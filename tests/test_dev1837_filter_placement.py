@@ -118,17 +118,21 @@ class TestConjunctionSplits:
             int(r["orders.band"]): float(r["orders.m"]) for r in separate.data
         }
 
-    async def test_mixed_or_still_fails_closed(self, exec_engine) -> None:
-        """An OR across phases has no common scope — the split-the-filter
-        directive survives the AND lift."""
-        query = q(
+    async def test_mixed_or_types_as_measure_and_masks_cells(self, exec_engine) -> None:
+        """DEV-1865: ``band`` is a query dimension (available at query grain),
+        so the whole OR types as measure and prunes result cells — band-1 cells
+        survive unconditionally, others only where change > 0 (none here)."""
+        resp = await exec_engine.execute(q(
             dimensions=[BAND],
             time_dimensions=month_td(),
             filters=["band == 1 or change(amount:sum) > 0"],
             measures=[ModelMeasure(formula="change(amount:sum)", name="c")],
-        )
-        with pytest.raises(NotImplementedError, match=r"separate filters"):
-            await exec_engine.execute(query)
+        ))
+        got = _by_band_month(resp, "c")
+        assert set(got) == {(1, "2024-01"), (1, "2024-02"), (1, "2024-03")}
+        assert got[(1, "2024-01")][0] is None
+        assert float(got[(1, "2024-02")][0]) == pytest.approx(15.0)
+        assert float(got[(1, "2024-03")][0]) == pytest.approx(45.0)
 
 
 class TestShiftedCteRegroupAwareness:

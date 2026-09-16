@@ -10,9 +10,10 @@ import logging
 import re
 import warnings as _warnings_module
 from collections.abc import Callable
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
 import sqlalchemy as sa
+import sqlglot
 from sqlglot import exp
 from pydantic import (
     BaseModel,
@@ -25,8 +26,10 @@ from slayer.async_utils import run_sync
 from slayer.core.enums import DEFAULT_AGGREGATIONS_BY_TYPE, DataType, JoinCardinality
 from slayer.core.errors import (
     AmbiguousModelError,
+    AssociatedGrainWarning,
     BroadcastGrainWarning,
     ForcedFilterError,
+    ModelSqlValidationError,
     SchemaDriftError,
     SlayerError,
     UnreachableFilterDroppedWarning,
@@ -40,6 +43,7 @@ from slayer.engine.cardinality import (
     compute_verdict,
     declares_solo_unique,
 )
+from slayer.core.join_walker import neighbors
 from slayer.core.policy import JoinFilterRuleset, SessionPolicy
 from slayer.core.format import format_number
 from slayer.core.models import (
@@ -51,17 +55,27 @@ from slayer.core.models import (
 from slayer.core.query import (
     SlayerQuery,
     _contains_block_delimiter,
+    _get_source_model_name,
     coerce_declared_list_variables,
     declares_variables,
+    extract_variable_refs,
     list_valued_variable_names,
+    render_probe_text,
     substitute_variables,
+)
+from slayer.engine.population import (
+    infer_population,
+    to_one_reachable,
 )
 from slayer.core.warnings import (
     AnySlayerWarning,
+    AssociatedWarningPayload,
+    DegenerateReaggregationWarningPayload,
     BroadcastDimension,
     BroadcastGrainWarningPayload,
     DroppedFilterWarning,
     NormalizationWarning,
+    SemiJoinPushedWarningPayload,
 )
 from slayer.core.recommend import (
     CandidateCoverage,
@@ -79,7 +93,7 @@ from slayer.engine.cache import (
 )
 from slayer.engine.normalization import normalize_query
 from slayer.core.keys import REGROUP_LEAF_PREFIX
-from slayer.engine.planned import PlannedQuery
+from slayer.ir.planned import PlannedQuery
 from slayer.engine.schema_drift import (
     AppliedEntry,
     ApplyDriftResult,
@@ -93,30 +107,39 @@ from slayer.engine.response_meta import (
     build_response_metadata,
     projection_result_keys,
 )
-from slayer.engine.column_expansion import expand_derived_refs_sync
-from slayer.engine.source_bundle import (
-    ResolvedSourceBundle,
-    build_resolved_source_bundle,
-    expand_query_backed_models_in_bundle,
-)
+from slayer.sql.column_expansion import expand_derived_refs_sync
+from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.stage_ordering import topologically_order_stages
-from slayer.engine.stage_planner import _topo_sort, plan_stages
-from slayer.engine.variables import apply_variables_to_query
+from slayer.engine.compile.stages import _topo_sort
+from slayer.engine.plan import plan_stages
+from slayer.ir.variables import apply_variables_to_query
 from slayer.engine.introspect_utils import _safe_get_columns
 from slayer.engine.schema_scope import SchemaRef
-from slayer.engine.join_graph import JoinGraph, min_hops_root
+from slayer.engine.join_graph import JoinGraph
 from slayer.memories.resolver import (
     _all_models_in_datasource,
     resolve_entity,
 )
-from slayer.sql.client import SlayerSQLClient
+from slayer.sql.client import (
+    SlayerSQLClient,
+    _is_auth_failure,
+    _is_transient_db_error,
+    _is_unreachable_db_error,
+    build_sql_model_trial_query,
+    classify_model_sql,
+)
 from slayer.sql.dialects import SqlDialect, dialect_for_ds_type, get_dialect
 from slayer.sql import engine_factory
 from slayer.sql.engine_factory import EngineCacheKey, _sql_client_cache_key
 from slayer.sql.generator import generate_planned_stages
-from slayer.sql.session_policy import ScopedTable, apply_session_policy
+from slayer.sql.session_policy import (
+    ScopedTable,
+    _attach_ch_correlated_setting,
+    apply_session_policy,
+)
 from slayer.sql.stage_wrapper import build_flat_rename_wrapper
 from slayer.storage.base import StorageBackend
+import slayer.engine.bundle_builder
 
 logger = logging.getLogger(__name__)
 
@@ -127,11 +150,13 @@ class _ResolvedItem(BaseModel):
     model: str
     leaf: str
     suffix: str | None = None
+    # DEV-1866: measures / aggregation-suffixed items attach (reachability-only)
+    # and never steer the recommendation; columns are determination items.
+    attachment: bool = False
 
 
-def _emit_recommend_path(graph: JoinGraph, root: str, item: "_ResolvedItem") -> str:
-    """Join-qualified path to ``item`` from ``root`` (root excluded), suffix re-attached."""
-    hops = graph.shortest_path(root, item.model) or []
+def _emit_recommend_path(hops: list[str], item: "_ResolvedItem") -> str:
+    """Join-qualified path to ``item`` from a root over ``hops`` (root excluded), suffix re-attached."""
     core = item.leaf if not hops else ".".join(hops) + "." + item.leaf
     return core if item.suffix is None else f"{core}:{item.suffix}"
 
@@ -164,24 +189,29 @@ def _resolve_root_hint(
 
 
 def _build_recommend_coverage(
-    graph: JoinGraph,
     all_names: list[str],
-    mentioned: set[str],
-    resolved: list["_ResolvedItem"],
+    det_items: list["_ResolvedItem"],
+    reach_by_candidate: dict[str, dict[str, list[str]]],
     *,
     force_include: set[str] | None = None,
 ) -> list[CandidateCoverage]:
-    """Pareto frontier of partial-root candidates; ``force_include`` rows appear even if dominated."""
+    """Pareto frontier of partial-root candidates over the determination items.
+
+    Reach is provably-to-one determination (``reach_by_candidate`` = target →
+    to-one token path); ``force_include`` rows appear even if dominated.
+    """
     forced = force_include or set()
-    items_in_order = [r.input_item for r in resolved]
-    model_of_item = {r.input_item: r.model for r in resolved}
+    items_in_order = [r.input_item for r in det_items]
+    model_of_item = {r.input_item: r.model for r in det_items}
+    det_models = {r.model for r in det_items}
 
     candidates: list[tuple[str, set[str], dict[str, int]]] = []
     for name in all_names:
-        reach = {m for m in mentioned if graph.shortest_path(name, m) is not None}
+        to_one = reach_by_candidate[name]
+        reach = {m for m in det_models if m in to_one}
         if not reach and name not in forced:
             continue
-        hops = {m: len(graph.shortest_path(name, m) or []) for m in reach}
+        hops = {m: len(to_one[m]) for m in reach}
         candidates.append((name, reach, hops))
 
     def dominates(a: tuple, b: tuple) -> bool:
@@ -239,6 +269,17 @@ def _model_has_optional_block(model: SlayerModel) -> bool:
 def _model_needs_substitution_pass(model: SlayerModel) -> bool:
     """True if substitution must run with no variables (a ``{? ?}`` block or declared variables)."""
     return _model_has_optional_block(model) or declares_variables(model)
+
+
+def _sql_safety_reject_reason(safety: str, *, parameterized: bool) -> str | None:
+    """Save-time reject reason for a classified ``model.sql``, or None to admit
+    it. Unparseable blocks only when static (a parameterized source may parse
+    only once its identifiers are filled)."""
+    if safety == "modifying":
+        return "model SQL must be a read-only query; it is not a plain SELECT"
+    if safety == "unparseable" and not parameterized:
+        return "model SQL could not be parsed for a read-only check"
+    return None
 
 
 def _substitute_model_sql_surfaces(
@@ -310,6 +351,35 @@ def _walk_regroup_attaches(planned):
         yield from _walk_regroup_attaches(attach.producer_plan)
 
 
+def plan_has_semi_join_filters(planned) -> bool:
+    """Whether any (nested) plan carries a pushed semi-join filter (DEV-1840)."""
+    if getattr(planned, "semi_join_filters", None):
+        return True
+    return any(
+        plan_has_semi_join_filters(attach.producer_plan)
+        for attach in _walk_regroup_attaches(planned)
+    )
+
+
+def _iter_plans_with_producers(planned_list):
+    """Each planned query followed by every nested producer plan."""
+    for planned in planned_list:
+        yield planned
+        for attach in _walk_regroup_attaches(planned):
+            yield attach.producer_plan
+
+
+def _semi_join_filter_texts(planned_list) -> List[str]:
+    """Distinct user filter texts pushed as semi-joins, for diagnostics."""
+    texts: List[str] = []
+    for plan in _iter_plans_with_producers(planned_list):
+        for group in getattr(plan, "semi_join_filters", None) or ():
+            for text in group.filter_texts:
+                if text and text not in texts:
+                    texts.append(text)
+    return texts
+
+
 def _collect_dropped_filter_warnings(
     *, planned_list, stages,
 ) -> List[DroppedFilterWarning]:
@@ -360,26 +430,102 @@ def _collect_broadcast_warnings(
     ]
 
 
-def _raise_on_strict_events(
+def _collect_associated_warnings(
+    *, planned_list, stages,
+) -> List[AssociatedWarningPayload]:
+    """One associated payload per ``(stage location, measure label)``; dimensions unioned."""
+    dims_by_key: "dict[tuple[str, str], list[str]]" = {}
+    for index, planned in enumerate(planned_list):
+        location = _stage_location(stages=stages, index=index, member=None)
+        for attach in _walk_regroup_attaches(planned):
+            measure = attach.associated_measure
+            if not measure:
+                continue
+            dims = dims_by_key.setdefault((location, measure), [])
+            for dim in attach.associated_dimensions:
+                if dim not in dims:
+                    dims.append(dim)
+    return [
+        AssociatedWarningPayload(measure=measure, location=location, dimensions=dims)
+        for (location, measure), dims in dims_by_key.items()
+    ]
+
+
+def _collect_degenerate_warnings(
+    *, planned_list, stages,
+) -> List[DegenerateReaggregationWarningPayload]:
+    """One degenerate-re-aggregation payload per ``(location, measure)`` (DEV-1847)."""
+    seen: set = set()
+    out: List[DegenerateReaggregationWarningPayload] = []
+    for index, planned in enumerate(planned_list):
+        location = _stage_location(stages=stages, index=index, member=None)
+        for attach in _walk_regroup_attaches(planned):
+            measure = attach.degenerate_measure
+            if not measure:
+                continue
+            identity = (location, measure)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            out.append(DegenerateReaggregationWarningPayload(
+                measure=measure, location=location,
+                operand_grain=list(attach.degenerate_operand_grain),
+                outer_grain=list(attach.degenerate_outer_grain),
+            ))
+    return out
+
+
+def _attach_semi_join_texts(attach) -> Iterator[str]:
+    """Non-empty semi-join-pushed filter texts on an attach's producer plan."""
+    for group in getattr(attach.producer_plan, "semi_join_filters", None) or ():
+        yield from (text for text in group.filter_texts if text)
+
+
+def _collect_semi_join_pushed_warnings(
+    *, planned_list, stages,
+) -> List[SemiJoinPushedWarningPayload]:
+    """Response-only informational entries for semi-join-pushed conjuncts (DEV-1841 amends DEV-1840's silence); one per ``(location, aggregate, filter text)``."""
+    seen: set = set()
+    out: List[SemiJoinPushedWarningPayload] = []
+    for index, planned in enumerate(planned_list):
+        location = _stage_location(stages=stages, index=index, member=None)
+        for attach in _walk_regroup_attaches(planned):
+            measure = (
+                attach.broadcast_measure or attach.associated_measure
+                or attach.alias_hint or "<aggregate>"
+            )
+            for text in _attach_semi_join_texts(attach):
+                identity = (location, measure, text)
+                if identity in seen:
+                    continue
+                seen.add(identity)
+                out.append(SemiJoinPushedWarningPayload(
+                    measure=measure, location=location, filter_text=text,
+                ))
+    return out
+
+
+def _raise_on_error_events(
     *, broadcasts: List[BroadcastGrainWarningPayload],
     dropped: List[DroppedFilterWarning],
 ) -> None:
-    """Strict mode: turn any silent-semantics event into an error naming metric/filter + remedy."""
+    """``to_many_handling: "error"``: turn any silent-semantics event into an error naming metric/filter + remedy."""
     remedy = (
-        "declare join cardinality, a covering unique key, or remove the "
+        "declare join cardinality, a covering unique key, switch to "
+        "to_many_handling='associate', or remove the "
     )
     if broadcasts:
         w = broadcasts[0]
         dims = ", ".join(d.dimension for d in w.dimensions)
         reason = w.dimensions[0].reason if w.dimensions else ""
         raise SlayerError(
-            f"strict mode: metric {w.measure!r} would broadcast across "
+            f"error mode: metric {w.measure!r} would broadcast across "
             f"unattributable dimension(s) {dims} ({reason}); {remedy}dimension."
         )
     if dropped:
         d = dropped[0]
         raise SlayerError(
-            f"strict mode: filter {d.filter_text!r} would be dropped from a "
+            f"error mode: filter {d.filter_text!r} would be dropped from a "
             f"producer ({d.reason}); {remedy}filter."
         )
 
@@ -401,6 +547,13 @@ def _emit_dropped_filter_warnings(response) -> None:
                 BroadcastGrainWarning(measure=w.measure, reason=reason),
                 stacklevel=3,
             )
+        elif isinstance(w, AssociatedWarningPayload):
+            _warnings_module.warn(
+                AssociatedGrainWarning(
+                    measure=w.measure, dimensions=", ".join(w.dimensions),
+                ),
+                stacklevel=3,
+            )
 
 
 class SlayerResponse(BaseModel):
@@ -413,6 +566,9 @@ class SlayerResponse(BaseModel):
     # Query advisories, discriminated on ``kind`` (normalization rewrites,
     # dropped cross-model filters); empty for a clean query.
     warnings: List[AnySlayerWarning] = PydanticField(default_factory=list)
+    # DEV-1866: the effective population model and whether it was inferred.
+    population: Optional[str] = None
+    population_inferred: bool = False
 
     @model_validator(mode="after")
     def _populate_columns(self) -> "SlayerResponse":
@@ -460,6 +616,8 @@ class _Prepared(BaseModel):
     touched: set
     model: SlayerModel
     slack_warnings: List[Any] = PydanticField(default_factory=list)
+    population: Optional[str] = None
+    population_inferred: bool = False
 
 
 class SlayerQueryEngine:
@@ -569,11 +727,33 @@ class SlayerQueryEngine:
 
         return guard
 
-    async def _preflight_clickhouse_correlated(
-        self, *, dialect: str, datasource: DatasourceConfig
+    def _require_clickhouse_semi_join_support(
+        self, *, datasource: DatasourceConfig, planned_list,
     ) -> None:
-        """Probe + cache the ClickHouse version once per datasource (join-rule policies); failure caches ``None``."""
-        if dialect != "clickhouse" or not self._policy_has_join_rules():
+        """Fail closed when a semi-join plan targets ClickHouse < 25.4 (or an
+        undeterminable version) — correlated EXISTS is unsupported there."""
+        version = self._ch_version_cache.get(_sql_client_cache_key(datasource))
+        if version is not None and version >= (25, 4):
+            return
+        texts = _semi_join_filter_texts(planned_list)
+        named = f" filter(s): {', '.join(repr(t) for t in texts)};" if texts else ""
+        detected = (
+            f"detected {version[0]}.{version[1]}" if version is not None
+            else "the server version could not be determined"
+        )
+        raise SlayerError(
+            f"This query pushes a filter into a related model as a correlated "
+            f"EXISTS semi-join;{named} ClickHouse supports correlated "
+            f"subqueries only from server 25.4, but {detected}. Upgrade the "
+            f"server, or restructure the filter."
+        )
+
+    async def _preflight_clickhouse_correlated(
+        self, *, dialect: str, datasource: DatasourceConfig, needed: bool = False
+    ) -> None:
+        """Probe + cache the ClickHouse version once per datasource (join-rule
+        policies, or ``needed=True`` for semi-join plans); failure caches ``None``."""
+        if dialect != "clickhouse" or not (needed or self._policy_has_join_rules()):
             return
         ds_key = _sql_client_cache_key(datasource)
         if ds_key in self._ch_version_cache:
@@ -789,6 +969,22 @@ class SlayerQueryEngine:
         Produces the final executed SQL; no SQL client on the no-policy path (so
         ``evict()`` recomputes a key without connecting).
         """
+        # DEV-1866: infer the population of any rootless stage (main + each named
+        # stage independently) BEFORE prefix-strip, so the chosen model flows
+        # through the untouched pipeline byte-identically to its explicit twin.
+        query, named_queries, population, population_inferred, inferred_data_source = (
+            await self._infer_populations(
+                query=query,
+                named_queries=named_queries,
+                prefer_data_source=prefer_data_source,
+            )
+        )
+        # Pin bundle resolution to the inferred datasource (anchor voting already
+        # fixed exactly one), so the winning bare model name can't re-resolve to a
+        # same-named model in another datasource.
+        if inferred_data_source is not None:
+            prefer_data_source = inferred_data_source
+
         query = query.strip_source_model_prefix()
         named_queries = {
             name: q.strip_source_model_prefix()
@@ -800,7 +996,7 @@ class SlayerQueryEngine:
 
         # Build the resolved bundle once — the only storage consult; the binder
         # then reads from the bundle purely.
-        bundle = await build_resolved_source_bundle(
+        bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
             query=query,
             storage=self.storage,
             data_source=prefer_data_source,
@@ -812,7 +1008,7 @@ class SlayerQueryEngine:
         # inline_extensions. Shared with ``_expand_query_backed_model`` so both
         # surfaces consume the identical expansion contract.
         original_source_model = bundle.source_model
-        bundle = await expand_query_backed_models_in_bundle(
+        bundle = await slayer.engine.bundle_builder.expand_query_backed_models_in_bundle(
             bundle=bundle,
             outer_vars=query.variables,
             runtime_kwarg=runtime_kwarg,
@@ -857,9 +1053,10 @@ class SlayerQueryEngine:
         # aggs, misplaced measures) to canonical form, each stage against its
         # own resolved model.
         sibling_names = set(named_queries)
-        query, slack_warnings = self._normalize_stage(
+        query, _norm_warnings = self._normalize_stage(
             query=query, bundle=bundle, sibling_names=sibling_names,
         )
+        slack_warnings: List[AnySlayerWarning] = list(_norm_warnings)
         normed_named: Dict[str, SlayerQuery] = {}
         for nm, nq in named_queries.items():
             nq2, nq_warnings = self._normalize_stage(
@@ -911,12 +1108,24 @@ class SlayerQueryEngine:
         broadcast_warnings = _collect_broadcast_warnings(
             planned_list=planned_list, stages=ordered_stages,
         )
-        if getattr(query, "strict", False):
-            _raise_on_strict_events(
+        associated_warnings = _collect_associated_warnings(
+            planned_list=planned_list, stages=ordered_stages,
+        )
+        semi_join_infos = _collect_semi_join_pushed_warnings(
+            planned_list=planned_list, stages=ordered_stages,
+        )
+        degenerate_warnings = _collect_degenerate_warnings(
+            planned_list=planned_list, stages=ordered_stages,
+        )
+        if getattr(query, "to_many_handling", "broadcast") == "error":
+            _raise_on_error_events(
                 broadcasts=broadcast_warnings, dropped=dropped_warnings,
             )
         slack_warnings.extend(dropped_warnings)
         slack_warnings.extend(broadcast_warnings)
+        slack_warnings.extend(associated_warnings)
+        slack_warnings.extend(semi_join_infos)
+        slack_warnings.extend(degenerate_warnings)
 
         dialect = self._dialect_for_type(datasource.type)
         sql = generate_planned_stages(
@@ -925,11 +1134,22 @@ class SlayerQueryEngine:
             # fit; the read side decodes against the same set.
             projection_aliases=projection_result_keys(root_planned=planned_list[-1]),
         )
+        # Semi-join pushdown emits correlated EXISTS, which ClickHouse supports
+        # only from 25.4 behind a setting: probe the version, fail closed below
+        # it, and attach the setting on every entry point (dry-run included).
+        has_semi_joins = any(plan_has_semi_join_filters(p) for p in planned_list)
+        await self._preflight_clickhouse_correlated(
+            dialect=dialect, datasource=datasource, needed=has_semi_joins
+        )
+        if has_semi_joins and dialect == "clickhouse":
+            self._require_clickhouse_semi_join_support(
+                datasource=datasource, planned_list=planned_list,
+            )
+            ast = sqlglot.parse_one(sql, dialect=dialect)
+            _attach_ch_correlated_setting(ast)
+            sql = ast.sql(dialect=dialect, pretty=True)
         # Forced-filter rewrite before dry-run / explain / execute so all three
         # (and the cache key) see the policy-rewritten SQL; no-op without a policy.
-        await self._preflight_clickhouse_correlated(
-            dialect=dialect, datasource=datasource
-        )
         sql = self._apply_policy(sql=sql, dialect=dialect, datasource=datasource)
         logger.debug("Generated SQL:\n%s", sql)
 
@@ -954,6 +1174,56 @@ class SlayerQueryEngine:
             touched=touched,
             model=model,
             slack_warnings=slack_warnings,
+            population=population,
+            population_inferred=population_inferred,
+        )
+
+    async def _infer_populations(
+        self,
+        *,
+        query: SlayerQuery,
+        named_queries: Dict[str, SlayerQuery],
+        prefer_data_source: Optional[str],
+    ) -> "tuple[SlayerQuery, Dict[str, SlayerQuery], Optional[str], bool, Optional[str]]":
+        """Fill in an omitted ``source_model`` on the main query and each named stage.
+
+        Runs before prefix-strip (design §1). Returns the (possibly rewritten) main
+        query and stages, the main query's effective population + inferred flag, and
+        the inferred datasource (pins bundle resolution so the winning model name
+        can't resolve ambiguously to a same-named model in another datasource).
+        """
+        stage_names = set(named_queries) | ({query.name} if query.name else set())
+
+        inferred = query.source_model is None
+        inferred_data_source: Optional[str] = None
+        if inferred:
+            choice = await infer_population(
+                query=query, storage=self.storage,
+                data_source=prefer_data_source,
+                sibling_stage_names=stage_names - ({query.name} if query.name else set()),
+            )
+            query = query.model_copy(update={"source_model": choice.model_name})
+            inferred_data_source = choice.data_source
+
+        rewritten: Dict[str, SlayerQuery] = {}
+        for name, stage in named_queries.items():
+            if stage.source_model is None:
+                choice = await infer_population(
+                    query=stage, storage=self.storage,
+                    data_source=prefer_data_source or inferred_data_source,
+                    sibling_stage_names=stage_names - {name},
+                )
+                stage = stage.model_copy(update={"source_model": choice.model_name})
+                # Pin bundle resolution to the inferred datasource even when only a
+                # stage (not the main query) was rootless, so the stage's bare model
+                # name can't resolve to a same-named model in another datasource.
+                if inferred_data_source is None:
+                    inferred_data_source = choice.data_source
+            rewritten[name] = stage
+
+        return (
+            query, rewritten, _get_source_model_name(query.source_model),
+            inferred, inferred_data_source,
         )
 
     @staticmethod
@@ -994,6 +1264,8 @@ class SlayerQueryEngine:
             return SlayerResponse(
                 data=[], columns=prepared.expected_columns, sql=prepared.sql,
                 attributes=prepared.attributes, warnings=prepared.slack_warnings,
+                population=prepared.population,
+                population_inferred=prepared.population_inferred,
             )
 
         use_cache = cache and not dry_run and not explain
@@ -1006,7 +1278,12 @@ class SlayerQueryEngine:
             entry = await cache_obj.get(key)
             if entry is not None:
                 # Deep copy so caller mutation can't poison the cached response.
-                return entry.response.model_copy(deep=True)
+                # Population metadata is per-query, not per-SQL (an explicit and an
+                # inferred twin share a cache key), so report the current query's.
+                return entry.response.model_copy(deep=True, update={
+                    "population": prepared.population,
+                    "population_inferred": prepared.population_inferred,
+                })
 
         # Miss (or cache=False) → a SQL client is required.
         client = self._client_for(prepared.datasource)
@@ -1024,6 +1301,8 @@ class SlayerQueryEngine:
             return SlayerResponse(
                 data=rows, sql=prepared.sql, attributes=prepared.attributes,
                 warnings=prepared.slack_warnings,
+                population=prepared.population,
+                population_inferred=prepared.population_inferred,
             )
 
         # Capture refresh-key baselines before the data query (cached data then
@@ -1040,6 +1319,8 @@ class SlayerQueryEngine:
         response = SlayerResponse(
             data=rows, columns=columns, sql=prepared.sql,
             attributes=prepared.attributes, warnings=prepared.slack_warnings,
+            population=prepared.population,
+            population_inferred=prepared.population_inferred,
         )
 
         if use_cache:
@@ -1217,6 +1498,8 @@ class SlayerQueryEngine:
         response = SlayerResponse(
             data=rows, columns=columns, sql=prepared.sql,
             attributes=prepared.attributes, warnings=prepared.slack_warnings,
+            population=prepared.population,
+            population_inferred=prepared.population_inferred,
         )
         return self._build_cache_entry(
             prepared=prepared,
@@ -1409,10 +1692,33 @@ class SlayerQueryEngine:
                     out.add(target)
         return out
 
+    async def _load_join_graph_models(
+        self, *, names: "set[str]", data_source: Optional[str]
+    ) -> "Dict[str, SlayerModel]":
+        """Best-effort model load: an unlistable datasource falls back to ``names``."""
+        if data_source is not None:
+            try:
+                names |= set(await self.storage.list_models(data_source))
+            except Exception:
+                pass
+        models_by_name: Dict[str, SlayerModel] = {}
+        for name in names:
+            try:
+                m = await self.storage.get_model(name, data_source=data_source)
+            except Exception:
+                m = None
+            if m is not None:
+                models_by_name[m.name] = m
+        return models_by_name
+
     async def _expand_join_graph(
         self, *, touched: "set[str]", data_source: Optional[str]
     ) -> None:
-        """Add transitively-reachable join targets to ``touched`` (visited-guarded)."""
+        """Add join-connected models to ``touched`` — either traversal
+        direction (DEV-1853)."""
+        models_by_name = await self._load_join_graph_models(
+            names=set(touched), data_source=data_source
+        )
         frontier = list(touched)
         visited: set[str] = set()
         while frontier:
@@ -1420,16 +1726,13 @@ class SlayerQueryEngine:
             if name in visited:
                 continue
             visited.add(name)
-            try:
-                m = await self.storage.get_model(name, data_source=data_source)
-            except Exception:
-                m = None
+            m = models_by_name.get(name)
             if m is None:
                 continue
-            for j in m.joins:
-                if j.target_model not in touched:
-                    touched.add(j.target_model)
-                    frontier.append(j.target_model)
+            for edge in neighbors(model=m, models_by_name=models_by_name):
+                if edge.target_model not in touched:
+                    touched.add(edge.target_model)
+                    frontier.append(edge.target_model)
 
     async def _maybe_raise_schema_drift(
         self,
@@ -1556,7 +1859,7 @@ class SlayerQueryEngine:
             )
             if not model.source_queries:
                 probe_query = probe_query.model_copy(update={"source_model": model})
-            bundle = await build_resolved_source_bundle(
+            bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
                 query=probe_query,
                 storage=self.storage,
                 data_source=model.data_source or None,
@@ -1564,7 +1867,7 @@ class SlayerQueryEngine:
                 named_queries={},
             )
             # Expand nested query-backed models so the planner sees sql-mode shapes.
-            bundle = await expand_query_backed_models_in_bundle(
+            bundle = await slayer.engine.bundle_builder.expand_query_backed_models_in_bundle(
                 bundle=bundle,
                 outer_vars=None,
                 runtime_kwarg=None,
@@ -1745,9 +2048,14 @@ class SlayerQueryEngine:
             raise ValueError(
                 f"'{raw}' does not name a column or metric on '{model_name}'."
             )
+        # DEV-1866: an aggregation suffix or a saved-measure leaf makes this an
+        # attachment (reachability-only); a plain column is a determination item.
+        attachment = suffix is not None or (
+            owning.get_column(leaf) is None and owning.get_measure(leaf) is not None
+        )
         item = _ResolvedItem(
             input_item=raw, data_source=ds, model=model_name,
-            leaf=leaf, suffix=suffix,
+            leaf=leaf, suffix=suffix, attachment=attachment,
         )
         return item, warnings
 
@@ -1786,7 +2094,7 @@ class SlayerQueryEngine:
                 deduped_warnings.append(w)
         return resolved, deduped_warnings
 
-    async def recommend_root_model(
+    async def recommend_root_model(  # NOSONAR(S3776) — cohesive: small named reach/validity closures over shared state read clearer inline than hoisted
         self,
         items: list[str],
         *,
@@ -1795,9 +2103,12 @@ class SlayerQueryEngine:
     ) -> RootModelRecommendation:
         """Recommend the query root for ``model.column`` / ``model.metric`` items, plus each item's path.
 
-        Selection minimizes total hops, prefers a mentioned model on ties, then the
-        smallest name; no common root ⇒ ``reachable=False`` with a Pareto ``coverage``.
-        A feasible ``root_hint`` overrides min-hops (forcing a bridge model); an
+        DEV-1866: selection uses the population rule — the root must *determine*
+        every column item along provably to-one paths (fewest total hops); saved
+        measures and aggregation-suffixed items are attachments, needing only
+        (cardinality-blind) reachability, and never steer the choice. No common
+        determiner ⇒ ``reachable=False`` with a Pareto ``coverage`` over the
+        determination items. A feasible ``root_hint`` overrides the auto-pick; an
         infeasible one falls back with a warning, a malformed one raises.
         """
         resolved, base_warnings = await self._recommend_resolve_items(
@@ -1805,39 +2116,68 @@ class SlayerQueryEngine:
         )
         ds = resolved[0].data_source
         models = await _all_models_in_datasource(self.storage, ds)
+        models_by_name = {m.name: m for m in models}
         graph = JoinGraph.build_from_models(models)
-        all_names = sorted(m.name for m in models)
-        mentioned = {r.model for r in resolved}
+        all_names = sorted(models_by_name)
         warnings = list(base_warnings)
+
+        det = [r for r in resolved if not r.attachment]
+        attach = [r for r in resolved if r.attachment]
+        mentioned = {r.model for r in resolved}
+        reach = {name: to_one_reachable(name, models_by_name) for name in all_names}
+
+        def det_hops(root: str) -> int:
+            return sum(len(reach[root].get(r.model, ())) for r in det)
+
+        def item_hops(root: str, item: "_ResolvedItem") -> list[str]:
+            # Determination items ride the recorded to-one path; attachments only
+            # need reachability, so they take the cardinality-blind shortest route.
+            if item.attachment:
+                return graph.shortest_path(root, item.model) or []
+            return reach[root].get(item.model, [])
+
+        def reaches_attachments(root: str) -> bool:
+            return all(graph.shortest_path(root, r.model) is not None for r in attach)
+
+        def is_valid(root: str) -> bool:
+            return all(r.model in reach[root] for r in det) and reaches_attachments(root)
+
+        def unmet(root: str) -> list[str]:
+            missing = [r.model for r in det if r.model not in reach[root]]
+            missing += [r.model for r in attach if graph.shortest_path(root, r.model) is None]
+            return sorted(set(missing))
 
         hint = _resolve_root_hint(root_hint, data_source=ds, all_names=all_names)
         hint_model = hint[0] if hint is not None else None
         hint_display = hint[1] if hint is not None else None
 
-        def reaches_all(root: str) -> bool:
-            return all(graph.shortest_path(root, m) is not None for m in mentioned)
-
-        def missing_models(root: str) -> list[str]:
-            return sorted(m for m in mentioned if graph.shortest_path(root, m) is None)
-
-        auto = min_hops_root(graph, all_names, mentioned)
-        if auto is not None:
-            if hint_model is not None and reaches_all(hint_model):
+        valid = [n for n in all_names if is_valid(n)]
+        if valid:
+            # Objective: fewest determination hops; attachments never steer, so
+            # they are absent from the key (only a mentioned-preference + name
+            # break exact determination-hop ties).
+            auto = min(
+                valid,
+                key=lambda n: (det_hops(n), 0 if n in mentioned else 1, n),
+            )
+            if hint_model is not None and is_valid(hint_model):
                 root = hint_model
-                message = (
-                    f"All items are reachable from '{root}' (requested via root_hint)."
-                )
+                message = f"All items are reachable from '{root}' (requested via root_hint)."
             else:
                 root = auto
                 if hint_model is not None:
-                    missing = ", ".join(missing_models(hint_model))
+                    missing = ", ".join(unmet(hint_model))
                     warnings.append(
                         f"root_hint '{hint_display}' cannot reach {{{missing}}}; "
                         f"fell back to '{auto}'."
                     )
                 message = f"All items are reachable from '{root}'."
             item_paths = [
-                ItemPath(input_item=r.input_item, path=_emit_recommend_path(graph, root, r))
+                ItemPath(
+                    input_item=r.input_item,
+                    path=_emit_recommend_path(item_hops(root, r), r),
+                    attachment=r.attachment,
+                )
                 for r in resolved
             ]
             return RootModelRecommendation(
@@ -1846,11 +2186,23 @@ class SlayerQueryEngine:
             )
 
         force_include = {hint_model} if hint_model is not None else None
-        coverage = _build_recommend_coverage(
-            graph, all_names, mentioned, resolved, force_include=force_include
-        )
+        if det:
+            coverage = _build_recommend_coverage(all_names, det, reach, force_include=force_include)
+        else:
+            # Attachment-only request with no common reacher: rank partial roots by
+            # attachment reachability (cardinality-blind) so `coverage` isn't empty
+            # when the message directs callers to it.
+            attach_reach = {
+                name: {
+                    r.model: p
+                    for r in attach
+                    if (p := graph.shortest_path(name, r.model)) is not None
+                }
+                for name in all_names
+            }
+            coverage = _build_recommend_coverage(all_names, attach, attach_reach, force_include=force_include)
         if hint_model is not None:
-            missing = ", ".join(missing_models(hint_model))
+            missing = ", ".join(unmet(hint_model))
             warnings.append(
                 f"root_hint '{hint_display}' cannot reach {{{missing}}}; "
                 f"no single model reaches every item — see coverage."
@@ -1859,7 +2211,7 @@ class SlayerQueryEngine:
             data_source=ds, root_model=None, reachable=False, item_paths=[],
             coverage=coverage, warnings=warnings,
             message=(
-                "No single model reaches every requested item. See 'coverage' "
+                "No single model determines every requested item. See 'coverage' "
                 "for the best partial roots — split the request into a "
                 "multi-stage query rooted at those models."
             ),
@@ -2336,7 +2688,7 @@ class SlayerQueryEngine:
         # Build the bundle for the final stage WITHOUT a DS hint, so inner
         # resolution falls back to the priority-list resolver — letting
         # ``get_column_types`` recover from a stale persisted ``data_source``.
-        bundle = await build_resolved_source_bundle(
+        bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
             query=final_stage,
             storage=self.storage,
             data_source=None,
@@ -2349,7 +2701,7 @@ class SlayerQueryEngine:
         # names so a target referencing its parent short-circuits via cached SQL.
         # Pass the bundle's MERGED variables (not the bare stage dict) so nested
         # expansions keep the outer model's ``query_variables`` layer.
-        bundle = await expand_query_backed_models_in_bundle(
+        bundle = await slayer.engine.bundle_builder.expand_query_backed_models_in_bundle(
             bundle=bundle,
             outer_vars=bundle.query_variables,
             runtime_kwarg=runtime_kwarg,
@@ -2589,6 +2941,7 @@ class SlayerQueryEngine:
                 )
             model = await self._validate_and_populate_cache(model)
         await self._validate_mode_a_join_paths(model)
+        await self.validate_sql_model_source(model)
         await self.storage.save_model(model)
         # Clean up the stale entry if the model moved datasource.
         if (
@@ -2600,14 +2953,79 @@ class SlayerQueryEngine:
             )
         return model
 
+    async def validate_sql_model_source(self, model: SlayerModel) -> None:
+        """Statically classify a raw-``sql`` source, then trial-execute it: a
+        non-read-only or unparseable source is rejected with no DB call; a
+        reachable backend's rejection also blocks. Parameterized SQL is still
+        classified (so a parameterized DML is caught) but not trial-run."""
+        if not model.sql or model.sql_table or model.source_queries:
+            return
+        ds = (
+            await self.storage.get_datasource(model.data_source)
+            if model.data_source
+            else None
+        )
+        sqlglot_name = dialect_for_ds_type(ds.type).sqlglot_name if ds else None
+        bare, blocked = extract_variable_refs(model.sql)
+        parameterized = bool(bare or blocked)
+        # render_probe_text is SLayer's canonical Mode-A probe render (blocks →
+        # (1=1), {var} → 0), so classification matches how model.sql parses.
+        # Unparseable blocks the save only when there are no placeholders — a
+        # parameterized source may parse only once its identifiers are filled.
+        safety = classify_model_sql(render_probe_text(model.sql), dialect=sqlglot_name)
+        reject_reason = _sql_safety_reject_reason(safety, parameterized=parameterized)
+        if reject_reason:
+            raise ModelSqlValidationError(
+                model_name=model.name,
+                data_source=model.data_source or "",
+                ds_type=ds.type if ds else None,
+                reason=reject_reason,
+            )
+        if parameterized:
+            logger.info(
+                "Skipping save-time SQL trial-execute for model %r: model.sql "
+                "carries %d placeholder(s), which cannot be trial-filled.",
+                model.name, len(bare | blocked),
+            )
+            return
+        if ds is None:
+            logger.warning(
+                "Skipping save-time SQL validation for model %r: datasource "
+                "%r is unset or not configured.", model.name, model.data_source,
+            )
+            return
+        await self._trial_execute_sql_source(model, ds)
+
+    async def _trial_execute_sql_source(self, model: SlayerModel, ds) -> None:
+        """Trial-execute read-only ``model.sql`` against ``ds``: raise on a
+        reachable rejection, warn-and-return on an inconclusive verdict."""
+        try:
+            await self._client_for(ds).get_column_types(
+                build_sql_model_trial_query(model.sql)
+            )
+        except Exception as exc:
+            if (
+                _is_transient_db_error(exc)
+                or _is_auth_failure(exc)
+                or _is_unreachable_db_error(exc)
+            ):
+                logger.warning(
+                    "Save-time SQL validation for model %r was inconclusive "
+                    "(datasource %r, type %r): %s. Saving anyway.",
+                    model.name, model.data_source, ds.type,
+                    getattr(exc, "orig", exc),
+                )
+                return
+            raise ModelSqlValidationError(
+                model_name=model.name,
+                data_source=model.data_source,
+                ds_type=ds.type,
+                reason=str(getattr(exc, "orig", exc)),
+            ) from exc
+
     async def _validate_mode_a_join_paths(self, model: SlayerModel) -> None:
         """Reject a broken dotted chain / legacy ``__`` split-alias at save time via the generator's resolver."""
-        if not model.joins:
-            return  # no join graph → no chain qualifiers to resolve
         loaded = await self._preload_join_targets(model)
-
-        def _resolve(name: str) -> Optional[SlayerModel]:
-            return loaded.get(name)
 
         # Parse with the datasource's own dialect (matching generation), else
         # valid non-Postgres Mode-A SQL could be mis-rejected. Missing → postgres.
@@ -2626,30 +3044,32 @@ class SlayerQueryEngine:
                 sql=sql,
                 model=model,
                 alias_path=model.name,
-                resolve_model=_resolve,
+                models_by_name={
+                    k: v for k, v in loaded.items() if v is not None
+                },
                 dialect=dialect,
             )
 
     async def _preload_join_targets(
         self, model: SlayerModel,
     ) -> Dict[str, Optional[SlayerModel]]:
-        """BFS-load join-reachable models into a sync dict; missing targets map to ``None``."""
+        """Load the datasource's models into a sync dict — the bidirectional
+        closure is the connected component (DEV-1853). Best-effort: an
+        unlistable datasource or unloadable peer maps to ``None``/is skipped."""
         loaded: Dict[str, Optional[SlayerModel]] = {model.name: model}
-        queue: List[str] = [j.target_model for j in (model.joins or [])]
-        while queue:
-            name = queue.pop()
+        try:
+            names = await self.storage.list_models(model.data_source)
+        except Exception:
+            names = [j.target_model for j in (model.joins or [])]
+        for name in names:
             if name in loaded:
                 continue
-            target: Optional[SlayerModel] = None
             try:
-                target = await self.storage.get_model(
+                loaded[name] = await self.storage.get_model(
                     name, data_source=model.data_source,
                 )
             except Exception:
-                target = None
-            loaded[name] = target
-            if target is not None:
-                queue.extend(j.target_model for j in (target.joins or []))
+                loaded[name] = None
         return loaded
 
     async def _validate_and_populate_cache(self, model: SlayerModel) -> SlayerModel:

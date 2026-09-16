@@ -8,11 +8,33 @@ from __future__ import annotations
 
 from decimal import Decimal
 from enum import IntEnum
-from typing import Literal, Mapping, Optional, Tuple, TypeVar, Union, cast
+from typing import (
+    FrozenSet,
+    Sequence,
+    TypeGuard,
+    AbstractSet,
+    Callable,
+    ClassVar,
+    Iterable,
+    Iterator,
+    List,
+    Literal,
+    Mapping,
+    Optional,
+    Tuple,
+    TypeVar,
+    Union,
+    cast,
+    get_args,
+)
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from slayer.core.enums import DataType
+from slayer.core.enums import (
+    DataType,
+    RANK_FAMILY_TRANSFORMS,
+    RANKED_AGGREGATIONS,
+)
 from slayer.core.format import NumberFormat
 
 
@@ -126,10 +148,58 @@ def normalize_scalar(value):
     )
 
 
-class _FrozenKey(BaseModel):
-    """Common config for the typed-key family: frozen (hashable, immutable)."""
+class _FrozenKey(BaseModel, frozen=True):
+    """Common config for the typed-key family: frozen (hashable, immutable).
 
-    model_config = ConfigDict(frozen=True)
+    Every kind overrides the total-traversal protocol: ``children()`` yields the
+    directly embedded value keys (scalars and the Mode-A-opaque
+    ``AggregateKey.column_filter_key`` are never children); ``map_children``
+    rebuilds one level with ``fn`` applied at each ``children()`` position,
+    returning ``self`` when no child changed identity (``is``).
+    """
+
+    def children(self) -> Tuple["ValueKey", ...]:
+        raise NotImplementedError(
+            f"{type(self).__name__} must override children(): every value-key "
+            f"kind implements the total-traversal protocol."
+        )
+
+    def map_children(
+        self, fn: Callable[["ValueKey"], "ValueKey"],
+    ) -> "_FrozenKey":
+        raise NotImplementedError(
+            f"{type(self).__name__} must override map_children(): every "
+            f"value-key kind implements the total-traversal protocol."
+        )
+
+
+class _ChildMapper:
+    """``map_children`` helper: applies ``fn`` to keys, passes scalars through,
+    and records whether any result changed identity."""
+
+    def __init__(self, fn: Callable[["ValueKey"], "ValueKey"]) -> None:
+        self._fn = fn
+        self.changed = False
+
+    def __call__(self, value):
+        if not isinstance(value, _FrozenKey):
+            return value
+        new = self._fn(value)
+        if new is not value:
+            self.changed = True
+        return new
+
+
+class _LeafKey(_FrozenKey, frozen=True):
+    """Traversal leaf: no embedded keys."""
+
+    def children(self) -> Tuple["ValueKey", ...]:
+        return ()
+
+    def map_children(
+        self, fn: Callable[["ValueKey"], "ValueKey"],
+    ) -> "_LeafKey":
+        return self
 
 
 def _typed_leaf(v):
@@ -155,7 +225,7 @@ def _typed_kwargs(kwargs):
     return tuple((k, _typed_leaf(v)) for k, v in kwargs)
 
 
-class ColumnKey(_FrozenKey):
+class ColumnKey(_LeafKey, frozen=True):
     """Row-level reference to a base column on a model.
 
     ``path`` is the join walk from the query's source model to the terminal
@@ -171,7 +241,7 @@ class ColumnKey(_FrozenKey):
         return Phase.ROW
 
 
-class ColumnSqlKey(_FrozenKey):
+class ColumnSqlKey(_LeafKey, frozen=True):
     """Reference to a derived column (whose ``Column.sql`` is set).
 
     The expansion AST is recovered from the model at binding time — the key only
@@ -187,7 +257,7 @@ class ColumnSqlKey(_FrozenKey):
         return Phase.ROW
 
 
-class TimeTruncKey(_FrozenKey):
+class TimeTruncKey(_FrozenKey, frozen=True):
     """Row-level reference to a time-truncated column, keyed by (column, granularity).
 
     ``column`` is a ``ColumnKey`` (base temporal column) or ``ColumnSqlKey``
@@ -202,6 +272,16 @@ class TimeTruncKey(_FrozenKey):
     def phase(self) -> Phase:
         return Phase.ROW
 
+    def children(self) -> Tuple["ValueKey", ...]:
+        return (self.column,)
+
+    def map_children(
+        self, fn: Callable[["ValueKey"], "ValueKey"],
+    ) -> "TimeTruncKey":
+        m = _ChildMapper(fn)
+        column = m(self.column)
+        return self.model_copy(update={"column": column}) if m.changed else self
+
 
 def column_leaf(col: Union["ColumnKey", "ColumnSqlKey"]) -> str:
     """Leaf column name of a ``TimeTruncKey.column`` regardless of kind."""
@@ -213,7 +293,7 @@ def column_path(col: Union["ColumnKey", "ColumnSqlKey"]) -> Tuple[str, ...]:
     return col.path
 
 
-class StarKey(_FrozenKey):
+class StarKey(_LeafKey, frozen=True):
     """Sentinel source for ``*:count`` aggregations.
 
     ``path`` is empty for the local star and non-empty for a cross-model star
@@ -227,7 +307,7 @@ class StarKey(_FrozenKey):
         return Phase.ROW
 
 
-class LiteralKey(_FrozenKey):
+class LiteralKey(_LeafKey, frozen=True):
     """Identity for a literal value inside an expression tree.
 
     Scalar normalization happens at the call site via ``normalize_scalar`` so
@@ -250,7 +330,7 @@ class LiteralKey(_FrozenKey):
         return _typed_leaf(self.value) == _typed_leaf(other.value)
 
 
-class SqlExprKey(_FrozenKey):
+class SqlExprKey(_LeafKey, frozen=True):
     """Identity for a Mode-A SQL fragment.
 
     Used as ``AggregateKey.column_filter_key`` so an attached ``Column.filter``
@@ -295,13 +375,20 @@ class SqlExprKey(_FrozenKey):
 # same-model EXPRESSION source (``sum(amount - cost)``) — the bound tree reuses
 # the existing row-level composites, so hash/equality/serialization come from
 # the canonical tree and formatting variants intern to one key.
+# DEV-1847: a re-aggregation's source resolves entirely to attached values, so
+# the source may itself be an ``AggregateKey`` (or a composite of them — carried
+# by the Arithmetic/ScalarCall operands, which already admit any ValueKey).
 _AggregateSource = Union[
     ColumnKey, ColumnSqlKey, StarKey,
-    "ArithmeticKey", "ScalarCallKey", "LiteralKey",
+    "ArithmeticKey", "ScalarCallKey", "LiteralKey", "AggregateKey",
 ]
-# Positional and kwarg arg values share one union: both `last(created_at)` and
-# `weighted_avg(weight=qty)` bind identifier columns via `_bind_agg_arg`.
-_AggregateArgValue = Union[ColumnKey, ColumnSqlKey, Decimal, str, bool, None]
+# Positional and kwarg arg values share one union: `last(created_at)` binds an
+# identifier column, `weighted_avg(weight=qty)` a column, and
+# `weighted_avg(weight=count(id, partition_by=…))` an aggregate — all via
+# `_bind_agg_arg`.
+_AggregateArgValue = Union[
+    ColumnKey, ColumnSqlKey, "AggregateKey", Decimal, str, bool, None,
+]
 _AggregateKwargValue = _AggregateArgValue
 
 
@@ -312,7 +399,7 @@ def _sort_kwargs_tuple(v):
     return tuple(sorted(v, key=lambda kv: kv[0]))
 
 
-class AggregateKey(_FrozenKey):
+class AggregateKey(_FrozenKey, frozen=True):
     """Identity for an aggregation slot (P3).
 
     Local and cross-model aggregates share this shape: ``source.path`` empty for
@@ -321,7 +408,7 @@ class AggregateKey(_FrozenKey):
     ``ColumnKey``/``ColumnSqlKey``; kwargs canonicalized to sorted order).
     ``column_filter_key`` folds any attached ``Column.filter`` into identity.
 
-    ``grain`` (DEV-1747 D2) names where a cross-model aggregate is evaluated:
+    ``locus`` (DEV-1747 D2) names where a cross-model aggregate is evaluated:
     ``"target"`` (default) rooted at the target, one value per target row-group;
     ``"host"`` rooted at the host, one value per host group (needed by the
     DEV-1735 order wrap). It participates in identity — the two are different
@@ -333,8 +420,9 @@ class AggregateKey(_FrozenKey):
     args: Tuple[_AggregateArgValue, ...] = ()
     kwargs: Tuple[Tuple[str, _AggregateKwargValue], ...] = ()
     column_filter_key: Optional[SqlExprKey] = None
-    grain: Literal["target", "host"] = "target"
-    partition_keys: Optional[frozenset["ValueKey"]] = None
+    locus: Literal["target", "host"] = "target"
+    # None = grain inherited from context; Grain.EMPTY = explicitly scalar.
+    partition_keys: Optional["Grain"] = None
 
     @field_validator("kwargs", mode="before")
     @classmethod
@@ -345,6 +433,32 @@ class AggregateKey(_FrozenKey):
     def phase(self) -> Phase:
         return Phase.AGGREGATE
 
+    def children(self) -> Tuple["ValueKey", ...]:
+        # column_filter_key is Mode-A opaque — never a child (A1).
+        embedded = [
+            c
+            for c in (self.source, *self.args, *(v for _, v in self.kwargs))
+            if isinstance(c, _FrozenKey)
+        ]
+        if self.partition_keys is not None:
+            embedded.extend(self.partition_keys)
+        return tuple(embedded)
+
+    def map_children(
+        self, fn: Callable[["ValueKey"], "ValueKey"],
+    ) -> "AggregateKey":
+        m = _ChildMapper(fn)
+        update = {
+            "source": m(self.source),
+            "args": tuple(m(a) for a in self.args),
+            "kwargs": tuple((k, m(v)) for k, v in self.kwargs),
+            "partition_keys": (
+                None if self.partition_keys is None
+                else Grain.of(m(p) for p in self.partition_keys)
+            ),
+        }
+        return self.model_copy(update=update) if m.changed else self
+
     def __hash__(self) -> int:
         return hash((
             "AggregateKey",
@@ -353,7 +467,7 @@ class AggregateKey(_FrozenKey):
             _typed_args(self.args),
             _typed_kwargs(self.kwargs),
             self.column_filter_key,
-            self.grain,
+            self.locus,
             self.partition_keys,
         ))
 
@@ -366,7 +480,7 @@ class AggregateKey(_FrozenKey):
             and _typed_args(self.args) == _typed_args(other.args)
             and _typed_kwargs(self.kwargs) == _typed_kwargs(other.kwargs)
             and self.column_filter_key == other.column_filter_key
-            and self.grain == other.grain
+            and self.locus == other.locus
             and self.partition_keys == other.partition_keys
         )
 
@@ -403,7 +517,7 @@ def reroot_aggregate_key(
     return reroot_value_key(key, target_path=target_path)
 
 
-class TransformKey(_FrozenKey):
+class TransformKey(_FrozenKey, frozen=True):
     """Identity for a transform slot (window / temporal operator over a value).
 
     ``input`` is the operated-on value. ``partition_keys`` is order-independent;
@@ -414,7 +528,7 @@ class TransformKey(_FrozenKey):
     input: "ValueKey"
     args: Tuple[Scalar, ...] = ()
     kwargs: Tuple[Tuple[str, Scalar], ...] = ()
-    partition_keys: frozenset["ValueKey"] = frozenset()
+    partition_keys: "Grain" = Field(default_factory=lambda: Grain.EMPTY)
     time_key: Optional["ValueKey"] = None
 
     @field_validator("kwargs", mode="before")
@@ -425,6 +539,24 @@ class TransformKey(_FrozenKey):
     @property
     def phase(self) -> Phase:
         return Phase.POST
+
+    def children(self) -> Tuple["ValueKey", ...]:
+        # args/kwargs are scalar-only, never children.
+        embedded = [self.input, *self.partition_keys]
+        if self.time_key is not None:
+            embedded.append(self.time_key)
+        return tuple(embedded)
+
+    def map_children(
+        self, fn: Callable[["ValueKey"], "ValueKey"],
+    ) -> "TransformKey":
+        m = _ChildMapper(fn)
+        update = {
+            "input": m(self.input),
+            "partition_keys": Grain.of(m(p) for p in self.partition_keys),
+            "time_key": None if self.time_key is None else m(self.time_key),
+        }
+        return self.model_copy(update=update) if m.changed else self
 
     def __hash__(self) -> int:
         return hash((
@@ -450,7 +582,7 @@ class TransformKey(_FrozenKey):
         )
 
 
-class ArithmeticKey(_FrozenKey):
+class ArithmeticKey(_FrozenKey, frozen=True):
     """Identity for an arithmetic / comparison / boolean expression.
 
     ``op`` is the operator symbol. Operand order matters (non-commutative ops,
@@ -464,6 +596,19 @@ class ArithmeticKey(_FrozenKey):
     def phase(self) -> Phase:
         return max((o.phase for o in self.operands), default=Phase.ROW)
 
+    def children(self) -> Tuple["ValueKey", ...]:
+        return self.operands
+
+    def map_children(
+        self, fn: Callable[["ValueKey"], "ValueKey"],
+    ) -> "ArithmeticKey":
+        m = _ChildMapper(fn)
+        operands = tuple(m(o) for o in self.operands)
+        return (
+            self.model_copy(update={"operands": operands})
+            if m.changed else self
+        )
+
 
 _ScalarCallArg = Union["ValueKey", Decimal, str, bool, None]
 
@@ -473,7 +618,7 @@ def _arg_phase(arg) -> Optional[Phase]:
     return getattr(arg, "phase", None)
 
 
-class ScalarCallKey(_FrozenKey):
+class ScalarCallKey(_FrozenKey, frozen=True):
     """Identity for a closed-allowlist scalar function call (C12).
 
     ``name`` must be in ``SCALAR_FUNCTIONS``; the key does not validate this (the
@@ -488,6 +633,16 @@ class ScalarCallKey(_FrozenKey):
         phases = [p for a in self.args if (p := _arg_phase(a)) is not None]
         return max(phases) if phases else Phase.ROW
 
+    def children(self) -> Tuple["ValueKey", ...]:
+        return tuple(a for a in self.args if isinstance(a, _FrozenKey))
+
+    def map_children(
+        self, fn: Callable[["ValueKey"], "ValueKey"],
+    ) -> "ScalarCallKey":
+        m = _ChildMapper(fn)
+        args = tuple(m(a) for a in self.args)
+        return self.model_copy(update={"args": args}) if m.changed else self
+
     def __hash__(self) -> int:
         return hash(("ScalarCallKey", self.name, _typed_args(self.args)))
 
@@ -500,7 +655,7 @@ class ScalarCallKey(_FrozenKey):
         )
 
 
-class BetweenKey(_FrozenKey):
+class BetweenKey(_FrozenKey, frozen=True):
     """Typed identity for a ``col BETWEEN low AND high`` predicate.
 
     The planner uses this to mark where ``BETWEEN`` is the right legacy-parity
@@ -517,8 +672,20 @@ class BetweenKey(_FrozenKey):
     def phase(self) -> Phase:
         return Phase.ROW
 
+    def children(self) -> Tuple["ValueKey", ...]:
+        return (self.column, self.low, self.high)
 
-class InKey(_FrozenKey):
+    def map_children(
+        self, fn: Callable[["ValueKey"], "ValueKey"],
+    ) -> "BetweenKey":
+        m = _ChildMapper(fn)
+        update = {
+            "column": m(self.column), "low": m(self.low), "high": m(self.high),
+        }
+        return self.model_copy(update=update) if m.changed else self
+
+
+class InKey(_FrozenKey, frozen=True):
     """Typed identity for a ``col IN (lit, …)`` / ``NOT IN`` predicate.
 
     Modelled on ``BetweenKey``: a column LHS and a fixed tuple of ``LiteralKey``
@@ -548,6 +715,19 @@ class InKey(_FrozenKey):
     def phase(self) -> Phase:
         return Phase.ROW
 
+    def children(self) -> Tuple["ValueKey", ...]:
+        return (self.column, *self.values)
+
+    def map_children(
+        self, fn: Callable[["ValueKey"], "ValueKey"],
+    ) -> "InKey":
+        m = _ChildMapper(fn)
+        update = {
+            "column": m(self.column),
+            "values": tuple(m(v) for v in self.values),
+        }
+        return self.model_copy(update=update) if m.changed else self
+
 
 ValueKey = Union[
     ColumnKey,
@@ -564,6 +744,103 @@ ValueKey = Union[
 ]
 
 
+class Grain(BaseModel):
+    """The grain of an aggregate — its dimension-key set — as a first-class value type.
+
+    Grains form a lattice under inclusion: ``union`` is the join, a coarser grain
+    is a subgrain of a finer one, and broadcast is the coarse->fine coercion.
+    Set-like dunders carry the mechanical set algebra; the named predicates spell
+    out the lattice reading. Comparisons and ``union`` accept a ``Grain`` only;
+    ``__or__`` / ``__sub__`` also accept any ``AbstractSet[ValueKey]``; ``__eq__``
+    is ``Grain``-only so mixed-representation drift fails loudly.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    keys: frozenset[ValueKey] = frozenset()
+
+    EMPTY: ClassVar["Grain"]
+
+    @classmethod
+    def of(cls, keys: Iterable[ValueKey]) -> "Grain":
+        return cls(keys=frozenset(keys))
+
+    @property
+    def is_empty(self) -> bool:
+        return not self.keys
+
+    def union(self, other: "Grain") -> "Grain":
+        """The join: the grain containing every key of both."""
+        return Grain(keys=self.keys | other.keys)
+
+    def is_subgrain_of(self, other: "Grain") -> bool:
+        """``self`` is coarser than or equal to ``other`` (reflexive)."""
+        return self.keys <= other.keys
+
+    def is_strict_subgrain_of(self, other: "Grain") -> bool:
+        """``self`` is strictly coarser than ``other`` (irreflexive)."""
+        return self.keys < other.keys
+
+    def broadcasts_into(self, finer: "Grain") -> bool:
+        """A coarse value coerces up to ``finer`` iff ``self`` is a subgrain of it;
+        the reverse needs a second-order aggregation, never a broadcast."""
+        return self.is_subgrain_of(finer)
+
+    def __contains__(self, key: object) -> bool:
+        return key in self.keys
+
+    def __iter__(self) -> Iterator[ValueKey]:  # type: ignore[override]
+        return iter(self.keys)
+
+    def __len__(self) -> int:
+        return len(self.keys)
+
+    def __bool__(self) -> bool:
+        return bool(self.keys)
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, Grain):
+            return self.keys == other.keys
+        return NotImplemented
+
+    def __hash__(self) -> int:
+        return hash(self.keys)
+
+    def __le__(self, other: object) -> bool:
+        if isinstance(other, Grain):
+            return self.keys <= other.keys
+        return NotImplemented
+
+    def __lt__(self, other: object) -> bool:
+        if isinstance(other, Grain):
+            return self.keys < other.keys
+        return NotImplemented
+
+    def __ge__(self, other: object) -> bool:
+        if isinstance(other, Grain):
+            return self.keys >= other.keys
+        return NotImplemented
+
+    def __gt__(self, other: object) -> bool:
+        if isinstance(other, Grain):
+            return self.keys > other.keys
+        return NotImplemented
+
+    def __or__(self, other: object) -> "Grain":
+        if isinstance(other, Grain):
+            return Grain(keys=self.keys | other.keys)
+        if isinstance(other, AbstractSet):
+            return Grain(keys=self.keys | frozenset(other))
+        return NotImplemented
+
+    def __sub__(self, other: object) -> "Grain":
+        if isinstance(other, Grain):
+            return Grain(keys=self.keys - other.keys)
+        if isinstance(other, AbstractSet):
+            return Grain(keys=self.keys - frozenset(other))
+        return NotImplemented
+
+
 # Resolve the recursive forward references on the keys that take ValueKey.
 TransformKey.model_rebuild()
 ArithmeticKey.model_rebuild()
@@ -573,6 +850,37 @@ InKey.model_rebuild()
 TimeTruncKey.model_rebuild()
 # AggregateKey.source forward-references the expression composites (DEV-1826).
 AggregateKey.model_rebuild()
+Grain.model_rebuild()
+Grain.EMPTY = Grain(keys=frozenset())
+
+
+VALUE_KEY_TYPES: Tuple[type, ...] = get_args(ValueKey)
+
+
+class KindPolicy(BaseModel):
+    """Consumer-named per-kind policy flags; membership is a conscious
+    classification asserted by tests, not derived from structure."""
+
+    model_config = ConfigDict(frozen=True)
+
+    slottable: bool = False
+    slot_composite: bool = False
+    materialised_order: bool = False
+
+
+KIND_POLICY: dict[type, KindPolicy] = {
+    ColumnKey: KindPolicy(slottable=True),
+    ColumnSqlKey: KindPolicy(slottable=True),
+    TimeTruncKey: KindPolicy(slottable=True),
+    StarKey: KindPolicy(),
+    LiteralKey: KindPolicy(),
+    AggregateKey: KindPolicy(slottable=True, materialised_order=True),
+    TransformKey: KindPolicy(slottable=True, materialised_order=True),
+    ArithmeticKey: KindPolicy(slot_composite=True, materialised_order=True),
+    ScalarCallKey: KindPolicy(slot_composite=True, materialised_order=True),
+    BetweenKey: KindPolicy(),
+    InKey: KindPolicy(),
+}
 
 
 def _map_sql_expr_key(key: SqlExprKey, *, map_path) -> SqlExprKey:
@@ -588,88 +896,58 @@ def _map_sql_expr_key(key: SqlExprKey, *, map_path) -> SqlExprKey:
     )
 
 
-def _map_partition_keys(partition_keys, *, map_path):
-    """Map an ``AggregateKey.partition_keys`` frozenset, keeping None (absent) vs empty."""
-    if partition_keys is None:
-        return None
-    return frozenset(
-        _map_value_key(p, map_path=map_path) for p in partition_keys
-    )
-
-
 def _map_value_key(key: _RerootableT, *, map_path) -> _RerootableT:
     """Rewrite every embedded join ``path`` in ``key`` through ``map_path``.
 
-    The one total, fail-closed visitor behind :func:`reroot_value_key` and
-    :func:`prepend_value_key`; an unhandled kind raises ``TypeError``.
-    ``AggregateKey.column_filter_key`` is copied unchanged (owner-anchored), while
-    a standalone ``SqlExprKey`` is root-anchored and does map.
+    Total & fail-closed behind :func:`reroot_value_key` / :func:`prepend_value_key`:
+    path-carrying leaves map here, every other kind routes through
+    ``map_children`` (a protocol-less kind raises). ``AggregateKey.column_filter_key``
+    is copied unchanged (owner-anchored), while a standalone ``SqlExprKey`` is
+    root-anchored and does map.
     """
-    def _recurse(value):
-        return _map_value_key(value, map_path=map_path)
-
     # Scalars ride through untouched (ScalarCallKey args, AggregateKey kwargs).
     if key is None or isinstance(key, (Decimal, str, bool, int, float)):
         return key
-
-    # --- leaves ---------------------------------------------------------
     if isinstance(key, (ColumnKey, ColumnSqlKey, StarKey)):
         return cast(_RerootableT, _map_path_ref(key, map_path=map_path))
-    if isinstance(key, LiteralKey):
-        return key
-    if isinstance(key, TimeTruncKey):
-        # Path lives on the wrapped column.
-        return key.model_copy(update={"column": _recurse(key.column)})
     if isinstance(key, SqlExprKey):
         return cast(_RerootableT, _map_sql_expr_key(key, map_path=map_path))
-
-    # --- composites -----------------------------------------------------
-    if isinstance(key, AggregateKey):
-        return key.model_copy(update={
-            "source": _recurse(key.source),
-            "args": tuple(_recurse(a) for a in key.args),
-            "kwargs": tuple((n, _recurse(v)) for n, v in key.kwargs),
-            "partition_keys": _map_partition_keys(
-                key.partition_keys, map_path=map_path,
-            ),
-        })
-    if isinstance(key, TransformKey):
-        # args/kwargs are Tuple[Scalar, ...] — no ValueKey to traverse there.
-        return key.model_copy(update={
-            "input": _recurse(key.input),
-            "partition_keys": frozenset(
-                _recurse(p) for p in key.partition_keys
-            ),
-            "time_key": (
-                None if key.time_key is None else _recurse(key.time_key)
-            ),
-        })
-    if isinstance(key, ArithmeticKey):
-        return key.model_copy(update={
-            "operands": tuple(_recurse(o) for o in key.operands),
-        })
-    if isinstance(key, ScalarCallKey):
-        return key.model_copy(update={
-            "args": tuple(_recurse(a) for a in key.args),
-        })
-    if isinstance(key, BetweenKey):
-        return key.model_copy(update={
-            "column": _recurse(key.column),
-            "low": _recurse(key.low),
-            "high": _recurse(key.high),
-        })
-    if isinstance(key, InKey):
-        return key.model_copy(update={
-            "column": _recurse(key.column),
-            "values": tuple(_recurse(v) for v in key.values),
-        })
-
-    raise TypeError(
-        f"the value-key path visitor has no case for {type(key).__name__!r}. "
-        f"The visitor is total over ValueKey by design: add an explicit case "
-        f"rather than letting an unmapped key through, which the SQL generator "
-        f"cannot distinguish from a correctly-anchored one."
+    if not isinstance(key, _FrozenKey):
+        raise TypeError(
+            f"the value-key path visitor has no case for {type(key).__name__!r}: "
+            f"only value keys and scalars are mappable."
+        )
+    return cast(
+        _RerootableT,
+        key.map_children(lambda c: _map_value_key(c, map_path=map_path)),
     )
+
+
+def walk_value_keys(key: ValueKey):
+    """Yield every ``ValueKey`` reachable from ``key``, including ``key`` —
+    total via the traversal protocol (a protocol-less kind raises)."""
+    yield key
+    for child in key.children():
+        yield from walk_value_keys(child)
+
+
+def grained_inner_aggregates(vk: ValueKey) -> List[AggregateKey]:
+    """Explicitly-partitioned ``AggregateKey``s reachable from ``vk``."""
+    return [
+        k for k in walk_value_keys(vk)
+        if isinstance(k, AggregateKey) and k.partition_keys is not None
+    ]
+
+
+def regroup_root_grain(root: ValueKey) -> Grain:
+    """Producer grain of a row-attach root: a transform evaluates at the set-union
+    of ALL inner aggregates' partition grains; a bare aggregate at its own grain."""
+    if isinstance(root, TransformKey):
+        grain = Grain.EMPTY
+        for inner in grained_inner_aggregates(root.input):
+            grain = grain | (inner.partition_keys or frozenset())
+        return grain
+    return Grain.of(getattr(root, "partition_keys", None) or frozenset())
 
 
 def reroot_value_key(
@@ -719,67 +997,25 @@ def substitute_value_keys(
 ) -> _RerootableT:
     """Replace whole sub-keys named in ``mapping`` by identity, structurally.
 
-    Match-before-recurse: a key equal to a ``mapping`` entry is replaced
-    atomically (children never traversed). Total & fail-closed: an unhandled kind
-    raises ``TypeError``. ``AggregateKey.column_filter_key`` is NOT traversed (a
-    Mode-A ``SqlExprKey``); ``TimeTruncKey.column`` IS.
+    Pre-order match-before-recurse: a key equal to a ``mapping`` entry is
+    replaced atomically (children never traversed, replacements never
+    re-substituted); everything else routes through ``map_children`` (a
+    protocol-less kind raises). ``AggregateKey.column_filter_key`` is NOT
+    traversed (a Mode-A ``SqlExprKey``); ``TimeTruncKey.column`` IS.
     """
-    def _recurse(value):
-        return substitute_value_keys(key=value, mapping=mapping)
-
     # Scalars ride through untouched (ScalarCallKey args, AggregateKey kwargs).
     if key is None or isinstance(key, (Decimal, str, bool, int, float)):
         return key
-
-    # Whole-key match wins before any structural descent.
+    if not isinstance(key, _FrozenKey):
+        raise TypeError(
+            f"substitute_value_keys has no case for {type(key).__name__!r}: "
+            f"only value keys and scalars are substitutable."
+        )
     if key in mapping:
         return cast(_RerootableT, mapping[key])
-
-    # --- leaves ---------------------------------------------------------
-    if isinstance(key, (ColumnKey, ColumnSqlKey, StarKey, LiteralKey, SqlExprKey)):
-        return key
-    if isinstance(key, TimeTruncKey):
-        return key.model_copy(update={"column": _recurse(key.column)})
-
-    # --- composites -----------------------------------------------------
-    if isinstance(key, AggregateKey):
-        return key.model_copy(update={
-            "source": _recurse(key.source),
-            "args": tuple(_recurse(a) for a in key.args),
-            "kwargs": tuple((n, _recurse(v)) for n, v in key.kwargs),
-            "partition_keys": (
-                None if key.partition_keys is None
-                else frozenset(_recurse(p) for p in key.partition_keys)
-            ),
-        })
-    if isinstance(key, TransformKey):
-        return key.model_copy(update={
-            "input": _recurse(key.input),
-            "partition_keys": frozenset(_recurse(p) for p in key.partition_keys),
-            "time_key": None if key.time_key is None else _recurse(key.time_key),
-        })
-    if isinstance(key, ArithmeticKey):
-        return key.model_copy(update={
-            "operands": tuple(_recurse(o) for o in key.operands),
-        })
-    if isinstance(key, ScalarCallKey):
-        return key.model_copy(update={"args": tuple(_recurse(a) for a in key.args)})
-    if isinstance(key, BetweenKey):
-        return key.model_copy(update={
-            "column": _recurse(key.column),
-            "low": _recurse(key.low),
-            "high": _recurse(key.high),
-        })
-    if isinstance(key, InKey):
-        return key.model_copy(update={
-            "column": _recurse(key.column),
-            "values": tuple(_recurse(v) for v in key.values),
-        })
-
-    raise TypeError(
-        f"substitute_value_keys has no case for {type(key).__name__!r}. The "
-        f"visitor is total over ValueKey by design: add an explicit case rather "
-        f"than letting a key ride through unrewritten."
+    return cast(
+        _RerootableT,
+        key.map_children(lambda c: substitute_value_keys(c, mapping)),
     )
 
 
@@ -816,3 +1052,248 @@ def conditional_number_format(
 ) -> Optional[NumberFormat]:
     """A conditional carries a number format only when both branches agree."""
     return a if (a is not None and a == b) else None
+
+
+# ---------------------------------------------------------------------------
+# Key classification and rewrites shared by binding, elaboration and compilation
+# ---------------------------------------------------------------------------
+
+
+def window_kwarg_of(key: ValueKey):
+    """The ``window=`` kwarg value of an ``AggregateKey``, or ``None``."""
+    if isinstance(key, AggregateKey):
+        for k, v in key.kwargs:
+            if k == "window":
+                return v
+    return None
+
+
+def is_local_partitioned_agg(k: ValueKey) -> bool:
+    """A LOCAL aggregate with an explicit ``partition_by=`` grain."""
+    return (
+        isinstance(k, AggregateKey)
+        and k.partition_keys is not None
+        and not getattr(k.source, "path", ())
+    )
+
+
+def is_cross_model_agg(k: ValueKey) -> bool:
+    """A cross-model AggregateKey (source names another model); a host-grain wrap (locus="host") is excluded."""
+    return (
+        isinstance(k, AggregateKey)
+        and bool(getattr(k.source, "path", ()))
+        and k.locus != "host"
+    )
+
+
+def is_local_combined_regroup_ref(
+    k: ValueKey, *, row_agg_set: frozenset = frozenset(),
+) -> bool:
+    """A LOCAL aggregate attached at the COMBINED SELECT (explicit ``partition_by=``
+    or a bare windowed/first/last measure); ``row_agg_set`` aggregates excluded."""
+    return (
+        isinstance(k, AggregateKey)
+        and not getattr(k.source, "path", ())
+        and k not in row_agg_set
+        and (
+            k.partition_keys is not None
+            or any(kw == "window" for kw, _ in k.kwargs)
+            or k.agg in RANKED_AGGREGATIONS
+        )
+    )
+
+
+PREDICATE_COMPARISON_OPS = frozenset(
+    {"==", "=", "!=", "<>", "<", "<=", ">", ">=", "is", "is not"}
+)
+BOOL_CONNECTIVE_OPS = frozenset({"and", "or", "not"})
+
+
+def is_boolean_shaped(key: "ValueKey") -> bool:
+    """Whether ``key`` renders as a SQL predicate (truth value) rather than a
+    numeric/text value: a comparison, a null test, BETWEEN, IN, or an
+    ``and`` / ``or`` / ``not`` connective."""
+    if isinstance(key, ArithmeticKey):
+        return (
+            key.op in PREDICATE_COMPARISON_OPS
+            or key.op in BOOL_CONNECTIVE_OPS
+        )
+    return isinstance(key, (BetweenKey, InKey))
+
+
+def split_top_level_and(vk: ValueKey) -> List[ValueKey]:
+    """Top-level AND conjuncts; only ``and`` splits (OR/comparisons stay whole)."""
+    if isinstance(vk, ArithmeticKey) and vk.op == "and":
+        out: List[ValueKey] = []
+        for o in vk.operands:
+            out.extend(split_top_level_and(o))
+        return out
+    return [vk]
+
+
+def rewrite_rank_partition_keys(
+    key: ValueKey, *, rewrite_fn: Callable[[Union[AggregateKey, TransformKey]], Grain],
+) -> ValueKey:
+    """Replace every rank-family ``TransformKey``'s / partitioned aggregate's ``partition_keys`` via ``rewrite_fn``; identity-preserving, runs before interning. Post-order; ``rewrite_fn`` receives the pre-rebuild node."""
+    rebuilt = key.map_children(
+        lambda c: rewrite_rank_partition_keys(key=c, rewrite_fn=rewrite_fn),
+    )
+    if (
+        isinstance(key, TransformKey)
+        and key.op in RANK_FAMILY_TRANSFORMS
+        and bool(key.partition_keys)
+    ) or (isinstance(key, AggregateKey) and bool(key.partition_keys)):
+        new_pk = rewrite_fn(key)
+        if new_pk != rebuilt.partition_keys:
+            rebuilt = rebuilt.model_copy(update={"partition_keys": new_pk})
+    return rebuilt
+
+
+def desugar_change(key: TransformKey) -> ArithmeticKey:
+    """``change(x)`` → ``x - time_shift(x, periods=-1)``; inner ``x`` is identity-preserving so the registry interns it once."""
+    assert key.op == "change", f"desugar_change expected op='change', got {key.op!r}."
+    inner = key.input
+    shifted = TransformKey(
+        op="time_shift",
+        input=inner,
+        kwargs=(("periods", normalize_scalar(-1)),),
+        partition_keys=key.partition_keys,
+        time_key=key.time_key,
+    )
+    return ArithmeticKey(op="-", operands=(inner, shifted))
+
+
+def desugar_change_pct(key: TransformKey) -> ArithmeticKey:
+    """``change_pct(x)`` → ``(x - time_shift(x,-1)) / NULLIF(time_shift(x,-1), 0)``; NULLIF guards a zero prior value."""
+    assert key.op == "change_pct", (
+        f"desugar_change_pct expected op='change_pct', got {key.op!r}."
+    )
+    inner = key.input
+    shifted = TransformKey(
+        op="time_shift",
+        input=inner,
+        kwargs=(("periods", normalize_scalar(-1)),),
+        partition_keys=key.partition_keys,
+        time_key=key.time_key,
+    )
+    numerator = ArithmeticKey(op="-", operands=(inner, shifted))
+    guarded_divisor = ScalarCallKey(
+        name="nullif", args=(shifted, normalize_scalar(0)),
+    )
+    return ArithmeticKey(op="/", operands=(numerator, guarded_divisor))
+
+
+def lower_sugar_transforms(key: ValueKey) -> ValueKey:
+    """Recursively lower ``change``/``change_pct`` TransformKeys to desugared arithmetic, preserving the inner aggregate's identity. Post-order over ``map_children``."""
+    lowered = key.map_children(lower_sugar_transforms)
+    if isinstance(lowered, TransformKey):
+        if lowered.op == "change":
+            return desugar_change(lowered)
+        if lowered.op == "change_pct":
+            return desugar_change_pct(lowered)
+    return lowered
+
+def operand_aggregates(source: ValueKey) -> List[AggregateKey]:
+    """The top-level attached aggregates of a re-aggregation source (the direct
+    constituents, deduped — a composite may repeat one), not descending through
+    a nested aggregate's own source."""
+    out: List[AggregateKey] = []
+
+    def _walk(k: ValueKey) -> None:
+        if isinstance(k, AggregateKey):
+            if k not in out:
+                out.append(k)
+            return
+        for c in k.children():
+            _walk(c)
+
+    _walk(source)
+    return out
+
+
+def source_row_leaves(source: ValueKey) -> List[ValueKey]:
+    """The top-level ROW-level column leaves of an aggregation source (not
+    descending through a nested aggregate's own source, which is attached)."""
+    out: List[ValueKey] = []
+
+    def _walk(k: ValueKey) -> None:
+        if isinstance(k, AggregateKey):
+            return
+        if isinstance(k, (ColumnKey, ColumnSqlKey, TimeTruncKey, StarKey)):
+            out.append(k)
+            return
+        for c in k.children():
+            _walk(c)
+
+    _walk(source)
+    return out
+
+
+def attached_inputs(k: ValueKey) -> List[AggregateKey]:
+    """Deduped top-level aggregates across source, args and kwargs (source first)."""
+    if not isinstance(k, AggregateKey):
+        return []
+    out: List[AggregateKey] = []
+    for inp in (k.source, *k.args, *(v for _, v in k.kwargs)):
+        if isinstance(inp, _FrozenKey):
+            for agg in operand_aggregates(inp):
+                if agg not in out:
+                    out.append(agg)
+    return out
+
+
+def is_reaggregation_key(k: ValueKey) -> TypeGuard[AggregateKey]:
+    """Aggregate over an attached source (attached values, no row leaf) — axiom 6.
+    A source mixing a row leaf with an attached value is row grain (DEV-1859)."""
+    return (
+        isinstance(k, AggregateKey)
+        and bool(operand_aggregates(k.source))
+        and not source_row_leaves(k.source)
+    )
+
+
+def is_row_attach_root(k: ValueKey) -> TypeGuard[AggregateKey]:
+    """Row-grain aggregate carrying attached inputs to broadcast per row: a mixed
+    / literal / plain-row source with an attached constituent or parameter
+    (DEV-1859). Not a re-aggregation, so it never reaches the carrier."""
+    return (
+        isinstance(k, AggregateKey)
+        and not is_reaggregation_key(k)
+        and bool(attached_inputs(k))
+    )
+
+
+def attached_operand_keys(vks: Sequence[ValueKey]) -> FrozenSet[AggregateKey]:
+    """Aggregates nested (any depth) in the inputs of any root with attached
+    inputs — re-aggregation or row-attach. The lenient partition-key set the bind
+    pass needs so row-attached constituents and parameters are not mis-flagged as
+    combined consumers."""
+    out: set = set()
+
+    def _scan(k: ValueKey) -> None:
+        if isinstance(k, AggregateKey) and attached_inputs(k):
+            for r in (k.source, *k.args, *(v for _, v in k.kwargs)):
+                if isinstance(r, _FrozenKey):
+                    out.update(c for c in walk_value_keys(r)
+                               if isinstance(c, AggregateKey))
+            return
+        for c in k.children():
+            _scan(c)
+
+    for vk in vks:
+        _scan(vk)
+    return frozenset(out)
+
+
+def walk_consumer_keys(key: ValueKey):
+    """Reachable keys for root discovery: opaque below a root's inputs (they
+    belong to the root's own attach), still walking its partition keys — an
+    attach-carrying computed dimension in ``partition_by=`` needs the outer attach
+    the grain join is built on (DEV-1859 decision 9)."""
+    yield key
+    if isinstance(key, AggregateKey) and attached_inputs(key):
+        for pk in (key.partition_keys or ()):
+            yield from walk_consumer_keys(pk)
+        return
+    for child in key.children():
+        yield from walk_consumer_keys(child)

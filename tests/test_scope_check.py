@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import pytest
 
+import slayer.sql.scope_check as sc
 from slayer.sql.scope_check import (
     ScopeLeakError,
     assert_scope_closed,
@@ -338,12 +339,12 @@ FROM (
 GROUP BY orders.status
 """.strip()
 
-    def test_rls_correlation_rejected_pre_rls(self) -> None:
-        # Without the allowlist, the intentional ``_rls_src`` correlation reads
-        # as an out-of-scope reference — proving the validator is strict by
-        # default (pre-RLS mode).
-        with pytest.raises(ScopeLeakError, match=r"_rls_src"):
-            assert_scope_closed(self.RLS_WRAPPED)
+    def test_rls_correlation_accepted_without_the_allowlist(self) -> None:
+        # DEV-1840 made the validator correlation-aware: a qualifier bound in
+        # an ancestor scope resolves through an expression-subquery boundary,
+        # so the ``_rls_src`` correlation passes even in pre-RLS mode.
+        assert_scope_closed(self.RLS_WRAPPED)
+        assert check_scope_closed(self.RLS_WRAPPED).closed is True
 
     def test_rls_correlation_allowed_in_post_rls_mode(self) -> None:
         assert_scope_closed(self.RLS_WRAPPED, allow_rls_correlation=True)
@@ -413,8 +414,6 @@ class TestBigQueryParseCarveOutRemoved:
     def test_typeerror_propagates_for_every_dialect(
         self, monkeypatch, dialect: str,
     ) -> None:
-        import slayer.sql.scope_check as sc
-
         def _boom(*_args, **_kwargs):
             raise TypeError("sqlglot quirk")
 

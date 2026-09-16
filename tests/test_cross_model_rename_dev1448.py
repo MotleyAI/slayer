@@ -263,7 +263,7 @@ class TestCrossModelRenameNestedDAG:
         resp = await engine.execute(query=query, dry_run=True)
         sql = resp.sql or ""
         aliases = _public_projection_aliases(sql)
-        assert aliases == ["orders.status", "orders.customers.revenue_sum / 100"], (
+        assert aliases == ["orders.status", "orders.customers_revenue_sum_100"], (
             f"only the user-declared arithmetic measure may be public; got "
             f"{aliases!r}\nSQL:\n{sql}"
         )
@@ -610,8 +610,8 @@ class TestCrossModelRenameCollisionGuards:
         self, orders_customers_engine,
     ) -> None:
         """A measure renamed ``revenue_sum__div__100`` and an arithmetic
-        ``revenue:sum / 100`` stay distinct; the typed pipeline keeps the readable
-        ``orders.revenue_sum / 100`` key rather than the legacy mangled short."""
+        ``revenue:sum / 100`` stay distinct; the arithmetic one derives the
+        sanitized ``orders.revenue_sum_100`` key (DEV-1879)."""
         engine, _ = orders_customers_engine
         query = SlayerQuery(
             source_model="orders",
@@ -627,7 +627,7 @@ class TestCrossModelRenameCollisionGuards:
         assert aliases == [
             "orders.status",
             "orders.revenue_sum__div__100",
-            "orders.revenue_sum / 100",
+            "orders.revenue_sum_100",
         ], (
             f"the arithmetic measure and the renamed cross-model measure must "
             f"stay distinct public keys; got {aliases!r}\nSQL:\n{sql}"
@@ -636,7 +636,7 @@ class TestCrossModelRenameCollisionGuards:
             f"public projection has a duplicate alias — silent merge; got "
             f"{aliases!r}\nSQL:\n{sql}"
         )
-        assert 'SUM(orders.amount) AS REAL) / 100 AS "orders.revenue_sum / 100"' in sql, sql
+        assert 'SUM(orders.amount) AS REAL) / 100 AS "orders.revenue_sum_100"' in sql, sql
         assert 'CAST(SUM(customers.lifetime_revenue) AS REAL) AS "customers.revenue_sum"' in sql, sql
 
     async def test_two_local_renames_distinct_canonicals_pass(

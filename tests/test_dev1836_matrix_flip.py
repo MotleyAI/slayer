@@ -21,8 +21,8 @@ from pathlib import Path
 import pytest
 
 import slayer
-from slayer.engine.source_bundle import ResolvedSourceBundle
-from slayer.engine.stage_planner import plan_query
+from slayer.ir.source_bundle import ResolvedSourceBundle
+from slayer.engine.plan import plan_query
 from slayer.sql.scope_check import assert_scope_closed
 
 from tests._dev1836_fixtures import (

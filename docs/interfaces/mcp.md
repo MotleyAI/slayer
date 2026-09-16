@@ -86,26 +86,37 @@ claude mcp list
 
 | Tool | Description |
 |------|-------------|
-| `query` | Execute a semantic query. See [Queries](../concepts/queries.md) for format. |
-| `query_nested` | Execute a multi-stage DAG of named sub-queries that reference one another via `source_model` or `joins.target_model`. Companion to `query`; the engine auto-sorts the list, so order doesn't matter. Params: `queries: List[Dict[str, Any]]`, plus `variables` / `show_sql` / `dry_run` / `explain` / `format` mirroring `query`. |
+| `query` | Execute a semantic query. The `query` argument mirrors the engine: a model name (run a query-backed model by name), a single query object, or a list of query objects — a multi-stage DAG whose stages reference one another via `source_model` or `source_model.joins[].target_model` (there is no top-level `joins` field), with non-root stages auto-sorted by the engine (their order doesn't matter) and the last entry the returned root (place the intended root last). Plus the wrappers `variables` / `show_sql` / `dry_run` / `explain` / `format`. |
 
-**`query` parameters:**
+**`query` tool arguments:**
 
 | Param | Type | Description |
 |-------|------|-------------|
-| `source_model` | string \| ModelExtension \| SlayerModel | Model name (string), inline `ModelExtension` dict (`{"source_name": "orders", "columns": [...], "joins": [...], "measures": [...]}` — extend a saved model with extras for this query), or inline `SlayerModel` dict (`{"name": "ad_hoc", "sql_table": "...", "data_source": "...", "columns": [...]}` — define a model ad-hoc). Required. |
-| `measures` | list | Aggregated values: column-aggregations, arithmetic, transforms. E.g. `["count(*)", {"formula": "sum(revenue) / count(*)", "name": "aov", "label": "Average Order Value"}, "cumsum(sum(revenue))"]`. Each entry has an optional `label` for human-readable display. Supports nesting: `"change(cumsum(sum(revenue)))"`. Bare names resolve to saved `ModelMeasure` formulas on the model. |
-| `dimensions` | list | Dimension names, e.g. `["status"]`. When using the engine directly, dimensions accept an optional `label` via `{"name": "status", "label": "Order Status"}`. |
-| `filters` | list[str] | Filter formula strings, e.g. `["status = 'active'", "amount > 100"]`. Supports operators (`=`, `<>`, `>`, `>=`, `<`, `<=`, `IN`, `IS NULL`, `IS NOT NULL`, `LIKE`, `NOT LIKE`), boolean logic (`AND`, `OR`, `NOT`), and inline transform expressions (`"change(sum(revenue)) > 0"`). Filters on measures are automatically routed to HAVING. |
-| `time_dimensions` | list[dict] | Time grouping. Each entry supports an optional `label` for display. |
-| `order` | list[dict] | Sorting, e.g. `[{"column": "count(*)", "direction": "desc"}]` |
-| `limit` | int | Max rows |
-| `offset` | int | Skip rows |
-| `whole_periods_only` | bool | Snap date filters to time bucket boundaries, exclude the current incomplete time bucket |
+| `query` | string \| object \| list[object] | A model name, a single query object (fields below), or a list of query objects forming a multi-stage DAG (each stage takes the same fields plus an optional `name`). Required. |
+| `variables` | dict | Values for `{var}` placeholder substitution in filters. Precedence: runtime > named-stage > outer-query > model `query_variables`. |
 | `show_sql` | bool | Include the generated SQL in the response for debugging |
 | `dry_run` | bool | Generate and return the SQL without executing it |
 | `explain` | bool | Run EXPLAIN ANALYZE and return the query plan |
 | `format` | string | Output format: `"markdown"` (default, compact), `"json"` (structured), or `"csv"` (most compact). Case-insensitive |
+
+**Query object fields** (the shape of `query`, and of each stage in the list form):
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `source_model` | string \| ModelExtension \| SlayerModel | Model name (string), inline `ModelExtension` dict (`{"source_name": "orders", "columns": [...], "joins": [...], "measures": [...]}` — extend a saved model with extras for this query), or inline `SlayerModel` dict (`{"name": "ad_hoc", "sql_table": "...", "data_source": "...", "columns": [...]}` — define a model ad-hoc). Required. |
+| `measures` | list | Aggregated values: column-aggregations, arithmetic, transforms. E.g. `["*:count", {"formula": "revenue:sum / *:count", "name": "aov", "label": "Average Order Value"}, "cumsum(revenue:sum)"]`. Each entry has an optional `label` for human-readable display. Supports nesting: `"change(cumsum(revenue:sum))"`. Bare names resolve to saved `ModelMeasure` formulas on the model. |
+| `dimensions` | list | Dimension names, e.g. `["status"]`. When using the engine directly, dimensions accept an optional `label` via `{"name": "status", "label": "Order Status"}`. |
+| `filters` | list[str] | Filter formula strings, e.g. `["status = 'active'", "amount > 100"]`. Supports operators (`=`, `<>`, `>`, `>=`, `<`, `<=`, `IN`, `IS NULL`, `IS NOT NULL`, `LIKE`, `NOT LIKE`), boolean logic (`AND`, `OR`, `NOT`), and inline transform expressions (`"change(revenue:sum) > 0"`). Filters on measures are automatically routed to HAVING. |
+| `time_dimensions` | list[dict] | Time grouping. Each entry supports an optional `label` for display. |
+| `main_time_dimension` | string | Name of the time dimension transforms (`change` / `lag` / …) key off, overriding auto-detection when a query has multiple time dimensions. |
+| `order` | list[dict] | Sorting, e.g. `[{"column": "*:count", "direction": "desc"}]` |
+| `limit` | int | Max rows |
+| `offset` | int | Skip rows |
+| `whole_periods_only` | bool | Snap date filters to time bucket boundaries, exclude the current incomplete time bucket |
+| `distinct_dimension_values` | bool | Default `true` — auto-dedup dim-only queries (`GROUP BY <dim/td aliases>`). Set `false` to emit raw rows (no top-level `GROUP BY`); rejects any measure reference in `measures` / `filters` / `order`. |
+| `to_many_handling` | str | Default `"broadcast"` — how an aggregate resolves query dimensions [unattributable from its root](../concepts/queries.md#cross-model-measures): `broadcast` (repeat and warn), `associate` (per-cell value over the distinct associated entities), or `error` (refuse). A query-object field; the retired `strict` flag is rejected with this remedy. |
+| `variables` | dict | Per-stage `{var}` values, scoped to this stage; overridden by the top-level `variables` arg (see precedence above). |
+| `name` | string | List form only — names a stage so sibling stages can reference it via `source_model` (every non-final stage must be named). |
 
 ### Ingestion
 
@@ -153,15 +164,8 @@ Available topics and what they cover (content lives in `slayer/memories/help_con
 
 | Topic id | Covers |
 |----------|--------|
-| `memory:help.queries` | Anatomy of a [query](../concepts/queries.md); evaluation order; dimensions vs [time dimensions](../concepts/queries.md#timedimension) on the same column; `main_time_dimension` disambiguation |
-| `memory:help.formulas` | The [formula mini-language](../concepts/formulas.md) shared by `measures` and `filters`; colon syntax; arithmetic; nesting |
-| `memory:help.aggregations` | Built-in and [custom aggregations](../examples/07_aggregations/aggregations.md); `first`/`last` time-column resolution; `allowed_aggregations` |
-| `memory:help.transforms` | `cumsum`, `time_shift`, `change`, `lag`, the rank family (`rank`/`percent_rank`/`dense_rank`/`ntile`, optional `partition_by=`), `last()` — trade-offs and nesting ([time post](../examples/04_time/time.md)) |
-| `memory:help.time` | Granularities, `date_range`, `whole_periods_only`, the three meanings of "last" |
-| `memory:help.filters` | Operators; auto-routing to HAVING / post-filter; filtered measures; [model-level filters](../concepts/models.md#model-filters) |
-| `memory:help.joins` | Dot syntax and the `__` alias convention; cross-model measures and diamond joins ([joins post](../examples/05_joins/joins.md), [joined measures](../examples/05_joined_measures/joined_measures.md)) |
-| `memory:help.models` | Source modes (`sql_table`, `sql`, `source_queries`); query-backed models, `query_variables`, cached `backing_query_sql`; result column naming; `default_time_dimension`; hidden models ([models ref](../concepts/models.md)) |
-| `memory:help.extending` | `ModelExtension`, query lists, `create_model_from_query` (with `variables=`), run-by-name via `query` tool ([multistage post](../examples/06_multistage_queries/multistage_queries.md)) |
+| `memory:help.intro` | What SLayer is, the judgment calls queries require, and the deep-dive topics (the query language itself is documented on the `query` tool and its schema) |
+| `memory:help.models` | Authoring [models](../concepts/models.md): columns, saved measures, custom aggregations, joins, model filters, `default_time_dimension`, hidden models, result column naming, query-backed models |
 | `memory:help.workflow` | Tool-chaining playbook, query-iteration tips, common-error decoder |
 
 ## Typical Agent Workflows
@@ -190,7 +194,7 @@ To explore first without auto-ingesting:
 1. list_datasources()                              # pick a datasource
 2. models_summary(datasource_name="mydb")      # discover its models
 3. inspect_model(model_name="orders")          # see schema + sample data
-4. query(source_model="orders", measures=["count(*)"], dimensions=["status"], limit=10)
+4. query(query={"source_model": "orders", "measures": ["*:count"], "dimensions": ["status"], "limit": 10})
 ```
 
 ### Customize a model

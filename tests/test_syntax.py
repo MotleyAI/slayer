@@ -499,9 +499,12 @@ class TestRejection:
     def test_unknown_function_inside_arithmetic_raises(self):
         # DEV-1484 backfill from the deleted
         # TestUnifiedScalarPassthrough::test_unknown_call_rejected_inside_arithmetic
-        # — the allowlist is enforced at every depth, not just the root.
+        # — the allowlist is enforced at every depth, not just the root. An
+        # unknown name over an AGGREGATABLE operand now defers to binding as a
+        # custom-aggregation candidate (DEV-1847); a transform operand cannot
+        # be one, so it still rejects at parse.
         with pytest.raises(UnknownFunctionError):
-            parse_expr("revenue:sum + magic_fn(other:sum)")
+            parse_expr("revenue:sum + magic_fn(cumsum(other))")
 
     def test_double_underscore_in_ref_now_parses(self):
         # DEV-1743: the parser no longer rejects `__` in identifiers —
@@ -647,7 +650,7 @@ class TestFilterOperatorNormalization:
     def test_sql_like_operator_normalised(self):
         # DEV-1704: a SQL ``LIKE`` operator (e.g. from the pg-facade WHERE
         # translation) normalises to the ``like(col, pattern)`` scalar the DSL
-        # already emits as SQL LIKE — matching formula._preprocess_like.
+        # already emits as SQL LIKE.
         result = parse_filter_expr("name LIKE 'do%'")
         assert isinstance(result, ScalarCall)
         assert result.name == "like"

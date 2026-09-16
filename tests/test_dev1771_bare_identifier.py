@@ -3,7 +3,7 @@
 The flip rejects non-ASCII *leading* identifiers (the old char-loop accepted
 them). Non-ASCII in non-leading positions, all ASCII behavior, and whitespace
 normalization are unchanged. The residual drift false-negative for a bare
-non-ASCII-leading ``Column.sql`` alias is documented in DECISIONS.md.
+non-ASCII-leading ``Column.sql`` alias is documented in the DEV-1771 decision trail (git history).
 """
 from __future__ import annotations
 

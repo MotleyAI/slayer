@@ -41,6 +41,7 @@ from slayer.core.keys import (
     TimeTruncKey,
     TransformKey,
 )
+from slayer.core.keys import Grain
 
 # The visitor under construction. Imported at module scope (not inside each
 # test) so the whole module reports ONE clear collection error while it does
@@ -222,7 +223,7 @@ class TestCompositeKinds:
                 input=AggregateKey(
                     source=ColumnKey(path=("customers",), leaf="spend"), agg="sum",
                 ),
-                partition_keys=frozenset({ColumnKey(path=("customers",), leaf="tier")}),
+                partition_keys=Grain.of({ColumnKey(path=("customers",), leaf="tier")}),
                 time_key=TimeTruncKey(
                     column=ColumnKey(path=("customers",), leaf="signup_at"),
                     granularity="month",
@@ -231,7 +232,7 @@ class TestCompositeKinds:
             target_path=TARGET,
         )
         assert out.input.source == ColumnKey(path=(), leaf="spend")
-        assert out.partition_keys == frozenset({ColumnKey(path=(), leaf="tier")})
+        assert out.partition_keys == Grain.of({ColumnKey(path=(), leaf="tier")})
         assert out.time_key.column == ColumnKey(path=(), leaf="signup_at")
 
     def test_transform_scalar_args_are_type_prohibited_from_holding_keys(self) -> None:
@@ -317,7 +318,7 @@ class TestCompositeKinds:
                         source=ColumnKey(path=("customers", "regions"), leaf="pop"),
                         agg="sum",
                     ),
-                    partition_keys=frozenset({
+                    partition_keys=Grain.of({
                         ColumnKey(path=("customers",), leaf="tier"),
                     }),
                 ),
@@ -345,8 +346,11 @@ class TestCompositeKinds:
         out = reroot_value_key(key, target_path=TARGET)
         transform, call = out.operands
         assert transform.input.source == ColumnKey(path=("regions",), leaf="pop")
-        assert transform.partition_keys == frozenset({ColumnKey(path=(), leaf="tier")})
+        assert transform.partition_keys == Grain.of({ColumnKey(path=(), leaf="tier")})
         in_key, between_key = call.args
+        assert isinstance(in_key, InKey)
+        assert isinstance(between_key, BetweenKey)
+        assert isinstance(between_key.column, TimeTruncKey)
         assert in_key.column == ColumnKey(path=(), leaf="tier")
         assert between_key.column.column == ColumnKey(path=(), leaf="signup_at")
 
@@ -553,12 +557,12 @@ class TestPublicResultKeysUnchanged:
             source=ColumnKey(path=("customers",), leaf="spend"),
             agg="approx_count_distinct",
             column_filter_key=SqlExprKey(canonical_sql="a = 1"),
-            grain="host",
+            locus="host",
         )
         out = reroot_value_key(key, target_path=TARGET)
         assert out.agg == "approx_count_distinct"
         assert out.column_filter_key is not None
-        assert out.grain == "host"
+        assert out.locus == "host"
 
     def test_kwargs_stay_canonically_sorted_after_reroot(self) -> None:
         key = AggregateKey(

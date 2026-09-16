@@ -1,54 +1,5 @@
-"""DEV-1746 §5.1 — ``resolve(consumer=…)`` gets its first production caller.
-
-``ScopeFrame.resolve(consumer=…)`` and ``apply_materializations`` implement the
-projection-boundary principle: a value that crosses a join inside a producing
-scope is projected there under a ``_val_<n>`` alias and referenced by that alias
-from the consumer. Both are fully unit-tested — and both have **zero production
-callers**. An API nobody calls does not establish a principle, so §5.1 requires
-a production-path test.
-
-Meanwhile the generator carries its own second materialiser for exactly the same
-job (``allocate_val()`` + a ``value_alias_by_sql`` dict, deduped by resolved SQL
-text). Two mechanisms, one purpose. "The ``consumer=`` materializer becomes the
-ONLY one on the cross-model path" is therefore read as: it REPLACES that
-generator-local flow. Slot-backed public columns keep resolving through
-projected aliases — consuming another scope's projected column by its alias
-already *is* exchanging data through projected columns.
-
-The two sites migrated here are the ones inside ``_render_cross_model_cte``:
-
-* a **crossing grain** — grouping a first/last cross-model aggregate by a
-  derived dimension whose SQL reaches a further join. The ranked subquery
-  re-exports only ``target.*``, so the grain must be projected inside it::
-
-      regions.population AS _val_0        -- inside the ranked subquery
-      ...
-      GROUP BY _val_0                     -- the outer CTE reads the alias
-
-* a **crossing value** — the aggregated expression itself crosses a join.
-
-The generator's own ``_val_`` flow for the host-rooted ranked path was the last
-holdout; ``RankedAggregatePlan`` (DEV-1748) replaced it, so ``ScopeFrame`` is now
-the single materialiser on every isolated-CTE path. The class at the bottom of
-this module pinned that deferral and now pins its removal — the boundary was
-asserted rather than assumed, so it could not drift silently in either
-direction.
-
-Both dedup on the resolved SQL text — ``ScopeFrame``'s key is
-``(scope_id, rendered_ast, dialect)`` — so the migration was byte-preserving for
-every shape that materialises through ONE of the two sites.
-
-One shape was NOT, and it is a defect the migration fixes: when a first/last
-cross-model aggregate is grouped by the same crossing expression it aggregates,
-both sites fired and each kept its own dedup map, so the expression was
-projected twice (``_val_0`` and ``_val_1``). ``ScopeFrame`` holds one table per
-scope, so they collapse to one. See
-``TestDedupParity::test_one_expression_is_materialised_once_per_scope``.
-
-The pinned CTE bodies below are the DEV-1836 target-rooted producer (``_cm_``)
-shape: the ranked subquery is rooted at the target, aliases are canonical
-(``customers_v2.*``), and the producer measure keeps its canonical alias (the
-user name lands on the outer projection via the placeholder substitution).
+"""``ScopeFrame.resolve(consumer=…)`` becomes the single materialiser on the cross-model path.
+It projects a join-crossing value inside the producing scope under a ``_val_<n>`` alias and references it from the consumer, replacing the generator's own ``allocate_val()`` flow. Migrated sites (inside ``_render_cross_model_cte``): a crossing grain (grouping a first/last cross-model aggregate by a derived dimension whose SQL reaches a further join) and a crossing value (the aggregated expression itself crosses a join). Both dedup on resolved SQL text, so the swap is byte-preserving — except one fixed defect: grouping a first/last aggregate by the same expression it aggregates used to project it twice; one per-scope table collapses it to one.
 """
 
 from __future__ import annotations
@@ -66,11 +17,7 @@ from slayer.sql.scope import ScopeFrame
 from tests._cross_model_chain import _gen
 from tests._engine_helpers import _extract_cte_body, _norm
 
-# --------------------------------------------------------------------------- #
-# Byte-parity baselines — the emitted SQL these shapes produce today. The
-# migration swaps WHICH materialiser mints ``_val_0``; it must not change the
-# SQL, so these are pinned verbatim (normalised for whitespace only).
-# --------------------------------------------------------------------------- #
+# Byte-parity baselines: swapping which materialiser mints ``_val_0`` must not change this SQL.
 CROSSING_GRAIN_CTE = _norm(
     """
     SELECT _val_0 AS "customers_v2.deep_pop",
@@ -103,7 +50,6 @@ CROSSING_VALUE_CTE = _norm(
 
 
 def _crossing_grain_query() -> SlayerQuery:
-    """First/last cross-model aggregate grouped by a CROSSING derived grain."""
     return SlayerQuery(
         source_model="orders_x",
         dimensions=[ColumnRef(name="customers_v2.deep_pop")],
@@ -114,7 +60,6 @@ def _crossing_grain_query() -> SlayerQuery:
 
 
 def _crossing_value_query() -> SlayerQuery:
-    """First/last cross-model aggregate whose VALUE crosses a join."""
     return SlayerQuery(
         source_model="orders_x",
         dimensions=[ColumnRef(name="customers_v2.status")],
@@ -135,18 +80,7 @@ def _two_distinct_crossing_values_query() -> SlayerQuery:
 
 class _ResolveSpy:
     """Records every close of a scoped value and whether it named a consumer.
-
-    Spies on ``ScopeFrame._close`` — the Law-2 branch itself — rather than on
-    ``resolve``. Both public entry points funnel through it: ``resolve(ref,
-    consumer=…)`` for a value the scope anchors from a key, and
-    ``materialize_for(expr, consumer=…)`` for one the producer anchored itself.
-
-    The cross-model CTE uses the second. It must: the expressions it
-    materialises are a date-truncated grain and a value carrying its column's
-    declared CAST, and re-deriving those by anchoring a ref would project a
-    different expression than the one the aggregate consumes. What §5.1 asks
-    for is that the materialisation branch runs on the production path with a
-    named consumer, which is exactly what this observes.
+    Spies on ``ScopeFrame._close`` (the branch both ``resolve`` and ``materialize_for`` funnel through), so a named-consumer close is observable on the production path.
     """
 
     def __init__(self) -> None:
@@ -183,9 +117,6 @@ class _MaterializeSpy:
         monkeypatch.setattr(ScopeFrame, "_materialize", _wrapped, raising=True)
 
 
-# =========================================================================== #
-# The production-path proof.
-# =========================================================================== #
 class TestConsumerMaterializationOnTheProductionPath:
 
     @pytest.mark.parametrize(
@@ -196,8 +127,6 @@ class TestConsumerMaterializationOnTheProductionPath:
     async def test_a_value_is_closed_for_a_named_consumer(
         self, query_factory, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """NEW (§5.1): generating a real query exercises the projection-boundary
-        branch with a named consumer."""
         spy = _ResolveSpy()
         spy.install(monkeypatch)
         await _gen(query_factory(), dialect="postgres")
@@ -217,8 +146,6 @@ class TestConsumerMaterializationOnTheProductionPath:
     async def test_scope_frame_mints_the_val_alias(
         self, query_factory, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """The alias in the emitted SQL is the one ``ScopeFrame`` minted — not a
-        coincidentally-identical one from the generator's own allocator."""
         spy = _MaterializeSpy()
         spy.install(monkeypatch)
         sql = await _gen(query_factory(), dialect="postgres")
@@ -235,15 +162,7 @@ class TestConsumerMaterializationOnTheProductionPath:
     async def test_what_the_scope_materialises_is_what_gets_projected(
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """The other half of the contract: the scope's materialisation table is
-        the SOURCE of the producing SELECT's extra projections.
-
-        Asserted on the table's contents reaching the SQL rather than on
-        ``apply_materializations`` being the call used. The producing scope here
-        is a ranked subquery the generator assembles from parts, so it reads the
-        table directly; what must hold either way is that every materialisation
-        is projected under its own alias and that nothing else invents one.
-        """
+        """Every entry in the scope's materialisation table is projected under its own alias in the producing SELECT, and nothing else invents one."""
         captured: List[List[Tuple[str, str]]] = []
         original = ScopeFrame._materialize
 
@@ -266,9 +185,6 @@ class TestConsumerMaterializationOnTheProductionPath:
             )
 
 
-# =========================================================================== #
-# Byte-parity: swapping the materialiser must not change emitted SQL.
-# =========================================================================== #
 class TestMigrationIsBytePreserving:
 
     async def test_crossing_grain_cte_is_unchanged(self) -> None:
@@ -290,38 +206,18 @@ class TestMigrationIsBytePreserving:
         )
 
 
-# =========================================================================== #
-# Dedup parity with the flow being replaced.
-# =========================================================================== #
 class TestDedupParity:
 
     async def test_two_distinct_crossing_values_get_distinct_aliases(
         self,
     ) -> None:
-        """Different values must never collapse onto one alias — that would
-        silently aggregate the wrong column."""
+        """Different values must never collapse onto one alias (would aggregate the wrong column)."""
         sql = await _gen(_two_distinct_crossing_values_query(), dialect="postgres")
         assert "_val_0" in sql, f"first materialisation missing:\n{sql}"
         assert "_val_1" in sql, f"second materialisation missing:\n{sql}"
 
     async def test_one_expression_is_materialised_once_per_scope(self) -> None:
-        """NEWLY SURFACED DIVERGENCE — grouping a first/last cross-model
-        aggregate by the SAME crossing expression it aggregates materialises it
-        TWICE today::
-
-            regions.weight AS _val_0,      -- minted by the grain loop
-            regions.weight AS _val_1,      -- minted by the value branch
-
-        because the two sites keep SEPARATE dedup maps (the grain loop calls
-        ``allocate_val()`` without consulting the value branch's
-        ``value_alias_by_sql``). ``ScopeFrame`` holds ONE materialisation table
-        per scope keyed on the rendered template, so routing both through
-        ``resolve(consumer=…)`` collapses them to a single projection.
-
-        This is a redundant column rather than a wrong answer, but it is an
-        emitted-SQL change beyond the ratified B-items and belongs on the PR's
-        approval list.
-        """
+        """One per-scope ``ScopeFrame`` table collapses to a single projection what the two old dedup maps materialised twice (grouping a first/last aggregate by the same expression it aggregates)."""
         query = SlayerQuery(
             source_model="orders_x",
             dimensions=[ColumnRef(name="customers_v2.deep_weight")],
@@ -340,10 +236,7 @@ class TestDedupParity:
     async def test_separate_scopes_keep_independent_materialisations(
         self,
     ) -> None:
-        """Dedup is per SCOPE, not global: two ``_cm_`` CTEs are two scopes, so
-        each materialises its own copy. Pinned so the dedup unification above
-        is not over-applied into cross-scope sharing, which would reference an
-        alias that does not exist in the consuming CTE."""
+        """Dedup is per scope: two ``_cm_`` CTEs each materialise their own copy (guards against over-sharing into an alias absent from the consuming CTE)."""
         query = SlayerQuery(
             source_model="orders_x",
             dimensions=[ColumnRef(name="customers_v2.status")],
@@ -360,22 +253,9 @@ class TestDedupParity:
             )
 
 
-# =========================================================================== #
-# The deliberate PR-5 exception, pinned rather than left implicit.
-# =========================================================================== #
 class TestRankedPathUsesTheOneMaterialiser:
-    """The HOST-rooted ranked path, which kept the generator's own ``_val_``
-    flow until ``RankedAggregatePlan`` (DEV-1748) replaced it.
-
-    This class asserted the DEFERRAL — that ``ScopeFrame`` did NOT materialise
-    here — precisely so the boundary between the two PRs could not move
-    silently. It now asserts the migration, which is the same claim with the
-    sign flipped: there is ONE materialiser per scope, and this path uses it.
-
-    To reach that code the aggregate must be rooted at the HOST — a
-    ``customers_v2.…`` measure is cross-model and roots at the target instead.
-    So the host model gets a derived column whose SQL crosses into the joined
-    model, and the first/last aggregate is taken over THAT.
+    """The host-rooted ranked path uses the one per-scope materialiser too.
+    Reaching it needs a HOST-rooted aggregate (a ``customers_v2.…`` measure roots at the target instead), so the host gets a derived column crossing into the joined model and first/last runs over that.
     """
 
     _HOST_CROSSING_COLUMN = [
@@ -394,8 +274,6 @@ class TestRankedPathUsesTheOneMaterialiser:
         )
 
     async def test_local_first_last_still_materialises_correctly(self) -> None:
-        """The corner keeps WORKING while it waits — pinned so PR 5 inherits a
-        test rather than a silent assumption."""
         sql = await _gen(
             self._query(), orders_extra=self._HOST_CROSSING_COLUMN,
             dialect="postgres",
@@ -408,13 +286,7 @@ class TestRankedPathUsesTheOneMaterialiser:
     async def test_every_val_alias_here_comes_from_scopeframe(
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """The migration, pinned in the same terms the deferral was.
-
-        Every ``_val_`` alias this shape emits must be one ``ScopeFrame``
-        minted. A generator-local materialiser coming back would show up as an
-        alias in the SQL that the spy never saw — which is the failure this
-        catches, and the reason the assertion is by SET rather than by count.
-        """
+        """Every ``_val_`` alias this shape emits must be one ``ScopeFrame`` minted; asserted by SET so a returning generator-local materialiser (an alias the spy never saw) fails."""
         spy = _MaterializeSpy()
         spy.install(monkeypatch)
         sql = await _gen(

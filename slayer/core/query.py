@@ -22,7 +22,7 @@ from slayer.core.models import ModelMeasure, SlayerModel, _validate_model_name
 from slayer.core.refs import auto_name_from_expression
 from slayer.engine.syntax import AggCall, parse_expr, walk_parsed_refs
 from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
-from slayer.storage.migrations import migrate as _migrate_schema
+from slayer.storage.migrations import CURRENT_VERSIONS, migrate as _migrate_schema
 
 logger = logging.getLogger(__name__)
 
@@ -447,7 +447,7 @@ def coerce_declared_list_variables(
 
 
 class ColumnRef(BaseModel):
-    """A dimension reference; dotted paths (``customers.regions.name``) split at validation into ``model`` + leaf ``name``."""
+    """A column reference: bare name or dotted join path (``customers.regions.name``); a short form (``regions.name``) auto-routes when exactly one route exists."""
     name: str
     model: str | None = None
     label: str | None = None
@@ -486,7 +486,7 @@ class ColumnRef(BaseModel):
 
 
 class ComputedDimension(BaseModel):
-    """A dimension defined by a Mode-B ``expression`` (grouped by and projected); an aggregate inside must carry ``partition_by=`` (aggregate-then-regroup path)."""
+    """A dimension computed by an ``expression``; an aggregation inside must carry ``partition_by=`` to fix its grain. Best given an explicit ``name``."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -587,6 +587,7 @@ def _is_direction(value: Any) -> bool:
 
 
 class TimeDimension(BaseModel):
+    """Group-by on ``dimension`` truncated to ``granularity``; optional ``date_range`` [start, end] (ISO dates)."""
     dimension: Annotated[ColumnRef, BeforeValidator(_coerce_column_ref)]
     granularity: TimeGranularity
     date_range: list[str] | None = None
@@ -594,13 +595,17 @@ class TimeDimension(BaseModel):
 
 
 class OrderItem(BaseModel):
+    """A sort key: ``column`` is a result column name or an expression string; ``direction`` asc|desc."""
     # extra="forbid": reject stray keys so a mixed canonical+shorthand item
     # raises instead of silently dropping the extra key.
     model_config = ConfigDict(extra="forbid")
 
     column: Annotated[ColumnRef, BeforeValidator(_coerce_order_column)]
     direction: str = "asc"
-    raw_formula: str | None = None
+    raw_formula: str | None = Field(
+        default=None,
+        description="Internal — captured automatically from expression strings; do not set.",
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -742,14 +747,57 @@ class SlayerQuery(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    version: int = 3
-    name: str | None = None  # For referencing this query from other queries in a list
-    source_model: object  # str (model name), SlayerModel (inline), or ModelExtension
-    measures: Annotated[list[ModelMeasure] | None, BeforeValidator(_coerce_measures)] = None
+    version: int = 4
+    name: str | None = Field(
+        default=None,
+        description=(
+            "Stage name in a multi-stage list; other stages reference it as "
+            "their source_model."
+        ),
+    )
+    source_model: object | None = Field(
+        default=None,
+        description=(
+            "The query's population: a saved model name, an inline ModelExtension "
+            '({"source_name": ..., plus optional "columns"/"measures"/"joins"/"filters"}), '
+            "or a full inline model dict. Omit to infer the smallest model determining "
+            "every queried dimension, time dimension, and row-level filter column (the "
+            "choice is reported in response metadata)."
+        ),
+    )
+    measures: Annotated[
+        list[ModelMeasure] | None, BeforeValidator(_coerce_measures)
+    ] = Field(
+        default=None,
+        description=(
+            "Values to return: aggregation-expression formulas (see the query tool "
+            "description). A bare name references a saved model measure."
+        ),
+    )
 
     @model_validator(mode="before")
     @classmethod
     def _apply_schema_migrations(cls, data: Any) -> Any:
+        # `strict` is retired. Reject it for fresh (no version), current-version,
+        # or malformed payloads; only a pre-current *integer* stored version
+        # migrates it (v3→v4 maps strict:true→to_many_handling='error'). ``version``
+        # is raw here (pre-coercion), so accept only int / integer-string forms —
+        # never truncate a float or other malformed value into a stale version.
+        if isinstance(data, dict) and "strict" in data:
+            raw_version = data.get("version")
+            version: int | None = None
+            if isinstance(raw_version, int) and not isinstance(raw_version, bool):
+                version = raw_version
+            elif isinstance(raw_version, str):
+                try:
+                    version = int(raw_version)
+                except ValueError:
+                    version = None
+            if version is None or version >= CURRENT_VERSIONS["SlayerQuery"]:
+                raise ValueError(
+                    "`strict` is retired; set to_many_handling='error' instead "
+                    "(one of broadcast|associate|error)."
+                )
         return _migrate_schema(entity="SlayerQuery", data=data)
 
     @field_validator("name")
@@ -760,23 +808,86 @@ class SlayerQuery(BaseModel):
         if v is None:
             return v
         return _validate_model_name(v, "Query")
-    dimensions: Annotated[list[ColumnRef | ComputedDimension] | None, BeforeValidator(_coerce_dimensions)] = None
-    time_dimensions: list[TimeDimension] | None = None
-    main_time_dimension: str | None = None  # Explicit time dimension for transforms (overrides auto-detection)
-    filters: list[str] | None = None
-    variables: dict[str, Any] | None = None  # Variable values for filter substitution
-    order: Annotated[list[OrderItem] | None, BeforeValidator(_coerce_order)] = None
-    limit: int | None = None
-    offset: int | None = None
-    whole_periods_only: bool = False
-    # Default True: auto-dedup dim-only queries (Cube.js-style) when measures is
-    # empty. False emits a flat projection and rejects any measure reference.
-    distinct_dimension_values: bool = True
+    dimensions: Annotated[
+        list[ColumnRef | ComputedDimension] | None, BeforeValidator(_coerce_dimensions)
+    ] = Field(
+        default=None,
+        description=(
+            "Group-by columns — names / dotted paths, or computed expressions "
+            '({"expression": ..., "name": ...}); one result row per distinct '
+            "value combination."
+        ),
+    )
+    time_dimensions: list[TimeDimension] | None = Field(
+        default=None,
+        description="Time-bucketed group-bys — one result row per bucket.",
+    )
+    main_time_dimension: str | None = Field(
+        default=None,
+        description=(
+            "Name of the time dimension that time-ordered transforms (change, lag, ...) "
+            "key off; overrides auto-detection when the query has multiple time dimensions."
+        ),
+    )
+    filters: list[str] | None = Field(
+        default=None,
+        description=(
+            "Condition strings, AND-ed; each routes automatically to WHERE / "
+            "HAVING / post-aggregation. May contain aggregations, transforms, "
+            "and {variable} placeholders."
+        ),
+    )
+    variables: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "{placeholder} values scoped to this query object / stage; the "
+            "tool-level variables argument overrides."
+        ),
+    )
+    order: Annotated[list[OrderItem] | None, BeforeValidator(_coerce_order)] = Field(
+        default=None,
+        description=(
+            "Sort keys; column is a result column name or an "
+            "aggregation-bearing expression string."
+        ),
+    )
+    limit: int | None = Field(
+        default=None,
+        description=(
+            "Max rows to return. Use only for top-N / 'the single most X' "
+            "requests — never to trim a plain list (an uncapped MCP response "
+            "is truncated at 20 rows with an explicit notice)."
+        ),
+    )
+    offset: int | None = Field(default=None, description="Rows to skip.")
+    whole_periods_only: bool = Field(
+        default=False,
+        description=(
+            "Snap date filters to whole time buckets and drop the current "
+            "incomplete bucket."
+        ),
+    )
+    distinct_dimension_values: bool = Field(
+        default=True,
+        description=(
+            "Default true: dimension-only queries return distinct dimension "
+            "combinations (GROUP BY the projected dimensions). Set false for "
+            "raw per-record rows — requires empty `measures` and no measure "
+            "reference in `filters`/`order`. For rows plus a count, keep the "
+            "default and add `count(*)`."
+        ),
+    )
 
-    # Default False (broadcast + warn). True turns silent-semantics events — an
-    # implicit-grain broadcast, a dropped-as-unreachable filter — into hard errors.
-    # Explicit partition_by= broadcasting is by design and never errors.
-    strict: bool = False
+    # Filters keep EXISTS pushdown in every mode.
+    to_many_handling: Literal["broadcast", "associate", "error"] = Field(
+        default="broadcast",
+        description=(
+            "What happens when an aggregation is sliced by a dimension not "
+            "attributable to it: broadcast (default — repeat the value across "
+            "the cells, with a warning) | associate (aggregate per cell over "
+            "the distinct associated entities) | error (refuse)."
+        ),
+    )
 
     @model_validator(mode="after")
     def _validate_dsl_user_input(self) -> "SlayerQuery":

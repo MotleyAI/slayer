@@ -20,7 +20,9 @@ from slayer.engine.query_engine import FieldMetadata
 # DEV-1485 Stage D: imported through ``query_engine`` while the legacy
 # ``_query_as_model`` re-exported it; now imported from its owning module.
 from slayer.engine.response_meta import _infer_aggregated_format
-from slayer.engine.prebound import (
+from slayer.engine.query_engine import ResponseAttributes
+from slayer.mcp.server import _format_attributes
+from slayer.engine.key_metadata import (
     aggregated_type,
     measure_key_format_description,
     measure_key_type,
@@ -133,9 +135,6 @@ class TestMcpFormatMeta:
     """Tests for _format_attributes in MCP server."""
 
     def test_format_meta_includes_precision_and_symbol(self):
-        from slayer.engine.query_engine import ResponseAttributes
-        from slayer.mcp.server import _format_attributes
-
         attrs = ResponseAttributes(
             measures={
                 "orders.revenue_sum": FieldMetadata(
@@ -150,9 +149,6 @@ class TestMcpFormatMeta:
         assert "symbol=€" in result
 
     def test_format_meta_omits_none_fields(self):
-        from slayer.engine.query_engine import ResponseAttributes
-        from slayer.mcp.server import _format_attributes
-
         attrs = ResponseAttributes(
             measures={
                 "orders.count": FieldMetadata(

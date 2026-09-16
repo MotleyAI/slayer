@@ -1,6 +1,7 @@
-# Postgres Facade
+# SQL API
 
-SLayer speaks the [Postgres wire protocol](https://www.postgresql.org/docs/current/protocol.html)
+SLayer's SQL API is Postgres-based: the server speaks the
+[Postgres wire protocol](https://www.postgresql.org/docs/current/protocol.html)
 on port **5145** by default (REST is 5143, Flight SQL is 5144). Any tool that ships a
 Postgres connector — Metabase, Superset, Tableau, Power BI, Looker, `psql`, `asyncpg`,
 `psycopg` — can connect to SLayer as if it were a Postgres database, with no Java or
@@ -105,7 +106,7 @@ SLayer model as a table under schema `public`, and lets you build questions/dash
 against them. Project named metrics (`revenue_sum`) or write `SUM(amount)` /
 `COUNT(*)` — both map to SLayer measures.
 
-> Phase-1 note: BI tools may issue `pg_catalog` queries beyond the six tables the facade
+> Phase-1 note: BI tools may issue `pg_catalog` queries beyond the six tables the SQL API
 > implements; if a tool trips on one, that's the set to extend.
 
 ## Authentication
@@ -120,7 +121,7 @@ against them. Project named metrics (`revenue_sum`) or write `SUM(amount)` /
 
 ## SQL Surface
 
-The same translator the [Flight SQL facade](flight-sql.md) uses powers this endpoint, so
+The same translator [Flight SQL](flight-sql.md) uses powers this endpoint, so
 the query surface is identical:
 
 * Project **named metrics** and **dimensions** the catalog advertises, e.g.
@@ -219,7 +220,7 @@ expression` error.
 #### CAST coarse-OID mapping
 
 CAST is a **coarse wire-OID hint**, not a precision-preserving conversion.
-The SLayer engine projects the bare column unchanged; the pg-facade encoder
+The SLayer engine projects the bare column unchanged; the SQL API's encoder
 is OID-driven, so the wire bytes always match the OID we advertise. Some
 PostgreSQL types the user can write in a CAST don't have a one-to-one
 SLayer equivalent — those collapse onto the nearest broader SLayer type:
@@ -272,7 +273,7 @@ per column — `asyncpg` (which requests binary results) and `psql` (text) both 
 
 ## Install
 
-The facade is pure-stdlib — no extra is needed. It ships with the base install:
+The SQL API is pure-stdlib — no extra is needed. It ships with the base install:
 
 ```bash
 pip install motley-slayer

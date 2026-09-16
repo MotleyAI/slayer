@@ -22,8 +22,8 @@ from slayer.core.enums import DataType
 from slayer.core.errors import IllegalScopeReferenceError
 from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.core.query import SlayerQuery
-from slayer.engine.source_bundle import ResolvedSourceBundle
-from slayer.engine.stage_planner import plan_query, plan_stages
+from slayer.ir.source_bundle import ResolvedSourceBundle
+from slayer.engine.plan import plan_query, plan_stages
 
 
 def _orders() -> SlayerModel:
@@ -118,8 +118,8 @@ class TestSingleStage:
             filters=["status == 'paid'"],
         )
         planned = plan_query(query=q, bundle=_bundle())
-        # Filter present in filters_by_phase.
-        assert len(planned.filters_by_phase) == 1
+        # One typed mask per filter conjunct.
+        assert len(planned.masks) == 1
 
 
 # ---------------------------------------------------------------------------

@@ -7,15 +7,20 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import tempfile
 from collections.abc import AsyncIterator
 
+import pytest
 import pytest_asyncio
 from fastapi.testclient import TestClient
 
 from slayer.api.server import create_app
+from slayer.cli import _run_recommend_root_model, main
+from slayer.client.slayer_client import SlayerClient
 from slayer.core.enums import DataType, JoinType
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
+from slayer.core.recommend import RootModelRecommendation
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.mcp.server import create_mcp_server
 from slayer.storage.yaml_storage import YAMLStorage
@@ -131,6 +136,8 @@ class TestRestEndpoint:
         )
         assert resp.status_code == 200
         body = resp.json()
+        # DEV-1866: only orders determines both columns along to-one paths
+        # (customers→products is unreachable to-one), so orders is the root.
         assert body["root_model"] == "orders"
         assert body["data_source"] == "mydb"
 
@@ -141,6 +148,7 @@ class TestRestEndpoint:
             json={"items": ["customers.name", "products.category"]},
         )
         paths = {ip["input_item"]: ip["path"] for ip in resp.json()["item_paths"]}
+        # DEV-1866: root is orders; each column is one to-one hop away.
         assert paths == {
             "customers.name": "customers.name",
             "products.category": "products.category",
@@ -166,7 +174,6 @@ class TestRestEndpoint:
 
 class TestCliHandler:
     def test_cli_text(self, storage, capsys) -> None:
-        from slayer.cli import _run_recommend_root_model
 
         args = argparse.Namespace(
             storage=storage.base_dir, models_dir=None,
@@ -178,7 +185,6 @@ class TestCliHandler:
         assert "orders" in out
 
     def test_cli_json(self, storage, capsys) -> None:
-        from slayer.cli import _run_recommend_root_model
 
         args = argparse.Namespace(
             storage=storage.base_dir, models_dir=None,
@@ -192,9 +198,7 @@ class TestCliHandler:
 class TestCliParserWiring:
     def test_main_registers_subcommand(self, storage, monkeypatch, capsys) -> None:
         # Exercises the actual `slayer recommend-root-model` argparse wiring.
-        import sys
 
-        from slayer.cli import main
 
         monkeypatch.setattr(sys, "argv", [
             "slayer", "recommend-root-model",
@@ -203,27 +207,24 @@ class TestCliParserWiring:
         ])
         main()
         payload = json.loads(capsys.readouterr().out)
+        # DEV-1866: orders determines both columns to-one.
         assert payload["root_model"] == "orders"
 
 
 class TestSlayerClient:
     def test_local_engine_sync(self, storage) -> None:
-        from slayer.client.slayer_client import SlayerClient
-        from slayer.core.recommend import RootModelRecommendation
 
         client = SlayerClient(storage=storage)
         rec = client.recommend_root_model_sync(["customers.name", "products.category"])
         assert isinstance(rec, RootModelRecommendation)
-        assert rec.root_model == "orders"
+        assert rec.root_model == "orders"  # DEV-1866: to-one determiner of both
 
     async def test_local_engine_async(self, storage) -> None:
-        from slayer.client.slayer_client import SlayerClient
-        from slayer.core.recommend import RootModelRecommendation
 
         client = SlayerClient(storage=storage)
         rec = await client.recommend_root_model(["customers.name", "products.category"])
         assert isinstance(rec, RootModelRecommendation)
-        assert rec.root_model == "orders"
+        assert rec.root_model == "orders"  # DEV-1866: to-one determiner of both
 
 
 class TestRootHintSurfaces:
@@ -269,7 +270,6 @@ class TestRootHintSurfaces:
 
     # -- CLI ------------------------------------------------------------
     def test_cli_feasible_hint_honored(self, storage, capsys) -> None:
-        from slayer.cli import _run_recommend_root_model
 
         args = argparse.Namespace(
             storage=storage.base_dir, models_dir=None,
@@ -281,9 +281,7 @@ class TestRootHintSurfaces:
         assert payload["root_model"] == "orders"
 
     def test_cli_bad_hint_nonzero_exit(self, storage, capsys) -> None:
-        import pytest
 
-        from slayer.cli import _run_recommend_root_model
 
         args = argparse.Namespace(
             storage=storage.base_dir, models_dir=None,
@@ -296,9 +294,7 @@ class TestRootHintSurfaces:
         assert "failed" in capsys.readouterr().out.lower()
 
     def test_cli_parser_accepts_root_hint(self, storage, monkeypatch, capsys) -> None:
-        import sys
 
-        from slayer.cli import main
 
         monkeypatch.setattr(sys, "argv", [
             "slayer", "recommend-root-model", "customers.name",
@@ -306,20 +302,17 @@ class TestRootHintSurfaces:
         ])
         main()
         payload = json.loads(capsys.readouterr().out)
-        assert payload["root_model"] == "orders"
+        assert payload["root_model"] == "orders"  # the hint wins
 
     # -- SlayerClient (local engine) ------------------------------------
     def test_client_local_feasible_hint_honored(self, storage) -> None:
-        from slayer.client.slayer_client import SlayerClient
 
         client = SlayerClient(storage=storage)
         rec = client.recommend_root_model_sync(["customers.name"], root_hint="orders")
         assert rec.root_model == "orders"
 
     async def test_client_local_bad_hint_raises(self, storage) -> None:
-        import pytest
 
-        from slayer.client.slayer_client import SlayerClient
 
         client = SlayerClient(storage=storage)
         with pytest.raises(ValueError):
@@ -327,7 +320,6 @@ class TestRootHintSurfaces:
 
     # -- SlayerClient (remote HTTP) sends root_hint only when set -------
     async def test_client_remote_sends_root_hint_only_when_set(self) -> None:
-        from slayer.client.slayer_client import SlayerClient
 
         client = SlayerClient(url="https://testserver")
         captured: list[dict] = []

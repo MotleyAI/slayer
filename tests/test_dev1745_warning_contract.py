@@ -45,8 +45,8 @@ from slayer.core.warnings import (
     NormalizationWarning,
     SlayerWarning,
 )
-from slayer.engine.source_bundle import ResolvedSourceBundle
-from slayer.engine.stage_planner import plan_query
+from slayer.ir.source_bundle import ResolvedSourceBundle
+from slayer.engine.plan import plan_query
 from slayer.mcp.server import create_mcp_server
 from slayer.sql.generator import SQLGenerator
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
@@ -56,9 +56,11 @@ from slayer.storage.yaml_storage import YAMLStorage
 
 
 # --------------------------------------------------------------------------- #
-# Fixtures — a query whose host filter is unreachable from the CTE root.
-# `warehouses` is a SIBLING branch of `customers`, so a filter on it cannot be
-# propagated into the customers-rooted _cm_ CTE.
+# Fixtures — a query whose host filter is genuinely excluded from the CTE root.
+# DEV-1853 retired the ambiguous-reverse-hop route to drop+warn (parallel edges
+# now fail closed, and any single edge inverts into a semi-join pushdown), so
+# the excluded filter is the D2 shape that STAYS dropped: a producer-root-local
+# ref mixed with a cross-path ref under OR.
 # --------------------------------------------------------------------------- #
 def _warehouses() -> SlayerModel:
     return SlayerModel(
@@ -109,7 +111,8 @@ def _orders() -> SlayerModel:
     )
 
 
-DROPPED_FILTER = "warehouses.code == 'X'"
+#: Mixed-OR (D2): producer-root-local + cross-path — stays dropped + warned.
+DROPPED_FILTER = "customers.revenue > 0 or warehouses.code == 'X'"
 
 
 def _query(*, extra_filters: list | None = None) -> SlayerQuery:
@@ -161,13 +164,13 @@ async def _engine(tmpdir: str, *, with_tables: bool = False) -> SlayerQueryEngin
 
 
 def _two_plan_query() -> SlayerQuery:
-    """ONE user filter, unreachable from TWO different cross-model targets.
+    """ONE user filter, excluded from TWO different cross-model targets.
 
-    Verified: this produces two separate ``dropped_filter_warnings`` entries
-    (one on the customers plan, one on the shippers plan) for the SAME user
-    filter. Deduping them to a single warning is the contract's core claim, and
-    without this shape nothing in the suite distinguishes "one per filter" from
-    "one per plan".
+    ``customers.revenue > 0 or shippers.cost > 0`` is the D2 mixed-OR shape for
+    BOTH producers (each sees its own root-local ref mixed with a cross-path
+    ref), so both drop it with one agreeing reason. Deduping the two entries to
+    a single warning is the contract's core claim; without this shape nothing in
+    the suite distinguishes "one per filter" from "one per plan".
     """
     return SlayerQuery(
         source_model="orders",
@@ -176,7 +179,7 @@ def _two_plan_query() -> SlayerQuery:
             {"formula": "customers.revenue:sum"},
             {"formula": "shippers.cost:sum"},
         ],
-        filters=[DROPPED_FILTER],
+        filters=["customers.revenue > 0 or shippers.cost > 0"],
     )
 
 
@@ -249,7 +252,9 @@ class TestExecuteEntryPoint:
             with warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter("always")
                 await engine.execute(
-                    _query(extra_filters=["warehouses.code == 'Y'"]),
+                    _query(extra_filters=[
+                        "customers.revenue > 0 or warehouses.code == 'Y'",
+                    ]),
                     dry_run=True,
                 )
         hits = [
@@ -568,14 +573,16 @@ class TestMcpEntryPoint:
             for m in (_orders(), _customers(), _warehouses()):
                 await storage.save_model(m, _validate=False)
             server = create_mcp_server(storage=storage)
-            # The MCP query tool takes the query fields as its own typed
-            # arguments — no nested "query" envelope, and `dimensions` is a
-            # list of plain strings rather than the SlayerQuery dict form.
+            # The MCP query tool takes one polymorphic `query` argument (model
+            # name, single query object, or list of stage objects) plus the
+            # execution wrappers.
             result = await server.call_tool("query", {
-                "source_model": "orders",
-                "dimensions": ["status"],
-                "measures": [{"formula": "customers.revenue:sum"}],
-                "filters": [DROPPED_FILTER],
+                "query": {
+                    "source_model": "orders",
+                    "dimensions": ["status"],
+                    "measures": [{"formula": "customers.revenue:sum"}],
+                    "filters": [DROPPED_FILTER],
+                },
                 "dry_run": True,
             })
         text = str(result)

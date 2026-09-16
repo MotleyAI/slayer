@@ -16,10 +16,10 @@ from slayer.core.query import OrderItem
 from slayer.sql.scope_check import assert_scope_closed
 
 from tests._dev1836_fixtures import (
-    AMOUNT_BY_LABEL,
     AMOUNT_BY_STATUS,
     AMOUNT_BY_TIER,
     AMOUNT_BY_TIER_STATUS,
+    AMOUNT_TOTAL,
     GOLD_SPEND_BY_REGION,
     ModelMeasure,
     SPEND_BY_REGION,
@@ -111,8 +111,9 @@ class TestBroadcast:
         await _dry_scope_closed(engine, query, dialect)
 
     async def test_unproven_hop_dim_broadcasts(self, exec_backend):
-        """customers → segments has unproven arity: the metric never joins
-        through it, broadcasting instead of double-counting."""
+        """customers → segments has unproven arity: neither metric joins
+        through it, so both broadcast their grand total instead of double-
+        counting — the local ``m`` under DEV-1841's uniform classification too."""
         dialect, engine = exec_backend
         query = q(dimensions=["customers.segments.label"], measures=[M, CM])
         resp = await engine.execute(query)
@@ -120,7 +121,7 @@ class TestBroadcast:
         assert set(by) == {("Alpha",), ("Beta",), (None,)}
         for (label,), row in by.items():
             _approx(row["orders.cm"], SPEND_TOTAL, key=label)
-            _approx(row["orders.m"], AMOUNT_BY_LABEL[label], key=f"m:{label}")
+            _approx(row["orders.m"], AMOUNT_TOTAL, key=f"m:{label}")
         await _dry_scope_closed(engine, query, dialect)
 
     async def test_mixed_grain_broadcasts_only_the_unsafe_member(self, exec_backend):

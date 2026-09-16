@@ -20,14 +20,15 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.engine.source_bundle import ResolvedSourceBundle
-from slayer.engine.stage_planner import (
-    _crossing_local_root_predicate,
+from slayer.ir.planned import MaskTyping
+from slayer.engine.join_safety import crossing_local_root_predicate
+from slayer.ir.source_bundle import ResolvedSourceBundle
+from slayer.engine.compile.stages import (
     _plan_regroups,
-    _resolve_scope,
-    _split_partitioned_filter_conjuncts,
-    bind_query_inputs,
 )
+from slayer.engine.bind_inputs import bind_query_inputs
+from slayer.engine.elaborate_env import type_and_split_filters
+from slayer.ir.source_bundle import resolve_scope
 
 from tests._dev1838_fixtures import (
     ModelMeasure,
@@ -220,7 +221,7 @@ async def test_keyless_filter_over_own_cross_model_aggregate_row_routes(
 
 
 def test_filter_over_own_cross_model_aggregate_routes_row_not_combined() -> None:
-    """The dim's OWN cross-model aggregate in a filter stays row-scoped, not pushed to the combined outer WHERE."""
+    """The dim's OWN cross-model aggregate in a filter types as FIELD (row-scoped, attached), not measure."""
     models = dev1838_models()
     bundle = ResolvedSourceBundle(
         source_model=models[0], referenced_models=list(models[1:]),
@@ -230,13 +231,13 @@ def test_filter_over_own_cross_model_aggregate_routes_row_not_combined() -> None
         measures=[ModelMeasure(formula="amount:sum", name="m")],
         filters=[f"{CM_AGG} > 100"],
     )
-    scope = _resolve_scope(query=query, bundle=bundle, stage_schemas={})
+    scope = resolve_scope(query=query, bundle=bundle, stage_schemas={})
     prebound = bind_query_inputs(query=query, bundle=bundle, scope=scope)
-    crossing_root = _crossing_local_root_predicate(scope=scope, bundle=bundle)
-    _, combined_idx = _split_partitioned_filter_conjuncts(
+    crossing_root = crossing_local_root_predicate(scope=scope, bundle=bundle)
+    _, typings = type_and_split_filters(
         prebound, crossing_root=crossing_root,
     )
-    assert combined_idx == []
+    assert [(t.typing, t.stratum) for t in typings] == [(MaskTyping.FIELD, 1)]
 
 
 async def test_keyless_order_by_dimension_name_cross_model_row_routes(
@@ -307,12 +308,13 @@ def test_local_discovery_false_suppresses_local_keeps_cross_model() -> None:
             ),
         ],
     )
-    scope = _resolve_scope(query=query, bundle=bundle, stage_schemas={})
+    scope = resolve_scope(query=query, bundle=bundle, stage_schemas={})
     prebound = bind_query_inputs(query=query, bundle=bundle, scope=scope)
 
     def _attaches(local_discovery: bool):
         result = _plan_regroups(
-            prebound=prebound, scope=scope, bundle=bundle, stage_schemas={},
+            prebound=prebound, filter_typings=[], scope=scope, bundle=bundle,
+            stage_schemas={},
             producer_source_model="orders", local_discovery=local_discovery,
         )
         assert result is not None

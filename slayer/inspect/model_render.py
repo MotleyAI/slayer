@@ -19,8 +19,13 @@ from typing import Any
 import sqlalchemy as sa
 
 from slayer.core.enums import DataType
+from slayer.core.join_walker import OrientedJoin, neighbors
 from slayer.core.models import Column, SlayerModel
-from slayer.core.query import SlayerQuery, extract_model_variables
+from slayer.core.query import (
+    SlayerQuery,
+    extract_model_variables,
+    extract_placeholder_names,
+)
 from slayer.engine.ingestion import _friendly_db_error
 from slayer.engine.profiling import (
     _is_sample_cached,
@@ -484,8 +489,6 @@ def _build_backing_query_info(model: SlayerModel) -> dict | None:
     """
     if not model.source_queries:
         return None
-    from slayer.core.query import extract_placeholder_names
-
     all_placeholders: set = set()
     stage_dicts: list[dict] = []
     # A placeholder is "required" only if it has no default at any layer the
@@ -663,6 +666,29 @@ def _render_variables_line(variables: dict[str, list[str]]) -> str | None:
         return None
     parts = [f"{name} (required)" for name in required] + list(optional)
     return f"Variables: {', '.join(parts)}"
+
+
+async def _oriented_hops(
+    model: SlayerModel, storage: StorageBackend
+) -> list[OrientedJoin]:
+    """Every hop incident to ``model`` — declared outgoing plus reverse-reachable
+    incoming edges declared on datasource peers — oriented from ``model``
+    (DEV-1853). Best-effort: a peer that fails to load is skipped."""
+    models_by_name: dict[str, SlayerModel] = {model.name: model}
+    try:
+        peer_names = await storage.list_models(model.data_source)
+    except Exception:  # best-effort — fall back to declared joins only
+        peer_names = []
+    for nm in peer_names:
+        if nm in models_by_name:
+            continue
+        try:
+            peer = await storage.get_model(nm, data_source=model.data_source)
+        except Exception:
+            peer = None
+        if peer is not None:
+            models_by_name[nm] = peer
+    return neighbors(model=model, models_by_name=models_by_name)
 
 
 async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of the inspect_model tool body; the section-gating + cache-miss + dual markdown/json render is intentionally a single linear pass
@@ -1025,14 +1051,15 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
     # ------------------------------------------------------------------
     # Joins section
     # ------------------------------------------------------------------
+    hops = await _oriented_hops(model, storage)
     if "joins" in included_set:
         join_rows: list[dict[str, Any]] = []
-        for j in model.joins:
-            pairs = "; ".join(f"{src} = {tgt}" for src, tgt in j.join_pairs)
+        for h in hops:
+            pairs = "; ".join(f"{src} = {tgt}" for src, tgt in h.join_pairs)
             join_rows.append({
-                "target_model": j.target_model,
+                "target_model": h.target_model,
                 "join_pairs": pairs,
-                "cardinality": str(j.cardinality) if j.cardinality else "",
+                "cardinality": str(h.cardinality) if h.cardinality else "",
             })
         out_sections.append(
             f"## Joins ({len(join_rows)})\n\n"
@@ -1041,10 +1068,10 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
                 columns=["target_model", "join_pairs", "cardinality"],
             )
         )
-    elif model.joins:
-        csv = ", ".join(_md_code_span(j.target_model) for j in model.joins)
+    elif hops:
+        csv = ", ".join(_md_code_span(h.target_model) for h in hops)
         out_sections.append(
-            f"## Joins ({len(model.joins)} — names only)\n\n{csv}"
+            f"## Joins ({len(hops)} — names only)\n\n{csv}"
         )
 
     # ------------------------------------------------------------------
@@ -1277,18 +1304,18 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
         elif model.aggregations:
             payload["aggregations_names"] = [a.name for a in model.aggregations]
 
-        # Joins
+        # Joins — declared outgoing plus reverse-reachable incoming, oriented.
         if "joins" in included_set:
             payload["joins"] = [
                 {
-                    "target_model": j.target_model,
-                    "join_pairs": j.join_pairs,
-                    "cardinality": j.cardinality,
+                    "target_model": h.target_model,
+                    "join_pairs": h.join_pairs,
+                    "cardinality": h.cardinality,
                 }
-                for j in model.joins
+                for h in hops
             ]
-        elif model.joins:
-            payload["joins_names"] = [j.target_model for j in model.joins]
+        elif hops:
+            payload["joins_names"] = [h.target_model for h in hops]
 
         # Samples
         if "samples" in included_set:

@@ -26,6 +26,7 @@ from slayer.core.keys import (
     ValueKey,
     normalize_scalar,
 )
+from slayer.core.keys import Grain
 
 
 # ---------------------------------------------------------------------------
@@ -199,6 +200,7 @@ class TestAggregateKey:
             source=ColumnKey(path=("customers",), leaf="revenue"),
             agg="sum",
         )
+        assert isinstance(k.source, ColumnKey)
         assert k.source.path == ("customers",)
         # Same class as local — only `source.path` differs (P3).
         local = AggregateKey(
@@ -302,7 +304,7 @@ class TestTransformKey:
         a = TransformKey(
             op="cumsum",
             input=agg,
-            partition_keys=frozenset({
+            partition_keys=Grain.of({
                 ColumnKey(path=(), leaf="region"),
                 ColumnKey(path=(), leaf="store"),
             }),
@@ -310,7 +312,7 @@ class TestTransformKey:
         b = TransformKey(
             op="cumsum",
             input=agg,
-            partition_keys=frozenset({
+            partition_keys=Grain.of({
                 ColumnKey(path=(), leaf="store"),
                 ColumnKey(path=(), leaf="region"),
             }),
@@ -568,6 +570,8 @@ class TestIdentityInterning:
         )
         assert type(local) is type(cross)
         assert local != cross
+        assert isinstance(local.source, ColumnKey)
+        assert isinstance(cross.source, ColumnKey)
         assert local.source.path == ()
         assert cross.source.path == ("customers",)
 

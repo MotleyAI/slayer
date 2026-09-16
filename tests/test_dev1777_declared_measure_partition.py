@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.engine.prebound import PreboundQuery, partition_declared_measures
+from slayer.ir.prebound import PreboundQuery, partition_declared_measures
 
 # Sentinel elements — partition_declared_measures is pure list slicing, so the
 # element type is irrelevant; strings make the boundaries readable.

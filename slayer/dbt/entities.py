@@ -114,7 +114,10 @@ class EntityRegistry:
                     cardinality=JoinCardinality.MANY_TO_ONE,
                 ))
 
-        # Peer joins: models sharing the same primary/unique entity are joinable
+        # Peer joins: models sharing the same primary/unique entity are joinable.
+        # Declared once per unordered pair (smaller name wins) — reverse
+        # traversal is automatic (DEV-1853), and the exact-inverse twin would
+        # be rejected at save time.
         seen_peer_signatures: set = set()
         for entity in model.entities:
             if entity.type not in ("primary", "unique"):
@@ -122,7 +125,7 @@ class EntityRegistry:
             peers = self._primaries.get(entity.name, [])
             local_expr = entity.expr or entity.name
             for peer_model_name, peer_expr in peers:
-                if peer_model_name == model.name:
+                if peer_model_name <= model.name:
                     continue
                 peer_signature = (peer_model_name, local_expr, peer_expr)
                 if peer_signature in seen_peer_signatures:

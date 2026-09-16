@@ -1,18 +1,23 @@
 """Abstract storage protocol and factory."""
 
 import asyncio
+import logging
 import os
 import sys
+import warnings
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
 from collections.abc import Callable, Iterable
 
+from slayer.core.enums import JoinCardinality, invert_cardinality
 from slayer.core.errors import (
     AmbiguousModelError,
     IdCollisionError,
     MemoryNotFoundError,
 )
+from slayer.engine.column_dependency import validate_no_column_cycles
+from slayer.core.join_walker import edges_between
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.embeddings.models import Embedding
@@ -33,6 +38,172 @@ from slayer.storage.type_refinement import (
     refine_dict_with_live_schema,
 )
 
+
+
+_TO_ONE_CARDINALITIES = {"many_to_one", "one_to_one"}
+
+
+def _is_exact_inverse_join(a: dict, b: dict) -> bool:
+    """True iff join dicts declared on opposite models mirror each other:
+    swapped pair set, same join type, equal ``name`` (a token on only one half
+    must survive — resolve_hop matches names first), cardinalities consistent
+    under inversion (unset on one side counts as consistent)."""
+    if (a.get("name") or None) != (b.get("name") or None):
+        return False
+    try:
+        a_pairs = {(str(x), str(y)) for x, y in a.get("join_pairs") or []}
+        b_pairs = {(str(y), str(x)) for x, y in b.get("join_pairs") or []}
+    except (TypeError, ValueError):
+        return False
+    if not a_pairs or a_pairs != b_pairs:
+        return False
+    if str(a.get("join_type") or "left") != str(b.get("join_type") or "left"):
+        return False
+    ca, cb = a.get("cardinality"), b.get("cardinality")
+    if ca is None or cb is None:
+        return True
+    try:
+        return invert_cardinality(JoinCardinality(ca)) == JoinCardinality(cb)
+    except ValueError:
+        return False
+
+
+def _inverse_survivor(
+    *, model_a: str, join_a: dict, model_b: str, join_b: dict,
+) -> str:
+    """Which model keeps its half of an exact-inverse pair: the to-one side,
+    else the cardinality-carrying side, else lexicographic ``(model, target)``.
+    Pure function of the two halves, so both load orders agree."""
+    a_card, b_card = join_a.get("cardinality"), join_b.get("cardinality")
+    a_to_one = a_card in _TO_ONE_CARDINALITIES
+    b_to_one = b_card in _TO_ONE_CARDINALITIES
+    if a_to_one != b_to_one:
+        return model_a if a_to_one else model_b
+    if (a_card is None) != (b_card is None):
+        return model_a if a_card is not None else model_b
+    return min((model_a, model_b), (model_b, model_a))[0]
+
+
+def _stored_counterpart(*, join: dict, name: str, peer: dict | None):
+    """The exact-inverse of ``join`` in ``peer``'s raw joins, or ``None``."""
+    peer_joins = peer.get("joins") if isinstance(peer, dict) else None
+    if not isinstance(peer_joins, list):
+        return None
+    return next(
+        (
+            j for j in peer_joins
+            if isinstance(j, dict) and j.get("target_model") == name
+            and _is_exact_inverse_join(join, j)
+        ),
+        None,
+    )
+
+
+def _checked_join_names(model: SlayerModel) -> list[str]:
+    """Names of ``model``'s named edges; raises on duplicates."""
+    names = [j.name for j in model.joins if j.name]
+    dupes = sorted({n for n in names if names.count(n) > 1})
+    if dupes:
+        raise ValueError(
+            f"Model '{model.name}': duplicate join names {dupes}. Each "
+            f"edge name incident to a model must be unique."
+        )
+    return names
+
+
+def _checked_join_name_namespace(
+    *, model: SlayerModel, names: list[str],
+    identities: Iterable[tuple[str, str]],
+) -> set[str]:
+    """Datasource model-name namespace; raises when an edge name collides."""
+    ds_model_names = {
+        n for ds, n in identities if ds == model.data_source
+    } | {model.name}
+    for n in names:
+        if n in ds_model_names:
+            raise ValueError(
+                f"Model '{model.name}': join name '{n}' collides with "
+                f"model '{n}' in datasource '{model.data_source}'. Edge "
+                f"names and model names share the path-segment namespace."
+            )
+    return ds_model_names
+
+
+def _check_edges_against_peers(
+    *, model: SlayerModel, peers: dict[str, SlayerModel],
+) -> None:
+    """Reject edge-name reuse across incident edges and exact-inverse twins."""
+    incident_to_self = {
+        j.name for p in peers.values() for j in p.joins
+        if j.target_model == model.name and j.name
+    }
+    for join in model.joins:
+        target = peers.get(join.target_model)
+        if join.name:
+            _check_edge_name_free(
+                model=model, join=join, target=target, peers=peers,
+                incident_to_self=incident_to_self,
+            )
+        if target is not None:
+            _check_not_exact_inverse(model=model, join=join, target=target)
+
+
+def _check_edge_name_free(
+    *, model: SlayerModel, join, target: SlayerModel | None,
+    peers: dict[str, SlayerModel], incident_to_self: set,
+) -> None:
+    target_incident = set(incident_to_self)
+    if target is not None:
+        target_incident |= {j2.name for j2 in target.joins if j2.name}
+        target_incident |= {
+            j3.name for p in peers.values() for j3 in p.joins
+            if j3.target_model == join.target_model and j3.name
+        }
+    if join.name in target_incident:
+        raise ValueError(
+            f"Model '{model.name}': join name '{join.name}' is "
+            f"already used by another edge incident to "
+            f"'{model.name}' or '{join.target_model}'."
+        )
+
+
+def _check_not_exact_inverse(
+    *, model: SlayerModel, join, target: SlayerModel,
+) -> None:
+    raw = join.model_dump(mode="json")
+    for j2 in target.joins:
+        if j2.target_model != model.name:
+            continue
+        if _is_exact_inverse_join(raw, j2.model_dump(mode="json")):
+            raise ValueError(
+                f"Model '{model.name}': join to '{target.name}' is "
+                f"the exact inverse of the edge already declared on "
+                f"'{target.name}' — reverse traversal is automatic; "
+                f"remove this declaration."
+            )
+
+
+def _warn_unnamed_parallel_edges(
+    *, model: SlayerModel, peers: dict[str, SlayerModel],
+) -> None:
+    for peer_name in {j.target_model for j in model.joins}:
+        target = peers.get(peer_name)
+        if target is None:
+            continue
+        edges = edges_between(source=model, target=target)
+        unnamed = [e for e in edges if e.name is None]
+        # Any unnamed edge in a parallel set is unaddressable — the bare
+        # model token is ambiguous and there is no name to fall back on.
+        if len(edges) >= 2 and unnamed:
+            warnings.warn(
+                f"Model '{model.name}': {len(edges)} parallel edges connect "
+                f"'{model.name}' and '{peer_name}' and {len(unnamed)} of "
+                f"them are unnamed — the bare path token is ambiguous and "
+                f"an unnamed edge has no token of its own. Name the edges "
+                f"to make them addressable.",
+                UserWarning,
+                stacklevel=2,
+            )
 
 
 def _write_sample_fields(
@@ -225,9 +396,69 @@ class StorageBackend(ABC):
         if _validate:
             if self._ids_collide_as_filenames:
                 await self._check_model_identity_collision(model)
-            from slayer.engine.column_dependency import validate_no_column_cycles
             await validate_no_column_cycles(model=model, storage=self)
+            await self._validate_join_edges(model)
         await self._save_model_impl(model)
+
+    async def _validate_join_edges(self, model: SlayerModel) -> None:
+        """DEV-1853 save-time join validation: reject duplicate incident edge
+        names, names colliding with datasource model names (in BOTH directions
+        — a model named like an existing edge is rejected too), and
+        exact-inverse re-declarations (reverse traversal is automatic); warn
+        when the save leaves unnamed parallel edges between a pair of models."""
+        clash = await self._find_edge_named(
+            name=model.name, data_source=model.data_source,
+            exclude_model=model.name,
+        )
+        if clash is not None:
+            raise ValueError(
+                f"Model name '{model.name}' collides with the join name "
+                f"'{model.name}' declared on model '{clash}' in datasource "
+                f"'{model.data_source}'. Edge names and model names share "
+                f"the path-segment namespace."
+            )
+        if not model.joins:
+            return
+        names = _checked_join_names(model)
+        identities = await self._list_all_model_identities()
+        ds_model_names = _checked_join_name_namespace(
+            model=model, names=names, identities=identities,
+        )
+        peers = await self._load_join_peers(
+            model, names=names, ds_model_names=ds_model_names,
+        )
+        _check_edges_against_peers(model=model, peers=peers)
+        _warn_unnamed_parallel_edges(model=model, peers=peers)
+
+    async def _load_join_peers(
+        self, model: SlayerModel, *, names: list[str], ds_model_names: set[str],
+    ) -> dict[str, SlayerModel]:
+        """Full peer loads only where needed: join targets always; every peer
+        only when a named edge must be checked against incident edges."""
+        peers: dict[str, SlayerModel] = {}
+        wanted = {j.target_model for j in model.joins}
+        if names:
+            wanted = {n for n in ds_model_names if n != model.name}
+        for peer_name in sorted(wanted):
+            if peer_name == model.name or peer_name in peers:
+                continue
+            peer = await self.get_model(peer_name, data_source=model.data_source)
+            if peer is not None:
+                peers[peer.name] = peer
+        return peers
+
+    async def _find_edge_named(
+        self, *, name: str, data_source: str, exclude_model: str,
+    ) -> str | None:
+        """The datasource model declaring a join named ``name``, or ``None``."""
+        identities = await self._list_all_model_identities()
+        for ds, peer_name in identities:
+            if ds != data_source or peer_name == exclude_model:
+                continue
+            peer = await self.get_model(peer_name, data_source=data_source)
+            if peer is not None and any(j.name == name for j in peer.joins):
+                return peer_name
+        return None
 
     async def _check_model_identity_collision(self, model: SlayerModel) -> None:
         """Reject a model whose ``data_source`` or ``name`` differs only
@@ -422,14 +653,16 @@ class StorageBackend(ABC):
 
     @staticmethod
     def _warn_skipped_int_probe(*, name: str, data_source: str) -> None:
-        import logging as _logging
-        _logging.getLogger(__name__).warning(
-            "Datasource %r unavailable; skipping SQLite "
-            "affinity probe for INT base columns on %r. "
+        # Sanitize for log injection (S5145): strip CR/LF before logging.
+        safe_ds = data_source.replace("\r", "\\r").replace("\n", "\\n")
+        safe_name = name.replace("\r", "\\r").replace("\n", "\\n")
+        logging.getLogger(__name__).warning(
+            "Datasource '%s' unavailable; skipping SQLite "
+            "affinity probe for INT base columns on '%s'. "
             "Re-run `slayer ingest` once the datasource is "
             "back to widen any mis-typed columns.",
-            data_source,
-            name,
+            safe_ds,
+            safe_name,
         )
 
     async def _migrate_and_refine_on_load(
@@ -477,6 +710,10 @@ class StorageBackend(ABC):
             data = await self._rewrite_legacy_join_aliases(
                 name=name, data=data, data_source=data_source,
             )
+            # DEV-1853 v10: collapse stored exact-inverse mirror pairs.
+            data = await self._dedup_exact_inverse_joins(
+                name=name, data=data, data_source=data_source,
+            )
             write_back = True
             await self._apply_refinement_or_raise(
                 name=name, data=data, data_source=data_source,
@@ -489,6 +726,49 @@ class StorageBackend(ABC):
             # could not load a broken legacy model to repair it.
             await self.save_model(model, _validate=False)
         return model
+
+    async def _dedup_exact_inverse_joins(
+        self, *, name: str, data: dict, data_source: str,
+    ) -> dict:
+        """DEV-1853 v10: drop this document's half of a stored exact-inverse
+        join pair when the counterpart (read raw, no recursive migration)
+        holds the surviving half. A missing/corrupt peer or a drifted pair
+        leaves the document untouched; the outcome is load-order-independent
+        because :func:`_inverse_survivor` reads only the two halves."""
+        joins = data.get("joins")
+        if not isinstance(joins, list) or not joins:
+            return data
+        cache: dict[str, dict | None] = {}
+        kept = [
+            join for join in joins
+            if await self._survives_stored_inverse(
+                join=join, name=name, data_source=data_source, cache=cache,
+            )
+        ]
+        if len(kept) != len(joins):
+            data["joins"] = kept
+        return data
+
+    async def _survives_stored_inverse(
+        self, *, join, name: str, data_source: str,
+        cache: dict[str, dict | None],
+    ) -> bool:
+        """True when ``join`` has no stored exact-inverse counterpart, or wins
+        against it."""
+        peer_name = join.get("target_model") if isinstance(join, dict) else None
+        if not isinstance(peer_name, str) or peer_name == name:
+            return True
+        if peer_name not in cache:
+            cache[peer_name] = await self._load_raw_model_dict(
+                name=peer_name, data_source=data_source,
+            )
+        counterpart = _stored_counterpart(
+            join=join, name=name, peer=cache[peer_name],
+        )
+        return counterpart is None or _inverse_survivor(
+            model_a=name, join_a=join,
+            model_b=peer_name, join_b=counterpart,
+        ) == name
 
     async def _rewrite_legacy_join_aliases(
         self, *, name: str, data: dict, data_source: str,
@@ -1078,19 +1358,19 @@ def resolve_storage(path: str) -> StorageBackend:
         scheme, _, remainder = path.partition("://")
         scheme = scheme.lower()
         if scheme in _STORAGE_REGISTRY:
-            return _wrap_join_sync(_STORAGE_REGISTRY[scheme](remainder))
+            return _STORAGE_REGISTRY[scheme](remainder)
         # Built-in schemes
         if scheme == "yaml":
-            from slayer.storage.yaml_storage import YAMLStorage
+            from slayer.storage.yaml_storage import YAMLStorage  # ALLOW(import-not-top): circular — backend modules import from this module
 
-            return _wrap_join_sync(YAMLStorage(base_dir=remainder))
+            return YAMLStorage(base_dir=remainder)
         if scheme == "sqlite":
-            from slayer.storage.sqlite_storage import SQLiteStorage
+            from slayer.storage.sqlite_storage import SQLiteStorage  # ALLOW(import-not-top): circular — backend modules import from this module
 
             # sqlite:///abs/path → remainder="/abs/path" (keep absolute)
             # sqlite://rel/path → remainder="rel/path" (keep relative)
             db_path = remainder if remainder.startswith("/") else remainder.lstrip("/")
-            return _wrap_join_sync(SQLiteStorage(db_path=db_path))
+            return SQLiteStorage(db_path=db_path)
         raise ValueError(
             f"Unknown storage scheme '{scheme}'. "
             f"Built-in: yaml, sqlite. "
@@ -1100,18 +1380,11 @@ def resolve_storage(path: str) -> StorageBackend:
 
     # Extension-based detection
     if path.endswith((".db", ".sqlite", ".sqlite3")):
-        from slayer.storage.sqlite_storage import SQLiteStorage
+        from slayer.storage.sqlite_storage import SQLiteStorage  # ALLOW(import-not-top): circular — backend modules import from this module
 
-        return _wrap_join_sync(SQLiteStorage(db_path=path))
+        return SQLiteStorage(db_path=path)
 
     # Default: YAML directory
-    from slayer.storage.yaml_storage import YAMLStorage
+    from slayer.storage.yaml_storage import YAMLStorage  # ALLOW(import-not-top): circular — backend modules import from this module
 
-    return _wrap_join_sync(YAMLStorage(base_dir=path))
-
-
-def _wrap_join_sync(storage: StorageBackend) -> StorageBackend:
-    """Wrap a storage backend with automatic inner-join synchronization."""
-    from slayer.storage.join_sync import JoinSyncStorage
-
-    return JoinSyncStorage(inner=storage)
+    return YAMLStorage(base_dir=path)

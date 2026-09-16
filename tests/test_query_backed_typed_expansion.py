@@ -125,7 +125,11 @@ class TestStoredSourceQueriesTopoSort:
                     name="main",
                     source_model={
                         "source_name": "orders",
-                        "joins": [{"target_model": "kpi", "join_pairs": [["id", "kpi_id"]]}],
+                        # DEV-1853: the reverse hop is traversable now, so the
+                        # pair must name kpi's real exported column ("id" — the
+                        # old "kpi_id" was only a display label and was never
+                        # exercised while the hop was unreachable).
+                        "joins": [{"target_model": "kpi", "join_pairs": [["id", "id"]]}],
                     },
                     dimensions=["status"],
                     measures=[{"formula": "kpi._count:sum"}],
@@ -161,7 +165,11 @@ class TestStoredSourceQueriesTopoSort:
                     name="main",
                     source_model={
                         "source_name": "orders",
-                        "joins": [{"target_model": "kpi", "join_pairs": [["id", "kpi_id"]]}],
+                        # DEV-1853: the reverse hop is traversable now, so the
+                        # pair must name kpi's real exported column ("id" — the
+                        # old "kpi_id" was only a display label and was never
+                        # exercised while the hop was unreachable).
+                        "joins": [{"target_model": "kpi", "join_pairs": [["id", "id"]]}],
                     },
                     dimensions=["status"],
                     measures=[{"formula": "kpi._count:sum"}],

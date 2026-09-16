@@ -7,7 +7,7 @@ one targets exactly what PR 4 rewires and what PRs 5-6 will move next:
 * every ORDER BY render path the single resolver replaced — host base, the
   hidden-slot outer trim wrap, the combined cross-model SELECT, the windowed
   CTE, and the transform chain's outer wrap;
-* the host-grain (``grain="host"``) wrap in both directions, which is where a
+* the host-grain (``locus="host"``) wrap in both directions, which is where a
   regression would silently sort every group by one global value;
 * the re-rooted cross-model CTE with reachable / host-local / unreachable
   filters, since re-rooting is what PR 5 builds on;
@@ -139,6 +139,8 @@ def _cases() -> dict:
             ],
             filters=["customers.regions.name == 'Alpha'"],
         ),
+        # Both push into the producer by semi-join since DEV-1853 (ids kept
+        # stable; "unreachable" is historical — the inverted hop resolves now).
         "reroot/host_local_filter": _q(
             dimensions=["customers.regions.name"],
             measures=[
@@ -196,13 +198,18 @@ def _cases() -> dict:
                 {"formula": "consecutive_periods(amount:sum)", "name": "streak_b"},
             ],
         ),
+        # DEV-1795: two aggregates of one column in the base CTE surface in
+        # plan order, not hash-seed order (fixed by DEV-1839).
+        "chain/multi_agg_base_order": _q(
+            time_dimensions=_MONTH,
+            measures=[
+                {"formula": "cumsum(amount:sum)", "name": "c1"},
+                {"formula": "cumsum(amount:max)", "name": "c2"},
+            ],
+        ),
         # --- DEV-1777 A0: dependency-split step-CTE shapes (Codex finding 2). ---
         # A window over a window -> two dependent batches -> step1 then step2
         # (the dependency-split the extracted helper's ordering invariant guards).
-        # Single aggregate per case, so the base CTE has one column and the
-        # emitted SQL is deterministic across processes (multi-aggregate base
-        # column order is hash-seed dependent — see the _emit_step_cte unit test,
-        # which pins the multi-slot batch body deterministically instead).
         "chain/local_nested_window": _q(
             time_dimensions=_MONTH,
             measures=[{"formula": "cumsum(cumsum(amount:sum))", "name": "cc"}],
@@ -295,6 +302,10 @@ def test_reroot_cases_actually_reroot(baseline) -> None:
     for key, value in baseline.items():
         if not key.startswith("reroot/"):
             continue
+        # Population guard fail-closes the fanning-filter shape until DEV-1909.
+        if key.startswith("reroot/unreachable_filter::"):
+            assert isinstance(value, dict), f"{key} must stay fail-closed: {value}"
+            continue
         assert isinstance(value, str), f"{key} records an error, not SQL: {value}"
         assert "_cm_" in value, (
             f"{key} is a re-rooting case with no ``_cm_`` alias — it stopped "
@@ -312,6 +323,7 @@ _CHAIN_STEP_EXPECTATIONS: dict[str, dict[str, bool]] = {
     "chain/local_multi_step": {"step1": True, "step2": True},
     "chain/transform_two_names": {"step1": True, "step2": False},
     "chain/consecutive_periods_two_names": {"cp": True},
+    "chain/multi_agg_base_order": {"step1": True, "step2": False},
     "chain/local_consecutive_periods": {"cp": True},
     "chain/cross_model_window": {"step1": True, "step2": False},
     "chain/local_nested_window": {"step1": True, "step2": True},

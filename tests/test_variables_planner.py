@@ -1,6 +1,6 @@
 """Stage 7b.1 (DEV-1450) — variables substitution in the new pipeline.
 
-Pins the contract for ``slayer.engine.variables``:
+Pins the contract for ``slayer.ir.variables``:
 
 - ``merge_query_variables`` collapses the four variable layers into the
   effective dict that populates ``ResolvedSourceBundle.query_variables``.
@@ -22,12 +22,14 @@ import pytest
 
 from slayer.core.models import ModelMeasure
 from slayer.core.query import ColumnRef, SlayerQuery
-from slayer.engine.variables import (
+from slayer.ir.variables import (
     apply_variables_to_query,
     extract_placeholder_names,
     merge_query_variables,
     substitute_variables,
 )
+from slayer.core.query import substitute_variables as core_sv
+from slayer.core.query import extract_placeholder_names as core_epn
 
 
 class TestMergeQueryVariables:
@@ -398,11 +400,9 @@ class TestReExportsMatchCoreQuery:
     so callers can import either path."""
 
     def test_substitute_variables_is_core_query_re_export(self) -> None:
-        from slayer.core.query import substitute_variables as core_sv
 
         assert substitute_variables is core_sv
 
     def test_extract_placeholder_names_is_core_query_re_export(self) -> None:
-        from slayer.core.query import extract_placeholder_names as core_epn
 
         assert extract_placeholder_names is core_epn

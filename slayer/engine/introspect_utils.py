@@ -245,6 +245,34 @@ def _info_schema_columns_query(
     return sql + "ORDER BY ordinal_position", params
 
 
+_CLICKHOUSE_WRAPPER_NAMES = frozenset({"NULLABLE", "LOWCARDINALITY"})
+_CLICKHOUSE_WRAPPER_MAX_DEPTH = 8
+
+
+def unwrap_clickhouse_wrapper_str(db_type: str) -> str:
+    """Peel nested ``Nullable(...)``/``LowCardinality(...)`` wrapper text (string twin of the SA-level unwrap)."""
+    current = db_type.strip()
+    for _ in range(_CLICKHOUSE_WRAPPER_MAX_DEPTH):
+        head, sep, _rest = current.partition("(")
+        if not sep or head.strip().upper() not in _CLICKHOUSE_WRAPPER_NAMES or not current.endswith(")"):
+            return current
+        current = current[len(head) + 1 : -1].strip()
+    return current
+
+
+def is_exact_numeric_db_type(db_type: Optional[str]) -> bool:
+    """Whether a raw DB type string is exact-numeric (DECIMAL/NUMERIC family).
+
+    Containment on the pre-paren token covers DECIMAL, NUMERIC, ClickHouse
+    Decimal32/64/128/256 and BigQuery BIGNUMERIC. Wrapper strings
+    (``Nullable(...)``) deliberately don't match — unwrapping is the caller's job.
+    """
+    if not db_type:
+        return False
+    token = db_type.split("(")[0].upper().strip()
+    return "DECIMAL" in token or "NUMERIC" in token
+
+
 def _info_schema_type(data_type_str: str) -> tuple[DataType, bool]:
     """Map an INFORMATION_SCHEMA type string to ``(DataType, is_float)``.
 
@@ -257,7 +285,7 @@ def _info_schema_type(data_type_str: str) -> tuple[DataType, bool]:
     mapped = _INFO_SCHEMA_TYPE_MAP.get(base)
     if mapped is not None:
         return mapped, base in _FLOAT_LIKE_INFO_SCHEMA_TYPES
-    if "DECIMAL" in base or "NUMERIC" in base:
+    if is_exact_numeric_db_type(base):
         return DataType.DOUBLE, _parse_info_schema_is_float(data_type_str)
     if "DOUBLE" in base or "FLOAT" in base or "REAL" in base:
         # e.g. Postgres "DOUBLE PRECISION".
@@ -295,8 +323,12 @@ def _get_columns_fallback(
         rows = conn.execute(sa.text(sql), params).fetchall()
     result = []
     for col_name, data_type_str in rows:
-        sa_type, is_float = _info_schema_type(data_type_str)
-        result.append({"name": col_name, "type": sa_type, "is_float": is_float})
+        # ClickHouse metadata carries wrapper text (Nullable(...)); unwrap so
+        # type mapping and db_type capture see the inner type.
+        unwrapped = unwrap_clickhouse_wrapper_str(data_type_str) if data_type_str else data_type_str
+        sa_type, is_float = _info_schema_type(unwrapped)
+        db_type = unwrapped if is_exact_numeric_db_type(unwrapped) else None
+        result.append({"name": col_name, "type": sa_type, "is_float": is_float, "db_type": db_type})
     comments = _get_column_comments_fallback(
         sa_engine=sa_engine, table_name=table_name, ref=ref,
     )

@@ -22,7 +22,17 @@ pass.
 
 from __future__ import annotations
 
-from slayer.engine.schema_drift import _measure_formula_refs
+from types import SimpleNamespace
+
+from slayer.core.enums import DataType
+from slayer.core.models import Column, ModelJoin, SlayerModel
+from slayer.core.query import SlayerQuery
+from slayer.engine.schema_drift import (
+    _attribute_ref_to_base,
+    _build_stage_graph,
+    _filter_refs_dsl,
+    _measure_formula_refs,
+)
 from slayer.engine.syntax import (
     AggCall,
     DottedRef,
@@ -30,6 +40,65 @@ from slayer.engine.syntax import (
     parse_expr,
     walk_parsed_refs,
 )
+
+
+class TestStageGraphBidirectional:
+    """DEV-1853: the cascade graph and attribution traverse either direction."""
+
+    def test_reverse_edge_reachable_and_attributed(self) -> None:
+        orders = SlayerModel(
+            name="orders", data_source="ds", sql_table="orders",
+            columns=[
+                Column(name="id", type=DataType.INT, primary_key=True),
+                Column(name="customer_id", type=DataType.INT),
+                Column(name="amount", type=DataType.DOUBLE),
+            ],
+            joins=[ModelJoin(target_model="customers",
+                             join_pairs=[["customer_id", "id"]])],
+        )
+        customers = SlayerModel(
+            name="customers", data_source="ds", sql_table="customers",
+            columns=[Column(name="id", type=DataType.INT, primary_key=True)],
+        )
+        models = {"orders": orders, "customers": customers}
+        graph = _build_stage_graph(
+            stage=SlayerQuery(source_model="customers"),
+            stage_source_name="customers", models_by_name=models,
+        )
+        assert "orders" in graph.reachable
+        assert _attribute_ref_to_base(
+            ref="orders.amount", base_name="orders", graph=graph,
+        ) == "amount"
+
+    def test_named_extension_hop_attributes_by_name(self) -> None:
+        stage = SimpleNamespace(source_model=SimpleNamespace(joins=[
+            ModelJoin(target_model="customers",
+                      join_pairs=[["customer_id", "id"]], name="buyer"),
+        ]))
+        graph = _build_stage_graph(
+            stage=stage, stage_source_name="orders", models_by_name={},
+        )
+        assert _attribute_ref_to_base(
+            ref="buyer.name", base_name="customers", graph=graph,
+        ) == "name"
+
+    def test_parallel_extension_targets_unaddressable_by_bare_name(self) -> None:
+        stage = SimpleNamespace(source_model=SimpleNamespace(joins=[
+            ModelJoin(target_model="customers",
+                      join_pairs=[["b_id", "id"]], name="buyer"),
+            ModelJoin(target_model="customers",
+                      join_pairs=[["s_id", "id"]], name="seller"),
+        ]))
+        graph = _build_stage_graph(
+            stage=stage, stage_source_name="orders", models_by_name={},
+        )
+        assert _attribute_ref_to_base(
+            ref="seller.name", base_name="customers", graph=graph,
+        ) == "name"
+        # The bare target token is ambiguous across the pair — no attribution.
+        assert _attribute_ref_to_base(
+            ref="customers.name", base_name="customers", graph=graph,
+        ) is None
 
 
 class TestWalkParsedRefs:
@@ -228,4 +297,67 @@ class TestMeasureFormulaRefs:
         # (DEV-1450 C11).
         assert _measure_formula_refs("robot__details:sum") == {
             "robot__details"
+        }
+
+
+class TestFilterRefsDslParity:
+    """DEV-1833 parity suite pinned while migrating ``_filter_refs_dsl`` onto
+    ``parse_filter_expr`` (verified green on the legacy implementation first).
+    Set equality only: reference order is expression order."""
+
+    def test_colon_agg(self) -> None:
+        assert set(_filter_refs_dsl("revenue:sum > 100")) == {"revenue"}
+
+    def test_funcstyle_builtin_agg(self) -> None:
+        assert set(_filter_refs_dsl("sum(revenue) > 100")) == {"revenue"}
+
+    def test_colon_agg_alias(self) -> None:
+        assert set(_filter_refs_dsl("revenue:countd > 5")) == {"revenue"}
+
+    def test_colon_custom_agg(self) -> None:
+        assert set(_filter_refs_dsl("revenue:my_custom_agg > 5")) == {"revenue"}
+
+    def test_dotted_path(self) -> None:
+        assert set(_filter_refs_dsl("customers.regions.name == 'EU'")) == {
+            "customers.regions.name"
+        }
+
+    def test_dotted_colon_agg(self) -> None:
+        assert set(_filter_refs_dsl("customers.revenue:sum > 10")) == {
+            "customers.revenue"
+        }
+
+    def test_star_count_excluded(self) -> None:
+        assert set(_filter_refs_dsl("*:count > 3")) == set()
+
+    def test_like_filter(self) -> None:
+        assert set(_filter_refs_dsl("name LIKE 'a%'")) == {"name"}
+
+    def test_plain_columns(self) -> None:
+        assert set(_filter_refs_dsl("status == 'x' and amount > 5")) == {
+            "status",
+            "amount",
+        }
+
+    def test_agg_and_column_mixed(self) -> None:
+        assert set(_filter_refs_dsl("amount:sum > 100 and region == 'EU'")) == {
+            "amount",
+            "region",
+        }
+
+    def test_unparseable_returns_empty(self) -> None:
+        assert _filter_refs_dsl("this is (( not parseable") == []
+
+
+class TestFilterRefsDslMigrationGains:
+    """Refs only the migrated ``parse_filter_expr`` implementation surfaces
+    (DEV-1833); red until the migration lands."""
+
+    def test_funcstyle_custom_agg(self) -> None:
+        assert set(_filter_refs_dsl("my_custom_agg(revenue) > 5")) == {"revenue"}
+
+    def test_expression_agg_source(self) -> None:
+        assert set(_filter_refs_dsl("sum(amount - cost) > 0")) == {
+            "amount",
+            "cost",
         }

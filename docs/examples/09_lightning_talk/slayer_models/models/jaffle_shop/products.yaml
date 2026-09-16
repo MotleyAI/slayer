@@ -1,4 +1,4 @@
-version: 9
+version: 10
 name: products
 sql_table: products
 query_variables: {}

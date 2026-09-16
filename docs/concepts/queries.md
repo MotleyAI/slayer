@@ -7,7 +7,7 @@ A `SlayerQuery` specifies what data to retrieve from a model.
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `name` | string | No | Name for this query — used to reference it from other queries in a list |
-| `source_model` | string, SlayerModel, or ModelExtension | Yes | Source model name, inline model, or model extension (adds columns/measures/joins) |
+| `source_model` | string, SlayerModel, or ModelExtension | No | The population (query root): a model name, inline model, or model extension. Omit it to infer the population — see [Population](#population). |
 | `measures` | list[ModelMeasure] | No | Computed/aggregated values — formulas, arithmetic, transforms. Aggregations accept colon syntax (`revenue:sum`) and the equivalent functional spelling (`sum(revenue)`, incl. expressions like `sum(amount - cost)`) interchangeably — see [Formulas](formulas.md) and [Aggregation spelling equivalence](references.md#aggregation-spelling-equivalence). |
 | `dimensions` | list[str \| ColumnRef \| ComputedDimension] | No | Columns to group by — bare strings (`"status"`) or `{"name": "status"}` dicts, dotted names for joined models (`customers.name`), or `{"expression": …, "name": …}` for a [computed expression](#expression-dimensions). |
 | `time_dimensions` | list[TimeDimension] | No | Time dimensions with granularity |
@@ -18,7 +18,7 @@ A `SlayerQuery` specifies what data to retrieve from a model.
 | `limit` | int | No | Maximum rows to return |
 | `offset` | int | No | Number of rows to skip |
 | `whole_periods_only` | bool | No | Snap date filters to time bucket boundaries, exclude the current incomplete time bucket |
-| `strict` | bool | No | Fail instead of warn when a [cross-model measure broadcasts](#cross-model-measures) across an unattributable dimension or a filter is dropped from its producer. Default `false` (warn). |
+| `to_many_handling` | str | No | How an aggregate resolves query dimensions [unattributable from its root](#cross-model-measures): `broadcast` (default; repeat the safe-grain value across the cells and warn), `associate` (per-cell value over the distinct associated entities), or `error` (refuse). Semi-join-pushed filters are always applied and never error; the retired `strict` flag is rejected with this remedy. |
 
 You can pass a single query or a **list of queries** to `execute()`. When passing a list, earlier queries are named sub-queries that later queries can reference. The last query in the list is the main one whose results are returned. See [Query Lists](#query-lists) for examples.
 
@@ -74,9 +74,9 @@ crosses a threshold, then group by `(region, band)`:
   "source_model": "orders",
   "dimensions": [
     "region",
-    {"expression": "CASE WHEN sum(amount, partition_by=city) > 5000 THEN 1 ELSE 0 END", "name": "band"}
+    {"expression": "CASE WHEN amount:sum(partition_by=city) > 5000 THEN 1 ELSE 0 END", "name": "band"}
   ],
-  "measures": [{"formula": "sum(amount)", "name": "band_total"}]
+  "measures": [{"formula": "amount:sum", "name": "band_total"}]
 }
 ```
 
@@ -94,14 +94,14 @@ filter (`status == 'ok'`) also constrains the partition aggregate; a filter on
 the computed dimension name (`band == 1`) applies after regrouping.
 
 A dimension expression may band a windowed partitioned aggregate
-(`sum(amount, window='90d', partition_by=region)`), a `first` / `last`, or a
-transform over a grained aggregate — `rank(sum(revenue, partition_by=region))` as
+(`amount:sum(window='90d', partition_by=region)`), a `first` / `last`, or a
+transform over a grained aggregate — `rank(revenue:sum(partition_by=region))` as
 a DIMENSION ranks the partitions (it evaluates at the producer grain), whereas
 the same expression as a MEASURE ranks the result rows (query grain).
 
 An aggregation-derived dimension combines with transform measures: alongside
-`band` you can declare `time_shift(sum(amount), -1)`, `change` / `change_pct`,
-`cumsum`, `lag` / `lead`, `consecutive_periods(...)`, or `rank(sum(amount))`,
+`band` you can declare `time_shift(amount:sum, -1)`, `change` / `change_pct`,
+`cumsum`, `lag` / `lead`, `consecutive_periods(...)`, or `rank(amount:sum)`,
 with or without plain and `partition_by=` measures in the same query. Every
 transform treats the computed dimension as an ordinary grouping dimension (a
 running total accumulates within each `(region, band)` group; a time shift
@@ -109,10 +109,10 @@ compares each group only against itself).
 
 A transform over aggregates at **different** partition grains unions the grains
 and broadcasts each aggregate to the union —
-`rank(sum(amount, partition_by=region) - sum(amount, partition_by=city))` ranks
+`rank(amount:sum(partition_by=region) - amount:sum(partition_by=city))` ranks
 the `(region, city)` rows, each region
 total broadcast across its cities and each city total against its region. The
-same holds as a bare measure (`sum(a, partition_by=region) - sum(b, partition_by=city)`
+same holds as a bare measure (`a:sum(partition_by=region) - b:sum(partition_by=city)`
 evaluated at the query grain) and recursively for a nested transform, which
 accumulates within its **own** grain before broadcasting into the outer union.
 
@@ -121,15 +121,15 @@ compiles through the same target-rooted producer as a
 [cross-model measure](#cross-model-measures), with the same exact-grain vs
 broadcast semantics.
 
-Deferred shapes (raise a clear error citing the follow-up): a bare aggregate
-without `partition_by=`, an aggregate partitioned by another computed dimension
-(a nested attach), a computed dimension combined with a bare windowed
-(`window=` without `partition_by=`) or `first` / `last` measure, a
-**mixed-grain** transform any of whose inner aggregates is windowed or `first`
-/ `last` (its union would need the synthesized time bucket), and a time-ordered
-transform (`cumsum`, `lag`, …) whose evaluation grain lacks its time-ordering
-key — include that key in `partition_by=` so the transform accumulates within
-its own grain.
+An aggregate partitioned by another computed dimension — even one carrying an
+attached aggregate — compiles as a nested producer
+([re-aggregation](formulas.md#re-aggregation-aggregate-over-an-attached-value)).
+
+Ill-typed shapes (raise a clear error naming the remedy, by design): a bare
+aggregate without `partition_by=` — the ungrained default would include the
+dimension being defined — and a time-ordered transform (`cumsum`, `lag`, …)
+whose evaluation grain lacks its time-ordering key — include that key in
+`partition_by=` so the transform accumulates within its own grain.
 
 ### Dim-only queries deduplicate
 
@@ -185,45 +185,47 @@ A time dimension with a required granularity and an optional date range. Support
 
 `week` is Monday-anchored (ISO-8601); `week_sunday` is Sunday-anchored (weeks start Sunday, end Saturday) for tools that use Sunday weeks. Both are model granularities you set on a `TimeDimension` — `week_sunday` is the SLayer value, not a wire keyword sent by a BI tool.
 
+`date_range` must be exactly two non-null string bounds and filters inclusively (`[start, end]`); a one-sided range isn't expressible here, so use an explicit comparator filter (`"created_at >= '2024-01-01'"`) for an open-ended bound.
+
 `date_range` and an equivalent explicit filter (`"created_at >= '2024-01-01' and created_at <= '2024-12-31'"`) are interchangeable — including for trailing-window measures and `time_shift`, which still read rows from before the range so the earliest bucket isn't short-changed. See [Time bounds do not clip the window](formulas.md#time-bounds-do-not-clip-the-window) for exactly which predicates count as a time bound.
 
 ## OrderItem
 
-A sort specification: `column` names a dimension (`status`), a declared measure's short alias (`revenue_sum`), or a formula (`count(*)`); `direction` is `asc` or `desc`.
+A sort specification: `column` names a dimension (`status`), a declared measure's short alias (`revenue_sum`), or a formula (`*:count`); `direction` is `asc` or `desc`.
 
 ```json
-{"column": "count(*)", "direction": "desc"}
+{"column": "*:count", "direction": "desc"}
 ```
 
-Via MCP: `{"column": "count(*)", "direction": "desc"}`
+Via MCP: `{"column": "*:count", "direction": "desc"}`
 
 ### Ordering by something you don't project
 
 `order` may reference a column or aggregate that is **not** declared as a dimension/measure — the classic "top-N by metric X, display only Y, Z" pattern:
 
 ```json
-{"source_model": "orders", "dimensions": ["status"], "measures": [{"formula": "count(*)"}],
- "order": [{"column": "sum(amount)", "direction": "desc"}], "limit": 10}
+{"source_model": "orders", "dimensions": ["status"], "measures": [{"formula": "*:count"}],
+ "order": [{"column": "amount:sum", "direction": "desc"}], "limit": 10}
 ```
 
-The `sum(amount)` aggregate is computed as a hidden column, sorted on, and **stripped from the result** — the response projects only `status` and `_count`. This works for local aggregates, cross-model aggregates (`sum(customers.revenue)`), and inner-stage columns re-aggregated in a later DAG stage (`max(customers__revenue_sum)`).
+The `amount:sum` aggregate is computed as a hidden column, sorted on, and **stripped from the result** — the response projects only `status` and `_count`. This works for local aggregates, cross-model aggregates (`customers.revenue:sum`), and inner-stage columns re-aggregated in a later DAG stage (`customers__revenue_sum:max`).
 
 What each shape of an *undeclared* order target does:
 
 | Order target | Behavior |
 | --- | --- |
-| An aggregate (`sum(amount)`, `sum(customers.revenue)`) | Computed hidden, sorted on, stripped from the result. Always allowed. |
-| An inline **transform** (`rank(sum(amount))`, `cumsum(...)`, `change(...)`, `lag`/`lead`/`ntile`) | Computed hidden, sorted on, stripped. |
-| An inline **composite** (`sum(revenue) / sum(cnt)`, `abs(sum(amount))`, `change(sum(amount)) / 2`) | Computed hidden, sorted on, stripped. |
-| A **windowed** aggregate (`sum(amount, window='90d')`), alone or inside a composite | Computed hidden in its own rolling-window CTE, sorted on, stripped. |
+| An aggregate (`amount:sum`, `customers.revenue:sum`) | Computed hidden, sorted on, stripped from the result. Always allowed. |
+| An inline **transform** (`rank(amount:sum)`, `cumsum(...)`, `change(...)`, `lag`/`lead`/`ntile`) | Computed hidden, sorted on, stripped. |
+| An inline **composite** (`revenue:sum / cnt:sum`, `abs(amount:sum)`, `change(amount:sum) / 2`) | Computed hidden, sorted on, stripped. |
+| A **windowed** aggregate (`amount:sum(window='90d')`), alone or inside a composite | Computed hidden in its own rolling-window CTE, sorted on, stripped. |
 | A raw row column, in a **raw-rows** query (`distinct_dimension_values: false`, no measures) | Sorted on directly (`ORDER BY orders.created_at`). Applies to a **joined** column (`customers.regions.name`) and to a derived column whose `sql` reaches through a join — the join is pulled in for the sort. |
-| A raw row column, in an **aggregated / dedup** query | Sorted on **per group**: ASC by each group's minimum, DESC by each group's maximum. The wrap is implicit — you do not write `min(created_at)`. |
+| A raw row column, in an **aggregated / dedup** query | Sorted on **per group**: ASC by each group's minimum, DESC by each group's maximum. The wrap is implicit — you do not write `created_at:min`. |
 | A **joined** row column (`customers.regions.name`) in an aggregated query | Same per-group wrap, computed in a CTE rooted at the source model with the join pulled inside, so each group gets its own extreme rather than one global value. |
 
 Ordering by an undeclared row column in a grouped query is **not** the same as
 ordering by the column itself — there is no single value per group to sort by.
 SLayer picks the extreme the direction puts first: `asc` sorts each group by its
-`min`, `desc` by its `max`. Write `{"column": "max(created_at)", "direction": "asc"}`
+`min`, `desc` by its `max`. Write `{"column": "created_at:max", "direction": "asc"}`
 explicitly if you want the other one.
 
 NULLs sort **last** in both directions, on every database, so the same query
@@ -235,15 +237,15 @@ An order target that names nothing SLayer can resolve is an error, never a
 silently unsorted result.
 
 Transform and composite order targets accept the full formula syntax, so
-`{"column": "sum(revenue) / sum(cnt)"}` and `{"column": "change(sum(revenue))"}` both
+`{"column": "revenue:sum / cnt:sum"}` and `{"column": "change(revenue:sum)"}` both
 work without declaring a measure. One limit: the operands must be written as
 formulas, not as the *names* of measures you declared in the same query —
 `{"column": "rev / cnt"}` is rejected at validation, because referencing a
 declared measure by its alias inside an expression is not supported anywhere in
-SLayer. Write `{"column": "sum(revenue) / sum(cnt)"}` instead.
+SLayer. Write `{"column": "revenue:sum / cnt:sum"}` instead.
 
 A windowed measure inside a **declared** composite measure
-(`{"formula": "sum(revenue, window='90d') / sum(cnt)"}`), and any combination of a
+(`{"formula": "revenue:sum(window='90d') / cnt:sum"}`), and any combination of a
 windowed measure with a transform, are still rejected — see
 [formulas](formulas.md#windowed-sum-and-average).
 
@@ -258,7 +260,7 @@ Query results are returned as a `SlayerResponse`:
 | `row_count` | int | Number of rows |
 | `sql` | string | The generated SQL (useful for debugging) |
 | `attributes` | ResponseAttributes | Field metadata split by type: `attributes.dimensions` and `attributes.measures`, each a dict of column alias → FieldMetadata (label, format) |
-| `warnings` | list[SlayerWarning] | Advisories, discriminated by `kind`: input normalizations (`"normalization"`), a [cross-model measure broadcast](#cross-model-measures) (`"broadcast"` — `measure`, `location`, and per-dimension `dimensions[].reason`), a filter dropped from a cross-model producer (`"unreachable_filter_dropped"` — `filter_text`, `location`, `reason`) |
+| `warnings` | list[SlayerWarning] | Advisories, discriminated by `kind`: input normalizations (`"normalization"`), a [cross-model measure broadcast](#cross-model-measures) (`"broadcast"` — `measure`, `location`, and per-dimension `dimensions[].reason`), a distinct-entity attribution over an unattributable dimension (`"associated"` — `measure`, `location`, `dimensions`; cells overlap and are not additive), a filter dropped from a cross-model producer (`"unreachable_filter_dropped"` — `filter_text`, `location`, `reason`), and a semi-join-pushed filter (`"semi_join_pushed"` — `measure`, `location`, `filter_text`) |
 
 `columns` — and the key order of each row in `data` — follows the order you
 declared fields in the query: dimensions, then time dimensions, then measures,
@@ -330,6 +332,19 @@ Use `and`, `or`, `not` within a single filter string:
 
 Multiple entries in the `filters` list are combined with AND.
 
+### Field vs measure filters
+
+Each filter conjunct (a top-level `and` splits) types as either a **field**
+(aggregate-free — masks rows before aggregation, so every measure sees only
+passing rows) or a **measure** (any expression legal as a measure in the same
+query, including partitioned, windowed, and cross-model aggregates — evaluated
+at query grain, it prunes result rows without changing surviving values). An
+expression valid as both (a plain dimension) is a field; one valid as neither
+— e.g. an `or` mixing an aggregate with a row column that isn't a query
+dimension — fails with an error naming both failed typings. The same typing
+applies to `order` targets, so anything you can measure you can filter or sort
+by.
+
 ### Scalar Functions in Filters
 
 Filters in `SlayerQuery.filters` accept the closed Mode-B scalar
@@ -366,13 +381,13 @@ Filters can reference names of computed measures — transforms and arithmetic e
 
 When a query measure is renamed via `{"formula": "col:agg", "name": "alias"}`, the filter in the same node may reference EITHER form — the raw colon formula `col:agg` OR the user alias `alias`. Both resolve to the user alias, and a colon-form filter is classified as HAVING on the underlying aggregate. Renaming never changes the legal filter form. Two enrichment-time validations apply: (1) a query measure `name` that collides with a source column on the source model is rejected (alias-form filters would otherwise silently bind to the source column); (2) a rename whose canonical alias literally shadows a source column on the same model is also rejected (the colon-form filter would otherwise be ambiguous).
 
-Renaming also works for *cross-model* aggregated measures (`{"formula": "customers.revenue:sum", "name": "cust_rev"}`). Only the canonical leaf of the dotted path swaps to the user name; the hop path is preserved — same dot-syntax shape every other multi-hop caller-facing key uses. The result-column key becomes `orders.customers.cust_rev` (one-hop) or `orders.customers.regions.region_pop` (multi-hop). In any *downstream* stage of a `query_nested` DAG, the column is exposed under the BARE user name — type `cust_rev:max` (or `region_pop:max`) in stage 2 to consume the value, not the dotted hop-path form. Filters referencing a renamed cross-model measure in the SAME stage resolve in both forms — the bare user alias (`filters=["cust_rev > 100"]`) and the raw colon form (`"customers.revenue:sum > 100"`) — and restrict the result rows on the attached value, as does ORDER BY via the bare user alias (`order=[{"column": "cust_rev"}]`).
+Renaming also works for *cross-model* aggregated measures (`{"formula": "customers.revenue:sum", "name": "cust_rev"}`). Only the canonical leaf of the dotted path swaps to the user name; the hop path is preserved — same dot-syntax shape every other multi-hop caller-facing key uses. The result-column key becomes `orders.customers.cust_rev` (one-hop) or `orders.customers.regions.region_pop` (multi-hop). In any *downstream* stage of a multi-stage query list, the column is exposed under the BARE user name — type `cust_rev:max` (or `region_pop:max`) in stage 2 to consume the value, not the dotted hop-path form. Filters referencing a renamed cross-model measure in the SAME stage resolve in both forms — the bare user alias (`filters=["cust_rev > 100"]`) and the raw colon form (`"customers.revenue:sum > 100"`) — and restrict the result rows on the attached value, as does ORDER BY via the bare user alias (`order=[{"column": "cust_rev"}]`).
 
 ```json
 {
   "measures": [
-    "sum(revenue)",
-    {"formula": "change(sum(revenue))", "name": "rev_change"}
+    "revenue:sum",
+    {"formula": "change(revenue:sum)", "name": "rev_change"}
   ],
   "filters": ["rev_change < 0"]
 }
@@ -382,7 +397,7 @@ Transform expressions can also be used **directly in filters** without defining 
 
 ```json
 {
-  "filters": ["last(change(sum(revenue))) < 0"]
+  "filters": ["last(change(revenue:sum)) < 0"]
 }
 ```
 
@@ -390,7 +405,7 @@ Post-filters can be combined with regular filters — base filters (on dimension
 
 ```json
 {
-  "filters": ["status = 'completed'", "change(sum(revenue)) > 0"]
+  "filters": ["status = 'completed'", "change(revenue:sum) > 0"]
 }
 ```
 
@@ -403,6 +418,8 @@ Filters can reference columns from joined models, and the planner adds the impli
 - Bare-named local derived columns whose own SQL crosses a join: e.g. a query column with `Column(name="is_eu", sql="CASE WHEN customers.region = 'EU' THEN 1 ELSE 0 END")` referenced as `"filters": ["is_eu = 1"]`. The planner walks the column's `sql` (recursively, through any local derived-column chain) to find the cross-table aliases and adds the corresponding joins.
 
 The same auto-join logic applies to model-level `filters` (always-applied WHERE) and to column-level `filter=` attributes (CASE-WHEN at aggregation time).
+
+A query filter that reaches the population root only across a fanning (not provably to-one) hop cannot be combined with an aggregate computed inline over that population — the query fails closed with a typed error rather than multiplying the aggregate's rows through the join.
 
 ### Window functions in filters
 
@@ -424,7 +441,7 @@ Filters support `{variable_name}` placeholders, substituted from the query's `va
 ```json
 {
   "source_model": "orders",
-  "measures": ["count(*)"],
+  "measures": ["*:count"],
   "filters": ["status = '{status}' AND amount > {min_amount}"],
   "variables": {"status": "completed", "min_amount": 100}
 }
@@ -439,7 +456,7 @@ This produces the filter `status = 'completed' AND amount > 100`.
     ```json
     {
       "source_model": "orders",
-      "measures": ["count(*)"],
+      "measures": ["*:count"],
       "filters": ["region in ({regions})"],
       "variables": {"regions": ["US", "CA"]}
     }
@@ -471,7 +488,7 @@ slayer query monthly_revenue --variables region=EU
 
 ```json
 // REST POST /query
-{"source_model": "orders", "measures": [{"formula": "count(*)"}], "variables": {"region": "EU"}}
+{"source_model": "orders", "measures": [{"formula": "*:count"}], "variables": {"region": "EU"}}
 {"name": "monthly_revenue", "variables": {"region": "EU"}}  // run-by-name
 ```
 
@@ -498,22 +515,36 @@ REST equivalent: `POST /query` with `{"name": "<model>", "variables": {...}}`. R
 
 CLI equivalent: `slayer query <model_name> [--variables k=v ...] [--dry-run] [--explain]` — when the positional argument doesn't look like JSON (doesn't start with `{` or `[`) and isn't a `@file` reference, it's interpreted as a model name.
 
-MCP equivalent: `query(source_model="<model>", variables={...}, dry_run=True/False, explain=True/False)` — when only `source_model` (and optional flags) is supplied, the call dispatches through the run-by-name shortcut.
+MCP equivalent: `query(query="<model>", variables={...}, dry_run=True/False, explain=True/False)` — a bare model-name string is run-by-name execution (a non-query-backed name raises the same error as `execute(str)`).
 
 ---
 
+## Population
+
+`source_model` declares the query's **population** — the model whose rows the result is quantified over (one result row per distinct combination of its dimensions). It is optional: omit it and the population is inferred as the smallest dataset (fewest join hops) that **determines every queried dimension** along provably to-one join paths, read from the dimensions and field-typed (aggregate-free) filters **only — never measures**. Adding or removing a measure therefore never changes which rows come back.
+
+```json
+{"dimensions": ["customers.region"], "measures": [{"formula": "orders.amount:sum"}]}
+```
+
+infers population `customers` (one row per region present among customers, order totals attached, NULL where a region has no orders) — not "regions that happen to have orders". The Python client and REST responses always carry the effective population as `population` and whether it was inferred as `population_inferred`; MCP output reports them only when the population was inferred.
+
+Inference fails closed with a `PopulationInferenceError` naming the candidates when no single model determines everything, several minimal candidates tie, a dimension's join path is ambiguous, or the referenced models don't scope to exactly one datasource. Name `source_model` explicitly (any model — including a bridge that owns none of the queried items) to override inference.
+
+Inference is routing-aware: a short-form cross-model dimension (bare `regions.name`) is probed per candidate through the same auto-routing binding applies, so it infers the same population as its full dotted path (`customers.regions.name`) — or fails closed identically.
+
 ## Choosing a root model
 
-When you know the columns and metrics you want but not which model to use as `source_model`, `recommend_root_model` introspects the join graph and picks it for you. Give it the `model.column` / `model.metric` items (aggregation suffixes allowed) and it returns the recommended root plus each item's join-qualified reference path from that root — ready to paste into a query.
+`recommend_root_model` is the explain surface for the population rule: give it the `model.column` / `model.metric` items you want (aggregation suffixes allowed) and it returns the population it would pick plus each item's join-qualified reference path from it — ready to paste into a query.
 
 ```python
 rec = engine.recommend_root_model_sync(["customers.name", "products.category"])
-rec.root_model          # "orders"  (the bridge model that reaches both)
+rec.root_model          # "orders"  (the only model that determines both to-one)
 {ip.input_item: ip.path for ip in rec.item_paths}
 # {"customers.name": "customers.name", "products.category": "products.category"}
 ```
 
-A root is valid when every requested item is reachable from it over the join graph — LEFT joins are directional (source → target), INNER joins traverse both ways. Among valid roots, the one with the fewest total join hops wins. Root-owned items come back as a bare leaf (`status`); joined items as a dotted path (`customers.regions.name`); aggregation suffixes are preserved (`sum(revenue)`).
+A root is valid when it **determines** every requested column along provably to-one join paths; saved measures and aggregation-suffixed items are attachments that only need to be reachable and never steer the choice (each `ItemPath` flags `attachment`). Among valid roots, the one with the fewest total join hops wins — the same rule as population inference, so the two surfaces cannot disagree. Root-owned items come back as a bare leaf (`status`); joined items as a dotted path (`customers.regions.name`); aggregation suffixes are preserved (`revenue:sum`).
 
 When no single model reaches everything, `root_model` is `None`, `reachable` is `False`, and `coverage` lists the best partial roots (each with its reachable / unreachable items) so you can split the request into a multi-stage [`source_queries`](models.md#query-backed-models) query.
 
@@ -528,7 +559,7 @@ rec = engine.recommend_root_model_sync(
 rec.root_model   # "orders"  (honored — it reaches both, overriding the closer auto-pick)
 ```
 
-When the hint reaches every item it's honored outright, overriding the fewest-hops pick. When it can't reach everything, the auto-pick is used instead and `warnings` explains which owning models the hint missed and which root was chosen. If no model reaches everything (`reachable` is `False`), the hint's own row is included in `coverage` too, so you can see exactly what it reaches. `root_hint` is resolved after the datasource is fixed from the items, so it names a model *within* that datasource — it can't choose the datasource. A hint that isn't a model in the resolved datasource raises.
+When the hint determines every item it's honored outright, overriding the fewest-hops pick. When it can't, the auto-pick is used instead and `warnings` explains which owning models the hint missed and which root was chosen. If no model reaches everything (`reachable` is `False`), the hint's own row is included in `coverage` too, so you can see exactly what it reaches. `root_hint` is resolved after the datasource is fixed from the items, so it names a model *within* that datasource — it can't choose the datasource. A hint that isn't a model in the resolved datasource raises.
 
 Surfaces: MCP `recommend_root_model(items, data_source=None, root_hint=None, format="markdown")`, REST `POST /recommend-root-model` (`{"items": [...], "data_source": null, "root_hint": null}`), CLI `slayer recommend-root-model ITEM... [--data-source X] [--root-hint M] [--format json|text]`, and `SlayerClient.recommend_root_model(_sync)`. The optional `data_source` scopes name resolution to one datasource; all items must resolve to a single datasource.
 
@@ -541,7 +572,7 @@ Surfaces: MCP `recommend_root_model(items, data_source=None, root_hint=None, for
 ```json
 {
   "source_model": "orders",
-  "measures": ["count(*)"],
+  "measures": ["*:count"],
   "dimensions": ["status"]
 }
 ```
@@ -551,7 +582,7 @@ Surfaces: MCP `recommend_root_model(items, data_source=None, root_hint=None, for
 ```json
 {
   "source_model": "orders",
-  "measures": ["sum(revenue)"],
+  "measures": ["revenue:sum"],
   "time_dimensions": [{
     "dimension": "created_at",
     "granularity": "month",
@@ -565,9 +596,9 @@ Surfaces: MCP `recommend_root_model(items, data_source=None, root_hint=None, for
 ```json
 {
   "source_model": "orders",
-  "measures": ["sum(revenue)"],
+  "measures": ["revenue:sum"],
   "dimensions": ["customer_name"],
-  "order": [{"column": "sum(revenue)", "direction": "desc"}],
+  "order": [{"column": "revenue:sum", "direction": "desc"}],
   "limit": 5
 }
 ```
@@ -577,7 +608,7 @@ Surfaces: MCP `recommend_root_model(items, data_source=None, root_hint=None, for
 ```json
 {
   "source_model": "orders",
-  "measures": ["count(*)"],
+  "measures": ["*:count"],
   "filters": ["status = 'completed' or status = 'pending'"]
 }
 ```
@@ -588,11 +619,11 @@ Surfaces: MCP `recommend_root_model(items, data_source=None, root_hint=None, for
 {
   "source_model": "orders",
   "measures": [
-    "count(*)",
-    "sum(revenue)",
-    {"formula": "sum(revenue) / count(*)", "name": "aov", "label": "Average Order Value"},
-    {"formula": "cumsum(sum(revenue))", "name": "running"},
-    {"formula": "change(sum(revenue))", "name": "mom_change"}
+    "*:count",
+    "revenue:sum",
+    {"formula": "revenue:sum / *:count", "name": "aov", "label": "Average Order Value"},
+    {"formula": "cumsum(revenue:sum)", "name": "running"},
+    {"formula": "change(revenue:sum)", "name": "mom_change"}
   ],
   "time_dimensions": [{"dimension": "created_at", "granularity": "month"}]
 }
@@ -606,10 +637,10 @@ The `stddev_samp`, `stddev_pop`, `var_samp`, `var_pop`, `corr`, `covar_samp`, an
 {
   "source_model": "orders",
   "measures": [
-    {"formula": "stddev_samp(latency)", "name": "latency_sd"},
-    {"formula": "var_pop(latency)", "name": "latency_var_pop"},
-    {"formula": "corr(price, other=quantity)", "name": "price_qty_corr"},
-    {"formula": "covar_samp(price, other=quantity)", "name": "price_qty_cov"}
+    {"formula": "latency:stddev_samp", "name": "latency_sd"},
+    {"formula": "latency:var_pop", "name": "latency_var_pop"},
+    {"formula": "price:corr(other=quantity)", "name": "price_qty_corr"},
+    {"formula": "price:covar_samp(other=quantity)", "name": "price_qty_cov"}
   ],
   "dimensions": [{"name": "status"}]
 }
@@ -633,9 +664,9 @@ percent-of-total shape. See [Formulas](formulas.md#aggregate-at-a-coarser-grain-
   "source_model": "orders",
   "dimensions": [{"name": "region"}, {"name": "city"}],
   "measures": [
-    {"formula": "sum(revenue)", "name": "city_rev"},
-    {"formula": "sum(revenue) / sum(revenue, partition_by=region)", "name": "share_of_region"},
-    {"formula": "sum(revenue) / sum(revenue, partition_by=[])", "name": "share_of_total"}
+    {"formula": "revenue:sum", "name": "city_rev"},
+    {"formula": "revenue:sum / revenue:sum(partition_by=region)", "name": "share_of_region"},
+    {"formula": "revenue:sum / revenue:sum(partition_by=[])", "name": "share_of_total"}
   ]
 }
 ```
@@ -654,8 +685,8 @@ When models have [joins](models.md#joins), you can reference measures from joine
 {
   "source_model": "orders",
   "measures": [
-    "count(*)",
-    "avg(customers.score)"
+    "*:count",
+    "customers.score:avg"
   ],
   "time_dimensions": [{"dimension": "created_at", "granularity": "month"}]
 }
@@ -672,19 +703,45 @@ provably many-to-one (a primary key on the far side, or a declared
 [join `cardinality`](models.md#join-cardinality)). Each remaining dimension gets
 the **broadcast** value (the total over the safe grain, repeated across that
 dimension), and the response carries a `warnings` entry (`kind: "broadcast"`)
-naming the metric and each broadcast dimension with the reason. Likewise, a
-query filter that the sub-query cannot evaluate from its root is applied only to
-the local measures and reported as `kind: "unreachable_filter_dropped"`. Declare
-the missing join cardinality (or primary key) to make such a dimension exact.
-Set `"strict": true` on the query to turn both conditions into errors instead of
-warnings.
+naming the metric and each broadcast dimension with the reason. Declare the
+missing join cardinality (or primary key) to make such a dimension exact.
 
-A filter **on** the cross-model value itself (`"avg(customers.score) > 4"`)
+Query **filters** still restrict the metric: a conjunct the sub-query can only
+reach across an unproven hop is pushed down as a correlated `EXISTS` semi-join —
+the metric counts exactly the target rows related to at least one row passing
+the filter (each row once, never multiplied through the join), surfaced as an
+informational `kind: "semi_join_pushed"` entry in `.warnings` (never an error,
+in any mode). The correlation path resolves through the same
+[bidirectional traversal](models.md#bidirectional-traversal) as every other hop
+— no declared reverse join is needed, and a hop spanned by two or more edges
+fails the whole query with the ambiguous-hop error (in every mode) rather than
+guessing. Only a filter with no resolvable path from the
+sub-query's root (or one mixing local and joined references under `OR`/`NOT`)
+is excluded: it still applies to the local measures and is reported as
+`kind: "unreachable_filter_dropped"`. On ClickHouse the semi-join needs server
+≥ 25.4 (the required setting is attached automatically); older servers fail
+with a clear error.
+
+`to_many_handling` chooses how a broadcast dimension resolves — `broadcast` (the
+default above), `associate` (each cell aggregates over the distinct entities
+associated with it, warned as `kind: "associated"` because the cells overlap and
+are not additive), or `error` (refuse) — where a stored query's retired
+`strict: true` migrates to `error` (fresh input carrying `strict` is rejected),
+and a semi-join-pushed filter is applied, never erroring, in every mode.
+Example: `{"source_model": "orders", "dimensions": ["status"], "measures": [{"formula": "customers.spend:sum"}], "to_many_handling": "associate"}`.
+
+`associate` resolves only *eligible* aggregates — a plain scalar aggregate whose root declares a unique key; an unsupported combination (`window=`/`first`/`last`, a root without a unique key, or an input crossing an unproven hop) returns a typed error rather than a value, so `associate` does not turn every broadcast case exact. An attached (aggregate-valued) parameter the entity grain determines (`customers.spend:weighted_avg(weight=sum(amount, partition_by=customers.regions.name))`) is lifted under `associate`; under `broadcast` an attached input must read only columns attributable from the aggregate's root, otherwise a typed error names the `associate` remedy.
+
+Every input of an aggregate — its source, arguments (`weight=`), definition defaults, and its column-level `filter=` — is traced recursively through derived-column definitions, and an input whose expansion crosses a fanning (not provably to-one) hop fails closed with a typed error instead of silently multiplying rows.
+
+A filter **on** the cross-model value itself (`"customers.score:avg > 4"`)
 restricts the result rows, uniformly with local aggregate filters — groups that
 fail the predicate are dropped, not returned with `NULL`.
 
-Cross-model aggregates also work with `window=`, `partition_by=`, `first` /
-`last`, inside [dimension expressions](#expression-dimensions), and as hidden
+Cross-model aggregates also support `window=`, `partition_by=`, and `first` /
+`last` when associate-mode resolution is not required (an aggregate that needs
+association cannot use `window=` or `first` / `last`), inside
+[dimension expressions](#expression-dimensions), and as hidden
 [order-only fields](#ordering-by-something-you-dont-project).
 
 A cross-model **parametric** aggregate keeps its kwarg signature in the result key, so two variants on the same target column do not collide:
@@ -694,13 +751,13 @@ A cross-model **parametric** aggregate keeps its kwarg signature in the result k
   "source_model": "orders",
   "dimensions": ["customers.region"],
   "measures": [
-    "percentile(customers.revenue, p=0.5)",
-    "percentile(customers.revenue, p=0.95)"
+    "customers.revenue:percentile(p=0.5)",
+    "customers.revenue:percentile(p=0.95)"
   ]
 }
 ```
 
-surfaces two distinct result keys — `orders.customers.revenue_percentile_p_0_5` and `orders.customers.revenue_percentile_p_0_95`. (A non-parametric `sum(customers.revenue)` surfaces as `orders.customers.revenue_sum`.)
+surfaces two distinct result keys — `orders.customers.revenue_percentile_p_0_5` and `orders.customers.revenue_percentile_p_0_95`. (A non-parametric `customers.revenue:sum` surfaces as `orders.customers.revenue_sum`.)
 
 ### Query lists
 
@@ -711,12 +768,12 @@ Pass a list of queries to `execute()`. Earlier queries are named sub-queries, th
   {
     "name": "monthly",
     "source_model": "orders",
-    "measures": ["count(*)", "sum(amount)"],
+    "measures": ["*:count", "amount:sum"],
     "time_dimensions": [{"dimension": "created_at", "granularity": "month"}]
   },
   {
     "source_model": "monthly",
-    "measures": ["count(*)"]
+    "measures": ["*:count"]
   }
 ]
 ```
@@ -731,11 +788,11 @@ You can also join named queries to models:
     "name": "customer_scores",
     "source_model": "customers",
     "dimensions": ["id"],
-    "measures": ["avg(score)"]
+    "measures": ["score:avg"]
   },
   {
     "source_model": {"source_name": "orders", "joins": [{"target_model": "customer_scores", "join_pairs": [["customer_id", "id"]]}]},
-    "measures": ["count(*)", "avg(customer_scores.score_avg)"],
+    "measures": ["*:count", "customer_scores.score_avg:avg"],
     "time_dimensions": [{"dimension": "created_at", "granularity": "month"}]
   }
 ]
@@ -751,17 +808,17 @@ Sibling stages can also reference each other — any non-final stage may use a *
     "name": "customer_scores",
     "source_model": "customers",
     "dimensions": ["id"],
-    "measures": ["avg(score)"]
+    "measures": ["score:avg"]
   },
   {
     "name": "tagged_orders",
     "source_model": {"source_name": "orders", "joins": [{"target_model": "customer_scores", "join_pairs": [["customer_id", "id"]]}]},
     "dimensions": ["customer_scores.score_avg"],
-    "measures": ["count(*)"]
+    "measures": ["*:count"]
   },
   {
     "source_model": "tagged_orders",
-    "measures": ["max(_count)"]
+    "measures": ["_count:max"]
   }
 ]
 ```
@@ -774,10 +831,8 @@ Sibling stages can also reference each other — any non-final stage may use a *
 
 - Python SDK: `engine.execute(query=[...])` and `SlayerClient.query`/`query_sync`/`sql`/`sql_sync`/`explain`/`explain_sync`/`query_df` all accept `SlayerQuery | dict | list[SlayerQuery | dict] | str` (str = run-by-name).
 - CLI: `slayer query @file.json` — accepts both a single object and a top-level list.
-- MCP: the `query_nested` tool, `queries=[...]` argument.
+- MCP: the `query` tool with `query=[...]` (a list of stage objects); the same tool also accepts a model name or a single query object.
 - REST: `POST /query` with body `{"queries": [...], "variables": {...}, "dry_run": ..., "explain": ...}` (the single-query body shape is also still accepted).
-
-The single-stage MCP tool `query` stays single-query only — use it when the typed per-field schema fits a one-shot query; reach for `query_nested` for multi-stage.
 
 ### ModelExtension
 
@@ -791,7 +846,7 @@ Extend a model inline with extra columns, measures, or joins — without modifyi
     "joins": [{"target_model": "customer_scores", "join_pairs": [["customer_id", "id"]]}]
   },
   "dimensions": ["tier"],
-  "measures": ["count(*)"]
+  "measures": ["*:count"]
 }
 ```
 
@@ -805,7 +860,7 @@ Dimensions from joined models can be referenced with dotted paths. SLayer auto-r
 {
   "source_model": "orders",
   "dimensions": ["customers.regions.name"],
-  "measures": ["count(*)"]
+  "measures": ["*:count"]
 }
 ```
 

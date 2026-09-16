@@ -20,9 +20,18 @@ from __future__ import annotations
 
 import re
 
-from slayer.core.formula import ALL_TRANSFORMS, ParsedFilter
+from pydantic import BaseModel, Field
+
+from slayer.core.formula import ALL_TRANSFORMS
 from slayer.core.refs import AGG_REF_RE
 from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
+
+
+class ParsedFilter(BaseModel):
+    """A validated SQL-mode predicate ready for SQL generation."""
+    sql: str = Field(description="SQL WHERE condition, e.g. \"status = 'completed'\"")
+    columns: list[str] = Field(description="Column names referenced in the filter")
+
 
 _STRING_LITERAL_RE = re.compile(r"'(?:[^'\\]|\\.)*'")
 
@@ -62,7 +71,7 @@ def _reject_dsl_constructs(formula: str) -> None:
 def _bare_column_refs(formula: str) -> list[str]:
     """Best-effort extraction of column-like identifiers from a SQL-mode
     predicate. The render-time join-detection use was superseded by structured
-    extraction (``column_filter_paths``) and the Mode-A door; this now serves
+    extraction (``reference_closure``) and the Mode-A door; this now serves
     only VALIDATION — the model-filter measure/windowed-column rejection in
     ``stage_planner`` and the ``schema_drift`` check. Skips string literals,
     then walks tokens that look like identifiers

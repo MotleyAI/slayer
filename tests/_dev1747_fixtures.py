@@ -35,6 +35,7 @@ from sqlglot import exp
 from slayer.core.enums import DataType
 from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.ir.source_bundle import ResolvedSourceBundle
 
 from tests._engine_helpers import make_seeded_sqlite_engine
 
@@ -190,6 +191,11 @@ def _orders_model(*, data_source: str = "test") -> SlayerModel:
         columns=[
             Column(name="id", type=DataType.INT, primary_key=True),
             Column(name="customer_id", type=DataType.INT),
+            # Kept as a plain column; its second edge onto customers is gone —
+            # DEV-1853 makes parallel edges fail closed in BOTH directions, so
+            # host-local filters now push down by semi-join over the inverted
+            # edge instead of dropping (divergences.md class (c)/(d)).
+            Column(name="billed_customer_id", type=DataType.INT),
             Column(name="status", type=DataType.TEXT),
             Column(name="created_at", type=DataType.TIMESTAMP),
             Column(name="amount", type=DataType.DOUBLE),
@@ -237,8 +243,6 @@ def dev1747_bundle():
     through the engine — §5.10's contract is that the PLAN carries the order
     scope/phase/nulls, so it has to be assertable without rendering.
     """
-    from slayer.engine.source_bundle import ResolvedSourceBundle
-
     models = dev1747_models()
     return ResolvedSourceBundle(
         source_model=models[0], referenced_models=models[1:],

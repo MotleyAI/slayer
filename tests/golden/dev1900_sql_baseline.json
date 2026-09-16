@@ -1,0 +1,191 @@
+{
+  "fanning/cross_model_kwarg::bigquery": {
+    "error": "ValueError",
+    "message": "Cross-model aggregate 'customers.spend_weighted_avg_weight_customers_regions_bad_pop' reads an input across an unproven join hop to region_events from customers; declare join cardinality or a covering unique key on the target."
+  },
+  "fanning/cross_model_kwarg::duckdb": {
+    "error": "ValueError",
+    "message": "Cross-model aggregate 'customers.spend_weighted_avg_weight_customers_regions_bad_pop' reads an input across an unproven join hop to region_events from customers; declare join cardinality or a covering unique key on the target."
+  },
+  "fanning/cross_model_kwarg::mysql": {
+    "error": "ValueError",
+    "message": "Cross-model aggregate 'customers.spend_weighted_avg_weight_customers_regions_bad_pop' reads an input across an unproven join hop to region_events from customers; declare join cardinality or a covering unique key on the target."
+  },
+  "fanning/cross_model_kwarg::postgres": {
+    "error": "ValueError",
+    "message": "Cross-model aggregate 'customers.spend_weighted_avg_weight_customers_regions_bad_pop' reads an input across an unproven join hop to region_events from customers; declare join cardinality or a covering unique key on the target."
+  },
+  "fanning/cross_model_kwarg::snowflake": {
+    "error": "ValueError",
+    "message": "Cross-model aggregate 'customers.spend_weighted_avg_weight_customers_regions_bad_pop' reads an input across an unproven join hop to region_events from customers; declare join cardinality or a covering unique key on the target."
+  },
+  "fanning/cross_model_kwarg::sqlite": {
+    "error": "ValueError",
+    "message": "Cross-model aggregate 'customers.spend_weighted_avg_weight_customers_regions_bad_pop' reads an input across an unproven join hop to region_events from customers; declare join cardinality or a covering unique key on the target."
+  },
+  "fanning/cross_model_kwarg::tsql": {
+    "error": "ValueError",
+    "message": "Cross-model aggregate 'customers.spend_weighted_avg_weight_customers_regions_bad_pop' reads an input across an unproven join hop to region_events from customers; declare join cardinality or a covering unique key on the target."
+  },
+  "fanning/definition_default::bigquery": {
+    "error": "ValueError",
+    "message": "Cross-model aggregate 'customers.spend_wsumx' reads an input across an unproven join hop to region_events from customers; declare join cardinality or a covering unique key on the target."
+  },
+  "fanning/definition_default::duckdb": {
+    "error": "ValueError",
+    "message": "Cross-model aggregate 'customers.spend_wsumx' reads an input across an unproven join hop to region_events from customers; declare join cardinality or a covering unique key on the target."
+  },
+  "fanning/definition_default::mysql": {
+    "error": "ValueError",
+    "message": "Cross-model aggregate 'customers.spend_wsumx' reads an input across an unproven join hop to region_events from customers; declare join cardinality or a covering unique key on the target."
+  },
+  "fanning/definition_default::postgres": {
+    "error": "ValueError",
+    "message": "Cross-model aggregate 'customers.spend_wsumx' reads an input across an unproven join hop to region_events from customers; declare join cardinality or a covering unique key on the target."
+  },
+  "fanning/definition_default::snowflake": {
+    "error": "ValueError",
+    "message": "Cross-model aggregate 'customers.spend_wsumx' reads an input across an unproven join hop to region_events from customers; declare join cardinality or a covering unique key on the target."
+  },
+  "fanning/definition_default::sqlite": {
+    "error": "ValueError",
+    "message": "Cross-model aggregate 'customers.spend_wsumx' reads an input across an unproven join hop to region_events from customers; declare join cardinality or a covering unique key on the target."
+  },
+  "fanning/definition_default::tsql": {
+    "error": "ValueError",
+    "message": "Cross-model aggregate 'customers.spend_wsumx' reads an input across an unproven join hop to region_events from customers; declare join cardinality or a covering unique key on the target."
+  },
+  "fanning/dim_error_mode::bigquery": {
+    "error": "SlayerError",
+    "message": "error mode: metric 'amt' would broadcast across unattributable dimension(s) customers__regions__bad_pop (crosses a fanning or unproven join hop to region_events); declare join cardinality, a covering unique key, switch to to_many_handling='associate', or remove the dimension."
+  },
+  "fanning/dim_error_mode::duckdb": {
+    "error": "SlayerError",
+    "message": "error mode: metric 'amt' would broadcast across unattributable dimension(s) customers__regions__bad_pop (crosses a fanning or unproven join hop to region_events); declare join cardinality, a covering unique key, switch to to_many_handling='associate', or remove the dimension."
+  },
+  "fanning/dim_error_mode::mysql": {
+    "error": "SlayerError",
+    "message": "error mode: metric 'amt' would broadcast across unattributable dimension(s) customers__regions__bad_pop (crosses a fanning or unproven join hop to region_events); declare join cardinality, a covering unique key, switch to to_many_handling='associate', or remove the dimension."
+  },
+  "fanning/dim_error_mode::postgres": {
+    "error": "SlayerError",
+    "message": "error mode: metric 'amt' would broadcast across unattributable dimension(s) customers__regions__bad_pop (crosses a fanning or unproven join hop to region_events); declare join cardinality, a covering unique key, switch to to_many_handling='associate', or remove the dimension."
+  },
+  "fanning/dim_error_mode::snowflake": {
+    "error": "SlayerError",
+    "message": "error mode: metric 'amt' would broadcast across unattributable dimension(s) customers__regions__bad_pop (crosses a fanning or unproven join hop to region_events); declare join cardinality, a covering unique key, switch to to_many_handling='associate', or remove the dimension."
+  },
+  "fanning/dim_error_mode::sqlite": {
+    "error": "SlayerError",
+    "message": "error mode: metric 'amt' would broadcast across unattributable dimension(s) customers__regions__bad_pop (crosses a fanning or unproven join hop to region_events); declare join cardinality, a covering unique key, switch to to_many_handling='associate', or remove the dimension."
+  },
+  "fanning/dim_error_mode::tsql": {
+    "error": "SlayerError",
+    "message": "error mode: metric 'amt' would broadcast across unattributable dimension(s) customers__regions__bad_pop (crosses a fanning or unproven join hop to region_events); declare join cardinality, a covering unique key, switch to to_many_handling='associate', or remove the dimension."
+  },
+  "fanning/local_kwarg::bigquery": {
+    "error": "ValueError",
+    "message": "Aggregate 'amount_weighted_avg_weight_customers_regions_bad_pop' reads an input across an unproven join hop to region_events from orders; declare join cardinality or a covering unique key on the target."
+  },
+  "fanning/local_kwarg::duckdb": {
+    "error": "ValueError",
+    "message": "Aggregate 'amount_weighted_avg_weight_customers_regions_bad_pop' reads an input across an unproven join hop to region_events from orders; declare join cardinality or a covering unique key on the target."
+  },
+  "fanning/local_kwarg::mysql": {
+    "error": "ValueError",
+    "message": "Aggregate 'amount_weighted_avg_weight_customers_regions_bad_pop' reads an input across an unproven join hop to region_events from orders; declare join cardinality or a covering unique key on the target."
+  },
+  "fanning/local_kwarg::postgres": {
+    "error": "ValueError",
+    "message": "Aggregate 'amount_weighted_avg_weight_customers_regions_bad_pop' reads an input across an unproven join hop to region_events from orders; declare join cardinality or a covering unique key on the target."
+  },
+  "fanning/local_kwarg::snowflake": {
+    "error": "ValueError",
+    "message": "Aggregate 'amount_weighted_avg_weight_customers_regions_bad_pop' reads an input across an unproven join hop to region_events from orders; declare join cardinality or a covering unique key on the target."
+  },
+  "fanning/local_kwarg::sqlite": {
+    "error": "ValueError",
+    "message": "Aggregate 'amount_weighted_avg_weight_customers_regions_bad_pop' reads an input across an unproven join hop to region_events from orders; declare join cardinality or a covering unique key on the target."
+  },
+  "fanning/local_kwarg::tsql": {
+    "error": "ValueError",
+    "message": "Aggregate 'amount_weighted_avg_weight_customers_regions_bad_pop' reads an input across an unproven join hop to region_events from orders; declare join cardinality or a covering unique key on the target."
+  },
+  "fanning/pop_filter_derived::bigquery": {
+    "error": "ValueError",
+    "message": "Filter 'customers.regions.bad_pop > 0' reaches the population root only across a fanning join hop to 'region_events'; with an aggregate computed inline over the population, this would multiply its rows. Aggregate the filtered relation to the population grain, or select it only through a producer."
+  },
+  "fanning/pop_filter_derived::duckdb": {
+    "error": "ValueError",
+    "message": "Filter 'customers.regions.bad_pop > 0' reaches the population root only across a fanning join hop to 'region_events'; with an aggregate computed inline over the population, this would multiply its rows. Aggregate the filtered relation to the population grain, or select it only through a producer."
+  },
+  "fanning/pop_filter_derived::mysql": {
+    "error": "ValueError",
+    "message": "Filter 'customers.regions.bad_pop > 0' reaches the population root only across a fanning join hop to 'region_events'; with an aggregate computed inline over the population, this would multiply its rows. Aggregate the filtered relation to the population grain, or select it only through a producer."
+  },
+  "fanning/pop_filter_derived::postgres": {
+    "error": "ValueError",
+    "message": "Filter 'customers.regions.bad_pop > 0' reaches the population root only across a fanning join hop to 'region_events'; with an aggregate computed inline over the population, this would multiply its rows. Aggregate the filtered relation to the population grain, or select it only through a producer."
+  },
+  "fanning/pop_filter_derived::snowflake": {
+    "error": "ValueError",
+    "message": "Filter 'customers.regions.bad_pop > 0' reaches the population root only across a fanning join hop to 'region_events'; with an aggregate computed inline over the population, this would multiply its rows. Aggregate the filtered relation to the population grain, or select it only through a producer."
+  },
+  "fanning/pop_filter_derived::sqlite": {
+    "error": "ValueError",
+    "message": "Filter 'customers.regions.bad_pop > 0' reaches the population root only across a fanning join hop to 'region_events'; with an aggregate computed inline over the population, this would multiply its rows. Aggregate the filtered relation to the population grain, or select it only through a producer."
+  },
+  "fanning/pop_filter_derived::tsql": {
+    "error": "ValueError",
+    "message": "Filter 'customers.regions.bad_pop > 0' reaches the population root only across a fanning join hop to 'region_events'; with an aggregate computed inline over the population, this would multiply its rows. Aggregate the filtered relation to the population grain, or select it only through a producer."
+  },
+  "fanning/reagg_param::bigquery": {
+    "error": "SlayerError",
+    "message": "Aggregation 'w' parameter 'weight' is not determined by the operand grain (customers__regions__id); the aggregation reads one value per cell of that grain. Aggregate the parameter to that grain, or add its determining keys to the operand's partition_by=."
+  },
+  "fanning/reagg_param::duckdb": {
+    "error": "SlayerError",
+    "message": "Aggregation 'w' parameter 'weight' is not determined by the operand grain (customers__regions__id); the aggregation reads one value per cell of that grain. Aggregate the parameter to that grain, or add its determining keys to the operand's partition_by=."
+  },
+  "fanning/reagg_param::mysql": {
+    "error": "SlayerError",
+    "message": "Aggregation 'w' parameter 'weight' is not determined by the operand grain (customers__regions__id); the aggregation reads one value per cell of that grain. Aggregate the parameter to that grain, or add its determining keys to the operand's partition_by=."
+  },
+  "fanning/reagg_param::postgres": {
+    "error": "SlayerError",
+    "message": "Aggregation 'w' parameter 'weight' is not determined by the operand grain (customers__regions__id); the aggregation reads one value per cell of that grain. Aggregate the parameter to that grain, or add its determining keys to the operand's partition_by=."
+  },
+  "fanning/reagg_param::snowflake": {
+    "error": "SlayerError",
+    "message": "Aggregation 'w' parameter 'weight' is not determined by the operand grain (customers__regions__id); the aggregation reads one value per cell of that grain. Aggregate the parameter to that grain, or add its determining keys to the operand's partition_by=."
+  },
+  "fanning/reagg_param::sqlite": {
+    "error": "SlayerError",
+    "message": "Aggregation 'w' parameter 'weight' is not determined by the operand grain (customers__regions__id); the aggregation reads one value per cell of that grain. Aggregate the parameter to that grain, or add its determining keys to the operand's partition_by=."
+  },
+  "fanning/reagg_param::tsql": {
+    "error": "SlayerError",
+    "message": "Aggregation 'w' parameter 'weight' is not determined by the operand grain (customers__regions__id); the aggregation reads one value per cell of that grain. Aggregate the parameter to that grain, or add its determining keys to the operand's partition_by=."
+  },
+  "positive/assoc_region_name::bigquery": "WITH _base AS (\n  SELECT\n    customers__regions.name AS `orders___customers___regions___name`,\n    CAST(SUM(orders.amount) AS FLOAT64) AS `orders___amt`\n  FROM orders AS orders\n  LEFT JOIN customers AS customers\n    ON orders.customer_id = customers.id\n  LEFT JOIN regions AS customers__regions\n    ON customers.region_id = customers__regions.id\n  GROUP BY\n    customers__regions.name\n), _cm_orders__customers__spend_sum AS (\n  SELECT\n    regions.name AS `customers___regions___name`,\n    CAST(SUM(customers.spend) AS FLOAT64) AS `customers___spend_sum`\n  FROM customers AS customers\n  LEFT JOIN regions AS regions\n    ON customers.region_id = regions.id\n  GROUP BY\n    regions.name\n)\nSELECT\n  _base.`orders___customers___regions___name`,\n  _base.`orders___amt`,\n  _cm_orders__customers__spend_sum.`customers___spend_sum` AS `orders___csp`\nFROM _base\nLEFT JOIN _cm_orders__customers__spend_sum\n  ON _base.`orders___customers___regions___name` IS NOT DISTINCT FROM _cm_orders__customers__spend_sum.`customers___regions___name`",
+  "positive/assoc_region_name::duckdb": "WITH _base AS (\n  SELECT\n    customers__regions.name AS \"orders.customers.regions.name\",\n    CAST(SUM(orders.amount) AS DOUBLE) AS \"orders.amt\"\n  FROM orders AS orders\n  LEFT JOIN customers AS customers\n    ON orders.customer_id = customers.id\n  LEFT JOIN regions AS customers__regions\n    ON customers.region_id = customers__regions.id\n  GROUP BY\n    customers__regions.name\n), _cm_orders__customers__spend_sum AS (\n  SELECT\n    regions.name AS \"customers.regions.name\",\n    CAST(SUM(customers.spend) AS DOUBLE) AS \"customers.spend_sum\"\n  FROM customers AS customers\n  LEFT JOIN regions AS regions\n    ON customers.region_id = regions.id\n  GROUP BY\n    regions.name\n)\nSELECT\n  _base.\"orders.customers.regions.name\",\n  _base.\"orders.amt\",\n  _cm_orders__customers__spend_sum.\"customers.spend_sum\" AS \"orders.csp\"\nFROM _base\nLEFT JOIN _cm_orders__customers__spend_sum\n  ON _base.\"orders.customers.regions.name\" IS NOT DISTINCT FROM _cm_orders__customers__spend_sum.\"customers.regions.name\"",
+  "positive/assoc_region_name::mysql": "WITH _base AS (\n  SELECT\n    customers__regions.name AS `orders.customers.regions.name`,\n    CAST(SUM(orders.amount) AS DOUBLE) AS `orders.amt`\n  FROM orders AS orders\n  LEFT JOIN customers AS customers\n    ON orders.customer_id = customers.id\n  LEFT JOIN regions AS customers__regions\n    ON customers.region_id = customers__regions.id\n  GROUP BY\n    customers__regions.name\n), _cm_orders__customers__spend_sum AS (\n  SELECT\n    regions.name AS `customers.regions.name`,\n    CAST(SUM(customers.spend) AS DOUBLE) AS `customers.spend_sum`\n  FROM customers AS customers\n  LEFT JOIN regions AS regions\n    ON customers.region_id = regions.id\n  GROUP BY\n    regions.name\n)\nSELECT\n  _base.`orders.customers.regions.name`,\n  _base.`orders.amt`,\n  _cm_orders__customers__spend_sum.`customers.spend_sum` AS `orders.csp`\nFROM _base\nLEFT JOIN _cm_orders__customers__spend_sum\n  ON _base.`orders.customers.regions.name` <=> _cm_orders__customers__spend_sum.`customers.regions.name`",
+  "positive/assoc_region_name::postgres": "WITH _base AS (\n  SELECT\n    customers__regions.name AS \"orders.customers.regions.name\",\n    CAST(SUM(orders.amount) AS DOUBLE PRECISION) AS \"orders.amt\"\n  FROM orders AS orders\n  LEFT JOIN customers AS customers\n    ON orders.customer_id = customers.id\n  LEFT JOIN regions AS customers__regions\n    ON customers.region_id = customers__regions.id\n  GROUP BY\n    customers__regions.name\n), _cm_orders__customers__spend_sum AS (\n  SELECT\n    regions.name AS \"customers.regions.name\",\n    CAST(SUM(customers.spend) AS DOUBLE PRECISION) AS \"customers.spend_sum\"\n  FROM customers AS customers\n  LEFT JOIN regions AS regions\n    ON customers.region_id = regions.id\n  GROUP BY\n    regions.name\n)\nSELECT\n  _base.\"orders.customers.regions.name\",\n  _base.\"orders.amt\",\n  _cm_orders__customers__spend_sum.\"customers.spend_sum\" AS \"orders.csp\"\nFROM _base\nLEFT JOIN _cm_orders__customers__spend_sum\n  ON _base.\"orders.customers.regions.name\" IS NOT DISTINCT FROM _cm_orders__customers__spend_sum.\"customers.regions.name\"",
+  "positive/assoc_region_name::snowflake": "WITH _base AS (\n  SELECT\n    customers__regions.name AS \"orders.customers.regions.name\",\n    CAST(SUM(orders.amount) AS DOUBLE) AS \"orders.amt\"\n  FROM orders AS orders\n  LEFT JOIN customers AS customers\n    ON orders.customer_id = customers.id\n  LEFT JOIN regions AS customers__regions\n    ON customers.region_id = customers__regions.id\n  GROUP BY\n    customers__regions.name\n), _cm_orders__customers__spend_sum AS (\n  SELECT\n    regions.name AS \"customers.regions.name\",\n    CAST(SUM(customers.spend) AS DOUBLE) AS \"customers.spend_sum\"\n  FROM customers AS customers\n  LEFT JOIN regions AS regions\n    ON customers.region_id = regions.id\n  GROUP BY\n    regions.name\n)\nSELECT\n  _base.\"orders.customers.regions.name\",\n  _base.\"orders.amt\",\n  _cm_orders__customers__spend_sum.\"customers.spend_sum\" AS \"orders.csp\"\nFROM _base\nLEFT JOIN _cm_orders__customers__spend_sum\n  ON _base.\"orders.customers.regions.name\" IS NOT DISTINCT FROM _cm_orders__customers__spend_sum.\"customers.regions.name\"",
+  "positive/assoc_region_name::sqlite": "WITH _base AS (\n  SELECT\n    customers__regions.name AS \"orders.customers.regions.name\",\n    CAST(SUM(orders.amount) AS REAL) AS \"orders.amt\"\n  FROM orders AS orders\n  LEFT JOIN customers AS customers\n    ON orders.customer_id = customers.id\n  LEFT JOIN regions AS customers__regions\n    ON customers.region_id = customers__regions.id\n  GROUP BY\n    customers__regions.name\n), _cm_orders__customers__spend_sum AS (\n  SELECT\n    regions.name AS \"customers.regions.name\",\n    CAST(SUM(customers.spend) AS REAL) AS \"customers.spend_sum\"\n  FROM customers AS customers\n  LEFT JOIN regions AS regions\n    ON customers.region_id = regions.id\n  GROUP BY\n    regions.name\n)\nSELECT\n  _base.\"orders.customers.regions.name\",\n  _base.\"orders.amt\",\n  _cm_orders__customers__spend_sum.\"customers.spend_sum\" AS \"orders.csp\"\nFROM _base\nLEFT JOIN _cm_orders__customers__spend_sum\n  ON _base.\"orders.customers.regions.name\" IS _cm_orders__customers__spend_sum.\"customers.regions.name\"",
+  "positive/assoc_region_name::tsql": "WITH _base AS (\n  SELECT\n    customers__regions.name AS [orders___customers___regions___name],\n    CAST(SUM(orders.amount) AS FLOAT) AS [orders___amt]\n  FROM orders AS orders\n  LEFT JOIN customers AS customers\n    ON orders.customer_id = customers.id\n  LEFT JOIN regions AS customers__regions\n    ON customers.region_id = customers__regions.id\n  GROUP BY\n    customers__regions.name\n), _cm_orders__customers__spend_sum AS (\n  SELECT\n    regions.name AS [customers___regions___name],\n    CAST(SUM(customers.spend) AS FLOAT) AS [customers___spend_sum]\n  FROM customers AS customers\n  LEFT JOIN regions AS regions\n    ON customers.region_id = regions.id\n  GROUP BY\n    regions.name\n)\nSELECT\n  _base.[orders___customers___regions___name],\n  _base.[orders___amt],\n  _cm_orders__customers__spend_sum.[customers___spend_sum] AS [orders___csp]\nFROM _base\nLEFT JOIN _cm_orders__customers__spend_sum\n  ON (\n    _base.[orders___customers___regions___name] = _cm_orders__customers__spend_sum.[customers___regions___name]\n    OR (\n      _base.[orders___customers___regions___name] IS NULL\n      AND _cm_orders__customers__spend_sum.[customers___regions___name] IS NULL\n    )\n  )",
+  "positive/reagg_derived_pop::bigquery": "WITH _base AS (\n  SELECT\n    1 AS _placeholder\n), _cm_amount_sum_partition_by_customers_regions_id AS (\n  SELECT\n    `_stage_inner`.`orders___customers___regions___id` AS `customers__regions__id`,\n    `_stage_inner`.`orders___amount_sum_partition_by_customers_regions_id` AS `amount_sum_partition_by_customers_regions_id`\n  FROM (\n    SELECT\n      customers__regions.id AS `orders___customers___regions___id`,\n      CAST(SUM(orders.amount) AS FLOAT64) AS `orders___amount_sum_partition_by_customers_regions_id`\n    FROM orders AS orders\n    LEFT JOIN customers AS customers\n      ON orders.customer_id = customers.id\n    LEFT JOIN regions AS customers__regions\n      ON customers.region_id = customers__regions.id\n    GROUP BY\n      customers__regions.id\n  ) AS _stage_inner\n), _cm_orders___weighted_avg_weight_customers_regions_derived_pop AS (\n  SELECT\n    CAST(SUM(_base._v * _base._p0) / NULLIF(SUM(_base._p0), 0) AS FLOAT64) AS `orders___ra`\n  FROM (\n    SELECT\n      customers__regions.id AS _ek0,\n      MAX(\n        _cm_amount_sum_partition_by_customers_regions_id.`amount_sum_partition_by_customers_regions_id`\n      ) AS _v,\n      MAX(customers__regions.pop * 2) AS _p0\n    FROM orders AS orders\n    LEFT JOIN customers AS customers\n      ON orders.customer_id = customers.id\n    LEFT JOIN regions AS customers__regions\n      ON customers.region_id = customers__regions.id\n    LEFT JOIN _cm_amount_sum_partition_by_customers_regions_id\n      ON customers__regions.id IS NOT DISTINCT FROM _cm_amount_sum_partition_by_customers_regions_id.`customers__regions__id`\n    GROUP BY\n      customers__regions.id\n  ) AS _base\n)\nSELECT\n  _cm_orders___weighted_avg_weight_customers_regions_derived_pop.`orders___ra`\nFROM _base\nCROSS JOIN _cm_orders___weighted_avg_weight_customers_regions_derived_pop",
+  "positive/reagg_derived_pop::duckdb": "WITH _base AS (\n  SELECT\n    1 AS _placeholder\n), _cm_amount_sum_partition_by_customers_regions_id AS (\n  SELECT\n    _stage_inner.\"orders.customers.regions.id\" AS \"customers__regions__id\",\n    _stage_inner.\"orders.amount_sum_partition_by_customers_regions_id\" AS \"amount_sum_partition_by_customers_regions_id\"\n  FROM (\n    SELECT\n      customers__regions.id AS \"orders.customers.regions.id\",\n      CAST(SUM(orders.amount) AS DOUBLE) AS \"orders.amount_sum_partition_by_customers_regions_id\"\n    FROM orders AS orders\n    LEFT JOIN customers AS customers\n      ON orders.customer_id = customers.id\n    LEFT JOIN regions AS customers__regions\n      ON customers.region_id = customers__regions.id\n    GROUP BY\n      customers__regions.id\n  ) AS _stage_inner\n), _cm_orders___weighted_avg_weight_customers_regions_derived_pop AS (\n  SELECT\n    CAST(SUM(_base._v * _base._p0) / NULLIF(SUM(_base._p0), 0) AS DOUBLE) AS \"orders.ra\"\n  FROM (\n    SELECT\n      customers__regions.id AS _ek0,\n      MAX(\n        _cm_amount_sum_partition_by_customers_regions_id.\"amount_sum_partition_by_customers_regions_id\"\n      ) AS _v,\n      MAX(customers__regions.pop * 2) AS _p0\n    FROM orders AS orders\n    LEFT JOIN customers AS customers\n      ON orders.customer_id = customers.id\n    LEFT JOIN regions AS customers__regions\n      ON customers.region_id = customers__regions.id\n    LEFT JOIN _cm_amount_sum_partition_by_customers_regions_id\n      ON customers__regions.id IS NOT DISTINCT FROM _cm_amount_sum_partition_by_customers_regions_id.\"customers__regions__id\"\n    GROUP BY\n      customers__regions.id\n  ) AS _base\n)\nSELECT\n  _cm_orders___weighted_avg_weight_customers_regions_derived_pop.\"orders.ra\"\nFROM _base\nCROSS JOIN _cm_orders___weighted_avg_weight_customers_regions_derived_pop",
+  "positive/reagg_derived_pop::mysql": "WITH _base AS (\n  SELECT\n    1 AS _placeholder\n), _cm_amount_sum_partition_by_customers_regions_id AS (\n  SELECT\n    _stage_inner.`orders.customers.regions.id` AS `customers__regions__id`,\n    _stage_inner.`orders.amount_sum_partition_by_customers_regions_id` AS `amount_sum_partition_by_customers_regions_id`\n  FROM (\n    SELECT\n      customers__regions.id AS `orders.customers.regions.id`,\n      CAST(SUM(orders.amount) AS DOUBLE) AS `orders.amount_sum_partition_by_customers_regions_id`\n    FROM orders AS orders\n    LEFT JOIN customers AS customers\n      ON orders.customer_id = customers.id\n    LEFT JOIN regions AS customers__regions\n      ON customers.region_id = customers__regions.id\n    GROUP BY\n      customers__regions.id\n  ) AS _stage_inner\n), _cm_orders___weighted_avg_weight_customers_regions_derived_pop AS (\n  SELECT\n    CAST(SUM(_base._v * _base._p0) / NULLIF(SUM(_base._p0), 0) AS DOUBLE) AS `orders.ra`\n  FROM (\n    SELECT\n      customers__regions.id AS _ek0,\n      MAX(\n        _cm_amount_sum_partition_by_customers_regions_id.`amount_sum_partition_by_customers_regions_id`\n      ) AS _v,\n      MAX(customers__regions.pop * 2) AS _p0\n    FROM orders AS orders\n    LEFT JOIN customers AS customers\n      ON orders.customer_id = customers.id\n    LEFT JOIN regions AS customers__regions\n      ON customers.region_id = customers__regions.id\n    LEFT JOIN _cm_amount_sum_partition_by_customers_regions_id\n      ON customers__regions.id <=> _cm_amount_sum_partition_by_customers_regions_id.`customers__regions__id`\n    GROUP BY\n      customers__regions.id\n  ) AS _base\n)\nSELECT\n  _cm_orders___weighted_avg_weight_customers_regions_derived_pop.`orders.ra`\nFROM _base\nCROSS JOIN _cm_orders___weighted_avg_weight_customers_regions_derived_pop",
+  "positive/reagg_derived_pop::postgres": "WITH _base AS (\n  SELECT\n    1 AS _placeholder\n), _cm_amount_sum_partition_by_customers_regions_id AS (\n  SELECT\n    _stage_inner.\"orders.customers.regions.id\" AS \"customers__regions__id\",\n    _stage_inner.\"orders.amount_sum_partition_by_customers_regions_id\" AS \"amount_sum_partition_by_customers_regions_id\"\n  FROM (\n    SELECT\n      customers__regions.id AS \"orders.customers.regions.id\",\n      CAST(SUM(orders.amount) AS DOUBLE PRECISION) AS \"orders.amount_sum_partition_by_customers_regions_id\"\n    FROM orders AS orders\n    LEFT JOIN customers AS customers\n      ON orders.customer_id = customers.id\n    LEFT JOIN regions AS customers__regions\n      ON customers.region_id = customers__regions.id\n    GROUP BY\n      customers__regions.id\n  ) AS _stage_inner\n), _cm_orders___weighted_avg_weight_customers_regions_derived_pop AS (\n  SELECT\n    CAST(SUM(_base._v * _base._p0) / NULLIF(SUM(_base._p0), 0) AS DOUBLE PRECISION) AS \"orders.ra\"\n  FROM (\n    SELECT\n      customers__regions.id AS _ek0,\n      MAX(\n        _cm_amount_sum_partition_by_customers_regions_id.\"amount_sum_partition_by_customers_regions_id\"\n      ) AS _v,\n      MAX(customers__regions.pop * 2) AS _p0\n    FROM orders AS orders\n    LEFT JOIN customers AS customers\n      ON orders.customer_id = customers.id\n    LEFT JOIN regions AS customers__regions\n      ON customers.region_id = customers__regions.id\n    LEFT JOIN _cm_amount_sum_partition_by_customers_regions_id\n      ON customers__regions.id IS NOT DISTINCT FROM _cm_amount_sum_partition_by_customers_regions_id.\"customers__regions__id\"\n    GROUP BY\n      customers__regions.id\n  ) AS _base\n)\nSELECT\n  _cm_orders___weighted_avg_weight_customers_regions_derived_pop.\"orders.ra\"\nFROM _base\nCROSS JOIN _cm_orders___weighted_avg_weight_customers_regions_derived_pop",
+  "positive/reagg_derived_pop::snowflake": "WITH _base AS (\n  SELECT\n    1 AS _placeholder\n), _cm_amount_sum_partition_by_customers_regions_id AS (\n  SELECT\n    _stage_inner.\"orders.customers.regions.id\" AS \"customers__regions__id\",\n    _stage_inner.\"orders.amount_sum_partition_by_customers_regions_id\" AS \"amount_sum_partition_by_customers_regions_id\"\n  FROM (\n    SELECT\n      customers__regions.id AS \"orders.customers.regions.id\",\n      CAST(SUM(orders.amount) AS DOUBLE) AS \"orders.amount_sum_partition_by_customers_regions_id\"\n    FROM orders AS orders\n    LEFT JOIN customers AS customers\n      ON orders.customer_id = customers.id\n    LEFT JOIN regions AS customers__regions\n      ON customers.region_id = customers__regions.id\n    GROUP BY\n      customers__regions.id\n  ) AS _stage_inner\n), _cm_orders___weighted_avg_weight_customers_regions_derived_pop AS (\n  SELECT\n    CAST(SUM(_base._v * _base._p0) / NULLIF(SUM(_base._p0), 0) AS DOUBLE) AS \"orders.ra\"\n  FROM (\n    SELECT\n      customers__regions.id AS _ek0,\n      MAX(\n        _cm_amount_sum_partition_by_customers_regions_id.\"amount_sum_partition_by_customers_regions_id\"\n      ) AS _v,\n      MAX(customers__regions.pop * 2) AS _p0\n    FROM orders AS orders\n    LEFT JOIN customers AS customers\n      ON orders.customer_id = customers.id\n    LEFT JOIN regions AS customers__regions\n      ON customers.region_id = customers__regions.id\n    LEFT JOIN _cm_amount_sum_partition_by_customers_regions_id\n      ON customers__regions.id IS NOT DISTINCT FROM _cm_amount_sum_partition_by_customers_regions_id.\"customers__regions__id\"\n    GROUP BY\n      customers__regions.id\n  ) AS _base\n)\nSELECT\n  _cm_orders___weighted_avg_weight_customers_regions_derived_pop.\"orders.ra\"\nFROM _base\nCROSS JOIN _cm_orders___weighted_avg_weight_customers_regions_derived_pop",
+  "positive/reagg_derived_pop::sqlite": "WITH _base AS (\n  SELECT\n    1 AS _placeholder\n), _cm_amount_sum_partition_by_customers_regions_id AS (\n  SELECT\n    _stage_inner.\"orders.customers.regions.id\" AS \"customers__regions__id\",\n    _stage_inner.\"orders.amount_sum_partition_by_customers_regions_id\" AS \"amount_sum_partition_by_customers_regions_id\"\n  FROM (\n    SELECT\n      customers__regions.id AS \"orders.customers.regions.id\",\n      CAST(SUM(orders.amount) AS REAL) AS \"orders.amount_sum_partition_by_customers_regions_id\"\n    FROM orders AS orders\n    LEFT JOIN customers AS customers\n      ON orders.customer_id = customers.id\n    LEFT JOIN regions AS customers__regions\n      ON customers.region_id = customers__regions.id\n    GROUP BY\n      customers__regions.id\n  ) AS _stage_inner\n), _cm_orders___weighted_avg_weight_customers_regions_derived_pop AS (\n  SELECT\n    CAST(SUM(_base._v * _base._p0) / NULLIF(SUM(_base._p0), 0) AS REAL) AS \"orders.ra\"\n  FROM (\n    SELECT\n      customers__regions.id AS _ek0,\n      MAX(\n        _cm_amount_sum_partition_by_customers_regions_id.\"amount_sum_partition_by_customers_regions_id\"\n      ) AS _v,\n      MAX(customers__regions.pop * 2) AS _p0\n    FROM orders AS orders\n    LEFT JOIN customers AS customers\n      ON orders.customer_id = customers.id\n    LEFT JOIN regions AS customers__regions\n      ON customers.region_id = customers__regions.id\n    LEFT JOIN _cm_amount_sum_partition_by_customers_regions_id\n      ON customers__regions.id IS _cm_amount_sum_partition_by_customers_regions_id.\"customers__regions__id\"\n    GROUP BY\n      customers__regions.id\n  ) AS _base\n)\nSELECT\n  _cm_orders___weighted_avg_weight_customers_regions_derived_pop.\"orders.ra\"\nFROM _base\nCROSS JOIN _cm_orders___weighted_avg_weight_customers_regions_derived_pop",
+  "positive/reagg_derived_pop::tsql": "WITH _base AS (\n  SELECT\n    1 AS _placeholder\n), _cm_amount_sum_partition_by_customers_regions_id AS (\n  SELECT\n    _stage_inner.[orders___customers___regions___id] AS [customers__regions__id],\n    _stage_inner.[orders___amount_sum_partition_by_customers_regions_id] AS [amount_sum_partition_by_customers_regions_id]\n  FROM (\n    SELECT\n      customers__regions.id AS [orders___customers___regions___id],\n      CAST(SUM(orders.amount) AS FLOAT) AS [orders___amount_sum_partition_by_customers_regions_id]\n    FROM orders AS orders\n    LEFT JOIN customers AS customers\n      ON orders.customer_id = customers.id\n    LEFT JOIN regions AS customers__regions\n      ON customers.region_id = customers__regions.id\n    GROUP BY\n      customers__regions.id\n  ) AS _stage_inner\n), _cm_orders___weighted_avg_weight_customers_regions_derived_pop AS (\n  SELECT\n    CAST(SUM(_base._v * _base._p0) / NULLIF(SUM(_base._p0), 0) AS FLOAT) AS [orders___ra]\n  FROM (\n    SELECT\n      customers__regions.id AS _ek0,\n      MAX(\n        _cm_amount_sum_partition_by_customers_regions_id.[amount_sum_partition_by_customers_regions_id]\n      ) AS _v,\n      MAX(customers__regions.pop * 2) AS _p0\n    FROM orders AS orders\n    LEFT JOIN customers AS customers\n      ON orders.customer_id = customers.id\n    LEFT JOIN regions AS customers__regions\n      ON customers.region_id = customers__regions.id\n    LEFT JOIN _cm_amount_sum_partition_by_customers_regions_id\n      ON (\n        customers__regions.id = _cm_amount_sum_partition_by_customers_regions_id.[customers__regions__id]\n        OR (\n          customers__regions.id IS NULL\n          AND _cm_amount_sum_partition_by_customers_regions_id.[customers__regions__id] IS NULL\n        )\n      )\n    GROUP BY\n      customers__regions.id\n  ) AS _base\n)\nSELECT\n  _cm_orders___weighted_avg_weight_customers_regions_derived_pop.[orders___ra]\nFROM _base\nCROSS JOIN _cm_orders___weighted_avg_weight_customers_regions_derived_pop",
+  "positive/to_one_filter::bigquery": "SELECT\n  CAST(SUM(orders.amount) AS FLOAT64) AS `orders___amt`\nFROM orders AS orders\nLEFT JOIN customers AS customers\n  ON orders.customer_id = customers.id\nWHERE\n  customers.tier = 'gold'",
+  "positive/to_one_filter::duckdb": "SELECT\n  CAST(SUM(orders.amount) AS DOUBLE) AS \"orders.amt\"\nFROM orders AS orders\nLEFT JOIN customers AS customers\n  ON orders.customer_id = customers.id\nWHERE\n  customers.tier = 'gold'",
+  "positive/to_one_filter::mysql": "SELECT\n  CAST(SUM(orders.amount) AS DOUBLE) AS `orders.amt`\nFROM orders AS orders\nLEFT JOIN customers AS customers\n  ON orders.customer_id = customers.id\nWHERE\n  customers.tier = 'gold'",
+  "positive/to_one_filter::postgres": "SELECT\n  CAST(SUM(orders.amount) AS DOUBLE PRECISION) AS \"orders.amt\"\nFROM orders AS orders\nLEFT JOIN customers AS customers\n  ON orders.customer_id = customers.id\nWHERE\n  customers.tier = 'gold'",
+  "positive/to_one_filter::snowflake": "SELECT\n  CAST(SUM(orders.amount) AS DOUBLE) AS \"orders.amt\"\nFROM orders AS orders\nLEFT JOIN customers AS customers\n  ON orders.customer_id = customers.id\nWHERE\n  customers.tier = 'gold'",
+  "positive/to_one_filter::sqlite": "SELECT\n  CAST(SUM(orders.amount) AS REAL) AS \"orders.amt\"\nFROM orders AS orders\nLEFT JOIN customers AS customers\n  ON orders.customer_id = customers.id\nWHERE\n  customers.tier = 'gold'",
+  "positive/to_one_filter::tsql": "SELECT\n  CAST(SUM(orders.amount) AS FLOAT) AS [orders___amt]\nFROM orders AS orders\nLEFT JOIN customers AS customers\n  ON orders.customer_id = customers.id\nWHERE\n  customers.tier = 'gold'"
+}

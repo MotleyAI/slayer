@@ -40,8 +40,8 @@ import pytest
 from slayer.core.models import ModelMeasure
 from slayer.core.query import ColumnRef, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.source_bundle import ResolvedSourceBundle
-from slayer.engine.stage_planner import plan_query
+from slayer.ir.source_bundle import ResolvedSourceBundle
+from slayer.engine.plan import plan_query
 from slayer.sql.generator import SQLGenerator
 
 from tests._cross_model_chain import (
@@ -139,9 +139,11 @@ class TestEmptyBaseGrainPlanNode:
         ids = list(planned.empty_base_plan.host_filter_ids)
         assert ids, (
             "the host-local filter was not recorded on the node, so the "
-            "renderer would have to re-walk `filters_by_phase` to find it."
+            "renderer would have to re-walk the masks to find it."
         )
-        known = {f.id for f in planned.filters_by_phase}
+        known = {m.slot_id for m in planned.masks} | {
+            mf.id for mf in planned.mode_a_filters
+        }
         assert set(ids) <= known, (
             f"node references unknown filter ids: {set(ids) - known}"
         )
@@ -281,9 +283,9 @@ class TestEmptyBaseExecution:
     async def test_host_filter_gates_the_whole_result(
         self, exec_engine: SlayerQueryEngine,
     ) -> None:
-        """A host-local filter that MATCHES still yields the full scalar
-        aggregate (the filter gates the spine, it does not restrict the
-        isolated CTE)."""
+        """A host-local filter that MATCHES gates the spine AND (DEV-1840)
+        restricts the isolated CTE by semi-join: only customer 100 has a paid
+        order, so the scalar is 1000, not the unfiltered 1325."""
         query = SlayerQuery(
             source_model="orders",
             measures=[ModelMeasure(formula="customers.spend:sum", name="total")],
@@ -291,7 +293,7 @@ class TestEmptyBaseExecution:
         )
         resp = await exec_engine.execute(query)
         assert len(resp.data) == 1, resp.data
-        assert resp.data[0]["orders.total"] == pytest.approx(1325.0), resp.data
+        assert resp.data[0]["orders.total"] == pytest.approx(1000.0), resp.data
 
     async def test_host_filter_matching_nothing_yields_no_rows(
         self, exec_engine: SlayerQueryEngine,

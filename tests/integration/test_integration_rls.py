@@ -11,6 +11,7 @@ import sqlite3
 
 import pytest
 
+import slayer.engine.query_engine as qe
 from slayer.core.enums import DataType
 from slayer.core.errors import ForcedFilterError
 from slayer.core.models import (
@@ -29,6 +30,7 @@ from slayer.core.policy import (
 from slayer.core.query import ColumnRef, SlayerQuery
 from slayer.engine.profiling import profile_column
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.storage.yaml_storage import YAMLStorage
 
 pytestmark = pytest.mark.integration
 
@@ -93,8 +95,6 @@ async def rls_storage(tmp_path):
     )
     conn.commit()
     conn.close()
-
-    from slayer.storage.yaml_storage import YAMLStorage
 
     storage_dir = tmp_path / "storage"
     storage_dir.mkdir()
@@ -288,8 +288,6 @@ async def test_get_column_types_blocking_policy_degrades(rls_storage):
 async def test_none_presence_reprobes_and_self_heals(rls_storage, monkeypatch):
     """A transient introspection failure (-> None -> fail closed) is not
     cached: once introspection recovers, the next query succeeds."""
-    import slayer.engine.query_engine as qe
-
     real = qe._safe_get_columns
     state = {"fail": True}
 
@@ -317,8 +315,6 @@ async def test_none_presence_reprobes_and_self_heals(rls_storage, monkeypatch):
 
 async def test_column_presence_is_cached(rls_storage, monkeypatch):
     engine = SlayerQueryEngine(storage=rls_storage, policy=_org_policy(ORG_A))
-
-    import slayer.engine.query_engine as qe
 
     calls = {"n": 0}
     real = qe._safe_get_columns
@@ -400,8 +396,6 @@ async def rls_join_storage(tmp_path):
     )
     conn.commit()
     conn.close()
-
-    from slayer.storage.yaml_storage import YAMLStorage
 
     storage_dir = tmp_path / "storage"
     storage_dir.mkdir()
@@ -574,9 +568,9 @@ async def test_execute_invokes_clickhouse_preflight(rls_join_storage, monkeypatc
     seen = {"n": 0}
     real = engine._preflight_clickhouse_correlated
 
-    async def spy(*, dialect, datasource):
+    async def spy(*, dialect, datasource, needed=False):
         seen["n"] += 1
-        return await real(dialect=dialect, datasource=datasource)
+        return await real(dialect=dialect, datasource=datasource, needed=needed)
 
     monkeypatch.setattr(engine, "_preflight_clickhouse_correlated", spy)
     await engine.execute(
@@ -592,9 +586,9 @@ async def test_get_column_types_invokes_clickhouse_preflight(
     seen = {"n": 0}
     real = engine._preflight_clickhouse_correlated
 
-    async def spy(*, dialect, datasource):
+    async def spy(*, dialect, datasource, needed=False):
         seen["n"] += 1
-        return await real(dialect=dialect, datasource=datasource)
+        return await real(dialect=dialect, datasource=datasource, needed=needed)
 
     monkeypatch.setattr(engine, "_preflight_clickhouse_correlated", spy)
     await engine.get_column_types(model_name="orders", data_source="rls_sqlite")

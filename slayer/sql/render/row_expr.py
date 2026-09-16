@@ -25,6 +25,7 @@ from slayer.core.keys import (
     ColumnSqlKey,
     LiteralKey,
     ScalarCallKey,
+    _FrozenKey,
     check_scalar_arity,
 )
 from slayer.sql.dialects.base import SqlDialect
@@ -197,7 +198,7 @@ def render_scalar_call(
     arity_error = check_scalar_arity(name=name, argc=len(args))
     if arity_error is not None:
         # Checked before building: sqlglot is inconsistent (3-arg ROUND drops the third, etc.).
-        raise NotImplementedError(arity_error)
+        raise NotImplementedError(f"Scalar arity check failed: {arity_error}")
     if name == "like":
         return exp.Like(this=args[0], expression=args[1])
     if name == "mod":
@@ -218,7 +219,7 @@ def iif_case_chain(
         # Fail-closed arity backstop so a malformed key can't surface an opaque IndexError.
         arity_error = check_scalar_arity(name="iif", argc=len(node.args))
         if arity_error is not None:
-            raise NotImplementedError(arity_error)
+            raise NotImplementedError(f"Scalar arity check failed: {arity_error}")
         ifs.append(exp.If(this=part(node.args[0]), true=part(node.args[1])))
         node = node.args[2]
     return exp.Case(ifs=ifs, default=part(node))
@@ -238,7 +239,9 @@ def render_row_expression(
     any other row-level position.
     """
     def _part(a: Any) -> exp.Expression:
-        if isinstance(a, (ColumnKey, ColumnSqlKey, LiteralKey, ArithmeticKey, ScalarCallKey)):
+        # ANY key routes as a key (the tail raise owns unsupported kinds); only
+        # true scalars render as literals.
+        if isinstance(a, _FrozenKey):
             return render_row_expression(
                 key=a, dialect=dialect, resolve_column=resolve_column,
             )

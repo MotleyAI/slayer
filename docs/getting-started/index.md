@@ -28,7 +28,7 @@ SLayer works with most SQL databases. The base install includes SQLite support (
 | Snowflake, BigQuery, Redshift, Trino, Databricks, MS SQL, Oracle | Covered by sqlglot | SQL generation tested |
 
 DuckDB ships by default rather than behind an extra: the bundled
-`slayer datasources create demo` datasource and the Postgres facade both
+`slayer datasources create demo` datasource and the SQL API both
 require it, so `pip install motley-slayer` alone gives you a working driver.
 
 ## Next Steps

@@ -11,8 +11,8 @@ rather than only by an executed-value diff.
 from __future__ import annotations
 
 from slayer.core.keys import AggregateKey, ColumnKey, TransformKey
-from slayer.engine.source_bundle import ResolvedSourceBundle
-from slayer.engine.stage_planner import plan_query
+from slayer.ir.source_bundle import ResolvedSourceBundle
+from slayer.engine.plan import plan_query
 
 from tests._dev1750_fixtures import (
     ModelMeasure,

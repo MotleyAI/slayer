@@ -20,6 +20,8 @@ SLayer handles database connectivity (read-only), SQL translation, common data t
 
 SLayer can be used as a standalone tool or imported as a Python library, easily embeddable into any Python app. Use it for powering analytical MCP servers or APIs or simply to query databases semantically.
 
+SLayer is at the core of [Motley](https://motley.ai) and is maintained with ♡ by the same team.
+
 ## How SLayer is different
 
 Traditionally, semantic layers were a part of the BI stack, where every metric and its aggregation

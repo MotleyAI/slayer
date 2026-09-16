@@ -63,7 +63,7 @@ These databases are verified by integration tests and runnable Docker examples. 
 | `snowflake` | `motley-slayer[snowflake]` | `snowflake://?connection_name=default` (TOML-driven) or `snowflake://user:pw@account/db/schema?warehouse=wh&role=role` (inline). See [Snowflake](#snowflake) below. |
 
 `duckdb` has no install extra because `duckdb` and `duckdb-engine` are core
-dependencies — the bundled demo datasource and the Postgres facade both need
+dependencies — the bundled demo datasource and the SQL API both need
 them, so they are always present.
 
 #### Additional support

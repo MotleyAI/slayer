@@ -17,22 +17,21 @@ from slayer.core.keys import (
     ValueKey,
     reroot_value_key,
 )
+from slayer.core.errors import AmbiguousJoinPathError
+from slayer.core.enums import RANKED_AGGREGATIONS
+from slayer.core.join_walker import terminal_model, walk
 from slayer.core.models import SlayerModel
-from slayer.engine.planned import (
+from slayer.ir.planned import (
     SlotId,
     ValueSlot,
 )
-from slayer.engine.source_bundle import ResolvedSourceBundle
+from slayer.ir.source_bundle import ResolvedSourceBundle
 
 __all__ = [
-    "RANKED_AGGREGATIONS",
     "explicit_ranking_time_arg",
     "ordered_row_keys",
     "resolve_ranking_time_key",
 ]
-
-#: The aggregations that rank; named once so classifier, planner and renderer agree.
-RANKED_AGGREGATIONS = ("first", "last")
 
 _TEMPORAL_TYPES = (DataType.DATE, DataType.TIMESTAMP)
 
@@ -54,9 +53,13 @@ def _ranking_key_name(key: ValueKey) -> str:
     return type(key).__name__
 
 
-def _resolves_on(*, key: ValueKey, model: SlayerModel) -> bool:
-    """Whether ``key`` is reachable FROM ``model`` — a shallow check catching the
-    common mistake (a HOST column as a TARGET-rooted ranking key) at plan time."""
+def _resolves_on(
+    *, key: ValueKey, model: SlayerModel,
+    models_by_name: dict[str, SlayerModel],
+) -> bool:
+    """Whether ``key`` is reachable FROM ``model`` — walks the full path and
+    requires the leaf on the terminal, catching a HOST column (or a stale
+    rerooted path) as a TARGET-rooted ranking key at plan time."""
     if isinstance(key, ColumnKey):
         leaf, path = key.leaf, key.path
     elif isinstance(key, ColumnSqlKey):
@@ -64,7 +67,18 @@ def _resolves_on(*, key: ValueKey, model: SlayerModel) -> bool:
     else:
         return True
     if path:
-        return any(j.target_model == path[0] for j in (model.joins or []))
+        try:
+            chain = walk(
+                root=model, path=tuple(path), models_by_name=models_by_name,
+            )
+        except AmbiguousJoinPathError:
+            return True  # a join hop exists; the strict door disambiguates
+        if not chain:
+            return False
+        terminal = models_by_name.get(chain[-1].target_model)
+        return terminal is not None and any(
+            c.name == leaf for c in terminal.columns
+        )
     return any(c.name == leaf for c in model.columns)
 
 
@@ -74,14 +88,13 @@ def _temporal_row_dimension_key(
     source_model: SlayerModel,
     bundle: ResolvedSourceBundle,
 ) -> Optional[ValueKey]:
+    models_by_name = bundle.models_by_name
     for key in row_keys:
         if not isinstance(key, ColumnKey):
             continue
-        model: Optional[SlayerModel] = source_model
-        for hop in key.path:
-            model = bundle.get_referenced_model(hop)
-            if model is None:
-                break
+        model = terminal_model(
+            root=source_model, path=key.path, models_by_name=models_by_name,
+        )
         if model is None:
             continue
         col = next((c for c in model.columns if c.name == key.leaf), None)
@@ -115,7 +128,10 @@ def resolve_ranking_time_key(
     if arg is not None:
         # Re-anchor into the target's coordinates in lockstep with the source.
         rerooted = reroot_value_key(arg, target_path=target_path)
-        if target_path and not _resolves_on(key=rerooted, model=root_model):
+        if target_path and not _resolves_on(
+            key=rerooted, model=root_model,
+            models_by_name=bundle.models_by_name,
+        ):
             # A host column can't rank a target-rooted CTE (the relation runs 1:N).
             raise ValueError(
                 f"first/last ranking column "

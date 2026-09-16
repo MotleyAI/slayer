@@ -2,6 +2,7 @@
 
 import os
 import shutil
+import sqlite3
 import tempfile
 
 import pytest
@@ -10,9 +11,11 @@ from fastapi.testclient import TestClient
 from slayer.api.server import QueryRequest, create_app
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType
+from slayer.core.errors import SchemaDriftError
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.sql.client import SlayerSQLClient
 from slayer.core.query import SlayerQuery
+from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -290,6 +293,23 @@ class TestQuery:
         resp = client.post("/query", json={"source_model": "orders", "measures": [{"formula": "revenue:sum"}]})
         assert resp.status_code == 400
 
+    def test_query_schema_drift_returns_422(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """SchemaDriftError subclasses SlayerError (a ValueError); the 422
+        drift contract must not be swallowed by the generic 400 handler."""
+        async def _raise_drift(self, *args, **kwargs):
+            raise SchemaDriftError(
+                models=["orders"], to_delete=[], original=RuntimeError("boom"),
+            )
+
+        monkeypatch.setattr(SlayerQueryEngine, "execute", _raise_drift)
+        resp = client.post("/query", json={
+            "source_model": "orders", "measures": [{"formula": "*:count"}],
+        })
+        assert resp.status_code == 422
+        assert resp.json()["detail"]["error"] == "schema_drift"
+
     def test_request_measures_payload_reaches_slayer_query(self) -> None:
         """v2 `measures` key must be declared on QueryRequest so FastAPI keeps it."""
         req = QueryRequest.model_validate(
@@ -440,8 +460,8 @@ class TestQueryBackedModelsAPI:
 class TestQueryListBody:
     """POST /query accepts a multi-stage DAG via ``{"queries": [...]}``.
 
-    Mirrors ``engine.execute(query=[...])`` and the MCP ``query_nested``
-    tool: earlier entries are named sub-queries, the last entry is the
+    Mirrors ``engine.execute(query=[...])`` and the MCP ``query`` tool's
+    list form: earlier entries are named sub-queries, the last entry is the
     DAG root, order doesn't matter (engine auto-sorts), cycles and
     self-references are rejected with 400.
     """
@@ -677,3 +697,63 @@ class TestOpenAPI400Documentation:
         assert body.get("sql") is not None
         assert "amount" in body["sql"].lower()
         assert execute_calls == 0, "dry_run=True must not execute SQL"
+
+
+class TestSaveTimeSqlValidation:
+    """DEV-1843 — ``POST /models`` trial-executes a raw-``sql`` model against a
+    reachable datasource; a rejection surfaces as HTTP 400 (ValueError→400)."""
+
+    def _register_live_ds(self, client: TestClient, tmp_path) -> None:
+        db_path = str(tmp_path / "live.db")
+        conn = sqlite3.connect(db_path)
+        conn.executescript(
+            "CREATE TABLE orders (id INTEGER PRIMARY KEY, amount REAL);"
+            "INSERT INTO orders VALUES (1, 100.0);"
+        )
+        conn.commit()
+        conn.close()
+        resp = client.post(
+            "/datasources",
+            json={"name": "livedb", "type": "sqlite", "database": db_path},
+        )
+        assert resp.status_code == 200
+
+    def test_valid_sql_model_created_and_persisted(
+        self, client: TestClient, tmp_path
+    ) -> None:
+        self._register_live_ds(client, tmp_path)
+        resp = client.post("/models", json={
+            "name": "good_model", "sql": "SELECT id FROM orders",
+            "data_source": "livedb",
+            "columns": [{"name": "id", "sql": "id", "type": "number"}],
+        })
+        assert resp.status_code == 200
+        # Acknowledged AND retrievable — not a no-op 200.
+        assert client.get("/models/good_model").status_code == 200
+
+    def test_invalid_sql_model_returns_400(self, client: TestClient, tmp_path) -> None:
+        self._register_live_ds(client, tmp_path)
+        resp = client.post("/models", json={
+            "name": "bad_model", "sql": "SELECT nope FROM ghosts",
+            "data_source": "livedb",
+            "columns": [{"name": "id", "sql": "id", "type": "number"}],
+        })
+        assert resp.status_code == 400
+        assert client.get("/models/bad_model").status_code == 404
+
+    def test_invalid_sql_update_returns_400_and_original_intact(
+        self, client: TestClient, tmp_path
+    ) -> None:
+        self._register_live_ds(client, tmp_path)
+        assert client.post("/models", json={
+            "name": "upd", "sql": "SELECT id FROM orders",
+            "data_source": "livedb",
+            "columns": [{"name": "id", "sql": "id", "type": "number"}],
+        }).status_code == 200
+        resp = client.put("/models/upd", json={
+            "name": "upd", "sql": "SELECT nope FROM ghosts",
+            "data_source": "livedb",
+            "columns": [{"name": "id", "sql": "id", "type": "number"}],
+        })
+        assert resp.status_code == 400
+        assert client.get("/models/upd").json()["sql"] == "SELECT id FROM orders"

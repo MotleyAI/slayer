@@ -7,7 +7,7 @@ TARGET-rooted CTE, which for a host-grain sort key degenerates to a scalar
 CROSS JOIN — every group would get the same global value and the sort would
 silently do nothing.
 
-DEV-1747 gives the wrap a structural marker (``AggregateKey.grain == "host"``)
+DEV-1747 gives the wrap a structural marker (``AggregateKey.locus == "host"``)
 that routes it to the DEV-1709 HOST-ROOTED isolated CTE instead: the crossed
 join is pulled inside that CTE, the wrap is computed there, the CTE is grouped
 on the query grain, and it joins back null-safe. The reference shape already
@@ -370,7 +370,7 @@ class TestIsolatedCteShape:
         self,
     ) -> None:
         """The generator's local-aggregate walkers skip path-bearing sources
-        today, which is what would leave a ``grain="host"`` wrap unrendered.
+        today, which is what would leave a ``locus="host"`` wrap unrendered.
 
         The observable contract: the aggregate is evaluated INSIDE the isolated
         CTE against the pulled join, and the host base computes no such wrap.

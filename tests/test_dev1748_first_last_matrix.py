@@ -672,6 +672,8 @@ class TestCrossingInputsAndFanout:
         # Every seeded group holds exactly two rows, so the oracle is uniform.
         assert set(counts.values()) == {2}
 
+    @pytest.mark.xfail(strict=True, reason=(
+        "DEV-1909: a fanning population filter with an aggregate inline over the population now fails closed (DEV-1900 interim guard); DEV-1909 restores it via association pushdown."))
     async def test_a_1n_join_multiplies_a_sum_but_not_the_ranked_pick(
         self, engine: SlayerQueryEngine,
     ) -> None:

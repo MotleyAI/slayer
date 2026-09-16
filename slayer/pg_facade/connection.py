@@ -30,7 +30,7 @@ from sqlglot.optimizer.scope import traverse_scope
 
 from slayer.core.enums import DataType
 from slayer.core.models import SlayerModel
-from slayer.engine import timing
+from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.facade.catalog import (
     FacadeCatalog,
     build_catalog_grouped_by_schema,
@@ -66,6 +66,7 @@ from slayer.pg_facade.types import (
     value_to_binary,
     value_to_text,
 )
+from slayer.core import timing
 
 logger = logging.getLogger(__name__)
 
@@ -253,8 +254,6 @@ EngineFactory = Callable[[object], object]
 
 
 def _default_engine_factory(storage: object) -> object:
-    from slayer.engine.query_engine import SlayerQueryEngine
-
     return SlayerQueryEngine(storage=storage)
 
 # DEV-1569: GUC_REPORT-class settings. After a successful SET / set_config /

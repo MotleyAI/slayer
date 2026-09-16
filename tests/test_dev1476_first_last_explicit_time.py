@@ -20,14 +20,14 @@ from slayer.core.keys import (
 )
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
-from slayer.engine.planned import ValueSlot
+from slayer.ir.planned import ValueSlot
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.ranked_planner import (
     explicit_ranking_time_arg,
     resolve_ranking_time_key,
 )
-from slayer.engine.source_bundle import ResolvedSourceBundle
-from slayer.engine.stage_planner import plan_query
+from slayer.ir.source_bundle import ResolvedSourceBundle
+from slayer.engine.plan import plan_query
 from slayer.sql.generator import SQLGenerator
 from slayer.sql.naming import AliasAllocator
 from slayer.sql.scope import ScopeFrame
@@ -689,7 +689,7 @@ class TestTimeArgJoinDiscovery:
             s for s in attach.producer_plan.aggregate_slots
             if isinstance(s.key, AggregateKey) and s.key.agg == "last"
         )
-        assert prod_agg.key.grain == "target", prod_agg.key
+        assert prod_agg.key.locus == "target", prod_agg.key
         assert not any(isinstance(s.key, AggregateKey) for s in slots.values())
         gen = self._gen()
         scope = _host_scope(gen, source_model=_u_orders(), bundle=bundle)
@@ -879,3 +879,23 @@ async def test_e2e_time_arg_join_dedup_with_dimension() -> None:
         f"expected one customers join per scope (host base + isolation "
         f"CTE), got {len(joins)}:\n{resp.sql}"
     )
+
+
+class TestRankingKeyFullPathValidation:
+    def test_invalid_leaf_past_first_hop_is_rejected_at_plan_time(self) -> None:
+        """A rerooted ranking key whose first hop resolves but whose leaf is
+        absent on the terminal fails at plan time, not in SQL generation."""
+        customers = _u_customers()
+        bundle = ResolvedSourceBundle(
+            source_model=customers,
+            referenced_models=[customers, _u_regions()],
+        )
+        key = AggregateKey(
+            source=ColumnKey(path=("customers",), leaf="amount"), agg="last",
+            args=(ColumnKey(path=("customers", "regions"), leaf="nonexistent"),),
+        )
+        with pytest.raises(ValueError, match="not resolvable"):
+            resolve_ranking_time_key(
+                key=key, root_model=customers, bundle=bundle,
+                target_path=("customers",),
+            )

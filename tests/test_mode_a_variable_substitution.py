@@ -8,15 +8,34 @@ to DEV-1678 (a couple of boundary pins below assert that deferred behavior).
 All end-to-end cases run against a real file-backed SQLite datasource and
 assert on RESULT DATA, not just generated SQL strings.
 """
+import ast
 import sqlite3
 import tempfile
 
 import pytest
+import sqlglot
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
-from slayer.core.query import ColumnRef, ModelExtension, SlayerQuery
-from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.core.models import (
+    Aggregation,
+    Column,
+    DatasourceConfig,
+    ModelMeasure,
+    SlayerModel,
+)
+from slayer.core.query import (
+    ColumnRef,
+    ModelExtension,
+    SlayerQuery,
+    substitute_variables,
+)
+from slayer.engine.query_engine import (
+    SlayerQueryEngine,
+    _render_probe_model,
+    _substitute_model_sql_surfaces,
+)
+from slayer.inspect.model_render import render_model_inspection
+from slayer.sql.dialects import _ALL_DIALECTS, MysqlDialect, SqliteDialect
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -614,7 +633,10 @@ class TestBraceLiterals:
 # ---------------------------------------------------------------------------
 
 class TestCrossModelConsistency:
-    def _models(self, *, bidirectional: bool) -> list[SlayerModel]:
+    def _models(self) -> list[SlayerModel]:
+        # DEV-1853: no declared reverse join — the orders → customers edge
+        # traverses both ways, so the old bidirectional/unidirectional fixture
+        # axis is gone (a declared exact inverse is rejected at save).
         customers = SlayerModel(
             name="customers",
             sql_table="customers",
@@ -623,14 +645,6 @@ class TestCrossModelConsistency:
                 Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
                 Column(name="name", sql="name", type=DataType.TEXT),
             ],
-            # A reverse join makes the source model (orders) reachable FROM the
-            # cross-model target (customers), so the source's {floor} filter is
-            # applied in the re-rooted CTE rather than dropped.
-            joins=(
-                [{"target_model": "orders", "join_pairs": [["id", "customer_id"]]}]
-                if bidirectional
-                else []
-            ),
         )
         orders = SlayerModel(
             name="orders",
@@ -646,7 +660,7 @@ class TestCrossModelConsistency:
         )
         return [customers, orders]
 
-    async def _engine(self, *, bidirectional: bool) -> tuple:
+    async def _engine(self) -> tuple:
         tmp = tempfile.TemporaryDirectory()
         db_path = f"{tmp.name}/orders.db"
         conn = sqlite3.connect(db_path)
@@ -669,21 +683,17 @@ class TestCrossModelConsistency:
         await storage.save_datasource(
             DatasourceConfig(name="ds", type="sqlite", database=db_path)
         )
-        for m in self._models(bidirectional=bidirectional):
+        for m in self._models():
             await storage.save_model(m)
         return SlayerQueryEngine(storage=storage), tmp
 
     async def test_source_model_filter_var_applies_to_reroot(self) -> None:
-        # Boundary pin (unreachable target): customers has NO reverse join to
-        # orders, so the re-rooted cross-model CTE cannot reach the source and
-        # SLayer's pre-existing ``drop_unreachable_filters`` semantics DROP the
-        # source's ``amount >= {floor}`` filter there (a static filter behaves
-        # identically — verified). What DEV-1625 guarantees is that the {floor}
-        # in ``orders.filters`` is SUBSTITUTED wherever it IS emitted: the main
-        # ``amount:sum`` CTE gets ``>= 100`` (300.0), and no stray literal
-        # ``{floor}`` survives anywhere in the SQL. The cross-model count is
-        # unfiltered (all 3 customers) because the filter was dropped upstream.
-        engine, tmp = await self._engine(bidirectional=False)
+        # DEV-1853: the reverse hop is automatic, and F4 (DEV-1703) keeps the
+        # host's ``amount >= {floor}`` host-local either way — the cross-model
+        # count stays over all 3 customers. DEV-1625's guarantee: {floor} is
+        # SUBSTITUTED wherever it IS emitted (``amount:sum`` gets ``>= 100`` →
+        # 300.0) and no stray literal ``{floor}`` survives anywhere.
+        engine, tmp = await self._engine()
         try:
             q = SlayerQuery(
                 source_model="orders",
@@ -701,7 +711,8 @@ class TestCrossModelConsistency:
             tmp.cleanup()
 
     async def test_source_model_filter_var_applies_to_reroot_reachable(self) -> None:
-        # Reachable target: customers HAS a reverse join back to orders.
+        # Reachable target (DEV-1853: reachability is automatic — the declared
+        # reverse join this variant used to add is now rejected at save).
         #
         # DEV-1703 F4 DIVERGENCE FROM LEGACY (deliberate, user-approved):
         # under the typed pipeline a filter constrains the scope whose root it
@@ -715,7 +726,7 @@ class TestCrossModelConsistency:
         # pins, is that {floor} is SUBSTITUTED wherever it IS emitted (the
         # ``amount:sum`` scope gets ``>= 100`` → 300.0) with no stray literal
         # ``{floor}`` anywhere in the SQL.
-        engine, tmp = await self._engine(bidirectional=True)
+        engine, tmp = await self._engine()
         try:
             q = SlayerQuery(
                 source_model="orders",
@@ -814,7 +825,6 @@ class TestDeferredScope:
 
 class TestInspectShowsTemplate:
     async def test_inspect_model_shows_literal_var(self) -> None:
-        from slayer.inspect.model_render import render_model_inspection
 
         model = SlayerModel(
             name="floored",
@@ -848,9 +858,7 @@ def _python_mode_roundtrips(template: str, value: str) -> bool:
     constant equals the original ``value``. This verifies the escaping CONTRACT
     (the substituted filter round-trips through SLayer's ast.parse-based Mode-B
     parser) rather than just an opaque expected string."""
-    import ast
 
-    from slayer.core.query import substitute_variables
 
     substituted = substitute_variables(
         filter_str=template, variables={"v": value}, escape="python"
@@ -868,7 +876,6 @@ def _python_mode_roundtrips(template: str, value: str) -> bool:
 
 class TestSubstituteVariablesHardened:
     def test_sql_mode_string_value_doubles_single_quote(self) -> None:
-        from slayer.core.query import substitute_variables
 
         # Mode-A (sqlglot-parsed) surfaces double the single quote. Standard
         # (non-backslash) dialect regime.
@@ -879,7 +886,6 @@ class TestSubstituteVariablesHardened:
         assert result == "status = 'O''Brien'"
 
     def test_sql_mode_string_value_without_quote_unchanged(self) -> None:
-        from slayer.core.query import substitute_variables
 
         result = substitute_variables(
             filter_str="status = '{v}'", variables={"v": "active"},
@@ -888,7 +894,6 @@ class TestSubstituteVariablesHardened:
         assert result == "status = 'active'"
 
     def test_sql_mode_backslash_untouched_standard_dialect(self) -> None:
-        from slayer.core.query import substitute_variables
 
         # On a STANDARD dialect (backslash_escapes=False) sqlglot treats
         # backslash as an ordinary char, so SQL-mode must NOT touch it (only '
@@ -900,7 +905,6 @@ class TestSubstituteVariablesHardened:
         assert result == r"path = 'a\b'"
 
     def test_python_mode_string_value_backslash_escapes_quote(self) -> None:
-        from slayer.core.query import substitute_variables
 
         # Mode-B (Python-AST-parsed) filters backslash-escape the quote — SQL
         # quote-doubling would be parsed as adjacent-literal concatenation
@@ -911,7 +915,6 @@ class TestSubstituteVariablesHardened:
         assert result == "status = 'O\\'Brien'"
 
     def test_python_mode_double_quote_escaped(self) -> None:
-        from slayer.core.query import substitute_variables
 
         result = substitute_variables(
             filter_str='status = "{v}"', variables={"v": 'say "hi"'}, escape="python"
@@ -919,7 +922,6 @@ class TestSubstituteVariablesHardened:
         assert result == 'status = "say \\"hi\\""'
 
     def test_python_mode_backslash_doubled_first(self) -> None:
-        from slayer.core.query import substitute_variables
 
         # Backslash must be escaped BEFORE quotes, else a\'b would become
         # a\\'b's quote unescaped. Trailing/standalone backslash → doubled.
@@ -929,7 +931,6 @@ class TestSubstituteVariablesHardened:
         assert result == "path = 'a\\\\b'"
 
     def test_python_mode_backslash_then_quote(self) -> None:
-        from slayer.core.query import substitute_variables
 
         # Value  a\'b  (backslash, quote) → a\\\'b  (doubled backslash, escaped
         # quote) so the Python AST reads it back as the literal 4-char string.
@@ -939,7 +940,6 @@ class TestSubstituteVariablesHardened:
         assert result == "path = 'a\\\\\\'b'"
 
     def test_python_mode_trailing_backslash(self) -> None:
-        from slayer.core.query import substitute_variables
 
         result = substitute_variables(
             filter_str="path = '{v}'", variables={"v": "abc\\"}, escape="python"
@@ -947,7 +947,6 @@ class TestSubstituteVariablesHardened:
         assert result == "path = 'abc\\\\'"
 
     def test_python_mode_backslash_before_double_quote(self) -> None:
-        from slayer.core.query import substitute_variables
 
         # Symmetric to backslash-before-single-quote, in a double-quoted
         # template: value  a\"b  → a\\\"b so the AST recovers the 4-char value.
@@ -981,7 +980,6 @@ class TestSubstituteVariablesHardened:
         assert _python_mode_roundtrips(template, value)
 
     def test_python_mode_newline_escaped(self) -> None:
-        from slayer.core.query import substitute_variables
 
         # A real newline becomes the two-char escape \n so the literal stays on
         # one line and re-parses to the original value.
@@ -991,7 +989,6 @@ class TestSubstituteVariablesHardened:
         assert result == "note = 'a\\nb'"
 
     def test_sql_mode_newline_left_raw(self) -> None:
-        from slayer.core.query import substitute_variables
 
         # SQL string literals permit raw newlines, so sql-mode must NOT escape
         # them (only the single quote is special there). DEV-1727 made the sql
@@ -1003,7 +1000,6 @@ class TestSubstituteVariablesHardened:
         assert result == "note = 'a\nb'"
 
     def test_number_value_not_escaped_either_mode(self) -> None:
-        from slayer.core.query import substitute_variables
 
         assert (
             substitute_variables(
@@ -1018,7 +1014,6 @@ class TestSubstituteVariablesHardened:
         )
 
     def test_float_value_not_escaped(self) -> None:
-        from slayer.core.query import substitute_variables
 
         assert (
             substitute_variables(
@@ -1029,7 +1024,6 @@ class TestSubstituteVariablesHardened:
         )
 
     def test_bool_value_accepted(self) -> None:
-        from slayer.core.query import substitute_variables
 
         # bool is an int subclass; kept accepted (renders True/False).
         assert (
@@ -1045,7 +1039,6 @@ class TestSubstituteVariablesHardened:
         )
 
     def test_nan_value_raises(self) -> None:
-        from slayer.core.query import substitute_variables
 
         with pytest.raises(ValueError, match="finite"):
             substitute_variables(
@@ -1054,7 +1047,6 @@ class TestSubstituteVariablesHardened:
             )
 
     def test_inf_value_raises(self) -> None:
-        from slayer.core.query import substitute_variables
 
         with pytest.raises(ValueError, match="finite"):
             substitute_variables(
@@ -1067,7 +1059,6 @@ class TestSubstituteVariablesHardened:
             )
 
     def test_dict_value_raises(self) -> None:
-        from slayer.core.query import substitute_variables
 
         # A dict is neither scalar nor list/tuple → terminal ValueError whose
         # message now names list/tuple as an accepted shape (DEV-1730 lists).
@@ -1080,7 +1071,6 @@ class TestSubstituteVariablesHardened:
             )
 
     def test_set_value_raises(self) -> None:
-        from slayer.core.query import substitute_variables
 
         # A set is unordered → deliberately NOT accepted (only list/tuple), and
         # falls through to the same terminal message.
@@ -1093,7 +1083,6 @@ class TestSubstituteVariablesHardened:
             )
 
     def test_escape_is_required_keyword_only(self) -> None:
-        from slayer.core.query import substitute_variables
 
         # Omitting escape is a TypeError (genuinely required kw-only), so no
         # caller silently gets an unintended escaping regime.
@@ -1101,7 +1090,6 @@ class TestSubstituteVariablesHardened:
             substitute_variables(filter_str="x = {v}", variables={"v": 1})
 
     def test_invalid_escape_value_raises(self) -> None:
-        from slayer.core.query import substitute_variables
 
         # Literal gives no runtime enforcement; the implementation must reject
         # an unknown mode deterministically rather than silently pick a branch.
@@ -1114,7 +1102,6 @@ class TestSubstituteVariablesHardened:
             )
 
     def test_invalid_escape_takes_precedence_over_missing_flag(self) -> None:
-        from slayer.core.query import substitute_variables
 
         # An invalid escape mode is rejected BEFORE the sql-mode
         # backslash_escapes guard — the error is about the mode, not the flag.
@@ -1133,10 +1120,7 @@ class TestSubstituteHelperScope:
     def test_only_mode_a_surfaces_substituted(self) -> None:
         # Introduced by DEV-1625; import inline so a missing symbol doesn't
         # break collection of the whole module during TDD phase 1.
-        from slayer.engine.query_engine import _substitute_model_sql_surfaces
-        from slayer.sql.dialects import SqliteDialect
 
-        from slayer.core.models import Aggregation
 
         model = SlayerModel(
             name="m",
@@ -1185,8 +1169,6 @@ class TestSubstituteHelperScope:
         assert model.get_column("hid").sql == "amount * {mult}"
 
     def test_empty_variables_is_noop(self) -> None:
-        from slayer.engine.query_engine import _substitute_model_sql_surfaces
-        from slayer.sql.dialects import SqliteDialect
 
         model = SlayerModel(
             name="m",
@@ -1204,8 +1186,6 @@ class TestSubstituteHelperScope:
         surfaces — SlayerModel.sql, SlayerModel.filters, Column.sql,
         Column.filter — proving every surface routes list values through
         ``_render_variable_value`` (all comma-joined, auto-quoted, sql-escape)."""
-        from slayer.engine.query_engine import _substitute_model_sql_surfaces
-        from slayer.sql.dialects import SqliteDialect
 
         model = SlayerModel(
             name="m",
@@ -1532,7 +1512,6 @@ class TestListValueRenderingSql:
     — the author writes the parens, NOT the per-element quotes."""
 
     def test_sql_list_strings_auto_quoted(self) -> None:
-        from slayer.core.query import substitute_variables
 
         result = substitute_variables(
             filter_str="region IN ({v})",
@@ -1542,7 +1521,6 @@ class TestListValueRenderingSql:
         assert result == "region IN ('US', 'CA')"
 
     def test_sql_list_embedded_quote_doubled(self) -> None:
-        from slayer.core.query import substitute_variables
 
         # Per-element the same sql escaping as scalars: ' → ''.
         result = substitute_variables(
@@ -1553,7 +1531,6 @@ class TestListValueRenderingSql:
         assert result == "name IN ('A', 'O''Brien', 3)"
 
     def test_sql_list_numbers_and_bools_bare(self) -> None:
-        from slayer.core.query import substitute_variables
 
         result = substitute_variables(
             filter_str="x IN ({v})",
@@ -1563,7 +1540,6 @@ class TestListValueRenderingSql:
         assert result == "x IN (1, 2.5, True, False)"
 
     def test_sql_single_element_list(self) -> None:
-        from slayer.core.query import substitute_variables
 
         result = substitute_variables(
             filter_str="region IN ({v})",
@@ -1573,7 +1549,6 @@ class TestListValueRenderingSql:
         assert result == "region IN ('EU')"
 
     def test_sql_tuple_accepted_same_as_list(self) -> None:
-        from slayer.core.query import substitute_variables
 
         from_list = substitute_variables(
             filter_str="x IN ({v})", variables={"v": ["A", "B"]},
@@ -1586,7 +1561,6 @@ class TestListValueRenderingSql:
         assert from_list == from_tuple == "x IN ('A', 'B')"
 
     def test_sql_injection_element_stays_inside_literal(self) -> None:
-        from slayer.core.query import substitute_variables
 
         # A classic breakout attempt: the closing quote is doubled so the whole
         # payload stays a single string literal inside the IN list.
@@ -1604,7 +1578,6 @@ class TestListValueRenderingPython:
     (``x in ('A')`` is string membership; ``x in ('A',)`` is a 1-tuple)."""
 
     def test_python_list_trailing_comma_single(self) -> None:
-        from slayer.core.query import substitute_variables
 
         result = substitute_variables(
             filter_str="region in ({v})",
@@ -1614,7 +1587,6 @@ class TestListValueRenderingPython:
         assert result == "region in ('A',)"
 
     def test_python_list_trailing_comma_multi(self) -> None:
-        from slayer.core.query import substitute_variables
 
         result = substitute_variables(
             filter_str="region in ({v})",
@@ -1624,7 +1596,6 @@ class TestListValueRenderingPython:
         assert result == "region in ('A', 'B',)"
 
     def test_python_list_numbers_bare_trailing_comma(self) -> None:
-        from slayer.core.query import substitute_variables
 
         result = substitute_variables(
             filter_str="x in ({v})",
@@ -1640,9 +1611,7 @@ class TestListValueRenderingPython:
         # The substituted ``x in (...)`` must parse to an ast.Tuple (never a
         # bare Constant) whose elements recover the ORIGINAL string values —
         # so single-element lists work and quotes/backslashes round-trip.
-        import ast
 
-        from slayer.core.query import substitute_variables
 
         substituted = substitute_variables(
             filter_str="region in ({v})",
@@ -1658,7 +1627,6 @@ class TestListValueRenderingPython:
         assert recovered == values
 
     def test_python_tuple_accepted_same_as_list(self) -> None:
-        from slayer.core.query import substitute_variables
 
         from_list = substitute_variables(
             filter_str="x in ({v})", variables={"v": ["A", "B"]}, escape="python"
@@ -1671,7 +1639,6 @@ class TestListValueRenderingPython:
 
 class TestListValueRenderingErrors:
     def test_empty_list_raises_naming_variable(self) -> None:
-        from slayer.core.query import substitute_variables
 
         # IN () is invalid SQL; the message names the variable, says "empty", and
         # points at the sentinel-default idiom (DEV-1730) for "no filter".
@@ -1688,7 +1655,6 @@ class TestListValueRenderingErrors:
         assert "sentinel" in msg
 
     def test_empty_tuple_raises(self) -> None:
-        from slayer.core.query import substitute_variables
 
         with pytest.raises(ValueError, match="regions") as exc:
             substitute_variables(
@@ -1699,7 +1665,6 @@ class TestListValueRenderingErrors:
         assert "empty" in str(exc.value).lower()
 
     def test_nested_list_element_raises(self) -> None:
-        from slayer.core.query import substitute_variables
 
         # ``element`` in the match pins the PER-ELEMENT validation path (a valid
         # list with one bad element), not the whole-value type rejection; and the
@@ -1713,7 +1678,6 @@ class TestListValueRenderingErrors:
         assert "regions" in str(exc.value)
 
     def test_none_element_raises(self) -> None:
-        from slayer.core.query import substitute_variables
 
         with pytest.raises(ValueError, match="element") as exc:
             substitute_variables(
@@ -1725,7 +1689,6 @@ class TestListValueRenderingErrors:
 
     @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
     def test_non_finite_float_element_raises(self, bad: float) -> None:
-        from slayer.core.query import substitute_variables
 
         with pytest.raises(ValueError, match="finite") as exc:
             substitute_variables(
@@ -1736,7 +1699,6 @@ class TestListValueRenderingErrors:
         assert "v" in str(exc.value)
 
     def test_dict_element_raises(self) -> None:
-        from slayer.core.query import substitute_variables
 
         with pytest.raises(ValueError, match="element") as exc:
             substitute_variables(
@@ -1952,12 +1914,6 @@ class TestListModeBEndToEnd:
 # ===========================================================================
 # DEV-1727 — dialect-aware / complete escaping for Mode-A {var} substitution
 # ===========================================================================
-
-import ast  # noqa: E402
-import sqlglot  # noqa: E402
-
-from slayer.core.query import substitute_variables  # noqa: E402
-from slayer.sql.dialects import _ALL_DIALECTS  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -2305,8 +2261,6 @@ class TestSubstituteModelSqlSurfacesDialect:
         )
 
     def test_backslash_dialect_escapes_value(self) -> None:
-        from slayer.engine.query_engine import _substitute_model_sql_surfaces
-        from slayer.sql.dialects import MysqlDialect
 
         out = _substitute_model_sql_surfaces(
             model=self._model(), variables={"region": "a\\'b"},
@@ -2315,8 +2269,6 @@ class TestSubstituteModelSqlSurfacesDialect:
         assert out.sql == "SELECT * FROM t WHERE r = 'a\\\\\\'b'"
 
     def test_standard_dialect_doubles_quote_only(self) -> None:
-        from slayer.engine.query_engine import _substitute_model_sql_surfaces
-        from slayer.sql.dialects import SqliteDialect
 
         out = _substitute_model_sql_surfaces(
             model=self._model(), variables={"region": "a\\'b"},
@@ -2325,7 +2277,6 @@ class TestSubstituteModelSqlSurfacesDialect:
         assert out.sql == "SELECT * FROM t WHERE r = 'a\\''b'"
 
     def test_dialect_is_required(self) -> None:
-        from slayer.engine.query_engine import _substitute_model_sql_surfaces
 
         # Build the model outside the raises-block so only the call under test
         # (missing the required `dialect`) can raise (Sonar S5778).
@@ -2419,21 +2370,16 @@ class TestProbeModelDialectThreading:
         )
 
     def test_probe_uses_backslash_dialect(self) -> None:
-        from slayer.engine.query_engine import _render_probe_model
-        from slayer.sql.dialects import MysqlDialect
 
         out = _render_probe_model(self._template_model(), dialect=MysqlDialect())
         assert out.sql == "SELECT * FROM t WHERE r = 'a\\\\\\'b'"
 
     def test_probe_uses_standard_dialect(self) -> None:
-        from slayer.engine.query_engine import _render_probe_model
-        from slayer.sql.dialects import SqliteDialect
 
         out = _render_probe_model(self._template_model(), dialect=SqliteDialect())
         assert out.sql == "SELECT * FROM t WHERE r = 'a\\''b'"
 
     def test_probe_dialect_required(self) -> None:
-        from slayer.engine.query_engine import _render_probe_model
 
         # Build the model outside the raises-block so only the call under test
         # (missing the required `dialect`) can raise (Sonar S5778).

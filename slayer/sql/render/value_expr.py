@@ -4,7 +4,7 @@ rather than by call site so one key can't render two ways. Column-like leaves an
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 import sqlglot
 from pydantic import BaseModel, ConfigDict, Field
@@ -25,6 +25,7 @@ from slayer.core.keys import (
     TimeTruncKey,
     TransformKey,
     ValueKey,
+    _FrozenKey,
 )
 from slayer.sql.dialects.base import SqlDialect
 from slayer.sql.render.aggregates import (
@@ -122,13 +123,18 @@ class CompositeFacilities(BaseModel):
 class AliasFacilities(BaseModel):
     """The aliases an earlier scope projected; its presence switches the five slotted kinds to
     ALIAS-EXCLUSIVE resolution (rebuilding from source in an alias-only CTE is wrong SQL). An
-    absent slot RAISES; ``table_by_slot_id`` carries the qualifier."""
+    absent slot RAISES; ``table_by_slot_id`` carries the qualifier.
+
+    ``composite_alias_slot_ids`` (DEV-1865): composite-keyed slots (computed
+    dimensions) whose keys ALSO resolve by alias — re-rendering one inline at a
+    post-aggregation scope would re-evaluate it at the wrong grain."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     slot_id_by_key: Dict[Any, str] = Field(default_factory=dict)
     available_alias_by_slot_id: Dict[str, str] = Field(default_factory=dict)
     table_by_slot_id: Dict[str, str] = Field(default_factory=dict)
+    composite_alias_slot_ids: Set[str] = Field(default_factory=set)
 
 
 class RenderContext(BaseModel):
@@ -287,6 +293,13 @@ def _render_builtin_aggregate(  # NOSONAR(S3776) — sequential fail-closed guar
                 f"only 'count' is defined over a bare star.",
             )
         inner: exp.Expression = exp.Star()
+    elif isinstance(key.source, AggregateKey):
+        # A nested-aggregate source (re-aggregation) desugars before render.
+        raise RenderContextMissingFacilityError(
+            key_kind=type(key).__name__,
+            facility=_AGG_BUILDER,
+            detail="a nested-aggregate source must desugar to a producer",
+        )
     else:
         inner = _require_scope(ctx, key).resolve(
             key.source, consumer=ctx.consumer,
@@ -308,6 +321,16 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
     """Render ``key`` to sqlglot AST in ``ctx``."""
     # ALIAS-EXCLUSIVE mode: intercepted before every scope branch so a miss RAISES.
     if ctx.aliases is not None and isinstance(key, _ALIAS_SLOTTED_KINDS):
+        return _render_via_alias(key, ctx)
+    # A composite dimension slot (computed dim) resolves by its grouped alias:
+    # re-rendering it inline at a post-aggregation scope re-evaluates the
+    # expression at the wrong grain (DEV-1865).
+    if (
+        ctx.aliases is not None
+        and ctx.aliases.composite_alias_slot_ids
+        and ctx.aliases.slot_id_by_key.get(key)
+        in ctx.aliases.composite_alias_slot_ids
+    ):
         return _render_via_alias(key, ctx)
 
     if isinstance(key, ColumnKey):
@@ -365,9 +388,11 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
     if isinstance(key, ScalarCallKey):
         if key.name == "iif":
             return _render_iif_case(key=key, ctx=ctx)
+        # ANY key routes as a key (the tail raise owns unsupported kinds); only
+        # true scalars render as literals.
         args = [
             render_value_key(key=a, ctx=ctx)
-            if isinstance(a, _VALUE_KEY_TYPES)
+            if isinstance(a, _FrozenKey)
             else _literal(a)
             for a in key.args
         ]
@@ -421,18 +446,12 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
     )
 
 
-_VALUE_KEY_TYPES: Tuple[type, ...] = (
-    ColumnKey, ColumnSqlKey, TimeTruncKey, StarKey, LiteralKey, AggregateKey,
-    TransformKey, ArithmeticKey, ScalarCallKey, BetweenKey, InKey,
-)
-
-
 def _render_iif_case(*, key: ScalarCallKey, ctx: "RenderContext") -> exp.Case:
     """Render an ``iif`` chain as one multi-WHEN CASE, flattening nested ``iif`` in the otherwise position."""
     def _part(a):
         return (
             render_value_key(key=a, ctx=ctx)
-            if isinstance(a, _VALUE_KEY_TYPES) else _literal(a)
+            if isinstance(a, _FrozenKey) else _literal(a)
         )
 
     return iif_case_chain(key=key, part=_part)
@@ -440,28 +459,7 @@ def _render_iif_case(*, key: ScalarCallKey, ctx: "RenderContext") -> exp.Case:
 
 def contains_aggregate(key: ValueKey) -> bool:
     """Whether ``key``'s tree contains an ``AggregateKey`` (decides GROUP BY / HAVING). A structural
-    walk, NOT ``phase >= AGGREGATE``: every ``TransformKey`` is POST phase, which would route a transform over a raw column into HAVING."""
+    walk over ``children()``, NOT ``phase >= AGGREGATE``: every ``TransformKey`` is POST phase, which would route a transform over a raw column into HAVING."""
     if isinstance(key, AggregateKey):
         return True
-    if isinstance(key, ArithmeticKey):
-        return any(contains_aggregate(o) for o in key.operands)
-    if isinstance(key, ScalarCallKey):
-        return any(
-            contains_aggregate(a)
-            for a in key.args
-            if isinstance(a, _VALUE_KEY_TYPES)
-        )
-    if isinstance(key, TransformKey):
-        # partition_keys / time_key are dependencies too: cumsum(x, partition_by=revenue:sum).
-        return (
-            contains_aggregate(key.input)
-            or any(contains_aggregate(p) for p in key.partition_keys)
-            or (key.time_key is not None and contains_aggregate(key.time_key))
-        )
-    if isinstance(key, BetweenKey):
-        return any(
-            contains_aggregate(k) for k in (key.column, key.low, key.high)
-        )
-    if isinstance(key, InKey):
-        return contains_aggregate(key.column)
-    return False
+    return any(contains_aggregate(c) for c in key.children())

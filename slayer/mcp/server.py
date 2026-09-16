@@ -25,8 +25,9 @@ from slayer.core.models import (
     ModelMeasure,
     SlayerModel,
 )
-from slayer.core.query import ModelExtension, SlayerQuery
+from slayer.core.query import SlayerQuery
 from slayer.core.recommend import render_recommendation_markdown
+from slayer.core.warnings import ResponseTruncationWarning
 from slayer import async_utils
 from slayer.engine import ingestion as engine_ingestion
 from slayer.engine.ingestion import (
@@ -72,9 +73,12 @@ logger = logging.getLogger(__name__)
 VALID_DIMENSION_TYPES = {"string", "time", "date", "boolean", "number"}
 _UNSET = object()  # Sentinel to distinguish "not provided" from "explicitly set to None"
 
-# Shared remedy for every mcp-import failure below. The direct constrained
-# install leads because it works on any SLayer release; "upgrade SLayer" is
-# secondary (reinstalling doesn't help someone already on the latest).
+# Response row cap when the caller passes no limit; an explicit limit is trusted verbatim.
+_MCP_ROW_CAP = 20
+_CAP_HINT = "pass a higher 'limit' to get more rows"
+_NESTED_CAP_HINT = "pass a higher 'limit' on the root query to get more rows"
+
+# Shared remedy for every mcp-import failure below.
 _MCP_REMEDY = (
     "Install a supported version: pip install 'mcp>=1.0,<2' "
     "(or upgrade SLayer, which pins mcp<2: pip install -U motley-slayer)."
@@ -92,9 +96,7 @@ def _mcp_major(version_str: str) -> int | None:
 def _import_fastmcp():
     """Return the mcp 1.x ``FastMCP`` class, or raise an actionable ImportError.
 
-    mcp 2.x renamed ``mcp.server.fastmcp`` to ``mcp.server.mcpserver``, so an
-    unbounded pin can resolve a major SLayer cannot import; absent package and
-    wrong major get different remedies.
+    Absent package and wrong major (mcp 2.x dropped the module) get different remedies.
     """
     try:
         from mcp.server.fastmcp import FastMCP  # ALLOW(import-not-top): optional-dep probe — must attempt the import at call time to diagnose absent vs wrong-major
@@ -111,8 +113,7 @@ def _import_fastmcp():
                 f"mcp.server.mcpserver.MCPServer)."
             )
         else:
-            # 1.x that failed for another reason (e.g. broken transitive dep) —
-            # report that, not the 2.x rename.
+            # 1.x that failed for another reason — report that, not the rename.
             detail = (
                 f"mcp {installed} is installed, but 'mcp.server.fastmcp' could "
                 f"not be imported: {exc}"
@@ -122,12 +123,7 @@ def _import_fastmcp():
 
 
 def _set_server_version(mcp) -> None:
-    """Stamp SLayer's version onto the lowlevel MCP server.
-
-    FastMCP 1.x forwards no ``version`` to the lowlevel ``Server``, which then
-    reports the mcp SDK's own version. Both degradation paths are tolerated so
-    an SDK change can't abort construction over a cosmetic field.
-    """
+    """Stamp SLayer's version onto the lowlevel MCP server (best-effort; cosmetic)."""
     lowlevel = getattr(mcp, "_mcp_server", None)
     if lowlevel is None:
         logger.debug("MCP server exposes no _mcp_server; leaving serverInfo.version")
@@ -139,12 +135,7 @@ def _set_server_version(mcp) -> None:
 
 
 def _ambiguous_with_mcp_hint(exc: AmbiguousModelError) -> str:
-    """Render an ``AmbiguousModelError`` for the MCP surface.
-
-    The exception itself is intentionally surface-neutral; we append an
-    MCP-specific remediation pointing at the ``data_source`` tool argument
-    and the ``set_datasource_priority`` MCP tool.
-    """
+    """Render an ``AmbiguousModelError`` with an MCP-specific remediation hint."""
     return (
         f"{exc} Pass data_source=... to this tool, or use the "
         f"set_datasource_priority tool to set a priority."
@@ -166,21 +157,16 @@ def _test_connection(ds: DatasourceConfig) -> tuple[bool, str]:
 def _fetch_tables(
     ds: DatasourceConfig, schema_name: str | None = None,
 ) -> tuple[list[IngestableObject] | None, str | None]:
-    """Inspect a datasource's table AND view objects (name + kind).
+    """Inspect a datasource's table and view objects (name + kind).
 
-    Returns ``(objects, None)`` on success or ``(None, friendly_error_message)``
-    on failure. ``schema_name=None`` uses the dialect's default schema. Each
-    object keeps its ``kind`` so callers can label views / matviews rather than
-    presenting every object as a bare table name.
-
-    Views are always included, independent of the ingest-side ``--no-views``
-    flag: a views-only schema must not read as empty and misdirect the agent.
+    Returns (objects, None) or (None, friendly_error). schema_name=None uses the
+    default schema. Views are always included so a views-only schema isn't empty.
     """
     try:
         sa_engine = engine_factory.get_engine(ds.resolve_env_vars())
         inspector = sa.inspect(sa_engine)
-        # DEV-1758: route through a SchemaRef so ``schema_name=None`` resolves to
-        # the catalog-qualified default rather than sweeping every schema (DuckDB).
+        # Route through a SchemaRef so schema_name=None resolves to the
+        # catalog-qualified default rather than sweeping every schema.
         ref = (
             schema_ref_from_token(
                 schema_name, dialect_name=sa_engine.dialect.name,
@@ -284,11 +270,7 @@ def _render_drift_section(to_delete: list[Any]) -> list[str]:
 
 
 def _render_skipped_section(skipped: list[Any]) -> list[str]:
-    """Objects that produced no model at all.
-
-    Unlike the CLI this omits the ``--exclude`` hint — the agent has no such
-    argument to pass.
-    """
+    """Objects that produced no model at all (no --exclude hint; the agent has none)."""
     if not skipped:
         return []
     out = ["", f"Skipped ({len(skipped)}) — not modellable, no model created:"]
@@ -297,8 +279,7 @@ def _render_skipped_section(skipped: list[Any]) -> list[str]:
 
 
 def _render_skipped_schemas_section(skipped_schemas: list[Any]) -> list[str]:
-    """Requested schemas dropped from scope (foreign catalog / system schema),
-    so an explicit request for one isn't reported as an empty success."""
+    """Requested schemas dropped from scope (foreign catalog / system schema)."""
     if not skipped_schemas:
         return []
     out = ["", f"Skipped schemas ({len(skipped_schemas)}):"]
@@ -309,12 +290,10 @@ def _render_skipped_schemas_section(skipped_schemas: list[Any]) -> list[str]:
 def _render_hidden_internals_section(
     hidden: list[Any], *, data_source: str | None = None
 ) -> list[str]:
-    """Recognised ELT/migration bookkeeping modelled ``hidden``.
+    """Recognised ELT/migration internals modelled ``hidden``.
 
-    The models exist and stay queryable but are absent from ``models_summary``;
-    reporting them lets the agent tell a hidden model from an uncreated one. The
-    hint is datasource-qualified (via ``_unhide_hint``) because an agent runs it
-    verbatim and these names collide across datasources by construction.
+    Queryable but absent from models_summary; reporting them tells a hidden
+    model from an uncreated one. The unhide hint is datasource-qualified.
     """
     if not hidden:
         return []
@@ -344,8 +323,7 @@ def _render_ingest_result(
 ) -> str:
     """Render an ``IdempotentIngestResult`` for the MCP ``ingest_datasource_models`` tool."""
     additions = list(result.additions)
-    # Read defensively — called with more than one result shape; an older one
-    # may carry neither attribute.
+    # Read defensively — older result shapes may lack these attributes.
     skipped = list(getattr(result, "skipped", None) or [])
     skipped_schemas = list(getattr(result, "skipped_schemas", None) or [])
     hidden_internals = list(getattr(result, "hidden_internals", None) or [])
@@ -359,20 +337,9 @@ def _render_ingest_result(
         and not hidden_internals
         and not datasource_described
     ):
-        # Two distinct cases produce an empty result:
-        #   1. The scanned scope actually has no tables (the agent should look
-        #      elsewhere — show the "Try schema_name=..." hint).
-        #   2. The scope has tables but every persisted model is sql /
-        #      query-backed (silently skipped by the additive pass) — no
-        #      additive work to do, but the existing models are healthy.
-        # Use the scan's own discovered objects (DEV-1758) rather than
-        # re-probing ``_fetch_tables(schema_name)``, which only sees the default
-        # schema and so misreports a synchronized ``schemas`` / ``all_schemas``
-        # request as empty.
-        #
-        # The skipped/hidden checks are part of this guard: a steady-state
-        # re-ingest produces no additions, so without them this branch would
-        # answer "already in sync" and swallow both sections.
+        # Empty result: either no tables in scope, or all models already
+        # skipped. Use the scan's own discovered objects (not _fetch_tables,
+        # which only sees the default schema) to tell the two apart.
         scanned_objects = getattr(result, "objects", None) or []
         if not scanned_objects:
             return _empty_ingest_message(schema_name=schema_name, ds=ds)
@@ -446,17 +413,9 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
     ingest_on_startup: bool = False,
     _seed_help: bool = True,
 ):
-    # DEV-1658: seed the conceptual-help memories (help.intro …). ``_seed_help``
-    # is False when embedded in create_app (which seeds once itself), so the
-    # pass never fires twice. Idempotent / skip-if-unchanged, so a warm store
-    # is a cheap no-op.
-    #
-    # DEV-1669: seeding is a convenience side-effect and must never crash server
-    # construction. Skip silently for a ``None`` / non-``StorageBackend`` arg —
-    # metadata-only builds (reading advertised tool names / a tool's JSON
-    # schema) need no storage at all. When a real backend is given, treat a
-    # genuine seed failure (nested-loop ``run_sync``, embedding/DB error) as
-    # best-effort: warn and continue rather than abort the build.
+    # Seed conceptual-help memories (idempotent; _seed_help=False when
+    # create_app already seeds). Best-effort — never abort the build on a
+    # seed failure, and skip for metadata-only (non-StorageBackend) builds.
     if _seed_help and isinstance(storage, StorageBackend):
         try:
             # Via the modules so tests can monkeypatch both seams.
@@ -477,179 +436,153 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
     mcp = FastMCP(
         "SLayer",
         instructions=(
-            "SLayer is a semantic layer for querying databases. "
-            "Instead of writing SQL, describe what data you want using models, measures, dimensions, and filters. "
-            "New to SLayer? Start with inspect(reference='memory:help.intro', entity_type='memory') for an overview of core concepts and the query shape — it lists the deep-dive topics you can inspect the same way. "
-            "Use search(question='...') to find relevant concepts, models, and saved learnings. "
-            "Typical workflow: inspect(memory:help.intro) → search → inspect → query. "
-            "To connect a new database: create_datasource → describe_datasource (verify + list tables) → ingest_datasource_models → models_summary."
+            """SLayer is a semantic layer for querying databases. Instead of writing SQL, describe what data you want using measures, dimensions, and filters.
+SLayer queries allow you to do multistage aggregations, arithmetic, time shifts and much more right inside the query, including across multiple models (SLayer writes the joins for you).
+Before assuming you can't express certain logic (like aggregations of aggregations, or different grains in the same query) in SLayer,
+MAKE SURE to inspect(reference='memory:help.intro', entity_type='memory') for an overview of what it can do.
+DO NOT fall back on manipulating the raw data yourself unless you've read the help and are SURE SLayer can't do it.
+Use search(question='...') to find relevant concepts, models, and saved learnings.
+Typical workflow: inspect(reference='memory:help.intro', entity_type='memory') → search → inspect → query.
+To connect a new database: create_datasource → describe_datasource (verify + list tables) → ingest_datasource_models → models_summary."""
         ),
     )
     _set_server_version(mcp)
     engine = SlayerQueryEngine(storage=storage)
-    # DEV-1656: expose the closure engine so callers (bird-interact-agents on
-    # the cloud Ray runner, where one actor process is reused across many
-    # tasks) can dispose its per-task asyncpg pools at task teardown:
-    #   engine = getattr(mcp, "_slayer_engine", None)
-    #   if engine is not None:
-    #       await engine.aclose()   # loop-bound; run before the task loop closes
-    # aclose() is idempotent and leaves the engine reusable (a later execute
-    # lazily recreates the async engine). The read-only introspection tools
-    # (validate_models / recommend_root_model) reuse this same engine so a
-    # single engine holds every cached SQL client for the server's lifetime.
+    # Expose the closure engine so callers can dispose per-task pools via
+    # mcp._slayer_engine.aclose() (idempotent; leaves the engine reusable).
+    # The read-only introspection tools share this same engine.
     mcp._slayer_engine = engine
 
     @mcp.tool()
-    async def query(  # NOSONAR S107 — FastMCP introspects this signature to expose each query option as a typed MCP tool argument; collapsing into a dict would degrade the agent-facing schema
-        source_model: str | ModelExtension | SlayerModel,
-        measures: list[dict[str, str]] | None = None,
-        dimensions: list[str] | None = None,
-        filters: list[str] | None = None,
-        time_dimensions: list[dict[str, Any]] | None = None,
-        order: list[dict[str, str]] | None = None,
-        limit: int | None = None,
-        offset: int | None = None,
-        whole_periods_only: bool = False,
+    async def query(
+        query: str | SlayerQuery | list[SlayerQuery],
+        variables: dict[str, Any] | None = None,
         show_sql: bool = False,
         dry_run: bool = False,
         explain: bool = False,
         format: str = "markdown",
-        variables: dict[str, Any] | None = None,
-        distinct_dimension_values: bool = True,
-        strict: bool = False,
     ) -> str:
-        """Query data from a semantic model. Call inspect(reference="<ds>.<model>", entity_type="model") first to see available columns and measures.
+        """Query data from a semantic model. Call inspect(reference="<datasource>.<model>", entity_type="model") first to see available columns and measures, and ``search`` (with the entities you plan to use and/or a free-text question) to surface saved learnings and example queries before finalizing a query.
 
-        Args:
-            source_model: One of three forms:
-                - **Model name** (string) — name of a saved model from models_summary, e.g. ``"orders"``.
-                - **Inline ModelExtension** (dict) — extend an existing model with extra columns/joins/measures
-                  for this one query: ``{"source_name": "orders", "columns": [{"name": "double_amount",
-                  "sql": "amount * 2", "type": "DOUBLE"}]}``.
-                - **Inline SlayerModel** (dict) — define a model ad-hoc:
-                  ``{"name": "ad_hoc", "sql_table": "things", "data_source": "test", "columns": [...]}``.
-            measures: Aggregated values to return. Each is a formula: {"formula": "*:count"},
-                {"formula": "revenue:sum / *:count", "name": "aov"} (arithmetic),
-                {"formula": "cumsum(revenue:sum)"} (cumulative sum),
-                {"formula": "change(revenue:sum)"} (period-over-period difference),
-                {"formula": "change_pct(revenue:sum)"} (period-over-period % change, e.g. month-over-month growth),
-                {"formula": "time_shift(revenue:sum, -1)"} (the shifted value itself, one time bucket back),
-                {"formula": "time_shift(revenue:sum, -1, 'year')"} (value from one year earlier, for custom arithmetic),
-                {"formula": "lag(revenue:sum, 1)"} (previous row via window function; shifts by row position, NULL at edges),
-                {"formula": "lead(revenue:sum, 1)"} (next row via window function), {"formula": "last(revenue:sum)"} (most recent),
-                {"formula": "rank(revenue:sum)"} (ranking). A bare name like {"formula": "aov"} resolves to a saved ModelMeasure on the model.
-                change / change_pct / time_shift are calendar-aware and partition-safe: change and change_pct compare
-                each row against the prior time bucket (one step back at the query's own granularity), while time_shift
-                compares at its explicitly requested offset and granularity. All three join on the same non-time
-                dimension values, so per-group series reset cleanly — safe for grouped queries like month-over-month
-                revenue by store.
-                For period-over-period growth, prefer change_pct (or change for the absolute delta); use time_shift
-                only when you need the shifted value itself as a term in your own arithmetic.
-            dimensions: List of dimension names to group by, e.g. ["status", "region"].
-            filters: Filter conditions as formula strings. Examples: "status == 'completed'",
-                "amount > 100", "status in ('a', 'b')", "status is None",
-                "name like '%acme%'". Filters on measures are automatically routed to HAVING.
-                Supports and/or: "status == 'a' or status == 'b'".
-                Filters can also reference computed measure names or contain inline transforms:
-                "change(revenue:sum) > 0", "last(change(revenue:sum)) < 0".
-            time_dimensions: Time grouping. Format: {"dimension": "created_at", "granularity": "day|week|month|quarter|year", "date_range": ["2024-01-01", "2024-12-31"]}.
-            order: Sorting. Format: {"column": "measure_or_dim_name", "direction": "asc|desc"}.
-            limit: Max rows to return.
-            offset: Number of rows to skip.
-            whole_periods_only: When true, snap date filters to time bucket boundaries based on granularity, exclude the current incomplete time bucket.
+        The ``query`` argument takes one of three forms:
+
+        - **Model name** (string) — run a query-backed saved model by name, e.g. ``"monthly_revenue"``
+          (honors ``variables``; every other setting comes from the stored query).
+        - **Query object** (dict) — a single query; per-field documentation is on the SlayerQuery schema.
+        - **Multi-stage list** (list of query objects) — a DAG of stages. Every entry except the last
+          MUST carry a ``name``; the last entry is the root whose rows are returned. Stages reference
+          one another by that name — as a ``source_model`` or via a join in an inline ModelExtension —
+          and the engine orders them topologically. An inner stage's result columns become plain
+          columns of the outer stage (dotted paths flatten: ``stores.name`` -> ``stores__name``); a
+          stage may reference only what its own source defines or what a prior stage projected —
+          define before you reference. Use stages when a whole result set must be re-queried,
+          joined, or reused; single-query nesting and computed dimensions already cover
+          re-aggregation.
+
+        Expressions — one language, used in measures, computed dimensions, filters, and order. The
+        same expression returns its value as a measure, groups by it as a computed dimension, masks
+        as a filter (routed automatically to WHERE / HAVING / post-aggregation), and sorts in order.
+
+        - Aggregations are function calls over a column or a same-model scalar expression:
+          ``count(*)``, ``sum(total)``, ``sum(amount - cost)``, ``percentile(price, p=0.95)``.
+          Available: sum, avg (both take window='90d' for trailing time windows), min, max, count,
+          count_distinct, count_distinct_approx, median, percentile(x, p=),
+          weighted_avg(x, weight=col), stddev_samp, stddev_pop, var_samp, var_pop,
+          corr(x, other=col), covar_samp(x, other=col), covar_pop(x, other=col),
+          first(x[, time_col]) / last(x[, time_col]) (earliest/latest record's value per group),
+          plus model-defined custom aggregations. Write count_distinct(x), never count(distinct x).
+        - All aggregations support ``partition_by=`` (bare names: ``partition_by=region``,
+          ``partition_by=[region, city]``, ``partition_by=[]`` for the grand total), computing the
+          aggregate at that coarser grain; the result is broadcast over the missing dimensions.
+        - Combine aggregations with arithmetic and transforms — missing dimensions broadcast on
+          both sides. E.g. with dimensions ["city", "region"], the measure
+          {"formula": "sum(total) / sum(total, partition_by=region)", "name": "share_of_region"}
+          is each city's share of its region's total.
+        - Aggregations nest: "avg(sum(total, partition_by=[region, city]), partition_by=[region])"
+          averages the per-city totals within each region. The top-level partition_by must be a
+          subset of the query's dimensions; inner aggregations' partition_by need not be. An
+          outer aggregation's parameters must be determined by the operand's grain — a cell
+          value at that grain, e.g. weight=count(id, partition_by=[region, city]), or a column
+          that grain fixes; any other row column is a typed error.
+        - Transforms wrap aggregated expressions: cumsum(x); change(x) / change_pct(x)
+          (period-over-period delta / % change — calendar-aware and partition-safe, prefer these
+          for growth); time_shift(x, -1[, 'year']) (the shifted value itself, for custom
+          arithmetic); lag(x, n) / lead(x, n) (row-position shift, NULL at edges); first(x) /
+          last(x) (broadcast the earliest/latest bucket's value); consecutive_periods(predicate)
+          (trailing run length; the predicate may be row-level, e.g. status = 'paid'); rank(x),
+          dense_rank(x), percent_rank(x), ntile(x, n=N) (rank family — optional partition_by=, no
+          time dimension needed). All other transforms require a time_dimensions entry.
+          Transforms nest in either order (change(cumsum(x))). Not supported: a row-level column
+          mixed into a composite or nested input of time_shift / change / change_pct, or mixed
+          with another aggregation's value inside one aggregation source.
+        - Cross-model: reference any joined model's field as ``model_name.field_name`` (or a
+          longer dotted path) and the engine figures out the join paths, avoiding fan-outs and
+          chasm traps — each aggregation computes over its own model's rows exactly once;
+          ambiguous routes error naming the candidates, and result keys use the full routed path.
+          An aggregation sliced by a dimension not attributable to it broadcasts its value with a
+          warning — see ``to_many_handling`` to attribute or error instead.
+
+        Method — decompose the question into blocks first: every qualifier, projected column,
+        filter, grouping, unit, rounding, and ordering hint is one block, and each must map to a
+        named column/measure/filter/dimension. Never drop a qualifier because no entity matched —
+        search for it, else encode it as an expression or an inline ModelExtension column;
+        reference already-encoded quantities by name rather than re-deriving their logic. Pin
+        explicitly rather than guessing: which aggregation ("typical" is not automatically avg vs
+        median), the grouping column and raw-vs-standardized labels, each aggregate's scope (all
+        rows vs a filtered subset), sort column + direction + tie-break, NULL handling, units and
+        rounding, exact numeric constants. "How many / count of" -> a scalar count(*); "which /
+        list / show" -> the rows. Project exactly the columns the question names — no extras,
+        none missing.
+
+        Filter literals — build every ==/in/like predicate on a text column from that column's
+        sampled values (inspect it), never a guessed spelling; samples are a top-N snapshot, so
+        when a needed literal is absent verify it (e.g. a distinct-values query) rather than
+        assume either way. Compare case/whitespace-insensitively in the FILTER
+        position only, never on a projected, grouped, or join-key column; abbreviations that
+        case-folding can't unify go in the IN-set. Apply only the transformations
+        (TRIM/ROUND/CAST/dedup) the question or a governing definition requires.
+
+        Verify — run the exact final query and read the result (show_sql=true when unsure): row
+        count plausible; no dimension-only GROUP BY when you wanted per-record rows
+        (distinct_dimension_values: false); sort column + direction as asked; each aggregate's
+        scope right; NULL behavior intended; string values carry the expected casing. On a wrong
+        result, change ONE variable at a time — two changes per attempt make the outcome
+        uninterpretable.
+
+        Top-level arguments (siblings of ``query``, NOT fields inside it):
+            variables: Values for {placeholder} substitutions in filters / model SQL. Also
+                settable per query object; precedence: runtime (top-level) > named-stage >
+                outer-query > model.query_variables.
             show_sql: When true, include the generated SQL in the response for debugging.
-            strict: Error instead of warn when a cross-model measure would broadcast or a producer filter would be dropped. Rejected with run-by-name execution — declare it on the stored query instead.
             dry_run: When true, generate and return the SQL without executing it.
             explain: When true, run EXPLAIN ANALYZE and return the query plan.
-            format: Output format — "markdown" (default, compact and LLM-friendly), "json" (structured), or "csv" (most compact). Case-insensitive.
-            distinct_dimension_values: Default True (Cube.js-style auto-dedup for dim-only queries — emits GROUP BY <dim aliases>). Set False to emit raw rows: no top-level GROUP BY, just SELECT <dimensions/time_dimensions> with the usual WHERE/ORDER BY/LIMIT. Any measure reference (in measures, filters, or order) raises an error in this mode.
+            format: Output format — "markdown" (default, compact) | "json" | "csv". Case-insensitive.
 
-        Example: query(source_model="orders", measures=[{"formula": "*:count"}], dimensions=["status"], filters=["status == 'completed'"])
+        Without an explicit ``limit`` the response is capped at 20 rows with a truncation notice.
 
-        Before calling this tool, run ``search`` first, supplying the entities you're thinking of using (and/or the query itself via the ``query`` arg, or a free-text ``question``). Read the returned memories and consider any matching example queries before formulating the final query.
+        Example: query(query={"source_model": "orders", "dimensions": ["status"],
+        "measures": [{"formula": "count(*)"}], "filters": ["status == 'completed'"]})
         """
-        data: dict[str, Any] = {"source_model": source_model}
-        if dimensions:
-            data["dimensions"] = list(dimensions)
-        if filters:
-            data["filters"] = filters
-        if time_dimensions:
-            data["time_dimensions"] = list(time_dimensions)
-        if order:
-            data["order"] = list(order)
-        if limit is not None:
-            data["limit"] = limit
-        if offset is not None:
-            data["offset"] = offset
-        if whole_periods_only:
-            data["whole_periods_only"] = True
-        if measures:
-            data["measures"] = measures
-        if variables:
-            data["variables"] = dict(variables)
-        # DEV-1543: only emit when non-default so tool calls stay compact.
-        if distinct_dimension_values is False:
-            data["distinct_dimension_values"] = False
-        # DEV-1836: strict = error on any silent broadcast / dropped filter.
-        if strict:
-            data["strict"] = True
         try:
             fmt = format.lower().strip()
             if fmt not in ("json", "csv", "markdown"):
                 raise ValueError(f"Invalid format '{format}'. Must be one of: json, csv, markdown")
-            # Run-by-name shortcut: when ``source_model`` is a stored model
-            # name (string) and no overrides are given, dispatch through
-            # ``engine.execute(str)`` so the model's stored backing query
-            # runs directly with run-by-name variable precedence
-            # (``runtime_kwarg > stage > model.query_variables``). Inline
-            # ``ModelExtension`` / ``SlayerModel`` values fall through to
-            # the regular ``SlayerQuery`` path below — they have no stored
-            # backing query and the run-by-name semantics don't apply.
-            # See DEV-1373 for the variable-precedence asymmetry between
-            # the two paths.
-            no_overrides = (
-                not measures and not dimensions and not filters
-                and not time_dimensions and not order
-                and limit is None and offset is None
-                and not whole_periods_only
-                # DEV-1543: explicit ``False`` is a real override; default
-                # ``True`` falls through.
-                and distinct_dimension_values
-            )
-            if isinstance(source_model, str) and no_overrides:
-                model_name = source_model
-                target = await storage.get_model(model_name)
-                if target is not None and target.source_queries:
-                    if strict:
-                        raise ValueError(
-                            "'strict' is not supported with run-by-name "
-                            "execution; declare it on the stored query instead."
-                        )
-                    result = await engine.execute(
-                        query=model_name,
-                        variables=variables or {},
-                        dry_run=dry_run,
-                        explain=explain,
-                    )
-                    if dry_run:
-                        return f"SQL:\n{result.sql}"
-                    if explain:
-                        output = f"SQL:\n{result.sql}\n\nQuery Plan:\n"
-                        output += _format_output(result=result, fmt=fmt)
-                        return output
-                    output = _format_output(result=result, fmt=fmt)
-                    if show_sql and result.sql:
-                        output = f"SQL:\n{result.sql}\n\n{output}"
-                    return output
-            slayer_query = SlayerQuery.model_validate(data)
+            # Response row cap (spec: mcp/response-row-cap): with no explicit
+            # limit on the root query, push down cap+1 so truncation is
+            # detectable, then slice response-side. A run-by-name string is
+            # opaque (its stored SQL can't take a pushed-down limit) — cap
+            # response-side only.
+            exec_query, capped, cap_hint = _apply_mcp_row_cap(query)
             result = await engine.execute(
-                query=slayer_query,
+                query=exec_query,
                 variables=variables,
                 dry_run=dry_run,
                 explain=explain,
             )
             if dry_run:
                 return f"SQL:\n{result.sql}"
+            if capped:
+                _cap_rows(result, hint=cap_hint)
             if explain:
                 output = f"SQL:\n{result.sql}\n\nQuery Plan:\n"
                 output += _format_output(result=result, fmt=fmt)
@@ -657,98 +590,13 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             output = _format_output(result=result, fmt=fmt)
             if show_sql and result.sql:
                 output = f"SQL:\n{result.sql}\n\n{output}"
-            if result.attributes and (result.attributes.dimensions or result.attributes.measures):
-                output += "\n\n" + _format_attributes(attributes=result.attributes)
             return output
         except Exception as e:
             if isinstance(e, (sa.exc.OperationalError, sa.exc.DatabaseError)):
                 return _friendly_db_error(e)
             raise
 
-    @mcp.tool()
-    async def query_nested(
-        queries: list[dict[str, Any]],
-        variables: dict[str, Any] | None = None,
-        show_sql: bool = False,
-        dry_run: bool = False,
-        explain: bool = False,
-        format: str = "markdown",
-    ) -> str:
-        """Run a multi-stage query as a DAG. Use this when one stage depends on the output of another.
-
-        ``queries`` is a list of query dicts forming a DAG. Each entry has the
-        same shape as the regular ``query`` tool's arguments
-        (``source_model``, ``measures``, ``dimensions``, ``filters``,
-        ``time_dimensions``, ``order``, ``limit``, ``offset``,
-        ``whole_periods_only``) plus an optional ``name``. Stages reference
-        each other by name via ``source_model: "<sibling_name>"`` or
-        ``joins.target_model``.
-
-        Order doesn't matter — the engine auto-sorts so every stage
-        appears after the siblings it references. The **last entry of
-        the input is always the entry point / DAG root** (its result is
-        what's returned); only the non-final entries are reordered.
-        Every non-final entry must have a ``name``. Cycles,
-        self-references, and a non-final stage referencing the root are
-        rejected with a clear error. Stages that aren't reachable from
-        the root are accepted as utility sub-queries — they're silently
-        dropped from the emitted SQL.
-
-        Args:
-            queries: Ordered list of stage dicts. Earlier stages must be
-                named; the last stage is the one whose rows return.
-            variables: Variable values for ``{var}`` placeholder
-                substitution in filters. Runtime kwarg precedence:
-                ``runtime > stage.variables > outer query.variables >
-                model.query_variables``.
-            show_sql: When true, include the generated SQL in the response.
-            dry_run: When true, generate the SQL without executing it.
-            explain: When true, run EXPLAIN ANALYZE and return the plan.
-            format: ``markdown`` (default), ``json``, or ``csv``.
-
-        Example:
-            queries=[
-                {"name": "monthly", "source_model": "orders",
-                 "measures": [{"formula": "*:count"}, {"formula": "revenue:sum"}],
-                 "time_dimensions": [{"dimension": "created_at", "granularity": "month"}]},
-                {"source_model": "monthly", "measures": [{"formula": "*:count"}]}
-            ]
-
-        For a single-stage query, prefer the regular ``query`` tool — its
-        typed arguments give a more discoverable schema.
-        """
-        try:
-            fmt = format.lower().strip()
-            if fmt not in ("json", "csv", "markdown"):
-                raise ValueError(f"Invalid format '{format}'. Must be one of: json, csv, markdown")
-            if not queries:
-                raise ValueError("'queries' must be a non-empty list of query dicts.")
-            result = await engine.execute(
-                query=list(queries),
-                variables=variables,
-                dry_run=dry_run,
-                explain=explain,
-            )
-            if dry_run:
-                return f"SQL:\n{result.sql}"
-            if explain:
-                output = f"SQL:\n{result.sql}\n\nQuery Plan:\n"
-                output += _format_output(result=result, fmt=fmt)
-                return output
-            output = _format_output(result=result, fmt=fmt)
-            if show_sql and result.sql:
-                output = f"SQL:\n{result.sql}\n\n{output}"
-            if result.attributes and (result.attributes.dimensions or result.attributes.measures):
-                output += "\n\n" + _format_attributes(attributes=result.attributes)
-            return output
-        except Exception as e:
-            if isinstance(e, (sa.exc.OperationalError, sa.exc.DatabaseError)):
-                return _friendly_db_error(e)
-            raise
-
-    # -----------------------------------------------------------------------
     # Model discovery
-    # -----------------------------------------------------------------------
 
     @mcp.tool()
     async def models_summary(
@@ -914,6 +762,13 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         memories. Use ``search`` instead when you want an entity surfaced *in
         context* (with related memories and ranked neighbours).
 
+        Before using a column as a filter, projection, group-by, or join
+        key, inspect it and read its ``Description:`` (the schema author's
+        intent) and ``Sample values:`` (the stored literal forms — a top-N
+        sample, indicative rather than exhaustive; build text predicates
+        from these, never a guessed spelling). Never pick a column from its
+        name alone.
+
         Collection (DEV-1667): omit ``reference`` (or pass ``None`` / ``[]``)
         to list a whole kind. ``entity_type="model"`` lists all models grouped
         by datasource (compact=True: one terse line per model; compact=False:
@@ -972,9 +827,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             descriptions_max_chars=descriptions_max_chars,
         )
 
-    # -----------------------------------------------------------------------
     # Model creation and editing
-    # -----------------------------------------------------------------------
 
     @mcp.tool()
     async def create_model(
@@ -990,13 +843,22 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
     ) -> str:
         """Create a new semantic model, either from a database table or from a query.
 
-        **From a table** (provide sql_table or sql):
+        Host a column/measure on the model whose row grain is 1:1 with what
+        it describes — not merely one where its input columns live. Choose
+        join keys by column ``Description`` (author intent); on ties take the
+        shortest declared join path (long chains through lookup/log tables
+        fan out rows). Encode definitions in dependency order, referencing
+        already-defined entities by name rather than re-deriving them inline;
+        in row-level SQL parenthesise weighted sums in comparisons
+        (``(a*w1 + b*w2) > t``).
+
+        **From a table or sql query** (provide sql_table or sql):
             create_model(name="orders", sql_table="public.orders", data_source="mydb",
                          columns=[...], measures=[...])
 
         **From a query** (provide query):
             create_model(name="monthly_summary", query={"source_model": "orders",
-                         "measures": ["*:count", "amount:sum"],
+                         "measures": ["count(*)", "sum(amount)"],
                          "time_dimensions": [{"dimension": "created_at", "granularity": "month"}]})
             Columns are auto-introspected from the query result.
 
@@ -1013,7 +875,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 (CASE WHEN inside aggregation), ``label``, ``description``, ``hidden``,
                 ``meta``.
             measures: List of named formula definitions on the model. Each:
-                {"name": "aov", "formula": "revenue:sum / *:count", "label": "...",
+                {"name": "aov", "formula": "sum(revenue) / count(*)", "label": "...",
                  "description": "...", "meta": {...}}.
                 Queries can reference these by bare name (e.g. ``{"formula": "aov"}``).
                 ``meta`` is an optional opaque dict for caller bookkeeping
@@ -1076,7 +938,14 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             await storage.get_model(name, data_source=model.data_source)
             is not None
         )
-        await storage.save_model(model)
+        # save_model normalizes, validates Mode-A join paths, and trial-executes
+        # a raw-sql source against its datasource before it persists.
+        try:
+            await engine.save_model(model)
+        except Exception as e:
+            if isinstance(e, (sa.exc.OperationalError, sa.exc.DatabaseError)):
+                return _friendly_db_error(e)
+            return f"Error creating model '{model.name}': {e}"
         verb = "replaced" if existed else "created"
         return f"Model '{model.name}' {verb}."
 
@@ -1143,6 +1012,15 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         """Edit an existing model in a single call — update metadata, upsert columns/measures/aggregations/joins,
         manage filters, and remove entities.
 
+        Host a column/measure on the model whose row grain is 1:1 with what
+        it describes — not merely one where its input columns live. Choose
+        join keys by column ``Description`` (author intent); on ties take the
+        shortest declared join path (long chains through lookup/log tables
+        fan out rows). Encode definitions in dependency order, referencing
+        already-defined entities by name rather than re-deriving them inline;
+        in row-level SQL parenthesise weighted sums in comparisons
+        (``(a*w1 + b*w2) > t``).
+
         Args:
             model_name: Name of the model to edit.
             description: New model description.
@@ -1176,7 +1054,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 (``primary_key`` already implies it); it is used to infer join
                 cardinality.
             measures: Named formula measures to create or update (upsert by name). Each dict:
-                {"name": "aov", "formula": "revenue:sum / *:count", "label": "...",
+                {"name": "aov", "formula": "sum(revenue) / count(*)", "label": "...",
                  "description": "...", "meta": {...}}.
                 Queries can reference these by bare name (e.g. ``{"formula": "aov"}``).
                 ``meta`` is an optional opaque dict for caller bookkeeping.
@@ -1204,7 +1082,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         Example — update a column and add a named measure:
             edit_model(model_name="orders",
                        columns=[{"name": "status", "type": "string"}],
-                       measures=[{"name": "aov", "formula": "revenue:sum / *:count"}])
+                       measures=[{"name": "aov", "formula": "sum(revenue) / count(*)"}])
         Example — remove a measure:
             edit_model(model_name="orders", remove={"measures": ["old_metric"]})
         """
@@ -1217,16 +1095,13 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
 
         original_data_source = model.data_source
         changes: list[str] = []
-        # DEV-1375: track refresh-triggering changes so the post-save hook
-        # knows whether to refresh just the touched columns or every
-        # column on the model.
+        # Track column-level vs model-level changes so the post-save hook
+        # refreshes only the touched columns when possible.
         changed_columns: set = set()
         model_level_change = False
-        # DEV-1386: pure model-doc changes (measures / aggregations /
-        # joins) don't invalidate ``Column.sampled`` but DO change the
-        # embedding text rendered by ``slayer.search.render``. Track
-        # these separately so the embedding refresh fires without
-        # triggering a full per-column sample-value re-profile.
+        # Model-doc changes (measures / joins) don't invalidate Column.sampled
+        # but do change the embedding text — track separately to refresh
+        # embeddings without a full per-column re-profile.
         model_doc_changed = False
 
         # --- Phase 1: Scalar metadata ---
@@ -1234,12 +1109,9 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             model.description = description
             changes.append("updated description")
         if new_data_source is not None and new_data_source != model.data_source:
-            # v4: moving a model between datasources is delete-old +
-            # save-new. To avoid losing the source row when validation/save
-            # fails, we (a) refuse if a sibling already lives at the target
-            # ``(new_data_source, model.name)`` key, and (b) defer the
-            # delete-from-old until *after* the new save succeeds (handled
-            # below in Phase 5). Here we only mutate the in-memory model.
+            # Moving a model is delete-old + save-new: refuse if the target key
+            # is taken and defer the delete until after the new save (Phase 5).
+            # Here we only mutate the in-memory model.
             try:
                 existing_target = await storage.get_model(
                     model.name, data_source=new_data_source
@@ -1406,71 +1278,52 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             return f"No changes specified for model '{model_name}'."
 
         # --- Phase 5: Validate and save ---
-        # For query-backed models, columns are an engine-managed cache.
-        # If we end up with source_queries set after this edit, we route through
-        # engine.save_model so the cache is refreshed (and any user-supplied
-        # cache fields are rejected). Otherwise, persist directly via storage.
+        # Query-backed models route through engine.save_model so the
+        # engine-managed column cache is refreshed and user-supplied cache
+        # fields are rejected.
         try:
             validated = SlayerModel.model_validate(model.model_dump(mode="json"))
         except Exception as exc:
             return f"Validation error: {exc}"
 
         if validated.source_queries:
-            # ``columns`` and ``backing_query_sql`` are engine-managed for
-            # query-backed models. Reject explicit user supply rather than
-            # silently dropping (which would let the API report a successful
-            # column edit that never persists).
+            # columns / backing_query_sql are engine-managed here; reject
+            # explicit user supply rather than silently dropping it.
             if columns is not None:
                 return (
                     "Validation error: cannot supply 'columns' on a "
                     f"query-backed model ('{model_name}'). Columns are "
                     "engine-managed (auto-derived from the backing query)."
                 )
-            # Strip cache fields before save so engine.save_model can repopulate
-            # them from a fresh expansion of the backing query. (These are
-            # present here only because they were on the existing stored
-            # model, not from this edit.)
+            # Strip cache fields so save_model repopulates them from a fresh
+            # expansion of the backing query.
             validated = validated.model_copy(update={
                 "columns": [],
                 "backing_query_sql": None,
             })
             try:
-                # ``engine.save_model`` may RECOMPUTE ``data_source`` for
-                # query-backed models from the resolved virtual model, so
-                # we cannot trust ``validated.data_source`` after this
-                # call — use the returned model's identity for the
-                # post-save cleanup decision below.
+                # save_model may recompute data_source for query-backed models,
+                # so use the returned model's identity for cleanup below.
                 saved_model = await engine.save_model(validated)
             except Exception as exc:
                 return f"Validation error: {exc}"
         else:
+            # save_model normalizes, validates Mode-A join paths, and trial-
+            # executes a raw-sql source before it persists.
             try:
-                await storage.save_model(validated)
-                saved_model = validated
+                saved_model = await engine.save_model(validated)
             except Exception as exc:
-                # Source row is still intact because we deferred the
-                # delete. Surface the failure as an error string instead
-                # of letting MCP wrap it as a ToolError.
-                return f"Storage error: {exc}"
+                return f"Validation error: {exc}"
 
-        # v4 atomic move: only after the new save has succeeded do we
-        # remove the source row, and only if the saved model actually
-        # landed at a different ``data_source`` than where it started.
-        # For query-backed models the engine-side cache populator can
-        # override ``new_data_source`` (it derives ``data_source`` from
-        # the backing query); without this guard a "move that didn't
-        # move" silently deleted the just-saved row at the original key.
+        # Atomic move: remove the source row only after the save succeeded and
+        # only if the saved model actually landed at a different data_source
+        # (the cache populator can override new_data_source).
         if saved_model.data_source != original_data_source:
             await storage.delete_model(
-                saved_model.name, data_source=original_data_source
+                name=saved_model.name, data_source=original_data_source
             )
-        # DEV-1375 / DEV-1386: refresh persisted ``Column.sampled``
-        # values for any touched columns (or every column when a
-        # source-level change made every column's sample suspect), and
-        # refresh embeddings for the model subtree on any edit that
-        # changed the indexed text. Best-effort: any raise here is
-        # captured into ``refresh_warnings`` so the save's success
-        # status survives a flaky embedding API.
+        # Refresh sampled column values and subtree embeddings. Best-effort —
+        # a raise is captured into refresh_warnings so the save still succeeds.
         refresh_warnings: list[str] = []
         if changed_columns or model_level_change or model_doc_changed:
             try:
@@ -1500,9 +1353,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             response_payload["warnings"] = refresh_warnings
         return json.dumps(response_payload, indent=2)
 
-    # -----------------------------------------------------------------------
     # Datasource management
-    # -----------------------------------------------------------------------
 
     @mcp.tool()
     async def create_datasource(
@@ -1637,8 +1488,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
     async def list_datasources() -> str:
         """List all configured database connections (names and types only, credentials are not shown). Use describe_datasource for connection details and status."""
         names = await storage.list_datasources()
-        # DEV-1667: rendering delegates to the shared renderer (also used by
-        # the ``inspect`` datasource collection view) — one code path.
+        # Delegates to the shared renderer (also used by inspect).
         pairs: list[tuple[str, str | None]] = []
         for name in names:
             try:
@@ -1708,8 +1558,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             elif tables:
                 lines.append(f"\nTables ({len(tables)}){schema_label}:")
                 for o in tables:
-                    # Label non-table objects so a view-backed model is not
-                    # presented as a plain table (source_kind visibility).
+                    # Label non-table objects (views/matviews) explicitly.
                     suffix = "" if o.kind == "table" else f" ({o.kind})"
                     lines.append(f"  - {o.name}{suffix}")
                 lines.append(
@@ -1741,16 +1590,9 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
 
         await storage.save_datasource(ds)
 
-        # DEV-1549: the datasource embedding text now includes
-        # ``DatasourceConfig.description``, so an edit to the
-        # description must refresh the embedding inline — otherwise the
-        # persisted row stays stale until the next ``slayer ingest``
-        # and description-only semantic matches silently miss.
-        #
-        # The save is already committed at this point. Per CodeRabbit
-        # round-7 review: the refresh is post-save and best-effort —
-        # log a warning if it raises and surface a partial-success
-        # message rather than telling the agent the save itself failed.
+        # The embedding text includes the description, so refresh it inline on
+        # a description change. Post-save and best-effort — warn and report
+        # partial success rather than failing the already-committed save.
         refresh_warning: str | None = None
         if description is not None and description != old_description:
             models_in_ds: list[SlayerModel] = []
@@ -1776,9 +1618,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             )
         return f"Datasource '{name}' updated."
 
-    # -----------------------------------------------------------------------
     # Delete operations
-    # -----------------------------------------------------------------------
 
     @mcp.tool()
     async def delete_model(name: str, data_source: str | None = None) -> str:
@@ -1813,15 +1653,13 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 concatenated.
         """
         if data_source is not None:
-            # Fail loudly on an unknown name. Without this guard the engine
-            # returns ``[]`` because no persisted models match, which is
-            # indistinguishable from "no drift" — risky for an agent flow.
+            # Fail loudly on an unknown name — an empty result is otherwise
+            # indistinguishable from "no drift".
             ds = await storage.get_datasource(data_source)
             if ds is None:
                 return f"Datasource '{data_source}' not found."
-        # DEV-1656: reuse the closure engine (not a fresh per-call engine) so
-        # the schema-drift SQL client it opens is cached on the server's
-        # engine and disposed by ``mcp._slayer_engine.aclose()`` at teardown.
+        # Reuse the closure engine so its schema-drift SQL client is cached and
+        # disposed at teardown.
         try:
             entries = await engine.validate_models(data_source=data_source)
         except (sa.exc.OperationalError, sa.exc.DatabaseError) as exc:
@@ -1843,15 +1681,18 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         paths are ready to drop into a query whose ``source_model`` is the
         recommended root — e.g. a joined column comes back as
         ``customers.regions.name`` and a root-owned one as ``status``;
-        aggregation suffixes (``:sum``) are preserved.
+        aggregation spellings (``sum(revenue)`` / ``revenue:sum``) are preserved.
 
         When no single model reaches everything, ``root_model`` is null and
         ``coverage`` lists the best partial roots so you can split the
         request into a multi-stage query.
 
+        Call this once your item list is final, not as a schema browser —
+        explore with ``search`` / ``inspect`` first.
+
         Args:
             items: entity references (``orders.revenue``, ``customers.name``,
-                ``orders.revenue:sum``, bare ``aov`` for a saved metric...).
+                ``orders.revenue:sum`` / ``sum(orders.revenue)``, bare ``aov`` for a saved metric...).
             data_source: optional datasource scope; when omitted, names
                 resolve via the datasource-priority list. All items must
                 resolve to a single datasource.
@@ -1870,7 +1711,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 f"recommend_root_model failed: unknown format '{format}'. "
                 f"Use 'markdown' or 'json'."
             )
-        # DEV-1656: reuse the closure engine (see validate_models above).
+        # Reuse the closure engine (see validate_models above).
         try:
             rec = await engine.recommend_root_model(
                 items, data_source=data_source, root_hint=root_hint
@@ -1894,9 +1735,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             return f"Datasource '{name}' deleted."
         return f"Datasource '{name}' not found."
 
-    # -----------------------------------------------------------------------
     # Ingestion
-    # -----------------------------------------------------------------------
 
     @mcp.tool()
     async def ingest_datasource_models(
@@ -1985,7 +1824,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         priority = await storage.get_datasource_priority()
         return f"Datasource priority: {priority}"
 
-    # ---------- DEV-1357 v2: unified Memory surface -------------------
+    # Unified Memory surface
 
     memory_service = MemoryService(storage=storage)
 
@@ -2057,7 +1896,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 learning="Paid revenue by status",
                 linked_entities={
                     "source_model": "orders",
-                    "measures": [{"formula": "amount:sum"}],
+                    "measures": [{"formula": "sum(amount)"}],
                     "filters": ["status = 'paid'"],
                 },
                 id="kb.paid-revenue",
@@ -2103,9 +1942,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             return _format_resolution_error(exc)
         return response.model_dump_json(indent=2)
 
-    # ---------- DEV-1375: semantic search -----------------------------
-
-    # DEV-1516: pass the engine so the search service's post-fusion
+    # Semantic search. Pass the engine so the search service's post-fusion
     # column-hit hook can auto-refresh stale categorical columns.
     search_service = SearchService(storage=storage, engine=engine)
 
@@ -2124,6 +1961,12 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         Call this BEFORE ``query`` to surface any notes or example
         queries previously saved against the entities you're
         considering.
+
+        Discovery, not detail: hits come back as one-line descriptions —
+        pick candidate ids here, then read their full bodies with
+        ``inspect`` (batching same-kind ids in one call). A broad
+        ``compact=False`` search drags full renders into cached context on
+        every later turn for no added signal.
 
         Channel 1 (entity-overlap BM25 over memories): runs when
         ``entities`` and/or ``query`` is supplied. Memories whose
@@ -2165,12 +2008,15 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             max_results: Maximum total number of hits to return (default 10).
             cypher_filter: Optional openCypher MATCH query returning
                 ``… AS id`` that pre-filters all three channels to the
-                returned canonical IDs. When ``advanced_search`` is not
-                installed, only simple
+                returned canonical IDs — narrow to one kind so
+                ``max_results`` isn't spent on an RRF-fused mix of
+                memories, columns, measures, and models. When
+                ``advanced_search`` is not installed, only simple
                 ``MATCH (n:Label1:Label2) RETURN n.id AS id`` patterns are
                 supported as a kind filter (multi-label uses union
                 semantics; allowed labels: Memory, Datasource, Model,
-                Column, Measure, Aggregation).
+                ModelColumn, Measure, Aggregation — use ``ModelColumn``,
+                not ``Column``, which resolves only on the naive fallback).
         """
         try:
             response = await search_service.search(
@@ -2217,18 +2063,25 @@ def _format_table(data: list[dict[str, Any]], columns: list[str], max_rows: int 
 def _format_json(
     data: list[dict[str, Any]],
     warnings: list[dict[str, Any]] | None = None,
+    attributes: dict[str, Any] | None = None,
+    population: str | None = None,
 ) -> str:
-    """Format data as JSON.
+    """Bare array, or {"data", "warnings"?, "attributes"?, "population"?} once any is present.
 
-    A bare array when there is nothing to report, so the long-standing shape is
-    unchanged for every clean query. When warnings exist they go INSIDE the
-    JSON as ``{"data": [...], "warnings": [...]}`` — appending them as prose
-    would break ``json.loads`` on exactly the queries a caller most needs to
-    inspect (DEV-1745 W5).
+    Attributes, warnings, and the inferred population ride inside the payload so
+    the whole response stays strict-``json.loads``-able — never trailing prose.
     """
-    if not warnings:
+    if not warnings and not attributes and population is None:
         return json.dumps(data, default=str)
-    return json.dumps({"data": data, "warnings": warnings}, default=str)
+    payload: dict[str, Any] = {"data": data}
+    if warnings:
+        payload["warnings"] = warnings
+    if attributes:
+        payload["attributes"] = attributes
+    if population is not None:
+        payload["population"] = population
+        payload["population_inferred"] = True
+    return json.dumps(payload, default=str)
 
 
 def _format_csv(data: list[dict[str, Any]], columns: list[str]) -> str:
@@ -2247,24 +2100,60 @@ def _format_csv(data: list[dict[str, Any]], columns: list[str]) -> str:
     return "\n".join(lines)
 
 
-def _csv_warning_comments(result: SlayerResponse) -> str:
-    """Warnings as leading `#` comment lines for CSV output.
+def _cap_rows(result: SlayerResponse, *, hint: str) -> None:
+    """Slice past-cap rows and append the truncation notice. No-limit paths only."""
+    if len(result.data) <= _MCP_ROW_CAP:
+        return
+    result.data = result.data[:_MCP_ROW_CAP]
+    result.warnings = [
+        *result.warnings,
+        ResponseTruncationWarning(returned_rows=_MCP_ROW_CAP, hint=hint),
+    ]
 
-    Comments precede the header, so every DATA record keeps a uniform column
-    count and the advisory is still visible to whoever reads the output.
+
+def _cap_leaf(query: "SlayerQuery | dict"):
+    """Push ``limit = cap + 1`` into one query object with no limit; returns
+    ``(query_or_capped, capped)`` and never mutates the caller's input."""
+    limit = query.limit if isinstance(query, SlayerQuery) else query.get("limit")
+    if limit is not None:
+        return query, False
+    capped = (
+        query.model_copy(update={"limit": _MCP_ROW_CAP + 1})
+        if isinstance(query, SlayerQuery)
+        else {**query, "limit": _MCP_ROW_CAP + 1}
+    )
+    return capped, True
+
+
+def _apply_mcp_row_cap(
+    query: "str | SlayerQuery | list[SlayerQuery]",
+):
+    """Push the default row cap into the root query when the caller set no limit.
+
+    Returns ``(query_to_execute, capped, hint)``. A run-by-name string is opaque,
+    so it can't be pushed down — cap response-side. A single query object or the
+    root (last) stage of a multi-stage list gets ``limit = cap + 1`` so truncation
+    is detectable; an explicit limit is trusted verbatim.
     """
+    if isinstance(query, str):
+        return query, True, _CAP_HINT
+    if isinstance(query, (SlayerQuery, dict)):
+        capped_query, capped = _cap_leaf(query)
+        return capped_query, capped, _CAP_HINT
+    if isinstance(query, list) and query:
+        capped_root, capped = _cap_leaf(query[-1])
+        return [*query[:-1], capped_root], capped, _NESTED_CAP_HINT
+    return query, False, _CAP_HINT
+
+
+def _csv_warning_comments(result: SlayerResponse) -> str:
+    """Warnings as leading `#` comment lines for CSV output (uniform column count)."""
     lines = [f"# warning: {w.human_message()}" for w in (result.warnings or [])]
     return "" if not lines else "\n".join(lines) + "\n"
 
 
 def _format_warnings(result: SlayerResponse) -> str:
-    """Advisories about the query, appended to the TEXT output formats.
-
-    A dropped filter changes which rows the answer covers, so it cannot be
-    left to a field the caller might not read (DEV-1745 W5 / D2). Rendering
-    goes through each payload's ``human_message`` so this surface and the CLI
-    cannot describe the same warning differently.
-    """
+    """Advisories appended to text output, rendered via each payload's human_message."""
     lines = [f"  - {w.human_message()}" for w in (result.warnings or [])]
     return "" if not lines else "\n\nWarnings:\n" + "\n".join(lines)
 
@@ -2272,28 +2161,43 @@ def _format_warnings(result: SlayerResponse) -> str:
 def _format_output(result: SlayerResponse, fmt: str) -> str:
     """Format query output in the requested format.
 
-    Warnings never corrupt a machine-readable format: for ``json`` they go
-    INSIDE the payload under a ``warnings`` key, and for ``csv`` they become
-    leading ``#`` comment lines. Only ``markdown`` gets a prose block.
-
-    Note this covers the warnings only. The ``query`` tool still prepends
-    ``SQL:`` text for ``show_sql`` / ``explain`` and appends an attributes
-    block, which has always made those combinations non-JSON; that predates
-    this change and is not addressed here.
+    Attributes and warnings stay machine-safe: both inside the json payload,
+    both as leading `#` comment lines for csv, a prose attributes footer before
+    the trailing Warnings block for markdown.
     """
+    inferred_population = result.population if result.population_inferred else None
     if fmt == "csv":
-        # Leading `#` comment lines, never trailing prose: appending the block
-        # turned each warning into a record with the wrong column count and
-        # broke every CSV reader on exactly the queries worth inspecting.
-        return _csv_warning_comments(result) + _format_csv(
-            data=result.data, columns=result.columns,
+        # Leading `#` lines, never trailing prose — trailing rows break the
+        # column count for every CSV reader.
+        return (
+            _population_comment(inferred_population)
+            + _csv_attribute_comments(result)
+            + _csv_warning_comments(result)
+            + _format_csv(data=result.data, columns=result.columns)
         )
     if fmt == "markdown":
-        return result.to_markdown() + _format_warnings(result)
+        return (
+            result.to_markdown()
+            + _attributes_footer(result.attributes)
+            + _population_footer(inferred_population)
+            + _format_warnings(result)
+        )
     return _format_json(
         data=result.data,
         warnings=[w.model_dump(mode="json") for w in (result.warnings or [])],
+        attributes=_json_attributes(result.attributes),
+        population=inferred_population,
     )
+
+
+def _population_footer(population: str | None) -> str:
+    """Trailing note naming the inferred population (markdown), or empty."""
+    return "" if population is None else f"\n\nPopulation: {population} (inferred)"
+
+
+def _population_comment(population: str | None) -> str:
+    """Leading `#` note naming the inferred population (csv), or empty."""
+    return "" if population is None else f"# population: {population} (inferred)\n"
 
 
 def _format_field_meta(entries: dict[str, Any]) -> list[str]:
@@ -2326,4 +2230,30 @@ def _format_attributes(attributes) -> str:
     if measure_lines:
         lines.append("Measure attributes:")
         lines.extend(measure_lines)
-    return "\n".join(lines)if lines else ""
+    return "\n".join(lines) if lines else ""
+
+
+def _has_attributes(attributes) -> bool:
+    return bool(attributes and (attributes.dimensions or attributes.measures))
+
+
+def _attributes_footer(attributes) -> str:
+    """Attributes block as a trailing footer, or empty when there's nothing to show."""
+    if _has_attributes(attributes):
+        return "\n\n" + _format_attributes(attributes=attributes)
+    return ""
+
+
+def _csv_attribute_comments(result: SlayerResponse) -> str:
+    """Field attributes as leading `#` comment lines for CSV (never trailing rows)."""
+    if not _has_attributes(result.attributes):
+        return ""
+    block = _format_attributes(attributes=result.attributes)
+    return "\n".join(f"# {line}" for line in block.splitlines()) + "\n"
+
+
+def _json_attributes(attributes) -> dict[str, Any] | None:
+    """Structured attributes for the json payload, or None when there's nothing to show."""
+    if _has_attributes(attributes):
+        return attributes.model_dump(mode="json")
+    return None

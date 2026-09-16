@@ -8,7 +8,7 @@ import os
 from decimal import Decimal
 from typing import Dict, List, Optional, Tuple, Union
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 
 from slayer.core.errors import (
     AggregationNotAllowedError,
@@ -18,8 +18,10 @@ from slayer.core.errors import (
     MeasureRecursionLimitError,
     UnknownFunctionError,
     UnknownReferenceError,
+    UnresolvableDimensionJoinError,
 )
 from slayer.core.enums import (
+    BUILTIN_AGGREGATION_PARAM_ORDER,
     BUILTIN_AGGREGATIONS,
     DEFAULT_AGGREGATIONS_BY_TYPE,
     NUMERIC_ONLY_AGGREGATIONS,
@@ -28,35 +30,16 @@ from slayer.core.enums import (
     format_unknown_aggregation,
     normalize_aggregation_name,
 )
-from slayer.core.formula import RANK_FAMILY_TRANSFORMS
+from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS
-from slayer.core.keys import (
-    SCALAR_FUNCTIONS,
-    check_scalar_arity,
-    AggregateKey,
-    ArithmeticKey,
-    BetweenKey,
-    ColumnKey,
-    ColumnSqlKey,
-    InKey,
-    LiteralKey,
-    Phase,
-    ScalarCallKey,
-    SqlExprKey,
-    StarKey,
-    TimeTruncKey,
-    TransformKey,
-    ValueKey,
-    column_leaf,
-    column_path,
-    normalize_scalar,
-    prepend_value_key,
-)
+from slayer.core.keys import SCALAR_FUNCTIONS, check_scalar_arity, AggregateKey, ArithmeticKey, ColumnKey, ColumnSqlKey, Grain, InKey, LiteralKey, ScalarCallKey, SqlExprKey, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, column_path, normalize_scalar, prepend_value_key, walk_value_keys
+from slayer.core.join_walker import resolve_hop, terminal_model
 from slayer.core.models import SlayerModel
+from slayer.engine import dimension_routing
 from slayer.core.query import TimeDimension
 from slayer.core.scope import ModelScope, StageSchema
-from slayer.engine.column_filter_paths import compute_column_filter_join_paths
-from slayer.engine.source_bundle import ResolvedSourceBundle
+from slayer.engine.reference_closure import compute_column_filter_join_paths
+from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.syntax import (
     AggCall,
     Arith,
@@ -75,14 +58,12 @@ from slayer.engine.syntax import (
     walk_parsed_refs,
 )
 from slayer.sql.sql_expr import has_window_function
+from slayer.ir.bound import BoundExpr, BoundFilter
 
 __all__ = [
-    "BoundExpr",
-    "BoundFilter",
     "bind_expr",
     "bind_filter",
     "bind_time_dimension",
-    "walk_value_keys",
 ]
 
 
@@ -122,50 +103,35 @@ def _fmt_measure_chain(chain: Tuple[Tuple[str, str], ...]) -> List[str]:
     return [f"{model}.{measure}" for model, measure in chain]
 
 
-class BoundExpr(BaseModel):
-    """A bound expression — its leaves are resolved ``ValueKey``s."""
-
-    model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
-
-    value_key: ValueKey
-
-    @property
-    def phase(self) -> Phase:
-        return self.value_key.phase
-
-
-class BoundFilter(BaseModel):
-    """A bound filter predicate: ``value_key`` (like ``BoundExpr``), ``phase``
-    (max phase any referenced slot reaches), and ``referenced_keys`` (every
-    ``ValueKey`` in the tree, for the cross-model planner's filter routing)."""
-
-    model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
-
-    value_key: ValueKey
-    phase: Phase
-    referenced_keys: Tuple[ValueKey, ...] = Field(default_factory=tuple)
-
-
 def bind_expr(
     parsed: ParsedExpr,
     *,
     scope: Union[ModelScope, StageSchema],
     bundle: ResolvedSourceBundle,
     allow_measures: bool = False,
+    dimension_alias_map: Optional[Dict[str, "ValueKey"]] = None,
 ) -> BoundExpr:
     """Bind a parsed expression against a scope into a ``BoundExpr``.
 
     ``allow_measures`` enables saved-measure resolution (bare and dotted) in
     the eligible positions — measure formulas and computed-dimension
-    expressions; off everywhere else, so a saved-measure name there errors."""
+    expressions; off everywhere else, so a saved-measure name there errors.
+    ``dimension_alias_map`` resolves ``partition_by=<computed dim name>`` to
+    the dimension's bound key (DEV-1847 shape B); it applies ONLY there."""
     measure_ctx = (
         MeasureResolutionCtx(depth_limit=_measure_depth_limit())
         if allow_measures else None
     )
     value_key = _bind(
         parsed, scope=scope, bundle=bundle, in_filter=False, measure_ctx=measure_ctx,
+        dim_alias_map=dimension_alias_map,
     )
-    return BoundExpr(value_key=value_key)
+    return BoundExpr(
+        value_key=value_key,
+        routed_dotted=_canonical_if_routed(
+            parsed=parsed, value_key=value_key, scope=scope,
+        ),
+    )
 
 
 def bind_time_dimension(
@@ -238,11 +204,42 @@ def bind_time_dimension(
             f"(DATE / TIMESTAMP); got column type {observed!r}."
         )
 
-    return BoundExpr(
-        value_key=TimeTruncKey(
-            column=bound_col, granularity=str(td.granularity.value),
-        ),
+    time_key = TimeTruncKey(
+        column=bound_col, granularity=str(td.granularity.value),
     )
+    routed = (
+        _canonical_if_routed(
+            parsed=DottedRef(parts=tuple(full.split("."))),
+            value_key=bound_col, scope=scope,
+        )
+        if "." in full else None
+    )
+    return BoundExpr(value_key=time_key, routed_dotted=routed)
+
+
+def _canonical_if_routed(
+    *,
+    parsed: ParsedExpr,
+    value_key: ValueKey,
+    scope: Union[ModelScope, StageSchema],
+) -> Optional[str]:
+    """Full routed dotted path when the whole field is a short-form ``DottedRef``
+    that auto-routed to a longer path (DEV-1856), else ``None``. Excludes
+    self-prefix and direct joins (bound path == typed hop path) so every
+    non-routed ref keeps a byte-identical result key."""
+    if not isinstance(parsed, DottedRef):
+        return None
+    if not isinstance(scope, ModelScope) or scope.source_model is None:
+        return None
+    key = value_key.column if isinstance(value_key, TimeTruncKey) else value_key
+    if not isinstance(key, (ColumnKey, ColumnSqlKey)):
+        return None  # saved measures canonicalize in stage_planner._resolve_saved_measure_ref
+    typed = parsed.parts
+    if typed and typed[0] == scope.source_model.name:
+        typed = typed[1:]
+    if tuple(column_path(key)) == tuple(typed[:-1]):
+        return None
+    return ".".join((*column_path(key), column_leaf(key)))
 
 
 def _terminal_model_for_path(
@@ -251,15 +248,22 @@ def _terminal_model_for_path(
     scope: ModelScope,
     bundle: ResolvedSourceBundle,
 ) -> Optional[SlayerModel]:
-    """Walk ``path`` from ``scope.source_model`` to the terminal model (host if empty)."""
+    """Walk ``path`` from ``scope.source_model`` to the terminal model (host if
+    empty) through the shared bidirectional walker — reverse hops and edge-name
+    tokens resolve, so the terminal model comes from the resolved edge, never
+    from reading the token as a model name (DEV-1853 D5)."""
     current = scope.source_model
     if current is None:
         return None
+    models_by_name = bundle.models_by_name
+    models_by_name.setdefault(current.name, current)
     for hop in path:
-        nxt = bundle.get_referenced_model(hop)
-        if nxt is None:
+        edge = resolve_hop(current=current, token=hop, models_by_name=models_by_name)
+        if edge is None:
             return None
-        current = nxt
+        current = models_by_name.get(edge.target_model)
+        if current is None:
+            return None
     return current
 
 
@@ -269,6 +273,7 @@ def bind_filter(
     scope: Union[ModelScope, StageSchema],
     bundle: ResolvedSourceBundle,
     alias_map: Optional[Dict[str, "ValueKey"]] = None,
+    dimension_alias_map: Optional[Dict[str, "ValueKey"]] = None,
 ) -> BoundFilter:
     """Bind a parsed filter predicate + classify its phase.
 
@@ -276,9 +281,11 @@ def bind_filter(
     ``IllegalWindowInFilterError`` if a referenced ``Column.sql`` is windowed.
     ``alias_map`` maps a stage's declared-measure names to their bound
     ``ValueKey`` so a bare ref matching an alias interns onto that slot rather
-    than resolving against model columns (colon form and alias form share one slot)."""
+    than resolving against model columns (colon form and alias form share one slot).
+    ``dimension_alias_map`` resolves ``partition_by=<computed dim name>`` only."""
     value_key = _bind(
         parsed, scope=scope, bundle=bundle, in_filter=True, alias_map=alias_map,
+        dim_alias_map=dimension_alias_map,
     )
     refs = tuple(walk_value_keys(value_key))
     phase = max(
@@ -291,58 +298,6 @@ def bind_filter(
     )
 
 
-_VALUE_KEY_TYPES = (
-    ColumnKey, ColumnSqlKey, StarKey, LiteralKey,
-    AggregateKey, TransformKey, ArithmeticKey, ScalarCallKey,
-    BetweenKey, InKey, TimeTruncKey,
-)
-
-
-def walk_value_keys(key: ValueKey):
-    """Yield every ``ValueKey`` reachable from ``key``, including ``key``."""
-    yield key
-    if isinstance(key, AggregateKey):
-        if isinstance(key.source, _VALUE_KEY_TYPES):
-            yield from walk_value_keys(key.source)
-        for a in key.args:
-            if isinstance(a, _VALUE_KEY_TYPES):
-                yield from walk_value_keys(a)
-        for _, v in key.kwargs:
-            if isinstance(v, _VALUE_KEY_TYPES):
-                yield from walk_value_keys(v)
-        for pk in key.partition_keys or ():
-            yield from walk_value_keys(pk)
-    elif isinstance(key, TransformKey):
-        if isinstance(key.input, _VALUE_KEY_TYPES):
-            yield from walk_value_keys(key.input)
-        for a in key.args:
-            if isinstance(a, _VALUE_KEY_TYPES):
-                yield from walk_value_keys(a)
-        for _, v in key.kwargs:
-            if isinstance(v, _VALUE_KEY_TYPES):
-                yield from walk_value_keys(v)
-        for pk in key.partition_keys:
-            yield from walk_value_keys(pk)
-        if key.time_key is not None:
-            yield from walk_value_keys(key.time_key)
-    elif isinstance(key, ArithmeticKey):
-        for op in key.operands:
-            yield from walk_value_keys(op)
-    elif isinstance(key, ScalarCallKey):
-        for arg in key.args:
-            if isinstance(arg, _VALUE_KEY_TYPES):
-                yield from walk_value_keys(arg)
-    elif isinstance(key, BetweenKey):
-        yield from walk_value_keys(key.column)
-        yield from walk_value_keys(key.low)
-        yield from walk_value_keys(key.high)
-    elif isinstance(key, InKey):
-        # Walk column LHS + every literal RHS, like BetweenKey.
-        yield from walk_value_keys(key.column)
-        for v in key.values:
-            yield from walk_value_keys(v)
-
-
 def _bind(
     parsed: ParsedExpr,
     *,
@@ -351,9 +306,12 @@ def _bind(
     in_filter: bool,
     alias_map: Optional[Dict[str, "ValueKey"]] = None,
     measure_ctx: Optional[MeasureResolutionCtx] = None,
+    dim_alias_map: Optional[Dict[str, "ValueKey"]] = None,
 ) -> ValueKey:
     # ``measure_ctx`` rides eligible operand edges, dropped at the aggregation
     # boundary — a measure is legal at value level but not inside an aggregation.
+    # ``dim_alias_map`` rides every edge but resolves ONLY inside an
+    # aggregation's ``partition_by`` (DEV-1847 shape B).
     if isinstance(parsed, Literal):
         return LiteralKey(value=normalize_scalar(parsed.value))
 
@@ -373,33 +331,36 @@ def _bind(
         return StarKey()
 
     if isinstance(parsed, AggCall):
-        return _bind_agg(parsed, scope=scope, bundle=bundle)
+        return _bind_agg(
+            parsed, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map,
+        )
 
     if isinstance(parsed, TransformCall):
         return _bind_transform(
             parsed, scope=scope, bundle=bundle, alias_map=alias_map,
-            measure_ctx=measure_ctx,
+            measure_ctx=measure_ctx, dim_alias_map=dim_alias_map,
         )
 
     if isinstance(parsed, ScalarCall):
         return _bind_scalar(
             parsed, scope=scope, bundle=bundle, in_filter=in_filter,
             alias_map=alias_map, measure_ctx=measure_ctx,
+            dim_alias_map=dim_alias_map,
         )
 
     if isinstance(parsed, Arith):
         return ArithmeticKey(
             op=parsed.op,
             operands=(
-                _bind(parsed.left, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map, measure_ctx=measure_ctx),
-                _bind(parsed.right, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map, measure_ctx=measure_ctx),
+                _bind(parsed.left, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map, measure_ctx=measure_ctx, dim_alias_map=dim_alias_map),
+                _bind(parsed.right, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map, measure_ctx=measure_ctx, dim_alias_map=dim_alias_map),
             ),
         )
 
     if isinstance(parsed, UnaryOp):
         return ArithmeticKey(
             op=parsed.op,
-            operands=(_bind(parsed.operand, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map, measure_ctx=measure_ctx),),
+            operands=(_bind(parsed.operand, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map, measure_ctx=measure_ctx, dim_alias_map=dim_alias_map),),
         )
 
     if isinstance(parsed, Cmp):
@@ -410,18 +371,19 @@ def _bind(
                 parsed,
                 scope=scope, bundle=bundle, in_filter=in_filter,
                 alias_map=alias_map, measure_ctx=measure_ctx,
+                dim_alias_map=dim_alias_map,
             )
         return ArithmeticKey(
             op=parsed.op,
             operands=(
-                _bind(parsed.left, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map, measure_ctx=measure_ctx),
-                _bind(parsed.right, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map, measure_ctx=measure_ctx),
+                _bind(parsed.left, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map, measure_ctx=measure_ctx, dim_alias_map=dim_alias_map),
+                _bind(parsed.right, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map, measure_ctx=measure_ctx, dim_alias_map=dim_alias_map),
             ),
         )
 
     if isinstance(parsed, BoolOp):
         operands = tuple(
-            _bind(v, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map, measure_ctx=measure_ctx)
+            _bind(v, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map, measure_ctx=measure_ctx, dim_alias_map=dim_alias_map)
             for v in parsed.operands
         )
         return ArithmeticKey(op=parsed.op, operands=operands)
@@ -439,6 +401,7 @@ def _bind_in(
     in_filter: bool,
     alias_map: Optional[Dict[str, "ValueKey"]] = None,
     measure_ctx: Optional[MeasureResolutionCtx] = None,
+    dim_alias_map: Optional[Dict[str, "ValueKey"]] = None,
 ) -> InKey:
     """Bind an ``IN`` / ``NOT IN`` predicate into an ``InKey``.
 
@@ -453,7 +416,7 @@ def _bind_in(
     column = _bind(
         parsed.left,
         scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map,
-        measure_ctx=measure_ctx,
+        measure_ctx=measure_ctx, dim_alias_map=dim_alias_map,
     )
     values = tuple(
         LiteralKey(value=normalize_scalar(elt.value))
@@ -557,32 +520,51 @@ def _walk_join_chain(
     host,
     bundle: ResolvedSourceBundle,
     parts: Tuple[str, ...],
+    leaf: str,
 ):
-    """Walk ``hop_path`` join hops from ``host``, validating each and rejecting a
-    hop that revisits a model (circular join). Returns the terminal model;
-    ``parts`` is the full dotted ref, for error messages only."""
+    """Walk ``hop_path`` join hops from ``host`` through the shared bidirectional
+    walker; returns ``(terminal_model, effective_hop_path)``. Each token resolves
+    as an edge name then a neighbour model, in either orientation.
+
+    When a token resolves to no incident edge, a bare ``Target`` short form
+    (``len(hop_path) == 1``) auto-routes to its full datasource-scoped path
+    (DEV-1856) — the effective path is the routed one; a ``len >= 2`` chain is a
+    broken chain, rejected (never silently repaired) with a short-form suggestion
+    when the target is uniquely routable. ``AmbiguousJoinPathError`` from a
+    parallel-pair hop propagates untouched; an edge that resolves onto a target
+    absent from the bundle stays ``UnknownReferenceError``. ``parts`` is the full
+    dotted ref, for error messages."""
+    models_by_name = bundle.models_by_name
+    models_by_name.setdefault(host.name, host)
     current = host
     visited_models = {host.name}
     for hop in hop_path:
-        join = next(
-            (j for j in current.joins if j.target_model == hop), None,
-        )
-        if join is None:
-            raise UnknownReferenceError(
-                name=".".join(parts),
-                scope_kind="ModelScope",
-                scope_summary=(
-                    f"model {current.name!r} joins: "
-                    f"{[j.target_model for j in current.joins]}"
-                ),
-                suggestion=f"model {current.name!r} has no join to {hop!r}.",
+        edge = resolve_hop(current=current, token=hop, models_by_name=models_by_name)
+        if edge is None:
+            if current is host and len(hop_path) == 1:
+                route = dimension_routing.route_dotted_target(
+                    root=host, target_model=hop, leaf=leaf,
+                    models_by_name=models_by_name,
+                )
+                terminal = models_by_name.get(hop)
+                if terminal is None:
+                    raise UnknownReferenceError(
+                        name=".".join(parts),
+                        scope_kind="ModelScope",
+                        scope_summary=f"target {hop!r} not in source bundle",
+                        suggestion=None,
+                    )
+                return terminal, tuple(route)
+            raise _broken_chain_error(
+                host=host, hop_path=hop_path, leaf=leaf, parts=parts,
+                models_by_name=models_by_name,
             )
-        nxt = bundle.get_referenced_model(hop)
+        nxt = models_by_name.get(edge.target_model)
         if nxt is None:
             raise UnknownReferenceError(
                 name=".".join(parts),
                 scope_kind="ModelScope",
-                scope_summary=f"target {hop!r} not in source bundle",
+                scope_summary=f"target {edge.target_model!r} not in source bundle",
                 suggestion=None,
             )
         # Revisiting a model is a circular join (``a -> b -> a``): reject here
@@ -594,7 +576,30 @@ def _walk_join_chain(
             )
         visited_models.add(nxt.name)
         current = nxt
-    return current
+    return current, tuple(hop_path)
+
+
+def _broken_chain_error(
+    *,
+    host: SlayerModel,
+    hop_path: Tuple[str, ...],
+    leaf: str,
+    parts: Tuple[str, ...],
+    models_by_name: Dict[str, SlayerModel],
+) -> UnresolvableDimensionJoinError:
+    """A multi-hop dotted chain with an unresolvable hop — rejected, never
+    auto-repaired. Suggests the short form ``Target.leaf`` when its target
+    (``hop_path[-1]``) is itself uniquely routable, else no suggestion."""
+    target = hop_path[-1]
+    routable = dimension_routing.short_form_route_or_none(
+        root=host, target_model=target, models_by_name=models_by_name,
+    )
+    return UnresolvableDimensionJoinError(
+        reference=".".join(parts),
+        root_model=host.name,
+        reason=f"'{'.'.join(hop_path)}' is not a valid join chain",
+        suggested_path=f"{target}.{leaf}" if routable is not None else None,
+    )
 
 
 def _strip_self_prefix(
@@ -663,12 +668,12 @@ def _resolve_dotted(
     # parts[:-1] are join targets; parts[-1] is the leaf column.
     hop_path = parts[:-1]
     leaf = parts[-1]
-    current = _walk_join_chain(
-        hop_path=hop_path, host=host, bundle=bundle, parts=parts,
+    current, effective_hop_path = _walk_join_chain(
+        hop_path=hop_path, host=host, bundle=bundle, parts=parts, leaf=leaf,
     )
 
     return _resolve_terminal_leaf(
-        current=current, leaf=leaf, hop_path=hop_path,
+        current=current, leaf=leaf, hop_path=effective_hop_path,
         original_parts=original_parts, scope=scope, bundle=bundle,
         measure_ctx=measure_ctx,
     )
@@ -772,13 +777,19 @@ def _reject_round_trip(
 ) -> None:
     """Reject a re-anchored measure whose join path revisits a model on the
     host→target chain (round trip) — parity with the circular-join rejection."""
+    models_by_name = bundle.models_by_name
+    models_by_name.setdefault(host.name, host)
     for sub in walk_value_keys(host_key):
         path = getattr(sub, "path", None)
         if not path:
             continue
         visited = {host.name}
+        current = host
         for hop in path:
-            nxt = bundle.get_referenced_model(hop)
+            # Tokens may be edge names — resolve via the shared walker.
+            edge = resolve_hop(
+                current=current, token=hop, models_by_name=models_by_name)
+            nxt = models_by_name.get(edge.target_model) if edge else None
             if nxt is None:
                 break
             if nxt.name in visited:
@@ -789,6 +800,7 @@ def _reject_round_trip(
                     f"(the identical hand-written path is rejected as circular)."
                 )
             visited.add(nxt.name)
+            current = nxt
 
 
 def _resolve_saved_measure(
@@ -873,21 +885,29 @@ def _resolve_dotted_star(
     # Strip same-model self-prefix (``orders.*`` on ``orders``).
     if hop_path and hop_path[0] == host.name:
         hop_path = hop_path[1:]
-    # Validate the hop chain (raises on missing / circular join); leaf ``*``
-    # needs only the validated path, not the terminal model.
-    _walk_join_chain(hop_path=hop_path, host=host, bundle=bundle, parts=parts)
-    return StarKey(path=tuple(hop_path))
+    # Validate the hop chain (raises on missing / circular join, auto-routes a
+    # short form); the routed effective path carries the star.
+    _, effective_hop_path = _walk_join_chain(
+        hop_path=hop_path, host=host, bundle=bundle, parts=parts, leaf="*",
+    )
+    return StarKey(path=tuple(effective_hop_path))
 
 
 def _bind_agg_partition_keys(
     value, *,
     scope: Union[ModelScope, StageSchema],
     bundle: ResolvedSourceBundle,
-) -> frozenset:
-    """Bind an aggregation ``partition_by`` value to a frozenset of column keys."""
+    dim_alias_map: Optional[Dict[str, "ValueKey"]] = None,
+) -> Grain:
+    """Bind an aggregation ``partition_by`` value to the partition ``Grain``;
+    a name in ``dim_alias_map`` resolves to that computed dimension's bound key
+    (DEV-1847 shape B)."""
     elements = value if isinstance(value, tuple) else (value,)
     pks: List = []
     for elem in elements:
+        if dim_alias_map and isinstance(elem, Ref) and elem.name in dim_alias_map:
+            pks.append(dim_alias_map[elem.name])
+            continue
         bound = _bind(parsed=elem, scope=scope, bundle=bundle, in_filter=False)
         if not isinstance(bound, (ColumnKey, ColumnSqlKey)):
             raise ValueError(
@@ -895,7 +915,7 @@ def _bind_agg_partition_keys(
                 f"got {type(bound).__name__}."
             )
         pks.append(bound)
-    return frozenset(pks)
+    return Grain.of(pks)
 
 
 def _bind_expression_agg_source(
@@ -1045,12 +1065,38 @@ def _reject_non_numeric_expression_agg(
         )
 
 
+def _source_is_reaggregation(node) -> bool:
+    """Whether a parsed aggregation source resolves to attached values (a nested
+    AggCall, alone or composed) — a re-aggregation (DEV-1847). The parse gate has
+    already ensured such a source is pure-attached (no transforms, no row mix)."""
+    if isinstance(node, AggCall):
+        return True
+    if isinstance(node, (Arith, Cmp)):
+        return _source_is_reaggregation(node.left) or _source_is_reaggregation(node.right)
+    if isinstance(node, ScalarCall):
+        return any(_source_is_reaggregation(a) for a in node.args)
+    if isinstance(node, UnaryOp):
+        return _source_is_reaggregation(node.operand)
+    if isinstance(node, BoolOp):
+        return any(_source_is_reaggregation(o) for o in node.operands)
+    return False
+
+
 def _bind_agg(
     parsed: AggCall, *,
     scope: Union[ModelScope, StageSchema],
     bundle: ResolvedSourceBundle,
+    dim_alias_map: Optional[Dict[str, "ValueKey"]] = None,
 ) -> AggregateKey:
-    if isinstance(parsed.source, StarSource):
+    if _source_is_reaggregation(parsed.source):
+        # Re-aggregation (DEV-1847): bind the operand subtree — inner AggCalls
+        # become AggregateKeys — so the outer key carries a nested-aggregate
+        # source (axiom 6). Discovery/planning lift it to a producer-over-producer.
+        source = _bind(
+            parsed.source, scope=scope, bundle=bundle, in_filter=False,
+            dim_alias_map=dim_alias_map,
+        )
+    elif isinstance(parsed.source, StarSource):
         source = StarKey()
     elif (
         isinstance(parsed.source, DottedRef)
@@ -1081,15 +1127,20 @@ def _bind_agg(
     # ``partition_by`` is lifted out of kwargs onto ``partition_keys``
     # (``None`` means no partition, ``[]`` means grand total).
     args = tuple(
-        _bind_agg_arg(a, scope=scope, bundle=bundle) for a in parsed.args
+        _bind_agg_arg(a, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map)
+        for a in parsed.args
     )
-    partition_keys: Optional[frozenset] = None
+    partition_keys: Optional[Grain] = None
     kwargs_list: List = []
     for k, v in parsed.kwargs:
         if k == "partition_by":
-            partition_keys = _bind_agg_partition_keys(value=v, scope=scope, bundle=bundle)
+            partition_keys = _bind_agg_partition_keys(
+                value=v, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map,
+            )
             continue
-        kwargs_list.append((k, _bind_agg_arg(v, scope=scope, bundle=bundle)))
+        kwargs_list.append((
+            k, _bind_agg_arg(v, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map),
+        ))
     kwargs = tuple(kwargs_list)
     # Propagate ``Column.filter`` into the AggregateKey's identity: two
     # aggregates over the same column with different filters differ at the key
@@ -1101,6 +1152,9 @@ def _bind_agg(
     # (alias-healed) name so the generator resolves the canonical aggregation.
     effective_agg = _validate_agg_eligibility(
         source=source, agg=parsed.agg, bundle=bundle,
+    )
+    args, kwargs = _fold_positional_agg_args(
+        agg=effective_agg, source=source, bundle=bundle, args=args, kwargs=kwargs,
     )
     # DEV-1826 expression sources: order-sensitive first/last need a plain
     # column (the ranked kernel can't rank an expression), and numeric-only
@@ -1125,6 +1179,18 @@ def _bind_agg(
     )
 
 
+def _walk_tokens_best_effort(
+    *, host: SlayerModel, path, bundle: ResolvedSourceBundle,
+) -> Optional[SlayerModel]:
+    """Terminal model of ``path`` from ``host`` via the shared walker (tokens
+    may be edge names); ``None`` when a hop doesn't resolve — callers skip
+    their validation best-effort."""
+    return terminal_model(
+        root=host, path=tuple(path),
+        models_by_name=bundle.models_by_name,
+    )
+
+
 def _resolve_column_filter_key(
     *, source, bundle: ResolvedSourceBundle,
 ) -> Optional[SqlExprKey]:
@@ -1140,12 +1206,9 @@ def _resolve_column_filter_key(
     host = bundle.source_model
     if host is None:
         return None
-    current: SlayerModel = host
-    for hop in path:
-        nxt = bundle.get_referenced_model(hop)
-        if nxt is None:
-            return None
-        current = nxt
+    current = _walk_tokens_best_effort(host=host, path=path, bundle=bundle)
+    if current is None:
+        return None
     col = next((c for c in current.columns if c.name == leaf), None)
     if col is None or not col.filter:
         return None
@@ -1178,13 +1241,55 @@ def _resolve_agg_owner(
     if host is None:
         return None, None
     leaf = getattr(source, "leaf", None) or getattr(source, "column_name", None)
-    current: SlayerModel = host
-    for hop in tuple(getattr(source, "path", ())):
-        nxt = bundle.get_referenced_model(hop)
-        if nxt is None:
-            return None, None
-        current = nxt
+    current = _walk_tokens_best_effort(
+        host=host, path=tuple(getattr(source, "path", ())), bundle=bundle)
+    if current is None:
+        return None, None
     return current, leaf
+
+
+def _declared_agg_param_names(
+    *, agg: str, source, bundle: ResolvedSourceBundle,
+) -> List[str]:
+    """Declared parameter order for ``agg`` — the owning model's custom
+    definition wins over the built-in registry; ``[]`` when none declared."""
+    owner, _leaf = _resolve_agg_owner(source, bundle)
+    if owner is not None:
+        custom = next(
+            (a for a in (owner.aggregations or []) if a.name == agg), None,
+        )
+        if custom is not None:
+            return [p.name for p in custom.params]
+    return list(BUILTIN_AGGREGATION_PARAM_ORDER.get(agg, ()))
+
+
+def _fold_positional_agg_args(
+    *, agg: str, source, bundle: ResolvedSourceBundle, args: tuple, kwargs: tuple,
+) -> "tuple[tuple, tuple]":
+    """Fold positional call values onto declared parameter names, Python-call
+    style, so ``percentile(x, 0.9)`` interns identically to ``p=0.9``. Ranked
+    ``first``/``last`` declare no parameters — their positional ranking column
+    stays in ``args``."""
+    if not args:
+        return args, kwargs
+    names = _declared_agg_param_names(agg=agg, source=source, bundle=bundle)
+    if not names:
+        return args, kwargs
+    if len(args) > len(names):
+        raise ValueError(
+            f"Aggregation {agg!r} takes at most {len(names)} parameter(s) "
+            f"({', '.join(names)}); got {len(args)} positional value(s)."
+        )
+    given = {k for k, _ in kwargs}
+    folded = list(kwargs)
+    for name, value in zip(names, args):
+        if name in given:
+            raise ValueError(
+                f"Aggregation {agg!r} got parameter {name!r} both positionally "
+                f"and by name."
+            )
+        folded.append((name, value))
+    return (), tuple(folded)
 
 
 def _unknown_aggregation_message(name: str, known) -> str:
@@ -1279,16 +1384,24 @@ def _bind_agg_arg(
     parsed: ParsedExpr, *,
     scope: Union[ModelScope, StageSchema],
     bundle: ResolvedSourceBundle,
+    dim_alias_map: Optional[Dict[str, "ValueKey"]] = None,
 ):
     """Bind one aggregation arg: identifiers → ``ColumnKey`` / ``ColumnSqlKey``,
-    literals → inline scalar via ``normalize_scalar`` (stored inline, not as LiteralKey)."""
+    a nested aggregate → ``AggregateKey`` (aggregate-valued parameter),
+    literals → inline scalar via ``normalize_scalar`` (stored inline, not as LiteralKey).
+    ``dim_alias_map`` rides into a nested aggregate so its ``partition_by=`` can
+    name a computed dimension (as the outer aggregate's can)."""
     if isinstance(parsed, Literal):
         return normalize_scalar(parsed.value)
+    if isinstance(parsed, AggCall):
+        return _bind_agg(
+            parsed, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map,
+        )
     if isinstance(parsed, (Ref, DottedRef)):
         return _bind(parsed, scope=scope, bundle=bundle, in_filter=False)
     raise ValueError(
         f"Aggregation argument of kind {type(parsed).__name__} is not "
-        f"supported. Pass a column reference or a scalar."
+        f"supported. Pass a column reference, a scalar, or a partitioned aggregate."
     )
 
 
@@ -1349,12 +1462,13 @@ def _bind_transform(
     bundle: ResolvedSourceBundle,
     alias_map: Optional[Dict[str, "ValueKey"]] = None,
     measure_ctx: Optional[MeasureResolutionCtx] = None,
+    dim_alias_map: Optional[Dict[str, "ValueKey"]] = None,
 ) -> TransformKey:
     # ``measure_ctx`` rides the transform INPUT only — partition_by / scalar
-    # kwargs drop it (and partition_by binds without ``alias_map``).
+    # kwargs drop it (and a transform's partition_by binds without alias maps).
     inp = _bind(
         parsed.input, scope=scope, bundle=bundle, in_filter=False,
-        alias_map=alias_map, measure_ctx=measure_ctx,
+        alias_map=alias_map, measure_ctx=measure_ctx, dim_alias_map=dim_alias_map,
     )
     # A few transforms accept further positional params (mapped onto kwargs);
     # every other transform is keyword-only after the value.
@@ -1429,7 +1543,7 @@ def _bind_transform(
         input=inp,
         args=tuple(args),
         kwargs=tuple(kwargs),
-        partition_keys=frozenset(partition_keys),
+        partition_keys=Grain.of(partition_keys),
     )
 
 
@@ -1492,6 +1606,7 @@ def _bind_scalar(
     in_filter: bool,
     alias_map: Optional[Dict[str, "ValueKey"]] = None,
     measure_ctx: Optional[MeasureResolutionCtx] = None,
+    dim_alias_map: Optional[Dict[str, "ValueKey"]] = None,
 ) -> ScalarCallKey:
     if parsed.name not in SCALAR_FUNCTIONS:
         # Defence in depth: direct ParsedExpr construction bypasses the parser.
@@ -1516,7 +1631,7 @@ def _bind_scalar(
             )
         raise ValueError(arity_error)
     args = tuple(
-        _bind(a, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map, measure_ctx=measure_ctx)
+        _bind(a, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map, measure_ctx=measure_ctx, dim_alias_map=dim_alias_map)
         for a in parsed.args
     )
     return ScalarCallKey(name=parsed.name, args=args)

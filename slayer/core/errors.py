@@ -3,14 +3,20 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, List, Tuple
+from enum import Enum
+from typing import TYPE_CHECKING, Any, List, Sequence, Tuple
 
 if TYPE_CHECKING:
+    from slayer.core.join_walker import OrientedJoin  # noqa: F401
     from slayer.engine.schema_drift import ToDeleteEntry  # noqa: F401
 
 
-class SlayerError(Exception):
-    """Base for SLayer-specific errors — catch to isolate intentional failures from driver/IO errors."""
+class SlayerError(ValueError):
+    """Base for SLayer-specific errors — catch to isolate intentional failures from
+    driver/IO errors. A ``ValueError`` subclass (DEV-1900) so every intentional
+    slayer failure is caught by ``except ValueError`` / REST-400 call sites and by
+    tests that pin a mode/typing refusal as a ``ValueError`` — the per-error
+    ``(SlayerError, ValueError)`` classes remain valid (redundant but harmless)."""
 
 
 class AmbiguousModelError(SlayerError):
@@ -24,6 +30,44 @@ class AmbiguousModelError(SlayerError):
             f"{sorted(self.candidates)}. Specify a data_source or set a "
             f"datasource priority to disambiguate."
         )
+
+
+class AmbiguousJoinPathError(SlayerError):
+    """A hop between two models is spanned by two or more edges and no edge
+    name disambiguates it, so traversal fails closed in both directions rather
+    than silently picking the first stored edge. ``candidates`` holds the
+    competing oriented edges; the message names each edge's declaring model,
+    name (if any), join pairs, and cardinality, plus the remediation."""
+
+    def __init__(
+        self,
+        *,
+        source_model: str,
+        target_model: str,
+        candidates: "Sequence[OrientedJoin]",
+        token: str | None = None,
+    ) -> None:
+        self.source_model = source_model
+        self.target_model = target_model
+        self.candidates = list(candidates)
+        self.token = token
+        lines = [
+            f"Ambiguous join hop {source_model!r} → {target_model!r}: "
+            f"{len(self.candidates)} edges connect these models and no edge "
+            f"name resolves it."
+        ]
+        for c in self.candidates:
+            pairs = ", ".join(f"{a}={b}" for a, b in c.join_pairs)
+            named = f" name={c.name!r}" if c.name else ""
+            lines.append(
+                f"  - declared on {c.declaring_model!r}{named}: "
+                f"pairs [{pairs}], cardinality {c.cardinality}"
+            )
+        lines.append(
+            "Give one edge a `name` and use it as the path segment to "
+            "disambiguate."
+        )
+        super().__init__("\n".join(lines))
 
 
 class EntityResolutionError(SlayerError):
@@ -66,6 +110,30 @@ class ColumnCycleError(SlayerError, ValueError):
         self.cycle: list[tuple[str, str]] = list(cycle)
         chain = " → ".join(f"{m}.{c}" for m, c in self.cycle)
         super().__init__(f"Circular column reference detected: {chain}")
+
+
+class ModelSqlValidationError(SlayerError, ValueError):
+    """Raw-``sql`` model source rejected by its reachable datasource at save time.
+
+    ``ValueError`` subclass so REST 400 / ``except ValueError`` callers catch it;
+    names the datasource *type* only, never ``repr(ds)`` (no secret leak)."""
+
+    def __init__(
+        self,
+        *,
+        model_name: str,
+        data_source: str,
+        ds_type: str | None,
+        reason: str,
+    ) -> None:
+        self.model_name = model_name
+        self.data_source = data_source
+        self.ds_type = ds_type
+        self.reason = reason
+        super().__init__(
+            f"Model {model_name!r} has invalid SQL for datasource "
+            f"{data_source!r} (type {ds_type!r}): {reason}"
+        )
 
 
 # Stage-5 errors below build their message via ``_format_error_message`` for a
@@ -302,11 +370,14 @@ class UnreachableFilterDroppedWarning(UserWarning):
     """A host filter referenced slots unreachable from a cross-model CTE's root, so it was dropped from the CTE (still applied to host rows). Visibility warning, not an error."""
 
     def __init__(self, filter_text: str, reason: str) -> None:
+        super().__init__(filter_text, reason)  # args mirror params so cls(*w.args) reconstructs across pytest-xdist
         self.filter_text = filter_text
         self.reason = reason
-        super().__init__(
-            f"Filter {filter_text!r} dropped from cross-model CTE "
-            f"(unreachable from CTE root): {reason}"
+
+    def __str__(self) -> str:
+        return (
+            f"Filter {self.filter_text!r} dropped from cross-model CTE "
+            f"(unreachable from CTE root): {self.reason}"
         )
 
 
@@ -314,11 +385,29 @@ class BroadcastGrainWarning(UserWarning):
     """A cross-model aggregate's implicit grain lost a dimension (not attributable from its root) to broadcasting; result grain unchanged. Visibility warning, not an error."""
 
     def __init__(self, measure: str, reason: str) -> None:
+        super().__init__(measure, reason)  # args mirror params so cls(*w.args) reconstructs across pytest-xdist
         self.measure = measure
         self.reason = reason
-        super().__init__(
-            f"Metric {measure!r} broadcast across an unattributable "
-            f"dimension: {reason}"
+
+    def __str__(self) -> str:
+        return (
+            f"Metric {self.measure!r} broadcast across an unattributable "
+            f"dimension: {self.reason}"
+        )
+
+
+class AssociatedGrainWarning(UserWarning):
+    """An aggregate resolved by distinct-entity association over unattributable dimension(s); cells' populations may overlap and are not additive. Visibility warning, not an error."""
+
+    def __init__(self, measure: str, dimensions: str) -> None:
+        super().__init__(measure, dimensions)  # args mirror params so cls(*w.args) reconstructs across pytest-xdist
+        self.measure = measure
+        self.dimensions = dimensions
+
+    def __str__(self) -> str:
+        return (
+            f"Metric {self.measure!r} associated over unattributable dimension(s) "
+            f"{self.dimensions}; cell populations may overlap and are not additive."
         )
 
 
@@ -400,6 +489,32 @@ class IdentifierCollisionError(SlayerError, ValueError):
         )
 
 
+class IdentifierLengthError(SlayerError, ValueError):
+    """An emitted identifier exceeds the dialect's byte limit after fitting.
+
+    The always-on emission backstop: a non-exempt over-limit token means
+    unaccounted provenance, so generation fails rather than hand the database a
+    silently-truncatable name (sql principle 9)."""
+
+    def __init__(
+        self,
+        *,
+        tokens: Sequence[str],
+        dialect: str,
+        limit: int,
+    ) -> None:
+        self.tokens = sorted(tokens)
+        self.dialect = dialect
+        self.limit = limit
+        joined = ", ".join(repr(t) for t in self.tokens)
+        super().__init__(
+            f"emitted identifier(s) exceed max_identifier_bytes={limit} on "
+            f"dialect '{dialect}' and are neither fitted nor user-authored: "
+            f"{joined}. This is a fitting gap — report it rather than let the "
+            f"database truncate silently."
+        )
+
+
 class ForcedFilterError(SlayerError):
     """The session policy's ruleset can't be safely applied to a query; carries the offending ``table``/``column`` (either may be ``None``)."""
 
@@ -417,6 +532,10 @@ class ForcedFilterError(SlayerError):
 
 class DistinctDimensionValuesError(SlayerError, ValueError):
     """``distinct_dimension_values=False`` (raw rows, no top-level ``GROUP BY``) conflicts with any aggregation or a query with no projected columns."""
+
+
+class PositionTypingError(SlayerError, ValueError):
+    """A filter conjunct / order target is valid as neither field nor measure; names both failed typings."""
 
 
 class UnresolvableOrderColumnError(SlayerError, ValueError):
@@ -465,6 +584,88 @@ class UnresolvableDimensionJoinError(SlayerError, ValueError):
         if self.suggested_path:
             msg += f" Did you mean '{self.suggested_path}'?"
         return msg
+
+
+class PopulationErrorReason(str, Enum):
+    """Why dimension-determined population inference (DEV-1866) failed closed."""
+
+    TIE = "tie"
+    NO_VIABLE_CANDIDATE = "no_viable_candidate"
+    EMPTY_DETERMINATION = "empty_determination"
+    AMBIGUOUS_PATH = "ambiguous_path"
+    AMBIGUOUS_DATASOURCE = "ambiguous_datasource"
+    NO_DATASOURCE = "no_datasource"
+    SIBLING_STAGE = "sibling_stage"
+
+
+class PopulationInferenceError(SlayerError, ValueError):
+    """A rootless query's population could not be uniquely inferred (DEV-1866).
+
+    Carries the ``reason`` kind plus the ``candidates`` / ``datasources`` that
+    left it under-determined; ``str()`` is stable-prefixed for snapshots."""
+
+    _SUMMARIES = {
+        PopulationErrorReason.TIE: (
+            "Multiple minimal populations determine every queried dimension; "
+            "name one explicitly as `source_model`."
+        ),
+        PopulationErrorReason.NO_VIABLE_CANDIDATE: (
+            "No single model determines every queried dimension along "
+            "provably to-one join paths; name a `source_model` explicitly."
+        ),
+        PopulationErrorReason.EMPTY_DETERMINATION: (
+            "There is nothing to infer a population from: the query has no "
+            "dimensions and no field-typed filters. Add a dimension or name a "
+            "`source_model`."
+        ),
+        PopulationErrorReason.AMBIGUOUS_PATH: (
+            "A queried dimension's join path is ambiguous from every otherwise "
+            "viable population; name a `source_model` explicitly."
+        ),
+        PopulationErrorReason.AMBIGUOUS_DATASOURCE: (
+            "The referenced models exist together in more than one datasource; "
+            "pass a `data_source` to disambiguate."
+        ),
+        PopulationErrorReason.NO_DATASOURCE: (
+            "No single datasource holds every referenced model."
+        ),
+        PopulationErrorReason.SIBLING_STAGE: (
+            "A rootless stage's dimensions anchor at a sibling stage; name that "
+            "sibling as the stage's `source_model`."
+        ),
+    }
+
+    def __init__(
+        self,
+        reason: PopulationErrorReason,
+        *,
+        candidates: Sequence[str] | None = None,
+        datasources: Sequence[str] | None = None,
+        detail: str | None = None,
+    ) -> None:
+        self.reason = reason
+        self.candidates = list(candidates or [])
+        self.datasources = list(datasources or [])
+        extras: List[Tuple[str, str]] = []
+        if self.candidates:
+            extras.append(("candidates", repr(sorted(self.candidates))))
+        if self.datasources:
+            extras.append(("datasources", repr(sorted(self.datasources))))
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__,
+            summary=self._SUMMARIES[reason],
+            scope=detail,
+            extras=extras,
+        ))
+
+
+class MaterialisationStageError(SlayerError, ValueError):
+    """A ``PlannedQuery`` violates the materialisation-stage invariant: a value is unstaged, or references a value staged later than itself (it would render before its inputs are materialised). Raised at plan time before any SQL is generated."""
+
+    def __init__(self, summary: str) -> None:
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__, summary=summary,
+        ))
 
 
 class LegacyDunderAliasError(SlayerError, ValueError):

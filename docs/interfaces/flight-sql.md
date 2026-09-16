@@ -10,7 +10,7 @@ The endpoint is **read-only**: catalog introspection plus a constrained SQL subs
 translates to a `SlayerQuery` and executes against the engine. SQL `INSERT` / `UPDATE` /
 `DELETE` / `CREATE` / `ALTER` / `DROP` are refused with a `read-only` error.
 
-> Prefer a no-Java option? The [Postgres facade](pg-facade.md) (`slayer pg-serve`) exposes
+> Prefer a no-Java option? The [SQL API](pg-facade.md) (`slayer pg-serve`) exposes
 > the same query surface over the Postgres wire protocol, so any Postgres-connector BI
 > tool — or `psql` / `asyncpg` — can connect without a JDBC/Arrow driver.
 
@@ -102,7 +102,7 @@ SLayer accepts a single-`FROM` `SELECT` that translates to a `SlayerQuery`:
 | `SELECT <metric> [, ...]` | Each item must be a metric, dimension, or time-grain expression on the resolved table. |
 | `month(<col>)`, `quarter(...)`, etc. | Time-grain wrappers on time-typed columns. Equivalent to `date_trunc('month', <col>)`. |
 | `WHERE <col> BETWEEN '...' AND '...'` | On time-typed columns, lifts to `time_dimensions[*].date_range`. |
-| `WHERE <col> >= '...'` / `<=` / `>` / `<` | Same lift for time bounds. |
+| `WHERE <col> >= '...'` / `<=` / `>` / `<` | Passed verbatim into `SlayerQuery.filters`; comparators are never lifted, since a one-sided bound can't form a range. |
 | `WHERE ...` (everything else) | Passed verbatim into `SlayerQuery.filters`. |
 | `GROUP BY` | Strict on extras, lenient on omissions. User items must be in the derived dimension set; missing ones are silently filled in from the projection. |
 | `ORDER BY <col> [DESC \| ASC]` | Resolved against projected names. |

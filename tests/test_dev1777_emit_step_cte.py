@@ -2,9 +2,7 @@
 transform-chain step-CTE sites (window / unmaterialised-POST, in the host and
 cross-model chains). These pin the shell directly and deterministically:
 
-* the multi-slot-in-one-batch body (the caller controls slot order, so unlike
-  an end-to-end golden this is not exposed to the base-CTE column-order
-  non-determinism tracked in DEV-1795);
+* the multi-slot-in-one-batch body, pinned in caller-supplied slot order;
 * the render-before-mutate ordering invariant a later same-step slot relies on;
 * block D (F2 unmaterialised-POST), which no real query reaches — it errors
   earlier in ``_render_outer_composite`` — so it has no golden pin; the shell it
@@ -27,6 +25,7 @@ from slayer.core.keys import (
     ScalarCallKey,
     TransformKey,
 )
+from slayer.ir.planned import Stage, StageKind
 from slayer.sql.generator import SQLGenerator
 from slayer.sql.render.cte_assembly import CteEntry
 
@@ -40,7 +39,13 @@ def _base_ctes() -> list[CteEntry]:
 
 
 def _slot(name: str, *, type_=None) -> SimpleNamespace:
-    return SimpleNamespace(public_aliases=[name], declared_name=name, type=type_, cast_type=type_)
+    return SimpleNamespace(
+        public_aliases=[name],
+        declared_name=name,
+        type=type_,
+        cast_type=type_,
+        preserve_native_type=False,
+    )
 
 
 def test_single_slot_emits_step_cte_and_advances_chain() -> None:
@@ -197,14 +202,18 @@ def test_typed_slot_is_cast_wrapped() -> None:
 
 
 def test_unmaterialised_post_slots_detects_arith_and_scalar_call() -> None:
-    # The detection loop feeding block C (F1) and block D (F2): Arithmetic and
-    # ScalarCall POST slots are detected; TransformKey (materialised by a layer),
-    # an already-materialised slot, and a plain ColumnKey are skipped.
+    # The detection loop feeding block C (F1) and block D (F2): DERIVED
+    # Arithmetic and ScalarCall slots needing a column are detected; TransformKey
+    # (materialised by a layer), an already-materialised slot, a mask-only slot
+    # (needs_column=False), and a plain ColumnKey are skipped.
+    derived = Stage(kind=StageKind.DERIVED, level=1)
     arith = SimpleNamespace(
         id="arith", key=ArithmeticKey(op="-", operands=(LiteralKey(value=Decimal(1)),)),
+        stage=derived, needs_column=True,
     )
     scalar = SimpleNamespace(
         id="scalar", key=ScalarCallKey(name="abs", args=(ColumnKey(leaf="x"),)),
+        stage=derived, needs_column=True,
     )
     transform = SimpleNamespace(
         id="xf", key=TransformKey(op="cumsum", input=ColumnKey(leaf="x")),
@@ -212,9 +221,13 @@ def test_unmaterialised_post_slots_detects_arith_and_scalar_call() -> None:
     materialised = SimpleNamespace(
         id="done", key=ArithmeticKey(op="+", operands=(LiteralKey(value=Decimal(2)),)),
     )
+    mask_only = SimpleNamespace(
+        id="mask", key=ArithmeticKey(op=">", operands=(LiteralKey(value=Decimal(3)),)),
+        stage=derived, needs_column=False,
+    )
     column = SimpleNamespace(id="col", key=ColumnKey(leaf="y"))
     pq = SimpleNamespace(
-        combined_expression_slots=[arith, scalar, transform, materialised, column],
+        combined_expression_slots=[arith, scalar, transform, materialised, mask_only, column],
     )
     out = SQLGenerator._unmaterialised_post_slots(pq, {"done": ["orders.done"]})
     assert [s.id for s in out] == ["arith", "scalar"]

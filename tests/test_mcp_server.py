@@ -2479,7 +2479,7 @@ class TestInspectModelRequiredVariables:
 
 
 class TestRunByNamePlanFlagsMCP:
-    """``query(source_model="qb", dry_run=True)`` returns SQL without executing."""
+    """``query(query="qb", dry_run=True)`` returns SQL without executing."""
     async def test_dry_run_run_by_name_returns_sql_without_executing(
         self, mcp_server, storage: YAMLStorage, monkeypatch
     ) -> None:
@@ -2509,38 +2509,12 @@ class TestRunByNamePlanFlagsMCP:
 
         monkeypatch.setattr(SlayerSQLClient, "execute", counting_execute)
         result = await _call(mcp_server, name="query", arguments={
-            "source_model": "qb_dr",
+            "query": "qb_dr",
             "dry_run": True,
         })
         assert "SQL:" in result
         assert "amount" in result.lower()
         assert execute_calls == 0, "dry_run=True must not execute SQL"
-
-    async def test_run_by_name_rejects_strict(
-        self, mcp_server, storage: YAMLStorage
-    ) -> None:
-        """Run-by-name rejects call-level ``strict`` rather than silently dropping it."""
-        await storage.save_datasource(DatasourceConfig(
-            name="test", type="sqlite", database=":memory:"
-        ))
-        await storage.save_model(SlayerModel(
-            name="upstream", sql_table="t", data_source="test",
-            columns=[Column(name="amount", sql="amount", type=DataType.DOUBLE)],
-        ))
-        await storage.save_model(SlayerModel(
-            name="qb_strict",
-            data_source="test",
-            source_queries=[SlayerQuery(
-                source_model="upstream",
-                measures=[{"formula": "amount:sum"}],
-            )],
-        ))
-        with pytest.raises(ToolError, match="run-by-name"):
-            await _call(mcp_server, name="query", arguments={
-                "source_model": "qb_strict",
-                "strict": True,
-                "dry_run": True,
-            })
 
 
 class TestQueryAcceptsInlineSourceModel:
@@ -2563,8 +2537,10 @@ class TestQueryAcceptsInlineSourceModel:
     ) -> None:
         await self._setup_orders(storage)
         result = await _call(mcp_server, name="query", arguments={
-            "source_model": "orders",
-            "measures": [{"formula": "*:count"}],
+            "query": {
+                "source_model": "orders",
+                "measures": [{"formula": "*:count"}],
+            },
             "dry_run": True,
         })
         assert "Invalid model name" not in result
@@ -2576,13 +2552,15 @@ class TestQueryAcceptsInlineSourceModel:
     ) -> None:
         await self._setup_orders(storage)
         result = await _call(mcp_server, name="query", arguments={
-            "source_model": {
-                "source_name": "orders",
-                "columns": [
-                    {"name": "double_amount", "sql": "amount * 2", "type": "DOUBLE"},
-                ],
+            "query": {
+                "source_model": {
+                    "source_name": "orders",
+                    "columns": [
+                        {"name": "double_amount", "sql": "amount * 2", "type": "DOUBLE"},
+                    ],
+                },
+                "measures": [{"formula": "double_amount:sum"}],
             },
-            "measures": [{"formula": "double_amount:sum"}],
             "dry_run": True,
         })
         assert "Invalid model name" not in result
@@ -2598,15 +2576,17 @@ class TestQueryAcceptsInlineSourceModel:
             name="test", type="sqlite", database=":memory:"
         ))
         result = await _call(mcp_server, name="query", arguments={
-            "source_model": {
-                "name": "ad_hoc",
-                "sql_table": "things",
-                "data_source": "test",
-                "columns": [
-                    {"name": "x", "sql": "x", "type": "DOUBLE"},
-                ],
+            "query": {
+                "source_model": {
+                    "name": "ad_hoc",
+                    "sql_table": "things",
+                    "data_source": "test",
+                    "columns": [
+                        {"name": "x", "sql": "x", "type": "DOUBLE"},
+                    ],
+                },
+                "measures": [{"formula": "x:sum"}],
             },
-            "measures": [{"formula": "x:sum"}],
             "dry_run": True,
         })
         assert "Invalid model name" not in result
@@ -2614,9 +2594,10 @@ class TestQueryAcceptsInlineSourceModel:
         assert "things" in result.lower()
 
 
-class TestQueryNested:
-    """MCP ``query_nested``: a DAG of named stages later entries reference by
-    name; mirrors ``engine.execute(list)``."""
+class TestQueryListMultiStage:
+    """MCP ``query`` with a list argument: a DAG of named stages later entries
+    reference by name; mirrors ``engine.execute(list)`` (the list form absorbed
+    the retired standalone nested-query tool)."""
     async def _setup_orders(self, storage: YAMLStorage) -> None:
         await storage.save_datasource(DatasourceConfig(
             name="test", type="sqlite", database=":memory:"
@@ -2633,8 +2614,8 @@ class TestQueryNested:
     async def test_two_stage_dag_dry_run(self, mcp_server, storage: YAMLStorage) -> None:
         """Stage 2 references prior named sibling 'monthly' via source_model."""
         await self._setup_orders(storage)
-        result = await _call(mcp_server, name="query_nested", arguments={
-            "queries": [
+        result = await _call(mcp_server, name="query", arguments={
+            "query": [
                 {
                     "name": "monthly",
                     "source_model": "orders",
@@ -2657,17 +2638,17 @@ class TestQueryNested:
 
     async def test_empty_list_rejected(self, mcp_server, storage: YAMLStorage) -> None:
         await self._setup_orders(storage)
-        with pytest.raises(ToolError, match="non-empty list"):
-            await _call(mcp_server, name="query_nested", arguments={
-                "queries": [],
+        with pytest.raises(ToolError, match="non-empty"):
+            await _call(mcp_server, name="query", arguments={
+                "query": [],
                 "dry_run": True,
             })
 
     async def test_out_of_order_dag_works(self, mcp_server, storage: YAMLStorage) -> None:
         """Stages submitted out of topological order are auto-sorted before emission."""
         await self._setup_orders(storage)
-        result = await _call(mcp_server, name="query_nested", arguments={
-            "queries": [
+        result = await _call(mcp_server, name="query", arguments={
+            "query": [
                 {
                     "name": "a",
                     "source_model": "b",
@@ -2692,8 +2673,8 @@ class TestQueryNested:
         """A cycle between stages must surface a clear error naming the cycle members."""
         await self._setup_orders(storage)
         with pytest.raises(ToolError, match=r"[Cc]ycle"):
-            await _call(mcp_server, name="query_nested", arguments={
-                "queries": [
+            await _call(mcp_server, name="query", arguments={
+                "query": [
                     {"name": "a", "source_model": "b", "measures": [{"formula": "amount:sum"}]},
                     {"name": "b", "source_model": "a", "measures": [{"formula": "amount:sum"}]},
                     {"source_model": "orders", "measures": [{"formula": "amount:sum"}]},
@@ -2704,8 +2685,8 @@ class TestQueryNested:
     async def test_invalid_format_rejected(self, mcp_server, storage: YAMLStorage) -> None:
         await self._setup_orders(storage)
         with pytest.raises(ToolError, match="Invalid format"):
-            await _call(mcp_server, name="query_nested", arguments={
-                "queries": [
+            await _call(mcp_server, name="query", arguments={
+                "query": [
                     {"source_model": "orders", "measures": [{"formula": "*:count"}]},
                 ],
                 "format": "xml",
@@ -2991,3 +2972,90 @@ class TestDataProfileRetryScope:
         assert "equality operator" in (payload["sample_data_error"] or "")
         assert "connection closed" not in (payload["sample_data_error"] or "")
         assert payload["sample_data_reduced"] is False
+
+
+def _seed_live_db(path: str) -> None:
+    """A real SQLite file with an ``orders`` table for save-time trial-execute."""
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        "CREATE TABLE orders (id INTEGER PRIMARY KEY, amount REAL, status TEXT);"
+        "INSERT INTO orders VALUES (1, 100.0, 'ok');"
+    )
+    conn.commit()
+    conn.close()
+
+
+async def _register_live_ds(storage: YAMLStorage, db_path: str) -> None:
+    await storage.save_datasource(
+        DatasourceConfig(name="livedb", type="sqlite", database=db_path)
+    )
+
+
+class TestSaveTimeSqlValidationMcp:
+    """DEV-1843 — the MCP create/edit doors reroute through ``engine.save_model``
+    so a raw-sql model with backend-invalid SQL is rejected before it persists."""
+
+    async def test_create_sql_mode_valid_persists(
+        self, mcp_server, storage: YAMLStorage, tmp_path
+    ) -> None:
+        db = str(tmp_path / "live.db")
+        _seed_live_db(db)
+        await _register_live_ds(storage, db)
+        result = await _call(mcp_server, name="create_model", arguments={
+            "name": "good_model", "sql": "SELECT id FROM orders",
+            "data_source": "livedb",
+            "columns": [{"name": "id", "sql": "id", "type": "number"}],
+        })
+        assert "created" in result
+        assert await storage.get_model("good_model", data_source="livedb") is not None
+
+    async def test_create_sql_mode_invalid_rejected(
+        self, mcp_server, storage: YAMLStorage, tmp_path
+    ) -> None:
+        db = str(tmp_path / "live.db")
+        _seed_live_db(db)
+        await _register_live_ds(storage, db)
+        result = await _call(mcp_server, name="create_model", arguments={
+            "name": "bad_model", "sql": "SELECT nope FROM ghosts",
+            "data_source": "livedb",
+            "columns": [{"name": "id", "sql": "id", "type": "number"}],
+        })
+        assert "created" not in result
+        assert "bad_model" in result
+        assert await storage.get_model("bad_model", data_source="livedb") is None
+
+    async def test_edit_sql_to_invalid_rejected_and_original_intact(
+        self, mcp_server, storage: YAMLStorage, tmp_path
+    ) -> None:
+        db = str(tmp_path / "live.db")
+        _seed_live_db(db)
+        await _register_live_ds(storage, db)
+        await storage.save_model(SlayerModel(
+            name="m", sql="SELECT id FROM orders", data_source="livedb",
+            columns=[Column(name="id", sql="id", type=DataType.DOUBLE)],
+        ))
+        result = await _call(mcp_server, name="edit_model", arguments={
+            "model_name": "m", "data_source": "livedb",
+            "sql": "SELECT nope FROM ghosts",
+        })
+        assert "error" in result.lower()
+        model = await storage.get_model("m", data_source="livedb")
+        assert model.sql == "SELECT id FROM orders"
+
+    async def test_edit_sql_to_valid_succeeds(
+        self, mcp_server, storage: YAMLStorage, tmp_path
+    ) -> None:
+        db = str(tmp_path / "live.db")
+        _seed_live_db(db)
+        await _register_live_ds(storage, db)
+        await storage.save_model(SlayerModel(
+            name="m", sql="SELECT id FROM orders", data_source="livedb",
+            columns=[Column(name="id", sql="id", type=DataType.DOUBLE)],
+        ))
+        result = await _call(mcp_server, name="edit_model", arguments={
+            "model_name": "m", "data_source": "livedb",
+            "sql": "SELECT amount FROM orders",
+        })
+        assert '"success": true' in result
+        model = await storage.get_model("m", data_source="livedb")
+        assert model.sql == "SELECT amount FROM orders"

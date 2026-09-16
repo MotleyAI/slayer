@@ -31,7 +31,11 @@ import yaml
 import slayer.core.models as models_mod
 from slayer.core.models import DatasourceConfig
 from slayer.storage import migrations as mig
-from slayer.storage.join_sync import JoinSyncStorage
+from slayer.storage.base import resolve_storage
+from slayer.storage.legacy_alias_rewrite import (
+    apply_dunder_rewrite,
+    extract_dunder_chains,
+)
 from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -230,19 +234,20 @@ class TestRewritePrecedesValidation:
 
 
 # --------------------------------------------------------------------------- #
-# [C7] Sibling raw-load works through a JoinSyncStorage wrapper, not just the
-# direct backend — the multi-hop rewrite reads sibling models through it.
+# [C7] Sibling raw-load works through the resolve_storage factory path, not
+# just a directly-constructed backend — the multi-hop rewrite reads sibling
+# models through whatever the factory returns.
 # --------------------------------------------------------------------------- #
-class TestSiblingLoadThroughWrapper:
+class TestSiblingLoadThroughFactory:
     @pytest.mark.asyncio
-    async def test_wrapped_yaml_rewrites_via_siblings(self) -> None:
+    async def test_factory_yaml_rewrites_via_siblings(self) -> None:
         with tempfile.TemporaryDirectory() as d:
-            inner = await _seed_yaml(d, [
+            await _seed_yaml(d, [
                 _orders_v8(region_sql="customers__regions.name"),
                 _customers_v8(), _regions_v8(),
             ])
-            wrapped = JoinSyncStorage(inner)
-            loaded = await wrapped.get_model("orders", data_source="ds")
+            storage = resolve_storage(d)
+            loaded = await storage.get_model("orders", data_source="ds")
             assert loaded is not None
             assert loaded.get_column("region_name").sql == "customers.regions.name"
 
@@ -331,12 +336,10 @@ class TestExactDunderTargetBeatsSplit:
 # --------------------------------------------------------------------------- #
 class TestLegacyAliasRewriteHelper:
     def test_extract_finds_only_dunder_qualifiers(self) -> None:
-        from slayer.storage.legacy_alias_rewrite import extract_dunder_chains
         chains = extract_dunder_chains("lower(a__b__c.leaf) + plain.col + bare__ident")
         assert chains == {("a", "b", "c")}
 
     def test_apply_rewrites_only_resolvable_and_preserves_quoting(self) -> None:
-        from slayer.storage.legacy_alias_rewrite import apply_dunder_rewrite
         out = apply_dunder_rewrite(
             'customers__regions."name" || cte__x.y',
             resolvable={("customers", "regions")},
@@ -345,15 +348,10 @@ class TestLegacyAliasRewriteHelper:
         assert "cte__x.y" in out
 
     def test_apply_empty_resolvable_is_byte_verbatim(self) -> None:
-        from slayer.storage.legacy_alias_rewrite import apply_dunder_rewrite
         src = "lower(a__b.c)"  # would be normalised by sqlglot if re-serialised
         assert apply_dunder_rewrite(src, resolvable=set()) == src
 
     def test_unparseable_fragment_passthrough(self) -> None:
-        from slayer.storage.legacy_alias_rewrite import (
-            apply_dunder_rewrite,
-            extract_dunder_chains,
-        )
         assert extract_dunder_chains("!!! not sql (((") == set()
         assert apply_dunder_rewrite(
             "!!! not sql (((", resolvable={("a", "b")},

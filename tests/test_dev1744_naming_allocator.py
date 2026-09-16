@@ -39,11 +39,10 @@ from slayer.core.models import (
     SlayerModel,
 )
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
-from slayer.engine import planning, stage_planner
-from slayer.engine.binding import BoundExpr
-from slayer.engine.planning import _canonical_name
+from slayer.engine.compile.projection import _canonical_name
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.stage_planner import _canonical_alias_for_formula
+from slayer.engine import bind_inputs
+from slayer.engine.bind_inputs import _canonical_alias_for_formula
 from slayer.sql import generator as generator_module
 from slayer.sql import naming
 from slayer.sql import stage_wrapper as sw_module
@@ -52,6 +51,8 @@ from slayer.sql.dialects import tsql as tsql_module
 from slayer.sql.generator import SQLGenerator
 from slayer.sql.naming import AliasAllocator
 from slayer.storage.yaml_storage import YAMLStorage
+from slayer.ir.bound import BoundExpr
+from slayer.engine.compile import projection, stages
 
 
 # Fixtures — a seeded store whose model contains the colliding name shapes.
@@ -880,7 +881,7 @@ class TestProductionCallersDelegate:
 
         # Callers import by name, so patch the binding in each caller's namespace.
         for module in (
-            naming, generator_module, planning, stage_planner,
+            naming, generator_module, projection, stages, bind_inputs,
         ):
             if getattr(module, "canonical_aggregate_alias", None) is not None:
                 monkeypatch.setattr(
@@ -894,10 +895,10 @@ class TestProductionCallersDelegate:
         assert calls[-1].get("profile") == "cross_model_cte"
         assert calls[-1].get("source_relation") == "orders"
 
-        planning._canonical_name(key)
+        projection._canonical_name(key)
         assert calls[-1].get("profile") == "declared_name"
 
-        stage_planner._canonical_alias_for_formula(
+        bind_inputs._canonical_alias_for_formula(
             "IGNORED_TEXT", bound=BoundExpr(value_key=key),
         )
         assert calls[-1].get("profile") == "stage_formula"

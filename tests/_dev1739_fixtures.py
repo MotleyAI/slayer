@@ -41,12 +41,14 @@ amount:sum by (region, month):
 ok_amount (amount where status='ok') by region: North=100  South=25  NULL=60
 nomatch  (amount where amount>100000): no row qualifies anywhere.
 
-customers (id, tier, spend, region_id) → regions (id, name):
-   c1 gold   100  r1(RegN)
-   c2 silver 200  r1(RegN)
-   c3 gold    50  r2(RegS)
+customers (id, tier, spend, signup_at, region_id) → regions (id, name):
+   c1 gold   100  2024-01-05  r1(RegN)
+   c2 silver 200  2024-02-10  r1(RegN)
+   c3 gold    50  2024-03-15  r2(RegS)
 customers.spend:sum by tier:  gold=150  silver=200   grand total=350
 customers.spend:sum by regions.name:  RegN=300 (c1+c2)  RegS=50 (c3)  grand=350
+customers.spend first/last by signup within regions.name (DEV-1868 ranked
+cross-model shapes): RegN first=100 last=200, RegS first=last=50.
 """
 
 from __future__ import annotations
@@ -88,11 +90,13 @@ def regions_model() -> SlayerModel:
 def customers_model() -> SlayerModel:
     return SlayerModel(
         name="customers", data_source="test", sql_table="customers",
+        default_time_dimension="signup_at",
         columns=[
             Column(name="id", type=DataType.INT, primary_key=True),
             Column(name="region_id", type=DataType.INT),
             Column(name="tier", type=DataType.TEXT),
             Column(name="spend", type=DataType.DOUBLE),
+            Column(name="signup_at", type=DataType.TIMESTAMP),
         ],
         joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
     )
@@ -157,10 +161,10 @@ def cm_cte_bodies(sql: str) -> str:
 # --------------------------------------------------------------------------- #
 _REGIONS_ROWS = [(1, "RegN"), (2, "RegS")]
 _CUSTOMERS_ROWS = [
-    # (id, region_id, tier, spend)
-    (1, 1, "gold", 100.0),
-    (2, 1, "silver", 200.0),
-    (3, 2, "gold", 50.0),
+    # (id, region_id, tier, spend, signup_at)
+    (1, 1, "gold", 100.0, "2024-01-05"),
+    (2, 1, "silver", 200.0, "2024-02-10"),
+    (3, 2, "gold", 50.0, "2024-03-15"),
 ]
 _ORDERS_ROWS = [
     # (id, customer_id, region, city, channel, amount, status, ordered_at)
@@ -181,9 +185,9 @@ def _seed_sqlite(db_path: str) -> None:
     cur.executemany("INSERT INTO regions VALUES (?,?)", _REGIONS_ROWS)
     cur.execute(
         "CREATE TABLE customers (id INTEGER PRIMARY KEY, region_id INTEGER, "
-        "tier TEXT, spend REAL)"
+        "tier TEXT, spend REAL, signup_at TEXT)"
     )
-    cur.executemany("INSERT INTO customers VALUES (?,?,?,?)", _CUSTOMERS_ROWS)
+    cur.executemany("INSERT INTO customers VALUES (?,?,?,?,?)", _CUSTOMERS_ROWS)
     cur.execute(
         "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, "
         "region TEXT, city TEXT, channel TEXT, amount REAL, status TEXT, "
@@ -201,9 +205,9 @@ def _seed_duckdb(db_path: str) -> None:
     con.executemany("INSERT INTO regions VALUES (?,?)", _REGIONS_ROWS)
     con.execute(
         "CREATE TABLE customers (id INTEGER, region_id INTEGER, tier VARCHAR, "
-        "spend DOUBLE)"
+        "spend DOUBLE, signup_at TIMESTAMP)"
     )
-    con.executemany("INSERT INTO customers VALUES (?,?,?,?)", _CUSTOMERS_ROWS)
+    con.executemany("INSERT INTO customers VALUES (?,?,?,?,?)", _CUSTOMERS_ROWS)
     con.execute(
         "CREATE TABLE orders (id INTEGER, customer_id INTEGER, region VARCHAR, "
         "city VARCHAR, channel VARCHAR, amount DOUBLE, status VARCHAR, "

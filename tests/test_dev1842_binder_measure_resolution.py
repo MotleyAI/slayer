@@ -33,7 +33,7 @@ from slayer.core.models import Column, ModelMeasure, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.core.scope import StageColumn, StageSchema
 from slayer.engine.binding import bind_expr
-from slayer.engine.source_bundle import ResolvedSourceBundle
+from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.syntax import parse_expr
 
 from tests._engine_helpers import _engine_generate

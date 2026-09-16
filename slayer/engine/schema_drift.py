@@ -20,7 +20,6 @@ from sqlglot import exp
 from sqlglot.optimizer.scope import Scope, traverse_scope
 
 from slayer.core.enums import DataType
-from slayer.core.formula import parse_filter
 from slayer.core.models import (
     Column,
     DatasourceConfig,
@@ -45,17 +44,22 @@ from slayer.engine.ingestion import (
     _sa_type_is_float,
     _sa_type_to_data_type,
 )
-from slayer.engine.column_expansion import resolve_ref_target
+from slayer.core.errors import AmbiguousJoinPathError
+from slayer.core.join_walker import neighbors, resolve_hop
+from slayer.sql.column_expansion import resolve_ref_target
+from slayer.engine.dimension_routing import short_form_route_or_none
 from slayer.engine.syntax import (
     AggCall,
     DottedRef,
+    ParsedExpr,
     Ref,
     StarSource,
     parse_expr,
+    parse_filter_expr,
     walk_parsed_refs,
 )
 from slayer.sql import engine_factory, sqlite_introspect
-from slayer.sql.client import SlayerSQLClient
+from slayer.sql.client import SlayerSQLClient, build_sql_model_trial_query
 from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.engine_factory import EngineCacheKey, _sql_client_cache_key
 
@@ -492,6 +496,24 @@ def _parsed_ref_name(node: Union[Ref, DottedRef, AggCall]) -> Optional[str]:
     return ".".join(node.parts)
 
 
+def _walk_ref_names(parsed: ParsedExpr):
+    """Yield the name of each reference in a parsed Mode-B tree; an ``AggCall``
+    collapses to its source name, a DEV-1826 expression source attributes each
+    operand ref, ``*`` sources yield nothing."""
+    for node in walk_parsed_refs(parsed):
+        if isinstance(node, AggCall) and not isinstance(
+            node.source, (Ref, DottedRef, StarSource)
+        ):
+            for inner in walk_parsed_refs(node.source):
+                inner_name = _parsed_ref_name(inner)
+                if inner_name is not None:
+                    yield inner_name
+            continue
+        name = _parsed_ref_name(node)
+        if name is not None:
+            yield name
+
+
 def _measure_formula_refs(formula: str) -> Set[str]:
     """Column/measure names in a Mode-B formula (dotted for cross-model);
     textual only. Both aggregation spellings parse natively (DEV-1826), and an
@@ -501,21 +523,7 @@ def _measure_formula_refs(formula: str) -> Set[str]:
         parsed = parse_expr(formula)
     except Exception:
         return set()
-    out: Set[str] = set()
-    for node in walk_parsed_refs(parsed):
-        if isinstance(node, AggCall) and not isinstance(
-            node.source, (Ref, DottedRef, StarSource)
-        ):
-            # DEV-1826 expression source: attribute each operand ref.
-            for inner in walk_parsed_refs(node.source):
-                inner_name = _parsed_ref_name(inner)
-                if inner_name is not None:
-                    out.add(inner_name)
-            continue
-        name = _parsed_ref_name(node)
-        if name is not None:
-            out.add(name)
-    return out
+    return set(_walk_ref_names(parsed))
 
 
 def _filter_refs(filter_str: str) -> list[str]:
@@ -528,15 +536,13 @@ def _filter_refs(filter_str: str) -> list[str]:
 
 
 def _filter_refs_dsl(filter_str: str) -> list[str]:
-    """Column/measure references in a DSL (Mode B) filter; recovers base measures from ``agg_refs`` and strips synthesized colon aliases (``*`` excluded)."""
+    """Column/measure references in a DSL (Mode B) filter, in expression order
+    (deduplicated); ``[]`` on parse failure."""
     try:
-        pf = parse_filter(filter_str)
+        parsed = parse_filter_expr(filter_str)
     except Exception:
         return []
-    measure_names = [ref.measure_name for ref in pf.agg_refs if ref.measure_name != "*"]
-    canonical_aliases = set(pf.synthesized_aliases)
-    raw_columns = [c for c in pf.columns if c not in canonical_aliases]
-    return list(dict.fromkeys(measure_names + raw_columns))
+    return list(dict.fromkeys(_walk_ref_names(parsed)))
 
 
 def _walk_alias_to_target_model(
@@ -551,7 +557,7 @@ def _walk_alias_to_target_model(
     return resolve_ref_target(
         qualifiers=tuple(table_alias.split(".")),
         source_model=source_model,
-        resolve_model=models_by_name.get,
+        models_by_name=models_by_name,
     )
 
 
@@ -708,6 +714,8 @@ class _StageGraph(BaseModel):
 
     stage_source_name: str | None = None
     extension_targets: set[str] = Field(default_factory=set)
+    # Hop token (join name when set, else target name) → target model.
+    extension_hops: dict[str, str] = Field(default_factory=dict)
     reachable: set[str] = Field(default_factory=set)
     models_by_name: dict[str, SlayerModel] = Field(default_factory=dict)
 
@@ -719,6 +727,7 @@ def _build_stage_graph(
     models_by_name: dict[str, SlayerModel],
 ) -> _StageGraph:
     """Build a ``_StageGraph`` for one stage; ``stage_source_name`` None for inline sources."""
+    extension_hops = _stage_extension_hops(stage)
     extension_targets = _stage_join_targets(stage)
     reachable: set[str] = set()
     if stage_source_name:
@@ -734,13 +743,15 @@ def _build_stage_graph(
         m = models_by_name.get(name)
         if m is None:
             continue
-        for j in m.joins:
-            if j.target_model not in reachable:
-                reachable.add(j.target_model)
-                frontier.append(j.target_model)
+        # Either traversal direction reaches (DEV-1853).
+        for edge in neighbors(model=m, models_by_name=models_by_name):
+            if edge.target_model not in reachable:
+                reachable.add(edge.target_model)
+                frontier.append(edge.target_model)
     return _StageGraph(
         stage_source_name=stage_source_name,
         extension_targets=extension_targets,
+        extension_hops=extension_hops,
         reachable=reachable,
         models_by_name=models_by_name,
     )
@@ -758,22 +769,73 @@ def _attribute_ref_to_base(
     parts = ref.split(".")
     leaf = parts[-1]
     path = parts[:-1]
-    current = graph.stage_source_name
-    if current is None:
+    if graph.stage_source_name is None:
         return None
     # Root-qualified ref (``orders.amount`` from a stage rooted at orders):
     # ``orders`` isn't in its own join set, so treat path==[source] as same-model.
     if path == [graph.stage_source_name]:
         return leaf if graph.stage_source_name == base_name else None
-    for hop in path:
-        m = graph.models_by_name.get(current)
-        join_targets = {j.target_model for j in (m.joins if m is not None else [])}
-        if current == graph.stage_source_name:
-            join_targets |= graph.extension_targets
-        if hop not in join_targets:
+    terminal = _walk_stage_path(path=path, graph=graph)
+    if terminal is None and len(path) == 1:
+        # Short-form auto-routing (DEV-1856): a len==1 prefix with no direct join
+        # attributes to its uniquely-routed terminal only (mirroring full paths),
+        # so the stage cascades on the terminal column or terminal-reaching join.
+        # Route-precise attribution (earlier intervening joins, and no over-cascade
+        # on off-route joins to the terminal) is deferred to DEV-1885.
+        terminal = _route_short_form_terminal(target=path[0], graph=graph)
+    if terminal is None:
+        return None
+    return leaf if terminal == base_name else None
+
+
+def _route_short_form_terminal(*, target: str, graph: _StageGraph) -> str | None:
+    """The short-form target when it is uniquely routable from the stage source
+    over the datasource-scoped join graph (ambiguous / unreachable → None).
+    Routing triggers only when the first hop resolves to no edge; a parallel pair
+    directly off the source is a fail-closed ambiguous hop (DEV-1853), not a
+    route, so it attributes to nothing — mirroring the binder."""
+    root = (
+        graph.models_by_name.get(graph.stage_source_name)
+        if graph.stage_source_name else None
+    )
+    if root is None:
+        return None
+    try:
+        if resolve_hop(
+            current=root, token=target, models_by_name=graph.models_by_name,
+        ) is not None:
             return None
-        current = hop
-    return leaf if current == base_name else None
+    except AmbiguousJoinPathError:
+        return None
+    route = short_form_route_or_none(
+        root=root, target_model=target, models_by_name=graph.models_by_name,
+    )
+    return target if route is not None else None
+
+
+def _walk_stage_path(*, path: list[str], graph: _StageGraph) -> str | None:
+    """Terminal model name of ``path`` from the stage source — either
+    traversal direction, stage-extension joins included — or ``None``."""
+    current = graph.stage_source_name
+    for hop in path:
+        # Extension joins live on the stage, not the stored model; their
+        # token is the join name when set, else the target name.
+        if current == graph.stage_source_name and hop in graph.extension_hops:
+            current = graph.extension_hops[hop]
+            continue
+        m = graph.models_by_name.get(current) if current else None
+        if m is None:
+            return None
+        try:
+            edge = resolve_hop(
+                current=m, token=hop, models_by_name=graph.models_by_name,
+            )
+        except AmbiguousJoinPathError:
+            return None
+        if edge is None:
+            return None
+        current = edge.target_model
+    return current
 
 
 def _measure_refs_on_base(
@@ -849,6 +911,7 @@ def _stage_referenced_columns_for_base(
         graph = _StageGraph(
             stage_source_name=stage_source_name,
             extension_targets=_stage_join_targets(stage),
+            extension_hops=_stage_extension_hops(stage),
             reachable={stage_source_name} if stage_source_name else set(),
             models_by_name={},
         )
@@ -869,6 +932,29 @@ def _stage_join_targets(stage: SlayerQuery) -> set[str]:
         target = getattr(j, "target_model", None)
         if isinstance(target, str):
             out.add(target)
+    return out
+
+
+def _stage_extension_hops(stage: SlayerQuery) -> dict[str, str]:
+    """Addressable hop token → target model for a stage's ``ModelExtension``
+    joins: the join ``name`` when set; the bare target name only while a
+    single join targets it (a parallel pair is unaddressable by target,
+    matching the engine's ambiguity rule)."""
+    source = getattr(stage, "source_model", None)
+    joins = getattr(source, "joins", None) or []
+    out: dict[str, str] = {}
+    target_counts: dict[str, int] = {}
+    for j in joins:
+        target = getattr(j, "target_model", None)
+        if not isinstance(target, str):
+            continue
+        target_counts[target] = target_counts.get(target, 0) + 1
+        name = getattr(j, "name", None)
+        if name:
+            out[name] = target
+    for target, count in target_counts.items():
+        if count == 1:
+            out.setdefault(target, target)
     return out
 
 
@@ -1659,14 +1745,9 @@ async def _live_columns_for_sql_model(
     """Trial-execute ``model.sql`` with a 0-row guard; return cursor types, or None on failure."""
     if not model.sql:
         return None
-    # Strip a trailing ``;`` before wrapping: valid at top level but invalid
-    # inside ``SELECT * FROM (...)``, and the syntax error would look like drift.
-    inner_sql = model.sql.rstrip()
-    if inner_sql.endswith(";"):
-        inner_sql = inner_sql[:-1].rstrip()
+    # Trailing ``;`` stripped before wrapping, else its syntax error looks like drift.
     try:
-        trial_sql = f"SELECT * FROM ({inner_sql}) AS _sd_validate WHERE 1=0"
-        cats = await client.get_column_types(trial_sql)
+        cats = await client.get_column_types(build_sql_model_trial_query(model.sql))
     except Exception as exc:
         logger.info(
             "validate_models: trial-execute on %r failed: %s",

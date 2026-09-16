@@ -97,16 +97,17 @@ async def _query_count(server, *, source_model: str) -> int:
     text = await _call(
         server, name="query",
         arguments={
-            "source_model": source_model,
-            "measures": [{"formula": "*:count"}],
+            "query": {
+                "source_model": source_model,
+                "measures": [{"formula": "*:count"}],
+            },
             "format": "json",
         },
     )
-    # The query tool's json format appends a human-readable "Measure
-    # attributes:" footer after the JSON payload — decode just the leading
-    # JSON value and ignore the trailing text.
-    rows, _ = json.JSONDecoder().raw_decode(text)
-    row = rows[0] if isinstance(rows, list) else rows["data"][0]
+    # json output is a bare array, or a {"data", ...} envelope once
+    # attributes/warnings are present — strict-parse and unwrap either.
+    payload = json.loads(text)
+    row = payload[0] if isinstance(payload, list) else payload["data"][0]
     return int(row[f"{source_model}._count"])
 
 
@@ -138,11 +139,11 @@ class TestContractAttribute:
 
         assert captured["self"] is server._slayer_engine
 
-    async def test_slayer_engine_is_the_object_query_nested_uses(
+    async def test_slayer_engine_is_the_object_query_list_uses(
         self, workspace: Path, monkeypatch,
     ) -> None:
-        """query_nested shares the same closure engine (plan: one engine
-        across query/query_nested/validate_models/recommend_root_model)."""
+        """The list (multi-stage) form shares the same closure engine (plan:
+        one engine across query/validate_models/recommend_root_model)."""
         storage = await _seed_storage(workspace)
         server = create_mcp_server(storage=storage)
 
@@ -155,8 +156,8 @@ class TestContractAttribute:
 
         monkeypatch.setattr(SlayerQueryEngine, "execute", _spy)
         await _call(
-            server, name="query_nested",
-            arguments={"queries": [{"source_model": "t", "measures": [{"formula": "*:count"}]}]},
+            server, name="query",
+            arguments={"query": [{"source_model": "t", "measures": [{"formula": "*:count"}]}]},
         )
 
         assert captured["self"] is server._slayer_engine

@@ -1,0 +1,26 @@
+views {
+  view landscape {
+    title 'SLayer landscape'
+    include *
+  }
+
+  view query_pipeline {
+    title 'Query pipeline'
+    include core, engine, sql, ir, storage
+  }
+
+  view core_focus {
+    title 'Core in context'
+    include core, core -> *, * -> core
+  }
+
+  view sql_focus {
+    title 'SQL generation in context'
+    include sql, sql -> *, * -> sql
+  }
+
+  view engine_focus {
+    title 'Engine seam'
+    include engine
+  }
+}

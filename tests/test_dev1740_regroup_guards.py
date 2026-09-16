@@ -4,6 +4,8 @@ explicit and in-scope; deferred shapes raise loudly (never degrade).
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from slayer.core.errors import DistinctDimensionValuesError
@@ -54,6 +56,8 @@ class TestAggregateReferencingDimGenerates:
 
 class TestDeferredShapesRaiseDev1824:
     async def test_transform_in_dimension_expression(self) -> None:
+        # DEV-1868 residue split: an ungrained aggregate under a dimension
+        # transform is a permanent type rule (ValueError, no issue ref).
         q = _q(
             dimensions=[
                 "region",
@@ -63,8 +67,10 @@ class TestDeferredShapesRaiseDev1824:
             time_dimensions=month_td(),
             measures=[ModelMeasure(formula="amount:sum", name="t")],
         )
-        with pytest.raises(NotImplementedError, match=r"DEV-1824"):
+        with pytest.raises(ValueError) as ei:
             await gen(q)
+        assert "partition_by" in str(ei.value)
+        assert not re.search(r"DEV-\d+", str(ei.value))
 
     async def test_window_plus_partition_in_dimension_expression_lifted(self) -> None:
         # DEV-1824 (task 3.7 / D5) — window=+partition_by inside a dimension is

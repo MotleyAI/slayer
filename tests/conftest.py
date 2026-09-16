@@ -11,6 +11,8 @@ from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.embeddings import client as embedding_client
 from slayer.storage.yaml_storage import YAMLStorage
 
+from tests._dev1824_fixtures import make_exec_engine
+
 
 @pytest.fixture(autouse=True)
 def _disable_embedding_channel_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -116,3 +118,13 @@ async def mydb_orders_storage() -> AsyncIterator[YAMLStorage]:
             )
         )
         yield storage
+
+
+@pytest.fixture(params=["sqlite", "duckdb"])
+async def exec_engine(request):
+    """Executing engine over the shared dev1739-family models, one per backend.
+
+    Modules built on another fixture family override this locally.
+    """
+    async for engine in make_exec_engine(request):
+        yield engine

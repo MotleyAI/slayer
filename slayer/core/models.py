@@ -141,10 +141,10 @@ class Column(BaseModel):
     db_type: str | None = Field(
         default=None,
         description=(
-            "Raw database type string (e.g. 'point', 'jsonb'), retained when "
-            "the declared DataType loses information. Populated by ingestion "
-            "for UNKNOWN (opaque) columns; None for mapped types, where the "
-            "declared DataType already carries everything we need."
+            "Raw database type string (e.g. 'point', 'DECIMAL(18, 2)'), "
+            "retained when the declared DataType loses information. Populated "
+            "by ingestion for UNKNOWN (opaque) and exact NUMERIC/DECIMAL "
+            "columns; None when the mapped type carries everything needed."
         ),
     )
     primary_key: bool = False
@@ -187,7 +187,7 @@ class Column(BaseModel):
 
 
 class ModelMeasure(BaseModel):
-    """A named formula evaluating to an aggregated value (grammar: ``slayer/core/formula.py``)."""
+    """A named aggregated value: ``formula`` is an aggregation expression — inline in a query's measures or saved on a model and referenced by bare name. ``name`` sets the result key, referenceable in filters and order by either the name or the formula text."""
     formula: str
     name: str | None = None
     label: str | None = None
@@ -344,9 +344,19 @@ class ModelJoin(BaseModel):
     join_type: JoinType = JoinType.LEFT             # LEFT (default) or INNER
     # Join arity, read source->target; None = undetermined.
     cardinality: JoinCardinality | None = None
+    # Optional edge name, usable as a path segment in either direction — the
+    # disambiguator for parallel edges (DEV-1853). Model-name identifier rules.
+    name: str | None = None
     # Optional human/agent metadata; additive, so no schema-version bump needed.
     description: str | None = None
     meta: dict[str, Any] | None = None
+
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, v: str | None) -> str | None:
+        if v is not None:
+            _validate_model_name(v, "Join")
+        return v
 
     @field_validator("join_pairs")
     @classmethod
@@ -397,7 +407,7 @@ def _check_column_measure_namespace(
 
 
 class SlayerModel(BaseModel):
-    version: int = 9  # DEV-1743: v9 = ``__`` ban lift + legacy-alias load rewrite
+    version: int = 10  # v10 = exact-inverse join dedup (bidirectional traversal)
     name: str
     sql_table: str | None = None
     # Kind of DB object ``sql_table`` names; only auto-ingestion sets it. ``None`` = unknown.
@@ -477,6 +487,20 @@ class SlayerModel(BaseModel):
         _check_column_measure_namespace(
             model_name=self.name, columns=self.columns, measures=self.measures
         )
+        return self
+
+    @model_validator(mode="after")
+    def _reject_self_joins(self) -> "SlayerModel":
+        """Joins resolve by target-model name, so a self-join is unaddressable."""
+        if any(j.target_model == self.name for j in self.joins):
+            raise ValueError(
+                f"Model '{self.name}': join target_model '{self.name}' is the "
+                f"model itself. Self-joins are not supported — dotted "
+                f"references resolve by model name, so a self-join can never "
+                f"be addressed from a query. Define the second role as a "
+                f"separate model over the same table (or a view) and join to "
+                f"that."
+            )
         return self
 
     @model_validator(mode="after")

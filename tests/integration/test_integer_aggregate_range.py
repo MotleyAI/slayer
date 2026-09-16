@@ -5,8 +5,8 @@ import pytest
 from slayer.core.enums import DataType
 from slayer.core.models import ModelJoin, SlayerModel
 from slayer.core.query import SlayerQuery
-from slayer.engine.source_bundle import ResolvedSourceBundle
-from slayer.engine.stage_planner import plan_query
+from slayer.ir.source_bundle import ResolvedSourceBundle
+from slayer.engine.plan import plan_query
 from slayer.sql.generator import generate_from_planned
 
 duckdb = pytest.importorskip("duckdb")
@@ -119,7 +119,7 @@ def test_joined_integer_aggregate_preserves_cast_intent(integer_orders, explicit
             "name": "customers",
             "sql_table": "customers",
             "measures": [],
-            "joins": [ModelJoin(target_model="orders", join_pairs=[["id", "id"]])],
+            "joins": [],
         }
     )
     measure = {"formula": "customers.amount:sum", "name": "total"}

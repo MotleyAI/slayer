@@ -15,6 +15,7 @@ SLayer has two distinct expression layers and the rules for what each one accept
 
 * A bare identifier `col` resolves to the column named `col` on the underlying table or SQL of this model.
 * A join path is written with **dots**: `a.b.c.col` walks `model → a → b → c` and resolves the leaf column `col` on the final model. Dots separate join hops; the leaf column follows the final dot. The generated SQL emits this walk with a `__`-delimited internal table alias (`LEFT JOIN … AS a__b__c`), but that spelling is an emitted-SQL detail you never write. A `__` token in a qualifier is treated as part of **one exact name**, never split into a hop walk — `customers__region.label` means "the directly-joined model literally named `customers__region`, column `label`". The legacy `__`-delimited split-alias input form (`customers__regions.name` meant as a `customers → regions` walk) is a hard error (`LegacyDunderAliasError`), not auto-converted. The flattened form `a__b__c__col` appears only inside virtual-model column names produced by the query-backed model wrap (see below).
+* A path segment resolves as an incident **edge name first, then a neighbour model name**, and traverses the edge in **either direction** (any declared join is reachable in reverse — see [Bidirectional traversal](models.md#bidirectional-traversal)); a hop spanned by two or more edges fails closed unless an edge-name segment disambiguates it.
 * Single-dot `t.col` is a literal `<table>.<column>` SQL reference (sqlglot's normal behavior).
 * Multi-dot input (`a.b.c`) stays dotted through to resolution — there is no `__` rewrite (the old dotted→`__` normalization is retired).
 * Other derived columns of the same model (or of a joined model via a dotted join path) are recursively expanded so chains like `A.ratio = "A.bar / B.foo_normalized"` (where `B.foo_normalized` is itself derived) work.
@@ -25,7 +26,8 @@ SLayer has two distinct expression layers and the rules for what each one accept
 ### DSL mode (queries + `ModelMeasure.formula`)
 
 * A bare name must resolve to a `Column`, a `ModelMeasure`, or a custom `Aggregation` defined on the model. Filters additionally accept `{variable}` placeholders, query-level measure / transform / expression aliases, and synthesised canonical agg names like `revenue_sum`.
-* A single-dot dotted path walks the join graph: `customers.regions.name` traverses `model → customers → regions` and resolves `name` on the regions model. Multi-hop is supported.
+* A single-dot dotted path walks the join graph: `customers.regions.name` traverses `model → customers → regions` and resolves `name` on the regions model. Multi-hop is supported. Each segment resolves as an incident **edge name first, then a neighbour model name**, in **either direction** ([bidirectional traversal](models.md#bidirectional-traversal)); an ambiguous hop (parallel edges, no edge-name segment) fails closed naming the candidates.
+* A **short form** naming only the target model and column (`regions.name`) auto-routes to its full path when the target is reached by exactly one route — or, among several, exactly one fan-out-free route — surfacing under that full routed path; an ambiguous or unreachable target is rejected (`UnresolvableDimensionJoinError`) with a suggested path, and a broken explicit chain is never silently repaired.
 * Aggregation colon syntax: `<col>:<agg>` (e.g. `revenue:sum`), `*:count`, `<col>:<agg>(<args>)` (e.g. `price:weighted_avg(weight=quantity)`), and `<dotted.path>:<agg>` for cross-model aggregations.
 * The **functional spelling** `<agg>(<col>, <args>)` is a first-class exact equivalent of the colon form in every position — see [Aggregation spelling equivalence](#aggregation-spelling-equivalence).
 * Transform calls wrap aggregated refs: `cumsum(sum(revenue))`, `rank(sum(revenue), partition_by=region)`, `change(sum(customers.revenue))`, etc.
@@ -41,7 +43,10 @@ extensions, inline models, multi-stage formulas, computed-dimension
 expressions, transform and arithmetic operands) and for **every** aggregation
 — builtin, aliased (`countD(x)` ≡ `count_distinct(x)`), and model-defined
 custom aggregations. Neither spelling is rewritten or warned about; a saved
-model keeps the author's spelling.
+model keeps the author's spelling. Declared parameters may be passed
+positionally in declaration order — `percentile(price, 0.9)` and
+`price:percentile(0.9)` both mean `p=0.9` (`first`/`last` keep their
+positional ranking column instead).
 
 | Colon form | Functional form |
 |---|---|
@@ -194,11 +199,12 @@ Five consequences worth knowing:
 
 * **`greatest` / `least` NULL handling is backend-specific.** They pass through
   to each backend's native form, and those forms disagree on `NULL`: Postgres,
-  DuckDB and SQL Server *ignore* `NULL` arguments (returning `NULL` only when
-  every argument is `NULL`), while SQLite (scalar `MAX`/`MIN`), MySQL,
-  ClickHouse, BigQuery and Snowflake *propagate* `NULL` (any `NULL` argument
-  makes the result `NULL`; Snowflake's `GREATEST`/`LEAST` need
-  `GREATEST_IGNORE_NULLS`/`LEAST_IGNORE_NULLS` to skip them). SLayer does not normalise this — wrap arguments in
+  DuckDB, SQL Server, ClickHouse 24.12+ and Snowflake (where the generated SQL
+  uses `GREATEST_IGNORE_NULLS`/`LEAST_IGNORE_NULLS`) *ignore* `NULL` arguments
+  (returning `NULL` only when every argument is `NULL`), while SQLite (scalar
+  `MAX`/`MIN`), MySQL, BigQuery and pre-24.12 ClickHouse (or 24.12+ with the
+  `least_greatest_legacy_null_behavior` setting) *propagate* `NULL`
+  (any `NULL` argument makes the result `NULL`). SLayer does not normalise this — wrap arguments in
   `ifnull(...)` / `coalesce(...)` if you need one behaviour on every backend.
   On SQL Server, `GREATEST` / `LEAST` require SQL Server 2022 or newer; earlier
   versions reject the generated SQL.

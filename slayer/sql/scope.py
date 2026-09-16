@@ -30,6 +30,7 @@ from sqlglot.errors import ParseError
 
 from slayer.core.enums import DataType
 from slayer.core.errors import ModeASqlParseError, UnknownReferenceError
+from slayer.core.join_walker import terminal_model
 from slayer.core.keys import (
     REGROUP_LEAF_PREFIX,
     ArithmeticKey,
@@ -39,11 +40,11 @@ from slayer.core.keys import (
     ScalarCallKey,
 )
 from slayer.core.models import SlayerModel
-from slayer.engine.column_expansion import (
+from slayer.sql.column_expansion import (
     collect_root_scope_joined_paths,
     expand_derived_refs_sync,
 )
-from slayer.engine.source_bundle import ResolvedSourceBundle
+from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.dialects.base import SqlDialect
 from slayer.sql.naming import AliasAllocator
 from slayer.sql.render.parse import parse_expression, parse_predicate
@@ -148,11 +149,13 @@ class ScopeFrame(BaseModel):
         *,
         consumer: "ScopeFrame | None" = None,
         location: Optional[str] = None,
+        owner_path: Tuple[str, ...] = (),
     ) -> exp.Expression:
         """Enter a Mode-A boolean PREDICATE (``Column.filter``, model
         ``filters``) into this scope. See :meth:`_enter`."""
         return self._enter(
             sql, grammar=_PREDICATE, consumer=consumer, location=location,
+            owner_path=tuple(owner_path),
         )
 
     def enter_expression(
@@ -161,11 +164,13 @@ class ScopeFrame(BaseModel):
         *,
         consumer: "ScopeFrame | None" = None,
         location: Optional[str] = None,
+        owner_path: Tuple[str, ...] = (),
     ) -> exp.Expression:
         """Enter a Mode-A scalar EXPRESSION (``Column.sql``) into this scope.
         See :meth:`_enter`."""
         return self._enter(
             sql, grammar=_EXPRESSION, consumer=consumer, location=location,
+            owner_path=tuple(owner_path),
         )
 
     def _enter(
@@ -175,6 +180,7 @@ class ScopeFrame(BaseModel):
         grammar: _Grammar,
         consumer: "ScopeFrame | None",
         location: Optional[str],
+        owner_path: Tuple[str, ...] = (),
     ) -> exp.Expression:
         """The single implementation behind both Mode-A surfaces.
 
@@ -203,7 +209,30 @@ class ScopeFrame(BaseModel):
         being read determines it (a ``Column.filter`` is always a predicate).
         Sniffing content or retrying the other grammar would put classification
         back into render time.
+
+        ``owner_path`` anchors the scan/expansion at a to-one SUB-scope — the
+        owner of a measure-local ``Column.filter`` or an owner-anchored parameter
+        default — so its refs resolve from that owner and the joins they cross
+        register relative to it (prefixed by ``owner_path``). Empty (the default)
+        is the scope root, byte-identical to before.
         """
+        if owner_path:
+            owner_model = terminal_model(
+                root=self.root_model, path=owner_path,
+                models_by_name=self._models_by_name(),
+            )
+            assert owner_model is not None, (
+                f"owner_path {owner_path!r} does not resolve from "
+                f"{self.root_model.name!r}"
+            )
+            alias_path = self.allocator.alias_for(
+                root=self.root_relation, path=owner_path,
+                limit=self.dialect.max_identifier_bytes,
+            )
+            self._register_path_prefixes(owner_path)
+        else:
+            owner_model = self.root_model
+            alias_path = self.root_relation
         prequoted = prequote_reserved_identifiers(
             sql, dialect=self.dialect.sqlglot_name,
         )
@@ -215,15 +244,18 @@ class ScopeFrame(BaseModel):
         # inlining a derived column (the DEV-1494 dual-discovery contract), now
         # collected STRUCTURALLY via ``crossed_paths`` rather than by re-scanning
         # the internal-alias output (DEV-1743).
-        self._register_join_paths(raw_ast)
+        self._register_join_paths(
+            raw_ast, owner_model=owner_model, owner_relation=alias_path,
+            owner_path=owner_path,
+        )
 
         expanded = expand_derived_refs_sync(
             sql=prequoted,
-            model=self.root_model,
-            alias_path=self.root_relation,
-            resolve_model=self.bundle.get_referenced_model,
+            model=owner_model,
+            alias_path=alias_path,
+            models_by_name=self._models_by_name(),
             dialect=self.dialect.sqlglot_name,
-            owner_path=(),
+            owner_path=owner_path,
             alias_resolver=self._alias_resolver(),
             crossed_paths=self.join_paths,
         )
@@ -273,6 +305,10 @@ class ScopeFrame(BaseModel):
     def _default_location(self) -> str:
         return f"Mode-A SQL in scope rooted at model {self.root_model.name!r}"
 
+    def _models_by_name(self) -> dict:
+        """The bundle's model collection, for the shared bidirectional walker."""
+        return self.bundle.models_by_name
+
     def _alias_resolver(self) -> Callable[[Tuple[str, ...]], str]:
         """The WP3 registry-backed alias resolver for this scope (DEV-1743):
         maps a root-relative join path to the internal JOIN alias the generator
@@ -284,16 +320,23 @@ class ScopeFrame(BaseModel):
             limit=self.dialect.max_identifier_bytes,
         )
 
-    def _register_join_paths(self, parsed: exp.Expression) -> None:
+    def _register_join_paths(
+        self, parsed: exp.Expression, *,  # pyright: ignore[reportPrivateImportUsage]
+        owner_model: Optional[SlayerModel] = None,
+        owner_relation: Optional[str] = None,
+        owner_path: Tuple[str, ...] = (),
+    ) -> None:
         """Law 1's side effect: every join path ``parsed`` crosses is recorded
-        on this scope, so ``_build_from_and_joins`` emits the JOINs it needs."""
+        on this scope, so ``_build_from_and_joins`` emits the JOINs it needs. A
+        non-empty ``owner_path`` scans from that to-one sub-scope and prefixes
+        each discovered path with it (root-relative)."""
         for path in collect_root_scope_joined_paths(
             parsed=parsed,
-            source_model=self.root_model,
-            source_relation=self.root_relation,
+            source_model=owner_model or self.root_model,
+            source_relation=owner_relation or self.root_relation,
             bundle=self.bundle,
         ):
-            self.join_paths.add(path)
+            self.join_paths.add(tuple(owner_path) + path)
 
     def materialize_for(
         self, template: exp.Expression, *, consumer: "ScopeFrame",
@@ -387,7 +430,7 @@ class ScopeFrame(BaseModel):
                 sql=raw_sql,
                 model=model,
                 alias_path=alias_path,
-                resolve_model=self.bundle.get_referenced_model,
+                models_by_name=self._models_by_name(),
                 dialect=self.dialect.sqlglot_name,
                 owner_path=owner_path,
                 alias_resolver=self._alias_resolver(),
@@ -409,7 +452,7 @@ class ScopeFrame(BaseModel):
                 sql=prequoted,
                 model=self.root_model,
                 alias_path=self.root_relation,
-                resolve_model=self.bundle.get_referenced_model,
+                models_by_name=self._models_by_name(),
                 dialect=self.dialect.sqlglot_name,
                 owner_path=(),
                 alias_resolver=self._alias_resolver(),
@@ -436,7 +479,11 @@ class ScopeFrame(BaseModel):
             if not ref.path:
                 model = self.root_model
             else:
-                model = self.bundle.get_referenced_model(ref.path[-1])
+                # Walk the path — tokens may be edge names (DEV-1853).
+                model = terminal_model(
+                    root=self.root_model, path=ref.path,
+                    models_by_name=self._models_by_name(),
+                )
             if model is None:
                 return None
             col = next((c for c in model.columns if c.name == ref.leaf), None)
