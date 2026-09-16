@@ -16,13 +16,7 @@ import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.format import NumberFormatType
-from slayer.core.keys import (
-    AggregateKey,
-    ArithmeticKey,
-    ColumnKey,
-    reroot_value_key,
-    substitute_value_keys,
-)
+from slayer.core.keys import AggregateKey, ArithmeticKey, ColumnKey, reroot_value_key, substitute_value_keys, walk_value_keys
 from slayer.core.models import (
     Aggregation,
     Column,
@@ -32,7 +26,6 @@ from slayer.core.models import (
     SlayerModel,
 )
 from slayer.core.query import OrderItem, SlayerQuery, TimeDimension
-from slayer.engine.binding import walk_value_keys
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.syntax import AggCall, Ref, canonical_measure_text, parse_expr
 from slayer.storage.yaml_storage import YAMLStorage
@@ -424,12 +417,13 @@ class TestExpressionErrors:
             await _dry(q)
         assert "filter" in str(ei.value).lower()
 
-    async def test_mixed_row_and_attached_source_rejected(self) -> None:
-        # ``sum(sum(amount))`` became a legal degenerate re-aggregation
-        # (DEV-1847); row-mixing stays rejected (DEV-1859 boundary).
+    async def test_mixed_row_and_attached_source_accepted(self) -> None:
+        # ``sum(sum(amount))`` is a degenerate re-aggregation (DEV-1847); a
+        # source mixing a row leaf with an attached value is now a row-grain
+        # aggregation and compiles (DEV-1859), not the expression gate.
         q = _q(measures=["sum(amount + sum(amount))"])
-        with pytest.raises(ValueError, match="(?i)mix"):
-            await _dry(q)
+        resp = await _dry(q)
+        assert resp.sql
 
     async def test_nested_transform_rejected(self) -> None:
         q = _q(measures=["sum(cumsum(amount) - 1)"])

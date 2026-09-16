@@ -12,8 +12,7 @@ import pytest
 from slayer.core.errors import UnreachableFilterDroppedWarning
 from slayer.core.keys import AggregateKey
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery
-from slayer.engine import stage_planner
-from slayer.engine.stage_planner import plan_query
+from slayer.engine.plan import plan_query
 from slayer.sql.generator import _lower_positions
 from tests._dev1747_fixtures import (
     ALPHA_SPEND_ALL,
@@ -27,6 +26,8 @@ from tests._dev1747_fixtures import (
     seed_dev1747_sqlite,
 )
 import inspect
+from slayer.engine import join_safety
+from slayer.engine.compile import stages
 
 #: Cross-model aggregate + a dimension a hop past the target → planner re-roots the CTE at ``customers``.
 _CROSS_MODEL_MEASURE = {"formula": "customers.spend:sum", "name": "cs"}
@@ -132,7 +133,7 @@ def _classifier_spy(monkeypatch) -> list:
     """Record every ``_cross_model_inherited_filters`` call and its arguments (once per producer)."""
 
     calls: list = []
-    original = stage_planner._cross_model_inherited_filters
+    original = stages._cross_model_inherited_filters
 
     def _recording(**kwargs):
         result = original(**kwargs)
@@ -140,7 +141,7 @@ def _classifier_spy(monkeypatch) -> list:
         return result
 
     monkeypatch.setattr(
-        stage_planner, "_cross_model_inherited_filters", _recording,
+        stages, "_cross_model_inherited_filters", _recording,
     )
     return calls
 
@@ -278,12 +279,12 @@ class TestInternalFailuresRaise:
         """No swallowing ``except`` in the reroot functions: a broad tuple, ``except Exception``, or bare ``except:`` all reintroduce the B6 defect."""
         broad = {"Exception", "BaseException", "ValueError"}
         checked = 0
-        for name in (
-            "_cross_model_inherited_filters",
-            "_attributable_from_root",
-            "_reroot_from_root",
+        for mod, name in (
+            (stages, "_cross_model_inherited_filters"),
+            (join_safety, "attributable_from_root"),
+            (join_safety, "reroot_from_root"),
         ):
-            target = getattr(stage_planner, name, None)
+            target = getattr(mod, name, None)
             assert target is not None, (
                 f"{name} is gone — the reroot path was renamed and this guard "
                 f"now checks nothing"
@@ -317,7 +318,7 @@ class TestInternalFailuresRaise:
             raise boom
 
         monkeypatch.setattr(
-            stage_planner, "_cross_model_inherited_filters", _explode, raising=True,
+            stages, "_cross_model_inherited_filters", _explode, raising=True,
         )
         with pytest.raises(RuntimeError, match="planner exploded"):
             _attaches(FILTER_REACHABLE)
@@ -354,7 +355,7 @@ class TestUnreachableDimensionsStillDrop:
 
 
 class TestFilteredLocalDispatchAccounting:
-    """A ``grain="host"`` wrap (path is its crossing) must take the HOST-rooted route; a target-rooted producer would degenerate to a scalar CROSS JOIN (D2)."""
+    """A ``locus="host"`` wrap (path is its crossing) must take the HOST-rooted route; a target-rooted producer would degenerate to a scalar CROSS JOIN (D2)."""
 
     def _grouped_joined_order(self) -> SlayerQuery:
         return SlayerQuery(
@@ -378,7 +379,7 @@ class TestFilteredLocalDispatchAccounting:
         assert attach.producer_root_model is None
         (sub,) = attach.substitutions
         assert isinstance(sub.original_key, AggregateKey)
-        assert sub.original_key.grain == "host"
+        assert sub.original_key.locus == "host"
         assert getattr(sub.original_key.source, "path", None) == ("customers", "regions"), (
             "the wrap lost its path on the way to the host-rooted route"
         )
@@ -438,6 +439,8 @@ class TestRerootedFilterStillNarrowsTheHost:
         rows, _ = await cls._rows_and_warnings(*filters)
         return rows
 
+    @pytest.mark.xfail(strict=True, reason=(
+        "DEV-1909: a fanning population filter with an aggregate inline over the population now fails closed (DEV-1900 interim guard); DEV-1909 restores it via association pushdown."))
     def test_every_fixture_here_actually_reroots(self) -> None:
         """Vacuity guard: if the planner stopped re-rooting and used a forward plan, the row assertions below would pass while testing nothing."""
         for label, flt in (
@@ -496,6 +499,8 @@ class TestRerootedFilterStillNarrowsTheHost:
         assert regions == sorted([REGION_A_LOW, REGION_A_HIGH]), regions
         assert sum(r["orders.rev"] for r in rows) == GROUP_A_AMOUNT, rows
 
+    @pytest.mark.xfail(strict=True, reason=(
+        "DEV-1909: a fanning population filter with an aggregate inline over the population now fails closed (DEV-1900 interim guard); DEV-1909 restores it via association pushdown."))
     async def test_the_tags_filter_narrows_without_fanning_out(self) -> None:
         """``rush`` tags orders 1 and 2 only; a join-based pushdown (instead of containment) would multiply order 1 by its three tags."""
         rows = await self._rows(FILTER_TAGS)
@@ -530,6 +535,8 @@ class TestRerootedFilterStillNarrowsTheHost:
             f"{ALPHA_SPEND_ALL})"
         )
 
+    @pytest.mark.xfail(strict=True, reason=(
+        "DEV-1909: a fanning population filter with an aggregate inline over the population now fails closed (DEV-1900 interim guard); DEV-1909 restores it via association pushdown."))
     async def test_no_warning_when_every_filter_is_reachable(self) -> None:
         """A misclassified predicate still yields right-looking rows; the warning is the only tell. Host-local and tags filters push by semi-join now (DEV-1853) — no warning."""
         for flt in (FILTER_REACHABLE, FILTER_TARGET_ATTRIBUTE,
@@ -636,6 +643,8 @@ class TestRowPhaseFiltersAlwaysApplyAtTheHost:
             == [r["orders.rev"] for r in mixed_rows]
         ), "the sibling local measure changed when a cross-model one was added"
 
+    @pytest.mark.xfail(strict=True, reason=(
+        "DEV-1909: a fanning population filter with an aggregate inline over the population now fails closed (DEV-1900 interim guard); DEV-1909 restores it via association pushdown."))
     async def test_applying_at_the_host_does_not_fan_out_a_sibling(self) -> None:
         """Ruled out: the host's copy of a filter on a 1:N path (``order_tags``) must not fan out a sibling ``amount:sum`` — group A reads 24.0, not the 46.0 a three-way fan-out gives."""
         rows = await self._rows(SlayerQuery(

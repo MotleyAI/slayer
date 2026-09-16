@@ -80,7 +80,7 @@ warnings too. Explicit `partition_by=` broadcasting is by design and MUST NOT wa
 - **THEN** the warning's reason names that hop classification — never "unreachable"
 
 ### Requirement: Unsafe aggregate inputs fail closed
-An aggregate whose inputs — positional args, keyword args (including aggregation-parameter fragments), or measure-level column filter references — cross a join hop that is not provably many-to-one from the aggregate's root SHALL fail with a clear error in all three modes, whatever the aggregate's root: target-rooted, host-rooted, and local aggregates alike. Multiplying a host-side operand through a fanning join is ambiguous and MUST never silently compute over multiplied rows. The rule applies per input role: a *filter reference* or *argument* crossing an unproven hop fails closed, whatever the aggregate's root. A crossing *source* stays legal only where the aggregate is evaluated over the join result at host grain — a host-grain wrap (an ORDER BY sort key over an unprojected joined column) consumes the target's values per matched row and keeps its established values. A target-rooted cross-model producer re-roots its source to the target; a source that then reads through an unproven hop fans the aggregate and fails closed like any other crossing input.
+An aggregate whose inputs — positional args, keyword args (including aggregation-parameter fragments and the aggregation definition's non-overridden defaults), or measure-level column filter references — cross a join hop that is not provably many-to-one from the aggregate's root SHALL fail with a clear error in all three modes, whatever the aggregate's root: target-rooted, host-rooted, and local aggregates alike. An input's dependencies are its *dependency closure*: its own join path plus every join path the definition of any derived column it names crosses, recursively through chains of derived columns, whether the reference is bare or path-bearing — a derived column whose definition crosses a fanning hop is an unsafe input exactly as a structural reference across that hop is. An input whose derived-column definition cannot be analyzed for join dependencies SHALL fail closed with a typed error naming the aggregate and the column — never be treated as crossing nothing. Multiplying a host-side operand through a fanning join is ambiguous and MUST never silently compute over multiplied rows. The rule applies per input role: a *filter reference* or *argument* crossing an unproven hop fails closed, whatever the aggregate's root. A crossing *source* stays legal only where the aggregate is evaluated over the join result at host grain — a host-grain wrap (an ORDER BY sort key over an unprojected joined column) consumes the target's values per matched row and keeps its established values; a definition default's references local to its owner ride with the source. A target-rooted cross-model producer re-roots its source to the target; a source that then reads through an unproven hop fans the aggregate and fails closed like any other crossing input.
 
 #### Scenario: Aggregate reading through an unproven join errors
 - WHEN an aggregate's column filter references a column across a join with unproven arity from the aggregate's root
@@ -97,6 +97,30 @@ An aggregate whose inputs — positional args, keyword args (including aggregati
 #### Scenario: Host-grain wrap over a to-many source stays legal
 - WHEN a query orders by an aggregate of a joined column evaluated at host grain across a to-many join
 - THEN the aggregate evaluates over the joined rows as before, with unchanged executed values
+
+#### Scenario: Path-bearing derived argument crossing a fanning hop fails closed
+- WHEN a query rooted at `orders` selects `customers.spend:weighted_avg(weight=customers.regions.bad_pop)`, where `regions.bad_pop` is defined as `pop + region_events.value` over the one-to-many `regions → region_events` hop, in any `to_many_handling` mode
+- THEN the query fails with the unproven-join-hop error naming `region_events`, never emitting the multiplying join; the same holds when the argument names a derived column defined over that derived column (`bad_pop * 2`)
+
+#### Scenario: Local aggregate with a derived crossing argument fails closed
+- WHEN a query rooted at `orders` selects `amount:weighted_avg(weight=customers.regions.bad_pop)`
+- THEN the query fails with the unproven-join-hop error naming `region_events`
+
+#### Scenario: Definition default naming a fanning derived column fails closed
+- WHEN a custom aggregation on `customers` defaults a parameter to `regions.bad_pop`, or to the expression `regions.bad_pop * 1`, and a query selects `customers.spend:<that aggregation>`
+- THEN the query fails with the unproven-join-hop error naming `region_events`
+
+#### Scenario: Measure-local filter naming a fanning derived column fails closed
+- WHEN a column's measure-level filter references a derived column on a joined model whose definition crosses a fanning hop (`regions.bad_pop > 0` on a `customers` column) and a query aggregates that column
+- THEN the query fails with the unproven-join-hop error naming `region_events`
+
+#### Scenario: Derived dependencies over provably to-one hops stay legal
+- WHEN an argument or definition default names a derived column reached over a provably to-one path whose own definition is local to its model (`regions.derived_pop` = `pop * 2`)
+- THEN the query executes with the derived expansion applied, by executed values, unchanged from today
+
+#### Scenario: Unanalyzable derived definition fails closed
+- WHEN an aggregate input names a derived column whose definition no supported dialect can parse
+- THEN the query fails at plan time with a typed error naming the aggregate and the column, containing no issue reference — never a plan that treats the column as crossing nothing
 
 ### Requirement: Explicit grain and window on cross-model aggregates
 Cross-model aggregates SHALL accept `partition_by=`, `window=`, and `first`/`last`.
@@ -129,11 +153,23 @@ from its root, else errors.
 - **THEN** the value is correct by executed values and result cardinality is unchanged
 
 ### Requirement: Cross-model aggregates compose in expressions and dimensions
-Cross-model aggregates SHALL be legal wherever local aggregates are: in arithmetic and scalar-call composites (including mixed with local aggregates and with aggregates from different joined models in one expression), inside transforms, in dimension expressions, in filters, and in ORDER BY. A computed dimension whose expression columns are all attributable from a metric's root participates in that metric's grain; otherwise the metric broadcasts across it. Consumption-position rules match local aggregates exactly: a combined-position consumer of a cross-model partitioned aggregate needs query-dimension partition keys (per the partitioned-aggregates combined-consumer requirement), while row-scope references to a computed dimension's own aggregate stay legal at any partition grain.
+Cross-model aggregates SHALL be legal wherever local aggregates are: in arithmetic and scalar-call composites (including mixed with local aggregates and with aggregates from different joined models in one expression), inside transforms, in dimension expressions, in filters, and in ORDER BY. Composite legality is uniform across the composite's own shape: a cross-model operand SHALL compile whether the composite combines it with local aggregates, with literals, with several cross-model operands, or wraps it in scalar calls — the compiled route never depends on which seam the composite would otherwise render through, and no composite shape reaches an internal not-supported seam error. A computed dimension whose expression columns are all attributable from a metric's root participates in that metric's grain; otherwise the metric broadcasts across it. Consumption-position rules match local aggregates exactly: a combined-position consumer of a cross-model partitioned aggregate needs query-dimension partition keys (per the partitioned-aggregates combined-consumer requirement), while row-scope references to a computed dimension's own aggregate stay legal at any partition grain.
 
 #### Scenario: Local and cross-model aggregates in one expression
 - WHEN a query selects the measure `orders.revenue:sum / customers.spend:sum`
 - THEN each cell's value is the ratio of the two correctly-computed aggregates, by executed values
+
+#### Scenario: Scalar call wrapping a cross-model operand executes
+- **WHEN** a query selects a scalar-call composite over a cross-model aggregate mixed with
+  a local aggregate and a literal (for example `round(customers.spend:sum / amount:sum, 2)`)
+- **THEN** the composite executes with correct hand-computed values on SQLite and DuckDB —
+  never the former AGGREGATE-phase-composite not-yet-supported error
+
+#### Scenario: Multiple cross-model operands in one composite execute
+- **WHEN** a composite combines two cross-model aggregates (same or different joined
+  models) with no local operand
+- **THEN** each operand is computed in its own producer and the composed value is correct
+  by executed values
 
 #### Scenario: Cross-model aggregate source inside a computed dimension
 - WHEN a query declares a dimension banding `customers.spend:sum(partition_by=<customer-level dimension>)`
@@ -169,9 +205,57 @@ A dimension lying on an intermediate hop of a cross-model aggregate's join chain
 ### Requirement: Every aggregate has exactly one disposition
 Planning SHALL guarantee that every aggregate reference — measure, composite leaf, computed-dimension, filter-only, order-only, windowed, ranked, host-grain, or nested — is either computed inline, routed to exactly one producer, or rejected with a clear error. A discovery gap MUST surface as an explicit planner error, never as a silently dropped or wrong value.
 
+Beyond routing, planning SHALL assign every value the plan carries — row leaf, aggregate, producer placeholder, composite, transform, filter predicate — exactly one materialisation stage in the emitted statement's pipeline (host base, producer, combined, derived level — where a value reading a transform is staged one level above the deepest transform it reads: a transform is one more relation layer, a composite renders inline and is never a layer of its own), derived only from the stages of the values it references, together with whether any consumer requires it as a column. A plan in which a value references a value of a later stage, or in which any value is left unstaged, SHALL be rejected at plan time with a typed error before any SQL is generated. SQL generation SHALL place each value in the relation its stage names and read earlier relations by alias only, never re-deriving placement from the value's shape; a value whose stage names a relation that cannot render it MUST fail closed, never render at the wrong grain.
+
 #### Scenario: Unrouted shapes fail loudly
 - WHEN a query contains an aggregate shape the planner cannot route
 - THEN the query fails with a clear error naming the shape, never with missing or incorrect values
+
+#### Scenario: Every planned value carries one stage
+- **WHEN** any query is planned, including the producer bodies nested inside it
+- **THEN** every value in the plan carries exactly one materialisation stage; a value that
+  reads a transform is staged strictly later than every transform it reads, and no value
+  is staged earlier than any operand
+
+#### Scenario: A transform over a composite over a transform
+- **WHEN** a query projects `change(x)` and filters on `last(change(x))`
+- **THEN** `change(x)` is staged one level above its `time_shift`, `last(change(x))`
+  shares the composite's level (only transforms stratify; the composite renders inline),
+  and the query executes selecting the declining partition (pinned by the DEV-1859
+  last-over-change test)
+
+#### Scenario: Staging is a function of the term alone
+- **WHEN** the same query filters on `last(change(x))` with and without also projecting
+  `change(x)`
+- **THEN** every shared value carries the same stage in both plans and the surviving rows
+  are identical
+
+#### Scenario: Deeper alternation of transforms and composites
+- **WHEN** a transform's operand is a composite over a transform over a transform (for
+  example `last(change(cumsum(x)))`)
+- **THEN** each transform is staged one level above the deepest transform it reads and
+  the query plans with no construction-inspecting refusal
+
+#### Scenario: Later-stage reference is rejected at plan time
+- **WHEN** a plan is constructed in which a value references a value staged later than
+  itself, in which a transform reads a transform not staged strictly earlier, or in which
+  some value has no stage
+- **THEN** plan construction fails with a typed error naming the values, and no SQL is
+  generated
+
+#### Scenario: Operands needed later are materialised earlier
+- **WHEN** a value at a later stage (a transform, a composite reading a derived value, a
+  filter predicate, an ORDER BY key) reads a value materialised at an earlier stage that
+  is not otherwise selected
+- **THEN** the earlier value is projected as a hidden column of its own relation and the
+  later value reads it by alias, by executed values and by the generated SQL
+
+#### Scenario: Already-legal shapes keep their SQL
+
+- **WHEN** the golden-SQL suites for every previously supported shape run after
+  materialisation becomes planner-owned
+- **THEN** generated SQL is byte-identical except for individually approved divergences,
+  and executed values are unchanged for every divergence
 
 ### Requirement: Existing cross-model behavior is preserved where already safe
 Cross-model shapes supported before this change whose grains were already fan-out-safe SHALL keep identical executed values, and golden SQL stays byte-identical except individually approved divergences. Shapes whose values or errors change (arity-unsafe grains broadcasting, unsafe inputs and unsafe explicit partition keys erroring, previously-dropped reachable filters now restricting the metric by semi-join, and semi-join queries on pre-25.4 ClickHouse now failing closed) are enumerated and individually approved.
@@ -201,13 +285,19 @@ column's classification follows the models its definition actually reads, not ju
 declared location.
 
 Semi-join pushdown SHALL apply uniformly to every producer — plain, partitioned,
-ranked, windowed, nested computed-dimension, and association producers. For an
-association producer the same routing applies with the producer's root taken as the
-host: host-attributable conjuncts apply inline, unsafe-but-reachable conjuncts push by
-semi-join, and membership of the association is identical to the semi-join semantics
-above. Conjuncts pushed into the same producer that share their first reverse hop SHALL
-be satisfied by the same related row (combination); conjuncts on different branches are
-satisfied independently.
+ranked, windowed, and nested computed-dimension producers. An association producer is
+rooted at the aggregate's home dataset and applies every reachable conjunct inline on
+its own joins: attributable conjuncts inline as in every producer, and a conjunct
+reachable only across hops that are not provably many-to-one inlines on the fanning
+join, where the per-entity deduplication makes the fan-out harmless. Membership of the
+association is identical to the semi-join semantics above — entities with at least one
+related row passing the conjunct, conjuncts on one branch satisfied by the same related
+row, branches independent — and a conjunct sharing a hop with an association dimension
+is satisfied by the same related row that carries the dimension value. Each such
+conjunct is reported through the same informational entry as a semi-join-pushed
+conjunct. Conjuncts pushed into the same producer that share their first reverse hop
+SHALL be satisfied by the same related row (combination); conjuncts on different
+branches are satisfied independently.
 
 A conjunct SHALL remain excluded from the producer — reported through the established
 dropped-filter warning (and erroring under `to_many_handling: "error"`) while still
@@ -216,7 +306,8 @@ from the root), when its cross-path references span multiple distinct join branc
 within one conjunct, or when root-local and cross-path references mix under a
 disjunction or negation. The reverse path resolves through the same bidirectional
 traversal as every other hop: any declared edge, in either orientation, with oriented
-provability governing inline-vs-semi-join classification. A hop of the correlation path
+provability governing inline-vs-semi-join classification; a home several hops from the
+population root reverses every hop of its path. A hop of the correlation path
 connected by two or more parallel edges (candidate edges for that single hop) SHALL fail closed in all three modes with the ambiguous-hop
 error naming the candidate edges — never dropped, never guessed. AGGREGATE-phase
 predicates keep aggregate-filter semantics uniform with local aggregates: they restrict
@@ -288,13 +379,29 @@ only in the filter.
 - **WHEN** a query with an unsafe-but-reachable filter uses ranked, windowed, nested
   computed-dimension, or association producers
 - **THEN** each such producer's population is restricted by the same semi-join
-  semantics, by executed values
+  semantics, by executed values — the association producer by inlining the conjunct on
+  its home-rooted joins
 
 #### Scenario: Filter on a sibling fan-out branch restricts the association correctly
 - **WHEN** an associate-mode query's filter references a to-many branch different from
   the metric's association path, including a NULL-sensitive predicate
 - **THEN** the association's membership equals the semi-join semantics — entities of
   root rows with at least one related row passing the predicate — by executed values
+
+#### Scenario: Host filter and host dimension bind to the same population row
+- **WHEN** an associate-mode query rooted at `orders` filters `channel = 'app'` and
+  selects `customers.spend:sum` by `status`, or the same query rooted at `customers`
+  selects `spend:sum` by `orders.status` with the filter `orders.channel = 'app'`
+- **THEN** each status cell aggregates the distinct customers having an app order with
+  that status — never a customer whose app order and status order are different rows —
+  by executed values on SQLite and DuckDB
+
+#### Scenario: Association-restricted conjunct carries the informational entry
+- **WHEN** an association producer applies a reachable-but-unsafe conjunct inline on
+  its joins
+- **THEN** the response carries the same machine-readable entry as a semi-join-pushed
+  conjunct, naming the aggregate and the filter, with no Python-level warning and no
+  error in any mode
 
 #### Scenario: ClickHouse below 25.4 fails closed
 - **WHEN** a semi-join pushdown query targets a ClickHouse server older than 25.4 or of

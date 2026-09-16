@@ -13,7 +13,7 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.errors import AmbiguousJoinPathError
-from slayer.engine.stage_planner import plan_query
+from slayer.engine.plan import plan_query
 
 from tests._dev1840_fixtures import (
     ModelMeasure,

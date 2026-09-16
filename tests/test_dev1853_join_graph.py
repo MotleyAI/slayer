@@ -20,13 +20,14 @@ from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.join_graph import JoinGraph
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.source_bundle import _collect_referenced_models
 from slayer.storage.yaml_storage import YAMLStorage
+
+from tests._dev1853_fixtures import chain_models, parallel_engine, parallel_models
+import slayer.engine.bundle_builder
+
 
 if TYPE_CHECKING:
     from slayer.storage.base import StorageBackend
-
-from tests._dev1853_fixtures import chain_models, parallel_engine, parallel_models
 
 
 class TestBidirectionalReachability:
@@ -162,7 +163,7 @@ class TestPeerLoadsAreConcurrent:
                 return peers[name]
 
         storage = _SlowStorage()
-        out = await _collect_referenced_models(
+        out = await slayer.engine.bundle_builder._collect_referenced_models(
             source_model=root, named_queries={},
             storage=cast("StorageBackend", storage), data_source="db",
         )

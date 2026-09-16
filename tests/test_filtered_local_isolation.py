@@ -23,10 +23,10 @@ from slayer.core.models import (
     SlayerModel,
 )
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
-from slayer.engine.column_filter_paths import compute_column_filter_join_paths
-from slayer.engine.planned import MaskTyping
-from slayer.engine.source_bundle import ResolvedSourceBundle
-from slayer.engine.stage_planner import plan_query
+from slayer.engine.reference_closure import compute_column_filter_join_paths
+from slayer.ir.planned import MaskTyping
+from slayer.ir.source_bundle import ResolvedSourceBundle
+from slayer.engine.plan import plan_query
 
 
 # Fixtures
@@ -691,10 +691,10 @@ def _assert_single_host_rooted(plans):
     return attach
 
 
-def test_aggregate_input_paths_module_exists():
-    """Canary: the aggregate_input_paths helper module must import."""
+def test_reference_closure_module_exists():
+    """Canary: the reference-closure helper module must import."""
 
-    importlib.import_module("slayer.engine.aggregate_input_paths")
+    importlib.import_module("slayer.engine.reference_closure")
 
 
 class TestCrossingFirstLastStaysRanked:

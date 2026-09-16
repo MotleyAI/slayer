@@ -57,6 +57,7 @@ from slayer.core.keys import (
     TimeTruncKey,
     TransformKey,
 )
+from slayer.core.keys import Grain
 from slayer.core.models import (
     Aggregation,
     Column,
@@ -67,7 +68,7 @@ from slayer.core.models import (
 )
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.source_bundle import ResolvedSourceBundle
+from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.dialects import get_dialect
 from slayer.sql.generator import SQLGenerator
 from slayer.sql.naming import AliasAllocator
@@ -1765,7 +1766,7 @@ class TestContainsAggregateTransformDependencies:
         key = TransformKey(
             op="rank",
             input=ColumnKey(leaf="amount"),
-            partition_keys=frozenset({agg}),
+            partition_keys=Grain.of({agg}),
         )
         assert contains_aggregate(key) is True
 
@@ -1780,7 +1781,7 @@ class TestContainsAggregateTransformDependencies:
         key = TransformKey(
             op="rank",
             input=ColumnKey(leaf="amount"),
-            partition_keys=frozenset({ColumnKey(leaf="label")}),
+            partition_keys=Grain.of({ColumnKey(leaf="label")}),
             time_key=ColumnKey(leaf="created_at"),
         )
         assert contains_aggregate(key) is False

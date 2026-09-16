@@ -240,6 +240,8 @@ class TestInlineEquivalence:
 
 
 class TestBranchIndependence:
+    @pytest.mark.xfail(strict=True, reason=(
+        "DEV-1909: a fanning population filter with an aggregate inline over the population now fails closed (DEV-1900 interim guard); DEV-1909 restores it via association pushdown."))
     async def test_two_branches_satisfied_independently(self, exec_backend_weak):
         _, engine = exec_backend_weak
         resp = await engine.execute(q(

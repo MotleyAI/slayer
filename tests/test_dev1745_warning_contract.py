@@ -45,8 +45,8 @@ from slayer.core.warnings import (
     NormalizationWarning,
     SlayerWarning,
 )
-from slayer.engine.source_bundle import ResolvedSourceBundle
-from slayer.engine.stage_planner import plan_query
+from slayer.ir.source_bundle import ResolvedSourceBundle
+from slayer.engine.plan import plan_query
 from slayer.mcp.server import create_mcp_server
 from slayer.sql.generator import SQLGenerator
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel

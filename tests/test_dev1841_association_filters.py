@@ -1,14 +1,15 @@
-"""DEV-1841 task 3.3 — filters route into the association producer by the
-existing producer filter routing (root = host): host-attributable conjuncts
-inline, unsafe-but-reachable conjuncts push by semi-join, out-of-scope conjuncts
-stay dropped+warned. Executed values on SQLite + DuckDB.
+"""DEV-1841 / DEV-1910 — filters route into the home-rooted association
+producer: host-attributable conjuncts inline, reachable-but-unsafe conjuncts
+inline on the fanning home join (the per-entity dedup makes the fan-out
+harmless), out-of-scope conjuncts stay dropped+warned. Executed values on
+SQLite + DuckDB.
 
-The multi-branch routing MATRIX (which conjuncts inline vs push vs drop, across
-several join branches, ambiguous hops) is DEV-1840's contract
-(``test_dev1840_disposition.py``); the association producer reuses that routing
-verbatim. These tests pin that the association producer participates in it and
-that its membership is the semi-join semantics — including the NULL/absent-row
-case (an entity with no passing related row is excluded).
+Membership is the semi-join semantics either way — entities of root rows with at
+least one related row passing the predicate — so these executed oracles are
+unchanged by the DEV-1910 re-home; only the emission (inline vs EXISTS) moves.
+These tests pin that the association producer participates in the routing and its
+membership, including the NULL/absent-row case (an entity with no passing related
+row is excluded).
 
 Spec: openspec …/specs/queries/cross-model-aggregates — "Producer filter
 routing", scenarios "Filter on a sibling fan-out branch restricts the

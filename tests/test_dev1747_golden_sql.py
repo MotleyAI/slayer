@@ -7,7 +7,7 @@ one targets exactly what PR 4 rewires and what PRs 5-6 will move next:
 * every ORDER BY render path the single resolver replaced — host base, the
   hidden-slot outer trim wrap, the combined cross-model SELECT, the windowed
   CTE, and the transform chain's outer wrap;
-* the host-grain (``grain="host"``) wrap in both directions, which is where a
+* the host-grain (``locus="host"``) wrap in both directions, which is where a
   regression would silently sort every group by one global value;
 * the re-rooted cross-model CTE with reachable / host-local / unreachable
   filters, since re-rooting is what PR 5 builds on;
@@ -301,6 +301,10 @@ def test_reroot_cases_actually_reroot(baseline) -> None:
     pins a forward plan instead."""
     for key, value in baseline.items():
         if not key.startswith("reroot/"):
+            continue
+        # Population guard fail-closes the fanning-filter shape until DEV-1909.
+        if key.startswith("reroot/unreachable_filter::"):
+            assert isinstance(value, dict), f"{key} must stay fail-closed: {value}"
             continue
         assert isinstance(value, str), f"{key} records an error, not SQL: {value}"
         assert "_cm_" in value, (

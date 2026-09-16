@@ -14,8 +14,8 @@ from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Aggregation, AggregationParam, Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.source_bundle import ResolvedSourceBundle
-from slayer.engine.stage_planner import plan_query
+from slayer.ir.source_bundle import ResolvedSourceBundle
+from slayer.engine.plan import plan_query
 from slayer.sql.generator import (
     AggRenderSpec,
     SQLGenerator,
@@ -1736,16 +1736,16 @@ class TestFields:
         ctes = _re.findall(r'(?:WITH|,)\s*"?(\w+)"?\s+AS\s*\(', sql)
         assert len(ctes) == len(set(ctes)), f"duplicate CTE names: {ctes}"
 
-    async def test_nested_self_join_raises(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
-        """Nesting self-join transforms (e.g., change(time_shift(x))) should raise."""
+    async def test_nested_self_join_generates(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+        """change(time_shift(x)) nests: the outer shift reads the inner's series."""
         orders_model.default_time_dimension = "created_at"
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
             measures=[ModelMeasure(formula="revenue:sum"), ModelMeasure(formula="change(time_shift(revenue:sum, -1, 'year'))", name="x")],
         )
-        with pytest.raises(ValueError, match="Nesting.*not supported"):
-            await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_model)
+        assert len(set(_re.findall(r"shifted_\w+", sql))) == 2, sql
 
     async def test_post_filter_on_computed_column(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         """Filters on computed columns should be applied as post-filter wrapper."""
@@ -2236,8 +2236,8 @@ class TestNestedFields:
         assert "SUM(" in sql  # cumsum window
         assert "delta" in sql.lower()
 
-    async def test_change_of_cumsum_raises(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
-        """change(cumsum(x)) is not supported — time_shift can't target a window function result."""
+    async def test_change_of_cumsum_generates(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+        """change(cumsum(x)) shifts the cumsum series; the window renders once."""
         orders_model.default_time_dimension = "created_at"
         query = SlayerQuery(
             source_model="orders",
@@ -2247,8 +2247,9 @@ class TestNestedFields:
                 ModelMeasure(formula="change(cumsum(revenue:sum))", name="delta"),
             ],
         )
-        with pytest.raises(ValueError, match="not supported"):
-            await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_model)
+        assert "shifted_" in sql
+        assert len(_re.findall(r"OVER\s*\(", sql)) == 1, sql
 
     async def test_mixed_arithmetic_with_transform(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         """cumsum(revenue) / count should work."""

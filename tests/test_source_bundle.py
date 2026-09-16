@@ -14,7 +14,7 @@ from __future__ import annotations
 from slayer.core.enums import DataType
 from slayer.core.models import Aggregation, Column, ModelJoin, SlayerModel
 from slayer.core.query import ModelExtension, SlayerQuery
-from slayer.engine.source_bundle import ResolvedSourceBundle
+from slayer.ir.source_bundle import ResolvedSourceBundle
 
 
 def _model(name: str, ds: str = "prod") -> SlayerModel:

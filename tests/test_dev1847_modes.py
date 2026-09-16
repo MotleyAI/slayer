@@ -58,7 +58,8 @@ class TestBroadcast:
             assert float(value) == pytest.approx(BROADCAST_GLOBAL_AVG_CITY)
         (w,) = broadcast_warnings(resp)
         region_dims = [d for d in w.dimensions if d.dimension == "region"]
-        assert region_dims and region_dims[0].reason
+        assert region_dims
+        assert region_dims[0].reason
         assert "associate" in w.hint.lower()
 
 
@@ -87,8 +88,9 @@ class TestErrorMode:
     async def test_error_mode_refuses_with_clear_message(self, exec_engine):
         """Scenario: Unattributable outer dimension refuses under error mode —
         a clear error naming the dimension and the remedy, never wrong numbers."""
+        query = _q("error")
         with pytest.raises((SlayerError, ValueError)) as ei:
-            await exec_engine.execute(_q("error"))
+            await exec_engine.execute(query)
         msg = str(ei.value)
         assert not isinstance(ei.value, NotImplementedError)
         # a genuine error-mode refusal, not the generic expression-nesting gate
@@ -115,8 +117,9 @@ class TestExplicitOuterKeyUnattributable:
         assert any(d.dimension == "product" for d in w.dimensions)
 
     async def test_error_mode_refuses(self, exec_engine):
+        query = self._pq("error")
         with pytest.raises((SlayerError, ValueError)) as ei:
-            await exec_engine.execute(self._pq("error"))
+            await exec_engine.execute(query)
         assert not isinstance(ei.value, NotImplementedError)
         assert "product" in str(ei.value)
 
@@ -148,6 +151,7 @@ class TestJoinedDimensionSeeding:
             dimensions=["customers.regions.name"],
             measures=[ModelMeasure(
                 formula="avg(sum(amount, partition_by=amount))", name="a")]))
+        assert len(resp.data) == 2  # one row per region, no hidden duplicates
         vals = {row["corders.customers.regions.name"]: float(row["corders.a"])
                 for row in resp.data}
         assert vals == {"North": 42.5, "South": 42.5}  # global avg of the 4 cells

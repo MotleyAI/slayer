@@ -125,14 +125,11 @@ An aggregate partitioned by another computed dimension — even one carrying an
 attached aggregate — compiles as a nested producer
 ([re-aggregation](formulas.md#re-aggregation-aggregate-over-an-attached-value)).
 
-Deferred shapes (raise a clear error citing the follow-up): a bare aggregate
-without `partition_by=`, a computed dimension combined with a bare windowed
-(`window=` without `partition_by=`) or `first` / `last` measure, a
-**mixed-grain** transform any of whose inner aggregates is windowed or `first`
-/ `last` (its union would need the synthesized time bucket), and a time-ordered
-transform (`cumsum`, `lag`, …) whose evaluation grain lacks its time-ordering
-key — include that key in `partition_by=` so the transform accumulates within
-its own grain.
+Ill-typed shapes (raise a clear error naming the remedy, by design): a bare
+aggregate without `partition_by=` — the ungrained default would include the
+dimension being defined — and a time-ordered transform (`cumsum`, `lag`, …)
+whose evaluation grain lacks its time-ordering key — include that key in
+`partition_by=` so the transform accumulates within its own grain.
 
 ### Dim-only queries deduplicate
 
@@ -422,6 +419,8 @@ Filters can reference columns from joined models, and the planner adds the impli
 
 The same auto-join logic applies to model-level `filters` (always-applied WHERE) and to column-level `filter=` attributes (CASE-WHEN at aggregation time).
 
+A query filter that reaches the population root only across a fanning (not provably to-one) hop cannot be combined with an aggregate computed inline over that population — the query fails closed with a typed error rather than multiplying the aggregate's rows through the join.
+
 ### Window functions in filters
 
 Window functions (`OVER (...)`) are not allowed inside the inner WHERE on SQLite or most dialects. Query filters reject them in two ways:
@@ -532,7 +531,7 @@ infers population `customers` (one row per region present among customers, order
 
 Inference fails closed with a `PopulationInferenceError` naming the candidates when no single model determines everything, several minimal candidates tie, a dimension's join path is ambiguous, or the referenced models don't scope to exactly one datasource. Name `source_model` explicitly (any model — including a bridge that owns none of the queried items) to override inference.
 
-Inference reads dimensions as literal join paths, so when you omit `source_model`, write cross-model dimensions as full dotted paths (`customers.regions.name`) — short-form auto-routing needs a declared root, so a bare `regions.name` will fail closed or pick the wrong population; name `source_model` if you want short forms.
+Inference is routing-aware: a short-form cross-model dimension (bare `regions.name`) is probed per candidate through the same auto-routing binding applies, so it infers the same population as its full dotted path (`customers.regions.name`) — or fails closed identically.
 
 ## Choosing a root model
 
@@ -731,7 +730,9 @@ are not additive), or `error` (refuse) — where a stored query's retired
 and a semi-join-pushed filter is applied, never erroring, in every mode.
 Example: `{"source_model": "orders", "dimensions": ["status"], "measures": [{"formula": "customers.spend:sum"}], "to_many_handling": "associate"}`.
 
-`associate` resolves only *eligible* aggregates — a plain scalar aggregate whose root declares a unique key; an unsupported combination (`window=`/`first`/`last`, a root without a unique key, a column-reference parameter, or an input crossing an unproven hop) returns a typed error rather than a value, so `associate` does not turn every broadcast case exact.
+`associate` resolves only *eligible* aggregates — a plain scalar aggregate whose root declares a unique key; an unsupported combination (`window=`/`first`/`last`, a root without a unique key, or an input crossing an unproven hop) returns a typed error rather than a value, so `associate` does not turn every broadcast case exact. Each cell aggregates over the metric's own home rows by the home's join path, so an entity with no population row still counts in the cells its path reaches (a dimension reached only back through the population root needs a population row), and a pushed filter binds to the same related row as a dimension it shares a hop with. An attached (aggregate-valued) parameter the entity grain determines (`customers.spend:weighted_avg(weight=sum(amount, partition_by=customers.regions.name))`) is lifted under `associate`; under `broadcast` an attached input must read only columns attributable from the aggregate's root, otherwise a typed error names the `associate` remedy.
+
+Every input of an aggregate — its source, arguments (`weight=`), definition defaults, and its column-level `filter=` — is traced recursively through derived-column definitions, and an input whose expansion crosses a fanning (not provably to-one) hop fails closed with a typed error instead of silently multiplying rows.
 
 A filter **on** the cross-model value itself (`"customers.score:avg > 4"`)
 restricts the result rows, uniformly with local aggregate filters — groups that

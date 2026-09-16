@@ -15,14 +15,13 @@ from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.keys import AggregateKey, ColumnKey, SqlExprKey
 from slayer.core.models import Column, SlayerModel
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
-from slayer.engine import stage_planner
-from slayer.engine.planned import (
+from slayer.ir.planned import (
     PlainProducerKernel,
     RankedProducerKernel,
     RegroupAttachPlan,
     TrailingWindowProducerKernel,
 )
-from slayer.engine.source_bundle import ResolvedSourceBundle
+from slayer.ir.source_bundle import ResolvedSourceBundle
 
 from tests._dev1748_fixtures import dev1748_bundle
 from tests._dev1838_fixtures import (
@@ -32,6 +31,9 @@ from tests._dev1838_fixtures import (
     month_td,
     q,
 )
+from slayer.ir import planned
+from slayer.engine import join_safety
+from slayer.engine import plan
 
 M = ModelMeasure(formula="amount:sum", name="m")
 
@@ -44,7 +46,7 @@ def _bundle() -> ResolvedSourceBundle:
 
 
 def _plan(query):
-    return stage_planner.plan_query(query=query, bundle=_bundle())
+    return plan.plan_query(query=query, bundle=_bundle())
 
 
 def _combined_attaches(planned):
@@ -167,7 +169,7 @@ class TestRankedKernelSynthesis:
 
 
 def _plan48(query):
-    return stage_planner.plan_query(query=query, bundle=dev1748_bundle())
+    return plan.plan_query(query=query, bundle=dev1748_bundle())
 
 
 def _q48(**kw) -> SlayerQuery:
@@ -232,7 +234,7 @@ class TestRankingKeyPrecedence:
             measures=[{"formula": "amount:last", "name": "l"}],
         )
         with pytest.raises(ValueError) as excinfo:
-            stage_planner.plan_query(query=query, bundle=bundle)
+            plan.plan_query(query=query, bundle=bundle)
         assert str(excinfo.value) == (
             "first/last aggregation requires a ranking time column "
             "(a time_dimension, a DATE/TIMESTAMP dimension, or the "
@@ -341,8 +343,8 @@ class TestKernelIdentity:
 
         a, b = windowed_attach("90d"), windowed_attach("45d")
         assert (
-            stage_planner.regroup_producer_identity(a)
-            != stage_planner.regroup_producer_identity(b)
+            planned.regroup_producer_identity(a)
+            != planned.regroup_producer_identity(b)
         )
 
 
@@ -367,7 +369,7 @@ class TestKernelModel:
 
 class TestCrossingInputPathsUnionFilterAndStructural:
     """DEV-1783 item 6, re-homed from the retired isolation classifier —
-    ``_local_crossing_input_paths`` must UNION a local aggregate's
+    ``local_crossing_input_paths`` must UNION a local aggregate's
     ``Column.filter`` crossings with its structural input crossings (source
     ``Column.sql`` / args / kwargs). Reporting the filter paths alone hides a
     crossing kwarg from the desugar and lets a fan-multiplying aggregate
@@ -384,10 +386,11 @@ class TestCrossingInputPathsUnionFilterAndStructural:
             ),
         )
         bundle = _bundle()
-        paths = stage_planner._local_crossing_input_paths(
+        paths = join_safety.local_crossing_input_paths(
             key=key, bundle=bundle, host_model=bundle.source_model,
         )
+        assert paths is not None
         assert ("customers", "regions") in paths, paths  # column_filter_key
         assert ("customers",) in paths, paths            # kwarg — dropped pre-fix
-        # Order-stable + de-duplicated: filter paths first, then structural.
-        assert paths == [("customers", "regions"), ("customers",)], paths
+        # Order-stable + de-duplicated: closure order, prefixes first.
+        assert paths == [("customers",), ("customers", "regions")], paths

@@ -27,8 +27,8 @@ from slayer.core.keys import (
 )
 from slayer.core.models import Column, SlayerModel
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS, expression_source_leaf
-from slayer.engine.planned import PlannedQuery, ValueSlot
-from slayer.engine.source_bundle import ResolvedSourceBundle
+from slayer.ir.planned import PlannedQuery, ValueSlot
+from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.dialects import get_dialect
 from slayer.sql.naming import result_key, result_key_from_alias
 
@@ -102,7 +102,7 @@ def _model_for_path(
     current = bundle.source_model
     if not path or current is None:
         return current
-    models_by_name = {m.name: m for m in bundle.referenced_models}
+    models_by_name = bundle.models_by_name
     models_by_name.setdefault(current.name, current)
     for hop in path:
         try:

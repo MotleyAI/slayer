@@ -87,6 +87,25 @@ class TestStorageMigration:
         assert out.get("to_many_handling", "broadcast") == "broadcast"
         assert "strict" not in out
 
+    def test_strict_string_false_maps_to_default(self) -> None:
+        """A legacy quoted ``strict: "false"`` stays broadcast (migration precedes
+        Pydantic bool coercion, so the raw string must not read as truthy)."""
+        for raw in ("false", "False", "0", "no", "off", ""):
+            out = self._migrate(strict=raw)
+            assert out.get("to_many_handling", "broadcast") == "broadcast", raw
+
+    def test_strict_string_true_becomes_error_mode(self) -> None:
+        for raw in ("true", "True", "1", "yes", "on"):
+            out = self._migrate(strict=raw)
+            assert out["to_many_handling"] == "error", raw
+
+    def test_strict_unrecognized_string_fails_closed(self) -> None:
+        """An unrecognized legacy token raises rather than silently broadcasting."""
+        for raw in ("error", "treu", "maybe", "broadcast"):
+            with pytest.raises(ValueError) as ei:
+                self._migrate(strict=raw)
+            assert "to_many_handling" in str(ei.value), raw
+
     def test_strict_absent_maps_to_default(self) -> None:
         out = self._migrate()
         assert out.get("to_many_handling", "broadcast") == "broadcast"

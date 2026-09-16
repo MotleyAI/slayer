@@ -18,11 +18,11 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import StaticPool
 
 from slayer.core.models import DatasourceConfig
-from slayer.engine import timing
 from slayer.sql import engine_factory
 from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.dialects.sqlite import SqliteDialect
 from slayer.sql.reserved_keywords import prequote_reserved_identifiers
+from slayer.core import timing
 
 # Shared SQLite dialect; its register_udfs is the SQLAlchemy connect-event hook.
 _SQLITE_DIALECT = SqliteDialect()

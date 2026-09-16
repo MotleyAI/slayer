@@ -4,39 +4,51 @@
 
 `slayer/sql` turns a `PlannedQuery` (built by `engine`) into dialect-correct SQL
 text. Children: `render` (AST assembly: value keys, order terms, joins, CTE
-assembly) and `dialects` (per-dialect emission strategies). It must not know how
-plans are made — the grandfathered `sql → engine` edges die with the
-`slayer/ir` extraction slice.
+assembly) and `dialects` (per-dialect emission strategies), plus the leaf
+modules `sql_predicate` and `window_detect` that the grandfathered `core`
+`#legacy` doors land on. It must not know how plans are made — it consumes the
+shared representation in `slayer/ir`, never `engine` internals.
 
 ## 2. Building blocks
 
-The `query_pipeline` view ([views.c4](views.c4)):
+The `sql_focus` view ([views.c4](views.c4)):
 
-<!-- likec4:query_pipeline -->
+<!-- likec4:sql_focus -->
 ```mermaid
 flowchart TD
-  %% query_pipeline: Query pipeline
-  core["Core domain models"]
+  %% sql_focus: SQL generation in context
+  subgraph core["Core domain models"]
+    core__query["Query"]
+    core__models["Models"]
+  end
+  subgraph sql["SQL generation"]
+    sql__render["Render"]
+    sql__dialects["Dialects"]
+    sql__sql_predicate["SQL predicate"]
+    sql__window_detect["Window detect"]
+  end
   engine["Query engine"]
-  sql["SQL generation"]
+  ir["Intermediate representation"]
   storage["Storage backends"]
-  core -.-> engine
-  core -.-> sql
-  core -.-> storage
-  engine --> core
+  importers("Importers")
+  surfaces("User-facing surfaces")
+  core__models -.-> sql__dialects
+  core__models -.-> sql__sql_predicate
+  core__models -.-> sql__window_detect
+  core__query -.-> sql__window_detect
+  sql__render --> sql__dialects
+  sql__sql_predicate --> sql__window_detect
   engine --> sql
-  engine --> storage
+  importers --> sql
   sql --> core
-  sql -.-> engine
-  storage --> core
-  storage --> engine
+  sql --> ir
   storage --> sql
+  surfaces --> sql
+  classDef leaf fill:none;
+  class core__query,core__models,sql__render,sql__dialects,sql__sql_predicate,sql__window_detect,engine,ir,storage,importers,surfaces leaf;
 ```
 *Dashed arrows: legacy edges slated to die.*
-<!-- /likec4:query_pipeline -->
-
-Children: `render`
-(value keys, aggregates, order terms, joins, node assembly) and `dialects`.
+<!-- /likec4:sql_focus -->
 
 ## 3. Principles
 
@@ -69,23 +81,20 @@ Children: `render`
     as a producer (a plan-shaped CTE rooted where its rows live), attached
     back by a null-safe LEFT JOIN on its complete grain and substituted into
     expressions by structural identity, never text. [review]
-11. **One flat WITH**: every statement renders through one pipeline
-    (base → aggregate → combined → steps → post) with one allocator; a
-    producer's internal WITH hoists to the top level — a WITH never nests
-    inside a CTE definition; fusion of adjacent phases is an emission
-    decision, never semantic. [review]
+11. **One flat WITH, partitioned by stage**: every statement renders through
+    one pipeline with one allocator, each value materialising in the relation
+    its planner-assigned stage names; a producer's internal WITH hoists to the
+    top level — a WITH never nests inside a CTE definition; fusion of adjacent
+    phases is an emission decision, never semantic. [review]
 12. **Attach is cardinality-neutral**: attaching a producer never changes the
     host row count or any other column's value.
     [enforced: test:tests/test_dev1837_dimension_measure_matrix.py]
 
 ## 4. Rationale
 
-The single-door / single-renderer / single-namer shape is the end state of the
-DEV-1742 consolidation (6 PRs, 2026-08), which replaced five per-path renderers,
-four ORDER BY resolvers, and regex-based join discovery — each a source of
-silent divergence. The layering target (`engine` → `sql` → `core`) still has
-grandfathered edges because `generator.py` consumes engine plan types directly;
-the `slayer/ir` extraction slice moves those types into a shared IR package.
-Recent structural trail in the archive: e.g.
-`openspec/changes/archive/2026-09-02-dev-1838-…` (node discipline in the
-generator's root SELECT).
+Parallel render paths diverge silently: per-path renderers, per-position ORDER
+BY resolvers, and regex-based join discovery each produce subtly different SQL
+for the same plan, so the single-door / single-renderer / single-namer shape
+makes that divergence structurally impossible. The layering
+`engine` → `sql` → `ir` → `core` holds because `generator.py` consumes the
+shared plan types from `slayer/ir`, never planner internals.

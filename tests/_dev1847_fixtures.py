@@ -17,6 +17,7 @@ import pytest
 from slayer.core.enums import DataType, JoinCardinality
 from slayer.core.models import (
     Aggregation,
+    AggregationParam,
     Column,
     DatasourceConfig,
     ModelJoin,
@@ -41,11 +42,19 @@ def sales_model() -> SlayerModel:
             Column(name="city", type=DataType.TEXT),
             Column(name="product", type=DataType.TEXT),
             Column(name="amount", type=DataType.DOUBLE),
+            Column(name="quantity", type=DataType.DOUBLE),
+            Column(name="unit_price", type=DataType.DOUBLE),
             # amount restricted to product 'Q' — sparse by design.
             Column(name="q_amount", type=DataType.DOUBLE, sql="amount",
                    filter="product = 'Q'"),
         ],
-        aggregations=[Aggregation(name="dsum", formula="SUM({value})")],
+        aggregations=[
+            Aggregation(name="dsum", formula="SUM({value})"),
+            # weight defaults to a COLUMN — outer use must fail closed.
+            Aggregation(name="wavg",
+                        formula="SUM({value} * {weight}) / SUM({weight})",
+                        params=[AggregationParam(name="weight", sql="amount")]),
+        ],
     )
 
 
@@ -178,6 +187,8 @@ CHAIN_AVG_BY_REGION = {"North": 35.0, "South": 100.0}
 COMPOSITE_AVG_BY_REGION = {"North": 125.0, "South": 240.0, "East": 260.0}
 #: row-phase filter ``product='P'`` reaches the inner producer, shifting totals.
 ROWPHASE_P_AVG_BY_REGION = {"North": 20.0, "South": 40.0, "East": 50.0, "Gap": 10.0}
+#: avg(coalesce(sum, 0)) under ``product='Q'`` — P-only cities form NO cells.
+FILTERED_COALESCE_AVG_BY_REGION = {"North": 35.0, "South": 100.0, "East": 80.0}
 #: shape B (spend_band = 'hi' iff [city,region] total > 45): the band totals.
 SHAPE_B_BAND_TOTAL = {"hi": 340.0, "lo": 90.0}
 #:   plain amount:sum grouped by (region, spend_band).
@@ -199,6 +210,58 @@ SPEND_BAND_EXPR = (
 )
 
 
+# --- DEV-1859: mixed row/attached sources over the (quantity, unit_price) widening.
+INNER_UP_PRODUCT = "avg(unit_price, partition_by=product)"
+INNER_UP_CITY = "avg(unit_price, partition_by=city)"
+MIXED_SUM = f"sum(quantity * {INNER_UP_PRODUCT})"
+#: avg(unit_price) by product over all rows (NULL prices ignored): 45/9, 60/4.
+AVG_UP_BY_PRODUCT = {"P": 5.0, "Q": 15.0}
+#: the headline row-weighted oracle; Void rows carry quantity, so Void = 15.
+MIXED_SUM_BY_REGION = {"North": 80.0, "South": 105.0, "East": 50.0,
+                       "Gap": 30.0, "Void": 15.0}
+#: plain sum(quantity * unit_price) — distinguishable per region.
+ROW_PRODUCT_SUM_BY_REGION = {"North": 66.0, "South": 86.0, "East": 73.0,
+                             "Gap": 35.0, "Void": None}
+#: pure re-aggregation sum over the region's product cells — distinguishable.
+PURE_CELL_SUM_BY_REGION = {"North": 20.0, "South": 20.0, "East": 20.0, "Gap": 5.0}
+#: ungrained inner: avg(unit_price) typed at [region], then row-weighted.
+UNGRAINED_MIXED_BY_REGION = {"North": 72.0, "South": 77.0, "East": 66.0,
+                             "Gap": 30.0, "Void": None}
+#: city-grained constituent: Xi's cell is all-NULL, so Void is NULL bare and
+#: 0.0 under coalesce(..., 0) — the surviving-row pin.
+CITY_MIXED_BY_REGION = {"North": 57.0, "South": 96.0, "East": 73.0,
+                        "Gap": 33.0, "Void": None}
+COALESCE_CITY_MIXED_BY_REGION = {**CITY_MIXED_BY_REGION, "Void": 0.0}
+#: quantity >= 2 prunes ids 4/9/12/15 AND shifts avg_P to 42/7 = 6.
+FILTERED_AVG_UP_BY_PRODUCT = {"P": 6.0, "Q": 15.0}
+FILTERED_MIXED_BY_REGION = {"North": 69.0, "South": 111.0, "East": 48.0,
+                            "Gap": 30.0, "Void": 12.0}
+#: North against the UNFILTERED producer would be 2*5 + 2*5 + 3*15.
+FILTERED_MIXED_NORTH_WRONG = 65.0
+COUNT_CITY_MIXED_BY_REGION = {"North": 4, "South": 3, "East": 3, "Gap": 3,
+                              "Void": 0}
+DISTINCT_MIXED_BY_REGION = {"North": 3, "South": 3, "East": 3, "Gap": 3,
+                            "Void": 2}
+#: customers-rooted sum(region_id * sum(corders.amount, partition_by=region_id)).
+CROSS_MODEL_MIXED_BY_REGION_ID = {1: 140.0, 2: 200.0}
+#: wavg(mixed, weight=quantity) = sum(q^2 * avg_p) / sum(q).
+WAVG_MIXED_BY_REGION = {"North": 23.75, "South": 475.0 / 11.0,
+                        "East": 55.0 / 3.0, "Gap": 35.0 / 3.0,
+                        "Void": 25.0 / 3.0}
+#: corr(mixed, other=quantity): single-product regions are exactly linear.
+CORR_MIXED_BY_REGION = {"North": 30.0 / 1700.0 ** 0.5,
+                        "South": 90.0 / (2450.0 * 14.0 / 3.0) ** 0.5,
+                        "East": 30.0 / 5700.0 ** 0.5,
+                        "Gap": 1.0, "Void": 1.0}
+MIXED_BAND_THRESHOLD = 60.0
+#: amount:sum grouped by the mixed band (hi = {North, South}).
+AMOUNT_BY_MIXED_BAND = {"hi": 230.0, "lo": 200.0}
+MIXED_BAND_EXPR = (
+    f"CASE WHEN sum(quantity * {INNER_UP_PRODUCT}, partition_by=region) "
+    f"> {MIXED_BAND_THRESHOLD} THEN 'hi' ELSE 'lo' END"
+)
+
+
 _SALES_ROWS = [  # (id, region, city, product, amount)
     (1, "North", "Alpha", "P", 10.0),
     (2, "North", "Alpha", "P", 10.0),
@@ -217,6 +280,14 @@ _SALES_ROWS = [  # (id, region, city, product, amount)
     (14, "Void", "Xi", "P", None),
     (15, "Void", "Xi", "P", None),
 ]
+#: DEV-1859 widening: id -> (quantity, unit_price); Void prices are NULL.
+_SALES_EXTRA = {
+    1: (2.0, 4.0), 2: (2.0, 8.0), 3: (3.0, 9.0), 4: (1.0, 15.0),
+    5: (4.0, 4.0), 6: (2.0, 5.0), 7: (5.0, 12.0), 8: (3.0, 8.0),
+    9: (1.0, 1.0), 10: (2.0, 24.0), 11: (2.0, 6.0), 12: (1.0, 2.0),
+    13: (3.0, 7.0), 14: (2.0, None), 15: (1.0, None),
+}
+_SALES_ROWS_WIDE = [(*r, *_SALES_EXTRA[r[0]]) for r in _SALES_ROWS]
 _REGIONS_ROWS = [(1, "North"), (2, "South")]
 _CUSTOMERS_ROWS = [(1, 1), (2, 1), (3, 2)]
 _CORDERS_ROWS = [(1, 1, 10.0), (2, 1, 20.0), (3, 2, 40.0), (4, 3, 100.0)]
@@ -226,8 +297,9 @@ def _seed_sqlite(db_path: str) -> None:
     con = sqlite3.connect(db_path)
     cur = con.cursor()
     cur.execute("CREATE TABLE sales (id INTEGER PRIMARY KEY, region TEXT, "
-                "city TEXT, product TEXT, amount REAL)")
-    cur.executemany("INSERT INTO sales VALUES (?,?,?,?,?)", _SALES_ROWS)
+                "city TEXT, product TEXT, amount REAL, quantity REAL, "
+                "unit_price REAL)")
+    cur.executemany("INSERT INTO sales VALUES (?,?,?,?,?,?,?)", _SALES_ROWS_WIDE)
     cur.execute("CREATE TABLE regions (id INTEGER PRIMARY KEY, name TEXT)")
     cur.executemany("INSERT INTO regions VALUES (?,?)", _REGIONS_ROWS)
     cur.execute("CREATE TABLE customers (id INTEGER PRIMARY KEY, region_id INTEGER)")
@@ -243,8 +315,9 @@ def _seed_duckdb(db_path: str) -> None:
     duckdb = pytest.importorskip("duckdb")
     con = duckdb.connect(db_path)
     con.execute("CREATE TABLE sales (id INTEGER, region VARCHAR, city VARCHAR, "
-                "product VARCHAR, amount DOUBLE)")
-    con.executemany("INSERT INTO sales VALUES (?,?,?,?,?)", _SALES_ROWS)
+                "product VARCHAR, amount DOUBLE, quantity DOUBLE, "
+                "unit_price DOUBLE)")
+    con.executemany("INSERT INTO sales VALUES (?,?,?,?,?,?,?)", _SALES_ROWS_WIDE)
     con.execute("CREATE TABLE regions (id INTEGER, name VARCHAR)")
     con.executemany("INSERT INTO regions VALUES (?,?)", _REGIONS_ROWS)
     con.execute("CREATE TABLE customers (id INTEGER, region_id INTEGER)")
@@ -304,7 +377,18 @@ __all__ = [
     "DEPTH3_MAX_AVG_BY_PRODUCT", "GAP_AVG", "GAP_NULL_CELL_TOTAL",
     "CHAIN_AVG_BY_REGION",
     "COMPOSITE_AVG_BY_REGION", "ROWPHASE_P_AVG_BY_REGION",
+    "FILTERED_COALESCE_AVG_BY_REGION",
     "SHAPE_B_BAND_TOTAL", "SHAPE_B_GROUP_SUM", "SHAPE_B_ACR",
     "SHAPE_B_BAND_THRESHOLD", "SPEND_BAND_EXPR",
-    "_SALES_ROWS", "_CORDERS_ROWS", "_CUSTOMERS_ROWS", "_REGIONS_ROWS",
+    "INNER_UP_PRODUCT", "INNER_UP_CITY", "MIXED_SUM",
+    "AVG_UP_BY_PRODUCT", "MIXED_SUM_BY_REGION", "ROW_PRODUCT_SUM_BY_REGION",
+    "PURE_CELL_SUM_BY_REGION", "UNGRAINED_MIXED_BY_REGION",
+    "CITY_MIXED_BY_REGION", "COALESCE_CITY_MIXED_BY_REGION",
+    "FILTERED_AVG_UP_BY_PRODUCT", "FILTERED_MIXED_BY_REGION",
+    "FILTERED_MIXED_NORTH_WRONG", "COUNT_CITY_MIXED_BY_REGION",
+    "DISTINCT_MIXED_BY_REGION", "CROSS_MODEL_MIXED_BY_REGION_ID",
+    "WAVG_MIXED_BY_REGION", "CORR_MIXED_BY_REGION",
+    "MIXED_BAND_THRESHOLD", "AMOUNT_BY_MIXED_BAND", "MIXED_BAND_EXPR",
+    "_SALES_ROWS", "_SALES_EXTRA", "_SALES_ROWS_WIDE",
+    "_CORDERS_ROWS", "_CUSTOMERS_ROWS", "_REGIONS_ROWS",
 ]

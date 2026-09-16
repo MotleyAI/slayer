@@ -11,8 +11,12 @@ if TYPE_CHECKING:
     from slayer.engine.schema_drift import ToDeleteEntry  # noqa: F401
 
 
-class SlayerError(Exception):
-    """Base for SLayer-specific errors — catch to isolate intentional failures from driver/IO errors."""
+class SlayerError(ValueError):
+    """Base for SLayer-specific errors — catch to isolate intentional failures from
+    driver/IO errors. A ``ValueError`` subclass (DEV-1900) so every intentional
+    slayer failure is caught by ``except ValueError`` / REST-400 call sites and by
+    tests that pin a mode/typing refusal as a ``ValueError`` — the per-error
+    ``(SlayerError, ValueError)`` classes remain valid (redundant but harmless)."""
 
 
 class AmbiguousModelError(SlayerError):
@@ -485,6 +489,32 @@ class IdentifierCollisionError(SlayerError, ValueError):
         )
 
 
+class IdentifierLengthError(SlayerError, ValueError):
+    """An emitted identifier exceeds the dialect's byte limit after fitting.
+
+    The always-on emission backstop: a non-exempt over-limit token means
+    unaccounted provenance, so generation fails rather than hand the database a
+    silently-truncatable name (sql principle 9)."""
+
+    def __init__(
+        self,
+        *,
+        tokens: Sequence[str],
+        dialect: str,
+        limit: int,
+    ) -> None:
+        self.tokens = sorted(tokens)
+        self.dialect = dialect
+        self.limit = limit
+        joined = ", ".join(repr(t) for t in self.tokens)
+        super().__init__(
+            f"emitted identifier(s) exceed max_identifier_bytes={limit} on "
+            f"dialect '{dialect}' and are neither fitted nor user-authored: "
+            f"{joined}. This is a fitting gap — report it rather than let the "
+            f"database truncate silently."
+        )
+
+
 class ForcedFilterError(SlayerError):
     """The session policy's ruleset can't be safely applied to a query; carries the offending ``table``/``column`` (either may be ``None``)."""
 
@@ -626,6 +656,15 @@ class PopulationInferenceError(SlayerError, ValueError):
             summary=self._SUMMARIES[reason],
             scope=detail,
             extras=extras,
+        ))
+
+
+class MaterialisationStageError(SlayerError, ValueError):
+    """A ``PlannedQuery`` violates the materialisation-stage invariant: a value is unstaged, or references a value staged later than itself (it would render before its inputs are materialised). Raised at plan time before any SQL is generated."""
+
+    def __init__(self, summary: str) -> None:
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__, summary=summary,
         ))
 
 

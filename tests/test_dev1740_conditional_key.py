@@ -10,16 +10,8 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.core.keys import (
-    AggregateKey,
-    ArithmeticKey,
-    ColumnKey,
-    LiteralKey,
-    Phase,
-    ScalarCallKey,
-    reroot_value_key,
-)
-from slayer.engine.binding import walk_value_keys
+from slayer.core.keys import AggregateKey, ArithmeticKey, ColumnKey, LiteralKey, Phase, ScalarCallKey, reroot_value_key, walk_value_keys
+from slayer.core.keys import Grain
 from slayer.sql.render.value_expr import contains_aggregate
 
 
@@ -81,7 +73,7 @@ class TestIdentity:
 class TestStructuralTraversal:
     @pytest.mark.parametrize("where", [0, 1, 2])
     def test_aggregate_in_any_branch_is_discovered(self, where: int) -> None:
-        agg = _amount(partition_keys=frozenset({ColumnKey(path=(), leaf="city")}))
+        agg = _amount(partition_keys=Grain.of({ColumnKey(path=(), leaf="city")}))
         parts = [LiteralKey(value=True), LiteralKey(value=1), LiteralKey(value=0)]
         parts[where] = agg
         key = _iif(cond=parts[0], then=parts[1], otherwise=parts[2])

@@ -8,7 +8,7 @@ import os
 from decimal import Decimal
 from typing import Dict, List, Optional, Tuple, Union
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 
 from slayer.core.errors import (
     AggregationNotAllowedError,
@@ -21,6 +21,7 @@ from slayer.core.errors import (
     UnresolvableDimensionJoinError,
 )
 from slayer.core.enums import (
+    BUILTIN_AGGREGATION_PARAM_ORDER,
     BUILTIN_AGGREGATIONS,
     DEFAULT_AGGREGATIONS_BY_TYPE,
     NUMERIC_ONLY_AGGREGATIONS,
@@ -29,36 +30,16 @@ from slayer.core.enums import (
     format_unknown_aggregation,
     normalize_aggregation_name,
 )
-from slayer.core.formula import RANK_FAMILY_TRANSFORMS
+from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS
-from slayer.core.keys import (
-    SCALAR_FUNCTIONS,
-    check_scalar_arity,
-    AggregateKey,
-    ArithmeticKey,
-    ColumnKey,
-    ColumnSqlKey,
-    InKey,
-    LiteralKey,
-    Phase,
-    ScalarCallKey,
-    SqlExprKey,
-    StarKey,
-    TimeTruncKey,
-    TransformKey,
-    ValueKey,
-    column_leaf,
-    column_path,
-    normalize_scalar,
-    prepend_value_key,
-)
+from slayer.core.keys import SCALAR_FUNCTIONS, check_scalar_arity, AggregateKey, ArithmeticKey, ColumnKey, ColumnSqlKey, Grain, InKey, LiteralKey, ScalarCallKey, SqlExprKey, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, column_path, normalize_scalar, prepend_value_key, walk_value_keys
 from slayer.core.join_walker import resolve_hop, terminal_model
 from slayer.core.models import SlayerModel
 from slayer.engine import dimension_routing
 from slayer.core.query import TimeDimension
 from slayer.core.scope import ModelScope, StageSchema
-from slayer.engine.column_filter_paths import compute_column_filter_join_paths
-from slayer.engine.source_bundle import ResolvedSourceBundle
+from slayer.engine.reference_closure import compute_column_filter_join_paths
+from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.syntax import (
     AggCall,
     Arith,
@@ -77,14 +58,12 @@ from slayer.engine.syntax import (
     walk_parsed_refs,
 )
 from slayer.sql.sql_expr import has_window_function
+from slayer.ir.bound import BoundExpr, BoundFilter
 
 __all__ = [
-    "BoundExpr",
-    "BoundFilter",
     "bind_expr",
     "bind_filter",
     "bind_time_dimension",
-    "walk_value_keys",
 ]
 
 
@@ -122,34 +101,6 @@ class MeasureResolutionCtx(BaseModel):
 def _fmt_measure_chain(chain: Tuple[Tuple[str, str], ...]) -> List[str]:
     """Render a ``(model, measure)`` chain as ``model.measure`` steps for errors."""
     return [f"{model}.{measure}" for model, measure in chain]
-
-
-class BoundExpr(BaseModel):
-    """A bound expression — its leaves are resolved ``ValueKey``s. ``routed_dotted``
-    is the full routed dotted path when the whole field is a short-form
-    ``DottedRef`` that auto-routed (DEV-1856), else ``None`` — the naming layer
-    surfaces a routed dimension under this full path, not the short form typed."""
-
-    model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
-
-    value_key: ValueKey
-    routed_dotted: Optional[str] = None
-
-    @property
-    def phase(self) -> Phase:
-        return self.value_key.phase
-
-
-class BoundFilter(BaseModel):
-    """A bound filter predicate: ``value_key`` (like ``BoundExpr``), ``phase``
-    (max phase any referenced slot reaches), and ``referenced_keys`` (every
-    ``ValueKey`` in the tree, for the cross-model planner's filter routing)."""
-
-    model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
-
-    value_key: ValueKey
-    phase: Phase
-    referenced_keys: Tuple[ValueKey, ...] = Field(default_factory=tuple)
 
 
 def bind_expr(
@@ -304,7 +255,7 @@ def _terminal_model_for_path(
     current = scope.source_model
     if current is None:
         return None
-    models_by_name = {m.name: m for m in bundle.referenced_models}
+    models_by_name = bundle.models_by_name
     models_by_name.setdefault(current.name, current)
     for hop in path:
         edge = resolve_hop(current=current, token=hop, models_by_name=models_by_name)
@@ -345,14 +296,6 @@ def bind_filter(
     return BoundFilter(
         value_key=value_key, phase=phase, referenced_keys=refs,
     )
-
-
-def walk_value_keys(key: ValueKey):
-    """Yield every ``ValueKey`` reachable from ``key``, including ``key`` —
-    total via the traversal protocol (a protocol-less kind raises)."""
-    yield key
-    for child in key.children():
-        yield from walk_value_keys(child)
 
 
 def _bind(
@@ -591,7 +534,7 @@ def _walk_join_chain(
     parallel-pair hop propagates untouched; an edge that resolves onto a target
     absent from the bundle stays ``UnknownReferenceError``. ``parts`` is the full
     dotted ref, for error messages."""
-    models_by_name = {m.name: m for m in bundle.referenced_models}
+    models_by_name = bundle.models_by_name
     models_by_name.setdefault(host.name, host)
     current = host
     visited_models = {host.name}
@@ -834,7 +777,7 @@ def _reject_round_trip(
 ) -> None:
     """Reject a re-anchored measure whose join path revisits a model on the
     host→target chain (round trip) — parity with the circular-join rejection."""
-    models_by_name = {m.name: m for m in bundle.referenced_models}
+    models_by_name = bundle.models_by_name
     models_by_name.setdefault(host.name, host)
     for sub in walk_value_keys(host_key):
         path = getattr(sub, "path", None)
@@ -955,8 +898,8 @@ def _bind_agg_partition_keys(
     scope: Union[ModelScope, StageSchema],
     bundle: ResolvedSourceBundle,
     dim_alias_map: Optional[Dict[str, "ValueKey"]] = None,
-) -> frozenset:
-    """Bind an aggregation ``partition_by`` value to a frozenset of column keys;
+) -> Grain:
+    """Bind an aggregation ``partition_by`` value to the partition ``Grain``;
     a name in ``dim_alias_map`` resolves to that computed dimension's bound key
     (DEV-1847 shape B)."""
     elements = value if isinstance(value, tuple) else (value,)
@@ -972,7 +915,7 @@ def _bind_agg_partition_keys(
                 f"got {type(bound).__name__}."
             )
         pks.append(bound)
-    return frozenset(pks)
+    return Grain.of(pks)
 
 
 def _bind_expression_agg_source(
@@ -1128,12 +1071,14 @@ def _source_is_reaggregation(node) -> bool:
     already ensured such a source is pure-attached (no transforms, no row mix)."""
     if isinstance(node, AggCall):
         return True
-    if isinstance(node, Arith):
+    if isinstance(node, (Arith, Cmp)):
         return _source_is_reaggregation(node.left) or _source_is_reaggregation(node.right)
     if isinstance(node, ScalarCall):
         return any(_source_is_reaggregation(a) for a in node.args)
     if isinstance(node, UnaryOp):
         return _source_is_reaggregation(node.operand)
+    if isinstance(node, BoolOp):
+        return any(_source_is_reaggregation(o) for o in node.operands)
     return False
 
 
@@ -1182,9 +1127,10 @@ def _bind_agg(
     # ``partition_by`` is lifted out of kwargs onto ``partition_keys``
     # (``None`` means no partition, ``[]`` means grand total).
     args = tuple(
-        _bind_agg_arg(a, scope=scope, bundle=bundle) for a in parsed.args
+        _bind_agg_arg(a, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map)
+        for a in parsed.args
     )
-    partition_keys: Optional[frozenset] = None
+    partition_keys: Optional[Grain] = None
     kwargs_list: List = []
     for k, v in parsed.kwargs:
         if k == "partition_by":
@@ -1192,7 +1138,9 @@ def _bind_agg(
                 value=v, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map,
             )
             continue
-        kwargs_list.append((k, _bind_agg_arg(v, scope=scope, bundle=bundle)))
+        kwargs_list.append((
+            k, _bind_agg_arg(v, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map),
+        ))
     kwargs = tuple(kwargs_list)
     # Propagate ``Column.filter`` into the AggregateKey's identity: two
     # aggregates over the same column with different filters differ at the key
@@ -1204,6 +1152,9 @@ def _bind_agg(
     # (alias-healed) name so the generator resolves the canonical aggregation.
     effective_agg = _validate_agg_eligibility(
         source=source, agg=parsed.agg, bundle=bundle,
+    )
+    args, kwargs = _fold_positional_agg_args(
+        agg=effective_agg, source=source, bundle=bundle, args=args, kwargs=kwargs,
     )
     # DEV-1826 expression sources: order-sensitive first/last need a plain
     # column (the ranked kernel can't rank an expression), and numeric-only
@@ -1236,7 +1187,7 @@ def _walk_tokens_best_effort(
     their validation best-effort."""
     return terminal_model(
         root=host, path=tuple(path),
-        models_by_name={m.name: m for m in bundle.referenced_models},
+        models_by_name=bundle.models_by_name,
     )
 
 
@@ -1295,6 +1246,50 @@ def _resolve_agg_owner(
     if current is None:
         return None, None
     return current, leaf
+
+
+def _declared_agg_param_names(
+    *, agg: str, source, bundle: ResolvedSourceBundle,
+) -> List[str]:
+    """Declared parameter order for ``agg`` — the owning model's custom
+    definition wins over the built-in registry; ``[]`` when none declared."""
+    owner, _leaf = _resolve_agg_owner(source, bundle)
+    if owner is not None:
+        custom = next(
+            (a for a in (owner.aggregations or []) if a.name == agg), None,
+        )
+        if custom is not None:
+            return [p.name for p in custom.params]
+    return list(BUILTIN_AGGREGATION_PARAM_ORDER.get(agg, ()))
+
+
+def _fold_positional_agg_args(
+    *, agg: str, source, bundle: ResolvedSourceBundle, args: tuple, kwargs: tuple,
+) -> "tuple[tuple, tuple]":
+    """Fold positional call values onto declared parameter names, Python-call
+    style, so ``percentile(x, 0.9)`` interns identically to ``p=0.9``. Ranked
+    ``first``/``last`` declare no parameters — their positional ranking column
+    stays in ``args``."""
+    if not args:
+        return args, kwargs
+    names = _declared_agg_param_names(agg=agg, source=source, bundle=bundle)
+    if not names:
+        return args, kwargs
+    if len(args) > len(names):
+        raise ValueError(
+            f"Aggregation {agg!r} takes at most {len(names)} parameter(s) "
+            f"({', '.join(names)}); got {len(args)} positional value(s)."
+        )
+    given = {k for k, _ in kwargs}
+    folded = list(kwargs)
+    for name, value in zip(names, args):
+        if name in given:
+            raise ValueError(
+                f"Aggregation {agg!r} got parameter {name!r} both positionally "
+                f"and by name."
+            )
+        folded.append((name, value))
+    return (), tuple(folded)
 
 
 def _unknown_aggregation_message(name: str, known) -> str:
@@ -1389,16 +1384,24 @@ def _bind_agg_arg(
     parsed: ParsedExpr, *,
     scope: Union[ModelScope, StageSchema],
     bundle: ResolvedSourceBundle,
+    dim_alias_map: Optional[Dict[str, "ValueKey"]] = None,
 ):
     """Bind one aggregation arg: identifiers → ``ColumnKey`` / ``ColumnSqlKey``,
-    literals → inline scalar via ``normalize_scalar`` (stored inline, not as LiteralKey)."""
+    a nested aggregate → ``AggregateKey`` (aggregate-valued parameter),
+    literals → inline scalar via ``normalize_scalar`` (stored inline, not as LiteralKey).
+    ``dim_alias_map`` rides into a nested aggregate so its ``partition_by=`` can
+    name a computed dimension (as the outer aggregate's can)."""
     if isinstance(parsed, Literal):
         return normalize_scalar(parsed.value)
+    if isinstance(parsed, AggCall):
+        return _bind_agg(
+            parsed, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map,
+        )
     if isinstance(parsed, (Ref, DottedRef)):
         return _bind(parsed, scope=scope, bundle=bundle, in_filter=False)
     raise ValueError(
         f"Aggregation argument of kind {type(parsed).__name__} is not "
-        f"supported. Pass a column reference or a scalar."
+        f"supported. Pass a column reference, a scalar, or a partitioned aggregate."
     )
 
 
@@ -1540,7 +1543,7 @@ def _bind_transform(
         input=inp,
         args=tuple(args),
         kwargs=tuple(kwargs),
-        partition_keys=frozenset(partition_keys),
+        partition_keys=Grain.of(partition_keys),
     )
 
 

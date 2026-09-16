@@ -23,7 +23,7 @@ import pytest
 from slayer.core.enums import DataType
 from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.core.query import SlayerQuery
-from slayer.engine.column_expansion import expand_derived_refs_sync
+from slayer.sql.column_expansion import expand_derived_refs_sync
 
 from tests._engine_helpers import _engine_generate
 

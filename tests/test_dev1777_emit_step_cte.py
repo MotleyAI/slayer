@@ -25,6 +25,7 @@ from slayer.core.keys import (
     ScalarCallKey,
     TransformKey,
 )
+from slayer.ir.planned import Stage, StageKind
 from slayer.sql.generator import SQLGenerator
 from slayer.sql.render.cte_assembly import CteEntry
 
@@ -201,14 +202,18 @@ def test_typed_slot_is_cast_wrapped() -> None:
 
 
 def test_unmaterialised_post_slots_detects_arith_and_scalar_call() -> None:
-    # The detection loop feeding block C (F1) and block D (F2): Arithmetic and
-    # ScalarCall POST slots are detected; TransformKey (materialised by a layer),
-    # an already-materialised slot, and a plain ColumnKey are skipped.
+    # The detection loop feeding block C (F1) and block D (F2): DERIVED
+    # Arithmetic and ScalarCall slots needing a column are detected; TransformKey
+    # (materialised by a layer), an already-materialised slot, a mask-only slot
+    # (needs_column=False), and a plain ColumnKey are skipped.
+    derived = Stage(kind=StageKind.DERIVED, level=1)
     arith = SimpleNamespace(
         id="arith", key=ArithmeticKey(op="-", operands=(LiteralKey(value=Decimal(1)),)),
+        stage=derived, needs_column=True,
     )
     scalar = SimpleNamespace(
         id="scalar", key=ScalarCallKey(name="abs", args=(ColumnKey(leaf="x"),)),
+        stage=derived, needs_column=True,
     )
     transform = SimpleNamespace(
         id="xf", key=TransformKey(op="cumsum", input=ColumnKey(leaf="x")),
@@ -216,9 +221,13 @@ def test_unmaterialised_post_slots_detects_arith_and_scalar_call() -> None:
     materialised = SimpleNamespace(
         id="done", key=ArithmeticKey(op="+", operands=(LiteralKey(value=Decimal(2)),)),
     )
+    mask_only = SimpleNamespace(
+        id="mask", key=ArithmeticKey(op=">", operands=(LiteralKey(value=Decimal(3)),)),
+        stage=derived, needs_column=False,
+    )
     column = SimpleNamespace(id="col", key=ColumnKey(leaf="y"))
     pq = SimpleNamespace(
-        combined_expression_slots=[arith, scalar, transform, materialised, column],
+        combined_expression_slots=[arith, scalar, transform, materialised, mask_only, column],
     )
     out = SQLGenerator._unmaterialised_post_slots(pq, {"done": ["orders.done"]})
     assert [s.id for s in out] == ["arith", "scalar"]

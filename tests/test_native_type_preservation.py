@@ -12,7 +12,7 @@ from slayer.engine.introspect_utils import (
     is_exact_numeric_db_type,
     unwrap_clickhouse_wrapper_str,
 )
-from slayer.engine.prebound import measure_key_preserves_native_type
+from slayer.engine.key_metadata import measure_key_preserves_native_type
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.dialects import get_dialect
 from slayer.storage.yaml_storage import YAMLStorage

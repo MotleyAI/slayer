@@ -18,6 +18,7 @@ from tests._dev1847_fixtures import (
     COUNT_CITY_CELLS_BY_REGION,
     DEGENERATE_SUM_BY_REGION,
     EAST_CITY_TOTALS,
+    FILTERED_COALESCE_AVG_BY_REGION,
     GAP_AVG,
     GAP_NULL_CELL_TOTAL,
     INNER_CR,
@@ -188,8 +189,22 @@ class TestNullEmptyKeyless:
             dimensions=["region"], filters=["product = 'Q'"],
             measures=[reagg("avg", INNER_CR, name="acr")]))
         regions = {k[0] for k in region_key(resp)}
-        assert "Gap" not in regions and "Void" not in regions
+        assert "Gap" not in regions
+        assert "Void" not in regions
         assert {"North", "South", "East"} <= regions
+
+    async def test_row_filter_bounds_composite_cells(self, exec_engine):
+        """Scenario: Row filters bound the operand dataset's cells — a coalesce
+        composite cannot fabricate cells for filtered-out cities (P-only
+        South/Alpha would otherwise average in as 0)."""
+        resp = await exec_engine.execute(sales_q(
+            dimensions=["region"], filters=["product = 'Q'"],
+            measures=[ModelMeasure(
+                formula=f"avg(coalesce({INNER_CR}, 0))", name="acz")]))
+        vals = _region_vals(resp, "sales.acz")
+        assert set(vals) == set(FILTERED_COALESCE_AVG_BY_REGION)
+        for region, expected in FILTERED_COALESCE_AVG_BY_REGION.items():
+            assert float(vals[region]) == pytest.approx(expected)
 
     async def test_all_null_operand_values(self, exec_engine):
         """Scenario: All-null operand values — Void's only cell sums to NULL, so
