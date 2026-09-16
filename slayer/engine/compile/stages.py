@@ -1338,8 +1338,15 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
                 reachable=reason != UNREACHABLE_NO_PATH,
             ))
 
-    # Arm-specific state shared into the common tail.
-    associate = mode == "associate" and bool(unattributable)
+    # Arm-specific state shared into the common tail. Associate also when only an
+    # attached INPUT (not a dimension) is unattributable from the home — its producer
+    # then nests per home entity rather than the broadcast arm refusing it (DEV-1832).
+    attached_leaf = _first_unattributable_attached_leaf(
+        agg=agg, target_path=target_path, root_model=root_model,
+        models_by_name=models_by_name, host_name=host_model.name,
+        bundle=bundle, host_model=host_model,
+    )
+    associate = mode == "associate" and (bool(unattributable) or bool(attached_leaf))
     window_td_key: Optional[ValueKey] = None
     semi_joins: List[SemiJoinFilter] = []
     broadcast: List[Tuple[str, str]] = []
@@ -1370,7 +1377,9 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
             root_model=root_model, models_by_name=models_by_name,
             host_model=host_model, bundle=bundle,
         )
-        associated_measure = None if explicit else alias
+        # No unattributable dimension (associate triggered by an attached input only)
+        # means no association warning — nothing degraded per dimension.
+        associated_measure = None if (explicit or not unattributable) else alias
         associated_dimensions = (
             [] if explicit else [u.name for u in unattributable]
         )
@@ -1385,11 +1394,7 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
         if mode != "error" or not unattributable:
             check_attached_inputs_attributable(
                 alias=alias, root_name=root_name, mode=mode,
-                unattributable=_first_unattributable_attached_leaf(
-                    agg=agg, target_path=target_path, root_model=root_model,
-                    models_by_name=models_by_name, host_name=host_model.name,
-                    bundle=bundle, host_model=host_model,
-                ),
+                unattributable=attached_leaf,
             )
 
         if target_path != source_anchor_path(agg.source):

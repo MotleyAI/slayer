@@ -334,8 +334,11 @@ class TestExpressionSourceTyping:
             to_many_handling="associate", dimensions=["customers.tier"],
             measures=[ModelMeasure(formula=self._ATTACHED_PARAM, name="m")]))
         vals = {k[0]: v["orders.m"] for k, v in rows_by(resp, "orders.customers.tier").items()}
-        assert vals  # every tier cell carries a weighted-average value
-        assert all(v is not None for v in vals.values())
+        # Every REAL tier cell carries a weighted-average value; the orphan-order
+        # NULL-tier cell is a normal population group and carries NULL, as in the
+        # sibling cross-model-by-tier tests (accepted + compiled, per the spec).
+        assert {t: v for t, v in vals.items() if t is not None}
+        assert all(v is not None for t, v in vals.items() if t is not None)
 
     async def test_attached_parameter_rejected_under_broadcast(self):
         with pytest.raises(ValueError) as ei:
