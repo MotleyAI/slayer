@@ -31,5 +31,5 @@
 ## 6. Gates
 
 - [x] 6.1 `poetry run pytest -m "not integration" -n auto`; `poetry run ruff check slayer/ tests/`; `poetry run python tools/arch_check.py`; `poetry run basedpyright` (no new errors vs baseline); `~/.claude/skills/process-reviews/scripts/check-conventions.sh`. Verify: all green.
-- [ ] 6.2 Codex pass over the working tree before the push. Verify: no open findings.
-- [ ] 6.3 With go-ahead: commit, push, open the PR against the DEV-1900 branch while PR #398 is open (retarget to `main` once it merges). Verify: PR URL.
+- [x] 6.2 Codex pass over the working tree before the push. Verify: no open findings.
+- [x] 6.3 With go-ahead: commit, push, open the PR against the DEV-1900 branch while PR #398 is open (retarget to `main` once it merges). Verify: PR URL — https://github.com/MotleyAI/slayer/pull/399 (base main).
