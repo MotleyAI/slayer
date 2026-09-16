@@ -74,7 +74,7 @@ DEV-1906); ranked / windowed association (DEV-1914).
    coupling with the dimension the dice–slice law and the existing 140 oracle require.
    Alternative — inline only conjuncts sharing a first hop with an association dimension,
    semi-join the rest: rejected, two rules for one observable semantics.
-5. **Reverse path.** `_back_token` becomes `_back_path(root_model, host_name, target_path,
+5. **Reverse path.** `_back_token` becomes `_back_path(host_name, target_path,
    models_by_name) -> Tuple[str, ...]`: walk the target path forward from the host
    (`models_by_name` is host-inclusive since DEV-1900); per hop the reverse token is the edge
    name when declared (direction-agnostic, the DEV-1853 disambiguator) else the hop's source

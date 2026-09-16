@@ -56,6 +56,7 @@ from tests._dev1910_fixtures import (
     cust_q,
     make_null_status_engine,
     orders_q,
+    rows_by,
     status_vals,
 )
 
@@ -73,6 +74,15 @@ async def null_engine(request):
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
+async def null_engine_reverse(request):
+    """Null-status seed with customers owning the orders 1:N edge, so the fanning
+    derived column ``customers.last_status = orders.status`` exists."""
+    async for e in make_null_status_engine(
+            request, models=dev1840_models(declare_reverse=True)):
+        yield e
+
+
+@pytest.fixture(params=["sqlite", "duckdb"])
 async def weak_engine(request):
     async for e in make_exec_engine(request, models=dev1840_models(strong_plans=False)):
         yield e
@@ -80,8 +90,7 @@ async def weak_engine(request):
 
 class TestIssueBar:
     async def test_home_entity_absent_from_population_counts(self, engine):
-        """South cross-model spend includes c7 (zero orders); the local amount
-        cell is unchanged (orders home, c7 has none); the cells warn."""
+        """South cross-model spend includes c7 (zero orders); local amount cell unchanged; cells warn."""
         resp = await engine.execute(orders_q(
             dimensions=[BAD_POP], measures=[SPEND_SUM, AMOUNT_SUM],
             to_many_handling="associate"))
@@ -96,8 +105,7 @@ class TestIssueBar:
 
 class TestHostFilterHomeSideDimension:
     async def test_app_filter_couples_to_the_home_side_dimension(self, engine):
-        """channel='app' restricts to app customers before the per-entity
-        aggregation, by bad_pop: North 250, South 140; c7 (no app order) out."""
+        """channel='app' restricts to app customers pre-aggregation, by bad_pop: North 250, South 140; c7 out."""
         resp = await engine.execute(orders_q(
             dimensions=[BAD_POP], measures=[SPEND_SUM],
             filters=["channel = 'app'"], to_many_handling="associate"))
@@ -108,8 +116,7 @@ class TestHostFilterHomeSideDimension:
 
 class TestMixedHomeAndPopulationRootDimensions:
     async def test_c7_absent_from_every_status_cell(self, engine):
-        """By (bad_pop, status): the only South cell is (230, ok) = c3+c5; c7 —
-        no order, so no status — is in no cell (South total 140, not 195)."""
+        """By (bad_pop, status): the only South cell is (230, ok)=c3+c5; c7 (no order) in no cell (140, not 195)."""
         resp = await engine.execute(orders_q(
             dimensions=[BAD_POP, "status"], measures=[SPEND_SUM],
             to_many_handling="associate"))
@@ -123,12 +130,28 @@ class TestMixedHomeAndPopulationRootDimensions:
 
 class TestPresenceGuardOnTheBackHop:
     async def test_null_status_cell_holds_only_the_owner(self, null_engine):
-        """Orders-rooted: the NULL-status cell holds only c1 (owner); c7 (no
-        order) is in no cell, never a manufactured NULL cell."""
+        """Orders-rooted: NULL-status cell holds only c1 (owner); c7 (no order) never in a manufactured cell."""
         resp = await null_engine.execute(orders_q(
             dimensions=["status"], measures=[SPEND_SUM],
             to_many_handling="associate"))
         spend = status_vals(resp, "orders.csp")
+        assert float(spend[None]) == pytest.approx(PRESENCE_NULL_CELL)
+        assert float(spend[None]) != pytest.approx(PRESENCE_NULL_CELL_C7_BUG)
+        for cell, expected in SPEND_BY_STATUS_NULLSEED.items():
+            assert float(spend[cell]) == pytest.approx(expected), cell
+
+
+class TestDerivedDimensionCrossingBackIsGuarded:
+    async def test_fanning_derived_dim_guards_the_orderless_entity(
+            self, null_engine_reverse):
+        """A derived dim whose SQL crosses back (customers.last_status) guards
+        through its dependencies, not its structural key: c7 (no order) stays out
+        of the NULL cell (100, c1 only; not the 155 c7-leak)."""
+        resp = await null_engine_reverse.execute(orders_q(
+            dimensions=["customers.last_status"], measures=[SPEND_SUM],
+            to_many_handling="associate"))
+        spend = {k[0]: v["orders.csp"]
+                 for k, v in rows_by(resp, "orders.customers.last_status").items()}
         assert float(spend[None]) == pytest.approx(PRESENCE_NULL_CELL)
         assert float(spend[None]) != pytest.approx(PRESENCE_NULL_CELL_C7_BUG)
         for cell, expected in SPEND_BY_STATUS_NULLSEED.items():

@@ -1406,11 +1406,11 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
             # and render it inline as a host-locus aggregate joining the to-one path
             # from the home, never a source-rooted producer.
             agg_rooted = reroot_from_root(
-                agg, target_path=target_path, root_model=root_model,
+                key=agg, target_path=target_path, root_model=root_model,
                 models_by_name=models_by_name, host_name=host_model.name,
             ).model_copy(update={"locus": "host"})
         else:
-            agg_rooted = reroot_value_key(agg, target_path=target_path)
+            agg_rooted = reroot_value_key(key=agg, target_path=target_path)
         _assert_cross_model_inputs_safe(
             agg=agg, agg_rooted=agg_rooted, root_model=root_model, root_name=root_name,
             target_path=target_path, bundle=bundle, models_by_name=models_by_name,
@@ -1433,7 +1433,7 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
             )
             assert active_td is not None  # the checker raised otherwise
             window_td_key = reroot_from_root(
-                active_td, target_path=target_path, root_model=root_model,
+                key=active_td, target_path=target_path, root_model=root_model,
                 models_by_name=models_by_name, host_name=host_model.name,
             )
 
@@ -1501,7 +1501,7 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
         if _param_subst:
             picked_params = [
                 pp.model_copy(update={
-                    "key": substitute_value_keys(pp.key, _param_subst),
+                    "key": substitute_value_keys(key=pp.key, mapping=_param_subst),
                 }) if pp.key is not None else pp
                 for pp in picked_params
             ]
@@ -1712,14 +1712,15 @@ def _association_arm(
     _safety_rooted = agg
     if attached_inputs(agg):
         _safety_rooted = substitute_value_keys(
-            agg, {a: LiteralKey(value=Decimal(1)) for a in attached_inputs(agg)})
+            key=agg,
+            mapping={a: LiteralKey(value=Decimal(1)) for a in attached_inputs(agg)})
     agg_rooted = reroot_from_root(
-        agg, target_path=target_path, root_model=root_model,
+        key=agg, target_path=target_path, root_model=root_model,
         models_by_name=models_by_name, host_name=host_model.name,
     ).model_copy(update={"locus": "host"})
     _assert_cross_model_inputs_safe(
         agg=agg, agg_rooted=reroot_from_root(
-            _safety_rooted, target_path=target_path, root_model=root_model,
+            key=_safety_rooted, target_path=target_path, root_model=root_model,
             models_by_name=models_by_name, host_name=host_model.name,
         ).model_copy(update={"locus": "host"}),
         root_model=root_model, root_name=root_model.name, target_path=target_path,
@@ -1761,14 +1762,14 @@ def _association_arm(
         picked_params.append(PickedParam(
             name=_ps.name,
             key=(reroot_from_root(
-                _ps.key, target_path=target_path, root_model=root_model,
+                key=_ps.key, target_path=target_path, root_model=root_model,
                 models_by_name=models_by_name, host_name=host_model.name,
             ) if _ps.key is not None else None),
             sql=_ps.expr_sql, anchor_path=tuple(rel_source),
         ))
     assoc_pairs = [
         (u.key, reroot_from_root(
-            u.key, target_path=target_path, root_model=root_model,
+            key=u.key, target_path=target_path, root_model=root_model,
             models_by_name=models_by_name, host_name=host_model.name,
         ))
         for u in unattributable
@@ -1776,6 +1777,7 @@ def _association_arm(
     present_keys = _association_present_keys(
         unattributable=unattributable, target_path=target_path,
         root_model=root_model, host_model=host_model, models_by_name=models_by_name,
+        bundle=bundle,
     )
     return agg_rooted, picked_params, entity_keys_root, present_keys, assoc_pairs
 
@@ -1801,7 +1803,7 @@ def _association_inline_filters(
             continue
         for cj in split_top_level_and(bf.value_key):
             inh, pushed, drop_w = _conjunct_disposition(
-                cj, text=text, target_path=target_path, root_model=root_model,
+                cj=cj, text=text, target_path=target_path, root_model=root_model,
                 models_by_name=models_by_name, host_name=host_model.name,
                 host_model=host_model, bundle=bundle,
             )
@@ -1809,7 +1811,7 @@ def _association_inline_filters(
                 inherited.append(inh)
             elif pushed is not None:
                 inherited.append(bound_filter_from_key(reroot_from_root(
-                    cj, target_path=target_path, root_model=root_model,
+                    key=cj, target_path=target_path, root_model=root_model,
                     models_by_name=models_by_name, host_name=host_model.name,
                 )))
                 if pushed[1] is not None:
@@ -1823,7 +1825,7 @@ def _association_inline_filters(
 def _association_present_keys(
     *, unattributable: List[_UnattributableDim], target_path: Tuple[str, ...],
     root_model: SlayerModel, host_model: SlayerModel,
-    models_by_name: Dict[str, SlayerModel],
+    models_by_name: Dict[str, SlayerModel], bundle: ResolvedSourceBundle,
 ) -> List[ValueKey]:
     """The reverse hop's host-side join columns in the home-rooted producer's
     coordinates (path = the reverse path), guarded NOT NULL in level 1 so a
@@ -1834,7 +1836,7 @@ def _association_present_keys(
     if not target_path:
         return []
     back = _back_path(
-        root_model=root_model, host_name=host_model.name,
+        host_name=host_model.name,
         target_path=target_path, models_by_name=models_by_name,
     )
     try:
@@ -1845,18 +1847,38 @@ def _association_present_keys(
         first_hop = None
     if first_hop is None:
         return []
-    reaches_back = any(
-        any(
+
+    def _reaches_back(u: _UnattributableDim) -> bool:
+        # The dimension's own structural position (a base column like orders.status
+        # reroots under the reverse path).
+        if any(
             isinstance(r, (ColumnKey, ColumnSqlKey, TimeTruncKey))
             and key_host_path(r)[: len(back)] == back
             for r in walk_value_keys(reroot_from_root(
-                u.key, target_path=target_path, root_model=root_model,
+                key=u.key, target_path=target_path, root_model=root_model,
                 models_by_name=models_by_name, host_name=host_model.name,
             ))
+        ):
+            return True
+        # A derived column carries its dependencies in its SQL, not its structural
+        # key: expand the full dependency set so a home-local derived dim whose
+        # definition crosses back is guarded too. An unanalysable closure fails closed.
+        closure = key_closure(
+            key=u.key, anchor_model=host_model, anchor_relation=host_model.name,
+            bundle=bundle,
         )
-        for u in unattributable
-    )
-    if not reaches_back:
+        if closure is None:
+            return True
+        return any(
+            key_host_path(reroot_from_root(
+                key=ColumnKey(path=p, leaf=""), target_path=target_path,
+                root_model=root_model, models_by_name=models_by_name,
+                host_name=host_model.name,
+            ))[: len(back)] == back
+            for p in closure
+        )
+
+    if not any(_reaches_back(u) for u in unattributable):
         return []
     return [ColumnKey(path=back, leaf=src) for src, _ in first_hop.join_pairs]
 

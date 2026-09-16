@@ -1,9 +1,6 @@
 """DEV-1910 — plan shapes for the home-rooted association producer (design
-decisions 2–6). The producer roots at the aggregate's home, its entity keys are
-in root coordinates, a population-root-reached dimension is presence-guarded on
-the reverse hop, a reachable-but-unsafe conjunct rides as a bound filter (no
-semi-join) with its informational entry kept, and a cross-model attached
-parameter nests its own target-rooted producer.
+decisions 2–6): home root, root-coordinate entity keys, back-hop presence guard,
+reachable-unsafe conjunct as a kept bound filter, nested attached-parameter producer.
 
 Spec: queries/attribution-modes — "Distinct-entity association semantics";
 queries/cross-model-aggregates — "Producer filter routing".
@@ -18,7 +15,9 @@ from slayer.ir.source_bundle import ResolvedSourceBundle
 
 from tests._dev1840_fixtures import bundle, dev1840_models
 from tests._dev1841_fixtures import ModelMeasure, assoc_q
-from tests._dev1900_fixtures import BAD_POP, dev1900_models, orders_q
+from tests._dev1900_fixtures import (
+    BAD_POP, dev1900_models, orders_q, unparseable_derived_models,
+)
 
 CM = ModelMeasure(formula="customers.spend:sum", name="cm")
 HEADLINE = ("customers.spend:weighted_avg("
@@ -47,9 +46,8 @@ def _present(att):
 
 
 def _rerooted_paths(att, leaf: str):
-    """The producer-side (home-rooted) grain key paths for ``leaf`` — the key of
-    the producer slot each join_pair points at (``join_pairs[0]`` is the consumer
-    join key, so the reroot shows on the producer side)."""
+    """Producer-side (home-rooted) grain key paths for ``leaf`` — the producer
+    slot each join_pair points at, where the reroot shows."""
     slots = {s.id: s for s in att.producer_plan.row_slots}
     return [getattr(slots[sid].key, "path", None)
             for _, sid in att.join_pairs
@@ -70,9 +68,8 @@ class TestHomeRooting:
 
 class TestReachableConjunctIsInlined:
     def test_no_semi_join_conjunct_rides_as_a_bound_filter(self):
-        """The weak-plans conjunct inlines on the home-rooted joins (no
-        semi-join); its text rides the attach's restricted-filter list so the
-        informational entry is kept."""
+        """The weak-plans conjunct inlines (no semi-join); its text rides the
+        attach's restricted-filter list so the informational entry is kept."""
         att = _assoc(plan_query(
             query=assoc_q(dimensions=["status"], measures=[CM],
                           filters=["customers.plans.level = 'basic'"]),
@@ -98,6 +95,16 @@ class TestPresenceKeys:
             bundle=_bundle1900()))
         assert _akernel(att).present_keys == []
 
+    def test_unanalysable_derived_dimension_fails_closed_to_a_guard(self):
+        """A derived dim whose SQL cannot be analysed (closure None) guards the back hop rather than risk a leak."""
+        models = unparseable_derived_models()
+        att = _assoc(plan_query(
+            query=orders_q(dimensions=["customers.regions.unparseable"], measures=[CM],
+                           to_many_handling="associate"),
+            bundle=ResolvedSourceBundle(
+                source_model=models[0], referenced_models=models[1:])))
+        assert _present(att) == {(("orders",), "customer_id")}
+
     def test_composite_back_hop_guards_every_column(self):
         """A composite reverse hop (orders → stores) guards BOTH host-side join
         columns (all-components rule)."""
@@ -111,9 +118,8 @@ class TestPresenceKeys:
 
 class TestTwoHopHome:
     def test_roots_at_regions_with_the_two_hop_reverse_path(self):
-        """A metric homed two hops away roots at regions; the population-root
-        dimension reroots through the two-hop reverse path ('customers',
-        'orders')."""
+        """A metric homed two hops away roots at regions; status reroots through
+        the two-hop reverse path ('customers', 'orders')."""
         att = _assoc(plan_query(
             query=orders_q(dimensions=["status"],
                            measures=[ModelMeasure(formula="customers.regions.pop:sum",
@@ -142,9 +148,8 @@ class TestSerialization:
 
 class TestNestedAttachedParameterProducer:
     def test_headline_nests_an_orders_rooted_producer(self):
-        """DEV-1859 headline (decision 6): the customers-rooted association body
-        nests the amount-sum parameter's own target-rooted producer at orders,
-        rather than re-routing onto a host-rooted producer."""
+        """DEV-1859 headline (decision 6): the customers-rooted body nests the
+        amount-sum parameter's own orders-rooted producer, not a host-rooted one."""
         att = _assoc(plan_query(
             query=assoc_q(dimensions=["status"],
                           measures=[ModelMeasure(formula=HEADLINE, name="w")]),

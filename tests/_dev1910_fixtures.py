@@ -6,124 +6,55 @@ orders, and ``make_null_status_engine`` adds a NULL-status order for c1 (SQLite
 
 from __future__ import annotations
 
-import os
 import sqlite3
-import tempfile
 from typing import AsyncIterator, List, Optional
 
 import pytest
 
-from slayer.core.models import DatasourceConfig, ModelMeasure, SlayerModel
+from slayer.core.models import ModelMeasure, SlayerModel
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.storage.yaml_storage import YAMLStorage
 
-from tests._dev1840_fixtures import (
-    _CUSTOMERS_ROWS,
-    _ORDERS_ROWS,
-    _PLANS_ROWS,
-    _REGIONS_ROWS,
-    _STORES_ROWS,
-    rows_by,
-)
+from tests._dev1840_fixtures import rows_by
 from tests._dev1900_fixtures import (
-    _REGION_EVENTS_ROWS,
     BAD_POP,
     associated_warnings,
     bad_pop_vals,
     cust_q,
     dev1900_models,
+    make_exec_engine,
     orders_q,
 )
 
-# --------------------------------------------------------------------------- #
-# The extra order: c1 gets a NULL-status order, so the NULL-status cell exists
-# and holds exactly c1 (never c7, who has no order at all).
-# --------------------------------------------------------------------------- #
+#: c1 gets a NULL-status order so the NULL-status cell exists and holds exactly
+#: c1 (never c7, who has no order at all).
 #: (id, customer_id, status, channel, amount, ordered_at, store_co, store_no)
 NULL_STATUS_ORDER = (11, 1, None, "web", 8.0, "2024-01-30", "A", 1)
-_ORDERS_WITH_NULL = [*_ORDERS_ROWS, NULL_STATUS_ORDER]
 
 
-def _seed_sqlite(db_path: str) -> None:
-    con = sqlite3.connect(db_path)
-    cur = con.cursor()
-    cur.execute("CREATE TABLE regions (id INTEGER PRIMARY KEY, name TEXT, pop REAL)")
-    cur.executemany("INSERT INTO regions VALUES (?,?,?)", _REGIONS_ROWS)
-    cur.execute("CREATE TABLE plans (code TEXT PRIMARY KEY, level TEXT, fee REAL)")
-    cur.executemany("INSERT INTO plans VALUES (?,?,?)", _PLANS_ROWS)
-    cur.execute(
-        "CREATE TABLE customers (id INTEGER PRIMARY KEY, region_id INTEGER, "
-        "plan_code TEXT, tier TEXT, spend REAL, signup_at TEXT)")
-    cur.executemany("INSERT INTO customers VALUES (?,?,?,?,?,?)", _CUSTOMERS_ROWS)
-    cur.execute(
-        "CREATE TABLE stores (co TEXT, no INTEGER, city TEXT, rent REAL, "
-        "PRIMARY KEY (co, no))")
-    cur.executemany("INSERT INTO stores VALUES (?,?,?,?)", _STORES_ROWS)
-    cur.execute(
-        "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, "
-        "status TEXT, channel TEXT, amount REAL, ordered_at TEXT, "
-        "store_co TEXT, store_no INTEGER)")
-    cur.executemany("INSERT INTO orders VALUES (?,?,?,?,?,?,?,?)", _ORDERS_WITH_NULL)
-    cur.execute(
-        "CREATE TABLE region_events (id INTEGER PRIMARY KEY, region_id INTEGER, "
-        "value REAL)")
-    cur.executemany("INSERT INTO region_events VALUES (?,?,?)", _REGION_EVENTS_ROWS)
-    con.commit()
-    con.close()
-
-
-def _seed_duckdb(db_path: str) -> None:
-    duckdb = pytest.importorskip("duckdb")
-    con = duckdb.connect(db_path)
-    con.execute("CREATE TABLE regions (id INTEGER, name VARCHAR, pop DOUBLE)")
-    con.executemany("INSERT INTO regions VALUES (?,?,?)", _REGIONS_ROWS)
-    con.execute("CREATE TABLE plans (code VARCHAR, level VARCHAR, fee DOUBLE)")
-    con.executemany("INSERT INTO plans VALUES (?,?,?)", _PLANS_ROWS)
-    con.execute(
-        "CREATE TABLE customers (id INTEGER, region_id INTEGER, "
-        "plan_code VARCHAR, tier VARCHAR, spend DOUBLE, signup_at TIMESTAMP)")
-    con.executemany("INSERT INTO customers VALUES (?,?,?,?,?,?)", _CUSTOMERS_ROWS)
-    con.execute(
-        "CREATE TABLE stores (co VARCHAR, no INTEGER, city VARCHAR, rent DOUBLE)")
-    con.executemany("INSERT INTO stores VALUES (?,?,?,?)", _STORES_ROWS)
-    con.execute(
-        "CREATE TABLE orders (id INTEGER, customer_id INTEGER, status VARCHAR, "
-        "channel VARCHAR, amount DOUBLE, ordered_at TIMESTAMP, "
-        "store_co VARCHAR, store_no INTEGER)")
-    con.executemany("INSERT INTO orders VALUES (?,?,?,?,?,?,?,?)", _ORDERS_WITH_NULL)
-    con.execute(
-        "CREATE TABLE region_events (id INTEGER, region_id INTEGER, value DOUBLE)")
-    con.executemany("INSERT INTO region_events VALUES (?,?,?)", _REGION_EVENTS_ROWS)
-    con.close()
-
-
-async def _engine_for(*, dialect: str, db_path: str,
-                      models: List[SlayerModel]) -> SlayerQueryEngine:
-    storage = YAMLStorage(base_dir=os.path.join(os.path.dirname(db_path), "store"))
-    await storage.save_datasource(
-        DatasourceConfig(name="test", type=dialect, database=db_path))
-    for model in models:
-        await storage.save_model(model, _validate=False)
-    return SlayerQueryEngine(storage=storage)
+def _append_order(*, dialect: str, db_path: str, row: tuple) -> None:
+    """Insert one order into an already-seeded db (before the engine opens it)."""
+    sql = "INSERT INTO orders VALUES (?,?,?,?,?,?,?,?)"
+    if dialect == "duckdb":
+        con = pytest.importorskip("duckdb").connect(db_path)
+        con.execute(sql, list(row))
+        con.close()
+    else:
+        con = sqlite3.connect(db_path)
+        con.execute(sql, row)
+        con.commit()
+        con.close()
 
 
 async def make_null_status_engine(
     request, *, models: Optional[List[SlayerModel]] = None,
 ) -> AsyncIterator[SlayerQueryEngine]:
-    """``params=["sqlite", "duckdb"]`` engine seeded with the extra
-    NULL-status order for c1."""
-    dialect = request.param
-    if dialect == "duckdb":
-        pytest.importorskip("duckdb")
-    with tempfile.TemporaryDirectory() as d:
-        db_path = os.path.join(d, f"data.{dialect}")
-        if dialect == "sqlite":
-            _seed_sqlite(db_path)
-        else:
-            _seed_duckdb(db_path)
-        yield await _engine_for(
-            dialect=dialect, db_path=db_path,
-            models=models if models is not None else dev1900_models())
+    """``params=["sqlite", "duckdb"]`` engine — the _dev1900 seed plus c1's
+    NULL-status order (appended before the engine opens the db)."""
+    async for engine in make_exec_engine(request, models=models):
+        ds = await engine.storage.get_datasource("test")
+        assert ds is not None and ds.type is not None and ds.database is not None
+        _append_order(dialect=ds.type, db_path=ds.database, row=NULL_STATUS_ORDER)
+        yield engine
 
 
 SPEND_SUM = ModelMeasure(formula="customers.spend:sum", name="csp")

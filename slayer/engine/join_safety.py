@@ -237,7 +237,7 @@ def key_host_path(key: ValueKey) -> Tuple[str, ...]:
 
 
 def _back_path(
-    *, root_model: SlayerModel, host_name: str, target_path: Tuple[str, ...],
+    *, host_name: str, target_path: Tuple[str, ...],
     models_by_name: Dict[str, SlayerModel],
 ) -> Tuple[str, ...]:
     """The reverse path from the aggregate's root back to the host: walk the
@@ -273,8 +273,7 @@ def attributable_from_root(
     if hp and safe_reachable(root=root_model, path=hp, models_by_name=models_by_name):
         return True
     back = _back_path(
-        root_model=root_model, host_name=host_name, target_path=tp,
-        models_by_name=models_by_name,
+        host_name=host_name, target_path=tp, models_by_name=models_by_name,
     )
     return safe_reachable(
         root=root_model, path=(*back, *hp), models_by_name=models_by_name,
@@ -361,8 +360,7 @@ def _reroot_leaf_via_host(
     if target_path and host_name == target_path[0]:
         return None
     back = _back_path(
-        root_model=root_model, host_name=host_name, target_path=target_path,
-        models_by_name=models_by_name,
+        host_name=host_name, target_path=target_path, models_by_name=models_by_name,
     )
     via_host = (*back, *hp)
     if not safe_reachable(
@@ -449,8 +447,7 @@ def broadcast_reason(
     # Off the forward path: reachable only back through the reverse (fanning) hop?
     if host_name is not None and not (tp and host_name == tp[0]):
         back = _back_path(
-            root_model=root_model, host_name=host_name, target_path=tp,
-            models_by_name=models_by_name,
+            host_name=host_name, target_path=tp, models_by_name=models_by_name,
         )
         reason = _hop_walk_reason(
             root_model=root_model, path=(*back, *hp), models_by_name=models_by_name,

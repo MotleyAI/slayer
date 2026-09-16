@@ -79,18 +79,18 @@ def _ambiguous_reverse():
 class TestBackPath:
     def test_single_hop_is_byte_identical(self):
         M = _unnamed_two_hop()
-        assert _back_path(root_model=M["customers"], host_name="orders",
+        assert _back_path(host_name="orders",
                           target_path=("customers",), models_by_name=M) == ("orders",)
 
     def test_unnamed_two_hop_reverses_both_source_models(self):
         M = _unnamed_two_hop()
-        assert _back_path(root_model=M["regions"], host_name="orders",
+        assert _back_path(host_name="orders",
                           target_path=("customers", "regions"),
                           models_by_name=M) == ("customers", "orders")
 
     def test_named_hop_uses_the_edge_name_reversed(self):
         M = _named_two_hop()
-        assert _back_path(root_model=M["regions"], host_name="orders",
+        assert _back_path(host_name="orders",
                           target_path=("customers", "regions"),
                           models_by_name=M) == ("home_region", "orders")
 
@@ -98,7 +98,7 @@ class TestBackPath:
         """When the forward walk finds no path (not ambiguity), fall back to the
         host name — today's single-token behaviour."""
         M = _unnamed_two_hop()
-        assert _back_path(root_model=M["regions"], host_name="orders",
+        assert _back_path(host_name="orders",
                           target_path=("nonexistent",), models_by_name=M) == ("orders",)
 
 
@@ -156,8 +156,8 @@ class TestAmbiguousReverseHopFailsClosed:
         raises the ambiguous-hop error rather than silently guessing (today it is
         swallowed and a wrong single-token reroot is returned)."""
         M = _ambiguous_reverse()
+        key = ColumnKey(path=(), leaf="kind")
         with pytest.raises(AmbiguousJoinPathError):
             reroot_from_root(
-                ColumnKey(path=(), leaf="kind"),
-                target_path=("customers", "regions"),
+                key, target_path=("customers", "regions"),
                 root_model=M["regions"], models_by_name=M, host_name="events")
