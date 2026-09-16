@@ -13,10 +13,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from slayer.mcp.server import create_mcp_server
 from slayer.core.errors import (
     AmbiguousModelError,
-    EntityResolutionError,
     MemoryNotFoundError,
     SchemaDriftError,
-    SlayerError,
 )
 from slayer.core.format import NumberFormat
 from slayer.core.models import DatasourceConfig, SlayerModel
@@ -386,8 +384,6 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             if dry_run or explain:
                 response.sql = result.sql
             return response
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
         except SchemaDriftError as drift:
             raise HTTPException(
                 status_code=422,
@@ -400,7 +396,8 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                     "original": str(drift.__cause__) if drift.__cause__ else None,
                 },
             )
-        except SlayerError as e:
+        except ValueError as e:
+            # SlayerError subclasses ValueError; both map to 400.
             raise HTTPException(status_code=400, detail=str(e))
 
     @app.get("/models")
@@ -634,7 +631,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                 request.items, data_source=request.data_source,
                 root_hint=request.root_hint,
             )
-        except (ValueError, SlayerError) as exc:
+        except ValueError as exc:  # SlayerError is a ValueError subclass
             raise HTTPException(status_code=400, detail=str(exc))
         return rec.model_dump(mode="json")
 
@@ -745,11 +742,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                 id=request.id,
                 description=request.description,
             )
-        except (
-            EntityResolutionError,
-            AmbiguousModelError,
-            ValueError,
-        ) as exc:
+        except ValueError as exc:  # EntityResolutionError/AmbiguousModelError are ValueError subclasses
             raise HTTPException(status_code=400, detail=str(exc))
         return response.model_dump(mode="json")
 
@@ -797,7 +790,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                 cypher_filter=request.cypher_filter,
                 compact=request.compact,
             )
-        except (SlayerError, ValueError) as exc:
+        except ValueError as exc:  # SlayerError is a ValueError subclass
             raise HTTPException(status_code=400, detail=str(exc))
         return response.model_dump(mode="json")
 
@@ -826,7 +819,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                 sections=request.sections,
                 descriptions_max_chars=request.descriptions_max_chars,
             )
-        except (SlayerError, ValueError) as exc:
+        except ValueError as exc:  # SlayerError is a ValueError subclass
             raise HTTPException(status_code=400, detail=str(exc))
         return {"result": result}
 

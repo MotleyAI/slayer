@@ -25,7 +25,7 @@ residual; the generator's old exact-match is subsumed):
 ``column_filter_key`` is copied UNCHANGED. Its ``canonical_sql`` and
 ``referenced_join_paths`` are anchored at the OWNING MODEL of the source
 column (see ``slayer/engine/binding.py::_resolve_column_filter_key`` and
-``slayer/engine/column_filter_paths.py``), which rerooting — a pure change of
+``slayer/engine/reference_closure.py``), which rerooting — a pure change of
 how that owner is *reached* from the query root — never moves. Pinned below.
 
 Behavioural acceptance for DEV-1476 (c)/(d-cross) lives in

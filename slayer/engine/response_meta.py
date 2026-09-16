@@ -102,7 +102,7 @@ def _model_for_path(
     current = bundle.source_model
     if not path or current is None:
         return current
-    models_by_name = {m.name: m for m in bundle.referenced_models}
+    models_by_name = bundle.models_by_name
     models_by_name.setdefault(current.name, current)
     for hop in path:
         try:

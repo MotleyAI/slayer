@@ -3,7 +3,6 @@ Binding lives in ``bind_inputs``; typing and the checker in ``elaborate_env``.""
 
 from __future__ import annotations
 
-import re
 from decimal import Decimal
 from typing import (
     AbstractSet,
@@ -29,11 +28,15 @@ from pydantic import BaseModel, ConfigDict
 from slayer.core.enums import DataType, RANKED_AGGREGATIONS
 from slayer.core.errors import AmbiguousJoinPathError, UnreachableFilterDroppedWarning
 from slayer.core.keys import AggregateKey, Grain, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, regroup_root_grain, reroot_value_key, substitute_value_keys, walk_value_keys, walk_consumer_keys, REGROUP_LEAF_PREFIX, is_cross_model_agg, is_local_partitioned_agg, split_top_level_and, window_kwarg_of, is_reaggregation_key, is_row_attach_root, attached_inputs, operand_aggregates
-from slayer.core.models import AggregationParam, SlayerModel
-from slayer.engine.aggregate_input_paths import compute_aggregate_input_join_paths
-from slayer.engine.column_filter_paths import (
+from slayer.core.models import SlayerModel
+from slayer.engine.reference_closure import (
+    ParamSpec,
+    aggregate_input_closure,
     compute_column_filter_join_paths,
-    compute_expr_reference_columns,
+    default_param_value_key,
+    first_unanalyzable_input_column,
+    key_closure,
+    resolve_aggregation_params,
 )
 from slayer.core.join_walker import resolve_hop, walk
 from slayer.engine.join_safety import (
@@ -43,6 +46,8 @@ from slayer.engine.join_safety import (
     crossing_local_root_predicate,
     grain_determines,
     grain_member_attributable,
+    key_attributable_from_root,
+    key_broadcast_reason,
     key_host_path,
     local_crossing_input_paths,
     reroot_from_root,
@@ -68,10 +73,12 @@ from slayer.engine.elaborate_env import (
     check_cross_model_inputs_safe,
     check_cross_model_partition_keys_attributable,
     check_cross_model_source_resolves,
+    check_input_dependencies_analyzable,
     check_local_producer_inputs_safe,
     check_order_target_has_slot,
     check_attached_inputs_attributable,
     check_parameter_determined,
+    check_population_filter_no_fanout,
     check_raw_rows_no_aggregate_slots,
     check_reaggregation_dims_attributable,
     check_reaggregation_no_window,
@@ -504,36 +511,22 @@ def _partition_free_identity(agg: ValueKey):  # NOSONAR(S8495) — distinct-shap
 def _cross_model_input_paths(
     *, agg_rooted: AggregateKey, root_model: SlayerModel, root_name: str,
     bundle: ResolvedSourceBundle,
-) -> List[Tuple[str, ...]]:
-    out: List[Tuple[str, ...]] = []
-    if agg_rooted.column_filter_key is not None:
-        # referenced_join_paths are OWNER-relative (anchored at the source
-        # column's owner via source.path) and are never re-rooted; prefix each
-        # with the source path and register every prefix, as filter_reachability
-        # does. Today owner == root, so the prefix was empty.
-        source_path = key_host_path(agg_rooted.source)
-        for p in agg_rooted.column_filter_key.referenced_join_paths:
-            full = source_path + tuple(p)
-            for i in range(1, len(full) + 1):
-                if full[:i] not in out:
-                    out.append(full[:i])
-    for p in compute_aggregate_input_join_paths(
+) -> Optional[List[Tuple[str, ...]]]:
+    """The dependency closure of the aggregate's inputs in the root's coordinates
+    (source / args / kwargs / column filter / definition defaults, derived
+    definitions expanded); ``None`` when a dependency cannot be analysed."""
+    closure = aggregate_input_closure(
         key=agg_rooted, anchor_model=root_model, anchor_relation=root_name,
-        bundle=bundle,
-    ):
-        if tuple(p) not in out:
-            out.append(tuple(p))
-    return out
+        bundle=bundle, include_source=True,
+    )
+    return None if closure is None else list(closure)
 
 
 def _first_unsafe_input_hop(
-    *, agg_rooted: AggregateKey, root_model: SlayerModel, root_name: str,
-    bundle: ResolvedSourceBundle, models_by_name: Dict[str, SlayerModel],
+    *, paths: List[Tuple[str, ...]], root_model: SlayerModel, root_name: str,
+    models_by_name: Dict[str, SlayerModel],
 ) -> List[str]:
-    # Source-column / kwarg / column-filter refs, in the root's coordinates.
-    for path in _cross_model_input_paths(
-        agg_rooted=agg_rooted, root_model=root_model, root_name=root_name, bundle=bundle,
-    ):
+    for path in paths:
         if not safe_reachable(
             root=root_model, path=path, models_by_name=models_by_name,
         ):
@@ -545,20 +538,30 @@ def _first_unsafe_input_hop(
 def _first_unattributable_arg_leaf(
     *, agg: AggregateKey, target_path: Tuple[str, ...],
     root_model: SlayerModel, models_by_name: Dict[str, SlayerModel],
+    bundle: ResolvedSourceBundle, host_model: Optional[SlayerModel] = None,
     host_name: Optional[str] = None,
 ) -> List[str]:
     # Positional args and column-valued kwargs in HOST coordinates (a ranking
     # first/last time key, a weight column); a fail-closed backstop under the
-    # home rule, which certifies legal inputs upstream. host_name lets an off-home
-    # input traverse a proven reverse hop, exactly as _home_path judged it.
+    # home rule, judged on each input's dependency closure (DEV-1900). host_name
+    # lets an off-home input traverse a proven reverse hop, as _home_path judged.
     for arg in (*agg.args, *(v for _, v in agg.kwargs)):
         if not isinstance(arg, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
             continue
-        hp = key_host_path(arg)
-        if not attributable_from_root(
-            host_path=hp, target_path=target_path, root_model=root_model,
-            models_by_name=models_by_name, host_name=host_name,
-        ):
+        attributable = (
+            key_attributable_from_root(
+                key=arg, target_path=target_path, root_model=root_model,
+                models_by_name=models_by_name, bundle=bundle,
+                host_model=host_model, host_name=host_name,
+            )
+            if host_model is not None
+            else attributable_from_root(
+                host_path=key_host_path(arg), target_path=target_path,
+                root_model=root_model, models_by_name=models_by_name,
+                host_name=host_name,
+            )
+        )
+        if not attributable:
             leaf = getattr(arg, "leaf", None) or getattr(
                 getattr(arg, "column", None), "leaf", None,
             ) or "input"
@@ -569,17 +572,18 @@ def _first_unattributable_arg_leaf(
 def _first_unattributable_attached_leaf(
     *, agg: AggregateKey, target_path: Tuple[str, ...],
     root_model: SlayerModel, models_by_name: Dict[str, SlayerModel],
-    host_name: str,
+    host_name: str, bundle: ResolvedSourceBundle, host_model: SlayerModel,
 ) -> List[Tuple[str, str, str]]:
-    """(input alias, dotted leaf, reason) of the first row leaf inside an attached input that the root cannot reach."""
+    """(input alias, dotted leaf, reason) of the first row leaf inside an attached input the root cannot reach — judged on the leaf's dependency closure (DEV-1900)."""
     for inp in attached_inputs(agg):
         for leaf in walk_value_keys(inp):
             if not isinstance(leaf, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
                 continue
             hp = key_host_path(leaf)
-            if attributable_from_root(
-                host_path=hp, target_path=target_path, root_model=root_model,
-                models_by_name=models_by_name, host_name=host_name,
+            if key_attributable_from_root(
+                key=leaf, target_path=target_path, root_model=root_model,
+                models_by_name=models_by_name, bundle=bundle,
+                host_model=host_model, host_name=host_name,
             ):
                 continue
             name = (
@@ -603,20 +607,36 @@ def _assert_cross_model_inputs_safe(
     *, agg: AggregateKey, agg_rooted: AggregateKey, root_model: SlayerModel,
     root_name: str, target_path: Tuple[str, ...], bundle: ResolvedSourceBundle,
     models_by_name: Dict[str, SlayerModel], host_name: Optional[str] = None,
+    host_model: Optional[SlayerModel] = None,
 ) -> None:
-    """Resolve every cross-model input's attributability from its root; the checker raises on a fanning/unproven join."""
-    unsafe_input_hops = _first_unsafe_input_hop(
+    """Resolve every cross-model input's attributability from its root; the checker raises on a fanning/unproven join or an unanalysable derived dependency."""
+    alias = canonical_aggregate_alias(agg, profile="stage_formula")
+    paths = _cross_model_input_paths(
         agg_rooted=agg_rooted, root_model=root_model, root_name=root_name,
-        bundle=bundle, models_by_name=models_by_name,
+        bundle=bundle,
+    )
+    if paths is None:
+        check_input_dependencies_analyzable(
+            alias=alias,
+            column=first_unanalyzable_input_column(
+                key=agg_rooted, anchor_model=root_model, anchor_relation=root_name,
+                bundle=bundle,
+            ),
+        )
+        paths = []
+    unsafe_input_hops = _first_unsafe_input_hop(
+        paths=paths, root_model=root_model, root_name=root_name,
+        models_by_name=models_by_name,
     )
     unattributable_arg_leaves = [] if unsafe_input_hops else (
         _first_unattributable_arg_leaf(
             agg=agg, target_path=target_path, root_model=root_model,
             models_by_name=models_by_name, host_name=host_name,
+            bundle=bundle, host_model=host_model,
         )
     )
     check_cross_model_inputs_safe(
-        alias=canonical_aggregate_alias(agg, profile="stage_formula"),
+        alias=alias,
         root_name=root_name,
         unsafe_input_hops=unsafe_input_hops,
         unattributable_arg_leaves=unattributable_arg_leaves,
@@ -700,13 +720,23 @@ def _assert_local_producer_inputs_safe(
 
     # Crossed predicate + remaining crossed args; the SOURCE's own crossings are exempt.
     gated_crossings: List[str] = []
+    alias = canonical_aggregate_alias(agg, profile="stage_formula")
     if not ranked_crossings:
         gated = local_crossing_input_paths(
             key=agg, bundle=bundle, host_model=host_model, include_source=False,
         )
+        if gated is None:
+            check_input_dependencies_analyzable(
+                alias=alias,
+                column=first_unanalyzable_input_column(
+                    key=agg, anchor_model=host_model, anchor_relation=host_model.name,
+                    bundle=bundle, include_source=False,
+                ),
+            )
+            gated = []
         gated_crossings = [p[-1] for p in gated if p and not _safe(p)]
     check_local_producer_inputs_safe(
-        alias=canonical_aggregate_alias(agg, profile="stage_formula"),
+        alias=alias,
         host=host_model.name,
         ranked_crossings=ranked_crossings,
         gated_crossings=gated_crossings,
@@ -775,7 +805,7 @@ def _synthesize_wrap_attach(
 ) -> RegroupAttachPlan:
     """A host-grain ORDER-BY wrap as a HOST-rooted producer synthesized late: a combined attach at the full projected grain whose placeholder IS the wrap key."""
     producer_model = scope.source_model if isinstance(scope, ModelScope) else None
-    models_by_name = {m.name: m for m in bundle.referenced_models}
+    models_by_name = bundle.models_by_name
     if producer_model is not None:
         _assert_local_producer_inputs_safe(
             agg=wrap_key, host_model=producer_model, bundle=bundle,
@@ -883,7 +913,10 @@ def _ref_sql_dependency_paths(
     col: ValueKey, *, host_model: Optional[SlayerModel],
     models_by_name: Dict[str, SlayerModel], bundle: Optional[ResolvedSourceBundle],
 ) -> Tuple[Tuple[str, ...], ...]:
-    """Owner-relative join paths a derived column's ``Column.sql`` actually reads."""
+    """Owner-relative join paths a derived column's ``Column.sql`` crosses (the
+    dependency closure at the owner) — the semi-join push tree registers a hop
+    for each. ``bundle.models_by_name`` is host-inclusive (DEV-1900), so a dep
+    pointing back at the host resolves without a hand-patched bundle."""
     if not isinstance(col, ColumnSqlKey) or bundle is None:
         return ()
     owner = _owning_model(
@@ -894,32 +927,10 @@ def _ref_sql_dependency_paths(
     column = next((c for c in owner.columns if c.name == col.column_name), None)
     if column is None or not column.sql:
         return ()
-    scan_bundle = bundle
-    if host_model is not None and bundle.get_referenced_model(host_model.name) is None:
-        # A dep can point back at the host, which some bundles keep only as source.
-        scan_bundle = bundle.model_copy(update={
-            "referenced_models": [*bundle.referenced_models, host_model],
-        })
     return compute_column_filter_join_paths(
         canonical_sql=column.sql, anchor_model=owner,
-        anchor_relation=owner.name, bundle=scan_bundle,
+        anchor_relation=owner.name, bundle=bundle,
     )
-
-
-def _ref_effective_paths(
-    r: ValueKey, *, host_model: Optional[SlayerModel],
-    models_by_name: Dict[str, SlayerModel], bundle: Optional[ResolvedSourceBundle],
-) -> List[Tuple[str, ...]]:
-    """Host-coordinate paths the ref's evaluation reads: its declared path plus,
-    for a SQL-defined column, its definition's crossed paths (owner-relative)."""
-    col = r.column if isinstance(r, TimeTruncKey) else r
-    own = tuple(getattr(col, "path", ()) or ())
-    out = [own]
-    for rel in _ref_sql_dependency_paths(
-        col, host_model=host_model, models_by_name=models_by_name, bundle=bundle,
-    ):
-        out.append(own + tuple(rel))
-    return out
 
 
 def _path_edges_exist(
@@ -1184,23 +1195,23 @@ def _conjunct_disposition(
         k for k in walk_value_keys(cj)
         if isinstance(k, (ColumnKey, ColumnSqlKey, TimeTruncKey, StarKey))
     ]
-    unsafe = next(
-        (
-            r for r in refs
-            if any(
-                not attributable_from_root(
-                    host_path=ep, target_path=target_path,
-                    root_model=root_model, models_by_name=models_by_name,
-                    host_name=host_name,
-                )
-                for ep in _ref_effective_paths(
-                    r, host_model=host_model, models_by_name=models_by_name,
-                    bundle=bundle,
-                )
+
+    def _attributable(r: ValueKey) -> bool:
+        # Judge each ref on its dependency closure (DEV-1900) — a derived column
+        # crossing a fanning hop is unattributable exactly as a structural one is.
+        if host_model is not None and bundle is not None:
+            return key_attributable_from_root(
+                key=r, target_path=target_path, root_model=root_model,
+                models_by_name=models_by_name, bundle=bundle,
+                host_model=host_model, host_name=host_name,
             )
-        ),
-        None,
-    )
+        return attributable_from_root(
+            host_path=key_host_path(r), target_path=target_path,
+            root_model=root_model, models_by_name=models_by_name,
+            host_name=host_name,
+        )
+
+    unsafe = next((r for r in refs if not _attributable(r)), None)
     if unsafe is None:
         rerooted = (
             reroot_from_root(
@@ -1307,7 +1318,6 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
     safe_pairs: List[Tuple[ValueKey, ValueKey]] = []  # (host_key, rerooted_key)
     unattributable: List[_UnattributableDim] = []
     for g in requested:
-        hp = key_host_path(g)
         shared = shared_join_key_reroot(
             key=g, target_path=target_path, host_model=host_model,
             models_by_name=models_by_name,
@@ -1317,16 +1327,18 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
             safe_pairs.append((g, shared))
         elif grain_member_attributable(
             key=g, target_path=target_path, root_model=root_model,
-            models_by_name=models_by_name, host_name=host_model.name,
+            models_by_name=models_by_name, bundle=bundle, host_model=host_model,
+            host_name=host_model.name,
         ):
             safe_pairs.append((g, reroot_from_root(
                 g, target_path=target_path, root_model=root_model,
                 models_by_name=models_by_name, host_name=host_model.name,
             )))
         else:
-            reason = broadcast_reason(
-                host_path=hp, target_path=target_path, root_model=root_model,
-                models_by_name=models_with_host, host_name=host_model.name,
+            reason = key_broadcast_reason(
+                key=g, target_path=target_path, root_model=root_model,
+                models_by_name=models_with_host, bundle=bundle,
+                host_model=host_model, host_name=host_model.name,
             )
             unattributable.append(_UnattributableDim(
                 key=g, name=_regroup_grain_name(g), reason=reason,
@@ -1359,6 +1371,7 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
             unattributable=_first_unattributable_attached_leaf(
                 agg=agg, target_path=target_path, root_model=root_model,
                 models_by_name=models_by_name, host_name=host_model.name,
+                bundle=bundle, host_model=host_model,
             ),
         )
 
@@ -1375,7 +1388,7 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
     _assert_cross_model_inputs_safe(
         agg=agg, agg_rooted=agg_rooted, root_model=root_model, root_name=root_name,
         target_path=target_path, bundle=bundle, models_by_name=models_by_name,
-        host_name=host_model.name,
+        host_name=host_model.name, host_model=host_model,
     )
 
     # A windowed cross-model aggregate folds the active TD into its grain as the bucket (must be attributable from the root).
@@ -1405,7 +1418,7 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
         host_name=host_model.name, host_model=host_model, bundle=bundle,
     )
 
-    root_bundle = bundle.model_copy(update={"source_model": root_model})
+    root_bundle = bundle.rerooted(root_model)
     root_scope = (
         ModelScope(source_model=root_model)
         if isinstance(scope, ModelScope) else scope
@@ -1499,89 +1512,6 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
     )
 
 
-_BARE_IDENT_RE = re.compile(r"^[A-Za-z_]\w*$")
-_DOTTED_PATH_RE = re.compile(r"^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+$")
-
-
-class _ParamSpec(NamedTuple):
-    """A resolved aggregation parameter that references data: a bound
-    ``key`` (column / aggregate) or an ``expr_sql`` expression default whose
-    referenced columns are ``expr_refs`` (``None`` = an unresolvable qualifier,
-    fails closed). Literal params never become a ``_ParamSpec``."""
-    name: str
-    key: Optional[ValueKey]
-    expr_sql: Optional[str]
-    expr_refs: Tuple[Optional[ValueKey], ...] = ()
-
-
-def _column_default_key(
-    *, path: Tuple[str, ...], leaf: str, base: Optional[SlayerModel],
-) -> ValueKey:
-    """A ``ColumnSqlKey`` when ``leaf`` names a derived column on ``base`` (so its
-    ``Column.sql`` expands), else a plain ``ColumnKey``."""
-    if base is not None:
-        col = next((c for c in (base.columns or []) if c.name == leaf), None)
-        if col is not None and col.sql:
-            return ColumnSqlKey(path=path, model=base.name, column_name=leaf)
-    return ColumnKey(path=path, leaf=leaf)
-
-
-def _default_param_value_key(
-    *, sql: str, owner_path: Tuple[str, ...],
-    owner_model: Optional[SlayerModel] = None,
-    bundle: Optional[ResolvedSourceBundle] = None,
-) -> Optional[ValueKey]:
-    """A bare-identifier or dotted-path definition default → a structured key in
-    the owner's coordinates (so a host column of the same name never captures it,
-    and a to-one path like ``regions.pop`` is picked once per cell), a
-    ``ColumnSqlKey`` when the named column is derived so its SQL expands; an
-    expression or literal default → ``None``."""
-    text = sql.strip()
-    if _BARE_IDENT_RE.match(text):
-        return _column_default_key(path=tuple(owner_path), leaf=text, base=owner_model)
-    if _DOTTED_PATH_RE.match(text):
-        parts = text.split(".")
-        # A leading owner-model qualifier is a self-reference, not a hop.
-        if owner_model is not None and parts[0] == owner_model.name:
-            parts = parts[1:]
-        if len(parts) == 1:
-            return _column_default_key(
-                path=tuple(owner_path), leaf=parts[0], base=owner_model,
-            )
-        terminal = (
-            walk_key_path(model=owner_model, path=tuple(parts[:-1]), bundle=bundle)
-            if owner_model is not None and bundle is not None else None
-        )
-        return _column_default_key(
-            path=tuple(owner_path) + tuple(parts[:-1]), leaf=parts[-1], base=terminal,
-        )
-    return None
-
-
-def _expr_default_ref_keys(
-    *, sql: str, owner_model: Optional[SlayerModel],
-    owner_path: Tuple[str, ...], bundle: Optional[ResolvedSourceBundle],
-) -> List[Optional[ValueKey]]:
-    """Parse-based column refs of an expression default, as keys in the host's
-    coordinates. A bare ref is owner-anchored (modeled or physical, like a bare
-    default); string literals never contribute; ``None`` entries — an
-    unresolvable qualifier, or a fragment that could not be analyzed at all —
-    fail closed at typing."""
-    if owner_model is None or bundle is None:
-        return []
-    refs = compute_expr_reference_columns(
-        canonical_sql=sql, anchor_model=owner_model,
-        anchor_relation=owner_model.name, bundle=bundle,
-    )
-    if refs is None:
-        return [None]
-    return [
-        ColumnKey(path=tuple(owner_path) + path, leaf=leaf)
-        if path is not None else None
-        for path, leaf in refs
-    ]
-
-
 def _longest_common_prefix(paths: List[Tuple[str, ...]]) -> Tuple[str, ...]:
     if not paths:
         return ()
@@ -1594,16 +1524,49 @@ def _longest_common_prefix(paths: List[Tuple[str, ...]]) -> Tuple[str, ...]:
     return common
 
 
+def _default_home_candidate_paths(
+    *, agg: AggregateKey, host_model: SlayerModel, bundle: ResolvedSourceBundle,
+) -> List[Tuple[str, ...]]:
+    """Home candidates contributed by non-overridden definition defaults (gap 4):
+    each default resolved as a reference FROM THE HOST, so a default naming a
+    shallower model (``customers.spend``) widens the home exactly as spelling it
+    explicitly would. Paths verbatim — reverse-hop cancellation is DEV-1908."""
+    owner = walk_key_path(model=host_model, path=key_host_path(agg.source), bundle=bundle)
+    agg_def = next(
+        (a for a in (owner.aggregations or []) if a.name == agg.agg), None,
+    ) if owner is not None else None
+    if agg_def is None:
+        return []
+    explicit = {name for name, _ in agg.kwargs}
+    out: List[Tuple[str, ...]] = []
+    for p in agg_def.params:
+        if p.name in explicit:
+            continue
+        vk = default_param_value_key(
+            sql=p.sql, owner_path=(), owner_model=host_model, bundle=bundle,
+        )
+        if not isinstance(vk, (ColumnKey, ColumnSqlKey)):
+            continue
+        path = key_host_path(vk)
+        # Only a default naming a model that actually walks forward from the host
+        # is a home candidate — a bare owner-local default rides the source, and a
+        # dotted default whose head is unreachable from the host is not a home.
+        if path and walk_key_path(model=host_model, path=path, bundle=bundle) is not None:
+            out.append(path)
+    return out
+
+
 def _home_path(
     *, agg: AggregateKey, host_model: SlayerModel,
     models_by_name: Dict[str, SlayerModel], bundle: ResolvedSourceBundle,
 ) -> Tuple[str, ...]:
     """The home dataset for a cross-model aggregate (Axiom 2): the deepest join
-    path that determines every input — the source column plus each column-valued
-    arg/kwarg — over provably to-one hops. Candidates are the input paths and
-    their longest common prefix, deepest first (ties prefer the source path); the
-    first one every input is attributable from wins. Falls back to the source path
-    (today's root), where input safety then raises on an unproven hop."""
+    path that determines every input — the source column, each column-valued
+    arg/kwarg, and each definition default (DEV-1900 gap 4) — over provably
+    to-one hops. Candidates are the input paths and their longest common prefix,
+    deepest first (ties prefer the source path); the first one every input is
+    attributable from wins. Falls back to the source path (today's root), where
+    input safety then raises on an unproven hop."""
     source_path = key_host_path(agg.source)
     input_paths: List[Tuple[str, ...]] = [source_path]
     # A ranked aggregate's positional args are its ranking keys, not value inputs;
@@ -1613,6 +1576,9 @@ def _home_path(
     for v in (*arg_values, *(val for _, val in agg.kwargs)):
         if isinstance(v, (ColumnKey, ColumnSqlKey)):
             input_paths.append(key_host_path(v))
+    input_paths.extend(_default_home_candidate_paths(
+        agg=agg, host_model=host_model, bundle=bundle,
+    ))
     candidates = sorted(
         {source_path, _longest_common_prefix(input_paths), *input_paths},
         key=lambda p: (-len(p), p != source_path, p),
@@ -1632,75 +1598,26 @@ def _home_path(
     return source_path
 
 
-def _resolve_aggregation_params(
-    *, agg: AggregateKey, owner_model: Optional[SlayerModel],
-    owner_path: Tuple[str, ...], bundle: Optional[ResolvedSourceBundle] = None,
-) -> List[_ParamSpec]:
-    """Every aggregation parameter that references data — explicit non-scalar
-    args/kwargs and non-overridden definition defaults (a bare-identifier or
-    dotted-path default → a column key, a derived one a ``ColumnSqlKey``; an
-    expression default → its SQL). Literal params are omitted: they ride the
-    existing kwarg/default machinery unchanged."""
-    explicit = {name for name, _ in agg.kwargs}
-    out: List[_ParamSpec] = [
-        _ParamSpec(name=name, key=v, expr_sql=None)
-        for name, v in agg.kwargs
-        if isinstance(v, (ColumnKey, ColumnSqlKey, AggregateKey))
-    ]
-    agg_def = next(
-        (a for a in (owner_model.aggregations or []) if a.name == agg.agg), None,
-    ) if owner_model is not None else None
-    if agg_def is not None and owner_model is not None:
-        out.extend(
-            spec for p in agg_def.params if p.name not in explicit
-            and (spec := _default_param_spec(
-                p=p, owner_model=owner_model, owner_path=owner_path, bundle=bundle,
-            )) is not None
-        )
-    return out
-
-
-def _default_param_spec(
-    *, p: AggregationParam, owner_model: SlayerModel,
-    owner_path: Tuple[str, ...], bundle: Optional[ResolvedSourceBundle],
-) -> Optional[_ParamSpec]:
-    """A non-overridden definition default → its ``_ParamSpec`` (a bound key, or a
-    lifted expression with its referenced columns), or ``None`` when it rides the
-    plain kwarg/default machinery unchanged."""
-    vk = _default_param_value_key(
-        sql=p.sql, owner_path=owner_path, owner_model=owner_model, bundle=bundle,
-    )
-    if vk is not None:
-        return _ParamSpec(name=p.name, key=vk, expr_sql=None)
-    refs = _expr_default_ref_keys(
-        sql=p.sql, owner_model=owner_model, owner_path=owner_path, bundle=bundle,
-    )
-    if refs:
-        return _ParamSpec(
-            name=p.name, key=None, expr_sql=p.sql, expr_refs=tuple(refs),
-        )
-    return None
-
-
 def _param_is_determined(
-    *, spec: _ParamSpec, grain: Grain, host_model: SlayerModel,
-    models_by_name: Dict[str, SlayerModel],
+    *, spec: ParamSpec, grain: Grain, host_model: SlayerModel,
+    models_by_name: Dict[str, SlayerModel], bundle: ResolvedSourceBundle,
 ) -> bool:
     """A parameter is legal iff the dataset grain determines it — the bound key,
-    or (for an expression default) every column it references. An UNGRAINED
-    aggregate parameter types at the query grain, which the operand grain always
-    refines, so it is determined (DEV-1859 decision 12)."""
+    or (for an expression default) every column it references — judged on each
+    reference's dependency closure (DEV-1900). An UNGRAINED aggregate parameter
+    types at the query grain, which the operand grain always refines, so it is
+    determined (DEV-1859 decision 12)."""
     if spec.key is not None:
         if isinstance(spec.key, AggregateKey) and spec.key.partition_keys is None:
             return True
         return grain_determines(
             key=spec.key, grain=grain, host_model=host_model,
-            models_by_name=models_by_name,
+            models_by_name=models_by_name, bundle=bundle,
         )
     return all(
         k is not None and grain_determines(
             key=k, grain=grain, host_model=host_model,
-            models_by_name=models_by_name,
+            models_by_name=models_by_name, bundle=bundle,
         )
         for k in spec.expr_refs
     )
@@ -1768,6 +1685,7 @@ def _synthesize_association_producer(  # NOSONAR(S3776) — one cohesive host-ro
         ).model_copy(update={"locus": "host"}),
         root_model=root_model, root_name=root_name, target_path=target_path,
         bundle=bundle, models_by_name=models_by_name, host_name=host_model.name,
+        host_model=host_model,
     )
     entity_keys: List[ValueKey] = [
         ColumnKey(path=target_path, leaf=col) for col in key_sets[0]
@@ -1786,7 +1704,7 @@ def _synthesize_association_producer(  # NOSONAR(S3776) — one cohesive host-ro
     ) or root_model
     entity_grain = Grain.of(entity_keys)
     picked_params: List[PickedParam] = []
-    for _ps in _resolve_aggregation_params(
+    for _ps in resolve_aggregation_params(
         agg=agg, owner_model=source_model, owner_path=source_path, bundle=bundle,
     ):
         check_parameter_determined(
@@ -1794,7 +1712,7 @@ def _synthesize_association_producer(  # NOSONAR(S3776) — one cohesive host-ro
             grain_display=_grain_display(entity_grain),
             determined=_param_is_determined(
                 spec=_ps, grain=entity_grain, host_model=host_model,
-                models_by_name=models_by_name,
+                models_by_name=models_by_name, bundle=bundle,
             ),
         )
         picked_params.append(PickedParam(
@@ -1995,7 +1913,7 @@ def _non_aggregate_leaf_check(
 
 def _grain_expression_determined(
     *, key: ValueKey, union_grain: Grain, host_model: SlayerModel,
-    models_by_name: Dict[str, SlayerModel],
+    models_by_name: Dict[str, SlayerModel], bundle: ResolvedSourceBundle,
 ) -> bool:
     """An attach-carrying computed dimension is a function of the operand's
     union-grain cell when every embedded aggregate is grained by a subset of it
@@ -2011,21 +1929,21 @@ def _grain_expression_determined(
     return _non_aggregate_leaf_check(key, ok=lambda leaf: (
         leaf in union_grain or _reaggregation_determined(
             key=leaf, union_grain=union_grain, host_model=host_model,
-            models_by_name=models_by_name,
+            models_by_name=models_by_name, bundle=bundle,
         )
     ))
 
 
 def _reaggregation_determined(
     *, key: ValueKey, union_grain: Grain, host_model: SlayerModel,
-    models_by_name: Dict[str, SlayerModel],
+    models_by_name: Dict[str, SlayerModel], bundle: ResolvedSourceBundle,
 ) -> bool:
     """Is an outer dimension determined by the operand dataset's union grain?
     Delegates to the one determination rule: a grain member, or a
     column reached over provably to-one hops from a model the grain pins."""
     return grain_determines(
         key=key, grain=union_grain, host_model=host_model,
-        models_by_name=models_by_name,
+        models_by_name=models_by_name, bundle=bundle,
     )
 
 
@@ -2092,7 +2010,7 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
     # grain (decision 12) — normalise it there so the carrier broadcasts it per
     # outer cell; the original key stays the outer pipeline identity, aliased to the
     # normalised constituent's placeholder below.
-    reagg_param_specs = _resolve_aggregation_params(
+    reagg_param_specs = resolve_aggregation_params(
         agg=root, owner_model=host_model, owner_path=(), bundle=bundle,
     )
     param_constituent_of: Dict[ValueKey, ValueKey] = {}
@@ -2101,7 +2019,7 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
             alias=alias, param_name=_ps.name, grain_display=_grain_display(union_grain),
             determined=_param_is_determined(
                 spec=_ps, grain=union_grain, host_model=host_model,
-                models_by_name=models_by_name,
+                models_by_name=models_by_name, bundle=bundle,
             ),
         )
         if isinstance(_ps.key, AggregateKey):
@@ -2123,19 +2041,20 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
     for g in requested:
         if g in union_grain or _reaggregation_determined(
             key=g, union_grain=union_grain, host_model=host_model,
-            models_by_name=models_by_name,
+            models_by_name=models_by_name, bundle=bundle,
         ):
             attributable.append(g)
         elif _grain_expression_determined(
             key=g, union_grain=union_grain, host_model=host_model,
-            models_by_name=models_by_name,
+            models_by_name=models_by_name, bundle=bundle,
         ):
             attributable.append(g)
             expression_determined.append(g)
         else:
             if key_host_path(g) and grain_member_attributable(
                 key=g, target_path=(), root_model=host_model,
-                models_by_name=models_by_name, host_name=host_model.name,
+                models_by_name=models_by_name, bundle=bundle, host_model=host_model,
+                host_name=host_model.name,
             ):
                 # Reachable to-one but not SEEDED by the operand grain.
                 reason = (
@@ -2143,10 +2062,10 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
                     "entity key to the inner partition_by="
                 )
             else:
-                reason = broadcast_reason(
-                    host_path=key_host_path(g), target_path=(),
-                    root_model=host_model,
-                    models_by_name=models_by_name, host_name=host_model.name,
+                reason = key_broadcast_reason(
+                    key=g, target_path=(), root_model=host_model,
+                    models_by_name=models_by_name, bundle=bundle,
+                    host_model=host_model, host_name=host_model.name,
                 )
             unattributable.append(_UnattributableDim(
                 key=g, name=_regroup_grain_name(g), reason=reason,
@@ -2640,7 +2559,7 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
     # (broadcast / associate / error), never the naive fanned inline GROUP BY.
     host_for_local = scope.source_model if isinstance(scope, ModelScope) else None
     if host_for_local is not None:
-        lb_models = {m.name: m for m in bundle.referenced_models}
+        lb_models = bundle.models_by_name
         lb_grain = [*projected_dim_keys, *projected_td_keys]
 
         def _local_broadcasts(k: ValueKey) -> bool:
@@ -2657,7 +2576,8 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
             return any(
                 not grain_member_attributable(
                     key=g, target_path=(), root_model=host_for_local,
-                    models_by_name=lb_models, host_name=host_for_local.name,
+                    models_by_name=lb_models, bundle=bundle,
+                    host_model=host_for_local, host_name=host_for_local.name,
                 )
                 for g in lb_grain
             )
@@ -2913,7 +2833,7 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
     host_model_for_cm = (
         scope.source_model if isinstance(scope, ModelScope) else bundle.source_model
     )
-    models_by_name_cm = {m.name: m for m in bundle.referenced_models}
+    models_by_name_cm = bundle.models_by_name
     base_filters_with_text = list(zip(
         prebound.bound_filters,
         prebound.bound_filter_texts
@@ -3005,6 +2925,58 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
     return rewritten, attaches
 
 
+def _has_inline_population_aggregate(prebound: PreboundQuery) -> bool:
+    """A plain host-rooted aggregate survives inline over the population rows —
+    every producer-bound term is a placeholder by now, so any real ``AggregateKey``
+    with a host-local source, no partition_by, no window and not first/last computes
+    directly over the (row-filtered) population. Scans projected measures, ordering
+    keys AND filters — an aggregate in a HAVING/combined predicate is inline over
+    the population too, so a fanning row filter multiplies it just the same."""
+    keys = [dm.bound.value_key for dm in prebound.declared_measures]
+    keys += [sp.bound.value_key for sp in prebound.order_specs]
+    keys += [bf.value_key for bf in prebound.bound_filters]
+    return any(
+        isinstance(a, AggregateKey) and not is_cross_model_agg(a)
+        and not key_host_path(a.source) and a.partition_keys is None
+        and window_kwarg_of(a) is None and a.agg not in RANKED_AGGREGATIONS
+        for vk in keys for a in walk_value_keys(vk)
+    )
+
+
+def _assert_population_filters_no_fanout(
+    *, prebound: PreboundQuery, scope: Union[ModelScope, StageSchema],
+    bundle: ResolvedSourceBundle,
+) -> None:
+    """Interim population-filter guard (DEV-1900 decision 7): with an aggregate
+    inline over the population, a ROW-filter conjunct reaching the population root
+    only across a fanning hop would multiply its rows — fail closed (DEV-1909
+    lands association pushdown to the population and retires this)."""
+    host_model = scope.source_model if isinstance(scope, ModelScope) else None
+    if host_model is None or not _has_inline_population_aggregate(prebound):
+        return
+    models_by_name = bundle.models_by_name
+    texts = prebound.bound_filter_texts
+    for i, bf in enumerate(prebound.bound_filters):
+        if bf.phase != Phase.ROW:
+            continue
+        text = texts[i] if i < len(texts) else None
+        for cj in split_top_level_and(bf.value_key):
+            closure = key_closure(
+                key=cj, anchor_model=host_model,
+                anchor_relation=host_model.name, bundle=bundle,
+            )
+            hop = None if closure is None else next(
+                (p[-1] for p in closure if p and not safe_reachable(
+                    root=host_model, path=p, models_by_name=models_by_name,
+                )),
+                None,
+            )
+            check_population_filter_no_fanout(
+                filter_text=text or _canonical_name(cj), hop=hop,
+                unanalyzable=closure is None,
+            )
+
+
 def compile_prebound(  # NOSONAR(S3776) — compiler entry-point dispatcher. The pre-existing complexity is owned by the multi-stage scope / bundle / projection / filter-routing wiring it orchestrates and is tracked as a separate refactor.
     *,
     query: Union[SlayerQuery, StrictQueryCarrier],
@@ -3090,6 +3062,9 @@ def compile_prebound(  # NOSONAR(S3776) — compiler entry-point dispatcher. The
     # At the top consumer level every cross-model / partitioned leaf must now be a placeholder; sub-plans are exempt.
     if not disable_host_rooted_isolation and not enable_producer_regroups:
         _assert_total_routing(prebound)
+        _assert_population_filters_no_fanout(
+            prebound=prebound, scope=scope, bundle=bundle,
+        )
     if env is not None:
         _assert_broadcast_coherence(
             env=env, measure_roots=_coh_measure_roots,

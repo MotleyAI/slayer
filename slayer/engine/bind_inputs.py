@@ -684,7 +684,7 @@ def _joined_column_type(
     *hops, leaf = parts
     current = terminal_model(
         root=source_model, path=tuple(hops),
-        models_by_name={m.name: m for m in bundle.referenced_models},
+        models_by_name=bundle.models_by_name,
     )
     if current is None:
         return None
@@ -727,7 +727,7 @@ def _terminal_model_for_dotted(
     missing/circular/ambiguous hop), mirroring the binder's join walk."""
     return terminal_model(
         root=source_model, path=tuple(hops),
-        models_by_name={m.name: m for m in bundle.referenced_models},
+        models_by_name=bundle.models_by_name,
     )
 
 
@@ -742,7 +742,7 @@ def _route_short_form_saved_measure(
     ambiguous hop there — it returns None and lets binding raise the ambiguity."""
     if len(hops) != 1:
         return None
-    models_by_name = {m.name: m for m in bundle.referenced_models}
+    models_by_name = bundle.models_by_name
     models_by_name.setdefault(host.name, host)
     try:
         if resolve_hop(

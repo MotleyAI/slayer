@@ -38,7 +38,7 @@ from slayer.core.models import SlayerModel
 from slayer.engine import dimension_routing
 from slayer.core.query import TimeDimension
 from slayer.core.scope import ModelScope, StageSchema
-from slayer.engine.column_filter_paths import compute_column_filter_join_paths
+from slayer.engine.reference_closure import compute_column_filter_join_paths
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.syntax import (
     AggCall,
@@ -255,7 +255,7 @@ def _terminal_model_for_path(
     current = scope.source_model
     if current is None:
         return None
-    models_by_name = {m.name: m for m in bundle.referenced_models}
+    models_by_name = bundle.models_by_name
     models_by_name.setdefault(current.name, current)
     for hop in path:
         edge = resolve_hop(current=current, token=hop, models_by_name=models_by_name)
@@ -534,7 +534,7 @@ def _walk_join_chain(
     parallel-pair hop propagates untouched; an edge that resolves onto a target
     absent from the bundle stays ``UnknownReferenceError``. ``parts`` is the full
     dotted ref, for error messages."""
-    models_by_name = {m.name: m for m in bundle.referenced_models}
+    models_by_name = bundle.models_by_name
     models_by_name.setdefault(host.name, host)
     current = host
     visited_models = {host.name}
@@ -777,7 +777,7 @@ def _reject_round_trip(
 ) -> None:
     """Reject a re-anchored measure whose join path revisits a model on the
     host→target chain (round trip) — parity with the circular-join rejection."""
-    models_by_name = {m.name: m for m in bundle.referenced_models}
+    models_by_name = bundle.models_by_name
     models_by_name.setdefault(host.name, host)
     for sub in walk_value_keys(host_key):
         path = getattr(sub, "path", None)
@@ -1187,7 +1187,7 @@ def _walk_tokens_best_effort(
     their validation best-effort."""
     return terminal_model(
         root=host, path=tuple(path),
-        models_by_name={m.name: m for m in bundle.referenced_models},
+        models_by_name=bundle.models_by_name,
     )
 
 
