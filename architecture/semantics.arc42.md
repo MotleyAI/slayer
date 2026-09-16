@@ -106,6 +106,7 @@ is the coercion from coarser to finer.
     association or is loudly excluded — a stated restriction is never silently
     ignored (spec: `queries/semantics` › Filters restrict by association or
     fail loudly). [enforced: test:tests/test_dev1840_execution.py]
+    [enforced: test:tests/test_dev1909_population_pushdown.py]
 
 ## 3. Laws
 

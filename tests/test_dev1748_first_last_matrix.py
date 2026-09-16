@@ -1,33 +1,8 @@
 """DEV-1748 §5.8 — the first/last pinning matrix.
 
-**Protocol.** This module landed and passed against the OLD code, BEFORE
-first/last was rebuilt as ``RankedAggregatePlan`` (B9). Its job is to state what
-first/last MEANS, in executed rows, so that a rewrite which changes the emitted
-SQL for every first/last query can be shown not to change a single answer. A
-test here that needed editing when the rewrite landed is either a bug in the
-rewrite or a divergence that needs explicit approval — never routine churn.
-
-**One test was an exception, and it is the point of the exercise.**
-``test_a_joined_derived_time_arg_ranks_by_the_joined_expression`` landed
-``xfail(strict=True)``: the old code RAISED on a time arg that is a derived
-column on a joined model, because the ranking ran in the host base and could
-not pull the residual join (the DEV-1476/1526 remnant). The rewrite removes
-that limitation, so the xfail was removed with it. Everything else in this
-module passed on both sides unchanged.
-
-Assertions are **execution-based**: SQL-shape assertions belong in
-``tests/test_dev1748_golden_sql.py``, which pins the emission across five
-dialects. The two are complementary — a golden diff shows WHAT changed, this
-module shows whether the ANSWER changed.
-
-**Nondeterminism is stated, not papered over** (§5.8: "no false parity"). The
-``tie`` group holds two rows with the same ranking timestamp and different
-values. ``ROW_NUMBER`` breaks that tie arbitrarily, so those cases assert
-MEMBERSHIP in the candidate set. Pinning one value would produce a test that
-passes by luck and fails on an engine or planner version bump, while advertising
-a guarantee SLayer does not make.
-
-The corpus and every named expectation live in ``tests/_dev1748_fixtures.py``.
+Execution-based (SQL shapes live in ``tests/test_dev1748_golden_sql.py``); ties
+and NULL ordering assert membership, not a pinned value. Corpus and named
+expectations in ``tests/_dev1748_fixtures.py``.
 """
 
 from __future__ import annotations
@@ -79,20 +54,14 @@ async def _rows(engine: SlayerQueryEngine, **kwargs) -> list:
     return response.data
 
 
-# --------------------------------------------------------------------------- #
-# Grouped and ungrouped — the shape every other case is a variation on
-# --------------------------------------------------------------------------- #
+# Grouped and ungrouped — the shape every other case varies on.
 
 
 class TestGroupedAndUngrouped:
     async def test_first_and_last_pick_opposite_ends_of_the_group(
         self, engine: SlayerQueryEngine,
     ) -> None:
-        """The plain case. ``paid`` holds 11.0 (older) and 13.0 (newer), so
-        first and last differ — and because the group is ordered the same way by
-        value and by time, this alone would also pass for min/max. The ``filt``
-        group is what rules that out: its newer row is the SMALLER value, so
-        ``last`` there is 5.0 while ``max`` would be 61.0."""
+        """first != last; the ``filt`` group rules out min/max (its newer row is the smaller value)."""
         rows = await _rows(
             engine, dimensions=["status"],
             measures=[
@@ -105,23 +74,20 @@ class TestGroupedAndUngrouped:
 
         assert first["paid"] == PAID_FIRST
         assert last["paid"] == PAID_LAST
-        # The anti-min/max discriminator.
         assert first["filt"] == FILT_MATCHING
         assert last["filt"] == FILT_NEWER_NONMATCHING
 
     async def test_ungrouped_ranks_over_the_whole_table(
         self, engine: SlayerQueryEngine,
     ) -> None:
-        """No dimensions at all: one partition, one answer. Order 16 is the
-        newest row in the table."""
+        """One partition, one answer; order 16 is the newest row."""
         rows = await _rows(engine, measures=[{"formula": "amount:last", "name": "l"}])
         assert rows == [{"orders.l": FAN_LAST}]
 
     async def test_a_null_grain_member_gets_its_own_group_and_a_real_value(
         self, engine: SlayerQueryEngine,
     ) -> None:
-        """The NULL-status group must survive the grain join-back with its own
-        first/last, not collapse or come back NULL (P-I)."""
+        """The NULL-status group survives the grain join-back with its own first/last (P-I)."""
         rows = await _rows(
             engine, dimensions=["status"],
             measures=[
@@ -139,9 +105,7 @@ class TestGroupedAndUngrouped:
     async def test_a_time_truncated_grain_partitions_by_the_truncated_value(
         self, engine: SlayerQueryEngine,
     ) -> None:
-        """A month grain must rank WITHIN each month. February holds orders 8
-        (NULL value), 10, 12 and 14; order 14 on the 13th is the newest, so
-        February's ``last`` is its amount — not the table-wide newest."""
+        """A month grain ranks WITHIN each month; NULL-timestamp rows form their own bucket."""
         rows = await _rows(
             engine,
             time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
@@ -151,14 +115,12 @@ class TestGroupedAndUngrouped:
 
         assert by_month["2024-02-01"] == FILT_NEWER_NONMATCHING
         assert by_month["2024-03-01"] == FAN_LAST
-        # The rows whose ranking timestamp is NULL form their own bucket.
         assert by_month[None] == NULLTIME_NULL_ROW_AMOUNT
 
     async def test_a_joined_dimension_grain_ranks_within_each_joined_group(
         self, engine: SlayerQueryEngine,
     ) -> None:
-        """Grouping by a two-hop joined dimension. Region ``Alpha`` holds every
-        customer-100 order, whose newest is order 2."""
+        """Grouping by a two-hop joined dimension; region 2's NULL name is a nullable grain member."""
         rows = await _rows(
             engine, dimensions=["customers.regions.name"],
             measures=[{"formula": "amount:last", "name": "l"}],
@@ -167,23 +129,17 @@ class TestGroupedAndUngrouped:
             rows, key="orders.customers.regions.name", value="orders.l",
         )
         assert by_region["Alpha"] == PAID_LAST
-        # Region 2's name is NULL — a joined nullable grain member.
         assert by_region[None] == FAN_LAST
 
 
-# --------------------------------------------------------------------------- #
-# NULLs — in the ranking key and in the ranked value
-# --------------------------------------------------------------------------- #
+# NULLs — in the ranking key and in the ranked value.
 
 
 class TestNulls:
     async def test_a_null_ranked_value_is_returned_as_null(
         self, engine: SlayerQueryEngine,
     ) -> None:
-        """``nullval``'s newest row carries a NULL amount. ``last`` must be
-        NULL — the value OF the winning row. Returning 41.0 would mean the
-        implementation aggregated over the group instead of selecting a row,
-        which is the single most likely way to get first/last subtly wrong."""
+        """``last`` returns the NULL amount OF the winning row, not an aggregate over the group."""
         rows = await _rows(
             engine, dimensions=["status"],
             measures=[
@@ -192,8 +148,6 @@ class TestNulls:
             ],
         )
         assert by_group(rows, key="orders.status", value="orders.l")["nullval"] is None
-        # ...and the OTHER end of the same group is a real value, so the NULL
-        # above is the winner's value and not a group-wide failure.
         assert by_group(
             rows, key="orders.status", value="orders.f",
         )["nullval"] == NULLVAL_OLDER
@@ -201,14 +155,7 @@ class TestNulls:
     async def test_a_null_ranking_timestamp_sorts_per_the_engine(
         self, engine: SlayerQueryEngine,
     ) -> None:
-        """``nulltime`` holds one row with a NULL ``created_at`` and one dated.
-
-        SQLite sorts NULLs FIRST ascending, so ``ORDER BY created_at DESC`` puts
-        the NULL row LAST and the dated row wins ``last``; ascending, the NULL
-        row wins ``first``. That is a DIALECT-dependent answer — Postgres sorts
-        NULLs last ascending and would swap them — so this pins SQLite's
-        behaviour rather than claiming a portable guarantee. What must not
-        change is that the ranking is not silently NULL-blind."""
+        """DIALECT-dependent: SQLite sorts NULLs first ascending, so the dated row wins ``last``."""
         rows = await _rows(
             engine, dimensions=["status"],
             measures=[
@@ -226,10 +173,7 @@ class TestNulls:
     async def test_an_explicit_time_arg_with_its_own_nulls_ranks_by_that_column(
         self, engine: SlayerQueryEngine,
     ) -> None:
-        """``shipped_at`` is NULL on the row whose ``created_at`` is set, and
-        set on the row whose ``created_at`` is NULL — deliberately inverted, so
-        ranking by the explicit arg gives the OTHER answer than the default. A
-        query that ignored the explicit arg would return 32.0 here."""
+        """``shipped_at`` is inverted against ``created_at``, so the explicit arg gives the other answer."""
         rows = await _rows(
             engine, dimensions=["status"],
             measures=[{"formula": "amount:last(shipped_at)", "name": "l"}],
@@ -239,23 +183,14 @@ class TestNulls:
         )["nulltime"] == NULLTIME_NULL_ROW_AMOUNT
 
 
-# --------------------------------------------------------------------------- #
-# Ties — documented as nondeterministic
-# --------------------------------------------------------------------------- #
+# Ties — documented as nondeterministic.
 
 
 class TestTiesAreNondeterministic:
     async def test_equal_timestamps_yield_one_of_the_tied_values(
         self, engine: SlayerQueryEngine,
     ) -> None:
-        """Two ``tie`` rows share a ``created_at`` and carry different amounts.
-
-        ``ROW_NUMBER() OVER (... ORDER BY created_at)`` assigns rank 1 to one of
-        them arbitrarily — SLayer adds no secondary sort key, so first/last
-        under a tie is genuinely nondeterministic and is documented as such
-        rather than pinned. The contract asserted here is the one that IS real:
-        the answer is one of the tied rows' values, never a blend, a NULL, or a
-        value from another group."""
+        """Tied timestamps: the answer is one of the tied rows' values, never a blend or NULL."""
         rows = await _rows(
             engine, dimensions=["status"],
             measures=[
@@ -272,10 +207,7 @@ class TestTiesAreNondeterministic:
     async def test_breaking_the_tie_with_an_explicit_arg_is_deterministic(
         self, engine: SlayerQueryEngine,
     ) -> None:
-        """The same group ranked by ``shipped_at``, which is distinct across the
-        two rows. Determinism returns the moment the ranking key does — which is
-        what makes the nondeterminism above a property of the DATA, not of the
-        implementation."""
+        """Ranking the same group by distinct ``shipped_at`` restores determinism."""
         rows = await _rows(
             engine, dimensions=["status"],
             measures=[{"formula": "amount:last(shipped_at)", "name": "l"}],
@@ -285,21 +217,14 @@ class TestTiesAreNondeterministic:
         )["tie"] == TIE_CANDIDATES[1]
 
 
-# --------------------------------------------------------------------------- #
-# Filtered first/last — Column.filter on the measure
-# --------------------------------------------------------------------------- #
+# Filtered first/last — Column.filter on the measure.
 
 
 class TestFilteredFirstLast:
     async def test_a_filter_selects_the_newest_MATCHING_row(
         self, engine: SlayerQueryEngine,
     ) -> None:
-        """``filt``'s newest row (5.0) is below the threshold and the older one
-        (61.0) is above it, so a filtered ``last`` must return 61.0.
-
-        Two wrong implementations this rules out: ranking before filtering
-        returns NULL (the winner is excluded), and filtering without ranking
-        returns whichever matching row the engine happens to reach."""
+        """``filt``'s newest row is below the threshold, so a filtered ``last`` returns the older 61.0."""
         rows = await _rows(
             engine, dimensions=["status"],
             measures=[{"formula": "big_amount:last", "name": "l"}],
@@ -311,12 +236,7 @@ class TestFilteredFirstLast:
     async def test_a_group_with_no_matching_row_survives_carrying_null(
         self, engine: SlayerQueryEngine,
     ) -> None:
-        """``nomatch`` holds 1.0 and 2.0, both under the threshold.
-
-        The group must still be PRESENT, carrying NULL. This is the case that
-        separates a filtered first/last computed in its own scope (the rows
-        vanish there; the grain join-back restores the group) from one that
-        drops the group entirely."""
+        """No row clears the threshold: the group stays PRESENT carrying NULL (grain join-back)."""
         rows = await _rows(
             engine, dimensions=["status"],
             measures=[{"formula": "big_amount:last", "name": "l"}],
@@ -329,8 +249,7 @@ class TestFilteredFirstLast:
     async def test_no_group_is_lost_when_a_measure_filter_matches_nothing(
         self, engine: SlayerQueryEngine,
     ) -> None:
-        """The stronger form of the case above, stated over the whole result:
-        a filtered measure must not change WHICH groups the query returns."""
+        """A filtered measure must not change WHICH groups the query returns."""
         unfiltered = await _rows(
             engine, dimensions=["status"],
             measures=[{"formula": "amount:last", "name": "l"}],
@@ -347,28 +266,22 @@ class TestFilteredFirstLast:
     async def test_a_filter_on_a_joined_column_ranks_the_matching_rows(
         self, engine: SlayerQueryEngine,
     ) -> None:
-        """``gold_amount`` filters on ``customers.tier``, a column a hop away.
-        Only customer 100's orders qualify, so groups made entirely of other
-        customers' orders come back NULL and customer-100 groups rank normally.
-        """
+        """A filter on ``customers.tier`` (a hop away): only customer 100's groups rank; others NULL."""
         rows = await _rows(
             engine, dimensions=["status"],
             measures=[{"formula": "gold_amount:last", "name": "l"}],
         )
         by_status = by_group(rows, key="orders.status", value="orders.l")
 
-        assert by_status["paid"] == PAID_LAST          # customer 100
+        assert by_status["paid"] == PAID_LAST
         assert by_status["nulltime"] == NULLTIME_DATED_ROW_AMOUNT
-        assert by_status["filt"] is None               # customer 102
-        assert by_status["fan"] is None                # customer 102
+        assert by_status["filt"] is None
+        assert by_status["fan"] is None
 
     async def test_a_filter_over_a_derived_expression_ranks_the_matching_rows(
         self, engine: SlayerQueryEngine,
     ) -> None:
-        """``doubled_big`` filters on ``amount * 2``, an expression rather than
-        a bare column. It selects exactly the same rows as ``big_amount``, so
-        the two must agree group for group — a derived predicate that silently
-        failed to bind would not."""
+        """A filter on the expression ``amount * 2`` selects the same rows as ``big_amount``."""
         derived = await _rows(
             engine, dimensions=["status"],
             measures=[{"formula": "doubled_big:last", "name": "l"}],
@@ -382,21 +295,13 @@ class TestFilteredFirstLast:
             derived_by_status
             == by_group(plain, key="orders.status", value="orders.l")
         )
-        # A direct oracle as well as the comparison, so the two paths cannot
-        # agree by being wrong together.
         assert derived_by_status["filt"] == FILT_MATCHING
         assert derived_by_status["nomatch"] is None
 
     async def test_an_ungrouped_filter_matching_nothing_still_returns_one_row(
         self, engine: SlayerQueryEngine,
     ) -> None:
-        """Over the EMPTY table, an ungrouped filtered first/last must return
-        exactly one row carrying NULL.
-
-        This is the invariant the empty-grain join-back depends on: a scalar
-        isolated aggregate is CROSS JOINed to the host spine, so a CTE that
-        returned zero rows instead of one NULL row would erase the result
-        entirely."""
+        """Over the EMPTY table, an ungrouped filtered first/last returns exactly one NULL row."""
         rows = await _rows(
             engine, source_model="empty_orders",
             measures=[{"formula": "big_amount:last", "name": "l"}],
@@ -404,17 +309,14 @@ class TestFilteredFirstLast:
         assert rows == [{"empty_orders.l": None}]
 
 
-# --------------------------------------------------------------------------- #
-# The empty source — the one-row-or-no-row contract
-# --------------------------------------------------------------------------- #
+# The empty source — the one-row-or-no-row contract.
 
 
 class TestEmptySource:
     async def test_ungrouped_over_an_empty_table_returns_one_null_row(
         self, engine: SlayerQueryEngine,
     ) -> None:
-        """One row, NULL — the same thing ``amount:sum`` does over no rows.
-        Zero rows would be a different answer to a different question."""
+        """One NULL row — the same thing ``amount:sum`` does over no rows."""
         rows = await _rows(
             engine, source_model="empty_orders",
             measures=[{"formula": "amount:last", "name": "l"}],
@@ -424,8 +326,7 @@ class TestEmptySource:
     async def test_ungrouped_first_last_matches_ungrouped_sum_over_no_rows(
         self, engine: SlayerQueryEngine,
     ) -> None:
-        """Stated as a comparison so the contract cannot drift for one
-        aggregate family and not the other."""
+        """A comparison so the contract cannot drift between aggregate families."""
         ranked = await _rows(
             engine, source_model="empty_orders",
             measures=[{"formula": "amount:last", "name": "m"}],
@@ -441,9 +342,7 @@ class TestEmptySource:
     async def test_grouped_over_an_empty_table_returns_no_rows(
         self, engine: SlayerQueryEngine,
     ) -> None:
-        """With a grain there are no groups, so there are no rows. The contrast
-        with the ungrouped case above is the point: it is the ABSENCE of a grain
-        that forces the single-row answer."""
+        """With a grain there are no groups, so there are no rows."""
         rows = await _rows(
             engine, source_model="empty_orders", dimensions=["status"],
             measures=[{"formula": "amount:last", "name": "l"}],
@@ -451,18 +350,14 @@ class TestEmptySource:
         assert rows == []
 
 
-# --------------------------------------------------------------------------- #
-# Explicit time args
-# --------------------------------------------------------------------------- #
+# Explicit time args.
 
 
 class TestExplicitTimeArgs:
     async def test_an_explicit_arg_overrides_the_default_ranking_column(
         self, engine: SlayerQueryEngine,
     ) -> None:
-        """Ranking ``tie`` by ``shipped_at`` picks a different row than the
-        default ``created_at`` can, because only ``shipped_at`` distinguishes
-        them."""
+        """Only ``shipped_at`` distinguishes the ``tie`` rows, so it picks a row ``created_at`` cannot."""
         rows = await _rows(
             engine, dimensions=["status"],
             measures=[{"formula": "amount:last(shipped_at)", "name": "l"}],
@@ -474,10 +369,7 @@ class TestExplicitTimeArgs:
     async def test_two_measures_with_different_time_args_rank_independently(
         self, engine: SlayerQueryEngine,
     ) -> None:
-        """The case the rn-suffix scheme exists for today, and the case that
-        forces two separate CTEs after the rewrite. ``nulltime`` is the group
-        where the two rankings disagree, so a shared ranking column would
-        collapse them onto one wrong answer."""
+        """Two time args rank independently; ``nulltime`` is where the two rankings disagree."""
         rows = await _rows(
             engine, dimensions=["status"],
             measures=[
@@ -495,8 +387,7 @@ class TestExplicitTimeArgs:
     async def test_a_local_derived_time_arg_ranks_like_its_underlying_column(
         self, engine: SlayerQueryEngine,
     ) -> None:
-        """``created_alias`` is ``Column.sql = "created_at"``, so ranking by it
-        must equal ranking by ``created_at``."""
+        """``created_alias`` is ``sql="created_at"``, so ranking by it equals ranking by ``created_at``."""
         derived = await _rows(
             engine, dimensions=["status"],
             measures=[{"formula": "amount:last(created_alias)", "name": "l"}],
@@ -510,29 +401,14 @@ class TestExplicitTimeArgs:
             derived_by_status
             == by_group(plain, key="orders.status", value="orders.l")
         )
-        # A direct oracle too — two paths agreeing proves nothing on its own.
         assert derived_by_status["paid"] == PAID_LAST
         assert derived_by_status["nulltime"] == NULLTIME_DATED_ROW_AMOUNT
 
     async def test_a_joined_derived_time_arg_ranks_by_the_joined_expression(
         self, engine: SlayerQueryEngine,
     ) -> None:
-        """``customers.signup_alias`` is ``signup_at`` on the joined model, so
-        ranking by it reaches THROUGH the join.
-
-        This raised ``NotImplementedError`` before B9 — the DEV-1476 remnant.
-        The ranking ran in the host base, which could not pull the residual
-        join, so join discovery skipped the path-bearing ``ColumnSqlKey`` and
-        the render seam refused rather than emit a reference to a relation the
-        FROM did not have. A ranked CTE resolves its ranking key through its
-        OWN scope, so the join is registered where it is needed and the refusal
-        has nothing left to protect.
-
-        The ``paid`` group's two rows belong to customers whose signup order is
-        the reverse of the rows' own ``created_at`` order, so the two rankings
-        disagree and the expected value is exactly the one ``created_at`` would
-        NOT choose. An implementation that silently fell back to the default
-        ranking column returns ``PAID_LAST`` and fails here."""
+        """Ranking through a joined derived time arg; ``paid``'s signup order reverses ``created_at``,
+        so the winner is the row ``created_at`` would NOT choose."""
         rows = await _rows(
             engine, dimensions=["status"],
             measures=[{"formula": "amount:last(customers.signup_alias)", "name": "l"}],
@@ -542,18 +418,14 @@ class TestExplicitTimeArgs:
         assert by_status["paid"] != PAID_LAST
 
 
-# --------------------------------------------------------------------------- #
-# Cross-model first/last
-# --------------------------------------------------------------------------- #
+# Cross-model first/last.
 
 
 class TestCrossModel:
     async def test_a_cross_model_first_last_ranks_in_the_target_scope(
         self, engine: SlayerQueryEngine,
     ) -> None:
-        """``customers.spend:last`` ranks CUSTOMERS by the target model's own
-        ``default_time_dimension`` (``signup_at``), not orders by
-        ``created_at``. Customer 101 signed up last; customer 100 first."""
+        """``customers.spend:last`` ranks CUSTOMERS by the target's own ``signup_at`` default."""
         rows = await _rows(
             engine,
             measures=[
@@ -566,8 +438,7 @@ class TestCrossModel:
     async def test_an_explicit_target_time_arg_gives_the_same_answer(
         self, engine: SlayerQueryEngine,
     ) -> None:
-        """Naming the target's time column explicitly must agree with letting
-        the target's default supply it."""
+        """Naming the target's time column explicitly agrees with its default."""
         rows = await _rows(
             engine,
             measures=[
@@ -579,8 +450,7 @@ class TestCrossModel:
     async def test_a_derived_time_arg_on_the_target_gives_the_same_answer(
         self, engine: SlayerQueryEngine,
     ) -> None:
-        """``customers.signup_alias`` is derived but LOCAL to the target, so it
-        needs no extra join and must agree with the bare column."""
+        """A derived time arg LOCAL to the target needs no extra join and agrees with the bare column."""
         rows = await _rows(
             engine,
             measures=[
@@ -592,11 +462,8 @@ class TestCrossModel:
     async def test_a_target_time_arg_whose_sql_crosses_a_further_join_works(
         self, engine: SlayerQueryEngine,
     ) -> None:
-        """``customers.deep_opened`` is ``regions.opened_at`` — a hop PAST the
-        target. The CTE must pull ``customers -> regions`` to rank by it.
-        Region 2 opened later than region 1, and customers 101/102 both sit in
-        region 2, so the ranking is a tie between them; the assertion is that
-        the query runs and returns one of their spends."""
+        """A target time arg (``regions.opened_at``) a hop PAST the target: the CTE pulls the further join;
+        customers 101/102 tie in region 2, so the query returns one of their spends."""
         rows = await _rows(
             engine,
             measures=[
@@ -606,19 +473,14 @@ class TestCrossModel:
         assert rows[0]["orders.l"] in (CUSTOMER_SPEND_LAST, 75.0)
 
 
-# --------------------------------------------------------------------------- #
-# Crossing inputs, 1:N fan-out, and sibling containment
-# --------------------------------------------------------------------------- #
+# Crossing inputs, 1:N fan-out, and sibling containment.
 
 
 class TestCrossingInputsAndFanout:
     async def test_a_first_last_over_a_crossing_derived_value_reads_through_the_join(
         self, engine: SlayerQueryEngine,
     ) -> None:
-        """``cust_region`` is ``customers__regions.name`` — the value itself
-        crosses two joins. The newest row of each customer-100 group belongs to
-        region ``Alpha``; customer-101/102 groups sit in the NULL-named region.
-        """
+        """A ranked value that itself crosses two joins; customer-100 groups land in ``Alpha``."""
         rows = await _rows(
             engine, dimensions=["status"],
             measures=[{"formula": "cust_region:last", "name": "l"}],
@@ -630,10 +492,7 @@ class TestCrossingInputsAndFanout:
     async def test_a_sibling_aggregate_is_unchanged_by_an_adjacent_first_last(
         self, engine: SlayerQueryEngine,
     ) -> None:
-        """P-C's cardinality clause, stated in rows: adding a first/last measure
-        must not move a sibling ``amount:sum``. The sibling's value is compared
-        against the SAME query without the first/last, so this holds the line
-        both today and after the rewrite moves the ranking into its own CTE."""
+        """P-C's cardinality clause in rows: adding a first/last measure must not move a sibling ``amount:sum``."""
         with_ranked = await _rows(
             engine, dimensions=["status"],
             measures=[
@@ -647,15 +506,13 @@ class TestCrossingInputsAndFanout:
         )
         sums = by_group(with_ranked, key="orders.status", value="orders.s")
         assert sums == by_group(without, key="orders.status", value="orders.s")
-        # ...and an oracle, so "both wrong together" is not a way to pass.
         assert sums["paid"] == PAID_FIRST + PAID_LAST
         assert sums["fan"] == FAN_FIRST + FAN_LAST
 
     async def test_a_star_count_sibling_is_unchanged_too(
         self, engine: SlayerQueryEngine,
     ) -> None:
-        """``*:count`` has no source column, so it takes a different render path
-        than ``amount:sum`` and needs its own containment pin."""
+        """``*:count`` has no source column, so it takes a different render path and needs its own pin."""
         with_ranked = await _rows(
             engine, dimensions=["status"],
             measures=[
@@ -669,17 +526,13 @@ class TestCrossingInputsAndFanout:
         )
         counts = by_group(with_ranked, key="orders.status", value="orders.n")
         assert counts == by_group(without, key="orders.status", value="orders.n")
-        # Every seeded group holds exactly two rows, so the oracle is uniform.
+        # Every seeded group holds exactly two rows.
         assert set(counts.values()) == {2}
 
     async def test_a_1n_rush_filter_binds_once_for_sum_and_ranked_pick(
         self, engine: SlayerQueryEngine,
     ) -> None:
-        """Order 15 is tagged ``rush`` TWICE, but a fanning filter to ``rush``
-        restricts by semi-join, so ``amount:sum`` counts it once (order 15 +
-        order 16, never order 15 twice). ``amount:last`` does not move either,
-        because duplicating a row cannot change which row is newest. Pinning both
-        together is what proves a later cardinality change would be visible."""
+        """A fanning filter to ``rush`` (order 15 tagged twice) restricts by semi-join: sum counts it once, last is unmoved."""
         rows = await _rows(
             engine, dimensions=["status"],
             filters=["order_tags.name == 'rush'"],
@@ -697,8 +550,7 @@ class TestCrossingInputsAndFanout:
     async def test_grouping_by_a_1n_dimension_ranks_within_each_match(
         self, engine: SlayerQueryEngine,
     ) -> None:
-        """With the fan-out column AS the grain, order 15 legitimately appears
-        in three tag groups. Each ranks over the rows that reached it."""
+        """With the fan-out column AS the grain, order 15 appears in three tag groups, each ranked."""
         rows = await _rows(
             engine, dimensions=["order_tags.name"],
             measures=[{"formula": "amount:last", "name": "l"}],
@@ -710,18 +562,14 @@ class TestCrossingInputsAndFanout:
         assert by_tag["rush"] == FAN_LAST
 
 
-# --------------------------------------------------------------------------- #
-# Composition — several ranked measures, and ranked measures inside expressions
-# --------------------------------------------------------------------------- #
+# Composition — several ranked measures, and ranked measures in expressions.
 
 
 class TestComposition:
     async def test_two_ranked_measures_sharing_a_ranking_column(
         self, engine: SlayerQueryEngine,
     ) -> None:
-        """``first`` and ``last`` over the same column and the same ranking key
-        — one ranked scope today, two CTEs after the rewrite. The answers must
-        not depend on which."""
+        """``first`` and ``last`` over one column and ranking key, independent of scope layout."""
         rows = await _rows(
             engine, dimensions=["status"],
             measures=[
@@ -735,9 +583,7 @@ class TestComposition:
     async def test_the_same_ranked_measure_under_two_names(
         self, engine: SlayerQueryEngine,
     ) -> None:
-        """C13: one structural key, two declared names. Both columns must be
-        emitted and must agree — a shared CTE must not collapse them to one
-        column, and two names must not become two different answers."""
+        """C13: one structural key, two declared names — both emitted and equal."""
         rows = await _rows(
             engine, dimensions=["status"],
             measures=[
@@ -753,10 +599,7 @@ class TestComposition:
     async def test_an_arithmetic_composite_of_two_ranked_operands(
         self, engine: SlayerQueryEngine,
     ) -> None:
-        """``amount:last - amount:first`` — inline over one ranked scope today,
-        an outer composite over two CTEs after the rewrite. ``filt`` is the
-        discriminator: its difference is NEGATIVE, so an implementation that
-        swapped the operands would be caught."""
+        """An arithmetic composite of two ranked operands; ``filt``'s difference is negative (operand order)."""
         rows = await _rows(
             engine, dimensions=["status"],
             measures=[{"formula": "amount:last - amount:first", "name": "d"}],
@@ -771,18 +614,13 @@ class TestComposition:
     async def test_a_ranked_measure_under_a_transform_chain(
         self, engine: SlayerQueryEngine,
     ) -> None:
-        """``cumsum(amount:last)`` — the ranked value feeds a window function in
-        a later stage, so the ranked result must be materialised as a column the
-        chain can read."""
+        """``cumsum(amount:last)`` — the ranked value must be materialised as a column the chain reads."""
         rows = await _rows(
             engine,
             time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
             measures=[{"formula": "cumsum(amount:last)", "name": "c"}],
         )
-        # The WHOLE ordered sequence, not two sampled points: a running total
-        # can land on the right final value while every step before it is
-        # wrong, and the ORDER the chain accumulates in is part of what a
-        # transform over an isolated aggregate has to get right.
+        # Assert the whole ordered sequence, not sampled points: order matters.
         january = NULLTIME_NULL_ROW_AMOUNT + FAN_FIRST
         february = january + FILT_NEWER_NONMATCHING
         assert [
@@ -795,19 +633,14 @@ class TestComposition:
         ]
 
 
-# --------------------------------------------------------------------------- #
-# Filters and ordering that TARGET a ranked measure
-# --------------------------------------------------------------------------- #
+# Filters and ordering that TARGET a ranked measure.
 
 
 class TestFilteringAndOrderingOnARankedMeasure:
     async def test_a_comparison_on_a_ranked_measure_drops_groups(
         self, engine: SlayerQueryEngine,
     ) -> None:
-        """``amount:last > 30`` is an AGGREGATE-phase filter over a value that
-        lives in its own scope after the rewrite, so it moves from HAVING to an
-        outer WHERE. The ROW SET must not change: exactly the groups whose last
-        exceeds 30, and a group whose last is NULL is not one of them."""
+        """An aggregate-phase filter on a ranked value keeps the row set: groups whose last exceeds 30, NULL excluded."""
         rows = await _rows(
             engine, dimensions=["status"],
             measures=[{"formula": "amount:last", "name": "l"}],
@@ -822,19 +655,14 @@ class TestFilteringAndOrderingOnARankedMeasure:
     async def test_ordering_by_a_projected_ranked_measure(
         self, engine: SlayerQueryEngine,
     ) -> None:
-        """Descending by the ranked value. NULLs sort last by SLayer policy, so
-        the ``nullval`` group is at the end rather than at the front."""
+        """Descending by the ranked value; NULLs sort last by SLayer policy."""
         rows = await _rows(
             engine, dimensions=["status"],
             measures=[{"formula": "amount:last", "name": "l"}],
             order=[{"column": "l", "direction": "desc"}],
         )
         values = [row["orders.l"] for row in rows]
-        # The ``tie`` group's value is arbitrary between the two candidates, so
-        # its POSITION is pinned but not which of the two lands there — both sit
-        # between 32.0 and 13.0, so the surrounding order is unaffected either
-        # way. Pinning one would be a test that passes by luck and fails on an
-        # engine or planner version bump.
+        # The ``tie`` value is arbitrary between the candidates; only its position is pinned.
         assert values[3] in TIE_CANDIDATES, values
         assert values[:3] + values[4:] == [
             FAN_LAST, NULL_STATUS_LAST, NULLTIME_DATED_ROW_AMOUNT,
@@ -844,9 +672,7 @@ class TestFilteringAndOrderingOnARankedMeasure:
     async def test_ordering_by_a_ranked_measure_that_is_not_projected(
         self, engine: SlayerQueryEngine,
     ) -> None:
-        """The order-only case: the ranked measure is materialised but trimmed
-        from the projection, so it must still exist somewhere to sort by. The
-        emitted columns are exactly the declared ones, in declaration order."""
+        """Order-only: the ranked measure is materialised but trimmed from the projection."""
         rows = await _rows(
             engine, dimensions=["status"],
             measures=[{"formula": "amount:sum", "name": "s"}],

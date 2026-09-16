@@ -37,6 +37,7 @@ from slayer.ir.bound import (
     dimension_partitioned_aggregates,
     dimension_regroup_roots,
 )
+from slayer.ir.planned import SemiJoinFilter
 
 __all__ = [
     "PreboundQuery",
@@ -97,6 +98,10 @@ class PreboundQuery(BaseModel):
     # How aggregates resolve query dimensions unattributable from their root;
     # threaded onto nested producer prebounds so every plan resolves alike.
     to_many_handling: Literal["broadcast", "associate", "error"] = "broadcast"
+    # Correlated EXISTS semi-joins the compiler copies onto this plan (the host
+    # population's fanning-filter groups, or a target-rooted producer's own),
+    # each rooted at ``source_relation`` (compile asserts the match).
+    semi_join_filters: List[SemiJoinFilter] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _filter_texts_are_parallel(self) -> "PreboundQuery":

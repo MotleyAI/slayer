@@ -242,9 +242,12 @@ class FilterReachability(BaseModel):
 class EmptyBaseGrainPlan(BaseModel):
     """Host base has no columns of its own — ``_base`` is a one-row spine for the CROSS
     JOIN. ``host_filter_ids`` (if any) gate it via ``FROM <host> WHERE ... LIMIT 1``, the
-    LIMIT stopping the N filtered rows from repeating the scalar N times."""
+    LIMIT stopping the N filtered rows from repeating the scalar N times.
+    ``host_gated`` also forces the host FROM + ``LIMIT 1`` when the population is
+    restricted only by semi-joins (no masks), so a population nobody passes is empty."""
 
     host_filter_ids: List[BoundFilterId] = Field(default_factory=list)
+    host_gated: bool = False
 
 
 class SemiJoinHop(BaseModel):
@@ -273,6 +276,10 @@ class SemiJoinFilter(BaseModel):
     hops: List[SemiJoinHop]
     conjuncts: List[ValueKey]
     filter_texts: List[Optional[str]] = Field(default_factory=list)
+    #: The relation the first hop correlates against — the plan's
+    #: ``source_relation`` (``compile_prebound`` asserts they match). ``None`` on a
+    #: group built before that root is known (set when copied onto a prebound).
+    root_relation: Optional[str] = None
 
 
 class RegroupSubstitution(BaseModel):
@@ -379,6 +386,9 @@ class RegroupAttachPlan(BaseModel):
     partition_display: List[str] = Field(default_factory=list)
     producer_root_model: Optional[str] = None
     dropped_filter_warnings: List[Any] = Field(default_factory=list)
+    # Public measure name to report for a semi-join pushed into this producer
+    # (the canonical ``alias_hint`` is the last resort otherwise).
+    semi_join_measure: Optional[str] = None
     broadcast_measure: Optional[str] = None
     broadcast_dimensions: List[Tuple[str, str]] = Field(default_factory=list)
     # Associate-mode counterparts (DEV-1841): the aggregate resolved by

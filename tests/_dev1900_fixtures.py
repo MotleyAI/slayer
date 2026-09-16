@@ -1,26 +1,15 @@
 """Shared fixtures for DEV-1900 — fail-closed safety for path-bearing derived
 refs crossing fanning hops.
 
-Extends the DEV-1840 ``orders → customers → regions`` graph with a 1:N
-``regions → region_events`` hop and derived columns that cross it, so every
-input role (positional arg, kwarg, definition default, dimension, measure-level
-filter, re-aggregation parameter) can be exercised over a genuinely fanning
-derived definition. One hand-computed dataset seeded into SQLite AND DuckDB;
-every oracle below derives from it.
+Extends DEV-1840's ``orders → customers → regions`` with a 1:N
+``regions → region_events`` hop and derived columns crossing it (``bad_pop``,
+``bad_pop2``, local ``derived_pop``). North has TWO equal events, so ``bad_pop``
+is single-valued per region yet the hop still fans. One dataset seeded into
+SQLite AND DuckDB; every oracle below derives from it.
 
-Graph extension
----------------
-``regions → region_events``  1:N (fanning). ``regions.bad_pop = pop +
-region_events.value`` crosses it; ``bad_pop2 = bad_pop * 2`` chains through it;
-``derived_pop = pop * 2`` is local (crosses nothing). North has TWO
-region_events of equal value, so ``bad_pop`` is single-valued per region (one
-dimension cell) yet the hop still fans — the multiplying join is observable.
-
-Dataset (region_events; the rest is the DEV-1840 dataset verbatim)
-------------------------------------------------------------------
 region_events (id, region_id, value): 1 r1 50 | 2 r1 50 | 3 r2 30
-  → bad_pop:     North 100+50 = 150   South 200+30 = 230   (region-less → NULL)
-  → derived_pop: North 200            South 400
+  bad_pop = pop + value: North 150, South 230, region-less NULL
+  derived_pop = pop * 2: North 200, South 400
 """
 
 from __future__ import annotations
@@ -59,9 +48,7 @@ from tests._dev1840_fixtures import (
 )
 from tests._dev1841_fixtures import associated_warnings
 
-# --------------------------------------------------------------------------- #
 # Models — one rich graph; tests select the role via the measure / dimension.
-# --------------------------------------------------------------------------- #
 _REGION_EVENTS_ROWS = [(1, 1, 50.0), (2, 1, 50.0), (3, 2, 30.0)]
 
 
@@ -85,8 +72,7 @@ def _customers(models: List[SlayerModel]) -> SlayerModel:
 
 
 def dev1900_models() -> List[SlayerModel]:
-    """DEV-1840 graph + region_events, the fanning derived columns, and the
-    customer aggregations that name them. Host first (orders)."""
+    """DEV-1840 graph + region_events, the fanning derived columns and aggregations. Host first (orders)."""
     models = dev1840_models()
     regions = _regions(models)
     regions.joins.append(ModelJoin(
@@ -99,9 +85,7 @@ def dev1900_models() -> List[SlayerModel]:
         Column(name="bad_pop2", type=DataType.DOUBLE, sql="bad_pop * 2"))
     regions.columns.append(
         Column(name="derived_pop", type=DataType.DOUBLE, sql="pop * 2"))
-    # A region-owned aggregation whose weight defaults to the BARE owner-local
-    # derived column bad_pop (which crosses the fanning hop) — the bare-default
-    # counterpart to customers' dotted wsumx.
+    # Weight defaults to the BARE owner-local bad_pop (fanning) — bare-default counterpart to wsumx.
     regions.aggregations.append(Aggregation(
         name="wbadbare", formula="SUM({value} * {weight})",
         params=[AggregationParam(name="weight", sql="bad_pop")]))
@@ -125,12 +109,8 @@ def dev1900_models() -> List[SlayerModel]:
 
 
 def home_path_models() -> List[SlayerModel]:
-    """A region-owned aggregation (``wsum_cust_spend``) whose weight defaults to
-    ``customers.spend``. With a source ``customers.regions.pop``, the shallower
-    ``customers`` home determines both inputs (``pop`` to-one, ``spend`` local)
-    — but only once definition-default paths join the home candidates (gap 4).
-    An explicit ``weight=customers.spend`` already widens the home today, so it
-    is the reference the default must match."""
+    """``wsum_cust_spend`` weight defaults to ``customers.spend``: the shallower ``customers`` home must
+    determine both inputs once definition-default paths join the home candidates (gap 4)."""
     models = dev1900_models()
     _regions(models).aggregations.append(Aggregation(
         name="wsum_cust_spend", formula="SUM({value} * {weight})",
@@ -139,10 +119,8 @@ def home_path_models() -> List[SlayerModel]:
 
 
 def unparseable_derived_models() -> List[SlayerModel]:
-    """Pathological derived columns on regions: ``unparseable`` (no dialect
-    parses it → closure is tri-state None, never empty) and ``cyc`` (self-
-    referential → the closure's cycle guard raises). ``wunparse`` names the
-    unparseable one as a weight, so an aggregate over it must fail closed."""
+    """Pathological derived columns on regions: ``unparseable`` (closure tri-state None) and self-referential
+    ``cyc`` (cycle guard raises). ``wunparse`` weights the unparseable one, so its aggregate must fail closed."""
     models = dev1900_models()
     regions = _regions(models)
     regions.columns.append(
@@ -153,9 +131,7 @@ def unparseable_derived_models() -> List[SlayerModel]:
     customers.aggregations.append(Aggregation(
         name="wunparse", formula="SUM({value} * {weight})",
         params=[AggregationParam(name="weight", sql="regions.unparseable")]))
-    # An unparseable EXPRESSION default: expr_refs is (None,), so no single
-    # column can be named — the input closure is None but the diagnostic returns
-    # None (the check_input_dependencies_analyzable unnameable arm).
+    # An unparseable EXPRESSION default: expr_refs is (None,), so no column can be named (unnameable arm).
     customers.aggregations.append(Aggregation(
         name="wexpr_unparse", formula="SUM({value} * {weight})",
         params=[AggregationParam(name="weight", sql=")((( bad")]))
@@ -165,9 +141,7 @@ def unparseable_derived_models() -> List[SlayerModel]:
     return models
 
 
-# --------------------------------------------------------------------------- #
 # Dual-engine seed (DEV-1840 tables used by the graph + region_events).
-# --------------------------------------------------------------------------- #
 def _seed_sqlite(db_path: str) -> None:
     con = sqlite3.connect(db_path)
     cur = con.cursor()
@@ -234,8 +208,7 @@ async def _engine_for(*, dialect: str, db_path: str,
 async def make_exec_engine(
     request, *, models: Optional[List[SlayerModel]] = None,
 ) -> AsyncIterator[SlayerQueryEngine]:
-    """Body for a ``params=["sqlite", "duckdb"]`` fixture; each test module
-    wraps this in ``@pytest.fixture``."""
+    """Body for a ``params=["sqlite", "duckdb"]`` fixture; wrapped per module in ``@pytest.fixture``."""
     dialect = request.param
     if dialect == "duckdb":
         pytest.importorskip("duckdb")
@@ -250,9 +223,7 @@ async def make_exec_engine(
             models=models if models is not None else dev1900_models())
 
 
-# --------------------------------------------------------------------------- #
 # Query shorthands.
-# --------------------------------------------------------------------------- #
 def orders_q(**kw) -> SlayerQuery:
     kw.setdefault("source_model", "orders")
     return SlayerQuery(**kw)
@@ -263,8 +234,7 @@ def cust_q(**kw) -> SlayerQuery:
     return SlayerQuery(**kw)
 
 
-# The fanning derived dimension, its cross-model / local metrics, and the two
-# re-aggregation shapes, spelled once.
+# The fanning derived dimension, its metrics, and the two re-aggregation shapes.
 BAD_POP = "customers.regions.bad_pop"
 AMOUNT_SUM = ModelMeasure(formula="amount:sum", name="amt")
 SPEND_SUM = ModelMeasure(formula="customers.spend:sum", name="csp")
@@ -281,87 +251,62 @@ def bad_pop_vals(resp, measure: str) -> dict:
     return {k[0]: v[measure] for k, v in rows_by(resp, "orders." + BAD_POP).items()}
 
 
-# --------------------------------------------------------------------------- #
 # Hand-computed oracles (every value traced to the dataset above).
-# --------------------------------------------------------------------------- #
-#: North customers c1,c2,c6 orders = 10+20+3 + 30+25 + 12 = 100; South c3,c5 =
-#: 5+15 = 20; region-less c4 (o6=40) + orphan o8 (7) = 47. Each order once.
+#: amount by bad_pop, each order once: North c1,c2,c6=100; South c3,c5=20; region-less c4(40)+orphan o8(7)=47.
 ASSOC_AMOUNT_BY_BAD_POP = {150.0: 100.0, 230.0: 20.0, None: 47.0}
-#: Cross-model spend, each customer once: North c1+c2+c6 = 280; South c3+c5+c7
-#: = 195 (c7 has zero orders); region-less c4 = 40.
+#: spend by bad_pop, each customer once: North c1+c2+c6=280; South c3+c5+c7=195 (c7 no orders); c4=40.
 ASSOC_SPEND_BY_BAD_POP = {150.0: 280.0, 230.0: 195.0, None: 40.0}
 #: The multiplying join doubles North's two same-value events (100→200, 280→560).
 ASSOC_AMOUNT_NORTH_FAN_DEFECT = 200.0
 ASSOC_SPEND_NORTH_FAN_DEFECT = 560.0
-#: Broadcast repeats the ungrouped grand total per cell: local amount = all 10
-#: orders = 167; cross-model spend = every customer once = 280+195+40 = 515.
+#: Broadcast repeats the grand total per cell: amount all 10 orders=167; spend every customer once=515.
 BROADCAST_AMOUNT_TOTAL = 167.0
 BROADCAST_SPEND_TOTAL = 515.0
 
-#: weighted_avg of region-cell amount sums by derived_pop = 2·pop:
-#: (100·200 + 20·400) / (200 + 400) = 28000 / 600.
+#: weighted_avg of region-cell amount sums by derived_pop=2·pop: (100·200 + 20·400) / (200+400).
 REAGG_DERIVED_POP_WAVG = 28000.0 / 600.0
 
-#: To-one measure-level population filter (customers.tier='gold') stays inline:
-#: gold c1(33)+c3(5)+c6(12)+c7(0) = 50.
+#: To-one filter (tier='gold') stays inline: gold c1(33)+c3(5)+c6(12)+c7(0) = 50.
 TO_ONE_FILTER_AMOUNT = 50.0
 
-#: SUM(pop·spend) over customers at the shallower (customers) home for the
-#: source customers.regions.pop with weight=customers.spend — the explicit
-#: spelling produces this today; the definition default must match it (gap 4).
+#: SUM(pop·spend) at the shallower customers home (source regions.pop, weight=customers.spend); default must match (gap 4).
 HOME_WIDEN_VALUE = 67000.0
 
-#: DEV-1909 targets (DEV-1900 makes both RAISE): distinct customers with an 'ok'
-#: order = c1+c2+c3+c5+c6 = 420 (the inline-fan defect double-counts c1's two ok
-#: orders → 520); orders whose region passes bad_pop>0 = 167 − 47 = 120 (the
-#: fan defect over North's two events → 220).
+#: DEV-1909 (DEV-1900 makes both RAISE): 'ok'-order customers c1+c2+c3+c5+c6=420 (inline-fan defect 520);
+#: orders whose region passes bad_pop>0 = 167−47 = 120 (fan defect 220).
 POP_FILTER_STRUCTURAL_ASSOC = 420.0
 POP_FILTER_STRUCTURAL_FAN_DEFECT = 520.0
 POP_FILTER_DERIVED_ASSOC = 120.0
 POP_FILTER_DERIVED_FAN_DEFECT = 220.0
 
-# Host-population pushdown oracles — the filter restricts the customers
-# population by association (each customer once), and every producer rooted at it
-# inherits the same disposition. Filter is ``orders.status = 'ok'`` unless noted;
-# ok-order customers = c1,c2,c3,c5,c6 (c4 has only 'new', c7 has no orders).
-#: sum(spend, partition_by=tier): gold c1+c3+c6=190, silver c2+c5=230 (the fan
-#: defect double-counts c1's two 'ok' orders → gold 290).
+# Host-population pushdown oracles. Filter is ``orders.status = 'ok'`` unless
+# noted; ok-order customers = c1,c2,c3,c5,c6 (c4 only 'new', c7 no orders).
+#: sum(spend, partition_by=tier): gold c1+c3+c6=190, silver c2+c5=230 (fan defect gold 290).
 POP_FILTER_PARTITIONED_BY_TIER = {"gold": 190.0, "silver": 230.0}
 POP_FILTER_PARTITIONED_GOLD_FAN_DEFECT = 290.0
-#: sum(spend, window='1y') by signup month, April cumulative bucket = the five
-#: ok-order customers (defect 520 from c1's doubled 'ok' orders).
+#: sum(spend, window='1y') by signup month, April cumulative bucket = five ok-order customers (defect 520).
 POP_FILTER_WINDOWED_APRIL = 420.0
 POP_FILTER_WINDOWED_APRIL_FAN_DEFECT = 520.0
 #: *:count of the distinct ok-order customers per tier.
 POP_FILTER_COUNT_BY_TIER = {"gold": 3, "silver": 2}
-#: raw rows (distinct_dimension_values=False): one row per ok-order customer
-#: (defect 6 from c1's second 'ok' order).
+#: raw rows (distinct_dimension_values=False): one per ok-order customer (defect 6 from c1's second 'ok').
 POP_FILTER_RAW_ROWS = 5
 POP_FILTER_RAW_ROWS_FAN_DEFECT = 6
-#: spend with two independent branches — an 'ok' order AND a region_event of
-#: value>=50 (only region North qualifies): North customers c1+c2+c6 = 280.
+#: spend, two independent branches — 'ok' order AND a region_event value>=50 (North only): c1+c2+c6 = 280.
 POP_FILTER_TWO_BRANCH_SPEND = 280.0
-#: associate, dims=orders.status, filter amount in (20,30): the amount-20 order
-#: is c1's 'new', the amount-30 order is c2's 'ok' — each binds to its own cell
-#: (the fan defect associates both customers with both cells → 250/250).
+#: associate, dims=orders.status, amount in (20,30): amount-20 is c1's 'new', amount-30 c2's 'ok' (defect 250/250).
 POP_FILTER_ASSOC_SAME_BRANCH = {"new": 100.0, "ok": 150.0}
 POP_FILTER_ASSOC_SAME_BRANCH_FAN_DEFECT = 250.0
-#: avg(sum(spend, partition_by=tier)) by tier — the outer avg over a single
-#: per-tier value is that value, so the cells equal the partitioned totals; their
-#: mean over tiers is 210 (the fanned gold 290 gives the defect mean 260).
+#: avg(sum(spend, partition_by=tier)) by tier equals the partitioned totals; mean over tiers 210 (defect 260).
 POP_FILTER_NESTED_BY_TIER = {"gold": 190.0, "silver": 230.0}
 POP_FILTER_NESTED_TIER_MEAN = 210.0
-#: associate, dims=orders.status, filter amount=20: only c1's 'new' order
-#: qualifies, so one cell binds to that same row.
+#: associate, dims=orders.status, amount=20: only c1's 'new' qualifies, so one cell binds that row.
 POP_FILTER_SAME_ROW_ONE_CELL = {"new": 100.0}
-#: one filter string with an inline conjunct (tier='gold', local) and a pushed
-#: conjunct (orders.status='ok', fanning): gold customers with an 'ok' order.
+#: one filter string, inline conjunct (tier='gold') + pushed (status='ok'): gold customers with an 'ok' order.
 POP_FILTER_MIXED_CONJUNCT_SPEND = 190.0
-#: out-of-scope OR (tier='bronze' OR orders.status='ok') on dims-only rows — the
-#: conjunct stays applied through the join: bronze c4 plus the ok-order tiers.
+#: out-of-scope OR (tier='bronze' OR status='ok') on dims-only rows stays applied: bronze c4 + ok-order tiers.
 POP_FILTER_OUT_OF_SCOPE_TIERS = {"bronze", "gold", "silver"}
-#: producer-only orders.amount:sum over all 'ok' orders — the target-rooted
-#: producer applies the filter locally, including the customer-less orphan o8.
+#: producer-only orders.amount:sum over all 'ok' orders, applied locally, incl. the customer-less orphan o8.
 POP_FILTER_PRODUCER_ONLY_AMOUNT = 82.0
 
 __all__ = [

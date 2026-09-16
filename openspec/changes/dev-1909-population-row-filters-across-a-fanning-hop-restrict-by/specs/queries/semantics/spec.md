@@ -104,10 +104,11 @@ aggregate.
 - **THEN** the query fails at plan time with a typed error naming the filter and the column,
   containing no issue reference — never SQL routed as if the column crossed nothing
 
-#### Scenario: Out-of-scope conjunct with an inline aggregate fails closed
+#### Scenario: Population filter across a fanning hop with an inline aggregate fails closed
 - **WHEN** a query rooted at `customers` filters on
   `tier = 'bronze' or orders.status = 'ok'` (a root-local and a cross-path reference under
-  `OR`) and selects the local `spend:sum`, in any `to_many_handling` mode
+  `OR`, the cross-path leg reaching only across the fanning `orders` hop) and selects the
+  local `spend:sum`, in any `to_many_handling` mode
 - **THEN** the query fails at plan time with a typed error naming the filter, the reason
   (the `OR` mix), and the remedy (split the filter or restate it on one branch), containing
   no issue reference — never the join-multiplied total
@@ -119,9 +120,9 @@ aggregate.
   `bronze`, `gold`, `silver` on the reference dataset), each producer drops the conjunct
   with the dropped-filter warning, and `to_many_handling: "error"` errors
 
-#### Scenario: Dimension-only and producer-only queries keep their values
+#### Scenario: Dimension-only and producer-only queries are unaffected by the guard
 - **WHEN** a query rooted at `customers` filters on `orders.status = 'ok'` and selects no
   measures, or selects only aggregates that compute in their own producers (cross-model,
   partitioned, or windowed)
-- **THEN** the query executes with values unchanged from today, the filter applied to the
-  population and to each producer by association
+- **THEN** the retired guard blocks nothing: the query executes with values unchanged from
+  today, the filter applied to the population and to each producer by association

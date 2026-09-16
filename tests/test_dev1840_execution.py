@@ -1,9 +1,8 @@
 """DEV-1840 task 1.4 — executed semi-join pushdown values (SQLite + DuckDB).
 
-Spec: openspec …/specs/queries/cross-model-aggregates — "Producer filter
-inheritance". Every oracle is hand-computed in ``tests/_dev1840_fixtures.py``;
-each defect value the dataset can distinguish (join fan-out, split-EXISTS,
-single-pair correlation, inline-through-1:N) is asserted against explicitly.
+Spec ``queries/cross-model-aggregates`` (Producer filter inheritance); oracles
+hand-computed in ``tests/_dev1840_fixtures.py``, each distinguishable defect
+(fan-out, split-EXISTS, single-pair, inline-through-1:N) asserted explicitly.
 """
 
 from __future__ import annotations
@@ -156,8 +155,7 @@ class TestReverseHopPushdown:
 
 class TestSameRowGrouping:
     async def test_conjuncts_sharing_the_branch_bind_one_row(self, exec_backend):
-        """Scenario: filters sharing a branch bind to the same related row —
-        c1 and c2 have an ok order and an app order but no single ok app one."""
+        """Filters sharing a branch bind one row — c1/c2 have an ok and an app order but no single ok-app one."""
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["customers.tier"], measures=[M, CM],
@@ -173,8 +171,7 @@ class TestSameRowGrouping:
         assert dropped_filter_warnings(resp) == []
 
     async def test_multi_hop_union_tree_same_row(self, exec_backend):
-        """One store qualifies only through a single order that is both app
-        AND by a gold customer — across the composite hop plus one more."""
+        """One store qualifies only through a single app AND gold-customer order, across the composite hop plus one."""
         dialect, engine = exec_backend
         query = q(dimensions=["status"], measures=[M, RM],
                   filters=["channel = 'app'", "customers.tier = 'gold'"])
@@ -192,8 +189,7 @@ class TestSameRowGrouping:
 
 class TestCompositeCorrelation:
     async def test_composite_first_hop_uses_every_pair(self, exec_backend):
-        """(B,2) shares one pair column with each qualifying store; only the
-        full composite correlation excludes it."""
+        """(B,2) shares one pair column with each qualifying store; only the full composite correlation excludes it."""
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["status"], measures=[M, RM],
@@ -211,9 +207,7 @@ class TestInlineEquivalence:
     async def test_unproven_m2one_matches_the_proven_inline_values(
         self, exec_backend_weak,
     ):
-        """EXISTS ≡ inline on genuinely m:1 data: the weak variant (no PK
-        claim on plans.code) must take the EXISTS path yet produce the strong
-        variant's inline values (the same oracle the smoke suite pins)."""
+        """EXISTS ≡ inline on genuinely m:1 data: the weak variant (no PK claim) takes EXISTS yet matches inline values."""
         dialect, engine = exec_backend_weak
         query = q(dimensions=["customers.tier"], measures=[CM],
                   filters=["customers.plans.level = 'basic'"])
@@ -259,8 +253,7 @@ class TestBranchIndependence:
 
 class TestCorrelatedOuterReference:
     async def test_root_local_ref_correlates_into_the_exists(self, exec_backend):
-        """``customers.spend > amount``: c4 fails its only comparison and c7
-        has no orders — both drop from the population."""
+        """``customers.spend > amount``: c4 fails its only comparison, c7 has no orders — both drop."""
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["customers.tier"], measures=[M, CM],
@@ -279,9 +272,7 @@ class TestExpandedDependencies:
     async def test_host_declared_column_pushes_by_its_dependencies(
         self, exec_backend,
     ):
-        """Scenario: derived-column dependencies drive classification —
-        c7 (gold, zero orders) separates the semi-join from a root-local
-        rewrite; the broadcast total 515 marks the dropped-filter defect."""
+        """Derived-column dependencies drive classification; c7 (gold, zero orders) separates semi-join from root-local rewrite."""
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["status"], measures=[M, CM],
@@ -298,8 +289,7 @@ class TestExpandedDependencies:
     async def test_target_declared_column_never_fans_the_producer(
         self, exec_backend_rev,
     ):
-        """The latent inline hole, executed: c1 has TWO ok orders; inlining
-        ``last_status = 'ok'`` counts its spend twice (290)."""
+        """The latent inline hole: c1 has TWO ok orders; inlining ``last_status = 'ok'`` counts its spend twice (290)."""
         dialect, engine = exec_backend_rev
         query = q(dimensions=["customers.tier"], measures=[CM],
                   filters=["customers.last_status = 'ok'"])
@@ -359,10 +349,7 @@ class TestProducerKinds:
             assert float(got[month]) == pytest.approx(expected), month
 
     async def test_windowed_grain_spine_carries_the_exists(self, exec_backend):
-        """Scenario: the pushed filter reaches BOTH windowed-producer legs —
-        the grain spine (``_base``) and the window source (``_src``) — so an
-        excluded bucket vanishes from the producer instead of surfacing with
-        a NULL window value."""
+        """The pushed filter reaches BOTH windowed legs (``_base`` and ``_src``), so an excluded bucket vanishes."""
         dialect, engine = exec_backend
         dry = await engine.execute(query=q(
             time_dimensions=signup_month_td(),
@@ -376,9 +363,7 @@ class TestProducerKinds:
     async def test_windowed_grain_spine_drops_filtered_out_buckets(
         self, exec_backend,
     ):
-        """Scenario: a bucket with no passing customer (2024-04 has no
-        new-status order) vanishes from the result, and surviving window
-        values sum the kept population only."""
+        """A bucket with no passing customer (2024-04 has no new-status order) vanishes; survivors sum the kept population."""
         _, engine = exec_backend
         resp = await engine.execute(query=q(
             time_dimensions=signup_month_td(),
@@ -393,8 +378,7 @@ class TestProducerKinds:
             assert float(got[month]) == pytest.approx(expected), month
 
     async def test_nested_computed_dimension_producer(self, exec_backend):
-        """Scenario: pushdown reaches every producer kind (nested computed
-        dimension) — the app population flips gold to 'lo' (160 ≤ 170)."""
+        """Pushdown reaches a nested computed-dimension producer — the app population flips gold to 'lo' (160 ≤ 170)."""
         dialect, engine = exec_backend
         query = q(
             dimensions=[{"expression": SPEND_BAND_170, "name": "sband"}],

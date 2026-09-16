@@ -34,6 +34,7 @@ from slayer.engine.reference_closure import (
     aggregate_input_closure,
     compute_column_filter_join_paths,
     default_param_value_key,
+    first_unanalyzable_filter_column,
     first_unanalyzable_input_column,
     key_closure,
     resolve_aggregation_params,
@@ -78,7 +79,8 @@ from slayer.engine.elaborate_env import (
     check_order_target_has_slot,
     check_attached_inputs_attributable,
     check_parameter_determined,
-    check_population_filter_no_fanout,
+    check_filter_dependencies_analyzable,
+    check_population_filter_in_pushdown_scope,
     check_raw_rows_no_aggregate_slots,
     check_reaggregation_dims_attributable,
     check_reaggregation_no_window,
@@ -254,6 +256,7 @@ def _regroup_producer_prebound(  # NOSONAR(S3776) — one producer-prebound asse
     grain_name_by_key: Optional[Mapping[ValueKey, str]] = None,
     window_td_key: Optional[ValueKey] = None,
     to_many_handling: str = "broadcast",
+    semi_join_filters: Optional[List[SemiJoinFilter]] = None,
 ) -> Tuple[PreboundQuery, List[ValueKey]]:
     """The producer's bind product: grain from partition keys, one measure per consumed aggregate, inherited base-row filters; returns prebound + ordered grain keys."""
     public_alias_by_agg = public_alias_by_agg or {}
@@ -319,6 +322,7 @@ def _regroup_producer_prebound(  # NOSONAR(S3776) — one producer-prebound asse
         n_time_dimensions=len(tds),
         distinct_dimension_values=True,
         to_many_handling=to_many_handling,
+        semi_join_filters=list(semi_join_filters or []),
     )
     return prebound, [*dims, *tds]
 
@@ -686,6 +690,7 @@ def _cross_model_inherited_filters(
             hops=sorted(g["nodes"].values(), key=lambda h: len(h.node_path)),
             conjuncts=g["conjuncts"],
             filter_texts=g["texts"],
+            root_relation=root_model.name,
         )
         for g in groups.values()
     ]
@@ -801,6 +806,7 @@ def _synthesize_wrap_attach(
     stage_schemas: Dict[str, StageSchema],
     producer_registry: Optional[Dict[Hashable, PlannedQuery]],
     producer_source_model: Optional[str],
+    population: Optional["PopulationFilters"] = None,
     row_attaches: Sequence[RegroupAttachPlan] = (),
 ) -> RegroupAttachPlan:
     """A host-grain ORDER-BY wrap as a HOST-rooted producer synthesized late: a combined attach at the full projected grain whose placeholder IS the wrap key."""
@@ -831,17 +837,21 @@ def _synthesize_wrap_attach(
         for dm in (*dim_dms, *td_dms)
         if dm.declared_name is not None
     }
-    inherited, n_inherited_date = _regroup_inherited_filters(
-        prebound=prebound, filter_typings=filter_typings,
+    w_inherited, w_n_date, w_semi_joins, w_dropped = _producer_filter_view(
+        population=population, prebound=prebound, filter_typings=filter_typings,
+        # The wrap's grain materialises its source branch too (position parity).
+        grain_keys=[*projected, wrap_key.source],
+        bundle=bundle,
     )
     producer_prebound, ordered_pks = _regroup_producer_prebound(
         pks=Grain.of(projected), aggs=[wrap_key], model=producer_model,
-        bundle=bundle, inherited=inherited, n_date_range=n_inherited_date,
+        bundle=bundle, inherited=w_inherited, n_date_range=w_n_date,
         partition_order=lambda pks: sorted(
             pks, key=lambda k: consumer_order.get(k, len(consumer_order)),
         ),
         grain_name_by_key=grain_name_by_key,
         to_many_handling=prebound.to_many_handling,
+        semi_join_filters=w_semi_joins,
     )
     producer_plan = compile_prebound(
         query=StrictQueryCarrier(
@@ -893,6 +903,7 @@ def _synthesize_wrap_attach(
             original_key=wrap_key,
         )],
         partition_display=[_regroup_grain_name(pk) for pk in ordered_pks],
+        dropped_filter_warnings=w_dropped,
     )
 
 
@@ -1190,7 +1201,20 @@ def _conjunct_disposition(
     Optional[Tuple[ValueKey, Optional[str], Dict[Tuple[str, ...], SemiJoinHop]]],
     Optional[UnreachableFilterDroppedWarning],
 ]:
-    """Three-way ROW-conjunct disposition (D1): inline / semi-join pushed / dropped."""
+    """Three-way ROW-conjunct disposition (D1): inline / semi-join pushed /
+    dropped. Fails closed on an unanalyzable dependency closure (D4)."""
+    display = text or _canonical_name(cj)
+    if host_model is not None and bundle is not None and key_closure(
+        key=cj, anchor_model=host_model,
+        anchor_relation=host_model.name, bundle=bundle,
+    ) is None:
+        check_filter_dependencies_analyzable(
+            filter_text=display,
+            column=first_unanalyzable_filter_column(
+                key=cj, anchor_model=host_model,
+                anchor_relation=host_model.name, bundle=bundle,
+            ) or _canonical_name(cj),
+        )
     refs = [
         k for k in walk_value_keys(cj)
         if isinstance(k, (ColumnKey, ColumnSqlKey, TimeTruncKey, StarKey))
@@ -1222,7 +1246,6 @@ def _conjunct_disposition(
             else reroot_value_key(cj, target_path=target_path)
         )
         return bound_filter_from_key(rerooted), None, None
-    display = text or _canonical_name(cj)
     if host_model is not None and bundle is not None:
         try:
             key_rewritten, nodes = _conjunct_push_plan(
@@ -1244,6 +1267,329 @@ def _conjunct_disposition(
     )
 
 
+# --------------------------------------------------------------------------- #
+# One population disposition (DEV-1909): the query population's ROW-filter
+# conjuncts disposed once at the host root; every host-rooted consumer derives
+# its masks / semi-joins / dropped set from this one result.
+# --------------------------------------------------------------------------- #
+def _grain_closure_paths(
+    grain_keys: Iterable[ValueKey], *, host_model: SlayerModel,
+    bundle: ResolvedSourceBundle,
+) -> FrozenSet[Tuple[str, ...]]:
+    """The join paths a consumer's grain materialises — the union of every grain
+    key's dependency closure, anchored at the host (D2)."""
+    paths: set = set()
+    for gk in grain_keys:
+        closure = key_closure(
+            key=gk, anchor_model=host_model,
+            anchor_relation=host_model.name, bundle=bundle,
+        )
+        if closure:
+            paths.update(closure)
+    return frozenset(paths)
+
+
+def _paths_materialised(
+    fanning_paths: Tuple[Tuple[str, ...], ...],
+    grain_paths: FrozenSet[Tuple[str, ...]],
+) -> bool:
+    """Every crossed path of a conjunct is a prefix of (or equal to) some grain
+    path — the consumer's grain already binds each to one related row (D2)."""
+    return bool(fanning_paths) and all(
+        any(gp[: len(fp)] == fp for gp in grain_paths)
+        for fp in fanning_paths
+    )
+
+
+class _PopulationConjunct(BaseModel):
+    """One split population ROW conjunct with its host-root disposition (D1).
+    ``origin_index`` / ``origin_bf`` tie split conjuncts back to their source
+    filter so an all-inline filter re-emits combined (never gratuitously split)."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    key: ValueKey
+    text: Optional[str]
+    is_date_bound: bool
+    origin_index: int
+    origin_bf: BoundFilter
+    disposition: Literal["inline", "semi_join", "excluded"]
+    fanning_paths: Tuple[Tuple[str, ...], ...] = ()
+    group_id: Optional[Tuple[str, Tuple[Tuple[str, str], ...]]] = None
+    # For a semi_join conjunct: its producer-root-coordinate key, its OWN hop
+    # subtree (parents first, ancestors included), and diagnostic text — so a
+    # consumer rebuilds the EXISTS from only its non-materialised conjuncts and
+    # only the hops those conjuncts use (per-conjunct binding, D2).
+    key_rewritten: Optional[ValueKey] = None
+    hops: Tuple[SemiJoinHop, ...] = ()
+    semi_join_text: Optional[str] = None
+    reason: Optional[str] = None
+
+
+class _PassthroughFilter(BaseModel):
+    """A non-population host mask (measure-typed or higher stratum): the host base
+    keeps it verbatim; producers never inherit it."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    bound: BoundFilter
+    text: Optional[str]
+    typing: MaskTyping
+    stratum: int
+
+
+class _ProducerFilterView(BaseModel):
+    """A producer's share of the population disposition (replaces
+    ``_regroup_inherited_filters``): inline masks (date bounds first), the
+    semi-joins to attach, and the conjuncts dropped from it."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    inherited: List[BoundFilter]
+    n_date_range: int
+    semi_joins: List[SemiJoinFilter]
+    dropped: List[Any]
+
+
+def _group_by_origin(
+    conjuncts: List["_PopulationConjunct"],
+) -> List[List["_PopulationConjunct"]]:
+    """Conjuncts split into their source-filter groups, order preserved."""
+    groups: Dict[int, List[_PopulationConjunct]] = {}
+    order: List[int] = []
+    for c in conjuncts:
+        if c.origin_index not in groups:
+            groups[c.origin_index] = []
+            order.append(c.origin_index)
+        groups[c.origin_index].append(c)
+    return [groups[i] for i in order]
+
+
+class PopulationFilters(BaseModel):
+    """The query population's ROW-filter conjuncts disposed once at the host root
+    (D1): the base query and every producer rooted at the population derive their
+    masks / semi-joins / dropped set from this one result."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    host_model: SlayerModel
+    conjuncts: List[_PopulationConjunct]
+    passthrough: List[_PassthroughFilter]
+
+    def _pushed(
+        self, grain_paths: FrozenSet[Tuple[str, ...]],
+    ) -> List[_PopulationConjunct]:
+        """The semi-join conjuncts a consumer whose grain materialises
+        ``grain_paths`` does NOT bind inline — decided per conjunct (D2)."""
+        return [
+            c for c in self.conjuncts
+            if c.disposition == "semi_join"
+            and not _paths_materialised(c.fanning_paths, grain_paths)
+        ]
+
+    def _semi_joins(
+        self, pushed: List[_PopulationConjunct],
+    ) -> List[SemiJoinFilter]:
+        """One ``SemiJoinFilter`` per group id present among ``pushed`` (conjuncts
+        sharing a first hop → the same related row), over just those conjuncts and
+        the union of only THEIR hop subtrees — never a materialised sibling's hop
+        (D2/D3)."""
+        by_group: Dict[Any, List[_PopulationConjunct]] = {}
+        order: List[Any] = []
+        for c in pushed:
+            if c.group_id not in by_group:
+                by_group[c.group_id] = []
+                order.append(c.group_id)
+            by_group[c.group_id].append(c)
+        out: List[SemiJoinFilter] = []
+        for g in order:
+            members = by_group[g]
+            hops_by_path: Dict[Tuple[str, ...], SemiJoinHop] = {}
+            for c in members:
+                for hop in c.hops:
+                    hops_by_path.setdefault(hop.node_path, hop)
+            out.append(SemiJoinFilter(
+                hops=sorted(hops_by_path.values(), key=lambda h: len(h.node_path)),
+                conjuncts=[c.key_rewritten for c in members
+                           if c.key_rewritten is not None],
+                filter_texts=[c.semi_join_text for c in members
+                              if c.key_rewritten is not None],
+                root_relation=self.host_model.name,
+            ))
+        return out
+
+    def _excluded_warnings(self) -> List[Any]:
+        return [
+            UnreachableFilterDroppedWarning(
+                filter_text=c.text or _canonical_name(c.key),
+                reason=c.reason or "",
+            )
+            for c in self.conjuncts
+            if c.disposition == "excluded"
+        ]
+
+    def producer_view(
+        self, *, grain_paths: FrozenSet[Tuple[str, ...]],
+    ) -> _ProducerFilterView:
+        """A producer inherits inline masks for the conjuncts its grain binds,
+        the semi-joins for the rest, and the dropped-filter warnings for the
+        out-of-scope residue (D1/D2). An all-inline source filter re-emits
+        combined; one with a pushed conjunct splits (date bounds first)."""
+        pushed = self._pushed(grain_paths)
+        pushed_keys = {c.key for c in pushed}
+
+        inline_date: List[BoundFilter] = []
+        inline_other: List[BoundFilter] = []
+        for group in _group_by_origin(self.conjuncts):
+            kept = [c for c in group
+                    if c.disposition != "excluded" and c.key not in pushed_keys]
+            if not kept:
+                continue
+            target = inline_date if group[0].is_date_bound else inline_other
+            if len(kept) == len(group):
+                target.append(group[0].origin_bf)  # all inline → combined
+            else:
+                target.extend(bound_filter_from_key(c.key) for c in kept)
+        return _ProducerFilterView(
+            inherited=[*inline_date, *inline_other],
+            n_date_range=len(inline_date),
+            semi_joins=self._semi_joins(pushed),
+            dropped=self._excluded_warnings(),
+        )
+
+    def host_split(
+        self, *, grain_paths: FrozenSet[Tuple[str, ...]],
+    ) -> Tuple[FrozenSet[ValueKey], List[SemiJoinFilter], List[Tuple[str, str]]]:
+        """The host base keeps every conjunct as a mask except the semi-joins its
+        own grain does not bind; returns (dropped conjunct keys, semi-join groups,
+        out-of-scope residue as (filter_text, reason)) (D4)."""
+        pushed = self._pushed(grain_paths)
+        drop_keys = frozenset(c.key for c in pushed)
+        residue = [
+            (c.text or _canonical_name(c.key), c.reason or "")
+            for c in self.conjuncts
+            if c.disposition == "excluded"
+        ]
+        return drop_keys, self._semi_joins(pushed), residue
+
+
+def dispose_population_filters(
+    *, prebound: PreboundQuery, filter_typings: Sequence[ConjunctTyping],
+    scope: Union[ModelScope, StageSchema], bundle: ResolvedSourceBundle,
+) -> Optional[PopulationFilters]:
+    """Dispose the query population's ROW-phase FIELD conjuncts once at the host
+    root (D1): inline / semi-join / excluded, grouped per first reverse hop. Fails
+    closed on an unanalyzable dependency (via ``_conjunct_disposition``). ``None``
+    when the scope carries no host model (a stage-schema sub-plan)."""
+    host_model = scope.source_model if isinstance(scope, ModelScope) else None
+    if host_model is None:
+        return None
+    models_by_name = bundle.models_by_name
+    host_name = host_model.name
+    texts = prebound.bound_filter_texts
+    conjuncts: List[_PopulationConjunct] = []
+    passthrough: List[_PassthroughFilter] = []
+    for idx, (bf, ct) in enumerate(zip(prebound.bound_filters, filter_typings)):
+        text = texts[idx] if idx < len(texts) else None
+        if not (bf.phase == Phase.ROW and ct.typing == MaskTyping.FIELD
+                and ct.stratum == 0):
+            passthrough.append(_PassthroughFilter(
+                bound=bf, text=text, typing=ct.typing, stratum=ct.stratum,
+            ))
+            continue
+        is_date = idx < prebound.n_date_range
+        split = split_top_level_and(bf.value_key)
+        conj_text = text if len(split) == 1 else None
+        for cj in split:
+            inherited_bf, pushed, dropped_w = _conjunct_disposition(
+                cj, text=text, target_path=(), root_model=host_model,
+                models_by_name=models_by_name, host_name=host_name,
+                host_model=host_model, bundle=bundle,
+            )
+            def _conj(**kw: Any) -> _PopulationConjunct:
+                return _PopulationConjunct(
+                    key=cj, text=conj_text, is_date_bound=is_date,
+                    origin_index=idx, origin_bf=bf, **kw,
+                )
+
+            if inherited_bf is not None:
+                conjuncts.append(_conj(disposition="inline"))
+            elif pushed is not None:
+                key_rewritten, display, nodes = pushed
+                first = next(h for p, h in nodes.items() if len(p) == 1)
+                gid = (first.target_model, first.join_pairs)
+                conjuncts.append(_conj(
+                    disposition="semi_join", group_id=gid,
+                    key_rewritten=key_rewritten, semi_join_text=display,
+                    hops=tuple(sorted(
+                        nodes.values(), key=lambda h: len(h.node_path))),
+                    fanning_paths=tuple(key_closure(
+                        key=cj, anchor_model=host_model,
+                        anchor_relation=host_name, bundle=bundle,
+                    ) or ()),
+                ))
+            else:
+                assert dropped_w is not None
+                conjuncts.append(_conj(
+                    disposition="excluded", reason=dropped_w.reason,
+                ))
+    return PopulationFilters(
+        host_model=host_model, conjuncts=conjuncts, passthrough=passthrough,
+    )
+
+
+def _drop_pushed_population_conjuncts(
+    *, bound_filters: List[BoundFilter], filter_typings: Sequence[ConjunctTyping],
+    n_date_range: int, drop_keys: FrozenSet[ValueKey],
+) -> Tuple[List[BoundFilter], List[ConjunctTyping], int]:
+    """Rebuild the host masks with the semi-join-pushed conjuncts removed: a
+    FIELD stratum-0 filter with a dropped conjunct is split, its kept conjuncts
+    re-emitted in place; every other filter is untouched. Date bounds stay the
+    prefix (D1)."""
+    new_bf: List[BoundFilter] = []
+    new_typings: List[ConjunctTyping] = []
+    new_n_date = 0
+    for idx, (bf, ct) in enumerate(zip(bound_filters, filter_typings)):
+        is_date = idx < n_date_range
+        if bf.phase == Phase.ROW and ct.typing == MaskTyping.FIELD and ct.stratum == 0:
+            split = split_top_level_and(bf.value_key)
+            if any(cj in drop_keys for cj in split):
+                for cj in split:
+                    if cj in drop_keys:
+                        continue
+                    new_bf.append(bound_filter_from_key(cj))
+                    new_typings.append(ct)
+                    new_n_date += is_date
+                continue
+        new_bf.append(bf)
+        new_typings.append(ct)
+        new_n_date += is_date
+    return new_bf, new_typings, new_n_date
+
+
+def _producer_filter_view(
+    *, population: Optional[PopulationFilters], prebound: PreboundQuery,
+    filter_typings: Sequence[ConjunctTyping], grain_keys: Iterable[ValueKey],
+    bundle: ResolvedSourceBundle,
+) -> Tuple[List[BoundFilter], int, List[SemiJoinFilter], List[Any]]:
+    """A host-rooted producer's (inherited masks, n_date_range, semi-joins,
+    dropped) from the population disposition. In a sub-plan (``population`` None)
+    the disposition already happened at the parent, so the producer inherits its
+    prebound's stratum-0 field masks verbatim and the parent's groups by
+    construction (D1/D3)."""
+    if population is not None:
+        view = population.producer_view(
+            grain_paths=_grain_closure_paths(
+                grain_keys, host_model=population.host_model, bundle=bundle,
+            ),
+        )
+        return view.inherited, view.n_date_range, view.semi_joins, view.dropped
+    inherited, n_date = _regroup_inherited_filters(
+        prebound=prebound, filter_typings=filter_typings,
+    )
+    return inherited, n_date, list(prebound.semi_join_filters), []
+
+
 class _ProducerSynthesisContext(BaseModel):
     """The per-plan inputs every cross-model producer synthesis shares."""
 
@@ -1258,6 +1604,10 @@ class _ProducerSynthesisContext(BaseModel):
     base_filters_with_text: List[Tuple[BoundFilter, Optional[str]]]
     scope: Union[ModelScope, StageSchema]
     stage_schemas: Dict[str, StageSchema]
+    filter_typings: Tuple[ConjunctTyping, ...] = ()
+    # The one population disposition (D1); host-rooted syntheses consume its
+    # views, target-rooted ones build their own groups. ``None`` in a sub-plan.
+    population: Optional["PopulationFilters"] = None
 
 
 class _UnattributableDim(NamedTuple):
@@ -1412,12 +1762,6 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
             models_by_name=models_by_name, host_name=host_model.name,
         )
 
-    inherited, semi_joins, dropped = _cross_model_inherited_filters(
-        base_filters=base_filters_with_text, target_path=target_path,
-        root_model=root_model, models_by_name=models_by_name,
-        host_name=host_model.name, host_model=host_model, bundle=bundle,
-    )
-
     root_bundle = bundle.rerooted(root_model)
     root_scope = (
         ModelScope(source_model=root_model)
@@ -1428,14 +1772,35 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
         # The bucket joins back on the consumer's own active TD.
         host_by_rerooted.setdefault(window_td_key, prebound.main_time_key)
     grain_keys = Grain.of(rr for _, rr in safe_pairs)
+    # A host-rooted (broadcast-local) producer consumes the population disposition
+    # at its own grain (D1/D3); a target-rooted one builds its own groups from the
+    # original conjuncts, rooted at the target.
+    cm_n_date = 0
+    if target_path == () and context.population is not None:
+        view = context.population.producer_view(
+            grain_paths=_grain_closure_paths(
+                [*grain_keys, *([window_td_key] if window_td_key is not None else [])],
+                host_model=context.population.host_model, bundle=root_bundle,
+            ),
+        )
+        inherited, cm_n_date, semi_joins, dropped = (
+            view.inherited, view.n_date_range, view.semi_joins, view.dropped,
+        )
+    else:
+        inherited, semi_joins, dropped = _cross_model_inherited_filters(
+            base_filters=base_filters_with_text, target_path=target_path,
+            root_model=root_model, models_by_name=models_by_name,
+            host_name=host_model.name, host_model=host_model, bundle=bundle,
+        )
     # The producer measure keeps the CANONICAL alias (root columns could shadow the public name).
     producer_prebound, ordered_pks = _regroup_producer_prebound(
         pks=grain_keys, aggs=[agg_rooted], model=root_model, bundle=root_bundle,
-        inherited=inherited, n_date_range=0, window_td_key=window_td_key,
+        inherited=inherited, n_date_range=cm_n_date, window_td_key=window_td_key,
         explicit_types=(
             {agg_rooted: declared_type} if declared_type is not None else None
         ),
         to_many_handling=prebound.to_many_handling,
+        semi_join_filters=semi_joins,
     )
     # A computed-dimension grain member, windowed producer, or attach-owning answer
     # (mixed source / attached parameter, DEV-1859) re-enables discovery so the
@@ -1458,10 +1823,6 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
         prebound=producer_prebound,
         producer_registry=producer_registry,
     )
-    if semi_joins:
-        producer_plan = producer_plan.model_copy(
-            update={"semi_join_filters": semi_joins},
-        )
     producer_answer_ids = list(producer_plan.projection)[len(ordered_pks):]
     answer_slot = _regroup_answer_slot_id(
         value_slots=[
@@ -1725,39 +2086,52 @@ def _synthesize_association_producer(  # NOSONAR(S3776) — one cohesive host-ro
     # removes the reverse-hop fan-out.
     assoc_agg = agg.model_copy(update={"locus": "host"})
     grain_keys = Grain.of(requested)
-    # A conjunct the metric-root routing cannot handle (e.g. an OR mixing the
-    # entity's own column with a host predicate) would inline fan-dependently at
-    # host grain — drop it exactly as the cross-model producer would; every other
-    # conjunct routes via the host (inline / semi-join).
-    survivors: List[Tuple[BoundFilter, Optional[str]]] = []
-    root_dropped: List[UnreachableFilterDroppedWarning] = []
-    for bf, text in base_filters_with_text:
-        if bf.phase != Phase.ROW:
-            survivors.append((bf, text))
-            continue
-        for cj in split_top_level_and(bf.value_key):
-            _, _, drop_w = _conjunct_disposition(
-                cj, text=text, target_path=target_path, root_model=root_model,
-                models_by_name=models_by_name, host_name=host_model.name,
-                host_model=host_model, bundle=bundle,
-            )
-            if drop_w is not None:
-                root_dropped.append(drop_w)
-            else:
-                survivors.append((bound_filter_from_key(cj), text))
-    inherited, semi_joins, dropped = _cross_model_inherited_filters(
-        base_filters=survivors, target_path=(),
-        root_model=host_model, models_by_name=models_by_name,
-        host_name=host_model.name, host_model=host_model, bundle=bundle,
-    )
-    dropped = [*root_dropped, *dropped]
+    if root_model.name == host_model.name:
+        # A population-rooted association (local metric): take the one population
+        # disposition at its own grain (D1) — a conjunct on the association
+        # dimension's branch binds inline to the same related row, the rest push
+        # by semi-join, out-of-scope conjuncts drop with the warning.
+        inherited, a_n_date, semi_joins, dropped = _producer_filter_view(
+            population=context.population, prebound=context.prebound,
+            filter_typings=context.filter_typings, grain_keys=grain_keys,
+            bundle=bundle,
+        )
+    else:
+        # A cross-model metric associated: the metric roots elsewhere, so a
+        # conjunct the metric root cannot handle (e.g. an OR mixing the entity's
+        # own column with a host predicate) drops; every other conjunct routes
+        # via the host (inline / semi-join), exactly as DEV-1841 did.
+        survivors: List[Tuple[BoundFilter, Optional[str]]] = []
+        root_dropped: List[UnreachableFilterDroppedWarning] = []
+        for bf, text in base_filters_with_text:
+            if bf.phase != Phase.ROW:
+                survivors.append((bf, text))
+                continue
+            for cj in split_top_level_and(bf.value_key):
+                _, _, drop_w = _conjunct_disposition(
+                    cj, text=text, target_path=target_path, root_model=root_model,
+                    models_by_name=models_by_name, host_name=host_model.name,
+                    host_model=host_model, bundle=bundle,
+                )
+                if drop_w is not None:
+                    root_dropped.append(drop_w)
+                else:
+                    survivors.append((bound_filter_from_key(cj), text))
+        inherited, semi_joins, host_dropped = _cross_model_inherited_filters(
+            base_filters=survivors, target_path=(),
+            root_model=host_model, models_by_name=models_by_name,
+            host_name=host_model.name, host_model=host_model, bundle=bundle,
+        )
+        dropped = [*root_dropped, *host_dropped]
+        a_n_date = 0
     producer_prebound, ordered_pks = _regroup_producer_prebound(
         pks=grain_keys, aggs=[assoc_agg], model=host_model, bundle=bundle,
-        inherited=inherited, n_date_range=0,
+        inherited=inherited, n_date_range=a_n_date,
         explicit_types=(
             {assoc_agg: declared_type} if declared_type is not None else None
         ),
         to_many_handling=prebound.to_many_handling,
+        semi_join_filters=semi_joins,
     )
     producer_plan = compile_prebound(
         query=StrictQueryCarrier(
@@ -1770,10 +2144,6 @@ def _synthesize_association_producer(  # NOSONAR(S3776) — one cohesive host-ro
         enable_producer_regroups=_answers_need_nested_regroups([assoc_agg]),
         prebound=producer_prebound, producer_registry=producer_registry,
     )
-    if semi_joins:
-        producer_plan = producer_plan.model_copy(
-            update={"semi_join_filters": semi_joins},
-        )
     # An attached parameter row-attached inside the producer: map each picked key
     # through the sub-plan's substitutions so the level-1 pick references the
     # producer's row-attach column, not the raw aggregate (decision 13).
@@ -1957,12 +2327,11 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
     declared_type: Optional[DataType],
     producer_registry: Optional[Dict[Hashable, PlannedQuery]],
     registry: RegroupPlaceholderRegistry,
-    inherited: List[BoundFilter],
-    n_date_range: int,
 ) -> RegroupAttachPlan:
     """Compile a re-aggregation (DEV-1847) as producer-over-producer: a carrier
     at the operand's union grain (the inner producers) and an outer aggregate
-    grouping it by the attributable outer grain, reusing the association kernel."""
+    grouping it by the attributable outer grain, reusing the association kernel.
+    Both are host-rooted, so both take the population disposition (D1)."""
     prebound, bundle = context.prebound, context.bundle
     host_model, models_by_name = context.host_model, context.models_by_name
     scope, stage_schemas = context.scope, context.stage_schemas
@@ -2106,11 +2475,21 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
     # placeholder (decision 12).
     for orig, ck in param_constituent_of.items():
         constituent_placeholders[orig] = constituent_placeholders[ck]
+    # Both levels are host-rooted; each takes the population disposition at its
+    # own grain (D1) — the carrier over the union grain, the outer over its grain.
+    c_inherited, c_n_date, c_semi_joins, reagg_dropped = _producer_filter_view(
+        population=context.population, prebound=prebound,
+        filter_typings=context.filter_typings, grain_keys=union_grain, bundle=bundle,
+    )
+    o_inherited, o_n_date, o_semi_joins, _ = _producer_filter_view(
+        population=context.population, prebound=prebound,
+        filter_typings=context.filter_typings, grain_keys=outer_grain, bundle=bundle,
+    )
     carrier_attach = _build_carrier_attach(
         union_grain=union_grain, constituents=constituents,
         constituent_placeholders=constituent_placeholders, host_model=host_model,
         bundle=bundle, scope=scope, stage_schemas=stage_schemas,
-        inherited=inherited, n_date_range=n_date_range,
+        inherited=c_inherited, n_date_range=c_n_date, semi_joins=c_semi_joins,
         producer_source_model=host_model.name, producer_registry=producer_registry,
     )
 
@@ -2142,12 +2521,13 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
         # Row filters define the population whose cells the outer aggregate
         # consumes — without them a NULL-masking composite (coalesce) would
         # fabricate cells for filtered-out entities.
-        inherited=inherited, n_date_range=n_date_range,
+        inherited=o_inherited, n_date_range=o_n_date,
         # A clean producer column name (the placeholder-sourced key would leak the
         # reserved __regroup__ prefix into the emitted alias).
         public_alias_by_agg={outer_agg: alias},
         explicit_types={outer_agg: declared_type} if declared_type is not None else None,
         to_many_handling=mode,
+        semi_join_filters=o_semi_joins,
     )
     outer_plan = compile_prebound(
         query=StrictQueryCarrier(
@@ -2231,6 +2611,7 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
         degenerate_outer_grain=(
             [_regroup_grain_name(g) for g in outer_grain] if degenerate else []
         ),
+        dropped_filter_warnings=reagg_dropped,
     )
 
 
@@ -2245,6 +2626,7 @@ def _build_carrier_attach(
     stage_schemas: Dict[str, StageSchema],
     inherited: List[BoundFilter],
     n_date_range: int,
+    semi_joins: Optional[List[SemiJoinFilter]] = None,
     producer_source_model: Optional[str],
     producer_registry: Optional[Dict[Hashable, PlannedQuery]],
 ) -> RegroupAttachPlan:
@@ -2252,7 +2634,7 @@ def _build_carrier_attach(
     ones broadcast within it) — the carrier / level-1 of the re-aggregation."""
     carrier_prebound, ordered_pks = _regroup_producer_prebound(
         pks=union_grain, aggs=constituents, model=host_model, bundle=bundle,
-        inherited=inherited, n_date_range=n_date_range,
+        inherited=inherited, n_date_range=n_date_range, semi_join_filters=semi_joins,
     )
     carrier_plan = compile_prebound(
         query=StrictQueryCarrier(
@@ -2415,6 +2797,7 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
     producer_source_model: Optional[str],
     in_producer: bool = False,
     producer_registry: Optional[Dict[Hashable, PlannedQuery]] = None,
+    population: Optional[PopulationFilters] = None,
     local_discovery: bool = True,
 ) -> Optional[Tuple[PreboundQuery, List[RegroupAttachPlan]]]:
     """Discover partitioned aggregates and desugar into producer stages + reserved-leaf placeholders (row attach at base FROM, combined at the combined SELECT)."""
@@ -2648,10 +3031,6 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
         for agg in (*row_aggs, *combined_aggs, *cm_row, *cm_combined)
     }
 
-    inherited, n_inherited_date = _regroup_inherited_filters(
-        prebound=prebound, filter_typings=filter_typings,
-    )
-
     # A combined producer keeps the consumer's dimension order (row producers use the alphabetical default).
     consumer_order: Dict[ValueKey, int] = {
         dm.bound.value_key: idx for idx, dm in enumerate([*dim_dms, *td_dms])
@@ -2717,9 +3096,16 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
                                 m.name: m for m in bundle.referenced_models
                             },
                         )
+            window_td = prebound.main_time_key if windowed else None
+            p_inherited, p_n_date, p_semi_joins, p_dropped = _producer_filter_view(
+                population=population, prebound=prebound,
+                filter_typings=filter_typings,
+                grain_keys=[*pks, *([window_td] if window_td is not None else [])],
+                bundle=bundle,
+            )
             producer_prebound, ordered_pks = _regroup_producer_prebound(
                 pks=pks, aggs=producer_aggs, model=producer_model, bundle=bundle,
-                inherited=inherited, n_date_range=n_inherited_date,
+                inherited=p_inherited, n_date_range=p_n_date,
                 partition_order=order_fn, public_alias_by_agg=alias_map,
                 explicit_types={
                     dm.bound.value_key: dm.type
@@ -2727,8 +3113,9 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
                     if phase == "combined" and dm.type_is_explicit and dm.type is not None
                 },
                 grain_name_by_key=grain_names,
-                window_td_key=prebound.main_time_key if windowed else None,
+                window_td_key=window_td,
                 to_many_handling=prebound.to_many_handling,
+                semi_join_filters=p_semi_joins,
             )
             producer_plan = compile_prebound(
                 query=StrictQueryCarrier(
@@ -2826,6 +3213,11 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
                 join_pairs=join_pairs,
                 substitutions=substitutions,
                 partition_display=[_regroup_grain_name(pk) for pk in ordered_pks],
+                dropped_filter_warnings=p_dropped,
+                semi_join_measure=(
+                    alias_map.get(producer_aggs[0])
+                    if isinstance(producer_aggs[0], AggregateKey) else None
+                ),
                 **attach_kwargs,
             ))
 
@@ -2845,7 +3237,8 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
         projected_dim_keys=projected_dim_keys,
         projected_td_keys=projected_td_keys,
         base_filters_with_text=base_filters_with_text, scope=scope,
-        stage_schemas=stage_schemas,
+        stage_schemas=stage_schemas, population=population,
+        filter_typings=tuple(filter_typings),
     )
     for phase, cm_aggs in (("combined", cm_combined), ("row", cm_row)):
         for agg in cm_aggs:
@@ -2865,7 +3258,6 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
             context=synthesis_context,
             declared_type=reagg_declared_type.get(root),
             producer_registry=producer_registry, registry=registry,
-            inherited=inherited, n_date_range=n_inherited_date,
         ))
 
     # The ROW substitution applies ONLY to computed DIMENSIONS; a non-dim measure
@@ -2943,40 +3335,6 @@ def _has_inline_population_aggregate(prebound: PreboundQuery) -> bool:
     )
 
 
-def _assert_population_filters_no_fanout(
-    *, prebound: PreboundQuery, scope: Union[ModelScope, StageSchema],
-    bundle: ResolvedSourceBundle,
-) -> None:
-    """Interim population-filter guard (DEV-1900 decision 7): with an aggregate
-    inline over the population, a ROW-filter conjunct reaching the population root
-    only across a fanning hop would multiply its rows — fail closed (DEV-1909
-    lands association pushdown to the population and retires this)."""
-    host_model = scope.source_model if isinstance(scope, ModelScope) else None
-    if host_model is None or not _has_inline_population_aggregate(prebound):
-        return
-    models_by_name = bundle.models_by_name
-    texts = prebound.bound_filter_texts
-    for i, bf in enumerate(prebound.bound_filters):
-        if bf.phase != Phase.ROW:
-            continue
-        text = texts[i] if i < len(texts) else None
-        for cj in split_top_level_and(bf.value_key):
-            closure = key_closure(
-                key=cj, anchor_model=host_model,
-                anchor_relation=host_model.name, bundle=bundle,
-            )
-            hop = None if closure is None else next(
-                (p[-1] for p in closure if p and not safe_reachable(
-                    root=host_model, path=p, models_by_name=models_by_name,
-                )),
-                None,
-            )
-            check_population_filter_no_fanout(
-                filter_text=text or _canonical_name(cj), hop=hop,
-                unanalyzable=closure is None,
-            )
-
-
 def compile_prebound(  # NOSONAR(S3776) — compiler entry-point dispatcher. The pre-existing complexity is owned by the multi-stage scope / bundle / projection / filter-routing wiring it orchestrates and is tracked as a separate refactor.
     *,
     query: Union[SlayerQuery, StrictQueryCarrier],
@@ -3037,6 +3395,18 @@ def compile_prebound(  # NOSONAR(S3776) — compiler entry-point dispatcher. The
         _producer_source_model = render_source_model.name
     else:
         _producer_source_model = None
+    # One population disposition (D1): the host's ROW-filter conjuncts disposed
+    # once at the host root, consumed by the host base and every producer rooted
+    # at it. Only the top-level consumer disposes; a sub-plan inherits via the
+    # groups already on its prebound.
+    population = (
+        dispose_population_filters(
+            prebound=prebound, filter_typings=filter_typings,
+            scope=scope, bundle=bundle,
+        )
+        if not disable_host_rooted_isolation and not enable_producer_regroups
+        else None
+    )
     # The desugar always runs; the LOCAL half is suppressed in a disabled sub-plan, cross-model roots always desugar.
     regroup_result = _plan_regroups(
         prebound=prebound, filter_typings=filter_typings,
@@ -3045,6 +3415,7 @@ def compile_prebound(  # NOSONAR(S3776) — compiler entry-point dispatcher. The
         producer_source_model=_producer_source_model,
         in_producer=enable_producer_regroups,
         producer_registry=producer_registry,
+        population=population,
         local_discovery=(
             not disable_host_rooted_isolation or enable_producer_regroups
         ),
@@ -3062,9 +3433,41 @@ def compile_prebound(  # NOSONAR(S3776) — compiler entry-point dispatcher. The
     # At the top consumer level every cross-model / partitioned leaf must now be a placeholder; sub-plans are exempt.
     if not disable_host_rooted_isolation and not enable_producer_regroups:
         _assert_total_routing(prebound)
-        _assert_population_filters_no_fanout(
-            prebound=prebound, scope=scope, bundle=bundle,
+    # Host base consumer of the population disposition (D4): the conjuncts its own
+    # grain does not bind restrict by semi-join (dropped from the masks, added to
+    # the plan's groups); every other conjunct stays a mask. Fail closed on an
+    # out-of-scope residue with a plain aggregate inline over the population (D4);
+    # a spine-covered fanning mask never coexists with such an aggregate (D5).
+    host_semi_joins: List[SemiJoinFilter] = []
+    if population is not None:
+        host_grain_paths = _grain_closure_paths(
+            [dm.bound.value_key for dm in prebound.grain_declared_measures],
+            host_model=population.host_model, bundle=bundle,
         )
+        drop_keys, host_semi_joins, residue = population.host_split(
+            grain_paths=host_grain_paths,
+        )
+        inline_agg = _has_inline_population_aggregate(prebound)
+        if residue and inline_agg:
+            check_population_filter_in_pushdown_scope(
+                filter_text=residue[0][0], reason=residue[0][1],
+            )
+        assert not (inline_agg and any(
+            c.disposition == "semi_join"
+            and _paths_materialised(c.fanning_paths, host_grain_paths)
+            for c in population.conjuncts
+        )), (
+            "a fanning population filter bound inline at the host base coexists "
+            "with a plain aggregate inline over the population (DEV-1841 routes "
+            "the aggregate to a producer)"
+        )
+        if drop_keys:
+            bound_filters, filter_typings, n_date_range = (
+                _drop_pushed_population_conjuncts(
+                    bound_filters=bound_filters, filter_typings=filter_typings,
+                    n_date_range=n_date_range, drop_keys=drop_keys,
+                )
+            )
     if env is not None:
         _assert_broadcast_coherence(
             env=env, measure_roots=_coh_measure_roots,
@@ -3181,6 +3584,7 @@ def compile_prebound(  # NOSONAR(S3776) — compiler entry-point dispatcher. The
                         stage_schemas=stage_schemas,
                         producer_registry=producer_registry,
                         producer_source_model=_producer_source_model,
+                        population=population,
                         row_attaches=[
                             a for a in regroup_attach_plans
                             if a.attach_phase == "row"
@@ -3299,6 +3703,15 @@ def compile_prebound(  # NOSONAR(S3776) — compiler entry-point dispatcher. The
             sid = projection.registry.find_by_key(sub.placeholder)
             if sid is not None:
                 regroup_combined_slot_ids.add(sid)
+    # Semi-joins on this plan: the population's host groups (top level) plus any
+    # a target-rooted producer set on its prebound; each rooted at this plan's
+    # relation (D3).
+    plan_semi_joins = [*prebound.semi_join_filters, *host_semi_joins]
+    for group in plan_semi_joins:
+        assert group.root_relation in (None, source_relation), (
+            f"semi-join group rooted at {group.root_relation!r} attached to a "
+            f"plan on {source_relation!r} (D3 root mismatch)"
+        )
     empty_base_plan = _plan_empty_base_grain(
         projection=projection.public_projection,
         agg_slots=agg_slots,
@@ -3307,6 +3720,7 @@ def compile_prebound(  # NOSONAR(S3776) — compiler entry-point dispatcher. The
         order_entries=order_entries,
         masks=masks,
         mode_a_filters=mode_a_filters,
+        host_gated=bool(plan_semi_joins),
     )
 
     # Assign every slot its materialisation stage / needs-column / series fact
@@ -3343,6 +3757,7 @@ def compile_prebound(  # NOSONAR(S3776) — compiler entry-point dispatcher. The
         frame_bound_columns=frame_bound_columns,
         filter_reachability=filter_reachability,
         empty_base_plan=empty_base_plan,
+        semi_join_filters=plan_semi_joins,
     )
     return planned
 
@@ -3358,8 +3773,9 @@ def _plan_empty_base_grain(
     masks: List[MaskEntry],
     mode_a_filters: List[ModeAFilter],
     regroup_combined_slot_ids: Optional[set] = None,
+    host_gated: bool = False,
 ) -> "EmptyBaseGrainPlan | None":
-    """Decide the empty-base spine at plan time — the host base has nothing of its own exactly when every value asked for is an isolated aggregate."""
+    """Decide the empty-base spine at plan time — the host base has nothing of its own exactly when every value asked for is an isolated aggregate. ``host_gated`` = a population semi-join must still restrict the spine (D6)."""
     isolated = set(windowed_slot_ids)
     isolated |= (regroup_combined_slot_ids or set())
     if not projection or any(sid not in isolated for sid in projection):
@@ -3372,7 +3788,7 @@ def _plan_empty_base_grain(
     host_filter_ids = [
         m.slot_id for m in masks if m.typing == MaskTyping.FIELD
     ] + [mf.id for mf in mode_a_filters]
-    return EmptyBaseGrainPlan(host_filter_ids=host_filter_ids)
+    return EmptyBaseGrainPlan(host_filter_ids=host_filter_ids, host_gated=host_gated)
 
 
 def _frame_bound_columns(*, row_slots: list) -> List[ValueKey]:

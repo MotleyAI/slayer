@@ -852,29 +852,35 @@ def check_input_dependencies_analyzable(
     )
 
 
-def check_population_filter_no_fanout(
-    *, filter_text: str, hop: Optional[str], unanalyzable: bool = False,
+def check_population_filter_in_pushdown_scope(
+    *, filter_text: str, reason: str,
 ) -> None:
-    """Interim guard: a row-level filter conjunct reaching the
-    population root only across a fanning hop, with an aggregate inline over the
-    population rows, would multiply its rows. ``hop`` = the fanning hop when one
-    exists, else ``None``; ``unanalyzable`` = the conjunct's dependency closure
-    could not be analysed (fail closed) (DEV-1909 replaces this with association
-    semantics)."""
-    if unanalyzable:
-        raise ValueError(
-            f"Filter {filter_text!r} has a dependency no supported dialect can "
-            f"analyse for join dependencies; with an aggregate computed inline "
-            f"over the population, an unanalyzable dependency is unsafe. Fix the "
-            f"referenced column's SQL, or remove the filter."
-        )
-    if hop is None:
-        return
+    """A population conjunct outside semi-join pushdown scope (a root-local and a
+    cross-path reference mixed under OR/NOT, or several join branches) cannot
+    restrict by association; with a plain aggregate inline over the population it
+    would fan through the join, so fail closed (DEV-1909 decision 4)."""
     raise ValueError(
-        f"Filter {filter_text!r} reaches the population root only across a "
-        f"fanning join hop to {hop!r}; with an aggregate computed inline over the "
-        f"population, this would multiply its rows. Aggregate the filtered "
-        f"relation to the population grain, or select it only through a producer."
+        f"Filter {filter_text!r} is outside semi-join pushdown scope ({reason}); "
+        f"with a plain aggregate computed inline over the population, applying it "
+        f"through the join would multiply the population's rows. Split the "
+        f"filter's conjuncts onto one branch each, or restate it so its "
+        f"cross-path references share one branch."
+    )
+
+
+def check_filter_dependencies_analyzable(
+    *, filter_text: str, column: str,
+) -> None:
+    """A filter conjunct whose dependency closure cannot be analysed is unsafe,
+    never 'crosses nothing' — host and producers alike, in every mode, whether or
+    not the query aggregates. Callers invoke this only once the closure has come
+    back ``None``, so it always raises; ``column`` names the offending derived
+    column (DEV-1909 decision 4)."""
+    raise ValueError(
+        f"Filter {filter_text!r} depends on derived column {column!r}, whose "
+        f"definition no supported dialect can analyse for join dependencies; an "
+        f"unanalyzable dependency is unsafe. Fix the column's SQL, or remove the "
+        f"filter."
     )
 
 

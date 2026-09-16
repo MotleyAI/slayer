@@ -36,6 +36,7 @@ from slayer.core.keys import (
     TimeTruncKey,
     TransformKey,
     ValueKey,
+    walk_value_keys,
 )
 from slayer.core.errors import SlayerError
 from slayer.core.models import AggregationParam, SlayerModel
@@ -689,6 +690,23 @@ def first_unanalyzable_input_column(
             getattr(key.source, "leaf", None)
             or getattr(key.source, "column_name", None)
         )
+    return None
+
+
+def first_unanalyzable_filter_column(
+    *, key: ValueKey, anchor_model: SlayerModel, anchor_relation: str,
+    bundle: ResolvedSourceBundle,
+) -> Optional[str]:
+    """The name of the first derived column a filter conjunct names whose
+    definition no dialect can analyse (diagnostic for
+    ``check_filter_dependencies_analyzable``); ``None`` if none can be named."""
+    for ref in walk_value_keys(key):
+        name = _unanalyzable_derived_name(
+            ref=ref, anchor_model=anchor_model, anchor_relation=anchor_relation,
+            bundle=bundle,
+        )
+        if name is not None:
+            return name
     return None
 
 

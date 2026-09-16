@@ -45,30 +45,30 @@ the files below fail (the intended reds), everything else stays green.
 
 ## 2. IR
 
-- [ ] 2.1 `slayer/ir/prebound.py`: `PreboundQuery.semi_join_filters`; `slayer/ir/planned.py`: `SemiJoinFilter.root_relation`, `EmptyBaseGrainPlan.host_gated`; move `SemiJoinHop` / `SemiJoinFilter` to a shared ir module if the import would cycle. Verify: `tools/arch_check.py` green; `basedpyright` baseline not grown.
+- [x] 2.1 `slayer/ir/prebound.py`: `PreboundQuery.semi_join_filters`; `slayer/ir/planned.py`: `SemiJoinFilter.root_relation`, `EmptyBaseGrainPlan.host_gated` (+ `RegroupAttachPlan.semi_join_measure` for the producer push's public name); `SemiJoinHop`/`SemiJoinFilter` already share `ir.planned`, no cycle. Verify: `arch_check` + `basedpyright` clean (baseline unchanged).
 
 ## 3. Checker
 
-- [ ] 3.1 `slayer/engine/elaborate_env.py`: `check_population_filter_in_pushdown_scope(filter_text, reason)` and `check_filter_dependencies_analyzable(filter_text, column)`; delete `check_population_filter_no_fanout`. Verify: 1.5 green.
+- [x] 3.1 `slayer/engine/elaborate_env.py`: `check_population_filter_in_pushdown_scope(filter_text, reason)` and `check_filter_dependencies_analyzable(filter_text, column)` added, `check_population_filter_no_fanout` deleted; `first_unanalyzable_filter_column` added to `reference_closure.py`. Verify: 1.5 raise-parity green.
 
 ## 4. Population disposition
 
-- [ ] 4.1 `slayer/engine/compile/stages.py`: `PopulationFilters` + `dispose_population_filters` (decision 1), views by grain paths (decision 2); `_conjunct_disposition` raises the analyzability error on a `None` closure. Verify: 1.2 structural / derived / two-branch cases green.
-- [ ] 4.2 Host base consumer in `compile_prebound`: masks, texts, typings, `n_date_range` rebuilt from the host view; groups copied to the plan with the root assertion (decision 3); the out-of-scope residue check (decision 4); the backstop assertion (decision 5); `_assert_population_filters_no_fanout` deleted. Verify: 1.2 same-branch, raw-row, residue and unanalyzable cases green.
-- [ ] 4.3 Producer consumers: `_regroup_producer_prebound` takes the population view (replacing `inherited` / `n_date_range`) and sets `semi_join_filters` on the producer prebound; local regroups, `_synthesize_wrap_attach`, `_synthesize_association_producer` (its own disposition loop deleted) and the broadcast-local synthesis consume it; excluded conjuncts land on `dropped_filter_warnings`; `_regroup_inherited_filters` deleted; the two post-hoc `model_copy` sites go. Verify: 1.2 partitioned, windowed, first/last, association, nested cases green; DEV-1840 / DEV-1841 / DEV-1853 suites green.
-- [ ] 4.4 Empty-base gating in `_plan_empty_base_grain` (decision 6). Verify: 1.2 producer-only 82 / zero-rows case green.
+- [x] 4.1 `slayer/engine/compile/stages.py`: `PopulationFilters` + `dispose_population_filters` (decision 1), `producer_view` / `host_split` by grain paths (decision 2); `_conjunct_disposition` raises the analyzability error on a `None` closure. Verify: 1.2 structural / derived / two-branch green.
+- [x] 4.2 Host base consumer in `compile_prebound`: `host_split` drops the pushed conjuncts from the masks (`_drop_pushed_population_conjuncts`, combined filters preserved), copies groups to the plan with the root assertion (decision 3), residue check (decision 4), backstop assertion (decision 5); `_assert_population_filters_no_fanout` deleted. Verify: 1.2 same-branch, raw-row, residue, unanalyzable green.
+- [x] 4.3 Producer consumers via `_producer_filter_view`: local regroups, `_synthesize_wrap_attach`, the reaggregation carrier + outer, the broadcast-local (host-rooted) cross-model synthesis and the population-rooted association consume it, setting `semi_join_filters` on the producer prebound; excluded conjuncts land on `dropped_filter_warnings`; the two post-hoc `model_copy` sites removed. **Deviation:** `_regroup_inherited_filters` is KEPT as the sub-plan fallback (population is disposed only at the top level; a nested producer inherits its prebound's inline masks verbatim + the parent's groups by construction — re-disposing a sub-plan would wrongly re-push a materialised conjunct). A cross-model-metric association (root ≠ host) keeps its DEV-1841 metric-root disposition, not the host view. Verify: 1.2 partitioned/windowed/first-last/association/nested green; DEV-1840/1841/1853 green.
+- [x] 4.4 Empty-base gating in `_plan_empty_base_grain` + renderer (decision 6). Verify: 1.2 producer-only 82 / zero-rows green.
 
 ## 5. Renderer
 
-- [ ] 5.1 `slayer/sql/generator.py`: the placeholder branch of `_render_with_combined_attaches` applies `_semi_join_exists_conditions` and uses the host FROM + `LIMIT 1` when masks or groups exist; confirm a pushed conjunct discovers no join on any base path. Verify: 1.3 goldens re-blessed with EXISTS and no `orders` join; `assert_scope_closed` green.
+- [x] 5.1 `slayer/sql/generator.py`: the empty-base placeholder branch of `_render_with_combined_attaches` builds the host FROM + `LIMIT 1` and applies `_semi_join_exists_conditions` when masks OR `host_gated`. Verify: 1.3 goldens re-blessed with EXISTS and no fanning join; `assert_scope_closed` green.
 
 ## 6. Reporting
 
-- [ ] 6.1 `slayer/core/warnings.py`: `measure: Optional[str] = None` + human message; `slayer/engine/query_engine.py`: top-level plan entries in `_collect_semi_join_pushed_warnings`. Verify: 1.2 warning assertions green; `test_dev1745_warning_contract.py` / `test_xdist_warning_serialization.py` green.
+- [x] 6.1 `slayer/core/warnings.py`: `measure: Optional[str] = None` + branched human message; `slayer/engine/query_engine.py`: top-level plan `semi_join_filters` emit `(location, None, text)` entries. Verify: 1.2 warning assertions green.
 
 ## 7. Docs, architecture, gates
 
-- [ ] 7.1 `docs/concepts/queries.md`: one sentence replacing the guard sentence (Filters and Auto-Joins); the `warnings` table cell notes `measure` is `null` for a population push. Verify: `zensical.toml` nav unchanged.
-- [ ] 7.2 `architecture/semantics.arc42.md` axiom 14 tag — show the verbatim diff, apply on OK. Verify: `tools/arch_check.py` green.
-- [ ] 7.3 Full non-integration suite, ruff, conventions gate, basedpyright baseline not grown, `arch_check`, LikeC4 validate; every shifting test outside 1.4 / 1.6 stops for a ruling. Verify: all green.
-- [ ] 7.4 Codex pass on the working tree before the push (standing rule). Verify: findings resolved or recorded.
+- [x] 7.1 `docs/concepts/queries.md`: guard sentence replaced (Filters and Auto-Joins); `warnings` table cell notes `measure` is `null` for a population push. Nav unchanged.
+- [x] 7.2 `architecture/semantics.arc42.md` axiom 14 gains `[enforced: test:tests/test_dev1909_population_pushdown.py]` (approved 2026-09-16). `arch_check` green.
+- [x] 7.3 Full non-integration suite green (18354 passed), ruff clean, conventions gate green, basedpyright baseline unchanged, `arch_check` + LikeC4 green. Shifting test outside 1.4/1.6: the DEV-1840 `exists/*` goldens (host base flips an unproven-hop conjunct to EXISTS) — ruled + re-blessed by Egor 2026-09-16.
+- [x] 7.4 Codex pass on the working tree (standing rule). Three findings resolved: per-conjunct (not per-group) materialisation with per-conjunct hop subtrees so a materialised sibling's hop never inner-joins the EXISTS (+`TestPerConjunctMaterialisation` unit tests); the host-rooted cross-model branch threads `view.n_date_range`; the sub-plan fallback confirmed sound (nested producers have subset grains). Re-review clean, no new issues.
