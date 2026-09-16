@@ -320,6 +320,50 @@ POP_FILTER_STRUCTURAL_FAN_DEFECT = 520.0
 POP_FILTER_DERIVED_ASSOC = 120.0
 POP_FILTER_DERIVED_FAN_DEFECT = 220.0
 
+# Host-population pushdown oracles — the filter restricts the customers
+# population by association (each customer once), and every producer rooted at it
+# inherits the same disposition. Filter is ``orders.status = 'ok'`` unless noted;
+# ok-order customers = c1,c2,c3,c5,c6 (c4 has only 'new', c7 has no orders).
+#: sum(spend, partition_by=tier): gold c1+c3+c6=190, silver c2+c5=230 (the fan
+#: defect double-counts c1's two 'ok' orders → gold 290).
+POP_FILTER_PARTITIONED_BY_TIER = {"gold": 190.0, "silver": 230.0}
+POP_FILTER_PARTITIONED_GOLD_FAN_DEFECT = 290.0
+#: sum(spend, window='1y') by signup month, April cumulative bucket = the five
+#: ok-order customers (defect 520 from c1's doubled 'ok' orders).
+POP_FILTER_WINDOWED_APRIL = 420.0
+POP_FILTER_WINDOWED_APRIL_FAN_DEFECT = 520.0
+#: *:count of the distinct ok-order customers per tier.
+POP_FILTER_COUNT_BY_TIER = {"gold": 3, "silver": 2}
+#: raw rows (distinct_dimension_values=False): one row per ok-order customer
+#: (defect 6 from c1's second 'ok' order).
+POP_FILTER_RAW_ROWS = 5
+POP_FILTER_RAW_ROWS_FAN_DEFECT = 6
+#: spend with two independent branches — an 'ok' order AND a region_event of
+#: value>=50 (only region North qualifies): North customers c1+c2+c6 = 280.
+POP_FILTER_TWO_BRANCH_SPEND = 280.0
+#: associate, dims=orders.status, filter amount in (20,30): the amount-20 order
+#: is c1's 'new', the amount-30 order is c2's 'ok' — each binds to its own cell
+#: (the fan defect associates both customers with both cells → 250/250).
+POP_FILTER_ASSOC_SAME_BRANCH = {"new": 100.0, "ok": 150.0}
+POP_FILTER_ASSOC_SAME_BRANCH_FAN_DEFECT = 250.0
+#: avg(sum(spend, partition_by=tier)) by tier — the outer avg over a single
+#: per-tier value is that value, so the cells equal the partitioned totals; their
+#: mean over tiers is 210 (the fanned gold 290 gives the defect mean 260).
+POP_FILTER_NESTED_BY_TIER = {"gold": 190.0, "silver": 230.0}
+POP_FILTER_NESTED_TIER_MEAN = 210.0
+#: associate, dims=orders.status, filter amount=20: only c1's 'new' order
+#: qualifies, so one cell binds to that same row.
+POP_FILTER_SAME_ROW_ONE_CELL = {"new": 100.0}
+#: one filter string with an inline conjunct (tier='gold', local) and a pushed
+#: conjunct (orders.status='ok', fanning): gold customers with an 'ok' order.
+POP_FILTER_MIXED_CONJUNCT_SPEND = 190.0
+#: out-of-scope OR (tier='bronze' OR orders.status='ok') on dims-only rows — the
+#: conjunct stays applied through the join: bronze c4 plus the ok-order tiers.
+POP_FILTER_OUT_OF_SCOPE_TIERS = {"bronze", "gold", "silver"}
+#: producer-only orders.amount:sum over all 'ok' orders — the target-rooted
+#: producer applies the filter locally, including the customer-less orphan o8.
+POP_FILTER_PRODUCER_ONLY_AMOUNT = 82.0
+
 __all__ = [
     "Aggregation", "AggregationParam", "Column", "ColumnRef", "DataType",
     "ModelJoin", "ModelMeasure", "SlayerModel", "SlayerQuery", "JoinCardinality",
@@ -335,4 +379,12 @@ __all__ = [
     "TO_ONE_FILTER_AMOUNT", "HOME_WIDEN_VALUE", "POP_FILTER_STRUCTURAL_ASSOC",
     "POP_FILTER_STRUCTURAL_FAN_DEFECT", "POP_FILTER_DERIVED_ASSOC",
     "POP_FILTER_DERIVED_FAN_DEFECT",
+    "POP_FILTER_PARTITIONED_BY_TIER", "POP_FILTER_PARTITIONED_GOLD_FAN_DEFECT",
+    "POP_FILTER_WINDOWED_APRIL", "POP_FILTER_WINDOWED_APRIL_FAN_DEFECT",
+    "POP_FILTER_COUNT_BY_TIER", "POP_FILTER_RAW_ROWS",
+    "POP_FILTER_RAW_ROWS_FAN_DEFECT", "POP_FILTER_TWO_BRANCH_SPEND",
+    "POP_FILTER_ASSOC_SAME_BRANCH", "POP_FILTER_ASSOC_SAME_BRANCH_FAN_DEFECT",
+    "POP_FILTER_NESTED_BY_TIER", "POP_FILTER_NESTED_TIER_MEAN",
+    "POP_FILTER_SAME_ROW_ONE_CELL", "POP_FILTER_MIXED_CONJUNCT_SPEND",
+    "POP_FILTER_OUT_OF_SCOPE_TIERS", "POP_FILTER_PRODUCER_ONLY_AMOUNT",
 ]

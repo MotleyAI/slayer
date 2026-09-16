@@ -93,16 +93,16 @@ NOMATCH_AMOUNTS = (1.0, 2.0)
 NULL_STATUS_FIRST = 51.0
 NULL_STATUS_LAST = 52.0
 
-#: ``fan``: order 15 carries four tags, TWO of them ``rush``. The duplicate is
-#: what makes 1:N multiply-per-match observable — filtering to ``rush`` matches
-#: order 15 twice, so a sibling ``amount:sum`` doubles its contribution while
-#: the ranked pick, which only cares which row is newest, does not move.
+#: ``fan``: order 15 carries four tags, TWO of them ``rush``. A fanning filter
+#: to ``rush`` restricts by semi-join, so order 15 is matched once — the sibling
+#: ``amount:sum`` counts it once and the ranked pick, which only cares which row
+#: is newest, does not move either.
 FAN_FIRST = 71.0
 FAN_LAST = 73.0
 FAN_RUSH_DUPLICATES = 2
-#: ``sum`` over the ``fan`` group when filtered to ``rush``: order 15 counted
-#: twice plus order 16 once.
-FAN_RUSH_MULTIPLIED_SUM = FAN_FIRST * FAN_RUSH_DUPLICATES + FAN_LAST
+#: ``sum`` over the ``fan`` group filtered to ``rush``: each matched order once
+#: (order 15 + order 16), never order 15 twice.
+FAN_RUSH_SUM = FAN_FIRST + FAN_LAST
 
 #: The ``big_amount`` / ``gold_amount`` filter threshold.
 BIG_AMOUNT_THRESHOLD = 20.0

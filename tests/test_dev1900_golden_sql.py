@@ -18,7 +18,15 @@ from slayer.core.query import SlayerQuery
 
 GOLDEN_PATH = Path(__file__).parent / "golden" / "dev1900_sql_baseline.json"
 DIALECTS = ["postgres", "sqlite", "duckdb", "mysql", "tsql", "bigquery", "snowflake"]
-ALLOWED_DELTAS: dict[str, str] = {}
+# The derived fanning population filter (bad_pop) now restricts the base by a
+# correlated semi-join instead of failing closed; its recorded raise flips to
+# real SQL. Owned by tests/test_dev1909_population_pushdown.py going forward.
+ALLOWED_DELTAS: dict[str, str] = {
+    f"fanning/pop_filter_derived::{d}": (
+        "population filter restricts by semi-join; raise flips to real SQL"
+    )
+    for d in DIALECTS
+}
 
 _MODEL_SETS = {"dev1900": dev1900_models}
 _REAGG_GOOD = ("weighted_avg(sum(amount, partition_by=customers.regions.id), "
@@ -69,7 +77,12 @@ def _cases() -> dict:
     }
 
 
-FAIL_CLOSED = {k for k in _cases() if k.startswith("fanning/")}
+# pop_filter_derived is no longer fail-closed — the population restricts by
+# semi-join, so it emits real SQL like the positive shapes.
+FAIL_CLOSED = {
+    k for k in _cases()
+    if k.startswith("fanning/") and k != "fanning/pop_filter_derived"
+}
 
 
 async def _generate_one(case, dialect: str):
