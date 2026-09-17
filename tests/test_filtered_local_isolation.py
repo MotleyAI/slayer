@@ -12,7 +12,7 @@ import importlib
 
 import pytest
 
-from slayer.core.enums import DataType, TimeGranularity
+from slayer.core.enums import DataType, JoinType, TimeGranularity
 from slayer.core.models import (
     Aggregation,
     AggregationParam,
@@ -377,22 +377,24 @@ class TestHostModelFiltersInteractions:
 
     def test_host_model_filter_referencing_aggregate_measure_raises(self):
         """``model.filters`` referencing an aggregate measure must raise at construction (``ValidationError`` is a ``ValueError``), not emit bad SQL."""
+        columns = [
+            Column(name="id", type=DataType.INT, primary_key=True),
+            Column(name="amount", type=DataType.DOUBLE),
+            Column(
+                name="loss_payment_amt", sql="amount",
+                filter="loss_payment.has_flag = 1", type=DataType.DOUBLE,
+            ),
+        ]
+        joins = [ModelJoin(
+            target_model="loss_payment",
+            join_pairs=[["id", "claim_amount_id"]],
+            join_type=JoinType.INNER,
+        )]
         with pytest.raises(ValueError, match=r"(?i)aggregation colon syntax|measure"):
             SlayerModel(
                 name="claim_amount", data_source="test", sql_table="Claim_Amount",
-                columns=[
-                    Column(name="id", type=DataType.INT, primary_key=True),
-                    Column(name="amount", type=DataType.DOUBLE),
-                    Column(
-                        name="loss_payment_amt", sql="amount",
-                        filter="loss_payment.has_flag = 1", type=DataType.DOUBLE,
-                    ),
-                ],
-                joins=[ModelJoin(
-                    target_model="loss_payment",
-                    join_pairs=[["id", "claim_amount_id"]],
-                    join_type="inner",
-                )],
+                columns=columns,
+                joins=joins,
                 # Illegal: model.filters cannot reference an aggregate measure.
                 filters=["loss_payment_amt:sum > 0"],
             )

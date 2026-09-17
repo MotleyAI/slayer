@@ -220,6 +220,12 @@ its `partition_by=` still gets the outer attach the grain join needs.
   the hand-computed row-weighted value, by executed values — never the former
   nested-transform rejection
 
+#### Scenario: Collapsing constituent mixed with a row leaf fails closed
+- **WHEN** a query over a month time dimension selects
+  `sum(amount * last(amount:sum(partition_by=[region, ordered_at])))`
+- **THEN** it fails with a typed error naming the collapsing transform and the
+  row-level column, never a broadcast or multiplied value
+
 #### Scenario: Joined-model row leaf inside a mixed source
 - **WHEN** a query rooted at `orders` over `[status]` selects
   `sum(customers.discount * avg(amount, partition_by=status))`

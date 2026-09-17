@@ -86,53 +86,78 @@ def _column_dependencies(
     :func:`slayer.sql.column_expansion.resolve_ref_target` — exact-name-first
     then a dotted chain of exact hops, never ``__``-splitting.
     """
+    return [
+        *_sql_dependencies(column=column, host=host, reachable=reachable),
+        *_filter_dependencies(column=column, host=host, reachable=reachable),
+    ]
+
+
+def _sql_dependencies(
+    *, column: Column, host: SlayerModel, reachable: dict[str, SlayerModel],
+) -> list[tuple[str, str]]:
+    """Edges from a derived ``Column.sql`` to every expanding column it names."""
+    if column.sql is None or is_trivial_base(column=column):
+        return []
     deps: list[tuple[str, str]] = []
-    if column.sql is not None and not is_trivial_base(column=column):
-        for quals, leaf in _fragment_refs(column.sql) or []:
-            target = resolve_ref_target(
-                qualifiers=quals, source_model=host, models_by_name=reachable,
-            )
-            if target is None:
-                continue
-            col = target.get_column(leaf)
-            if col is not None and col.needs_expansion:
-                deps.append((target.name, col.name))
-    if column.filter:
-        for quals, leaf in _fragment_refs(column.filter) or []:
-            first = _first_hop(quals, host)
-            if first is not None and not _is_join_hop(host, first, reachable):
-                # The leading hop names no join edge on the host — a broken path,
-                # not a merely-unloaded one. Fail the save, naming the path.
-                raise ValueError(
-                    f"Column {column.name!r} on model {host.name!r} has a filter "
-                    f"referencing {'.'.join((*quals, leaf))!r}, which does not "
-                    f"resolve to a joined model from {host.name!r}."
-                )
-            target = (
-                host if first is None
-                else resolve_ref_target(
-                    qualifiers=quals, source_model=host, models_by_name=reachable,
-                )
-            )
-            if target is None:
-                continue  # a real join hop whose target is not loaded here — skip
-            col = target.get_column(leaf)
-            if col is None or not col.needs_expansion:
-                continue
-            # A filter naming its OWN column reads the physical column (not the
-            # recursive masked value) when that column is a bare physical one
-            # (trivial base) — so `val` filtered by `val > 0` is fine; only a
-            # DERIVED self-reference (`loop = amount` filtered by `loop > 0`) is a cycle.
-            if (
-                target.name == host.name and leaf == column.name
-                and is_trivial_base(column=column)
-            ):
-                continue
+    for quals, leaf in _fragment_refs(column.sql) or []:
+        target = resolve_ref_target(
+            qualifiers=quals, source_model=host, models_by_name=reachable,
+        )
+        if target is None:
+            continue
+        col = target.get_column(leaf)
+        if col is not None and col.needs_expansion:
             deps.append((target.name, col.name))
     return deps
 
 
-def _first_hop(quals, host: SlayerModel):
+def _filter_dependencies(
+    *, column: Column, host: SlayerModel, reachable: dict[str, SlayerModel],
+) -> list[tuple[str, str]]:
+    """Edges from a ``Column.filter`` to every expanding column it names; a
+    trivial-base self-reference reads the physical column, not a cycle."""
+    if not column.filter:
+        return []
+    deps: list[tuple[str, str]] = []
+    for quals, leaf in _fragment_refs(column.filter) or []:
+        target = _filter_ref_target(
+            column=column, host=host, quals=quals, leaf=leaf, reachable=reachable,
+        )
+        if target is None:
+            continue  # a real join hop whose target is not loaded here — skip
+        col = target.get_column(leaf)
+        if col is None or not col.needs_expansion:
+            continue
+        if (
+            target.name == host.name and leaf == column.name
+            and is_trivial_base(column=column)
+        ):
+            continue
+        deps.append((target.name, col.name))
+    return deps
+
+
+def _filter_ref_target(
+    *, column: Column, host: SlayerModel, quals, leaf: str,
+    reachable: dict[str, SlayerModel],
+) -> SlayerModel | None:
+    """The model a filter reference resolves to; a leading hop naming no join
+    edge on ``host`` is a broken path and fails the save, naming the path."""
+    first = _first_hop(quals=quals, host=host)
+    if first is None:
+        return host
+    if not _is_join_hop(host=host, token=first, reachable=reachable):
+        raise ValueError(
+            f"Column {column.name!r} on model {host.name!r} has a filter "
+            f"referencing {'.'.join((*quals, leaf))!r}, which does not "
+            f"resolve to a joined model from {host.name!r}."
+        )
+    return resolve_ref_target(
+        qualifiers=quals, source_model=host, models_by_name=reachable,
+    )
+
+
+def _first_hop(*, quals, host: SlayerModel):
     """The leading join-hop token of a reference (host's own name stripped), or
     ``None`` when the reference is host-local (a bare column)."""
     q = list(quals)
@@ -141,7 +166,7 @@ def _first_hop(quals, host: SlayerModel):
     return q[0] if q else None
 
 
-def _is_join_hop(host: SlayerModel, token: str, reachable: dict[str, SlayerModel]) -> bool:
+def _is_join_hop(*, host: SlayerModel, token: str, reachable: dict[str, SlayerModel]) -> bool:
     """Whether ``token`` names a join edge incident to ``host`` (its own declared
     joins, resolvable without loading the target); ambiguous counts as a hop."""
     try:

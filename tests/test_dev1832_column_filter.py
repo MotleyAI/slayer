@@ -12,13 +12,21 @@ ranked masked-pick are unchanged (regression guards).
 from __future__ import annotations
 
 import os
+import re
 import sqlite3
 import tempfile
 
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
+from slayer.core.models import (
+    Aggregation,
+    AggregationParam,
+    Column,
+    DatasourceConfig,
+    ModelMeasure,
+    SlayerModel,
+)
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
@@ -112,7 +120,8 @@ class TestSingleColumnUnchanged:
     async def test_single_column_aggregate_sql_unchanged(self) -> None:
         sql = _norm(await gen(sales_q(measures=[_measure("q_amount:sum")])))
         assert "SUM(CASE WHEN" in sql.upper().replace("SUM (", "SUM("), sql
-        assert "'Q'" in sql and "amount" in sql
+        assert "'Q'" in sql
+        assert "amount" in sql
 
     async def test_single_column_value(self, exec_backend) -> None:
         resp = await exec_backend.execute(sales_q(measures=[_measure("q_amount:sum")]))
@@ -123,7 +132,8 @@ class TestSingleColumnUnchanged:
         sql = await gen(
             SlayerQuery(source_model="tsales", measures=[_measure("q_amount:last")]),
             models=[_tsales_model()])
-        assert "CASE WHEN" in sql.upper() and "'Q'" in sql, sql
+        assert "CASE WHEN" in sql.upper(), sql
+        assert "'Q'" in sql, sql
 
     async def test_ranked_over_filtered_picks_masked_value_exec(self) -> None:
         # Latest row (Jun) is non-Q, so the masked pick is NULL — never the raw 999.
@@ -135,6 +145,36 @@ class TestSingleColumnUnchanged:
         resp = await engine.execute(
             SlayerQuery(source_model="tsales", measures=[_measure("q_amount:last")]))
         assert resp.data[0]["tsales.m"] is None
+
+    @pytest.mark.parametrize("position", ["measure", "dimension", "filter", "last"])
+    async def test_filtered_physical_column_masked_once(self, position: str) -> None:
+        # A filtered column with no sql (or sql == name) wraps exactly one CASE WHEN.
+        model = _tsales_model()
+        model.columns.append(
+            Column(name="amt", type=DataType.DOUBLE, filter="product = 'Q'"))
+        query = {
+            "measure": SlayerQuery(source_model="tsales", measures=[_measure("amt:sum")]),
+            "dimension": SlayerQuery(
+                source_model="tsales", dimensions=[ColumnRef(name="amt")],
+                measures=[_measure("id:count")]),
+            "filter": SlayerQuery(
+                source_model="tsales", measures=[_measure("id:count")], filters=["amt > 0"]),
+            "last": SlayerQuery(source_model="tsales", measures=[_measure("amt:last")]),
+        }[position]
+        sql = await gen(query, models=[model])
+        expected = 2 if position == "dimension" else 1  # projection + GROUP BY
+        masks = re.findall(r"CASE\s+WHEN\s+tsales\.product = 'Q'", sql, flags=re.I)
+        assert len(masks) == expected, sql
+
+    async def test_ranked_over_filtered_picks_masked_value_exec_positive(self) -> None:
+        # Latest row (Jun) IS a Q row, so the masked pick is its value — 70, never 999.
+        engine = await _tsales_engine([
+            (1, "P", 999.0, "2024-01-01"),
+            (2, "Q", 70.0, "2024-06-01"),
+        ])
+        resp = await engine.execute(
+            SlayerQuery(source_model="tsales", measures=[_measure("q_amount:last")]))
+        assert float(resp.data[0]["tsales.m"]) == pytest.approx(70.0)
 
 
 # --------------------------------------------------------------------------- #
@@ -190,7 +230,8 @@ class TestFilteredColumnPositions:
         assert [v for v in ordered if v is not None] == [10.0, 60.0, 80.0, 100.0]
         assert None in ordered
         sql = await gen(query)
-        assert "CASE WHEN" in sql.upper() and "'Q'" in sql, sql
+        assert "CASE WHEN" in sql.upper(), sql
+        assert "'Q'" in sql, sql
 
     async def test_partition_key_reads_masked_value(self, exec_backend) -> None:
         query = sales_q(
@@ -200,7 +241,8 @@ class TestFilteredColumnPositions:
         cells = {row["sales.q_amount"] for row in resp.data}
         assert cells == set(COUNT_BY_QAMOUNT)  # one cell per masked value, incl. NULL
         sql = await gen(query)
-        assert "CASE WHEN" in sql.upper() and "'Q'" in sql, sql
+        assert "CASE WHEN" in sql.upper(), sql
+        assert "'Q'" in sql, sql
 
 
 # --------------------------------------------------------------------------- #
@@ -233,9 +275,25 @@ class TestFilteredLeafOnJoinedModel:
     async def test_fanning_filter_leaf_fails_closed(self) -> None:
         # bad_pop_spend = spend filtered by regions.bad_pop > 0, crossing the
         # fanning regions→region_events hop.
-        with pytest.raises(ValueError, match="unproven join hop"):
-            await gen(orders_q(
-                measures=[_measure("sum(amount - customers.bad_pop_spend)")]))
+        query = orders_q(measures=[_measure("sum(amount - customers.bad_pop_spend)")])
+        with pytest.raises(ValueError, match="unproven or fanning join hop") as ei:
+            await gen(query)
+        assert "aggregate the target column directly" in str(ei.value)
+
+    async def test_fanning_filter_default_parameter_fails_closed(self) -> None:
+        # A filtered PHYSICAL column (no sql) whose filter crosses the fanning hop,
+        # used as a definition default: its crossings close like a derived one's.
+        models = dev1832_models()
+        cust = next(m for m in models if m.name == "customers")
+        cust.columns.append(
+            Column(name="bad_pop_w", type=DataType.DOUBLE, filter="regions.bad_pop > 0"))
+        cust.aggregations.append(Aggregation(
+            name="wsum_badw", formula="SUM({value} * {weight})",
+            params=[AggregationParam(name="weight", sql="bad_pop_w")]))
+        query = orders_q(measures=[_measure("wsum_badw(customers.spend)")])
+        with pytest.raises(ValueError, match="unproven join hop") as ei:
+            await gen(query, models=models)
+        assert "region_events" in str(ei.value)
 
 
 # --------------------------------------------------------------------------- #
@@ -247,7 +305,8 @@ class TestDerivedOverFiltered:
         model.columns.append(
             Column(name="q_double", type=DataType.DOUBLE, sql="q_amount * 2"))
         sql = await gen(sales_q(measures=[_measure("q_double:sum")]), models=[model])
-        assert "CASE WHEN" in sql.upper() and "'Q'" in sql, sql
+        assert "CASE WHEN" in sql.upper(), sql
+        assert "'Q'" in sql, sql
 
     async def test_derived_column_expands_wrapped_value_exec(self, exec_qdouble) -> None:
         # q_double = q_amount * 2, so sum over Q rows = 2 * QAMT_SUM; a wrong
@@ -269,7 +328,8 @@ class TestVariableSubstitution:
             sales_q(measures=[_measure("vcol:sum")], variables={"mult": 2, "prod": "Q"}),
             models=[model])
         assert "{" not in sql, sql
-        assert "'Q'" in sql and "2" in sql, sql
+        assert "'Q'" in sql, sql
+        assert "2" in sql, sql
 
 
 # --------------------------------------------------------------------------- #
@@ -304,15 +364,16 @@ class TestCycleAndPathValidation:
             ]))
 
     async def test_filter_naming_own_column_is_a_cycle(self) -> None:
+        model = SlayerModel(
+            name="floop", sql_table="sales", data_source="test",
+            columns=[
+                Column(name="id", type=DataType.INT, primary_key=True),
+                Column(name="amount", type=DataType.DOUBLE),
+                Column(name="loop", type=DataType.DOUBLE, sql="amount",
+                       filter="loop > 0"),
+            ])
         with pytest.raises(ValueError, match="(?i)circular|cycle"):
-            await _save_validated(SlayerModel(
-                name="floop", sql_table="sales", data_source="test",
-                columns=[
-                    Column(name="id", type=DataType.INT, primary_key=True),
-                    Column(name="amount", type=DataType.DOUBLE),
-                    Column(name="loop", type=DataType.DOUBLE, sql="amount",
-                           filter="loop > 0"),
-                ]))
+            await _save_validated(model)
 
     async def test_filter_naming_own_physical_column_is_not_a_cycle(self) -> None:
         # A filter naming its own column reads the PHYSICAL column when that column
@@ -328,26 +389,28 @@ class TestCycleAndPathValidation:
 
     async def test_mutual_filter_reference_is_a_cycle(self) -> None:
         # der_a's filter names der_b and vice versa → a 2-node cycle.
+        model = SlayerModel(
+            name="fmutual", sql_table="sales", data_source="test",
+            columns=[
+                Column(name="id", type=DataType.INT, primary_key=True),
+                Column(name="amount", type=DataType.DOUBLE),
+                Column(name="der_a", type=DataType.DOUBLE, sql="amount",
+                       filter="der_b > 0"),
+                Column(name="der_b", type=DataType.DOUBLE, sql="amount",
+                       filter="der_a > 0"),
+            ])
         with pytest.raises(ValueError, match="(?i)circular|cycle"):
-            await _save_validated(SlayerModel(
-                name="fmutual", sql_table="sales", data_source="test",
-                columns=[
-                    Column(name="id", type=DataType.INT, primary_key=True),
-                    Column(name="amount", type=DataType.DOUBLE),
-                    Column(name="der_a", type=DataType.DOUBLE, sql="amount",
-                           filter="der_b > 0"),
-                    Column(name="der_b", type=DataType.DOUBLE, sql="amount",
-                           filter="der_a > 0"),
-                ]))
+            await _save_validated(model)
 
     async def test_broken_filter_path_fails_at_save(self) -> None:
+        model = SlayerModel(
+            name="fbad", sql_table="sales", data_source="test",
+            columns=[
+                Column(name="id", type=DataType.INT, primary_key=True),
+                Column(name="amount", type=DataType.DOUBLE),
+                Column(name="bad", type=DataType.DOUBLE, sql="amount",
+                       filter="ghost.col = 1"),
+            ])
         with pytest.raises(ValueError) as ei:
-            await _save_validated(SlayerModel(
-                name="fbad", sql_table="sales", data_source="test",
-                columns=[
-                    Column(name="id", type=DataType.INT, primary_key=True),
-                    Column(name="amount", type=DataType.DOUBLE),
-                    Column(name="bad", type=DataType.DOUBLE, sql="amount",
-                           filter="ghost.col = 1"),
-                ]))
+            await _save_validated(model)
         assert "ghost" in str(ei.value).lower()

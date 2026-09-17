@@ -252,8 +252,9 @@ class TestCrossModelExpressions:
 
     async def test_custom_aggregation_unknown_off_the_anchor(self):
         # wsum is defined on customers, not orders — the orders-anchored spelling is unknown.
+        query = orders_q(measures=[ModelMeasure(formula="wsum(amount - cost)", name="m")])
         with pytest.raises((ValueError,), match="(?i)unknown aggregation"):
-            await gen(orders_q(measures=[ModelMeasure(formula="wsum(amount - cost)", name="m")]))
+            await gen(query)
 
     async def test_target_homed_scope_closed_no_placeholder_leak(self):
         # The cross-model producer closes its scope and leaks no internal placeholder.
@@ -290,22 +291,28 @@ class TestCrossModelExpressions:
 # --------------------------------------------------------------------------- #
 class TestExpressionSourceTyping:
     async def test_fanning_leaf_fails_closed(self):
+        query = orders_q(measures=[
+            ModelMeasure(formula="sum(amount - customers.regions.bad_pop)", name="m")])
         with pytest.raises(ValueError, match="(?i)unproven join hop|fanning") as ei:
-            await gen(orders_q(measures=[
-                ModelMeasure(formula="sum(amount - customers.regions.bad_pop)", name="m")]))
+            await gen(query)
         assert not re.search(r"DEV-\d+", str(ei.value))
+        # A source-leaf crossing names the cross-model spelling as the remedy.
+        assert "region_events" in str(ei.value)
+        assert "aggregate the target column directly" in str(ei.value)
 
     async def test_unanalysable_leaf_fails_closed(self):
+        query = orders_q(measures=[
+            ModelMeasure(formula="sum(amount - customers.regions.unparseable)", name="m")])
+        models = dev1832_unparseable_models()
         with pytest.raises(ValueError, match="(?i)analy") as ei:
-            await gen(orders_q(measures=[
-                ModelMeasure(formula="sum(amount - customers.regions.unparseable)", name="m")]),
-                models=dev1832_unparseable_models())
+            await gen(query, models=models)
         assert "unparseable" in str(ei.value)
 
     async def test_first_over_expression_keeps_its_error(self):
+        query = orders_q(measures=[
+            ModelMeasure(formula="first(amount - customers.discount, ordered_at)", name="m")])
         with pytest.raises(ValueError, match="not supported over an expression") as ei:
-            await gen(orders_q(measures=[
-                ModelMeasure(formula="first(amount - customers.discount, ordered_at)", name="m")]))
+            await gen(query)
         assert "cross-model" not in str(ei.value).lower()
 
     async def test_fully_attached_source_accepted(self, exec_backend):
@@ -341,10 +348,12 @@ class TestExpressionSourceTyping:
         assert all(v is not None for t, v in vals.items() if t is not None)
 
     async def test_attached_parameter_rejected_under_broadcast(self):
+        query = orders_q(measures=[ModelMeasure(formula=self._ATTACHED_PARAM, name="m")])
         with pytest.raises(ValueError) as ei:
-            await gen(orders_q(measures=[ModelMeasure(formula=self._ATTACHED_PARAM, name="m")]))
+            await gen(query)
         msg = str(ei.value)
-        assert "customers" in msg and "amount" in msg
+        assert "customers" in msg
+        assert "amount" in msg
         assert "associate" in msg.lower()
         assert not re.search(r"DEV-\d+", msg)
 

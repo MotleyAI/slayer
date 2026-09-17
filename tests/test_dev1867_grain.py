@@ -57,8 +57,10 @@ class TestGrainConstruction:
             Grain.of([REGION, "not-a-key"])
 
     def test_frozen_mutation_fails(self) -> None:
+        grain = Grain.of([REGION])
+        empty = frozenset()
         with pytest.raises((ValidationError, TypeError)):
-            Grain.of([REGION]).keys = frozenset()  # type: ignore[misc]
+            grain.keys = empty  # type: ignore[misc]
 
     def test_empty_constant(self) -> None:
         assert Grain.of([]) == Grain.EMPTY

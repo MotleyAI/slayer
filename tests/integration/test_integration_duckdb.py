@@ -951,10 +951,9 @@ class TestDev1531CrossJoinFirstLast:
 
 
 # --------------------------------------------------------------------------- #
-# DEV-1709 (Stage 5) headline: SIBLING PROTECTION. A crossing-input aggregate
-# isolates into a host-rooted CTE, so its 1:N join can no longer multiply the
-# host rows seen by SIBLING measures. The crossing measure itself keeps
-# multiply-per-match semantics (F1 — unchanged, only the scope moved).
+# SIBLING PROTECTION: a host column defined across the unproven 1:N hop is
+# refused when aggregated; the crossing sum is spelled on line_items and
+# isolates into its own producer, so it never multiplies sibling measures.
 # --------------------------------------------------------------------------- #
 @pytest.fixture(scope="module")
 def _dev1709_duckdb_storage(tmp_path_factory):

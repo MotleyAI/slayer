@@ -92,6 +92,13 @@ def _extend_graph_a(models: List[SlayerModel]) -> None:
     cust.aggregations.append(Aggregation(
         name="wsum", formula="SUM({value} * {weight})",
         params=[AggregationParam(name="weight", sql="spend")]))
+    # Expression defaults: one naming a shallower (root-side) model, one local.
+    cust.aggregations.append(Aggregation(
+        name="wsum_expr", formula="SUM({value} * {weight})",
+        params=[AggregationParam(name="weight", sql="stores.rent * 2")]))
+    cust.aggregations.append(Aggregation(
+        name="wsum_local_expr", formula="SUM({value} * {weight})",
+        params=[AggregationParam(name="weight", sql="spend * 2")]))
 
 
 def dev1832_models() -> List[SlayerModel]:

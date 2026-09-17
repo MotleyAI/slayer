@@ -4802,8 +4802,9 @@ class TestMeasureFilterInjection:
             )
         )
         query = SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="evil:sum")])
+        generator = SQLGenerator(dialect="postgres")
         with pytest.raises((sqlglot.errors.ParseError, sqlglot.errors.TokenError, ValueError)):
-            await _generate(SQLGenerator(dialect="postgres"), query, orders_model)
+            await _generate(generator, query, orders_model)
 
     async def test_union_select_rejected(self, orders_model: SlayerModel) -> None:
         """UNION SELECT payload is rejected by sqlglot at generation time."""
@@ -4816,8 +4817,9 @@ class TestMeasureFilterInjection:
             )
         )
         query = SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="evil:sum")])
+        generator = SQLGenerator(dialect="postgres")
         with pytest.raises((sqlglot.errors.ParseError, sqlglot.errors.TokenError, ValueError)):
-            await _generate(SQLGenerator(dialect="postgres"), query, orders_model)
+            await _generate(generator, query, orders_model)
 
     def test_block_comment_passes_through_safely(self, orders_model: SlayerModel) -> None:
         """``/* ... */`` block comments survive ``Column`` construction — DEV-1369's SQL-mode validator does not parse them, only checks for DSL constructs (aggregation colon syntax, transform calls, ``OVER``)."""
@@ -5650,12 +5652,19 @@ Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
                 dimensions=[ColumnRef(name="status")],
             )
             sql = (await engine.execute(query, dry_run=True)).sql
+            assert sql is not None
             _assert_valid_sql(sql, dialect=generator.dialect)
             # Two distinct percentile parameterizations must not collapse via canonical-name dedup: both p values and both user aliases surface distinctly in the emitted SQL.
-            assert "0.5" in sql and "0.95" in sql, (
+            assert "0.5" in sql, (
                 f"Expected both percentile p values in SQL:\n{sql}"
             )
-            assert "p50" in sql and "p95" in sql, (
+            assert "0.95" in sql, (
+                f"Expected both percentile p values in SQL:\n{sql}"
+            )
+            assert "p50" in sql, (
+                f"Expected both user aliases (p50, p95) in SQL:\n{sql}"
+            )
+            assert "p95" in sql, (
                 f"Expected both user aliases (p50, p95) in SQL:\n{sql}"
             )
 
@@ -5764,7 +5773,10 @@ class TestDev1501HiddenFirstLastRender:
             terms = _outer_order_terms(sql)
             exprs = [t[0] for t in terms]
             dirs = [t[1] for t in terms]
-            assert len(terms) == 2 and exprs[0] != exprs[1], (
+            assert len(terms) == 2, (
+                f"Two ORDER BY expressions collapsed:\n{sql}"
+            )
+            assert exprs[0] != exprs[1], (
                 f"Two ORDER BY expressions collapsed:\n{sql}"
             )
             assert dirs == ["asc", "desc"], (
@@ -5799,7 +5811,10 @@ class TestDev1501HiddenFirstLastRender:
             assert "ORDER BY orders.created_at DESC)" in norm, sql
             terms = _outer_order_terms(sql)
             exprs = [t[0] for t in terms]
-            assert len(terms) == 2 and exprs[0] != exprs[1], (
+            assert len(terms) == 2, (
+                f"first/last ORDER BY expressions collapsed:\n{sql}"
+            )
+            assert exprs[0] != exprs[1], (
                 f"first/last ORDER BY expressions collapsed:\n{sql}"
             )
 
@@ -6649,7 +6664,11 @@ class TestDev1501BroadTriggerAndGuards:
                 for sel in tree.find_all(sqlglot.exp.Select)
                 if sel.args.get("group")
             ]
-            assert group_counts and all(c == 1 for c in group_counts), (
+            assert group_counts, (
+                f"GROUP BY contains extras (row leaves leaked). Counts: "
+                f"{group_counts}\nSQL:\n{sql}"
+            )
+            assert all(c == 1 for c in group_counts), (
                 f"GROUP BY contains extras (row leaves leaked). Counts: "
                 f"{group_counts}\nSQL:\n{sql}"
             )
@@ -7607,7 +7626,8 @@ class TestIsolatedFilteredMeasureCTEs:
         assert "total_amount" in base_body, (
             f"unfiltered total_amount should be in host _base CTE:\n{base_body}"
         )
-        assert "_cm_" in sql and "loss_payment_amt" in sql
+        assert "_cm_" in sql
+        assert "loss_payment_amt" in sql
 
     async def test_all_measures_isolated_produces_dimension_spine(
         self, generator: SQLGenerator, claim_amount_model, related_models,
@@ -7622,7 +7642,8 @@ class TestIsolatedFilteredMeasureCTEs:
 
         # Host _base CTE exists; the filtered measure goes to its own _cm_ CTE.
         assert "_base" in sql
-        assert "_cm_" in sql and "loss_payment_amt" in sql
+        assert "_cm_" in sql
+        assert "loss_payment_amt" in sql
         # Inspect the _base body: dim spine with GROUP BY, no filter-target join.
         base_match = _re.search(r"_base\s+AS\s*\(", sql)
         assert base_match, f"Expected _base CTE in:\n{sql}"
@@ -7668,7 +7689,10 @@ class TestIsolatedFilteredMeasureCTEs:
         assert "claim_number" in sql
         assert "12345" in sql
         # The claim join must land somewhere (legacy: in _base; new: in _cm_). Either is correct as long as the filter can resolve.
-        assert "Claim" in sql and "JOIN" in sql, (
+        assert "Claim" in sql, (
+            f"claim join missing entirely:\n{sql}"
+        )
+        assert "JOIN" in sql, (
             f"claim join missing entirely:\n{sql}"
         )
         _assert_valid_sql(sql)
@@ -7754,7 +7778,8 @@ class TestIsolatedFilteredMeasureCTEs:
         sql = await self._sql(claim_amount_model, related_models, query)
         assert "SELECT\nFROM" not in sql, f"Empty SELECT detected:\n{sql}"
         assert "SELECT FROM" not in sql, f"Empty SELECT detected:\n{sql}"
-        assert "_cm_" in sql and "loss_payment_amt" in sql
+        assert "_cm_" in sql
+        assert "loss_payment_amt" in sql
         # ``_base`` must NOT reference the host table — that turns the one-row placeholder into N rows.
         base_body = _extract_cte_body(sql, r"_base")
         assert "Claim_Amount" not in base_body, (
@@ -8190,7 +8215,10 @@ class TestIsolatedFilteredMeasureCTEs:
         )
         sql = await self._sql(claim_amount_model, related_models, query)
         assert "> 0" in sql, f"POST filter '> 0' missing:\n{sql}"
-        assert "SUM" in sql.upper() and "OVER" in sql.upper(), (
+        assert "SUM" in sql.upper(), (
+            f"Expected windowed SUM ... OVER (...) for cumsum:\n{sql}"
+        )
+        assert "OVER" in sql.upper(), (
             f"Expected windowed SUM ... OVER (...) for cumsum:\n{sql}"
         )
         # Layer-boundary pin: the POST predicate lives in the _filtered outer wrap, not base — routing it into base.WHERE would filter rows before the cumsum window and change the semantics.
@@ -8687,7 +8715,8 @@ class TestIsolatedFilteredMeasureCTEs:
             validate=False,
         )
         # Filtered measure isolated into its own _cm_ CTE; the subquery FROM for the host renders inside it.
-        assert "_cm_" in sql and "loss_payment_amt" in sql
+        assert "_cm_" in sql
+        assert "loss_payment_amt" in sql
         # Host's sql=... subquery renders inside the _cm_ CTE (sqlglot may pretty-print, so check whitespace-tolerantly); the mixed-case table Claim_Amount is quoted on emit (DEV-1645).
         sql_collapsed = _re.sub(r"\s+", " ", sql)
         assert 'SELECT * FROM "Claim_Amount"' in sql_collapsed, (
@@ -9966,7 +9995,13 @@ class TestFilterOuterParenWrapDev1539:
             f"Expected HAVING multi-term LHS to start with `(`; got:\n{having}"
         )
         # And the body contains a real top-level divide between two aggregate calls — not just the inner NULLIF.
-        assert "SUM(" in having.upper() and "/" in having and "NULLIF" in having.upper(), (
+        assert "SUM(" in having.upper(), (
+            f"Expected HAVING body to combine SUM/NULLIF via `/`; got:\n{having}"
+        )
+        assert "/" in having, (
+            f"Expected HAVING body to combine SUM/NULLIF via `/`; got:\n{having}"
+        )
+        assert "NULLIF" in having.upper(), (
             f"Expected HAVING body to combine SUM/NULLIF via `/`; got:\n{having}"
         )
 

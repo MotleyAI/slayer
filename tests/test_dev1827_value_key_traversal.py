@@ -396,8 +396,9 @@ class TestOpaqueDummyFailsClosed:
 class TestKindDispatchVisitorsRaise:
     def test_iter_slot_deps_raises_on_both(self) -> None:
         for dummy in (DummyKey(child=CITY), DummyOpaqueKey()):
+            deps = _iter_slot_deps(dummy)  # type: ignore[arg-type]
             with pytest.raises(TypeError):
-                list(_iter_slot_deps(dummy))
+                list(deps)
 
     def test_iter_slot_deps_still_skips_star_and_literal(self) -> None:
         assert list(_iter_slot_deps(StarKey())) == []

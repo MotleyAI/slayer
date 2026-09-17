@@ -46,7 +46,7 @@ from slayer.sql.column_expansion import (
     is_trivial_base,
     collect_root_scope_joined_paths,
     collect_root_scope_reference_columns,
-    expand_derived_refs_sync,
+    expand_column_definition_parts_sync,
     wrap_column_filter,
 )
 from slayer.ir.planned import MaskTyping, RankedGrainMember, StageKind, ValueSlot, regroup_producer_identity
@@ -2358,7 +2358,6 @@ class SQLGenerator:
                             f"desugar should have isolated it into a producer "
                             f"CTE."
                         )
-                _hg = bool(agg_path) and _is_host_grain(key)
                 synth = self._build_agg_render_spec_from_planned(
                     slot=slot,
                     key=key,
@@ -2368,7 +2367,6 @@ class SQLGenerator:
                     bundle=bundle,
                     resolved_agg_kwargs=resolved_agg_kwargs.get(key),
                     scope=host_scope,
-                    owner_path=tuple(agg_path) if _hg else (),
                 )
                 agg_expr, is_agg = self._build_agg(synth)
                 if is_agg:
@@ -2823,7 +2821,7 @@ class SQLGenerator:
         )
 
         where_parts = self._ranked_cte_where(
-            plan=plan, local_key=local_key, planned_query=planned_query,
+            plan=plan, planned_query=planned_query,
             bundle=bundle, root_model=root_model, root_relation=root_relation,
             scope=ranked_scope,
         )
@@ -2879,7 +2877,6 @@ class SQLGenerator:
         self,
         *,
         plan,
-        local_key,
         planned_query,
         bundle,
         root_model,
@@ -3112,7 +3109,6 @@ class SQLGenerator:
                     if k not in picked_names
                 },
                 scope=scope,
-                owner_path=source_anchor_path(agg_slot.key.source),
             )
             value_sql = self._resolve_value_sql(spec)
             inner_cols.append(
@@ -5694,25 +5690,17 @@ class SQLGenerator:
                 f"{source_model.name!r}",
             )
         resolver_root = root_relation if root_relation is not None else source_relation
-        resolver = self._join_alias_resolver(resolver_root)
-
-        def _expand(sql: str) -> str:
-            out = expand_derived_refs_sync(
-                sql=sql, model=source_model, alias_path=source_relation,
-                models_by_name=bundle.models_by_name, dialect=self.dialect,
-                owner_path=owner_path, alias_resolver=resolver,
-                crossed_paths=crossed_paths,
-            )
-            return out if out is not None else sql
-
-        raw_value = col.sql if col.sql else col.name
-        value_ast = self._parse(_expand(raw_value))
+        value, filter_sql = expand_column_definition_parts_sync(
+            column=col, model=source_model, alias_path=source_relation,
+            models_by_name=bundle.models_by_name, dialect=self.dialect,
+            owner_path=owner_path, alias_resolver=self._join_alias_resolver(resolver_root),
+            crossed_paths=crossed_paths,
+        )
+        value_ast = self._parse(value)
         value_sql = (
             _wrap_cast_for_type(value_ast, col.type) if cast else value_ast
         ).sql(dialect=self.dialect)
-        if not col.filter:
-            return value_sql
-        return wrap_column_filter(value_sql=value_sql, filter_sql=_expand(col.filter))
+        return wrap_column_filter(value_sql=value_sql, filter_sql=filter_sql)
 
     def _render_expression_source_sql(self, *, source, scope: ScopeFrame) -> str:
         """Render an aggregate's row-level expression source through ``scope`` — one resolver for leaves, attached placeholders, derived columns and join registration."""
@@ -5891,7 +5879,6 @@ class SQLGenerator:
         bundle=None,
         resolved_agg_kwargs: "Optional[Dict[str, ResolvedAggKwarg]]" = None,
         scope: Optional[ScopeFrame] = None,
-        owner_path: Tuple[str, ...] = (),
     ) -> AggRenderSpec:
         """Build an ``AggRenderSpec`` from a planned aggregate slot so"""
 

@@ -202,10 +202,11 @@ class TestMixedTransformConstituent:
 # --------------------------------------------------------------------------- #
 class TestTransformSourceRejections:
     async def test_row_leaf_under_transform_rejected(self):
+        query = orders_q(
+            measures=[ModelMeasure(formula="sum(cumsum(weight) - 1)", name="m")],
+            time_dimensions=month_td())
         with pytest.raises(ValueError, match="cannot consume the row-level") as ei:
-            await gen(orders_q(
-                measures=[ModelMeasure(formula="sum(cumsum(weight) - 1)", name="m")],
-                time_dimensions=month_td()))
+            await gen(query)
         assert not re.search(r"DEV-\d+", str(ei.value))
 
     async def test_projected_grain_key_under_transform_legal(self, exec_backend):
@@ -223,41 +224,46 @@ class TestTransformSourceRejections:
     async def test_transform_constituent_without_time_axis_fails(self):
         # The same time-axis error a dimension-position transform raises
         # (check_dimension_temporal_axis → NotImplementedError), position-neutral.
+        query = monthly_q(
+            measures=[ModelMeasure(
+                formula="sum(cumsum(amount:sum(partition_by=region)))", name="m")],
+            time_dimensions=month_td())
         with pytest.raises(NotImplementedError, match="time axis"):
-            await gen(monthly_q(
-                measures=[ModelMeasure(
-                    formula="sum(cumsum(amount:sum(partition_by=region)))", name="m")],
-                time_dimensions=month_td()))
+            await gen(query)
 
     async def test_axis_check_covers_filter_and_order_positions(self):
         # The axis check must walk filter and order constituents too, not just
         # measures (a coarser producer grain would else reach planning).
         axis_missing = "sum(cumsum(amount:sum(partition_by=region)))"
+        filter_query = monthly_q(
+            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            filters=[f"{axis_missing} > 5"], time_dimensions=month_td())
         with pytest.raises(NotImplementedError, match="time axis"):
-            await gen(monthly_q(
-                measures=[ModelMeasure(formula="amount:sum", name="s")],
-                filters=[f"{axis_missing} > 5"], time_dimensions=month_td()))
+            await gen(filter_query)
+        order_query = monthly_q(
+            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            order=[{"column": axis_missing, "direction": "desc"}],
+            time_dimensions=month_td())
         with pytest.raises(NotImplementedError, match="time axis"):
-            await gen(monthly_q(
-                measures=[ModelMeasure(formula="amount:sum", name="s")],
-                order=[{"column": axis_missing, "direction": "desc"}],
-                time_dimensions=month_td()))
+            await gen(order_query)
 
     async def test_transform_in_scalar_call_aggregate_arg_needs_time_dim(self):
         # A transform inside an aggregate that is a scalar-call argument must still
         # reach the no-time-dimension guard (time attach + unresolved-time walk
         # descend into an aggregate arg).
+        query = monthly_q(measures=[ModelMeasure(
+            formula="coalesce(sum(cumsum(amount:sum)), 0)", name="m")])
         with pytest.raises(ValueError, match="unambiguous time dimension"):
-            await gen(monthly_q(measures=[ModelMeasure(
-                formula="coalesce(sum(cumsum(amount:sum)), 0)", name="m")]))
+            await gen(query)
 
     async def test_first_over_mixed_keeps_expression_error(self):
+        query = sales_q(
+            dimensions=["region"],
+            measures=[ModelMeasure(
+                formula="first(quantity * avg(unit_price, partition_by=product))",
+                name="m")])
         with pytest.raises(ValueError, match="not supported over an expression"):
-            await gen(sales_q(
-                dimensions=["region"],
-                measures=[ModelMeasure(
-                    formula="first(quantity * avg(unit_price, partition_by=product))",
-                    name="m")]))
+            await gen(query)
 
 
 # --------------------------------------------------------------------------- #
@@ -335,20 +341,22 @@ class TestCollapsingConstituent:
 
 class TestCollapsingRejections:
     async def test_collapse_mixed_with_row_leaf_fails_closed(self):
+        query = monthly_q(
+            measures=[ModelMeasure(formula=f"sum(amount * last({_X}))", name="m")],
+            time_dimensions=month_td())
         with pytest.raises(ValueError, match="collapsing transform.*row-level") as ei:
-            await gen(monthly_q(
-                measures=[ModelMeasure(formula=f"sum(amount * last({_X}))", name="m")],
-                time_dimensions=month_td()))
+            await gen(query)
         assert not re.search(r"DEV-\d+", str(ei.value))
 
     async def test_collapse_over_ungrained_inner_in_dimension_raises_residue(self):
         # A collapsing transform over an ungrained aggregate in a computed
         # dimension is the Axiom 9 residue error — collapse does not bypass it.
+        query = monthly_q(
+            dimensions=[{"expression": "last(amount:sum)", "name": "b"}],
+            measures=[ModelMeasure(formula=UNGRAINED_CUMSUM, name="m")],
+            time_dimensions=month_td())
         with pytest.raises(ValueError, match="partition_by"):
-            await gen(monthly_q(
-                dimensions=[{"expression": "last(amount:sum)", "name": "b"}],
-                measures=[ModelMeasure(formula=UNGRAINED_CUMSUM, name="m")],
-                time_dimensions=month_td()))
+            await gen(query)
 
 
 class TestCollapsingPlanStructure:
@@ -394,18 +402,20 @@ class TestTransformFamily:
 # --------------------------------------------------------------------------- #
 class TestDeferredInnerShapes:
     async def test_windowed_inner_fails_closed(self):
+        query = monthly_q(
+            measures=[ModelMeasure(
+                formula="sum(rank(amount:sum(window='90d', partition_by=region)))",
+                name="m")],
+            time_dimensions=month_td())
         with pytest.raises(ValueError, match="time dimension"):
-            await gen(monthly_q(
-                measures=[ModelMeasure(
-                    formula="sum(rank(amount:sum(window='90d', partition_by=region)))",
-                    name="m")],
-                time_dimensions=month_td()))
+            await gen(query)
 
     async def test_cross_model_grained_inner_fails_closed(self):
         # The host bucket is not attributable from the target (probed, fails closed).
+        query = orders_q(
+            measures=[ModelMeasure(formula=(
+                "sum(cumsum(customers.spend:sum("
+                "partition_by=[customers.tier, ordered_at])))"), name="m")],
+            time_dimensions=month_td())
         with pytest.raises(ValueError, match="partition_by"):
-            await gen(orders_q(
-                measures=[ModelMeasure(formula=(
-                    "sum(cumsum(customers.spend:sum("
-                    "partition_by=[customers.tier, ordered_at])))"), name="m")],
-                time_dimensions=month_td()))
+            await gen(query)

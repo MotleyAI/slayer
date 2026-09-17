@@ -18,6 +18,7 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import DataType, TimeGranularity
+from slayer.core.errors import ColumnCycleError
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -142,6 +143,54 @@ async def test_quoted_self_identity_column_emits_quoted_and_no_cycle(tmp_path) -
     )
     sql = await _gen_sql(engine, query, model)
     assert '"legalEntityType"' in sql, f"Expected quoted identifier preserved, got:\n{sql}"
+
+
+async def test_quoted_self_identity_column_is_qualified_across_a_join(tmp_path) -> None:
+    """Across a join the quoted self-identity stays table-qualified — a bare
+    quoted name is ambiguous against a same-named column on the join target."""
+    engine, storage = _engine_with_storage(tmp_path)
+    other = SlayerModel(
+        name="other", data_source="test", sql_table="other",
+        columns=[
+            Column(name="id", type=DataType.INT, primary_key=True),
+            Column(name="legalEntityType", sql='"legalEntityType"', type=DataType.TEXT),
+        ],
+    )
+    merchant = SlayerModel(
+        name="merchant", data_source="test", sql_table="merchant",
+        columns=[
+            Column(name="id", type=DataType.INT, primary_key=True),
+            Column(name="other_id", type=DataType.INT),
+            Column(name="legalEntityType", sql='"legalEntityType"', type=DataType.TEXT),
+        ],
+        joins=[ModelJoin(target_model="other", join_pairs=[["other_id", "id"]])],
+    )
+    await storage.save_model(other)
+    query = SlayerQuery(
+        source_model="merchant",
+        dimensions=[ColumnRef(name="legalEntityType"), ColumnRef(name="other.legalEntityType")],
+    )
+    sql = await _gen_sql(engine, query, merchant)
+    assert 'merchant."legalEntityType"' in sql, sql
+    assert 'other."legalEntityType"' in sql, sql
+
+
+async def test_derived_over_quoted_self_identity_keeps_quoting(tmp_path) -> None:
+    """A derived column referencing a quoted self-identity column UNQUOTED still
+    expands to the quoted physical spelling — the target's own definition wins."""
+    engine, storage = _engine_with_storage(tmp_path)
+    model = SlayerModel(
+        name="merchant", data_source="test", sql_table="merchant",
+        columns=[
+            Column(name="id", type=DataType.INT, primary_key=True),
+            Column(name="legalEntityType", sql='"legalEntityType"', type=DataType.TEXT),
+            Column(name="label", sql="legalEntityType", type=DataType.TEXT),
+        ],
+    )
+    query = SlayerQuery(source_model="merchant", dimensions=[ColumnRef(name="label")])
+    sql = await _gen_sql(engine, query, model)
+    assert '"legalEntityType"' in sql, sql
+    assert _no_bare_derived_ref(sql, "merchant", "label"), sql  # label was inlined
 
 
 # ---------------------------------------------------------------------------
@@ -707,7 +756,8 @@ async def test_multihop_query_dim_to_derived_target_column(tmp_path) -> None:
         f"Expected B__C.raw_c * 2, got:\n{sql}"
     )
     # And the C join must be present under the canonical alias.
-    assert "B__C" in norm and ("JOIN C" in norm or 'JOIN "C"' in norm), (
+    assert "B__C" in norm, f"C join missing under B__C alias:\n{sql}"
+    assert "JOIN C" in norm or 'JOIN "C"' in norm, (
         f"C join missing under B__C alias:\n{sql}"
     )
 
@@ -726,7 +776,8 @@ async def test_multihop_cross_model_measure_over_derived_target(tmp_path) -> Non
     # Parse-sanity first so a malformed query short-circuits before the
     # substring assertions that could otherwise mask broken structure.
     parsed = sqlglot.parse(sql, dialect="sqlite")
-    assert parsed and len(parsed) == 1, f"Generated SQL doesn't parse:\n{sql}"
+    assert parsed, f"Generated SQL doesn't parse:\n{sql}"
+    assert len(parsed) == 1, f"Generated SQL doesn't parse:\n{sql}"
     norm = _norm(sql)
     # x_derived must be inlined regardless of which CTE shape was used.
     assert _no_bare_derived_ref(norm, "B__C", "x_derived")
@@ -940,7 +991,8 @@ async def test_generated_sql_parses(tmp_path, scenario) -> None:
     query = SlayerQuery(source_model="A", dimensions=[ColumnRef(name=scenario)])
     sql = await _gen_sql(engine, query, model_a)
     parsed = sqlglot.parse(sql, dialect="sqlite")
-    assert parsed and len(parsed) == 1
+    assert parsed
+    assert len(parsed) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -1199,7 +1251,10 @@ async def test_dev1334_column_level_filter_attribute_with_cross_table_ref_adds_j
     # bounded ``[^"]*`` segment (plus a substring check for the THEN clause)
     # avoids the multi-quantifier ReDoS pattern S5852 flags.
     n = _norm(sql)
-    assert re.search(r'SUM\(\s*CASE WHEN [^"]*customers\.region', n) and "THEN orders.amount" in n, (
+    assert re.search(r'SUM\(\s*CASE WHEN [^"]*customers\.region', n), (
+        f"is_eu expansion not inside SUM(CASE WHEN ... THEN orders.amount):\n{sql}"
+    )
+    assert "THEN orders.amount" in n, (
         f"is_eu expansion not inside SUM(CASE WHEN ... THEN orders.amount):\n{sql}"
     )
 
@@ -1326,7 +1381,8 @@ async def test_dev1494_column_filter_dotted_derived_ref_crossing_further_join(
     n = _norm(sql)
     assert re.search(
         r'SUM\(\s*CASE WHEN [^"]*loss_payment__claim\.state', n,
-    ) and "THEN claim_amount.amount" in n, (
+    ), f"deep_flag expansion not inside SUM(CASE WHEN ...):\n{sql}"
+    assert "THEN claim_amount.amount" in n, (
         f"deep_flag expansion not inside SUM(CASE WHEN ... THEN claim_amount.amount):\n{sql}"
     )
 
@@ -2095,8 +2151,6 @@ async def test_dev1410_local_bare_ref_cycle_raises_at_compile_time(tmp_path) -> 
     ColumnCycleError at compile time with the cycle chain in the message.
     The error must also be catchable as ValueError (dual-inheritance for
     backwards compat with existing call sites)."""
-    from slayer.core.errors import ColumnCycleError
-
     engine, _ = _engine_with_storage(tmp_path)
     model_a = SlayerModel(
         name="A",

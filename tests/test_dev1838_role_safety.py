@@ -155,6 +155,19 @@ class TestProvenHopsKeepExactValues:
         assert by[("ok",)]["orders.gl"] is None
         assert by[("new",)]["orders.gl"] is None
 
+    async def test_ranked_filtered_picks_masked_value_when_newest_matches(self, exec_backend):
+        # CityA's newest order (#2, gold c1) → gold_amount:last = 20; every other
+        # city's newest order is non-gold → NULL.
+        _, engine = exec_backend
+        resp = await engine.execute(q(
+            dimensions=["city"],
+            measures=[ModelMeasure(formula="gold_amount:last", name="gl")],
+        ))
+        by = rows_by(resp, "orders.city")
+        assert float(by[("CityA",)]["orders.gl"]) == pytest.approx(20.0)
+        assert by[("CityB",)]["orders.gl"] is None
+        assert by[("CityD",)]["orders.gl"] is None
+
     async def test_aggregation_param_over_proven_hops(self, exec_backend):
         _, engine = exec_backend
         resp = await engine.execute(q(

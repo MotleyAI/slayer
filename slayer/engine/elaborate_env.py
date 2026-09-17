@@ -816,6 +816,7 @@ def check_local_producer_inputs_safe(
     *, alias: Optional[str], host: str,
     ranked_crossings: Sequence[Tuple[str, str]],
     gated_crossings: Sequence[str],
+    source_crossings: Sequence[str] = (),
 ) -> None:
     """Per-role crossing-input safety for a HOST-rooted producer answer (DEV-1871 G11, was ``_assert_local_producer_inputs_safe``); crossings are the compiler-resolved unproven hops."""
     remedy = "declare join cardinality or a covering unique key on the target"
@@ -830,6 +831,14 @@ def check_local_producer_inputs_safe(
         raise ValueError(
             f"Aggregate {alias!r} reads an input across an unproven join "
             f"hop to {gated_crossings[0]} from {host}; {remedy}."
+        )
+    if source_crossings:
+        raise ValueError(
+            f"Aggregate {alias!r} reads its source across an unproven or fanning join "
+            f"hop to {source_crossings[0]} from {host}: a column of {host} cannot be "
+            f"aggregated across a to-many target — aggregate the target column directly "
+            f"({source_crossings[0]}.<column>:<aggregation>), or declare a to-one "
+            f"cardinality or a covering unique key if the hop is to-one."
         )
 
 

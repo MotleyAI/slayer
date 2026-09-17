@@ -278,11 +278,12 @@ class TestBuilderStarKey:
     def test_non_count_star_raises(self):
         key = AggregateKey(source=StarKey(), agg="sum")
         slot = _slot(key, declared_name="_sum", public_name="_sum")
+        source_model = _orders_model()
         with pytest.raises(ValueError, match=r"not allowed with measure '\*'"):
             _invoke(
                 slot=slot,
                 key=key,
-                source_model=_orders_model(),
+                source_model=source_model,
                 source_relation="orders",
                 full_alias="orders._sum",
             )
@@ -290,11 +291,12 @@ class TestBuilderStarKey:
     def test_star_with_args_raises(self):
         key = AggregateKey(source=StarKey(), agg="count", args=(Decimal("1"),))
         slot = _slot(key, declared_name="_count", public_name="_count")
+        source_model = _orders_model()
         with pytest.raises(ValueError, match=r"\*:count.* no args"):
             _invoke(
                 slot=slot,
                 key=key,
-                source_model=_orders_model(),
+                source_model=source_model,
                 source_relation="orders",
                 full_alias="orders._count",
             )
@@ -306,11 +308,12 @@ class TestBuilderStarKey:
             kwargs=(("p", Decimal("0.5")),),
         )
         slot = _slot(key, declared_name="_count", public_name="_count")
+        source_model = _orders_model()
         with pytest.raises(ValueError, match=r"\*:count.* no args or kwargs"):
             _invoke(
                 slot=slot,
                 key=key,
-                source_model=_orders_model(),
+                source_model=source_model,
                 source_relation="orders",
                 full_alias="orders._count",
             )
@@ -386,6 +389,7 @@ class TestBuilderColumnKey:
         # that surfaces a different ValueError (e.g. a setup failure) still
         # fails loudly. Legacy emits exactly:
         #     "Aggregate source column 'nonexistent' not found on model 'orders'"
+        source_model = _orders_model()
         with pytest.raises(
             ValueError,
             match=r"Aggregate source column 'nonexistent' not found on model 'orders'",
@@ -393,7 +397,7 @@ class TestBuilderColumnKey:
             _invoke(
                 slot=slot,
                 key=key,
-                source_model=_orders_model(),
+                source_model=source_model,
                 source_relation="orders",
                 full_alias="orders.x_sum",
             )
@@ -438,11 +442,12 @@ class TestBuilderCustomAggregation:
             agg="not_a_real_agg",
         )
         slot = _slot(key, declared_name="amount_x", public_name="amount_x")
+        source_model = _orders_model()
         with pytest.raises(AggregationNotAllowedError, match=r"unknown aggregation"):
             _invoke(
                 slot=slot,
                 key=key,
-                source_model=_orders_model(),
+                source_model=source_model,
                 source_relation="orders",
                 full_alias="orders.amount_x",
             )

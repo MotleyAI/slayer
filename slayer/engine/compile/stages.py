@@ -685,8 +685,9 @@ def _assert_local_producer_inputs_safe(
             ranked_crossings.append((leaf, path[-1]))
             break  # first violation wins; the checker raises it
 
-    # Crossed predicate + remaining crossed args; the SOURCE's own crossings are exempt here.
+    # Crossed predicate + remaining crossed args; the SOURCE's own crossings are separate.
     gated_crossings: List[str] = []
+    source_crossings: List[str] = []
     alias = canonical_aggregate_alias(agg, profile="stage_formula")
     if not ranked_crossings:
         gated = local_crossing_input_paths(
@@ -702,31 +703,41 @@ def _assert_local_producer_inputs_safe(
             )
             gated = []
         gated_crossings = [p[-1] for p in gated if p and not _safe(p)]
-        # An expression source's own ROW leaves cross from the host too (attached
-        # constituents opaque, Axiom 2.3); a to-one leaf is safe, a fanning / unproven
-        # or unanalysable one fails closed (Axiom 2.8). An explicit host-grain wrap
-        # (locus="host") is exempt: its crossing source is defined over the join result.
-        if agg.locus != "host":
-            src = source_row_leaf_closure(
-                key=agg, anchor_model=host_model,
-                anchor_relation=host_model.name, bundle=bundle,
-            )
-            if src is None:
-                check_input_dependencies_analyzable(
-                    alias=alias,
-                    column=first_unanalyzable_source_row_leaf(
-                        key=agg, anchor_model=host_model,
-                        anchor_relation=host_model.name, bundle=bundle,
-                    ),
-                )
-            else:
-                gated_crossings.extend(p[-1] for p in src if p and not _safe(p))
+        source_crossings = _source_crossings(
+            agg=agg, host_model=host_model, bundle=bundle, alias=alias, safe=_safe,
+        )
     check_local_producer_inputs_safe(
         alias=alias,
         host=host_model.name,
         ranked_crossings=ranked_crossings,
         gated_crossings=gated_crossings,
+        source_crossings=source_crossings,
     )
+
+
+def _source_crossings(
+    *,
+    agg: AggregateKey,
+    host_model: SlayerModel,
+    bundle: ResolvedSourceBundle,
+    alias: Optional[str],
+    safe: Callable[[Tuple[str, ...]], bool],
+) -> List[str]:
+    """Unproven hops the expression source's own ROW leaves cross from the host (constituents opaque, Axiom 2.3; unanalysable fails closed, Axiom 2.8); a host-grain wrap is exempt."""
+    if agg.locus == "host":
+        return []
+    src = source_row_leaf_closure(
+        key=agg, anchor_model=host_model, anchor_relation=host_model.name, bundle=bundle,
+    )
+    if src is None:
+        check_input_dependencies_analyzable(
+            alias=alias,
+            column=first_unanalyzable_source_row_leaf(
+                key=agg, anchor_model=host_model, anchor_relation=host_model.name, bundle=bundle,
+            ),
+        )
+        return []
+    return [p[-1] for p in src if p and not safe(p)]
 
 
 def _trailing_window_kernel(
@@ -2211,7 +2222,7 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
     )
 
 
-def _build_carrier_attach(
+def _build_carrier_attach(  # NOSONAR(S107) — carrier plumbing: each parameter is a distinct compile input threaded from _plan_regroups; a one-use context type would only relocate them
     *,
     union_grain: Grain,
     constituents: List[ValueKey],

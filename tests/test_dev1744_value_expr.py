@@ -723,8 +723,9 @@ class TestRendersEveryKeyKind:
         somewhere else inside the renderer satisfy this test.
         """
         ctx = _filter_ctx()
+        key = object()
         with pytest.raises(NotImplementedError) as excinfo:
-            render_value_key(key=object(), ctx=ctx)  # type: ignore[arg-type]
+            render_value_key(key=key, ctx=ctx)  # type: ignore[arg-type]
         assert "object" in str(excinfo.value)
 
 
