@@ -19,15 +19,24 @@ from tests._dev1832_fixtures import (
     _ORDERS_ROWS,
     _REGIONS_ROWS,
     _SALES_ROWS,
+    CHANGE_PCT_SUM_BY_MONTH,
+    CHANGE_SUM_BY_MONTH,
+    CONSEC_SUM_BY_MONTH,
     COUNT_BY_QAMOUNT,
     COUNT_QAMT_MINUS_1,
+    CUMSUM_MINUS_LAST_BY_MONTH,
+    FIRST_SUM_BY_MONTH,
     GRAINED_CUMSUM_BY_MONTH,
     HOST_DISCOUNT_BY_STATUS,
     JOINED_ROWLEAF_MIXED_BY_STATUS,
+    LAG_SUM_BY_MONTH,
+    LAST_SUM_BY_MONTH,
+    LEAD_SUM_BY_MONTH,
     MIXED_RANK_SUM_BY_REGION,
     NORTH_SPEND_EXPR_BY_STATUS,
     QAMT_SUM,
     SUM_QAMT_MINUS_1,
+    TIME_SHIFT_BACK_SUM_BY_MONTH,
     UNGRAINED_CUMSUM_BY_MONTH,
     WAVG_AMOUNT_WEIGHT_QAMT,
     WAVG_QAMT_WEIGHT_QTY,
@@ -142,6 +151,8 @@ class TestTransformOracles:
     def test_grained_cumsum_by_month(self):
         rm = defaultdict(float)
         for r in _MONTHLY_ROWS:
+            if r[_M_AMOUNT] is None:  # NULL amount contributes nothing (SUM ignores it)
+                continue
             rm[(r[_M_REGION], r[_M_MONTH][:7])] += r[_M_AMOUNT]
         running = {}
         for region in {k[0] for k in rm}:
@@ -157,9 +168,86 @@ class TestTransformOracles:
     def test_ungrained_cumsum_by_month(self):
         am = defaultdict(float)
         for r in _MONTHLY_ROWS:
+            if r[_M_AMOUNT] is None:  # NULL amount contributes nothing (SUM ignores it)
+                continue
             am[r[_M_MONTH][:7]] += r[_M_AMOUNT]
         running, tot = {}, 0.0
         for month in sorted(am):
             tot += am[month]
             running[month] = tot
         assert running == UNGRAINED_CUMSUM_BY_MONTH
+
+
+_MONTHS = ("2024-01", "2024-02", "2024-03")
+
+
+def _x_series():
+    """X = amount:sum per (region, month), as an ordered [(month, value)] list per
+    region (a NULL amount cell yields a None value)."""
+    by_rm: dict = {}
+    for r in _MONTHLY_ROWS:
+        key = (r[_M_REGION], r[_M_MONTH][:7])
+        amt = r[_M_AMOUNT]
+        by_rm[key] = None if amt is None else (by_rm.get(key) or 0.0) + amt
+    series: dict = defaultdict(list)
+    for (region, month) in sorted(by_rm):
+        series[region].append((month, by_rm[(region, month)]))
+    return series
+
+
+def _sum_by_month(per_region_month: list) -> dict:
+    """Sum values across regions per month, dropping None cells; a month with no
+    non-None cell is a NULL measure row and drops out entirely."""
+    out: dict = defaultdict(float)
+    has_value: dict = defaultdict(bool)
+    for (month, value) in per_region_month:
+        if value is not None:
+            out[month] += value
+            has_value[month] = True
+    return {m: out[m] for m in _MONTHS if has_value[m]}
+
+
+class TestCollapseAndFamilyOracles:
+    """D4c collapse + D4a family oracles, re-derived from the raw monthly rows."""
+
+    def test_last_first_collapse(self):
+        s = _x_series()
+        last_total = sum(v for (_, v) in (ser[-1] for ser in s.values()) if v is not None)
+        first_total = sum(v for (_, v) in (ser[0] for ser in s.values()) if v is not None)
+        assert {m: last_total for m in _MONTHS} == LAST_SUM_BY_MONTH
+        assert {m: first_total for m in _MONTHS} == FIRST_SUM_BY_MONTH
+
+    def test_cumsum_minus_last(self):
+        cells = []
+        for ser in _x_series().values():
+            last = ser[-1][1]
+            tot = 0.0
+            for (month, v) in ser:
+                if v is None or last is None:
+                    cells.append((month, None))
+                    continue
+                tot += v
+                cells.append((month, tot - last))
+        assert _sum_by_month(cells) == CUMSUM_MINUS_LAST_BY_MONTH
+
+    def test_family_shifts_and_diffs(self):
+        change, change_pct, shift_back, lead, consec = [], [], [], [], []
+        for ser in _x_series().values():
+            vals = [v for (_, v) in ser]
+            streak = 0
+            for i, (month, v) in enumerate(ser):
+                prev = vals[i - 1] if i > 0 else None
+                nxt = vals[i + 1] if i + 1 < len(vals) else None
+                change.append((month, None if (v is None or prev is None) else v - prev))
+                change_pct.append((month, None if (v is None or prev is None or prev == 0)
+                                   else (v - prev) / prev))
+                shift_back.append((month, prev))
+                lead.append((month, nxt))
+                streak = streak + 1 if (v is not None and v > 12) else 0
+                consec.append((month, streak))
+        assert _sum_by_month(change) == CHANGE_SUM_BY_MONTH
+        assert _sum_by_month(change_pct) == CHANGE_PCT_SUM_BY_MONTH
+        assert _sum_by_month(shift_back) == TIME_SHIFT_BACK_SUM_BY_MONTH
+        assert _sum_by_month(shift_back) == LAG_SUM_BY_MONTH
+        assert _sum_by_month(lead) == LEAD_SUM_BY_MONTH
+        assert _sum_by_month(consec) == CONSEC_SUM_BY_MONTH

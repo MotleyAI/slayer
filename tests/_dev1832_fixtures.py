@@ -210,13 +210,16 @@ _SALES_ROWS = [
     (14, "Void", "Xi", "P", None, 2.0, None),
     (15, "Void", "Xi", "P", None, 1.0, None),
 ]
-# (id, region, ordered_at, amount)
+# (id, region, ordered_at, amount). The West Feb cell has a NULL amount — SUM
+# ignores it, so every absolute oracle is unchanged (smoke-test derivations skip
+# None); it exercises the all-NULL collapse pick and the NULL dimension band.
 _MONTHLY_ROWS = [
     (1, "North", "2024-01-10", 10.0),
     (2, "North", "2024-02-10", 20.0),
     (3, "North", "2024-03-10", 30.0),
     (4, "South", "2024-01-15", 5.0),
     (5, "South", "2024-02-15", 15.0),
+    (6, "West", "2024-02-15", None),
 ]
 
 
@@ -360,12 +363,36 @@ GRAINED_CUMSUM_BY_MONTH = {"2024-01": 13.0, "2024-02": 48.0, "2024-03": 59.0}
 #: (identity + degenerate warning): amount:sum Jan15/Feb35/Mar30 → 15/50/80.
 UNGRAINED_CUMSUM_BY_MONTH = {"2024-01": 15.0, "2024-02": 50.0, "2024-03": 80.0}
 
+# Collapsing constituents (D4c): last/first reduce X along the month axis to one
+# value per region (North last 30 / first 10, South last 15 / first 5, West NULL),
+# summed over regions and broadcast across months.
+LAST_SUM_BY_MONTH = {"2024-01": 45.0, "2024-02": 45.0, "2024-03": 45.0}
+FIRST_SUM_BY_MONTH = {"2024-01": 15.0, "2024-02": 15.0, "2024-03": 15.0}
+#: sum(cumsum(X) - last(X)) by month — cumsum preserves the axis, last collapses
+#: it: North (10-30, 30-30, 60-30)=(−20,0,30), South (5-15, 20-15)=(−10,5).
+CUMSUM_MINUS_LAST_BY_MONTH = {"2024-01": -30.0, "2024-02": 5.0, "2024-03": 30.0}
+
+# Family coverage (D4a preserving transforms over X, summed by month; the first
+# period of a within-region series is NULL for the difference/shift ops).
+CHANGE_SUM_BY_MONTH = {"2024-02": 20.0, "2024-03": 10.0}
+CHANGE_PCT_SUM_BY_MONTH = {"2024-02": 3.0, "2024-03": 0.5}
+TIME_SHIFT_BACK_SUM_BY_MONTH = {"2024-02": 15.0, "2024-03": 20.0}
+LAG_SUM_BY_MONTH = {"2024-02": 15.0, "2024-03": 20.0}
+LEAD_SUM_BY_MONTH = {"2024-01": 35.0, "2024-02": 30.0}
+CONSEC_SUM_BY_MONTH = {"2024-01": 0, "2024-02": 2, "2024-03": 2}
+
 DEGENERATE_KIND = "degenerate_reaggregation"
+BROADCAST_KIND = "broadcast"
 
 
 def degenerate_warnings(resp) -> list:
     return [w for w in (resp.warnings or [])
             if getattr(w, "kind", None) == DEGENERATE_KIND]
+
+
+def broadcast_warnings(resp) -> list:
+    return [w for w in (resp.warnings or [])
+            if getattr(w, "kind", None) == BROADCAST_KIND]
 
 
 def status_key(resp, root: str = "orders") -> dict:
@@ -388,6 +415,10 @@ __all__ = [
     "WAVG_AMOUNT_WEIGHT_QAMT", "COUNT_BY_QAMOUNT", "SUM_QAMT_MINUS_1",
     "COUNT_QAMT_MINUS_1", "MIXED_RANK_SUM_BY_REGION",
     "GRAINED_CUMSUM_BY_MONTH", "UNGRAINED_CUMSUM_BY_MONTH",
+    "LAST_SUM_BY_MONTH", "FIRST_SUM_BY_MONTH", "CUMSUM_MINUS_LAST_BY_MONTH",
+    "CHANGE_SUM_BY_MONTH", "CHANGE_PCT_SUM_BY_MONTH", "TIME_SHIFT_BACK_SUM_BY_MONTH",
+    "LAG_SUM_BY_MONTH", "LEAD_SUM_BY_MONTH", "CONSEC_SUM_BY_MONTH",
+    "broadcast_warnings", "BROADCAST_KIND",
     "_ORDERS_ROWS", "_CUSTOMERS_ROWS", "_REGIONS_ROWS", "_SALES_ROWS",
     "_MONTHLY_ROWS",
 ]
