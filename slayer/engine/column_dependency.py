@@ -56,10 +56,12 @@ def _fragment_refs(sql: str):
         )
     except Exception:
         return None
+    # sqlglot's parse_one is typed with a generic Expr TypeVar; without into= it
+    # is an Expression at runtime.
     return [
         (quals, leaf)
         for _node, quals, leaf in reference_sites(
-            parsed, root_scope_column_ids(parsed=parsed),
+            parsed, root_scope_column_ids(parsed=parsed),  # pyright: ignore[reportArgumentType]
         )
     ]
 

@@ -3415,6 +3415,7 @@ class TestMeasureSourceSqlJoinInference:
             measures=[ModelMeasure(formula="region_payment:last(orders.created_at)")],
         )
         sql = (await engine.execute(query, dry_run=True)).sql
+        assert sql is not None
         norm = _norm(sql)
         assert "_cm_" in sql, f"expected an isolation CTE:\n{sql}"
         # DEV-1832: the Column.filter MASKS the materialised value (it is not a

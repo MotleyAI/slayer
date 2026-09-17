@@ -17,6 +17,7 @@ from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.elaborate import elaborate_query
 from slayer.ir.source_bundle import ResolvedSourceBundle
+from slayer.ir.terms import Aggregate
 
 from tests._dev1832_fixtures import (
     ModelMeasure,
@@ -37,7 +38,9 @@ def _home_path(formula: str, *, dimensions: list[str] | None = None) -> tuple:
     assert elab.prebound is not None
     root = elab.prebound.declared_measures[-1].bound.value_key
     assert isinstance(root, AggregateKey), root
-    return elab.terms[root].home_path
+    term = elab.terms[root]
+    assert isinstance(term, Aggregate), term
+    return term.home_path
 
 
 def _parallel_edge_models() -> list[SlayerModel]:
@@ -150,5 +153,7 @@ class TestParallelNamedEdges:
             bundle=ResolvedSourceBundle(source_model=models[0], referenced_models=models[1:]))
         aggs = [k for k in elab.terms if isinstance(k, AggregateKey)]
         assert len(aggs) == 1
+        term = elab.terms[aggs[0]]
+        assert isinstance(term, Aggregate), term
         # opener/closer are both provably to-one from tk and diverge → home is tk.
-        assert elab.terms[aggs[0]].home_path == ()
+        assert term.home_path == ()
