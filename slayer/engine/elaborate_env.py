@@ -524,15 +524,14 @@ def check_opaque_grouping_dim(
         )
 
 
-def _temporal_axis_transforms(dm):
+def _temporal_axis_transforms(vk: ValueKey, *, is_dimension: bool):
     """Time-ordered transforms whose grain must contain their axis: any transform
     in a dimension expression, and every transform reachable inside an
-    aggregation-source constituent of a measure — nested ones included, mirroring
-    the dimension arm, so a nested time transform cannot evade Axiom 11.5 (a
-    top-level transform measure carries its bucket through the windowed producer
-    instead)."""
-    vk = dm.bound.value_key
-    if dm.is_dimension:
+    aggregation-source constituent of a measure/filter/order expression — nested
+    ones included, mirroring the dimension arm, so a nested time transform cannot
+    evade Axiom 11.5 (a top-level transform measure carries its bucket through the
+    windowed producer instead)."""
+    if is_dimension:
         yield from (k for k in walk_value_keys(vk) if isinstance(k, TransformKey))
         return
     for k in walk_value_keys(vk):
@@ -545,12 +544,20 @@ def _temporal_axis_transforms(dm):
                     )
 
 
-def check_dimension_temporal_axis(declared_measures) -> None:
-    """Fail closed if a time-ordered transform — in a dimension or aggregated as
-    a source constituent — evaluates at a grain not containing its time axis
-    (DEV-1871 G10 / DEV-1832 D4, was ``_guard_dimension_temporal_axis``)."""
-    for dm in declared_measures:
-        for tk in _temporal_axis_transforms(dm):
+def check_dimension_temporal_axis(
+    declared_measures, *, bound_filters=(), order_specs=(),
+) -> None:
+    """Fail closed if a time-ordered transform — in a dimension, or aggregated as
+    a source constituent in a measure / filter / order expression — evaluates at a
+    grain not containing its time axis (DEV-1871 G10 / DEV-1832 D4, was
+    ``_guard_dimension_temporal_axis``)."""
+    roots = [
+        (dm.bound.value_key, dm.is_dimension) for dm in declared_measures
+    ]
+    roots += [(bf.value_key, False) for bf in bound_filters]
+    roots += [(sp.bound.value_key, False) for sp in order_specs]
+    for vk, is_dimension in roots:
+        for tk in _temporal_axis_transforms(vk, is_dimension=is_dimension):
             if tk.op not in TIME_TRANSFORMS or tk.time_key is None:
                 continue
             if tk.time_key not in regroup_root_grain(tk):
@@ -605,7 +612,7 @@ def _time_search_children(key: ValueKey) -> List[ValueKey]:
         return [
             a for a in key.args
             if isinstance(
-                a, (TransformKey, ArithmeticKey, ScalarCallKey, BetweenKey, InKey),
+                a, (AggregateKey, TransformKey, ArithmeticKey, ScalarCallKey, BetweenKey, InKey),
             )
         ]
     if isinstance(key, BetweenKey):

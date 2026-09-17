@@ -173,6 +173,28 @@ class TestTransformSourceRejections:
                     formula="sum(cumsum(amount:sum(partition_by=region)))", name="m")],
                 time_dimensions=month_td()))
 
+    async def test_axis_check_covers_filter_and_order_positions(self):
+        # The axis check must walk filter and order constituents too, not just
+        # measures (a coarser producer grain would else reach planning).
+        axis_missing = "sum(cumsum(amount:sum(partition_by=region)))"
+        with pytest.raises(NotImplementedError, match="time axis"):
+            await gen(monthly_q(
+                measures=[ModelMeasure(formula="amount:sum", name="s")],
+                filters=[f"{axis_missing} > 5"], time_dimensions=month_td()))
+        with pytest.raises(NotImplementedError, match="time axis"):
+            await gen(monthly_q(
+                measures=[ModelMeasure(formula="amount:sum", name="s")],
+                order=[{"column": axis_missing, "direction": "desc"}],
+                time_dimensions=month_td()))
+
+    async def test_transform_in_scalar_call_aggregate_arg_needs_time_dim(self):
+        # A transform inside an aggregate that is a scalar-call argument must still
+        # reach the no-time-dimension guard (time attach + unresolved-time walk
+        # descend into an aggregate arg).
+        with pytest.raises(ValueError, match="unambiguous time dimension"):
+            await gen(monthly_q(measures=[ModelMeasure(
+                formula="coalesce(sum(cumsum(amount:sum)), 0)", name="m")]))
+
     async def test_first_over_mixed_keeps_expression_error(self):
         with pytest.raises(ValueError, match="not supported over an expression"):
             await gen(sales_q(

@@ -126,7 +126,7 @@ def _attach_time_to_scalar_call(key: ScalarCallKey, *, td_key: TimeTruncKey) -> 
     new_args = tuple(
         _attach_time_keys(a, td_key=td_key)
         if isinstance(
-            a, (TransformKey, ArithmeticKey, ScalarCallKey, BetweenKey, InKey),
+            a, (AggregateKey, TransformKey, ArithmeticKey, ScalarCallKey, BetweenKey, InKey),
         )
         else a
         for a in key.args
@@ -652,7 +652,9 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         order_specs=order_specs,
     )
 
-    check_dimension_temporal_axis(declared_measures)
+    check_dimension_temporal_axis(
+        declared_measures, bound_filters=bound_filters, order_specs=order_specs,
+    )
 
     # A collapsing transform mixed with a row-level column would collapse to a
     # re-aggregation the row-attach path cannot yet broadcast (D4c deferral); fail
