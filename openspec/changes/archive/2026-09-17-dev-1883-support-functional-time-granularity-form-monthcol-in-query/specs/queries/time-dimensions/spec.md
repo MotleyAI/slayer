@@ -104,7 +104,7 @@ An order entry `gran(col)` SHALL sort by the bucketed value of the query's time 
 
 ### Requirement: Result keys disambiguate same-column time dimensions
 
-When two or more projected time dimensions share the same source column at different granularities, each of their result keys SHALL be the usual column key with the granularity appended (`orders.created_at.month`, `orders.created_at.year`). A time dimension whose column no other projected time dimension shares SHALL keep its existing granularity-free key. Exact-duplicate time dimensions (same column, granularity, date range, and label) SHALL be deduplicated at construction; time dimensions sharing column and granularity but differing in date range or label SHALL be rejected at construction.
+When two or more projected time dimensions share the same source column at different granularities, each of their result keys SHALL be the usual column key with the granularity appended (`orders.created_at.month`, `orders.created_at.year`). A time dimension whose column no other projected time dimension shares SHALL keep its existing granularity-free key. Exact-duplicate time dimensions (same column, granularity, date range, and label) SHALL be deduplicated at construction; time dimensions sharing column and granularity but differing in date range or label SHALL be rejected at construction. Time dimensions whose columns are spelled differently but resolve to the same bucket (the same bound time-truncation identity), disagreeing in date range or label, SHALL be rejected at binding — backstopping the construction-time text check for spellings that only prove equivalent once resolved.
 
 #### Scenario: two granularities of one column
 
@@ -125,6 +125,25 @@ When two or more projected time dimensions share the same source column at diffe
 
 - WHEN a query lists two time dimensions on the same column and granularity that differ in date range or label
 - THEN construction fails with an error naming the collision
+
+#### Scenario: equivalent spellings with differing metadata rejected at binding
+
+- WHEN two projected time dimensions name one column via different spellings that resolve to the same bucket but differ in date range or label
+- THEN the query fails with an error naming the conflict
+
+### Requirement: main_time_dimension over same-column buckets fails closed
+
+When several projected time dimensions share a column at different granularities, a bare-column `main_time_dimension` naming that column cannot pick a bucket and SHALL be rejected as ambiguous, naming the per-granularity candidates (`month(created_at)`, `year(created_at)`). A `main_time_dimension` that resolves to exactly one projected time dimension (a lone time dimension, a distinct column, or a full-name match) SHALL continue to select it.
+
+#### Scenario: ambiguous bare-column main_time_dimension rejected
+
+- WHEN a query projects `month(created_at)` and `year(created_at)`, sets `main_time_dimension="created_at"`, and carries a time-ordered transform
+- THEN the query fails with an ambiguity error naming `month(created_at)` and `year(created_at)`
+
+#### Scenario: main_time_dimension on a distinct column still resolves
+
+- WHEN a query projects time dimensions on two different columns and `main_time_dimension` names one of them
+- THEN that time dimension is selected as the transform axis
 
 ### Requirement: Functional form is advertised
 
