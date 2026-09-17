@@ -25,7 +25,7 @@ from typing import (
 
 from pydantic import BaseModel, ConfigDict
 
-from slayer.core.enums import DataType, RANKED_AGGREGATIONS
+from slayer.core.enums import DataType, RANKED_AGGREGATIONS, TimeGranularity
 from slayer.core.errors import AmbiguousJoinPathError, UnreachableFilterDroppedWarning
 from slayer.core.keys import AggregateKey, Grain, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, regroup_root_grain, reroot_value_key, substitute_value_keys, walk_value_keys, walk_consumer_keys, REGROUP_LEAF_PREFIX, is_cross_model_agg, is_local_partitioned_agg, split_top_level_and, window_kwarg_of, is_reaggregation_key, is_row_attach_root, attached_inputs, operand_aggregates
 from slayer.core.models import SlayerModel
@@ -3564,11 +3564,18 @@ def _emit_stage_schema(
         check_stage_flatten_collision(
             flat_name=flat, collides=any(c.name == flat for c in columns),
         )
+        # A column an upstream stage bucketed carries its granularity downstream,
+        # so a re-binding TimeDimension can type-check the re-bucket (DEV-1471).
+        upstream_gran = (
+            TimeGranularity(slot.key.granularity)
+            if isinstance(slot.key, TimeTruncKey) else None
+        )
         columns.append(StageColumn(
             name=flat,
             sql_alias=flat,
             public_alias=alias,
             type=slot.type,
+            granularity=upstream_gran,
             label=slot.label,
             hidden=False,
             format=slot.format,

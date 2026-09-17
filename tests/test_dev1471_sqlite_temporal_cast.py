@@ -1,10 +1,4 @@
-"""DEV-1471 task 1.5 — SQLite declared temporal-cast suppression.
-
-On SQLite a declared DATE/TIMESTAMP cast around an aggregate / derived column
-collapses a text date to its leading year (``2025``). This suppresses the cast
-on SQLite only, so temporal ``max`` / ``min`` / derived-column values are full
-dates; every other dialect renders its cast unchanged. Fails until 2.8.
-"""
+"""SQLite suppresses declared DATE/TIMESTAMP casts (they collapse a text date to its leading year); every other dialect renders its cast unchanged."""
 
 from __future__ import annotations
 

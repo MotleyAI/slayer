@@ -1,10 +1,4 @@
-"""Shared fixtures/helpers for the DEV-1471 cross-stage time-dimension tests.
-
-Underscore-prefixed so pytest skips collection while ``from tests._dev1471_fixtures
-import ...`` still works. Builds a seeded sqlite or duckdb engine from declarative
-table specs so every executed-value test runs identically on both backends
-(spec: SQLite + DuckDB), avoiding per-file engine-builder duplication.
-"""
+"""Shared fixtures for the cross-stage time-dimension tests: a seeded sqlite/duckdb engine from declarative table specs so executed-value tests run on both backends."""
 
 from __future__ import annotations
 

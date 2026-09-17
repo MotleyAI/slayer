@@ -1,11 +1,4 @@
-"""DEV-1471 task 1.4 — a stage's own time dimension is the transform time axis.
-
-``time_shift`` / ``change`` / ``cumsum`` / ``last`` and windowed aggregates on a
-downstream stage resolve against the stage-bound bucket, with values identical
-to a model-backed dataset holding the same rows; two stage time dimensions need
-``main_time_dimension``; the functional surfaces (``gran(col)`` order key,
-suffixed result keys) apply to stage time dimensions. Fails until 2.7.
-"""
+"""A stage's own time dimension is the transform time axis (shift/change/cumsum/last/windowed) and carries the functional surfaces (gran-order key, suffixed keys)."""
 
 from __future__ import annotations
 
@@ -63,7 +56,7 @@ async def test_time_shift_over_stage_time_dimension(backend: str) -> None:
         source_model="s1",
         time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TG.MONTH)],
         measures=[
-            {"formula": "rev:sum", "name": "rev"},
+            {"formula": "rev:sum"},
             {"formula": "time_shift(rev:sum, -1, 'month')", "name": "prev"},
         ],
     )
@@ -174,7 +167,7 @@ async def test_time_shift_over_multi_hop_flat_time_dimension(backend: str) -> No
         source_model="s1",
         time_dimensions=[TimeDimension(dimension=ColumnRef(name=col), granularity=TG.MONTH)],
         measures=[
-            {"formula": "n:sum", "name": "n"},
+            {"formula": "n:sum"},
             {"formula": "time_shift(n:sum, -1, 'month')", "name": "prev"},
         ],
     )
@@ -249,7 +242,7 @@ async def test_order_by_stage_bucket(backend: str) -> None:
     outer = SlayerQuery(
         source_model="s1",
         time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TG.MONTH)],
-        measures=[{"formula": "rev:sum", "name": "rev"}],
+        measures=[{"formula": "rev:sum"}],
         order=[OrderItem(column="month(created_at)", direction="desc")],
     )
     with tempfile.TemporaryDirectory() as tmp:
@@ -266,13 +259,14 @@ async def test_two_granularities_of_one_stage_column(backend: str) -> None:
             TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TG.MONTH),
             TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TG.YEAR),
         ],
-        measures=[{"formula": "rev:sum", "name": "rev"}],
+        measures=[{"formula": "rev:sum"}],
     )
     with tempfile.TemporaryDirectory() as tmp:
         resp = await _exec_outer(backend, tmp, outer)
     assert resp.data, "expected rows"
     keys = set(resp.data[0].keys())
-    assert "s1.created_at.month" in keys and "s1.created_at.year" in keys
+    assert "s1.created_at.month" in keys
+    assert "s1.created_at.year" in keys
     years = {date_str(r["s1.created_at.year"]) for r in resp.data}
     assert years == {"2025-01-01"}
     months = {date_str(r["s1.created_at.month"]) for r in resp.data}

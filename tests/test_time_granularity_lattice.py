@@ -1,10 +1,4 @@
-"""DEV-1471 task 1.1 — the ``TimeGranularity.nests_into`` lattice.
-
-The full 9×9 matrix: reflexive, the four nesting chains, transitive closure,
-and week/month + week/week_sunday rejected in both directions. ``a.nests_into(b)``
-is True iff ``a``'s buckets tile ``b`` exactly (``a`` finer-or-equal, aligned).
-Fails until 2.1 adds the method.
-"""
+"""The full 9×9 ``TimeGranularity.nests_into`` matrix: reflexive, the four nesting chains, transitive closure, week/month and week/week_sunday rejected both ways."""
 
 from __future__ import annotations
 

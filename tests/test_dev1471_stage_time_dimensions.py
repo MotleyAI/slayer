@@ -1,11 +1,4 @@
-"""DEV-1471 task 1.2 — time dimensions bind on stage datasets.
-
-Binder-level (a stage ``TimeDimension`` binds to a ``TimeTruncKey`` carrying the
-``StageColumn`` facts; unknown → ``UnknownReferenceError``; dotted →
-``IllegalScopeReferenceError``), checker-level re-bucketing rules
-(``TimeDimensionColumnError``), and executed cross-stage values on SQLite +
-DuckDB. Fails until 2.2–2.5 (cohort also needs the 2.8 SQLite cast fix).
-"""
+"""Time dimensions bind on stage datasets: binder facts, checker re-bucketing rules, and executed cross-stage values on SQLite + DuckDB."""
 
 from __future__ import annotations
 
@@ -111,14 +104,16 @@ class TestStageBinder:
     def test_unknown_stage_column_raises_unknown_reference(self) -> None:
         stage = _stage(StageColumn(name="created_at", sql_alias="created_at", type=DataType.TIMESTAMP))
         td = TimeDimension(dimension=ColumnRef(name="not_a_column"), granularity=TG.MONTH)
+        bundle = _bundle()
         with pytest.raises(UnknownReferenceError, match="created_at"):  # lists the stage's columns
-            bind_time_dimension(td, scope=stage, bundle=_bundle())
+            bind_time_dimension(td, scope=stage, bundle=bundle)
 
     def test_dotted_name_on_stage_raises_illegal_scope(self) -> None:
         stage = _stage(StageColumn(name="created_at", sql_alias="created_at", type=DataType.TIMESTAMP))
         td = TimeDimension(dimension=ColumnRef(name="customers.created_at"), granularity=TG.MONTH)
+        bundle = _bundle()
         with pytest.raises(IllegalScopeReferenceError):
-            bind_time_dimension(td, scope=stage, bundle=_bundle())
+            bind_time_dimension(td, scope=stage, bundle=bundle)
 
 
 # ---------------------------------------------------------------------------
@@ -149,7 +144,8 @@ class TestReBucketingChecker:
                 upstream_granularity=TG.MONTH, requested_granularity=TG.DAY,
             )
         msg = str(exc.value)
-        assert "month" in msg and "day" in msg
+        assert "month" in msg
+        assert "day" in msg
         assert "coarser" in msg  # the mandated remedy
 
     @pytest.mark.parametrize(
@@ -163,7 +159,8 @@ class TestReBucketingChecker:
                 upstream_granularity=upstream, requested_granularity=requested,
             )
         msg = str(exc.value)
-        assert upstream.value in msg and requested.value in msg
+        assert upstream.value in msg
+        assert requested.value in msg
         assert "coarser" in msg  # the mandated remedy
 
     @pytest.mark.parametrize(
@@ -196,6 +193,28 @@ class TestStageBindingErrorsEndToEnd:
         )
         with pytest.raises(TimeDimensionColumnError):
             await engine.execute(query=[inner, outer], dry_run=True)
+
+    async def test_finer_rebucket_after_passthrough_end_to_end(self) -> None:
+        # s1 buckets month, s2 re-projects the bucket as a plain dimension (which
+        # drops its type from the stage schema), s3 re-buckets finer: the untyped
+        # fail-closed rule rejects it, so a silent wrong re-bucket never lands.
+        engine = await _dryrun_engine([orders_model()])
+        s1 = SlayerQuery(
+            name="s1", source_model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TG.MONTH)],
+            measures=[{"formula": "amount:sum", "name": "rev"}],
+        )
+        s2 = SlayerQuery(
+            name="s2", source_model="s1", dimensions=["created_at"],
+            measures=[{"formula": "rev:sum"}],
+        )
+        s3 = SlayerQuery(
+            source_model="s2",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TG.DAY)],
+            measures=[{"formula": "rev_sum:sum"}],
+        )
+        with pytest.raises(TimeDimensionColumnError):
+            await engine.execute(query=[s1, s2, s3], dry_run=True)
 
     async def test_non_temporal_column_end_to_end(self) -> None:
         engine = await _dryrun_engine([orders_model()])
@@ -274,12 +293,12 @@ class TestStageReBucketExecuted:
             time_dimensions=[TimeDimension(
                 dimension=ColumnRef(name="customers__regions__last_activity_at"), granularity=TG.MONTH,
             )],
-            measures=[{"formula": "n:sum", "name": "n"}],
+            measures=[{"formula": "n:sum"}],
         )
         with tempfile.TemporaryDirectory() as tmp:
             data = await _exec_stages(backend, tmp, tables=tables, models=region_chain_models(), stages=[inner, outer])
         key = "s1.customers__regions__last_activity_at"
-        got = {date_str(r[key]): r["s1.n"] for r in data}
+        got = {date_str(r[key]): r["s1.n_sum"] for r in data}
         assert got == {"2025-01-01": 4, "2025-02-01": 1}
 
     async def test_coarser_year_over_month(self, backend: str) -> None:
@@ -291,11 +310,11 @@ class TestStageReBucketExecuted:
         outer = SlayerQuery(
             source_model="s1",
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TG.YEAR)],
-            measures=[{"formula": "rev:sum", "name": "rev"}],
+            measures=[{"formula": "rev:sum"}],
         )
         with tempfile.TemporaryDirectory() as tmp:
             data = await _exec_stages(backend, tmp, tables=[orders_table_spec(_MONTHLY)], models=[orders_model()], stages=[inner, outer])
-        got = {date_str(r["s1.created_at"]): r["s1.rev"] for r in data}
+        got = {date_str(r["s1.created_at"]): r["s1.rev_sum"] for r in data}
         assert got == {"2024-01-01": 300.0, "2025-01-01": 850.0}
 
     async def test_raw_temporal_column(self, backend: str) -> None:
@@ -306,11 +325,11 @@ class TestStageReBucketExecuted:
         outer = SlayerQuery(
             source_model="s1",
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TG.MONTH)],
-            measures=[{"formula": "rev:sum", "name": "rev"}],
+            measures=[{"formula": "rev:sum"}],
         )
         with tempfile.TemporaryDirectory() as tmp:
             data = await _exec_stages(backend, tmp, tables=[orders_table_spec(_MONTHLY)], models=[orders_model()], stages=[inner, outer])
-        got = {date_str(r["s1.created_at"]): r["s1.rev"] for r in data}
+        got = {date_str(r["s1.created_at"]): r["s1.rev_sum"] for r in data}
         assert got == {"2024-11-01": 100.0, "2024-12-01": 200.0, "2025-01-01": 350.0, "2025-02-01": 500.0}
 
     async def test_cohort_partition_by_auto_name_with_same_column_filter(self, backend: str) -> None:
@@ -349,16 +368,16 @@ class TestStageReBucketExecuted:
         s2 = SlayerQuery(
             name="s2", source_model="s1",
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TG.MONTH)],
-            measures=[{"formula": "rev:sum", "name": "rev"}],
+            measures=[{"formula": "rev:sum"}],
         )
         s3 = SlayerQuery(
             source_model="s2",
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TG.YEAR)],
-            measures=[{"formula": "rev:sum", "name": "rev"}],
+            measures=[{"formula": "rev_sum:sum"}],
         )
         with tempfile.TemporaryDirectory() as tmp:
             data = await _exec_stages(backend, tmp, tables=[orders_table_spec(_MONTHLY)], models=[orders_model()], stages=[s1, s2, s3])
-        got = {date_str(r["s2.created_at"]): r["s2.rev"] for r in data}
+        got = {date_str(r["s2.created_at"]): r["s2.rev_sum_sum"] for r in data}
         assert got == {"2024-01-01": 300.0, "2025-01-01": 850.0}
 
     async def test_stage_dimension_joins_stage_bucket_grain(self, backend: str) -> None:
@@ -369,11 +388,11 @@ class TestStageReBucketExecuted:
         outer = SlayerQuery(
             source_model="s1", dimensions=["region"],
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TG.MONTH)],
-            measures=[{"formula": "rev:sum", "name": "rev"}],
+            measures=[{"formula": "rev:sum"}],
         )
         with tempfile.TemporaryDirectory() as tmp:
             data = await _exec_stages(backend, tmp, tables=[orders_table_spec(_GRAIN)], models=[orders_model()], stages=[inner, outer])
-        got = {(r["s1.region"], date_str(r["s1.created_at"])): r["s1.rev"] for r in data}
+        got = {(r["s1.region"], date_str(r["s1.created_at"])): r["s1.rev_sum"] for r in data}
         assert got == {
             ("W", "2025-01-01"): 150.0,
             ("W", "2025-02-01"): 200.0,

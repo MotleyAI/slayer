@@ -1,10 +1,4 @@
-"""DEV-1471 task 1.3 — a date_range on a stage time dimension filters the stage.
-
-The ``isinstance(scope, ModelScope)`` skip that silently dropped a downstream
-``date_range`` is gone: a two-bound range on a stage time dimension restricts
-the outer stage's rows before its aggregation, exactly as on a model. Fails
-until 2.6.
-"""
+"""A two-bound date_range on a stage time dimension filters the outer stage's rows before its aggregation, exactly as a model-scope range filters a model."""
 
 from __future__ import annotations
 
@@ -58,16 +52,17 @@ async def test_stage_date_range_restricts_outer_stage(backend: str) -> None:
             dimension=ColumnRef(name="created_at"), granularity=TG.MONTH,
             date_range=["2025-02-01", "2025-03-31"],
         )],
-        measures=[{"formula": "rev:sum", "name": "rev"}],
+        measures=[{"formula": "rev:sum"}],
     )
     with tempfile.TemporaryDirectory() as tmp:
         resp = await _exec(backend, tmp, outer)
-    got = {date_str(r["s1.created_at"]): r["s1.rev"] for r in resp.data}
+    got = {date_str(r["s1.created_at"]): r["s1.rev_sum"] for r in resp.data}
     assert got == {"2025-02-01": 200.0, "2025-03-01": 300.0}
     # The range lands in the OUTER stage's WHERE on the stage column, not the inner CTE.
     where = _where_text(resp.sql or "", dialect=backend)
     assert "created_at" in where, resp.sql
-    assert "2025-02-01" in where and "2025-03-31" in where, resp.sql
+    assert "2025-02-01" in where, resp.sql
+    assert "2025-03-31" in where, resp.sql
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
@@ -78,10 +73,10 @@ async def test_stage_date_range_on_coarser_rebucketing(backend: str) -> None:
             dimension=ColumnRef(name="created_at"), granularity=TG.YEAR,
             date_range=["2025-02-01", "2025-03-31"],
         )],
-        measures=[{"formula": "rev:sum", "name": "rev"}],
+        measures=[{"formula": "rev:sum"}],
     )
     with tempfile.TemporaryDirectory() as tmp:
         resp = await _exec(backend, tmp, outer)
-    got = {date_str(r["s1.created_at"]): r["s1.rev"] for r in resp.data}
+    got = {date_str(r["s1.created_at"]): r["s1.rev_sum"] for r in resp.data}
     # Only Feb + Mar survive the range; the year bucket totals them.
     assert got == {"2025-01-01": 500.0}

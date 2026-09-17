@@ -229,12 +229,10 @@ class TestBindTimeDimension:
             dimension=ColumnRef(name="not_a_column"),
             granularity=TimeGranularity.MONTH,
         )
+        scope = ModelScope(source_model=model)
+        bundle = _bundle_local()
         with pytest.raises(UnknownReferenceError):
-            bind_time_dimension(
-                td,
-                scope=ModelScope(source_model=model),
-                bundle=_bundle_local(),
-            )
+            bind_time_dimension(td, scope=scope, bundle=bundle)
 
     # (DEV-1471) test_stage_schema_scope_rejected retired: downstream-stage
     # time dimensions now bind — covered by tests/test_dev1471_stage_time_dimensions.py.
@@ -244,12 +242,10 @@ class TestBindTimeDimension:
             dimension=ColumnRef(name="created_at"),
             granularity=TimeGranularity.MONTH,
         )
+        scope = ModelScope(source_model=None)
+        bundle = _bundle_local()
         with pytest.raises(UnknownReferenceError):
-            bind_time_dimension(
-                td,
-                scope=ModelScope(source_model=None),
-                bundle=_bundle_local(),
-            )
+            bind_time_dimension(td, scope=scope, bundle=bundle)
 
     def test_date_column_accepted(self) -> None:
         # DATE is in the same temporal bucket as TIMESTAMP — should bind.
