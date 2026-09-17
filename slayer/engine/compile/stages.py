@@ -242,7 +242,7 @@ def _regroup_partition_order(pks: Grain) -> List[ValueKey]:
 def _regroup_producer_prebound(  # NOSONAR(S3776) — one producer-prebound assembly; the grain / aggregate / inherited-filter / order arms share the prebound under construction.
     *,
     pks: Grain,
-    aggs: List[AggregateKey],
+    aggs: List[ValueKey],
     model: Optional[SlayerModel],
     bundle: ResolvedSourceBundle,
     inherited: List[BoundFilter],
@@ -285,7 +285,7 @@ def _regroup_producer_prebound(  # NOSONAR(S3776) — one producer-prebound asse
     agg_dms: List[DeclaredMeasure] = []
     for agg in aggs:
         canonical = (
-            public_alias_by_agg.get(agg)
+            (public_alias_by_agg.get(agg) if isinstance(agg, AggregateKey) else None)
             or (canonical_aggregate_alias(agg, profile="stage_formula")
                 if isinstance(agg, AggregateKey) else None)
             or getattr(agg, "agg", None)
@@ -560,7 +560,7 @@ def _first_unattributable_attached_leaf(
                 or "input"
             )
             return [(
-                canonical_aggregate_alias(inp, profile="stage_formula") or "input",
+                _constituent_alias(inp) or "input",
                 ".".join([*hp, name]),
                 broadcast_reason(
                     host_path=hp, target_path=target_path, root_model=root_model,
@@ -1251,7 +1251,7 @@ class _ProducerSynthesisContext(BaseModel):
     stage_schemas: Dict[str, StageSchema]
     # Home path per aggregate (Axiom 2), resolved in the elaborator and read
     # here; the source anchor is the fallback for keys with no term.
-    home_paths: Dict[AggregateKey, Tuple[str, ...]] = {}
+    home_paths: Dict[ValueKey, Tuple[str, ...]] = {}
 
     def home_of(self, agg: AggregateKey) -> Tuple[str, ...]:
         return self.home_paths.get(agg, source_anchor_path(agg.source))
@@ -1917,11 +1917,9 @@ def _constituent_alias(c: ValueKey) -> str:
     canonical aggregate alias of its own)."""
     if isinstance(c, TransformKey):
         return c.op
-    return (
-        canonical_aggregate_alias(c, profile="stage_formula")
-        or getattr(c, "agg", None)
-        or "reagg"
-    )
+    if isinstance(c, AggregateKey):
+        return canonical_aggregate_alias(c, profile="stage_formula") or c.agg
+    return "reagg"
 
 
 def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive second-order synthesis (constituents → union grain → attributability/mode → carrier producer → outer producer → attach); the arms share the re-rooting state.
@@ -2395,7 +2393,7 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
     in_producer: bool = False,
     producer_registry: Optional[Dict[Hashable, PlannedQuery]] = None,
     local_discovery: bool = True,
-    home_paths: Optional[Dict[AggregateKey, Tuple[str, ...]]] = None,
+    home_paths: Optional[Dict[ValueKey, Tuple[str, ...]]] = None,
 ) -> Optional[Tuple[PreboundQuery, List[RegroupAttachPlan]]]:
     """Discover partitioned aggregates and desugar into producer stages + reserved-leaf placeholders (row attach at base FROM, combined at the combined SELECT)."""
     # DEV-1847: re-aggregation roots — an aggregate whose operand resolves to

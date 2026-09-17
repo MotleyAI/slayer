@@ -1308,7 +1308,7 @@ def _grain_transform_inner_aggregates(
             and not source_anchor_path(rebuilt.source)
         ):
             return rebuilt.model_copy(update={"partition_keys": query_grain})
-        return rebuilt
+        return cast("ValueKey", rebuilt)  # map_children preserves ValueKey-ness
 
     new_input = _grain(t.input)
     return t if new_input is t.input else t.model_copy(update={"input": new_input})
@@ -1326,7 +1326,7 @@ def normalize_transform_constituents(
         lambda c: normalize_transform_constituents(c, query_grain=query_grain),
     )
     if not isinstance(rebuilt, AggregateKey):
-        return rebuilt
+        return cast("ValueKey", rebuilt)  # map_children preserves ValueKey-ness
     subs: Dict[ValueKey, ValueKey] = {}
     for c in operand_constituents(rebuilt.source):
         if isinstance(c, TransformKey):
@@ -1350,7 +1350,7 @@ def lower_collapsing_constituents(key: ValueKey) -> ValueKey:
     positions."""
     rebuilt = key.map_children(lower_collapsing_constituents)
     if not isinstance(rebuilt, AggregateKey):
-        return rebuilt
+        return cast("ValueKey", rebuilt)  # map_children preserves ValueKey-ness
     subs: Dict[ValueKey, ValueKey] = {}
     for c in operand_constituents(rebuilt.source):
         if (
