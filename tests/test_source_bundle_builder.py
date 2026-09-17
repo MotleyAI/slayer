@@ -168,19 +168,19 @@ class TestSourceModelShapes:
     async def test_dict_slayer_model_source(self, tmp_path):
         storage = await _storage(tmp_path, _regions(), _customers())
         inline = _orders().model_dump()
-        query = SlayerQuery(source_model=inline)
+        query = SlayerQuery.model_validate({"source_model": inline})
         bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(query=query, storage=storage)
         assert bundle.source_model is not None
         assert bundle.source_model.name == "orders"
 
     async def test_dict_model_extension_source(self, tmp_path):
         storage = await _storage(tmp_path, _regions(), _customers(), _orders())
-        query = SlayerQuery(
-            source_model={
+        query = SlayerQuery.model_validate({
+            "source_model": {
                 "source_name": "orders",
                 "columns": [{"name": "discount", "type": "DOUBLE"}],
-            }
-        )
+            },
+        })
         bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(query=query, storage=storage)
         assert bundle.source_model is not None
         assert bundle.source_model.name == "orders"

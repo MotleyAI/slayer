@@ -12,20 +12,23 @@ In SLayer, we chose a different path: the model defines the abstraction between 
 
 Any [transforms](../../concepts/formulas.md#transform-functions) from our DSL are then applied at query time inside a query's `measures` list; the `filters` list of a query likewise only refers to DSL-side entities — column names, query-time aggregations, transforms, and named formulas from that query.
 
-What if you want to add to a query a filter that directly references the underlying tables, and can only be phrased in terms of SQL, rather than DSL-side entities? Just use the [dynamic model extension feature](../../concepts/queries.md#modelextension) of a query, and add the desired filter to the model definition right inside the query.
+What if you want to add to a query a filter that directly references the underlying tables, and can only be phrased in terms of SQL, rather than DSL-side entities? Just use the [dynamic model extension feature](../../concepts/queries.md#modelextension) of a query: add a column carrying the raw SQL expression to the model definition right inside the query, then filter on it by name.
 
 ```json
 {
   "source_model": {
     "source_name": "orders",
-    "filters": ["subtotal > tax_paid * 5"]
+    "columns": [
+      {"name": "is_weekend", "sql": "CASE WHEN EXTRACT(dow FROM ordered_at) IN (0, 6) THEN 1 ELSE 0 END", "type": "INT"}
+    ]
   },
   "measures": ["*:count", "order_total:sum"],
-  "dimensions": ["stores.name"]
+  "dimensions": ["stores.name"],
+  "filters": ["is_weekend = 1"]
 }
 ```
 
-Here, `subtotal > tax_paid * 5` is a raw SQL condition on the underlying table columns — it's added to the model definition via `ModelExtension`, not to the query's filters. The query's own `measures` and `dimensions` still use DSL-level names.
+Here, `EXTRACT(dow FROM ordered_at) IN (0, 6)` is raw SQL over the underlying table columns — it lives on the model side, as a column added via `ModelExtension`. The query's own `measures`, `dimensions`, and `filters` still use DSL-level names: the filter refers to the new column by name.
 
 What if you want to get fancy, and use expressions such as time-shift for defining derived measures or dimensions?
 

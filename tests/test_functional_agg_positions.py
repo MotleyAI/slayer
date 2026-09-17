@@ -438,11 +438,11 @@ class TestExtensionPositions:
         )
 
     async def test_inline_source_model_measure(self) -> None:
-        def inline(formula: str) -> dict:
-            return {
+        def inline(formula: str) -> ModelExtension:
+            return ModelExtension.model_validate({
                 "source_name": "orders",
                 "measures": [{"name": "rev", "formula": formula}],
-            }
+            })
 
         await _assert_twins(
             SlayerQuery(
