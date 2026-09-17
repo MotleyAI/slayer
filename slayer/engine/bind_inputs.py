@@ -978,6 +978,7 @@ def _declared_measures_from_query(  # NOSONAR(S3776) — three sequential projec
         for td in (query.time_dimensions or [])
         for b in [bind_time_dimension(td=td, scope=scope, bundle=bundle)]
     ]
+    _assert_equivalent_tds_agree(bound_tds)
     _td_flat_counts = Counter(_flatten_dotted(canon) for _, _, canon in bound_tds)
     for td, bound, canonical in bound_tds:
         base_flat = _flatten_dotted(canonical)
@@ -1130,24 +1131,48 @@ def _build_date_range_filter(
     )
 
 
+def _assert_equivalent_tds_agree(
+    bound_tds: List[Tuple[TimeDimension, BoundExpr, str]],
+) -> None:
+    """Time dimensions binding to one ``TimeTruncKey`` (equivalent column spellings) must
+    agree on ``date_range``/``label``; otherwise their date-range filters and shared
+    projection column silently conflict. Construction dedup catches this once the query is
+    rooted — this is the bind-time backstop for spellings that only prove equivalent here
+    (full identity matching lands in DEV-1925)."""
+    seen: Dict[ValueKey, TimeDimension] = {}
+    for td, bound, _ in bound_tds:
+        prior = seen.setdefault(bound.value_key, td)
+        if prior is not td and (prior.date_range, prior.label) != (td.date_range, td.label):
+            raise GranularityCallError(
+                f"Conflicting time dimensions on {td.dimension.full_name!r} at "
+                f"{td.granularity.value} granularity: equivalent columns must not "
+                f"differ in date range or label."
+            )
+
+
 def _named_td_matches(
     *, tds: List[TimeDimension], target: str,
-) -> Tuple[Optional[TimeDimension], List[TimeDimension]]:
-    """(full-name match, leaf matches) for ``target`` among ``tds``."""
-    for td in tds:
-        if td.dimension.full_name == target:
-            return td, []
-    return None, [td for td in tds if td.dimension.name == target]
+) -> Tuple[List[TimeDimension], List[TimeDimension]]:
+    """(full-name matches, leaf matches) for ``target`` among ``tds``. Two same-column
+    buckets share a full_name, so full matches is a list, not a single TD (DEV-1883)."""
+    full = [td for td in tds if td.dimension.full_name == target]
+    if full:
+        return full, []
+    return [], [td for td in tds if td.dimension.name == target]
 
 
 def _host_local_default_td(
     *, tds: List[TimeDimension], default: str,
 ) -> Optional[TimeDimension]:
     # The default points only at the host model; prefer a host-local TD over a same-leaf joined one.
-    for td in tds:
-        if td.dimension.model is None and td.dimension.name == default:
-            return td
-    return None
+    matches = [
+        td for td in tds
+        if td.dimension.model is None and td.dimension.name == default
+    ]
+    # Same column at several granularities: the passive model default can't pick a
+    # bucket. Resolve to None (not raise) so no-transform queries still run; a
+    # transform that needs the axis then fails via check_time_transforms_resolved.
+    return matches[0] if len(matches) == 1 else None
 
 
 def _resolve_main_time_dimension(
@@ -1165,9 +1190,19 @@ def _resolve_main_time_dimension(
     if query.main_time_dimension:
         target = query.main_time_dimension
         # Prefer full-name (more specific) over leaf match.
-        full_match, leaf_matches = _named_td_matches(tds=tds, target=target)
-        if full_match is not None:
-            return full_match
+        full_matches, leaf_matches = _named_td_matches(tds=tds, target=target)
+        if len(full_matches) == 1:
+            return full_matches[0]
+        if len(full_matches) > 1:
+            # Same column, several granularities: a bare column can't pick a bucket.
+            # Per-granularity selection (e.g. year(created_at)) lands in DEV-1925.
+            raise AmbiguousReferenceError(
+                name=target,
+                candidates=[
+                    f"{td.granularity.value}({td.dimension.full_name})"
+                    for td in full_matches
+                ],
+            )
         if len(leaf_matches) == 1:
             return leaf_matches[0]
         if len(leaf_matches) > 1:
