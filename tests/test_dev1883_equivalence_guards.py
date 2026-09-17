@@ -52,7 +52,8 @@ class TestMainTimeDimensionAmbiguity:
         with pytest.raises(AmbiguousReferenceError) as ei:
             await engine.execute(q, dry_run=True)
         msg = str(ei.value)
-        assert "month(created_at)" in msg and "year(created_at)" in msg
+        assert "month(created_at)" in msg
+        assert "year(created_at)" in msg
 
     async def test_unit_resolve_raises_on_same_column_buckets(self, engine) -> None:
         model = await _orders_model(engine)
@@ -146,18 +147,20 @@ class TestEquivalentTimeDimensionMetadataGuard:
     K_YEAR = TimeTruncKey(column=ColumnKey(leaf="created_at"), granularity="year")
 
     def test_conflicting_date_range_raises(self) -> None:
+        tds = [
+            _bound_td("created_at", "month", self.K_MONTH, date_range=["2024-01-01", "2024-12-31"]),
+            _bound_td("orders.created_at", "month", self.K_MONTH, date_range=["2025-01-01", "2025-12-31"]),
+        ]
         with pytest.raises(GranularityCallError, match="date range"):
-            _assert_equivalent_tds_agree([
-                _bound_td("created_at", "month", self.K_MONTH, date_range=["2024-01-01", "2024-12-31"]),
-                _bound_td("orders.created_at", "month", self.K_MONTH, date_range=["2025-01-01", "2025-12-31"]),
-            ])
+            _assert_equivalent_tds_agree(tds)
 
     def test_conflicting_label_raises(self) -> None:
+        tds = [
+            _bound_td("created_at", "month", self.K_MONTH, label="A"),
+            _bound_td("orders.created_at", "month", self.K_MONTH, label="B"),
+        ]
         with pytest.raises(GranularityCallError):
-            _assert_equivalent_tds_agree([
-                _bound_td("created_at", "month", self.K_MONTH, label="A"),
-                _bound_td("orders.created_at", "month", self.K_MONTH, label="B"),
-            ])
+            _assert_equivalent_tds_agree(tds)
 
     def test_agreeing_metadata_passes(self) -> None:
         _assert_equivalent_tds_agree([
