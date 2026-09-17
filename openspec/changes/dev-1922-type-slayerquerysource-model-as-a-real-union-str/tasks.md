@@ -35,4 +35,4 @@
 - [x] 5.1 Regenerate the basedpyright baseline; confirm the diff only removes entries. Verify: `poetry run basedpyright` green, `git diff .basedpyright/baseline.json` deletions only.
 - [x] 5.2 `poetry run pytest -m "not integration" -n auto`; goldens byte-identical; `poetry run ruff check slayer/ tests/`; `poetry run python tools/arch_check.py`; `npx -y likec4@1.47.0 validate architecture`; `~/.claude/skills/process-reviews/scripts/check-conventions.sh`. Verify: all green.
 - [x] 5.3 Codex pass over the working tree before the push. Verify: no open findings.
-- [ ] 5.4 With go-ahead: commit, push, open the PR against `main`. Verify: PR URL recorded here.
+- [x] 5.4 With go-ahead: commit, push, open the PR against `main`. Verify: PR URL recorded here — https://github.com/MotleyAI/slayer/pull/401
