@@ -40,7 +40,7 @@ from slayer.core.errors import (
 )
 from slayer.core.join_walker import resolve_hop
 from slayer.core.models import SlayerModel
-from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
+from slayer.core.query import ColumnRef, ModelExtension, SlayerQuery, TimeDimension
 from slayer.engine.syntax import (
     AggCall,
     DottedRef,
@@ -544,23 +544,18 @@ async def extract_entities_from_query(  # NOSONAR(S3776) — straight-line walk 
                 seen.add(f)
                 canonical.append(f)
 
-    # 1. source_model — must already be a saved model name (str). For
-    # inline SlayerModel / ModelExtension, fall back to its name attr.
+    # 1. source_model — a saved model name, an inline model, or an extension's base.
     src = query.source_model
     if isinstance(src, str):
         source_model = await storage.get_model(src)
     elif isinstance(src, SlayerModel):
         source_model = src
+    elif isinstance(src, ModelExtension):
+        source_model = await storage.get_model(src.source_name)
     else:
-        # ModelExtension: resolve its source by name.
-        source_name = getattr(src, "source_name", None) or getattr(
-            src, "name", None
+        raise EntityResolutionError(
+            "Could not derive a model name from query.source_model."
         )
-        if not isinstance(source_name, str):
-            raise EntityResolutionError(
-                "Could not derive a model name from query.source_model."
-            )
-        source_model = await storage.get_model(source_name)
     if source_model is None:
         raise EntityResolutionError(
             f"Source model not found: {src!r}."

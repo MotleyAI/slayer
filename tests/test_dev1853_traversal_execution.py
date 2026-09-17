@@ -179,13 +179,13 @@ class TestOrientedCardinalityValues:
         # dedups each customer's spend once per status, never join-multiplied.
         kw = dict(source_model="customers", dimensions=["orders.status"],
                   measures=[{"formula": "spend:sum", "name": "s"}])
-        bcast = await fwd_engine.execute(SlayerQuery(**kw))
+        bcast = await fwd_engine.execute(SlayerQuery.model_validate(kw))
         assert broadcast_warnings(bcast)
         assert {r["customers.s"] for r in bcast.data} == {
             CHAIN_SPEND_BROADCAST_TOTAL}
 
         assoc = await fwd_engine.execute(
-            SlayerQuery(**kw, to_many_handling="associate"))
+            SlayerQuery.model_validate({**kw, "to_many_handling": "associate"}))
         got = {r["customers.orders.status"]: r["customers.s"]
                for r in assoc.data}
         assert got == CHAIN_SPEND_BY_REVERSE_STATUS

@@ -22,11 +22,9 @@ pass.
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 from slayer.core.enums import DataType
 from slayer.core.models import Column, ModelJoin, SlayerModel
-from slayer.core.query import SlayerQuery
+from slayer.core.query import ModelExtension, SlayerQuery
 from slayer.engine.schema_drift import (
     _attribute_ref_to_base,
     _build_stage_graph,
@@ -71,7 +69,7 @@ class TestStageGraphBidirectional:
         ) == "amount"
 
     def test_named_extension_hop_attributes_by_name(self) -> None:
-        stage = SimpleNamespace(source_model=SimpleNamespace(joins=[
+        stage = SlayerQuery(source_model=ModelExtension(source_name="orders", joins=[
             ModelJoin(target_model="customers",
                       join_pairs=[["customer_id", "id"]], name="buyer"),
         ]))
@@ -83,7 +81,7 @@ class TestStageGraphBidirectional:
         ) == "name"
 
     def test_parallel_extension_targets_unaddressable_by_bare_name(self) -> None:
-        stage = SimpleNamespace(source_model=SimpleNamespace(joins=[
+        stage = SlayerQuery(source_model=ModelExtension(source_name="orders", joins=[
             ModelJoin(target_model="customers",
                       join_pairs=[["b_id", "id"]], name="buyer"),
             ModelJoin(target_model="customers",

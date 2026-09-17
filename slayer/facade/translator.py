@@ -28,6 +28,7 @@ from slayer.core.query import (
     ModelExtension,
     OrderItem,
     SlayerQuery,
+    SourceSpec,
     TimeDimension,
 )
 from slayer.engine.cardinality import declares_solo_unique
@@ -2617,7 +2618,7 @@ def _materialise_dynamic_join_lookups(
 
 def _build_source_model_from_join(
     *, parent_name: str, plan: _JoinPlan,
-) -> object:
+) -> SourceSpec:
     """``SlayerQuery.source_model`` value derived from the join plan:
     the parent's bare name when an existing configured join matched, or a
     ``ModelExtension`` carrying the dynamically-built ``ModelJoin`` when
@@ -2811,7 +2812,7 @@ def _translate_slayer_select(
         strip_prefix=strip_prefix, alias_map=overlays.alias_map,
     )
 
-    source_model: object = (
+    source_model: SourceSpec = (
         _build_source_model_from_join(parent_name=table.name, plan=join_plan)
         if join_plan is not None
         else table.name

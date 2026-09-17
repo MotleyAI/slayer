@@ -53,9 +53,9 @@ from slayer.core.models import (
     SlayerModel,
 )
 from slayer.core.query import (
+    ModelExtension,
     SlayerQuery,
     _contains_block_delimiter,
-    _get_source_model_name,
     coerce_declared_list_variables,
     declares_variables,
     extract_variable_refs,
@@ -1229,7 +1229,7 @@ class SlayerQueryEngine:
             rewritten[name] = stage
 
         return (
-            query, rewritten, _get_source_model_name(query.source_model),
+            query, rewritten, query.source_model_name,
             inferred, inferred_data_source,
         )
 
@@ -1681,22 +1681,19 @@ class SlayerQueryEngine:
         out: set[str] = set()
         if not model.source_queries:
             return out
-        stages = list(model.source_queries)
-        stage_names = {
-            getattr(s, "name", None) for s in stages if getattr(s, "name", None)
-        }
+        stages: list[SlayerQuery] = list(model.source_queries)
+        stage_names = {s.name for s in stages if s.name}
         for stage in stages:
-            sm = getattr(stage, "source_model", None)
+            sm = stage.source_model
+            joins: list = []
             if isinstance(sm, str) and sm not in stage_names:
                 out.add(sm)
             elif isinstance(sm, SlayerModel):
                 out.add(sm.name)
-            # Joins live on the stage's source_model (a ModelExtension); getattr
-            # makes plain str / SlayerModel source_models no-ops.
-            for j in (getattr(sm, "joins", None) or []):
-                target = getattr(j, "target_model", None)
-                if target is not None:
-                    out.add(target)
+                joins = sm.joins
+            elif isinstance(sm, ModelExtension):
+                joins = sm.joins or []
+            out.update(j.target_model for j in joins)
         return out
 
     async def _load_join_graph_models(

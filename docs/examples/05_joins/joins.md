@@ -28,7 +28,7 @@ When auto-ingesting a schema, SLayer introspects foreign key relationships and c
 
 For now, if there are multiple ways in the join graph to reach a given model, we treat these as separate copies when constructing queries, de facto turning the join graph into a tree. For example, if we have joins like A → B → C and A → D→ C, then B.C.column1 and D.C.column1 will refer to separate subqueries in the SLayer-constructed query. 
 
-If that is not the desired behavior, you can add to the model a filter `B.C.column1 == D.C.column1` (dotted paths work in model filters, which are SQL snippets), re-creating the diamond pattern.
+If that is not the desired behavior, add a filter `B.C.column1 = D.C.column1` to the query, or to the model to make it permanent (dotted paths work in both), re-creating the diamond pattern.
 
 ## Dynamic joins
 

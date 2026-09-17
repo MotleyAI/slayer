@@ -13,7 +13,7 @@ import pytest
 
 from slayer.core.keys import AggregateKey, ColumnKey
 from slayer.core.keys import Grain
-from slayer.core.query import ModelMeasure, SlayerQuery
+from slayer.core.query import ModelExtension, ModelMeasure, SlayerQuery
 from slayer.engine.compile.regroup import (
     REGROUP_LEAF_PREFIX,
     RegroupPlaceholderRegistry,
@@ -200,11 +200,11 @@ class TestDiscoveryGuards:
 
     async def test_reserved_prefix_column_rejected_when_regroup_active(self) -> None:
         q = SlayerQuery(
-            source_model={
+            source_model=ModelExtension.model_validate({
                 "source_name": "orders",
                 "columns": [{"name": "__regroup__x", "sql": "amount",
                              "type": "DOUBLE"}],
-            },
+            }),
             dimensions=["region", {"expression": BAND, "name": "band"}],
             measures=[ModelMeasure(formula="amount:sum", name="s")],
         )
@@ -213,11 +213,11 @@ class TestDiscoveryGuards:
 
     async def test_reserved_prefix_column_fine_without_regroup(self) -> None:
         q = SlayerQuery(
-            source_model={
+            source_model=ModelExtension.model_validate({
                 "source_name": "orders",
                 "columns": [{"name": "__regroup__x", "sql": "amount",
                              "type": "DOUBLE"}],
-            },
+            }),
             dimensions=["region"],
             measures=[ModelMeasure(formula="amount:sum", name="s")],
         )

@@ -1568,10 +1568,10 @@ async def test_query_list_with_joins(cross_model_env):
     # In the virtual model, inner measures become dimensions with auto-generated
     # SUM/AVG measures. Use avg_score_avg to re-average the inner avg_score.
     main = SlayerQuery(
-        source_model=ModelExtension(
-            source_name="orders",
-            joins=[{"target_model": "customer_scores", "join_pairs": [["customer_id", "id"]]}],
-        ),
+        source_model=ModelExtension.model_validate({
+            "source_name": "orders",
+            "joins": [{"target_model": "customer_scores", "join_pairs": [["customer_id", "id"]]}],
+        }),
         time_dimensions=[TimeDimension(
             dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
         )],
@@ -1615,10 +1615,10 @@ async def test_sibling_stage_joins_dag(cross_model_env):
         ),
         SlayerQuery(
             name="tagged",
-            source_model=ModelExtension(
-                source_name="customers",
-                joins=[{"target_model": "kpis", "join_pairs": [["id", "customer_id"]]}],
-            ),
+            source_model=ModelExtension.model_validate({
+                "source_name": "customers",
+                "joins": [{"target_model": "kpis", "join_pairs": [["id", "customer_id"]]}],
+            }),
             # ``kpis.total_amount_sum`` is a join-traversed dimension, so
             # each customer row carries their own kpis sum.
             dimensions=[ColumnRef(name="name"), ColumnRef(name="kpis.total_amount_sum")],
@@ -1647,10 +1647,10 @@ async def test_sql_dimension_via_model_extension(integration_env):
     engine = integration_env
 
     query = SlayerQuery(
-        source_model=ModelExtension(
-            source_name="orders",
-            columns=[{"name": "tier", "sql": "CASE WHEN amount > 100 THEN 'high' ELSE 'low' END"}],
-        ),
+        source_model=ModelExtension.model_validate({
+            "source_name": "orders",
+            "columns": [{"name": "tier", "sql": "CASE WHEN amount > 100 THEN 'high' ELSE 'low' END"}],
+        }),
         dimensions=[ColumnRef(name="tier")],
         measures=[ModelMeasure(formula="*:count")],
     )
@@ -1666,10 +1666,10 @@ async def test_sql_dimension_with_regular(integration_env):
     engine = integration_env
 
     query = SlayerQuery(
-        source_model=ModelExtension(
-            source_name="orders",
-            columns=[{"name": "tier", "sql": "CASE WHEN amount > 100 THEN 'high' ELSE 'low' END"}],
-        ),
+        source_model=ModelExtension.model_validate({
+            "source_name": "orders",
+            "columns": [{"name": "tier", "sql": "CASE WHEN amount > 100 THEN 'high' ELSE 'low' END"}],
+        }),
         dimensions=[ColumnRef(name="status"), ColumnRef(name="tier")],
         measures=[ModelMeasure(formula="*:count")],
     )
@@ -1697,11 +1697,11 @@ async def test_formula_dimension_via_query_list(integration_env):
 
     # Outer: group by amount tier via ModelExtension on the inner query's result
     outer = SlayerQuery(
-        source_model=ModelExtension(
-            source_name="monthly",
-            columns=[{"name": "amount_tier",
+        source_model=ModelExtension.model_validate({
+            "source_name": "monthly",
+            "columns": [{"name": "amount_tier",
                          "sql": "CASE WHEN total_amount_sum > 200 THEN 'high' ELSE 'low' END"}],
-        ),
+        }),
         dimensions=[ColumnRef(name="amount_tier")],
         measures=[ModelMeasure(formula="*:count")],
     )
