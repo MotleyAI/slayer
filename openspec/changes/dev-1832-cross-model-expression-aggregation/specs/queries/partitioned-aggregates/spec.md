@@ -1,17 +1,38 @@
 ## MODIFIED Requirements
 
+### Requirement: Partitioned aggregates nested inside transforms
+A transform SHALL accept a partitioned aggregate as its input when used as a measure — rank-family transforms and temporal transforms (`time_shift`, `change`, `change_pct`, `lag`, `lead`, `cumsum`, `consecutive_periods`) alike. The transform evaluates at the query grain over the attached partition-grain value (the grain of its containing context) and MUST never fail with an internal error.
+
+#### Scenario: Running total of partition-grain values
+- WHEN a query selects dimensions `[region, city, month(ordered_at)]` and the measure `cumsum(revenue:sum(partition_by=[region, ordered_at]))`
+- THEN each row's value is the cumulative sum across months, within the row's non-time dimensions, of the attached region-month totals, verified by executed values
+
+#### Scenario: Ranking result rows by an attached total
+- WHEN a query selects the measure `rank(revenue:sum(partition_by=region))`
+- THEN result rows are ranked by their attached region total at the query grain
+
+#### Scenario: Change over a partitioned aggregate executes
+- WHEN a query selects `change(amount:sum(partition_by=region))` or `change_pct(amount:sum(partition_by=region))` over a month time dimension
+- THEN the query executes with the hand-computed bucket-over-previous-bucket difference (or ratio) of the attached value, instead of failing with an internal rendering error
+
 ### Requirement: Re-aggregation consumes attached operands as datasets
 A partitioned aggregate, an explicitly grained transform, or a composite of them
 SHALL be a legal aggregation source: the outer aggregation consumes the operand
 dataset's cells per `queries/semantics` › Second-order aggregation over attached
-values. An explicitly grained transform — every inner aggregate carrying
-`partition_by=` — is a constituent like a partitioned aggregate, typed at the union
-of its inner aggregates' effective grains, a windowed inner contributing the query's
-active time bucket (per `queries/computed-dimensions` › Transforms inside dimension
-expressions), and evaluated at that grain; a time-ordered transform constituent
-whose grain does not contain its time axis SHALL fail with the same time-axis error
-a dimension-position transform raises; a transform with no explicitly grained inner
-aggregate types at the query grain and follows the degenerate rule. The outer
+values. A transform is a constituent like a partitioned aggregate, typed at the union of
+its inner aggregates' effective grains — each inner's explicit `partition_by=`, else
+the query grain (its dimensions and time buckets), a windowed inner contributing the
+query's active time bucket (per `queries/computed-dimensions` › Transforms inside
+dimension expressions) — and evaluated at that grain; a time-ordered transform
+constituent whose grain does not contain its time axis SHALL fail with the same
+time-axis error a dimension-position transform raises, the axis being named in
+`partition_by=` exactly as in dimension position (a top-level measure transform is
+unchanged and keeps evaluating at the query grain over the attached value); an
+axis-collapsing transform constituent (`first`, `last`) is typed at that union minus
+its time axis, realised as its axis-preserving evaluation followed by an exact
+per-partition pick, so the axis resolves per `to_many_handling` like any dimension
+the operand grain lacks; a transform with no explicitly grained inner aggregate types
+at the query grain and follows the degenerate rule. The outer
 aggregation SHALL support the plain scalar aggregation family —
 `sum`, `avg`, `min`, `max`, `count`, `count_distinct`, `median`,
 parametric aggregations, and model-defined custom aggregations; `count` counts
@@ -45,25 +66,38 @@ measure-local `filter=` on the outer aggregation.
 
 #### Scenario: Grained transform constituent executes through the carrier
 - **WHEN** a query over a month time dimension selects
-  `sum(cumsum(amount:sum, partition_by=[region, month(ordered_at)]) - 1)`
+  `sum(cumsum(amount:sum(partition_by=[region, ordered_at])) - 1)`
 - **THEN** it executes with the hand-computed sum over regions of running totals
   minus one per cell on SQLite and DuckDB, the plan carries exactly one producer for
   the transform at its `(region, month)` grain inside the carrier, the emitted
   statement has one flat `WITH`, scopes are closed, and no placeholder leaks
 
-#### Scenario: Windowed inner under a transform constituent carries the bucket
+#### Scenario: Every transform family executes as a constituent
+- **WHEN** a query over a month time dimension selects, over
+  `amount:sum(partition_by=[region, ordered_at])`, a `change`, a `lag`, a
+  `consecutive_periods` and a `first`/`last` constituent under `sum`
+- **THEN** each executes with hand-computed values on SQLite and DuckDB: the
+  shift family through its self-join series, `lag` and `consecutive_periods` per
+  cell, and `first`/`last` at the collapsed `(region)` grain
+
+#### Scenario: Windowed inner under a transform constituent fails closed
 - **WHEN** a query over a month time dimension selects
   `sum(rank(amount:sum(window='90d', partition_by=region)))`
-- **THEN** the constituent's grain is `(region, month bucket)`, the rank is computed
-  per bucket across regions and re-aggregated per month, by executed values, with
-  unchanged cardinality
+- **THEN** it fails with the windowed time-dimension resolution error — never a
+  misgrained or duplicated result — the shape being deferred to a follow-up issue
 
 #### Scenario: Transform constituent without its time axis fails cleanly
 - **WHEN** a query over a month time dimension selects
-  `sum(cumsum(amount:sum, partition_by=region))`
+  `sum(cumsum(amount:sum(partition_by=region)))`
 - **THEN** it fails with the time-axis error directing the author to include the time
   key in `partition_by=`, the same error the dimension-position form raises, and
   never returns duplicated or misgrained rows
+
+#### Scenario: Time transform without a time dimension fails as a constituent
+- **WHEN** a query with no `time_dimensions` selects
+  `sum(cumsum(amount:sum(partition_by=[region, ordered_at])))`
+- **THEN** it fails with the same unambiguous-time-dimension error a top-level
+  `cumsum` raises
 
 #### Scenario: Operand-grain parameter executes
 - **WHEN** a query over `[region]` selects

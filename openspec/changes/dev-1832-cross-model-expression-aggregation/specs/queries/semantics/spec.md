@@ -71,9 +71,11 @@ combined through arithmetic and scalar functions — SHALL aggregate over the
 operand dataset's cells, never over the query's population rows. The operand
 dataset is typed by the union of its constituents' grains: an aggregate
 constituent at its declared `partition_by=` grain; a transform constituent at the
-union of its inner aggregates' grains, where a windowed inner's grain always includes
-the query's time bucket whether or not its `partition_by=` names it; a constituent
-with no declared grain is typed at the query's dimensions. Its rows are the distinct union-grain cells of the row-filtered
+union of its inner aggregates' grains — each inner's explicit `partition_by=`, else
+the query's dimensions and time buckets — where a windowed inner's grain always
+includes the query's time bucket whether or not its `partition_by=` names it, and an
+axis-collapsing transform (`first`, `last`) at that union minus its time axis; a
+constituent with no declared grain is typed at the query's dimensions. Its rows are the distinct union-grain cells of the row-filtered
 population; each constituent's value attaches null-safely at its own grain, a cell
 a constituent lacks contributes NULL, and no constituent adds or removes cells. The
 outer aggregation partitions those cells by the query dimensions attributable to
@@ -100,7 +102,7 @@ column's values.
 
 #### Scenario: Grained transform constituent aggregates the transform's cells
 - **WHEN** a query over a month time dimension selects
-  `sum(cumsum(amount:sum, partition_by=[region, month(ordered_at)]) - 1)`
+  `sum(cumsum(amount:sum(partition_by=[region, ordered_at])) - 1)`
 - **THEN** each month carries the sum over regions of that region's running total
   minus one per cell, by hand-computed executed values on SQLite and DuckDB
 
@@ -108,6 +110,29 @@ column's values.
 - **WHEN** a query selects `sum(cumsum(amount:sum))` over a month time dimension
 - **THEN** the value equals `cumsum(amount:sum)` per cell and the response carries
   the degenerate-re-aggregation warning, exactly as `sum(sum(amount))` does
+
+#### Scenario: Ungrained inner of a mixed operand types at the query grain
+- **WHEN** a query over a month time dimension selects
+  `sum(rank(amount:sum(partition_by=[region, ordered_at]) - amount:sum))`
+- **THEN** the ungrained inner is the month total, computed at the query grain and
+  broadcast onto the `(region, month)` cells before ranking — never re-evaluated per
+  region — by hand-computed executed values distinguishable from the per-cell
+  evaluation
+
+#### Scenario: Collapsing transform constituent drops the time axis
+- **WHEN** a query over a month time dimension selects
+  `sum(last(amount:sum(partition_by=[region, ordered_at])))`
+- **THEN** the constituent is typed at `(region)`: every month carries the sum over
+  regions of each region's most recent monthly total, the response warns that the
+  month dimension is broadcast, and a region absent from a month still counts —
+  distinguishable from summing the `(region, month)` cells present in that month
+
+#### Scenario: Collapsing and preserving constituents share one operand dataset
+- **WHEN** the same query selects
+  `sum(cumsum(amount:sum(partition_by=[region, ordered_at])) - last(amount:sum(partition_by=[region, ordered_at])))`
+- **THEN** the operand dataset is the `(region, month)` cells, the collapsed value
+  broadcasts onto them, each month is attributable through the preserving
+  constituent, and the value is correct with no warning
 
 #### Scenario: Composite operand keeps the population's cells
 - **WHEN** the operand combines aggregates at `[city, region]` and `[region]`
@@ -180,8 +205,9 @@ population rows of its home dataset, never over the attached operands' cells. Th
 operand types at row grain: the union of a row leaf's grain with any attached
 constituent's grain is row grain, the finest. Each attached constituent is computed
 at its own declared grain (an aggregate at its `partition_by=` grain, a transform at
-the union of its inner aggregates' grains; a constituent with no declared grain is
-typed at the query's dimensions) and its value is broadcast onto each population
+the union of its inner aggregates' grains, minus its time axis for `first`/`last`;
+a constituent with no declared grain is typed at the query's dimensions) and its
+value is broadcast onto each population
 row null-safely: a row whose constituent lacks a value carries NULL for that
 constituent, and the attachment never adds or removes rows. Per-row weighting is
 the defined meaning of the shape and the broadcast SHALL NOT warn. The outer

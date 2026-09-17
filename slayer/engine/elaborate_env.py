@@ -39,6 +39,7 @@ from slayer.core.keys import (
     TimeTruncKey,
     TransformKey,
     ValueKey,
+    operand_constituents,
     regroup_root_grain,
     source_anchor_path,
     walk_value_keys,
@@ -522,25 +523,40 @@ def check_opaque_grouping_dim(
         )
 
 
+def _temporal_axis_transforms(dm):
+    """Time-ordered transforms whose grain must contain their axis: any transform
+    in a dimension expression, and a transform that is an aggregation-source
+    constituent in a measure (a top-level transform measure carries its bucket
+    through the windowed producer instead)."""
+    vk = dm.bound.value_key
+    if dm.is_dimension:
+        yield from (k for k in walk_value_keys(vk) if isinstance(k, TransformKey))
+        return
+    for k in walk_value_keys(vk):
+        if isinstance(k, AggregateKey):
+            yield from (
+                c for c in operand_constituents(k.source)
+                if isinstance(c, TransformKey)
+            )
+
+
 def check_dimension_temporal_axis(declared_measures) -> None:
-    """Fail closed if a time-ordered transform inside a dimension evaluates at a grain not containing its time axis (DEV-1871 G10, was ``_guard_dimension_temporal_axis``)."""
+    """Fail closed if a time-ordered transform — in a dimension or aggregated as
+    a source constituent — evaluates at a grain not containing its time axis
+    (DEV-1871 G10 / DEV-1832 D4, was ``_guard_dimension_temporal_axis``)."""
     for dm in declared_measures:
-        if not dm.is_dimension:
-            continue
-        for tk in walk_value_keys(dm.bound.value_key):
-            if not isinstance(tk, TransformKey):
-                continue
+        for tk in _temporal_axis_transforms(dm):
             if tk.op not in TIME_TRANSFORMS or tk.time_key is None:
                 continue
             if tk.time_key not in regroup_root_grain(tk):
                 axis = dotted_key_display(tk.time_key)
                 raise NotImplementedError(
-                    f"A time-ordered transform '{tk.op}' inside a computed "
-                    f"dimension evaluates at a grain that does not contain its "
-                    f"time axis '{axis}'; a producer bucketed by time joined back "
-                    f"on the coarser grain would duplicate result rows. Include "
-                    f"the time key in the aggregate's partition_by= so the "
-                    f"transform accumulates within its own grain."
+                    f"A time-ordered transform '{tk.op}' evaluates at a grain "
+                    f"that does not contain its time axis '{axis}'; a producer "
+                    f"bucketed by time joined back on the coarser grain would "
+                    f"duplicate result rows. Include the time key in the "
+                    f"aggregate's partition_by= so the transform accumulates "
+                    f"within its own grain."
                 )
 
 

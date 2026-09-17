@@ -17,8 +17,8 @@ from slayer.core.keys import (
     ColumnSqlKey,
     TransformKey,
     ValueKey,
-    effective_root_grain,
-    operand_aggregates,
+    constituent_grain,
+    operand_constituents,
     source_anchor_path,
     source_leaf_paths,
     walk_value_keys,
@@ -95,13 +95,10 @@ def _constituent_grain_paths(
     """Paths of an attached constituent's grain members (Axiom 2.3): its grain is
     the explicit ``partition_by=`` else the query dimensions, and a windowed inner
     always includes the query's time bucket."""
-    grain, windowed = effective_root_grain(
+    members = constituent_grain(
         c, projected_dim_keys=dim_keys, projected_td_keys=td_keys,
         active_bucket=active_bucket,
     )
-    members = set(grain)
-    if windowed and active_bucket is not None:
-        members.add(active_bucket)
     out: List[Path] = []
     for m in members:
         out.extend(_grain_member_paths(
@@ -137,7 +134,7 @@ def home_path_for(
     # the home must determine every one of its grain members (Axiom 2.3). An
     # aggregate-valued parameter is not a source operand — a query dimension it does
     # not share is associated / broadcast, never moved into the home (Axioms 2.4, 2.9).
-    for c in operand_aggregates(agg.source):
+    for c in operand_constituents(agg.source):
         input_paths.extend(_constituent_grain_paths(
             c, dim_keys=dim_keys, td_keys=td_keys, active_bucket=active_bucket,
         ))

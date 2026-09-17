@@ -137,7 +137,7 @@ row-level source, as a constituent of the operand dataset for an attached one.
 
 #### Scenario: Grained transform in the source accepted
 - **WHEN** a query over a month time dimension selects
-  `sum(cumsum(amount:sum, partition_by=[region, month(ordered_at)]) - 1)`
+  `sum(cumsum(amount:sum(partition_by=[region, ordered_at])) - 1)`
 - **THEN** each month carries the sum over regions of that region's running total
   minus one per cell, by hand-computed values on SQLite and DuckDB, distinguishable
   from the ungrained identity — never the former nested-transform rejection

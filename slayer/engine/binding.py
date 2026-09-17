@@ -1028,10 +1028,11 @@ def _reject_non_numeric_expression_agg(
 
 
 def _source_is_reaggregation(node) -> bool:
-    """Whether a parsed aggregation source resolves to attached values (a nested
-    AggCall, alone or composed) — a re-aggregation (DEV-1847). The parse gate has
-    already ensured such a source is pure-attached (no transforms, no row mix)."""
-    if isinstance(node, AggCall):
+    """Whether a parsed aggregation source carries an attached value — a nested
+    AggCall or a grained transform, alone or composed. Such a source is bound
+    structurally (its inner AggCalls / TransformCalls become nested keys) whether
+    it is a pure re-aggregation (DEV-1847) or a row-grain mix (DEV-1859)."""
+    if isinstance(node, (AggCall, TransformCall)):
         return True
     if isinstance(node, (Arith, Cmp)):
         return _source_is_reaggregation(node.left) or _source_is_reaggregation(node.right)

@@ -28,12 +28,15 @@ elaborator, and dependency closures, the shapes compose from existing primitives
   reads the masked value (non-matching rows fall into a NULL group). Single-column
   aggregate SQL is unchanged.
 - **Transform constituents.** A transform nested in an aggregation source is an
-  attached constituent typed at the union of its inner aggregates' explicit grains
-  (the transform-in-dimension rule; a windowed inner adds the active time bucket);
-  ungrained inners type it at the query grain (identity + the degenerate warning); a
-  row leaf under the transform that is not a projected grain key is rejected by the
-  DEV-1859 non-shift rule, extended to source position; a time-ordered constituent
-  without its axis fails with the existing time-axis error, reworded position-neutral.
+  attached constituent typed at the union of its inner aggregates' grains (the
+  transform-in-dimension rule; a windowed inner adds the active time bucket); an
+  ungrained inner is normalised to the query grain, so all-ungrained is the identity
+  plus the degenerate warning; `first`/`last` collapse the time axis through an
+  exact second-order pick; a row leaf under the transform that is not a projected
+  grain key is rejected by the DEV-1859 non-shift rule, extended to source position;
+  a time-ordered constituent whose `partition_by=` omits its axis fails with the
+  existing time-axis error, reworded position-neutral. Top-level measure transforms
+  are unchanged.
 - Every synthesized producer sub-plan is elaborated through the one elaboration pass
   (no compiler-local typing); the guard ratchet's stale allowlist entry is removed;
   `SqlExprKey` is retired if producer-less.

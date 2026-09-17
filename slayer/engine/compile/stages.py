@@ -27,7 +27,7 @@ from pydantic import BaseModel, ConfigDict
 
 from slayer.core.enums import DataType, RANKED_AGGREGATIONS
 from slayer.core.errors import AmbiguousJoinPathError, UnreachableFilterDroppedWarning
-from slayer.core.keys import AggregateKey, Grain, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, regroup_root_grain, effective_root_grain, reroot_value_key, substitute_value_keys, walk_value_keys, walk_consumer_keys, REGROUP_LEAF_PREFIX, is_cross_model_agg, is_local_partitioned_agg, split_top_level_and, window_kwarg_of, is_reaggregation_key, is_row_attach_root, attached_inputs, operand_aggregates, source_anchor_path
+from slayer.core.keys import AggregateKey, Grain, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, regroup_root_grain, effective_root_grain, constituent_grain, reroot_value_key, substitute_value_keys, walk_value_keys, walk_consumer_keys, REGROUP_LEAF_PREFIX, is_cross_model_agg, is_local_partitioned_agg, split_top_level_and, window_kwarg_of, is_reaggregation_key, is_row_attach_root, attached_inputs, operand_aggregates, operand_constituents, source_anchor_path
 from slayer.core.models import SlayerModel
 from slayer.engine.reference_closure import (
     ParamSpec,
@@ -1932,20 +1932,26 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
     scope, stage_schemas = context.scope, context.stage_schemas
     proj = [*context.projected_dim_keys, *context.projected_td_keys]
 
-    # Constituents and their grains; a constituent with no declared partition is
-    # typed at the query's dimensions. The union grain is the carrier grain.
-    constituents = operand_aggregates(root.source)
+    # Constituents (aggregates and grained transforms) and their grains; a
+    # constituent with no declared partition is typed at the query's dimensions,
+    # a transform at the union of its inner aggregates' grains (Axiom 2.3). The
+    # union grain is the carrier grain.
+    constituents = operand_constituents(root.source)
     union_grain = Grain.EMPTY
     for c in constituents:
-        cg = Grain.of(c.partition_keys) if c.partition_keys is not None else Grain.of(proj)
-        union_grain = union_grain | cg
+        union_grain = union_grain | constituent_grain(
+            c, projected_dim_keys=context.projected_dim_keys,
+            projected_td_keys=context.projected_td_keys,
+            active_bucket=prebound.main_time_key,
+        )
 
-    # A clean, stable name for the re-aggregation (the nested-aggregate source
-    # has no canonical alias of its own).
+    # A clean, stable name for the re-aggregation (the nested source has no
+    # canonical alias of its own; a transform constituent has no ``.agg``).
     inner_alias = (
         (canonical_aggregate_alias(constituents[0], profile="stage_formula")
          if constituents else None)
-        or (constituents[0].agg if constituents else "reagg")
+        or (getattr(constituents[0], "agg", None) if constituents else None)
+        or (constituents[0].op if constituents else "reagg")
     )
     alias = (
         public_alias
@@ -2484,14 +2490,10 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
             public_alias_by_agg.setdefault(agg, name)
 
     def _root_grain(agg: ValueKey) -> Grain:
-        grain, windowed = effective_root_grain(
+        return constituent_grain(
             agg, projected_dim_keys=projected_dim_keys,
             projected_td_keys=projected_td_keys, active_bucket=active_bucket,
         )
-        # Fold the windowed axis back in: a bare windowed measure IS its producer's answer, so it must be excluded.
-        if windowed and active_bucket is not None:
-            grain = grain | {active_bucket}
-        return grain
 
     # Inside a union-grain producer, a root at EXACTLY the producer's grain compiles inline; only STRICT-subset grains nest (windowed transform inner excepted).
     if in_producer:

@@ -925,6 +925,24 @@ def effective_root_grain(
     return grain, windowed
 
 
+def constituent_grain(
+    c: ValueKey, *,
+    projected_dim_keys: List[ValueKey],
+    projected_td_keys: List[ValueKey],
+    active_bucket: Optional[ValueKey],
+) -> Grain:
+    """Grain of an attached constituent (Axiom 2.3) — aggregate or grained
+    transform: its effective root grain, folding the active bucket back in when a
+    windowed inner pulls it in."""
+    grain, windowed = effective_root_grain(
+        c, projected_dim_keys=projected_dim_keys,
+        projected_td_keys=projected_td_keys, active_bucket=active_bucket,
+    )
+    if windowed and active_bucket is not None:
+        return grain | {active_bucket}
+    return grain
+
+
 def reroot_value_key(
     key: _RerootableT, *, target_path: Tuple[str, ...],
 ) -> _RerootableT:
@@ -1185,13 +1203,33 @@ def operand_aggregates(source: ValueKey) -> List[AggregateKey]:
     return out
 
 
-def source_row_leaves(source: ValueKey) -> List[ValueKey]:
-    """The top-level ROW-level column leaves of an aggregation source (not
-    descending through a nested aggregate's own source, which is attached)."""
+def operand_constituents(source: ValueKey) -> List[ValueKey]:
+    """The top-level attached constituents of an aggregation source — nested
+    aggregates AND grained transforms (Axiom 2.3), deduped and opaque (neither
+    descended past). The generalisation of :func:`operand_aggregates` that treats
+    a transform as the typed dataset it is."""
     out: List[ValueKey] = []
 
     def _walk(k: ValueKey) -> None:
-        if isinstance(k, AggregateKey):
+        if isinstance(k, (AggregateKey, TransformKey)):
+            if k not in out:
+                out.append(k)
+            return
+        for c in k.children():
+            _walk(c)
+
+    _walk(source)
+    return out
+
+
+def source_row_leaves(source: ValueKey) -> List[ValueKey]:
+    """The top-level ROW-level column leaves of an aggregation source (not
+    descending through an attached constituent — a nested aggregate or a grained
+    transform — whose own leaves are opaque)."""
+    out: List[ValueKey] = []
+
+    def _walk(k: ValueKey) -> None:
+        if isinstance(k, (AggregateKey, TransformKey)):
             return
         if isinstance(k, (ColumnKey, ColumnSqlKey, TimeTruncKey, StarKey)):
             out.append(k)
@@ -1249,16 +1287,17 @@ def source_anchor_path(source: ValueKey) -> Tuple[str, ...]:
     return prefix
 
 
-def attached_inputs(k: ValueKey) -> List[AggregateKey]:
-    """Deduped top-level aggregates across source, args and kwargs (source first)."""
+def attached_inputs(k: ValueKey) -> List[ValueKey]:
+    """Deduped top-level attached constituents — aggregates and grained
+    transforms — across source, args and kwargs (source first)."""
     if not isinstance(k, AggregateKey):
         return []
-    out: List[AggregateKey] = []
+    out: List[ValueKey] = []
     for inp in (k.source, *k.args, *(v for _, v in k.kwargs)):
         if isinstance(inp, _FrozenKey):
-            for agg in operand_aggregates(inp):
-                if agg not in out:
-                    out.append(agg)
+            for c in operand_constituents(inp):
+                if c not in out:
+                    out.append(c)
     return out
 
 
@@ -1267,7 +1306,7 @@ def is_reaggregation_key(k: ValueKey) -> TypeGuard[AggregateKey]:
     A source mixing a row leaf with an attached value is row grain (DEV-1859)."""
     return (
         isinstance(k, AggregateKey)
-        and bool(operand_aggregates(k.source))
+        and bool(operand_constituents(k.source))
         and not source_row_leaves(k.source)
     )
 

@@ -95,19 +95,80 @@ grain helper yields (probe, see D4).
    partitioned) use it; `compile_prebound` requires `env` and its local-typing branch
    is deleted. Sub-plans resolve homes relative to their own root. Alternative —
    thread a home resolver into recursive contexts — rejected: two typing doors.
-4. **Transform constituents through existing producers.** The classifiers in Context
-   bullet 5 treat `AggregateKey | TransformKey` as constituents, stopping at either;
-   `binding._source_is_reaggregation` / `syntax._is_mixed_agg_source` count a
-   `TransformCall` as attached. `constituent_grain(c, …)` = `_effective_root_grain`
-   (bucket-aware) for both kinds (Codex F3); the carrier's union grain, prebound
-   `main_time_key` / `window_td_key`, join pairs and degeneracy test use it. A transform
-   constituent is evaluated by the transform-root regroup producer (computed-dimension
-   path) and consumed by the carrier (pure) or the row attach (mixed) unchanged. The
-   row-leaf checker (`_first_row_leaf`) and `check_dimension_temporal_axis` also walk
-   transforms inside aggregation sources; the axis message drops "inside a computed
-   dimension" (ledger row and golden raises updated). **Probe-first hard stop:** if the
-   carrier cannot express a windowed-inner constituent's bucket grain, the test pins
-   the typed error and the shape is deferred to a fresh issue with a detailed comment.
+4. **Transform constituents through existing producers; every grain explicit.** The
+   classifiers in Context bullet 5 treat `AggregateKey | TransformKey` as constituents,
+   stopping at either; `binding._source_is_reaggregation` / `syntax._is_mixed_agg_source`
+   count a `TransformCall` as attached; `AggCall.source` and `_AggregateSource` admit a
+   transform so a bare `sum(cumsum(…))` parses and binds. A transform constituent is a
+   typed dataset (Axiom 2.3) at the union of its inner aggregates' grains, evaluated by
+   the transform-root regroup producer (computed-dimension path) and consumed by the
+   carrier (pure) or the row attach (mixed) unchanged; `constituent_grain(c, …)` =
+   `effective_root_grain` (bucket-aware) for both kinds (Codex F3) and drives the
+   carrier's union grain, the home rule and `_root_grain`. Sub-decisions (Egor,
+   2026-09-17):
+   - **4a Explicit axis, no implicit rewrite.** A time-ordered constituent takes its
+     axis from `partition_by=` exactly as in dimension position —
+     `sum(cumsum(amount:sum(partition_by=[region, ordered_at])) - 1)`, where
+     `ordered_at` maps to the query's bucket (the DEV-1824 spelling) — and a grain
+     lacking the axis fails with the time-axis error. Top-level measure-position
+     transforms keep evaluating at the query grain over the attached value
+     (`queries/partitioned-aggregates` › Partitioned aggregates nested inside
+     transforms; DEV-1868 executed pins): no behaviour change. Alternative — join the
+     query's active bucket onto every grained local inner of a time transform at bind
+     time (handover-5 "E6") — rejected: it silently changes a specified legal spelling
+     (`cumsum(amount:sum(partition_by=region))` 60/120/180 → 10/30/60), cannot apply
+     to cross-model inners (the host bucket is not attributable from the target, so
+     DEV-1868's broadcast reading would survive only there), and makes one spelling
+     mean different things in dimension and measure position.
+   - **4b Normalisation.** Inside a transform constituent in measure / filter / order
+     position, an ungrained, non-windowed, local inner aggregate is explicitly grained
+     at the query grain — the dimensions plus the time-dimension buckets — at bind
+     time, BEFORE partition-key validation so the synthesized keys pass the same
+     attributability and resolution checks as a user-written `partition_by=` (Codex:
+     a query dimension the inner's home does not determine fails closed with the
+     partition-key error rather than becoming an unchecked explicit grain)
+     (`core/keys.normalize_transform_constituents`, one `_map_bound_keys` pass that
+     skips dimension-position measures). One canonical
+     representation: the union grain is always the union of explicit grains, so a
+     mixed operand `rank(a:sum(partition_by=[region, ordered_at]) - b:sum)` types at
+     `(region, month)` with `b` computed at the query grain and broadcast, never
+     re-evaluated per region. A constituent with no inner aggregate (`rank(region)`)
+     types at the query grain (`effective_root_grain`, transform arm). All-ungrained is
+     the degenerate identity plus warning, exactly as `sum(sum(amount))`. Dimension
+     position is untouched — its inners must already be explicit (Axiom 9 residue).
+   - **4c Collapsing transforms.** `first` / `last` reduce along the axis: the
+     dataset's grain is the operand grain minus the axis (Axiom 11.3b). Lowered at bind
+     time into an exact second-order pick: a top-level collapsing constituent `t` becomes
+     `max(t, partition_by=<operand grain − axis>)` (`core/keys.lower_collapsing_constituents`,
+     `AXIS_COLLAPSING_TRANSFORMS` in `core/enums.py`), so the carrier, attributability
+     and the mode axis see the collapsed grain while the transform is still evaluated
+     with its axis inside the nested producer — no new producer arm. `max` is exact:
+     the value is constant along the axis within a partition. Preserving ops
+     (`cumsum`, `lag`, `lead`, `time_shift`, `change`, `change_pct`,
+     `consecutive_periods`) keep the operand grain. A nested collapsing transform
+     inside a constituent's input (`cumsum(last(x))`) evaluates within the enclosing
+     producer as today; only the constituent boundary collapses. Alternative — a
+     dedicated collapse arm in `_build_carrier_attach` — held as the fallback only if
+     the nested re-aggregation-constituent path cannot render (probe first); the shape
+     ships in this change either way. Alternative — treat `first`/`last` as
+     axis-preserving — rejected: ragged partitions over-count and the axis broadcast
+     goes unwarned.
+   - **4d Checkers.** `check_dimension_temporal_axis` also walks every transform
+     reachable inside a measure-source constituent — nested ones included, as the
+     dimension arm does (Codex: a nested time transform must not evade Axiom 11.5) —
+     with a position-neutral message (ledger row and the `dev1839` golden raises
+     re-recorded); `_attach_time_keys` and `_time_search_children`
+     descend into aggregate sources, args and kwargs so a constituent's transform gets
+     the query's bucket and the no-time-dimension error reaches it; the row-leaf
+     checker already walks sources.
+   - **4e Deferred shapes, fail-closed.** A windowed inner under a transform
+     constituent (`sum(rank(amount:sum(window='90d', partition_by=region)))`) hits the
+     windowed time-dimension error (probe-verified); a cross-model grained inner under a
+     transform constituent is unprobed. Each is pinned as a typed error (never wrong
+     numbers) — or, if it executes correctly, as executed values — and any pinned
+     error is deferred to a follow-up issue with a detailed comment naming it as an
+     Axiom 9 closure gap (Codex: a well-typed shape refused for an implementation
+     reason is a closure violation, tolerated only as an explicitly tracked deferral).
 5. **Filter desugar is structural, not textual** (Codex F2). `Column.sql` semantics and
    `is_trivial_base` are unchanged. A new `Column.needs_expansion` (non-trivial value
    or filter set) drives the binder's `ColumnSqlKey` decision and
@@ -129,9 +190,12 @@ grain helper yields (probe, see D4).
    added or removed). Naming needs no rule: `expression_source_leaf` already collapses
    dots.
 7. **Normative edits proposed, not applied**: `enforced:` tags on semantics axiom 2
-   (home test) and axiom 6 (transform-constituent test); the exact diff is presented
-   for approval at implement time. No `index.yaml` change: `models/` is already a
-   cross-cutting spec group.
+   (home test, applied 2026-09-16) and axiom 6 (transform-constituent test); the
+   Axiom 11 rewrite as sub-rules 11.1 operand grain / 11.2 timeless / 11.3 time-ordered
+   with 11.3a preserving and 11.3b collapsing / 11.4 position / 11.5 recursion (draft
+   approved by Egor 2026-09-17), with the Axiom 2.3 transform clause re-pointed at
+   Axiom 11's result grain; the exact diff is presented for approval at implement
+   time. No `index.yaml` change: `models/` is already a cross-cutting spec group.
 
 ## Risks / Trade-offs
 
@@ -140,8 +204,14 @@ grain helper yields (probe, see D4).
 - [Elaborating every sub-plan changes typing of a nested producer] → sub-plans were
   typed by the same `type_and_split_filters` with the same flags; `elaborate_query`
   reproduces that call; goldens byte-identical or the divergence ledger stops the work.
-- [Windowed inner under a transform constituent has no carrier arm] → D4 probe-first
-  hard stop, typed error pinned, deferral documented on a fresh issue.
+- [Windowed inner under a transform constituent has no carrier arm] → D4e: typed error
+  pinned, deferral documented on a fresh issue.
+- [The collapsing desugar nests a re-aggregation constituent inside the carrier (four
+  producer levels)] → D4c probe-first; the reagg discovery already runs inside
+  producer sub-plans (`local_discovery` is true whenever producer regroups are
+  enabled) and the carrier resolves a placeholder-substituted constituent by
+  projection position; a failure falls back to a dedicated collapse step, never to
+  the preserving treatment and never to a deferral.
 - [Filter desugar moves parenthesisation of single-column SQL] → allowed-delta
   re-blessing with executed values pinned unchanged; the three semantic changes are
   enumerated and each pinned by a fail-without-fix test.
