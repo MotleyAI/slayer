@@ -33,5 +33,5 @@ A downstream stage's own time dimension SHALL be the time axis for every time-or
 
 #### Scenario: Two stage time dimensions need main_time_dimension
 
-- **WHEN** the outer stage declares time dimensions on `created_at` at `month` and at `year` and selects `change(rev:sum)` without `main_time_dimension`
-- **THEN** planning fails with the existing error naming the `main_time_dimension` remedy, and setting `main_time_dimension` to one of them makes the query execute with that bucket as the axis
+- **WHEN** the outer stage declares time dimensions on two distinct temporal columns, `created_at` and `shipped_at`, each at `month`, and selects `change(rev:sum)` without `main_time_dimension`
+- **THEN** planning fails with the existing error naming the `main_time_dimension` remedy, and setting `main_time_dimension` to `created_at` makes the query execute with that column's bucket as the axis

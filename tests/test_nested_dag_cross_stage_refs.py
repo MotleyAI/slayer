@@ -350,11 +350,6 @@ class TestThreeHopDimension:
 # Test #3 — cross-stage time dimension.
 # ===========================================================================
 class TestCrossStageTimeDimension:
-    @pytest.mark.skip(
-        reason="DEV-1471: cross-stage time_dim re-binding not yet supported in "
-        "the typed pipeline. Inner stage truncates the column; downstream sees "
-        "it as a flat name and the binder rejects re-binding as a TimeDimension."
-    )
     async def test_multi_hop_dotted_time_dim_cross_stage(self) -> None:
         """Inner stage projects a multi-hop dotted time dim
         `customers.regions.last_activity_at`. Outer references the same
@@ -747,11 +742,6 @@ class TestRenamedInnerMeasureCrossStage:
 # Test #16 — cross-stage time_shift with dotted time dim.
 # ===========================================================================
 class TestCrossStageTimeShift:
-    @pytest.mark.skip(
-        reason="DEV-1471: time_shift on the outer stage requires a downstream "
-        "TimeDimension binding, which the typed pipeline currently rejects "
-        "(inner stage's truncated column surfaces as a flat StageSchema name)."
-    )
     async def test_time_shift_over_multi_hop_dotted_time_dim(self) -> None:
         """Outer-stage `time_shift` applied to a multi-hop dotted time
         dim (`customers.regions.last_activity_at`) projected by the

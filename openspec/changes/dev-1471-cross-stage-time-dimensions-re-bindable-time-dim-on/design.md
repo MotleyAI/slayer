@@ -16,6 +16,7 @@ Constraints: engine principle 9 (user-facing algebra type errors raise in the ch
 **Non-Goals:**
 - Granularity on the saved query-backed model's cached `Column` (DEV-1929).
 - A model-level default time dimension for stages (a stage has no model).
+- Selecting among two granularities of one stage column via `main_time_dimension` (DEV-1925); the two-time-dimension scenario uses two distinct columns.
 - Changing any non-SQLite dialect's SQL.
 
 ## Decisions
