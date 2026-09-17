@@ -197,7 +197,7 @@ class TestRegroupRootGrain:
 class TestEffectiveRootGrain:
     def test_bare_non_windowed_full_projected_grain(self) -> None:
         grain, windowed = effective_root_grain(
-            BARE_SUM, projected_dim_keys=[REGION, CITY],
+            agg=BARE_SUM, projected_dim_keys=[REGION, CITY],
             projected_td_keys=[MONTH], active_bucket=None,
         )
         assert type(grain) is Grain
@@ -206,7 +206,7 @@ class TestEffectiveRootGrain:
 
     def test_bare_windowed_excludes_active_bucket(self) -> None:
         grain, windowed = effective_root_grain(
-            WINDOW_SUM, projected_dim_keys=[REGION],
+            agg=WINDOW_SUM, projected_dim_keys=[REGION],
             projected_td_keys=[MONTH], active_bucket=MONTH,
         )
         assert type(grain) is Grain

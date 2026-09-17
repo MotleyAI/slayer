@@ -3206,11 +3206,18 @@ class SQLGenerator:
         else:
             assert spec is not None  # set in both non-star arms above
             level2_spec = AggRenderSpec(
-                # A re-aggregation ``count`` counts the cells with a NON-NULL
-                # value (COUNT(_v)), not the cells (COUNT(*)); reference _v so the
-                # count family runs over the picked value.
+                # ``count`` counts cells with a NON-NULL picked value (COUNT(_v)),
+                # never the cells (COUNT(*)): a Column.filter masks non-matching
+                # rows to NULL, so a filtered association count must skip them
+                # (DEV-1832). Other families already read _base._v via the
+                # sql=None branch, so only count must name _v here.
                 name=picked_alias,
-                sql=picked_alias if getattr(kernel, "null_safe", False) else None,
+                sql=(
+                    picked_alias
+                    if getattr(kernel, "null_safe", False)
+                    or agg_slot.key.agg == "count"
+                    else None
+                ),
                 aggregation=agg_slot.key.agg,
                 alias=agg_alias, model_name="_base", type=agg_slot.type,
                 column_type=spec.column_type,
@@ -5698,7 +5705,7 @@ class SQLGenerator:
         )
         value_ast = self._parse(value)
         value_sql = (
-            _wrap_cast_for_type(value_ast, col.type) if cast else value_ast
+            _wrap_cast_for_type(expr=value_ast, dt=col.type) if cast else value_ast
         ).sql(dialect=self.dialect)
         return wrap_column_filter(value_sql=value_sql, filter_sql=filter_sql)
 

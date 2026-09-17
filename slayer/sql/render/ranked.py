@@ -122,8 +122,11 @@ def build_ranked_cte_select(
     """Wrap ``inner`` as the ranked subquery and pick rank 1 per grain.
 
     Returns ``(select, grain_output_aliases)``; the aliases are the join-back
-    handle, in the same order the caller supplied the grain, so the ``ON``
-    clause and the ``GROUP BY`` cannot disagree about what the grain is.
+    handle. The grain is ordered by ``output_alias`` here, NOT trusted in the
+    caller's iteration order — ``Grain`` is frozenset-backed, so its order varies
+    between processes and would make the SELECT / GROUP BY / returned-alias order
+    (and thus the emitted SQL) nondeterministic. One sorted sequence drives all
+    three, so the ``ON`` clause and the ``GROUP BY`` cannot disagree.
 
     An EMPTY grain emits no ``GROUP BY`` — the aggregate is scalar over the
     whole ranked set and returns exactly one row, which is the property the
@@ -132,16 +135,17 @@ def build_ranked_cte_select(
     subquery = exp.Subquery(
         this=inner, alias=exp.TableAlias(this=exp.to_identifier(source_alias)),
     )
+    ordered_grain = sorted(grain, key=lambda member: member.output_alias)
     select = exp.Select()
-    for member in grain:
+    for member in ordered_grain:
         select = select.select(
             member.inner_ref.copy().as_(member.output_alias, quoted=True),
         )
     select = select.select(pick.copy().as_(agg_alias, quoted=True))
     select = select.from_(subquery)
-    for member in grain:
+    for member in ordered_grain:
         select = select.group_by(member.inner_ref.copy())
-    return select, [m.output_alias for m in grain]
+    return select, [m.output_alias for m in ordered_grain]
 
 
 def ranked_ordered(

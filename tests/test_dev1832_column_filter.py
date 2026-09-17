@@ -32,7 +32,10 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
 
 from slayer.core.errors import ColumnCycleError
+from slayer.core.keys import ColumnSqlKey
 from slayer.engine.column_dependency import _filter_dependencies
+from slayer.engine.filter_reachability import key_has_host_local_ref
+from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.column_expansion import expand_column_definition_parts_sync
 
 from tests._engine_helpers import _norm
@@ -298,6 +301,55 @@ class TestFilteredLeafOnJoinedModel:
         with pytest.raises(ValueError, match="unproven join hop") as ei:
             await gen(query, models=models)
         assert "region_events" in str(ei.value)
+
+
+# --------------------------------------------------------------------------- #
+# Host-locality reaches into Column.filter, not just Column.sql (DEV-1832 / Codex).
+# --------------------------------------------------------------------------- #
+class TestHostLocalFilterReachability:
+    """A host-declared derived column whose VALUE crosses into a joined model but
+    whose ``Column.filter`` reads a host-local column is host-local: its mask
+    must stay at the host, where that column is bound. Host-locality must consult
+    the filter fragment, not only the value (which the crossed set already
+    covers)."""
+
+    def _orders_bundle(self, *, sql: str | None, filter_: str):
+        models = dev1832_models()
+        orders = next(m for m in models if m.name == "orders")
+        orders.columns.append(Column(
+            name="probe", type=DataType.DOUBLE, sql=sql, filter=filter_))
+        b = ResolvedSourceBundle(
+            source_model=orders,
+            referenced_models=[m for m in models if m.name != "orders"])
+        key = ColumnSqlKey(path=(), model="orders", column_name="probe")
+        return orders, key, b
+
+    def test_cross_model_value_with_host_local_filter_is_host_local(self) -> None:
+        # value crosses orders → customers (to-one); filter reads host orders.amount.
+        orders, key, b = self._orders_bundle(
+            sql="customers.discount", filter_="amount > 5")
+        assert key_has_host_local_ref(
+            key=key, anchor_model=orders, anchor_relation="orders",
+            bundle=b, cache={}) is True
+
+    def test_cross_model_value_and_cross_model_filter_is_not_host_local(self) -> None:
+        # Control: both fragments cross to customers — nothing anchors at the host.
+        orders, key, b = self._orders_bundle(
+            sql="customers.discount", filter_="customers.tier = 'gold'")
+        assert key_has_host_local_ref(
+            key=key, anchor_model=orders, anchor_relation="orders",
+            bundle=b, cache={}) is False
+
+    def test_filtered_physical_column_with_cross_model_filter_is_host_local(
+        self,
+    ) -> None:
+        # A column with NO sql masks its own physical value (host-local); a
+        # cross-model filter must NOT strip that host-locality (Codex edge case).
+        orders, key, b = self._orders_bundle(
+            sql=None, filter_="customers.tier = 'gold'")
+        assert key_has_host_local_ref(
+            key=key, anchor_model=orders, anchor_relation="orders",
+            bundle=b, cache={}) is True
 
 
 # --------------------------------------------------------------------------- #

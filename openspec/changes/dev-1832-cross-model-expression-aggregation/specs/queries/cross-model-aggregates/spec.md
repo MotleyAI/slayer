@@ -16,9 +16,14 @@ other metrics are present.
 #### Scenario: Expression source homed at the joined model is not multiplied
 - **WHEN** a query rooted at `orders` selects `sum(customers.spend - customers.regions.pop)`
   grouped by a customer-level dimension, and customers have several orders each
-- **THEN** each cell's value counts every customer exactly once, by executed values,
-  identical to `customers.spend:sum - customers.regions.pop:sum` computed at the
-  same root
+- **THEN** the source is homed at `customers` (its single home), so `spend - pop` is
+  evaluated once per customer — `regions.pop` joined once per customer, NOT once per
+  region — and summed over the customers in each cell, by executed values, independent
+  of how many orders each customer has
+- Because the whole expression shares the `customers` home, this is NOT equal to
+  `customers.spend:sum - customers.regions.pop:sum`, whose two operands home at different
+  models (`pop` counted once per region): a valid comparison is only with an aggregation
+  that shares the same `customers` home
 
 #### Scenario: Adding a cross-model measure is cardinality-neutral
 - WHEN any supported query runs with and without an additional cross-model measure

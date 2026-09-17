@@ -2222,8 +2222,8 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
     )
 
 
-def _build_carrier_attach(  # NOSONAR(S107) — carrier plumbing: each parameter is a distinct compile input threaded from _plan_regroups; a one-use context type would only relocate them
-    *,
+def _build_carrier_attach(
+    *,  # NOSONAR(S107) — carrier plumbing: each parameter is a distinct compile input threaded from _plan_regroups; a one-use context type would only relocate them
     union_grain: Grain,
     constituents: List[ValueKey],
     constituent_placeholders: Dict[ValueKey, ValueKey],
