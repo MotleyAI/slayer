@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.core.keys import ColumnKey, ColumnSqlKey, SqlExprKey, StarKey, TimeTruncKey
+from slayer.core.keys import ColumnKey, ColumnSqlKey, StarKey, TimeTruncKey
 from slayer.core.models import SlayerModel
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.column_expansion import ColumnCycleError
@@ -107,13 +107,6 @@ class TestKeyClosure:
         assert got is not None
         assert CROSS not in got
         assert all(len(p) <= 1 for p in got), f"StarKey must not descend: {got}"
-
-    def test_sql_expr_key_returns_its_stamped_paths(self):
-        key = SqlExprKey(canonical_sql="1", referenced_join_paths=(CROSS,))
-        got = self._key(key)
-        assert got is not None
-        assert ("regions",) in got
-        assert CROSS in got
 
     def test_string_fragment_key_takes_fragment_closure(self):
         by, bundle = _bundle(dev1900_models())

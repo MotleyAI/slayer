@@ -152,8 +152,7 @@ class _FrozenKey(BaseModel, frozen=True):
     """Common config for the typed-key family: frozen (hashable, immutable).
 
     Every kind overrides the total-traversal protocol: ``children()`` yields the
-    directly embedded value keys (scalars and the Mode-A-opaque
-    ``AggregateKey.column_filter_key`` are never children); ``map_children``
+    directly embedded value keys (scalars are never children); ``map_children``
     rebuilds one level with ``fn`` applied at each ``children()`` position,
     returning ``self`` when no child changed identity (``is``).
     """
@@ -330,42 +329,6 @@ class LiteralKey(_LeafKey, frozen=True):
         return _typed_leaf(self.value) == _typed_leaf(other.value)
 
 
-class SqlExprKey(_LeafKey, frozen=True):
-    """Identity for a Mode-A SQL fragment.
-
-    Used as ``AggregateKey.column_filter_key`` so an attached ``Column.filter``
-    joins the aggregate's structural identity. ``canonical_sql`` is
-    sqlglot-normalized by the binder. ``referenced_join_paths`` is the set of
-    non-anchor join-path prefixes the filter touches (``()`` for same-model);
-    the before-validator sorts/dedups it so order doesn't affect identity.
-    """
-
-    canonical_sql: str
-    referenced_join_paths: Tuple[Tuple[str, ...], ...] = ()
-
-    @field_validator("referenced_join_paths", mode="before")
-    @classmethod
-    def _canonicalize_referenced_join_paths(cls, v):
-        if not v:
-            return ()
-        return tuple(sorted({tuple(p) for p in v}))
-
-    @property
-    def phase(self) -> Phase:
-        return Phase.ROW
-
-    def __hash__(self) -> int:
-        return hash(("SqlExprKey", self.canonical_sql, self.referenced_join_paths))
-
-    def __eq__(self, other: object) -> bool:
-        if not isinstance(other, SqlExprKey):
-            return NotImplemented
-        return (
-            self.canonical_sql == other.canonical_sql
-            and self.referenced_join_paths == other.referenced_join_paths
-        )
-
-
 # ---------------------------------------------------------------------------
 # Aggregate / Transform / Arithmetic / ScalarCall
 # ---------------------------------------------------------------------------
@@ -405,8 +368,9 @@ class AggregateKey(_FrozenKey, frozen=True):
     Local and cross-model aggregates share this shape: ``source.path`` empty for
     local, non-empty for joined. ``args``/``kwargs`` carry parameters (numeric
     scalars pre-normalized to Decimal; identifier kwargs arrive as
-    ``ColumnKey``/``ColumnSqlKey``; kwargs canonicalized to sorted order).
-    ``column_filter_key`` folds any attached ``Column.filter`` into identity.
+    ``ColumnKey``/``ColumnSqlKey``; kwargs canonicalized to sorted order). A
+    ``Column.filter`` rides its source ``ColumnSqlKey`` (DEV-1832), not the
+    aggregate.
 
     ``locus`` (DEV-1747 D2) names where a cross-model aggregate is evaluated:
     ``"target"`` (default) rooted at the target, one value per target row-group;
@@ -419,7 +383,6 @@ class AggregateKey(_FrozenKey, frozen=True):
     agg: str
     args: Tuple[_AggregateArgValue, ...] = ()
     kwargs: Tuple[Tuple[str, _AggregateKwargValue], ...] = ()
-    column_filter_key: Optional[SqlExprKey] = None
     locus: Literal["target", "host"] = "target"
     # None = grain inherited from context; Grain.EMPTY = explicitly scalar.
     partition_keys: Optional["Grain"] = None
@@ -434,7 +397,6 @@ class AggregateKey(_FrozenKey, frozen=True):
         return Phase.AGGREGATE
 
     def children(self) -> Tuple["ValueKey", ...]:
-        # column_filter_key is Mode-A opaque — never a child (A1).
         embedded = [
             c
             for c in (self.source, *self.args, *(v for _, v in self.kwargs))
@@ -466,7 +428,6 @@ class AggregateKey(_FrozenKey, frozen=True):
             self.agg,
             _typed_args(self.args),
             _typed_kwargs(self.kwargs),
-            self.column_filter_key,
             self.locus,
             self.partition_keys,
         ))
@@ -479,7 +440,6 @@ class AggregateKey(_FrozenKey, frozen=True):
             and self.agg == other.agg
             and _typed_args(self.args) == _typed_args(other.args)
             and _typed_kwargs(self.kwargs) == _typed_kwargs(other.kwargs)
-            and self.column_filter_key == other.column_filter_key
             and self.locus == other.locus
             and self.partition_keys == other.partition_keys
         )
@@ -511,8 +471,8 @@ def reroot_aggregate_key(
 ) -> "AggregateKey":
     """Re-anchor a cross-model ``AggregateKey`` into its target's local scope.
 
-    A thin alias for :func:`reroot_value_key`. ``column_filter_key`` rides
-    through unchanged (its paths are anchored at the source column's owning model).
+    A thin alias for :func:`reroot_value_key`; a ``Column.filter`` rides its
+    source ``ColumnSqlKey``, recovered from the model at expansion.
     """
     return reroot_value_key(key, target_path=target_path)
 
@@ -883,35 +843,18 @@ KIND_POLICY: dict[type, KindPolicy] = {
 }
 
 
-def _map_sql_expr_key(key: SqlExprKey, *, map_path) -> SqlExprKey:
-    """Apply ``map_path`` to a standalone fragment's referenced paths.
-
-    Reconstructed (not ``model_copy``d) so the validator re-sorts/dedups; a path
-    mapped to ``()`` is dropped.
-    """
-    mapped = [np for p in key.referenced_join_paths if (np := tuple(map_path(p)))]
-    return SqlExprKey(
-        canonical_sql=key.canonical_sql,
-        referenced_join_paths=mapped,
-    )
-
-
 def _map_value_key(key: _RerootableT, *, map_path) -> _RerootableT:
     """Rewrite every embedded join ``path`` in ``key`` through ``map_path``.
 
     Total & fail-closed behind :func:`reroot_value_key` / :func:`prepend_value_key`:
     path-carrying leaves map here, every other kind routes through
-    ``map_children`` (a protocol-less kind raises). ``AggregateKey.column_filter_key``
-    is copied unchanged (owner-anchored), while a standalone ``SqlExprKey`` is
-    root-anchored and does map.
+    ``map_children`` (a protocol-less kind raises).
     """
     # Scalars ride through untouched (ScalarCallKey args, AggregateKey kwargs).
     if key is None or isinstance(key, (Decimal, str, bool, int, float)):
         return key
     if isinstance(key, (ColumnKey, ColumnSqlKey, StarKey)):
         return cast(_RerootableT, _map_path_ref(key, map_path=map_path))
-    if isinstance(key, SqlExprKey):
-        return cast(_RerootableT, _map_sql_expr_key(key, map_path=map_path))
     if not isinstance(key, _FrozenKey):
         raise TypeError(
             f"the value-key path visitor has no case for {type(key).__name__!r}: "
@@ -1012,7 +955,7 @@ def prepend_value_key(
     re-anchoring a target-local bound tree into the host's coordinate system.
 
     Inverse of ``reroot_value_key(key, target_path=host_path)``. ``host_path == ()``
-    is the identity; ``AggregateKey.column_filter_key`` stays owner-anchored.
+    is the identity.
     """
     host_path = tuple(host_path)
     if not host_path:
@@ -1032,8 +975,7 @@ def substitute_value_keys(
     Pre-order match-before-recurse: a key equal to a ``mapping`` entry is
     replaced atomically (children never traversed, replacements never
     re-substituted); everything else routes through ``map_children`` (a
-    protocol-less kind raises). ``AggregateKey.column_filter_key`` is NOT
-    traversed (a Mode-A ``SqlExprKey``); ``TimeTruncKey.column`` IS.
+    protocol-less kind raises). ``TimeTruncKey.column`` IS traversed.
     """
     # Scalars ride through untouched (ScalarCallKey args, AggregateKey kwargs).
     if key is None or isinstance(key, (Decimal, str, bool, int, float)):

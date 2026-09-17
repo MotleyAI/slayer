@@ -25,7 +25,6 @@ from slayer.core.keys import (
     Phase,
     REGROUP_LEAF_PREFIX,
     ScalarCallKey,
-    SqlExprKey,
     StarKey,
     TimeTruncKey,
     TransformKey,
@@ -350,7 +349,7 @@ def _iter_slot_deps(key: ValueKey):
     if isinstance(key, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
         yield key
         return
-    if isinstance(key, (StarKey, LiteralKey, SqlExprKey)):
+    if isinstance(key, (StarKey, LiteralKey)):
         return  # never slottable on their own
     if isinstance(key, (ArithmeticKey, ScalarCallKey, BetweenKey, InKey)):
         # Inlined composites: surface their slot-worthy children.

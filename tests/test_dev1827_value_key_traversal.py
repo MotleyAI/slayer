@@ -16,7 +16,7 @@ import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.keys import Grain
-from slayer.core.keys import KIND_POLICY, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, KindPolicy, LiteralKey, Phase, ScalarCallKey, SqlExprKey, StarKey, TimeTruncKey, TransformKey, ValueKey, _FrozenKey, reroot_value_key, substitute_value_keys, walk_value_keys
+from slayer.core.keys import KIND_POLICY, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, KindPolicy, LiteralKey, Phase, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, ValueKey, _FrozenKey, reroot_value_key, substitute_value_keys, walk_value_keys
 from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.engine.reference_closure import UnhandledValueKindError, aggregate_input_closure
@@ -43,7 +43,6 @@ TS = ColumnKey(path=(), leaf="created_at")
 JOINED = ColumnKey(path=("customers",), leaf="balance")
 TT = TimeTruncKey(column=TS, granularity="month")
 AGG = AggregateKey(source=AMOUNT, agg="sum")
-FILT = SqlExprKey(canonical_sql="status = 'ok'")
 CHANGE_TR = TransformKey(op="change", input=AGG, time_key=TT)
 RANK_TR = TransformKey(op="rank", input=AGG, partition_keys=Grain.of({CITY}))
 
@@ -52,7 +51,6 @@ AGG_FULL = AggregateKey(
     agg="last",
     args=(TS, Decimal("2")),
     kwargs=(("p", Decimal("0.5")), ("weight", CITY)),
-    column_filter_key=FILT,
     locus="host",
     partition_keys=Grain.of({REGION}),
 )
@@ -86,7 +84,7 @@ SAMPLES = {
     BetweenKey: BT,
     InKey: IK,
 }
-LEAF_KINDS = (ColumnKey, ColumnSqlKey, StarKey, LiteralKey, SqlExprKey)
+LEAF_KINDS = (ColumnKey, ColumnSqlKey, StarKey, LiteralKey)
 
 
 class DummyKey(_FrozenKey, frozen=True):
@@ -141,14 +139,14 @@ class TestProtocolTotality:
         )
 
     def test_every_member_overrides_both_methods(self) -> None:
-        for member in get_args(ValueKey) + (SqlExprKey,):
+        for member in get_args(ValueKey):
             assert member.children is not _FrozenKey.children, member.__name__
             assert member.map_children is not _FrozenKey.map_children, (
                 member.__name__
             )
 
     def test_map_children_identity_returns_self(self) -> None:
-        for sample in (*SAMPLES.values(), FILT):
+        for sample in SAMPLES.values():
             out, _ = _record_map(sample)
             assert out is sample
 
@@ -172,8 +170,7 @@ class TestProtocolTotality:
 class TestChildrenPerKind:
     def test_leaves_have_no_children(self) -> None:
         for kind in LEAF_KINDS:
-            sample = FILT if kind is SqlExprKey else SAMPLES[kind]
-            assert sample.children() == ()
+            assert SAMPLES[kind].children() == ()
 
     def test_time_trunc_child_is_the_wrapped_column(self) -> None:
         assert TT.children() == (TS,)
@@ -181,7 +178,7 @@ class TestChildrenPerKind:
 
     def test_aggregate_children_field_order(self) -> None:
         # source, key-valued args, key-valued kwarg values, partition members;
-        # scalars and column_filter_key are NOT children.
+        # scalars are NOT children.
         assert AGG_FULL.children() == (AMOUNT, TS, CITY, REGION)
 
     def test_aggregate_without_partition_keys(self) -> None:
@@ -261,14 +258,12 @@ class TestMapChildrenContract:
         assert [id(s) for s in seen] == [id(AGG), id(CITY)]
         assert not any(s is AMOUNT for s in seen)
 
-    def test_scalars_and_column_filter_key_never_reach_fn(self) -> None:
+    def test_scalars_never_reach_fn(self) -> None:
         _, seen = _record_map(AGG_FULL)
         assert all(isinstance(s, _FrozenKey) for s in seen)
-        assert not any(s is FILT for s in seen)
 
-    def test_column_filter_key_survives_a_rebuild(self) -> None:
+    def test_locus_survives_a_rebuild(self) -> None:
         out = AGG_FULL.map_children(lambda c: c.model_copy())
-        assert out.column_filter_key is FILT
         assert out.locus == "host"
 
     def test_aggregate_none_partition_keys_stays_none(self) -> None:

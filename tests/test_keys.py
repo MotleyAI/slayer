@@ -20,7 +20,6 @@ from slayer.core.keys import (
     ColumnSqlKey,
     Phase,
     ScalarCallKey,
-    SqlExprKey,
     StarKey,
     TransformKey,
     ValueKey,
@@ -115,69 +114,6 @@ class TestStarKey:
 
 
 # ---------------------------------------------------------------------------
-# SqlExprKey
-# ---------------------------------------------------------------------------
-
-
-class TestSqlExprKey:
-    def test_basic(self):
-        k = SqlExprKey(canonical_sql="status = 'paid'")
-        assert k.canonical_sql == "status = 'paid'"
-        assert k.phase is Phase.ROW
-
-    def test_equality(self):
-        a = SqlExprKey(canonical_sql="x = 1")
-        b = SqlExprKey(canonical_sql="x = 1")
-        assert a == b
-        assert hash(a) == hash(b)
-
-    def test_different_sql_differs(self):
-        a = SqlExprKey(canonical_sql="x = 1")
-        b = SqlExprKey(canonical_sql="x = 2")
-        assert a != b
-
-    def test_referenced_join_paths_canonical_order_independent(self):
-        # DEV-1503 — two SqlExprKeys built with the same set of referenced
-        # paths in DIFFERENT input order must intern as equal. The
-        # ``before``-validator canonicalises to a sorted, de-duplicated
-        # tuple (CodeRabbit nitpick).
-        a = SqlExprKey(
-            canonical_sql="x = 1",
-            referenced_join_paths=(("loss_payment",), ("claim",)),
-        )
-        b = SqlExprKey(
-            canonical_sql="x = 1",
-            referenced_join_paths=(("claim",), ("loss_payment",)),
-        )
-        assert a == b
-        assert hash(a) == hash(b)
-
-    def test_referenced_join_paths_dedup(self):
-        # Duplicate paths in the input collapse — the field is a set.
-        a = SqlExprKey(
-            canonical_sql="x = 1",
-            referenced_join_paths=(("loss_payment",), ("loss_payment",)),
-        )
-        b = SqlExprKey(
-            canonical_sql="x = 1",
-            referenced_join_paths=(("loss_payment",),),
-        )
-        assert a == b
-        assert hash(a) == hash(b)
-
-    def test_referenced_join_paths_accepts_iterables(self):
-        # The validator coerces any iterable (list, set, generator) of
-        # iterables to tuples — callers should not have to pre-canonicalise.
-        a = SqlExprKey(
-            canonical_sql="x = 1",
-            referenced_join_paths=[["loss_payment"], ["claim", "regions"]],
-        )
-        assert a.referenced_join_paths == (
-            ("claim", "regions"), ("loss_payment",),
-        )
-
-
-# ---------------------------------------------------------------------------
 # AggregateKey
 # ---------------------------------------------------------------------------
 
@@ -188,7 +124,6 @@ class TestAggregateKey:
         assert k.agg == "sum"
         assert k.args == ()
         assert k.kwargs == ()
-        assert k.column_filter_key is None
         assert k.phase is Phase.AGGREGATE
 
     def test_star_count(self):
@@ -259,31 +194,6 @@ class TestAggregateKey:
         )
         assert a != b
         assert hash(a) != hash(b)
-
-    def test_column_filter_key_distinguishes(self):
-        base = AggregateKey(
-            source=ColumnKey(path=(), leaf="amount"), agg="sum"
-        )
-        with_filter = AggregateKey(
-            source=ColumnKey(path=(), leaf="amount"),
-            agg="sum",
-            column_filter_key=SqlExprKey(canonical_sql="paid = TRUE"),
-        )
-        assert base != with_filter
-
-    def test_same_column_filter_interns(self):
-        a = AggregateKey(
-            source=ColumnKey(path=(), leaf="amount"),
-            agg="sum",
-            column_filter_key=SqlExprKey(canonical_sql="paid = TRUE"),
-        )
-        b = AggregateKey(
-            source=ColumnKey(path=(), leaf="amount"),
-            agg="sum",
-            column_filter_key=SqlExprKey(canonical_sql="paid = TRUE"),
-        )
-        assert a == b
-        assert hash(a) == hash(b)
 
 
 # ---------------------------------------------------------------------------

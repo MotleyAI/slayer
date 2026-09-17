@@ -51,8 +51,8 @@ def _iif_partition_key() -> ScalarCallKey:
 
 _IIF_SUFFIX = (
     "_partition_by_name_iif_args_ArithmeticKey_op_operands_AggregateKey"
-    "_source_ColumnKey_path_leaf_amount_agg_sum_args_kwargs_column_filter"
-    "_key_None_grain_target_partition_keys_frozenset_ColumnKey_path_leaf"
+    "_source_ColumnKey_path_leaf_amount_agg_sum_args_kwargs_grain_target"
+    "_partition_keys_frozenset_ColumnKey_path_leaf"
     "_city_LiteralKey_value_Decimal_35_LiteralKey_value_Decimal_1"
     "_LiteralKey_value_Decimal_0"
 )
@@ -78,7 +78,7 @@ class TestPinnedSpellings:
         )
         assert legacy_key_str(key) == (
             "source=ColumnKey(path=(), leaf='amount') agg='sum' args=() "
-            "kwargs=() column_filter_key=None grain='target' "
+            "kwargs=() grain='target' "
             "partition_keys=frozenset({ColumnKey(path=(), leaf='city')})"
         )
 
@@ -102,7 +102,7 @@ class TestPinnedSpellings:
             ),
         )
         assert expression_source_leaf(source) == (
-            "source_columnkey_path_leaf_a_116b989e_s_none_1"
+            "source_columnkey_path_leaf_a_edd6d14d_s_none_1"
         )
 
     def test_expression_source_leaf_over_a_raw_scalar_arg(self) -> None:

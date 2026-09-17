@@ -32,9 +32,9 @@ from slayer.core.models import SlayerModel
 from slayer.engine.reference_closure import (
     ParamSpec,
     aggregate_input_closure,
-    compute_column_filter_join_paths,
     first_unanalyzable_input_column,
     first_unanalyzable_source_row_leaf,
+    fragment_closure,
     key_closure,
     resolve_aggregation_params,
     source_row_leaf_closure,
@@ -466,15 +466,13 @@ def _windowed_or_ranked_identity(agg: ValueKey):
     return (
         "windowed" if windowed else "ranked",
         agg.source, agg.agg, tuple(agg.args), tuple(agg.kwargs),
-        agg.column_filter_key,
     )
 
 
-def _partition_free_identity(agg: ValueKey):  # NOSONAR(S8495) — distinct-shape identity tuples are intentional dict keys: a plain aggregate's 5-field identity and an "other" 2-tuple never collide (different lengths compare unequal)
+def _partition_free_identity(agg: ValueKey):  # NOSONAR(S8495) — distinct-shape identity tuples are intentional dict keys: a plain aggregate's 4-field identity and an "other" 2-tuple never collide (different lengths compare unequal)
     if not isinstance(agg, AggregateKey):
         return ("other", agg)
-    return (agg.source, agg.agg, tuple(agg.args), tuple(agg.kwargs),
-            agg.column_filter_key)
+    return (agg.source, agg.agg, tuple(agg.args), tuple(agg.kwargs))
 
 
 def _cross_model_input_paths(
@@ -898,10 +896,11 @@ def _ref_sql_dependency_paths(
     col: ValueKey, *, host_model: Optional[SlayerModel],
     models_by_name: Dict[str, SlayerModel], bundle: Optional[ResolvedSourceBundle],
 ) -> Tuple[Tuple[str, ...], ...]:
-    """Owner-relative join paths a derived column's ``Column.sql`` crosses (the
-    dependency closure at the owner) — the semi-join push tree registers a hop
-    for each. ``bundle.models_by_name`` is host-inclusive (DEV-1900), so a dep
-    pointing back at the host resolves without a hand-patched bundle."""
+    """Owner-relative join paths a derived column's ``Column.sql`` AND its
+    ``Column.filter`` (DEV-1832) cross (the dependency closure at the owner) — the
+    semi-join push tree registers a hop for each. ``bundle.models_by_name`` is
+    host-inclusive (DEV-1900), so a dep pointing back at the host resolves without
+    a hand-patched bundle."""
     if not isinstance(col, ColumnSqlKey) or bundle is None:
         return ()
     owner = _owning_model(
@@ -910,12 +909,19 @@ def _ref_sql_dependency_paths(
     if owner is None:
         return ()
     column = next((c for c in owner.columns if c.name == col.column_name), None)
-    if column is None or not column.sql:
+    if column is None:
         return ()
-    return compute_column_filter_join_paths(
-        canonical_sql=column.sql, anchor_model=owner,
-        anchor_relation=owner.name, bundle=bundle,
-    )
+    paths: List[Tuple[str, ...]] = []
+    for sql in (column.sql, column.filter):
+        if not sql:
+            continue
+        frag = fragment_closure(
+            sql=sql, model=owner, owner_path=(),
+            anchor_relation=owner.name, bundle=bundle,
+        )
+        if frag:
+            paths.extend(frag)
+    return tuple(dict.fromkeys(paths))
 
 
 def _path_edges_exist(
@@ -2641,7 +2647,7 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
             # A crossing-input root needs its OWN producer, else another aggregate's crossed joins fan its rows.
             if ident is None and _is_crossing_local_root(agg):
                 ident = ("crossing", agg.source, agg.agg, tuple(agg.args),
-                         tuple(agg.kwargs), agg.column_filter_key)
+                         tuple(agg.kwargs))
             gkey = (grain, ident)
             groups.setdefault(gkey, []).append(agg)
             group_meta[gkey] = (grain, windowed)

@@ -37,11 +37,13 @@ from slayer.sql.reserved_keywords import prequote_reserved_identifiers
 
 __all__ = [
     "collect_root_scope_joined_paths",
+    "expand_column_definition_sync",
     "expand_derived_refs_sync",
     "is_trivial_base",
     "reference_sites",
     "resolve_ref_target",
     "root_scope_column_ids",
+    "wrap_column_filter",
 ]
 
 
@@ -549,27 +551,40 @@ def _process_reference_site(
             for i in range(1, len(full_path) + 1):
                 crossed_paths.add(full_path[:i])
     target_col = target_model.get_column(leaf)
-    if target_col is None or is_trivial_base(column=target_col):
+    if target_col is None or not target_col.needs_expansion:
         return _requalify(node, alias=canonical_alias, leaf=leaf)
     key = (target_model.name, leaf)
     if key in visited:
         cycle_start = visited.index(key)
         cycle = (*visited[cycle_start:], key)
         raise ColumnCycleError(cycle=list(cycle))
-    expanded_sql = expand_derived_refs_sync(
-        sql=target_col.sql,
-        model=target_model,
-        alias_path=canonical_alias,
-        owner_path=full_path,
-        models_by_name=models_by_name,
-        dialect=dialect,
-        visited=(*visited, key),
-        alias_resolver=alias_resolver,
-        crossed_paths=crossed_paths,
-    )
-    if expanded_sql is None:
+    child_visited = (*visited, key)
+
+    def _expand_child(sql: str) -> Optional[str]:
+        return expand_derived_refs_sync(
+            sql=sql, model=target_model, alias_path=canonical_alias,
+            owner_path=full_path, models_by_name=models_by_name, dialect=dialect,
+            visited=child_visited, alias_resolver=alias_resolver,
+            crossed_paths=crossed_paths,
+        )
+
+    if is_trivial_base(column=target_col):
+        # Filtered physical column: the value is the qualified bare column.
+        value_sql: Optional[str] = _requalify(
+            node.copy(), alias=canonical_alias, leaf=leaf,
+        ).sql(dialect=dialect)
+    else:
+        assert target_col.sql is not None  # non-trivial base ⇒ real derived sql
+        value_sql = _expand_child(target_col.sql)
+    if value_sql is None:
         return None
-    expanded_ast = sqlglot.parse_one(expanded_sql, dialect=dialect)
+    if target_col.filter:
+        filter_sql = _expand_child(target_col.filter)
+        value_sql = wrap_column_filter(
+            value_sql=value_sql,
+            filter_sql=filter_sql if filter_sql is not None else target_col.filter,
+        )
+    expanded_ast = sqlglot.parse_one(value_sql, dialect=dialect)
     replacement = exp.Paren(this=expanded_ast)
     node.replace(replacement)
     return replacement
@@ -638,3 +653,45 @@ def expand_derived_refs_sync(
         if replacement is not None and node is parsed:
             parsed = replacement
     return parsed.sql(dialect=dialect)
+
+
+def wrap_column_filter(*, value_sql: str, filter_sql: Optional[str]) -> str:
+    """Desugar ``Column.filter``: ``CASE WHEN <filter> THEN <value> END`` when a
+    filter is set, else the bare value. Both fragments are already expanded (and
+    derived expansions self-parenthesise), so no extra parens are added — the
+    canonical single-column form stays ``SUM(CASE WHEN f THEN col END)``."""
+    if not filter_sql:
+        return value_sql
+    return f"CASE WHEN {filter_sql} THEN {value_sql} END"
+
+
+def expand_column_definition_sync(
+    *,
+    column: Column,
+    model: SlayerModel,
+    alias_path: str,
+    models_by_name: ModelsByName,
+    dialect: str,
+    owner_path: Tuple[str, ...] = (),
+    visited: Optional[Tuple[Tuple[str, str], ...]] = None,
+    alias_resolver: Optional[AliasResolver] = None,
+    crossed_paths: Optional[_PathSink] = None,
+) -> str:
+    """Expand a column's value SQL, wrapping it in ``CASE WHEN (<filter>) THEN
+    (<value>) END`` when the column carries a ``Column.filter``. Value and filter
+    expand through the same derived-refs door at the same owner path — a filtered
+    physical column (``sql is None``) expands its bare name to the qualified column."""
+    raw_value = column.sql if column.sql else column.name
+
+    def _expand(sql: str) -> str:
+        out = expand_derived_refs_sync(
+            sql=sql, model=model, alias_path=alias_path,
+            models_by_name=models_by_name, dialect=dialect, owner_path=owner_path,
+            visited=visited, alias_resolver=alias_resolver, crossed_paths=crossed_paths,
+        )
+        return out if out is not None else sql
+
+    value = _expand(raw_value)
+    if not column.filter:
+        return value
+    return wrap_column_filter(value_sql=value, filter_sql=_expand(column.filter))

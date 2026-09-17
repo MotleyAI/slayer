@@ -119,10 +119,12 @@ class TestGrainDeterminesRenamedKey:
         )
 
 
-class TestPickedParamInheritsSourceFilter:
-    async def test_picked_weight_wrapped_in_source_filter(self) -> None:
-        # ``north_spend`` is filtered on regions.name='North'; the picked weight
-        # ``_p0`` must carry the same CASE as ``_v`` so the denominator excludes it.
+class TestPickedParamDoesNotInheritSourceFilter:
+    async def test_picked_weight_not_masked_by_source_filter(self) -> None:
+        # ``north_spend`` is filtered on regions.name='North'. Only the VALUE (_v)
+        # carries that CASE mask; the picked weight ``customers.spend`` (_p0) is NOT
+        # masked by the source's filter (DEV-1832: a parameter is masked only by its
+        # own column's filter, never the source's).
         models = toone_filter_models()
         orders = next(m for m in models if m.name == "orders")
         extra = [m for m in models if m.name != "orders"]
@@ -135,8 +137,9 @@ class TestPickedParamInheritsSourceFilter:
             model=orders, extra_models=extra, dialect="sqlite", validate=False,
         )
         p0_line = next(line for line in sql.splitlines() if "AS _p0" in line)
-        assert "CASE WHEN" in p0_line, sql
-        assert "'North'" in p0_line, sql
+        assert "CASE WHEN" not in p0_line, sql
+        v_line = next(line for line in sql.splitlines() if "AS _v" in line)
+        assert "CASE WHEN" in v_line and "'North'" in v_line, sql
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])

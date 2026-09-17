@@ -87,5 +87,7 @@ source column's, and no position reads the unmasked value.
 
 #### Scenario: Ranked aggregation over a filtered column picks the masked value
 - **WHEN** a query selects `q_amount:last`
-- **THEN** the picked value is `CASE WHEN product = 'Q' THEN amount END` at the
-  latest ranking timestamp, unchanged from before
+- **THEN** the ranking is by the ranking key over every row (the filter never
+  restricts it) and the picked value is `CASE WHEN product = 'Q' THEN amount END`
+  at the newest row — NULL when that newest row does not match; a row restriction
+  belongs in a query filter, not in the column

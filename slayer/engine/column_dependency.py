@@ -21,7 +21,8 @@ from typing import TYPE_CHECKING
 
 import sqlglot
 
-from slayer.core.errors import ColumnCycleError
+from slayer.core.errors import AmbiguousJoinPathError, ColumnCycleError
+from slayer.core.join_walker import resolve_hop
 from slayer.core.models import Column, SlayerModel
 from slayer.sql.column_expansion import (
     is_trivial_base,
@@ -42,53 +43,107 @@ if TYPE_CHECKING:
 _DEPENDENCY_DIALECT: str | None = None
 
 
+def _fragment_refs(sql: str):
+    """Root-scope ``(qualifiers, leaf)`` references of a Mode-A fragment, or
+    ``None`` on a parse failure (let the surface-level error surface instead)."""
+    try:
+        # DEV-1686: prequote reserved qualifiers/leaves so a fragment referencing
+        # a reserved joined model (``grant.amount``) parses cleanly here instead
+        # of falling back to a noisy ``Command`` parse.
+        parsed = sqlglot.parse_one(
+            prequote_reserved_identifiers(sql=sql, dialect=_DEPENDENCY_DIALECT),
+            dialect=_DEPENDENCY_DIALECT,
+        )
+    except Exception:
+        return None
+    return [
+        (quals, leaf)
+        for _node, quals, leaf in reference_sites(
+            parsed, root_scope_column_ids(parsed=parsed),
+        )
+    ]
+
+
 def _column_dependencies(
     *,
     column: Column,
     host: SlayerModel,
     reachable: dict[str, SlayerModel],
 ) -> list[tuple[str, str]]:
-    """Extract the root-scope derived-column dependencies of ``column``.
+    """Root-scope dependency edges ``(model_name, column_name)`` of ``column``.
 
-    Returns a list of ``(model_name, column_name)`` tuples — only refs
-    pointing at columns that exist in ``reachable`` AND are themselves
-    derived (non-trivial sql). Base, unknown, and external refs are
-    silently dropped: they cannot participate in a derived-column cycle.
+    Both its derived ``Column.sql`` and its ``Column.filter`` (DEV-1832) are
+    dependency sources — an edge points at any referenced column that itself
+    needs expansion (derived or filtered), so a filter naming another derived
+    column is an edge and one naming its own column is a cycle. A dotted filter
+    reference that does not walk from ``host`` fails the save, naming the path.
 
-    DEV-1743: each reference is resolved through the shared
+    DEV-1743: each reference resolves through the shared
     :func:`slayer.sql.column_expansion.resolve_ref_target` — exact-name-first
-    (a ``__``-named DIRECT join target stays whole) then a dotted chain of exact
-    hops (``customers.regions.label`` walks host→customers→regions), never
-    ``__``-splitting. Opaque / physical refs simply fail to resolve and drop out.
+    then a dotted chain of exact hops, never ``__``-splitting.
     """
-    if column.sql is None or is_trivial_base(column=column):
-        return []
-    try:
-        # DEV-1686: prequote reserved qualifiers/leaves so a derived column
-        # referencing a reserved joined model (e.g. ``grant.amount``) parses
-        # cleanly here instead of falling back to a noisy ``Command`` parse.
-        parsed = sqlglot.parse_one(
-            prequote_reserved_identifiers(sql=column.sql, dialect=_DEPENDENCY_DIALECT),
-            dialect=_DEPENDENCY_DIALECT,
-        )
-    except Exception:
-        # Parse failure on a save attempt — let the actual save proceed so
-        # the surface-level error (storage / pydantic) is what the user
-        # sees, not a noisy validator complaint about unparseable SQL.
-        return []
-    root_ids = root_scope_column_ids(parsed=parsed)
     deps: list[tuple[str, str]] = []
-    for _node, quals, leaf in reference_sites(parsed, root_ids):
-        target = resolve_ref_target(
-            qualifiers=quals, source_model=host, models_by_name=reachable,
-        )
-        if target is None:
-            continue
-        target_col = target.get_column(leaf)
-        if target_col is None or is_trivial_base(column=target_col):
-            continue
-        deps.append((target.name, target_col.name))
+    if column.sql is not None and not is_trivial_base(column=column):
+        for quals, leaf in _fragment_refs(column.sql) or []:
+            target = resolve_ref_target(
+                qualifiers=quals, source_model=host, models_by_name=reachable,
+            )
+            if target is None:
+                continue
+            col = target.get_column(leaf)
+            if col is not None and col.needs_expansion:
+                deps.append((target.name, col.name))
+    if column.filter:
+        for quals, leaf in _fragment_refs(column.filter) or []:
+            first = _first_hop(quals, host)
+            if first is not None and not _is_join_hop(host, first, reachable):
+                # The leading hop names no join edge on the host — a broken path,
+                # not a merely-unloaded one. Fail the save, naming the path.
+                raise ValueError(
+                    f"Column {column.name!r} on model {host.name!r} has a filter "
+                    f"referencing {'.'.join((*quals, leaf))!r}, which does not "
+                    f"resolve to a joined model from {host.name!r}."
+                )
+            target = (
+                host if first is None
+                else resolve_ref_target(
+                    qualifiers=quals, source_model=host, models_by_name=reachable,
+                )
+            )
+            if target is None:
+                continue  # a real join hop whose target is not loaded here — skip
+            col = target.get_column(leaf)
+            if col is None or not col.needs_expansion:
+                continue
+            # A filter naming its OWN column reads the physical column (not the
+            # recursive masked value) when that column is a bare physical one
+            # (trivial base) — so `val` filtered by `val > 0` is fine; only a
+            # DERIVED self-reference (`loop = amount` filtered by `loop > 0`) is a cycle.
+            if (
+                target.name == host.name and leaf == column.name
+                and is_trivial_base(column=column)
+            ):
+                continue
+            deps.append((target.name, col.name))
     return deps
+
+
+def _first_hop(quals, host: SlayerModel):
+    """The leading join-hop token of a reference (host's own name stripped), or
+    ``None`` when the reference is host-local (a bare column)."""
+    q = list(quals)
+    if q and q[0] == host.name:
+        q = q[1:]
+    return q[0] if q else None
+
+
+def _is_join_hop(host: SlayerModel, token: str, reachable: dict[str, SlayerModel]) -> bool:
+    """Whether ``token`` names a join edge incident to ``host`` (its own declared
+    joins, resolvable without loading the target); ambiguous counts as a hop."""
+    try:
+        return resolve_hop(current=host, token=token, models_by_name=reachable) is not None
+    except AmbiguousJoinPathError:
+        return True
 
 
 def _node_dependencies(
@@ -207,7 +262,7 @@ async def validate_no_column_cycles(
     for entity_name in sorted(reachable.keys()):
         entity = reachable[entity_name]
         for col in entity.columns:
-            if col.sql is None or is_trivial_base(column=col):
+            if not col.needs_expansion:
                 continue
             roots.append((entity_name, col.name))
     for root in roots:

@@ -257,16 +257,8 @@ def _render_builtin_aggregate(  # NOSONAR(S3776) — sequential fail-closed guar
                 f"mechanism, which needs the generator's builder"
             ),
         )
-    # The next guards refuse a key whose FIELDS need the generator (else a filtered aggregate renders as a plain SUM over excluded rows).
-    if key.column_filter_key is not None:
-        raise RenderContextMissingFacilityError(
-            key_kind=type(key).__name__,
-            facility=_AGG_BUILDER,
-            detail=(
-                "the aggregate's source carries a column filter, which needs "
-                "the generator's CASE-WHEN wrapper"
-            ),
-        )
+    # A Column.filter on the source rides its ColumnSqlKey (CASE WHEN baked into
+    # the source's scope resolution), so no separate guard is needed (DEV-1832).
     if key.kwargs or key.args:
         raise RenderContextMissingFacilityError(
             key_kind=type(key).__name__,

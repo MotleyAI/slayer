@@ -47,6 +47,7 @@ from slayer.sql.column_expansion import (
     collect_root_scope_joined_paths,
     collect_root_scope_reference_columns,
     expand_derived_refs_sync,
+    wrap_column_filter,
 )
 from slayer.ir.planned import MaskTyping, RankedGrainMember, StageKind, ValueSlot, regroup_producer_identity
 from slayer.ir.source_bundle import (
@@ -165,8 +166,6 @@ class AggRenderSpec(BaseModel):
             else:
                 coerced[key] = val  # bool / None / other → Pydantic rejects
         return coerced
-
-    filter_sql: Optional[str] = None
 
     time_column: Optional[str] = None
 
@@ -589,13 +588,6 @@ _BUCKET_ALIGNED_SHIFT_UNITS: dict[str, frozenset[str]] = {
 
 def _shift_preserves_bucket_starts(bucket: "TimeGranularity", shift: str) -> bool:
     return shift.lower() in _BUCKET_ALIGNED_SHIFT_UNITS.get(str(bucket), frozenset())
-
-
-def _wrap_filter(sql_str: str, filter_sql: Optional[str]) -> str:
-    """Wrap ``sql_str`` in ``CASE WHEN filter_sql THEN ... END`` if a row-level"""
-    if not filter_sql:
-        return sql_str
-    return f"(CASE WHEN {filter_sql} THEN {sql_str} END)"
 
 
 def _is_host_grain(key) -> bool:
@@ -1233,19 +1225,12 @@ class SQLGenerator:
         if agg_name == "percentile":
             return self._build_percentile(spec), True
         if agg_name == "count_distinct_approx":
-            col_expr = _wrap_filter(
-                self._resolve_value_sql(spec), spec.filter_sql
-            )
             return self._dialect.build_approx_count_distinct(
-                col_sql=col_expr, parse=self._parse
+                col_sql=self._resolve_value_sql(spec), parse=self._parse
             ), True
 
         if agg_name == "count" and spec.sql is None:
-            if spec.filter_sql:
-                case_sql = f"CASE WHEN {spec.filter_sql} THEN 1 END"
-                inner = self._parse(case_sql)
-            else:
-                inner = exp.Star()
+            inner = exp.Star()
         elif spec.sql:
             inner = self._resolve_sql(
                 sql=spec.sql,
@@ -1258,11 +1243,6 @@ class SQLGenerator:
                 this=exp.to_identifier(spec.name),
                 table=exp.to_identifier(spec.model_name),
             )
-
-        if spec.filter_sql and not (agg_name == "count" and spec.sql is None):
-            inner_sql = inner.sql(dialect=self.dialect)
-            case_sql = f"CASE WHEN {spec.filter_sql} THEN {inner_sql} END"
-            inner = self._parse(case_sql)
 
         if dispatch == DISPATCH_DISTINCT:
             return exp.Count(this=exp.Distinct(expressions=[inner])), True
@@ -1305,17 +1285,16 @@ class SQLGenerator:
                     f"(e.g., 'measure:{agg_name}({req}=column)')."
                 )
 
-        # Filter-wrap column refs in CASE WHEN so non-matching rows go NULL, but leave literal-default params unwrapped
-        # (wrapping a constant makes it a row expression).
-        col_expr = _wrap_filter(self._resolve_value_sql(spec), spec.filter_sql)
+        # A ``Column.filter`` on the source is already baked into ``spec.sql`` (its
+        # ColumnSqlKey desugars to CASE WHEN); parameters are masked only by their
+        # own columns' filters (DEV-1832), never by the source's.
+        col_expr = self._resolve_value_sql(spec)
         substituted = formula.replace("{value}", self._paren_fragment(col_expr))
         for param_name, param_val in params.items():
             param_ast = self._agg_param_ast(
                 param_val, model_name=spec.model_name,
             )
             param_expr = param_ast.sql(dialect=self.dialect)
-            if spec.filter_sql and not isinstance(param_ast, exp.Literal):
-                param_expr = _wrap_filter(param_expr, spec.filter_sql)
             substituted = substituted.replace(
                 f"{{{param_name}}}", self._paren_fragment(param_expr))
 
@@ -1352,7 +1331,7 @@ class SQLGenerator:
             )
 
         # Pass the original string p (not the float) so user literals like 0.50 / 5e-2 survive verbatim.
-        col_expr = _wrap_filter(self._resolve_value_sql(spec), spec.filter_sql)
+        col_expr = self._resolve_value_sql(spec)
         return self._dialect.build_percentile(
             p_str=p, col_sql=col_expr, parse=self._parse,
         )
@@ -1365,12 +1344,11 @@ class SQLGenerator:
         # one.
         other_expr: Optional[str] = None
         if agg_name in _TWO_ARG_STAT_AGGS:
-            other_expr = _wrap_filter(
-                self._resolve_agg_param(spec, name="other", agg_name=agg_name),
-                spec.filter_sql,
+            other_expr = self._resolve_agg_param(
+                spec, name="other", agg_name=agg_name,
             )
 
-        col_expr = _wrap_filter(self._resolve_value_sql(spec), spec.filter_sql)
+        col_expr = self._resolve_value_sql(spec)
 
         if agg_name in _TWO_ARG_STAT_AGGS:
             assert other_expr is not None  # set above when two-arg
@@ -2068,19 +2046,6 @@ class SQLGenerator:
                 if slot is not None and slot.phase == Phase.AGGREGATE:
                     _walk(slot.key, fn)
 
-        def _resolve_column_filter(key) -> None:
-            cfk = key.column_filter_key
-            if cfk is None or not cfk.canonical_sql:
-                return
-            # The filter is anchored at the aggregated column's OWNER (source
-            # path), not the scope root; enter through its sub-scope so a to-one
-            # ref (regions.name) resolves and its join registers.
-            self._enter_mode_a_predicate(
-                sql=cfk.canonical_sql, scope=scope,
-                owner_path=source_anchor_path(key.source),
-                location=f"Column.filter on model {scope.root_model.name!r}",
-            )
-
         def _resolve_source(key) -> None:
             # Expression sources (DEV-1826) resolve too: a ColumnSqlKey operand
             # whose derived SQL crosses joins must register them (Law 1).
@@ -2131,7 +2096,6 @@ class SQLGenerator:
                 return
             scope.resolve(arg)
 
-        _for_each_local_agg(_resolve_column_filter)
         _for_each_local_agg(_resolve_source)
         _for_each_local_agg(_resolve_kwargs)
         _for_each_local_agg(_resolve_fragment_kwargs)
@@ -2564,14 +2528,10 @@ class SQLGenerator:
         src_cols.append(raw_time.copy().as_("_w_time"))
         grain_aliases.append(wtd_alias)
 
+        # A Column.filter on the ranked source is baked into its ColumnSqlKey
+        # (CASE WHEN), so the picked value is masked while ranking spans all rows
+        # (DEV-1832): the latest row's value may be NULL if it fails the filter.
         val_expr = src_scope.resolve(key.source)
-        if key.column_filter_key is not None:
-            pred_sql = src_scope.resolve_predicate_sql(
-                key.column_filter_key.canonical_sql,
-            )
-            val_expr = exp.Case(
-                ifs=[exp.If(this=self._parse_predicate(pred_sql), true=val_expr)],
-            )
         src_cols.append(val_expr.as_("_w_value"))
 
         # _src inherits row filters minus their frame bounds; one effective list feeds both join discovery and rendering
@@ -2751,17 +2711,18 @@ class SQLGenerator:
                 f"Aggregate source column {leaf!r} not found on model "
                 f"{root_model.name!r}",
             )
-        if isinstance(source, ColumnSqlKey) and col.sql is not None:
-            sql_text = self._expand_derived_column_sql(
+        if isinstance(source, ColumnSqlKey):
+            # The value (and any Column.filter CASE) with its type CAST baked in
+            # (DEV-1832) — parse without re-casting the whole expression.
+            expr = self._parse(self._expand_derived_column_sql(
                 source_model=root_model, source_relation=root_relation,
                 column_name=col.name, bundle=bundle,
-            )
+            ))
         else:
-            sql_text = col.sql if col.sql else col.name
-        expr = self._resolve_sql(
-            sql=sql_text, name=col.name, model_name=root_relation,
-            type=col.type,
-        )
+            expr = self._resolve_sql(
+                sql=col.sql if col.sql else col.name, name=col.name,
+                model_name=root_relation, type=col.type,
+            )
         for p in self._joined_paths_in_sql(
             sql_expr=expr, source_relation=root_relation,
             source_model=root_model, bundle=bundle,
@@ -2924,15 +2885,12 @@ class SQLGenerator:
         root_relation: str,
         scope: ScopeFrame,
     ) -> List[exp.Expression]:
-        """Every predicate a ranked CTE applies to the rows it ranks."""
+        """Every predicate a ranked CTE applies to the rows it ranks.
+
+        A ``Column.filter`` on the ranked column is NOT a WHERE here — it masks the
+        picked value (baked into the source's ColumnSqlKey CASE), so ranking spans
+        every row and the latest row's value may be NULL (DEV-1832)."""
         parts: List[exp.Expression] = []
-        if local_key.column_filter_key is not None:
-            cfk_sql = local_key.column_filter_key.canonical_sql
-            if cfk_sql:
-                parts.append(self._enter_mode_a_predicate(
-                    sql=cfk_sql, scope=scope,
-                    location=f"Column.filter on model {root_model.name!r}",
-                ))
         skip_ids = {
             fp.id for fp in _lower_positions(planned_query).filters
         } - set(plan.where_filter_ids)
@@ -3155,28 +3113,20 @@ class SQLGenerator:
                 scope=scope,
                 owner_path=source_anchor_path(agg_slot.key.source),
             )
-            value_sql = _wrap_filter(self._resolve_value_sql(spec), spec.filter_sql)
+            value_sql = self._resolve_value_sql(spec)
             inner_cols.append(
                 exp.Max(this=self._parse(value_sql)).as_(
                     exp.to_identifier(picked_alias),
                 ),
             )
 
-        # Pick each legal parameter once per cell as _p<i>, under the SAME
-        # measure-local filter as the source value — else an excluded row still
-        # contributes its weight to a level-2 denominator (a weighted average
-        # over filtered rows). Literal defaults never carry a filter.
+        # Pick each legal parameter once per cell as _p<i>. A Column.filter masks
+        # only its own column (baked into that column's ColumnSqlKey CASE), never
+        # the source's filter (DEV-1832).
         picked_kwarg_exprs: Dict[str, ResolvedAggKwarg] = {}
         for _i, _pp in enumerate(picked_params):
             _p_alias = f"_p{_i}"
             _picked = self._render_picked_param_value(pp=_pp, ctx=ctx)
-            if (
-                spec is not None and spec.filter_sql
-                and not isinstance(_picked, exp.Literal)
-            ):
-                _picked = exp.Case(ifs=[exp.If(
-                    this=self._parse(spec.filter_sql), true=_picked,
-                )])
             inner_cols.append(exp.Alias(
                 this=exp.Max(this=_picked),
                 alias=exp.to_identifier(_p_alias),
@@ -5036,15 +4986,6 @@ class SQLGenerator:
                 leaf_frag_kwargs.setdefault(
                     _fname, ResolvedAggKwarg(kind="expr", value=_fast),
                 )
-            if (
-                leaf_key.column_filter_key is not None
-                and leaf_key.column_filter_key.canonical_sql
-            ):
-                self._enter_mode_a_predicate(
-                    sql=leaf_key.column_filter_key.canonical_sql,
-                    scope=shifted_scope,
-                    location=f"Column.filter on model {source_model.name!r}",
-                )
             synth = self._build_agg_render_spec_from_planned(
                 slot=leaf_slot, key=leaf_key, source_model=source_model,
                 source_relation=source_relation,
@@ -5457,31 +5398,6 @@ class SQLGenerator:
         alias_index[slot.id] = idx + 1
         return alias
 
-    def _qualify_column_filter_sql(
-        self,
-        *,
-        canonical_sql: Optional[str],
-        source_relation: str,
-        source_model,
-    ) -> Optional[str]:
-        """Qualify bare-identifier column refs in a Mode-A filter fragment."""
-        if not canonical_sql:
-            return None
-        try:
-            ast = self._parse_predicate(canonical_sql)
-        except Exception:
-            return canonical_sql
-        known_names = {c.name for c in source_model.columns}
-        for col in ast.find_all(exp.Column):
-            if col.args.get("table") is not None:
-                continue
-            ident = col.this
-            if not isinstance(ident, exp.Identifier):
-                continue
-            if ident.name in known_names:
-                col.set("table", exp.to_identifier(source_relation))
-        return ast.sql(dialect=self.dialect)
-
     def _mode_a_scope(
         self, *, source_model, source_relation: str, bundle,
     ) -> ScopeFrame:
@@ -5665,39 +5581,6 @@ class SQLGenerator:
             self._parse(expanded_sql), col.type if col is not None else None,
         )
 
-    def _expand_column_filter_sql(
-        self,
-        *,
-        canonical_sql: Optional[str],
-        source_relation: str,
-        source_model,
-        bundle=None,
-        scope: Optional[ScopeFrame] = None,
-        owner_path: Tuple[str, ...] = (),
-    ) -> Optional[str]:
-        """Render a ``Column.filter`` Mode-A predicate for the aggregation-time"""
-        if not canonical_sql:
-            return None
-        if scope is not None:
-            # Enter through the level-1 scope so the filter's owner-anchored
-            # to-one joins register on it (not a throwaway).
-            return scope.enter_predicate(
-                canonical_sql, owner_path=tuple(owner_path),
-                location=f"Column.filter on model {source_model.name!r}",
-            ).sql(dialect=self.dialect)
-        if bundle is None:
-            return self._qualify_column_filter_sql(
-                canonical_sql=canonical_sql,
-                source_relation=source_relation,
-                source_model=source_model,
-            )
-        return self._enter_mode_a_predicate(
-            sql=canonical_sql,
-            source_model=source_model,
-            source_relation=source_relation,
-            bundle=bundle,
-            location=f"Column.filter on model {source_model.name!r}",
-        ).sql(dialect=self.dialect)
 
     def _build_from_clause_from_planned(
         self,
@@ -5768,6 +5651,7 @@ class SQLGenerator:
                     column_name=time_column.column_name,
                     bundle=bundle,
                     owner_path=tuple(time_column.path),
+                    cast=False,
                 )
             else:
                 expanded_sql = self._expand_derived_column_sql(
@@ -5775,6 +5659,7 @@ class SQLGenerator:
                     source_relation=source_relation,
                     column_name=time_column.column_name,
                     bundle=bundle,
+                    cast=False,
                 )
             return self._parse(expanded_sql)
         raise NotImplementedError(
@@ -5786,8 +5671,14 @@ class SQLGenerator:
         owner_path: Tuple[str, ...] = (),
         root_relation: "Optional[str]" = None,
         crossed_paths: "Optional[Set[Tuple[str, ...]]]" = None,
+        cast: bool = True,
     ) -> str:
-        """Expand a derived ``Column.sql`` (a ``ColumnSqlKey`` target) into a"""
+        """Expand a ``ColumnSqlKey`` target to SQL, casting the value to its
+        declared type (a bare column is skipped) and desugaring any ``Column.filter``
+        to ``CASE WHEN <filter> THEN <value> END`` (DEV-1832). The type CAST rides
+        the VALUE, so the filter CASE needs no outer cast. ``cast=False`` skips the
+        type CAST for a raw-time expression (``DATE_TRUNC`` needs the untruncated
+        timestamp, not a lossy ``CAST(... AS TIMESTAMP)``)."""
         col = next(
             (c for c in source_model.columns if c.name == column_name), None,
         )
@@ -5796,20 +5687,26 @@ class SQLGenerator:
                 f"Derived column {column_name!r} not found on model "
                 f"{source_model.name!r}",
             )
-        if col.sql is None:
-            return col.name
         resolver_root = root_relation if root_relation is not None else source_relation
-        expanded = expand_derived_refs_sync(
-            sql=col.sql,
-            model=source_model,
-            alias_path=source_relation,
-            models_by_name=bundle.models_by_name,
-            dialect=self.dialect,
-            owner_path=owner_path,
-            alias_resolver=self._join_alias_resolver(resolver_root),
-            crossed_paths=crossed_paths,
-        )
-        return expanded if expanded is not None else col.sql
+        resolver = self._join_alias_resolver(resolver_root)
+
+        def _expand(sql: str) -> str:
+            out = expand_derived_refs_sync(
+                sql=sql, model=source_model, alias_path=source_relation,
+                models_by_name=bundle.models_by_name, dialect=self.dialect,
+                owner_path=owner_path, alias_resolver=resolver,
+                crossed_paths=crossed_paths,
+            )
+            return out if out is not None else sql
+
+        raw_value = col.sql if col.sql else col.name
+        value_ast = self._parse(_expand(raw_value))
+        value_sql = (
+            _wrap_cast_for_type(value_ast, col.type) if cast else value_ast
+        ).sql(dialect=self.dialect)
+        if not col.filter:
+            return value_sql
+        return wrap_column_filter(value_sql=value_sql, filter_sql=_expand(col.filter))
 
     def _render_expression_source_sql(self, *, source, scope: ScopeFrame) -> str:
         """Render an aggregate's row-level expression source through ``scope`` — one resolver for leaves, attached placeholders, derived columns and join registration."""
@@ -6059,13 +5956,10 @@ class SQLGenerator:
                     f"Aggregate source column {src_leaf!r} not found "
                     f"on model {source_model.name!r}",
                 )
-            # Inner bare refs in a derived aggregate's Column.sql must qualify to source_relation, else the SQL keeps
-            # bare 'amount' where it needs 'orders.amount'.
-            if (
-                isinstance(source, ColumnSqlKey)
-                and col.sql is not None
-                and bundle is not None
-            ):
+            # A ColumnSqlKey source expands its value (inner bare refs qualify to
+            # source_relation) and desugars any Column.filter to CASE WHEN here
+            # (DEV-1832); a plain physical column stays bare for the aggregate.
+            if isinstance(source, ColumnSqlKey) and bundle is not None:
                 sql_text = self._expand_derived_column_sql(
                     source_model=source_model,
                     source_relation=source_relation,
@@ -6074,8 +5968,12 @@ class SQLGenerator:
                     owner_path=source.path if host_grain_root is not None else (),
                     root_relation=host_grain_root,
                 )
+                # The declared-type CAST is baked into sql_text (on the value), so
+                # the aggregate must not re-cast the whole expression (DEV-1832).
+                column_type = None
             else:
                 sql_text = col.sql if col.sql else col.name
+                column_type = col.type
             resolved_kw = resolved_agg_kwargs or {}
             agg_kwargs_str = {
                 k: (resolved_kw[k] if k in resolved_kw else agg_kwarg_canonical_str(v))
@@ -6085,20 +5983,6 @@ class SQLGenerator:
             for _name, _resolved in resolved_kw.items():
                 if _name not in key_kwarg_names:
                     agg_kwargs_str.setdefault(_name, _resolved)
-            # Propagate column_filter_key into filter_sql (SUM(CASE WHEN <filter> THEN col END)) and qualify the
-            # filter's bare refs with the host model name.
-            filter_sql = self._expand_column_filter_sql(
-                canonical_sql=(
-                    key.column_filter_key.canonical_sql
-                    if key.column_filter_key is not None
-                    else None
-                ),
-                source_relation=source_relation,
-                source_model=source_model,
-                bundle=bundle,
-                scope=scope,
-                owner_path=owner_path,
-            )
             return AggRenderSpec(
                 name=col.name,
                 sql=sql_text,
@@ -6106,8 +5990,7 @@ class SQLGenerator:
                 alias=full_alias,
                 model_name=source_relation,
                 type=slot_type,
-                column_type=col.type,
-                filter_sql=filter_sql,
+                column_type=column_type,
                 agg_kwargs=agg_kwargs_str,
                 aggregation_def=agg_def,
                 time_column=None,
@@ -6141,7 +6024,6 @@ class SQLGenerator:
                 model_name=source_relation,
                 type=slot_type,
                 column_type=None,
-                filter_sql=None,
                 agg_kwargs=agg_kwargs_str,
                 aggregation_def=agg_def,
                 time_column=None,

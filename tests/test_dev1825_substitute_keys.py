@@ -22,7 +22,6 @@ from slayer.core.keys import (
     InKey,
     LiteralKey,
     ScalarCallKey,
-    SqlExprKey,
     StarKey,
     TimeTruncKey,
     TransformKey,
@@ -126,13 +125,6 @@ class TestTotality:
         )
         for member in members:
             assert substitute_value_keys(samples[member], {}) == samples[member]
-
-    def test_column_filter_key_is_not_traversed(self) -> None:
-        # SqlExprKey is Mode-A identity, not a ValueKey — it rides through
-        # unchanged like reroot's column_filter_key invariance.
-        filt = SqlExprKey(canonical_sql="status = 'ok'", referenced_join_paths=())
-        key = AggregateKey(source=AMOUNT, agg="sum", column_filter_key=filt)
-        assert substitute_value_keys(key, {CITY: AMOUNT}).column_filter_key == filt
 
     def test_unknown_kind_raises(self) -> None:
         class NotAKey:

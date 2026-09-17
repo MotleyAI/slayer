@@ -27,9 +27,9 @@
 
 ## 4. Column.filter desugar (D5)
 
-- [ ] 4.1 `Column.needs_expansion`; binder derived decision and `reference_closure._derived_column` read it; `column_dependency` adds filter-reference edges without a self-edge; verify the cycle-validation and dependency scenarios pass
-- [ ] 4.2 Apply the CASE wrapper at the three expansion seams (reference-site expander, scope anchor, generator aggregate-source expansion) with the filter expanded at the owner path; verify single-column SQL identity and the derived-over-filtered scenario
-- [ ] 4.3 Delete `AggregateKey.column_filter_key`, the binder resolver and filtered-operand rejection, closure filter arms, generator filter passes / `_wrap_filter` / `count(*)` CASE / ranked picked-value CASE, `AggRenderSpec.filter_sql`, compiler identity tuples, renderer guard; retire `SqlExprKey` and `parse_sql_expr`; verify `test_dev1832_column_filter.py` passes and re-bless moved goldens only through `ALLOWED_DELTAS` with executed values pinned
+- [x] 4.1 `Column.needs_expansion` (value non-trivial or filter set); both binder `ColumnSqlKey` decisions read it; `column_dependency` adds filter-reference edges (a filter naming its own column is a cycle; a filtered physical column becomes a root/node) and raises on a broken dotted filter path at save; `_column_key_closure` walks value AND filter; cycle/dependency scenarios pass
+- [x] 4.2 CASE wrapper (`column_expansion.wrap_column_filter` / `expand_column_definition_sync`) at the three expansion seams — `_process_reference_site`, `scope._anchor` ColumnSqlKey arm, generator `_expand_derived_column_sql` — filter expanded at the owner path; the declared-type CAST rides the value so single-column SQL is `SUM(CASE WHEN … THEN col END)` (no outer cast); single-column identity + derived-over-filtered pass
+- [x] 4.3 Deleted `AggregateKey.column_filter_key`, `_resolve_column_filter_key`, closure filter arms + `compute_column_filter_join_paths`, generator `_wrap_filter` / count(*) CASE / ranked picked-value CASE / param-mask CASE / `_expand_column_filter_sql` / `_qualify_column_filter_sql`, `AggRenderSpec.filter_sql`, compiler identity tuples, renderer guard; retired `SqlExprKey` + `parse_sql_expr` (`canonicalize_sql` kept). `test_dev1832_column_filter.py` 33/33 green; ~18 obsolete-machinery test files updated (Egor consent 2026-09-16). Golden re-bless deferred to 6.4 (adds `dev1859 param/mixed_plus` + `mixed/outer_partition` alias-hash deltas)
 
 ## 5. Transform constituents (D4)
 

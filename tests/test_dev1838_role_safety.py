@@ -22,7 +22,6 @@ from tests._dev1838_fixtures import (
     FACTOR_MAX_BY_STATUS,
     FACTOR_MIN_BY_STATUS,
     GOLD_BY_STATUS,
-    GOLD_LAST_BY_STATUS,
     LAST_BY_SIGNUP_BY_STATUS,
     ModelMeasure,
     OrderItem,
@@ -142,14 +141,19 @@ class TestProvenHopsKeepExactValues:
             assert float(by[(status,)]["orders.g"]) == pytest.approx(expected)
 
     async def test_ranked_filtered_over_proven_hop(self, exec_backend):
+        # DEV-1832: Column.filter masks the value; it never restricts the ranking.
+        # gold_amount masks amount to NULL unless the order's customer is gold (c1).
+        # The newest 'ok' order (#7, NULL customer) and newest 'new' order (#6, c4
+        # bronze) are both non-gold, so gold_amount:last masks each to NULL — the
+        # older gold orders are not reached (a WHERE would belong in the query).
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["status"],
             measures=[ModelMeasure(formula="gold_amount:last", name="gl")],
         ))
         by = rows_by(resp, "orders.status")
-        for status, expected in GOLD_LAST_BY_STATUS.items():
-            assert float(by[(status,)]["orders.gl"]) == pytest.approx(expected)
+        assert by[("ok",)]["orders.gl"] is None
+        assert by[("new",)]["orders.gl"] is None
 
     async def test_aggregation_param_over_proven_hops(self, exec_backend):
         _, engine = exec_backend

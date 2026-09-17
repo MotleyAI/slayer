@@ -42,6 +42,7 @@ from slayer.core.keys import (
 from slayer.core.models import SlayerModel
 from slayer.sql.column_expansion import (
     collect_root_scope_joined_paths,
+    expand_column_definition_sync,
     expand_derived_refs_sync,
 )
 from slayer.ir.source_bundle import ResolvedSourceBundle
@@ -404,12 +405,6 @@ class ScopeFrame(BaseModel):
             col = next(
                 (c for c in model.columns if c.name == ref.column_name), None,
             )
-            if col is None:
-                raw_sql = ref.column_name
-            elif col.sql:
-                raw_sql = col.sql
-            else:
-                raw_sql = col.name
             # DEV-1711: a derived column ON a JOINED model (``path`` non-empty,
             # e.g. ``stores.tier`` where ``tier`` lives on the joined ``stores``)
             # anchors at its ``__``-path alias (``owner_path=ref.path``) so a
@@ -426,8 +421,19 @@ class ScopeFrame(BaseModel):
             else:
                 alias_path = self.root_relation
             self._register_path_prefixes(owner_path)
-            expanded = expand_derived_refs_sync(
-                sql=raw_sql,
+            if col is None:
+                expanded = expand_derived_refs_sync(
+                    sql=ref.column_name, model=model, alias_path=alias_path,
+                    models_by_name=self._models_by_name(),
+                    dialect=self.dialect.sqlglot_name, owner_path=owner_path,
+                    alias_resolver=self._alias_resolver(),
+                    crossed_paths=self.join_paths,
+                )
+                return self._parse(expanded or ref.column_name)
+            # DEV-1832: a ``Column.filter`` desugars to CASE WHEN here — the value
+            # and filter expand through the same door at ``owner_path``.
+            expanded = expand_column_definition_sync(
+                column=col,
                 model=model,
                 alias_path=alias_path,
                 models_by_name=self._models_by_name(),
@@ -436,7 +442,7 @@ class ScopeFrame(BaseModel):
                 alias_resolver=self._alias_resolver(),
                 crossed_paths=self.join_paths,
             )
-            return self._parse(expanded or raw_sql)
+            return self._parse(expanded)
         if isinstance(ref, (ArithmeticKey, ScalarCallKey, LiteralKey)):
             # DEV-1826: an aggregate's row-level expression source — column
             # leaves anchor recursively through this scope, so join

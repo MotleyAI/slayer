@@ -32,13 +32,12 @@ from slayer.core.enums import (
 )
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS
-from slayer.core.keys import SCALAR_FUNCTIONS, check_scalar_arity, AggregateKey, ArithmeticKey, ColumnKey, ColumnSqlKey, Grain, InKey, LiteralKey, ScalarCallKey, SqlExprKey, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, column_path, normalize_scalar, prepend_value_key, source_anchor_path, walk_value_keys
+from slayer.core.keys import SCALAR_FUNCTIONS, check_scalar_arity, AggregateKey, ArithmeticKey, ColumnKey, ColumnSqlKey, Grain, InKey, LiteralKey, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, column_path, normalize_scalar, prepend_value_key, source_anchor_path, walk_value_keys
 from slayer.core.join_walker import resolve_hop, terminal_model
 from slayer.core.models import SlayerModel
 from slayer.engine import dimension_routing
 from slayer.core.query import TimeDimension
 from slayer.core.scope import ModelScope, StageSchema
-from slayer.engine.reference_closure import compute_column_filter_join_paths
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.syntax import (
     AggCall,
@@ -491,7 +490,7 @@ def _resolve_ref(
     # A ``__``-bearing name is not special: it resolves by ordinary exact-match.
     col = next((c for c in model.columns if c.name == name), None)
     if col is not None:
-        if col.sql is not None and col.sql.strip() != name:
+        if col.needs_expansion:
             return ColumnSqlKey(path=(), model=model.name, column_name=col.name)
         return ColumnKey(path=(), leaf=col.name)
 
@@ -692,9 +691,9 @@ def _resolve_terminal_leaf(
     → saved measure (re-anchored into host coords) → unresolved error."""
     col = next((c for c in current.columns if c.name == leaf), None)
     if col is not None:
-        if col.sql is not None and col.sql.strip() != leaf:
-            # Derived column on a joined model — path is part of the key so the
-            # cross-model planner can route via the join graph.
+        if col.needs_expansion:
+            # Derived / filtered column on a joined model — path is part of the
+            # key so the cross-model planner can route via the join graph.
             return ColumnSqlKey(
                 path=tuple(hop_path), model=current.name, column_name=leaf,
             )
@@ -1105,12 +1104,6 @@ def _bind_agg(
             k, _bind_agg_arg(v, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map),
         ))
     kwargs = tuple(kwargs_list)
-    # Propagate ``Column.filter`` into the AggregateKey's identity: two
-    # aggregates over the same column with different filters differ at the key
-    # level (wrapped as ``SUM(CASE WHEN ... THEN col END)``); same-filter intern.
-    column_filter_key = _resolve_column_filter_key(
-        source=source, bundle=bundle,
-    )
     # Gate per-column aggregation eligibility, then store the EFFECTIVE
     # (alias-healed) name so the generator resolves the canonical aggregation.
     effective_agg = _validate_agg_eligibility(
@@ -1137,7 +1130,6 @@ def _bind_agg(
         agg=effective_agg,
         args=args,
         kwargs=kwargs,
-        column_filter_key=column_filter_key,
         partition_keys=partition_keys,
     )
 
@@ -1154,38 +1146,6 @@ def _walk_tokens_best_effort(
     )
 
 
-def _resolve_column_filter_key(
-    *, source, bundle: ResolvedSourceBundle,
-) -> Optional[SqlExprKey]:
-    """Look up the resolved source's ``Column.filter`` and convert to a
-    ``SqlExprKey``. ``None`` for ``StarKey``, unset filters, or an unresolvable
-    target model (best-effort — the compile-time path validator catches those)."""
-    if isinstance(source, StarKey):
-        return None
-    path = getattr(source, "path", ())
-    leaf = getattr(source, "leaf", None) or getattr(source, "column_name", None)
-    if leaf is None:
-        return None
-    host = bundle.source_model
-    if host is None:
-        return None
-    current = _walk_tokens_best_effort(host=host, path=path, bundle=bundle)
-    if current is None:
-        return None
-    col = next((c for c in current.columns if c.name == leaf), None)
-    if col is None or not col.filter:
-        return None
-    # Stamp typed non-anchor join paths on the SqlExprKey so the planner's
-    # isolation trigger reads typed data, not parsed SQL. The anchor relation
-    # is the ``__``-canonical path alias when the anchor is a joined model.
-    anchor_relation = "__".join(path) if path else current.name
-    paths = compute_column_filter_join_paths(
-        canonical_sql=col.filter,
-        anchor_model=current,
-        anchor_relation=anchor_relation,
-        bundle=bundle,
-    )
-    return SqlExprKey(canonical_sql=col.filter, referenced_join_paths=paths)
 
 
 def _resolve_agg_owner(

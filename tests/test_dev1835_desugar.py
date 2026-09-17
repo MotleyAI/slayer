@@ -283,8 +283,10 @@ class TestFilteredMeasureNeutrality:
         _assert_map(_by_region_month(plus, "w"), OK_W90)
 
     async def test_filtered_last_beside_unfiltered(self, exec_backend) -> None:
-        """``ok_amount:last`` follows the latest OK row; the all-NULL
-        ``nomatch:last`` discriminates the filter reaching the producer."""
+        """``ok_amount:last`` masks the value at the latest row (NULL when that
+        row is not ok — DEV-1832: Column.filter masks, it never restricts the
+        ranking); the all-NULL ``nomatch:last`` discriminates the filter reaching
+        the producer."""
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["region"],

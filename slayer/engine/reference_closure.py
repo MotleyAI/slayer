@@ -31,12 +31,10 @@ from slayer.core.keys import (
     InKey,
     LiteralKey,
     ScalarCallKey,
-    SqlExprKey,
     StarKey,
     TimeTruncKey,
     TransformKey,
     ValueKey,
-    source_anchor_path,
     source_row_leaves,
 )
 from slayer.core.errors import SlayerError
@@ -154,7 +152,7 @@ def _prefixes(path: Path) -> List[Path]:
 
 # Values a key tree carries INLINE — plain data, never references.
 _INLINE_SCALARS = (str, int, float, bool, Decimal)
-_LEAF_KINDS = (LiteralKey, StarKey, SqlExprKey, ColumnKey, ColumnSqlKey)
+_LEAF_KINDS = (LiteralKey, StarKey, ColumnKey, ColumnSqlKey)
 
 
 class UnhandledValueKindError(SlayerError, TypeError):
@@ -172,10 +170,10 @@ class UnhandledValueKindError(SlayerError, TypeError):
 
 def _child_keys(node, *, descend_aggregates: bool = True) -> List:
     """The child keys of a composite node, in a STABLE order (moved from
-    ``filter_reachability``). Fails closed on an unknown kind. ``column_filter_key``
-    is never a plain child — its paths are owner-relative and re-anchored by the
-    leaf arm. ``descend_aggregates=False`` stops at an aggregate (routed by where
-    it is computed, not by its inputs)."""
+    ``filter_reachability``). Fails closed on an unknown kind. A ``Column.filter``
+    rides its source ``ColumnSqlKey``, whose closure walks both value and filter.
+    ``descend_aggregates=False`` stops at an aggregate (routed by where it is
+    computed, not by its inputs)."""
     if isinstance(node, _LEAF_KINDS) or isinstance(node, _INLINE_SCALARS):
         return []
     if isinstance(node, TimeTruncKey):
@@ -197,39 +195,36 @@ def _child_keys(node, *, descend_aggregates: bool = True) -> List:
     raise UnhandledValueKindError(node)
 
 
-def _derived_column(model: Optional[SlayerModel], leaf: str):
-    """The non-trivial derived ``Column`` named ``leaf`` on ``model``, else ``None``."""
-    if model is None:
-        return None
-    col = model.get_column(leaf)
-    if col is None or not col.sql or is_trivial_base(column=col):
-        return None
-    return col
-
-
 def _column_key_closure(
     node, *, anchor_model: SlayerModel, anchor_relation: str,
     bundle: ResolvedSourceBundle, cache: "Optional[dict]" = None,
 ) -> Optional[List[Path]]:
-    """Own path prefixes of a ``ColumnSqlKey``/``ColumnKey`` plus, when its
-    terminal column is derived and non-trivial, the fragment closure of its
-    definition (tri-state ``None`` propagates)."""
+    """Own path prefixes of a ``ColumnSqlKey``/``ColumnKey`` plus the fragment
+    closure of its definition — the value's ``sql`` (when non-trivial) AND its
+    ``Column.filter`` (DEV-1832), each anchored at the column's owner. Tri-state
+    ``None`` propagates (a dependency that cannot be analysed)."""
     path = tuple(getattr(node, "path", ()) or ())
     out: List[Path] = list(_prefixes(path))
     if isinstance(node, ColumnSqlKey):
         terminal = bundle.models_by_name.get(node.model)
         if terminal is None and node.model == anchor_model.name:
             terminal = anchor_model
-        col = _derived_column(terminal, node.column_name)
+        col = terminal.get_column(node.column_name) if terminal is not None else None
         if terminal is not None and col is not None:
-            frag = fragment_closure(
-                sql=col.sql, model=terminal, owner_path=path,
-                anchor_relation="__".join(path) if path else anchor_relation,
-                bundle=bundle, cache=cache,
-            )
-            if frag is None:
-                return None
-            out.extend(frag)
+            owner_relation = "__".join(path) if path else anchor_relation
+            for sql in (
+                col.sql if col.sql is not None and not is_trivial_base(column=col) else None,
+                col.filter,
+            ):
+                if not sql:
+                    continue
+                frag = fragment_closure(
+                    sql=sql, model=terminal, owner_path=path,
+                    anchor_relation=owner_relation, bundle=bundle, cache=cache,
+                )
+                if frag is None:
+                    return None
+                out.extend(frag)
     return out
 
 
@@ -273,13 +268,6 @@ def _leaf_closure(
     bundle: ResolvedSourceBundle, cache: "Optional[dict]" = None,
 ) -> Optional[List[Path]]:
     """Paths a node contributes ITSELF (not via children). ``None`` = unanalysable."""
-    if isinstance(node, AggregateKey) and node.column_filter_key is not None:
-        source_path = source_anchor_path(node.source)
-        return [
-            pre
-            for p in node.column_filter_key.referenced_join_paths
-            for pre in _prefixes(source_path + tuple(p))
-        ]
     if isinstance(node, ColumnSqlKey):
         return _column_key_closure(
             node, anchor_model=anchor_model, anchor_relation=anchor_relation,
@@ -293,29 +281,7 @@ def _leaf_closure(
             anchor_relation=anchor_relation, bundle=bundle, cache=cache,
         )
         return None if frag is None else list(frag)
-    if isinstance(node, SqlExprKey):
-        return [pre for p in node.referenced_join_paths for pre in _prefixes(tuple(p))]
     return []
-
-
-# ---------------------------------------------------------------------------
-# Column-filter / expression fragment discovery (was column_filter_paths).
-# ---------------------------------------------------------------------------
-
-
-def compute_column_filter_join_paths(
-    *, canonical_sql: Optional[str], anchor_model: SlayerModel,
-    anchor_relation: str, bundle: ResolvedSourceBundle,
-) -> Tuple[Path, ...]:
-    """The ordered join-path prefixes a ``Column.filter`` predicate crosses, its
-    derived references (anchor-local or on a joined model) expanded recursively.
-    ``()`` for same-model / empty / unanalysable (best-effort; the input-safety
-    consumer takes the tri-state closure directly)."""
-    frag = fragment_closure(
-        sql=canonical_sql, model=anchor_model, owner_path=(),
-        anchor_relation=anchor_relation, bundle=bundle,
-    )
-    return frag or ()
 
 
 def compute_expr_reference_columns(
@@ -473,33 +439,6 @@ def _default_param_spec(
 # ---------------------------------------------------------------------------
 
 
-def _column_filter_closure(
-    *, key: AggregateKey, anchor_model: SlayerModel, anchor_relation: str,
-    bundle: ResolvedSourceBundle,
-):
-    """Tri-state closure of the source column's ``filter=`` fragment (``None``
-    fails closed). A non-empty bind-time stamp proves the fragment analysed
-    cleanly (a ``None`` closure always stamps ``()``), and a rerooted key's
-    canonicalized ``__`` aliases defeat re-analysis — so re-derive only when the
-    stamp is empty. ``()`` when there is no filter or its owner is unresolvable
-    (broken paths belong to the path validator)."""
-    cfk = key.column_filter_key
-    if cfk is None or cfk.referenced_join_paths:
-        return ()
-    source_path = source_anchor_path(key.source)
-    owner = (
-        walk_key_path(model=anchor_model, path=source_path, bundle=bundle)
-        if source_path else anchor_model
-    )
-    if owner is None:
-        return ()
-    return fragment_closure(
-        sql=cfk.canonical_sql, model=owner, owner_path=source_path,
-        anchor_relation="__".join(source_path) if source_path else anchor_relation,
-        bundle=bundle,
-    )
-
-
 def _explicit_input_refs(*, key: AggregateKey, include_source: bool) -> List[object]:
     """An aggregate's directly-named input refs: its source (when
     ``include_source``), positional args, and keyword-arg values."""
@@ -523,29 +462,6 @@ def _default_param_specs(
             agg=key, owner_model=anchor_model, owner_path=(), bundle=bundle,
         )
         if spec.name not in explicit
-    ]
-
-
-def _column_filter_paths(
-    *, key: AggregateKey, anchor_model: SlayerModel, anchor_relation: str,
-    bundle: ResolvedSourceBundle,
-) -> Optional[List[Path]]:
-    """The owner-prefixed prefixes a measure-level ``filter=`` crosses. ``[]`` = no
-    filter; ``None`` = unanalysable (fail closed). Crossed paths are stamped
-    OWNER-relative at bind time (best-effort ``()``); re-derive the tri-state so
-    an unanalyzable filter dependency never reads as 'crosses nothing'."""
-    if key.column_filter_key is None:
-        return []
-    if _column_filter_closure(
-        key=key, anchor_model=anchor_model, anchor_relation=anchor_relation,
-        bundle=bundle,
-    ) is None:
-        return None
-    source_path = source_anchor_path(key.source)
-    return [
-        pre
-        for p in key.column_filter_key.referenced_join_paths
-        for pre in _prefixes(source_path + tuple(p))
     ]
 
 
@@ -609,21 +525,17 @@ def aggregate_input_closure(
     include_source: bool = True, descend_aggregates: bool = False,
 ) -> Optional[Tuple[Path, ...]]:
     """The dependency closure of an aggregate's inputs — its source (when
-    ``include_source``), positional/keyword arguments, a measure-level column
-    filter, and non-overridden definition defaults — recursively through derived
-    definitions. ``None`` when any dependency cannot be analysed (fail closed,
-    short-circuiting on the first unanalysable component); ``()`` when purely
-    local. Safety mode (``descend_aggregates=False``) treats an
+    ``include_source``), positional/keyword arguments, and non-overridden
+    definition defaults — recursively through derived definitions. A source
+    column's ``Column.filter`` rides its ``ColumnSqlKey`` source (DEV-1832), so
+    the source closure covers it. ``None`` when any dependency cannot be analysed
+    (fail closed, short-circuiting on the first unanalysable component); ``()``
+    when purely local. Safety mode (``descend_aggregates=False``) treats an
     ``AggregateKey``-valued input as opaque — its inputs belong to its own
     producer; discovery mode descends into it."""
     if anchor_model is None:
         return ()
     seen: "dict[Path, None]" = {}
-    if not _merge_paths(seen=seen, part=_column_filter_paths(
-        key=key, anchor_model=anchor_model, anchor_relation=anchor_relation,
-        bundle=bundle,
-    )):
-        return None
     if not _merge_paths(seen=seen, part=_refs_closure(
         refs=_explicit_input_refs(key=key, include_source=include_source),
         descend_aggregates=descend_aggregates, anchor_model=anchor_model,
@@ -642,21 +554,27 @@ def _unanalyzable_derived_name(
     *, ref: object, anchor_model: SlayerModel, anchor_relation: str,
     bundle: ResolvedSourceBundle,
 ) -> Optional[str]:
-    """``ref``'s column name when it names a derived column no dialect can
-    analyse, else ``None``."""
+    """``ref``'s column name when its definition — derived ``sql`` OR
+    ``Column.filter`` (DEV-1832) — is one no dialect can analyse, else ``None``."""
     if not isinstance(ref, ColumnSqlKey):
         return None
     path = tuple(ref.path or ())
     terminal = bundle.models_by_name.get(ref.model)
     if terminal is None and ref.model == anchor_model.name:
         terminal = anchor_model
-    col = _derived_column(terminal, ref.column_name)
-    if terminal is not None and col is not None and fragment_closure(
-        sql=col.sql, model=terminal, owner_path=path,
-        anchor_relation="__".join(path) if path else anchor_relation,
-        bundle=bundle,
-    ) is None:
-        return ref.column_name
+    col = terminal.get_column(ref.column_name) if terminal is not None else None
+    if terminal is None or col is None:
+        return None
+    owner_relation = "__".join(path) if path else anchor_relation
+    for sql in (
+        col.sql if col.sql is not None and not is_trivial_base(column=col) else None,
+        col.filter,
+    ):
+        if sql and fragment_closure(
+            sql=sql, model=terminal, owner_path=path,
+            anchor_relation=owner_relation, bundle=bundle,
+        ) is None:
+            return ref.column_name
     return None
 
 
@@ -682,15 +600,6 @@ def first_unanalyzable_input_column(
         )
         if name is not None:
             return name
-    if _column_filter_closure(
-        key=key, anchor_model=anchor_model, anchor_relation=anchor_relation,
-        bundle=bundle,
-    ) is None:
-        # The filter is part of the source column's definition; name that column.
-        return (
-            getattr(key.source, "leaf", None)
-            or getattr(key.source, "column_name", None)
-        )
     return None
 
 

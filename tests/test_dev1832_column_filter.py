@@ -314,6 +314,18 @@ class TestCycleAndPathValidation:
                            filter="loop > 0"),
                 ]))
 
+    async def test_filter_naming_own_physical_column_is_not_a_cycle(self) -> None:
+        # A filter naming its own column reads the PHYSICAL column when that column
+        # is a bare physical one (``val`` → ``val``), not the recursive masked
+        # value — so it is not a cycle (contrast the DERIVED ``loop`` above).
+        await _save_validated(SlayerModel(
+            name="fself", sql_table="sales", data_source="test",
+            columns=[
+                Column(name="id", type=DataType.INT, primary_key=True),
+                Column(name="val", type=DataType.DOUBLE, sql="val",
+                       filter="val > 0"),
+            ]))
+
     async def test_mutual_filter_reference_is_a_cycle(self) -> None:
         # der_a's filter names der_b and vice versa → a 2-node cycle.
         with pytest.raises(ValueError, match="(?i)circular|cycle"):

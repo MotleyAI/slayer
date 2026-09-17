@@ -27,7 +27,6 @@ from slayer.core.keys import (
     AggregateKey,
     ColumnKey,
     ColumnSqlKey,
-    SqlExprKey,
     StarKey,
     TimeTruncKey,
 )
@@ -367,32 +366,8 @@ class TestCrossModelCteNameAllocation:
 
 
 class TestDedupIdentityIsStructural:
-    """Dedup keys on the full typed ``AggregateKey``, not the canonical alias
-    (which omits ``column_filter_key``, so a filtered and unfiltered aggregate
-    would wrongly merge). Structural: a ``Column.filter`` lives on the definition."""
-    def _filtered_and_plain(self):
-
-        source = ColumnKey(leaf="revenue")
-        plain = AggregateKey(source=source, agg="sum")
-        filtered = AggregateKey(
-            source=source, agg="sum",
-            column_filter_key=SqlExprKey(canonical_sql="region_id = 1"),
-        )
-        return plain, filtered
-
-    def test_the_two_keys_are_distinct_identities(self) -> None:
-        plain, filtered = self._filtered_and_plain()
-        assert plain != filtered
-        assert hash(plain) != hash(filtered)
-        assert len({plain, filtered}) == 2
-
-    def test_but_they_share_one_canonical_alias(self) -> None:
-        plain, filtered = self._filtered_and_plain()
-        assert naming.canonical_aggregate_alias(
-            plain, profile="cross_model_cte", source_relation="orders",
-        ) == naming.canonical_aggregate_alias(
-            filtered, profile="cross_model_cte", source_relation="orders",
-        )
+    """The allocator hands out a fresh CTE name each call; collapsing two distinct
+    identities that happen to share a canonical alias is the caller's decision."""
 
     def test_one_alias_two_identities_get_two_cte_names(self) -> None:
         """The allocator hands out a fresh name each call; dedup is the caller's decision."""
