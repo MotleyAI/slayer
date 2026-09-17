@@ -50,8 +50,10 @@ def _fragment_refs(sql: str):
         # DEV-1686: prequote reserved qualifiers/leaves so a fragment referencing
         # a reserved joined model (``grant.amount``) parses cleanly here instead
         # of falling back to a noisy ``Command`` parse.
+        # prequote accepts a None dialect at runtime (sqlglot default); its str
+        # annotation is too strict for the dialect-independent identifier scan.
         parsed = sqlglot.parse_one(
-            prequote_reserved_identifiers(sql=sql, dialect=_DEPENDENCY_DIALECT),
+            prequote_reserved_identifiers(sql=sql, dialect=_DEPENDENCY_DIALECT),  # pyright: ignore[reportArgumentType]
             dialect=_DEPENDENCY_DIALECT,
         )
     except Exception:

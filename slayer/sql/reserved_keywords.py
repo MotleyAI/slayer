@@ -74,7 +74,7 @@ def install_reserved_keywords() -> None:
 
 
 def _reserved_dot_edit(
-    sql: str, toks: list, i: int, dialect: str | None
+    sql: str, toks: list, i: int, dialect: str
 ) -> tuple[int, int, str] | None:
     """Return the ``(start, end, quoted)`` edit for token ``i`` when it is a
     reserved word in QUALIFIER (``word.``) or LEAF (``.word``) position whose
@@ -100,7 +100,7 @@ def _reserved_dot_edit(
     return (tok.start, tok.end, quoted)
 
 
-def prequote_reserved_identifiers(sql: str, *, dialect: str | None) -> str:
+def prequote_reserved_identifiers(sql: str, *, dialect: str) -> str:
     """Quote reserved-word identifiers sitting in QUALIFIER (``word.``) or LEAF
     (``.word``) position so a generated string embedding a bare reserved
     qualifier/leaf parses.
