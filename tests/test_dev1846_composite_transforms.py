@@ -47,7 +47,7 @@ def _q(*, measures, dimensions=None) -> SlayerQuery:
     kw = dict(source_model="sales", time_dimensions=month_td(), measures=measures)
     if dimensions is not None:
         kw["dimensions"] = dimensions
-    return SlayerQuery(**kw)
+    return SlayerQuery.model_validate(kw)
 
 
 def _by_month(resp) -> dict:

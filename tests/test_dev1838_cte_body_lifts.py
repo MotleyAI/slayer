@@ -25,6 +25,7 @@ import sqlglot
 from sqlglot import exp
 
 import slayer
+from slayer.core.query import ModelExtension
 
 from tests._dev1838_fixtures import (
     BAND,
@@ -179,7 +180,7 @@ class TestNonFinalStage:
     def _banded_stages(**stage2_kwargs) -> list:
         stage1 = q(name="banded", dimensions=["region", BAND],
                    measures=[ModelMeasure(formula="amount:sum", name="bt")])
-        stage2 = SlayerQuery(source_model={"source_name": "banded"},
+        stage2 = SlayerQuery(source_model=ModelExtension(source_name="banded"),
                              **stage2_kwargs)
         return [stage1, stage2]
 
@@ -210,7 +211,7 @@ class TestNonFinalStage:
               measures=[ModelMeasure(formula="amount:sum", name="m"),
                         ModelMeasure(formula="amount:sum(partition_by=[])",
                                      name="gt")]),
-            SlayerQuery(source_model={"source_name": "s1"},
+            SlayerQuery(source_model=ModelExtension(source_name="s1"),
                         dimensions=["region"],
                         measures=[ModelMeasure(formula="m:sum", name="ms"),
                                   ModelMeasure(formula="gt:max", name="gts")]),
@@ -233,7 +234,7 @@ class TestNonFinalStage:
               measures=[ModelMeasure(formula="amount:sum", name="m"),
                         ModelMeasure(formula="amount:sum(window='1y')",
                                      name="w")]),
-            SlayerQuery(source_model={"source_name": "s1"},
+            SlayerQuery(source_model=ModelExtension(source_name="s1"),
                         dimensions=["region"],
                         measures=[ModelMeasure(formula="w:max", name="wm")]),
         ]
@@ -258,7 +259,7 @@ class TestNestingIsCardinalityNeutral:
             return [
                 q(name="s1", dimensions=dims,
                   measures=[ModelMeasure(formula="amount:sum", name="bt")]),
-                SlayerQuery(source_model={"source_name": "s1"},
+                SlayerQuery(source_model=ModelExtension(source_name="s1"),
                             dimensions=["region"],
                             measures=[ModelMeasure(formula="bt:sum", name="t")]),
             ]

@@ -24,7 +24,7 @@ from slayer.core.models import (
     ModelMeasure,
     SlayerModel,
 )
-from slayer.core.query import SlayerQuery
+from slayer.core.query import ModelExtension, SlayerQuery
 from slayer.engine.cache import CacheConfig
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
@@ -64,10 +64,10 @@ class TestExplicitVsInferredReporting:
 
     async def test_explicit_extension_reports_source_name(self, engine) -> None:
         resp = await engine.execute(SlayerQuery(
-            source_model={
+            source_model=ModelExtension.model_validate({
                 "source_name": "customers",
                 "columns": [{"name": "region_copy", "sql": "region"}],
-            },
+            }),
             dimensions=["region"],
         ))
         assert resp.population == "customers"
