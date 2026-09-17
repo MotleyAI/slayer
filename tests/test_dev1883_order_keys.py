@@ -15,7 +15,7 @@ async def exec_engine(tmp_path):
 
 
 def _month_query(order_column: str, direction: str = "desc") -> SlayerQuery:
-    return SlayerQuery(
+    return fx.q(
         source_model="orders",
         time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
         measures=[{"formula": "amount:sum"}],
@@ -33,7 +33,7 @@ class TestOrderByProjectedBucket:
         ]
 
     async def test_functional_order_over_functional_projection(self, exec_engine) -> None:
-        resp = await exec_engine.execute(SlayerQuery(
+        resp = await exec_engine.execute(fx.q(
             source_model="orders",
             dimensions=["month(created_at)"],
             measures=[{"formula": "amount:sum"}],
@@ -48,7 +48,7 @@ class TestOrderWithoutMatchingTimeDimension:
     async def test_no_time_dimension_on_column_errors_with_remedy(
         self, exec_engine,
     ) -> None:
-        query = SlayerQuery(
+        query = fx.q(
             source_model="orders",
             dimensions=["status"],
             measures=[{"formula": "amount:sum"}],

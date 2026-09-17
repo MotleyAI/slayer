@@ -8,6 +8,7 @@ import re
 import pydantic
 import pytest
 
+from slayer.core import errors
 from slayer.core.enums import TimeGranularity
 from slayer.core.query import SlayerQuery
 from tests import _dev1883_fixtures as fx
@@ -36,7 +37,7 @@ async def exec_engine(tmp_path):
 
 
 def _q(dimensions: list) -> SlayerQuery:
-    return SlayerQuery(
+    return fx.q(
         source_model="orders",
         dimensions=dimensions,
         measures=[{"formula": "*:count"}],
@@ -64,10 +65,17 @@ class TestUnknownSingleColumnCall:
         assert "partition_by" in msg
 
     def test_typed_error_class_exists(self) -> None:
-        from slayer.core import errors
-
         assert issubclass(errors.GranularityCallError, errors.SlayerError)
         assert issubclass(errors.GranularityCallError, ValueError)
+
+    @pytest.mark.parametrize(
+        "entry", ["stddev(amount)", "variance(amount)", "countdistinct(amount)"],
+    )
+    def test_builtin_alias_aggregate_not_typo_rejected(self, entry: str) -> None:
+        """A bare builtin-alias aggregate stays a computed dimension (binding-time
+        ``partition_by=`` error), not a construction-time granularity typo."""
+        q = _q([entry])
+        assert q.dimensions, q.dimensions
 
 
 class TestNonRegression:
@@ -91,7 +99,7 @@ class TestNonRegression:
     async def test_granularity_in_filter_keeps_unknown_aggregation_error(
         self, exec_engine,
     ) -> None:
-        query = SlayerQuery(
+        query = fx.q(
             source_model="orders",
             dimensions=["status"],
             measures=[{"formula": "*:count"}],
@@ -103,7 +111,7 @@ class TestNonRegression:
     async def test_granularity_in_measure_keeps_unknown_aggregation_error(
         self, exec_engine,
     ) -> None:
-        query = SlayerQuery(
+        query = fx.q(
             source_model="orders",
             dimensions=["status"],
             measures=[{"formula": "month(created_at)"}],

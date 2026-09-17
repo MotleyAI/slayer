@@ -1,10 +1,27 @@
 """Shared fixtures for the DEV-1883 functional time-granularity tests."""
 import sqlite3
+from typing import Any
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
+from slayer.core.query import SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
+
+
+def q(**kw: Any) -> SlayerQuery:
+    """Build a ``SlayerQuery``; dict/string field values are coerced by validators (keeps type-checkers off the shorthand)."""
+    return SlayerQuery(**kw)
+
+
+def td(**kw: Any) -> TimeDimension:
+    """Build a ``TimeDimension`` from shorthand (string ``dimension``/``granularity`` coerced by validators)."""
+    return TimeDimension(**kw)
+
+
+def model(**kw: Any) -> SlayerModel:
+    """Build a ``SlayerModel`` from shorthand kwargs (dict columns/aggregations coerced by validators)."""
+    return SlayerModel(**kw)
 
 # Orders span three month buckets across two years so month vs year bucketing
 # is observable: 2024-01 -> 10.0, 2024-02 -> 60.0, 2025-03 -> 5.0.

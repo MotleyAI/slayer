@@ -534,6 +534,10 @@ class DistinctDimensionValuesError(SlayerError, ValueError):
     """``distinct_dimension_values=False`` (raw rows, no top-level ``GROUP BY``) conflicts with any aggregation or a query with no projected columns."""
 
 
+class GranularityCallError(SlayerError, ValueError):
+    """A functional ``gran(col)`` query entry is malformed or unresolvable: wrong-shape granularity call, an unknown ``name(col)`` dimension, a bare ``time_dimensions`` string, a same-column+granularity metadata conflict, or an order key with no matching projected time dimension."""
+
+
 class PositionTypingError(SlayerError, ValueError):
     """A filter conjunct / order target is valid as neither field nor measure; names both failed typings."""
 

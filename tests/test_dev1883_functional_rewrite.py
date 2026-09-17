@@ -9,7 +9,8 @@ import pydantic
 import pytest
 
 from slayer.core.enums import TimeGranularity
-from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
+from slayer.core.query import ColumnRef, SlayerQuery
+from tests import _dev1883_fixtures as fx
 
 GRANULARITIES = [g.value for g in TimeGranularity]
 
@@ -17,18 +18,18 @@ GRANULARITIES = [g.value for g in TimeGranularity]
 class TestDimensionsRewrite:
     @pytest.mark.parametrize("gran", GRANULARITIES)
     def test_every_granularity_rewrites(self, gran: str) -> None:
-        q = SlayerQuery(
+        q = fx.q(
             source_model="orders",
             dimensions=[f"{gran}(created_at)"],
             measures=[{"formula": "*:count"}],
         )
         assert not q.dimensions, q.dimensions
         assert q.time_dimensions == [
-            TimeDimension(dimension="created_at", granularity=gran)
+            fx.td(dimension="created_at", granularity=gran)
         ]
 
     def test_case_insensitive_callee(self) -> None:
-        q = SlayerQuery(
+        q = fx.q(
             source_model="orders",
             dimensions=["MONTH(created_at)"],
             measures=[{"formula": "*:count"}],
@@ -37,41 +38,41 @@ class TestDimensionsRewrite:
         assert q.time_dimensions[0].granularity == TimeGranularity.MONTH
 
     def test_dotted_join_path(self) -> None:
-        q = SlayerQuery(
+        q = fx.q(
             source_model="orders",
             dimensions=["MONTH(customers.created_at)"],
             measures=[{"formula": "*:count"}],
         )
         assert q.time_dimensions == [
-            TimeDimension(dimension="customers.created_at", granularity="month")
+            fx.td(dimension="customers.created_at", granularity="month")
         ]
 
     def test_plain_entries_survive_in_place(self) -> None:
-        q = SlayerQuery(
+        q = fx.q(
             source_model="orders",
             dimensions=["status", "month(created_at)"],
             measures=[{"formula": "*:count"}],
         )
         assert q.dimensions == [ColumnRef(name="status")]
         assert q.time_dimensions == [
-            TimeDimension(dimension="created_at", granularity="month")
+            fx.td(dimension="created_at", granularity="month")
         ]
 
     def test_rewritten_append_after_explicit_in_appearance_order(self) -> None:
-        q = SlayerQuery(
+        q = fx.q(
             source_model="orders",
             time_dimensions=[{"dimension": "updated_at", "granularity": "day"}],
             dimensions=["month(created_at)", "week(shipped_at)"],
             measures=[{"formula": "*:count"}],
         )
         assert q.time_dimensions == [
-            TimeDimension(dimension="updated_at", granularity="day"),
-            TimeDimension(dimension="created_at", granularity="month"),
-            TimeDimension(dimension="shipped_at", granularity="week"),
+            fx.td(dimension="updated_at", granularity="day"),
+            fx.td(dimension="created_at", granularity="month"),
+            fx.td(dimension="shipped_at", granularity="week"),
         ]
 
     def test_canonical_serialization_moves_entry(self) -> None:
-        q = SlayerQuery(
+        q = fx.q(
             source_model="orders",
             dimensions=["month(created_at)"],
             measures=[{"formula": "*:count"}],
@@ -84,12 +85,12 @@ class TestDimensionsRewrite:
         ] == [("created_at", "month")]
 
     def test_dump_identical_to_explicit_form(self) -> None:
-        functional = SlayerQuery(
+        functional = fx.q(
             source_model="orders",
             dimensions=["month(created_at)"],
             measures=[{"formula": "*:count"}],
         )
-        explicit = SlayerQuery(
+        explicit = fx.q(
             source_model="orders",
             time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
             measures=[{"formula": "*:count"}],
@@ -106,23 +107,23 @@ class TestDimensionsRewrite:
         })
         assert q.to_many_handling == "error"
         assert q.time_dimensions == [
-            TimeDimension(dimension="created_at", granularity="month")
+            fx.td(dimension="created_at", granularity="month")
         ]
 
 
 class TestTimeDimensionsStringEntries:
     def test_functional_string_entry_coerces(self) -> None:
-        q = SlayerQuery(
+        q = fx.q(
             source_model="orders",
             time_dimensions=["month(created_at)"],
             measures=[{"formula": "*:count"}],
         )
         assert q.time_dimensions == [
-            TimeDimension(dimension="created_at", granularity="month")
+            fx.td(dimension="created_at", granularity="month")
         ]
 
     def test_string_and_dict_entries_mix(self) -> None:
-        q = SlayerQuery(
+        q = fx.q(
             source_model="orders",
             time_dimensions=[
                 {"dimension": "updated_at", "granularity": "day"},
@@ -131,13 +132,25 @@ class TestTimeDimensionsStringEntries:
             measures=[{"formula": "*:count"}],
         )
         assert q.time_dimensions == [
-            TimeDimension(dimension="updated_at", granularity="day"),
-            TimeDimension(dimension="created_at", granularity="month"),
+            fx.td(dimension="updated_at", granularity="day"),
+            fx.td(dimension="created_at", granularity="month"),
         ]
+
+    @pytest.mark.parametrize("bad", [5, 0, "", {}, "foo"])
+    def test_malformed_scalar_time_dimensions_rejected_cleanly(self, bad) -> None:
+        """A non-list ``time_dimensions`` raises ValidationError (not a TypeError/500),
+        even when a functional dimension is present to rewrite."""
+        with pytest.raises(pydantic.ValidationError):
+            fx.q(
+                source_model="orders",
+                dimensions=["month(created_at)"],
+                time_dimensions=bad,
+                measures=[{"formula": "*:count"}],
+            )
 
     def test_bare_column_string_rejected_with_remedy(self) -> None:
         with pytest.raises(pydantic.ValidationError) as ei:
-            SlayerQuery(
+            fx.q(
                 source_model="orders",
                 time_dimensions=["created_at"],
                 measures=[{"formula": "*:count"}],

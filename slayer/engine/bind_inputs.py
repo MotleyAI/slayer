@@ -4,10 +4,16 @@ turns syntax into keys; expression-level binding lives in ``binding``)."""
 
 from __future__ import annotations
 
+from collections import Counter
 from typing import Callable, Dict, FrozenSet, List, Optional, Tuple, Union
 
 from slayer.core.enums import DataType
-from slayer.core.errors import AmbiguousJoinPathError, AmbiguousReferenceError, UnknownReferenceError
+from slayer.core.errors import (
+    AmbiguousJoinPathError,
+    AmbiguousReferenceError,
+    GranularityCallError,
+    UnknownReferenceError,
+)
 from slayer.core.format import NumberFormat
 from slayer.core.formula import TIME_TRANSFORMS
 from slayer.core.join_walker import resolve_hop, terminal_model
@@ -37,6 +43,7 @@ from slayer.core.query import (
     ORDER_PLACEHOLDER_NAMES,
     SlayerQuery,
     TimeDimension,
+    granularity_call_parts,
 )
 from slayer.core.refs import (
     AGG_REF_RE,
@@ -425,6 +432,30 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
     for o in (query.order or []):
         col_name = o.column.name
         full_name = o.column.full_name
+        # A functional ``gran(col)`` order key sorts by the projected time
+        # dimension's bucket — resolved to its column binding (DEV-1883).
+        gran_parts = granularity_call_parts(o.raw_formula) if o.raw_formula else None
+        if gran_parts is not None:
+            _col, _gran = gran_parts
+            matching_td = next(
+                (
+                    td for td in (query.time_dimensions or [])
+                    if td.dimension.full_name == _col and td.granularity.value == _gran
+                ),
+                None,
+            )
+            if matching_td is None:
+                raise GranularityCallError(
+                    f"Order key {_gran}({_col}) has no matching projected time "
+                    f"dimension. Project a time_dimension on {_col!r} at {_gran} "
+                    f"granularity (e.g. {_gran}({_col}) in dimensions) to order by "
+                    f"its bucket."
+                )
+            order_specs.append(OrderSpec(
+                bound=bind_time_dimension(td=matching_td, scope=scope, bundle=bundle),
+                direction=o.direction,
+            ))
+            continue
         # A placeholder ColumnRef means the item is an EXPRESSION: bind raw_formula, skip alias lookups.
         if col_name in ORDER_PLACEHOLDER_NAMES and o.raw_formula:
             order_specs.append(OrderSpec(
@@ -938,17 +969,27 @@ def _declared_measures_from_query(  # NOSONAR(S3776) — three sequential projec
             format=fmt,
             description=desc,
         ))
-    # Time dimensions follow dimensions in the public projection.
-    for td in (query.time_dimensions or []):
-        full = td.dimension.full_name
-        bound = bind_time_dimension(td=td, scope=scope, bundle=bundle)
-        canonical = bound.routed_dotted or full
-        flat_name = _flatten_dotted(canonical)
-        _guard_flatten(flat_name=flat_name, origin=canonical)
+    # Time dimensions follow dimensions in the public projection. Same-column
+    # time dimensions (distinct granularities) get granularity-suffixed public
+    # names so their result keys disambiguate (DEV-1883); a lone one keeps the
+    # DEV-1744 granularity-free key.
+    bound_tds = [
+        (td, b, b.routed_dotted or td.dimension.full_name)
+        for td in (query.time_dimensions or [])
+        for b in [bind_time_dimension(td=td, scope=scope, bundle=bundle)]
+    ]
+    _td_flat_counts = Counter(_flatten_dotted(canon) for _, _, canon in bound_tds)
+    for td, bound, canonical in bound_tds:
+        base_flat = _flatten_dotted(canonical)
+        public = (
+            f"{base_flat}.{td.granularity.value}"
+            if _td_flat_counts[base_flat] > 1 else base_flat
+        )
+        _guard_flatten(flat_name=_flatten_dotted(public), origin=canonical)
         declared.append(DeclaredMeasure(
             bound=bound,
-            declared_name=flat_name,
-            public_name=flat_name,
+            declared_name=public,
+            public_name=public,
             label=td.label,
             type=DataType.TIMESTAMP,
         ))

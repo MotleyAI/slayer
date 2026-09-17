@@ -13,7 +13,8 @@ from fastapi.testclient import TestClient
 from slayer.api.server import QueryRequest, create_app
 from slayer.core.enums import TimeGranularity
 from slayer.core.models import SlayerModel
-from slayer.core.query import SlayerQuery, TimeDimension
+from slayer.core.query import SlayerQuery
+from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.mcp.server import create_mcp_server
 from tests import _dev1883_fixtures as fx
 
@@ -93,6 +94,17 @@ class TestMcpSurface:
             )
 
 
+class TestSchemaAdvertisesString:
+    def test_time_dimensions_input_schema_allows_string(self) -> None:
+        """The derived JSON/MCP input schema advertises the functional string form,
+        not only the TimeDimension object (DEV-1883)."""
+        schema = SlayerQuery.model_json_schema()
+        td = schema["properties"]["time_dimensions"]
+        array_schema = next(o for o in td["anyOf"] if o.get("type") == "array")
+        item_options = array_schema["items"]["anyOf"]
+        assert any(o.get("type") == "string" for o in item_options), td
+
+
 class TestStoredQuerySurface:
     async def test_stored_query_document_accepts_string_entry(self, storage) -> None:
         """A query-backed model whose stored document carries the string form
@@ -106,8 +118,6 @@ class TestStoredQuerySurface:
             }],
         })
         await storage.save_model(model)
-        from slayer.engine.query_engine import SlayerQueryEngine
-
         engine = SlayerQueryEngine(storage=storage)
         resp = await engine.execute("monthly_rev")
         assert {
@@ -135,5 +145,5 @@ class TestRestSurface:
         })
         query = SlayerQuery.model_validate(req.model_dump(exclude_none=True))
         assert query.time_dimensions == [
-            TimeDimension(dimension="created_at", granularity="month")
+            fx.td(dimension="created_at", granularity="month")
         ]

@@ -52,7 +52,9 @@ class QueryRequest(BaseModel):
     # ``_coerce_dimensions``) do the actual lifting downstream.
     measures: list[str | dict[str, Any]] | None = None
     dimensions: list[str | dict[str, Any]] | None = None
-    time_dimensions: list[dict[str, Any]] | None = None
+    # A string entry is the functional ``gran(col)`` form, coerced downstream by
+    # ``SlayerQuery`` (DEV-1883).
+    time_dimensions: list[str | dict[str, Any]] | None = None
     filters: list[str] | None = None
     order: list[dict[str, Any]] | None = None
     limit: int | None = None

@@ -20,7 +20,7 @@ async def exec_engine(tmp_path):
 
 
 def _functional() -> SlayerQuery:
-    return SlayerQuery(
+    return fx.q(
         source_model="orders",
         dimensions=["month(created_at)"],
         measures=[{"formula": "amount:sum"}],
@@ -28,7 +28,7 @@ def _functional() -> SlayerQuery:
 
 
 def _explicit() -> SlayerQuery:
-    return SlayerQuery(
+    return fx.q(
         source_model="orders",
         time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
         measures=[{"formula": "amount:sum"}],
@@ -52,7 +52,7 @@ class TestEquivalence:
         } == fx.MONTH_SUMS
 
     async def test_string_time_dimensions_entry_sql_identical(self, engine) -> None:
-        string_form = SlayerQuery(
+        string_form = fx.q(
             source_model="orders",
             time_dimensions=["month(created_at)"],
             measures=[{"formula": "amount:sum"}],
@@ -66,13 +66,13 @@ class TestEquivalence:
     ) -> None:
         """A transform keyed off the TD via ``main_time_dimension``, with a second
         TD present, generates identical SQL from the functional form."""
-        functional = await engine.execute(SlayerQuery(
+        functional = await engine.execute(fx.q(
             source_model="orders",
             dimensions=["month(created_at)", "year(customers.created_at)"],
             main_time_dimension="created_at",
             measures=[{"formula": "cumsum(amount:sum)", "name": "cs"}],
         ), dry_run=True)
-        explicit = await engine.execute(SlayerQuery(
+        explicit = await engine.execute(fx.q(
             source_model="orders",
             time_dimensions=[
                 {"dimension": "created_at", "granularity": "month"},
@@ -84,13 +84,13 @@ class TestEquivalence:
         assert functional.sql == explicit.sql
 
     async def test_whole_periods_only_identical(self, engine) -> None:
-        functional = await engine.execute(SlayerQuery(
+        functional = await engine.execute(fx.q(
             source_model="orders",
             dimensions=["month(created_at)"],
             measures=[{"formula": "amount:sum"}],
             whole_periods_only=True,
         ), dry_run=True)
-        explicit = await engine.execute(SlayerQuery(
+        explicit = await engine.execute(fx.q(
             source_model="orders",
             time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
             measures=[{"formula": "amount:sum"}],
@@ -99,12 +99,12 @@ class TestEquivalence:
         assert functional.sql == explicit.sql
 
     async def test_dotted_functional_execution(self, exec_engine) -> None:
-        functional = await exec_engine.execute(SlayerQuery(
+        functional = await exec_engine.execute(fx.q(
             source_model="orders",
             dimensions=["month(customers.created_at)"],
             measures=[{"formula": "amount:sum"}],
         ))
-        explicit = await exec_engine.execute(SlayerQuery(
+        explicit = await exec_engine.execute(fx.q(
             source_model="orders",
             time_dimensions=[
                 {"dimension": "customers.created_at", "granularity": "month"}

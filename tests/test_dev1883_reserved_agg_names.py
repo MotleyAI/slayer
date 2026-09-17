@@ -7,7 +7,8 @@ import pydantic
 import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.models import Aggregation, Column, SlayerModel
+from slayer.core.models import Aggregation, Column
+from tests import _dev1883_fixtures as fx
 
 GRANULARITIES = [g.value for g in TimeGranularity]
 
@@ -23,7 +24,7 @@ class TestGranularityNamesReserved:
 
     def test_model_with_granularity_named_aggregation_rejected(self) -> None:
         with pytest.raises(pydantic.ValidationError, match="week_sunday"):
-            SlayerModel(
+            fx.model(
                 name="orders", sql_table="orders", data_source="test",
                 columns=[Column(name="amount", sql="amount", type=DataType.DOUBLE)],
                 aggregations=[{"name": "quarter", "formula": "SUM({x})"}],
