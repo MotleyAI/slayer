@@ -55,5 +55,5 @@ D4d). Monthly fixture rows: North Jan 10 / Feb 20 / Mar 30, South Jan 5 / Feb 15
 
 - [x] 6.1 Remove the stale ratchet allowlist entry; verify `test_law_guard_ratchet.py` passes with `guards.baseline` unchanged
 - [x] 6.2 Docs: one sentence each in `docs/concepts/formulas.md` (boundaries paragraph), `docs/concepts/models.md` (filter row + paragraph), `docs/concepts/queries.md` (cross-model measures); `Column.filter` field comment; verify by grep that no "not yet supported" wording for the three shapes remains
-- [ ] 6.3 Confirm the 5.0 arc42 edit is applied and `arch_check` is green at the gate (the diff itself is task 5.0)
-- [ ] 6.4 Record the `dev1832` golden baseline (lifted/* now SQL) plus the `dev1839` axis-message and `dev1859` alias-hash deltas through `ALLOWED_DELTAS`; run `poetry run pytest -m "not integration" -n auto`, `ruff`, conventions gate, `basedpyright` (baseline shrinks or holds), `arch_check`; verify all green, then the Codex working-tree pass before push
+- [x] 6.3 Confirm the 5.0 arc42 edit is applied and `arch_check` is green at the gate (the diff itself is task 5.0)
+- [x] 6.4 Record the `dev1832` golden baseline (lifted/* now SQL) plus the `dev1839` axis-message and `dev1859` alias-hash deltas through `ALLOWED_DELTAS`; run `poetry run pytest -m "not integration" -n auto`, `ruff`, conventions gate, `basedpyright` (baseline shrinks or holds), `arch_check`; verify all green, then the Codex working-tree pass before push
