@@ -61,7 +61,7 @@ def _cases() -> dict:
         "lifted/transform_constituent": {
             "source": "monthly", "mode": None,
             "kw": {"time_dimensions": _MONTH_TD, "measures": [{"formula":
-                "sum(cumsum(amount:sum, partition_by=[region, month(ordered_at)]) - 1)",
+                "sum(cumsum(amount:sum(partition_by=[region, ordered_at])) - 1)",
                 "name": "m"}]}},
         "lifted/mixed_transform": {
             "source": "sales", "mode": None,

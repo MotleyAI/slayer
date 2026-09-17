@@ -525,19 +525,23 @@ def check_opaque_grouping_dim(
 
 def _temporal_axis_transforms(dm):
     """Time-ordered transforms whose grain must contain their axis: any transform
-    in a dimension expression, and a transform that is an aggregation-source
-    constituent in a measure (a top-level transform measure carries its bucket
-    through the windowed producer instead)."""
+    in a dimension expression, and every transform reachable inside an
+    aggregation-source constituent of a measure — nested ones included, mirroring
+    the dimension arm, so a nested time transform cannot evade Axiom 11.5 (a
+    top-level transform measure carries its bucket through the windowed producer
+    instead)."""
     vk = dm.bound.value_key
     if dm.is_dimension:
         yield from (k for k in walk_value_keys(vk) if isinstance(k, TransformKey))
         return
     for k in walk_value_keys(vk):
         if isinstance(k, AggregateKey):
-            yield from (
-                c for c in operand_constituents(k.source)
-                if isinstance(c, TransformKey)
-            )
+            for c in operand_constituents(k.source):
+                if isinstance(c, TransformKey):
+                    yield from (
+                        t for t in walk_value_keys(c)
+                        if isinstance(t, TransformKey)
+                    )
 
 
 def check_dimension_temporal_axis(declared_measures) -> None:
@@ -582,6 +586,16 @@ def check_time_dimension_date_range(*, full_name: str, date_range) -> None:
 
 
 def _time_search_children(key: ValueKey) -> List[ValueKey]:
+    if isinstance(key, AggregateKey):
+        # A transform constituent lives in the source (or a composite parameter);
+        # descend so its no-time-dimension error reaches an aggregated transform.
+        return [
+            key.source,
+            *[a for a in key.args if isinstance(
+                a, (AggregateKey, TransformKey, ArithmeticKey, ScalarCallKey))],
+            *[v for _, v in key.kwargs if isinstance(
+                v, (AggregateKey, TransformKey, ArithmeticKey, ScalarCallKey))],
+        ]
     if isinstance(key, TransformKey):
         return [key.input]
     if isinstance(key, ArithmeticKey):

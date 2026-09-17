@@ -62,7 +62,7 @@ ROWS: Tuple[LedgerRow, ...] = (
          "compile_query needs an environment produced by elaborate_query (its compile inputs are unset).",
          "internal", "internal", False, "compiler"),
     _row(_EE, "check_dimension_temporal_axis", "NotImplementedError",
-         "A time-ordered transform '…' inside a computed dimension evaluates at a grain that does not contain its time axis '…'; a producer bucketed by time joined back on the coarser grain would duplicate result rows. Include the time key in the aggregate's partition_by= so the transform accumulates within its own grain.",
+         "A time-ordered transform '…' evaluates at a grain that does not contain its time axis '…'; a producer bucketed by time joined back on the coarser grain would duplicate result rows. Include the time key in the aggregate's partition_by= so the transform accumulates within its own grain.",
          "checker", "time-axis", True, "checker"),
     _row(_EE, "check_windowed_key_supported", "ValueError",
          "Aggregation parameter 'window' is only supported for sum and avg, not '…'.",

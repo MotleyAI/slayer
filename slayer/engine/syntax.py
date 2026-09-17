@@ -59,10 +59,11 @@ class TupleLit(_BaseNode):
 
 class AggCall(_BaseNode):
     # source may also be an aggregation-free scalar expression (``sum(a - b)``),
-    # or — for a re-aggregation (DEV-1847) — a nested AggCall / composite of them.
+    # or — for a re-aggregation (DEV-1847/DEV-1832) — a nested AggCall or a grained
+    # TransformCall, alone or composed.
     source: Union[
         Ref, DottedRef, StarSource, Literal, "ScalarCall", "Arith", "UnaryOp",
-        "AggCall", "Cmp", "BoolOp",
+        "AggCall", "TransformCall", "Cmp", "BoolOp",
     ]
     agg: str
     args: Tuple[Any, ...] = ()

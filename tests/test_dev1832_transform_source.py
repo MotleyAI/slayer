@@ -44,7 +44,7 @@ from tests._dev1832_fixtures import (
 )
 
 # Source formulas under test.
-GRAINED_CUMSUM = "sum(cumsum(amount:sum, partition_by=[region, month(ordered_at)]) - 1)"
+GRAINED_CUMSUM = "sum(cumsum(amount:sum(partition_by=[region, ordered_at])) - 1)"
 UNGRAINED_CUMSUM = "sum(cumsum(amount:sum))"
 RANK_MIXED = "sum(quantity * rank(avg(unit_price, partition_by=product)))"
 JOINED_ROWLEAF_MIXED = "sum(customers.discount * avg(amount, partition_by=status))"
@@ -160,7 +160,7 @@ class TestTransformSourceRejections:
         with pytest.raises(NotImplementedError, match="time axis"):
             await gen(monthly_q(
                 measures=[ModelMeasure(
-                    formula="sum(cumsum(amount:sum, partition_by=region))", name="m")],
+                    formula="sum(cumsum(amount:sum(partition_by=region)))", name="m")],
                 time_dimensions=month_td()))
 
     async def test_first_over_mixed_keeps_expression_error(self):

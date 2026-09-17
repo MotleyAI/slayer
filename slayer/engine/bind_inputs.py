@@ -26,6 +26,7 @@ from slayer.core.keys import (
     ValueKey,
     lower_sugar_transforms,
     normalize_scalar,
+    normalize_transform_constituents,
     attached_operand_keys,
     rewrite_rank_partition_keys,
     walk_value_keys,
@@ -150,10 +151,18 @@ def _attach_time_to_in(key: InKey, *, td_key: TimeTruncKey) -> ValueKey:
     return InKey(column=nc, values=key.values, negated=key.negated)
 
 
+def _attach_time_to_aggregate(key: AggregateKey, *, td_key: TimeTruncKey) -> ValueKey:
+    # An aggregated transform constituent gets the query's bucket too — descend
+    # source, args and kwargs (identity-preserving, like ``map_children``).
+    return key.map_children(lambda c: _attach_time_keys(c, td_key=td_key))
+
+
 def _attach_time_keys(
     key: ValueKey, *, td_key: TimeTruncKey,
 ) -> ValueKey:
     """Set ``time_key=td_key`` on every time-needing TransformKey with a null one (identity-preserving)."""
+    if isinstance(key, AggregateKey):
+        return _attach_time_to_aggregate(key, td_key=td_key)
     if isinstance(key, TransformKey):
         return _attach_time_to_transform(key, td_key=td_key)
     if isinstance(key, ArithmeticKey):
@@ -282,11 +291,15 @@ def _map_bound_keys(
     declared_measures: List[DeclaredMeasure],
     bound_filters: List[BoundFilter],
     order_specs: List[OrderSpec],
+    skip_dimensions: bool = False,
 ) -> Tuple[List[DeclaredMeasure], List[BoundFilter], List[OrderSpec]]:
     new_measures = [
         DeclaredMeasure(
             bound=BoundExpr(
-                value_key=key_fn(dm.bound.value_key),
+                value_key=(
+                    dm.bound.value_key if (skip_dimensions and dm.is_dimension)
+                    else key_fn(dm.bound.value_key)
+                ),
                 routed_dotted=dm.bound.routed_dotted,
             ),
             declared_name=dm.declared_name,
@@ -564,6 +577,22 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         _td_by_source[vk.column] = vk
     _td_key_set = set(_td_by_source.values())
     _available_dims = [dm.declared_name for dm in (*_dim_dms, *_td_dms)]
+
+    # Normalise transform constituents (D4b, Axiom 11.1): an ungrained, non-windowed,
+    # local inner aggregate inside a transform constituent (measure/filter/order, not
+    # dimensions) is explicitly grained at the query grain — BEFORE partition-key
+    # validation, so the synthesized keys face the same attributability / resolution
+    # checks as a user-written partition_by=. Every dependent set below (dim-agg,
+    # combined-consumer, reagg-operand) is computed AFTER, over the normalised keys.
+    _query_grain = Grain.of([*_dim_key_set, *_td_key_set])
+    declared_measures, bound_filters, order_specs = _map_bound_keys(
+        lambda vk: normalize_transform_constituents(vk, query_grain=_query_grain),
+        declared_measures=declared_measures,
+        bound_filters=bound_filters,
+        order_specs=order_specs,
+        skip_dimensions=True,
+    )
+
     # A partitioned aggregate inside a computed dimension declares a producer grain (partition_by may be finer than the query).
     _dim_agg_keys = frozenset(dimension_partitioned_aggregates(declared_measures))
     # A COMBINED-position partitioned aggregate needs query-dimension partition keys

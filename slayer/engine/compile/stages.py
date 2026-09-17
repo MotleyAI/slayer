@@ -1911,6 +1911,19 @@ def _reaggregation_determined(
     )
 
 
+def _constituent_alias(c: ValueKey) -> str:
+    """A clean stage alias for a re-aggregation constituent: an aggregate's
+    canonical alias (else its ``.agg``), a transform's ``.op`` (a transform has no
+    canonical aggregate alias of its own)."""
+    if isinstance(c, TransformKey):
+        return c.op
+    return (
+        canonical_aggregate_alias(c, profile="stage_formula")
+        or getattr(c, "agg", None)
+        or "reagg"
+    )
+
+
 def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive second-order synthesis (constituents → union grain → attributability/mode → carrier producer → outer producer → attach); the arms share the re-rooting state.
     *,
     root: AggregateKey,
@@ -1947,12 +1960,7 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
 
     # A clean, stable name for the re-aggregation (the nested source has no
     # canonical alias of its own; a transform constituent has no ``.agg``).
-    inner_alias = (
-        (canonical_aggregate_alias(constituents[0], profile="stage_formula")
-         if constituents else None)
-        or (getattr(constituents[0], "agg", None) if constituents else None)
-        or (constituents[0].op if constituents else "reagg")
-    )
+    inner_alias = _constituent_alias(constituents[0]) if constituents else "reagg"
     alias = (
         public_alias
         or canonical_aggregate_alias(root, profile="stage_formula")
@@ -2082,6 +2090,9 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
         bundle=bundle, scope=scope, stage_schemas=stage_schemas,
         inherited=inherited, n_date_range=n_date_range,
         producer_source_model=host_model.name, producer_registry=producer_registry,
+        projected_dim_keys=context.projected_dim_keys,
+        projected_td_keys=context.projected_td_keys,
+        active_bucket=prebound.main_time_key,
     )
 
     # The outer producer: OUTER_AGG over the constituent composite (placeholders),
@@ -2205,7 +2216,7 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
 def _build_carrier_attach(
     *,
     union_grain: Grain,
-    constituents: List[AggregateKey],
+    constituents: List[ValueKey],
     constituent_placeholders: Dict[ValueKey, ValueKey],
     host_model: SlayerModel,
     bundle: ResolvedSourceBundle,
@@ -2215,6 +2226,9 @@ def _build_carrier_attach(
     n_date_range: int,
     producer_source_model: Optional[str],
     producer_registry: Optional[Dict[Hashable, PlannedQuery]],
+    projected_dim_keys: List[ValueKey],
+    projected_td_keys: List[ValueKey],
+    active_bucket: Optional[ValueKey],
 ) -> RegroupAttachPlan:
     """A row-attach producer at the union grain carrying every constituent (coarser
     ones broadcast within it) — the carrier / level-1 of the re-aggregation."""
@@ -2227,11 +2241,15 @@ def _build_carrier_attach(
         source_model=producer_source_model,
         bundle=bundle, scope=scope, stage_schemas=stage_schemas,
         # Discovery must re-run inside the carrier for a coarser constituent
-        # (nested broadcast), a constituent that is itself a re-aggregation, or
-        # an expression grain key needing its own nested row attach.
+        # (nested broadcast), a constituent that is itself a re-aggregation or a
+        # transform (Axiom 11), or an expression grain key needing its own nested
+        # row attach. A constituent's grain is its result grain (Axiom 2.3), not a
+        # raw partition_keys (a transform's is empty).
         enable_producer_regroups=any(
-            c.partition_keys is not None
-            and Grain.of(c.partition_keys) != union_grain
+            constituent_grain(
+                c, projected_dim_keys=projected_dim_keys,
+                projected_td_keys=projected_td_keys, active_bucket=active_bucket,
+            ) != union_grain
             for c in constituents
         ) or _answers_need_nested_regroups(constituents) or any(
             isinstance(pk, (ScalarCallKey, ArithmeticKey, TransformKey))
@@ -2271,12 +2289,7 @@ def _build_carrier_attach(
     )
     return RegroupAttachPlan(
         producer_plan=carrier_plan,
-        alias_hint=(
-            (canonical_aggregate_alias(constituents[0], profile="stage_formula")
-             if constituents else None)
-            or (constituents[0].agg if constituents else None)
-            or "carrier"
-        ),
+        alias_hint=(_constituent_alias(constituents[0]) if constituents else "carrier"),
         attach_phase="row",
         join_pairs=join_pairs,
         substitutions=substitutions,

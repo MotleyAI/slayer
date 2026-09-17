@@ -9,6 +9,7 @@ from __future__ import annotations
 from decimal import Decimal
 from enum import IntEnum
 from typing import (
+    Dict,
     FrozenSet,
     Sequence,
     TypeGuard,
@@ -343,7 +344,7 @@ class LiteralKey(_LeafKey, frozen=True):
 # by the Arithmetic/ScalarCall operands, which already admit any ValueKey).
 _AggregateSource = Union[
     ColumnKey, ColumnSqlKey, StarKey,
-    "ArithmeticKey", "ScalarCallKey", "LiteralKey", "AggregateKey",
+    "ArithmeticKey", "ScalarCallKey", "LiteralKey", "AggregateKey", "TransformKey",
 ]
 # Positional and kwarg arg values share one union: `last(created_at)` binds an
 # identifier column, `weighted_avg(weight=qty)` a column, and
@@ -908,6 +909,10 @@ def effective_root_grain(
     windowed = window_kwarg_of(agg) is not None
     if getattr(agg, "partition_keys", None) is not None:
         grain = regroup_root_grain(agg)
+        # A transform with no grained inner (e.g. rank(region)) is the degenerate
+        # query-grain identity (Axiom 11.1); its operand cells are the query grain.
+        if isinstance(agg, TransformKey) and grain.is_empty:
+            return Grain.of([*projected_dim_keys, *projected_td_keys]), False
         # A transform over a window= inner gains the active bucket in its union grain.
         if (
             not windowed and active_bucket is not None
@@ -1285,6 +1290,53 @@ def source_anchor_path(source: ValueKey) -> Tuple[str, ...]:
         if not prefix:
             break
     return prefix
+
+
+def _grain_transform_inner_aggregates(
+    t: TransformKey, *, query_grain: Grain,
+) -> TransformKey:
+    """Grain every ungrained, non-windowed, LOCAL aggregate under ``t.input`` at
+    ``query_grain`` — a cross-model or windowed or already-explicit inner is left
+    untouched. Post-order over ``map_children``."""
+    def _grain(node: ValueKey) -> ValueKey:
+        rebuilt = node.map_children(_grain)
+        if (
+            isinstance(rebuilt, AggregateKey)
+            and rebuilt.partition_keys is None
+            and window_kwarg_of(rebuilt) is None
+            and not source_anchor_path(rebuilt.source)
+        ):
+            return rebuilt.model_copy(update={"partition_keys": query_grain})
+        return rebuilt
+
+    new_input = _grain(t.input)
+    return t if new_input is t.input else t.model_copy(update={"input": new_input})
+
+
+def normalize_transform_constituents(
+    key: ValueKey, *, query_grain: Grain,
+) -> ValueKey:
+    """Explicitly grain the ungrained inner aggregates of a transform constituent
+    at ``query_grain`` (D4b, Axiom 11.1): a time-ordered constituent then has an
+    axis and a mixed operand shares one canonical grain. Post-order; runs before
+    partition-key validation, so the synthesized keys face the same
+    attributability / resolution checks as a user-written ``partition_by=``."""
+    rebuilt = key.map_children(
+        lambda c: normalize_transform_constituents(c, query_grain=query_grain),
+    )
+    if not isinstance(rebuilt, AggregateKey):
+        return rebuilt
+    subs: Dict[ValueKey, ValueKey] = {}
+    for c in operand_constituents(rebuilt.source):
+        if isinstance(c, TransformKey):
+            grained = _grain_transform_inner_aggregates(c, query_grain=query_grain)
+            if grained is not c:
+                subs[c] = grained
+    if not subs:
+        return rebuilt
+    return rebuilt.model_copy(
+        update={"source": substitute_value_keys(rebuilt.source, subs)},
+    )
 
 
 def attached_inputs(k: ValueKey) -> List[ValueKey]:
