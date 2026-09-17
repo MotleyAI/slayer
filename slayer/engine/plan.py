@@ -71,7 +71,7 @@ def _stage_scope_and_bundle(
     """Resolve one DAG stage's ``(scope, per-stage bundle)``; each stage binds against its OWN source, with sibling synthetic models threaded in."""
     src = query.source_model
     sibling_names = set(stage_schemas)
-    sib = source_name_if_sibling(src, sibling_names)
+    sib = source_name_if_sibling(spec=src, sibling_names=sibling_names)
 
     # 1. ModelExtension OVER a sibling: overlay the extra columns onto a synthetic sibling model.
     if sib is not None and isinstance(src, ModelExtension):

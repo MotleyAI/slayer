@@ -16,7 +16,7 @@ from slayer.core.query import ModelExtension, SlayerQuery, SourceSpec
 def _extract_sibling_refs(query: SlayerQuery, against: Set[str]) -> Set[str]:
     """Sibling names in ``against`` that ``query`` references; purely structural, never raises."""
     out: Set[str] = set()
-    _walk_spec(query.source_model, against, out)
+    _walk_spec(spec=query.source_model, against=against, out=out)
     return out
 
 
@@ -35,7 +35,7 @@ def _walk_spec(spec: SourceSpec | None, against: Set[str], out: Set[str]) -> Non
     else:
         joins = spec.joins
         for inner in spec.source_queries or []:
-            _walk_spec(inner.source_model, against, out)
+            _walk_spec(spec=inner.source_model, against=against, out=out)
     for j in joins:
         if j.target_model in against:
             out.add(j.target_model)

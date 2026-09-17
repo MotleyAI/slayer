@@ -214,7 +214,9 @@ class TestTypedAtConstruction:
         sm = q.source_model
         assert isinstance(sm, ModelExtension)
         assert sm.source_name == "orders"
-        assert sm.columns and sm.joins and sm.measures
+        assert sm.columns
+        assert sm.joins
+        assert sm.measures
         assert isinstance(sm.columns[0], Column)
         assert sm.columns[0].type == DataType.DOUBLE
         assert isinstance(sm.joins[0], ModelJoin)
@@ -319,10 +321,10 @@ class TestHelpersOverTypedSpecs:
     def test_source_name_if_sibling(self) -> None:
         ext = _query(source_model={"source_name": "stage_a"}).source_model
         inline = _query(source_model=INLINE_MODEL).source_model
-        assert source_name_if_sibling(ext, {"stage_a"}) == "stage_a"
-        assert source_name_if_sibling(ext, {"other"}) is None
-        assert source_name_if_sibling("stage_a", {"stage_a"}) == "stage_a"
-        assert source_name_if_sibling(inline, {"ad_hoc"}) is None
+        assert source_name_if_sibling(spec=ext, sibling_names={"stage_a"}) == "stage_a"
+        assert source_name_if_sibling(spec=ext, sibling_names={"other"}) is None
+        assert source_name_if_sibling(spec="stage_a", sibling_names={"stage_a"}) == "stage_a"
+        assert source_name_if_sibling(spec=inline, sibling_names={"ad_hoc"}) is None
 
     def test_spec_adds_measures(self) -> None:
         assert spec_adds_measures(_query(source_model=EXTENSION_WITH_MEASURES).source_model)
@@ -332,24 +334,25 @@ class TestHelpersOverTypedSpecs:
 
     def test_as_extension_over_nonsibling_returns_the_held_instance(self) -> None:
         q = _query(source_model=EXTENSION)
-        assert as_extension_over_nonsibling(q.source_model, set()) is q.source_model
-        assert as_extension_over_nonsibling(q.source_model, {"orders"}) is None
-        assert as_extension_over_nonsibling("orders", set()) is None
-        assert as_extension_over_nonsibling(_query(source_model=INLINE_MODEL).source_model, set()) is None
+        assert as_extension_over_nonsibling(spec=q.source_model, sibling_names=set()) is q.source_model
+        assert as_extension_over_nonsibling(spec=q.source_model, sibling_names={"orders"}) is None
+        assert as_extension_over_nonsibling(spec="orders", sibling_names=set()) is None
+        inline = _query(source_model=INLINE_MODEL).source_model
+        assert as_extension_over_nonsibling(spec=inline, sibling_names=set()) is None
 
     def test_follow_sibling_chain_reaches_the_typed_base(self) -> None:
         a = _query(name="a", source_model=EXTENSION)
         b = _query(name="b", source_model={"source_name": "a"})
         named = {"a": a, "b": b}
-        base = follow_sibling_chain(SlayerQuery(source_model="b").source_model, named)
+        base = follow_sibling_chain(spec=SlayerQuery(source_model="b").source_model, named_queries=named)
         assert base is a.source_model
-        assert follow_sibling_chain(None, named) is None
+        assert follow_sibling_chain(spec=None, named_queries=named) is None
 
     def test_follow_sibling_chain_cycle_raises(self) -> None:
         x = _query(name="x", source_model={"source_name": "y"})
         y = SlayerQuery(name="y", source_model="x")
         with pytest.raises(ValueError, match="Circular"):
-            follow_sibling_chain("x", {"x": x, "y": y})
+            follow_sibling_chain(spec="x", named_queries={"x": x, "y": y})
 
     def test_stage_ordering_walks_typed_specs_from_raw_objects(self) -> None:
         a = SlayerQuery(name="a", source_model="orders")

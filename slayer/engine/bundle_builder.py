@@ -133,10 +133,10 @@ async def build_resolved_source_bundle(
     # source_model is the real base the root chain bottoms out at. A ROOT
     # ModelExtension over a NON-sibling base is recorded in inline_extensions so
     # the engine can re-apply the overlay after a query-backed base expands.
-    root_spec = follow_sibling_chain(query.source_model, named_queries)
+    root_spec = follow_sibling_chain(spec=query.source_model, named_queries=named_queries)
     inline_extensions: List[ModelExtension] = []
-    if source_name_if_sibling(root_spec, sibling_names) is None:
-        ext = as_extension_over_nonsibling(root_spec, sibling_names)
+    if source_name_if_sibling(spec=root_spec, sibling_names=sibling_names) is None:
+        ext = as_extension_over_nonsibling(spec=root_spec, sibling_names=sibling_names)
         if ext is not None:
             inline_extensions.append(ext)
     source_model = await _resolve_source_spec(
@@ -158,7 +158,7 @@ async def build_resolved_source_bundle(
     # to its OWN concrete model so heterogeneous DAGs bind against the right host.
     stage_source_models: Dict[str, SlayerModel] = {}
     for nm, nq in named_queries.items():
-        if source_name_if_sibling(nq.source_model, sibling_names) is not None:
+        if source_name_if_sibling(spec=nq.source_model, sibling_names=sibling_names) is not None:
             continue  # sibling-sourced: planner resolves via upstream StageSchema
         # MUST resolve to a concrete model; a failure is a genuine error, not a
         # best-effort skip (would silently fall back to the root source).
@@ -206,7 +206,7 @@ async def _preseed_sibling_models(
     Best-effort — a sibling whose base is absent is skipped."""
     preseeded: Dict[str, SlayerModel] = {source_model.name: source_model}
     for sib in named_queries.values():
-        spec = follow_sibling_chain(sib.source_model, named_queries)
+        spec = follow_sibling_chain(spec=sib.source_model, named_queries=named_queries)
         try:
             sib_model = await _resolve_source_spec(
                 spec, storage=storage, data_source=data_source
