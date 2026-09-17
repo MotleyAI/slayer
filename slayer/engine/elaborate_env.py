@@ -11,7 +11,7 @@ from typing import (
     Sequence, Tuple, Union,
 )
 
-from slayer.core.enums import DataType
+from slayer.core.enums import AXIS_COLLAPSING_TRANSFORMS, DataType
 from slayer.core.errors import (
     CanonicalAliasShadowsColumnError,
     DistinctDimensionValuesError,
@@ -42,6 +42,7 @@ from slayer.core.keys import (
     operand_constituents,
     regroup_root_grain,
     source_anchor_path,
+    source_row_leaves,
     walk_value_keys,
 )
 from slayer.core.models import SlayerModel
@@ -639,6 +640,29 @@ def check_time_transforms_resolved(*, roots) -> None:
                 f"set main_time_dimension to select among multiple "
                 f"time dimensions."
             )
+
+
+def check_collapsing_transform_not_row_mixed(*, roots) -> None:
+    """Fail closed: a collapsing transform (first/last) aggregated together with a
+    row-level column reduces to a re-aggregation the row-attach path cannot yet
+    broadcast onto row operands (D4c deferral). A pure aggregation of attached
+    values collapses fine."""
+    for root in roots:
+        for k in walk_value_keys(root):
+            if not isinstance(k, AggregateKey):
+                continue
+            has_collapsing = any(
+                isinstance(c, TransformKey) and c.op in AXIS_COLLAPSING_TRANSFORMS
+                for c in operand_constituents(k.source)
+            )
+            if has_collapsing and source_row_leaves(k.source):
+                raise ValueError(
+                    "A collapsing transform (first/last) aggregated together with "
+                    "a row-level column is not yet supported: the collapsed value "
+                    "is a re-aggregation, which cannot be broadcast onto a "
+                    "row-level operand. Aggregate the column, or use the transform "
+                    "in a pure aggregation of attached values."
+                )
 
 
 def check_windowed_key_supported(*, key: AggregateKey, window_val) -> None:

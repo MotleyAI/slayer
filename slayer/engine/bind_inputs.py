@@ -49,6 +49,7 @@ from slayer.core.scope import ModelScope, StageSchema, host_model_name
 from slayer.engine import dimension_routing
 from slayer.engine.binding import bind_expr, bind_filter, bind_time_dimension
 from slayer.engine.elaborate_env import (
+    check_collapsing_transform_not_row_mixed,
     check_computed_dim_name_collision,
     check_computed_dimension,
     check_measure_dedupe_collision,
@@ -652,6 +653,15 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
     )
 
     check_dimension_temporal_axis(declared_measures)
+
+    # A collapsing transform mixed with a row-level column would collapse to a
+    # re-aggregation the row-attach path cannot yet broadcast (D4c deferral); fail
+    # closed before the desugar produces that shape.
+    check_collapsing_transform_not_row_mixed(roots=[
+        *(dm.bound.value_key for dm in declared_measures),
+        *(bf.value_key for bf in bound_filters),
+        *(sp.bound.value_key for sp in order_specs),
+    ])
 
     # Lower a collapsing transform constituent (first/last, D4c) to an exact
     # per-partition pick AFTER the axis check (which sees the raw transform); the
