@@ -119,6 +119,17 @@ class TestUngrainedTransformConstituent:
         assert _by_month(resp, "m") == pytest.approx(UNGRAINED_CUMSUM_BY_MONTH)
         assert degenerate_warnings(resp), "expected a degenerate-reaggregation warning"
 
+    async def test_scalar_call_wrapped_reaggregation_attaches_axis(self, exec_backend):
+        # The cumsum inside an aggregate that is a scalar-call argument still gets
+        # its time axis attached (the attachment half of the scalar-call fix); the
+        # coalesce leaves the non-null values unchanged.
+        _, engine = exec_backend
+        resp = await engine.execute(monthly_q(
+            measures=[ModelMeasure(
+                formula="coalesce(sum(cumsum(amount:sum)), 0)", name="m")],
+            time_dimensions=month_td()))
+        assert _by_month(resp, "m") == pytest.approx(UNGRAINED_CUMSUM_BY_MONTH)
+
 
 class TestMixedTransformConstituent:
     """queries/partitioned-aggregates › Transform constituent inside a mixed source."""
