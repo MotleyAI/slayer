@@ -260,7 +260,9 @@ class TestBindTimeDimension:
             bundle=_bundle_local(),
         )
         assert isinstance(bound.bound.value_key, TimeTruncKey)
-        assert bound.bound.value_key.column.leaf == "reviewed_at"
+        col_key = bound.bound.value_key.column
+        assert isinstance(col_key, ColumnKey)
+        assert col_key.leaf == "reviewed_at"
         assert bound.bound.value_key.granularity == "week"
 
     def test_multi_hop_joined_td(self) -> None:

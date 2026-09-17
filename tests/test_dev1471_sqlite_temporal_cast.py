@@ -50,10 +50,10 @@ async def test_temporal_max_returns_full_date(backend: str) -> None:
     """created_at:max per customer is the full latest date on SQLite and DuckDB."""
     with tempfile.TemporaryDirectory() as tmp:
         eng = await _engine(backend, tmp)
-        resp = await eng.execute(SlayerQuery(
-            source_model="orders", dimensions=["customer_id"],
-            measures=[{"formula": "created_at:max"}],
-        ))
+        resp = await eng.execute(SlayerQuery.model_validate({
+            "source_model": "orders", "dimensions": ["customer_id"],
+            "measures": [{"formula": "created_at:max"}],
+        }))
         got = {r["orders.customer_id"]: date_str(r["orders.created_at_max"]) for r in resp.data}
         assert got == {100: "2025-03-20", 101: "2025-02-25", 102: "2025-05-05"}
 
@@ -63,10 +63,10 @@ async def test_partitioned_temporal_aggregate_returns_full_date(backend: str) ->
     """created_at:max(partition_by=customer_id) attaches the full per-customer latest date."""
     with tempfile.TemporaryDirectory() as tmp:
         eng = await _engine(backend, tmp)
-        resp = await eng.execute(SlayerQuery(
-            source_model="orders", dimensions=["customer_id"],
-            measures=[{"formula": "created_at:max(partition_by=customer_id)"}],
-        ))
+        resp = await eng.execute(SlayerQuery.model_validate({
+            "source_model": "orders", "dimensions": ["customer_id"],
+            "measures": [{"formula": "created_at:max(partition_by=customer_id)"}],
+        }))
         key = "orders.created_at_max_partition_by_customer_id"
         got = {r["orders.customer_id"]: date_str(r[key]) for r in resp.data}
         assert got == {100: "2025-03-20", 101: "2025-02-25", 102: "2025-05-05"}
@@ -77,10 +77,10 @@ async def test_derived_temporal_column_returns_full_date(backend: str) -> None:
     """A non-identifier TIMESTAMP column (coalesce) projected and max-aggregated is a full date."""
     with tempfile.TemporaryDirectory() as tmp:
         eng = await _engine(backend, tmp, extra_columns=[_LAST_TOUCH])
-        resp = await eng.execute(SlayerQuery(
-            source_model="orders", dimensions=["customer_id"],
-            measures=[{"formula": "last_touch:max"}],
-        ))
+        resp = await eng.execute(SlayerQuery.model_validate({
+            "source_model": "orders", "dimensions": ["customer_id"],
+            "measures": [{"formula": "last_touch:max"}],
+        }))
         got = {r["orders.customer_id"]: date_str(r["orders.last_touch_max"]) for r in resp.data}
         assert got == {100: "2025-03-22", 101: "2025-02-25", 102: "2025-05-06"}
 
@@ -88,10 +88,10 @@ async def test_derived_temporal_column_returns_full_date(backend: str) -> None:
 async def test_sqlite_sql_has_no_temporal_cast() -> None:
     """The SQLite aggregate is bare ``MAX(orders.created_at)`` — no ``AS TIMESTAMP`` wrapper."""
     sql = await _engine_generate(
-        query=SlayerQuery(
-            source_model="orders", dimensions=["customer_id"],
-            measures=[{"formula": "created_at:max"}],
-        ),
+        query=SlayerQuery.model_validate({
+            "source_model": "orders", "dimensions": ["customer_id"],
+            "measures": [{"formula": "created_at:max"}],
+        }),
         model=orders_model(), dialect="sqlite",
     )
     normalized = _norm(sql)
@@ -103,10 +103,10 @@ async def test_sqlite_sql_has_no_temporal_cast() -> None:
 async def test_sqlite_derived_column_sql_has_no_temporal_cast() -> None:
     """The derived-column seam is suppressed on SQLite too (Codex's third seam)."""
     sql = await _engine_generate(
-        query=SlayerQuery(
-            source_model="orders", dimensions=["customer_id"],
-            measures=[{"formula": "last_touch:max"}],
-        ),
+        query=SlayerQuery.model_validate({
+            "source_model": "orders", "dimensions": ["customer_id"],
+            "measures": [{"formula": "last_touch:max"}],
+        }),
         model=orders_model(extra_columns=[_LAST_TOUCH]), dialect="sqlite",
     )
     assert "AS TIMESTAMP" not in _norm(sql), sql
@@ -141,10 +141,10 @@ _EXPECTED_SQL = {
 @pytest.mark.parametrize("dialect", sorted(_EXPECTED_SQL))
 async def test_other_dialects_keep_their_casts(dialect: str) -> None:
     sql = await _engine_generate(
-        query=SlayerQuery(
-            source_model="orders", dimensions=["customer_id"],
-            measures=[{"formula": "created_at:max"}],
-        ),
+        query=SlayerQuery.model_validate({
+            "source_model": "orders", "dimensions": ["customer_id"],
+            "measures": [{"formula": "created_at:max"}],
+        }),
         model=orders_model(), dialect=dialect,
     )
     assert _norm(sql) == _EXPECTED_SQL[dialect]

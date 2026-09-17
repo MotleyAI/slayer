@@ -5710,7 +5710,9 @@ class SQLGenerator:
         )
         value_ast = self._parse(value)
         value_sql = (
-            _wrap_cast_for_type(expr=value_ast, dt=col.type) if cast else value_ast
+            _wrap_cast_for_type(
+                expr=value_ast, dt=self._dialect.declared_cast_type(col.type),
+            ) if cast else value_ast
         ).sql(dialect=self.dialect)
         return wrap_column_filter(value_sql=value_sql, filter_sql=filter_sql)
 

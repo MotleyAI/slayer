@@ -28,11 +28,11 @@ _ROWS = [
     (4, 103, 400.0, "S", "2025-04-20", None),
 ]
 
-_INNER = SlayerQuery(
-    name="s1", source_model="orders",
-    time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TG.MONTH)],
-    measures=[{"formula": "amount:sum", "name": "rev"}],
-)
+_INNER = SlayerQuery.model_validate({
+    "name": "s1", "source_model": "orders",
+    "time_dimensions": [TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TG.MONTH)],
+    "measures": [{"formula": "amount:sum", "name": "rev"}],
+})
 
 
 async def _exec(backend: str, tmp: str, outer: SlayerQuery):
@@ -46,14 +46,14 @@ async def _exec(backend: str, tmp: str, outer: SlayerQuery):
 
 @pytest.mark.parametrize("backend", BACKENDS)
 async def test_stage_date_range_restricts_outer_stage(backend: str) -> None:
-    outer = SlayerQuery(
-        source_model="s1",
-        time_dimensions=[TimeDimension(
+    outer = SlayerQuery.model_validate({
+        "source_model": "s1",
+        "time_dimensions": [TimeDimension(
             dimension=ColumnRef(name="created_at"), granularity=TG.MONTH,
             date_range=["2025-02-01", "2025-03-31"],
         )],
-        measures=[{"formula": "rev:sum"}],
-    )
+        "measures": [{"formula": "rev:sum"}],
+    })
     with tempfile.TemporaryDirectory() as tmp:
         resp = await _exec(backend, tmp, outer)
     got = {date_str(r["s1.created_at"]): r["s1.rev_sum"] for r in resp.data}
@@ -67,14 +67,14 @@ async def test_stage_date_range_restricts_outer_stage(backend: str) -> None:
 
 @pytest.mark.parametrize("backend", BACKENDS)
 async def test_stage_date_range_on_coarser_rebucketing(backend: str) -> None:
-    outer = SlayerQuery(
-        source_model="s1",
-        time_dimensions=[TimeDimension(
+    outer = SlayerQuery.model_validate({
+        "source_model": "s1",
+        "time_dimensions": [TimeDimension(
             dimension=ColumnRef(name="created_at"), granularity=TG.YEAR,
             date_range=["2025-02-01", "2025-03-31"],
         )],
-        measures=[{"formula": "rev:sum"}],
-    )
+        "measures": [{"formula": "rev:sum"}],
+    })
     with tempfile.TemporaryDirectory() as tmp:
         resp = await _exec(backend, tmp, outer)
     got = {date_str(r["s1.created_at"]): r["s1.rev_sum"] for r in resp.data}
