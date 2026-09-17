@@ -82,14 +82,17 @@ class TestMcpSurface:
         tools = {t.name: t for t in await mcp_server.list_tools()}
         description = tools["query"].description or ""
         for gran in GRANULARITIES:
-            assert gran in description, f"tool docs must name granularity {gran!r}"
+            # Whole-token: ``week`` must not be satisfied by ``week_sunday`` alone.
+            assert re.search(rf"\b{re.escape(gran)}\b", description), (
+                f"tool docs must name granularity {gran!r}"
+            )
         # Both the dimensions and time_dimensions arg docs must show the form.
         for arg in ("dimensions", "time_dimensions"):
             block = re.search(
                 rf"\n\s+{arg}: .*?(?=\n\s+\w+:)", description, re.S,
             )
             assert block, f"no {arg} arg block in tool docs"
-            assert re.search(r"\b\w+\(\w+\)", block.group(0)), (
+            assert "month(created_at)" in block.group(0), (
                 f"{arg} docs must show the functional gran(col) form:\n{block.group(0)}"
             )
 

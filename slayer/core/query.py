@@ -123,21 +123,44 @@ def _reject_unknown_dimension_call(entry: str) -> None:
     )
 
 
+def _split_functional_dimensions(dims: "list | tuple") -> tuple[list, list]:
+    """Partition ``dimensions`` into (kept, extracted-TD-dicts): a ``gran(col)``
+    string becomes a ``TimeDimension`` dict; a non-granularity ``name(col)`` typo raises."""
+    kept: list = []
+    rewritten: list = []
+    for item in dims:
+        if isinstance(item, str):
+            td = _time_dimension_from_functional(item)
+            if td is not None:
+                rewritten.append(td)
+                continue
+            _reject_unknown_dimension_call(item)
+        kept.append(item)
+    return kept, rewritten
+
+
+def _coerce_time_dimension_entry(entry: Any) -> Any:
+    """A string ``time_dimensions`` entry must be the functional ``gran(col)`` form;
+    dicts/objects pass through untouched."""
+    if not isinstance(entry, str):
+        return entry
+    td = _time_dimension_from_functional(entry)
+    if td is None:
+        raise GranularityCallError(
+            f"Time dimension {entry!r} must be the functional form "
+            f"``gran(col)`` (e.g. ``month(created_at)``) for one of: "
+            f"{_granularity_names()}; no default granularity is invented."
+        )
+    return td
+
+
 def _rewrite_functional_granularity(data: dict) -> dict:
     """Move ``gran(col)`` dimension strings into ``time_dimensions`` and coerce
     string ``time_dimensions`` entries; both accept only the functional form."""
     rewritten: list = []
     dims = data.get("dimensions")
     if isinstance(dims, (list, tuple)):
-        kept: list = []
-        for item in dims:
-            if isinstance(item, str):
-                td = _time_dimension_from_functional(item)
-                if td is not None:
-                    rewritten.append(td)
-                    continue
-                _reject_unknown_dimension_call(item)
-            kept.append(item)
+        kept, rewritten = _split_functional_dimensions(dims)
         if len(kept) != len(dims):
             # Consuming every entry leaves ``None`` (not ``[]``) so the dump
             # matches an explicitly time-dimension-only query.
@@ -148,19 +171,7 @@ def _rewrite_functional_granularity(data: dict) -> dict:
     if tds is not None and not isinstance(tds, (list, tuple)):
         return data
     if tds or rewritten:
-        coerced: list = []
-        for entry in (tds or []):
-            if isinstance(entry, str):
-                td = _time_dimension_from_functional(entry)
-                if td is None:
-                    raise GranularityCallError(
-                        f"Time dimension {entry!r} must be the functional form "
-                        f"``gran(col)`` (e.g. ``month(created_at)``) for one of: "
-                        f"{_granularity_names()}; no default granularity is invented."
-                    )
-                coerced.append(td)
-            else:
-                coerced.append(entry)
+        coerced = [_coerce_time_dimension_entry(entry) for entry in (tds or [])]
         coerced.extend(rewritten)
         data = {**data, "time_dimensions": coerced}
     return data
