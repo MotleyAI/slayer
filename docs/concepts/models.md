@@ -82,7 +82,7 @@ A column is the unit of structure on the model. The same column entry can serve 
 | `hidden` | bool | No | `false` | Hide from listings |
 | `format` | dict | No | — | `NumberFormat` used by response metadata |
 | `allowed_aggregations` | list[str] | No | — | Whitelist (must be a subset of the type-default eligibility set, or a custom aggregation defined on this model) |
-| `filter` | string | No | — | SQL condition applied inside `CASE WHEN` at aggregation time. See [Filtered columns](#filtered-columns) |
+| `filter` | string | No | — | SQL condition wrapping the column value in `CASE WHEN` — a value mask that fires in every position. See [Filtered columns](#filtered-columns) |
 | `meta` | dict | No | — | Arbitrary JSON metadata |
 | `sampled` | string | No | — | Cached sample-value text snapshot (top-20 by frequency joined, or `top20 ... (50+ distinct)` on overflow, or `min .. max` for numeric/temporal); populated lazily on the first `inspect` of the column (or via `slayer search refresh-samples`), not at ingest time |
 | `sampled_values` | list[str] | No | — | Structured top-50-by-frequency list (categorical only); the unambiguous counterpart to `sampled` for consumers that need to compare predicate literals against stored values. `None` for numeric/temporal columns |
@@ -127,7 +127,7 @@ columns:
     filter: "status = 'completed'"
 ```
 
-`active_revenue:sum` then generates `SUM(CASE WHEN status = 'active' THEN amount END)`. The filter does nothing when the column is used as a group-by dimension — it fires only inside aggregations.
+`active_revenue:sum` then generates `SUM(CASE WHEN status = 'active' THEN amount END)`. The filter is pure syntactic sugar for `CASE WHEN <filter> THEN <value> END`, a **value mask** that fires in *every* position: as a group-by dimension, rows where the filter is false fall into the `NULL` group; a `first`/`last` picks the masked value at the chosen row (`NULL` if it does not match). It never removes rows or changes which row is picked — a genuine row restriction belongs in a query `filter`.
 
 Filters can reference joined columns via dot syntax (`categories.type = 'electronics'`). Filtered and unfiltered columns coexist freely in the same query and combine cleanly in arithmetic formulas (e.g. `{"formula": "active_revenue:sum / total_revenue:sum"}`).
 

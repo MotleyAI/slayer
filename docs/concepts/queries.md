@@ -417,7 +417,7 @@ Filters can reference columns from joined models, and the planner adds the impli
 - Multi-hop dotted refs: `"customers.regions.name = 'US'"` — every prefix on the path is added.
 - Bare-named local derived columns whose own SQL crosses a join: e.g. a query column with `Column(name="is_eu", sql="CASE WHEN customers.region = 'EU' THEN 1 ELSE 0 END")` referenced as `"filters": ["is_eu = 1"]`. The planner walks the column's `sql` (recursively, through any local derived-column chain) to find the cross-table aliases and adds the corresponding joins.
 
-The same auto-join logic applies to model-level `filters` (always-applied WHERE) and to column-level `filter=` attributes (CASE-WHEN at aggregation time).
+The same auto-join logic applies to model-level `filters` (always-applied WHERE) and to column-level `filter=` attributes (a `CASE WHEN` value mask that fires in every position).
 
 A query filter that reaches the population root only across a fanning (not provably to-one) hop cannot be combined with an aggregate computed inline over that population — the query fails closed with a typed error rather than multiplying the aggregate's rows through the join.
 
@@ -743,6 +743,8 @@ Cross-model aggregates also support `window=`, `partition_by=`, and `first` /
 association cannot use `window=` or `first` / `last`), inside
 [dimension expressions](#expression-dimensions), and as hidden
 [order-only fields](#ordering-by-something-you-dont-project).
+
+An [aggregated expression](formulas.md#expression-aggregation) may mix host and joined-model columns (`sum(amount - customers.discount)`); it is homed at the deepest dataset that determines every operand, so the join hop's cardinality decides exact-grain vs broadcast exactly as for a single cross-model measure.
 
 A cross-model **parametric** aggregate keeps its kwarg signature in the result key, so two variants on the same target column do not collide:
 
