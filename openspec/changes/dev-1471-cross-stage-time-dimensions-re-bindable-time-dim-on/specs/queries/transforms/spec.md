@@ -28,7 +28,7 @@ A downstream stage's own time dimension SHALL be the time axis for every time-or
 
 #### Scenario: time_shift over a multi-hop flat time dimension
 
-- **WHEN** an inner stage projects `customers.regions.last_activity_at` at `month` and the outer stage declares a time dimension on `customers__regions__last_activity_at` at `month` with `time_shift(*:count, -1, 'month')`
+- **WHEN** an inner stage projects `customers.regions.last_activity_at` at `month` with `*:count` named `n`, and the outer stage declares a time dimension on `customers__regions__last_activity_at` at `month` with `time_shift(n:sum, -1, 'month')`
 - **THEN** the shifted relation references the inner stage's flat alias and the query executes with correct values
 
 #### Scenario: Two stage time dimensions need main_time_dimension

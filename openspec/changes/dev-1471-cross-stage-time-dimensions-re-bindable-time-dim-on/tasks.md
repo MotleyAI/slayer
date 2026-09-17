@@ -29,4 +29,4 @@
 
 - [x] 4.1 Full non-integration suite green: `poetry run pytest -m "not integration" -n auto`
 - [x] 4.2 `poetry run ruff check slayer/ tests/`, `poetry run python tools/arch_check.py`, `poetry run basedpyright` (no new errors vs baseline), conventions gate clear; guards baseline in `architecture/index.yaml` unchanged
-- [ ] 4.3 Record the DEV-1929 deferral pointer and the OpenSpec change id on the Linear issue (done at plan time); PR only after DEV-1883's PR #402 lands, per the stacking rule
+- [x] 4.3 Record the DEV-1929 deferral pointer and the OpenSpec change id on the Linear issue (done at plan time); DEV-1883's PR #402 has landed, so the stacking rule is satisfied and PR #405 is open
