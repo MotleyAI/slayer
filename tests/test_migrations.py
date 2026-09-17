@@ -2,16 +2,21 @@
 
 import asyncio
 import json
+import logging
 import os
 import sqlite3
 import tempfile
+import warnings
 from pathlib import Path
 
 import pytest
 import yaml
+from pydantic import ValidationError
 
-from slayer.core.models import DatasourceConfig, SlayerModel
-from slayer.core.query import SlayerQuery
+from slayer.core.enums import DataType
+from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.query import ModelExtension, SlayerQuery
+from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage import migrations as mig
 from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.yaml_storage import YAMLStorage
@@ -63,11 +68,7 @@ def test_migrate_missing_handler_raises(monkeypatch) -> None:
 
 
 def test_migrate_chain_runs_in_order(monkeypatch) -> None:
-    """Synthetic chain to verify ordering and version stamping.
-
-    Registers two synthetic migrations *above* the real ones so we don't
-    collide with the real v1→v2 / v2→v3 / v3→v4 / v4→v5 SlayerModel converters.
-    """
+    """Two synthetic steps registered above the real ones run in order and stamp the version."""
     base = mig.CURRENT_VERSIONS["SlayerModel"]
     monkeypatch.setitem(mig.CURRENT_VERSIONS, "SlayerModel", base + 2)
     monkeypatch.setattr(mig, "_REGISTRY", dict(mig._REGISTRY))
@@ -90,9 +91,7 @@ def test_migrate_chain_runs_in_order(monkeypatch) -> None:
 
 
 def test_register_migration_rejects_duplicates(monkeypatch) -> None:
-    # Synthetic entity: registering against ("SlayerModel", N) breaks the
-    # moment N becomes a real step, as the v7→v8 bump showed. The guard under
-    # test is entity-agnostic, so a fake entity pins it without the coupling.
+    # A fake entity: a ("SlayerModel", N) slot breaks the moment N becomes a real step.
     monkeypatch.setattr(mig, "_REGISTRY", dict(mig._REGISTRY))
 
     @mig.register_migration("_DuplicateProbeEntity", 1)
@@ -122,10 +121,7 @@ def test_slayer_model_dump_includes_version() -> None:
 
 
 def test_slayer_model_synthetic_migration_runs_via_validator(monkeypatch) -> None:
-    """Prove the model_validator(mode='before') hook walks the chain.
-
-    Registers a migration *above* the real ones so we don't double-migrate.
-    """
+    """The before-validator walks the chain (synthetic step registered above the real ones)."""
     base = mig.CURRENT_VERSIONS["SlayerModel"]
     monkeypatch.setitem(mig.CURRENT_VERSIONS, "SlayerModel", base + 1)
     monkeypatch.setattr(mig, "_REGISTRY", dict(mig._REGISTRY))
@@ -161,15 +157,12 @@ def test_datasource_config_user_alias_still_works() -> None:
 
 
 def test_datasource_config_current_version_is_at_least_v2() -> None:
-    """DEV-1551: bump from v1 to v2 for the three Snowflake-relevant
-    fields (connection_name, warehouse, role)."""
+    """v2 added the Snowflake fields (connection_name, warehouse, role)."""
     assert mig.CURRENT_VERSIONS["DatasourceConfig"] >= 2
 
 
 def test_datasource_config_v1_to_v2_is_noop_forward() -> None:
-    """The v1→v2 converter is a pure no-op forward (additive optional
-    fields). A v1 dict with no Snowflake fields passes through unchanged
-    except for the version bump."""
+    """v1→v2 is additive: a v1 dict passes through unchanged except for the version bump."""
     raw = {
         "version": 1,
         "name": "pg",
@@ -231,12 +224,7 @@ def test_slayer_query_dump_includes_version() -> None:
 
 
 async def test_yaml_storage_migrates_legacy_model_on_load(monkeypatch) -> None:
-    """Write a synthetic-version YAML directly and confirm YAMLStorage upgrades it.
-
-    Registers a synthetic migration *above* the real ones, then writes a model
-    file at that intermediate version to prove the hook runs through every
-    backend.
-    """
+    """A hand-written YAML at a synthetic intermediate version is upgraded on load."""
     next_version = mig.CURRENT_VERSIONS["SlayerModel"] + 1
     monkeypatch.setitem(mig.CURRENT_VERSIONS, "SlayerModel", next_version)
     monkeypatch.setattr(mig, "_REGISTRY", dict(mig._REGISTRY))
@@ -247,10 +235,7 @@ async def test_yaml_storage_migrates_legacy_model_on_load(monkeypatch) -> None:
         return data
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        # Write the model file directly into the v4 namespaced layout so the
-        # storage open path runs the schema migration only — the layout
-        # migrator (which moves pre-v4 flat files) is exercised in
-        # tests/test_v4_migration.py.
+        # v4 namespaced layout: only the schema migration runs (layout: test_v4_migration.py).
         models_dir = os.path.join(tmpdir, "models", "ds")
         os.makedirs(models_dir, exist_ok=True)
         legacy_path = os.path.join(models_dir, "orders.yaml")
@@ -497,41 +482,30 @@ def test_query_v1_to_v2_inline_model_extension() -> None:
     })
     assert q.version == mig.CURRENT_VERSIONS["SlayerQuery"]
     sm = q.source_model
-    assert isinstance(sm, dict)
-    assert sm["source_name"] == "orders"
-    assert [c["name"] for c in sm["columns"]] == ["region", "revenue"]
-    assert sm["measures"] == []
+    assert isinstance(sm, ModelExtension)
+    assert sm.source_name == "orders"
+    assert [c.name for c in sm.columns or []] == ["region", "revenue"]
+    assert sm.measures == []
 
 
-def test_query_v1_to_v2_inline_slayer_model_dict_is_left_for_model_migration() -> None:
-    """An inline SlayerModel dict isn't pre-migrated by the query converter.
-
-    SlayerQuery.source_model is typed as ``object`` so Pydantic doesn't recurse
-    into it during query validation. The inline dict only gets migrated when
-    the engine later runs ``SlayerModel.model_validate(sm)``. This test pins
-    that boundary: the query keeps the dict verbatim, and feeding the same
-    dict through SlayerModel produces the v2 shape.
-    """
-    inline = {
-        "version": 1,
-        "name": "orders",
-        "data_source": "demo",
-        "sql_table": "orders",
-        "dimensions": [{"name": "status"}],
-        "measures": [{"name": "revenue", "sql": "amount"}],
-    }
+def test_query_v1_to_v2_inline_slayer_model_dict_migrates_during_query_validation() -> None:
+    """A v1 inline SlayerModel dict is migrated by the model's own before-validator
+    when the query's typed ``source_model`` validates it."""
     q = SlayerQuery.model_validate({
         "version": 1,
-        "source_model": dict(inline),
+        "source_model": {
+            "version": 1,
+            "name": "orders",
+            "data_source": "demo",
+            "sql_table": "orders",
+            "dimensions": [{"name": "status"}],
+            "measures": [{"name": "revenue", "sql": "amount"}],
+        },
         "fields": [{"formula": "revenue:sum"}],
     })
-    # Query migration leaves the inline dict alone (still has v1 keys).
     assert q.measures is not None  # `fields` rename worked
-    assert isinstance(q.source_model, dict)
-
-    # When the engine validates the same inline dict as a SlayerModel, the
-    # model-level migration runs and produces the current schema shape.
-    m = SlayerModel.model_validate(inline)
+    m = q.source_model
+    assert isinstance(m, SlayerModel)
     assert m.version == mig.CURRENT_VERSIONS["SlayerModel"]
     assert [c.name for c in m.columns] == ["status", "revenue"]
 
@@ -585,14 +559,10 @@ def test_model_v1_to_v2_source_queries_with_inline_extension() -> None:
     })
     inner = m.source_queries[0]
     assert isinstance(inner, SlayerQuery)
-    # source_model on a SlayerQuery is typed as ``object`` and stays a dict
-    # (ModelExtension shape) for the engine to interpret later.
     src = inner.source_model
-    assert isinstance(src, dict)
-    assert "dimensions" not in src
+    assert isinstance(src, ModelExtension)
     # Merged into columns (status from dimensions + revenue from measures)
-    col_names = sorted(c["name"] for c in src["columns"])
-    assert col_names == ["revenue", "status"]
+    assert sorted(c.name for c in src.columns or []) == ["revenue", "status"]
 
 
 def test_model_v2_input_with_source_queries_preserved() -> None:
@@ -619,11 +589,7 @@ def test_model_v2_input_with_source_queries_preserved() -> None:
 async def test_v1_yaml_round_trip_to_v2() -> None:
     """Hand-write a v1 YAML, load via storage, observe v2 shape on disk after save."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        # DEV-1361 storage-driven type refinement on first-load needs the
-        # datasource entry to be present (`StorageBackend._migrate_and_refine_on_load`
-        # raises otherwise), so spin up a minimal SQLite live DB and register
-        # the matching DatasourceConfig — same pattern as the
-        # ``test_v1_sqlite_round_trip_to_v2`` sibling test.
+        # First-load type refinement needs a live datasource: a minimal SQLite DB.
         live_db_path = os.path.join(tmpdir, "live.db")
         with sqlite3.connect(live_db_path) as live:
             live.execute(
@@ -638,9 +604,7 @@ async def test_v1_yaml_round_trip_to_v2() -> None:
                 f,
             )
 
-        # Drop the v1 file at the legacy flat layout so the v4 layout
-        # migrator picks it up at YAMLStorage init time and moves it under
-        # models/<data_source>/.
+        # Legacy flat layout: the v4 layout migrator moves it under models/<data_source>/.
         models_dir = os.path.join(tmpdir, "models")
         os.makedirs(models_dir, exist_ok=True)
         legacy_path = os.path.join(models_dir, "orders.yaml")
@@ -675,9 +639,7 @@ async def test_v1_sqlite_round_trip_to_v2() -> None:
     """Same round-trip, but via SQLiteStorage."""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = os.path.join(tmpdir, "slayer.db")
-        # The DEV-1361 type-refinement step on first load introspects the
-        # model's data_source. Use a real SQLite live DB (with the orders
-        # table) so the round-trip does not depend on an external Postgres.
+        # First-load type refinement introspects the datasource: a real SQLite DB.
         live_db_path = os.path.join(tmpdir, "live.db")
         with sqlite3.connect(live_db_path) as live:
             live.execute(
@@ -747,8 +709,6 @@ def test_query_v2_to_v3_drops_legacy_execution_flags(
     v2_payload: dict, expected_dropped: list, caplog
 ) -> None:
     """v2 SlayerQuery dicts with dry_run/explain are migrated; flags are dropped."""
-    import logging
-
     caplog.set_level(logging.WARNING, logger="slayer.storage.v3_migration")
     with pytest.warns(DeprecationWarning, match="v2.+v3 migration"):
         q = SlayerQuery.model_validate(v2_payload)
@@ -767,12 +727,9 @@ def test_query_v2_to_v3_drops_legacy_execution_flags(
 
 def test_query_v2_to_v3_no_op_when_neither_present(caplog) -> None:
     """A v2 query without dry_run/explain migrates silently."""
-    import logging
-    import warnings as wmod
-
     caplog.set_level(logging.WARNING, logger="slayer.storage.v3_migration")
-    with wmod.catch_warnings(record=True) as captured:
-        wmod.simplefilter("always")
+    with warnings.catch_warnings(record=True) as captured:
+        warnings.simplefilter("always")
         q = SlayerQuery.model_validate(
             {"version": 2, "source_model": "orders"}
         )
@@ -784,8 +741,6 @@ def test_query_v2_to_v3_no_op_when_neither_present(caplog) -> None:
 
 def test_query_v2_to_v3_uses_name_as_identifier_when_present(caplog) -> None:
     """When the query has a name, the warning identifies it by that name."""
-    import logging
-
     caplog.set_level(logging.WARNING, logger="slayer.storage.v3_migration")
     with pytest.warns(DeprecationWarning):
         SlayerQuery.model_validate({
@@ -802,22 +757,13 @@ def test_query_v2_to_v3_uses_name_as_identifier_when_present(caplog) -> None:
 
 
 def test_slayer_query_v3_extra_forbid_rejects_typo_field() -> None:
-    """v3 SlayerQuery has extra='forbid'; typos surface immediately.
-
-    Note: ``dry_run``/``explain`` themselves are intercepted by the v2→v3
-    migration (drop + DeprecationWarning), so they don't raise. Other typos
-    that aren't part of the migration drop list raise ValidationError.
-    """
-    from pydantic import ValidationError
-
+    """extra='forbid': a typo raises (``dry_run``/``explain`` are dropped by the v2→v3 migration instead)."""
     with pytest.raises(ValidationError, match="dryrun|extra"):
         SlayerQuery(source_model="orders", dryrun=True)  # type: ignore[call-arg]
 
 
 def test_slayer_query_v3_direct_construct_with_dry_run_still_warns() -> None:
-    """``SlayerQuery(dry_run=True)`` is intercepted by the migration; emits
-    DeprecationWarning + drops the field rather than raising. This is the
-    soft-landing for callers porting away from the v2 API."""
+    """``SlayerQuery(dry_run=True)`` warns and drops the field rather than raising."""
     with pytest.warns(DeprecationWarning, match="v2.+v3 migration"):
         q = SlayerQuery(source_model="orders", dry_run=True)  # type: ignore[call-arg]
     assert not hasattr(q, "dry_run")
@@ -827,15 +773,7 @@ def test_slayer_query_v3_direct_construct_with_dry_run_still_warns() -> None:
 
 
 async def _build_engine_with_orders(tmpdir: str):
-    """Build an engine with a single 'orders' model and a postgres datasource.
-
-    The datasource is postgres so dialect detection works, but dry_run never
-    actually connects to it.
-    """
-    from slayer.core.enums import DataType
-    from slayer.core.models import Column, DatasourceConfig, SlayerModel
-    from slayer.engine.query_engine import SlayerQueryEngine
-
+    """Engine over one 'orders' model on a postgres datasource (dry_run never connects)."""
     storage = YAMLStorage(base_dir=tmpdir)
     await storage.save_datasource(DatasourceConfig(
         name="ds", type="postgres", host="localhost", port=5432,
@@ -891,23 +829,15 @@ async def test_engine_dry_run_kwarg_list_input() -> None:
 
 
 async def test_stale_v2_yaml_with_dry_run_inside_source_queries(caplog) -> None:
-    """A query-backed model whose source_queries entry was saved as v2 with
-    dry_run=True (bypassing storage.save_model) still executes normally —
-    the v2→v3 migration on load drops the stale flag.
-    """
-    import logging
-    import os
-
+    """A v2 query-backed model saved with a stale nested dry_run=True still executes: the
+    v2→v3 migration on load drops the flag."""
     caplog.set_level(logging.WARNING, logger="slayer.storage.v3_migration")
 
     with tempfile.TemporaryDirectory() as tmpdir:
         engine = await _build_engine_with_orders(tmpdir)
         storage = engine.storage
-        # Hand-write a v2 query-backed model YAML with a stale dry_run=True
-        # nested inside source_queries — bypassing storage.save_model so the
-        # v3 schema/migration cannot strip it at write time.
-        # Drop the stale file directly into the v4 namespaced layout so the
-        # storage layer can find it without re-running the layout migrator.
+        # Hand-written into the v4 namespaced layout, bypassing save_model so
+        # the stale flag survives to load time.
         models_dir = os.path.join(tmpdir, "models", "ds")
         os.makedirs(models_dir, exist_ok=True)
         stale_yaml_path = os.path.join(models_dir, "stale.yaml")
@@ -950,22 +880,14 @@ async def test_stale_v2_yaml_with_dry_run_inside_source_queries(caplog) -> None:
         assert "COUNT(*)" in result.sql
 
 
-# ---------------------------------------------------------------------------
-# DEV-1361: v4 → v5 SlayerModel migration — coarse rename of legacy DataType
-# values to the sqlglot-aligned vocabulary; pseudo-types stripped.
-# ---------------------------------------------------------------------------
+# --- v4 → v5 SlayerModel: legacy DataType values renamed, pseudo-types stripped ---
 
 
 class TestV4ToV5DictMigration:
-    """Pure dict-level migration. The DB-introspection refinement step lives
-    in storage backends and is covered separately in test_storage_type_refinement.py.
-    """
+    """Dict-level only; DB-introspection refinement is test_storage_type_refinement.py."""
 
     def test_string_renames_to_text(self) -> None:
-        """v4→v5 leg in isolation. Pre-DEV-1480 went through
-        ``mig.migrate(...)`` and pinned the orchestrator's then-current
-        target (v6). DEV-1480 bumps CURRENT_VERSIONS so we now pin only
-        the v4→v5 step's contract."""
+        """The v4→v5 step in isolation, so CURRENT_VERSIONS bumps don't cascade here."""
         step = mig._REGISTRY[("SlayerModel", 4)]
         d = step({
             "version": 4,
@@ -1048,10 +970,7 @@ class TestV4ToV5DictMigration:
         assert inner["columns"][0]["type"] == "DOUBLE"
 
     def test_pydantic_load_round_trips(self) -> None:
-        """A v4 dict walks through the migration chain. Pre-DEV-1480 pinned
-        ``m.version == 6``; post-bump the orchestrator walks to v7. We only
-        pin the v4→v5 leg's contribution (the type renames) since that's
-        what this test owns."""
+        """A v4 dict walks the whole chain; only the v4→v5 type renames are pinned here."""
         m = SlayerModel.model_validate({
             "version": 4,
             "name": "items", "sql_table": "items", "data_source": "ds",
@@ -1066,13 +985,8 @@ class TestV4ToV5DictMigration:
         assert m.columns[2].type.name == "TIMESTAMP"
 
     def test_v5_dict_passes_through_v4_to_v5_step_unchanged(self) -> None:
-        """The v4→v5 step migrator is a no-op for already-v5 input. Pin the
-        step directly so DEV-1480's CURRENT_VERSIONS bump doesn't cascade
-        through this assertion."""
+        """The v4→v5 step is a no-op for v5 input (called directly; the orchestrator never would)."""
         step = mig._REGISTRY[("SlayerModel", 4)]
-        # The orchestrator calls the step only when input version < 5, so
-        # the step itself is never invoked for v5 input in production. We
-        # call it directly to pin its no-op-on-already-v5 contract.
         d = step({
             "version": 5,
             "name": "items", "sql_table": "items", "data_source": "ds",

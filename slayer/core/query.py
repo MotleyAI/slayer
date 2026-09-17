@@ -5,20 +5,29 @@ import datetime
 import logging
 import math
 import re
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, Union
 
 from pydantic import (
+    AliasChoices,
     BaseModel,
     BeforeValidator,
     ConfigDict,
+    Discriminator,
     Field,
+    Tag,
     field_validator,
     model_validator,
 )
 
 from slayer.core.enums import TimeGranularity
 from slayer.core.errors import DistinctDimensionValuesError
-from slayer.core.models import ModelMeasure, SlayerModel, _validate_model_name
+from slayer.core.models import (
+    Column,
+    ModelJoin,
+    ModelMeasure,
+    SlayerModel,
+    _validate_model_name,
+)
 from slayer.core.refs import auto_name_from_expression
 from slayer.engine.syntax import AggCall, parse_expr, walk_parsed_refs
 from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
@@ -588,7 +597,9 @@ def _is_direction(value: Any) -> bool:
 
 class TimeDimension(BaseModel):
     """Group-by on ``dimension`` truncated to ``granularity``; optional ``date_range`` [start, end] (ISO dates)."""
-    dimension: Annotated[ColumnRef, BeforeValidator(_coerce_column_ref)]
+    dimension: Annotated[ColumnRef, BeforeValidator(_coerce_column_ref)] = Field(
+        validation_alias=AliasChoices("dimension", "column"),
+    )
     granularity: TimeGranularity
     date_range: list[str] | None = None
     label: str | None = None
@@ -707,25 +718,35 @@ def _coerce_order(v: Any) -> Any:
 
 class ModelExtension(BaseModel):
     """Extend a model inline on a query with extra columns, measures, or joins, without modifying the stored model."""
+
+    model_config = ConfigDict(extra="forbid")
+
     source_name: str                                # Model/query to extend
-    columns: list | None = None                  # Extra Column objects
-    measures: list[ModelMeasure] | None = None   # Extra ModelMeasure formulas
-    joins: list | None = None                    # Extra ModelJoin objects
+    columns: list[Column] | None = None
+    measures: list[ModelMeasure] | None = None
+    joins: list[ModelJoin] | None = None
 
 
-def _get_source_model_name(source_model: object) -> str | None:
-    """Model name from any ``source_model`` type, before model resolution."""
-    if isinstance(source_model, str):
-        return source_model
-    if isinstance(source_model, dict):
-        return source_model.get("source_name") or source_model.get("name")
-    source_name = getattr(source_model, "source_name", None)
-    if isinstance(source_name, str):
-        return source_name
-    name = getattr(source_model, "name", None)
-    if isinstance(name, str):
-        return name
-    return None
+def _source_spec_tag(value: Any) -> str:
+    """Classify a raw ``source_model``: an object carrying ``source_name`` is always an extension."""
+    if isinstance(value, ModelExtension):
+        return "extension"
+    if isinstance(value, SlayerModel):
+        return "model"
+    if isinstance(value, dict):
+        return "extension" if "source_name" in value else "model"
+    return "name"
+
+
+# Anything accepted as ``SlayerQuery.source_model``; validated at construction.
+SourceSpec = Annotated[
+    Union[
+        Annotated[str, Tag("name")],
+        Annotated[ModelExtension, Tag("extension")],
+        Annotated[SlayerModel, Tag("model")],
+    ],
+    Discriminator(_source_spec_tag),
+]
 
 
 def _strip_column_ref(ref, model_name: str):
@@ -755,12 +776,12 @@ class SlayerQuery(BaseModel):
             "their source_model."
         ),
     )
-    source_model: object | None = Field(
+    source_model: SourceSpec | None = Field(
         default=None,
         description=(
             "The query's population: a saved model name, an inline ModelExtension "
-            '({"source_name": ..., plus optional "columns"/"measures"/"joins"/"filters"}), '
-            "or a full inline model dict. Omit to infer the smallest model determining "
+            '({"source_name": ..., plus optional "columns"/"measures"/"joins"}), '
+            "or a full inline model. Omit to infer the smallest model determining "
             "every queried dimension, time dimension, and row-level filter column (the "
             "choice is reported in response metadata)."
         ),
@@ -941,9 +962,22 @@ class SlayerQuery(BaseModel):
 
         return self.model_copy(update={"filters": filters, "whole_periods_only": False})
 
+    @property
+    def source_model_name(self) -> str | None:
+        """The population's model name before resolution (an extension names its base)."""
+        match self.source_model:
+            case str() as name:
+                return name
+            case ModelExtension(source_name=name):
+                return name
+            case SlayerModel(name=name):
+                return name
+            case _:
+                return None
+
     def strip_source_model_prefix(self) -> "SlayerQuery":
         """Strip a redundant source-model-name prefix from all dotted references (agents write ``orders.revenue:sum``)."""
-        model_name = _get_source_model_name(self.source_model)
+        model_name = self.source_model_name
         if model_name is None:
             return self
 

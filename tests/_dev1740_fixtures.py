@@ -67,7 +67,7 @@ from slayer.core.models import (
     ModelJoin,
     SlayerModel,
 )
-from slayer.core.query import ColumnRef, ModelMeasure, SlayerQuery, TimeDimension
+from slayer.core.query import ColumnRef, ModelExtension, ModelMeasure, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -246,14 +246,14 @@ def two_stage_banding() -> list:
         measures=[ModelMeasure(formula="amount:sum", name="city_total")],
     )
     stage2 = SlayerQuery(
-        source_model={
+        source_model=ModelExtension.model_validate({
             "source_name": "per_city",
             "columns": [{
                 "name": "band",
                 "sql": "CASE WHEN city_total > 5000 THEN 1 ELSE 0 END",
                 "type": "INT",
             }],
-        },
+        }),
         dimensions=["region", "band"],
         measures=[ModelMeasure(formula="city_total:sum", name="band_total")],
     )

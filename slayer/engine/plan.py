@@ -60,12 +60,6 @@ def plan_query(
 
 
 
-def _coerce_extension(spec) -> ModelExtension:
-    if isinstance(spec, ModelExtension):
-        return spec
-    return ModelExtension.model_validate(spec)
-
-
 def _stage_scope_and_bundle(
     *,
     query: SlayerQuery,
@@ -79,12 +73,12 @@ def _stage_scope_and_bundle(
     sibling_names = set(stage_schemas)
     sib = source_name_if_sibling(src, sibling_names)
 
-    # 1. ModelExtension / dict OVER a sibling: overlay the extra columns onto a synthetic sibling model.
-    if sib is not None and not isinstance(src, str):
+    # 1. ModelExtension OVER a sibling: overlay the extra columns onto a synthetic sibling model.
+    if sib is not None and isinstance(src, ModelExtension):
         base = synthetic_model_from_stage_schema(
             name=sib, schema=stage_schemas[sib], data_source=data_source,
         )
-        overlaid = apply_extension_overlay(base, _coerce_extension(src))
+        overlaid = apply_extension_overlay(base, src)
         others = {n: s for n, s in stage_schemas.items() if n != sib}
         sb = stage_bundle_with_siblings(
             bundle=bundle, source_model=overlaid,

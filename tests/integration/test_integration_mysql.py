@@ -594,10 +594,10 @@ class TestCrossModelAndMultistageMySQL:
 
     async def test_sql_dimension(self, mysql_cross_model_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
-            source_model=ModelExtension(
-                source_name="orders",
-                columns=[{"name": "tier", "sql": "CASE WHEN amount > 100 THEN 'high' ELSE 'low' END"}],
-            ),
+            source_model=ModelExtension.model_validate({
+                "source_name": "orders",
+                "columns": [{"name": "tier", "sql": "CASE WHEN amount > 100 THEN 'high' ELSE 'low' END"}],
+            }),
             dimensions=[ColumnRef(name="tier")],
             measures=[ModelMeasure(formula="*:count")],
         )

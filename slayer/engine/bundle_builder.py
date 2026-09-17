@@ -7,10 +7,9 @@ import logging
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, cast
 
 from slayer.core.models import SlayerModel
-from slayer.core.query import ModelExtension, SlayerQuery
+from slayer.core.query import ModelExtension, SlayerQuery, SourceSpec
 from slayer.ir.source_bundle import (
     ResolvedSourceBundle,
-    SourceSpec,
     apply_extension_overlay,
     as_extension_over_nonsibling,
     follow_sibling_chain,
@@ -340,7 +339,7 @@ async def _collect_referenced_models(
 
 
 async def _resolve_source_spec(
-    spec: SourceSpec,
+    spec: SourceSpec | None,
     *,
     storage: "StorageBackend",
     data_source: Optional[str],
@@ -358,13 +357,6 @@ async def _resolve_source_spec(
         if model is None:
             raise ValueError(f"Model '{spec}' not found")
         return model
-    if isinstance(spec, dict):
-        if "source_name" in spec:
-            ext = ModelExtension.model_validate(spec)
-            return await _resolve_source_spec(
-                ext, storage=storage, data_source=data_source
-            )
-        return SlayerModel.model_validate(spec)
     raise ValueError(f"Invalid source_model type: {type(spec)!r}")
 
 

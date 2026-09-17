@@ -379,7 +379,7 @@ def _windowed_query(**kw) -> SlayerQuery:
         measures=[ModelMeasure(formula="revenue:sum(window='90d')", name="rev_90d")],
     )
     base.update(kw)
-    return SlayerQuery(**base)
+    return SlayerQuery.model_validate(base)
 
 
 async def _wm_sql(query: SlayerQuery, model: SlayerModel, **kw) -> str:
@@ -852,7 +852,7 @@ def _shift_query(**kw) -> SlayerQuery:
         measures=[ModelMeasure(formula="time_shift(revenue:sum, -1, 'month')", name="prev")],
     )
     base.update(kw)
-    return SlayerQuery(**base)
+    return SlayerQuery.model_validate(base)
 
 
 async def _shifted_body(query: SlayerQuery, model: SlayerModel, **kw) -> str:
