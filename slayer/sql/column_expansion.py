@@ -18,7 +18,7 @@ unresolved derived references.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Dict, List, Optional, Protocol, Set, Tuple
+from typing import Dict, FrozenSet, List, Optional, Protocol, Set, Tuple
 
 import sqlglot
 from sqlglot import exp
@@ -521,6 +521,7 @@ def _process_reference_site(
     visited: Tuple[Tuple[str, str], ...],
     alias_resolver: Optional[AliasResolver],
     crossed_paths: Optional[_PathSink],
+    physical_read_exempt: FrozenSet[Tuple[str, str]] = frozenset(),
 ) -> Optional[exp.Expression]:
     """Resolve one reference site: qualify a base column in place, inline a
     derived one, or leave an opaque reference untouched.
@@ -552,13 +553,21 @@ def _process_reference_site(
             for i in range(1, len(full_path) + 1):
                 crossed_paths.add(full_path[:i])
     target_col = target_model.get_column(leaf)
-    if target_col is None or not target_col.needs_expansion:
+    # An exempt column reads physically (its filter's self-reference reads the
+    # bare column, never the masked value — matching the save-time cycle rule).
+    if (
+        target_col is None or not target_col.needs_expansion
+        or (target_model.name, leaf) in physical_read_exempt
+    ):
         return _requalify(node=node, alias=canonical_alias, leaf=leaf)
     key = (target_model.name, leaf)
     if key in visited:
         cycle_start = visited.index(key)
         cycle = (*visited[cycle_start:], key)
         raise ColumnCycleError(cycle=list(cycle))
+    # A column's own-filter exemption is LOCAL to that filter's fragment — it is
+    # NOT inherited into a referenced column's definition, or a real cross-column
+    # cycle (x.filter→y, y.sql→x) would be silently read as physical (Codex).
     value_sql = _expand_target_column(
         target_col=target_col, target_model=target_model,
         canonical_alias=canonical_alias, full_path=full_path,
@@ -587,12 +596,14 @@ def _expand_target_column(
 ) -> Optional[str]:
     """The expanded SQL of a derived / filtered target column: its value (the
     qualified bare column for a filtered physical one) masked by its filter."""
-    def _expand_child(sql: str) -> Optional[str]:
+    def _expand_child(
+        sql: str, *, exempt: FrozenSet[Tuple[str, str]] = frozenset(),
+    ) -> Optional[str]:
         return expand_derived_refs_sync(
             sql=sql, model=target_model, alias_path=canonical_alias,
             owner_path=full_path, models_by_name=models_by_name, dialect=dialect,
             visited=visited, alias_resolver=alias_resolver,
-            crossed_paths=crossed_paths,
+            crossed_paths=crossed_paths, physical_read_exempt=exempt,
         )
 
     if is_trivial_base(column=target_col):
@@ -606,7 +617,12 @@ def _expand_target_column(
         value_sql = _expand_child(target_col.sql)
     if value_sql is None or not target_col.filter:
         return value_sql
-    filter_sql = _expand_child(target_col.filter)
+    # A trivial-base target's OWN filter reads the physical column, not the mask;
+    # the exemption is local to this filter fragment (never inherited).
+    filter_exempt = frozenset(
+        {(target_model.name, target_col.name)} if is_trivial_base(column=target_col) else set()
+    )
+    filter_sql = _expand_child(target_col.filter, exempt=filter_exempt)
     return wrap_column_filter(
         value_sql=value_sql,
         filter_sql=filter_sql if filter_sql is not None else target_col.filter,
@@ -624,6 +640,7 @@ def expand_derived_refs_sync(
     owner_path: Tuple[str, ...] = (),
     alias_resolver: Optional[AliasResolver] = None,
     crossed_paths: Optional[_PathSink] = None,
+    physical_read_exempt: FrozenSet[Tuple[str, str]] = frozenset(),
 ) -> Optional[str]:
     """Inline every derived-column reference in ``sql`` to its definition and
     qualify every base reference to its internal alias.
@@ -666,6 +683,7 @@ def expand_derived_refs_sync(
             visited=visited,
             alias_resolver=alias_resolver,
             crossed_paths=crossed_paths,
+            physical_read_exempt=physical_read_exempt,
         )
         # ``node.replace`` mutates the node's PARENT. When the whole fragment is
         # a single reference — ``Column.sql = "other_derived_col"``, an alias of
@@ -727,20 +745,26 @@ def expand_column_definition_parts_sync(
     Value and filter expand through the same derived-refs door at the same owner
     path; a filtered physical column's value is its qualified bare name (re-entering
     the reference site would mask it twice)."""
-    def _expand(sql: str) -> str:
+    def _expand(
+        sql: str, *, exempt: FrozenSet[Tuple[str, str]] = frozenset(),
+    ) -> str:
         out = expand_derived_refs_sync(
             sql=sql, model=model, alias_path=alias_path,
             models_by_name=models_by_name, dialect=dialect, owner_path=owner_path,
             visited=visited, alias_resolver=alias_resolver, crossed_paths=crossed_paths,
+            physical_read_exempt=exempt,
         )
         return out if out is not None else sql
 
     if is_trivial_base(column=column):
         value = _qualified_base_sql(column=column, alias_path=alias_path, dialect=dialect)
+        # This column's own filter reads the physical column, never its mask.
+        filter_exempt = frozenset({(model.name, column.name)})
     else:
         assert column.sql is not None  # non-trivial base ⇒ real derived sql
         value = _expand(column.sql)
-    return value, (_expand(column.filter) if column.filter else None)
+        filter_exempt = frozenset()
+    return value, (_expand(column.filter, exempt=filter_exempt) if column.filter else None)
 
 
 def _qualified_base_sql(*, column: Column, alias_path: str, dialect: str) -> str:

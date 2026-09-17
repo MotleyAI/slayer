@@ -73,6 +73,7 @@ def _column_dependencies(
     column: Column,
     host: SlayerModel,
     reachable: dict[str, SlayerModel],
+    known_but_unloaded: frozenset[str] = frozenset(),
 ) -> list[tuple[str, str]]:
     """Root-scope dependency edges ``(model_name, column_name)`` of ``column``.
 
@@ -88,7 +89,10 @@ def _column_dependencies(
     """
     return [
         *_sql_dependencies(column=column, host=host, reachable=reachable),
-        *_filter_dependencies(column=column, host=host, reachable=reachable),
+        *_filter_dependencies(
+            column=column, host=host, reachable=reachable,
+            known_but_unloaded=known_but_unloaded,
+        ),
     ]
 
 
@@ -113,6 +117,7 @@ def _sql_dependencies(
 
 def _filter_dependencies(
     *, column: Column, host: SlayerModel, reachable: dict[str, SlayerModel],
+    known_but_unloaded: frozenset[str] = frozenset(),
 ) -> list[tuple[str, str]]:
     """Edges from a ``Column.filter`` to every expanding column it names; a
     trivial-base self-reference reads the physical column, not a cycle."""
@@ -122,6 +127,7 @@ def _filter_dependencies(
     for quals, leaf in _fragment_refs(column.filter) or []:
         target = _filter_ref_target(
             column=column, host=host, quals=quals, leaf=leaf, reachable=reachable,
+            known_but_unloaded=known_but_unloaded,
         )
         if target is None:
             continue  # a real join hop whose target is not loaded here — skip
@@ -140,13 +146,21 @@ def _filter_dependencies(
 def _filter_ref_target(
     *, column: Column, host: SlayerModel, quals, leaf: str,
     reachable: dict[str, SlayerModel],
+    known_but_unloaded: frozenset[str] = frozenset(),
 ) -> SlayerModel | None:
     """The model a filter reference resolves to; a leading hop naming no join
-    edge on ``host`` is a broken path and fails the save, naming the path."""
+    edge on ``host`` is a broken path and fails the save, naming the path.
+
+    A hop to a model the datasource knows but this best-effort prefetch could not
+    load is treated as unproven (return ``None``) — its reverse-direction join to
+    ``host`` may exist but is invisible here; only a genuinely unknown token raises.
+    """
     first = _first_hop(quals=quals, host=host)
     if first is None:
         return host
     if not _is_join_hop(host=host, token=first, reachable=reachable):
+        if first in known_but_unloaded:
+            return None
         raise ValueError(
             f"Column {column.name!r} on model {host.name!r} has a filter "
             f"referencing {'.'.join((*quals, leaf))!r}, which does not "
@@ -179,6 +193,7 @@ def _node_dependencies(
     *,
     node: tuple[str, str],
     reachable: dict[str, SlayerModel],
+    known_but_unloaded: frozenset[str] = frozenset(),
 ) -> list[tuple[str, str]]:
     """Return the dependency edges leaving ``node = (model_name, col_name)``.
     Empty list when the model or column is missing — those are dead-ends,
@@ -191,7 +206,10 @@ def _node_dependencies(
     col = host.get_column(col_name)
     if col is None:
         return []
-    return _column_dependencies(column=col, host=host, reachable=reachable)
+    return _column_dependencies(
+        column=col, host=host, reachable=reachable,
+        known_but_unloaded=known_but_unloaded,
+    )
 
 
 def _dfs_visit(
@@ -201,6 +219,7 @@ def _dfs_visit(
     on_stack: list[tuple[str, str]],
     on_stack_set: set[tuple[str, str]],
     visited: set[tuple[str, str]],
+    known_but_unloaded: frozenset[str] = frozenset(),
 ) -> list[tuple[str, str]] | None:
     """Recursive DFS visit. Returns the first cycle reachable from
     ``node``, or ``None``. Mutates ``on_stack`` / ``on_stack_set`` /
@@ -214,10 +233,13 @@ def _dfs_visit(
         return None
     on_stack.append(node)
     on_stack_set.add(node)
-    for dep in _node_dependencies(node=node, reachable=reachable):
+    for dep in _node_dependencies(
+        node=node, reachable=reachable, known_but_unloaded=known_but_unloaded,
+    ):
         found = _dfs_visit(
             node=dep, reachable=reachable,
             on_stack=on_stack, on_stack_set=on_stack_set, visited=visited,
+            known_but_unloaded=known_but_unloaded,
         )
         if found is not None:
             return found
@@ -231,6 +253,7 @@ def _detect_cycle_dfs(
     *,
     start: tuple[str, str],
     reachable: dict[str, SlayerModel],
+    known_but_unloaded: frozenset[str] = frozenset(),
 ) -> list[tuple[str, str]] | None:
     """DFS from ``start = (model_name, column_name)``. Returns the first
     cycle found as an ordered list (start may appear at both ends if the
@@ -239,6 +262,7 @@ def _detect_cycle_dfs(
     return _dfs_visit(
         node=start, reachable=reachable,
         on_stack=[], on_stack_set=set(), visited=set(),
+        known_but_unloaded=known_but_unloaded,
     )
 
 
@@ -246,17 +270,19 @@ async def _prefetch_reachable_models(
     *,
     model: SlayerModel,
     storage: "StorageBackend",
-) -> dict[str, SlayerModel]:
+) -> tuple[dict[str, SlayerModel], frozenset[str]]:
     """The datasource's models keyed by name, including ``model`` — the
     bidirectional closure is the connected component (DEV-1853), so refs may
-    cross edges declared on either side. Unlistable datasources and
-    unloadable peers are silently omitted — save-time is best-effort.
+    cross edges declared on either side. Unlistable datasources are best-effort;
+    the second element is the set of KNOWN names that failed to load, so their
+    (possibly reverse-direction) joins cannot be proved absent.
     """
     out: dict[str, SlayerModel] = {model.name: model}
     try:
         names = await storage.list_models(model.data_source)
     except Exception:
         names = [j.target_model for j in model.joins]
+    unloaded: set[str] = set()
     for name in names:
         if name in out:
             continue
@@ -268,7 +294,9 @@ async def _prefetch_reachable_models(
             target = None
         if target is not None:
             out[name] = target
-    return out
+        else:
+            unloaded.add(name)
+    return out, frozenset(unloaded)
 
 
 async def validate_no_column_cycles(
@@ -284,7 +312,9 @@ async def validate_no_column_cycles(
     are excluded by the same ``root_scope_column_ids`` rule used by the
     compile-time expander. The compile-time guard remains authoritative.
     """
-    reachable = await _prefetch_reachable_models(model=model, storage=storage)
+    reachable, known_but_unloaded = await _prefetch_reachable_models(
+        model=model, storage=storage,
+    )
     # Iterate roots in a deterministic order so the reported cycle is
     # stable across runs.
     roots: list[tuple[str, str]] = []
@@ -295,6 +325,8 @@ async def validate_no_column_cycles(
                 continue
             roots.append((entity_name, col.name))
     for root in roots:
-        cycle = _detect_cycle_dfs(start=root, reachable=reachable)
+        cycle = _detect_cycle_dfs(
+            start=root, reachable=reachable, known_but_unloaded=known_but_unloaded,
+        )
         if cycle is not None:
             raise ColumnCycleError(cycle=cycle)
