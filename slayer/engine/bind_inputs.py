@@ -24,6 +24,7 @@ from slayer.core.keys import (
     TimeTruncKey,
     TransformKey,
     ValueKey,
+    lower_collapsing_constituents,
     lower_sugar_transforms,
     normalize_scalar,
     normalize_transform_constituents,
@@ -651,6 +652,17 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
     )
 
     check_dimension_temporal_axis(declared_measures)
+
+    # Lower a collapsing transform constituent (first/last, D4c) to an exact
+    # per-partition pick AFTER the axis check (which sees the raw transform); the
+    # synthesized max's partition_by is a carrier grain key, validated inside the
+    # carrier sub-plan, so it runs after _rw. All positions.
+    declared_measures, bound_filters, order_specs = _map_bound_keys(
+        lower_collapsing_constituents,
+        declared_measures=declared_measures,
+        bound_filters=bound_filters,
+        order_specs=order_specs,
+    )
 
     return PreboundQuery(
         declared_measures=declared_measures,

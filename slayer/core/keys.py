@@ -32,6 +32,7 @@ from typing import (
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from slayer.core.enums import (
+    AXIS_COLLAPSING_TRANSFORMS,
     DataType,
     RANK_FAMILY_TRANSFORMS,
     RANKED_AGGREGATIONS,
@@ -1332,6 +1333,35 @@ def normalize_transform_constituents(
             grained = _grain_transform_inner_aggregates(c, query_grain=query_grain)
             if grained is not c:
                 subs[c] = grained
+    if not subs:
+        return rebuilt
+    return rebuilt.model_copy(
+        update={"source": substitute_value_keys(rebuilt.source, subs)},
+    )
+
+
+def lower_collapsing_constituents(key: ValueKey) -> ValueKey:
+    """Lower a top-level collapsing transform constituent (``first``/``last``,
+    Axiom 11.3b) to an exact per-partition pick: ``t`` becomes ``max(t,
+    partition_by=<operand grain − axis>)``, so the carrier, attributability and
+    the mode axis see the collapsed grain while ``t`` still evaluates with its axis
+    inside the nested producer. ``max`` is exact — the picked value is constant
+    along the axis within a partition. Post-order over ``map_children``; all
+    positions."""
+    rebuilt = key.map_children(lower_collapsing_constituents)
+    if not isinstance(rebuilt, AggregateKey):
+        return rebuilt
+    subs: Dict[ValueKey, ValueKey] = {}
+    for c in operand_constituents(rebuilt.source):
+        if (
+            isinstance(c, TransformKey)
+            and c.op in AXIS_COLLAPSING_TRANSFORMS
+            and c.time_key is not None
+        ):
+            subs[c] = AggregateKey(
+                source=c, agg="max",
+                partition_keys=regroup_root_grain(c) - {c.time_key},
+            )
     if not subs:
         return rebuilt
     return rebuilt.model_copy(
