@@ -36,7 +36,7 @@ is the coercion from coarser to finer.
    - **2.3 Attached constituent.** An aggregate or transform appearing as an operand
      is a typed dataset (Axiom 6) and is opaque: only its type is consulted (Axiom 9)
      — its grain: the explicit `partition_by=`, else the query's dimensions; for a
-     transform, the union of its inner aggregates' grains, where a windowed inner's
+     transform, its result grain (Axiom 11), where a windowed inner's
      grain always includes the query's time bucket whether or not its `partition_by=`
      names it. Its value is broadcast onto the home's rows (Axiom 10), which is
      well-defined only when the home determines every grain member; so in 2.2 the
@@ -94,7 +94,9 @@ is the coercion from coarser to finer.
    aggregation over attached values
    [enforced: test:tests/test_dev1847_reaggregation_exec.py]; aggregation sources
    mixing row-level columns with attached values
-   [enforced: test:tests/test_dev1859_row_mixed_exec.py].
+   [enforced: test:tests/test_dev1859_row_mixed_exec.py]; a transform is itself
+   such an attached value, its cells aggregated at its result grain (Axiom 11)
+   [enforced: test:tests/test_dev1832_transform_source.py].
 7. **Attributability**: a dimension is attributable to an aggregation iff the
    home dataset determines it — the cells then partition the home rows and sum
    to the total (spec: `queries/semantics` › Attribution by determination).
@@ -128,10 +130,30 @@ is the coercion from coarser to finer.
     the population supplies the row set, a cell an operand lacks contributes
     NULL, and combining never removes rows (spec: `queries/semantics` ›
     Grain-union broadcasting). [enforced: test:tests/test_dev1739_execution.py]
-11. **Transforms are typed**: transforms act on aggregates, preserving or
-    dropping grain dimensions; a time-ordered transform requires the time axis
-    in its operand's grain and fails with the remedy otherwise.
+11. **Transforms are typed**: a transform consumes an aggregate-valued dataset and
+    produces one, consulting only its operand's type (Axiom 9). Its grain is resolved by:
+    - **11.1 Operand grain.** The union of the inner aggregates' grains (Axiom 10):
+      each explicit `partition_by=`, else the query grain; a windowed inner always
+      includes the query's time bucket. An operand naming no explicit aggregation
+      (`rank(region)`) is the degenerate query-grain identity — grain = the query
+      dimensions, warned like `sum(sum(x))`.
+    - **11.2 Timeless.** The rank family preserves the operand grain; its own
+      `partition_by=` partitions the operand's cells and must name operand-grain members.
+    - **11.3 Time-ordered.** The axis is the query's active time bucket and must be in
+      the operand grain; otherwise the transform fails with the `partition_by=` remedy.
+      **11.3a Preserving** (`cumsum`, `lag`, `lead`, `time_shift`, `change`,
+      `change_pct`, `consecutive_periods`): one value per operand cell, result grain =
+      operand grain. **11.3b Collapsing** (`first`, `last`): one value per partition,
+      result grain = operand grain minus the axis, realised as the preserving
+      evaluation followed by an exact per-partition pick (Axiom 6).
+    - **11.4 Position.** As a measure, filter or order key the result is broadcast onto
+      the query grain (Axiom 10; a finer result is Axiom 6's implicit collapse); as an
+      aggregation-source constituent it is an opaque dataset at its result grain (2.3);
+      in dimension position every inner must be explicitly grained (Axiom 9 residue).
+    - **11.5 Recursion.** A nested transform is an inner of the enclosing one; its
+      result grain joins the enclosing operand's union like any grained inner.
     [enforced: test:tests/test_dev1871_terms.py]
+    [enforced: test:tests/test_dev1832_transform_source.py]
 12. **Population**: the population is the query's quantifier — exactly one
     result row per combination of dimension values among its row-filtered rows
     (raw-row mode is the one documented exception; spec: `queries/semantics` ›
