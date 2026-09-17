@@ -16,6 +16,7 @@ from slayer.core.enums import (
     JoinType,
     ObjectKind,
     PRIMARY_KEY_AGGREGATIONS,
+    TimeGranularity,
     _coerce_legacy_datatype,
 )
 from slayer.core.format import NumberFormat
@@ -27,6 +28,7 @@ from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
 from slayer.storage.migrations import migrate as _migrate_schema
 
 _NAME_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+_GRANULARITY_NAMES = frozenset(g.value for g in TimeGranularity)
 
 logger = logging.getLogger(__name__)
 
@@ -298,6 +300,14 @@ class Aggregation(BaseModel):
                 f"Aggregation name '{self.name}' conflicts with a scalar "
                 f"function. Scalar-allowlist names are reserved: "
                 f"{', '.join(sorted(SCALAR_FUNCTIONS))}"
+            )
+        # A granularity-named aggregation would shadow the functional ``gran(col)``
+        # time-bucket form in a query dimension (DEV-1883).
+        if self.name.lower() in _GRANULARITY_NAMES:
+            raise ValueError(
+                f"Aggregation name '{self.name}' conflicts with a time "
+                f"granularity. Reserved granularity names: "
+                f"{', '.join(sorted(_GRANULARITY_NAMES))}"
             )
         return self
 

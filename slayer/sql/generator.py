@@ -68,6 +68,7 @@ from slayer.sql.naming import (
     quote_mixed_case_identifiers,
     result_key,
     result_key_from_alias,
+    time_trunc_result_key,
 )
 from slayer.sql.render.aggregates import window_agg_class
 from slayer.sql.render.cte_assembly import CteEntry, assemble_with_chain
@@ -4253,6 +4254,11 @@ class SQLGenerator:
             elif isinstance(key, TimeTruncKey):
                 path, leaf = column_path(key.column), column_leaf(key.column)
             if path and leaf is not None:
+                if isinstance(key, TimeTruncKey):
+                    return time_trunc_result_key(
+                        source_relation=source_relation, path=path, leaf=leaf,
+                        granularity=key.granularity, declared_name=slot.declared_name,
+                    )
                 return result_key(
                     source_relation=source_relation, path=path, leaf=leaf,
                 )

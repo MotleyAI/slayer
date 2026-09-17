@@ -139,6 +139,22 @@ def result_key_from_alias(*, source_relation: str, alias: str) -> str:
     return f"{source_relation}.{alias}"
 
 
+def time_trunc_result_key(
+    *,
+    source_relation: str,
+    path: Tuple[str, ...],
+    leaf: str,
+    granularity: str,
+    declared_name: str,
+) -> str:
+    """Dotted result key for a joined time-trunc slot, appending ``.<granularity>``
+    when a same-column collision suffixed its declared name (DEV-1883). Shared by
+    the response-metadata and SQL-alias paths so the two never diverge."""
+    base = result_key(source_relation=source_relation, path=path, leaf=leaf)
+    suffix = f".{granularity}"
+    return f"{base}{suffix}" if declared_name.endswith(suffix) else base
+
+
 def flat_name(dotted: str, *, strip_relation: Optional[str] = None) -> str:
     """Flatten a dotted name to its ``__``-joined bind name; ``strip_relation`` removes an exact ``f"{strip_relation}."`` prefix first."""
     remainder = dotted

@@ -549,6 +549,16 @@ To connect a new database: create_datasource → describe_datasource (verify + l
         result, change ONE variable at a time — two changes per attempt make the outcome
         uninterpretable.
 
+        Query-object fields taking the functional time-granularity form
+        ``gran(col)`` — ``gran`` one of second, minute, hour, day, week,
+        week_sunday, month, quarter, year:
+            dimensions: group-by columns; a granularity call such as
+                ``month(created_at)`` buckets that timestamp, equivalent to a
+                ``time_dimensions`` entry (and orderable as ``month(created_at)``).
+            time_dimensions: time-bucketed group-bys — ``{"dimension": ...,
+                "granularity": ...}`` dicts, or the string form ``month(created_at)``.
+            main_time_dimension: which time dimension time-ordered transforms key off.
+
         Top-level arguments (siblings of ``query``, NOT fields inside it):
             variables: Values for {placeholder} substitutions in filters / model SQL. Also
                 settable per query object; precedence: runtime (top-level) > named-stage >
