@@ -600,6 +600,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
     # A source column at two granularities maps to two buckets — a bare partition_by is then ambiguous.
     _td_by_source: Dict[ValueKey, TimeTruncKey] = {}
     _td_ambiguous_sources: set = set()
+    _td_key_set: set[TimeTruncKey] = set()  # every projected bucket, not one per column
     for dm in _td_dms:
         vk = dm.bound.value_key
         if not isinstance(vk, TimeTruncKey):
@@ -608,7 +609,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         if vk.column in _td_by_source and _td_by_source[vk.column] != vk:
             _td_ambiguous_sources.add(vk.column)
         _td_by_source[vk.column] = vk
-    _td_key_set = set(_td_by_source.values())
+        _td_key_set.add(vk)
     _available_dims = [dm.declared_name for dm in (*_dim_dms, *_td_dms)]
 
     # Normalise transform constituents (D4b, Axiom 11.1): an ungrained, non-windowed,

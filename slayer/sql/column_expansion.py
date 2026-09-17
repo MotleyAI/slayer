@@ -552,7 +552,7 @@ def _process_reference_site(
                 crossed_paths.add(full_path[:i])
     target_col = target_model.get_column(leaf)
     if target_col is None or not target_col.needs_expansion:
-        return _requalify(node, alias=canonical_alias, leaf=leaf)
+        return _requalify(node=node, alias=canonical_alias, leaf=leaf)
     key = (target_model.name, leaf)
     if key in visited:
         cycle_start = visited.index(key)
@@ -571,7 +571,7 @@ def _process_reference_site(
     if is_trivial_base(column=target_col):
         # Filtered physical column: the value is the qualified bare column.
         value_sql: Optional[str] = _requalify(
-            node.copy(), alias=canonical_alias, leaf=leaf,
+            node=node.copy(), alias=canonical_alias, leaf=leaf,
         ).sql(dialect=dialect)
     else:
         assert target_col.sql is not None  # non-trivial base ⇒ real derived sql

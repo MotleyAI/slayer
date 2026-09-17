@@ -165,7 +165,9 @@ behave as a row-level expression source: everything legal for a plain
 expression source is legal for it, and nothing more. Row leaves MAY be host-model
 or joined-model columns, homed per `queries/semantics` › Home dataset of a
 row-level aggregation source; an explicitly grained transform is an attached
-constituent exactly like a partitioned aggregate. The outer aggregation
+constituent exactly like a partitioned aggregate, except a collapsing (`first`/`last`)
+constituent, which SHALL be rejected with a typed error when mixed with a row-level
+reference (deferred to DEV-1928). The outer aggregation
 SHALL support the plain scalar family, `count` (base rows with a non-null
 operand value) and `count_distinct`, parametric and model-defined custom
 aggregations — including multi-input built-ins and column-reference parameters

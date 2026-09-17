@@ -116,7 +116,10 @@ that is not a projected grain key SHALL be rejected per `queries/transforms` ›
 Non-shift transforms reject grain-refining row-level leaves. An aggregation source
 consisting entirely of attached values is a re-aggregation and SHALL be accepted; a
 source mixing row-level references with attached values is a row-grain aggregation
-and SHALL be accepted (per `queries/semantics` › Row-grain aggregation sources); an
+and SHALL be accepted (per `queries/semantics` › Row-grain aggregation sources), except
+that a collapsing (`first`/`last`) transform constituent mixed with a row-level
+reference SHALL be rejected with a typed error naming the shape (its broadcast onto
+row-level operands is deferred to DEV-1928); an
 attached (aggregate-valued) parameter on a row-level source SHALL be accepted when the
 aggregation's operating grain determines it (per `queries/partitioned-aggregates` ›
 Attached parameters on row-level sources). Under `broadcast`/`error` a cross-model

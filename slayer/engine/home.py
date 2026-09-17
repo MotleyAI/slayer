@@ -83,7 +83,7 @@ def _grain_member_paths(
     aggregate/transform member stands for its own grain members, recursively."""
     if isinstance(member, (AggregateKey, TransformKey)):
         return _constituent_grain_paths(
-            member, dim_keys=dim_keys, td_keys=td_keys, active_bucket=active_bucket,
+            c=member, dim_keys=dim_keys, td_keys=td_keys, active_bucket=active_bucket,
         )
     return list(source_leaf_paths(member))
 
@@ -102,7 +102,7 @@ def _constituent_grain_paths(
     out: List[Path] = []
     for m in members:
         out.extend(_grain_member_paths(
-            m, dim_keys=dim_keys, td_keys=td_keys, active_bucket=active_bucket,
+            member=m, dim_keys=dim_keys, td_keys=td_keys, active_bucket=active_bucket,
         ))
     return out
 
@@ -136,7 +136,7 @@ def home_path_for(
     # not share is associated / broadcast, never moved into the home (Axioms 2.4, 2.9).
     for c in operand_constituents(agg.source):
         input_paths.extend(_constituent_grain_paths(
-            c, dim_keys=dim_keys, td_keys=td_keys, active_bucket=active_bucket,
+            c=c, dim_keys=dim_keys, td_keys=td_keys, active_bucket=active_bucket,
         ))
     candidates = sorted(
         {anchor, _longest_common_prefix(input_paths), *input_paths},

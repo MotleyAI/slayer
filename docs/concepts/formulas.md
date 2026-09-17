@@ -64,7 +64,7 @@ same key). Very long expressions fold to a stable-hash key. An explicit
 keys collide (`sum(amount - cost)` and `sum(amount + cost)`) fail with a
 duplicate-key error asking for a rename.
 
-Expression sources also accept joined-model refs (`sum(amount - customers.discount)`, homed at the deepest dataset that determines every operand — see [cross-model measures](queries.md#cross-model-measures)), operands whose column carries a `filter` (which masks that operand's value), and nested transforms (`sum(cumsum(amount:sum(partition_by=[region, ordered_at])) - 1)`, aggregated over the transform's own cells).
+Expression sources also accept joined-model refs (`sum(amount - customers.discount)`, homed at the deepest dataset that determines every operand — see [cross-model measures](queries.md#cross-model-measures)), operands whose column carries a `filter` (which masks that operand's value), and nested transforms (`sum(cumsum(amount:sum(partition_by=[region, ordered_at])) - 1)`, aggregated over the transform's own cells). A collapsing `first`/`last` constituent mixed with a row-level column in one source (`sum(amount * last(X))`) is the one retained boundary and fails closed with a typed error.
 
 A source mixing row-level columns with attached values
 (`sum(quantity * avg(price, partition_by=product))`) is a row-grain aggregation

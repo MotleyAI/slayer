@@ -1323,20 +1323,20 @@ def normalize_transform_constituents(
     partition-key validation, so the synthesized keys face the same
     attributability / resolution checks as a user-written ``partition_by=``."""
     rebuilt = key.map_children(
-        lambda c: normalize_transform_constituents(c, query_grain=query_grain),
+        lambda c: normalize_transform_constituents(key=c, query_grain=query_grain),
     )
     if not isinstance(rebuilt, AggregateKey):
         return cast("ValueKey", rebuilt)  # map_children preserves ValueKey-ness
     subs: Dict[ValueKey, ValueKey] = {}
     for c in operand_constituents(rebuilt.source):
         if isinstance(c, TransformKey):
-            grained = _grain_transform_inner_aggregates(c, query_grain=query_grain)
+            grained = _grain_transform_inner_aggregates(t=c, query_grain=query_grain)
             if grained is not c:
                 subs[c] = grained
     if not subs:
         return rebuilt
     return rebuilt.model_copy(
-        update={"source": substitute_value_keys(rebuilt.source, subs)},
+        update={"source": substitute_value_keys(key=rebuilt.source, mapping=subs)},
     )
 
 
@@ -1365,7 +1365,7 @@ def lower_collapsing_constituents(key: ValueKey) -> ValueKey:
     if not subs:
         return rebuilt
     return rebuilt.model_copy(
-        update={"source": substitute_value_keys(rebuilt.source, subs)},
+        update={"source": substitute_value_keys(key=rebuilt.source, mapping=subs)},
     )
 
 

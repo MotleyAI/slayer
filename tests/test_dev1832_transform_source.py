@@ -20,6 +20,8 @@ import pytest
 import sqlglot
 from sqlglot import exp
 
+from slayer.core.keys import AggregateKey, TimeTruncKey, walk_value_keys
+from slayer.engine.elaborate import elaborate_query
 from slayer.engine.plan import plan_query
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.scope_check import assert_scope_closed
@@ -28,6 +30,7 @@ from tests._dev1832_fixtures import (
     CHANGE_PCT_SUM_BY_MONTH,
     CHANGE_SUM_BY_MONTH,
     CONSEC_SUM_BY_MONTH,
+    ColumnRef,
     CUMSUM_MINUS_LAST_BY_MONTH,
     FIRST_SUM_BY_MONTH,
     GRAINED_CUMSUM_BY_MONTH,
@@ -39,6 +42,8 @@ from tests._dev1832_fixtures import (
     TIME_SHIFT_BACK_SUM_BY_MONTH,
     UNGRAINED_CUMSUM_BY_MONTH,
     ModelMeasure,
+    TimeDimension,
+    TimeGranularity,
     broadcast_warnings,
     degenerate_warnings,
     dev1832_models,
@@ -129,6 +134,46 @@ class TestUngrainedTransformConstituent:
                 formula="coalesce(sum(cumsum(amount:sum)), 0)", name="m")],
             time_dimensions=month_td()))
         assert _by_month(resp, "m") == pytest.approx(UNGRAINED_CUMSUM_BY_MONTH)
+
+
+def _year_td() -> TimeDimension:
+    return TimeDimension(dimension=ColumnRef(name="ordered_at"),
+                         granularity=TimeGranularity.YEAR)
+
+
+class TestDualGranularityQueryGrain:
+    """queries/partitioned-aggregates › the query grain is every projected time
+    bucket — two granularities of one column are two grain keys."""
+
+    @pytest.mark.parametrize("tds", [
+        [*month_td(), _year_td()], [_year_td(), *month_td()],
+    ])
+    def test_ungrained_inner_is_grained_at_both_buckets(self, tds):
+        elab = elaborate_query(
+            query=monthly_q(
+                measures=[ModelMeasure(formula="sum(rank(amount:sum))", name="m")],
+                time_dimensions=tds),
+            bundle=_monthly_bundle())
+        assert elab.prebound is not None
+        root = elab.prebound.declared_measures[-1].bound.value_key
+        inner = next(k for k in walk_value_keys(root)
+                     if isinstance(k, AggregateKey) and k is not root)
+        assert inner.partition_keys is not None
+        grans = {k.granularity for k in inner.partition_keys.keys
+                 if isinstance(k, TimeTruncKey)}
+        assert grans == {"month", "year"}
+
+    async def test_rank_over_monthly_totals_by_executed_values(self, exec_backend):
+        # Cells are the (month, year) totals 15 / 35 / 30 → ranks 3 / 1 / 2; a
+        # per-column grain would rank the lone yearly total (1 everywhere).
+        _, engine = exec_backend
+        resp = await engine.execute(monthly_q(
+            measures=[ModelMeasure(formula="sum(rank(amount:sum))", name="m")],
+            time_dimensions=[*month_td(), _year_td()]))
+        got = {month_key(row["monthly.ordered_at.month"]): row["monthly.m"]
+               for row in resp.data}
+        assert got == {"2024-01": 3, "2024-02": 1, "2024-03": 2}
+        assert degenerate_warnings(resp), "expected a degenerate-reaggregation warning"
 
 
 class TestMixedTransformConstituent:

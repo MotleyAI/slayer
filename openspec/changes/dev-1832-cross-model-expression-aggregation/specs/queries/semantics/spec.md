@@ -150,7 +150,7 @@ column's values.
 
 #### Scenario: Outer dimension seeded by a nested-path entity key
 - **WHEN** the inner grain contains a joined model's unique key
-  (e.g. `sum(amount, partition_by=customers.id)` rooted at `corders`) and a query
+  (e.g. `sum(amount, partition_by=customers.id)` rooted at `orders`) and a query
   dimension is a column of that model or reached from it over a to-one hop
   (`customers.region_id`, `customers.regions.name`)
 - **THEN** the outer aggregation partitions the cells exactly by that dimension with
@@ -158,7 +158,7 @@ column's values.
 
 #### Scenario: A foreign-key grain field determines its to-one target
 - **WHEN** the inner grain contains a foreign-key column
-  (e.g. `sum(amount, partition_by=customers.region_id)` rooted at `corders`) and a
+  (e.g. `sum(amount, partition_by=customers.region_id)` rooted at `orders`) and a
   query dimension is a field of the model that key points at over the provably
   to-one hop (`customers.regions.name`)
 - **THEN** the outer aggregation partitions the cells exactly by that dimension with

@@ -113,7 +113,7 @@ A column with no explicit `allowed_aggregations` whitelist gets a default set ba
 
 ### Filtered columns
 
-A column can carry a `filter` — a SQL condition wrapped around the column inside an aggregation via `CASE WHEN`. This is how you express business metrics that apply to a row subset without a separate model:
+A column can carry a `filter` — a SQL condition applied as a `CASE WHEN` value mask wherever the column is read (NULL on non-matching rows, so an aggregation over it covers just the matching rows). This is how you express business metrics that apply to a row subset without a separate model:
 
 ```yaml
 columns:
