@@ -241,14 +241,10 @@ def _back_path(
     *, host_name: str, target_path: Tuple[str, ...],
     models_by_name: Dict[str, SlayerModel],
 ) -> Tuple[str, ...]:
-    """The reverse path from the aggregate's root back to the host: walk the
-    target path forward from the host and, per hop, take the reverse token —
-    the edge name when declared (direction-agnostic, resolves unambiguously
-    across parallel edges) else the hop's source model — then reverse the
-    tokens. A home several hops from the population root thus reverses every hop
-    of its path. Falls back to ``(host_name,)`` when the forward walk finds no
-    path (today's single-token behaviour); an ambiguous reverse hop raises at
-    walk time (fail closed, DEV-1853 D5)."""
+    """Reverse path from the aggregate's root back to the host (per hop, the
+    reverse token: edge name if declared, else source model; then reversed).
+    Falls back to ``(host_name,)`` with no forward path; an ambiguous reverse hop
+    fails closed at walk time (DEV-1853 D5)."""
     host_model = models_by_name.get(host_name)
     if host_model is None or not target_path:
         return (host_name,)
@@ -556,14 +552,11 @@ def grain_determines(
     models_by_name: Dict[str, SlayerModel],
     bundle: Optional[ResolvedSourceBundle] = None,
 ) -> bool:
-    """Does a dataset grain determine ``key`` (Axiom 1)? True iff ``key``
-    is a grain member, an aggregate whose ``partition_by=`` grain ⊆ the grain (a
-    cell of the same dataset), or a column every path of whose dependency closure
-    (DEV-1900 — its own path plus every path its derived definition crosses) is
-    reached over provably to-one hops from a model the grain pins. A derived
-    column crossing a fanning hop the grain does not pin is not determined,
-    however its own path is reached; an unanalysable definition is not
-    determined."""
+    """Does a dataset grain determine ``key`` (Axiom 1)? True iff ``key`` is a
+    grain member, an aggregate whose ``partition_by=`` grain ⊆ the grain, or a
+    column whose every dependency-closure path (DEV-1900) is reached over provably
+    to-one hops from a model the grain pins. A fanning or unanalysable closure is
+    not determined."""
     if key in grain:
         return True
     if isinstance(key, AggregateKey):
