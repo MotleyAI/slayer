@@ -496,10 +496,23 @@ def _collect_semi_join_pushed_warnings(
     out: List[SemiJoinPushedWarningPayload] = []
     for index, planned in enumerate(planned_list):
         location = _stage_location(stages=stages, index=index, member=None)
+        # The population's own restriction (DEV-1909): a top-level plan's
+        # semi-join groups name no aggregate (measure=None).
+        for group in getattr(planned, "semi_join_filters", None) or ():
+            for text in group.filter_texts:
+                if not text:
+                    continue
+                identity = (location, None, text)
+                if identity in seen:
+                    continue
+                seen.add(identity)
+                out.append(SemiJoinPushedWarningPayload(
+                    measure=None, location=location, filter_text=text,
+                ))
         for attach in _walk_regroup_attaches(planned):
             measure = (
-                attach.broadcast_measure or attach.associated_measure
-                or attach.alias_hint or "<aggregate>"
+                attach.population_semi_join_measure or attach.broadcast_measure
+                or attach.associated_measure or attach.alias_hint or "<aggregate>"
             )
             for text in _attach_semi_join_texts(attach):
                 identity = (location, measure, text)

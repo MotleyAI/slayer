@@ -662,6 +662,28 @@ def first_unanalyzable_source_row_leaf(
     return None
 
 
+def first_unanalyzable_filter_column(
+    *, key, anchor_model: Optional[SlayerModel], anchor_relation: str,
+    bundle: ResolvedSourceBundle,
+) -> Optional[str]:
+    """Column name of the first reference in a filter conjunct whose derived
+    definition no dialect can analyse (diagnostic for
+    ``check_filter_dependencies_analyzable``), else ``None``."""
+    if anchor_model is None:
+        return None
+    stack: List[object] = [key]
+    while stack:
+        node = stack.pop()
+        name = _unanalyzable_derived_name(
+            ref=node, anchor_model=anchor_model, anchor_relation=anchor_relation,
+            bundle=bundle,
+        )
+        if name is not None:
+            return name
+        stack.extend(_child_keys(node))
+    return None
+
+
 def _param_spec_closure(
     spec: ParamSpec, *, anchor_model: SlayerModel, anchor_relation: str,
     bundle: ResolvedSourceBundle,

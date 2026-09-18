@@ -3411,14 +3411,16 @@ class SQLGenerator:
         empty_base_plan = planned_query.empty_base_plan
         if empty_base_plan is not None:
             host_filter_ids = set(empty_base_plan.host_filter_ids)
+            # A population semi-join gates the spine even with no field mask (DEV-1909).
+            host_gated = host_filter_ids or empty_base_plan.host_gated
             placeholder_skip_ids = {
                 fp.id
                 for fp in lowered.filters
                 if fp.id not in host_filter_ids
             }
-            if host_filter_ids:
+            if host_gated:
                 # LIMIT 1 collapses the host to one row so the CROSS JOIN doesn't duplicate aggregates, while WHERE
-                # still gates the whole result (no matching host row -> 0 rows).
+                # and the correlated EXISTS still gate the whole result (no matching host row -> 0 rows).
                 placeholder_allocator = self._gen_allocator or self._new_allocator()
                 placeholder_scope = self._scope_frame(
                     model=source_model, relation=source_relation,
@@ -3451,6 +3453,11 @@ class SQLGenerator:
                 )
                 if base_where is not None:
                     base_select = base_select.where(base_where)
+                for cond in self._semi_join_exists_conditions(
+                    planned_query=planned_query, source_model=source_model,
+                    source_relation=source_relation, bundle=bundle,
+                ):
+                    base_select = base_select.where(cond)
                 base_select = base_select.limit(1)
             else:
                 base_select = exp.Select().select(

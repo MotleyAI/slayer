@@ -242,9 +242,12 @@ class FilterReachability(BaseModel):
 class EmptyBaseGrainPlan(BaseModel):
     """Host base has no columns of its own — ``_base`` is a one-row spine for the CROSS
     JOIN. ``host_filter_ids`` (if any) gate it via ``FROM <host> WHERE ... LIMIT 1``, the
-    LIMIT stopping the N filtered rows from repeating the scalar N times."""
+    LIMIT stopping the N filtered rows from repeating the scalar N times.
+    ``host_gated`` (DEV-1909) marks a population restricted by a correlated semi-join, so
+    the spine builds the host FROM and applies the EXISTS even without a plain field mask."""
 
     host_filter_ids: List[BoundFilterId] = Field(default_factory=list)
+    host_gated: bool = False
 
 
 class SemiJoinHop(BaseModel):
@@ -396,6 +399,10 @@ class RegroupAttachPlan(BaseModel):
     # empty for association producers, so the informational entry a semi-join
     # push would raise is kept.
     association_restricted_filter_texts: List[str] = Field(default_factory=list)
+    # Public measure name for a population semi-join inherited into a host-rooted
+    # producer (DEV-1909): the informational entry names the producer's own
+    # measure, not its internal stage alias.
+    population_semi_join_measure: Optional[str] = None
     # Degenerate second-order aggregation (DEV-1847): the re-aggregation whose
     # operand grain equals the outer grain (the identity), with both grains for
     # the warning.
