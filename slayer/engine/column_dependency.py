@@ -1,29 +1,29 @@
-"""DEV-1410: save-time derived-column cycle detection.
+"""Save-time well-formedness of a model's derived columns (arity + cycles).
 
-A model whose derived ``Column.sql`` chain forms a cycle must be rejected at
-save time so the broken model never reaches a query. The compile-time guard
-in :mod:`slayer.sql.column_expansion` is the authoritative correctness
-boundary; this module is the early-failure UX layer.
-
-Wiring: :class:`slayer.storage.base.StorageBackend.save_model` calls
-:func:`validate_no_column_cycles` before delegating to the backend's
-``_save_model_impl``. The migration write-back path passes
-``_validate=False`` so legacy cyclic models remain loadable.
-
-Scope: same-datasource only. Cross-datasource references are invalid by
-design and not attempted. Unresolved join targets (referenced model not yet
-persisted) are silently skipped — best-effort. The compile-time guard
-catches anything missed here.
+A derived ``Column.sql`` / ``Column.filter`` reference must be a function of its
+declaring model's row (Axiom 1): it may cross only provably to-one hops. Called
+from ``StorageBackend.save_model`` (skipped under ``_validate=False``), this
+early-failure layer rejects a path that provably fans (``DerivedColumnFanningError``),
+warns on an unproven hop (query-time input-safety gate is the backstop), and
+rejects a derived-column cycle (``ColumnCycleError``). Best-effort, same-datasource,
+saved model only; unresolved/unloaded/ambiguous targets are skipped and the
+compile-time/query-time guards remain authoritative.
 """
 from __future__ import annotations
 
+import warnings
 from typing import TYPE_CHECKING
 
 import sqlglot
 
-from slayer.core.errors import AmbiguousJoinPathError, ColumnCycleError
-from slayer.core.join_walker import resolve_hop
+from slayer.core.errors import (
+    AmbiguousJoinPathError,
+    ColumnCycleError,
+    DerivedColumnFanningError,
+)
+from slayer.core.join_walker import resolve_hop, walk
 from slayer.core.models import Column, SlayerModel
+from slayer.engine.join_safety import provably_fans, provably_to_one
 from slayer.sql.column_expansion import (
     is_trivial_base,
     reference_sites,
@@ -36,10 +36,8 @@ if TYPE_CHECKING:
     from slayer.storage.base import StorageBackend
 
 
-# Single sqlglot dialect for the dependency walk. The walk only inspects
-# ``exp.Column`` identifier shape — dialect choice does not change which
-# columns appear in the AST. Using sqlglot's default keeps the validator
-# independent of the model's runtime datasource dialect.
+# The walk only inspects ``exp.Column`` identifier shape, so sqlglot's default
+# dialect keeps it independent of the model's runtime datasource dialect.
 _DEPENDENCY_DIALECT: str | None = None
 
 
@@ -47,7 +45,7 @@ def _fragment_refs(sql: str):
     """Root-scope ``(qualifiers, leaf)`` references of a Mode-A fragment, or
     ``None`` on a parse failure (let the surface-level error surface instead)."""
     try:
-        # DEV-1686: prequote reserved qualifiers/leaves so a fragment referencing
+        # prequote reserved qualifiers/leaves so a fragment referencing
         # a reserved joined model (``grant.amount``) parses cleanly here instead
         # of falling back to a noisy ``Command`` parse.
         # prequote accepts a None dialect at runtime (sqlglot default); its str
@@ -75,18 +73,10 @@ def _column_dependencies(
     reachable: dict[str, SlayerModel],
     known_but_unloaded: frozenset[str] = frozenset(),
 ) -> list[tuple[str, str]]:
-    """Root-scope dependency edges ``(model_name, column_name)`` of ``column``.
-
-    Both its derived ``Column.sql`` and its ``Column.filter`` (DEV-1832) are
-    dependency sources — an edge points at any referenced column that itself
-    needs expansion (derived or filtered), so a filter naming another derived
-    column is an edge and one naming its own column is a cycle. A dotted filter
-    reference that does not walk from ``host`` fails the save, naming the path.
-
-    DEV-1743: each reference resolves through the shared
-    :func:`slayer.sql.column_expansion.resolve_ref_target` — exact-name-first
-    then a dotted chain of exact hops, never ``__``-splitting.
-    """
+    """Root-scope dependency edges ``(model, column)`` of ``column`` — both its
+    ``Column.sql`` and its ``Column.filter``, pointing at any referenced column
+    that itself needs expansion (a filter naming its own column is a cycle; a
+    dotted filter path that does not walk from ``host`` fails the save)."""
     return [
         *_sql_dependencies(column=column, host=host, reachable=reachable),
         *_filter_dependencies(
@@ -148,13 +138,9 @@ def _filter_ref_target(
     reachable: dict[str, SlayerModel],
     known_but_unloaded: frozenset[str] = frozenset(),
 ) -> SlayerModel | None:
-    """The model a filter reference resolves to; a leading hop naming no join
-    edge on ``host`` is a broken path and fails the save, naming the path.
-
-    A hop to a model the datasource knows but this best-effort prefetch could not
-    load is treated as unproven (return ``None``) — its reverse-direction join to
-    ``host`` may exist but is invisible here; only a genuinely unknown token raises.
-    """
+    """The model a filter reference resolves to; a leading hop naming no join edge
+    on ``host`` fails the save (a known-but-unloaded target returns ``None`` — its
+    reverse join may exist but is invisible here — only an unknown token raises)."""
     first = _first_hop(quals=quals, host=host)
     if first is None:
         return host
@@ -195,10 +181,8 @@ def _node_dependencies(
     reachable: dict[str, SlayerModel],
     known_but_unloaded: frozenset[str] = frozenset(),
 ) -> list[tuple[str, str]]:
-    """Return the dependency edges leaving ``node = (model_name, col_name)``.
-    Empty list when the model or column is missing — those are dead-ends,
-    not errors.
-    """
+    """Dependency edges leaving ``node = (model, col)``; empty when the model or
+    column is missing (a dead-end, not an error)."""
     model_name, col_name = node
     host = reachable.get(model_name)
     if host is None:
@@ -221,11 +205,8 @@ def _dfs_visit(
     visited: set[tuple[str, str]],
     known_but_unloaded: frozenset[str] = frozenset(),
 ) -> list[tuple[str, str]] | None:
-    """Recursive DFS visit. Returns the first cycle reachable from
-    ``node``, or ``None``. Mutates ``on_stack`` / ``on_stack_set`` /
-    ``visited`` in place — the caller initialises them empty and
-    discards them on return.
-    """
+    """First cycle reachable from ``node`` (or ``None``); mutates the
+    ``on_stack``/``on_stack_set``/``visited`` accumulators in place."""
     if node in on_stack_set:
         idx = on_stack.index(node)
         return [*on_stack[idx:], node]
@@ -255,10 +236,8 @@ def _detect_cycle_dfs(
     reachable: dict[str, SlayerModel],
     known_but_unloaded: frozenset[str] = frozenset(),
 ) -> list[tuple[str, str]] | None:
-    """DFS from ``start = (model_name, column_name)``. Returns the first
-    cycle found as an ordered list (start may appear at both ends if the
-    cycle closes through it), or ``None`` if the subgraph is acyclic.
-    """
+    """First cycle from ``start`` as an ordered list (``start`` may appear at
+    both ends when the cycle closes through it), or ``None`` if acyclic."""
     return _dfs_visit(
         node=start, reachable=reachable,
         on_stack=[], on_stack_set=set(), visited=set(),
@@ -271,12 +250,9 @@ async def _prefetch_reachable_models(
     model: SlayerModel,
     storage: "StorageBackend",
 ) -> tuple[dict[str, SlayerModel], frozenset[str]]:
-    """The datasource's models keyed by name, including ``model`` — the
-    bidirectional closure is the connected component (DEV-1853), so refs may
-    cross edges declared on either side. Unlistable datasources are best-effort;
-    the second element is the set of KNOWN names that failed to load, so their
-    (possibly reverse-direction) joins cannot be proved absent.
-    """
+    """The datasource's models keyed by name (including ``model``) — the
+    bidirectional closure, so refs may cross edges declared on either side. Second
+    element: KNOWN names that failed to load, whose reverse joins can't be proved absent."""
     out: dict[str, SlayerModel] = {model.name: model}
     try:
         names = await storage.list_models(model.data_source)
@@ -299,22 +275,110 @@ async def _prefetch_reachable_models(
     return out, frozenset(unloaded)
 
 
-async def validate_no_column_cycles(
+def _hop_path(*, quals, host: SlayerModel) -> tuple[str, ...]:
+    """A reference's join-hop tokens with ``host``'s own name stripped; empty = host-local."""
+    q = list(quals)
+    if q and q[0] == host.name:
+        q = q[1:]
+    return tuple(q)
+
+
+def _classify_hop_path(
+    *, host: SlayerModel, path: tuple[str, ...], reachable: dict[str, SlayerModel],
+) -> tuple[str, str] | None:
+    """Classify a reference's hop ``path`` from ``host``: ``("fanning", token)`` on
+    the first fanning hop (beats any later hop), ``("unproven", token)`` on the first
+    hop neither provably to-one nor fanning, else ``None``. Empty/unresolvable/
+    ambiguous/unloaded → ``None`` (``walk`` returns ``None`` for a target absent from
+    ``reachable``, so arity is never proven on topology this prefetch cannot see)."""
+    if not path:
+        return None
+    try:
+        chain = walk(root=host, path=path, models_by_name=reachable)
+    except AmbiguousJoinPathError:
+        return None
+    if chain is None:
+        return None
+    unproven: str | None = None
+    for token, edge in zip(path, chain):
+        target = reachable.get(edge.target_model)
+        if target is None:
+            return None
+        if provably_fans(edge=edge, target_model=target):
+            return ("fanning", token)
+        if unproven is None and not provably_to_one(edge=edge, target_model=target):
+            unproven = token
+    return ("unproven", unproven) if unproven is not None else None
+
+
+def _arity_reference_sources(column: Column) -> list[tuple[str, str]]:
+    """The ``(kind, fragment)`` pairs carrying arity: a derived ``Column.sql`` and
+    a ``Column.filter`` (a trivial-base ``sql`` is host-local, so it is skipped)."""
+    out: list[tuple[str, str]] = []
+    if column.sql is not None and not is_trivial_base(column=column):
+        out.append(("sql", column.sql))
+    if column.filter:
+        out.append(("filter", column.filter))
+    return out
+
+
+def _unproven_arity_message(*, column: str, model: str, hop: str, kind: str) -> str:
+    return (
+        f"Derived column {column!r} on model {model!r} has a {kind} reference "
+        f"crossing an unproven join hop to {hop!r} (cardinality not declared "
+        f"to-one and no covering unique key): it broadcasts if aggregated as a "
+        f"column of {model!r}. Declare the hop's cardinality, or aggregate the "
+        f"target column ({hop}.<column>:<aggregation>) instead."
+    )
+
+
+def _check_reference_arity(
+    *, model: SlayerModel, reachable: dict[str, SlayerModel],
+) -> None:
+    """Arity gate over the saved model's columns: a fanning-crossing reference
+    raises ``DerivedColumnFanningError``; an unproven hop warns once per
+    ``(column, kind, hop)``; to-one/unresolvable/unloaded/ambiguous skip."""
+    warned: set[tuple[str, str, str]] = set()
+    for column in model.columns:
+        for kind, fragment in _arity_reference_sources(column):
+            for quals, leaf in _fragment_refs(fragment) or []:
+                path = _hop_path(quals=quals, host=model)
+                verdict = _classify_hop_path(
+                    host=model, path=path, reachable=reachable,
+                )
+                if verdict is None:
+                    continue
+                status, hop = verdict
+                if status == "fanning":
+                    raise DerivedColumnFanningError(
+                        column=column.name, model=model.name, hop=hop, kind=kind,
+                        reference=".".join((*path, leaf)),
+                    )
+                key = (column.name, kind, hop)
+                if key in warned:
+                    continue
+                warned.add(key)
+                warnings.warn(
+                    _unproven_arity_message(
+                        column=column.name, model=model.name, hop=hop, kind=kind,
+                    ),
+                    UserWarning, stacklevel=2,
+                )
+
+
+async def validate_derived_columns(
     *,
     model: SlayerModel,
     storage: "StorageBackend",
 ) -> None:
-    """Raise :class:`ColumnCycleError` if any derived column on ``model``
-    (or on a reachable joined model in the same ``data_source``)
-    participates in a cycle.
-
-    Best-effort: unresolved join targets are skipped; nested-scope refs
-    are excluded by the same ``root_scope_column_ids`` rule used by the
-    compile-time expander. The compile-time guard remains authoritative.
-    """
+    """Reject ``model``'s ill-formed derived columns at save time: the arity gate
+    (:func:`_check_reference_arity`) then a :class:`ColumnCycleError` if any derived
+    column on ``model`` or a reachable same-datasource model cycles. Best-effort;
+    the compile-time / query-time guards remain authoritative."""
     reachable, known_but_unloaded = await _prefetch_reachable_models(
         model=model, storage=storage,
     )
+    _check_reference_arity(model=model, reachable=reachable)
     # Iterate roots in a deterministic order so the reported cycle is
     # stable across runs.
     roots: list[tuple[str, str]] = []

@@ -25742,14 +25742,6 @@
                     "endColumn": 74,
                     "lineCount": 1
                 }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 53,
-                    "endColumn": 73,
-                    "lineCount": 1
-                }
             }
         ],
         "./tests/test_dev1856_short_form_routing.py": [

@@ -18,6 +18,7 @@ from slayer.core.enums import DataType, JoinCardinality
 from slayer.core.errors import DerivedColumnFanningError, SlayerError
 from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.engine import join_safety
+from slayer.engine.column_dependency import validate_derived_columns
 from slayer.engine.join_safety import provably_fans
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -138,13 +139,15 @@ async def test_sql_across_declared_one_to_many_rejected(tmp_path) -> None:
     with pytest.raises(DerivedColumnFanningError) as ei:
         await storage.save_model(orders)
     exc = ei.value
-    assert isinstance(exc, ValueError) and isinstance(exc, SlayerError)
+    assert isinstance(exc, ValueError)
+    assert isinstance(exc, SlayerError)
     assert exc.column == "li_qty"
     assert exc.model == "orders"
     assert exc.hop == "line_items"
     assert exc.kind == "sql"
     msg = str(exc)
-    assert "li_qty" in msg and "line_items" in msg
+    assert "li_qty" in msg
+    assert "line_items" in msg
     assert "line_items.qty" in msg  # the cross-model aggregate remedy spelling
     # The three remedy components the spec requires: aggregate, filter, or
     # declare a to-one cardinality / covering unique key.
@@ -174,7 +177,8 @@ async def test_filter_across_declared_one_to_many_rejected(tmp_path) -> None:
     assert exc.hop == "line_items"
     assert exc.kind == "filter"
     msg = str(exc)
-    assert "big_item" in msg and "line_items" in msg
+    assert "big_item" in msg
+    assert "line_items" in msg
     assert "aggregat" in msg.lower()
 
 
@@ -538,6 +542,4 @@ async def test_peer_save_does_not_reclassify_stored_column(tmp_path) -> None:
 
 
 def test_validate_derived_columns_entry_point_exists() -> None:
-    from slayer.engine.column_dependency import validate_derived_columns
-
     assert callable(validate_derived_columns)
