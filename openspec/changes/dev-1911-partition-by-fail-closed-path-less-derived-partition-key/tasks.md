@@ -46,16 +46,16 @@
 
 ## 3. Normative harness (explicit approval required)
 
-- [ ] 3.1 Apply the approved Axiom 8 diff in `architecture/semantics.arc42.md` referencing
+- [x] 3.1 Apply the approved Axiom 8 diff in `architecture/semantics.arc42.md` referencing
       the new test id.
 
 ## 4. Gates
 
-- [ ] 4.1 Full non-integration suite green (`poetry run pytest -m "not integration"`).
+- [x] 4.1 Full non-integration suite green (`poetry run pytest -m "not integration"`).
 - [ ] 4.2 Integration suite green (CI invocation).
-- [ ] 4.3 `poetry run ruff check slayer/ tests/` clean.
-- [ ] 4.4 `poetry run python tools/arch_check.py` green.
-- [ ] 4.5 `poetry run basedpyright` — no new errors vs baseline.
-- [ ] 4.6 Codex full-diff review as the last local gate before push.
-- [ ] 4.7 Docs: no user-facing doc change expected (a silent-wrong query now raises);
+- [x] 4.3 `poetry run ruff check slayer/ tests/` clean.
+- [x] 4.4 `poetry run python tools/arch_check.py` green.
+- [x] 4.5 `poetry run basedpyright` — no new errors vs baseline.
+- [x] 4.6 Codex full-diff review as the last local gate before push.
+- [x] 4.7 Docs: no user-facing doc change expected (a silent-wrong query now raises);
       confirm during implement and update `docs/` only if a page states the old behavior.
