@@ -115,8 +115,13 @@ is the coercion from coarser to finer.
    [enforced: test:tests/test_dev1841_association_exec.py]
    [enforced: test:tests/test_dev1910_home_rooted_association.py]; and error (refuse)
    [enforced: test:tests/test_dev1841_error_mode.py]; an explicit partition_by
-   naming an unattributable dimension is an error outside associate mode.
-   [enforced: test:tests/test_dev1841_association_errors.py]
+   naming a dimension unattributable only from a further (cross-model) root is an
+   error outside associate mode
+   [enforced: test:tests/test_dev1841_association_errors.py], but one whose own
+   dependency closure (engine P10) crosses a fanning hop from its host is a
+   mode-invariant input-safety error — raised in every mode, associate included,
+   since it can never be counted without multiplying rows (Axiom 2.8).
+   [enforced: test:tests/test_dev1911_fanning_partition_key.py]
 9. **Closure**: every operator consumes and produces aggregates and may
    inspect only its operands' types (grain, home dataset), never how they were
    constructed — any "not supported inside" refusal of a well-typed term is a
