@@ -52,7 +52,7 @@
 ## 4. Gates
 
 - [x] 4.1 Full non-integration suite green (`poetry run pytest -m "not integration"`).
-- [ ] 4.2 Integration suite green (CI invocation).
+- [x] 4.2 Integration suite green (CI invocation).
 - [x] 4.3 `poetry run ruff check slayer/ tests/` clean.
 - [x] 4.4 `poetry run python tools/arch_check.py` green.
 - [x] 4.5 `poetry run basedpyright` — no new errors vs baseline.
