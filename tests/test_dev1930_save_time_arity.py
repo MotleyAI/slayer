@@ -60,6 +60,11 @@ def _fanning_warnings(rec, *, column: str) -> list:
     return [w for w in rec if column in str(w.message)]
 
 
+def _hop_warnings(rec, *, column: str, hop: str) -> list:
+    """Recorded warnings naming both the column and the hop (the contract)."""
+    return [w for w in rec if column in str(w.message) and hop in str(w.message)]
+
+
 # --------------------------------------------------------------------------- #
 # 1. provably_fans predicate (join_safety) — task 1.1.
 # --------------------------------------------------------------------------- #
@@ -141,7 +146,11 @@ async def test_sql_across_declared_one_to_many_rejected(tmp_path) -> None:
     msg = str(exc)
     assert "li_qty" in msg and "line_items" in msg
     assert "line_items.qty" in msg  # the cross-model aggregate remedy spelling
+    # The three remedy components the spec requires: aggregate, filter, or
+    # declare a to-one cardinality / covering unique key.
     assert "aggregat" in msg.lower()
+    assert "filter" in msg.lower()
+    assert any(w in msg.lower() for w in ("cardinality", "unique"))
 
 
 async def test_filter_across_declared_one_to_many_rejected(tmp_path) -> None:
@@ -164,6 +173,9 @@ async def test_filter_across_declared_one_to_many_rejected(tmp_path) -> None:
     assert exc.column == "big_item"
     assert exc.hop == "line_items"
     assert exc.kind == "filter"
+    msg = str(exc)
+    assert "big_item" in msg and "line_items" in msg
+    assert "aggregat" in msg.lower()
 
 
 async def test_host_prefixed_reference_rejected(tmp_path) -> None:
@@ -215,18 +227,19 @@ async def test_multihop_fanning_then_unproven_rejected(tmp_path) -> None:
         name="parts", data_source=DS, sql_table="parts",
         columns=[
             Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-            Column(name="line_item_id", sql="line_item_id", type=DataType.INT),
+            Column(name="code", sql="code", type=DataType.TEXT),  # non-unique
             Column(name="pval", sql="pval", type=DataType.DOUBLE),
         ],
     )
     await storage.save_model(parts)
-    # line_items -> parts is undeclared (unproven); orders -> line_items fans.
+    # orders -> line_items fans; line_items -> parts is undeclared on a
+    # non-unique target column (unproven). The fanning hop is first.
     line_items = _line_items(
-        extra=(Column(name="part_id", sql="part_id", type=DataType.INT),),
+        extra=(Column(name="part_code", sql="part_code", type=DataType.TEXT),),
     )
     line_items = line_items.model_copy(update={
         "joins": [ModelJoin(
-            target_model="parts", join_pairs=[["part_id", "id"]],
+            target_model="parts", join_pairs=[["part_code", "code"]],
         )],
     })
     await storage.save_model(line_items)
@@ -351,8 +364,10 @@ async def test_reverse_pk_undeclared_hop_warns_and_saves(tmp_path) -> None:
         li_column=Column(name="li_qty", sql="line_items.qty", type=DataType.DOUBLE),
         joins=[ModelJoin(target_model="line_items", join_pairs=[["id", "order_id"]])],
     )
-    with pytest.warns(UserWarning, match="li_qty"):
+    with warnings.catch_warnings(record=True) as rec:
+        warnings.simplefilter("always")
         await storage.save_model(orders)
+    assert _hop_warnings(rec, column="li_qty", hop="line_items")
     assert await storage.get_model("orders", data_source=DS) is not None
 
 
@@ -376,8 +391,28 @@ async def test_fully_undeclared_hop_warns_and_saves(tmp_path) -> None:
         ],
         joins=[ModelJoin(target_model="widgets", join_pairs=[["region", "region"]])],
     )
-    with pytest.warns(UserWarning, match="wsum"):
+    with warnings.catch_warnings(record=True) as rec:
+        warnings.simplefilter("always")
         await storage.save_model(orders)
+    assert _hop_warnings(rec, column="wsum", hop="widgets")
+    assert await storage.get_model("orders", data_source=DS) is not None
+
+
+async def test_filter_across_unproven_hop_warns_and_saves(tmp_path) -> None:
+    """A ``Column.filter`` across an unproven hop warns like an ``sql`` ref."""
+    storage = _storage(tmp_path)
+    await storage.save_model(_line_items())
+    orders = _orders(
+        li_column=Column(
+            name="big_item", sql="amount", type=DataType.DOUBLE,
+            filter="line_items.qty >= 2",
+        ),
+        joins=[ModelJoin(target_model="line_items", join_pairs=[["id", "order_id"]])],
+    )
+    with warnings.catch_warnings(record=True) as rec:
+        warnings.simplefilter("always")
+        await storage.save_model(orders)
+    assert _hop_warnings(rec, column="big_item", hop="line_items")
     assert await storage.get_model("orders", data_source=DS) is not None
 
 
@@ -387,14 +422,15 @@ async def test_unproven_warning_deduplicated_per_hop(tmp_path) -> None:
     await storage.save_model(_line_items())
     orders = _orders(
         li_column=Column(
-            name="li", sql="line_items.qty + line_items.order_id", type=DataType.DOUBLE,
+            name="qtysum", sql="line_items.qty + line_items.order_id",
+            type=DataType.DOUBLE,
         ),
         joins=[ModelJoin(target_model="line_items", join_pairs=[["id", "order_id"]])],
     )
     with warnings.catch_warnings(record=True) as rec:
         warnings.simplefilter("always")
         await storage.save_model(orders)
-    assert len(_fanning_warnings(rec, column="li")) == 1
+    assert len(_hop_warnings(rec, column="qtysum", hop="line_items")) == 1
 
 
 # --------------------------------------------------------------------------- #
@@ -417,6 +453,24 @@ async def test_unloaded_target_skipped(tmp_path) -> None:
         warnings.simplefilter("always")
         await storage.save_model(orders)  # must not raise
     assert _fanning_warnings(rec, column="li_qty") == []
+    assert await storage.get_model("orders", data_source=DS) is not None
+
+
+async def test_unresolvable_reference_skipped(tmp_path) -> None:
+    """A qualifier that names no join hop from the host resolves to nothing →
+    skipped at save time (no error, no warning), like the cycle walk."""
+    storage = _storage(tmp_path)
+    orders = SlayerModel(
+        name="orders", data_source=DS, sql_table="orders",
+        columns=[
+            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+            Column(name="ghost", sql="nowhere.value", type=DataType.DOUBLE),
+        ],
+    )
+    with warnings.catch_warnings(record=True) as rec:
+        warnings.simplefilter("always")
+        await storage.save_model(orders)  # must not raise
+    assert _fanning_warnings(rec, column="ghost") == []
     assert await storage.get_model("orders", data_source=DS) is not None
 
 
@@ -452,6 +506,30 @@ async def test_ambiguous_parallel_edge_skipped(tmp_path) -> None:
         warnings.simplefilter("always")
         await storage.save_model(orders)  # ambiguous hop → skipped, no raise
     assert _fanning_warnings(rec, column="wsum") == []
+
+
+async def test_peer_save_does_not_reclassify_stored_column(tmp_path) -> None:
+    """Best-effort scope: arity is classified for the model being saved only.
+    A stored fanning column (persisted via ``_validate=False``) is not
+    re-rejected or re-warned when an unrelated peer is later saved."""
+    storage = _storage(tmp_path)
+    await storage.save_model(_line_items())
+    fanning = _orders(
+        li_column=Column(name="li_qty", sql="line_items.qty", type=DataType.DOUBLE),
+        joins=[ModelJoin(
+            target_model="line_items", join_pairs=[["id", "order_id"]],
+            cardinality=JoinCardinality.ONE_TO_MANY,
+        )],
+    )
+    await storage.save_model(fanning, _validate=False)  # persist the ill-formed model
+    peer = SlayerModel(
+        name="widgets", data_source=DS, sql_table="widgets",
+        columns=[Column(name="id", sql="id", type=DataType.INT, primary_key=True)],
+    )
+    with warnings.catch_warnings(record=True) as rec:
+        warnings.simplefilter("always")
+        await storage.save_model(peer)  # must not raise about orders.li_qty
+    assert _fanning_warnings(rec, column="li_qty") == []
 
 
 # --------------------------------------------------------------------------- #
