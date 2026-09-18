@@ -895,19 +895,19 @@ def check_cross_model_partition_keys_attributable(
     )
 
 
-def check_windowed_cross_model_time_axis(
+def check_windowed_time_axis_attributable(
     *, alias: Optional[str], root_name: str, active_td_name: Optional[str],
     attributable: bool,
 ) -> None:
-    """A windowed cross-model aggregate needs the query's active time dimension, attributable from its root (DEV-1871 G12)."""
+    """A windowed aggregate needs the query's active time dimension, attributable from its root (DEV-1871 G12)."""
     if active_td_name is None:
         raise ValueError(
-            f"Windowed cross-model aggregate {alias!r} has no active time "
+            f"Windowed aggregate {alias!r} has no active time "
             f"dimension; add a single time_dimensions entry."
         )
     if not attributable:
         raise ValueError(
-            f"Windowed cross-model aggregate {alias!r} needs the query's "
+            f"Windowed aggregate {alias!r} needs the query's "
             f"active time dimension ('{active_td_name}') "
             f"attributable from {root_name}, but it crosses a fanning join; "
             f"declare join cardinality or a covering unique key on the target."

@@ -1,12 +1,9 @@
-"""DEV-1909 golden SQL (task 1.4) — the population-restriction shapes across the
-seven Tier-1 dialects. Blessed pre-implementation as today's state: the
-fanning-inline shapes record the DEV-1900 guard's raise, the producer / dims-only
-shapes record today's fanning SQL, and the to-one invariant records its plain SQL.
-At implementation each ``fanning_inline/`` case flips from the raise to an EXISTS
-base query, each ``producer/`` and ``dims_only/`` case gains the semi-join and
-loses the fanning join, all entering ALLOWED_DELTAS for a single re-bless; the
-``positive/`` case MUST stay byte-identical. ``test_fanning_inline_cases_fail_closed``
-is this module's feature-missing tripwire until then.
+"""DEV-1909 golden SQL — the population-restriction shapes across the seven Tier-1
+dialects. Each ``fanning_inline/`` shape restricts the population by a correlated
+EXISTS base query; each ``producer/`` and ``dims_only/`` shape carries the semi-join
+and no fanning join; the ``positive/`` to-one case stays a plain row restriction;
+and ``producer/windowed_fanning_axis`` fails closed (decision 12 — its window axis
+is not attributable from the population root).
 """
 
 from __future__ import annotations
@@ -55,7 +52,7 @@ def _cases() -> dict:
         "producer/windowed": {
             "source": "customers", "mode": None,
             "kw": {"time_dimensions": [
-                {"dimension": "orders.ordered_at", "granularity": "month"}],
+                {"dimension": "signup_at", "granularity": "month"}],
                    "measures": [{"formula": "spend:sum(window='1y')", "name": "w"}],
                    "filters": [_OK]}},
         "producer/producer_only": {
@@ -66,6 +63,14 @@ def _cases() -> dict:
         "dims_only/fanning": {
             "source": "customers", "mode": None,
             "kw": {"dimensions": ["tier"], "filters": [_OK]}},
+        # windowed over a fanning time axis (orders.ordered_at from customers):
+        # its axis is not attributable from the root, so it fails closed (decision 12).
+        "producer/windowed_fanning_axis": {
+            "source": "customers", "mode": None,
+            "kw": {"time_dimensions": [
+                {"dimension": "orders.ordered_at", "granularity": "month"}],
+                   "measures": [{"formula": "spend:sum(window='1y')", "name": "w"}],
+                   "filters": [_OK]}},
         # positive/* — a provably to-one filter; plain row restriction, byte-identical
         # SQL through the change.
         "positive/to_one_filter": {
@@ -75,7 +80,10 @@ def _cases() -> dict:
     }
 
 
-FAIL_CLOSED = {k for k in _cases() if k.startswith("fanning_inline/")}
+#: The only shape that still fails closed post-implementation: a window whose time
+#: axis is not attributable from the population root (decision 12). Every
+#: fanning_inline/producer/dims_only shape now restricts by EXISTS instead.
+FAIL_CLOSED = {"producer/windowed_fanning_axis"}
 
 
 async def _generate_one(case, dialect: str):
@@ -105,9 +113,9 @@ bind_golden_tests(
 )
 
 
-def test_fanning_inline_cases_fail_closed(baseline) -> None:
-    """Feature-missing tripwire: every fanning-inline shape currently records the
-    guard's raise, not SQL. Flips at implementation (each becomes an EXISTS base)."""
+def test_fail_closed_cases_record_a_raise(baseline) -> None:
+    """A window over a fanning time axis fails closed (decision 12): its baseline
+    is a recorded raise, never SQL — the fan-multiply must not slip through as SQL."""
     for key, value in baseline.items():
         if key.split("::", 1)[0] in FAIL_CLOSED:
             assert isinstance(value, dict), f"{key} unexpectedly emits SQL: {value}"

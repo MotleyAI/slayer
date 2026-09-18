@@ -85,7 +85,7 @@ from slayer.engine.elaborate_env import (
     check_reaggregation_dims_attributable,
     check_reaggregation_no_window,
     check_reaggregation_partition_key_is_query_dim,
-    check_windowed_cross_model_time_axis,
+    check_windowed_time_axis_attributable,
     check_windowed_key_supported,
     check_windowed_time_dimension,
 )
@@ -1678,7 +1678,7 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
         # A windowed cross-model aggregate folds the active TD into its grain as the bucket (must be attributable from the root).
         if window_kwarg_of(agg) is not None:
             active_td = prebound.main_time_key
-            check_windowed_cross_model_time_axis(
+            check_windowed_time_axis_attributable(
                 alias=alias, root_name=root_name,
                 active_td_name=(
                     None if active_td is None else _regroup_grain_name(active_td)
@@ -2957,6 +2957,23 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
                                 m.name: m for m in bundle.referenced_models
                             },
                         )
+            # A windowed axis must be attributable from the producer root, else it fans (decision 12; one rule with the cross-model spelling).
+            if producer_model is not None and windowed:
+                active_td = prebound.main_time_key
+                check_windowed_time_axis_attributable(
+                    alias=alias_map.get(producer_aggs[0]),
+                    root_name=producer_model.name,
+                    active_td_name=(
+                        None if active_td is None
+                        else _regroup_grain_name(active_td)
+                    ),
+                    attributable=active_td is not None and attributable_from_root(
+                        host_path=key_host_path(active_td), target_path=(),
+                        root_model=producer_model,
+                        models_by_name=bundle.models_by_name,
+                        host_name=producer_model.name,
+                    ),
+                )
             producer_prebound, ordered_pks = _regroup_producer_prebound(
                 pks=pks, aggs=producer_aggs, model=producer_model, bundle=bundle,
                 inherited=inherited, n_date_range=n_inherited_date,

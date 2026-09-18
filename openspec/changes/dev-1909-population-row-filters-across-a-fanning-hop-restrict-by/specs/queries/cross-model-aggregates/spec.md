@@ -39,9 +39,11 @@ a population conjunct the host applies inline applies inline, a population conju
 restricting the population by association restricts the producer by the same semi-join,
 and an excluded population conjunct is dropped from the producer with the dropped-filter
 warning; a producer nested inside such a producer and rooted at the same population
-inherits the same disposition during its own compilation. A population conjunct whose
-non-determining path the producer's own grain materialises — its partition keys, or its
-window time axis — applies inline to that producer on the same related row. This
+inherits the same disposition during its own compilation. Such a producer's own grain — its
+partition keys and its window time axis — is attributable from the population (an
+unattributable partition key or window time axis is a typed error, per *Explicit grain and
+window on cross-model aggregates*), so it takes the population's semi-join, never an inline
+join across the fanning hop. This
 population inheritance is keyed on the producer's kernel, not on whether its root equals
 the host: an association producer (even one whose root is the host) keeps the association
 routing of the paragraph above and receives no population semi-join, and a target-rooted
@@ -172,13 +174,14 @@ only in the filter.
   reference dataset, never gold 290), and the response carries a `semi_join_pushed` entry
   naming the measure alongside the population's entry naming no aggregate
 
-#### Scenario: Fanning-axis window keeps its frame rows
+#### Scenario: Windowed producer over a local axis inherits the restriction
 - **WHEN** a query rooted at `customers` selects `sum(spend, window='1y')` over
-  `time_dimensions: [{"dimension": "orders.ordered_at", "granularity": "month"}]` with
-  `filters: ["orders.status = 'ok'"]`
-- **THEN** by executed values each bucket restricts to the customer's `ok` orders on the
-  same branch as the window axis — the filter binds to the windowed rows, not a separate
-  correlated existence check (April 420 on the reference dataset, never 520)
+  `time_dimensions: [{"dimension": "customers.signup_at", "granularity": "month"}]` with
+  `filters: ["orders.status = 'ok'"]`, and one customer has two `ok` orders
+- **THEN** by executed values each bucket sums the trailing-year signups among the distinct
+  customers with at least one `ok` order, each once (April 420 on the reference dataset,
+  never 520), the window's source relation carries the semi-join and no `orders` join, and
+  the response carries the producer's and the population's `semi_join_pushed` entries
 
 #### Scenario: Nested producer rooted at the population inherits the restriction
 - **WHEN** a query rooted at `customers` selects `avg(sum(spend, partition_by=tier))` with
@@ -192,3 +195,44 @@ only in the filter.
   `filters: ["orders.status = 'ok'"]`, and a second run uses a predicate no order passes
 - **THEN** the first run returns one row with the producer's value by executed values (82 on
   the reference dataset) and the second returns zero rows — never one row carrying a NULL
+
+### Requirement: Explicit grain and window on cross-model aggregates
+Cross-model aggregates SHALL accept `partition_by=`, `window=`, and `first`/`last`.
+Under `"broadcast"` and `"error"` modes, every explicit partition key MUST be
+attributable from the aggregate's root — an unattributable key is a hard error naming
+the remedy. Under `"associate"`, an explicit partition key not attributable from the
+root is legal: the aggregate attributes at the declared grain by distinct-entity
+association (per `queries/attribution-modes`), without warning (requested grain). A
+windowed aggregate — cross-model or rooted at the query population — requires the query's
+active time dimension attributable from its home dataset, else fails at plan time with a
+typed error naming the time dimension and the remedy, in every `to_many_handling` mode and
+whether or not the query filters: the time bucket is a grain member of the windowed
+aggregate that its home must determine, never a fanning join multiplying the windowed rows.
+Windowing by association under `"associate"` is deferred to DEV-1914.
+
+#### Scenario: Cross-model partitioned aggregate computes at the declared grain
+- **WHEN** a query selects `customers.spend:sum(partition_by=<customer-level dimension>)`
+- **THEN** the value is computed at exactly the declared grain and broadcast to the
+  query rows, by executed values
+
+#### Scenario: Unattributable explicit partition key errors
+- **WHEN** a cross-model aggregate declares `partition_by=` naming a dimension not
+  attributable from its root, under `"broadcast"` or `"error"` mode
+- **THEN** the query fails with a clear error naming the key and the remedy
+
+#### Scenario: Unattributable explicit partition key attributes under associate
+- **WHEN** the same aggregate runs under `to_many_handling: "associate"`
+- **THEN** the value is computed at the declared grain over distinct associated
+  entities and attached to the query rows, by executed values, with no warning
+
+#### Scenario: Cross-model first/last and windowed aggregates work
+- **WHEN** a query selects a `first`/`last` or `window=` aggregate over a joined
+  model's column with an attributable grain
+- **THEN** the value is correct by executed values and result cardinality is unchanged
+
+#### Scenario: Population-rooted window over a fanning time axis fails closed
+- **WHEN** a query rooted at `customers` selects `sum(spend, window='1y')` over
+  `time_dimensions: [{"dimension": "orders.ordered_at", "granularity": "month"}]`, with or
+  without `filters: ["orders.status = 'ok'"]`, in any `to_many_handling` mode
+- **THEN** the query fails at plan time with a typed error naming `orders.ordered_at` and the
+  remedy, containing no issue reference — never a value counting a customer once per order

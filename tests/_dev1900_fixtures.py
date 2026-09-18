@@ -328,9 +328,10 @@ POP_FILTER_PARTITIONED_BY_TIER = {"gold": 190.0, "silver": 230.0}
 POP_FILTER_PARTITIONED_GOLD_FAN_DEFECT = 290.0
 #: *:count of the distinct population customers per tier (gold c1,c3,c6; silver c2,c5).
 POP_FILTER_COUNT_BY_TIER = {"gold": 3, "silver": 2}
-#: sum(spend, window='1y') bucketed by orders.ordered_at month: the fanning-axis
-#: window binds the ok filter to its own rows, each customer once. April trailing
-#: 1y = c1+c2+c3+c5+c6 = 420 (fan defect 520: c1's two Jan ok orders both counted).
+#: sum(spend, window='1y') bucketed by customers.signup_at month over the 'ok'
+#: population, each customer once: trailing-1y cumulative 100/250/310/420 (April =
+#: c1+c2+c3+c5+c6). The fanning orders.ordered_at axis fails closed (decision 12);
+#: 520 was its pre-fix April fan defect (c1's two Jan ok orders double-counted).
 POP_FILTER_WINDOWED_BY_MONTH = {
     "2024-01": 100.0, "2024-02": 250.0, "2024-03": 310.0, "2024-04": 420.0}
 POP_FILTER_WINDOWED_APRIL = 420.0

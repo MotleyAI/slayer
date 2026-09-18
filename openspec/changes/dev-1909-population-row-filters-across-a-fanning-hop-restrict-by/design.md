@@ -49,7 +49,8 @@ recursive boolean lowering of out-of-scope conjuncts (`OR`/`NOT` mixing local an
 or several branches) — deferred to **DEV-1935**, which replaces this change's fail-closed/drop
 residue with per-branch `EXISTS`; Mode-A `SlayerModel.filters` / column `filter=` fragments crossing
 fanning hops; a target-rooted producer nested inside a host-rooted producer disposing only the
-parent's inline conjuncts (pre-existing); DEV-1908 / DEV-1911.
+parent's inline conjuncts (pre-existing); window association under `associate` for local and
+cross-model windowed aggregates (**DEV-1914**, decision 12); DEV-1908 / DEV-1911.
 
 ## Decisions
 
@@ -68,13 +69,13 @@ parent's inline conjuncts (pre-existing); DEV-1908 / DEV-1911.
 2. **Per-consumer same-row rule (Axiom 3 Association + Law 5 Dice–slice).** A consumer applies a
    `semi_join` conjunct inline iff its own grain materialises every fanning path of that conjunct
    (each fanning path is a prefix of, or equal to, a closure path of one of its grain keys); else it
-   takes the `EXISTS`. Host base: projected dimensions and time dimensions — but DEV-1841 routes a
-   fanning projected dimension to a producer, so the host-base inline aggregate never coexists with a
-   fanning projected path and always takes the `EXISTS`. Producer: its partition keys plus the window
-   time key (a fanning-axis window keeps its same-branch conjunct inline, so it windows over matching
-   rows and keeps its frame rows; a partition-by-a-to-one-key producer has no fanning grain and takes
-   the `EXISTS`). *Alternative* — host base only, producers always `EXISTS` — rejected: it pushes a
-   fanning-axis date bound into a window's `_src` and loses same-branch binding.
+   takes the `EXISTS`. Host base: projected dimensions and time dimensions — a dims-only or
+   producer-only base binds a same-branch conjunct to the dimension's row; DEV-1841 routes a fanning
+   projected dimension to a producer, so a host-base inline aggregate never coexists with a fanning
+   projected path and always takes the `EXISTS`. Producer: its partition keys plus the window time
+   key — both attributable from the population by construction (the partition-key rule; decision 12
+   for the window axis), so a host-rooted producer never materialises a fanning path and always
+   takes the `EXISTS`. One generic rule serves both consumers.
 
 3. **Groups attach on the plan; the disposition threads through compilation.** The `EXISTS` groups
    live on `PlannedQuery.semi_join_filters` (the dev-1840/1910 field), not the prebound; there is no
@@ -131,12 +132,35 @@ parent's inline conjuncts (pre-existing); DEV-1908 / DEV-1911.
     raise cases are re-pointed to executed-value oracles; the unanalyzable/out-of-scope cases stay raises
     via the new checkers.
 
+12. **A windowed aggregate's time axis must be attributable from its home (ruling 2026-09-18).**
+    `sum(spend, window='1y')` by `orders.ordered_at` from `customers` is not a population-filter case:
+    the time bucket is a grain member of the windowed aggregate (Axiom 2.3) that its home does not
+    determine (Axiom 7), so it resolves per the mode axis (Axiom 8) — broadcast has no denotation for a
+    window (no value exists at the axis-less grain), associate is the distinct-entity dedup, error
+    refuses. Today the host-rooted producer multiplies the root-local value once per matching order in
+    every mode, unwarned, with or without a filter (300/600/700/810 unfiltered): an Axiom 4 violation
+    the population push cannot fix. The cross-model spelling of the same node already fails closed
+    (`check_windowed_cross_model_time_axis`; `queries/cross-model-aggregates` › Explicit grain and
+    window), associate mode refuses `window=`, and an explicit fanning partition key fails in every
+    mode; spelling-invariance (Axioms 2.5/2.7) gives the host-rooted spelling the same rule. So: the
+    checker rule is generalised to every windowed aggregate (name and message drop "cross-model") and
+    fired from the host-rooted windowed regroup path, mode-invariant; the DEV-1909 windowed scenario
+    becomes the local-axis window (`customers.signup_at`, same oracle series 100/250/310/420, verified
+    on current code) plus a fail-closed scenario. Window association — frame membership by association,
+    same-row filter binding, per-entity dedup inside the frame, under `associate`, both spellings — is
+    **DEV-1914** (oracles recorded there). *Alternatives rejected*: dedup inside the window in every
+    mode (association without the mode opt-in: in one query the plain sum would broadcast while the
+    window associates, against Axiom 8 and the cross-model rule); dedup only when a population conjunct
+    is inlined (keeps the unfiltered multiply; one shape, two behaviours).
+
 ## Risks / Trade-offs
 
 - [Golden churn on dims-only / producer-only shapes with fanning host filters] → intended (uniform
   push); ALLOWED_DELTAS carry reasons; values pinned by executed oracles.
 - [A same-row case misclassified as `EXISTS`] → the per-consumer rule is pinned by the association,
-  same-branch and fanning-axis window scenarios; decision 6's assertion fails closed on the reverse mistake.
+  same-branch and local-axis window scenarios; decision 6's assertion fails closed on the reverse mistake.
+- [A windowed query that returned numbers now errors] → intended (decision 12): the numbers were
+  join-multiplied in every mode; the error names the time dimension and the remedy.
 - [Population groups leak onto a host-rooted association producer] → decision 4's kernel-keyed boundary;
   a structural test asserts the association producer receives no population groups.
 - [Nested host-rooted producer misses the disposition] → decision 3's compile-context threading; a

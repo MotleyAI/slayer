@@ -25,8 +25,13 @@ to one row (associate `spend:sum` by `orders.status` filtered `orders.amount in 
   predicate, each once", in every query shape and every `to_many_handling` mode.
 - **Same-row binding is per consumer** (Axiom 3 Association, Law 5 Dice–slice). A consumer applies a
   fanning conjunct inline iff its own grain already materialises every fanning path of the conjunct
-  — a producer's partition keys or its window time axis; otherwise by semi-join. This keeps a
-  fanning-axis window bound to its matching rows.
+  — the host base's projected dimensions on that branch; otherwise by semi-join. A host-rooted
+  producer's grain (partition keys, window time axis) is attributable from the population by
+  construction, so it always takes the semi-join.
+- **A windowed aggregate's time axis must be attributable from its home, in every mode** — the
+  existing cross-model rule generalised to the host-rooted spelling, which today multiplies a
+  root-local value once per matching joined row, unwarned, with or without a filter. Windowing by
+  association under `associate` is **DEV-1914**.
 - **The DEV-1900 interim guard is retired.** Its fanning arm becomes the semi-join; its unanalyzable
   arm becomes a typed checker error raised by the disposition itself, for host and producers alike; a
   conjunct outside pushdown scope (`OR`/`NOT` mixing local and cross-path references, or several
@@ -58,14 +63,17 @@ to one row (associate `spend:sum` by `orders.status` filtered `orders.amount in 
 - `queries/cross-model-aggregates`: MODIFIED *Producer filter routing* — every host-rooted regroup
   producer inherits the population's disposition (including nested ones), same-row binding for
   conjuncts its grain materialises, and the informational entry for the population push names no
-  aggregate; the association arm keeps its own routing.
+  aggregate; the association arm keeps its own routing; MODIFIED *Explicit grain and window on
+  cross-model aggregates* — every windowed aggregate, cross-model or population-rooted, requires its
+  time axis attributable from its home, else a typed error in every mode.
 
 ## Impact
 
 - `slayer/engine/compile/stages.py` (population disposition object and its consumers; the guard
   trigger and `_regroup_inherited_filters`' fanning-conjunct handling replaced; the disposition
   threaded through `compile_synthesized` for nested producers), `slayer/engine/elaborate_env.py` (two
-  checker rules replace one), `slayer/ir/planned.py` (empty-base host gating),
+  checker rules replace one; the windowed-time-axis rule generalised and fired for host-rooted
+  windowed producers), `slayer/ir/planned.py` (empty-base host gating),
   `slayer/sql/generator.py` (empty-base placeholder applies the semi-joins),
   `slayer/core/warnings.py` + `slayer/engine/query_engine.py` (optional `measure`, top-level entries).
 - Tests: new `tests/test_dev1909_population_pushdown.py`, `tests/test_dev1909_golden_sql.py` +
@@ -73,5 +81,6 @@ to one row (associate `spend:sum` by `orders.status` filtered `orders.amount in 
   xfails and golden carve-outs re-pointed; `dev1747` / `dev1900` baselines re-blessed; ledger rows
   swapped; repository-wide audit of customers-rooted fanning filters.
 - Docs: one sentence in `docs/concepts/queries.md` (Filters and Auto-Joins) and the `warnings` table
-  cell; `architecture/semantics.arc42.md` axiom 14 gains an enforced tag (normative edit, exact diff
+  cell; the windowed sentence in `docs/concepts/formulas.md` loses its cross-model qualifier;
+  `architecture/semantics.arc42.md` axiom 14 gains an enforced tag (normative edit, exact diff
   shown before applying).

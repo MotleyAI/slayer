@@ -82,6 +82,12 @@ def _orders_month_td():
         granularity=TimeGranularity.MONTH)]
 
 
+def _signup_month_td():
+    return [TimeDimension(
+        dimension=ColumnRef(name="signup_at"),
+        granularity=TimeGranularity.MONTH)]
+
+
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def backend(request):
     async for e in make_exec_engine(request):
@@ -195,19 +201,42 @@ class TestProducersInheritDisposition:
         for tier, n in POP_FILTER_COUNT_BY_TIER.items():
             assert int(by[(tier,)]["customers.n"]) == n, tier
 
-    async def test_windowed_fanning_axis_keeps_frame_rows(self, backend):
-        """sum(spend, window='1y') bucketed by orders.ordered_at month: the ok
-        filter binds to the windowed rows; April trailing 1y = 420 (never 520)."""
-        _, engine = backend
-        resp = await engine.execute(cust_q(
-            time_dimensions=_orders_month_td(), measures=[WINDOWED], filters=[OK]))
+    async def test_windowed_local_axis_inherits_restriction(self, backend):
+        """sum(spend, window='1y') bucketed by customers.signup_at month over the
+        ok population: each customer once, trailing-1y cumulative 100/250/310/420;
+        the producer carries the EXISTS and never joins orders (both entries)."""
+        dialect, engine = backend
+        q = cust_q(
+            time_dimensions=_signup_month_td(), measures=[WINDOWED], filters=[OK])
+        resp = await engine.execute(q)
         by_month = {
-            month_key(r["customers.orders.ordered_at"]): r["customers.w"]
-            for r in resp.data if r["customers.orders.ordered_at"] is not None
+            month_key(r["customers.signup_at"]): r["customers.w"]
+            for r in resp.data if r["customers.signup_at"] is not None
         }
         assert set(by_month) == set(POP_FILTER_WINDOWED_BY_MONTH)
         for month, spend in POP_FILTER_WINDOWED_BY_MONTH.items():
             assert float(by_month[month]) == pytest.approx(spend), month
+        measures = {i.measure for i in pushed_filter_infos(resp)}
+        assert None in measures and "w" in measures, measures
+        sql = await _dry(engine, q, dialect)
+        assert "EXISTS" in sql.upper()
+        assert "orders" not in _join_aliases(sql, dialect=dialect), sql
+
+    @pytest.mark.parametrize("mode", MODES)
+    @pytest.mark.parametrize("with_filter", [True, False])
+    async def test_windowed_fanning_axis_fails_closed(self, backend, mode, with_filter):
+        """A window over a fanning time axis (orders.ordered_at from customers)
+        fails closed in every mode, filter or not: its axis is not attributable
+        from the population root; the error names the time dimension (decision 12)."""
+        _, engine = backend
+        kw = {"filters": [OK]} if with_filter else {}
+        with pytest.raises((SlayerError, ValueError)) as ei:
+            await engine.execute(cust_q(
+                time_dimensions=_orders_month_td(), measures=[WINDOWED],
+                to_many_handling=mode, **kw))
+        msg = str(ei.value)
+        assert "ordered_at" in msg, msg
+        assert_ref_free(msg)
 
     async def test_first_last_producer_with_sibling_sum(self, backend):
         """A first/last producer over a local axis coexists with the population
