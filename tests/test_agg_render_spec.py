@@ -24,8 +24,6 @@ mirrors the legacy synthesizer (``slayer/sql/generator.py:7033``) verbatim:
   raise ``AggregationNotAllowedError`` on miss.
 * ``first`` / ``last`` derive ``time_column`` from the first ``ColumnKey``
   in ``key.args``.
-* ``column_filter_key`` is qualified against ``source_relation`` /
-  ``source_model`` and surfaces as ``filter_sql``.
 * Cross-model kwargs whose ``ColumnKey.path`` disagrees with
   ``source.path`` raise ``AggregationNotAllowedError``.
 """
@@ -43,7 +41,6 @@ from slayer.core.keys import (
     ColumnKey,
     ColumnSqlKey,
     Phase,
-    SqlExprKey,
     StarKey,
 )
 from slayer.core.models import Aggregation, AggregationParam, Column, SlayerModel
@@ -173,9 +170,10 @@ class TestAggRenderSpecConstruction:
     """The new typed record's field surface and frozen contract."""
 
     def test_exact_field_set(self):
-        # Decision #4: exactly these 11 fields, no more, no less. Extra
+        # Decision #4: exactly these 10 fields, no more, no less. Extra
         # fields (agg_args / source_measure_name / distinct / window /
-        # user_declared / etc.) are deliberately NOT carried.
+        # user_declared / etc.) are deliberately NOT carried. A Column.filter
+        # rides its source ColumnSqlKey now, so there is no ``filter_sql`` field.
         assert set(AggRenderSpec.model_fields) == {
             "sql",
             "name",
@@ -184,7 +182,6 @@ class TestAggRenderSpecConstruction:
             "aggregation_def",
             "agg_kwargs",
             "alias",
-            "filter_sql",
             "time_column",
             "type",
             "column_type",
@@ -198,7 +195,7 @@ class TestAggRenderSpecConstruction:
             aggregation="count",
             alias="orders._count",
         )
-        # All 11 fields present; defaults for those omitted.
+        # All fields present; defaults for those omitted.
         assert spec.sql is None
         assert spec.name == ""
         assert spec.model_name == "orders"
@@ -206,7 +203,6 @@ class TestAggRenderSpecConstruction:
         assert spec.alias == "orders._count"
         assert spec.aggregation_def is None
         assert spec.agg_kwargs == {}
-        assert spec.filter_sql is None
         assert spec.time_column is None
         assert spec.type is None
         assert spec.column_type is None
@@ -225,7 +221,6 @@ class TestAggRenderSpecConstruction:
             aggregation_def=agg_def,
             agg_kwargs={"p": "0.5"},
             alias="orders.amount_custom",
-            filter_sql="orders.status = 'paid'",
             time_column="orders.created_at",
             type=DataType.DOUBLE,
             column_type=DataType.DOUBLE,
@@ -233,7 +228,6 @@ class TestAggRenderSpecConstruction:
         assert spec.sql == "amount"
         assert spec.aggregation_def is agg_def
         assert spec.agg_kwargs == {"p": _str_kwarg("0.5")}
-        assert spec.filter_sql == "orders.status = 'paid'"
         assert spec.time_column == "orders.created_at"
         assert spec.type is DataType.DOUBLE
         assert spec.column_type is DataType.DOUBLE
@@ -279,17 +273,17 @@ class TestBuilderStarKey:
         assert spec.alias == "orders._count"
         assert spec.type is DataType.INT
         assert spec.column_type is None
-        assert spec.filter_sql is None
         assert spec.agg_kwargs == {}
 
     def test_non_count_star_raises(self):
         key = AggregateKey(source=StarKey(), agg="sum")
         slot = _slot(key, declared_name="_sum", public_name="_sum")
+        source_model = _orders_model()
         with pytest.raises(ValueError, match=r"not allowed with measure '\*'"):
             _invoke(
                 slot=slot,
                 key=key,
-                source_model=_orders_model(),
+                source_model=source_model,
                 source_relation="orders",
                 full_alias="orders._sum",
             )
@@ -297,11 +291,12 @@ class TestBuilderStarKey:
     def test_star_with_args_raises(self):
         key = AggregateKey(source=StarKey(), agg="count", args=(Decimal("1"),))
         slot = _slot(key, declared_name="_count", public_name="_count")
+        source_model = _orders_model()
         with pytest.raises(ValueError, match=r"\*:count.* no args"):
             _invoke(
                 slot=slot,
                 key=key,
-                source_model=_orders_model(),
+                source_model=source_model,
                 source_relation="orders",
                 full_alias="orders._count",
             )
@@ -313,11 +308,12 @@ class TestBuilderStarKey:
             kwargs=(("p", Decimal("0.5")),),
         )
         slot = _slot(key, declared_name="_count", public_name="_count")
+        source_model = _orders_model()
         with pytest.raises(ValueError, match=r"\*:count.* no args or kwargs"):
             _invoke(
                 slot=slot,
                 key=key,
-                source_model=_orders_model(),
+                source_model=source_model,
                 source_relation="orders",
                 full_alias="orders._count",
             )
@@ -354,78 +350,9 @@ class TestBuilderColumnKey:
         assert spec.alias == "orders.amount_sum"
         assert spec.type is DataType.DOUBLE
         assert spec.column_type is DataType.DOUBLE
-        assert spec.filter_sql is None
         assert spec.time_column is None
         assert spec.agg_kwargs == {}
         assert spec.aggregation_def is None
-
-    def test_with_column_filter_key_qualifies_filter(self):
-        key = AggregateKey(
-            source=ColumnKey(path=(), leaf="amount"),
-            agg="sum",
-            column_filter_key=SqlExprKey(canonical_sql="status = 'paid'"),
-        )
-        slot = _slot(
-            key,
-            declared_name="paid_amount_sum",
-            public_name="paid_amount_sum",
-            slot_type=DataType.DOUBLE,
-        )
-        spec = _invoke(
-            slot=slot,
-            key=key,
-            source_model=_orders_model(),
-            source_relation="orders",
-            full_alias="orders.paid_amount_sum",
-        )
-        assert spec.filter_sql is not None
-        # Bare-identifier refs in the filter qualify under the host model
-        # (matches legacy ``resolve_filter_columns``).
-        assert "orders" in spec.filter_sql
-        assert "status" in spec.filter_sql
-
-    def test_filter_qualifies_with_source_relation_not_model_name(self):
-        # DEV-1484 (relocated from test_sql_generator.py
-        # TestFilteredMeasures::test_filtered_measure_uses_source_alias_* and
-        # ::test_filtered_measure_source_alias_propagates_to_generated_sql).
-        # When the source RELATION alias differs from the underlying
-        # model.name (named-query / sub-query sources), the filter columns
-        # AND the spec.model_name must qualify with the source relation, never
-        # the underlying model.name — otherwise the emitted FROM (which uses
-        # the relation alias) and the CASE-WHEN filter would disagree and the
-        # SQL would be invalid.
-        model = SlayerModel(
-            name="orders_underlying",
-            data_source="prod",
-            sql_table="orders",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="amount", type=DataType.DOUBLE),
-                Column(name="status", type=DataType.TEXT),
-            ],
-        )
-        key = AggregateKey(
-            source=ColumnKey(path=(), leaf="amount"),
-            agg="sum",
-            column_filter_key=SqlExprKey(canonical_sql="status = 'active'"),
-        )
-        slot = _slot(
-            key=key,
-            declared_name="active_revenue_sum",
-            public_name="active_revenue_sum",
-            slot_type=DataType.DOUBLE,
-        )
-        spec = _invoke(
-            slot=slot,
-            key=key,
-            source_model=model,
-            source_relation="orders_alias",
-            full_alias="orders_alias.active_revenue_sum",
-        )
-        assert spec.model_name == "orders_alias"
-        assert spec.filter_sql is not None
-        assert "orders_alias.status" in spec.filter_sql
-        assert "orders_underlying" not in spec.filter_sql
 
     def test_columnsqlkey_derived_uses_column_sql(self):
         # The derived ``net_amount`` column has ``sql = "amount - tax"`` and
@@ -462,6 +389,7 @@ class TestBuilderColumnKey:
         # that surfaces a different ValueError (e.g. a setup failure) still
         # fails loudly. Legacy emits exactly:
         #     "Aggregate source column 'nonexistent' not found on model 'orders'"
+        source_model = _orders_model()
         with pytest.raises(
             ValueError,
             match=r"Aggregate source column 'nonexistent' not found on model 'orders'",
@@ -469,7 +397,7 @@ class TestBuilderColumnKey:
             _invoke(
                 slot=slot,
                 key=key,
-                source_model=_orders_model(),
+                source_model=source_model,
                 source_relation="orders",
                 full_alias="orders.x_sum",
             )
@@ -514,11 +442,12 @@ class TestBuilderCustomAggregation:
             agg="not_a_real_agg",
         )
         slot = _slot(key, declared_name="amount_x", public_name="amount_x")
+        source_model = _orders_model()
         with pytest.raises(AggregationNotAllowedError, match=r"unknown aggregation"):
             _invoke(
                 slot=slot,
                 key=key,
-                source_model=_orders_model(),
+                source_model=source_model,
                 source_relation="orders",
                 full_alias="orders.amount_x",
             )

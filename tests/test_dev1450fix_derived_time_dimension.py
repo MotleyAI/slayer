@@ -164,12 +164,12 @@ class TestBindDerivedTimeDimension:
             scope=ModelScope(source_model=_orders_model()),
             bundle=_bundle_local(),
         )
-        assert isinstance(bound.value_key, TimeTruncKey)
-        assert bound.value_key.column == ColumnSqlKey(
+        assert isinstance(bound.bound.value_key, TimeTruncKey)
+        assert bound.bound.value_key.column == ColumnSqlKey(
             path=(), model="orders", column_name="effective_at",
         )
-        assert bound.value_key.granularity == "month"
-        assert bound.phase == Phase.ROW
+        assert bound.bound.value_key.granularity == "month"
+        assert bound.bound.phase == Phase.ROW
 
     def test_joined_derived_td_carries_path(self) -> None:
         td = TimeDimension(
@@ -181,8 +181,8 @@ class TestBindDerivedTimeDimension:
             scope=ModelScope(source_model=_orders_model()),
             bundle=_bundle_local(),
         )
-        assert isinstance(bound.value_key, TimeTruncKey)
-        assert bound.value_key.column == ColumnSqlKey(
+        assert isinstance(bound.bound.value_key, TimeTruncKey)
+        assert bound.bound.value_key.column == ColumnSqlKey(
             path=("customers",), model="customers", column_name="signup_eff",
         )
 

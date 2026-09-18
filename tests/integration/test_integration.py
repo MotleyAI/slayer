@@ -2112,8 +2112,9 @@ async def test_filtered_measure_with_dimensions(integration_env):
 
 
 async def test_filtered_last_picks_correct_row(integration_env):
-    """Filtered last measure picks the latest row that matches the filter,
-    not the globally latest row.
+    """A ``Column.filter`` masks the value and never restricts the ranking: ``last``
+    picks the globally latest row and reads its masked value (NULL when that row
+    fails the filter).
 
     Fixture: orders (1..6), Order 6 (pending, Mar-20) is globally latest,
     Order 5 (completed, 300.0, Mar-5) is the latest completed.
@@ -2142,11 +2143,11 @@ async def test_filtered_last_picks_correct_row(integration_env):
         ],
     ))
     rows_by_month = {row["orders.created_at"]: row for row in result.data}
-    # March: globally latest is Order 6 (pending, 25.0), but the latest
-    # completed is Order 5 (completed, 300.0). The filter must participate
-    # in ranking so the correct row is picked.
+    # March: the globally latest row is Order 6 (pending) — its masked value is
+    # NULL; the older completed Order 5 (300.0) is not reached (a WHERE belongs
+    # in the query).
     mar = rows_by_month["2025-03-01"]
-    assert mar["orders.completed_latest_last"] == pytest.approx(300.0)
+    assert mar["orders.completed_latest_last"] is None
     assert mar["orders.latest_amount_last"] == pytest.approx(25.0)  # unfiltered picks Order 6
 
     # January: latest is Order 2 (completed, 200.0) — passes filter
@@ -4047,7 +4048,13 @@ async def test_dev1539_having_multiterm_measure_emits_outer_parens(composite_sco
     assert having.startswith("("), (
         f"Expected HAVING body to start with `(` (outer wrap); got:\n{having}"
     )
-    assert "SUM(" in having.upper() and "/" in having and "NULLIF" in having.upper(), (
+    assert "SUM(" in having.upper(), (
+        f"Expected HAVING body to combine SUM/NULLIF via `/`; got:\n{having}"
+    )
+    assert "/" in having, (
+        f"Expected HAVING body to combine SUM/NULLIF via `/`; got:\n{having}"
+    )
+    assert "NULLIF" in having.upper(), (
         f"Expected HAVING body to combine SUM/NULLIF via `/`; got:\n{having}"
     )
 

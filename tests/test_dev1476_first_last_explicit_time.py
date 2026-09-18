@@ -288,12 +288,13 @@ async def test_cross_model_first_last_with_no_time_at_all_raises() -> None:
         ],
     )
 
+    query = SlayerQuery.model_validate({
+        "source_model": "orders",
+        "dimensions": ["customers.region"],
+        "measures": [{"formula": "customers.amount:last"}],
+    })
     with pytest.raises(ValueError, match=r"first/last.*ranking time"):
-        await engine.execute(SlayerQuery(
-            source_model="orders",
-            dimensions=["customers.region"],
-            measures=[{"formula": "customers.amount:last"}],
-        ))
+        await engine.execute(query)
 
 
 async def test_d_cross_cross_model_derived_time_arg(
@@ -363,8 +364,12 @@ async def test_cross_model_last_with_target_filter_ranks_filtered_rows() -> None
     assert by_region["NA"][last_key] == pytest.approx(100.0), resp.sql
 
 
-async def test_cross_model_last_over_column_filter_uses_filtered_rank() -> None:
-    """A ``Column.filter`` on the target column makes first/last use ``_last_rn_fN``/``_match_fN``; the bare ``_last_rn`` would be 'no such column'."""
+async def test_cross_model_last_over_column_filter_masks_the_newest_row() -> None:
+    """DEV-1832: a ``Column.filter`` masks the value; it never restricts the
+    ranking. ``customers.active_amount:last`` ranks customers by ``signup_at`` and
+    the newest (id 3, 2023-09-01) is ``inactive``, so its masked value is NULL —
+    the older active 100.0 is not reached (a row-restricting WHERE belongs in the
+    query, not the column)."""
     engine = await _engine_from_sql(
         ddl=[
             "CREATE TABLE orders ("
@@ -413,7 +418,7 @@ async def test_cross_model_last_over_column_filter_uses_filtered_rank() -> None:
     by_region = {row["orders.customers.region"]: row for row in resp.data}
     assert set(by_region) == {"NA"}, resp.sql
     last_key = next(k for k in by_region["NA"].keys() if "last" in k.lower())
-    assert by_region["NA"][last_key] == pytest.approx(100.0), resp.sql
+    assert by_region["NA"][last_key] is None, resp.sql
 
 
 async def test_local_last_over_derived_complex_time_col_qualifies_under_join() -> None:

@@ -59,10 +59,11 @@ class TupleLit(_BaseNode):
 
 class AggCall(_BaseNode):
     # source may also be an aggregation-free scalar expression (``sum(a - b)``),
-    # or — for a re-aggregation (DEV-1847) — a nested AggCall / composite of them.
+    # or — for a re-aggregation (DEV-1847/DEV-1832) — a nested AggCall or a grained
+    # TransformCall, alone or composed.
     source: Union[
         Ref, DottedRef, StarSource, Literal, "ScalarCall", "Arith", "UnaryOp",
-        "AggCall", "Cmp", "BoolOp",
+        "AggCall", "TransformCall", "Cmp", "BoolOp",
     ]
     agg: str
     args: Tuple[Any, ...] = ()
@@ -1101,10 +1102,11 @@ def _source_leaves(node: Any):
 
 
 def _is_mixed_agg_source(node: Any) -> bool:
-    """A source whose composition leaves mix an AggCall with a row-level
-    reference — the row-grain shape (DEV-1859)."""
+    """A source whose composition leaves mix an attached value — an AggCall or a
+    grained transform — with a row-level reference (the row-grain shape,
+    DEV-1859)."""
     leaves = list(_source_leaves(node))
-    return any(isinstance(leaf, AggCall) for leaf in leaves) and any(
+    return any(isinstance(leaf, (AggCall, TransformCall)) for leaf in leaves) and any(
         isinstance(leaf, (Ref, DottedRef, StarSource)) for leaf in leaves
     )
 
@@ -1112,18 +1114,13 @@ def _is_mixed_agg_source(node: Any) -> bool:
 def _validated_agg_source(source: Any, *, func_name: str, original: str) -> Any:
     """Validate a functional aggregation's first argument as its source.
 
-    A source resolving entirely to attached values (AggCalls, alone or composed
-    through arithmetic / scalar calls) is a re-aggregation (DEV-1847); a source
-    mixing row-level references with attached values is a row-grain aggregation
-    (DEV-1859); both are accepted. Only a transform nested in the source is
-    rejected."""
+    A source resolving to attached values — nested AggCalls and/or grained
+    transforms, alone or composed through arithmetic / scalar calls — is a
+    (second-order) re-aggregation (DEV-1847/DEV-1832); a source mixing row-level
+    references with attached values is a row-grain aggregation (DEV-1859); both
+    are accepted."""
     leaves = list(_source_leaves(source))
-    if any(isinstance(leaf, TransformCall) for leaf in leaves):
-        raise ValueError(
-            f"Invalid Mode-B expression {original!r}: transforms cannot be "
-            f"nested inside the expression aggregated by {func_name!r}."
-        )
-    if any(isinstance(leaf, AggCall) for leaf in leaves):
+    if any(isinstance(leaf, (AggCall, TransformCall)) for leaf in leaves):
         return source
     if not isinstance(source, _AGG_SOURCE_KINDS):
         raise ValueError(

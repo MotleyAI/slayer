@@ -8,8 +8,8 @@ Mode-A door, so registration becomes a side effect of resolution (P-A).
 Today the fragment scan exists ONLY on the host render path
 (``_resolve_agg_inputs_via_scope`` -> ``_resolve_fragment_kwargs``). The
 cross-model ``_cm_`` CTE builds its FROM purely from ``cte_scope.join_paths``
-and registers only source / positional args / typed column kwargs /
-``column_filter_key`` — never string fragments nor the model-default
+and registers only source / positional args / typed column kwargs — never
+string fragments nor the model-default
 ``AggregationParam.sql`` values. A crossing fragment therefore renders a
 reference to a table that is not in the CTE's FROM.
 

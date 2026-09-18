@@ -26,6 +26,7 @@ from slayer.core.keys import (
     TransformKey,
     ValueKey,
     _FrozenKey,
+    source_anchor_path,
 )
 from slayer.sql.dialects.base import SqlDialect
 from slayer.sql.render.aggregates import (
@@ -256,16 +257,8 @@ def _render_builtin_aggregate(  # NOSONAR(S3776) — sequential fail-closed guar
                 f"mechanism, which needs the generator's builder"
             ),
         )
-    # The next guards refuse a key whose FIELDS need the generator (else a filtered aggregate renders as a plain SUM over excluded rows).
-    if key.column_filter_key is not None:
-        raise RenderContextMissingFacilityError(
-            key_kind=type(key).__name__,
-            facility=_AGG_BUILDER,
-            detail=(
-                "the aggregate's source carries a column filter, which needs "
-                "the generator's CASE-WHEN wrapper"
-            ),
-        )
+    # A Column.filter on the source rides its ColumnSqlKey (CASE WHEN baked into
+    # the source's scope resolution), so no separate guard is needed (DEV-1832).
     if key.kwargs or key.args:
         raise RenderContextMissingFacilityError(
             key_kind=type(key).__name__,
@@ -276,13 +269,14 @@ def _render_builtin_aggregate(  # NOSONAR(S3776) — sequential fail-closed guar
             ),
         )
     if isinstance(key.source, StarKey):
-        if key.source.path:
+        star_path = source_anchor_path(key.source)
+        if star_path:
             # ``customers.*:count`` counts the JOINED relation's rows (needs the join graph); a bare ``*`` would count host rows.
             raise RenderContextMissingFacilityError(
                 key_kind=type(key).__name__,
                 facility=_AGG_BUILDER,
                 detail=(
-                    f"cross-model star over path {key.source.path!r} needs the "
+                    f"cross-model star over path {star_path!r} needs the "
                     f"generator's join-graph routing"
                 ),
             )
@@ -293,8 +287,8 @@ def _render_builtin_aggregate(  # NOSONAR(S3776) — sequential fail-closed guar
                 f"only 'count' is defined over a bare star.",
             )
         inner: exp.Expression = exp.Star()
-    elif isinstance(key.source, AggregateKey):
-        # A nested-aggregate source (re-aggregation) desugars before render.
+    elif isinstance(key.source, (AggregateKey, TransformKey)):
+        # A nested-aggregate / transform source (re-aggregation) desugars before render.
         raise RenderContextMissingFacilityError(
             key_kind=type(key).__name__,
             facility=_AGG_BUILDER,

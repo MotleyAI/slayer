@@ -29,6 +29,7 @@ from slayer.core.keys import (
     TransformKey,
     ValueKey,
     is_boolean_shaped,
+    source_anchor_path,
     window_kwarg_of,
 )
 from slayer.engine.compile.projection import _iter_slot_deps
@@ -87,7 +88,7 @@ def _series_flags(node: ValueKey, *, to_original: Dict[ValueKey, ValueKey]) -> T
     if isinstance(node, TransformKey):
         has_transform = True
     elif isinstance(node, AggregateKey):
-        if getattr(node.source, "path", ()):
+        if source_anchor_path(node.source):
             has_cross_model = True
     elif _is_placeholder(node):
         original = to_original.get(node)

@@ -209,17 +209,21 @@ disclosure.
 
 ### Requirement: Second-order aggregation over attached values
 An aggregation whose source operand resolves entirely to attached values —
-partitioned aggregates, directly or combined through arithmetic and scalar
-functions — SHALL aggregate over the operand dataset's cells, never over the
-query's population rows. The operand dataset is typed by the union of its
-constituents' grains (each constituent at its declared `partition_by=` grain; a
-constituent with no declared grain is typed at the query's dimensions). Its rows
-are the distinct union-grain cells of the row-filtered population; each
-constituent's value attaches null-safely at its own grain, a cell a constituent
-lacks contributes NULL, and no constituent adds or removes cells. The outer
-aggregation partitions those cells by the query dimensions attributable to the
-operand dataset per Axiom 1 (Determination): a dimension is attributable iff the
-grain determines it — a grain member, or a field reached from a grain member
+partitioned aggregates, or explicitly grained transforms over them, directly or
+combined through arithmetic and scalar functions — SHALL aggregate over the
+operand dataset's cells, never over the query's population rows. The operand
+dataset is typed by the union of its constituents' grains: an aggregate
+constituent at its declared `partition_by=` grain; a transform constituent at the
+union of its inner aggregates' grains — each inner's explicit `partition_by=`, else
+the query's dimensions and time buckets — where a windowed inner's grain always
+includes the query's time bucket whether or not its `partition_by=` names it, and an
+axis-collapsing transform (`first`, `last`) at that union minus its time axis; a
+constituent with no declared grain is typed at the query's dimensions. Its rows are the distinct union-grain cells of the row-filtered
+population; each constituent's value attaches null-safely at its own grain, a cell
+a constituent lacks contributes NULL, and no constituent adds or removes cells. The
+outer aggregation partitions those cells by the query dimensions attributable to
+the operand dataset per Axiom 1 (Determination): a dimension is attributable iff
+the grain determines it — a grain member, or a field reached from a grain member
 over provably to-one join hops (a foreign-key grain field thus determines its
 referenced model's fields and any column further along a to-one chain; an
 entity-key grain field additionally determines all of its own model's columns).
@@ -239,6 +243,40 @@ column's values.
 - **THEN** each region row carries the unweighted average of that region's city
   totals, by executed values, distinguishable from the row-count-weighted value
 
+#### Scenario: Grained transform constituent aggregates the transform's cells
+- **WHEN** a query over a month time dimension selects
+  `sum(cumsum(amount:sum(partition_by=[region, ordered_at])) - 1)`
+- **THEN** each month carries the sum over regions of that region's running total
+  minus one per cell, by hand-computed executed values on SQLite and DuckDB
+
+#### Scenario: Ungrained transform constituent is identity plus a warning
+- **WHEN** a query selects `sum(cumsum(amount:sum))` over a month time dimension
+- **THEN** the value equals `cumsum(amount:sum)` per cell and the response carries
+  the degenerate-re-aggregation warning, exactly as `sum(sum(amount))` does
+
+#### Scenario: Ungrained inner of a mixed operand types at the query grain
+- **WHEN** a query over a month time dimension selects
+  `sum(rank(amount:sum(partition_by=[region, ordered_at]) - amount:sum))`
+- **THEN** the ungrained inner is the month total, computed at the query grain and
+  broadcast onto the `(region, month)` cells before ranking — never re-evaluated per
+  region — by hand-computed executed values distinguishable from the per-cell
+  evaluation
+
+#### Scenario: Collapsing transform constituent drops the time axis
+- **WHEN** a query over a month time dimension selects
+  `sum(last(amount:sum(partition_by=[region, ordered_at])))`
+- **THEN** the constituent is typed at `(region)`: every month carries the sum over
+  regions of each region's most recent monthly total, the response warns that the
+  month dimension is broadcast, and a region absent from a month still counts —
+  distinguishable from summing the `(region, month)` cells present in that month
+
+#### Scenario: Collapsing and preserving constituents share one operand dataset
+- **WHEN** the same query selects
+  `sum(cumsum(amount:sum(partition_by=[region, ordered_at])) - last(amount:sum(partition_by=[region, ordered_at])))`
+- **THEN** the operand dataset is the `(region, month)` cells, the collapsed value
+  broadcasts onto them, each month is attributable through the preserving
+  constituent, and the value is correct with no warning
+
 #### Scenario: Composite operand keeps the population's cells
 - **WHEN** the operand combines aggregates at `[city, region]` and `[region]`
   grains and some union-grain cell has no value for one constituent (e.g. a
@@ -255,7 +293,7 @@ column's values.
 
 #### Scenario: Outer dimension seeded by a nested-path entity key
 - **WHEN** the inner grain contains a joined model's unique key
-  (e.g. `sum(amount, partition_by=customers.id)` rooted at `corders`) and a query
+  (e.g. `sum(amount, partition_by=customers.id)` rooted at `orders`) and a query
   dimension is a column of that model or reached from it over a to-one hop
   (`customers.region_id`, `customers.regions.name`)
 - **THEN** the outer aggregation partitions the cells exactly by that dimension with
@@ -263,7 +301,7 @@ column's values.
 
 #### Scenario: A foreign-key grain field determines its to-one target
 - **WHEN** the inner grain contains a foreign-key column
-  (e.g. `sum(amount, partition_by=customers.region_id)` rooted at `corders`) and a
+  (e.g. `sum(amount, partition_by=customers.region_id)` rooted at `orders`) and a
   query dimension is a field of the model that key points at over the provably
   to-one hop (`customers.regions.name`)
 - **THEN** the outer aggregation partitions the cells exactly by that dimension with
@@ -385,14 +423,16 @@ every consumer position.
 
 ### Requirement: Row-grain aggregation sources
 An aggregation whose source operand combines row-level column references with
-attached values — partitioned aggregates, directly or through arithmetic and
-scalar functions — SHALL aggregate over the row-filtered population rows of its
-home dataset, never over the attached operands' cells. The operand types at row
-grain: the union of a row leaf's grain with any attached constituent's grain is
-row grain, the finest. Each attached constituent is computed at its own declared
-`partition_by=` grain (a constituent with no declared grain is typed at the
-query's dimensions) and its value is broadcast onto each population row
-null-safely: a row whose constituent lacks a value carries NULL for that
+attached values — partitioned aggregates or explicitly grained transforms, directly
+or through arithmetic and scalar functions — SHALL aggregate over the row-filtered
+population rows of its home dataset, never over the attached operands' cells. The
+operand types at row grain: the union of a row leaf's grain with any attached
+constituent's grain is row grain, the finest. Each attached constituent is computed
+at its own declared grain (an aggregate at its `partition_by=` grain, a transform at
+the union of its inner aggregates' grains, minus its time axis for `first`/`last`;
+a constituent with no declared grain is typed at the query's dimensions) and its
+value is broadcast onto each population
+row null-safely: a row whose constituent lacks a value carries NULL for that
 constituent, and the attachment never adds or removes rows. Per-row weighting is
 the defined meaning of the shape and the broadcast SHALL NOT warn. The outer
 aggregation evaluates at its consumer grain exactly as over any row-level
@@ -407,6 +447,13 @@ other column's values.
   distinguishable from the pure re-aggregation
   `sum(avg(unit_price, partition_by=product))` and from
   `sum(quantity * unit_price)`
+
+#### Scenario: Transform constituent inside a mixed source
+- **WHEN** a query over dimensions `[region]` selects the measure
+  `sum(quantity * rank(avg(unit_price, partition_by=product)))`
+- **THEN** each region row carries the sum over its base rows of `quantity` times
+  the rank of the row's product among products by average unit price, by executed
+  values, with unchanged cardinality
 
 #### Scenario: Missing constituent value is NULL on a surviving row
 - **WHEN** some base row's cell has no value for an attached constituent and the
@@ -457,3 +504,71 @@ ungrained form on construction grounds is a closure violation.
   `[city, region]` operand dataset and broadcast onto its cells, and the
   executed value equals the manual encoding with
   `count(id, partition_by=region)` — never the not-determined rejection
+
+### Requirement: Home dataset of a row-level aggregation source
+An aggregation over a row-level source SHALL run over the rows of exactly one home
+dataset (Axiom 2): the deepest join path from the query root from which every
+dependency of every input — each source leaf, each column-valued parameter and each
+non-overridden definition default, each taken through its dependency closure, and
+each grain member of every attached constituent (an aggregate or grained transform
+operand is opaque and stands for its grain: its explicit `partition_by=`, else the
+query's dimensions; a transform's grain is the union of its inner aggregates', where
+a windowed inner's grain always includes the query's time bucket whether or not its
+`partition_by=` names it) — is
+reachable over provably to-one hops. Candidates are the input paths and their
+longest common prefix, deepest first; a tie prefers the source's anchor, the longest
+common prefix of the source leaves' own paths. The aggregation is computed over the
+home's rows, each counted once, never over a join product. When no candidate
+determines every input the query SHALL fail with the input-safety error naming the
+offending leaf and hop. The home SHALL depend on the leaves' paths alone, never on
+the spelling of the expression. Every other rule — attribution and
+`to_many_handling` modes, explicit grain, `window=`, filter routing, positions —
+applies exactly as for a single-column source rooted at the home.
+
+#### Scenario: Deepest determining dataset wins
+- **WHEN** a query rooted at `orders` selects `sum(customers.spend - customers.regions.pop)`
+  over provably to-one hops `orders → customers → regions`
+- **THEN** the home is `customers`: each customer's spend and its region's population
+  are counted once, however many orders the customer has, by executed values
+
+#### Scenario: Host-side leaf pulls the home to the root
+- **WHEN** a query rooted at `orders` selects `sum(amount - customers.discount)`
+- **THEN** the home is `orders`: each order row carries its own customer's discount,
+  by executed values
+
+#### Scenario: Branches meet at their common ancestor
+- **WHEN** a query rooted at `orders` selects `sum(customers.spend - stores.rent)`,
+  both hops provably to-one
+- **THEN** the home is `orders`, the aggregation runs over the order rows, and no
+  warning is raised, by executed values
+
+#### Scenario: A parameter widens the home
+- **WHEN** a query rooted at `orders` selects
+  `wsum(customers.spend + customers.regions.pop, weight=amount)`
+- **THEN** the home is `orders` — the weight's dataset — and each order is weighted by
+  its own amount, identical to the rule for a single-column source with the same
+  parameter
+
+#### Scenario: An attached constituent's grain widens the home
+- **WHEN** a query rooted at `orders` selects
+  `sum(customers.discount * avg(amount, partition_by=status))`
+- **THEN** the home is `orders` — the grain member `status` must be determined by the
+  home — and each order row carries its customer's discount times its status's
+  average amount, by executed values; with `partition_by=customers.tier` instead the
+  home stays `customers`
+
+#### Scenario: Spelling never moves the home
+- **WHEN** one query selects `sum(customers.spend)` and another `sum(customers.spend + 0)`
+- **THEN** both resolve the same home and return identical executed values
+
+#### Scenario: No home fails closed
+- **WHEN** a source leaf is reachable from every candidate home only across a fanning
+  or unproven join hop
+- **THEN** the query fails with the input-safety error naming the leaf and the hop,
+  never a multiplied value
+
+#### Scenario: A host column defined across a fanning hop is refused
+- **WHEN** `orders` defines `li_qty` as `line_items.qty` over an undeclared
+  one-to-many hop and a query rooted at `orders` selects `li_qty:sum`
+- **THEN** it fails with the input-safety error naming `line_items` and the
+  cross-model spelling, while `line_items.qty:sum` returns the per-line-item total

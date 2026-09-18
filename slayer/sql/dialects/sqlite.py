@@ -19,7 +19,9 @@ from collections.abc import Callable
 
 from sqlglot import exp
 
-from slayer.core.enums import TimeGranularity
+from typing import Optional
+
+from slayer.core.enums import DataType, TimeGranularity
 from slayer.sql.dialects.base import SqlDialect
 
 
@@ -409,6 +411,12 @@ class SqliteDialect(SqlDialect):
     # Numeric affinity stores INTEGER/REAL — nothing exact to preserve.
     exact_decimal_native: bool = False
     max_identifier_bytes: int | None = None  # unbounded
+
+    def declared_cast_type(self, dt: Optional[DataType]) -> Optional[DataType]:
+        """SQLite stores dates as text under numeric affinity, so a declared DATE / TIMESTAMP cast collapses a text date to its leading year — suppress it (P2)."""
+        if dt in (DataType.DATE, DataType.TIMESTAMP):
+            return None
+        return dt
 
     def build_null_safe_eq(
         self, left: exp.Expression, right: exp.Expression,

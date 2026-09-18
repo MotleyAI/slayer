@@ -9,7 +9,7 @@ never renders one (``slayer/sql`` keeps sole Node-building authority).
 
 from __future__ import annotations
 
-from typing import Protocol, Union, runtime_checkable
+from typing import Protocol, Tuple, Union, runtime_checkable
 
 from pydantic import BaseModel, model_validator
 
@@ -56,11 +56,17 @@ DatasetT = Union[ModelDataset, StageDataset, "Aggregate"]
 
 
 class Aggregate(_Term, frozen=True):
-    """An aggregation of ``home`` at a total ``grain`` — itself a ``Dataset``."""
+    """An aggregation of ``home`` at a total ``grain`` — itself a ``Dataset``.
+
+    ``home_path`` is the resolved home dataset (Axiom 2) as a join path relative
+    to the environment's host: the deepest dataset that determines every input;
+    ``()`` is the host itself. Resolved once in the elaborator (``engine/home``).
+    """
 
     home: DatasetT
     recipe: AggregateKey
     grain: Grain
+    home_path: Tuple[str, ...] = ()
 
     @property
     def kind(self) -> str:

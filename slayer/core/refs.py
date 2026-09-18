@@ -17,7 +17,6 @@ from slayer.core.keys import (
     InKey,
     LiteralKey,
     ScalarCallKey,
-    SqlExprKey,
     StarKey,
     TimeTruncKey,
     TransformKey,
@@ -85,14 +84,9 @@ _LEGACY_KEY_SPELLINGS: dict[type, tuple[str, _LegacyFields]] = {
     )),
     StarKey: ("StarKey", (("path", attrgetter("path")),)),
     LiteralKey: ("LiteralKey", (("value", attrgetter("value")),)),
-    SqlExprKey: ("SqlExprKey", (
-        ("canonical_sql", attrgetter("canonical_sql")),
-        ("referenced_join_paths", attrgetter("referenced_join_paths")),
-    )),
     AggregateKey: ("AggregateKey", (
         ("source", attrgetter("source")), ("agg", attrgetter("agg")),
         ("args", attrgetter("args")), ("kwargs", attrgetter("kwargs")),
-        ("column_filter_key", attrgetter("column_filter_key")),
         ("grain", attrgetter("locus")),
         ("partition_keys", lambda k: (
             None if k.partition_keys is None else k.partition_keys.keys

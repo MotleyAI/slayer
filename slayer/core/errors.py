@@ -112,6 +112,13 @@ class ColumnCycleError(SlayerError, ValueError):
         super().__init__(f"Circular column reference detected: {chain}")
 
 
+class TimeDimensionColumnError(SlayerError, ValueError):
+    """A time dimension's column is non-temporal / untyped, or re-buckets to a granularity its upstream bucket does not nest into. Plain message (both variants pinned by the raise ledger)."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+
+
 class ModelSqlValidationError(SlayerError, ValueError):
     """Raw-``sql`` model source rejected by its reachable datasource at save time.
 

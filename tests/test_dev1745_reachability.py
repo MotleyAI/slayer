@@ -39,7 +39,6 @@ from slayer.core.keys import (
     InKey,
     LiteralKey,
     ScalarCallKey,
-    SqlExprKey,
 )
 from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.core.query import SlayerQuery
@@ -248,38 +247,6 @@ class TestCompositeKeyKindsAreTotal:
             ),
         )
         assert ("customers",) in _paths_for(key)
-
-    def test_sql_expr_key_contributes_its_referenced_paths(self) -> None:
-        """``SqlExprKey`` carries its own precomputed crossed paths (a
-        ``Column.filter`` interned onto an aggregate). It has an arm in the
-        scan; this pins it."""
-        key = SqlExprKey(
-            canonical_sql="customers__regions.population > 1",
-            referenced_join_paths=(("customers", "regions"),),
-        )
-        paths = _paths_for(key)
-        assert ("customers",) in paths, paths
-        assert ("customers", "regions") in paths, paths
-
-    def test_aggregate_column_filter_key_is_owner_relative(self) -> None:
-        """DEV-1783 item 1. ``AggregateKey.column_filter_key`` paths are
-        OWNER-relative (anchored at the aggregated column's owner, reached via
-        ``source.path``), so the scan must re-anchor them by prefixing
-        ``source.path``. ``customers.balance:sum`` with a filter on
-        ``regions.name`` must contribute ``("customers","regions")`` — never
-        bare ``("regions",)``, which ``classify_host_filter`` would mis-route."""
-        key = AggregateKey(
-            agg="sum",
-            source=ColumnKey(path=("customers",), leaf="balance"),
-            column_filter_key=SqlExprKey(
-                canonical_sql="regions.name = 'Alpha'",
-                referenced_join_paths=(("regions",),),
-            ),
-        )
-        paths = _paths_for(key)
-        assert ("customers",) in paths, paths
-        assert ("customers", "regions") in paths, paths
-        assert ("regions",) not in paths, paths
 
     def test_in_key_column_crossing_is_walked(self) -> None:
         """An ``InKey`` is walked by the crossing scan: a crossing COLUMN

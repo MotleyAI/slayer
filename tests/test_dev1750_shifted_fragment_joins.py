@@ -4,7 +4,7 @@ through the same one door the host and ``_cm_`` paths use
 (``_register_fragment_kwarg_joins`` / ``scope.resolve``).
 
 Before this, ``_emit_time_shift_ctes_for_planned`` registered source / typed
-column kwargs / ``column_filter_key`` but never the string fragments, so a
+column kwargs but never the string fragments, so a
 crossing default like ``w='customers__regions.weight'`` would re-aggregate
 ``SUM(orders.amount * customers__regions.weight)`` in the shifted CTE with no
 join to ``regions`` — SQL no database binds.

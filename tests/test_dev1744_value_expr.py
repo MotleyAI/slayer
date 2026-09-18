@@ -52,7 +52,6 @@ from slayer.core.keys import (
     InKey,
     LiteralKey,
     ScalarCallKey,
-    SqlExprKey,
     StarKey,
     TimeTruncKey,
     TransformKey,
@@ -375,23 +374,6 @@ class TestRenderContextApi:
         with pytest.raises(RenderContextMissingFacilityError) as excinfo:
             render_value_key(key=key, ctx=bare)
         assert "composite" in str(excinfo.value).lower(), str(excinfo.value)
-
-    def test_filtered_aggregate_without_a_builder_fails_closed(self) -> None:
-        """A column filter must not vanish.
-
-        The generator wraps a filtered aggregate as
-        ``SUM(CASE WHEN <filter> THEN col END)``. Rendering it from ``agg`` and
-        ``source`` alone drops the filter and covers rows it must exclude —
-        a wrong number rather than an error, so the no-builder path refuses it.
-        """
-        key = AggregateKey(
-            source=ColumnKey(leaf="amount"),
-            agg="sum",
-            column_filter_key=SqlExprKey(canonical_sql="status = 'new'"),
-        )
-        ctx = _composite_ctx()
-        with pytest.raises(RenderContextMissingFacilityError):
-            render_value_key(key=key, ctx=ctx)
 
     def test_parametric_aggregate_without_a_builder_fails_closed(self) -> None:
         """Same rule for args/kwargs, which need the generator's parameter
@@ -741,8 +723,9 @@ class TestRendersEveryKeyKind:
         somewhere else inside the renderer satisfy this test.
         """
         ctx = _filter_ctx()
+        key = object()
         with pytest.raises(NotImplementedError) as excinfo:
-            render_value_key(key=object(), ctx=ctx)  # type: ignore[arg-type]
+            render_value_key(key=key, ctx=ctx)  # type: ignore[arg-type]
         assert "object" in str(excinfo.value)
 
 
@@ -1501,14 +1484,6 @@ def _mutation_cases():
             "AggregateKey.source",
             AggregateKey(source=col, agg="sum"),
             AggregateKey(source=other, agg="sum"),
-        ),
-        (
-            "AggregateKey.column_filter_key",
-            AggregateKey(source=col, agg="sum"),
-            AggregateKey(
-                source=col, agg="sum",
-                column_filter_key=SqlExprKey(canonical_sql="status = 'new'"),
-            ),
         ),
         (
             "AggregateKey.kwargs",

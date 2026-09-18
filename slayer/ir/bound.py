@@ -6,7 +6,7 @@ from typing import Dict, List, NamedTuple, Optional, Tuple
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from slayer.core.enums import DataType
+from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.format import NumberFormat
 from slayer.core.keys import (
     AggregateKey,
@@ -15,6 +15,7 @@ from slayer.core.keys import (
     ValueKey,
     grained_inner_aggregates,
     is_row_attach_root,
+    source_anchor_path,
     walk_consumer_keys,
     walk_value_keys,
 )
@@ -46,6 +47,18 @@ class BoundExpr(BaseModel):
     @property
     def phase(self) -> Phase:
         return self.value_key.phase
+
+
+class BoundTimeDimension(BaseModel):
+    """A bound time dimension: the wrapped ``BoundExpr`` (``bound``) plus the column
+    facts the checker judges — ``column_type`` and the stage column's
+    ``upstream_granularity`` (``None`` for a model column or an un-truncated stage column)."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
+
+    bound: BoundExpr
+    column_type: Optional[DataType] = None
+    upstream_granularity: Optional[TimeGranularity] = None
 
 
 def bound_filter_from_key(vk: ValueKey) -> BoundFilter:
@@ -159,7 +172,7 @@ def _combined_consumer_kind(k: ValueKey) -> Optional[str]:
     if not isinstance(k, AggregateKey):
         return None
     partitioned = k.partition_keys is not None
-    if not getattr(k.source, "path", ()):
+    if not source_anchor_path(k.source):
         return "local_partitioned" if partitioned else None
     if k.locus == "host":
         return None
