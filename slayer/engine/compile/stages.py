@@ -282,9 +282,27 @@ def _regroup_producer_prebound(  # NOSONAR(S3776) — one producer-prebound asse
             # A grain key is a dimension the producer GROUPS BY; marking a computed one makes its inner aggregate a ROW attach.
             is_dimension=True,
         ))
+    # Non-aggregate constituents (transforms, arithmetic, scalar) fall back to a
+    # bare op/name, so two same-op transforms — ``sum(cumsum(a) - cumsum(b))`` —
+    # would collide. Disambiguate against the names already taken (grain + prior
+    # constituents); the first occurrence keeps its bare name. Wiring is by key,
+    # so the label only needs to be unique.
+    used_names: set[str] = {
+        dm.public_name for dm in grain_dms if dm.public_name is not None
+    }
+
+    def _unique(name: str) -> str:
+        candidate = name
+        i = 2
+        while candidate in used_names:
+            candidate = f"{name}_{i}"
+            i += 1
+        used_names.add(candidate)
+        return candidate
+
     agg_dms: List[DeclaredMeasure] = []
     for agg in aggs:
-        canonical = (
+        canonical = _unique(
             (public_alias_by_agg.get(agg) if isinstance(agg, AggregateKey) else None)
             or (canonical_aggregate_alias(agg, profile="stage_formula")
                 if isinstance(agg, AggregateKey) else None)
@@ -841,7 +859,7 @@ def _synthesize_wrap_attach(
         to_many_handling=prebound.to_many_handling,
     )
     producer_plan = compile_synthesized(
-        producer_prebound,
+        prebound=producer_prebound,
         source_model=producer_source_model,
         bundle=bundle,
         scope=scope,
@@ -930,8 +948,14 @@ def _ref_sql_dependency_paths(
             sql=sql, model=owner, owner_path=(),
             anchor_relation=owner.name, bundle=bundle,
         )
-        if frag:
-            paths.extend(frag)
+        if frag is None:
+            # None = no dialect could analyse the fragment (≠ () = analysed, local).
+            # Fail closed: we can't determine the hops it crosses, so block the push.
+            raise _PushBlocked(
+                f"unanalyzable definition fragment on {owner.name}.{column.name} "
+                f"— cannot determine the semi-join hops it crosses"
+            )
+        paths.extend(frag)
     return tuple(dict.fromkeys(paths))
 
 
@@ -1486,7 +1510,7 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
         )
     )
     producer_plan = compile_synthesized(
-        producer_prebound,
+        prebound=producer_prebound,
         source_model=root_name,
         bundle=root_bundle, scope=root_scope,
         stage_schemas=stage_schemas,
@@ -1962,7 +1986,7 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
     union_grain = Grain.EMPTY
     for c in constituents:
         union_grain = union_grain | constituent_grain(
-            c, projected_dim_keys=context.projected_dim_keys,
+            c=c, projected_dim_keys=context.projected_dim_keys,
             projected_td_keys=context.projected_td_keys,
             active_bucket=prebound.main_time_key,
         )
@@ -2140,7 +2164,7 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
         to_many_handling=mode,
     )
     outer_plan = compile_synthesized(
-        outer_prebound,
+        prebound=outer_prebound,
         source_model=host_model.name,
         bundle=bundle, scope=scope, stage_schemas=stage_schemas,
         # An expression grain key (in-grain computed dim) — or an attach-owning
@@ -2246,7 +2270,7 @@ def _build_carrier_attach(
         inherited=inherited, n_date_range=n_date_range,
     )
     carrier_plan = compile_synthesized(
-        carrier_prebound,
+        prebound=carrier_prebound,
         source_model=producer_source_model,
         bundle=bundle, scope=scope, stage_schemas=stage_schemas,
         # Discovery must re-run inside the carrier for a coarser constituent
@@ -2256,7 +2280,7 @@ def _build_carrier_attach(
         # raw partition_keys (a transform's is empty).
         enable_producer_regroups=any(
             constituent_grain(
-                c, projected_dim_keys=projected_dim_keys,
+                c=c, projected_dim_keys=projected_dim_keys,
                 projected_td_keys=projected_td_keys, active_bucket=active_bucket,
             ) != union_grain
             for c in constituents
@@ -2513,7 +2537,7 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
 
     def _root_grain(agg: ValueKey) -> Grain:
         return constituent_grain(
-            agg, projected_dim_keys=projected_dim_keys,
+            c=agg, projected_dim_keys=projected_dim_keys,
             projected_td_keys=projected_td_keys, active_bucket=active_bucket,
         )
 
@@ -2664,7 +2688,7 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
         group_meta: Dict[Tuple, Tuple[Grain, bool]] = {}
         for agg in phase_aggs:
             grain, windowed = effective_root_grain(
-                agg, projected_dim_keys=projected_dim_keys,
+                agg=agg, projected_dim_keys=projected_dim_keys,
                 projected_td_keys=projected_td_keys, active_bucket=active_bucket,
             )
             ident = _windowed_or_ranked_identity(agg)
@@ -2716,7 +2740,7 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
                 to_many_handling=prebound.to_many_handling,
             )
             producer_plan = compile_synthesized(
-                producer_prebound,
+                prebound=producer_prebound,
                 source_model=producer_source_model,
                 bundle=bundle,
                 scope=scope,

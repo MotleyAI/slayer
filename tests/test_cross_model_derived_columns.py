@@ -170,7 +170,7 @@ async def test_quoted_self_identity_column_is_qualified_across_a_join(tmp_path) 
         source_model="merchant",
         dimensions=[ColumnRef(name="legalEntityType"), ColumnRef(name="other.legalEntityType")],
     )
-    sql = await _gen_sql(engine, query, merchant)
+    sql = await _gen_sql(engine=engine, query=query, model=merchant)
     assert 'merchant."legalEntityType"' in sql, sql
     assert 'other."legalEntityType"' in sql, sql
 
@@ -188,7 +188,7 @@ async def test_derived_over_quoted_self_identity_keeps_quoting(tmp_path) -> None
         ],
     )
     query = SlayerQuery(source_model="merchant", dimensions=[ColumnRef(name="label")])
-    sql = await _gen_sql(engine, query, model)
+    sql = await _gen_sql(engine=engine, query=query, model=model)
     assert '"legalEntityType"' in sql, sql
     assert _no_bare_derived_ref(sql, "merchant", "label"), sql  # label was inlined
 
