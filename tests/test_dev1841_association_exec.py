@@ -77,6 +77,24 @@ class TestCrossModelAssociation:
         for status, n in ASSOC_COUNT_BY_STATUS.items():
             assert int(by[(status,)]["orders.nc"]) == n
 
+    async def test_filtered_count_over_association_counts_matching_entities(
+        self, exec_backend_ext,
+    ):
+        """DEV-1832: a non-star ``count`` over a filtered association column counts
+        only the entities whose masked value is non-NULL (COUNT(_v)), NOT every
+        associated entity (COUNT(*)). ``gold_spend`` masks ``spend`` to gold tier,
+        so ``gold_spend:count`` = distinct GOLD customers/cell — a strict subset of
+        ``customers.*:count`` (ok 5 / new 3). The pre-fix COUNT(*) would return the
+        full population."""
+        _, engine = exec_backend_ext
+        resp = await engine.execute(assoc_q(
+            dimensions=["status"],
+            measures=[ModelMeasure(formula="customers.gold_spend:count", name="gc")]))
+        by = status_key(resp)
+        # gold (c1,c3,c6) with an ok order: c1,c3,c6 → 3; with a new order: c1 → 1.
+        for status, n in {"ok": 3, "new": 1}.items():
+            assert int(by[(status,)]["orders.gc"]) == n
+
     async def test_percentile_family_over_the_association(self, exec_backend):
         """Scenario: percentile attributes over the association — median over
         odd-sized populations is the exact middle element on both engines."""

@@ -57,89 +57,104 @@ __all__ = [
 Path = Tuple[str, ...]
 
 
-def _expanded_derived_ast(
-    *, key: ColumnSqlKey, anchor_model, anchor_relation: str, bundle,
-    cache: "Optional[dict]" = None,
-):
-    """The parsed, expanded AST of a derived column's ``Column.sql``.
-
-    Expanded with the same anchoring convention ``ScopeFrame`` uses — at the
-    ``__``-path alias with ``is_root=False`` when the column lives on a joined
-    model — so the refs inside come out already prefixed by the key's own path
-    and an anchor-rooted scan resolves them without further adjustment.
-
-    Memoised through the caller-supplied ``cache``. Both visitors ask for the
-    same key's expansion — ``_derived_sql_paths`` for the crossed set and
-    ``_derived_sql_touches_anchor`` for host-locality — and both run for every
-    filter on every plan, while ``_expand_derived_refs_any_dialect`` itself
-    re-parses per hop of a derived-of-derived chain.
-
-    The cache is passed IN rather than held module-level on purpose. A global
-    keyed by ``id(bundle)`` would be unsound: CPython reuses ids once an object
-    is collected, so a fresh bundle could be handed a dead one's entry. A dict
-    owned by one plan-level call cannot outlive the bundle it was built for.
-    """
-    if cache is None:
-        return _expanded_derived_ast_uncached(
-            key=key, anchor_model=anchor_model,
-            anchor_relation=anchor_relation, bundle=bundle,
-        )
-    cache_key = (key.model, key.column_name, key.path, anchor_relation)
-    if cache_key not in cache:
-        cache[cache_key] = _expanded_derived_ast_uncached(
-            key=key, anchor_model=anchor_model,
-            anchor_relation=anchor_relation, bundle=bundle,
-        )
-    return cache[cache_key]
-
-
-def _expanded_derived_ast_uncached(
-    *, key: ColumnSqlKey, anchor_model, anchor_relation: str, bundle,
-):
+def _resolve_key_column(*, key: ColumnSqlKey, anchor_model, bundle):
+    """The (model, column) a ``ColumnSqlKey`` names, or ``(None, None)``."""
     model = (
         anchor_model if key.model == getattr(anchor_model, "name", None)
         else bundle.get_referenced_model(key.model)
     )
     if model is None:
-        return None
-    col = next((c for c in model.columns if c.name == key.column_name), None)
-    if col is None or not col.sql:
-        return None
+        return None, None
+    return model, next(
+        (c for c in model.columns if c.name == key.column_name), None,
+    )
 
-    alias_path = "__".join(key.path) if key.path else anchor_relation
+
+def _expanded_fragment_ast_uncached(
+    *, fragment: str, model, key_path: Path, anchor_relation: str, bundle,
+):
+    alias_path = "__".join(key_path) if key_path else anchor_relation
     expanded = _expand_derived_refs_any_dialect(
-        sql=col.sql, model=model, alias_path=alias_path, bundle=bundle,
+        sql=fragment, model=model, alias_path=alias_path, bundle=bundle,
     )
-    return _parse_filter_sql_any_dialect(expanded or col.sql)
+    return _parse_filter_sql_any_dialect(expanded or fragment)
 
 
-def _derived_sql_touches_anchor(
-    *, key: ColumnSqlKey, anchor_model, anchor_relation: str, bundle,
-    cache: "Optional[dict]" = None,
-) -> bool:
-    """Whether a derived column's expansion references the ANCHOR relation.
+def _expanded_fragment_ast(
+    *, fragment: str, model, column_name: str, key_path: Path,
+    anchor_relation: str, bundle, cache: "Optional[dict]" = None,
+):
+    """A definition fragment (value or filter) expanded + parsed at the column's
+    own anchoring convention, so its refs come out already path-prefixed.
 
-    Tested directly rather than inferred from "it crossed nothing". A derived
-    column can do BOTH: ``amount * customers.rate`` crosses into ``customers``
-    AND depends on the host-local ``amount``. Treating a non-empty crossed set
-    as proof of non-locality would propagate that filter into a
-    ``customers``-rooted CTE, where ``orders.amount`` is not bound.
-
-    Expansion qualifies host-local refs to ``anchor_relation``, so those are
-    exactly the columns carrying that table (or, defensively, none at all).
+    Memoised through the caller-supplied plan-scoped ``cache`` — the fragment
+    string is part of the key, so a column's value and filter never collide. The
+    cache is passed IN, never module-global: a global keyed by ``id(bundle)`` is
+    unsound (CPython reuses collected ids), so it must not outlive its bundle.
     """
-    parsed = _expanded_derived_ast(
-        key=key, anchor_model=anchor_model,
-        anchor_relation=anchor_relation, bundle=bundle, cache=cache,
-    )
+    if cache is None:
+        return _expanded_fragment_ast_uncached(
+            fragment=fragment, model=model, key_path=key_path,
+            anchor_relation=anchor_relation, bundle=bundle,
+        )
+    cache_key = (model.name, column_name, key_path, anchor_relation, fragment)
+    if cache_key not in cache:
+        cache[cache_key] = _expanded_fragment_ast_uncached(
+            fragment=fragment, model=model, key_path=key_path,
+            anchor_relation=anchor_relation, bundle=bundle,
+        )
+    return cache[cache_key]
+
+
+def _fragment_touches_anchor(parsed, *, anchor_relation: str) -> bool:
+    """Whether a parsed fragment carries a column anchored at ``anchor_relation``
+    (or unqualified). ``None`` (unanalysable) counts as touching — fail safe."""
     if parsed is None:
-        # Nothing resolvable to inspect — a bare column name on the anchor.
         return True
     for col in parsed.find_all(exp.Column):
         table = col.args.get("table")
         if table is None or table.name == anchor_relation:
             return True
     return False
+
+
+def _derived_def_touches_anchor(
+    *, key: ColumnSqlKey, anchor_model, anchor_relation: str, bundle,
+    cache: "Optional[dict]" = None,
+) -> bool:
+    """Whether a derived column's definition — its ``Column.sql`` VALUE or its
+    ``Column.filter`` (DEV-1832) — references the ANCHOR relation.
+
+    Both fragments are definition inputs (mirrors ``reference_closure``'s
+    ``_definition_fragments``): a column whose value crosses INTO a joined model
+    but whose filter reads a host-local column is STILL host-local — its mask
+    cannot move off the host, where that column is bound. Tested per fragment,
+    not inferred from the crossed set: ``amount * customers.rate`` crosses into
+    ``customers`` yet depends on host-local ``amount``.
+
+    A column with no explicit ``sql`` masks its OWN physical column, so the value
+    fragment falls back to ``col.name`` — an implicit reference at the column's
+    own path (host-local for a ``path=()`` column), never dropped.
+    """
+    model, col = _resolve_key_column(
+        key=key, anchor_model=anchor_model, bundle=bundle,
+    )
+    if model is None or col is None:
+        return True  # nothing resolvable — a bare column name on the anchor
+    fragments = [frag for frag in (col.sql or col.name, col.filter) if frag]
+    if not fragments:
+        return True
+    return any(
+        _fragment_touches_anchor(
+            _expanded_fragment_ast(
+                fragment=frag, model=model, column_name=key.column_name,
+                key_path=tuple(key.path), anchor_relation=anchor_relation,
+                bundle=bundle, cache=cache,
+            ),
+            anchor_relation=anchor_relation,
+        )
+        for frag in fragments
+    )
 
 
 def compute_key_join_paths(
@@ -177,7 +192,7 @@ def key_has_host_local_ref(
         if isinstance(node, ColumnKey):
             return not node.path
         if isinstance(node, ColumnSqlKey):
-            return not node.path and _derived_sql_touches_anchor(
+            return not node.path and _derived_def_touches_anchor(
                 key=node, anchor_model=anchor_model,
                 anchor_relation=anchor_relation, bundle=bundle, cache=cache,
             )

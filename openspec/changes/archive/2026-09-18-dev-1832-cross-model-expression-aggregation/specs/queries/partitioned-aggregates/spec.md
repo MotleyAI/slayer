@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Partitioned aggregates nested inside transforms
-A transform SHALL accept a partitioned aggregate as its input when used as a measure — rank-family transforms and temporal transforms (`time_shift`, `change`, `change_pct`, `lag`, `lead`, `cumsum`, `consecutive_periods`) alike. The transform evaluates at the query grain over the attached partition-grain value (the grain of its containing context) and MUST never fail with an internal error.
+A transform SHALL accept a partitioned aggregate as its input when used as a measure — rank-family transforms and temporal transforms (`time_shift`, `change`, `change_pct`, `lag`, `lead`, `cumsum`, `consecutive_periods`) alike. The transform evaluates at its operand grain — the attached aggregate's `partition_by=`, else the query grain (Axiom 11.1) — and the measure consumer broadcasts the result onto the query grain (Axiom 11.4); it MUST never fail with an internal error.
 
 #### Scenario: Running total of partition-grain values
 - WHEN a query selects dimensions `[region, city, month(ordered_at)]` and the measure `cumsum(revenue:sum(partition_by=[region, ordered_at]))`
@@ -219,6 +219,12 @@ its `partition_by=` still gets the outer attach the grain join needs.
   row-attached into the outer aggregation's input relation, and each region carries
   the hand-computed row-weighted value, by executed values — never the former
   nested-transform rejection
+
+#### Scenario: Collapsing constituent mixed with a row leaf fails closed
+- **WHEN** a query over a month time dimension selects
+  `sum(amount * last(amount:sum(partition_by=[region, ordered_at])))`
+- **THEN** it fails with a typed error naming the collapsing transform and the
+  row-level column, never a broadcast or multiplied value
 
 #### Scenario: Joined-model row leaf inside a mixed source
 - **WHEN** a query rooted at `orders` over `[status]` selects

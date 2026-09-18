@@ -45,7 +45,7 @@ is the coercion from coarser to finer.
    - **2.4 Aggregation.** An aggregation over a row-level source is homed on the
      deepest dataset that determines the source's home (2.2) and every column-valued
      parameter and non-overridden definition default — each a row-level expression
-     under 2.1, defaults resolved as references from the root. It is counted over that
+     under 2.1, defaults resolved as references from the owning model [target: DEV-1931]. It is counted over that
      dataset's rows. The ordering key of a ranked aggregation must be determined by the
      home and never widens it; the aggregation's own `partition_by=` is not an input.
      A source with no row-level leaf is a second-order aggregation: its home is the

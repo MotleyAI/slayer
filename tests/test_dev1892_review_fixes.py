@@ -139,7 +139,8 @@ class TestPickedParamDoesNotInheritSourceFilter:
         p0_line = next(line for line in sql.splitlines() if "AS _p0" in line)
         assert "CASE WHEN" not in p0_line, sql
         v_line = next(line for line in sql.splitlines() if "AS _v" in line)
-        assert "CASE WHEN" in v_line and "'North'" in v_line, sql
+        assert "CASE WHEN" in v_line, sql
+        assert "'North'" in v_line, sql
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])

@@ -189,13 +189,9 @@ class Column(BaseModel):
 
     @property
     def _sql_is_nontrivial(self) -> bool:
-        """The value SQL is a real expression, not a bare (optionally quoted) self-name."""
-        if self.sql is None:
-            return False
-        sql = self.sql.strip()
-        if len(sql) >= 2 and sql[0] == '"' and sql[-1] == '"':
-            sql = sql[1:-1].replace('""', '"')
-        return sql != self.name
+        """The value SQL is not the bare self-name; a QUOTED self-name counts, since
+        only the expansion door re-qualifies it with its quoting intact."""
+        return self.sql is not None and self.sql.strip() != self.name
 
     @property
     def needs_expansion(self) -> bool:

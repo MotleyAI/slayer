@@ -11,7 +11,7 @@ from typing import (
     Sequence, Tuple, Union,
 )
 
-from slayer.core.enums import AXIS_COLLAPSING_TRANSFORMS, DataType
+from slayer.core.enums import AXIS_COLLAPSING_TRANSFORMS, DataType, TimeGranularity
 from slayer.core.errors import (
     CanonicalAliasShadowsColumnError,
     DistinctDimensionValuesError,
@@ -19,6 +19,7 @@ from slayer.core.errors import (
     MeasureNameCollidesWithColumnError,
     PositionTypingError,
     SlayerError,
+    TimeDimensionColumnError,
 )
 from slayer.core.formula import TIME_TRANSFORMS
 from slayer.core.window_duration import parse_window_duration
@@ -593,6 +594,34 @@ def check_time_dimension_date_range(*, full_name: str, date_range) -> None:
         )
 
 
+def check_time_dimension_column(
+    *,
+    name: str,
+    column_type: Optional[DataType],
+    upstream_granularity: Optional[TimeGranularity],
+    requested_granularity: TimeGranularity,
+) -> None:
+    """A time dimension's column must be temporal (DATE / TIMESTAMP); an upstream-bucketed stage column re-buckets only to the same or a nesting-coarser granularity (DEV-1471, closure Axiom 9)."""
+    if column_type not in (DataType.DATE, DataType.TIMESTAMP):
+        raise TimeDimensionColumnError(
+            f"TimeDimension {name!r} must reference a temporal column "
+            f"(DATE / TIMESTAMP); got column type {column_type!r}."
+        )
+    if (
+        upstream_granularity is not None
+        and requested_granularity != upstream_granularity
+        and not upstream_granularity.nests_into(requested_granularity)
+    ):
+        raise TimeDimensionColumnError(
+            f"TimeDimension {name!r} cannot re-bucket to "
+            f"'{requested_granularity.value}': its upstream stage bucketed it "
+            f"at '{upstream_granularity.value}', which does not nest into "
+            f"'{requested_granularity.value}'. Request the same or a "
+            f"nesting-coarser granularity, or bucket the raw column in the "
+            f"upstream stage."
+        )
+
+
 def _time_search_children(key: ValueKey) -> List[ValueKey]:
     if isinstance(key, AggregateKey):
         # A transform constituent lives in the source (or a composite parameter);
@@ -816,6 +845,7 @@ def check_local_producer_inputs_safe(
     *, alias: Optional[str], host: str,
     ranked_crossings: Sequence[Tuple[str, str]],
     gated_crossings: Sequence[str],
+    source_crossings: Sequence[str] = (),
 ) -> None:
     """Per-role crossing-input safety for a HOST-rooted producer answer (DEV-1871 G11, was ``_assert_local_producer_inputs_safe``); crossings are the compiler-resolved unproven hops."""
     remedy = "declare join cardinality or a covering unique key on the target"
@@ -830,6 +860,14 @@ def check_local_producer_inputs_safe(
         raise ValueError(
             f"Aggregate {alias!r} reads an input across an unproven join "
             f"hop to {gated_crossings[0]} from {host}; {remedy}."
+        )
+    if source_crossings:
+        raise ValueError(
+            f"Aggregate {alias!r} reads its source across an unproven or fanning join "
+            f"hop to {source_crossings[0]} from {host}: a column of {host} cannot be "
+            f"aggregated across a to-many target — aggregate the target column directly "
+            f"({source_crossings[0]}.<column>:<aggregation>), or declare a to-one "
+            f"cardinality or a covering unique key if the hop is to-one."
         )
 
 

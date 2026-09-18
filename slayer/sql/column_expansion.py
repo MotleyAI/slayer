@@ -18,7 +18,7 @@ unresolved derived references.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Dict, List, Optional, Protocol, Set, Tuple
+from typing import Dict, FrozenSet, List, Optional, Protocol, Set, Tuple
 
 import sqlglot
 from sqlglot import exp
@@ -37,6 +37,7 @@ from slayer.sql.reserved_keywords import prequote_reserved_identifiers
 
 __all__ = [
     "collect_root_scope_joined_paths",
+    "expand_column_definition_parts_sync",
     "expand_column_definition_sync",
     "expand_derived_refs_sync",
     "is_trivial_base",
@@ -520,6 +521,7 @@ def _process_reference_site(
     visited: Tuple[Tuple[str, str], ...],
     alias_resolver: Optional[AliasResolver],
     crossed_paths: Optional[_PathSink],
+    physical_read_exempt: FrozenSet[Tuple[str, str]] = frozenset(),
 ) -> Optional[exp.Expression]:
     """Resolve one reference site: qualify a base column in place, inline a
     derived one, or leave an opaque reference untouched.
@@ -551,43 +553,80 @@ def _process_reference_site(
             for i in range(1, len(full_path) + 1):
                 crossed_paths.add(full_path[:i])
     target_col = target_model.get_column(leaf)
-    if target_col is None or not target_col.needs_expansion:
+    # An exempt column reads physically (its filter's self-reference reads the
+    # bare column, never the masked value — matching the save-time cycle rule).
+    if (
+        target_col is None or not target_col.needs_expansion
+        or (target_model.name, leaf) in physical_read_exempt
+    ):
         return _requalify(node=node, alias=canonical_alias, leaf=leaf)
     key = (target_model.name, leaf)
     if key in visited:
         cycle_start = visited.index(key)
         cycle = (*visited[cycle_start:], key)
         raise ColumnCycleError(cycle=list(cycle))
-    child_visited = (*visited, key)
-
-    def _expand_child(sql: str) -> Optional[str]:
-        return expand_derived_refs_sync(
-            sql=sql, model=target_model, alias_path=canonical_alias,
-            owner_path=full_path, models_by_name=models_by_name, dialect=dialect,
-            visited=child_visited, alias_resolver=alias_resolver,
-            crossed_paths=crossed_paths,
-        )
-
-    if is_trivial_base(column=target_col):
-        # Filtered physical column: the value is the qualified bare column.
-        value_sql: Optional[str] = _requalify(
-            node=node.copy(), alias=canonical_alias, leaf=leaf,
-        ).sql(dialect=dialect)
-    else:
-        assert target_col.sql is not None  # non-trivial base ⇒ real derived sql
-        value_sql = _expand_child(target_col.sql)
+    # A column's own-filter exemption is LOCAL to that filter's fragment — it is
+    # NOT inherited into a referenced column's definition, or a real cross-column
+    # cycle (x.filter→y, y.sql→x) would be silently read as physical (Codex).
+    value_sql = _expand_target_column(
+        target_col=target_col, target_model=target_model,
+        canonical_alias=canonical_alias, full_path=full_path,
+        models_by_name=models_by_name, dialect=dialect, visited=(*visited, key),
+        alias_resolver=alias_resolver, crossed_paths=crossed_paths,
+    )
     if value_sql is None:
         return None
-    if target_col.filter:
-        filter_sql = _expand_child(target_col.filter)
-        value_sql = wrap_column_filter(
-            value_sql=value_sql,
-            filter_sql=filter_sql if filter_sql is not None else target_col.filter,
-        )
     expanded_ast = sqlglot.parse_one(value_sql, dialect=dialect)
     replacement = exp.Paren(this=expanded_ast)
     node.replace(replacement)
     return replacement
+
+
+def _expand_target_column(
+    *,
+    target_col: Column,
+    target_model: SlayerModel,
+    canonical_alias: str,
+    full_path: Tuple[str, ...],
+    models_by_name: ModelsByName,
+    dialect: str,
+    visited: Tuple[Tuple[str, str], ...],
+    alias_resolver: Optional[AliasResolver],
+    crossed_paths: Optional[_PathSink],
+) -> Optional[str]:
+    """The expanded SQL of a derived / filtered target column: its value (the
+    qualified bare column for a filtered physical one) masked by its filter."""
+    def _expand_child(
+        sql: str, *, exempt: FrozenSet[Tuple[str, str]] = frozenset(),
+    ) -> Optional[str]:
+        return expand_derived_refs_sync(
+            sql=sql, model=target_model, alias_path=canonical_alias,
+            owner_path=full_path, models_by_name=models_by_name, dialect=dialect,
+            visited=visited, alias_resolver=alias_resolver,
+            crossed_paths=crossed_paths, physical_read_exempt=exempt,
+        )
+
+    if is_trivial_base(column=target_col):
+        # The target's own spelling, not the (possibly unquoted) reference site,
+        # so a quoted self-identity keeps its quoting on case-folding dialects.
+        value_sql: Optional[str] = _qualified_base_sql(
+            column=target_col, alias_path=canonical_alias, dialect=dialect,
+        )
+    else:
+        assert target_col.sql is not None  # non-trivial base ⇒ real derived sql
+        value_sql = _expand_child(target_col.sql)
+    if value_sql is None or not target_col.filter:
+        return value_sql
+    # A trivial-base target's OWN filter reads the physical column, not the mask;
+    # the exemption is local to this filter fragment (never inherited).
+    filter_exempt = frozenset(
+        {(target_model.name, target_col.name)} if is_trivial_base(column=target_col) else set()
+    )
+    filter_sql = _expand_child(target_col.filter, exempt=filter_exempt)
+    return wrap_column_filter(
+        value_sql=value_sql,
+        filter_sql=filter_sql if filter_sql is not None else target_col.filter,
+    )
 
 
 def expand_derived_refs_sync(
@@ -601,6 +640,7 @@ def expand_derived_refs_sync(
     owner_path: Tuple[str, ...] = (),
     alias_resolver: Optional[AliasResolver] = None,
     crossed_paths: Optional[_PathSink] = None,
+    physical_read_exempt: FrozenSet[Tuple[str, str]] = frozenset(),
 ) -> Optional[str]:
     """Inline every derived-column reference in ``sql`` to its definition and
     qualify every base reference to its internal alias.
@@ -643,6 +683,7 @@ def expand_derived_refs_sync(
             visited=visited,
             alias_resolver=alias_resolver,
             crossed_paths=crossed_paths,
+            physical_read_exempt=physical_read_exempt,
         )
         # ``node.replace`` mutates the node's PARENT. When the whole fragment is
         # a single reference — ``Column.sql = "other_derived_col"``, an alias of
@@ -678,20 +719,57 @@ def expand_column_definition_sync(
     crossed_paths: Optional[_PathSink] = None,
 ) -> str:
     """Expand a column's value SQL, wrapping it in ``CASE WHEN (<filter>) THEN
-    (<value>) END`` when the column carries a ``Column.filter``. Value and filter
-    expand through the same derived-refs door at the same owner path — a filtered
-    physical column (``sql is None``) expands its bare name to the qualified column."""
-    raw_value = column.sql if column.sql else column.name
+    (<value>) END`` when the column carries a ``Column.filter``."""
+    value, filter_sql = expand_column_definition_parts_sync(
+        column=column, model=model, alias_path=alias_path,
+        models_by_name=models_by_name, dialect=dialect, owner_path=owner_path,
+        visited=visited, alias_resolver=alias_resolver, crossed_paths=crossed_paths,
+    )
+    return wrap_column_filter(value_sql=value, filter_sql=filter_sql)
 
-    def _expand(sql: str) -> str:
+
+def expand_column_definition_parts_sync(
+    *,
+    column: Column,
+    model: SlayerModel,
+    alias_path: str,
+    models_by_name: ModelsByName,
+    dialect: str,
+    owner_path: Tuple[str, ...] = (),
+    visited: Optional[Tuple[Tuple[str, str], ...]] = None,
+    alias_resolver: Optional[AliasResolver] = None,
+    crossed_paths: Optional[_PathSink] = None,
+) -> Tuple[str, Optional[str]]:
+    """``(value SQL, expanded filter SQL or None)`` of a column definition — the one
+    door for both the scope resolver and the generator's cast-wrapping renderer.
+    Value and filter expand through the same derived-refs door at the same owner
+    path; a filtered physical column's value is its qualified bare name (re-entering
+    the reference site would mask it twice)."""
+    def _expand(
+        sql: str, *, exempt: FrozenSet[Tuple[str, str]] = frozenset(),
+    ) -> str:
         out = expand_derived_refs_sync(
             sql=sql, model=model, alias_path=alias_path,
             models_by_name=models_by_name, dialect=dialect, owner_path=owner_path,
             visited=visited, alias_resolver=alias_resolver, crossed_paths=crossed_paths,
+            physical_read_exempt=exempt,
         )
         return out if out is not None else sql
 
-    value = _expand(raw_value)
-    if not column.filter:
-        return value
-    return wrap_column_filter(value_sql=value, filter_sql=_expand(column.filter))
+    if is_trivial_base(column=column):
+        value = _qualified_base_sql(column=column, alias_path=alias_path, dialect=dialect)
+        # This column's own filter reads the physical column, never its mask.
+        filter_exempt = frozenset({(model.name, column.name)})
+    else:
+        assert column.sql is not None  # non-trivial base ⇒ real derived sql
+        value = _expand(column.sql)
+        filter_exempt = frozenset()
+    return value, (_expand(column.filter, exempt=filter_exempt) if column.filter else None)
+
+
+def _qualified_base_sql(*, column: Column, alias_path: str, dialect: str) -> str:
+    """A trivial-base column as ``alias.leaf``, parsed from its own spelling so a
+    quoted self-identity or reserved name keeps its quoting."""
+    raw = prequote_reserved_identifiers(column.sql or column.name, dialect=dialect)
+    node = exp.maybe_parse(raw, dialect=dialect)
+    return _requalify(node=node, alias=alias_path, leaf=column.name).sql(dialect=dialect)

@@ -195,6 +195,27 @@ def _child_keys(node, *, descend_aggregates: bool = True) -> List:
     raise UnhandledValueKindError(node)
 
 
+def _terminal_model(
+    node: ColumnSqlKey, *, anchor_model: SlayerModel, bundle: ResolvedSourceBundle,
+) -> Optional[SlayerModel]:
+    """The model a ``ColumnSqlKey`` names, falling back to the anchor for its own name."""
+    terminal = bundle.models_by_name.get(node.model)
+    if terminal is None and node.model == anchor_model.name:
+        return anchor_model
+    return terminal
+
+
+def _definition_fragments(col) -> List[str]:
+    """The Mode-A fragments a column's definition reads: its non-trivial ``sql`` and its ``filter``."""
+    return [
+        sql for sql in (
+            col.sql if col.sql is not None and not is_trivial_base(column=col) else None,
+            col.filter,
+        )
+        if sql
+    ]
+
+
 def _column_key_closure(
     node, *, anchor_model: SlayerModel, anchor_relation: str,
     bundle: ResolvedSourceBundle, cache: "Optional[dict]" = None,
@@ -205,26 +226,21 @@ def _column_key_closure(
     ``None`` propagates (a dependency that cannot be analysed)."""
     path = tuple(getattr(node, "path", ()) or ())
     out: List[Path] = list(_prefixes(path))
-    if isinstance(node, ColumnSqlKey):
-        terminal = bundle.models_by_name.get(node.model)
-        if terminal is None and node.model == anchor_model.name:
-            terminal = anchor_model
-        col = terminal.get_column(node.column_name) if terminal is not None else None
-        if terminal is not None and col is not None:
-            owner_relation = "__".join(path) if path else anchor_relation
-            for sql in (
-                col.sql if col.sql is not None and not is_trivial_base(column=col) else None,
-                col.filter,
-            ):
-                if not sql:
-                    continue
-                frag = fragment_closure(
-                    sql=sql, model=terminal, owner_path=path,
-                    anchor_relation=owner_relation, bundle=bundle, cache=cache,
-                )
-                if frag is None:
-                    return None
-                out.extend(frag)
+    if not isinstance(node, ColumnSqlKey):
+        return out
+    terminal = _terminal_model(node, anchor_model=anchor_model, bundle=bundle)
+    col = terminal.get_column(node.column_name) if terminal is not None else None
+    if terminal is None or col is None:
+        return out
+    owner_relation = "__".join(path) if path else anchor_relation
+    for sql in _definition_fragments(col):
+        frag = fragment_closure(
+            sql=sql, model=terminal, owner_path=path,
+            anchor_relation=owner_relation, bundle=bundle, cache=cache,
+        )
+        if frag is None:
+            return None
+        out.extend(frag)
     return out
 
 
@@ -326,11 +342,12 @@ class ParamSpec(NamedTuple):
 def column_default_key(
     *, path: Path, leaf: str, base: Optional[SlayerModel],
 ) -> ValueKey:
-    """A ``ColumnSqlKey`` when ``leaf`` names a derived column on ``base`` (so its
-    ``Column.sql`` expands), else a plain ``ColumnKey``."""
+    """A ``ColumnSqlKey`` when ``leaf`` names a derived or filtered column on
+    ``base`` (so its definition expands and its crossings close), else a plain
+    ``ColumnKey``."""
     if base is not None:
         col = next((c for c in (base.columns or []) if c.name == leaf), None)
-        if col is not None and col.sql:
+        if col is not None and col.needs_expansion:
             return ColumnSqlKey(path=path, model=base.name, column_name=leaf)
     return ColumnKey(path=path, leaf=leaf)
 

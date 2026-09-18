@@ -25,7 +25,7 @@ from typing import (
 
 from pydantic import BaseModel, ConfigDict
 
-from slayer.core.enums import DataType, RANKED_AGGREGATIONS
+from slayer.core.enums import DataType, RANKED_AGGREGATIONS, TimeGranularity
 from slayer.core.errors import AmbiguousJoinPathError, UnreachableFilterDroppedWarning
 from slayer.core.keys import AggregateKey, Grain, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, regroup_root_grain, effective_root_grain, constituent_grain, reroot_value_key, substitute_value_keys, walk_value_keys, walk_consumer_keys, REGROUP_LEAF_PREFIX, is_cross_model_agg, is_local_partitioned_agg, split_top_level_and, window_kwarg_of, is_reaggregation_key, is_row_attach_root, attached_inputs, operand_aggregates, operand_constituents, source_anchor_path
 from slayer.core.models import SlayerModel
@@ -282,9 +282,27 @@ def _regroup_producer_prebound(  # NOSONAR(S3776) — one producer-prebound asse
             # A grain key is a dimension the producer GROUPS BY; marking a computed one makes its inner aggregate a ROW attach.
             is_dimension=True,
         ))
+    # Non-aggregate constituents (transforms, arithmetic, scalar) fall back to a
+    # bare op/name, so two same-op transforms — ``sum(cumsum(a) - cumsum(b))`` —
+    # would collide. Disambiguate against the names already taken (grain + prior
+    # constituents); the first occurrence keeps its bare name. Wiring is by key,
+    # so the label only needs to be unique.
+    used_names: set[str] = {
+        dm.public_name for dm in grain_dms if dm.public_name is not None
+    }
+
+    def _unique(name: str) -> str:
+        candidate = name
+        i = 2
+        while candidate in used_names:
+            candidate = f"{name}_{i}"
+            i += 1
+        used_names.add(candidate)
+        return candidate
+
     agg_dms: List[DeclaredMeasure] = []
     for agg in aggs:
-        canonical = (
+        canonical = _unique(
             (public_alias_by_agg.get(agg) if isinstance(agg, AggregateKey) else None)
             or (canonical_aggregate_alias(agg, profile="stage_formula")
                 if isinstance(agg, AggregateKey) else None)
@@ -685,8 +703,9 @@ def _assert_local_producer_inputs_safe(
             ranked_crossings.append((leaf, path[-1]))
             break  # first violation wins; the checker raises it
 
-    # Crossed predicate + remaining crossed args; the SOURCE's own crossings are exempt here.
+    # Crossed predicate + remaining crossed args; the SOURCE's own crossings are separate.
     gated_crossings: List[str] = []
+    source_crossings: List[str] = []
     alias = canonical_aggregate_alias(agg, profile="stage_formula")
     if not ranked_crossings:
         gated = local_crossing_input_paths(
@@ -702,31 +721,41 @@ def _assert_local_producer_inputs_safe(
             )
             gated = []
         gated_crossings = [p[-1] for p in gated if p and not _safe(p)]
-        # An expression source's own ROW leaves cross from the host too (attached
-        # constituents opaque, Axiom 2.3); a to-one leaf is safe, a fanning / unproven
-        # or unanalysable one fails closed (Axiom 2.8). An explicit host-grain wrap
-        # (locus="host") is exempt: its crossing source is defined over the join result.
-        if agg.locus != "host":
-            src = source_row_leaf_closure(
-                key=agg, anchor_model=host_model,
-                anchor_relation=host_model.name, bundle=bundle,
-            )
-            if src is None:
-                check_input_dependencies_analyzable(
-                    alias=alias,
-                    column=first_unanalyzable_source_row_leaf(
-                        key=agg, anchor_model=host_model,
-                        anchor_relation=host_model.name, bundle=bundle,
-                    ),
-                )
-            else:
-                gated_crossings.extend(p[-1] for p in src if p and not _safe(p))
+        source_crossings = _source_crossings(
+            agg=agg, host_model=host_model, bundle=bundle, alias=alias, safe=_safe,
+        )
     check_local_producer_inputs_safe(
         alias=alias,
         host=host_model.name,
         ranked_crossings=ranked_crossings,
         gated_crossings=gated_crossings,
+        source_crossings=source_crossings,
     )
+
+
+def _source_crossings(
+    *,
+    agg: AggregateKey,
+    host_model: SlayerModel,
+    bundle: ResolvedSourceBundle,
+    alias: Optional[str],
+    safe: Callable[[Tuple[str, ...]], bool],
+) -> List[str]:
+    """Unproven hops the expression source's own ROW leaves cross from the host (constituents opaque, Axiom 2.3; unanalysable fails closed, Axiom 2.8); a host-grain wrap is exempt."""
+    if agg.locus == "host":
+        return []
+    src = source_row_leaf_closure(
+        key=agg, anchor_model=host_model, anchor_relation=host_model.name, bundle=bundle,
+    )
+    if src is None:
+        check_input_dependencies_analyzable(
+            alias=alias,
+            column=first_unanalyzable_source_row_leaf(
+                key=agg, anchor_model=host_model, anchor_relation=host_model.name, bundle=bundle,
+            ),
+        )
+        return []
+    return [p[-1] for p in src if p and not safe(p)]
 
 
 def _trailing_window_kernel(
@@ -830,7 +859,7 @@ def _synthesize_wrap_attach(
         to_many_handling=prebound.to_many_handling,
     )
     producer_plan = compile_synthesized(
-        producer_prebound,
+        prebound=producer_prebound,
         source_model=producer_source_model,
         bundle=bundle,
         scope=scope,
@@ -919,8 +948,14 @@ def _ref_sql_dependency_paths(
             sql=sql, model=owner, owner_path=(),
             anchor_relation=owner.name, bundle=bundle,
         )
-        if frag:
-            paths.extend(frag)
+        if frag is None:
+            # None = no dialect could analyse the fragment (≠ () = analysed, local).
+            # Fail closed: we can't determine the hops it crosses, so block the push.
+            raise _PushBlocked(
+                f"unanalyzable definition fragment on {owner.name}.{column.name} "
+                f"— cannot determine the semi-join hops it crosses"
+            )
+        paths.extend(frag)
     return tuple(dict.fromkeys(paths))
 
 
@@ -1475,7 +1510,7 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
         )
     )
     producer_plan = compile_synthesized(
-        producer_prebound,
+        prebound=producer_prebound,
         source_model=root_name,
         bundle=root_bundle, scope=root_scope,
         stage_schemas=stage_schemas,
@@ -1951,7 +1986,7 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
     union_grain = Grain.EMPTY
     for c in constituents:
         union_grain = union_grain | constituent_grain(
-            c, projected_dim_keys=context.projected_dim_keys,
+            c=c, projected_dim_keys=context.projected_dim_keys,
             projected_td_keys=context.projected_td_keys,
             active_bucket=prebound.main_time_key,
         )
@@ -2129,7 +2164,7 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
         to_many_handling=mode,
     )
     outer_plan = compile_synthesized(
-        outer_prebound,
+        prebound=outer_prebound,
         source_model=host_model.name,
         bundle=bundle, scope=scope, stage_schemas=stage_schemas,
         # An expression grain key (in-grain computed dim) — or an attach-owning
@@ -2212,7 +2247,7 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
 
 
 def _build_carrier_attach(
-    *,
+    *,  # NOSONAR(S107) — carrier plumbing: each parameter is a distinct compile input threaded from _plan_regroups; a one-use context type would only relocate them
     union_grain: Grain,
     constituents: List[ValueKey],
     constituent_placeholders: Dict[ValueKey, ValueKey],
@@ -2235,7 +2270,7 @@ def _build_carrier_attach(
         inherited=inherited, n_date_range=n_date_range,
     )
     carrier_plan = compile_synthesized(
-        carrier_prebound,
+        prebound=carrier_prebound,
         source_model=producer_source_model,
         bundle=bundle, scope=scope, stage_schemas=stage_schemas,
         # Discovery must re-run inside the carrier for a coarser constituent
@@ -2245,7 +2280,7 @@ def _build_carrier_attach(
         # raw partition_keys (a transform's is empty).
         enable_producer_regroups=any(
             constituent_grain(
-                c, projected_dim_keys=projected_dim_keys,
+                c=c, projected_dim_keys=projected_dim_keys,
                 projected_td_keys=projected_td_keys, active_bucket=active_bucket,
             ) != union_grain
             for c in constituents
@@ -2502,7 +2537,7 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
 
     def _root_grain(agg: ValueKey) -> Grain:
         return constituent_grain(
-            agg, projected_dim_keys=projected_dim_keys,
+            c=agg, projected_dim_keys=projected_dim_keys,
             projected_td_keys=projected_td_keys, active_bucket=active_bucket,
         )
 
@@ -2653,7 +2688,7 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
         group_meta: Dict[Tuple, Tuple[Grain, bool]] = {}
         for agg in phase_aggs:
             grain, windowed = effective_root_grain(
-                agg, projected_dim_keys=projected_dim_keys,
+                agg=agg, projected_dim_keys=projected_dim_keys,
                 projected_td_keys=projected_td_keys, active_bucket=active_bucket,
             )
             ident = _windowed_or_ranked_identity(agg)
@@ -2705,7 +2740,7 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
                 to_many_handling=prebound.to_many_handling,
             )
             producer_plan = compile_synthesized(
-                producer_prebound,
+                prebound=producer_prebound,
                 source_model=producer_source_model,
                 bundle=bundle,
                 scope=scope,
@@ -3505,11 +3540,18 @@ def _emit_stage_schema(
         check_stage_flatten_collision(
             flat_name=flat, collides=any(c.name == flat for c in columns),
         )
+        # A column an upstream stage bucketed carries its granularity downstream,
+        # so a re-binding TimeDimension can type-check the re-bucket (DEV-1471).
+        upstream_gran = (
+            TimeGranularity(slot.key.granularity)
+            if isinstance(slot.key, TimeTruncKey) else None
+        )
         columns.append(StageColumn(
             name=flat,
             sql_alias=flat,
             public_alias=alias,
             type=slot.type,
+            granularity=upstream_gran,
             label=slot.label,
             hidden=False,
             format=slot.format,

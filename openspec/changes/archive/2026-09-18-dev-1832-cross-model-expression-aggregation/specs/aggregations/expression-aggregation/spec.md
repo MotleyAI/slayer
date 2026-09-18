@@ -157,6 +157,12 @@ row-level source, as a constituent of the operand dataset for an attached one.
 - **THEN** the query fails with the input-safety error naming the leaf and the hop,
   never a multiplied value
 
+#### Scenario: Collapsing constituent mixed with a row leaf fails closed
+- **WHEN** a query over a month time dimension selects
+  `sum(amount * last(amount:sum(partition_by=[region, ordered_at])))`
+- **THEN** it fails with a typed error naming the collapsing transform and the
+  row-level column, never a broadcast or multiplied value
+
 #### Scenario: Unanalysable derived leaf fails closed
 - **WHEN** an expression leaf names a derived column whose definition no dialect can
   parse

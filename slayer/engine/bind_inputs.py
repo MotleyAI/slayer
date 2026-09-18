@@ -67,6 +67,7 @@ from slayer.engine.elaborate_env import (
     check_partition_key_resolves,
     check_raw_rows_filter_measure_ref,
     check_raw_rows_order_measure_ref,
+    check_time_dimension_column,
     check_time_dimension_date_range,
     check_time_shift_input,
     check_time_transforms_resolved,
@@ -411,12 +412,11 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
     for td in (query.time_dimensions or []):
         if not td.date_range or len(td.date_range) != 2:
             continue
-        # Checked before the scope skip so non-ModelScope stages raise too.
         check_time_dimension_date_range(
             full_name=td.dimension.full_name, date_range=td.date_range,
         )
-        if not isinstance(scope, ModelScope):
-            continue
+        # A stage date_range filters the stage's rows on its bare column, exactly
+        # as a model-scope range filters a model's rows (DEV-1471).
         bf = _build_date_range_filter(td=td, scope=scope, bundle=bundle)
         bound_filters.append(bf)
         bound_filter_texts.append(None)
@@ -467,7 +467,9 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
                     f"its bucket."
                 )
             order_specs.append(OrderSpec(
-                bound=bind_time_dimension(td=matching_td, scope=scope, bundle=bundle),
+                bound=bind_time_dimension(
+                    td=matching_td, scope=scope, bundle=bundle,
+                ).bound,
                 direction=o.direction,
             ))
             continue
@@ -534,19 +536,17 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
             )
         order_specs.append(OrderSpec(bound=bo, direction=o.direction))
 
-    # Attach the active TD as time_key on every time-needing TransformKey the binder left at None.
+    # Attach the active TD as time_key on every time-needing TransformKey the binder
+    # left at None — the stage's own bucket is the axis on a StageSchema (DEV-1471).
     active_td_key: Optional[TimeTruncKey] = None
-    if isinstance(scope, ModelScope) and scope.source_model is not None:
-        active_td = _resolve_main_time_dimension(
-            query=query, model=scope.source_model,
-        )
-        if active_td is not None:
-            active_td_bound = bind_time_dimension(
-                td=active_td, scope=scope, bundle=bundle,
-            )
-            atd_key = active_td_bound.value_key
-            assert isinstance(atd_key, TimeTruncKey)
-            active_td_key = atd_key
+    _active_model = scope.source_model if isinstance(scope, ModelScope) else None
+    active_td = _resolve_main_time_dimension(query=query, model=_active_model)
+    if active_td is not None:
+        atd_key = bind_time_dimension(
+            td=active_td, scope=scope, bundle=bundle,
+        ).bound.value_key
+        assert isinstance(atd_key, TimeTruncKey)
+        active_td_key = atd_key
 
     if active_td_key is not None:
         declared_measures, bound_filters, order_specs = _map_bound_keys(
@@ -1027,11 +1027,19 @@ def _declared_measures_from_query(  # NOSONAR(S3776) — three sequential projec
     # time dimensions (distinct granularities) get granularity-suffixed public
     # names so their result keys disambiguate (DEV-1883); a lone one keeps the
     # DEV-1744 granularity-free key.
-    bound_tds = [
-        (td, b, b.routed_dotted or td.dimension.full_name)
-        for td in (query.time_dimensions or [])
-        for b in [bind_time_dimension(td=td, scope=scope, bundle=bundle)]
-    ]
+    bound_tds: List[Tuple[TimeDimension, BoundExpr, str]] = []
+    for td in (query.time_dimensions or []):
+        btd = bind_time_dimension(td=td, scope=scope, bundle=bundle)
+        # The temporal / re-bucketing type rules are the checker's (P9).
+        check_time_dimension_column(
+            name=td.dimension.full_name,
+            column_type=btd.column_type,
+            upstream_granularity=btd.upstream_granularity,
+            requested_granularity=td.granularity,
+        )
+        bound_tds.append(
+            (td, btd.bound, btd.bound.routed_dotted or td.dimension.full_name)
+        )
     _assert_equivalent_tds_agree(bound_tds)
     _td_flat_counts = Counter(_flatten_dotted(canon) for _, _, canon in bound_tds)
     for td, bound, canonical in bound_tds:
@@ -1156,7 +1164,7 @@ def _canonical_alias_for_formula(
 def _build_date_range_filter(
     *,
     td: TimeDimension,
-    scope: ModelScope,
+    scope: Union[ModelScope, StageSchema],
     bundle: ResolvedSourceBundle,
 ) -> BoundFilter:
     """Build a row-phase ``BoundFilter`` from a TimeDimension's ``date_range`` as an inclusive ``BetweenKey``, bound against the bare underlying column (not the TimeTruncKey)."""
@@ -1232,9 +1240,9 @@ def _host_local_default_td(
 def _resolve_main_time_dimension(
     *,
     query: SlayerQuery,
-    model: SlayerModel,
+    model: Optional[SlayerModel],
 ) -> Optional[TimeDimension]:
-    """Resolve the active time dimension for transform/windowing: 0 TDs → None; 1 → that TD; 2+ → main_time_dimension (full_name then leaf) else default_time_dimension else None."""
+    """Resolve the active time dimension for transform/windowing: 0 TDs → None; 1 → that TD; 2+ → main_time_dimension (full_name then leaf) else the model's default_time_dimension else None. A stage has no model, so its default step is skipped."""
     tds = list(query.time_dimensions or [])
     if not tds:
         return None
@@ -1275,7 +1283,7 @@ def _resolve_main_time_dimension(
             suggestion=None,
         )
 
-    default = model.default_time_dimension
+    default = model.default_time_dimension if model is not None else None
     if default:
         return _host_local_default_td(tds=tds, default=default)
     return None

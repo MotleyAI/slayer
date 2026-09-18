@@ -3,8 +3,6 @@
 Every ``#### Scenario`` of ``queries/semantics`` › *Home dataset of a row-level
 aggregation source*: the elaborator resolves each aggregate's home once and the
 term carries it as ``Aggregate.home_path`` (relative to the environment's host).
-These fail on the current tree — the term has no ``home_path`` and every
-aggregate's home is the query root.
 """
 
 from __future__ import annotations
@@ -81,6 +79,14 @@ class TestHomeDatasetPerScenario:
         # wsum's default weight (spend) is customers-local → home stays customers,
         # not the root — the default joins the home candidates.
         assert _home_path("wsum(customers.spend - customers.regions.pop)") == ("customers",)
+
+    def test_an_expression_default_widens_the_home_like_a_dotted_one(self):
+        # weight = "stores.rent * 2" reads the root-side stores → home is orders.
+        assert _home_path("wsum_expr(customers.spend)") == ()
+
+    def test_a_local_expression_default_constrains_nothing(self):
+        # weight = "spend * 2" is local to the definition → home stays customers.
+        assert _home_path("wsum_local_expr(customers.spend)") == ("customers",)
 
     def test_spelling_never_moves_the_home(self):
         assert _home_path("sum(customers.spend)") == _home_path("sum(customers.spend + 0)")

@@ -4048,7 +4048,13 @@ async def test_dev1539_having_multiterm_measure_emits_outer_parens(composite_sco
     assert having.startswith("("), (
         f"Expected HAVING body to start with `(` (outer wrap); got:\n{having}"
     )
-    assert "SUM(" in having.upper() and "/" in having and "NULLIF" in having.upper(), (
+    assert "SUM(" in having.upper(), (
+        f"Expected HAVING body to combine SUM/NULLIF via `/`; got:\n{having}"
+    )
+    assert "/" in having, (
+        f"Expected HAVING body to combine SUM/NULLIF via `/`; got:\n{having}"
+    )
+    assert "NULLIF" in having.upper(), (
         f"Expected HAVING body to combine SUM/NULLIF via `/`; got:\n{having}"
     )
 

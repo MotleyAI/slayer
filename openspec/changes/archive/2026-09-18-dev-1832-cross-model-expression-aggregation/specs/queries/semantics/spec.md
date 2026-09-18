@@ -62,6 +62,12 @@ applies exactly as for a single-column source rooted at the home.
 - **THEN** the query fails with the input-safety error naming the leaf and the hop,
   never a multiplied value
 
+#### Scenario: A host column defined across a fanning hop is refused
+- **WHEN** `orders` defines `li_qty` as `line_items.qty` over an undeclared
+  one-to-many hop and a query rooted at `orders` selects `li_qty:sum`
+- **THEN** it fails with the input-safety error naming `line_items` and the
+  cross-model spelling, while `line_items.qty:sum` returns the per-line-item total
+
 ## MODIFIED Requirements
 
 ### Requirement: Second-order aggregation over attached values

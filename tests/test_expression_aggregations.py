@@ -414,7 +414,8 @@ class TestExpressionErrors:
     async def test_filtered_column_operand_accepted(self) -> None:
         # DEV-1832: a filtered operand desugars to CASE WHEN, not a rejection.
         resp = await _dry(_q(measures=["sum(ok_amount - cost)"]))
-        assert resp.sql and "CASE WHEN" in resp.sql.upper()
+        assert resp.sql
+        assert "CASE WHEN" in resp.sql.upper()
 
     async def test_mixed_row_and_attached_source_accepted(self) -> None:
         # ``sum(sum(amount))`` is a degenerate re-aggregation (DEV-1847); a

@@ -28,10 +28,10 @@ An aggregation SHALL accept `partition_by=` and `window=` together. The value is
 - THEN ranking still uses the model's resolved ranking time column, not the partition key
 
 ### Requirement: Partitioned aggregates nested inside transforms
-A transform SHALL accept a partitioned aggregate as its input when used as a measure — rank-family transforms and temporal transforms (`time_shift`, `change`, `change_pct`, `lag`, `lead`, `cumsum`, `consecutive_periods`) alike. The transform evaluates at the query grain over the attached partition-grain value (the grain of its containing context) and MUST never fail with an internal error.
+A transform SHALL accept a partitioned aggregate as its input when used as a measure — rank-family transforms and temporal transforms (`time_shift`, `change`, `change_pct`, `lag`, `lead`, `cumsum`, `consecutive_periods`) alike. The transform evaluates at its operand grain — the attached aggregate's `partition_by=`, else the query grain (Axiom 11.1) — and the measure consumer broadcasts the result onto the query grain (Axiom 11.4); it MUST never fail with an internal error.
 
 #### Scenario: Running total of partition-grain values
-- WHEN a query selects dimensions `[region, city, month(ordered_at)]` and the measure `cumsum(revenue:sum(partition_by=[region, month(ordered_at)]))`
+- WHEN a query selects dimensions `[region, city, month(ordered_at)]` and the measure `cumsum(revenue:sum(partition_by=[region, ordered_at]))`
 - THEN each row's value is the cumulative sum across months, within the row's non-time dimensions, of the attached region-month totals, verified by executed values
 
 #### Scenario: Ranking result rows by an attached total
@@ -277,10 +277,24 @@ Every explicit partition key of a partitioned aggregate consumed in a combined p
 - THEN the query plans and executes without any partition-key error, and the outer aggregation's own explicit keys still carry the combined-consumer rule
 
 ### Requirement: Re-aggregation consumes attached operands as datasets
-A partitioned aggregate (or a composite of partitioned aggregates) SHALL be a
-legal aggregation source: the outer aggregation consumes the operand dataset's
-cells per `queries/semantics` › Second-order aggregation over attached values.
-The outer aggregation SHALL support the plain scalar aggregation family —
+A partitioned aggregate, an explicitly grained transform, or a composite of them
+SHALL be a legal aggregation source: the outer aggregation consumes the operand
+dataset's cells per `queries/semantics` › Second-order aggregation over attached
+values. A transform is a constituent like a partitioned aggregate, typed at the union of
+its inner aggregates' effective grains — each inner's explicit `partition_by=`, else
+the query grain (its dimensions and time buckets), a windowed inner contributing the
+query's active time bucket (per `queries/computed-dimensions` › Transforms inside
+dimension expressions) — and evaluated at that grain; a time-ordered transform
+constituent whose grain does not contain its time axis SHALL fail with the same
+time-axis error a dimension-position transform raises, the axis being named in
+`partition_by=` exactly as in dimension position (a top-level measure transform is
+unchanged and keeps evaluating at the query grain over the attached value); an
+axis-collapsing transform constituent (`first`, `last`) is typed at that union minus
+its time axis, realised as its axis-preserving evaluation followed by an exact
+per-partition pick, so the axis resolves per `to_many_handling` like any dimension
+the operand grain lacks; a transform with no explicitly grained inner aggregate types
+at the query grain and follows the degenerate rule. The outer
+aggregation SHALL support the plain scalar aggregation family —
 `sum`, `avg`, `min`, `max`, `count`, `count_distinct`, `median`,
 parametric aggregations, and model-defined custom aggregations; `count` counts
 the operand's cells with a non-null value and `count_distinct` its distinct
@@ -310,6 +324,41 @@ measure-local `filter=` on the outer aggregation.
   `percentile(sum(amount, partition_by=[city, region]), p=0.9)`
 - **THEN** each region row carries the number of its city cells with a non-null
   total and the 0.9-percentile of those totals, by executed values
+
+#### Scenario: Grained transform constituent executes through the carrier
+- **WHEN** a query over a month time dimension selects
+  `sum(cumsum(amount:sum(partition_by=[region, ordered_at])) - 1)`
+- **THEN** it executes with the hand-computed sum over regions of running totals
+  minus one per cell on SQLite and DuckDB, the plan carries exactly one producer for
+  the transform at its `(region, month)` grain inside the carrier, the emitted
+  statement has one flat `WITH`, scopes are closed, and no placeholder leaks
+
+#### Scenario: Every transform family executes as a constituent
+- **WHEN** a query over a month time dimension selects, over
+  `amount:sum(partition_by=[region, ordered_at])`, a `change`, a `lag`, a
+  `consecutive_periods` and a `first`/`last` constituent under `sum`
+- **THEN** each executes with hand-computed values on SQLite and DuckDB: the
+  shift family through its self-join series, `lag` and `consecutive_periods` per
+  cell, and `first`/`last` at the collapsed `(region)` grain
+
+#### Scenario: Windowed inner under a transform constituent fails closed
+- **WHEN** a query over a month time dimension selects
+  `sum(rank(amount:sum(window='90d', partition_by=region)))`
+- **THEN** it fails with the windowed time-dimension resolution error — never a
+  misgrained or duplicated result — the shape being deferred to a follow-up issue
+
+#### Scenario: Transform constituent without its time axis fails cleanly
+- **WHEN** a query over a month time dimension selects
+  `sum(cumsum(amount:sum(partition_by=region)))`
+- **THEN** it fails with the time-axis error directing the author to include the time
+  key in `partition_by=`, the same error the dimension-position form raises, and
+  never returns duplicated or misgrained rows
+
+#### Scenario: Time transform without a time dimension fails as a constituent
+- **WHEN** a query with no `time_dimensions` selects
+  `sum(cumsum(amount:sum(partition_by=[region, ordered_at])))`
+- **THEN** it fails with the same unambiguous-time-dimension error a top-level
+  `cumsum` raises
 
 #### Scenario: Operand-grain parameter executes
 - **WHEN** a query over `[region]` selects
@@ -483,7 +532,12 @@ ranked inners (`first`/`last`) and holds in measure, filter, and order positions
 ### Requirement: Mixed sources carry the full expression-source surface
 An aggregation source mixing row-level references with attached values SHALL
 behave as a row-level expression source: everything legal for a plain
-expression source is legal for it, and nothing more. The outer aggregation
+expression source is legal for it, and nothing more. Row leaves MAY be host-model
+or joined-model columns, homed per `queries/semantics` › Home dataset of a
+row-level aggregation source; an explicitly grained transform is an attached
+constituent exactly like a partitioned aggregate, except a collapsing (`first`/`last`)
+constituent, which SHALL be rejected with a typed error when mixed with a row-level
+reference (deferred to DEV-1928). The outer aggregation
 SHALL support the plain scalar family, `count` (base rows with a non-null
 operand value) and `count_distinct`, parametric and model-defined custom
 aggregations — including multi-input built-ins and column-reference parameters
@@ -498,8 +552,8 @@ group by the row leaf or the attached value themselves — they feed the outer
 aggregation only — and the mixed shape SHALL never be compiled through the
 fully-attached carrier (whose cell-over-cell value differs). Row leaves keep
 every existing expression-source restriction; attached constituents may be
-cross-model, windowed, or themselves attached-input aggregations. A source
-nesting a transform stays rejected. Discovery SHALL treat an aggregation that
+cross-model, windowed, grained transforms, or themselves attached-input
+aggregations. Discovery SHALL treat an aggregation that
 owns attached inputs as opaque below its inputs (source and parameters): those
 inputs belong to it — row-attached when it evaluates inline, owned by its own
 producer when it is itself a producer answer — and are never discovered as
@@ -527,6 +581,26 @@ its `partition_by=` still gets the outer attach the grain join needs.
   grain, row-attached into the outer aggregation's input relation — never an
   attach of the enclosing level — and each bucket carries the hand-computed
   row-weighted value, by executed values
+
+#### Scenario: Transform constituent inside a mixed source
+- **WHEN** a query over `[region]` selects
+  `sum(quantity * rank(avg(unit_price, partition_by=product)))`
+- **THEN** the transform is exactly one nested producer at its `(product)` grain,
+  row-attached into the outer aggregation's input relation, and each region carries
+  the hand-computed row-weighted value, by executed values — never the former
+  nested-transform rejection
+
+#### Scenario: Collapsing constituent mixed with a row leaf fails closed
+- **WHEN** a query over a month time dimension selects
+  `sum(amount * last(amount:sum(partition_by=[region, ordered_at])))`
+- **THEN** it fails with a typed error naming the collapsing transform and the
+  row-level column, never a broadcast or multiplied value
+
+#### Scenario: Joined-model row leaf inside a mixed source
+- **WHEN** a query rooted at `orders` over `[status]` selects
+  `sum(customers.discount * avg(amount, partition_by=status))`
+- **THEN** the source is homed at `orders`, the attached average is row-attached per
+  order, and each status carries the hand-computed value, by executed values
 
 #### Scenario: Parametric outer with a row-valued parameter
 - **WHEN** a query selects
