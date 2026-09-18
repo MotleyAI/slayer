@@ -155,6 +155,16 @@ class Column(BaseModel):
     label: str | None = None
     hidden: bool = False
     format: NumberFormat | None = None
+    granularity: TimeGranularity | None = Field(
+        default=None,
+        description=(
+            "Time bucket the column's values are already truncated to. "
+            "Query-backed models stamp it from the final stage; on a table-backed "
+            "column set it by hand only when you are sure the values are bucketed "
+            "at that granularity. A finer or non-nesting time dimension over the "
+            "column is then a typed error."
+        ),
+    )
     allowed_aggregations: list[str] | None = None
     filter: str | None = None  # Desugars to CASE WHEN (filter) THEN (value) END in every position
     meta: dict[str, Any] | None = None
@@ -186,6 +196,17 @@ class Column(BaseModel):
             # SQL-mode: validate at construction so DSL constructs raise early.
             parse_sql_predicate(v)
         return v
+
+    @model_validator(mode="after")
+    def _validate_granularity_temporal(self) -> "Column":
+        # A bucket only makes sense on a temporal column (like filter/aggregations, fail at construction).
+        if self.granularity is not None and self.type not in (DataType.DATE, DataType.TIMESTAMP):
+            raise ValueError(
+                f"Column {self.name!r} declares granularity "
+                f"'{self.granularity.value}' but its type is {self.type.value}; "
+                f"a granularity is only valid on a temporal (DATE / TIMESTAMP) column."
+            )
+        return self
 
     @property
     def _sql_is_nontrivial(self) -> bool:
