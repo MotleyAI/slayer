@@ -113,13 +113,17 @@ class TestColumnConstruction:
         with pytest.raises(ValueError) as exc:
             Column(name="created_at", type=DataType.TEXT, granularity=TG.MONTH)
         msg = str(exc.value)
-        assert "created_at" in msg and "month" in msg and "TEXT" in msg
+        assert "created_at" in msg
+        assert "month" in msg
+        assert "TEXT" in msg
 
     def test_default_type_rejects_granularity(self) -> None:
         with pytest.raises(ValueError) as exc:
             Column(name="ts", granularity=TG.MONTH)
         msg = str(exc.value)
-        assert "ts" in msg and "month" in msg and "TEXT" in msg
+        assert "ts" in msg
+        assert "month" in msg
+        assert "TEXT" in msg
 
     def test_dict_string_spelling_accepted(self) -> None:
         c = Column.model_validate({"name": "created_at", "type": "time", "granularity": "month"})
@@ -191,7 +195,8 @@ class TestBinderAndChecker:
                 upstream_granularity=TG.MONTH, requested_granularity=TG.DAY,
             )
         msg = str(exc.value)
-        assert "month" in msg and "day" in msg
+        assert "month" in msg
+        assert "day" in msg
         assert "already bucketed" in msg
         assert "bucket the raw column instead" in msg
         assert "nesting-coarser" in msg
@@ -272,12 +277,13 @@ class TestQueryBackedCache:
                 name="yearly",
             )
             assert _col(yearly, "created_at").granularity == TG.YEAR
+            finer = SlayerQuery.model_validate({
+                "source_model": "yearly",
+                "time_dimensions": [{"dimension": "created_at", "granularity": "day"}],
+                "measures": [{"formula": "rev_sum:sum"}],
+            })
             with pytest.raises(TimeDimensionColumnError):
-                await engine.execute(query=SlayerQuery.model_validate({
-                    "source_model": "yearly",
-                    "time_dimensions": [{"dimension": "created_at", "granularity": "day"}],
-                    "measures": [{"formula": "rev_sum:sum"}],
-                }), dry_run=True)
+                await engine.execute(query=finer, dry_run=True)
 
 
 # ---------------------------------------------------------------------------
@@ -298,12 +304,13 @@ class TestQueryBackedExecuted:
     async def test_issue_repro_finer_rejected(self, backend: str) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             engine = await self._monthly_engine(backend, tmp)
+            finer = SlayerQuery.model_validate({
+                "source_model": "monthly",
+                "time_dimensions": [{"dimension": "created_at", "granularity": "day"}],
+                "measures": [{"formula": "rev:sum"}],
+            })
             with pytest.raises(TimeDimensionColumnError):
-                await engine.execute(query=SlayerQuery.model_validate({
-                    "source_model": "monthly",
-                    "time_dimensions": [{"dimension": "created_at", "granularity": "day"}],
-                    "measures": [{"formula": "rev:sum"}],
-                }))
+                await engine.execute(query=finer)
 
     async def test_same_granularity_matches_direct(self, backend: str) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -334,12 +341,13 @@ class TestHandSetExecuted:
     async def test_handset_day_rejects_hour_and_executes(self, backend: str) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             engine = await _seeded_engine(backend, tmp, gran=TG.DAY)
+            finer = SlayerQuery.model_validate({
+                "source_model": "orders",
+                "time_dimensions": [{"dimension": "created_at", "granularity": "hour"}],
+                "measures": [{"formula": "amount:sum", "name": "rev"}],
+            })
             with pytest.raises(TimeDimensionColumnError):
-                await engine.execute(query=SlayerQuery.model_validate({
-                    "source_model": "orders",
-                    "time_dimensions": [{"dimension": "created_at", "granularity": "hour"}],
-                    "measures": [{"formula": "amount:sum", "name": "rev"}],
-                }), dry_run=True)
+                await engine.execute(query=finer, dry_run=True)
             day = await engine.execute(query=SlayerQuery.model_validate({
                 "source_model": "orders",
                 "time_dimensions": [{"dimension": "created_at", "granularity": "day"}],
@@ -372,12 +380,13 @@ class TestHandSetJoinPath:
             joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
         )
         engine = await _dryrun_engine([orders, customers])
+        finer = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "time_dimensions": [{"dimension": "customers.signup_at", "granularity": "day"}],
+            "measures": [{"formula": "*:count", "name": "n"}],
+        })
         with pytest.raises(TimeDimensionColumnError):
-            await engine.execute(query=SlayerQuery.model_validate({
-                "source_model": "orders",
-                "time_dimensions": [{"dimension": "customers.signup_at", "granularity": "day"}],
-                "measures": [{"formula": "*:count", "name": "n"}],
-            }), dry_run=True)
+            await engine.execute(query=finer, dry_run=True)
         await engine.execute(query=SlayerQuery.model_validate({
             "source_model": "orders",
             "time_dimensions": [{"dimension": "customers.signup_at", "granularity": "year"}],
@@ -460,8 +469,9 @@ class TestSiblingStandIns:
                     "time_dimensions": [{"dimension": "s1.created_at", "granularity": gran}],
                     "measures": [{"formula": "amount:sum", "name": "x"}],
                 }
+            finer = outer("day")
             with pytest.raises(TimeDimensionColumnError):
-                await engine.execute(query=[s1, outer("day")], dry_run=True)
+                await engine.execute(query=[s1, finer], dry_run=True)
             await engine.execute(query=[s1, outer("month")], dry_run=True)  # binds
 
 
@@ -486,11 +496,12 @@ class TestUnifiedMessage:
                        "time_dimensions": [{"dimension": "created_at", "granularity": "month"}]},
                 name="monthly",
             )
+            model_finer = SlayerQuery.model_validate({
+                "source_model": "monthly",
+                "time_dimensions": [{"dimension": "created_at", "granularity": "day"}],
+                "measures": [{"formula": "rev:sum"}]})
             with pytest.raises(TimeDimensionColumnError) as model_exc:
-                await engine.execute(query=SlayerQuery.model_validate({
-                    "source_model": "monthly",
-                    "time_dimensions": [{"dimension": "created_at", "granularity": "day"}],
-                    "measures": [{"formula": "rev:sum"}]}), dry_run=True)
+                await engine.execute(query=model_finer, dry_run=True)
             assert str(stage_exc.value) == str(model_exc.value)
             assert "upstream stage" not in str(stage_exc.value)
 
@@ -565,7 +576,9 @@ class TestMCPSurfaces:
             server, storage = await self._server(tmp)
             result = await _call(server, name="edit_model", arguments={
                 "model_name": "orders", "columns": [{"name": "note", "granularity": "month"}]})
-            assert "note" in result and "month" in result and "TEXT" in result
+            assert "note" in result
+            assert "month" in result
+            assert "TEXT" in result
             assert getattr(_col(await storage.get_model("orders"), "note"), "granularity", None) is None
 
     async def test_inspect_model_shows_set_granularity(self) -> None:

@@ -882,8 +882,9 @@ To connect a new database: create_datasource → describe_datasource (verify + l
                 Types: string, number, time, date, boolean. Optional fields: ``primary_key``,
                 ``unique`` (single-column uniqueness that is not the PK; ``primary_key``
                 already implies it), ``allowed_aggregations`` (whitelist), ``filter``
-                (CASE WHEN inside aggregation), ``label``, ``description``, ``hidden``,
-                ``meta``.
+                (CASE WHEN inside aggregation), ``granularity`` (a temporal column's
+                declared time bucket, e.g. ``"month"`` — only when it is truly bucketed
+                at that grain), ``label``, ``description``, ``hidden``, ``meta``.
             measures: List of named formula definitions on the model. Each:
                 {"name": "aov", "formula": "sum(revenue) / count(*)", "label": "...",
                  "description": "...", "meta": {...}}.
@@ -1057,7 +1058,9 @@ To connect a new database: create_datasource → describe_datasource (verify + l
                 {"name": "col", "type": "string", "sql": "col", "description": "...",
                  "primary_key": false, "unique": false, "hidden": false,
                  "allowed_aggregations": ["sum", "avg"],
-                 "filter": "status = 'active'", "label": "..."}.
+                 "filter": "status = 'active'", "label": "...", "granularity": "month"}.
+                ``granularity`` is a temporal column's declared time bucket (set it only
+                when the values are truly bucketed at that grain; ``null`` clears it).
                 If a column with this name exists, only the provided fields are updated.
                 Types: string, number, time, date, boolean.
                 ``unique`` marks single-column uniqueness that is not the primary key

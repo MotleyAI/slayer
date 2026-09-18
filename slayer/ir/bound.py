@@ -51,8 +51,9 @@ class BoundExpr(BaseModel):
 
 class BoundTimeDimension(BaseModel):
     """A bound time dimension: the wrapped ``BoundExpr`` (``bound``) plus the column
-    facts the checker judges — ``column_type`` and the stage column's
-    ``upstream_granularity`` (``None`` for a model column or an un-truncated stage column)."""
+    facts the checker judges — ``column_type`` and the recorded bucket
+    ``upstream_granularity`` (from a bucketed stage column or a model ``Column``'s
+    ``granularity``; ``None`` for an un-bucketed column)."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
 

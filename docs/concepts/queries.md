@@ -185,7 +185,7 @@ A time dimension with a required granularity and an optional date range. Support
 
 A `dimensions` or `time_dimensions` entry may also be written functionally as the string `gran(col)` (e.g. `"month(created_at)"`) — equivalent to a `TimeDimension` with that dimension and granularity (use the dict form above to add `date_range` or `label`), and usable as an `order` key too.
 
-A downstream stage of a multi-stage query may declare a time dimension on any DATE/TIMESTAMP column of its upstream stage — re-bucketing a column the upstream already truncated only at the same or a nesting-coarser granularity (e.g. `month` → `year`).
+A downstream stage of a multi-stage query may declare a time dimension on any DATE/TIMESTAMP column of its upstream stage — re-bucketing a column the upstream already truncated only at the same or a nesting-coarser granularity (e.g. `month` → `year`). The same rule applies to a model column that carries a `granularity` (a query-backed model's bucketed cache column, or a hand-set one): a finer or non-nesting time dimension over it is the same typed error.
 
 `week` is Monday-anchored (ISO-8601); `week_sunday` is Sunday-anchored (weeks start Sunday, end Saturday) for tools that use Sunday weeks. Both are model granularities you set on a `TimeDimension` — `week_sunday` is the SLayer value, not a wire keyword sent by a BI tool.
 

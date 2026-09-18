@@ -601,7 +601,7 @@ def check_time_dimension_column(
     upstream_granularity: Optional[TimeGranularity],
     requested_granularity: TimeGranularity,
 ) -> None:
-    """A time dimension's column must be temporal (DATE / TIMESTAMP); an upstream-bucketed stage column re-buckets only to the same or a nesting-coarser granularity (DEV-1471, closure Axiom 9)."""
+    """A time dimension's column must be temporal (DATE / TIMESTAMP); a bucketed column — stage, query-backed cache, or hand-set ``Column.granularity`` — re-buckets only to the same or a nesting-coarser granularity (DEV-1471 / DEV-1929, closure Axiom 9). One message for all three origins."""
     if column_type not in (DataType.DATE, DataType.TIMESTAMP):
         raise TimeDimensionColumnError(
             f"TimeDimension {name!r} must reference a temporal column "
@@ -614,11 +614,10 @@ def check_time_dimension_column(
     ):
         raise TimeDimensionColumnError(
             f"TimeDimension {name!r} cannot re-bucket to "
-            f"'{requested_granularity.value}': its upstream stage bucketed it "
+            f"'{requested_granularity.value}': its column is already bucketed "
             f"at '{upstream_granularity.value}', which does not nest into "
             f"'{requested_granularity.value}'. Request the same or a "
-            f"nesting-coarser granularity, or bucket the raw column in the "
-            f"upstream stage."
+            f"nesting-coarser granularity, or bucket the raw column instead."
         )
 
 

@@ -170,7 +170,9 @@ def synthetic_model_from_stage_schema(
         data_source=data_source or "_stage",
         sql_table=name,
         columns=[
-            Column(name=c.name, type=c.type or DataType.DOUBLE)
+            # DEV-1929: carry the bucket so the re-bucketing rule fires on a sibling
+            # reached through this stand-in (ModelExtension-over-sibling, stage join).
+            Column(name=c.name, type=c.type or DataType.DOUBLE, granularity=c.granularity)
             for c in schema.columns
         ],
     )
