@@ -50,6 +50,7 @@ from tests._dev1840_fixtures import (
     broadcast_warnings,
     dev1840_models,
     dropped_filter_warnings,
+    month_key,
     rows_by,
     _CUSTOMERS_ROWS,
     _ORDERS_ROWS,
@@ -57,7 +58,7 @@ from tests._dev1840_fixtures import (
     _REGIONS_ROWS,
     _STORES_ROWS,
 )
-from tests._dev1841_fixtures import associated_warnings
+from tests._dev1841_fixtures import associated_warnings, pushed_filter_infos
 
 # --------------------------------------------------------------------------- #
 # Models — one rich graph; tests select the role via the measure / dimension.
@@ -320,6 +321,44 @@ POP_FILTER_STRUCTURAL_FAN_DEFECT = 520.0
 POP_FILTER_DERIVED_ASSOC = 120.0
 POP_FILTER_DERIVED_FAN_DEFECT = 220.0
 
+# --- DEV-1909 host-rooted regroup producers under the same 'ok' population ---
+#: sum(spend, partition_by=tier) by tier; the fan defect double-counts c1's two
+#: ok orders in gold (190 -> 290).
+POP_FILTER_PARTITIONED_BY_TIER = {"gold": 190.0, "silver": 230.0}
+POP_FILTER_PARTITIONED_GOLD_FAN_DEFECT = 290.0
+#: *:count of the distinct population customers per tier (gold c1,c3,c6; silver c2,c5).
+POP_FILTER_COUNT_BY_TIER = {"gold": 3, "silver": 2}
+#: sum(spend, window='1y') bucketed by orders.ordered_at month: the fanning-axis
+#: window binds the ok filter to its own rows, each customer once. April trailing
+#: 1y = c1+c2+c3+c5+c6 = 420 (fan defect 520: c1's two Jan ok orders both counted).
+POP_FILTER_WINDOWED_BY_MONTH = {
+    "2024-01": 100.0, "2024-02": 250.0, "2024-03": 310.0, "2024-04": 420.0}
+POP_FILTER_WINDOWED_APRIL = 420.0
+POP_FILTER_WINDOWED_APRIL_FAN_DEFECT = 520.0
+#: first/last(spend, customers.signup_at) over the 'ok' population per tier:
+#: oldest-signup spend (gold c1=100, silver c2=150), newest (gold c6=30, silver
+#: c5=80). Fan-immune picks, but a sibling spend:sum must not multiply.
+POP_FILTER_FIRST_BY_TIER = {"gold": 100.0, "silver": 150.0}
+POP_FILTER_LAST_BY_TIER = {"gold": 30.0, "silver": 80.0}
+#: Nested avg(sum(spend, partition_by=tier)) with dims=[tier] is the degenerate
+#: identity: per-tier the inner total, each customer once (gold 190 not 290).
+POP_FILTER_NESTED_INNER_BY_TIER = {"gold": 190.0, "silver": 230.0}
+#: Two independent branches: customers with an ok order AND a region event >= 50
+#: (region North: c1,c2,c6) = 280.
+POP_FILTER_TWO_BRANCH = 280.0
+#: Producer-only orders.amount:sum over ok orders = 82; a predicate no order
+#: passes yields zero rows (empty-base spine carries the EXISTS).
+POP_FILTER_PRODUCER_ONLY = 82.0
+#: Raw-row mode: one row per distinct population customer with an ok order (5),
+#: never one per matching order (fan defect 6: c1's two ok orders).
+POP_FILTER_RAW_ROWS = 5
+#: Out-of-scope conjunct (tier='bronze' OR orders.status='ok') without an inline
+#: aggregate still restricts the result rows: tiers bronze, gold, silver.
+POP_FILTER_OUT_OF_SCOPE_TIERS = {"bronze", "gold", "silver"}
+#: Association arm untouched: associate spend:sum by orders.status filtered
+#: orders.amount in (20, 30) — new c1=100 / ok c2=150 (dev-1910, unchanged).
+POP_FILTER_ASSOC_BY_STATUS = {"new": 100.0, "ok": 150.0}
+
 __all__ = [
     "Aggregation", "AggregationParam", "Column", "ColumnRef", "DataType",
     "ModelJoin", "ModelMeasure", "SlayerModel", "SlayerQuery", "JoinCardinality",
@@ -335,4 +374,12 @@ __all__ = [
     "TO_ONE_FILTER_AMOUNT", "HOME_WIDEN_VALUE", "POP_FILTER_STRUCTURAL_ASSOC",
     "POP_FILTER_STRUCTURAL_FAN_DEFECT", "POP_FILTER_DERIVED_ASSOC",
     "POP_FILTER_DERIVED_FAN_DEFECT",
+    "POP_FILTER_PARTITIONED_BY_TIER", "POP_FILTER_PARTITIONED_GOLD_FAN_DEFECT",
+    "POP_FILTER_COUNT_BY_TIER", "POP_FILTER_WINDOWED_BY_MONTH",
+    "POP_FILTER_WINDOWED_APRIL", "POP_FILTER_WINDOWED_APRIL_FAN_DEFECT",
+    "POP_FILTER_FIRST_BY_TIER", "POP_FILTER_LAST_BY_TIER",
+    "POP_FILTER_NESTED_INNER_BY_TIER", "POP_FILTER_TWO_BRANCH",
+    "POP_FILTER_PRODUCER_ONLY", "POP_FILTER_RAW_ROWS",
+    "POP_FILTER_OUT_OF_SCOPE_TIERS", "POP_FILTER_ASSOC_BY_STATUS",
+    "pushed_filter_infos", "month_key",
 ]

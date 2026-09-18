@@ -185,13 +185,13 @@ ROWS: Tuple[LedgerRow, ...] = (
     _row(_EE, "check_parameter_determined", "SlayerError",
          "Aggregation … parameter … is not determined by the operand grain (…); the aggregation reads one value per cell of that grain. Aggregate the parameter to that grain, or add its determining keys to the operand's partition_by=.",
          "checker", "parameter", True, "checker"),
-    # Interim population-filter guard: a fanning row filter over an inline aggregate.
-    _row(_EE, "check_population_filter_no_fanout", "ValueError",
-         "Filter … reaches the population root only across a fanning join hop to …; with an aggregate computed inline over the population, this would multiply its rows. Aggregate the filtered relation to the population grain, or select it only through a producer.",
+    # DEV-1909: an out-of-scope population conjunct that would multiply the population.
+    _row(_EE, "check_population_filter_in_pushdown_scope", "ValueError",
+         "Filter … cannot restrict the population by association: …. With a plain aggregate inline over the population, or in raw-row mode, this would multiply the population's rows. Split the filter into separate conjuncts, or restate it on a single join branch.",
          "checker", "filters", True, "checker"),
-    # Its fail-closed arm: an unanalyzable filter dependency is unsafe, not local.
-    _row(_EE, "check_population_filter_no_fanout", "ValueError",
-         "Filter … has a dependency no supported dialect can analyse for join dependencies; with an aggregate computed inline over the population, an unanalyzable dependency is unsafe. Fix the referenced column's SQL, or remove the filter.",
+    # DEV-1909: a filter conjunct whose dependency closure cannot be analysed.
+    _row(_EE, "check_filter_dependencies_analyzable", "ValueError",
+         "Filter … names derived column …, whose definition no supported dialect can analyse for join dependencies; an unanalyzable dependency is unsafe. Fix the column's SQL, or remove the filter.",
          "checker", "filters", True, "checker"),
     _row(_EE, "check_reaggregation_no_window", "SlayerError",
          "Re-aggregation … cannot carry window= on its outer aggregation; apply the window inside the operand or consume the re-aggregated value through a transform.",

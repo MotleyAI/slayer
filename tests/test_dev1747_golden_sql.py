@@ -45,7 +45,11 @@ DIALECTS = ["postgres", "sqlite", "duckdb", "tsql", "bigquery"]
 
 # ``<case_id>::<dialect>`` -> why this entry is allowed to change right now.
 # A PENDING list, not a log: a committed state always has this empty.
-ALLOWED_DELTAS: dict[str, str] = {}
+_DEV1909 = ("DEV-1909: the fanning population filter now restricts by association "
+            "(EXISTS on the host base) instead of failing closed.")
+ALLOWED_DELTAS: dict[str, str] = {
+    f"reroot/unreachable_filter::{d}": _DEV1909 for d in DIALECTS
+}
 
 _MONTH = [{"dimension": "created_at", "granularity": "month"}]
 
@@ -301,10 +305,6 @@ def test_reroot_cases_actually_reroot(baseline) -> None:
     pins a forward plan instead."""
     for key, value in baseline.items():
         if not key.startswith("reroot/"):
-            continue
-        # Population guard fail-closes the fanning-filter shape until DEV-1909.
-        if key.startswith("reroot/unreachable_filter::"):
-            assert isinstance(value, dict), f"{key} must stay fail-closed: {value}"
             continue
         assert isinstance(value, str), f"{key} records an error, not SQL: {value}"
         assert "_cm_" in value, (

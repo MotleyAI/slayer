@@ -68,7 +68,12 @@ def _cases() -> dict:
     }
 
 
-FAIL_CLOSED = {k for k in _cases() if k.startswith("fanning/")}
+# DEV-1909 flips the derived population filter to an EXISTS restriction, so it is
+# no longer fail-closed here — it generates SQL like the positive shapes.
+FAIL_CLOSED = {
+    k for k in _cases()
+    if k.startswith("fanning/") and k != "fanning/pop_filter_derived"
+}
 
 
 async def _generate_one(case, dialect: str):
@@ -86,7 +91,11 @@ async def _generate_one(case, dialect: str):
         return record_raise(exc)
 
 
-ALLOWED_DELTAS: dict[str, str] = {}  # DEV-1910 associate deltas re-blessed
+_DEV1909 = ("DEV-1909: the derived fanning population filter now restricts by "
+            "association (EXISTS on the host base) instead of failing closed.")
+ALLOWED_DELTAS: dict[str, str] = {
+    f"fanning/pop_filter_derived::{d}": _DEV1909 for d in DIALECTS
+}
 
 bind_golden_tests(
     namespace=globals(),
