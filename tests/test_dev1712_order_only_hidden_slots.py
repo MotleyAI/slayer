@@ -775,19 +775,18 @@ class TestPartitionByGuard:
         assert "ambiguous" in str(ei.value).lower()
 
     async def test_partition_by_same_granularity_time_dim_not_flagged_ambiguous(self, engine) -> None:
-        """Two declarations at the SAME granularity are one bucket; the ambiguity guard must not misfire — the error must be the name collision, not 'ambiguous granularities'."""
+        """Two identical same-granularity declarations dedupe to one bucket (DEV-1883), so a bare ``partition_by=created_at`` is unambiguous — the guard must not misfire."""
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[
-                TimeDimension(dimension="created_at", granularity="month", label="A"),
-                TimeDimension(dimension="created_at", granularity="month", label="B"),
+                TimeDimension(dimension="created_at", granularity="month"),
+                TimeDimension(dimension="created_at", granularity="month"),
             ],
             measures=[ModelMeasure(
                 formula="rank(amount:sum, partition_by=created_at)", name="rk")],
         )
-        with pytest.raises(ValueError) as ei:
-            await _sql(engine, query)
-        assert "ambiguous" not in str(ei.value).lower()
+        sql = await _sql(engine, query)
+        assert _outer_select_columns(sql) == ["orders.created_at", "orders.rk"]
 
     async def test_partition_by_non_dim_raises_ntile(self, engine) -> None:
         query = SlayerQuery(

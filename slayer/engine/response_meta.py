@@ -30,7 +30,7 @@ from slayer.core.refs import EXPRESSION_SOURCE_KINDS, expression_source_leaf
 from slayer.ir.planned import PlannedQuery, ValueSlot
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.dialects import get_dialect
-from slayer.sql.naming import result_key, result_key_from_alias
+from slayer.sql.naming import result_key, result_key_from_alias, time_trunc_result_key
 
 
 class FieldMetadata(BaseModel):
@@ -133,10 +133,12 @@ def _slot_result_keys(*, slot: ValueSlot, source_relation: str) -> List[str]:
                 leaf=key.column_name,
             )]
         if isinstance(key, TimeTruncKey) and column_path(key.column):
-            return [result_key(
+            return [time_trunc_result_key(
                 source_relation=source_relation,
                 path=column_path(key.column),
                 leaf=column_leaf(key.column),
+                granularity=key.granularity,
+                declared_name=slot.declared_name,
             )]
     aliases = slot.public_aliases or [slot.declared_name]
     return [

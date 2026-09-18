@@ -287,8 +287,8 @@ def _render_builtin_aggregate(  # NOSONAR(S3776) — sequential fail-closed guar
                 f"only 'count' is defined over a bare star.",
             )
         inner: exp.Expression = exp.Star()
-    elif isinstance(key.source, AggregateKey):
-        # A nested-aggregate source (re-aggregation) desugars before render.
+    elif isinstance(key.source, (AggregateKey, TransformKey)):
+        # A nested-aggregate / transform source (re-aggregation) desugars before render.
         raise RenderContextMissingFacilityError(
             key_kind=type(key).__name__,
             facility=_AGG_BUILDER,

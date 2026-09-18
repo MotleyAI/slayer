@@ -17,8 +17,13 @@ is the coercion from coarser to finer.
 1. **Determination**: a dataset determines what a chain of provably to-one join
    hops reaches; determined fields have one value per row and behave as its own
    fields, and a reference never leaves its join path ambiguous (spec:
-   `models/join-cardinality` › Determination through to-one chains).
+   `models/join-cardinality` › Determination through to-one chains). A derived
+   column, being a function of its declaring dataset's row, is well-formed only
+   when its definition crosses provably to-one hops: a definition that provably
+   crosses a fanning hop is rejected at save time, an unproven hop is accepted
+   with a warning and the query-time backstop (spec: `models/column-definitions`).
    [enforced: test:tests/test_dev1836_producer_execution.py]
+   [enforced: test:tests/test_dev1930_save_time_arity.py]
 2. **Home dataset**: every row-level expression, and every aggregation, has at most
    one home dataset — the dataset over whose rows it is evaluated with exactly one
    value per row (an aggregation is counted over it, Axiom 4). Datasets are the
@@ -45,7 +50,7 @@ is the coercion from coarser to finer.
    - **2.4 Aggregation.** An aggregation over a row-level source is homed on the
      deepest dataset that determines the source's home (2.2) and every column-valued
      parameter and non-overridden definition default — each a row-level expression
-     under 2.1, defaults resolved as references from the root. It is counted over that
+     under 2.1, defaults resolved as references from the owning model [target: DEV-1931]. It is counted over that
      dataset's rows. The ordering key of a ranked aggregation must be determined by the
      home and never widens it; the aggregation's own `partition_by=` is not an input.
      A source with no row-level leaf is a second-order aggregation: its home is the
@@ -110,8 +115,13 @@ is the coercion from coarser to finer.
    [enforced: test:tests/test_dev1841_association_exec.py]
    [enforced: test:tests/test_dev1910_home_rooted_association.py]; and error (refuse)
    [enforced: test:tests/test_dev1841_error_mode.py]; an explicit partition_by
-   naming an unattributable dimension is an error outside associate mode.
-   [enforced: test:tests/test_dev1841_association_errors.py]
+   naming a dimension unattributable only from a further (cross-model) root is an
+   error outside associate mode
+   [enforced: test:tests/test_dev1841_association_errors.py], but one whose own
+   dependency closure (engine P10) crosses a fanning hop from its host is a
+   mode-invariant input-safety error — raised in every mode, associate included,
+   since it can never be counted without multiplying rows (Axiom 2.8).
+   [enforced: test:tests/test_dev1911_fanning_partition_key.py]
 9. **Closure**: every operator consumes and produces aggregates and may
    inspect only its operands' types (grain, home dataset), never how they were
    constructed — any "not supported inside" refusal of a well-typed term is a

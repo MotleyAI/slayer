@@ -64,14 +64,7 @@ same key). Very long expressions fold to a stable-hash key. An explicit
 keys collide (`sum(amount - cost)` and `sum(amount + cost)`) fail with a
 duplicate-key error asking for a rename.
 
-**Boundaries** (rejected with clear errors):
-
-* joined-model refs / dotted paths inside the expression
-  (`sum(amount - customers.discount)`) — cross-model expression aggregation
-  is not yet supported;
-* operands whose column carries a column-level `filter` — define a derived
-  model column instead;
-* nested transforms inside the aggregated expression (`sum(cumsum(x) - 1)`).
+Expression sources also accept joined-model refs (`sum(amount - customers.discount)`, homed at the deepest dataset that determines every operand — see [cross-model measures](queries.md#cross-model-measures)), operands whose column carries a `filter` (which masks that operand's value), and nested transforms (`sum(cumsum(amount:sum(partition_by=[region, ordered_at])) - 1)`, aggregated over the transform's own cells). A collapsing `first`/`last` constituent mixed with a row-level column in one source (`sum(amount * last(X))`) is the one retained boundary and fails closed with a typed error.
 
 A source mixing row-level columns with attached values
 (`sum(quantity * avg(price, partition_by=product))`) is a row-grain aggregation
@@ -368,7 +361,7 @@ Functions apply window operations to measures:
 | `first(x)` | Earliest time bucket's value | `FIRST_VALUE(x) OVER (ORDER BY time ASC ...)` |
 | `last(x)` | Most recent time bucket's value | `FIRST_VALUE(x) OVER (ORDER BY time DESC ...)` |
 
-**Time dimension requirement:** All time-ordered transforms (`cumsum`, `time_shift`, `change`, `change_pct`, `first`, `last`, `lag`, `lead`, `consecutive_periods`) require an explicit `time_dimensions` entry in the query. With a single entry, it's used automatically. With 2+ time dimensions, specify the query's `main_time_dimension` to disambiguate, or the model's `default_time_dimension` is used if it's among the query's time dimensions. The rank-family transforms (`rank`, `percent_rank`, `dense_rank`, `ntile`) do not need a time dimension.
+**Time dimension requirement:** All time-ordered transforms (`cumsum`, `time_shift`, `change`, `change_pct`, `first`, `last`, `lag`, `lead`, `consecutive_periods`) require an explicit `time_dimensions` entry in the query. With a single entry, it's used automatically. With 2+ time dimensions, specify the query's `main_time_dimension` to disambiguate, or the model's `default_time_dimension` is used if it's among the query's time dimensions. A downstream stage's own time dimension counts, so these transforms work over a re-bucketed stage column too. A stage has no model-level default, so set `main_time_dimension` when a stage has 2+ time dimensions. The rank-family transforms (`rank`, `percent_rank`, `dense_rank`, `ntile`) do not need a time dimension.
 
 Time-ordered window transforms partition by **every** projected non-time
 dimension — plain columns, joined and derived columns, and

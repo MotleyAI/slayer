@@ -26,7 +26,7 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict
 
-from slayer.core.enums import DataType
+from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.format import NumberFormat
 from slayer.core.models import SlayerModel
 
@@ -54,6 +54,9 @@ class StageColumn(BaseModel):
     sql_alias: str
     public_alias: Optional[str] = None
     type: Optional[DataType] = None
+    # Set only for a column an upstream stage bucketed (a ``TimeTruncKey`` slot);
+    # ``None`` means "not truncated", so any granularity re-binds (DEV-1471).
+    granularity: Optional[TimeGranularity] = None
     label: Optional[str] = None
     format: Optional[NumberFormat] = None
     hidden: bool = False

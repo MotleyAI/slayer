@@ -46,7 +46,7 @@ from slayer.sql.column_expansion import (
     is_trivial_base,
     collect_root_scope_joined_paths,
     collect_root_scope_reference_columns,
-    expand_derived_refs_sync,
+    expand_column_definition_parts_sync,
     wrap_column_filter,
 )
 from slayer.ir.planned import MaskTyping, RankedGrainMember, StageKind, ValueSlot, regroup_producer_identity
@@ -69,6 +69,7 @@ from slayer.sql.naming import (
     quote_mixed_case_identifiers,
     result_key,
     result_key_from_alias,
+    time_trunc_result_key,
 )
 from slayer.sql.render.aggregates import window_agg_class
 from slayer.sql.render.cte_assembly import CteEntry, assemble_with_chain
@@ -882,10 +883,12 @@ class SQLGenerator:
         return self._dialect.sqlglot_name
 
     def _slot_cast_type(self, slot: ValueSlot) -> Optional[DataType]:
-        """Without native exact decimals (SQLite), preservation is a no-op — keep the inferred cast."""
+        """The declared CAST target for ``slot`` — the single funnel for every slot cast site. Without native exact decimals (SQLite), preservation is a no-op; the dialect's declared-cast policy then suppresses temporal casts it cannot store (P2)."""
         if slot.preserve_native_type and not self._dialect.exact_decimal_native:
-            return slot.model_copy(update={"preserve_native_type": False}).cast_type
-        return slot.cast_type
+            dt = slot.model_copy(update={"preserve_native_type": False}).cast_type
+        else:
+            dt = slot.cast_type
+        return self._dialect.declared_cast_type(dt)
 
     def _new_allocator(self) -> AliasAllocator:
         """Build an ``AliasAllocator`` carrying this generator's dialect"""
@@ -1130,7 +1133,9 @@ class SQLGenerator:
             return exp.Column(this=self._to_ident(name), table=exp.to_identifier(model_name))
         if sql.isidentifier():
             return exp.Column(this=self._to_ident(sql), table=exp.to_identifier(model_name))
-        return _wrap_cast_for_type(self._parse(sql), type)
+        return _wrap_cast_for_type(
+            expr=self._parse(sql), dt=self._dialect.declared_cast_type(type),
+        )
 
     def _resolve_value_sql(self, spec: AggRenderSpec) -> str:
         """Resolve ``spec.sql`` (or ``spec.name``) into a fully-qualified"""
@@ -2357,7 +2362,6 @@ class SQLGenerator:
                             f"desugar should have isolated it into a producer "
                             f"CTE."
                         )
-                _hg = bool(agg_path) and _is_host_grain(key)
                 synth = self._build_agg_render_spec_from_planned(
                     slot=slot,
                     key=key,
@@ -2367,7 +2371,6 @@ class SQLGenerator:
                     bundle=bundle,
                     resolved_agg_kwargs=resolved_agg_kwargs.get(key),
                     scope=host_scope,
-                    owner_path=tuple(agg_path) if _hg else (),
                 )
                 agg_expr, is_agg = self._build_agg(synth)
                 if is_agg:
@@ -2822,7 +2825,7 @@ class SQLGenerator:
         )
 
         where_parts = self._ranked_cte_where(
-            plan=plan, local_key=local_key, planned_query=planned_query,
+            plan=plan, planned_query=planned_query,
             bundle=bundle, root_model=root_model, root_relation=root_relation,
             scope=ranked_scope,
         )
@@ -2878,7 +2881,6 @@ class SQLGenerator:
         self,
         *,
         plan,
-        local_key,
         planned_query,
         bundle,
         root_model,
@@ -3111,7 +3113,6 @@ class SQLGenerator:
                     if k not in picked_names
                 },
                 scope=scope,
-                owner_path=source_anchor_path(agg_slot.key.source),
             )
             value_sql = self._resolve_value_sql(spec)
             inner_cols.append(
@@ -3209,11 +3210,18 @@ class SQLGenerator:
         else:
             assert spec is not None  # set in both non-star arms above
             level2_spec = AggRenderSpec(
-                # A re-aggregation ``count`` counts the cells with a NON-NULL
-                # value (COUNT(_v)), not the cells (COUNT(*)); reference _v so the
-                # count family runs over the picked value.
+                # ``count`` counts cells with a NON-NULL picked value (COUNT(_v)),
+                # never the cells (COUNT(*)): a Column.filter masks non-matching
+                # rows to NULL, so a filtered association count must skip them
+                # (DEV-1832). Other families already read _base._v via the
+                # sql=None branch, so only count must name _v here.
                 name=picked_alias,
-                sql=picked_alias if getattr(kernel, "null_safe", False) else None,
+                sql=(
+                    picked_alias
+                    if getattr(kernel, "null_safe", False)
+                    or agg_slot.key.agg == "count"
+                    else None
+                ),
                 aggregation=agg_slot.key.agg,
                 alias=agg_alias, model_name="_base", type=agg_slot.type,
                 column_type=spec.column_type,
@@ -3223,7 +3231,7 @@ class SQLGenerator:
                 aggregation_def=spec.aggregation_def,
             )
         agg_expr, _ = self._build_agg(level2_spec)
-        agg_expr = _wrap_cast_for_type(agg_expr, self._slot_cast_type(agg_slot))
+        agg_expr = _wrap_cast_for_type(expr=agg_expr, dt=self._slot_cast_type(agg_slot))
         outer_cols: List[exp.Expression] = [
             _base_col(alias).as_(exp.to_identifier(alias, quoted=True))
             for alias in grain_aliases
@@ -4213,6 +4221,11 @@ class SQLGenerator:
             elif isinstance(key, TimeTruncKey):
                 path, leaf = column_path(key.column), column_leaf(key.column)
             if path and leaf is not None:
+                if isinstance(key, TimeTruncKey):
+                    return time_trunc_result_key(
+                        source_relation=source_relation, path=path, leaf=leaf,
+                        granularity=key.granularity, declared_name=slot.declared_name,
+                    )
                 return result_key(
                     source_relation=source_relation, path=path, leaf=leaf,
                 )
@@ -5578,7 +5591,8 @@ class SQLGenerator:
             (c for c in owner_model.columns if c.name == key.column_name), None,
         )
         return _wrap_cast_for_type(
-            self._parse(expanded_sql), col.type if col is not None else None,
+            expr=self._parse(expanded_sql),
+            dt=self._dialect.declared_cast_type(col.type if col is not None else None),
         )
 
 
@@ -5688,25 +5702,19 @@ class SQLGenerator:
                 f"{source_model.name!r}",
             )
         resolver_root = root_relation if root_relation is not None else source_relation
-        resolver = self._join_alias_resolver(resolver_root)
-
-        def _expand(sql: str) -> str:
-            out = expand_derived_refs_sync(
-                sql=sql, model=source_model, alias_path=source_relation,
-                models_by_name=bundle.models_by_name, dialect=self.dialect,
-                owner_path=owner_path, alias_resolver=resolver,
-                crossed_paths=crossed_paths,
-            )
-            return out if out is not None else sql
-
-        raw_value = col.sql if col.sql else col.name
-        value_ast = self._parse(_expand(raw_value))
+        value, filter_sql = expand_column_definition_parts_sync(
+            column=col, model=source_model, alias_path=source_relation,
+            models_by_name=bundle.models_by_name, dialect=self.dialect,
+            owner_path=owner_path, alias_resolver=self._join_alias_resolver(resolver_root),
+            crossed_paths=crossed_paths,
+        )
+        value_ast = self._parse(value)
         value_sql = (
-            _wrap_cast_for_type(value_ast, col.type) if cast else value_ast
+            _wrap_cast_for_type(
+                expr=value_ast, dt=self._dialect.declared_cast_type(col.type),
+            ) if cast else value_ast
         ).sql(dialect=self.dialect)
-        if not col.filter:
-            return value_sql
-        return wrap_column_filter(value_sql=value_sql, filter_sql=_expand(col.filter))
+        return wrap_column_filter(value_sql=value_sql, filter_sql=filter_sql)
 
     def _render_expression_source_sql(self, *, source, scope: ScopeFrame) -> str:
         """Render an aggregate's row-level expression source through ``scope`` — one resolver for leaves, attached placeholders, derived columns and join registration."""
@@ -5885,7 +5893,6 @@ class SQLGenerator:
         bundle=None,
         resolved_agg_kwargs: "Optional[Dict[str, ResolvedAggKwarg]]" = None,
         scope: Optional[ScopeFrame] = None,
-        owner_path: Tuple[str, ...] = (),
     ) -> AggRenderSpec:
         """Build an ``AggRenderSpec`` from a planned aggregate slot so"""
 

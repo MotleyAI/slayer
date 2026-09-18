@@ -1,28 +1,8 @@
-"""Tests for DEV-1449: nested-DAG multi-hop dotted dim referenced from a
-downstream stage.
+"""Nested-DAG multi-hop dotted dim referenced from a downstream stage.
 
-Bug: when an inner stage projects a multi-hop dotted dim (e.g.
-``customers.regions.name``) and an outer stage references the same dotted
-path, SLayer emits broken SQL referencing a hybrid ``__`` + ``.`` table
-alias that doesn't exist in scope.
-
-Fix (typed pipeline / DEV-1450): downstream stages see a FLAT schema —
-an inner stage's ``customers.regions.name`` dim is projected as the flat
-column ``customers__regions__name`` on the wrapping stage, and downstream
-stages reference it by that flat name. The dotted form is rejected
-downstream (``IllegalScopeReferenceError``).
-
-Cross-stage resolution is exercised end-to-end here via ``engine.execute``
-(flat downstream refs). The legacy stage-origin resolver's direct-unit
-tests — which pinned the OLD ancestor-strip resolution of the *dotted*
-downstream form (e.g. ``orders.customers.regions.name`` vs
-``customers.regions.name``) — were dropped in DEV-1484 Stage C: that
-behaviour is intentionally replaced by the flat-only contract, pinned by
-``tests/test_binding.py::TestStageSchemaScope`` (flat resolves; dotted
-rejected), and the helper itself dies with the legacy enrichment stack in
-Stage D.
-
-See ``.spec/DEV-1449.md`` for the full design.
+An inner stage projects a multi-hop dotted dim (``customers.regions.name``) as the
+flat column ``customers__regions__name``; downstream stages reference it by that
+flat name (the dotted form is rejected). Exercised end-to-end via ``engine.execute``.
 """
 
 import re
@@ -350,11 +330,6 @@ class TestThreeHopDimension:
 # Test #3 — cross-stage time dimension.
 # ===========================================================================
 class TestCrossStageTimeDimension:
-    @pytest.mark.skip(
-        reason="DEV-1471: cross-stage time_dim re-binding not yet supported in "
-        "the typed pipeline. Inner stage truncates the column; downstream sees "
-        "it as a flat name and the binder rejects re-binding as a TimeDimension."
-    )
     async def test_multi_hop_dotted_time_dim_cross_stage(self) -> None:
         """Inner stage projects a multi-hop dotted time dim
         `customers.regions.last_activity_at`. Outer references the same
@@ -747,11 +722,6 @@ class TestRenamedInnerMeasureCrossStage:
 # Test #16 — cross-stage time_shift with dotted time dim.
 # ===========================================================================
 class TestCrossStageTimeShift:
-    @pytest.mark.skip(
-        reason="DEV-1471: time_shift on the outer stage requires a downstream "
-        "TimeDimension binding, which the typed pipeline currently rejects "
-        "(inner stage's truncated column surfaces as a flat StageSchema name)."
-    )
     async def test_time_shift_over_multi_hop_dotted_time_dim(self) -> None:
         """Outer-stage `time_shift` applied to a multi-hop dotted time
         dim (`customers.regions.last_activity_at`) projected by the

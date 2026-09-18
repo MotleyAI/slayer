@@ -25,7 +25,7 @@ from slayer.core.keys import (
 )
 from slayer.core.models import SlayerModel
 from slayer.engine.join_safety import attributable_from_root, key_host_path
-from slayer.engine.reference_closure import default_param_value_key
+from slayer.engine.reference_closure import default_param_value_key, expr_default_ref_keys
 from slayer.ir.prebound import walk_key_path
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
@@ -47,32 +47,40 @@ def _longest_common_prefix(paths: List[Path]) -> Path:
 def _default_home_candidate_paths(
     *, agg: AggregateKey, host_model: SlayerModel, bundle: ResolvedSourceBundle,
 ) -> List[Path]:
-    """Home candidates from non-overridden definition defaults: each default
-    resolved as a reference FROM THE HOST, so a default naming a shallower model
-    (``customers.spend``) widens the home exactly as spelling it would. The
-    definition is looked up on the source's anchor (a cross-model custom agg)."""
-    owner = walk_key_path(
-        model=host_model, path=source_anchor_path(agg.source), bundle=bundle,
-    )
-    agg_def = next(
-        (a for a in (owner.aggregations or []) if a.name == agg.agg), None,
-    ) if owner is not None else None
+    """Home candidates from non-overridden definition defaults (the definition is
+    looked up on the source's anchor), each resolved as a reference FROM THE ROOT
+    (Axiom 2.4): a dotted default naming a shallower model widens the home exactly
+    as spelling it would, an expression default contributes every column it
+    references, and a local (bare) default has no join path and constrains nothing."""
+    owner = walk_key_path(model=host_model, path=source_anchor_path(agg.source), bundle=bundle)
+    if owner is None:
+        return []
+    agg_def = next((a for a in (owner.aggregations or []) if a.name == agg.agg), None)
     if agg_def is None:
         return []
     explicit = {name for name, _ in agg.kwargs}
-    out: List[Path] = []
-    for p in agg_def.params:
-        if p.name in explicit:
-            continue
-        vk = default_param_value_key(
-            sql=p.sql, owner_path=(), owner_model=host_model, bundle=bundle,
-        )
-        if not isinstance(vk, (ColumnKey, ColumnSqlKey)):
-            continue
-        path = key_host_path(vk)
-        if path and walk_key_path(model=host_model, path=path, bundle=bundle) is not None:
-            out.append(path)
-    return out
+    keys = [
+        k
+        for p in agg_def.params if p.name not in explicit
+        for k in _default_param_keys(sql=p.sql, root=host_model, bundle=bundle)
+        if isinstance(k, (ColumnKey, ColumnSqlKey))  # None = unanalysable; typing fails closed
+    ]
+    paths = [key_host_path(k) for k in keys]
+    return [
+        p for p in paths
+        if p and walk_key_path(model=host_model, path=p, bundle=bundle) is not None
+    ]
+
+
+def _default_param_keys(
+    *, sql: str, root: SlayerModel, bundle: ResolvedSourceBundle,
+) -> List[Optional[ValueKey]]:
+    """A definition default's column keys in the root's coordinates: one for a
+    bare/dotted default, every referenced column for an expression default."""
+    vk = default_param_value_key(sql=sql, owner_path=(), owner_model=root, bundle=bundle)
+    if vk is not None:
+        return [vk]
+    return expr_default_ref_keys(sql=sql, owner_model=root, owner_path=(), bundle=bundle)
 
 
 def _grain_member_paths(
@@ -83,7 +91,7 @@ def _grain_member_paths(
     aggregate/transform member stands for its own grain members, recursively."""
     if isinstance(member, (AggregateKey, TransformKey)):
         return _constituent_grain_paths(
-            member, dim_keys=dim_keys, td_keys=td_keys, active_bucket=active_bucket,
+            c=member, dim_keys=dim_keys, td_keys=td_keys, active_bucket=active_bucket,
         )
     return list(source_leaf_paths(member))
 
@@ -96,13 +104,13 @@ def _constituent_grain_paths(
     the explicit ``partition_by=`` else the query dimensions, and a windowed inner
     always includes the query's time bucket."""
     members = constituent_grain(
-        c, projected_dim_keys=dim_keys, projected_td_keys=td_keys,
+        c=c, projected_dim_keys=dim_keys, projected_td_keys=td_keys,
         active_bucket=active_bucket,
     )
     out: List[Path] = []
     for m in members:
         out.extend(_grain_member_paths(
-            m, dim_keys=dim_keys, td_keys=td_keys, active_bucket=active_bucket,
+            member=m, dim_keys=dim_keys, td_keys=td_keys, active_bucket=active_bucket,
         ))
     return out
 
@@ -136,7 +144,7 @@ def home_path_for(
     # not share is associated / broadcast, never moved into the home (Axioms 2.4, 2.9).
     for c in operand_constituents(agg.source):
         input_paths.extend(_constituent_grain_paths(
-            c, dim_keys=dim_keys, td_keys=td_keys, active_bucket=active_bucket,
+            c=c, dim_keys=dim_keys, td_keys=td_keys, active_bucket=active_bucket,
         ))
     candidates = sorted(
         {anchor, _longest_common_prefix(input_paths), *input_paths},

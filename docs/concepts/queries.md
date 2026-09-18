@@ -183,6 +183,10 @@ A time dimension with a required granularity and an optional date range. Support
 
 **Granularities**: `second`, `minute`, `hour`, `day`, `week`, `week_sunday`, `month`, `quarter`, `year`
 
+A `dimensions` or `time_dimensions` entry may also be written functionally as the string `gran(col)` (e.g. `"month(created_at)"`) — equivalent to a `TimeDimension` with that dimension and granularity (use the dict form above to add `date_range` or `label`), and usable as an `order` key too.
+
+A downstream stage of a multi-stage query may declare a time dimension on any DATE/TIMESTAMP column of its upstream stage — re-bucketing a column the upstream already truncated only at the same or a nesting-coarser granularity (e.g. `month` → `year`).
+
 `week` is Monday-anchored (ISO-8601); `week_sunday` is Sunday-anchored (weeks start Sunday, end Saturday) for tools that use Sunday weeks. Both are model granularities you set on a `TimeDimension` — `week_sunday` is the SLayer value, not a wire keyword sent by a BI tool.
 
 `date_range` must be exactly two non-null string bounds and filters inclusively (`[start, end]`); a one-sided range isn't expressible here, so use an explicit comparator filter (`"created_at >= '2024-01-01'"`) for an open-ended bound.
@@ -417,7 +421,7 @@ Filters can reference columns from joined models, and the planner adds the impli
 - Multi-hop dotted refs: `"customers.regions.name = 'US'"` — every prefix on the path is added.
 - Bare-named local derived columns whose own SQL crosses a join: e.g. a query column with `Column(name="is_eu", sql="CASE WHEN customers.region = 'EU' THEN 1 ELSE 0 END")` referenced as `"filters": ["is_eu = 1"]`. The planner walks the column's `sql` (recursively, through any local derived-column chain) to find the cross-table aliases and adds the corresponding joins.
 
-The same auto-join logic applies to model-level `filters` (always-applied WHERE) and to column-level `filter=` attributes (CASE-WHEN at aggregation time).
+The same auto-join logic applies to model-level `filters` (always-applied WHERE) and to column-level `filter=` attributes (a `CASE WHEN` value mask that fires in every position).
 
 A query filter that reaches the population root only across a fanning (not provably to-one) hop cannot be combined with an aggregate computed inline over that population — the query fails closed with a typed error rather than multiplying the aggregate's rows through the join.
 
@@ -743,6 +747,8 @@ Cross-model aggregates also support `window=`, `partition_by=`, and `first` /
 association cannot use `window=` or `first` / `last`), inside
 [dimension expressions](#expression-dimensions), and as hidden
 [order-only fields](#ordering-by-something-you-dont-project).
+
+An [aggregated expression](formulas.md#expression-aggregation) may mix host and joined-model columns (`sum(amount - customers.discount)`); it is homed at the deepest dataset that determines every operand, so the join hop's cardinality decides exact-grain vs broadcast exactly as for a single cross-model measure.
 
 A cross-model **parametric** aggregate keeps its kwarg signature in the result key, so two variants on the same target column do not collide:
 

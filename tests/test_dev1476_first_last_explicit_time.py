@@ -288,12 +288,13 @@ async def test_cross_model_first_last_with_no_time_at_all_raises() -> None:
         ],
     )
 
+    query = SlayerQuery.model_validate({
+        "source_model": "orders",
+        "dimensions": ["customers.region"],
+        "measures": [{"formula": "customers.amount:last"}],
+    })
     with pytest.raises(ValueError, match=r"first/last.*ranking time"):
-        await engine.execute(SlayerQuery(
-            source_model="orders",
-            dimensions=["customers.region"],
-            measures=[{"formula": "customers.amount:last"}],
-        ))
+        await engine.execute(query)
 
 
 async def test_d_cross_cross_model_derived_time_arg(

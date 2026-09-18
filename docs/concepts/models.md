@@ -82,7 +82,7 @@ A column is the unit of structure on the model. The same column entry can serve 
 | `hidden` | bool | No | `false` | Hide from listings |
 | `format` | dict | No | — | `NumberFormat` used by response metadata |
 | `allowed_aggregations` | list[str] | No | — | Whitelist (must be a subset of the type-default eligibility set, or a custom aggregation defined on this model) |
-| `filter` | string | No | — | SQL condition applied inside `CASE WHEN` at aggregation time. See [Filtered columns](#filtered-columns) |
+| `filter` | string | No | — | SQL condition wrapping the column value in `CASE WHEN` — a value mask that fires in every position. See [Filtered columns](#filtered-columns) |
 | `meta` | dict | No | — | Arbitrary JSON metadata |
 | `sampled` | string | No | — | Cached sample-value text snapshot (top-20 by frequency joined, or `top20 ... (50+ distinct)` on overflow, or `min .. max` for numeric/temporal); populated lazily on the first `inspect` of the column (or via `slayer search refresh-samples`), not at ingest time |
 | `sampled_values` | list[str] | No | — | Structured top-50-by-frequency list (categorical only); the unambiguous counterpart to `sampled` for consumers that need to compare predicate literals against stored values. `None` for numeric/temporal columns |
@@ -113,7 +113,7 @@ A column with no explicit `allowed_aggregations` whitelist gets a default set ba
 
 ### Filtered columns
 
-A column can carry a `filter` — a SQL condition wrapped around the column inside an aggregation via `CASE WHEN`. This is how you express business metrics that apply to a row subset without a separate model:
+A column can carry a `filter` — a SQL condition applied as a `CASE WHEN` value mask wherever the column is read (NULL on non-matching rows, so an aggregation over it covers just the matching rows). This is how you express business metrics that apply to a row subset without a separate model:
 
 ```yaml
 columns:
@@ -127,7 +127,7 @@ columns:
     filter: "status = 'completed'"
 ```
 
-`active_revenue:sum` then generates `SUM(CASE WHEN status = 'active' THEN amount END)`. The filter does nothing when the column is used as a group-by dimension — it fires only inside aggregations.
+`active_revenue:sum` then generates `SUM(CASE WHEN status = 'active' THEN amount END)`. The filter is pure syntactic sugar for `CASE WHEN <filter> THEN <value> END`, a **value mask** that fires in *every* position: as a group-by dimension, rows where the filter is false fall into the `NULL` group; a `first`/`last` picks the masked value at the chosen row (`NULL` if it does not match). It never removes rows or changes which row is picked — a genuine row restriction belongs in a query `filter`.
 
 Filters can reference joined columns via dot syntax (`categories.type = 'electronics'`). Filtered and unfiltered columns coexist freely in the same query and combine cleanly in arithmetic formulas (e.g. `{"formula": "active_revenue:sum / total_revenue:sum"}`).
 
@@ -159,7 +159,7 @@ joins:
 
 At query time, `aoi_ratio` expands to `telescopes.aperture / (stations.foo_raw / 100.0)`. The same applies to local-model chains (a column on the source model referencing another derived column on the same model) and to multi-hop join paths (use the dotted form, e.g., `B.C.x_derived`, when crossing more than one join).
 
-A derived column whose definition (recursively) crosses a fanning (not provably to-one) hop fails closed with a typed error when used as an aggregate input, a population filter, or an `error`-mode dimension — declare the [join cardinality](#join-cardinality) or primary key to prove the hop, or query it under `broadcast`/`associate` handling.
+A derived column whose definition (recursively) crosses a fanning (not provably to-one) hop fails closed with a typed error when used as an aggregate input, a population filter, or an `error`-mode dimension — declare the [join cardinality](#join-cardinality) or primary key to prove the hop, or query it under `broadcast`/`associate` handling. A derived column whose definition reaches a to-many (or undeclared) target cannot be aggregated as a column of its model — aggregate the target column directly (`line_items.qty:sum`). Where the hop is *provably* fanning (declared `one_to_many`/`many_to_many`), the model is rejected at **save time**; an unproven hop saves with a warning and relies on the query-time check above.
 
 Same-model references may be written **bare** (just the column name) or qualified with the host alias — both forms expand the same way. So given `bucket.sql = "raw_a / 10"`, a sibling `rn.sql = "ROW_NUMBER() OVER (PARTITION BY bucket ORDER BY id)"` correctly expands `bucket` to the inlined body. Bare references inside a nested scope (sub-query, `UNION` branch, CTE, `VALUES`) are NOT inlined — those identifiers belong to the inner rowset, not the host model — so `Column.sql = "(SELECT MAX(score) FROM other) + score"` inlines the outer `score` but leaves the inner one alone.
 

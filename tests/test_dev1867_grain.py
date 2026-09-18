@@ -57,8 +57,10 @@ class TestGrainConstruction:
             Grain.of([REGION, "not-a-key"])
 
     def test_frozen_mutation_fails(self) -> None:
+        grain = Grain.of([REGION])
+        empty = frozenset()
         with pytest.raises((ValidationError, TypeError)):
-            Grain.of([REGION]).keys = frozenset()  # type: ignore[misc]
+            grain.keys = empty  # type: ignore[misc]
 
     def test_empty_constant(self) -> None:
         assert Grain.of([]) == Grain.EMPTY
@@ -195,7 +197,7 @@ class TestRegroupRootGrain:
 class TestEffectiveRootGrain:
     def test_bare_non_windowed_full_projected_grain(self) -> None:
         grain, windowed = effective_root_grain(
-            BARE_SUM, projected_dim_keys=[REGION, CITY],
+            agg=BARE_SUM, projected_dim_keys=[REGION, CITY],
             projected_td_keys=[MONTH], active_bucket=None,
         )
         assert type(grain) is Grain
@@ -204,7 +206,7 @@ class TestEffectiveRootGrain:
 
     def test_bare_windowed_excludes_active_bucket(self) -> None:
         grain, windowed = effective_root_grain(
-            WINDOW_SUM, projected_dim_keys=[REGION],
+            agg=WINDOW_SUM, projected_dim_keys=[REGION],
             projected_td_keys=[MONTH], active_bucket=MONTH,
         )
         assert type(grain) is Grain

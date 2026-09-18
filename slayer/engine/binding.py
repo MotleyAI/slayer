@@ -27,6 +27,7 @@ from slayer.core.enums import (
     NUMERIC_ONLY_AGGREGATIONS,
     PRIMARY_KEY_AGGREGATIONS,
     DataType,
+    TimeGranularity,
     format_unknown_aggregation,
     normalize_aggregation_name,
 )
@@ -56,7 +57,7 @@ from slayer.engine.syntax import (
     parse_expr,
 )
 from slayer.sql.sql_expr import has_window_function
-from slayer.ir.bound import BoundExpr, BoundFilter
+from slayer.ir.bound import BoundExpr, BoundFilter, BoundTimeDimension
 
 __all__ = [
     "bind_expr",
@@ -64,8 +65,6 @@ __all__ = [
     "bind_time_dimension",
 ]
 
-
-_TEMPORAL_TYPES = frozenset({DataType.DATE, DataType.TIMESTAMP})
 
 _DEFAULT_MEASURE_DEPTH = 32
 _MEASURE_DEPTH_ENV_VAR = "SLAYER_MEASURE_EXPANSION_DEPTH"
@@ -137,71 +136,12 @@ def bind_time_dimension(
     *,
     scope: Union[ModelScope, StageSchema],
     bundle: ResolvedSourceBundle,
-) -> BoundExpr:
-    """Bind a ``TimeDimension`` into a ``BoundExpr`` carrying a ``TimeTruncKey``.
-
-    The column resolves against ``scope`` like a Mode-B identifier ref and must
-    be temporal (``DATE`` / ``TIMESTAMP``). Only ``ModelScope`` with a non-None
-    ``source_model`` is accepted; a ``StageSchema`` raises."""
-    if isinstance(scope, StageSchema):
-        raise IllegalScopeReferenceError(
-            name=td.dimension.full_name,
-            scope_kind="StageSchema",
-            reason=(
-                "time dimensions only bind against a ModelScope; downstream "
-                "stages already see the truncated column as a flat name "
-                "from the upstream stage's schema."
-            ),
-        )
-
-    assert isinstance(scope, ModelScope)
-    if scope.source_model is None:
-        raise UnknownReferenceError(
-            name=td.dimension.full_name,
-            scope_kind="ModelScope",
-            scope_summary="(no source_model anchor; anchor-less mode not implemented)",
-            suggestion=None,
-        )
-
+) -> BoundTimeDimension:
+    """Bind a ``TimeDimension`` into a ``BoundTimeDimension``: a ``BoundExpr`` carrying a ``TimeTruncKey`` plus the column facts the checker judges (its type, its upstream stage granularity). The column resolves like a Mode-B identifier ref against a ``ModelScope`` (joins) or a flat ``StageSchema``; the temporal / re-bucketing rules are the checker's (P9)."""
     full = td.dimension.full_name
-    if "." in full:
-        parts = tuple(full.split("."))
-        bound_col = _resolve_dotted(parts, scope=scope, bundle=bundle)
-    else:
-        bound_col = _resolve_ref(full, scope=scope, bundle=bundle)
-
-    if not isinstance(bound_col, (ColumnKey, ColumnSqlKey)):
-        # Defensive: an identifier ref against a ModelScope is always a column.
-        raise ValueError(
-            f"TimeDimension {full!r} did not resolve to a column "
-            f"reference (got {type(bound_col).__name__})."
-        )
-
-    # Leaf / path read via kind-agnostic helpers (ColumnKey or ColumnSqlKey).
-    terminal_model = _terminal_model_for_path(
-        path=column_path(bound_col),
-        scope=scope,
-        bundle=bundle,
+    bound_col, column_type, upstream_granularity = _time_dimension_column_facts(
+        full, scope=scope, bundle=bundle,
     )
-    if terminal_model is None:
-        # Defensive: _resolve_ref / _resolve_dotted would already have raised.
-        raise UnknownReferenceError(
-            name=full,
-            scope_kind="ModelScope",
-            scope_summary=f"could not resolve terminal model for {full!r}",
-            suggestion=None,
-        )
-    col = next(
-        (c for c in terminal_model.columns if c.name == column_leaf(bound_col)),
-        None,
-    )
-    if col is None or col.type not in _TEMPORAL_TYPES:
-        observed = col.type if col is not None else "<missing>"
-        raise ValueError(
-            f"TimeDimension {full!r} must reference a temporal column "
-            f"(DATE / TIMESTAMP); got column type {observed!r}."
-        )
-
     time_key = TimeTruncKey(
         column=bound_col, granularity=str(td.granularity.value),
     )
@@ -212,7 +152,63 @@ def bind_time_dimension(
         )
         if "." in full else None
     )
-    return BoundExpr(value_key=time_key, routed_dotted=routed)
+    return BoundTimeDimension(
+        bound=BoundExpr(value_key=time_key, routed_dotted=routed),
+        column_type=column_type,
+        upstream_granularity=upstream_granularity,
+    )
+
+
+def _time_dimension_column_facts(
+    full: str,
+    *,
+    scope: Union[ModelScope, StageSchema],
+    bundle: ResolvedSourceBundle,
+) -> Tuple[Union[ColumnKey, ColumnSqlKey], Optional[DataType], Optional[TimeGranularity]]:
+    """Resolve a time dimension's column against ``scope`` and read its facts — (bound column key, column type, upstream stage granularity). Stage arm reads the flat ``StageColumn`` (dotted → illegal-scope, unknown → unknown-reference); model arm walks joins to the terminal column, with no upstream granularity."""
+    if isinstance(scope, StageSchema):
+        if "." in full:
+            bound_col = _resolve_dotted(tuple(full.split(".")), scope=scope, bundle=bundle)
+        else:
+            bound_col = _resolve_ref(full, scope=scope, bundle=bundle)
+        assert isinstance(bound_col, ColumnKey)  # a stage ref is always a flat ColumnKey
+        stage_col = scope.get(full)
+        assert stage_col is not None  # _resolve_ref already validated existence
+        return bound_col, stage_col.type, stage_col.granularity
+
+    assert isinstance(scope, ModelScope)
+    if scope.source_model is None:
+        raise UnknownReferenceError(
+            name=full,
+            scope_kind="ModelScope",
+            scope_summary="(no source_model anchor; anchor-less mode not implemented)",
+            suggestion=None,
+        )
+    if "." in full:
+        bound_col = _resolve_dotted(tuple(full.split(".")), scope=scope, bundle=bundle)
+    else:
+        bound_col = _resolve_ref(full, scope=scope, bundle=bundle)
+    if not isinstance(bound_col, (ColumnKey, ColumnSqlKey)):
+        # Defensive: an identifier ref against a ModelScope is always a column.
+        raise ValueError(
+            f"TimeDimension {full!r} did not resolve to a column "
+            f"reference (got {type(bound_col).__name__})."
+        )
+    terminal = _terminal_model_for_path(
+        path=column_path(bound_col), scope=scope, bundle=bundle,
+    )
+    if terminal is None:
+        # Defensive: _resolve_ref / _resolve_dotted would already have raised.
+        raise UnknownReferenceError(
+            name=full,
+            scope_kind="ModelScope",
+            scope_summary=f"could not resolve terminal model for {full!r}",
+            suggestion=None,
+        )
+    col = next(
+        (c for c in terminal.columns if c.name == column_leaf(bound_col)), None,
+    )
+    return bound_col, (col.type if col is not None else None), None
 
 
 def _canonical_if_routed(
