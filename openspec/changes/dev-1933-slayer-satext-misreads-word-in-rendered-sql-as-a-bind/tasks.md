@@ -1,12 +1,12 @@
 ## 1. Client — one verbatim door
 
-- [ ] 1.1 Add `_exec_verbatim(conn, sql)` and `_exec_verbatim_async(conn, sql)` to `slayer/sql/client.py`, each calling `conn.exec_driver_sql(sql, execution_options={"no_parameters": True})` and returning the cursor result; verify the module guard test's helper-pair assertion passes.
-- [ ] 1.2 Route all fifteen `conn.execute(sa.text(...))` sites through the pair — the four rendered-SQL doors, the timeout SETs in both execute paths and both probe-timeout helpers, and both `SET TRANSACTION READ ONLY` sites — and drop the now-unused `sa.text` usage; verify `grep -c "sa.text(" slayer/sql/client.py` is 0 and the SQLite door tests pass.
+- [x] 1.1 Add `_exec_verbatim(conn, sql)` and `_exec_verbatim_async(conn, sql)` to `slayer/sql/client.py`, each calling `conn.exec_driver_sql(sql, execution_options={"no_parameters": True})` and returning the cursor result; verify the module guard test's helper-pair assertion passes.
+- [x] 1.2 Route all fifteen `conn.execute(sa.text(...))` sites through the pair — the four rendered-SQL doors, the timeout SETs in both execute paths and both probe-timeout helpers, and both `SET TRANSACTION READ ONLY` sites — and drop the now-unused `sa.text` usage; verify `grep -c "sa.text(" slayer/sql/client.py` is 0 and the SQLite door tests pass.
 
 ## 2. Normative harness & docs (arc42 edit approved 2026-09-18)
 
-- [ ] 2.1 Append item 13 to `architecture/sql.arc42.md` §3 with the approved wording and its `[enforced: test:tests/test_dev1933_verbatim_execution.py]` tag; verify `poetry run python tools/arch_check.py` passes.
-- [ ] 2.2 Add one sentence to the Columns section of `docs/concepts/models.md` (column SQL reaches the driver verbatim — `:name` never a bind parameter, `%` never a format directive); verify no new page, so no `zensical.toml` nav change.
+- [x] 2.1 Append item 13 to `architecture/sql.arc42.md` §3 with the approved wording and its `[enforced: test:tests/test_dev1933_verbatim_execution.py]` tag; verify `poetry run python tools/arch_check.py` passes.
+- [x] 2.2 Add one sentence to the Columns section of `docs/concepts/models.md` (column SQL reaches the driver verbatim — `:name` never a bind parameter, `%` never a format directive); verify no new page, so no `zensical.toml` nav change.
 
 ## 3. Unit tests — `tests/test_dev1933_verbatim_execution.py`
 
@@ -23,8 +23,8 @@
 
 ## 5. Gate
 
-- [ ] 5.1 `openspec validate dev-1933-slayer-satext-misreads-word-in-rendered-sql-as-a-bind --strict` passes.
-- [ ] 5.2 `poetry run pytest -m "not integration" -n auto`, the CI integration invocation, `poetry run ruff check slayer/ tests/`, `poetry run python tools/arch_check.py`, and `poetry run basedpyright` (no new errors vs baseline) all pass.
+- [x] 5.1 `openspec validate dev-1933-slayer-satext-misreads-word-in-rendered-sql-as-a-bind --strict` passes.
+- [x] 5.2 `poetry run pytest -m "not integration" -n auto`, the CI integration invocation, `poetry run ruff check slayer/ tests/`, `poetry run python tools/arch_check.py`, and `poetry run basedpyright` (no new errors vs baseline) all pass.
 
 ## 6. Archive (spec-review stage)
 

@@ -287,6 +287,26 @@ class TestSQLServerQueries:
         assert result.row_count == 1
         assert result.data[0]["orders._count"] == 6
 
+    async def test_dev1933_regex_literal_extension_column(self, sqlserver_env: SlayerQueryEngine) -> None:
+        """DEV-1933: an ad-hoc column holding a ``(?:...)`` regex literal and a ``%``
+        LIKE pattern executes verbatim; text() misread ``:too`` as a bind parameter."""
+        query = SlayerQuery(
+            source_model=ModelExtension(
+                source_name="orders",
+                columns=[Column(
+                    name="rx",
+                    sql="CASE WHEN status LIKE '%pend%' "
+                        "OR status = '(?i)(?:too complicated|too complex)' THEN 1 ELSE 0 END",
+                    type=DataType.DOUBLE,
+                )],
+            ),
+            dimensions=[ColumnRef(name="rx")],
+            measures=[ModelMeasure(formula="*:count")],
+        )
+        result = await sqlserver_env.execute(query=query)
+        by_rx = {int(r["orders.rx"]): r["orders._count"] for r in result.data}
+        assert by_rx == {1: 2, 0: 4}
+
     async def test_sum_measure(self, sqlserver_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(source_model="orders", measures=[{"formula": "total:sum"}])
         result = await sqlserver_env.execute(query=query)
@@ -970,8 +990,11 @@ class TestSQLServerStatAggregations:
         dry = await sqlserver_env.execute(query=query, dry_run=True)
         assert dry.sql is not None
         sql_upper = dry.sql.upper()
-        assert "VAR(" in sql_upper and "VAR_SAMP(" not in sql_upper, (
-            f"T-SQL var_samp must emit canonical VAR(, not VAR_SAMP(. Got:\n{dry.sql}"
+        assert "VAR(" in sql_upper, (
+            f"T-SQL var_samp must emit canonical VAR(. Got:\n{dry.sql}"
+        )
+        assert "VAR_SAMP(" not in sql_upper, (
+            f"T-SQL var_samp must not emit VAR_SAMP(. Got:\n{dry.sql}"
         )
 
     async def test_var_pop_uses_canonical_tsql_name(self, sqlserver_env: SlayerQueryEngine) -> None:

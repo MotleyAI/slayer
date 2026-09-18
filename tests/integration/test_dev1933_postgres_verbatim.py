@@ -13,8 +13,8 @@ import pytest
 
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
-from slayer.core.query import ModelExtension, SlayerQuery
+from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
+from slayer.core.query import ColumnRef, ModelExtension, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.client import SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
@@ -22,6 +22,7 @@ from slayer.storage.yaml_storage import YAMLStorage
 pytest.importorskip("pytest_postgresql")
 
 import psycopg  # ALLOW(import-not-top): optional DB driver, gated by pytest.importorskip above
+from psycopg import sql as pg_sql  # ALLOW(import-not-top): optional DB driver, gated by pytest.importorskip above
 from pytest_postgresql import factories  # ALLOW(import-not-top): optional DB driver, gated by pytest.importorskip above
 
 postgresql_proc = factories.postgresql_proc(port=None)
@@ -43,7 +44,7 @@ def _create_db(info) -> str:
     admin = psycopg.connect(host=info.host, port=info.port, user=info.user, dbname="postgres")
     admin.autocommit = True
     with admin.cursor() as cur:
-        cur.execute(f'CREATE DATABASE "{db_name}"')
+        cur.execute(pg_sql.SQL('CREATE DATABASE {}').format(pg_sql.Identifier(db_name)))
     admin.close()
     conn = psycopg.connect(host=info.host, port=info.port, user=info.user, dbname=db_name)
     with conn.cursor() as cur:
@@ -61,7 +62,9 @@ def _drop_db(info, db_name: str) -> None:
     admin = psycopg.connect(host=info.host, port=info.port, user=info.user, dbname="postgres")
     admin.autocommit = True
     with admin.cursor() as cur:
-        cur.execute(f'DROP DATABASE IF EXISTS "{db_name}" WITH (FORCE)')
+        cur.execute(
+            pg_sql.SQL('DROP DATABASE IF EXISTS {} WITH (FORCE)').format(pg_sql.Identifier(db_name))
+        )
     admin.close()
 
 
@@ -122,8 +125,8 @@ class TestPostgresVerbatimExecution:
                     type=DataType.TEXT,
                 )],
             ),
-            dimensions=[{"name": "rx"}],
-            measures=[{"formula": "*:count"}],
+            dimensions=[ColumnRef(name="rx")],
+            measures=[ModelMeasure(formula="*:count")],
         )
         result = await pg_env.execute(query=query)
         # No status matches the pattern, so REGEXP_REPLACE returns each unchanged.

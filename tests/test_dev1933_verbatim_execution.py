@@ -11,12 +11,13 @@ The literal ``'(?i)(?:too complicated|too complex)'`` carries ``:too``, which
 """
 
 import ast
+import sqlite3
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
-from slayer.core.query import ModelExtension, SlayerQuery
+from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
+from slayer.core.query import ColumnRef, ModelExtension, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql import client as sql_client
 from slayer.sql.client import SlayerSQLClient
@@ -266,8 +267,6 @@ class TestModelExtensionRegexColumnEndToEnd:
     ``:too``; text() failed it, the verbatim door runs it."""
 
     async def _seed_engine(self, tmp_path) -> SlayerQueryEngine:
-        import sqlite3
-
         db_path = tmp_path / "dev1933.sqlite"
         conn = sqlite3.connect(db_path)
         conn.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, status TEXT NOT NULL)")
@@ -302,8 +301,8 @@ class TestModelExtensionRegexColumnEndToEnd:
                     type=DataType.DOUBLE,
                 )],
             ),
-            dimensions=[{"name": "rx"}],
-            measures=[{"formula": "*:count"}],
+            dimensions=[ColumnRef(name="rx")],
+            measures=[ModelMeasure(formula="*:count")],
         )
         result = await engine.execute(query=query)
         by_rx = {int(row["orders.rx"]): row["orders._count"] for row in result.data}
