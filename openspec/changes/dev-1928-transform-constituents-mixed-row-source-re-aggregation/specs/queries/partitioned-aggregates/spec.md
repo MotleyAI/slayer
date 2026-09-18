@@ -14,9 +14,13 @@ transform constituent whose grain does not contain its time axis SHALL fail with
 time-axis error a dimension-position transform raises, the axis being named in
 `partition_by=` exactly as in dimension position (a top-level measure transform is
 unchanged and keeps evaluating at the query grain over the attached value); an inner
-aggregate homed on a joined model whose `partition_by=` names a key that model does not
-determine — the host's time axis reached only across a fanning hop — SHALL fail with the
-partition-key attributability error, a type rule and not a deferred shape; an
+aggregate homed on a joined model whose `partition_by=` names the host's time axis — a
+key reachable from the inner's own root only across a fanning join hop — SHALL fail with
+the partition-key attributability error in every mode, associate included, the
+mode-invariant input-safety rule for a partition key whose closure fans from the inner's
+host (Axiom 8): not a deferred shape and not a boundary a mode resolves, though a future
+change (DEV-1941) would let associate mode compute it by distinct-entity association per
+bucket; an
 axis-collapsing transform constituent (`first`, `last`) is typed at that union minus
 its time axis, realised as its axis-preserving evaluation followed by an exact
 per-partition pick, so the axis resolves per `to_many_handling` like any dimension
@@ -69,6 +73,12 @@ measure-local `filter=` on the outer aggregation.
   shift family through its self-join series, `lag` and `consecutive_periods` per
   cell, and `first`/`last` at the collapsed `(region)` grain
 
+#### Scenario: Windowed inner under a transform constituent fails closed
+- **WHEN** a query over a month time dimension selects
+  `sum(rank(amount:sum(window='90d', partition_by=region)))`
+- **THEN** it no longer fails with the windowed time-dimension error — it executes per
+  the next scenario; the former fail-closed pin is retired
+
 #### Scenario: Windowed inner under a transform constituent executes
 - **WHEN** a query over a month time dimension selects
   `sum(rank(amount:sum(window='90d', partition_by=region)))`
@@ -79,14 +89,27 @@ measure-local `filter=` on the outer aggregation.
   statement has one flat `WITH`, scopes are closed, and no placeholder leaks — never
   the former windowed time-dimension error
 
+#### Scenario: A pure re-aggregation counts operand cells, not base rows
+- **WHEN** a query over a month time dimension selects
+  `sum(rank(amount:sum(window='90d', partition_by=region)))` over a source with several
+  base rows per (region, month) cell
+- **THEN** the outer aggregation counts each operand cell once — its home is the operand
+  dataset (Axiom 2.4), so the producer joins at the query grain as a second-order
+  re-aggregation, never a row-grain attach that would multiply by the base-row count;
+  the mixed `sum(amount * min(X, partition_by=region))` over the same rows instead counts
+  every base row, since its row leaf homes it on the model rows
+
 #### Scenario: Cross-model grained inner naming a host time axis is a permanent boundary
 - **WHEN** a query rooted at `orders` over a month time dimension selects
   `sum(cumsum(customers.spend:sum(partition_by=[customers.tier, ordered_at])))`
-- **THEN** it fails at plan time with the partition-key attributability error naming
-  `ordered_at` and the remedy — the inner is homed at `customers`, and `ordered_at` is
-  reachable from it only across the fanning `customers→orders` hop, so no cell of the
-  inner determines the axis — never a duplicated or misgrained result, and never a
-  deferral wording
+- **THEN** under every mode — the default (broadcast), error AND associate — it fails at
+  plan time with the partition-key attributability error naming `ordered_at` and the
+  remedy: the inner is homed at `customers`, and `ordered_at` is an `orders` column
+  reachable from `customers` only across the fanning `customers → orders` hop, so it is
+  a mode-invariant input-safety error (Axiom 8) — never a duplicated or misgrained
+  result, and never a deferral wording. The value is well-defined under distinct-entity
+  association (a future change, DEV-1941, would compute it), so this is the boundary a
+  fanning-crossing time key hits today, not a fundamental impossibility.
 
 #### Scenario: A to-one cross-model partition key on a local-homed inner stays legal
 - **WHEN** a query rooted at `orders` over a month time dimension selects
@@ -231,6 +254,12 @@ its `partition_by=` still gets the outer attach the grain join needs.
   the hand-computed row-weighted value, by executed values — never the former
   nested-transform rejection
 
+#### Scenario: Collapsing constituent mixed with a row leaf fails closed
+- **WHEN** a query over a month time dimension selects
+  `sum(amount * last(amount:sum(partition_by=[region, ordered_at])))`
+- **THEN** it no longer fails with the collapsing-transform error — it executes per the
+  next scenario; the former fail-closed pin is retired
+
 #### Scenario: Collapsing transform constituent inside a mixed source
 - **WHEN** a query over a month time dimension selects `sum(amount * last(X))` with
   `X = amount:sum(partition_by=[region, ordered_at])`
@@ -356,3 +385,13 @@ its `partition_by=` still gets the outer attach the grain join needs.
 - **THEN** the plan carries exactly one producer and one attach for it, every
   occurrence substitutes to that attach, total routing holds after
   substitution, and the executed values are correct
+
+#### Scenario: A re-aggregation used both standalone and as a mixed constituent is deferred
+- **WHEN** one query selects both `min(X, partition_by=region)` on its own and
+  `sum(amount * min(X, partition_by=region))` — the same re-aggregation standalone
+  (combined phase) and as a mixed row-level constituent (row phase)
+- **THEN** it fails at bind time with a typed error naming the re-aggregation and the
+  remedy (select the two in separate queries): the one shared producer would need
+  attaching at two phases, and its nested-producer CTE emits out of dependency order on
+  strict dialects — a bounded emission-ordering gap tracked as DEV-1942, never a crash,
+  dialect-inconsistent SQL, or wrong numbers

@@ -6,8 +6,8 @@ here: a mixed row source with a re-aggregation constituent (the `first`/`last` c
 a windowed inner under a transform constituent, and a cross-model grained inner under a
 transform constituent. Under Axiom 9 a well-typed term refused for an implementation
 reason is a closure violation: the first two are exactly that (the hand-written form even
-surfaces a user-reachable internal assertion today), while the third is a correct Axiom 7
-attributability rejection that must stop masquerading as a deferral.
+surfaces a user-reachable internal assertion today), while the third is a correct Axiom 8
+mode-axis rejection that must stop masquerading as a deferral.
 
 ## What Changes
 
@@ -23,11 +23,21 @@ attributability rejection that must stop masquerading as a deferral.
   `sum(rank(amount:sum(window='90d', partition_by=region)))` executes: the query's active
   time bucket reaches the nested producer, so the windowed inner resolves it and the
   constituent is grained by it.
-- **Cross-model grained inner under a transform constituent is a permanent boundary.** A
-  target-homed inner whose `partition_by=` names a host time key reachable only across a
-  fanning hop stays refused by the partition-key attributability error — reclassified from
-  a deferral to the Axiom 7 rule it is. No axiom change.
+- **Cross-model grained inner under a transform constituent is a permanent boundary in
+  every mode.** A target-homed inner whose `partition_by=` names the host's time axis — an
+  `orders` column reachable from the inner's `customers` home only across the fanning
+  `customers → orders` hop — stays refused by the partition-key attributability error in
+  every mode, associate included; reclassified from a deferral to the Axiom 8
+  mode-invariant input-safety rule it is (a fanning-crossing partition key, per DEV-1911).
+  The associate-mode probe (task 1.4) confirmed it raises there too, so the value —
+  well-defined under distinct-entity association — is tracked as a follow-up (DEV-1941),
+  not delivered here. No axiom change.
 - The `time_dimension=` axis kwarg idea is dropped (not pursued, no issue).
+- **One bounded new boundary.** A re-aggregation used both on its own (a standalone
+  re-aggregation) and as a mixed row-level constituent in the same query fails closed
+  with a typed checker error: the one shared producer would need attaching at two phases
+  and its nested-producer CTE then emits out of dependency order on strict dialects.
+  Deferred to DEV-1942, never a dialect-inconsistent result.
 
 ## Capabilities
 
@@ -40,7 +50,9 @@ None.
 - `queries/partitioned-aggregates`: MODIFIED *Re-aggregation consumes attached operands
   as datasets* (the windowed-inner scenario becomes an executed one; the cross-model
   grained inner naming a host time axis is recorded as a permanent attributability
-  boundary, with a positive pin for a to-one cross-model partition key) and *Mixed sources
+  boundary in every mode — the fanning-crossing time key is a mode-invariant input-safety
+  error, associate included, tracked forward as DEV-1941 — beside a positive
+  pin for a to-one cross-model partition key) and *Mixed sources
   carry the full expression-source surface* (executed scenarios for a re-aggregation
   constituent — hand-written, collapse-produced, empty-grain, as a parameter, combined with
   a coarser measure, in filter and order position — and the mode axis).
@@ -50,7 +62,10 @@ None.
 - `slayer/engine/compile/stages.py` (row-attach path: attached-constituent synthesis
   context, join pairs from the producer's projected grain; the nested producer receives
   the query's time dimension), `slayer/engine/elaborate_env.py` and
-  `slayer/engine/bind_inputs.py` (guard removed).
+  `slayer/engine/bind_inputs.py` (collapse-in-mixed guard removed; a new checker guard
+  `check_reaggregation_not_standalone_and_mixed` added for the standalone+mixed boundary,
+  with its `tests/_dev1871_raise_ledger.py` row — a `ValueError`, so `guards.baseline`
+  stays unchanged).
 - Tests: `tests/test_dev1832_transform_source.py` (three pins flipped or reclassified, new
   executed cases), `tests/test_dev1832_fixtures_smoke.py` (oracle derivations),
   `tests/_dev1871_raise_ledger.py` (row removed), `tests/test_dev1832_golden_sql.py` +
@@ -58,5 +73,4 @@ None.
 - Docs: `docs/concepts/formulas.md` (one sentence).
 - No arc42 or `index.yaml` change; `guards.baseline` unchanged (the removed guard is a
   `ValueError`, not a ratcheted `NotImplementedError`).
-- Stacked on DEV-1832: the PR targets its branch until it merges, then main; this change
-  archives after DEV-1832's.
+- DEV-1832 has landed and archived on main (merged here 2026-09-18); the PR targets main.

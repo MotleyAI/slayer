@@ -64,7 +64,7 @@ same key). Very long expressions fold to a stable-hash key. An explicit
 keys collide (`sum(amount - cost)` and `sum(amount + cost)`) fail with a
 duplicate-key error asking for a rename.
 
-Expression sources also accept joined-model refs (`sum(amount - customers.discount)`, homed at the deepest dataset that determines every operand — see [cross-model measures](queries.md#cross-model-measures)), operands whose column carries a `filter` (which masks that operand's value), and nested transforms (`sum(cumsum(amount:sum(partition_by=[region, ordered_at])) - 1)`, aggregated over the transform's own cells). A collapsing `first`/`last` constituent mixed with a row-level column in one source (`sum(amount * last(X))`) is the one retained boundary and fails closed with a typed error.
+Expression sources also accept joined-model refs (`sum(amount - customers.discount)`, homed at the deepest dataset that determines every operand — see [cross-model measures](queries.md#cross-model-measures)), operands whose column carries a `filter` (which masks that operand's value), and nested transforms (`sum(cumsum(amount:sum(partition_by=[region, ordered_at])) - 1)`, aggregated over the transform's own cells). A re-aggregation constituent mixed with a row-level column (`sum(amount * last(X))`) and a windowed inner under a transform constituent (`sum(rank(revenue:sum(window='90d', partition_by=region)))`) both execute — the re-aggregation evaluated at its own grain and broadcast per partition onto the rows — while a target-homed inner whose `partition_by=` names the host's time axis stays a typed error.
 
 A source mixing row-level columns with attached values
 (`sum(quantity * avg(price, partition_by=product))`) is a row-grain aggregation
@@ -191,8 +191,10 @@ attributable, the query errors naming the time dimension and the remedy.
 The following windowed-measure shapes raise a clear error rather than returning
 wrong numbers, and are planned follow-ups: a windowed aggregation other than
 `sum`/`avg`; a windowed measure combined with a transform (`cumsum`,
-`time_shift`, …) in any position; a windowed measure nested in an
-arithmetic/composite expression in `measures`
+`time_shift`, …) in a measure, dimension, filter, or order position — though a
+windowed inner under a transform *constituent* of an aggregation source
+(`sum(rank(revenue:sum(window='90d', partition_by=region)))`) does execute; a
+windowed measure nested in an arithmetic/composite expression in `measures`
 (`{"formula": "revenue:sum(window='90d') / 2"}`); or one compared
 against a plain aggregate inside one filter
 (`revenue:sum(window='90d') > 100 and revenue:sum > 50`).
