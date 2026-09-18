@@ -9,6 +9,7 @@ from __future__ import annotations
 from decimal import Decimal
 from enum import IntEnum
 from typing import (
+    Dict,
     FrozenSet,
     Sequence,
     TypeGuard,
@@ -31,6 +32,7 @@ from typing import (
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from slayer.core.enums import (
+    AXIS_COLLAPSING_TRANSFORMS,
     DataType,
     RANK_FAMILY_TRANSFORMS,
     RANKED_AGGREGATIONS,
@@ -152,8 +154,7 @@ class _FrozenKey(BaseModel, frozen=True):
     """Common config for the typed-key family: frozen (hashable, immutable).
 
     Every kind overrides the total-traversal protocol: ``children()`` yields the
-    directly embedded value keys (scalars and the Mode-A-opaque
-    ``AggregateKey.column_filter_key`` are never children); ``map_children``
+    directly embedded value keys (scalars are never children); ``map_children``
     rebuilds one level with ``fn`` applied at each ``children()`` position,
     returning ``self`` when no child changed identity (``is``).
     """
@@ -330,42 +331,6 @@ class LiteralKey(_LeafKey, frozen=True):
         return _typed_leaf(self.value) == _typed_leaf(other.value)
 
 
-class SqlExprKey(_LeafKey, frozen=True):
-    """Identity for a Mode-A SQL fragment.
-
-    Used as ``AggregateKey.column_filter_key`` so an attached ``Column.filter``
-    joins the aggregate's structural identity. ``canonical_sql`` is
-    sqlglot-normalized by the binder. ``referenced_join_paths`` is the set of
-    non-anchor join-path prefixes the filter touches (``()`` for same-model);
-    the before-validator sorts/dedups it so order doesn't affect identity.
-    """
-
-    canonical_sql: str
-    referenced_join_paths: Tuple[Tuple[str, ...], ...] = ()
-
-    @field_validator("referenced_join_paths", mode="before")
-    @classmethod
-    def _canonicalize_referenced_join_paths(cls, v):
-        if not v:
-            return ()
-        return tuple(sorted({tuple(p) for p in v}))
-
-    @property
-    def phase(self) -> Phase:
-        return Phase.ROW
-
-    def __hash__(self) -> int:
-        return hash(("SqlExprKey", self.canonical_sql, self.referenced_join_paths))
-
-    def __eq__(self, other: object) -> bool:
-        if not isinstance(other, SqlExprKey):
-            return NotImplemented
-        return (
-            self.canonical_sql == other.canonical_sql
-            and self.referenced_join_paths == other.referenced_join_paths
-        )
-
-
 # ---------------------------------------------------------------------------
 # Aggregate / Transform / Arithmetic / ScalarCall
 # ---------------------------------------------------------------------------
@@ -380,7 +345,7 @@ class SqlExprKey(_LeafKey, frozen=True):
 # by the Arithmetic/ScalarCall operands, which already admit any ValueKey).
 _AggregateSource = Union[
     ColumnKey, ColumnSqlKey, StarKey,
-    "ArithmeticKey", "ScalarCallKey", "LiteralKey", "AggregateKey",
+    "ArithmeticKey", "ScalarCallKey", "LiteralKey", "AggregateKey", "TransformKey",
 ]
 # Positional and kwarg arg values share one union: `last(created_at)` binds an
 # identifier column, `weighted_avg(weight=qty)` a column, and
@@ -405,8 +370,9 @@ class AggregateKey(_FrozenKey, frozen=True):
     Local and cross-model aggregates share this shape: ``source.path`` empty for
     local, non-empty for joined. ``args``/``kwargs`` carry parameters (numeric
     scalars pre-normalized to Decimal; identifier kwargs arrive as
-    ``ColumnKey``/``ColumnSqlKey``; kwargs canonicalized to sorted order).
-    ``column_filter_key`` folds any attached ``Column.filter`` into identity.
+    ``ColumnKey``/``ColumnSqlKey``; kwargs canonicalized to sorted order). A
+    ``Column.filter`` rides its source ``ColumnSqlKey`` (DEV-1832), not the
+    aggregate.
 
     ``locus`` (DEV-1747 D2) names where a cross-model aggregate is evaluated:
     ``"target"`` (default) rooted at the target, one value per target row-group;
@@ -419,7 +385,6 @@ class AggregateKey(_FrozenKey, frozen=True):
     agg: str
     args: Tuple[_AggregateArgValue, ...] = ()
     kwargs: Tuple[Tuple[str, _AggregateKwargValue], ...] = ()
-    column_filter_key: Optional[SqlExprKey] = None
     locus: Literal["target", "host"] = "target"
     # None = grain inherited from context; Grain.EMPTY = explicitly scalar.
     partition_keys: Optional["Grain"] = None
@@ -434,7 +399,6 @@ class AggregateKey(_FrozenKey, frozen=True):
         return Phase.AGGREGATE
 
     def children(self) -> Tuple["ValueKey", ...]:
-        # column_filter_key is Mode-A opaque — never a child (A1).
         embedded = [
             c
             for c in (self.source, *self.args, *(v for _, v in self.kwargs))
@@ -466,7 +430,6 @@ class AggregateKey(_FrozenKey, frozen=True):
             self.agg,
             _typed_args(self.args),
             _typed_kwargs(self.kwargs),
-            self.column_filter_key,
             self.locus,
             self.partition_keys,
         ))
@@ -479,7 +442,6 @@ class AggregateKey(_FrozenKey, frozen=True):
             and self.agg == other.agg
             and _typed_args(self.args) == _typed_args(other.args)
             and _typed_kwargs(self.kwargs) == _typed_kwargs(other.kwargs)
-            and self.column_filter_key == other.column_filter_key
             and self.locus == other.locus
             and self.partition_keys == other.partition_keys
         )
@@ -511,8 +473,8 @@ def reroot_aggregate_key(
 ) -> "AggregateKey":
     """Re-anchor a cross-model ``AggregateKey`` into its target's local scope.
 
-    A thin alias for :func:`reroot_value_key`. ``column_filter_key`` rides
-    through unchanged (its paths are anchored at the source column's owning model).
+    A thin alias for :func:`reroot_value_key`; a ``Column.filter`` rides its
+    source ``ColumnSqlKey``, recovered from the model at expansion.
     """
     return reroot_value_key(key, target_path=target_path)
 
@@ -883,35 +845,18 @@ KIND_POLICY: dict[type, KindPolicy] = {
 }
 
 
-def _map_sql_expr_key(key: SqlExprKey, *, map_path) -> SqlExprKey:
-    """Apply ``map_path`` to a standalone fragment's referenced paths.
-
-    Reconstructed (not ``model_copy``d) so the validator re-sorts/dedups; a path
-    mapped to ``()`` is dropped.
-    """
-    mapped = [np for p in key.referenced_join_paths if (np := tuple(map_path(p)))]
-    return SqlExprKey(
-        canonical_sql=key.canonical_sql,
-        referenced_join_paths=mapped,
-    )
-
-
 def _map_value_key(key: _RerootableT, *, map_path) -> _RerootableT:
     """Rewrite every embedded join ``path`` in ``key`` through ``map_path``.
 
     Total & fail-closed behind :func:`reroot_value_key` / :func:`prepend_value_key`:
     path-carrying leaves map here, every other kind routes through
-    ``map_children`` (a protocol-less kind raises). ``AggregateKey.column_filter_key``
-    is copied unchanged (owner-anchored), while a standalone ``SqlExprKey`` is
-    root-anchored and does map.
+    ``map_children`` (a protocol-less kind raises).
     """
     # Scalars ride through untouched (ScalarCallKey args, AggregateKey kwargs).
     if key is None or isinstance(key, (Decimal, str, bool, int, float)):
         return key
     if isinstance(key, (ColumnKey, ColumnSqlKey, StarKey)):
         return cast(_RerootableT, _map_path_ref(key, map_path=map_path))
-    if isinstance(key, SqlExprKey):
-        return cast(_RerootableT, _map_sql_expr_key(key, map_path=map_path))
     if not isinstance(key, _FrozenKey):
         raise TypeError(
             f"the value-key path visitor has no case for {type(key).__name__!r}: "
@@ -950,6 +895,60 @@ def regroup_root_grain(root: ValueKey) -> Grain:
     return Grain.of(getattr(root, "partition_keys", None) or frozenset())
 
 
+def effective_root_grain(
+    agg: ValueKey,
+    *,
+    projected_dim_keys: List[ValueKey],
+    projected_td_keys: List[ValueKey],
+    active_bucket: Optional[ValueKey],
+) -> Tuple[Grain, bool]:
+    """A combined-root's producer grain and windowedness.
+
+    An explicitly-partitioned aggregate keeps ``regroup_root_grain``. A bare
+    windowed / first-last root takes the FULL projected grain (a windowed root's
+    bucket enters via ``window_td_key``, so it is excluded here)."""
+    windowed = window_kwarg_of(agg) is not None
+    if getattr(agg, "partition_keys", None) is not None:
+        grain = regroup_root_grain(agg)
+        # A transform with no grained inner (e.g. rank(region)) is the degenerate
+        # query-grain identity (Axiom 11.1); its operand cells are the query grain.
+        if isinstance(agg, TransformKey) and grain.is_empty:
+            return Grain.of([*projected_dim_keys, *projected_td_keys]), False
+        # A transform over a window= inner gains the active bucket in its union grain.
+        if (
+            not windowed and active_bucket is not None
+            and any(window_kwarg_of(k) is not None for k in walk_value_keys(agg))
+        ):
+            return grain | {active_bucket}, True
+        return grain, windowed
+    if windowed:
+        grain = Grain.of(projected_dim_keys) | (
+            Grain.of(projected_td_keys)
+            - ({active_bucket} if active_bucket else frozenset())
+        )
+    else:
+        grain = Grain.of([*projected_dim_keys, *projected_td_keys])
+    return grain, windowed
+
+
+def constituent_grain(
+    c: ValueKey, *,
+    projected_dim_keys: List[ValueKey],
+    projected_td_keys: List[ValueKey],
+    active_bucket: Optional[ValueKey],
+) -> Grain:
+    """Grain of an attached constituent (Axiom 2.3) — aggregate or grained
+    transform: its effective root grain, folding the active bucket back in when a
+    windowed inner pulls it in."""
+    grain, windowed = effective_root_grain(
+        agg=c, projected_dim_keys=projected_dim_keys,
+        projected_td_keys=projected_td_keys, active_bucket=active_bucket,
+    )
+    if windowed and active_bucket is not None:
+        return grain | {active_bucket}
+    return grain
+
+
 def reroot_value_key(
     key: _RerootableT, *, target_path: Tuple[str, ...],
 ) -> _RerootableT:
@@ -980,7 +979,7 @@ def prepend_value_key(
     re-anchoring a target-local bound tree into the host's coordinate system.
 
     Inverse of ``reroot_value_key(key, target_path=host_path)``. ``host_path == ()``
-    is the identity; ``AggregateKey.column_filter_key`` stays owner-anchored.
+    is the identity.
     """
     host_path = tuple(host_path)
     if not host_path:
@@ -1000,8 +999,7 @@ def substitute_value_keys(
     Pre-order match-before-recurse: a key equal to a ``mapping`` entry is
     replaced atomically (children never traversed, replacements never
     re-substituted); everything else routes through ``map_children`` (a
-    protocol-less kind raises). ``AggregateKey.column_filter_key`` is NOT
-    traversed (a Mode-A ``SqlExprKey``); ``TimeTruncKey.column`` IS.
+    protocol-less kind raises). ``TimeTruncKey.column`` IS traversed.
     """
     # Scalars ride through untouched (ScalarCallKey args, AggregateKey kwargs).
     if key is None or isinstance(key, (Decimal, str, bool, int, float)):
@@ -1073,15 +1071,15 @@ def is_local_partitioned_agg(k: ValueKey) -> bool:
     return (
         isinstance(k, AggregateKey)
         and k.partition_keys is not None
-        and not getattr(k.source, "path", ())
+        and not source_anchor_path(k.source)
     )
 
 
 def is_cross_model_agg(k: ValueKey) -> bool:
-    """A cross-model AggregateKey (source names another model); a host-grain wrap (locus="host") is excluded."""
+    """A cross-model AggregateKey (source lives on another model); a host-grain wrap (locus="host") is excluded."""
     return (
         isinstance(k, AggregateKey)
-        and bool(getattr(k.source, "path", ()))
+        and bool(source_anchor_path(k.source))
         and k.locus != "host"
     )
 
@@ -1093,7 +1091,7 @@ def is_local_combined_regroup_ref(
     or a bare windowed/first/last measure); ``row_agg_set`` aggregates excluded."""
     return (
         isinstance(k, AggregateKey)
-        and not getattr(k.source, "path", ())
+        and not source_anchor_path(k.source)
         and k not in row_agg_set
         and (
             k.partition_keys is not None
@@ -1211,13 +1209,33 @@ def operand_aggregates(source: ValueKey) -> List[AggregateKey]:
     return out
 
 
-def source_row_leaves(source: ValueKey) -> List[ValueKey]:
-    """The top-level ROW-level column leaves of an aggregation source (not
-    descending through a nested aggregate's own source, which is attached)."""
+def operand_constituents(source: ValueKey) -> List[ValueKey]:
+    """The top-level attached constituents of an aggregation source — nested
+    aggregates AND grained transforms (Axiom 2.3), deduped and opaque (neither
+    descended past). The generalisation of :func:`operand_aggregates` that treats
+    a transform as the typed dataset it is."""
     out: List[ValueKey] = []
 
     def _walk(k: ValueKey) -> None:
-        if isinstance(k, AggregateKey):
+        if isinstance(k, (AggregateKey, TransformKey)):
+            if k not in out:
+                out.append(k)
+            return
+        for c in k.children():
+            _walk(c)
+
+    _walk(source)
+    return out
+
+
+def source_row_leaves(source: ValueKey) -> List[ValueKey]:
+    """The top-level ROW-level column leaves of an aggregation source (not
+    descending through an attached constituent — a nested aggregate or a grained
+    transform — whose own leaves are opaque)."""
+    out: List[ValueKey] = []
+
+    def _walk(k: ValueKey) -> None:
+        if isinstance(k, (AggregateKey, TransformKey)):
             return
         if isinstance(k, (ColumnKey, ColumnSqlKey, TimeTruncKey, StarKey)):
             out.append(k)
@@ -1229,16 +1247,139 @@ def source_row_leaves(source: ValueKey) -> List[ValueKey]:
     return out
 
 
-def attached_inputs(k: ValueKey) -> List[AggregateKey]:
-    """Deduped top-level aggregates across source, args and kwargs (source first)."""
+def _leaf_join_path(k: ValueKey) -> Tuple[str, ...]:
+    """Join path of a row-level leaf key regardless of kind."""
+    if isinstance(k, TimeTruncKey):
+        return column_path(k.column)
+    return getattr(k, "path", ())
+
+
+def source_leaf_paths(source: ValueKey) -> List[Tuple[str, ...]]:
+    """Join paths of the row-level column/star leaves of an aggregation source.
+
+    Attached constituents — nested aggregates and grained transforms — are opaque
+    (they contribute their grain, not a source leaf); a literal-only source yields
+    no leaf. The one accessor every "where does this source live" site reads (D1)."""
+    out: List[Tuple[str, ...]] = []
+
+    def _walk(k: ValueKey) -> None:
+        if isinstance(k, (AggregateKey, TransformKey)):
+            return
+        if isinstance(k, (ColumnKey, ColumnSqlKey, TimeTruncKey, StarKey)):
+            out.append(_leaf_join_path(k))
+            return
+        for c in k.children():
+            _walk(c)
+
+    _walk(source)
+    return out
+
+
+def source_anchor_path(source: ValueKey) -> Tuple[str, ...]:
+    """Where an aggregation source lives: the longest common prefix of its
+    row-level leaves' paths. A bare column/star yields its own path; a
+    literal-only or fully-attached source yields ``()`` (the root)."""
+    paths = source_leaf_paths(source)
+    if not paths:
+        return ()
+    prefix = paths[0]
+    for path in paths[1:]:
+        i = 0
+        while i < len(prefix) and i < len(path) and prefix[i] == path[i]:
+            i += 1
+        prefix = prefix[:i]
+        if not prefix:
+            break
+    return prefix
+
+
+def _grain_transform_inner_aggregates(
+    t: TransformKey, *, query_grain: Grain,
+) -> TransformKey:
+    """Grain every ungrained, non-windowed, LOCAL aggregate under ``t.input`` at
+    ``query_grain`` — a cross-model or windowed or already-explicit inner is left
+    untouched. Post-order over ``map_children``."""
+    def _grain(node: ValueKey) -> ValueKey:
+        rebuilt = node.map_children(_grain)
+        if (
+            isinstance(rebuilt, AggregateKey)
+            and rebuilt.partition_keys is None
+            and window_kwarg_of(rebuilt) is None
+            and not source_anchor_path(rebuilt.source)
+        ):
+            return rebuilt.model_copy(update={"partition_keys": query_grain})
+        return cast("ValueKey", rebuilt)  # map_children preserves ValueKey-ness
+
+    new_input = _grain(t.input)
+    return t if new_input is t.input else t.model_copy(update={"input": new_input})
+
+
+def normalize_transform_constituents(
+    key: ValueKey, *, query_grain: Grain,
+) -> ValueKey:
+    """Explicitly grain the ungrained inner aggregates of a transform constituent
+    at ``query_grain`` (D4b, Axiom 11.1): a time-ordered constituent then has an
+    axis and a mixed operand shares one canonical grain. Post-order; runs before
+    partition-key validation, so the synthesized keys face the same
+    attributability / resolution checks as a user-written ``partition_by=``."""
+    rebuilt = key.map_children(
+        lambda c: normalize_transform_constituents(key=c, query_grain=query_grain),
+    )
+    if not isinstance(rebuilt, AggregateKey):
+        return cast("ValueKey", rebuilt)  # map_children preserves ValueKey-ness
+    subs: Dict[ValueKey, ValueKey] = {}
+    for c in operand_constituents(rebuilt.source):
+        if isinstance(c, TransformKey):
+            grained = _grain_transform_inner_aggregates(t=c, query_grain=query_grain)
+            if grained is not c:
+                subs[c] = grained
+    if not subs:
+        return rebuilt
+    return rebuilt.model_copy(
+        update={"source": substitute_value_keys(key=rebuilt.source, mapping=subs)},
+    )
+
+
+def lower_collapsing_constituents(key: ValueKey) -> ValueKey:
+    """Lower a top-level collapsing transform constituent (``first``/``last``,
+    Axiom 11.3b) to an exact per-partition pick: ``t`` becomes ``max(t,
+    partition_by=<operand grain − axis>)``, so the carrier, attributability and
+    the mode axis see the collapsed grain while ``t`` still evaluates with its axis
+    inside the nested producer. ``max`` is exact — the picked value is constant
+    along the axis within a partition. Post-order over ``map_children``; all
+    positions."""
+    rebuilt = key.map_children(lower_collapsing_constituents)
+    if not isinstance(rebuilt, AggregateKey):
+        return cast("ValueKey", rebuilt)  # map_children preserves ValueKey-ness
+    subs: Dict[ValueKey, ValueKey] = {}
+    for c in operand_constituents(rebuilt.source):
+        if (
+            isinstance(c, TransformKey)
+            and c.op in AXIS_COLLAPSING_TRANSFORMS
+            and c.time_key is not None
+        ):
+            subs[c] = AggregateKey(
+                source=c, agg="max",
+                partition_keys=regroup_root_grain(c) - {c.time_key},
+            )
+    if not subs:
+        return rebuilt
+    return rebuilt.model_copy(
+        update={"source": substitute_value_keys(key=rebuilt.source, mapping=subs)},
+    )
+
+
+def attached_inputs(k: ValueKey) -> List[ValueKey]:
+    """Deduped top-level attached constituents — aggregates and grained
+    transforms — across source, args and kwargs (source first)."""
     if not isinstance(k, AggregateKey):
         return []
-    out: List[AggregateKey] = []
+    out: List[ValueKey] = []
     for inp in (k.source, *k.args, *(v for _, v in k.kwargs)):
         if isinstance(inp, _FrozenKey):
-            for agg in operand_aggregates(inp):
-                if agg not in out:
-                    out.append(agg)
+            for c in operand_constituents(inp):
+                if c not in out:
+                    out.append(c)
     return out
 
 
@@ -1247,7 +1388,7 @@ def is_reaggregation_key(k: ValueKey) -> TypeGuard[AggregateKey]:
     A source mixing a row leaf with an attached value is row grain (DEV-1859)."""
     return (
         isinstance(k, AggregateKey)
-        and bool(operand_aggregates(k.source))
+        and bool(operand_constituents(k.source))
         and not source_row_leaves(k.source)
     )
 

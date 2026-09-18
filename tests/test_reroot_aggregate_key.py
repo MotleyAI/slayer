@@ -3,8 +3,8 @@
 One ``reroot_aggregate_key(key, *, target_path)`` re-anchors ALL embedded
 references of an ``AggregateKey`` from the HOST coordinate system into the
 TARGET's local scope when a cross-model aggregate is rendered inside its
-target-rooted CTE: the ``source``, positional ``args``, keyword ``kwargs``
-values, and (invariantly) the ``column_filter_key``.
+target-rooted CTE: the ``source``, positional ``args``, and keyword ``kwargs``
+values.
 
 Semantics (unified on the planner's historical behaviour — prefix-strip with
 residual; the generator's old exact-match is subsumed):
@@ -22,12 +22,6 @@ residual; the generator's old exact-match is subsumed):
 * ``target_path == ()`` is the identity (filtered-local reroot, where the
   source is already host-local).
 
-``column_filter_key`` is copied UNCHANGED. Its ``canonical_sql`` and
-``referenced_join_paths`` are anchored at the OWNING MODEL of the source
-column (see ``slayer/engine/binding.py::_resolve_column_filter_key`` and
-``slayer/engine/reference_closure.py``), which rerooting — a pure change of
-how that owner is *reached* from the query root — never moves. Pinned below.
-
 Behavioural acceptance for DEV-1476 (c)/(d-cross) lives in
 ``tests/test_dev1476_first_last_explicit_time.py`` (end-to-end) and
 ``tests/test_agg_render_spec.py`` (spec builder); this module pins the pure
@@ -43,7 +37,6 @@ from slayer.core.keys import (
     AggregateKey,
     ColumnKey,
     ColumnSqlKey,
-    SqlExprKey,
     StarKey,
     reroot_aggregate_key,
 )
@@ -350,50 +343,6 @@ def test_kwargs_canonical_sort_preserved_after_reroot() -> None:
 
 
 # ===========================================================================
-# Section D — column_filter_key invariance
-# ===========================================================================
-
-
-def test_column_filter_key_copied_byte_identical() -> None:
-    # The filter is anchored at the owning model of the source column; its
-    # canonical_sql + referenced_join_paths are owner-relative, so reroot
-    # never touches them.
-    cfk = SqlExprKey(
-        canonical_sql="loss_payment.has_flag = 1",
-        referenced_join_paths=(("loss_payment",),),
-    )
-    key = AggregateKey(
-        source=ColumnKey(path=("customers",), leaf="amount"),
-        agg="sum",
-        column_filter_key=cfk,
-    )
-    out = reroot_aggregate_key(key, target_path=("customers",))
-    # Value-identical; the plan permits (does not require) object reuse, so
-    # assert equality + fields, not `is`.
-    assert out.column_filter_key == cfk
-    assert out.column_filter_key.referenced_join_paths == (("loss_payment",),)
-
-
-def test_rerooted_key_still_matches_dev1503_filtered_local_trigger_shape() -> None:
-    # After reroot the source is local (path == ()) but the filter still
-    # crosses a join (non-empty referenced_join_paths) — the exact shape the
-    # DEV-1503 filtered-local isolation trigger keys on.
-    cfk = SqlExprKey(
-        canonical_sql="loss_payment.has_flag = 1",
-        referenced_join_paths=(("loss_payment",),),
-    )
-    key = AggregateKey(
-        source=ColumnKey(path=("customers",), leaf="amount"),
-        agg="sum",
-        column_filter_key=cfk,
-    )
-    out = reroot_aggregate_key(key, target_path=("customers",))
-    assert getattr(out.source, "path", ()) == ()
-    assert out.column_filter_key is not None
-    assert out.column_filter_key.referenced_join_paths
-
-
-# ===========================================================================
 # Section E — identity / whole-key semantics
 # ===========================================================================
 
@@ -431,14 +380,12 @@ def test_full_key_reroot_equals_handbuilt_local_key() -> None:
         agg="last",
         args=(ColumnKey(path=("customers",), leaf="signup_at"),),
         kwargs=(("weight", ColumnKey(path=("customers",), leaf="qty")),),
-        column_filter_key=SqlExprKey(canonical_sql="status = 'paid'"),
     )
     expected = AggregateKey(
         source=ColumnKey(path=(), leaf="amount"),
         agg="last",
         args=(ColumnKey(path=(), leaf="signup_at"),),
         kwargs=(("weight", ColumnKey(path=(), leaf="qty")),),
-        column_filter_key=SqlExprKey(canonical_sql="status = 'paid'"),
     )
     out = reroot_aggregate_key(key, target_path=("customers",))
     assert out == expected

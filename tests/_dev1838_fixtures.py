@@ -264,7 +264,6 @@ SPEND_TOTAL = 350.0
 SPEND_BY_TIER = {"gold": 100.0, "silver": 210.0, "bronze": 40.0}
 
 #: Value-preservation pins for shapes that STAY legal under per-role safety.
-GOLD_LAST_BY_STATUS = {"ok": 10.0, "new": 20.0}
 LAST_BY_SIGNUP_BY_STATUS = {"ok": 5.0, "new": 40.0}
 
 #: band × wm — (region, band, month) → (m, w). The interning flagship shape.
@@ -447,7 +446,7 @@ __all__ = [
     "WSCALED_BY_STATUS", "TSCALED_BY_STATUS",
     "FACTOR_MIN_BY_STATUS", "FACTOR_MAX_BY_STATUS",
     "SPEND_TOTAL", "SPEND_BY_TIER",
-    "GOLD_LAST_BY_STATUS", "LAST_BY_SIGNUP_BY_STATUS",
+    "LAST_BY_SIGNUP_BY_STATUS",
     "BAND_WM", "BAND_GOLD", "BAND_TIER_ORDER", "LASTDIM_GOLD",
     "SPEND_LAST_BAND",
     "STAGE1_BANDED", "BAND1_BY_REGION", "BT_BY_BAND",

@@ -57,6 +57,7 @@ model {
   engine.bind_inputs -> engine.binding
   engine.bind_inputs -> engine.elaborate_env
   engine.bind_inputs -> engine.syntax
+  engine.compile -> engine.elaborate
   engine.compile -> engine.elaborate_env
   engine.elaborate -> engine.bind_inputs
   engine.elaborate -> engine.elaborate_env

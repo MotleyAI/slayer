@@ -156,7 +156,7 @@ class Column(BaseModel):
     hidden: bool = False
     format: NumberFormat | None = None
     allowed_aggregations: list[str] | None = None
-    filter: str | None = None  # Applied inside CASE WHEN at aggregation time only
+    filter: str | None = None  # Desugars to CASE WHEN (filter) THEN (value) END in every position
     meta: dict[str, Any] | None = None
     sampled: str | None = None  # DEV-1375: cached sample-value snapshot
     sampled_values: list[str] | None = None  # DEV-1480: structured top-N
@@ -186,6 +186,18 @@ class Column(BaseModel):
             # SQL-mode: validate at construction so DSL constructs raise early.
             parse_sql_predicate(v)
         return v
+
+    @property
+    def _sql_is_nontrivial(self) -> bool:
+        """The value SQL is not the bare self-name; a QUOTED self-name counts, since
+        only the expansion door re-qualifies it with its quoting intact."""
+        return self.sql is not None and self.sql.strip() != self.name
+
+    @property
+    def needs_expansion(self) -> bool:
+        """The reference resolves to more than a bare physical column — a derived
+        ``sql`` or an attached ``filter`` — so its uses expand to that definition."""
+        return self._sql_is_nontrivial or self.filter is not None
 
 
 class ModelMeasure(BaseModel):

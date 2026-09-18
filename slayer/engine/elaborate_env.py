@@ -11,7 +11,7 @@ from typing import (
     Sequence, Tuple, Union,
 )
 
-from slayer.core.enums import DataType, TimeGranularity
+from slayer.core.enums import AXIS_COLLAPSING_TRANSFORMS, DataType, TimeGranularity
 from slayer.core.errors import (
     CanonicalAliasShadowsColumnError,
     DistinctDimensionValuesError,
@@ -40,7 +40,10 @@ from slayer.core.keys import (
     TimeTruncKey,
     TransformKey,
     ValueKey,
+    operand_constituents,
     regroup_root_grain,
+    source_anchor_path,
+    source_row_leaves,
     walk_value_keys,
 )
 from slayer.core.models import SlayerModel
@@ -122,7 +125,7 @@ def _measure_blockers(cj: ValueKey, dim_keys: frozenset) -> List[ValueKey]:
 def _key_display(k: ValueKey) -> str:
     if isinstance(k, AggregateKey):
         leaf = getattr(k.source, "leaf", None) or getattr(k.source, "column_name", None) or "*"
-        path = getattr(k.source, "path", ())
+        path = source_anchor_path(k.source)
         name = f"{'.'.join((*path, leaf))}:{k.agg}"
         return f"{name} (partition_by)" if k.partition_keys is not None else name
     if isinstance(k, TransformKey):
@@ -356,8 +359,10 @@ def validate_model_filter(
 
 def _aggregate_terms(
     roots: List[ValueKey], *, home: DatasetT, query_grain: Grain,
+    home_paths: Dict[AggregateKey, Tuple[str, ...]],
 ) -> Tuple[Dict[ValueKey, Term], List[TransformKey]]:
-    """(aggregate terms, transform keys seen) across ``roots``."""
+    """(aggregate terms, transform keys seen) across ``roots``. Each aggregate's
+    home path comes from the elaborator's map (fallback: the source anchor)."""
     terms: Dict[ValueKey, Term] = {}
     transforms: List[TransformKey] = []
     for root in roots:
@@ -367,7 +372,10 @@ def _aggregate_terms(
                     k.partition_keys if k.partition_keys is not None
                     else query_grain
                 )
-                terms[k] = Aggregate(home=home, recipe=k, grain=grain)
+                terms[k] = Aggregate(
+                    home=home, recipe=k, grain=grain,
+                    home_path=home_paths.get(k, source_anchor_path(k.source)),
+                )
             elif isinstance(k, TransformKey):
                 transforms.append(k)
     return terms, transforms
@@ -388,6 +396,7 @@ def _add_transform_terms(
 
 def _terms_for(
     roots: List[ValueKey], *, home: Optional[DatasetT], query_grain: Grain,
+    home_paths: Dict[AggregateKey, Tuple[str, ...]],
 ) -> Dict[ValueKey, Term]:
     """One term per unique aggregate/transform key, memoized by key identity.
 
@@ -398,7 +407,7 @@ def _terms_for(
     if home is None:
         return {}
     terms, transforms = _aggregate_terms(
-        roots, home=home, query_grain=query_grain,
+        roots, home=home, query_grain=query_grain, home_paths=home_paths,
     )
     _add_transform_terms(terms=terms, transforms=transforms)
     return terms
@@ -516,25 +525,51 @@ def check_opaque_grouping_dim(
         )
 
 
-def check_dimension_temporal_axis(declared_measures) -> None:
-    """Fail closed if a time-ordered transform inside a dimension evaluates at a grain not containing its time axis (DEV-1871 G10, was ``_guard_dimension_temporal_axis``)."""
-    for dm in declared_measures:
-        if not dm.is_dimension:
-            continue
-        for tk in walk_value_keys(dm.bound.value_key):
-            if not isinstance(tk, TransformKey):
-                continue
+def _temporal_axis_transforms(vk: ValueKey, *, is_dimension: bool):
+    """Time-ordered transforms whose grain must contain their axis: any transform
+    in a dimension expression, and every transform reachable inside an
+    aggregation-source constituent of a measure/filter/order expression — nested
+    ones included, mirroring the dimension arm, so a nested time transform cannot
+    evade Axiom 11.5 (a top-level transform measure carries its bucket through the
+    windowed producer instead)."""
+    if is_dimension:
+        yield from (k for k in walk_value_keys(vk) if isinstance(k, TransformKey))
+        return
+    for k in walk_value_keys(vk):
+        if isinstance(k, AggregateKey):
+            for c in operand_constituents(k.source):
+                if isinstance(c, TransformKey):
+                    yield from (
+                        t for t in walk_value_keys(c)
+                        if isinstance(t, TransformKey)
+                    )
+
+
+def check_dimension_temporal_axis(
+    declared_measures, *, bound_filters=(), order_specs=(),
+) -> None:
+    """Fail closed if a time-ordered transform — in a dimension, or aggregated as
+    a source constituent in a measure / filter / order expression — evaluates at a
+    grain not containing its time axis (DEV-1871 G10 / DEV-1832 D4, was
+    ``_guard_dimension_temporal_axis``)."""
+    roots = [
+        (dm.bound.value_key, dm.is_dimension) for dm in declared_measures
+    ]
+    roots += [(bf.value_key, False) for bf in bound_filters]
+    roots += [(sp.bound.value_key, False) for sp in order_specs]
+    for vk, is_dimension in roots:
+        for tk in _temporal_axis_transforms(vk, is_dimension=is_dimension):
             if tk.op not in TIME_TRANSFORMS or tk.time_key is None:
                 continue
             if tk.time_key not in regroup_root_grain(tk):
                 axis = dotted_key_display(tk.time_key)
                 raise NotImplementedError(
-                    f"A time-ordered transform '{tk.op}' inside a computed "
-                    f"dimension evaluates at a grain that does not contain its "
-                    f"time axis '{axis}'; a producer bucketed by time joined back "
-                    f"on the coarser grain would duplicate result rows. Include "
-                    f"the time key in the aggregate's partition_by= so the "
-                    f"transform accumulates within its own grain."
+                    f"A time-ordered transform '{tk.op}' evaluates at a grain "
+                    f"that does not contain its time axis '{axis}'; a producer "
+                    f"bucketed by time joined back on the coarser grain would "
+                    f"duplicate result rows. Include the time key in the "
+                    f"aggregate's partition_by= so the transform accumulates "
+                    f"within its own grain."
                 )
 
 
@@ -588,6 +623,16 @@ def check_time_dimension_column(
 
 
 def _time_search_children(key: ValueKey) -> List[ValueKey]:
+    if isinstance(key, AggregateKey):
+        # A transform constituent lives in the source (or a composite parameter);
+        # descend so its no-time-dimension error reaches an aggregated transform.
+        return [
+            key.source,
+            *[a for a in key.args if isinstance(
+                a, (AggregateKey, TransformKey, ArithmeticKey, ScalarCallKey))],
+            *[v for _, v in key.kwargs if isinstance(
+                v, (AggregateKey, TransformKey, ArithmeticKey, ScalarCallKey))],
+        ]
     if isinstance(key, TransformKey):
         return [key.input]
     if isinstance(key, ArithmeticKey):
@@ -596,7 +641,7 @@ def _time_search_children(key: ValueKey) -> List[ValueKey]:
         return [
             a for a in key.args
             if isinstance(
-                a, (TransformKey, ArithmeticKey, ScalarCallKey, BetweenKey, InKey),
+                a, (AggregateKey, TransformKey, ArithmeticKey, ScalarCallKey, BetweenKey, InKey),
             )
         ]
     if isinstance(key, BetweenKey):
@@ -631,6 +676,29 @@ def check_time_transforms_resolved(*, roots) -> None:
                 f"set main_time_dimension to select among multiple "
                 f"time dimensions."
             )
+
+
+def check_collapsing_transform_not_row_mixed(*, roots) -> None:
+    """Fail closed: a collapsing transform (first/last) aggregated together with a
+    row-level column reduces to a re-aggregation the row-attach path cannot yet
+    broadcast onto row operands (D4c deferral). A pure aggregation of attached
+    values collapses fine."""
+    for root in roots:
+        for k in walk_value_keys(root):
+            if not isinstance(k, AggregateKey):
+                continue
+            has_collapsing = any(
+                isinstance(c, TransformKey) and c.op in AXIS_COLLAPSING_TRANSFORMS
+                for c in operand_constituents(k.source)
+            )
+            if has_collapsing and source_row_leaves(k.source):
+                raise ValueError(
+                    "A collapsing transform (first/last) aggregated together with "
+                    "a row-level column is not yet supported: the collapsed value "
+                    "is a re-aggregation, which cannot be broadcast onto a "
+                    "row-level operand. Aggregate the column, or use the transform "
+                    "in a pure aggregation of attached values."
+                )
 
 
 def check_windowed_key_supported(*, key: AggregateKey, window_val) -> None:
@@ -777,6 +845,7 @@ def check_local_producer_inputs_safe(
     *, alias: Optional[str], host: str,
     ranked_crossings: Sequence[Tuple[str, str]],
     gated_crossings: Sequence[str],
+    source_crossings: Sequence[str] = (),
 ) -> None:
     """Per-role crossing-input safety for a HOST-rooted producer answer (DEV-1871 G11, was ``_assert_local_producer_inputs_safe``); crossings are the compiler-resolved unproven hops."""
     remedy = "declare join cardinality or a covering unique key on the target"
@@ -791,6 +860,14 @@ def check_local_producer_inputs_safe(
         raise ValueError(
             f"Aggregate {alias!r} reads an input across an unproven join "
             f"hop to {gated_crossings[0]} from {host}; {remedy}."
+        )
+    if source_crossings:
+        raise ValueError(
+            f"Aggregate {alias!r} reads its source across an unproven or fanning join "
+            f"hop to {source_crossings[0]} from {host}: a column of {host} cannot be "
+            f"aggregated across a to-many target — aggregate the target column directly "
+            f"({source_crossings[0]}.<column>:<aggregation>), or declare a to-one "
+            f"cardinality or a covering unique key if the hop is to-one."
         )
 
 
@@ -1077,8 +1154,10 @@ def build_environment(
     dim_keys: frozenset,
     row_agg_set: frozenset,
     filter_typings: List[ConjunctTyping],
+    home_paths: Optional[Dict[AggregateKey, Tuple[str, ...]]] = None,
 ) -> ElaboratedQuery:
     """Assemble the typing environment for one typed, split prebound query."""
+    home_paths = home_paths or {}
     query_grain = Grain.of(dim_keys)
     n_leading = prebound.n_dims + prebound.n_time_dimensions
     dim_roots = [
@@ -1092,7 +1171,7 @@ def build_environment(
 
     terms = _terms_for(
         [*dim_roots, *measure_roots, *filter_roots, *order_roots],
-        home=home, query_grain=query_grain,
+        home=home, query_grain=query_grain, home_paths=home_paths,
     )
 
     def _typed_verdict(root: ValueKey) -> PositionVerdict:

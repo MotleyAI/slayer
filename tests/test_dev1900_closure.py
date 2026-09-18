@@ -12,12 +12,13 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.core.keys import ColumnKey, ColumnSqlKey, SqlExprKey, StarKey, TimeTruncKey
+from slayer.core.keys import ColumnKey, ColumnSqlKey, StarKey, TimeTruncKey
 from slayer.core.models import SlayerModel
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.column_expansion import ColumnCycleError
 
 from slayer.engine.reference_closure import fragment_closure, key_closure
+from slayer.engine.compile.stages import _PushBlocked, _ref_sql_dependency_paths
 
 from tests._dev1900_fixtures import dev1900_models, unparseable_derived_models
 
@@ -108,13 +109,6 @@ class TestKeyClosure:
         assert CROSS not in got
         assert all(len(p) <= 1 for p in got), f"StarKey must not descend: {got}"
 
-    def test_sql_expr_key_returns_its_stamped_paths(self):
-        key = SqlExprKey(canonical_sql="1", referenced_join_paths=(CROSS,))
-        got = self._key(key)
-        assert got is not None
-        assert ("regions",) in got
-        assert CROSS in got
-
     def test_string_fragment_key_takes_fragment_closure(self):
         by, bundle = _bundle(dev1900_models())
         got = key_closure(key="region_events.value", anchor_model=by["regions"],
@@ -144,6 +138,32 @@ class TestKeyClosurePathologies:
         key = _regions_sqlkey("cyc")
         with pytest.raises(ColumnCycleError):
             self._key(key)
+
+
+class TestPushPlanHonoursUnanalyzable:
+    """The semi-join push consumer must honour fragment_closure's tri-state:
+    None (unanalyzable) ≠ () (local). An unparseable definition fails the push
+    CLOSED — dropping the hop would omit a required join / mis-scope a predicate."""
+
+    def setup_method(self):
+        self.by, self.bundle = _bundle(unparseable_derived_models())
+
+    def _deps(self, key):
+        return _ref_sql_dependency_paths(
+            key, host_model=self.by["orders"],
+            models_by_name=self.by, bundle=self.bundle,
+        )
+
+    def test_unanalyzable_fragment_blocks_the_push(self):
+        key = _regions_sqlkey("unparseable")
+        with pytest.raises(_PushBlocked):
+            self._deps(key)
+
+    def test_local_derived_contributes_no_hop(self):
+        assert self._deps(_regions_sqlkey("derived_pop")) == ()
+
+    def test_crossing_derived_registers_its_hop(self):
+        assert self._deps(_regions_sqlkey("bad_pop")) == (("region_events",),)
 
 
 class TestModelsByName:

@@ -9,9 +9,8 @@ into the host's coordinate system.
 
 Strip cases pin today (``reroot_value_key`` exists); prepend cases fail until
 ``prepend_value_key`` lands (referenced through the module so this file still
-collects). ``AggregateKey.column_filter_key`` stays owner-anchored — unchanged in
-BOTH directions — and the strip∘prepend round trip is the identity that makes a
-dotted reference bound-tree-identical to the hand-written form.
+collects). The strip∘prepend round trip is the identity that makes a dotted
+reference bound-tree-identical to the hand-written form.
 """
 
 from __future__ import annotations
@@ -31,7 +30,6 @@ from slayer.core.keys import (
     InKey,
     LiteralKey,
     ScalarCallKey,
-    SqlExprKey,
     StarKey,
     TimeTruncKey,
     TransformKey,
@@ -137,29 +135,6 @@ class TestPrependLeafKinds:
         out = K.prepend_value_key(ColumnKey(path=(), leaf="pop"), host_path=DEEP)
         assert out == ColumnKey(path=("customers", "regions"), leaf="pop")
 
-    def test_standalone_sql_expr_key_prepends_referenced_paths(self) -> None:
-        out = K.prepend_value_key(
-            SqlExprKey(canonical_sql="regions.name = 'US'",
-                       referenced_join_paths=(("regions",),)),
-            host_path=HOST,
-        )
-        assert out.referenced_join_paths == (("customers", "regions"),)
-
-    def test_sql_expr_key_recanonicalises_for_identity(self) -> None:
-        """Prepend must RECONSTRUCT the SqlExprKey (not ``model_copy``), so the
-        ``before`` validator re-sorts/dedups ``referenced_join_paths`` — two
-        orderings of the same paths must prepend to keys that are equal AND hash
-        equal, or the registry mints two slots for one value."""
-        a = K.prepend_value_key(
-            SqlExprKey(canonical_sql="x", referenced_join_paths=(("regions",), ("segments",))),
-            host_path=HOST)
-        b = K.prepend_value_key(
-            SqlExprKey(canonical_sql="x", referenced_join_paths=(("segments",), ("regions",))),
-            host_path=HOST)
-        assert a == b
-        assert hash(a) == hash(b)
-
-
 # --------------------------------------------------------------------------- #
 # Prepend direction — composites.
 # --------------------------------------------------------------------------- #
@@ -224,21 +199,6 @@ class TestPrependCompositeKinds:
         assert isinstance(between, BetweenKey)
         assert in_key.column == ColumnKey(path=("customers",), leaf="tier")
         assert between.column == ColumnKey(path=("customers",), leaf="signup_at")
-
-
-class TestPrependColumnFilterKeyInvariance:
-    """``AggregateKey.column_filter_key`` is owner-anchored — copied UNCHANGED in
-    both directions (parity with the strip visitor)."""
-
-    def test_column_filter_key_unchanged(self) -> None:
-        key = AggregateKey(
-            source=ColumnKey(path=(), leaf="spend"), agg="sum",
-            column_filter_key=SqlExprKey(canonical_sql="regions.name = 'US'",
-                                         referenced_join_paths=(("regions",),)),
-        )
-        out = K.prepend_value_key(key, host_path=HOST)
-        assert out.source == ColumnKey(path=("customers",), leaf="spend")
-        assert out.column_filter_key == key.column_filter_key
 
 
 class TestPrependTotalityAndFailClosed:

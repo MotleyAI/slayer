@@ -67,15 +67,11 @@ class TestFullyAttachedAccepted:
 
 
 class TestRejections:
-    def test_nested_transform_rejected(self):
-        """A transform inside the aggregated expression stays rejected."""
-        with pytest.raises(ValueError, match="(?i)nest|transform"):
-            parse_expr("sum(cumsum(amount) - 1)")
-
     def test_mixed_row_and_attached_accepted(self):
-        """A source mixing a row-level reference with an attached value is now a
-        row-grain aggregation and parses (DEV-1859); only nested transforms in a
-        source stay rejected."""
+        """A source mixing a row-level reference with an attached value is a
+        row-grain aggregation and parses (DEV-1859). A nested transform in a
+        source now parses too (DEV-1832); only a row-level leaf under it is
+        rejected, at plan time — see test_dev1832_transform_source."""
         parsed = parse_expr("sum(amount * avg(amount, partition_by=city))")
         assert isinstance(parsed, AggCall)
         assert parsed.agg == "sum"
@@ -131,26 +127,25 @@ class TestRejections:
         assert "window" in msg.lower()
 
 
-class TestCrossModelAndFilteredOperandStillRejected:
-    """Pre-existing expression-aggregation boundaries DEV-1847 leaves intact."""
+class TestCrossModelAndFilteredOperandNowAccepted:
+    """DEV-1832 lifts the two v1 boundaries DEV-1847 left intact (positive
+    coverage in test_dev1832_cross_model_exec / test_dev1832_column_filter)."""
 
-    async def test_cross_model_expression_rejected(self):
-        """The error states cross-model expression aggregation is unsupported."""
+    async def test_cross_model_expression_accepted(self):
+        """A dotted joined-model leaf inside the expression now compiles."""
         query = SlayerQuery(
             source_model="corders",
             dimensions=[ColumnRef(name="customer_id")],
             measures=[ModelMeasure(formula="sum(amount - customers.region_id)",
                                    name="x")])
-        with pytest.raises((SlayerError, ValueError), match="(?i)cross-model"):
-            await gen(query)
+        assert "SELECT" in (await gen(query)).upper()
 
-    async def test_filtered_column_operand_rejected(self):
-        """q_amount carries a column-level filter; the error names the column."""
+    async def test_filtered_column_operand_accepted(self):
+        """A filtered column operand desugars to CASE WHEN, not a rejection."""
         query = sales_q(dimensions=["region"],
                         measures=[ModelMeasure(formula="sum(q_amount - 1)",
                                                name="x")])
-        with pytest.raises((SlayerError, ValueError), match="q_amount"):
-            await gen(query)
+        assert "CASE WHEN" in (await gen(query)).upper()
 
 
 class TestFirstLastDispatchUnchanged:

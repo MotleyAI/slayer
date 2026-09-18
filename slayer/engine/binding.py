@@ -33,13 +33,12 @@ from slayer.core.enums import (
 )
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS
-from slayer.core.keys import SCALAR_FUNCTIONS, check_scalar_arity, AggregateKey, ArithmeticKey, ColumnKey, ColumnSqlKey, Grain, InKey, LiteralKey, ScalarCallKey, SqlExprKey, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, column_path, normalize_scalar, prepend_value_key, walk_value_keys
+from slayer.core.keys import SCALAR_FUNCTIONS, check_scalar_arity, AggregateKey, ArithmeticKey, ColumnKey, ColumnSqlKey, Grain, InKey, LiteralKey, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, column_path, normalize_scalar, prepend_value_key, source_anchor_path, walk_value_keys
 from slayer.core.join_walker import resolve_hop, terminal_model
 from slayer.core.models import SlayerModel
 from slayer.engine import dimension_routing
 from slayer.core.query import TimeDimension
 from slayer.core.scope import ModelScope, StageSchema
-from slayer.engine.reference_closure import compute_column_filter_join_paths
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.syntax import (
     AggCall,
@@ -56,7 +55,6 @@ from slayer.engine.syntax import (
     TupleLit,
     UnaryOp,
     parse_expr,
-    walk_parsed_refs,
 )
 from slayer.sql.sql_expr import has_window_function
 from slayer.ir.bound import BoundExpr, BoundFilter, BoundTimeDimension
@@ -488,7 +486,7 @@ def _resolve_ref(
     # A ``__``-bearing name is not special: it resolves by ordinary exact-match.
     col = next((c for c in model.columns if c.name == name), None)
     if col is not None:
-        if col.sql is not None and col.sql.strip() != name:
+        if col.needs_expansion:
             return ColumnSqlKey(path=(), model=model.name, column_name=col.name)
         return ColumnKey(path=(), leaf=col.name)
 
@@ -689,9 +687,9 @@ def _resolve_terminal_leaf(
     → saved measure (re-anchored into host coords) → unresolved error."""
     col = next((c for c in current.columns if c.name == leaf), None)
     if col is not None:
-        if col.sql is not None and col.sql.strip() != leaf:
-            # Derived column on a joined model — path is part of the key so the
-            # cross-model planner can route via the join graph.
+        if col.needs_expansion:
+            # Derived / filtered column on a joined model — path is part of the
+            # key so the cross-model planner can route via the join graph.
             return ColumnSqlKey(
                 path=tuple(hop_path), model=current.name, column_name=leaf,
             )
@@ -919,55 +917,19 @@ def _bind_expression_agg_source(
     scope: Union[ModelScope, StageSchema],
     bundle: ResolvedSourceBundle,
 ) -> ValueKey:
-    """Bind a same-model scalar-expression aggregate source (DEV-1826).
+    """Bind a scalar-expression aggregate source.
 
-    Boundaries with clear errors (cross-model semantics: DEV-1832): dotted
-    paths inside the expression are cross-model; operands carrying
-    ``Column.filter`` are rejected; nested aggregations / transforms were
-    already rejected at parse time.
-    """
-    for node in walk_parsed_refs(parsed_source):
-        if isinstance(node, DottedRef):
-            raise ValueError(
-                f"Cross-model expression aggregation is not supported: the "
-                f"aggregated expression references the dotted path "
-                f"{'.'.join(node.parts)!r}. Only bare same-model columns may "
-                f"appear inside an aggregated expression (DEV-1832)."
-            )
+    Dotted joined-model leaves and operands carrying ``Column.filter`` are both
+    admitted (DEV-1832): the home rule roots the aggregation and the filter
+    desugars to ``CASE WHEN``. The source must still resolve to a row-level
+    expression (a column, star, or arithmetic/scalar composite of them)."""
     bound = _bind(parsed_source, scope=scope, bundle=bundle, in_filter=False)
     if not isinstance(bound, EXPRESSION_SOURCE_KINDS):
         raise ValueError(
             f"Aggregation source must resolve to a column, star, or a "
             f"row-level expression; got {type(bound).__name__}."
         )
-    _reject_filtered_expression_operands(bound, scope=scope)
     return bound
-
-
-def _reject_filtered_expression_operands(
-    bound: ValueKey, *, scope: Union[ModelScope, StageSchema],
-) -> None:
-    """A ``Column.filter`` applies at aggregation time over ONE column; inside
-    a multi-operand expression its semantics are undefined until DEV-1832."""
-    if not isinstance(scope, ModelScope) or scope.source_model is None:
-        return  # StageSchema outputs carry no Column.filter
-    model = scope.source_model
-    for k in walk_value_keys(bound):
-        if isinstance(k, ColumnKey) and not k.path:
-            leaf = k.leaf
-        elif isinstance(k, ColumnSqlKey) and not k.path:
-            leaf = k.column_name
-        else:
-            continue
-        col = next((c for c in model.columns if c.name == leaf), None)
-        if col is not None and col.filter:
-            raise ValueError(
-                f"Column {leaf!r} carries a column-level filter "
-                f"({col.filter!r}) and cannot be used inside an aggregated "
-                f"expression. Define a derived model column for the "
-                f"expression and aggregate it with the colon form instead "
-                f"(DEV-1832)."
-            )
 
 
 # Scalar functions whose result is certainly text, for the best-effort
@@ -1062,10 +1024,11 @@ def _reject_non_numeric_expression_agg(
 
 
 def _source_is_reaggregation(node) -> bool:
-    """Whether a parsed aggregation source resolves to attached values (a nested
-    AggCall, alone or composed) — a re-aggregation (DEV-1847). The parse gate has
-    already ensured such a source is pure-attached (no transforms, no row mix)."""
-    if isinstance(node, AggCall):
+    """Whether a parsed aggregation source carries an attached value — a nested
+    AggCall or a grained transform, alone or composed. Such a source is bound
+    structurally (its inner AggCalls / TransformCalls become nested keys) whether
+    it is a pure re-aggregation (DEV-1847) or a row-grain mix (DEV-1859)."""
+    if isinstance(node, (AggCall, TransformCall)):
         return True
     if isinstance(node, (Arith, Cmp)):
         return _source_is_reaggregation(node.left) or _source_is_reaggregation(node.right)
@@ -1138,12 +1101,6 @@ def _bind_agg(
             k, _bind_agg_arg(v, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map),
         ))
     kwargs = tuple(kwargs_list)
-    # Propagate ``Column.filter`` into the AggregateKey's identity: two
-    # aggregates over the same column with different filters differ at the key
-    # level (wrapped as ``SUM(CASE WHEN ... THEN col END)``); same-filter intern.
-    column_filter_key = _resolve_column_filter_key(
-        source=source, bundle=bundle,
-    )
     # Gate per-column aggregation eligibility, then store the EFFECTIVE
     # (alias-healed) name so the generator resolves the canonical aggregation.
     effective_agg = _validate_agg_eligibility(
@@ -1170,7 +1127,6 @@ def _bind_agg(
         agg=effective_agg,
         args=args,
         kwargs=kwargs,
-        column_filter_key=column_filter_key,
         partition_keys=partition_keys,
     )
 
@@ -1187,38 +1143,6 @@ def _walk_tokens_best_effort(
     )
 
 
-def _resolve_column_filter_key(
-    *, source, bundle: ResolvedSourceBundle,
-) -> Optional[SqlExprKey]:
-    """Look up the resolved source's ``Column.filter`` and convert to a
-    ``SqlExprKey``. ``None`` for ``StarKey``, unset filters, or an unresolvable
-    target model (best-effort — the compile-time path validator catches those)."""
-    if isinstance(source, StarKey):
-        return None
-    path = getattr(source, "path", ())
-    leaf = getattr(source, "leaf", None) or getattr(source, "column_name", None)
-    if leaf is None:
-        return None
-    host = bundle.source_model
-    if host is None:
-        return None
-    current = _walk_tokens_best_effort(host=host, path=path, bundle=bundle)
-    if current is None:
-        return None
-    col = next((c for c in current.columns if c.name == leaf), None)
-    if col is None or not col.filter:
-        return None
-    # Stamp typed non-anchor join paths on the SqlExprKey so the planner's
-    # isolation trigger reads typed data, not parsed SQL. The anchor relation
-    # is the ``__``-canonical path alias when the anchor is a joined model.
-    anchor_relation = "__".join(path) if path else current.name
-    paths = compute_column_filter_join_paths(
-        canonical_sql=col.filter,
-        anchor_model=current,
-        anchor_relation=anchor_relation,
-        bundle=bundle,
-    )
-    return SqlExprKey(canonical_sql=col.filter, referenced_join_paths=paths)
 
 
 def _resolve_agg_owner(
@@ -1238,7 +1162,7 @@ def _resolve_agg_owner(
         return None, None
     leaf = getattr(source, "leaf", None) or getattr(source, "column_name", None)
     current = _walk_tokens_best_effort(
-        host=host, path=tuple(getattr(source, "path", ())), bundle=bundle)
+        host=host, path=source_anchor_path(source), bundle=bundle)
     if current is None:
         return None, None
     return current, leaf

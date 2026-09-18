@@ -30,8 +30,10 @@ from slayer.core.keys import (
     TimeTruncKey,
     TransformKey,
     ValueKey,
+    lower_collapsing_constituents,
     lower_sugar_transforms,
     normalize_scalar,
+    normalize_transform_constituents,
     attached_operand_keys,
     rewrite_rank_partition_keys,
     walk_value_keys,
@@ -54,6 +56,7 @@ from slayer.core.scope import ModelScope, StageSchema, host_model_name
 from slayer.engine import dimension_routing
 from slayer.engine.binding import bind_expr, bind_filter, bind_time_dimension
 from slayer.engine.elaborate_env import (
+    check_collapsing_transform_not_row_mixed,
     check_computed_dim_name_collision,
     check_computed_dimension,
     check_measure_dedupe_collision,
@@ -131,7 +134,7 @@ def _attach_time_to_scalar_call(key: ScalarCallKey, *, td_key: TimeTruncKey) -> 
     new_args = tuple(
         _attach_time_keys(a, td_key=td_key)
         if isinstance(
-            a, (TransformKey, ArithmeticKey, ScalarCallKey, BetweenKey, InKey),
+            a, (AggregateKey, TransformKey, ArithmeticKey, ScalarCallKey, BetweenKey, InKey),
         )
         else a
         for a in key.args
@@ -158,10 +161,18 @@ def _attach_time_to_in(key: InKey, *, td_key: TimeTruncKey) -> ValueKey:
     return InKey(column=nc, values=key.values, negated=key.negated)
 
 
+def _attach_time_to_aggregate(key: AggregateKey, *, td_key: TimeTruncKey) -> ValueKey:
+    # An aggregated transform constituent gets the query's bucket too — descend
+    # source, args and kwargs (identity-preserving, like ``map_children``).
+    return key.map_children(lambda c: _attach_time_keys(c, td_key=td_key))
+
+
 def _attach_time_keys(
     key: ValueKey, *, td_key: TimeTruncKey,
 ) -> ValueKey:
     """Set ``time_key=td_key`` on every time-needing TransformKey with a null one (identity-preserving)."""
+    if isinstance(key, AggregateKey):
+        return _attach_time_to_aggregate(key, td_key=td_key)
     if isinstance(key, TransformKey):
         return _attach_time_to_transform(key, td_key=td_key)
     if isinstance(key, ArithmeticKey):
@@ -290,11 +301,15 @@ def _map_bound_keys(
     declared_measures: List[DeclaredMeasure],
     bound_filters: List[BoundFilter],
     order_specs: List[OrderSpec],
+    skip_dimensions: bool = False,
 ) -> Tuple[List[DeclaredMeasure], List[BoundFilter], List[OrderSpec]]:
     new_measures = [
         DeclaredMeasure(
             bound=BoundExpr(
-                value_key=key_fn(dm.bound.value_key),
+                value_key=(
+                    dm.bound.value_key if (skip_dimensions and dm.is_dimension)
+                    else key_fn(dm.bound.value_key)
+                ),
                 routed_dotted=dm.bound.routed_dotted,
             ),
             declared_name=dm.declared_name,
@@ -585,6 +600,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
     # A source column at two granularities maps to two buckets — a bare partition_by is then ambiguous.
     _td_by_source: Dict[ValueKey, TimeTruncKey] = {}
     _td_ambiguous_sources: set = set()
+    _td_key_set: set[TimeTruncKey] = set()  # every projected bucket, not one per column
     for dm in _td_dms:
         vk = dm.bound.value_key
         if not isinstance(vk, TimeTruncKey):
@@ -593,8 +609,24 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         if vk.column in _td_by_source and _td_by_source[vk.column] != vk:
             _td_ambiguous_sources.add(vk.column)
         _td_by_source[vk.column] = vk
-    _td_key_set = set(_td_by_source.values())
+        _td_key_set.add(vk)
     _available_dims = [dm.declared_name for dm in (*_dim_dms, *_td_dms)]
+
+    # Normalise transform constituents (D4b, Axiom 11.1): an ungrained, non-windowed,
+    # local inner aggregate inside a transform constituent (measure/filter/order, not
+    # dimensions) is explicitly grained at the query grain — BEFORE partition-key
+    # validation, so the synthesized keys face the same attributability / resolution
+    # checks as a user-written partition_by=. Every dependent set below (dim-agg,
+    # combined-consumer, reagg-operand) is computed AFTER, over the normalised keys.
+    _query_grain = Grain.of([*_dim_key_set, *_td_key_set])
+    declared_measures, bound_filters, order_specs = _map_bound_keys(
+        lambda vk: normalize_transform_constituents(vk, query_grain=_query_grain),
+        declared_measures=declared_measures,
+        bound_filters=bound_filters,
+        order_specs=order_specs,
+        skip_dimensions=True,
+    )
+
     # A partitioned aggregate inside a computed dimension declares a producer grain (partition_by may be finer than the query).
     _dim_agg_keys = frozenset(dimension_partitioned_aggregates(declared_measures))
     # A COMBINED-position partitioned aggregate needs query-dimension partition keys
@@ -652,7 +684,29 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         order_specs=order_specs,
     )
 
-    check_dimension_temporal_axis(declared_measures)
+    check_dimension_temporal_axis(
+        declared_measures, bound_filters=bound_filters, order_specs=order_specs,
+    )
+
+    # A collapsing transform mixed with a row-level column would collapse to a
+    # re-aggregation the row-attach path cannot yet broadcast (D4c deferral); fail
+    # closed before the desugar produces that shape.
+    check_collapsing_transform_not_row_mixed(roots=[
+        *(dm.bound.value_key for dm in declared_measures),
+        *(bf.value_key for bf in bound_filters),
+        *(sp.bound.value_key for sp in order_specs),
+    ])
+
+    # Lower a collapsing transform constituent (first/last, D4c) to an exact
+    # per-partition pick AFTER the axis check (which sees the raw transform); the
+    # synthesized max's partition_by is a carrier grain key, validated inside the
+    # carrier sub-plan, so it runs after _rw. All positions.
+    declared_measures, bound_filters, order_specs = _map_bound_keys(
+        lower_collapsing_constituents,
+        declared_measures=declared_measures,
+        bound_filters=bound_filters,
+        order_specs=order_specs,
+    )
 
     return PreboundQuery(
         declared_measures=declared_measures,

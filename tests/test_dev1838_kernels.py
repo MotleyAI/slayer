@@ -12,7 +12,7 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.keys import AggregateKey, ColumnKey, SqlExprKey
+from slayer.core.keys import ColumnKey
 from slayer.core.models import Column, SlayerModel
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.ir.planned import (
@@ -32,7 +32,6 @@ from tests._dev1838_fixtures import (
     q,
 )
 from slayer.ir import planned
-from slayer.engine import join_safety
 from slayer.engine import plan
 
 M = ModelMeasure(formula="amount:sum", name="m")
@@ -292,15 +291,6 @@ class TestRankedKernelGrain:
         assert isinstance(attach.kernel, RankedProducerKernel)
         assert attach.join_pairs == []
 
-    def test_a_measure_filter_is_carried_on_the_producer_slot(self) -> None:
-        planned = _plan48(_q48(
-            dimensions=["status"],
-            measures=[{"formula": "big_amount:last", "name": "l"}],
-        ))
-        (attach,) = planned.regroup_attach_plans
-        (agg_slot,) = attach.producer_plan.aggregate_slots
-        assert agg_slot.key.column_filter_key is not None
-
     def test_an_order_only_ranked_measure_stays_hidden(self) -> None:
         planned = _plan48(_q48(
             dimensions=["status"],
@@ -367,30 +357,3 @@ class TestKernelModel:
         assert clone.kernel.window_parts == [(90, "d")]
 
 
-class TestCrossingInputPathsUnionFilterAndStructural:
-    """DEV-1783 item 6, re-homed from the retired isolation classifier —
-    ``local_crossing_input_paths`` must UNION a local aggregate's
-    ``Column.filter`` crossings with its structural input crossings (source
-    ``Column.sql`` / args / kwargs). Reporting the filter paths alone hides a
-    crossing kwarg from the desugar and lets a fan-multiplying aggregate
-    inline."""
-
-    def test_filter_and_kwarg_crossings_are_both_reported(self) -> None:
-        key = AggregateKey(
-            agg="sum",
-            source=ColumnKey(path=(), leaf="amount"),
-            kwargs=(("weight", ColumnKey(path=("customers",), leaf="spend")),),
-            column_filter_key=SqlExprKey(
-                canonical_sql="customers__regions.name = 'X'",
-                referenced_join_paths=(("customers", "regions"),),
-            ),
-        )
-        bundle = _bundle()
-        paths = join_safety.local_crossing_input_paths(
-            key=key, bundle=bundle, host_model=bundle.source_model,
-        )
-        assert paths is not None
-        assert ("customers", "regions") in paths, paths  # column_filter_key
-        assert ("customers",) in paths, paths            # kwarg — dropped pre-fix
-        # Order-stable + de-duplicated: closure order, prefixes first.
-        assert paths == [("customers",), ("customers", "regions")], paths

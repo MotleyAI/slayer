@@ -24,9 +24,11 @@ WM_X / RK_X    the bare-windowed / bare-last oracle per matrix dimension
 OK_W90         ``ok_amount:sum(window='90d')`` at (region, month) — row 6
                (hold) drops, so (S,Mar)=25 (vs 50 unfiltered): (N,Jan)=30
                (N,Feb)=100 (S,Jan)=25 (S,Mar)=25 (NULL,Mar)=60.
-OK_LAST        ``ok_amount:last`` by region — the latest OK row per region:
-               N=30 S=25 (row 5) NULL=60 (numerically equal to REGION_LAST;
-               the all-NULL ``nomatch:last`` is the discriminating twin).
+OK_LAST        ``ok_amount:last`` by region — the MASKED value at the newest row
+               (DEV-1832: Column.filter masks, it does not restrict the ranking):
+               N=30 (newest N row is ok), S=NULL (S's newest row #6 is 'hold' →
+               masked to NULL), NULL-region=60. The all-NULL ``nomatch:last`` is
+               the discriminating twin.
 CUMSUM_OVER_W90  cumsum of TRAILING_90D_REGION months within region:
                N: 30, 130 · S: 25, 75 · NULL: 60.
 W90_RATIO      TRAILING_90D_REGION / REGION_MONTH_TOTAL per bucket:
@@ -183,7 +185,7 @@ OK_W90 = {
     ("South", "2024-01"): 25.0, ("South", "2024-03"): 25.0,
     (None, "2024-03"): 60.0,
 }
-OK_LAST = {"North": 30.0, "South": 25.0, None: 60.0}
+OK_LAST = {"North": 30.0, "South": None, None: 60.0}
 CUMSUM_OVER_W90 = {
     ("North", "2024-01"): 30.0, ("North", "2024-02"): 130.0,
     ("South", "2024-01"): 25.0, ("South", "2024-03"): 75.0,

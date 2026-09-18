@@ -1,10 +1,9 @@
 """Planner unit tests for cross-model-filtered local measure isolation.
 
-Pins: (1) ``SqlExprKey.referenced_join_paths`` carries the non-host join paths a
-filter touches; (2) the cross-model planner's trigger fires for empty-path
-aggregates whose filter references a non-host join path, not for same-model /
-no-filter cases; (3) the recursive host-rooted sub-plan does not re-isolate;
-(4) a filtered-local first/last holds its measure inline.
+Pins: (1) the cross-model planner's trigger fires for empty-path aggregates
+whose filter references a non-host join path, not for same-model / no-filter
+cases; (2) the recursive host-rooted sub-plan does not re-isolate; (3) a
+filtered-local first/last holds its measure inline.
 """
 
 from __future__ import annotations
@@ -13,8 +12,7 @@ import importlib
 
 import pytest
 
-from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.keys import AggregateKey, SqlExprKey
+from slayer.core.enums import DataType, JoinType, TimeGranularity
 from slayer.core.models import (
     Aggregation,
     AggregationParam,
@@ -23,7 +21,6 @@ from slayer.core.models import (
     SlayerModel,
 )
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
-from slayer.engine.reference_closure import compute_column_filter_join_paths
 from slayer.ir.planned import MaskTyping
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.plan import plan_query
@@ -160,142 +157,6 @@ def _agg_slot_for(planned, name: str):
             return slot
     return None
 
-
-# SqlExprKey.referenced_join_paths — populated at binder time
-
-
-class TestSqlExprKeyReferencedJoinPaths:
-    """The binder stamps the non-host join paths a ``Column.filter`` touches onto
-    the ``SqlExprKey``, so the planner reads structural data not SQL text."""
-
-    def test_dialect_fallback_chain_recovers_mysql_backtick_filter(self):
-        """A backtick-quoted (MySQL) filter must still surface its join paths — the dialect fallback chain covers what Postgres can't parse."""
-        host = _claim_amount()
-        bundle = _bundle(host)
-        paths = compute_column_filter_join_paths(
-            canonical_sql="`loss_payment`.`has_flag` = 1",
-            anchor_model=host,
-            anchor_relation="claim_amount",
-            bundle=bundle,
-        )
-        assert ("loss_payment",) in paths, (
-            f"Dialect fallback must recover the join path from a "
-            f"backtick-quoted filter; got {paths!r}"
-        )
-
-    def test_dialect_fallback_chain_recovers_derived_ref_with_backticks(self):
-        """A derived column with backtick ``Column.sql`` must still expand when referenced from a filter."""
-        host = SlayerModel(
-            name="orders", data_source="test", sql_table="Orders",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="customer_id", type=DataType.INT),
-                Column(name="amount", type=DataType.DOUBLE),
-                # Derived sql in MySQL backticks — Postgres can't parse this.
-                Column(
-                    name="is_eu", type=DataType.DOUBLE,
-                    sql="CASE WHEN `customers`.`region` = 'EU' THEN 1 ELSE 0 END",
-                ),
-                Column(
-                    name="eu_amount", sql="amount", filter="is_eu = 1",
-                    type=DataType.DOUBLE,
-                ),
-            ],
-            joins=[ModelJoin(
-                target_model="customers", join_pairs=[["customer_id", "id"]],
-            )],
-        )
-        customers = SlayerModel(
-            name="customers", data_source="test", sql_table="Customers",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="region", type=DataType.TEXT),
-            ],
-        )
-        bundle = ResolvedSourceBundle(
-            source_model=host, referenced_models=[customers],
-        )
-        paths = compute_column_filter_join_paths(
-            canonical_sql="is_eu = 1",
-            anchor_model=host,
-            anchor_relation="orders",
-            bundle=bundle,
-        )
-        assert ("customers",) in paths, (
-            f"Dialect fallback must cover the derived-expansion path; "
-            f"got {paths!r}"
-        )
-
-    def test_same_model_filter_has_no_referenced_paths(self):
-        host = _claim_amount()
-        q = SlayerQuery(
-            source_model="claim_amount",
-            measures=[{"formula": "paid_amount:sum"}],
-        )
-        planned = plan_query(query=q, bundle=_bundle(host))
-        slot = _agg_slot_for(planned, "paid_amount")
-        assert slot is not None
-        assert isinstance(slot.key, AggregateKey)
-        cfk = slot.key.column_filter_key
-        assert isinstance(cfk, SqlExprKey)
-        assert cfk.referenced_join_paths == (), (
-            f"Same-model filter must have empty referenced_join_paths; got {cfk.referenced_join_paths!r}"
-        )
-
-    def test_dotted_cross_model_filter_records_join_path(self):
-        host = _claim_amount()
-        q = SlayerQuery(
-            source_model="claim_amount",
-            measures=[{"formula": "loss_payment_amt:sum"}],
-        )
-        planned = plan_query(query=q, bundle=_bundle(host))
-        slot = _agg_slot_for(planned, "loss_payment_amt")
-        assert slot is not None
-        assert isinstance(slot.key, AggregateKey)
-        cfk = slot.key.column_filter_key
-        assert isinstance(cfk, SqlExprKey)
-        assert ("loss_payment",) in cfk.referenced_join_paths, (
-            f"Expected ('loss_payment',) in referenced_join_paths; got {cfk.referenced_join_paths!r}"
-        )
-
-    def test_self_qualified_derived_ref_records_expanded_path(self):
-        """A self-qualified ``orders.is_eu = 1`` filter must trip the same derived-expansion gate as the bare form."""
-        _, bundle = _orders_with_derived_eu_filter(
-            eu_amount_filter="orders.is_eu = 1",
-        )
-        q = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "eu_amount:sum"}],
-        )
-        planned = plan_query(query=q, bundle=bundle)
-        slot = _agg_slot_for(planned, "eu_amount")
-        assert slot is not None
-        assert isinstance(slot.key, AggregateKey)
-        cfk = slot.key.column_filter_key
-        assert isinstance(cfk, SqlExprKey)
-        assert ("customers",) in cfk.referenced_join_paths, (
-            f"Self-qualified derived ref must surface expanded cross-model "
-            f"path; got {cfk.referenced_join_paths!r}"
-        )
-
-    def test_derived_ref_cross_model_filter_records_expanded_path(self):
-        """A filter referencing a host derived column whose sql crosses a join must surface the expanded path."""
-        _, bundle = _orders_with_derived_eu_filter(
-            eu_amount_filter="is_eu = 1",
-        )
-        q = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "eu_amount:sum"}],
-        )
-        planned = plan_query(query=q, bundle=bundle)
-        slot = _agg_slot_for(planned, "eu_amount")
-        assert slot is not None
-        cfk = slot.key.column_filter_key
-        assert isinstance(cfk, SqlExprKey)
-        # canonical_sql is ``is_eu = 1`` but bind-time expansion must surface customers.
-        assert ("customers",) in cfk.referenced_join_paths, (
-            f"derived-ref expansion missed customers path; got {cfk.referenced_join_paths!r}"
-        )
 
 
 # Trigger predicate: cross-model planner invocation
@@ -516,22 +377,24 @@ class TestHostModelFiltersInteractions:
 
     def test_host_model_filter_referencing_aggregate_measure_raises(self):
         """``model.filters`` referencing an aggregate measure must raise at construction (``ValidationError`` is a ``ValueError``), not emit bad SQL."""
+        columns = [
+            Column(name="id", type=DataType.INT, primary_key=True),
+            Column(name="amount", type=DataType.DOUBLE),
+            Column(
+                name="loss_payment_amt", sql="amount",
+                filter="loss_payment.has_flag = 1", type=DataType.DOUBLE,
+            ),
+        ]
+        joins = [ModelJoin(
+            target_model="loss_payment",
+            join_pairs=[["id", "claim_amount_id"]],
+            join_type=JoinType.INNER,
+        )]
         with pytest.raises(ValueError, match=r"(?i)aggregation colon syntax|measure"):
             SlayerModel(
                 name="claim_amount", data_source="test", sql_table="Claim_Amount",
-                columns=[
-                    Column(name="id", type=DataType.INT, primary_key=True),
-                    Column(name="amount", type=DataType.DOUBLE),
-                    Column(
-                        name="loss_payment_amt", sql="amount",
-                        filter="loss_payment.has_flag = 1", type=DataType.DOUBLE,
-                    ),
-                ],
-                joins=[ModelJoin(
-                    target_model="loss_payment",
-                    join_pairs=[["id", "claim_amount_id"]],
-                    join_type="inner",
-                )],
+                columns=columns,
+                joins=joins,
                 # Illegal: model.filters cannot reference an aggregate measure.
                 filters=["loss_payment_amt:sum > 0"],
             )
@@ -559,10 +422,8 @@ class TestFirstLastNoNestedCmaPlans:
         attach = planned.regroup_attach_plans[0]
         assert attach.kernel.kind == "ranked"
         assert attach.producer_root_model is None  # rooted at the host
-        producer = attach.producer_plan
-        # The crossing filter rides on the aggregate's own key; no second plan needed.
-        (slot,) = producer.aggregate_slots
-        assert slot.key.column_filter_key is not None
+        # The crossing filter rides on the source column; no second plan needed.
+        assert len(attach.producer_plan.aggregate_slots) == 1
 
 
 # Widened Law-3 trigger: ANY crossing input isolates.

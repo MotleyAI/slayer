@@ -1,14 +1,10 @@
 """Stage 7a.4 (DEV-1450) — Mode-A sqlglot wrapper.
 
-Single entry point for parsing Mode-A SQL into a structural-identity
-``SqlExprKey`` plus uniform window-function detection. Consumed by the
-binder (stage 7a.5) when constructing ``AggregateKey.column_filter_key``
-and by the SQL generator (stage 7b) when canonicalising arbitrary
-expressions.
+Canonicalises Mode-A SQL to a sqlglot-normalised string and detects window
+functions uniformly.
 
 Public surface:
 
-* ``parse_sql_expr(text, *, dialect=None) -> SqlExprKey``
 * ``canonicalize_sql(text, *, dialect=None) -> str``
 * ``has_window_function(text) -> bool``
 * ``assert_no_window_in_filter(text, *, source) -> None``
@@ -40,7 +36,6 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.errors import IllegalWindowInFilterError
-from slayer.core.keys import SqlExprKey
 from slayer.sql.dialects import get_dialect
 from slayer.sql.dialects.sqlite import rewrite_sqlite_json_extract
 from slayer.sql.render.parse import rewrite_log_aliases
@@ -50,7 +45,6 @@ __all__ = [
     "assert_no_window_in_filter",
     "canonicalize_sql",
     "has_window_function",
-    "parse_sql_expr",
 ]
 
 
@@ -84,15 +78,12 @@ def _parse_inner(text: str, *, dialect: Optional[str]) -> exp.Expression:
     return inner
 
 
-def parse_sql_expr(
-    text: str, *, dialect: Optional[str] = None,
-) -> SqlExprKey:
-    """Parse a Mode-A SQL expression and return its structural-identity key.
+def canonicalize_sql(text: str, *, dialect: Optional[str] = None) -> str:
+    """Return the canonical sqlglot form of ``text`` — whitespace and keyword
+    case normalized, dialect-specific rewrites applied so it matches emitted SQL.
 
-    Two structurally-equal inputs (differing only in whitespace and
-    casing of keywords) produce equal keys. Dialect-specific rewrites
-    are applied so the canonical form matches what the generator will
-    emit.
+    Two structurally-equal inputs (differing only in whitespace and keyword
+    casing) produce equal output.
     """
     if not text or not text.strip():
         raise ValueError("Empty Mode-A SQL expression.")
@@ -105,8 +96,7 @@ def parse_sql_expr(
     # generator apply, keyed on ``SqlDialect.should_use_native_log`` rather than
     # a local allowlist. ``dialect=None``, or a name sqlglot parses but SLayer's
     # registry does not carry, skips the rewrite (matching the old allowlist's
-    # behaviour on a miss), so ``parse_sql_expr`` stays a total function over any
-    # dialect sqlglot can parse.
+    # behaviour on a miss), so this stays total over any dialect sqlglot parses.
     sql_dialect = None
     if dialect is not None:
         try:
@@ -117,18 +107,7 @@ def parse_sql_expr(
         parsed = parsed.transform(
             lambda n: rewrite_log_aliases(n, dialect=sql_dialect),
         )
-    canonical = parsed.sql(dialect=dialect)
-    return SqlExprKey(canonical_sql=canonical)
-
-
-def canonicalize_sql(text: str, *, dialect: Optional[str] = None) -> str:
-    """Return the canonical sqlglot form of ``text``.
-
-    Equal to ``parse_sql_expr(text, dialect=dialect).canonical_sql`` by
-    construction; exposed as a helper so callers that don't need the
-    typed key (debug, logging) don't have to unpack one.
-    """
-    return parse_sql_expr(text, dialect=dialect).canonical_sql
+    return parsed.sql(dialect=dialect)
 
 
 def has_window_function(text: str) -> bool:

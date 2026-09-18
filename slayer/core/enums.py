@@ -212,6 +212,11 @@ RANKED_AGGREGATIONS = ("first", "last")
 # ``partition_by=`` opts into per-partition ranking.
 RANK_FAMILY_TRANSFORMS = {"rank", "percent_rank", "dense_rank", "ntile"}
 
+# Time-ordered transforms that reduce along the axis: one value per partition
+# (Axiom 11.3b). As an aggregation-source constituent they collapse to an exact
+# per-partition pick (DEV-1832 D4c).
+AXIS_COLLAPSING_TRANSFORMS = frozenset({"first", "last"})
+
 # ``classify_aggregation`` buckets each aggregation by result-vs-source relation;
 # slot type and display format both read the bucket, so the axes cannot drift.
 

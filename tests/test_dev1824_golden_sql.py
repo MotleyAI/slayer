@@ -189,7 +189,12 @@ def _cases() -> dict:
         "lift/nested_attach": q(
             dimensions=[
                 {"expression": BAND35, "name": "band"},
-                {"expression": "amount:sum(partition_by=band)", "name": "b2"},
+                # partition_by carries extra keys so the internal CTE alias stays
+                # over bigquery's 300-byte limit — the tier-1 identifier-fitting
+                # premise pinned in test_dev1891_internal_identifier_fit.py (D5's
+                # Column.filter desugar shortened the encoding).
+                {"expression": "amount:sum(partition_by=[band, region, customer_id])",
+                 "name": "b2"},
             ],
             measures=[ModelMeasure(formula="amount:sum", name="s")],
         ),

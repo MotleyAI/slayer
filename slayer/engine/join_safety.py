@@ -23,6 +23,7 @@ from slayer.core.keys import (
     TimeTruncKey,
     ValueKey,
     reroot_value_key,
+    source_anchor_path,
     substitute_value_keys,
     walk_value_keys,
     window_kwarg_of,
@@ -469,7 +470,7 @@ def assert_partition_key_attributable(
     if host_m is None:
         return
     agg_target = (
-        tuple(getattr(key.source, "path", ()) or ())
+        source_anchor_path(key.source)
         if isinstance(key, AggregateKey) else ()
     )
     models_by_name = bundle.models_by_name
@@ -524,7 +525,7 @@ def grain_member_attributable(
         if isinstance(r, AggregateKey):
             saw = True
             if not attributable_from_root(
-                host_path=tuple(getattr(r.source, "path", ()) or ()), target_path=target_path,
+                host_path=source_anchor_path(r.source), target_path=target_path,
                 root_model=root_model, models_by_name=models_by_name,
             ):
                 return False
@@ -688,7 +689,7 @@ def crossing_local_root_predicate(
         return (
             isinstance(k, AggregateKey)
             and k.partition_keys is None
-            and not getattr(k.source, "path", ())
+            and not source_anchor_path(k.source)
             # A host-locus wrap already compiles inline at the producer grain; its
             # attached parameter's crossing closure must not re-route it onto a
             # host-rooted producer (DEV-1910 D6, as ``_local_broadcasts`` excludes).
