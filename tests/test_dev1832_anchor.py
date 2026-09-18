@@ -118,8 +118,14 @@ def _is_getattr_source_path(node: ast.AST) -> bool:
 def _is_key_host_path_source(node: ast.AST) -> bool:
     """``key_host_path(<expr>.source)`` — a disguised source-path read: an
     expression source has no ``.path``, so it silently answers the root."""
-    return (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-            and node.func.id == "key_host_path" and len(node.args) >= 1
+    if not isinstance(node, ast.Call):
+        return False
+    is_key_host_path = (
+        isinstance(node.func, ast.Name) and node.func.id == "key_host_path"
+    ) or (
+        isinstance(node.func, ast.Attribute) and node.func.attr == "key_host_path"
+    )
+    return (is_key_host_path and len(node.args) >= 1
             and isinstance(node.args[0], ast.Attribute)
             and node.args[0].attr == "source")
 

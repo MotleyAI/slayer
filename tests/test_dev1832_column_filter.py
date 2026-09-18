@@ -31,6 +31,13 @@ from slayer.core.query import ColumnRef, OrderItem, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
 
+from slayer.core.errors import ColumnCycleError
+from slayer.core.keys import ColumnSqlKey
+from slayer.engine.column_dependency import _filter_dependencies
+from slayer.engine.filter_reachability import key_has_host_local_ref
+from slayer.ir.source_bundle import ResolvedSourceBundle
+from slayer.sql.column_expansion import expand_column_definition_parts_sync
+
 from tests._engine_helpers import _norm
 from tests._dev1832_fixtures import (
     COUNT_BY_QAMOUNT,
@@ -297,6 +304,55 @@ class TestFilteredLeafOnJoinedModel:
 
 
 # --------------------------------------------------------------------------- #
+# Host-locality reaches into Column.filter, not just Column.sql (DEV-1832 / Codex).
+# --------------------------------------------------------------------------- #
+class TestHostLocalFilterReachability:
+    """A host-declared derived column whose VALUE crosses into a joined model but
+    whose ``Column.filter`` reads a host-local column is host-local: its mask
+    must stay at the host, where that column is bound. Host-locality must consult
+    the filter fragment, not only the value (which the crossed set already
+    covers)."""
+
+    def _orders_bundle(self, *, sql: str | None, filter_: str):
+        models = dev1832_models()
+        orders = next(m for m in models if m.name == "orders")
+        orders.columns.append(Column(
+            name="probe", type=DataType.DOUBLE, sql=sql, filter=filter_))
+        b = ResolvedSourceBundle(
+            source_model=orders,
+            referenced_models=[m for m in models if m.name != "orders"])
+        key = ColumnSqlKey(path=(), model="orders", column_name="probe")
+        return orders, key, b
+
+    def test_cross_model_value_with_host_local_filter_is_host_local(self) -> None:
+        # value crosses orders → customers (to-one); filter reads host orders.amount.
+        orders, key, b = self._orders_bundle(
+            sql="customers.discount", filter_="amount > 5")
+        assert key_has_host_local_ref(
+            key=key, anchor_model=orders, anchor_relation="orders",
+            bundle=b, cache={}) is True
+
+    def test_cross_model_value_and_cross_model_filter_is_not_host_local(self) -> None:
+        # Control: both fragments cross to customers — nothing anchors at the host.
+        orders, key, b = self._orders_bundle(
+            sql="customers.discount", filter_="customers.tier = 'gold'")
+        assert key_has_host_local_ref(
+            key=key, anchor_model=orders, anchor_relation="orders",
+            bundle=b, cache={}) is False
+
+    def test_filtered_physical_column_with_cross_model_filter_is_host_local(
+        self,
+    ) -> None:
+        # A column with NO sql masks its own physical value (host-local); a
+        # cross-model filter must NOT strip that host-locality (Codex edge case).
+        orders, key, b = self._orders_bundle(
+            sql=None, filter_="customers.tier = 'gold'")
+        assert key_has_host_local_ref(
+            key=key, anchor_model=orders, anchor_relation="orders",
+            bundle=b, cache={}) is True
+
+
+# --------------------------------------------------------------------------- #
 # Derived column over a filtered column expands the wrapped value.
 # --------------------------------------------------------------------------- #
 class TestDerivedOverFiltered:
@@ -387,6 +443,40 @@ class TestCycleAndPathValidation:
                        filter="val > 0"),
             ]))
 
+    async def test_query_over_self_filtered_physical_column_reads_physical(self) -> None:
+        # Companion to the save test above: a query over the same column must also
+        # expand — its filter's self-reference reads the physical column, so exactly
+        # one CASE WHEN and no ColumnCycleError (CR: physical-read exemption).
+        model = SlayerModel(
+            name="fself", sql_table="fself", data_source="test",
+            columns=[
+                Column(name="id", type=DataType.INT, primary_key=True),
+                Column(name="val", type=DataType.DOUBLE, sql="val", filter="val > 0"),
+            ])
+        sql = await gen(
+            SlayerQuery(source_model="fself", measures=[_measure("val:sum")]),
+            models=[model])
+        masks = re.findall(r"CASE\s+WHEN\s+fself\.val > 0", sql, flags=re.I)
+        assert len(masks) == 1, sql
+
+    def test_cross_column_filter_cycle_still_raises_in_expansion(self) -> None:
+        # The physical-read exemption is LOCAL to a column's own filter fragment,
+        # never inherited into a referenced column's definition — so column
+        # expansion's own cycle-safety still fires on a genuine cross-column cycle
+        # (x.filter→y, y.sql→x), defence-in-depth below elaboration (Codex leak).
+        model = SlayerModel(
+            name="cyc", sql_table="cyc", data_source="test",
+            columns=[
+                Column(name="id", type=DataType.INT, primary_key=True),
+                Column(name="x", type=DataType.DOUBLE, sql="x", filter="y > 0"),
+                Column(name="y", type=DataType.DOUBLE, sql="x")])
+        x_col = model.get_column("x")
+        assert x_col is not None
+        with pytest.raises(ColumnCycleError):
+            expand_column_definition_parts_sync(
+                column=x_col, model=model, alias_path="cyc",
+                models_by_name={"cyc": model}, dialect="sqlite")
+
     async def test_mutual_filter_reference_is_a_cycle(self) -> None:
         # der_a's filter names der_b and vice versa → a 2-node cycle.
         model = SlayerModel(
@@ -414,3 +504,37 @@ class TestCycleAndPathValidation:
         with pytest.raises(ValueError) as ei:
             await _save_validated(model)
         assert "ghost" in str(ei.value).lower()
+
+    def test_filter_to_known_but_unloaded_peer_is_skipped(self) -> None:
+        # A reverse-direction join declared on the peer is invisible when the peer
+        # failed to load; the filter is unproven, not broken — skip, never raise (CR).
+        host = SlayerModel(
+            name="host", data_source="test", sql_table="host",
+            columns=[
+                Column(name="id", type=DataType.INT, primary_key=True),
+                Column(name="masked", type=DataType.DOUBLE, sql="id",
+                       filter="peer.flag = 1")])
+        col = host.get_column("masked")
+        assert col is not None
+        deps = _filter_dependencies(
+            column=col, host=host, reachable={"host": host},
+            known_but_unloaded=frozenset({"peer"}))
+        assert deps == []  # skipped — no spurious ValueError
+
+    def test_filter_to_genuinely_unknown_token_still_raises(self) -> None:
+        # The same reference with the token NOT known to the datasource is a broken
+        # path and still fails, naming the token (the ghost case is preserved).
+        host = SlayerModel(
+            name="host", data_source="test", sql_table="host",
+            columns=[
+                Column(name="id", type=DataType.INT, primary_key=True),
+                Column(name="masked", type=DataType.DOUBLE, sql="id",
+                       filter="peer.flag = 1")])
+        col = host.get_column("masked")
+        assert col is not None
+        reachable = {"host": host}
+        none_known: frozenset[str] = frozenset()
+        with pytest.raises(ValueError, match="does not"):
+            _filter_dependencies(
+                column=col, host=host, reachable=reachable,
+                known_but_unloaded=none_known)

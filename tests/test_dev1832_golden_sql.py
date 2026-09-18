@@ -1,12 +1,10 @@
 """DEV-1832 golden SQL (task 1.7) — the lifted expression-aggregation shapes
 across seven Tier-1 dialects.
 
-Blessed pre-implementation as today's feature-missing output: every ``lifted/``
-shape records a RAISE (the v1 boundary). ``test_lifted_cases_generate_sql`` is
-this module's feature-missing tripwire — RED until the boundaries fall. At
-implementation each ``lifted/`` case flips to SQL, enters ALLOWED_DELTAS, and is
-re-blessed with executed values pinned. The ``positive/`` shapes are already
-supported and MUST stay byte-identical SQL through the change.
+Every ``lifted/`` shape now emits SQL (the v1 boundaries have fallen);
+``test_lifted_cases_generate_sql`` guards against a regression back to a raise
+record. The ``positive/`` shapes were already supported and stay byte-identical
+SQL through the change.
 """
 
 from __future__ import annotations
@@ -114,8 +112,7 @@ bind_golden_tests(
 
 
 def test_lifted_cases_generate_sql(baseline) -> None:
-    """Feature-missing tripwire: every lifted shape must emit SQL once the v1
-    boundaries fall. RED now (each records the v1 raise), green after the change."""
+    """Regression guard: every lifted shape must emit SQL, never a raise record."""
     for key, value in baseline.items():
         if key.split("::", 1)[0] in LIFTED:
             assert not isinstance(value, dict), (

@@ -883,10 +883,12 @@ class SQLGenerator:
         return self._dialect.sqlglot_name
 
     def _slot_cast_type(self, slot: ValueSlot) -> Optional[DataType]:
-        """Without native exact decimals (SQLite), preservation is a no-op — keep the inferred cast."""
+        """The declared CAST target for ``slot`` — the single funnel for every slot cast site. Without native exact decimals (SQLite), preservation is a no-op; the dialect's declared-cast policy then suppresses temporal casts it cannot store (P2)."""
         if slot.preserve_native_type and not self._dialect.exact_decimal_native:
-            return slot.model_copy(update={"preserve_native_type": False}).cast_type
-        return slot.cast_type
+            dt = slot.model_copy(update={"preserve_native_type": False}).cast_type
+        else:
+            dt = slot.cast_type
+        return self._dialect.declared_cast_type(dt)
 
     def _new_allocator(self) -> AliasAllocator:
         """Build an ``AliasAllocator`` carrying this generator's dialect"""
@@ -1131,7 +1133,9 @@ class SQLGenerator:
             return exp.Column(this=self._to_ident(name), table=exp.to_identifier(model_name))
         if sql.isidentifier():
             return exp.Column(this=self._to_ident(sql), table=exp.to_identifier(model_name))
-        return _wrap_cast_for_type(self._parse(sql), type)
+        return _wrap_cast_for_type(
+            expr=self._parse(sql), dt=self._dialect.declared_cast_type(type),
+        )
 
     def _resolve_value_sql(self, spec: AggRenderSpec) -> str:
         """Resolve ``spec.sql`` (or ``spec.name``) into a fully-qualified"""
@@ -3206,11 +3210,18 @@ class SQLGenerator:
         else:
             assert spec is not None  # set in both non-star arms above
             level2_spec = AggRenderSpec(
-                # A re-aggregation ``count`` counts the cells with a NON-NULL
-                # value (COUNT(_v)), not the cells (COUNT(*)); reference _v so the
-                # count family runs over the picked value.
+                # ``count`` counts cells with a NON-NULL picked value (COUNT(_v)),
+                # never the cells (COUNT(*)): a Column.filter masks non-matching
+                # rows to NULL, so a filtered association count must skip them
+                # (DEV-1832). Other families already read _base._v via the
+                # sql=None branch, so only count must name _v here.
                 name=picked_alias,
-                sql=picked_alias if getattr(kernel, "null_safe", False) else None,
+                sql=(
+                    picked_alias
+                    if getattr(kernel, "null_safe", False)
+                    or agg_slot.key.agg == "count"
+                    else None
+                ),
                 aggregation=agg_slot.key.agg,
                 alias=agg_alias, model_name="_base", type=agg_slot.type,
                 column_type=spec.column_type,
@@ -3220,7 +3231,7 @@ class SQLGenerator:
                 aggregation_def=spec.aggregation_def,
             )
         agg_expr, _ = self._build_agg(level2_spec)
-        agg_expr = _wrap_cast_for_type(agg_expr, self._slot_cast_type(agg_slot))
+        agg_expr = _wrap_cast_for_type(expr=agg_expr, dt=self._slot_cast_type(agg_slot))
         outer_cols: List[exp.Expression] = [
             _base_col(alias).as_(exp.to_identifier(alias, quoted=True))
             for alias in grain_aliases
@@ -5580,7 +5591,8 @@ class SQLGenerator:
             (c for c in owner_model.columns if c.name == key.column_name), None,
         )
         return _wrap_cast_for_type(
-            self._parse(expanded_sql), col.type if col is not None else None,
+            expr=self._parse(expanded_sql),
+            dt=self._dialect.declared_cast_type(col.type if col is not None else None),
         )
 
 
@@ -5698,7 +5710,9 @@ class SQLGenerator:
         )
         value_ast = self._parse(value)
         value_sql = (
-            _wrap_cast_for_type(value_ast, col.type) if cast else value_ast
+            _wrap_cast_for_type(
+                expr=value_ast, dt=self._dialect.declared_cast_type(col.type),
+            ) if cast else value_ast
         ).sql(dialect=self.dialect)
         return wrap_column_filter(value_sql=value_sql, filter_sql=filter_sql)
 

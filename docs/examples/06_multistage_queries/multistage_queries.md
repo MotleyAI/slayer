@@ -63,6 +63,8 @@ If you'd rather not type `order_total_sum` everywhere, give the inner measure an
 ]
 ```
 
+The outer stage can also re-bucket the inner stage's `ordered_at` column to a coarser granularity — add `"time_dimensions": [{"dimension": "ordered_at", "granularity": "year"}]` there to roll the monthly rows up to a yearly axis.
+
 The inner stage emits a column called `rev`; the outer stage averages `rev:avg`. Renaming an inner-stage measure (or restructuring the stage shape) only requires editing the stage and re-saving — the cache is rebuilt from the updated stages on every save.
 
 The second example is more elaborate, as we have two logical steps: first, calculate the order count per customer; then, bucket it and use the bucketed value as a dimension in the parent query.
