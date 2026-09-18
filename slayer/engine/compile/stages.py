@@ -2957,17 +2957,17 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
                                 m.name: m for m in bundle.referenced_models
                             },
                         )
-            # A windowed axis must be attributable from the producer root, else it fans (decision 12; one rule with the cross-model spelling).
-            if producer_model is not None and windowed:
-                active_td = prebound.main_time_key
+            # A PRESENT windowed axis must be attributable from the producer root,
+            # else it fans (decision 12; one rule with the cross-model spelling). A
+            # missing axis is left to the existing time-resolution guard downstream.
+            active_td = prebound.main_time_key
+            if producer_model is not None and windowed and active_td is not None:
                 check_windowed_time_axis_attributable(
-                    alias=alias_map.get(producer_aggs[0]),
+                    alias=(alias_map.get(producer_aggs[0])
+                           if isinstance(producer_aggs[0], AggregateKey) else None),
                     root_name=producer_model.name,
-                    active_td_name=(
-                        None if active_td is None
-                        else _regroup_grain_name(active_td)
-                    ),
-                    attributable=active_td is not None and attributable_from_root(
+                    active_td_name=_regroup_grain_name(active_td),
+                    attributable=attributable_from_root(
                         host_path=key_host_path(active_td), target_path=(),
                         root_model=producer_model,
                         models_by_name=bundle.models_by_name,
@@ -3088,7 +3088,8 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
                 # producer's own public measure (DEV-1909), not its stage alias.
                 population_semi_join_measure=(
                     alias_map.get(aggs[0])
-                    if producer_plan.semi_join_filters else None
+                    if producer_plan.semi_join_filters
+                    and isinstance(aggs[0], AggregateKey) else None
                 ),
                 # An out-of-scope population conjunct is dropped from every
                 # host-rooted producer with the dropped-filter warning (D5).

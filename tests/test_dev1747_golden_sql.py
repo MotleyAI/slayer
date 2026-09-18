@@ -45,11 +45,7 @@ DIALECTS = ["postgres", "sqlite", "duckdb", "tsql", "bigquery"]
 
 # ``<case_id>::<dialect>`` -> why this entry is allowed to change right now.
 # A PENDING list, not a log: a committed state always has this empty.
-_DEV1909 = ("DEV-1909: the fanning population filter now restricts by association "
-            "(EXISTS on the host base) instead of failing closed.")
-ALLOWED_DELTAS: dict[str, str] = {
-    f"reroot/unreachable_filter::{d}": _DEV1909 for d in DIALECTS
-}
+ALLOWED_DELTAS: dict[str, str] = {}
 
 _MONTH = [{"dimension": "created_at", "granularity": "month"}]
 

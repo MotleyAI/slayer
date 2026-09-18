@@ -186,7 +186,8 @@ class TestProducersInheritDisposition:
         for tier, spend in POP_FILTER_PARTITIONED_BY_TIER.items():
             assert float(by[(tier,)]["customers.pt"]) == pytest.approx(spend), tier
         measures = {i.measure for i in pushed_filter_infos(resp)}
-        assert None in measures and "pt" in measures, measures
+        assert None in measures, measures
+        assert "pt" in measures, measures
         sql = await _dry(engine, q, dialect)
         assert "EXISTS" in sql.upper()
         assert "orders" not in _join_aliases(sql, dialect=dialect), sql
@@ -217,7 +218,8 @@ class TestProducersInheritDisposition:
         for month, spend in POP_FILTER_WINDOWED_BY_MONTH.items():
             assert float(by_month[month]) == pytest.approx(spend), month
         measures = {i.measure for i in pushed_filter_infos(resp)}
-        assert None in measures and "w" in measures, measures
+        assert None in measures, measures
+        assert "w" in measures, measures
         sql = await _dry(engine, q, dialect)
         assert "EXISTS" in sql.upper()
         assert "orders" not in _join_aliases(sql, dialect=dialect), sql
@@ -230,10 +232,11 @@ class TestProducersInheritDisposition:
         from the population root; the error names the time dimension (decision 12)."""
         _, engine = backend
         kw = {"filters": [OK]} if with_filter else {}
+        query = cust_q(
+            time_dimensions=_orders_month_td(), measures=[WINDOWED],
+            to_many_handling=mode, **kw)
         with pytest.raises((SlayerError, ValueError)) as ei:
-            await engine.execute(cust_q(
-                time_dimensions=_orders_month_td(), measures=[WINDOWED],
-                to_many_handling=mode, **kw))
+            await engine.execute(query)
         msg = str(ei.value)
         assert "ordered_at" in msg, msg
         assert_ref_free(msg)
@@ -320,31 +323,34 @@ class TestOutOfScopeResidue:
     async def test_producer_errors_under_error_mode(self, backend):
         """error mode turns the dropped out-of-scope conjunct into an error."""
         _, engine = backend
+        query = cust_q(
+            dimensions=["tier"], measures=[PARTITIONED], filters=[OR_MIX],
+            to_many_handling="error")
         with pytest.raises((SlayerError, ValueError)):
-            await engine.execute(cust_q(
-                dimensions=["tier"], measures=[PARTITIONED], filters=[OR_MIX],
-                to_many_handling="error"))
+            await engine.execute(query)
 
     @pytest.mark.parametrize("mode", MODES)
     async def test_inline_aggregate_fails_closed(self, backend, mode):
         """OR-mix over the population with a plain inline aggregate fails closed,
         naming the filter, the reason (the OR/NOT mix) and the remedy; no issue ref."""
         _, engine = backend
+        query = cust_q(measures=[SPEND], filters=[OR_MIX], to_many_handling=mode)
         with pytest.raises(ValueError) as ei:
-            await engine.execute(cust_q(
-                measures=[SPEND], filters=[OR_MIX], to_many_handling=mode))
+            await engine.execute(query)
         msg = str(ei.value)
         assert "status" in msg, msg
         assert "OR/NOT" in msg, msg
-        assert "split" in msg.lower() and "branch" in msg.lower(), msg
+        assert "split" in msg.lower(), msg
+        assert "branch" in msg.lower(), msg
         assert_ref_free(msg)
 
     async def test_raw_row_fails_closed(self, backend):
         """OR-mix in raw-row mode fails closed rather than returning fanned rows."""
         _, engine = backend
+        query = cust_q(
+            dimensions=["tier"], filters=[OR_MIX], distinct_dimension_values=False)
         with pytest.raises(ValueError) as ei:
-            await engine.execute(cust_q(
-                dimensions=["tier"], filters=[OR_MIX], distinct_dimension_values=False))
+            await engine.execute(query)
         assert_ref_free(str(ei.value))
 
 

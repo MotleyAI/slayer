@@ -142,7 +142,7 @@ class TestRepointedGuards:
                 formula="customers.spend:sum(window='90d')", name="w",
             )],
         )
-        with pytest.raises(ValueError, match=r"(?i)cross-model") as ei:
+        with pytest.raises(ValueError, match=r"attributable from") as ei:
             await _gen(query)
         msg = str(ei.value)
         assert "ordered_at_month" in msg

@@ -91,11 +91,7 @@ async def _generate_one(case, dialect: str):
         return record_raise(exc)
 
 
-_DEV1909 = ("DEV-1909: the derived fanning population filter now restricts by "
-            "association (EXISTS on the host base) instead of failing closed.")
-ALLOWED_DELTAS: dict[str, str] = {
-    f"fanning/pop_filter_derived::{d}": _DEV1909 for d in DIALECTS
-}
+ALLOWED_DELTAS: dict[str, str] = {}
 
 bind_golden_tests(
     namespace=globals(),
