@@ -42,6 +42,7 @@ from slayer.engine.cardinality import (
 
 __all__ = [
     "provably_to_one",
+    "provably_fans",
     "safe_reachable",
     "may_inline_crossing_inputs",
     "audit_join_safety",
@@ -95,6 +96,19 @@ def provably_to_one(*, edge: OrientedLike, target_model: SlayerModel) -> bool:
     ]
     return is_key_set_unique(
         key_columns=target_cols, unique_key_sets=_unique_key_sets(target_model)
+    )
+
+
+def provably_fans(*, edge: OrientedLike, target_model: SlayerModel) -> bool:
+    """Is ``edge`` provably fanning onto ``target_model`` in its orientation?
+    True iff it is NOT provably many-to-one and its declared cardinality is
+    ``one_to_many``/``many_to_many`` — proof beats a contradictory to-many
+    declaration, so a reverse-PK-covered or undeclared hop is unproven, not
+    fanning (absence of a target unique key permits a fan but does not prove one)."""
+    if provably_to_one(edge=edge, target_model=target_model):
+        return False
+    return edge.cardinality in (
+        JoinCardinality.ONE_TO_MANY, JoinCardinality.MANY_TO_MANY,
     )
 
 

@@ -112,6 +112,28 @@ class ColumnCycleError(SlayerError, ValueError):
         super().__init__(f"Circular column reference detected: {chain}")
 
 
+class DerivedColumnFanningError(SlayerError, ValueError):
+    """A derived ``Column.sql``/``Column.filter`` reference provably crosses a fanning hop from its declaring model — a set per row, not a column; carries ``column``/``model``/``hop``/``kind``."""
+
+    def __init__(
+        self, *, column: str, model: str, hop: str, kind: str,
+        reference: str | None = None,
+    ) -> None:
+        self.column = column
+        self.model = model
+        self.hop = hop
+        self.kind = kind
+        self.reference = reference
+        remedy = f"{reference or f'{hop}.<column>'}:<aggregation>"
+        super().__init__(
+            f"Derived column {column!r} on model {model!r} has a {kind} reference "
+            f"crossing a fanning join hop to {hop!r}: it is a set per row, not a "
+            f"column of {model!r}. Aggregate the target column ({remedy}) or filter "
+            f"by it; if the hop is really to-one, declare its cardinality "
+            f"(many_to_one/one_to_one) or a covering unique key."
+        )
+
+
 class TimeDimensionColumnError(SlayerError, ValueError):
     """A time dimension's column is non-temporal / untyped, or re-buckets to a granularity its upstream bucket does not nest into. Plain message (both variants pinned by the raise ledger)."""
 

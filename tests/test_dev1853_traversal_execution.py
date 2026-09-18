@@ -17,6 +17,7 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import JoinCardinality, JoinType
+from slayer.core.errors import DerivedColumnFanningError
 from slayer.core.models import Column, ModelMeasure
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -236,8 +237,9 @@ class TestReverseClosure:
         await fwd_engine._expand_join_graph(touched=touched, data_source="test")
         assert {"customers", "orders"} <= touched
 
-    async def test_mode_a_column_over_a_reverse_only_path(self) -> None:
-        # Mode-A free SQL resolves the same reverse hop Mode-B does.
+    async def test_mode_a_column_over_a_reverse_fanning_path_rejected(self) -> None:
+        # A Mode-A derived column across the reverse one_to_many hop is a set per
+        # row, not a column of customers — rejected at save time.
         with tempfile.TemporaryDirectory() as d:
             engine = await chain_engine(d)
             storage = engine.storage
@@ -246,9 +248,7 @@ class TestReverseClosure:
             cust.columns = [
                 *cust.columns, Column(name="o_status", sql="orders.status"),
             ]
-            await storage.save_model(cust)
-            resp = await engine.execute(SlayerQuery(
-                source_model="customers", dimensions=["name", "o_status"]))
-            assert rows_set(
-                resp, "customers.name", "customers.o_status",
-            ) == CHAIN_REVERSE_DIMS_LEFT
+            with pytest.raises(DerivedColumnFanningError) as ei:
+                await storage.save_model(cust)
+            assert ei.value.hop == "orders"
+            assert ei.value.kind == "sql"
