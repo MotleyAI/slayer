@@ -283,18 +283,19 @@ error, before any SQL is generated.
 
 ### Requirement: Non-shift transforms reject grain-refining row-level leaves
 A transform other than `time_shift`, `change`, and `change_pct`, used in
-measure, filter, or order position, SHALL reject with a typed plan-time error —
-before any SQL is generated — any row-level (non-aggregate) leaf in its input
-that refines the consumer grain, that is, a leaf that is not itself a projected
-query dimension. The error SHALL name the transform, the offending leaf kind,
-and the remedy (aggregate the leaf, e.g. `cumsum(weight:sum)`), and cite no
-tracking issue. The rule applies uniformly to every non-shift transform
-operation, the rank family included. Leaves that are projected grain keys —
-plain or computed dimensions — remain legal, evaluated at the query grain. The
-raw source column of a bucketed time dimension is not a projected grain key
-(it refines the bucket). `first`/`last` keep their aggregation dispatch, the
-shift family keeps its bare-leaf regime and its existing composite row-leaf
-rejection, and the stricter dimension-position rules are unchanged.
+measure, filter, or order position, or as a constituent of an aggregation source,
+SHALL reject with a typed plan-time error — before any SQL is generated — any
+row-level (non-aggregate) leaf in its input that refines the consumer grain, that
+is, a leaf that is not itself a projected query dimension. The error SHALL name
+the transform, the offending leaf kind, and the remedy (aggregate the leaf, e.g.
+`cumsum(weight:sum)`), and cite no tracking issue. The rule applies uniformly to
+every non-shift transform operation, the rank family included. Leaves that are
+projected grain keys — plain or computed dimensions — remain legal, evaluated at
+the query grain. The raw source column of a bucketed time dimension is not a
+projected grain key (it refines the bucket). `first`/`last` keep their
+aggregation dispatch, the shift family keeps its bare-leaf regime and its existing
+composite row-leaf rejection, and the stricter dimension-position rules are
+unchanged.
 
 #### Scenario: Bare grain-refining leaf rejected
 - **WHEN** a query with a month time dimension and no `weight` dimension selects
@@ -326,6 +327,18 @@ rejection, and the stricter dimension-position rules are unchanged.
   projected
 - **THEN** it fails with the same typed error — a transform does not collapse
   row grain, unlike an aggregation
+
+#### Scenario: Row leaf under a transform inside an aggregation source rejected
+- **WHEN** a query selects the measure `sum(cumsum(weight) - 1)` with `weight` not a
+  query dimension
+- **THEN** it fails at plan time with the same typed error naming the transform and
+  the aggregate-the-leaf remedy — an enclosing aggregation does not launder the
+  transform's row leaf
+
+#### Scenario: Projected grain key under a transform inside a source stays legal
+- **WHEN** a query over `[region]` selects the measure `sum(rank(region))`
+- **THEN** it compiles: the transform types at the query grain and the aggregation is
+  the degenerate identity with the degenerate-re-aggregation warning, never an error
 
 #### Scenario: Shift family keeps its bare-leaf regime
 - **WHEN** a query selects `time_shift(weight, -1)` or `change(weight)` over a

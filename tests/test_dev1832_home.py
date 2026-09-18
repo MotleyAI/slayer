@@ -3,8 +3,6 @@
 Every ``#### Scenario`` of ``queries/semantics`` › *Home dataset of a row-level
 aggregation source*: the elaborator resolves each aggregate's home once and the
 term carries it as ``Aggregate.home_path`` (relative to the environment's host).
-These fail on the current tree — the term has no ``home_path`` and every
-aggregate's home is the query root.
 """
 
 from __future__ import annotations

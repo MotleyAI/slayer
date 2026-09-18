@@ -941,7 +941,7 @@ def constituent_grain(
     transform: its effective root grain, folding the active bucket back in when a
     windowed inner pulls it in."""
     grain, windowed = effective_root_grain(
-        c, projected_dim_keys=projected_dim_keys,
+        agg=c, projected_dim_keys=projected_dim_keys,
         projected_td_keys=projected_td_keys, active_bucket=active_bucket,
     )
     if windowed and active_bucket is not None:

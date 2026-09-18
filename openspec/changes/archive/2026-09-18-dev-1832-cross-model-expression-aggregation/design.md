@@ -89,7 +89,7 @@ grain helper yields (probe, see D4).
    existing input-safety checker raises. Alternative — generalise `_home_path` in place
    — rejected by the user (the decision belongs to the typed elaborator).
 3. **Every synthesized sub-plan is elaborated** (Codex F1). One helper
-   `compile_synthesized(prebound, *, query, bundle, scope, …)` = `elaborate_query(prebound=…)`
+   `compile_synthesized(prebound, *, source_model, bundle, scope, …)` = `elaborate_query(prebound=…)`
    + `compile_query`; the six `compile_prebound` call sites in `compile/stages.py`
    (wrap attach, cross-model, association, re-aggregation outer, carrier, local
    partitioned) use it; `compile_prebound` requires `env` and its local-typing branch

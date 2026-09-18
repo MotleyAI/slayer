@@ -105,10 +105,19 @@ def _is_source_path_read(node: ast.AST) -> bool:
             and isinstance(node.value, ast.Attribute) and node.value.attr == "source")
 
 
+def _is_getattr_ref(func: ast.AST) -> bool:
+    """The builtin ``getattr`` — bare or qualified ``builtins.getattr`` — but not
+    an arbitrary ``helper.getattr`` (that isn't necessarily the builtin)."""
+    if isinstance(func, ast.Name):
+        return func.id == "getattr"
+    return (isinstance(func, ast.Attribute) and func.attr == "getattr"
+            and isinstance(func.value, ast.Name) and func.value.id == "builtins")
+
+
 def _is_getattr_source_path(node: ast.AST) -> bool:
-    """``getattr(<expr>.source, "path", ...)``."""
-    if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-            and node.func.id == "getattr" and len(node.args) >= 2):
+    """``getattr(<expr>.source, "path", ...)`` or ``builtins.getattr(...)``."""
+    if not (isinstance(node, ast.Call) and _is_getattr_ref(node.func)
+            and len(node.args) >= 2):
         return False
     target, attr = node.args[0], node.args[1]
     return (isinstance(target, ast.Attribute) and target.attr == "source"
@@ -154,3 +163,13 @@ class TestNoDirectSourcePathRead:
             "Direct `<expr>.source.path` reads (incl. `key_host_path(<expr>.source)`) "
             "must route through `source_anchor_path` / `source_leaf_paths`:\n"
             + "\n".join(sites))
+
+    def _call(self, src: str) -> ast.AST:
+        return ast.parse(src, mode="eval").body
+
+    def test_guard_catches_bare_and_qualified_getattr(self):
+        assert _is_getattr_source_path(self._call('getattr(x.source, "path", ())'))
+        assert _is_getattr_source_path(self._call('builtins.getattr(x.source, "path", ())'))
+
+    def test_guard_ignores_arbitrary_dot_getattr(self):
+        assert not _is_getattr_source_path(self._call('helper.getattr(x.source, "path", ())'))

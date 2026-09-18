@@ -104,7 +104,7 @@ def _constituent_grain_paths(
     the explicit ``partition_by=`` else the query dimensions, and a windowed inner
     always includes the query's time bucket."""
     members = constituent_grain(
-        c, projected_dim_keys=dim_keys, projected_td_keys=td_keys,
+        c=c, projected_dim_keys=dim_keys, projected_td_keys=td_keys,
         active_bucket=active_bucket,
     )
     out: List[Path] = []

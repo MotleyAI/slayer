@@ -7,9 +7,7 @@ the transform that is not a projected grain key is rejected at plan time; a
 time-ordered constituent without its axis fails with the time-axis error. Mixed
 sources admit transform constituents and joined-model row leaves.
 
-Fails on the current tree: nested transforms in a source are rejected at parse
-(``syntax._validated_agg_source``); the row-leaf / axis checkers do not yet walk
-aggregation sources; the joined-model leaf hits the cross-model rejection.
+All of the above is implemented; this module guards it against regression.
 """
 
 from __future__ import annotations
@@ -69,6 +67,8 @@ _X = "amount:sum(partition_by=[region, ordered_at])"
 LAST_X = f"sum(last({_X}))"
 FIRST_X = f"sum(first({_X}))"
 CUMSUM_MINUS_LAST = f"sum(cumsum({_X}) - last({_X}))"
+# Two same-op transform constituents: distinct keys (sum vs max inner), same op.
+TWO_CUMSUM = f"sum(cumsum({_X}) - cumsum(amount:max(partition_by=[region, ordered_at])))"
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -419,3 +419,16 @@ class TestDeferredInnerShapes:
             time_dimensions=month_td())
         with pytest.raises(ValueError, match="partition_by"):
             await gen(query)
+
+
+class TestSameOpTransformConstituents:
+    """``sum(cumsum(a) - cumsum(b))`` — two same-op transform constituents once
+    collided on the bare op name (DuplicateMeasureNameError). Each now gets a
+    distinct producer alias, so the source compiles."""
+
+    async def test_two_same_op_constituents_get_distinct_aliases(self):
+        sql = await gen(monthly_q(
+            time_dimensions=month_td(),
+            measures=[ModelMeasure(formula=TWO_CUMSUM, name="m")],
+        ))
+        assert "cumsum_2" in sql, sql

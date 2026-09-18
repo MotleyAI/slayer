@@ -3,9 +3,8 @@
 Every ``#### Scenario`` of ``aggregations/expression-aggregation`` › *Row-level
 expressions can be aggregated* and the execution/typing scenarios of *Expression
 source typing*, plus ``queries/cross-model-aggregates``. Executed on SQLite and
-DuckDB. Same-model shapes (DEV-1826) and fully-attached / mixed shapes
-(DEV-1847/1859) already compile — those pass here as regression guards; the
-cross-model shapes fail on the current tree (the DEV-1832 rejection fires).
+DuckDB. Same-model shapes and fully-attached / mixed shapes already compile;
+the cross-model shapes now compile too — all pass here as regression guards.
 """
 
 from __future__ import annotations

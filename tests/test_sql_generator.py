@@ -4804,7 +4804,7 @@ class TestMeasureFilterInjection:
         query = SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="evil:sum")])
         generator = SQLGenerator(dialect="postgres")
         with pytest.raises((sqlglot.errors.ParseError, sqlglot.errors.TokenError, ValueError)):
-            await _generate(generator, query, orders_model)
+            await _generate(generator=generator, query=query, model=orders_model)
 
     async def test_union_select_rejected(self, orders_model: SlayerModel) -> None:
         """UNION SELECT payload is rejected by sqlglot at generation time."""
@@ -4819,7 +4819,7 @@ class TestMeasureFilterInjection:
         query = SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="evil:sum")])
         generator = SQLGenerator(dialect="postgres")
         with pytest.raises((sqlglot.errors.ParseError, sqlglot.errors.TokenError, ValueError)):
-            await _generate(generator, query, orders_model)
+            await _generate(generator=generator, query=query, model=orders_model)
 
     def test_block_comment_passes_through_safely(self, orders_model: SlayerModel) -> None:
         """``/* ... */`` block comments survive ``Column`` construction — DEV-1369's SQL-mode validator does not parse them, only checks for DSL constructs (aggregation colon syntax, transform calls, ``OVER``)."""
