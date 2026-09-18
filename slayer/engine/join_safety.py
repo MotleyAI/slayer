@@ -462,28 +462,30 @@ def assert_partition_key_attributable(
     *, key: ValueKey, pk: ValueKey, label: str,
     scope: Union[ModelScope, StageSchema], bundle: ResolvedSourceBundle,
 ) -> None:
-    """Resolve a partition key's attributability from the aggregate's root; the checker raises on an unproven/fanning hop."""
-    hp = key_host_path(pk)
-    if not hp:
-        return  # a local column — no join to cross
+    """A partition key whose dependency closure crosses a fanning hop is unattributable; the checker raises. Path-less keys are judged from the host (DEV-1911), path-bearing from the aggregate's root."""
+    # StageSchema binds flat stage outputs — no join graph, so no fanning closure exists.
     host_m = scope.source_model if isinstance(scope, ModelScope) else None
     if host_m is None:
         return
-    agg_target = (
-        source_anchor_path(key.source)
-        if isinstance(key, AggregateKey) else ()
-    )
     models_by_name = bundle.models_by_name
-    root = walk_key_path(model=host_m, path=agg_target, bundle=bundle) or host_m
-    host_name = host_m.name if agg_target else None
+    hp = key_host_path(pk)
+    if not hp:
+        # Path-less derived key: a fan from its own host is a mode-invariant safety
+        # error; a host-safe key's cross-model-root concern stays the planner's.
+        root, target, host_name = host_m, (), None
+    else:
+        target = source_anchor_path(key.source) if isinstance(key, AggregateKey) else ()
+        root = walk_key_path(model=host_m, path=target, bundle=bundle) or host_m
+        host_name = host_m.name if target else None
     attributable = key_attributable_from_root(
-        key=pk, target_path=agg_target, root_model=root,
+        key=pk, target_path=target, root_model=root,
         models_by_name=models_by_name, bundle=bundle, host_model=host_m,
         host_name=host_name,
     )
-    reason = None if attributable else broadcast_reason(
-        host_path=hp, target_path=agg_target, root_model=root,
-        models_by_name=models_by_name, host_name=host_name,
+    reason = None if attributable else key_broadcast_reason(
+        key=pk, target_path=target, root_model=root,
+        models_by_name=models_by_name, bundle=bundle, host_model=host_m,
+        host_name=host_name,
     )
     check_partition_key_attributable(
         label=label, pk=pk, attributable=attributable, reason=reason,
