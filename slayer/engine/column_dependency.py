@@ -12,6 +12,7 @@ compile-time/query-time guards remain authoritative.
 from __future__ import annotations
 
 import warnings
+from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
 import sqlglot
@@ -158,12 +159,9 @@ def _filter_ref_target(
 
 
 def _first_hop(*, quals, host: SlayerModel):
-    """The leading join-hop token of a reference (host's own name stripped), or
-    ``None`` when the reference is host-local (a bare column)."""
-    q = list(quals)
-    if q and q[0] == host.name:
-        q = q[1:]
-    return q[0] if q else None
+    """The leading join-hop token of a reference, or ``None`` when host-local."""
+    path = _hop_path(quals=quals, host=host)
+    return path[0] if path else None
 
 
 def _is_join_hop(*, host: SlayerModel, token: str, reachable: dict[str, SlayerModel]) -> bool:
@@ -332,6 +330,16 @@ def _unproven_arity_message(*, column: str, model: str, hop: str, kind: str) -> 
     )
 
 
+def _iter_arity_refs(
+    *, model: SlayerModel,
+) -> Iterator[tuple[Column, str, tuple[str, ...], str]]:
+    """Yield ``(column, kind, hop_path, leaf)`` for every arity-bearing reference."""
+    for column in model.columns:
+        for kind, fragment in _arity_reference_sources(column):
+            for quals, leaf in _fragment_refs(fragment) or []:
+                yield column, kind, _hop_path(quals=quals, host=model), leaf
+
+
 def _check_reference_arity(
     *, model: SlayerModel, reachable: dict[str, SlayerModel],
 ) -> None:
@@ -339,31 +347,26 @@ def _check_reference_arity(
     raises ``DerivedColumnFanningError``; an unproven hop warns once per
     ``(column, kind, hop)``; to-one/unresolvable/unloaded/ambiguous skip."""
     warned: set[tuple[str, str, str]] = set()
-    for column in model.columns:
-        for kind, fragment in _arity_reference_sources(column):
-            for quals, leaf in _fragment_refs(fragment) or []:
-                path = _hop_path(quals=quals, host=model)
-                verdict = _classify_hop_path(
-                    host=model, path=path, reachable=reachable,
-                )
-                if verdict is None:
-                    continue
-                status, hop = verdict
-                if status == "fanning":
-                    raise DerivedColumnFanningError(
-                        column=column.name, model=model.name, hop=hop, kind=kind,
-                        reference=".".join((*path, leaf)),
-                    )
-                key = (column.name, kind, hop)
-                if key in warned:
-                    continue
-                warned.add(key)
-                warnings.warn(
-                    _unproven_arity_message(
-                        column=column.name, model=model.name, hop=hop, kind=kind,
-                    ),
-                    UserWarning, stacklevel=2,
-                )
+    for column, kind, path, leaf in _iter_arity_refs(model=model):
+        verdict = _classify_hop_path(host=model, path=path, reachable=reachable)
+        if verdict is None:
+            continue
+        status, hop = verdict
+        if status == "fanning":
+            raise DerivedColumnFanningError(
+                column=column.name, model=model.name, hop=hop, kind=kind,
+                reference=".".join((*path, leaf)),
+            )
+        key = (column.name, kind, hop)
+        if key in warned:
+            continue
+        warned.add(key)
+        warnings.warn(
+            _unproven_arity_message(
+                column=column.name, model=model.name, hop=hop, kind=kind,
+            ),
+            UserWarning, stacklevel=2,
+        )
 
 
 async def validate_derived_columns(
