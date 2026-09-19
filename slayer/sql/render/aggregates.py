@@ -3,8 +3,7 @@
 ``_build_agg`` reached its builders five different ways, so adding an
 aggregation meant knowing which one to touch. Here each is one
 :class:`AggEntry`: ``dispatch`` names the mechanism that renders it (the
-generator still owns the builders, which need model columns and dialect hooks),
-and ``window_class`` replaces a silent ``else AVG`` catch-all.
+generator still owns the builders, which need model columns and dialect hooks).
 """
 
 from __future__ import annotations
@@ -43,12 +42,6 @@ class AggEntry(BaseModel):
     dispatch: DispatchKind
     # The sqlglot class for the simple path, when there is one.
     node_class: Optional[Type[exp.Expression]] = None
-    # Set only for aggregations that can carry their own window frame.
-    window_class: Optional[Type[exp.Expression]] = None
-
-    @property
-    def windowable(self) -> bool:
-        return self.window_class is not None
 
 
 def _entry(*, name: str, dispatch: DispatchKind, **kw) -> AggEntry:
@@ -58,10 +51,8 @@ def _entry(*, name: str, dispatch: DispatchKind, **kw) -> AggEntry:
 AGG_REGISTRY: Dict[str, AggEntry] = {
     e.name: e
     for e in (
-        # Only sum and avg carry a window frame — the same pair the stage
-        # planner gates windowed measures on.
-        _entry(name="sum", dispatch=DISPATCH_SIMPLE, node_class=exp.Sum, window_class=exp.Sum),
-        _entry(name="avg", dispatch=DISPATCH_SIMPLE, node_class=exp.Avg, window_class=exp.Avg),
+        _entry(name="sum", dispatch=DISPATCH_SIMPLE, node_class=exp.Sum),
+        _entry(name="avg", dispatch=DISPATCH_SIMPLE, node_class=exp.Avg),
         _entry(name="count", dispatch=DISPATCH_SIMPLE, node_class=exp.Count),
         _entry(name="min", dispatch=DISPATCH_SIMPLE, node_class=exp.Min),
         _entry(name="max", dispatch=DISPATCH_SIMPLE, node_class=exp.Max),
@@ -116,20 +107,3 @@ def resolve_agg_entry(name: str) -> AggEntry:
 
 def is_builtin_agg(name: str) -> bool:
     return name in AGG_REGISTRY
-
-
-def window_agg_class(name: str) -> Type[exp.Expression]:
-    """The sqlglot class for a WINDOWED aggregate.
-
-    Raises ``ValueError`` when the aggregation cannot carry a window frame.
-    The windowed render path previously read ``exp.Sum if agg == "sum" else
-    exp.Avg``, silently rendering every other aggregation as AVG.
-    """
-    entry = resolve_agg_entry(name)
-    if entry.window_class is None:
-        raise ValueError(
-            f"Aggregation {name!r} cannot be windowed; only "
-            f"{sorted(n for n, e in AGG_REGISTRY.items() if e.windowable)} "
-            f"carry their own window frame.",
-        )
-    return entry.window_class
