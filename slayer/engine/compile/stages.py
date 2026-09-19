@@ -828,8 +828,9 @@ def _synthesize_wrap_attach(
     producer_registry: Optional[Dict[Hashable, PlannedQuery]],
     producer_source_model: Optional[str],
     row_attaches: Sequence[RegroupAttachPlan] = (),
+    population_filters: Optional["PopulationFilters"] = None,
 ) -> RegroupAttachPlan:
-    """A host-grain ORDER-BY wrap as a HOST-rooted producer synthesized late: a combined attach at the full projected grain whose placeholder IS the wrap key."""
+    """A host-grain ORDER-BY wrap as a HOST-rooted producer synthesized late: a combined attach at the full projected grain whose placeholder IS the wrap key. Inherits the population disposition (D1) like every other host-rooted producer."""
     producer_model = scope.source_model if isinstance(scope, ModelScope) else None
     models_by_name = bundle.models_by_name
     if producer_model is not None:
@@ -883,6 +884,7 @@ def _synthesize_wrap_attach(
             for pk in projected
         ),
         producer_registry=producer_registry,
+        population_filters=population_filters,
     )
     producer_answer_ids = list(producer_plan.projection)[len(ordered_pks):]
     answer_slot = _regroup_answer_slot_id(
@@ -3467,6 +3469,7 @@ def compile_prebound(  # NOSONAR(S3776) — compiler entry-point dispatcher. The
                             a for a in regroup_attach_plans
                             if a.attach_phase == "row"
                         ],
+                        population_filters=population_filters,
                     ),
                     producer_registry,
                 ))
@@ -3529,6 +3532,11 @@ def compile_prebound(  # NOSONAR(S3776) — compiler entry-point dispatcher. The
     masks: List[MaskEntry] = []
     mask_keys: List[ValueKey] = []
     pushed_set = set(pushed_conjunct_keys)
+    # Date-range filters are the first ``n_date_range`` bound_filters; a semi-join
+    # push can drop one, so count the survivors rather than trust the pre-drop
+    # total — the prefix ``masks[:n_date_range_masks]`` must stay exactly the
+    # surviving frame bounds (readers: sql.generator lowering, _plan_src_row_filters).
+    surviving_date_range = 0
     for i, (bf, ct) in enumerate(zip(bound_filters, filter_typings)):
         key = _drop_conjuncts(bf.value_key, pushed_set)
         if key is None:
@@ -3545,6 +3553,8 @@ def compile_prebound(  # NOSONAR(S3776) — compiler entry-point dispatcher. The
             slot_id=mask_sid, typing=ct.typing, stratum=ct.stratum,
         ))
         mask_keys.append(key)
+        if i < n_date_range:
+            surviving_date_range += 1
     if masks:
         row_slots, agg_slots, combined_slots = _bucket_slots(
             projection.registry.slots,
@@ -3660,7 +3670,7 @@ def compile_prebound(  # NOSONAR(S3776) — compiler entry-point dispatcher. The
         combined_expression_slots=combined_slots,
         transform_layers=transform_layers,
         masks=masks,
-        n_date_range_masks=n_date_range,
+        n_date_range_masks=surviving_date_range,
         mode_a_filters=mode_a_filters,
         projection=projection.public_projection,
         order=order_entries,

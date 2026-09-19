@@ -29,6 +29,8 @@ from slayer.core.errors import (
     UnreachableFilterDroppedWarning,
 )
 from slayer.core.query import ColumnRef, TimeDimension
+from slayer.engine.plan import plan_query
+from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.scope_check import assert_scope_closed
 
 from tests._dev1892_fixtures import assert_ref_free
@@ -50,6 +52,7 @@ from tests._dev1900_fixtures import (
     POP_FILTER_WINDOWED_BY_MONTH,
     TO_ONE_FILTER_AMOUNT,
     cust_q,
+    dev1900_models,
     dropped_filter_warnings,
     make_exec_engine,
     month_key,
@@ -110,6 +113,61 @@ async def _dry(engine, query, dialect: str) -> str:
 def _pop_infos(resp) -> list:
     """The population-push entries: a semi_join_pushed entry naming no aggregate."""
     return [i for i in pushed_filter_infos(resp) if i.measure is None]
+
+
+def _bundle1900() -> ResolvedSourceBundle:
+    m = dev1900_models()
+    src = next(x for x in m if x.name == "customers")
+    return ResolvedSourceBundle(
+        source_model=src, referenced_models=[x for x in m if x.name != "customers"])
+
+
+class TestDateRangeMaskAccounting:
+    """A fanning date-range population filter rides a host-rooted producer's EXISTS
+    and drops from the producer's masks; ``n_date_range_masks`` must count only the
+    SURVIVING date-range masks, so an ordinary mask is never misread as a frame
+    bound (readers: sql.generator lowering, _plan_src_row_filters)."""
+
+    def _producer_plan(self):
+        q = cust_q(
+            time_dimensions=[{
+                "dimension": "orders.ordered_at", "granularity": "month",
+                "date_range": ["2020-01-01", "2020-12-31"]}],
+            dimensions=["tier"],
+            measures=[PARTITIONED],
+            filters=["tier = 'gold'"])
+        planned = plan_query(query=q, bundle=_bundle1900())
+        (attach,) = planned.regroup_attach_plans
+        return attach.producer_plan
+
+    def test_pushed_date_range_leaves_no_producer_frame_bound(self):
+        pp = self._producer_plan()
+        assert pp.semi_join_filters, "the fanning date-range must ride the EXISTS"
+        assert pp.n_date_range_masks == 0, "no date-range mask survives the push"
+        # the surviving local tier mask must sit OUTSIDE the frame-bound prefix.
+        frame_bound_ids = {m.slot_id for m in pp.masks[:pp.n_date_range_masks]}
+        assert frame_bound_ids == set()
+        assert len(pp.masks) == 1
+
+
+class TestOrderWrapInheritsPopulation:
+    """A host-grain ORDER-BY wrap over a joined sort key is a host-rooted producer;
+    it inherits the population disposition (D1) and rides the EXISTS rather than
+    inlining the fanning filter (which would multiply its wrapped aggregate)."""
+
+    def _wrap_producer_plan(self):
+        q = cust_q(
+            dimensions=["tier"], measures=[SPEND], filters=[OK],
+            order=[{"column": "orders.amount", "direction": "asc"}])
+        planned = plan_query(query=q, bundle=_bundle1900())
+        (attach,) = planned.regroup_attach_plans
+        return attach.producer_plan
+
+    def test_wrap_rides_exists_not_inline_fanning_filter(self):
+        pp = self._wrap_producer_plan()
+        assert pp.semi_join_filters, "the wrap must inherit the population EXISTS"
+        # the fanning conjunct rode the EXISTS, so it is not an inline producer mask.
+        assert pp.masks == []
 
 
 class TestHostBaseRestrictsByAssociation:
