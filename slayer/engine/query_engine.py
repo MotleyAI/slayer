@@ -2813,6 +2813,9 @@ class SlayerQueryEngine:
                 label=sc.label,
                 description=sc.description,
                 format=sc.format,
+                # DEV-1929: carry the final stage's time-bucket granularity so a finer
+                # time dimension over the cached column is the same typed error.
+                granularity=sc.granularity,
                 primary_key=(
                     stamp_grain and sc.public_alias in grain_public_names
                 ),

@@ -88,7 +88,7 @@ class TestSnowflakeStatementTimeout:
         fake_result = MagicMock()
         fake_result.keys.return_value = ["col"]
         fake_result.fetchall.return_value = []
-        fake_conn.execute.return_value = fake_result
+        fake_conn.exec_driver_sql.return_value = fake_result
 
         client._execute_sql_sync(
             sql="SELECT 1",
@@ -98,8 +98,8 @@ class TestSnowflakeStatementTimeout:
             engine=fake_engine,
         )
 
-        assert fake_conn.execute.call_count == 2, "expected ALTER SESSION + user query"
-        timeout_sql = _extract_text(fake_conn.execute.call_args_list[0])
+        assert fake_conn.exec_driver_sql.call_count == 2, "expected ALTER SESSION + user query"
+        timeout_sql = _extract_text(fake_conn.exec_driver_sql.call_args_list[0])
         # Exact shape — substring "42" would silently pass for "420" etc.
         assert timeout_sql == "ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS = 42"
 
@@ -112,11 +112,11 @@ class TestSnowflakeStatementTimeout:
             fake_async_engine = MagicMock()
             ctx = MagicMock()
             fake_conn = MagicMock()
-            fake_conn.execute = AsyncMock()
+            fake_conn.exec_driver_sql = AsyncMock()
             fake_result = MagicMock()
             fake_result.keys.return_value = ["col"]
             fake_result.fetchall.return_value = []
-            fake_conn.execute.return_value = fake_result
+            fake_conn.exec_driver_sql.return_value = fake_result
             ctx.__aenter__ = AsyncMock(return_value=fake_conn)
             ctx.__aexit__ = AsyncMock(return_value=False)
             fake_async_engine.connect.return_value = ctx
@@ -127,7 +127,7 @@ class TestSnowflakeStatementTimeout:
                 db_type="snowflake",
                 timeout_seconds=7,
             )
-            calls = fake_conn.execute.await_args_list
+            calls = fake_conn.exec_driver_sql.await_args_list
             timeout_sql = _extract_text(calls[0])
             assert timeout_sql == "ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS = 7"
 
@@ -143,7 +143,7 @@ class TestSnowflakeStatementTimeout:
         fake_result = MagicMock()
         fake_result.keys.return_value = ["col"]
         fake_result.cursor.description = fake_cursor_desc
-        fake_conn.execute.return_value = fake_result
+        fake_conn.exec_driver_sql.return_value = fake_result
 
         with patch.object(client, "_resolve_sync_engine", return_value=fake_engine):
             client._get_column_types_sync(
@@ -153,8 +153,8 @@ class TestSnowflakeStatementTimeout:
                 engine=fake_engine,
             )
 
-        assert fake_conn.execute.call_count >= 2
-        first_sql = _extract_text(fake_conn.execute.call_args_list[0])
+        assert fake_conn.exec_driver_sql.call_count >= 2
+        first_sql = _extract_text(fake_conn.exec_driver_sql.call_args_list[0])
         assert first_sql.startswith("ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS = ")
 
 

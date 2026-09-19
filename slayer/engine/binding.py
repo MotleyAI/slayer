@@ -137,7 +137,7 @@ def bind_time_dimension(
     scope: Union[ModelScope, StageSchema],
     bundle: ResolvedSourceBundle,
 ) -> BoundTimeDimension:
-    """Bind a ``TimeDimension`` into a ``BoundTimeDimension``: a ``BoundExpr`` carrying a ``TimeTruncKey`` plus the column facts the checker judges (its type, its upstream stage granularity). The column resolves like a Mode-B identifier ref against a ``ModelScope`` (joins) or a flat ``StageSchema``; the temporal / re-bucketing rules are the checker's (P9)."""
+    """Bind a ``TimeDimension`` into a ``BoundTimeDimension``: a ``BoundExpr`` carrying a ``TimeTruncKey`` plus the column facts the checker judges (its type, its recorded bucket granularity — from a ``StageColumn`` or a model ``Column``). The column resolves like a Mode-B identifier ref against a ``ModelScope`` (joins) or a flat ``StageSchema``; the temporal / re-bucketing rules are the checker's (P9)."""
     full = td.dimension.full_name
     bound_col, column_type, upstream_granularity = _time_dimension_column_facts(
         full, scope=scope, bundle=bundle,
@@ -165,7 +165,7 @@ def _time_dimension_column_facts(
     scope: Union[ModelScope, StageSchema],
     bundle: ResolvedSourceBundle,
 ) -> Tuple[Union[ColumnKey, ColumnSqlKey], Optional[DataType], Optional[TimeGranularity]]:
-    """Resolve a time dimension's column against ``scope`` and read its facts — (bound column key, column type, upstream stage granularity). Stage arm reads the flat ``StageColumn`` (dotted → illegal-scope, unknown → unknown-reference); model arm walks joins to the terminal column, with no upstream granularity."""
+    """Resolve a time dimension's column against ``scope`` and read its facts — (bound column key, column type, recorded bucket granularity). Stage arm reads the flat ``StageColumn`` (dotted → illegal-scope, unknown → unknown-reference); model arm walks joins to the terminal ``Column`` and returns its ``granularity`` (DEV-1929), so a bucketed model column re-buckets under the same rule as a stage column."""
     if isinstance(scope, StageSchema):
         if "." in full:
             bound_col = _resolve_dotted(tuple(full.split(".")), scope=scope, bundle=bundle)
@@ -208,7 +208,11 @@ def _time_dimension_column_facts(
     col = next(
         (c for c in terminal.columns if c.name == column_leaf(bound_col)), None,
     )
-    return bound_col, (col.type if col is not None else None), None
+    return (
+        bound_col,
+        (col.type if col is not None else None),
+        (col.granularity if col is not None else None),
+    )
 
 
 def _canonical_if_routed(
