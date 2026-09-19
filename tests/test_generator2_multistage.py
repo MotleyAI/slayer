@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 import re
 import sqlite3
+from slayer.storage.sqlite_conn import transaction
 import tempfile
 from typing import AsyncIterator, List, Tuple
 
@@ -41,31 +42,29 @@ import slayer.engine.bundle_builder
 async def harness() -> AsyncIterator[Tuple[SlayerQueryEngine, YAMLStorage, str]]:
     d = tempfile.mkdtemp()
     db_path = os.path.join(d, "t.db")
-    con = sqlite3.connect(db_path)
-    cur = con.cursor()
-    cur.execute(
-        "CREATE TABLE customers (id INTEGER PRIMARY KEY, region TEXT, revenue REAL)"
-    )
-    cur.executemany(
-        "INSERT INTO customers VALUES (?,?,?)",
-        [(1, "NA", 100.0), (2, "NA", 50.0), (3, "EU", 70.0)],
-    )
-    cur.execute(
-        "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, "
-        "status TEXT, amount REAL)"
-    )
-    cur.executemany(
-        "INSERT INTO orders VALUES (?,?,?,?)",
-        [
-            (1, 1, "paid", 10.0),
-            (2, 1, "paid", 5.0),
-            (3, 2, "open", 7.0),
-            (4, 3, "open", 3.0),
-            (5, 3, "paid", 9.0),
-        ],
-    )
-    con.commit()
-    con.close()
+    with transaction(db_path) as con:
+        cur = con.cursor()
+        cur.execute(
+            "CREATE TABLE customers (id INTEGER PRIMARY KEY, region TEXT, revenue REAL)"
+        )
+        cur.executemany(
+            "INSERT INTO customers VALUES (?,?,?)",
+            [(1, "NA", 100.0), (2, "NA", 50.0), (3, "EU", 70.0)],
+        )
+        cur.execute(
+            "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, "
+            "status TEXT, amount REAL)"
+        )
+        cur.executemany(
+            "INSERT INTO orders VALUES (?,?,?,?)",
+            [
+                (1, 1, "paid", 10.0),
+                (2, 1, "paid", 5.0),
+                (3, 2, "open", 7.0),
+                (4, 3, "open", 3.0),
+                (5, 3, "paid", 9.0),
+            ],
+        )
 
     storage = YAMLStorage(base_dir=os.path.join(d, "store"))
     await storage.save_datasource(
@@ -107,12 +106,9 @@ async def harness() -> AsyncIterator[Tuple[SlayerQueryEngine, YAMLStorage, str]]
 
 
 def _run_sqlite(*, db_path: str, sql: str) -> List[dict]:
-    con = sqlite3.connect(db_path)
-    con.row_factory = sqlite3.Row
-    try:
+    with transaction(db_path) as con:
+        con.row_factory = sqlite3.Row
         rows = [dict(r) for r in con.execute(sql).fetchall()]
-    finally:
-        con.close()
     return rows
 
 
@@ -161,7 +157,8 @@ async def test_two_stage_local_aggregate_matches_legacy(harness):
     assert set(new_rows[0].keys()) == set(legacy.columns), new_sql
     assert _rowset(new_rows) == _rowset(legacy.data), new_sql
     # The non-root stage rendered as a CTE.
-    assert "WITH" in new_sql.upper() and "STAGE1" in new_sql.upper()
+    assert "WITH" in new_sql.upper()
+    assert "STAGE1" in new_sql.upper()
 
 
 async def test_three_stage_chain_matches_legacy(harness):

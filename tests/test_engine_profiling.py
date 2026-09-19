@@ -20,7 +20,8 @@ top-20 joined; overflow appends ` ... (N distinct)`. All-NULL columns get
 from __future__ import annotations
 
 import asyncio
-import sqlite3
+import logging
+from slayer.storage.sqlite_conn import transaction
 import tempfile
 
 import pytest
@@ -42,20 +43,18 @@ def sqlite_setup():
     """Build a SQLite-backed engine + storage with a populated `orders` table."""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_file = f"{tmpdir}/data.db"
-        conn = sqlite3.connect(db_file)
-        conn.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, amount REAL, status TEXT)")
-        conn.executemany(
-            "INSERT INTO orders VALUES (?, ?, ?)",
-            [
-                (1, 10.0, "paid"),
-                (2, 20.5, "paid"),
-                (3, 5.0, "refunded"),
-                (4, 99.99, "cancelled"),
-                (5, None, "paid"),
-            ],
-        )
-        conn.commit()
-        conn.close()
+        with transaction(db_file) as conn:
+            conn.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, amount REAL, status TEXT)")
+            conn.executemany(
+                "INSERT INTO orders VALUES (?, ?, ?)",
+                [
+                    (1, 10.0, "paid"),
+                    (2, 20.5, "paid"),
+                    (3, 5.0, "refunded"),
+                    (4, 99.99, "cancelled"),
+                    (5, None, "paid"),
+                ],
+            )
 
         storage_dir = f"{tmpdir}/storage"
         storage = resolve_storage(storage_dir)
@@ -168,18 +167,16 @@ def freq_setup():
     """SQLite ``items`` table with skewed frequencies so ordering is testable."""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_file = f"{tmpdir}/data.db"
-        conn = sqlite3.connect(db_file)
-        conn.execute("CREATE TABLE items (id INTEGER PRIMARY KEY, category TEXT, label TEXT, flag INTEGER)")
-        rows = []
-        # category counts: alpha 5, beta 2, gamma 1
-        for _ in range(5):
-            rows.append((len(rows) + 1, "alpha", "x", 1))
-        for _ in range(2):
-            rows.append((len(rows) + 1, "beta", "x", 0))
-        rows.append((len(rows) + 1, "gamma", "x", None))
-        conn.executemany("INSERT INTO items VALUES (?, ?, ?, ?)", rows)
-        conn.commit()
-        conn.close()
+        with transaction(db_file) as conn:
+            conn.execute("CREATE TABLE items (id INTEGER PRIMARY KEY, category TEXT, label TEXT, flag INTEGER)")
+            rows = []
+            # category counts: alpha 5, beta 2, gamma 1
+            for _ in range(5):
+                rows.append((len(rows) + 1, "alpha", "x", 1))
+            for _ in range(2):
+                rows.append((len(rows) + 1, "beta", "x", 0))
+            rows.append((len(rows) + 1, "gamma", "x", None))
+            conn.executemany("INSERT INTO items VALUES (?, ?, ?, ?)", rows)
 
         storage_dir = f"{tmpdir}/storage"
         storage = resolve_storage(storage_dir)
@@ -262,14 +259,12 @@ async def test_boolean_column_treated_as_categorical(freq_setup) -> None:
 def all_null_setup():
     with tempfile.TemporaryDirectory() as tmpdir:
         db_file = f"{tmpdir}/data.db"
-        conn = sqlite3.connect(db_file)
-        conn.execute("CREATE TABLE empties (id INTEGER PRIMARY KEY, notes TEXT)")
-        conn.executemany(
-            "INSERT INTO empties VALUES (?, ?)",
-            [(i, None) for i in range(1, 6)],
-        )
-        conn.commit()
-        conn.close()
+        with transaction(db_file) as conn:
+            conn.execute("CREATE TABLE empties (id INTEGER PRIMARY KEY, notes TEXT)")
+            conn.executemany(
+                "INSERT INTO empties VALUES (?, ?)",
+                [(i, None) for i in range(1, 6)],
+            )
 
         storage_dir = f"{tmpdir}/storage"
         storage = resolve_storage(storage_dir)
@@ -316,18 +311,16 @@ def overflow_setup():
     """SQLite ``hi_card`` table with 60 distinct values to exercise overflow."""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_file = f"{tmpdir}/data.db"
-        conn = sqlite3.connect(db_file)
-        conn.execute("CREATE TABLE hi_card (id INTEGER PRIMARY KEY, name TEXT)")
-        rows = []
-        # First 10 values are most common (3 rows each); next 50 are 1 row each.
-        for i in range(10):
-            for _ in range(3):
-                rows.append((len(rows) + 1, f"common_{i:02d}"))
-        for i in range(50):
-            rows.append((len(rows) + 1, f"rare_{i:02d}"))
-        conn.executemany("INSERT INTO hi_card VALUES (?, ?)", rows)
-        conn.commit()
-        conn.close()
+        with transaction(db_file) as conn:
+            conn.execute("CREATE TABLE hi_card (id INTEGER PRIMARY KEY, name TEXT)")
+            rows = []
+            # First 10 values are most common (3 rows each); next 50 are 1 row each.
+            for i in range(10):
+                for _ in range(3):
+                    rows.append((len(rows) + 1, f"common_{i:02d}"))
+            for i in range(50):
+                rows.append((len(rows) + 1, f"rare_{i:02d}"))
+            conn.executemany("INSERT INTO hi_card VALUES (?, ?)", rows)
 
         storage_dir = f"{tmpdir}/storage"
         storage = resolve_storage(storage_dir)
@@ -407,13 +400,11 @@ async def test_overflow_classification_unaffected_by_one_null_row() -> None:
     """
     with tempfile.TemporaryDirectory() as tmpdir:
         db_file = f"{tmpdir}/data.db"
-        conn = sqlite3.connect(db_file)
-        conn.execute("CREATE TABLE just_over (id INTEGER PRIMARY KEY, label TEXT)")
-        rows = [(i + 1, f"v_{i:03d}") for i in range(51)]
-        rows.append((52, None))
-        conn.executemany("INSERT INTO just_over VALUES (?, ?)", rows)
-        conn.commit()
-        conn.close()
+        with transaction(db_file) as conn:
+            conn.execute("CREATE TABLE just_over (id INTEGER PRIMARY KEY, label TEXT)")
+            rows = [(i + 1, f"v_{i:03d}") for i in range(51)]
+            rows.append((52, None))  # type: ignore[arg-type]
+            conn.executemany("INSERT INTO just_over VALUES (?, ?)", rows)
 
         storage_dir = f"{tmpdir}/storage"
         storage = resolve_storage(storage_dir)
@@ -447,12 +438,10 @@ async def test_non_overflow_at_50_boundary() -> None:
     """Exactly 50 non-null distinct → NOT overflow; full list persisted."""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_file = f"{tmpdir}/data.db"
-        conn = sqlite3.connect(db_file)
-        conn.execute("CREATE TABLE at_cap (id INTEGER PRIMARY KEY, label TEXT)")
-        rows = [(i + 1, f"v_{i:03d}") for i in range(50)]
-        conn.executemany("INSERT INTO at_cap VALUES (?, ?)", rows)
-        conn.commit()
-        conn.close()
+        with transaction(db_file) as conn:
+            conn.execute("CREATE TABLE at_cap (id INTEGER PRIMARY KEY, label TEXT)")
+            rows = [(i + 1, f"v_{i:03d}") for i in range(50)]
+            conn.executemany("INSERT INTO at_cap VALUES (?, ?)", rows)
 
         storage_dir = f"{tmpdir}/storage"
         storage = resolve_storage(storage_dir)
@@ -500,13 +489,11 @@ async def test_tiebreak_deterministic_at_limit_boundary() -> None:
     """
     with tempfile.TemporaryDirectory() as tmpdir:
         db_file = f"{tmpdir}/data.db"
-        conn = sqlite3.connect(db_file)
-        conn.execute("CREATE TABLE ties (id INTEGER PRIMARY KEY, label TEXT)")
-        # Insert in reverse: v_059, v_058, ..., v_001, v_000.
-        rows = [(i + 1, f"v_{(59 - i):03d}") for i in range(60)]
-        conn.executemany("INSERT INTO ties VALUES (?, ?)", rows)
-        conn.commit()
-        conn.close()
+        with transaction(db_file) as conn:
+            conn.execute("CREATE TABLE ties (id INTEGER PRIMARY KEY, label TEXT)")
+            # Insert in reverse: v_059, v_058, ..., v_001, v_000.
+            rows = [(i + 1, f"v_{(59 - i):03d}") for i in range(60)]
+            conn.executemany("INSERT INTO ties VALUES (?, ?)", rows)
 
         storage_dir = f"{tmpdir}/storage"
         storage = resolve_storage(storage_dir)
@@ -552,17 +539,15 @@ async def test_values_with_commas_preserved_in_structured_list() -> None:
     """``"R$ 1,000–3,000"`` survives in ``sampled_values`` as one item."""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_file = f"{tmpdir}/data.db"
-        conn = sqlite3.connect(db_file)
-        conn.execute("CREATE TABLE income (id INTEGER PRIMARY KEY, bracket TEXT)")
-        comma_values = [
-            "R$ 1,000–3,000",
-            "R$ 3,000–5,000",
-            "R$ 5,000–10,000",
-        ]
-        rows = [(i + 1, v) for i, v in enumerate(comma_values)]
-        conn.executemany("INSERT INTO income VALUES (?, ?)", rows)
-        conn.commit()
-        conn.close()
+        with transaction(db_file) as conn:
+            conn.execute("CREATE TABLE income (id INTEGER PRIMARY KEY, bracket TEXT)")
+            comma_values = [
+                "R$ 1,000–3,000",
+                "R$ 3,000–5,000",
+                "R$ 5,000–10,000",
+            ]
+            rows = [(i + 1, v) for i, v in enumerate(comma_values)]
+            conn.executemany("INSERT INTO income VALUES (?, ?)", rows)
 
         storage_dir = f"{tmpdir}/storage"
         storage = resolve_storage(storage_dir)
@@ -921,7 +906,6 @@ async def test_ensure_fresh_returns_input_when_profile_raises(
     monkeypatch.setattr("slayer.engine.profiling.profile_column", explodes)
     monkeypatch.setattr(storage, "update_column_sampled", tracking_persist)
 
-    import logging
     with caplog.at_level(logging.WARNING, logger="slayer.engine.profiling"):
         result = await ensure_column_sample_fresh(
             model=model, column=col, engine=engine, storage=storage,
@@ -964,7 +948,6 @@ async def test_ensure_fresh_swallows_persist_failure_returns_refreshed(
 
     monkeypatch.setattr(storage, "update_column_sampled", boom_persist)
 
-    import logging
     with caplog.at_level(logging.WARNING, logger="slayer.engine.profiling"):
         result = await ensure_column_sample_fresh(
             model=model, column=col, engine=engine, storage=storage,
@@ -1014,14 +997,12 @@ async def test_ensure_fresh_refreshes_uncached_temporal(tmp_path) -> None:
     not just DOUBLE. Self-contained so it exercises the helper's temporal
     branch directly at the unit level."""
     db_file = str(tmp_path / "t.db")
-    conn = sqlite3.connect(db_file)
-    conn.execute("CREATE TABLE events (id INTEGER PRIMARY KEY, ts DATE)")
-    conn.executemany(
-        "INSERT INTO events VALUES (?, ?)",
-        [(1, "2024-01-01"), (2, "2024-06-30")],
-    )
-    conn.commit()
-    conn.close()
+    with transaction(db_file) as conn:
+        conn.execute("CREATE TABLE events (id INTEGER PRIMARY KEY, ts DATE)")
+        conn.executemany(
+            "INSERT INTO events VALUES (?, ?)",
+            [(1, "2024-01-01"), (2, "2024-06-30")],
+        )
     storage = resolve_storage(str(tmp_path / "st"))
     await storage.save_datasource(
         DatasourceConfig(name="ds", type="sqlite", database=db_file)

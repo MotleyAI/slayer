@@ -22,16 +22,16 @@ import os
 import random
 import re
 import shutil
-import sqlite3
-import tempfile
 from typing import Any, AsyncIterator, Optional, Sequence, Tuple
 
 import pytest
 from pydantic import BaseModel
 
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.storage.sqlite_conn import open_connection
 
-from tests._dev1739_fixtures import _engine_for, _seed_duckdb, _seed_sqlite
+from tests._dev1739_fixtures import dev1739_models, _seed_duckdb, _seed_sqlite
+from tests._engine_helpers import seeded_exec_engine
 from tests._dev1837_fixtures import (
     DIM_FAMILY_DIMS,
     TD_TRANSFORM_OPS,
@@ -311,20 +311,25 @@ async def make_law_engine(
     connection configuration on the engine's file)."""
     if dialect == "duckdb":
         pytest.importorskip("duckdb")
-    with tempfile.TemporaryDirectory() as d:
-        db_path = os.path.join(d, f"data.{dialect}")
-        (_seed_sqlite if dialect == "sqlite" else _seed_duckdb)(db_path)
-        oracle_path = os.path.join(d, f"oracle.{dialect}")
+    seed = _seed_sqlite if dialect == "sqlite" else _seed_duckdb
+    async with seeded_exec_engine(
+        dialect=dialect, seed=seed, models=dev1739_models(),
+    ) as (engine, db_path):
+        # Copy the oracle right after entering — engine connections are lazy, so
+        # the file is not yet locked (DuckDB rejects a second config on it).
+        oracle_path = os.path.join(
+            os.path.dirname(db_path), f"oracle{os.path.splitext(db_path)[1]}",
+        )
         shutil.copyfile(db_path, oracle_path)
-        yield await _engine_for(dialect=dialect, db_path=db_path), oracle_path
+        yield engine, oracle_path
 
 
 def raw_rows(*, dialect: str, db_path: str, sql: str) -> list[tuple]:
     """Execute raw oracle SQL against the seeded database file."""
     if dialect == "sqlite":
-        con = sqlite3.connect(db_path)
-    else:
-        con = pytest.importorskip("duckdb").connect(db_path)
+        with open_connection(db_path) as con:
+            return list(con.execute(sql).fetchall())
+    con = pytest.importorskip("duckdb").connect(db_path)
     try:
         return list(con.execute(sql).fetchall())
     finally:

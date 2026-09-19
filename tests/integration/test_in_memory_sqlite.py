@@ -15,21 +15,13 @@ import pytest
 import sqlalchemy as sa
 
 from slayer.core.models import DatasourceConfig
-from slayer.sql import client as sql_client
+from slayer.sql import engine_factory
 from slayer.sql.client import SlayerSQLClient
 
 
 def _setup(client: SlayerSQLClient, statements: Iterable[str]) -> None:
-    """Run DDL/DML on whichever engine the client would use.
-
-    Mirrors the helper in ``tests/test_sql_client_in_memory_async.py``.
-    For file-backed SQLite the per-client accessor returns ``None`` and
-    the helper falls back to the module-level engine cache.
-    """
-    getter = getattr(client, "_get_sync_engine_for_client", None)
-    engine = getter() if getter is not None else None
-    if engine is None:
-        engine = sql_client._get_sync_engine(client.datasource.get_connection_string())
+    """Run DDL/DML on the client's per-client engine (file-backed → factory engine)."""
+    engine = client._get_sync_engine_for_client()
     with engine.begin() as conn:
         for stmt in statements:
             conn.execute(sa.text(stmt))
@@ -74,7 +66,6 @@ async def test_file_backed_sqlite_engine_cached_in_module(tmp_path: Path) -> Non
     preserved; the cache key just lives on ``engine_factory._engine_cache``
     now.
     """
-    from slayer.sql import engine_factory
     db_path = tmp_path / "cached.db"
     conn_str = f"sqlite:///{db_path}"
     ds = DatasourceConfig(

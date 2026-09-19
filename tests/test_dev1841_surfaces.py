@@ -19,7 +19,8 @@ from mcp.server.fastmcp.exceptions import ToolError
 from slayer.api.server import QueryRequest, create_app
 from slayer.mcp.server import create_mcp_server
 
-from tests._dev1840_fixtures import _engine_for, _seed_sqlite, dev1840_models
+from tests._dev1840_fixtures import _seed_sqlite, dev1840_models
+from tests._engine_helpers import build_exec_engine
 
 _ASSOCIATE_BODY = {
     "source_model": "orders",
@@ -34,8 +35,8 @@ async def storage() -> AsyncIterator[object]:
     with tempfile.TemporaryDirectory() as d:
         db_path = os.path.join(d, "data.sqlite")
         _seed_sqlite(db_path)
-        engine = await _engine_for(
-            dialect="sqlite", db_path=db_path, models=dev1840_models())
+        engine = await build_exec_engine(
+            db_path, dialect="sqlite", models=dev1840_models())
         yield engine.storage
 
 

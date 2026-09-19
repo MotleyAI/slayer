@@ -14492,14 +14492,6 @@
             {
                 "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 50,
-                    "endColumn": 59,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
                     "startColumn": 8,
                     "endColumn": 49,
                     "lineCount": 1
@@ -27294,14 +27286,6 @@
         ],
         "./tests/test_engine_profiling.py": [
             {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 25,
-                    "endColumn": 29,
-                    "lineCount": 1
-                }
-            },
-            {
                 "code": "reportOptionalMemberAccess",
                 "range": {
                     "startColumn": 20,
@@ -31093,14 +31077,6 @@
             }
         ],
         "./tests/test_ingestion_schema_qualification.py": [
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 8,
-                    "endColumn": 13,
-                    "lineCount": 1
-                }
-            },
             {
                 "code": "reportArgumentType",
                 "range": {
@@ -36060,14 +36036,6 @@
                 "range": {
                     "startColumn": 11,
                     "endColumn": 42,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportOperatorIssue",
-                "range": {
-                    "startColumn": 47,
-                    "endColumn": 76,
                     "lineCount": 1
                 }
             },

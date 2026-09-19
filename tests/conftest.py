@@ -1,17 +1,30 @@
 """Shared test fixtures."""
 
+import gc
 import os
 import tempfile
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 
 import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.embeddings import client as embedding_client
+from slayer.sql import engine_factory
 from slayer.storage.yaml_storage import YAMLStorage
 
 from tests._dev1824_fixtures import make_exec_engine
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _dispose_engines_at_session_end() -> Iterator[None]:
+    """DEV-1943 gate: dispose the factory cache and force a collection at session
+    end, inside the last test's teardown — while pytest's warning filters and
+    unraisable hook are still installed in every xdist worker (a
+    ``pytest_sessionfinish`` hook can run after they are gone)."""
+    yield
+    engine_factory.reset_cache()
+    gc.collect()
 
 
 @pytest.fixture(autouse=True)

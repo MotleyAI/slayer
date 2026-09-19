@@ -33,6 +33,7 @@ import yaml
 
 from slayer.storage.atomic_write import _atomic_write_yaml
 from slayer.storage.migrations import register_migration
+from slayer.storage.sqlite_conn import transaction
 
 
 # ---------------------------------------------------------------------------
@@ -229,7 +230,7 @@ def migrate_sqlite_schema(db_path: str) -> None:
 
     Idempotent: returns immediately if the new column is already present.
     """
-    with sqlite3.connect(db_path) as conn:
+    with transaction(db_path) as conn:
         cur = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='models'"
         )

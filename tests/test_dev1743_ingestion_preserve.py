@@ -11,7 +11,6 @@ the current sanitiser strips.
 
 from __future__ import annotations
 
-import sqlite3
 import tempfile
 from pathlib import Path
 
@@ -29,6 +28,7 @@ from slayer.engine.ingestion import (
     ingest_datasource_idempotent,
     ingest_datasource_report,
 )
+from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -43,10 +43,8 @@ def workspace():
 
 def _sqlite_ds(workspace: Path, script: str) -> DatasourceConfig:
     db_path = str(workspace / "live.db")
-    conn = sqlite3.connect(db_path)
-    conn.executescript(script)
-    conn.commit()
-    conn.close()
+    with transaction(db_path) as conn:
+        conn.executescript(script)
     return DatasourceConfig(name="ds", type="sqlite", database=db_path)
 
 
@@ -144,10 +142,8 @@ class TestJoinTargetsPreservedName:
 # the "same live object" guard.
 # --------------------------------------------------------------------------- #
 def _exec(db_path: str, script: str) -> None:
-    conn = sqlite3.connect(db_path)
-    conn.executescript(script)
-    conn.commit()
-    conn.close()
+    with transaction(db_path) as conn:
+        conn.executescript(script)
 
 
 class TestReingestMatching:

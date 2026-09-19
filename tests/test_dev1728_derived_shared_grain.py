@@ -42,7 +42,6 @@ from __future__ import annotations
 
 import os
 import re as _re
-import sqlite3
 import tempfile
 from typing import AsyncIterator
 
@@ -59,6 +58,7 @@ from slayer.core.models import (
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.scope_check import assert_scope_closed
+from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 
 from tests._cross_model_chain import (
@@ -524,47 +524,45 @@ class TestUnchangedBehaviourGuards:
 # SQLite EXECUTION — per-group correctness of the derived-grain join-back.
 # =========================================================================== #
 def _seed_sqlite(db_path: str) -> None:
-    con = sqlite3.connect(db_path)
-    cur = con.cursor()
-    cur.execute(
-        "CREATE TABLE regions (id INTEGER PRIMARY KEY, name TEXT, population REAL)"
-    )
-    cur.executemany(
-        "INSERT INTO regions VALUES (?,?,?)",
-        # region 3 has a NULL population — the nullable derived grain under test.
-        [(1, "NA", 100.0), (2, "EU", 200.0), (3, "APAC", None)],
-    )
-    cur.execute(
-        "CREATE TABLE customers (id INTEGER PRIMARY KEY, region_id INTEGER, "
-        "lifetime_value REAL, signup_at TEXT)"
-    )
-    cur.executemany(
-        "INSERT INTO customers VALUES (?,?,?,?)",
-        [
-            # region 1 (pop 100): two customers, ltv 10 & 30.
-            (1, 1, 10.0, "2024-01-01"),
-            (2, 1, 30.0, "2024-03-01"),
-            # region 2 (pop 200): one customer, ltv 20.
-            (3, 2, 20.0, "2024-02-01"),
-            # region 3 (pop NULL): one customer, ltv 40 — the NULL-grain group.
-            (4, 3, 40.0, "2024-04-01"),
-        ],
-    )
-    cur.execute(
-        "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, "
-        "amount REAL, created_at TEXT)"
-    )
-    cur.executemany(
-        "INSERT INTO orders VALUES (?,?,?,?)",
-        [
-            (1, 1, 5.0, "2024-01-05"),
-            (2, 2, 7.0, "2024-03-05"),
-            (3, 3, 9.0, "2024-02-05"),
-            (4, 4, 11.0, "2024-04-05"),
-        ],
-    )
-    con.commit()
-    con.close()
+    with transaction(db_path) as con:
+        cur = con.cursor()
+        cur.execute(
+            "CREATE TABLE regions (id INTEGER PRIMARY KEY, name TEXT, population REAL)"
+        )
+        cur.executemany(
+            "INSERT INTO regions VALUES (?,?,?)",
+            # region 3 has a NULL population — the nullable derived grain under test.
+            [(1, "NA", 100.0), (2, "EU", 200.0), (3, "APAC", None)],
+        )
+        cur.execute(
+            "CREATE TABLE customers (id INTEGER PRIMARY KEY, region_id INTEGER, "
+            "lifetime_value REAL, signup_at TEXT)"
+        )
+        cur.executemany(
+            "INSERT INTO customers VALUES (?,?,?,?)",
+            [
+                # region 1 (pop 100): two customers, ltv 10 & 30.
+                (1, 1, 10.0, "2024-01-01"),
+                (2, 1, 30.0, "2024-03-01"),
+                # region 2 (pop 200): one customer, ltv 20.
+                (3, 2, 20.0, "2024-02-01"),
+                # region 3 (pop NULL): one customer, ltv 40 — the NULL-grain group.
+                (4, 3, 40.0, "2024-04-01"),
+            ],
+        )
+        cur.execute(
+            "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, "
+            "amount REAL, created_at TEXT)"
+        )
+        cur.executemany(
+            "INSERT INTO orders VALUES (?,?,?,?)",
+            [
+                (1, 1, 5.0, "2024-01-05"),
+                (2, 2, 7.0, "2024-03-05"),
+                (3, 3, 9.0, "2024-02-05"),
+                (4, 4, 11.0, "2024-04-05"),
+            ],
+        )
 
 
 def _sqlite_models() -> "list[SlayerModel]":

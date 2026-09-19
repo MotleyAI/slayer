@@ -5,14 +5,19 @@ These tests run against an in-process SQLite datasource (dry_run=False would
 need real data; we use ``dry_run=True`` plus assertions on the generated SQL
 to keep tests hermetic and fast).
 """
+import asyncio
+import re
 import tempfile
 
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.core.query import SlayerQuery
+import slayer.engine.query_engine as qe
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.sql.client import SlayerSQLClient
+from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -321,9 +326,6 @@ class TestSaveModelGuards:
     async def test_rejects_user_columns_on_query_backed(self) -> None:
         engine, tmp = await _engine_with_orders()
         try:
-            from slayer.core.enums import DataType
-            from slayer.core.models import Column
-
             m = SlayerModel(
                 name="bad",
                 data_source="ds",
@@ -572,9 +574,6 @@ class TestQueryBackedColumnTypes:
     """
 
     async def test_get_column_types_uses_resolved_datasource(self) -> None:
-        from slayer.core.enums import DataType
-        from slayer.core.models import Column, DatasourceConfig
-
         tmp = tempfile.TemporaryDirectory()
         try:
             storage = YAMLStorage(base_dir=tmp.name)
@@ -589,13 +588,10 @@ class TestQueryBackedColumnTypes:
             engine = SlayerQueryEngine(storage=storage)
 
             # Pre-create the table so the type probe can run.
-            # SlayerSQLClient.execute() expects rowsets, so use sqlite3 directly for DDL.
-            import sqlite3
-            conn = sqlite3.connect(ds_path)
-            conn.execute("CREATE TABLE orders_t (amount NUMERIC)")
-            conn.execute("INSERT INTO orders_t (amount) VALUES (1)")
-            conn.commit()
-            conn.close()
+            # SlayerSQLClient.execute() expects rowsets, so use the sqlite door for DDL.
+            with transaction(ds_path) as conn:
+                conn.execute("CREATE TABLE orders_t (amount NUMERIC)")
+                conn.execute("INSERT INTO orders_t (amount) VALUES (1)")
 
             # Register a second, deliberately-stale datasource and pin the
             # query-backed model to it. Saving via raw storage skips the
@@ -612,7 +608,10 @@ class TestQueryBackedColumnTypes:
                 )],
             ))
             stored = await storage.get_model("qb")
-            assert stored is not None and stored.data_source == "ds_stale", (
+            assert stored is not None, (
+                "test setup expects stale data_source on the raw-saved model"
+            )
+            assert stored.data_source == "ds_stale", (
                 "test setup expects stale data_source on the raw-saved model"
             )
 
@@ -630,9 +629,6 @@ class TestQueryBackedColumnTypes:
         runs with placeholder fill, not with caller variables). Codex review
         of PR #67 commit 73f69b0.
         """
-        from slayer.core.enums import DataType
-        from slayer.core.models import Column, DatasourceConfig
-
         tmp = tempfile.TemporaryDirectory()
         try:
             storage = YAMLStorage(base_dir=tmp.name)
@@ -642,12 +638,9 @@ class TestQueryBackedColumnTypes:
                 name="t", sql_table="orders_t", data_source="ds",
                 columns=[Column(name="amount", sql="amount", type=DataType.DOUBLE)],
             ))
-            import sqlite3
-            conn = sqlite3.connect(ds_path)
-            conn.execute("CREATE TABLE orders_t (amount NUMERIC)")
-            conn.execute("INSERT INTO orders_t (amount) VALUES (1)")
-            conn.commit()
-            conn.close()
+            with transaction(ds_path) as conn:
+                conn.execute("CREATE TABLE orders_t (amount NUMERIC)")
+                conn.execute("INSERT INTO orders_t (amount) VALUES (1)")
 
             # `{threshold}` is referenced in the filter but no default is set
             # at either model.query_variables or stage.variables.
@@ -731,7 +724,8 @@ class TestBackingQuerySQLCacheHygiene:
                 query_variables={"r": "DEFAULT_R"},
             ))
             initial_sql = (await engine.storage.get_model("rev_filtered")).backing_query_sql
-            assert initial_sql and "'DEFAULT_R'" in initial_sql
+            assert initial_sql
+            assert "'DEFAULT_R'" in initial_sql
 
             # Outer query supplies r via SlayerQuery.variables (NOT runtime kwarg).
             outer = SlayerQuery(
@@ -755,9 +749,6 @@ class TestBackingQuerySQLCacheHygiene:
         when the caller still passes the old one — otherwise
         ``get_column_types()`` opens the wrong client.
         """
-        from slayer.core.enums import DataType
-        from slayer.core.models import Column, DatasourceConfig
-
         tmp = tempfile.TemporaryDirectory()
         try:
             storage = YAMLStorage(base_dir=tmp.name)
@@ -867,8 +858,6 @@ class TestJoinTargetIsQueryBacked:
         must see the enclosing query's runtime ``variables`` — not the cached
         placeholder-fill or model defaults.
         """
-        from slayer.core.models import ModelJoin
-
         engine, tmp = await _engine_with_orders()
         try:
             # Save a query-backed rollup whose stage filter references {threshold}.
@@ -925,8 +914,6 @@ class TestJoinTargetIsQueryBacked:
         own correct SQL. If recursion state were shared, the second would
         either short-circuit on the first's name or deadlock.
         """
-        import asyncio
-
         engine, tmp = await _engine_with_orders()
         try:
             alpha, beta = await asyncio.gather(
@@ -960,8 +947,6 @@ class TestJoinTargetIsQueryBacked:
             tmp.cleanup()
 
     async def test_join_target_is_query_backed_model(self) -> None:
-        from slayer.core.models import ModelJoin
-
         engine, tmp = await _engine_with_orders()
         try:
             # Create a saved query-backed "rollup" model joinable from orders.
@@ -1018,7 +1003,6 @@ class TestRunByNamePlanFlags:
         try:
             # Track whether a SQL execute was attempted.
             execute_calls = 0
-            from slayer.sql.client import SlayerSQLClient
             real_execute = SlayerSQLClient.execute
 
             async def counting_execute(self, *a, **kw):
@@ -1052,7 +1036,6 @@ class TestRunByNamePlanFlags:
         )
         engine, tmp = await _engine_with_orders(saved)
         try:
-            import slayer.engine.query_engine as qe
             real_explain = qe._build_explain_sql
             calls: list = []
 
@@ -1363,8 +1346,6 @@ class TestSiblingStageJoins:
 
     async def test_named_stage_self_ref_raises_clear_error(self) -> None:
         """A stage referencing its own name must raise a clear error."""
-        import re
-
         engine, tmp = await self._engine()
         try:
             queries = [
@@ -1454,7 +1435,6 @@ class TestMultiStageMeasureRename:
             # ``build_flat_rename_wrapper`` may emit the alias quoted
             # (``AS "rev"``) or bare (``AS rev``); both forms satisfy the
             # rename contract, so the assertion accepts either.
-            import re
             assert re.search(r'\bAS\s+"?rev"?(?:\s|$)', sql), (
                 f"expected inner-stage 'AS rev' rename in SQL:\n{sql}"
             )
@@ -1525,7 +1505,6 @@ class TestMultiStageMeasureRename:
                 f"canonical 'amount_sum' must be replaced when user supplies "
                 f"'name', got: {col_names}"
             )
-            import re
             assert re.search(r'\bAS\s+"?rev"?(?:\s|$)', virtual.sql or ""), (
                 f"wrapped SQL must rename to user alias 'rev':\n{virtual.sql}"
             )

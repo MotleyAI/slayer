@@ -22,6 +22,7 @@ import uuid
 import pytest
 
 import sqlalchemy as sa
+from tests._engine_helpers import disposable_engine
 
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType, TimeGranularity
@@ -683,10 +684,9 @@ def mysql_ingest_env(mysql_container):
         # Validate FK introspection before ingest — if MySQL's Inspector
         # doesn't surface the FK metadata we declared, the rest of the
         # rollup tests are meaningless. Fail loudly with the actual count.
-        sa_engine = sa.create_engine(ds.get_connection_string())
-        inspector = sa.inspect(sa_engine)
-        fks_on_orders = inspector.get_foreign_keys("orders")
-        sa_engine.dispose()
+        with disposable_engine(ds.get_connection_string()) as sa_engine:
+            inspector = sa.inspect(sa_engine)
+            fks_on_orders = inspector.get_foreign_keys("orders")
         assert len(fks_on_orders) >= 1, (
             f"MySQL InnoDB FK introspection returned 0 FKs on 'orders' — "
             f"rollup tests cannot validate. Inspector output: {fks_on_orders!r}"

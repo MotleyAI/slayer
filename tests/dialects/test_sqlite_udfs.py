@@ -25,6 +25,7 @@ from slayer.sql.dialects.sqlite import (
     _VarSampAgg,
     register_sqlite_udfs,
 )
+from slayer.storage.sqlite_conn import open_connection, transaction
 
 
 # ---------------------------------------------------------------------------
@@ -148,44 +149,41 @@ def test_percentile_disc_empty():
 
 
 def test_register_sqlite_udfs_exposes_all_three():
-    conn = sqlite3.connect(":memory:")
-    register_sqlite_udfs(conn)
-    cur = conn.cursor()
-    cur.execute("CREATE TABLE t (x REAL)")
-    cur.executemany("INSERT INTO t VALUES (?)", [(v,) for v in [1, 2, 3, 4, 5]])
+    with transaction(":memory:") as conn:
+        register_sqlite_udfs(conn)
+        cur = conn.cursor()
+        cur.execute("CREATE TABLE t (x REAL)")
+        cur.executemany("INSERT INTO t VALUES (?)", [(v,) for v in [1, 2, 3, 4, 5]])
 
-    assert cur.execute("SELECT median(x) FROM t").fetchone()[0] == 3
-    assert cur.execute("SELECT percentile_cont(x, 0.5) FROM t").fetchone()[0] == 3
-    assert cur.execute("SELECT percentile_disc(x, 0.5) FROM t").fetchone()[0] == 3
-    conn.close()
+        assert cur.execute("SELECT median(x) FROM t").fetchone()[0] == 3
+        assert cur.execute("SELECT percentile_cont(x, 0.5) FROM t").fetchone()[0] == 3
+        assert cur.execute("SELECT percentile_disc(x, 0.5) FROM t").fetchone()[0] == 3
 
 
 def test_register_sqlite_udfs_idempotent():
     # Calling register twice on the same connection must not error
     # (sqlite3 lets the second call replace the first).
-    conn = sqlite3.connect(":memory:")
-    register_sqlite_udfs(conn)
-    register_sqlite_udfs(conn)
-    cur = conn.cursor()
-    cur.execute("CREATE TABLE t (x REAL)")
-    cur.execute("INSERT INTO t VALUES (10)")
-    assert cur.execute("SELECT median(x) FROM t").fetchone()[0] == 10
-    conn.close()
+    with transaction(":memory:") as conn:
+        register_sqlite_udfs(conn)
+        register_sqlite_udfs(conn)
+        cur = conn.cursor()
+        cur.execute("CREATE TABLE t (x REAL)")
+        cur.execute("INSERT INTO t VALUES (10)")
+        assert cur.execute("SELECT median(x) FROM t").fetchone()[0] == 10
 
 
 def test_register_sqlite_udfs_per_group():
     # Catch UDF state-leak bugs: median per GROUP BY must restart per group.
-    conn = sqlite3.connect(":memory:")
-    register_sqlite_udfs(conn)
-    cur = conn.cursor()
-    cur.execute("CREATE TABLE t (g TEXT, x REAL)")
-    cur.executemany(
-        "INSERT INTO t VALUES (?, ?)",
-        [("a", 1), ("a", 2), ("a", 3), ("b", 10), ("b", 20)],
-    )
-    rows = dict(cur.execute("SELECT g, median(x) FROM t GROUP BY g").fetchall())
-    assert rows == {"a": 2, "b": 15}
-    conn.close()
+    with transaction(":memory:") as conn:
+        register_sqlite_udfs(conn)
+        cur = conn.cursor()
+        cur.execute("CREATE TABLE t (g TEXT, x REAL)")
+        cur.executemany(
+            "INSERT INTO t VALUES (?, ?)",
+            [("a", 1), ("a", 2), ("a", 3), ("b", 10), ("b", 20)],
+        )
+        rows = dict(cur.execute("SELECT g, median(x) FROM t GROUP BY g").fetchall())
+        assert rows == {"a": 2, "b": 15}
 
 
 # ---------------------------------------------------------------------------
@@ -195,10 +193,9 @@ def test_register_sqlite_udfs_per_group():
 
 @pytest.fixture
 def sqlite_conn():
-    conn = sqlite3.connect(":memory:")
-    register_sqlite_udfs(conn)
-    yield conn
-    conn.close()
+    with open_connection(":memory:") as conn:
+        register_sqlite_udfs(conn)
+        yield conn
 
 
 def _scalar(conn, sql, *params):
@@ -218,12 +215,12 @@ def test_ln_null_input_returns_null(sqlite_conn):
 
 def test_ln_zero_raises(sqlite_conn):
     with pytest.raises(sqlite3.OperationalError):
-        sqlite_conn.execute("SELECT ln(0)").fetchone()
+        sqlite_conn.execute("SELECT ln(0)")
 
 
 def test_ln_negative_raises(sqlite_conn):
     with pytest.raises(sqlite3.OperationalError):
-        sqlite_conn.execute("SELECT ln(-1)").fetchone()
+        sqlite_conn.execute("SELECT ln(-1)")
 
 
 # --- log10 -----------------------------------------------------------------
@@ -239,7 +236,7 @@ def test_log10_null_input_returns_null(sqlite_conn):
 
 def test_log10_zero_raises(sqlite_conn):
     with pytest.raises(sqlite3.OperationalError):
-        sqlite_conn.execute("SELECT log10(0)").fetchone()
+        sqlite_conn.execute("SELECT log10(0)")
 
 
 # --- log2 ------------------------------------------------------------------
@@ -258,12 +255,12 @@ def test_log2_null_input_returns_null(sqlite_conn):
 
 def test_log2_zero_raises(sqlite_conn):
     with pytest.raises(sqlite3.OperationalError):
-        sqlite_conn.execute("SELECT log2(0)").fetchone()
+        sqlite_conn.execute("SELECT log2(0)")
 
 
 def test_log2_negative_raises(sqlite_conn):
     with pytest.raises(sqlite3.OperationalError):
-        sqlite_conn.execute("SELECT log2(-1)").fetchone()
+        sqlite_conn.execute("SELECT log2(-1)")
 
 
 # --- log(B, X) -------------------------------------------------------------
@@ -332,7 +329,7 @@ def test_sqrt_null_input_returns_null(sqlite_conn):
 
 def test_sqrt_negative_raises(sqlite_conn):
     with pytest.raises(sqlite3.OperationalError):
-        sqlite_conn.execute("SELECT sqrt(-1)").fetchone()
+        sqlite_conn.execute("SELECT sqrt(-1)")
 
 
 # --- pow / power -----------------------------------------------------------
@@ -352,7 +349,7 @@ def test_pow_null_propagation(sqlite_conn):
 def test_pow_zero_to_negative_raises(sqlite_conn):
     # 0 ** -1 = ZeroDivisionError in Python; surfaces as OperationalError.
     with pytest.raises(sqlite3.OperationalError):
-        sqlite_conn.execute("SELECT pow(0, -1)").fetchone()
+        sqlite_conn.execute("SELECT pow(0, -1)")
 
 
 def test_power_alias_known_value(sqlite_conn):
@@ -374,10 +371,10 @@ def test_pow_negative_base_fractional_exponent_raises(sqlite_conn):
     math-domain-error policy. CodeRabbit major on PR #82 round 3.
     """
     with pytest.raises(sqlite3.OperationalError):
-        sqlite_conn.execute("SELECT pow(-2, 0.5)").fetchone()
+        sqlite_conn.execute("SELECT pow(-2, 0.5)")
     # `power` alias goes through the same wrapper.
     with pytest.raises(sqlite3.OperationalError):
-        sqlite_conn.execute("SELECT power(-2, 0.5)").fetchone()
+        sqlite_conn.execute("SELECT power(-2, 0.5)")
 
 
 def test_pow_huge_exponent_overflows_cleanly():
@@ -449,9 +446,9 @@ def test_log_zero_raises_uniformly(sqlite_conn):
     this hold even when the built-in would silently return NULL.
     """
     with pytest.raises(sqlite3.OperationalError):
-        sqlite_conn.execute("SELECT log(10, 0)").fetchone()
+        sqlite_conn.execute("SELECT log(10, 0)")
     with pytest.raises(sqlite3.OperationalError):
-        sqlite_conn.execute("SELECT log(10, -1)").fetchone()
+        sqlite_conn.execute("SELECT log(10, -1)")
 
 
 # ---------------------------------------------------------------------------

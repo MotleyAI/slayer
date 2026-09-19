@@ -1,18 +1,28 @@
 """`slayer ingest` must not be silent: skips or an empty scan exit 1, but `POST /ingest` keeps 422 for errors only."""
 from __future__ import annotations
 
+import sys
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from fastapi.testclient import TestClient
 
+from slayer.api.server import create_app
+from slayer.cli import _run_datasources_create, _run_ingest, main
 from slayer.engine.ingestion import (
     SkippedTable,
     _empty_ingest_message,
     _print_ingest_drift_and_errors,
 )
-from slayer.engine.schema_drift import IdempotentIngestResult, ModelAddition
+from slayer.engine.schema_drift import (
+    IdempotentIngestResult,
+    IngestionError,
+    ModelAddition,
+)
+from slayer.storage.sqlite_conn import open_connection
+from slayer.storage.yaml_storage import YAMLStorage
 
 
 @pytest.fixture
@@ -72,8 +82,6 @@ class TestIngestExitCodes:
         self, workspace: Path, monkeypatch, capsys
     ) -> None:
         """a skipped object is a valid table we declined to model."""
-        from slayer.cli import _run_ingest
-
         _patch_ingest(
             monkeypatch,
             IdempotentIngestResult(
@@ -106,8 +114,6 @@ class TestIngestExitCodes:
     def test_clean_run_exits_zero_with_no_skip_section(
         self, workspace: Path, monkeypatch, capsys
     ) -> None:
-        from slayer.cli import _run_ingest
-
         _patch_ingest(
             monkeypatch,
             IdempotentIngestResult(
@@ -131,8 +137,6 @@ class TestIngestExitCodes:
         self, workspace: Path, monkeypatch, capsys
     ) -> None:
         """the reported silence. Before the fix: no output, exit 0."""
-        from slayer.cli import _run_ingest
-
         _patch_ingest(
             monkeypatch,
             IdempotentIngestResult(
@@ -154,9 +158,6 @@ class TestIngestExitCodes:
         self, workspace: Path, monkeypatch
     ) -> None:
         """Pre-existing behaviour must not regress."""
-        from slayer.cli import _run_ingest
-        from slayer.engine.schema_drift import IngestionError
-
         _patch_ingest(
             monkeypatch,
             IdempotentIngestResult(
@@ -207,8 +208,6 @@ class TestRenderers:
 
     def test_skipped_and_errors_are_reported_separately(self, capsys) -> None:
         """A skip and an error have different causes and fixes, so report them separately."""
-        from slayer.engine.schema_drift import IngestionError
-
         result = IdempotentIngestResult(
             additions=[],
             to_delete=[],
@@ -245,11 +244,6 @@ class TestRestExitSemantics:
         self, monkeypatch, workspace: Path
     ) -> None:
         """Skips must NOT turn into 422; the body carries them alongside the successful additions."""
-        from fastapi.testclient import TestClient
-
-        from slayer.api.server import create_app
-        from slayer.storage.yaml_storage import YAMLStorage
-
         storage = YAMLStorage(base_dir=str(workspace / "storage"))
         app = create_app(storage=storage)
         client = TestClient(app)
@@ -285,12 +279,6 @@ class TestRestExitSemantics:
 
     def test_errors_still_return_422(self, monkeypatch, workspace: Path) -> None:
         """the existing contract at api/server.py:675 is unchanged."""
-        from fastapi.testclient import TestClient
-
-        from slayer.api.server import create_app
-        from slayer.engine.schema_drift import IngestionError
-        from slayer.storage.yaml_storage import YAMLStorage
-
         storage = YAMLStorage(base_dir=str(workspace / "storage"))
         app = create_app(storage=storage)
         client = TestClient(app)
@@ -327,13 +315,9 @@ class TestRestExitSemantics:
 class TestDatasourcesCreateCarveOut:
     def test_empty_db_still_exits_zero(self, workspace: Path, capsys) -> None:
         """Creating the datasource succeeded, so an empty database must not fail this command."""
-        import sqlite3
-
-        from slayer.cli import _run_datasources_create
-        from slayer.storage.yaml_storage import YAMLStorage
-
         db_path = str(workspace / "empty.db")
-        sqlite3.connect(db_path).close()
+        with open_connection(db_path):
+            pass
         storage = YAMLStorage(base_dir=str(workspace / "storage"))
 
         args = SimpleNamespace(
@@ -357,8 +341,6 @@ class TestViewsFlagWiring:
 
     @staticmethod
     def _capture(monkeypatch, argv: list[str], handler: str) -> SimpleNamespace:
-        import sys
-
         captured: dict[str, SimpleNamespace] = {}
 
         def _stub(args, *_rest, **_kwargs):
@@ -366,8 +348,6 @@ class TestViewsFlagWiring:
 
         monkeypatch.setattr(f"slayer.cli.{handler}", _stub)
         monkeypatch.setattr(sys, "argv", ["slayer", *argv])
-
-        from slayer.cli import main
 
         main()
         return captured["args"]

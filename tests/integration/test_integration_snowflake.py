@@ -547,11 +547,9 @@ def test_statement_timeout_aborts_long_query(sf_engine) -> None:
 
     Uses 5 seconds (not 10) to bound suite latency.
     """
-    connection_string = "snowflake://?connection_name=" + _CONNECTION_NAME
     with pytest.raises((sf_errors.ProgrammingError, sa.exc.DBAPIError)) as exc_info:
         client._execute_sql_sync(
             sql="CALL SYSTEM$WAIT(5, 'SECONDS')",
-            connection_string=connection_string,
             db_type="snowflake",
             timeout_seconds=1,
             engine=sf_engine,
@@ -578,7 +576,6 @@ def test_statement_timeout_aborts_long_query(sf_engine) -> None:
 def test_column_types_round_trip(sf_engine) -> None:
     """A SELECT against each Snowflake type code must round-trip through
     ``_get_column_types_sync`` and produce the expected SLayer categories."""
-    connection_string = "snowflake://?connection_name=" + _CONNECTION_NAME
     sql = """
         SELECT
             CAST(1 AS NUMBER) AS as_number,
@@ -590,7 +587,6 @@ def test_column_types_round_trip(sf_engine) -> None:
     """
     types = client._get_column_types_sync(
         sql=sql,
-        connection_string=connection_string,
         db_type="snowflake",
         engine=sf_engine,
     )

@@ -9,7 +9,6 @@ computing cumsum(a)+cumsum(a). Uniqueness now lives in the plan, not renderers.
 from __future__ import annotations
 
 import re
-import sqlite3
 
 import pydantic
 import pytest
@@ -29,6 +28,7 @@ from slayer.ir.planned import OrderEntry, PlannedQuery, Stage, StageKind, ValueS
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.generator import SQLGenerator
 from slayer.sql.scope_check import assert_scope_closed
+from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 
 _MONTH = [TimeDimension(dimension="created_at", granularity="month")]
@@ -204,10 +204,8 @@ async def engine(tmp_path):
 async def exec_engine(tmp_path):
     """On-disk SQLite seeded for execution / ordering / value assertions."""
     db_path = tmp_path / "t.db"
-    conn = sqlite3.connect(str(db_path))
-    conn.executescript(_SEED)
-    conn.commit()
-    conn.close()
+    with transaction(str(db_path)) as conn:
+        conn.executescript(_SEED)
     storage = YAMLStorage(base_dir=str(tmp_path / "store"))
     await storage.save_datasource(
         DatasourceConfig(name="test", type="sqlite", database=str(db_path)),
