@@ -28,4 +28,4 @@
 
 ## 6. Archive (spec-review stage)
 
-- [ ] 6.1 In the archive commit, add `specs: [sql]` to the `sql` node in `architecture/index.yaml`; verify `poetry run python tools/arch_check.py` passes with `openspec/specs/sql/execution/spec.md` on disk.
+- [x] 6.1 In the archive commit, add `specs: [sql]` to the `sql` node in `architecture/index.yaml`; verify `poetry run python tools/arch_check.py` passes with `openspec/specs/sql/execution/spec.md` on disk.

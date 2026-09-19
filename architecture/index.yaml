@@ -12,6 +12,7 @@ nodes:
   sql:
     package: slayer.sql
     children: [render, dialects, sql_predicate, window_detect]
+    specs: [sql]
     arc42: architecture/sql.arc42.md
   engine:
     package: slayer.engine
