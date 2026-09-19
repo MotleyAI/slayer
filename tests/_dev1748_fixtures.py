@@ -103,6 +103,9 @@ FAN_RUSH_DUPLICATES = 2
 #: ``sum`` over the ``fan`` group when filtered to ``rush``: order 15 counted
 #: twice plus order 16 once.
 FAN_RUSH_MULTIPLIED_SUM = FAN_FIRST * FAN_RUSH_DUPLICATES + FAN_LAST
+#: DEV-1909: a fanning ``rush`` population filter restricts by association, so the
+#: sibling sum counts each order once — order 15 and order 16, no duplicate.
+FAN_RUSH_ASSOC_SUM = FAN_FIRST + FAN_LAST
 
 #: The ``big_amount`` / ``gold_amount`` filter threshold.
 BIG_AMOUNT_THRESHOLD = 20.0

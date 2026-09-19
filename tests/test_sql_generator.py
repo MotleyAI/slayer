@@ -10655,7 +10655,7 @@ class TestWindowedMeasureGuards:
             measures=[{"formula": "customers.revenue:sum(window='30d')", "name": "rev_w"}],
         )
         # DEV-1836: fails closed with a precise attributability ValueError (the active time dimension is a host column, unreachable from customers).
-        with pytest.raises(ValueError, match="cross-model"):
+        with pytest.raises(ValueError, match="attributable from"):
             await engine.execute(query, dry_run=True)
 
     async def test_windowed_with_transform_raises(self, orders_model: SlayerModel) -> None:
@@ -10843,7 +10843,7 @@ class TestWindowedMeasureGuards:
             q = SlayerQuery(source_model="orders", time_dimensions=td,
                             measures=[{"formula": "customers.revenue:sum(window='30d')", "name": "rev_w"}])
             # DEV-1836: windowed cross-model with an unattributable TD → ValueError.
-            bundle, exc, match = _bundle(orders, [customers]), ValueError, "cross-model"
+            bundle, exc, match = _bundle(orders, [customers]), ValueError, "attributable from"
         elif case == "g4_transform":
             model = _plain()
             model.default_time_dimension = "created_at"

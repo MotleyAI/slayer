@@ -439,8 +439,6 @@ class TestRerootedFilterStillNarrowsTheHost:
         rows, _ = await cls._rows_and_warnings(*filters)
         return rows
 
-    @pytest.mark.xfail(strict=True, reason=(
-        "DEV-1909: a fanning population filter with an aggregate inline over the population now fails closed (DEV-1900 interim guard); DEV-1909 restores it via association pushdown."))
     def test_every_fixture_here_actually_reroots(self) -> None:
         """Vacuity guard: if the planner stopped re-rooting and used a forward plan, the row assertions below would pass while testing nothing."""
         for label, flt in (
@@ -499,8 +497,6 @@ class TestRerootedFilterStillNarrowsTheHost:
         assert regions == sorted([REGION_A_LOW, REGION_A_HIGH]), regions
         assert sum(r["orders.rev"] for r in rows) == GROUP_A_AMOUNT, rows
 
-    @pytest.mark.xfail(strict=True, reason=(
-        "DEV-1909: a fanning population filter with an aggregate inline over the population now fails closed (DEV-1900 interim guard); DEV-1909 restores it via association pushdown."))
     async def test_the_tags_filter_narrows_without_fanning_out(self) -> None:
         """``rush`` tags orders 1 and 2 only; a join-based pushdown (instead of containment) would multiply order 1 by its three tags."""
         rows = await self._rows(FILTER_TAGS)
@@ -535,8 +531,6 @@ class TestRerootedFilterStillNarrowsTheHost:
             f"{ALPHA_SPEND_ALL})"
         )
 
-    @pytest.mark.xfail(strict=True, reason=(
-        "DEV-1909: a fanning population filter with an aggregate inline over the population now fails closed (DEV-1900 interim guard); DEV-1909 restores it via association pushdown."))
     async def test_no_warning_when_every_filter_is_reachable(self) -> None:
         """A misclassified predicate still yields right-looking rows; the warning is the only tell. Host-local and tags filters push by semi-join now (DEV-1853) — no warning."""
         for flt in (FILTER_REACHABLE, FILTER_TARGET_ATTRIBUTE,
@@ -643,8 +637,6 @@ class TestRowPhaseFiltersAlwaysApplyAtTheHost:
             == [r["orders.rev"] for r in mixed_rows]
         ), "the sibling local measure changed when a cross-model one was added"
 
-    @pytest.mark.xfail(strict=True, reason=(
-        "DEV-1909: a fanning population filter with an aggregate inline over the population now fails closed (DEV-1900 interim guard); DEV-1909 restores it via association pushdown."))
     async def test_applying_at_the_host_does_not_fan_out_a_sibling(self) -> None:
         """Ruled out: the host's copy of a filter on a 1:N path (``order_tags``) must not fan out a sibling ``amount:sum`` — group A reads 24.0, not the 46.0 a three-way fan-out gives."""
         rows = await self._rows(SlayerQuery(

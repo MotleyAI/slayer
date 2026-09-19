@@ -10,7 +10,7 @@ import logging
 import re
 import warnings as _warnings_module
 from collections.abc import Callable
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import sqlalchemy as sa
 import sqlglot
@@ -488,27 +488,49 @@ def _attach_semi_join_texts(attach) -> Iterator[str]:
     )
 
 
+def _population_pushed_entries(planned) -> Iterator[Tuple[Optional[str], str]]:
+    """The population's own restriction: a top-level plan's semi-join groups name
+    no aggregate (measure=None)."""
+    for group in getattr(planned, "semi_join_filters", None) or ():
+        for text in group.filter_texts:
+            if text:
+                yield None, text
+
+
+def _attach_pushed_entries(planned) -> Iterator[Tuple[str, str]]:
+    """Semi-join-pushed entries for each regroup attach, one per (public measure,
+    filter text) — a producer may carry several public measures under one push."""
+    for attach in _walk_regroup_attaches(planned):
+        measures = attach.population_semi_join_measures or [
+            attach.broadcast_measure or attach.associated_measure
+            or attach.alias_hint or "<aggregate>"
+        ]
+        for text in _attach_semi_join_texts(attach):
+            for measure in measures:
+                yield measure, text
+
+
 def _collect_semi_join_pushed_warnings(
     *, planned_list, stages,
 ) -> List[SemiJoinPushedWarningPayload]:
-    """Response-only informational entries for semi-join-pushed conjuncts (DEV-1841 amends DEV-1840's silence); one per ``(location, aggregate, filter text)``."""
+    """Response-only informational entries for semi-join-pushed conjuncts; one per
+    ``(location, aggregate, filter text)``."""
     seen: set = set()
     out: List[SemiJoinPushedWarningPayload] = []
     for index, planned in enumerate(planned_list):
         location = _stage_location(stages=stages, index=index, member=None)
-        for attach in _walk_regroup_attaches(planned):
-            measure = (
-                attach.broadcast_measure or attach.associated_measure
-                or attach.alias_hint or "<aggregate>"
-            )
-            for text in _attach_semi_join_texts(attach):
-                identity = (location, measure, text)
-                if identity in seen:
-                    continue
-                seen.add(identity)
-                out.append(SemiJoinPushedWarningPayload(
-                    measure=measure, location=location, filter_text=text,
-                ))
+        entries = (
+            *_population_pushed_entries(planned),
+            *_attach_pushed_entries(planned),
+        )
+        for measure, text in entries:
+            identity = (location, measure, text)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            out.append(SemiJoinPushedWarningPayload(
+                measure=measure, location=location, filter_text=text,
+            ))
     return out
 
 

@@ -284,11 +284,19 @@ values. A transform is a constituent like a partitioned aggregate, typed at the 
 its inner aggregates' effective grains — each inner's explicit `partition_by=`, else
 the query grain (its dimensions and time buckets), a windowed inner contributing the
 query's active time bucket (per `queries/computed-dimensions` › Transforms inside
-dimension expressions) — and evaluated at that grain; a time-ordered transform
-constituent whose grain does not contain its time axis SHALL fail with the same
+dimension expressions) — and evaluated at that grain, the query's active time bucket
+reaching the constituent's own producer so a windowed inner resolves it; a time-ordered
+transform constituent whose grain does not contain its time axis SHALL fail with the same
 time-axis error a dimension-position transform raises, the axis being named in
 `partition_by=` exactly as in dimension position (a top-level measure transform is
-unchanged and keeps evaluating at the query grain over the attached value); an
+unchanged and keeps evaluating at the query grain over the attached value); an inner
+aggregate homed on a joined model whose `partition_by=` names the host's time axis — a
+key reachable from the inner's own root only across a fanning join hop — SHALL fail with
+the partition-key attributability error in every mode, associate included, the
+mode-invariant input-safety rule for a partition key whose closure fans from the inner's
+host (Axiom 8): not a deferred shape and not a boundary a mode resolves, though a future
+change (DEV-1941) would let associate mode compute it by distinct-entity association per
+bucket; an
 axis-collapsing transform constituent (`first`, `last`) is typed at that union minus
 its time axis, realised as its axis-preserving evaluation followed by an exact
 per-partition pick, so the axis resolves per `to_many_handling` like any dimension
@@ -344,8 +352,48 @@ measure-local `filter=` on the outer aggregation.
 #### Scenario: Windowed inner under a transform constituent fails closed
 - **WHEN** a query over a month time dimension selects
   `sum(rank(amount:sum(window='90d', partition_by=region)))`
-- **THEN** it fails with the windowed time-dimension resolution error — never a
-  misgrained or duplicated result — the shape being deferred to a follow-up issue
+- **THEN** it no longer fails with the windowed time-dimension error — it executes per
+  the next scenario; the former fail-closed pin is retired
+
+#### Scenario: Windowed inner under a transform constituent executes
+- **WHEN** a query over a month time dimension selects
+  `sum(rank(amount:sum(window='90d', partition_by=region)))`
+- **THEN** it executes with hand-computed values on SQLite and DuckDB — exactly one
+  result row per bucket, every value non-NULL — the plan carries exactly one nested
+  producer for the windowed inner grained by the query's active bucket, that exact
+  bucket key is among the producer's projected grain and join keys, the emitted
+  statement has one flat `WITH`, scopes are closed, and no placeholder leaks — never
+  the former windowed time-dimension error
+
+#### Scenario: A pure re-aggregation counts operand cells, not base rows
+- **WHEN** a query over a month time dimension selects
+  `sum(rank(amount:sum(window='90d', partition_by=region)))` over a source with several
+  base rows per (region, month) cell
+- **THEN** the outer aggregation counts each operand cell once — its home is the operand
+  dataset (Axiom 2.4), so the producer joins at the query grain as a second-order
+  re-aggregation, never a row-grain attach that would multiply by the base-row count;
+  the mixed `sum(amount * min(X, partition_by=region))` over the same rows instead counts
+  every base row, since its row leaf homes it on the model rows
+
+#### Scenario: Cross-model grained inner naming a host time axis is a permanent boundary
+- **WHEN** a query rooted at `orders` over a month time dimension selects
+  `sum(cumsum(customers.spend:sum(partition_by=[customers.tier, ordered_at])))`
+- **THEN** under every mode — the default (broadcast), error AND associate — it fails at
+  plan time with the partition-key attributability error naming `ordered_at` and the
+  remedy: the inner is homed at `customers`, and `ordered_at` is an `orders` column
+  reachable from `customers` only across the fanning `customers → orders` hop, so it is
+  a mode-invariant input-safety error (Axiom 8) — never a duplicated or misgrained
+  result, and never a deferral wording. The value is well-defined under distinct-entity
+  association (a future change, DEV-1941, would compute it), so this is the boundary a
+  fanning-crossing time key hits today, not a fundamental impossibility.
+
+#### Scenario: A to-one cross-model partition key on a local-homed inner stays legal
+- **WHEN** a query rooted at `orders` over a month time dimension selects
+  `sum(cumsum(amount:sum(partition_by=[customers.tier, ordered_at])))`
+- **THEN** it compiles: `customers.tier` is determined from `orders` over the to-one
+  hop, so the constituent is grained at `(customers.tier, month)` — the boundary above
+  is specific to a target-homed inner naming a host axis, not to cross-model partition
+  keys
 
 #### Scenario: Transform constituent without its time axis fails cleanly
 - **WHEN** a query over a month time dimension selects
@@ -535,9 +583,10 @@ behave as a row-level expression source: everything legal for a plain
 expression source is legal for it, and nothing more. Row leaves MAY be host-model
 or joined-model columns, homed per `queries/semantics` › Home dataset of a
 row-level aggregation source; an explicitly grained transform is an attached
-constituent exactly like a partitioned aggregate, except a collapsing (`first`/`last`)
-constituent, which SHALL be rejected with a typed error when mixed with a row-level
-reference (deferred to DEV-1928). The outer aggregation
+constituent exactly like a partitioned aggregate, and so is a re-aggregation — an
+aggregate over attached values, hand-written or produced by the `first`/`last`
+collapse — evaluated at its own grain and broadcast per partition onto the source's
+rows, an empty grain broadcasting its one value onto every row. The outer aggregation
 SHALL support the plain scalar family, `count` (base rows with a non-null
 operand value) and `count_distinct`, parametric and model-defined custom
 aggregations — including multi-input built-ins and column-reference parameters
@@ -593,8 +642,57 @@ its `partition_by=` still gets the outer attach the grain join needs.
 #### Scenario: Collapsing constituent mixed with a row leaf fails closed
 - **WHEN** a query over a month time dimension selects
   `sum(amount * last(amount:sum(partition_by=[region, ordered_at])))`
-- **THEN** it fails with a typed error naming the collapsing transform and the
-  row-level column, never a broadcast or multiplied value
+- **THEN** it no longer fails with the collapsing-transform error — it executes per the
+  next scenario; the former fail-closed pin is retired
+
+#### Scenario: Collapsing transform constituent inside a mixed source
+- **WHEN** a query over a month time dimension selects `sum(amount * last(X))` with
+  `X = amount:sum(partition_by=[region, ordered_at])`
+- **THEN** it executes with the hand-computed values Jan 375 / Feb 825 / Mar 900 on
+  SQLite and DuckDB: `last(X)` collapses to one value per region, broadcast onto each
+  row of that region, multiplied by the row's `amount` and summed per month — never
+  the former fail-closed collapse error
+
+#### Scenario: Hand-written re-aggregation constituent inside a mixed source
+- **WHEN** a query over a month time dimension selects
+  `sum(amount * min(X, partition_by=region))`
+- **THEN** it executes with hand-computed values on SQLite and DuckDB, the plan carries
+  exactly one producer for the re-aggregation at its `(region)` grain, row-attached on
+  `region` and never attached at the enclosing level, the emitted statement has one
+  flat `WITH`, scopes are closed, no placeholder leaks, and the query's row count is
+  unchanged — never the internal grain-cover assertion
+
+#### Scenario: Empty-grain re-aggregation constituent broadcasts one value
+- **WHEN** a query over a month time dimension selects
+  `sum(amount * last(amount:sum(partition_by=ordered_at)))`
+- **THEN** the collapsed constituent has an empty grain — one value — attached with no
+  join keys onto every row, and the query executes with hand-computed values on both
+  engines with unchanged cardinality, never an empty join predicate
+
+#### Scenario: Re-aggregation constituent as an attached parameter
+- **WHEN** a query over a month time dimension selects
+  `weighted_avg(amount, weight=min(X, partition_by=region))`
+- **THEN** the parameter is attached at its `(region)` grain through the same path as a
+  source constituent and the query executes with hand-computed values on both engines
+
+#### Scenario: Mixed re-aggregation root combined with a coarser measure
+- **WHEN** a query over `[region]` with a month time dimension selects
+  `sum(amount * min(X, partition_by=region)) + amount:sum(partition_by=region)`
+- **THEN** it executes with hand-computed values on both engines, the coarser term
+  broadcast across months exactly as any explicit-grain partitioned measure, with
+  unchanged cardinality
+
+#### Scenario: Mixed collapse in filter and order positions
+- **WHEN** `sum(amount * last(X))` appears only in a filter or only as an ORDER BY target
+- **THEN** the filter types as a measure — pruning result rows with surviving values
+  unchanged — and the order sorts by the same value the measure form returns
+
+#### Scenario: The mode axis is not bypassed by an attached re-aggregation
+- **WHEN** a query selecting `sum(amount * min(X, partition_by=region))` also groups by
+  a dimension the source's home does not determine
+- **THEN** under broadcast mode the value repeats across that dimension's cells with
+  the self-announcing warning, and under error mode the query fails with the mode
+  error — exactly as a mixed source with a plain attached aggregate
 
 #### Scenario: Joined-model row leaf inside a mixed source
 - **WHEN** a query rooted at `orders` over `[status]` selects
@@ -672,6 +770,16 @@ its `partition_by=` still gets the outer attach the grain join needs.
 - **THEN** the plan carries exactly one producer and one attach for it, every
   occurrence substitutes to that attach, total routing holds after
   substitution, and the executed values are correct
+
+#### Scenario: A re-aggregation used both standalone and as a mixed constituent is deferred
+- **WHEN** one query selects both `min(X, partition_by=region)` on its own and
+  `sum(amount * min(X, partition_by=region))` — the same re-aggregation standalone
+  (combined phase) and as a mixed row-level constituent (row phase)
+- **THEN** it fails at bind time with a typed error naming the re-aggregation and the
+  remedy (select the two in separate queries): the one shared producer would need
+  attaching at two phases, and its nested-producer CTE emits out of dependency order on
+  strict dialects — a bounded emission-ordering gap tracked as DEV-1942, never a crash,
+  dialect-inconsistent SQL, or wrong numbers
 
 ### Requirement: Attached parameters on row-level sources
 An aggregation over a row-level source whose parameter — keyword or

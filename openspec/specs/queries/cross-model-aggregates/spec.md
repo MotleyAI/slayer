@@ -147,8 +147,12 @@ attributable from the aggregate's root — an unattributable key is a hard error
 the remedy. Under `"associate"`, an explicit partition key not attributable from the
 root is legal: the aggregate attributes at the declared grain by distinct-entity
 association (per `queries/attribution-modes`), without warning (requested grain). A
-windowed cross-model aggregate requires the query's active time dimension attributable
-from its root, else errors.
+windowed aggregate — cross-model or rooted at the query population — requires the query's
+active time dimension attributable from its home dataset, else fails at plan time with a
+typed error naming the time dimension and the remedy, in every `to_many_handling` mode and
+whether or not the query filters: the time bucket is a grain member of the windowed
+aggregate that its home must determine, never a fanning join multiplying the windowed rows.
+Windowing by association under `"associate"` is deferred to DEV-1914.
 
 #### Scenario: Cross-model partitioned aggregate computes at the declared grain
 - **WHEN** a query selects `customers.spend:sum(partition_by=<customer-level dimension>)`
@@ -169,6 +173,13 @@ from its root, else errors.
 - **WHEN** a query selects a `first`/`last` or `window=` aggregate over a joined
   model's column with an attributable grain
 - **THEN** the value is correct by executed values and result cardinality is unchanged
+
+#### Scenario: Population-rooted window over a fanning time axis fails closed
+- **WHEN** a query rooted at `customers` selects `sum(spend, window='1y')` over
+  `time_dimensions: [{"dimension": "orders.ordered_at", "granularity": "month"}]`, with or
+  without `filters: ["orders.status = 'ok'"]`, in any `to_many_handling` mode
+- **THEN** the query fails at plan time with a typed error naming `orders.ordered_at` and the
+  remedy, containing no issue reference — never a value counting a customer once per order
 
 ### Requirement: Cross-model aggregates compose in expressions and dimensions
 Cross-model aggregates SHALL be legal wherever local aggregates are: in arithmetic and scalar-call composites (including mixed with local aggregates and with aggregates from different joined models in one expression), inside transforms, in dimension expressions, in filters, and in ORDER BY. Composite legality is uniform across the composite's own shape: a cross-model operand SHALL compile whether the composite combines it with local aggregates, with literals, with several cross-model operands, or wraps it in scalar calls — the compiled route never depends on which seam the composite would otherwise render through, and no composite shape reaches an internal not-supported seam error. A computed dimension whose expression columns are all attributable from a metric's root participates in that metric's grain; otherwise the metric broadcasts across it. Consumption-position rules match local aggregates exactly: a combined-position consumer of a cross-model partitioned aggregate needs query-dimension partition keys (per the partitioned-aggregates combined-consumer requirement), while row-scope references to a computed dimension's own aggregate stay legal at any partition grain.
@@ -295,7 +306,8 @@ rows related to at least one row (combination) passing the conjunct — never ov
 join-multiplied rows — uniformly with inline inheritance, in every
 `to_many_handling` mode. Each semi-join-pushed conjunct SHALL be reported through a
 machine-readable informational entry on the response naming the affected aggregate and
-the filter — carried on the response only, with no Python-level warning, and never an
+the filter — or, when the query population itself is restricted, naming the filter with
+no aggregate — carried on the response only, with no Python-level warning, and never an
 error in any mode. On provably many-to-one hops the semi-join is semantically identical
 to inline application, and inline remains a pure optimization (no informational entry).
 Reference resolution uses each reference's full dependency set: a derived (SQL-defined)
@@ -316,6 +328,23 @@ conjunct is reported through the same informational entry as a semi-join-pushed
 conjunct. Conjuncts pushed into the same producer that share their first reverse hop
 SHALL be satisfied by the same related row (combination); conjuncts on different
 branches are satisfied independently.
+
+Every producer rooted at the query population and built by the host regroup path —
+partitioned, windowed, first/last, host-grain wrap, broadcast-local — SHALL additionally
+inherit the query population's own filter disposition, computed once at the host root:
+a population conjunct the host applies inline applies inline, a population conjunct
+restricting the population by association restricts the producer by the same semi-join,
+and an excluded population conjunct is dropped from the producer with the dropped-filter
+warning; a producer nested inside such a producer and rooted at the same population
+inherits the same disposition during its own compilation. Such a producer's own grain — its
+partition keys and its window time axis — is attributable from the population (an
+unattributable partition key or window time axis is a typed error, per *Explicit grain and
+window on cross-model aggregates*), so it takes the population's semi-join, never an inline
+join across the fanning hop. This
+population inheritance is keyed on the producer's kernel, not on whether its root equals
+the host: an association producer (even one whose root is the host) keeps the association
+routing of the paragraph above and receives no population semi-join, and a target-rooted
+producer keeps its own metric-root disposition.
 
 A conjunct SHALL remain excluded from the producer — reported through the established
 dropped-filter warning (and erroring under `to_many_handling: "error"`) while still
@@ -433,3 +462,33 @@ only in the filter.
   root
 - **THEN** it is excluded with the dropped-filter warning and error mode errors,
   exactly as before
+
+#### Scenario: Partitioned local producer restricts by association
+- **WHEN** a query rooted at `customers` selects `sum(spend, partition_by=tier)` by `tier`
+  with `filters: ["orders.status = 'ok'"]`, and one gold customer has two `ok` orders
+- **THEN** by executed values each tier cell equals the spend of that tier's distinct
+  customers with at least one `ok` order, each once (gold 190 and silver 230 on the
+  reference dataset, never gold 290), and the response carries a `semi_join_pushed` entry
+  naming the measure alongside the population's entry naming no aggregate
+
+#### Scenario: Windowed producer over a local axis inherits the restriction
+- **WHEN** a query rooted at `customers` selects `sum(spend, window='1y')` over
+  `time_dimensions: [{"dimension": "customers.signup_at", "granularity": "month"}]` with
+  `filters: ["orders.status = 'ok'"]`, and one customer has two `ok` orders
+- **THEN** by executed values each bucket sums the trailing-year signups among the distinct
+  customers with at least one `ok` order, each once (April 420 on the reference dataset,
+  never 520), the window's source relation carries the semi-join and no `orders` join, and
+  the response carries the producer's and the population's `semi_join_pushed` entries
+
+#### Scenario: Nested producer rooted at the population inherits the restriction
+- **WHEN** a query rooted at `customers` selects `avg(sum(spend, partition_by=tier))` with
+  `dimensions: ["tier"]` and `filters: ["orders.status = 'ok'"]`
+- **THEN** by executed values the inner per-tier totals count each customer once (the
+  average over tiers is 210 on the reference dataset, never 260), and the generated SQL
+  carries the semi-join in the host-rooted producer body and no `orders` join
+
+#### Scenario: Population restriction reaches the producer-only spine
+- **WHEN** a query rooted at `customers` selects only `orders.amount:sum` with
+  `filters: ["orders.status = 'ok'"]`, and a second run uses a predicate no order passes
+- **THEN** the first run returns one row with the producer's value by executed values (82 on
+  the reference dataset) and the second returns zero rows — never one row carrying a NULL
