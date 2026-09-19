@@ -874,19 +874,19 @@ def check_cross_model_partition_keys_attributable(
     )
 
 
-def check_windowed_cross_model_time_axis(
+def check_windowed_time_axis_attributable(
     *, alias: Optional[str], root_name: str, active_td_name: Optional[str],
     attributable: bool,
 ) -> None:
-    """A windowed cross-model aggregate needs the query's active time dimension, attributable from its root (DEV-1871 G12)."""
+    """A windowed aggregate needs the query's active time dimension, attributable from its root (DEV-1871 G12)."""
     if active_td_name is None:
         raise ValueError(
-            f"Windowed cross-model aggregate {alias!r} has no active time "
+            f"Windowed aggregate {alias!r} has no active time "
             f"dimension; add a single time_dimensions entry."
         )
     if not attributable:
         raise ValueError(
-            f"Windowed cross-model aggregate {alias!r} needs the query's "
+            f"Windowed aggregate {alias!r} needs the query's "
             f"active time dimension ('{active_td_name}') "
             f"attributable from {root_name}, but it crosses a fanning join; "
             f"declare join cardinality or a covering unique key on the target."
@@ -937,29 +937,42 @@ def check_input_dependencies_analyzable(
     )
 
 
-def check_population_filter_no_fanout(
-    *, filter_text: str, hop: Optional[str], unanalyzable: bool = False,
-) -> None:
-    """Interim guard: a row-level filter conjunct reaching the
-    population root only across a fanning hop, with an aggregate inline over the
-    population rows, would multiply its rows. ``hop`` = the fanning hop when one
-    exists, else ``None``; ``unanalyzable`` = the conjunct's dependency closure
-    could not be analysed (fail closed) (DEV-1909 replaces this with association
-    semantics)."""
-    if unanalyzable:
-        raise ValueError(
-            f"Filter {filter_text!r} has a dependency no supported dialect can "
-            f"analyse for join dependencies; with an aggregate computed inline "
-            f"over the population, an unanalyzable dependency is unsafe. Fix the "
-            f"referenced column's SQL, or remove the filter."
-        )
-    if hop is None:
-        return
+def check_population_filter_in_pushdown_scope(
+    *, filter_text: str, reason: str,
+) -> NoReturn:
+    """An out-of-scope population conjunct — root-local and cross-path references
+    mixed under OR/NOT, or cross-path references spanning several join branches —
+    cannot restrict the population by a single semi-join; with a plain aggregate
+    inline over the population, or in raw-row mode, it would multiply the
+    population's rows. ``reason`` names why it is out of scope. Per-branch EXISTS
+    lowering is deferred to DEV-1935."""
     raise ValueError(
-        f"Filter {filter_text!r} reaches the population root only across a "
-        f"fanning join hop to {hop!r}; with an aggregate computed inline over the "
-        f"population, this would multiply its rows. Aggregate the filtered "
-        f"relation to the population grain, or select it only through a producer."
+        f"Filter {filter_text!r} cannot restrict the population by association: "
+        f"{reason}. With a plain aggregate inline over the population, or in "
+        f"raw-row mode, this would multiply the population's rows. Split the "
+        f"filter into separate conjuncts, or restate it on a single join branch."
+    )
+
+
+def check_filter_dependencies_analyzable(
+    *, filter_text: str, column: Optional[str],
+) -> NoReturn:
+    """A filter conjunct whose dependency closure no dialect can analyse for join
+    dependencies is unsafe, never 'crosses nothing'. ``column`` names the
+    offending derived column (the common case for a filter, which references
+    columns by name), else ``None``."""
+    if column is None:
+        raise ValueError(
+            f"Filter {filter_text!r} has a dependency whose definition no "
+            f"supported dialect can analyse for join dependencies; an "
+            f"unanalyzable dependency is unsafe. Fix the referenced column's SQL, "
+            f"or remove the filter."
+        )
+    raise ValueError(
+        f"Filter {filter_text!r} names derived column {column!r}, whose "
+        f"definition no supported dialect can analyse for join dependencies; an "
+        f"unanalyzable dependency is unsafe. Fix the column's SQL, or remove the "
+        f"filter."
     )
 
 

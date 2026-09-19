@@ -249,16 +249,17 @@ class TestParameterTyping:
 
 class TestAssociationRestrictedConjunctEntry:
     async def test_inlined_conjunct_carries_the_semi_join_pushed_entry(self, weak_engine):
-        """An unsafe-but-reachable conjunct inlined on the home-rooted joins is
-        reported through the same informational entry as a semi-join-pushed
-        conjunct, and the executed values are the restricted membership."""
+        """The one fanning conjunct restricts at two levels (Axiom 2.9): the
+        population spine (measure=None, DEV-1909) and the home-rooted association
+        producer's membership (measure='csp', dev-1910). Both are reported; the
+        executed values are the restricted membership."""
         resp = await weak_engine.execute(assoc_status_q(
             dimensions=["status"], measures=[SPEND_SUM],
             filters=["customers.plans.level = 'basic'"]))
         spend = status_vals(resp, "orders.csp")
         for cell, expected in ASSOC_BASIC_SPEND_BY_STATUS.items():
             assert float(spend[cell]) == pytest.approx(expected), cell
-        (info,) = pushed_filter_infos(resp)
-        assert info.measure == "csp"
-        assert "basic" in info.filter_text
+        infos = pushed_filter_infos(resp)
+        assert {i.measure for i in infos} == {None, "csp"}, infos
+        assert all("basic" in i.filter_text for i in infos)
         assert not dropped_filter_warnings(resp)

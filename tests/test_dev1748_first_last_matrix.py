@@ -47,7 +47,7 @@ from tests._dev1748_fixtures import (
     CUSTOMER_SPEND_LAST,
     FAN_FIRST,
     FAN_LAST,
-    FAN_RUSH_MULTIPLIED_SUM,
+    FAN_RUSH_ASSOC_SUM,
     FILT_MATCHING,
     FILT_NEWER_NONMATCHING,
     NULL_STATUS_FIRST,
@@ -675,19 +675,14 @@ class TestCrossingInputsAndFanout:
         # Every seeded group holds exactly two rows, so the oracle is uniform.
         assert set(counts.values()) == {2}
 
-    @pytest.mark.xfail(strict=True, reason=(
-        "DEV-1909: a fanning population filter with an aggregate inline over the population now fails closed (DEV-1900 interim guard); DEV-1909 restores it via association pushdown."))
-    async def test_a_1n_join_multiplies_a_sum_but_not_the_ranked_pick(
+    async def test_a_1n_join_restricts_the_sum_and_not_the_ranked_pick(
         self, engine: SlayerQueryEngine,
     ) -> None:
-        """Order 15 is tagged ``rush`` TWICE, so filtering to ``rush`` matches
-        it twice.
-
-        ``amount:sum`` doubles its contribution — the ratified multiply-per-match
-        semantics (DEV-1688 keep-list item 6), deliberately NOT changed here.
-        ``amount:last`` does not move, because duplicating a row cannot change
-        which row is newest. Pinning both together is what proves a later
-        cardinality change would be visible."""
+        """Order 15 is tagged ``rush`` TWICE. The fanning ``rush`` population
+        filter restricts by association (DEV-1909), so ``amount:sum`` counts each
+        matching order once — order 15 and order 16 — never doubling order 15.
+        ``amount:last`` does not move either, because duplicating a row cannot
+        change which row is newest."""
         rows = await _rows(
             engine, dimensions=["status"],
             filters=["order_tags.name == 'rush'"],
@@ -699,7 +694,7 @@ class TestCrossingInputsAndFanout:
         last = by_group(rows, key="orders.status", value="orders.l")
         summed = by_group(rows, key="orders.status", value="orders.s")
 
-        assert summed["fan"] == FAN_RUSH_MULTIPLIED_SUM
+        assert summed["fan"] == FAN_RUSH_ASSOC_SUM
         assert last["fan"] == FAN_LAST
 
     async def test_grouping_by_a_1n_dimension_ranks_within_each_match(

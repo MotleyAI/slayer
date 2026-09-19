@@ -130,14 +130,19 @@ class DegenerateReaggregationWarningPayload(SlayerWarning):
 
 
 class SemiJoinPushedWarningPayload(SlayerWarning):
-    """A ROW filter pushed into a producer as a semi-join (EXISTS): correctly applied, informational only — carried on the response, never a Python warning and never an error."""
+    """A ROW filter pushed as a semi-join (EXISTS): correctly applied, informational only — carried on the response, never a Python warning and never an error. ``measure`` names the affected aggregate, or is ``null`` when the query population itself is restricted (DEV-1909)."""
 
     kind: Literal["semi_join_pushed"] = "semi_join_pushed"
-    measure: str
+    measure: Optional[str] = None
     location: str
     filter_text: str
 
     def human_message(self) -> str:
+        if self.measure is None:
+            return (
+                f"filter {self.filter_text!r} restricts the population "
+                f"(at {self.location}) by semi-join"
+            )
         return (
             f"filter {self.filter_text!r} pushed into metric {self.measure!r} "
             f"(at {self.location}) by semi-join"
