@@ -376,7 +376,10 @@ class TestSlayerNormalizationWarning:
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             warnings.warn(SlayerNormalizationWarning(nw))
-        assert len(caught) == 1
-        assert issubclass(caught[0].category, SlayerNormalizationWarning)
-        assert isinstance(caught[0].message, SlayerNormalizationWarning)
-        assert caught[0].message.payload.rule_id == "FUNC_STYLE_AGG"
+        # Count our category only — a stray ResourceWarning (a GC-finalized sqlite
+        # connection on 3.14) can also land in the record window.
+        mine = [w for w in caught
+                if issubclass(w.category, SlayerNormalizationWarning)]
+        assert len(mine) == 1
+        assert isinstance(mine[0].message, SlayerNormalizationWarning)
+        assert mine[0].message.payload.rule_id == "FUNC_STYLE_AGG"

@@ -2265,9 +2265,18 @@ def _build_carrier_attach(
 ) -> RegroupAttachPlan:
     """A row-attach producer at the union grain carrying every constituent (coarser
     ones broadcast within it) — the carrier / level-1 of the re-aggregation."""
+    # A windowed inner carries the query's active bucket into its own grain
+    # (Axiom 2.3); thread it as the carrier's main time dimension so the nested
+    # producer for the windowed inner resolves it (DEV-1928 F5). The bucket is
+    # already a union-grain key, so this only sets main_time_key.
+    carrier_windowed = active_bucket is not None and any(
+        window_kwarg_of(k) is not None
+        for c in constituents for k in walk_value_keys(c)
+    )
     carrier_prebound, ordered_pks = _regroup_producer_prebound(
         pks=union_grain, aggs=constituents, model=host_model, bundle=bundle,
         inherited=inherited, n_date_range=n_date_range,
+        window_td_key=active_bucket if carrier_windowed else None,
     )
     carrier_plan = compile_synthesized(
         prebound=carrier_prebound,
@@ -2622,6 +2631,7 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
     # recursion. Discovery opacity keeps these inputs out of the combined sets,
     # so no subtraction is needed.
     mixed_inline_inner: List[ValueKey] = []
+    reagg_constituents: List[AggregateKey] = []
     row_attach_roots = (
         _discover_roots(prebound, predicate=is_row_attach_root)
         if local_discovery else []
@@ -2637,13 +2647,21 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
                     continue
                 seen_inner.add(a)
                 mixed_inline_inner.append(a)
+                # A re-aggregation constituent (an aggregate over attached values,
+                # hand-written or the first/last collapse) evaluates at its OWN
+                # grain and broadcasts per partition onto the rows — the
+                # second-order carrier / outer path, not the row-grain attach a
+                # plain aggregate or transform takes (DEV-1928).
+                if is_reaggregation_key(a):
+                    reagg_constituents.append(a)
+                    continue
                 target = cm_row if is_cross_model_agg(a) else row_aggs
                 if a not in target:
                     target.append(a)
     cm_type = dict(consumers.declared_type)
     if (
         not row_aggs and not combined_aggs and not cm_combined and not cm_row
-        and not reagg_roots
+        and not reagg_roots and not reagg_constituents
     ):
         return None
     # A real column sharing the reserved placeholder prefix would shadow a placeholder at render; reject while a regroup is active.
@@ -2654,7 +2672,9 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
     check_reserved_regroup_prefix(reserved)
     mapping: Dict[ValueKey, ValueKey] = {
         agg: registry.placeholder_for(agg)
-        for agg in (*row_aggs, *combined_aggs, *cm_row, *cm_combined)
+        for agg in (
+            *row_aggs, *combined_aggs, *cm_row, *cm_combined, *reagg_constituents,
+        )
     }
 
     inherited, n_inherited_date = _regroup_inherited_filters(
@@ -2870,6 +2890,32 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
             public_alias=reagg_public_alias.get(root),
             context=synthesis_context,
             declared_type=reagg_declared_type.get(root),
+            producer_registry=producer_registry, registry=registry,
+            inherited=inherited, n_date_range=n_inherited_date,
+        ))
+
+    # DEV-1928: a re-aggregation constituent of a row-attach root is the same
+    # second-order producer, but synthesized in a context whose projected grain IS
+    # the constituent's own grain (so each partition key is attributable without
+    # being a query dimension — the compile-time mirror of _reagg_operand_keys) and
+    # attached at ROW phase to broadcast per partition onto the source's rows.
+    for c in reagg_constituents:
+        c_grain = constituent_grain(
+            c=c, projected_dim_keys=projected_dim_keys,
+            projected_td_keys=projected_td_keys, active_bucket=active_bucket,
+        )
+        attaches.append(_synthesize_reaggregation_producer(
+            root=c, placeholder=mapping[c], attach_phase="row",
+            public_alias=None,
+            context=synthesis_context.model_copy(update={
+                "projected_dim_keys": [
+                    k for k in c_grain if not isinstance(k, TimeTruncKey)
+                ],
+                "projected_td_keys": [
+                    k for k in c_grain if isinstance(k, TimeTruncKey)
+                ],
+            }),
+            declared_type=None,
             producer_registry=producer_registry, registry=registry,
             inherited=inherited, n_date_range=n_inherited_date,
         ))

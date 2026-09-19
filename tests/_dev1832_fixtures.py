@@ -72,6 +72,22 @@ def monthly_model() -> SlayerModel:
     )
 
 
+def monthly_multi_model() -> SlayerModel:
+    """Like ``monthly`` but TWO rows per (region, month) — the substrate that
+    separates a second-order aggregation's count over operand CELLS (Axiom 2.4,
+    no row leaf → home is the operand dataset) from a naive count over base rows."""
+    return SlayerModel(
+        name="monthly_multi", data_source="test", sql_table="monthly_multi",
+        default_time_dimension="ordered_at",
+        columns=[
+            Column(name="id", type=DataType.INT, primary_key=True),
+            Column(name="region", type=DataType.TEXT),
+            Column(name="ordered_at", type=DataType.TIMESTAMP),
+            Column(name="amount", type=DataType.DOUBLE),
+        ],
+    )
+
+
 def _extend_graph_a(models: List[SlayerModel]) -> None:
     """Add DEV-1832's columns/aggregations to the DEV-1900 graph in place."""
     orders = next(m for m in models if m.name == "orders")
@@ -102,10 +118,11 @@ def _extend_graph_a(models: List[SlayerModel]) -> None:
 
 
 def dev1832_models() -> List[SlayerModel]:
-    """Graph A (extended DEV-1900) + the ``sales`` and ``monthly`` graphs."""
+    """Graph A (extended DEV-1900) + the ``sales``, ``monthly`` and
+    ``monthly_multi`` graphs."""
     models = dev1900_models()
     _extend_graph_a(models)
-    return [*models, sales_model(), monthly_model()]
+    return [*models, sales_model(), monthly_model(), monthly_multi_model()]
 
 
 def dev1832_unparseable_models() -> List[SlayerModel]:
@@ -113,7 +130,7 @@ def dev1832_unparseable_models() -> List[SlayerModel]:
     expression leaf naming it fails the analyzability check."""
     models = unparseable_derived_models()
     _extend_graph_a(models)
-    return [*models, sales_model(), monthly_model()]
+    return [*models, sales_model(), monthly_model(), monthly_multi_model()]
 
 
 # --------------------------------------------------------------------------- #
@@ -136,6 +153,11 @@ def sales_q(**kw) -> SlayerQuery:
 
 def monthly_q(**kw) -> SlayerQuery:
     kw.setdefault("source_model", "monthly")
+    return SlayerQuery(**kw)
+
+
+def monthly_multi_q(**kw) -> SlayerQuery:
+    kw.setdefault("source_model", "monthly_multi")
     return SlayerQuery(**kw)
 
 
@@ -228,6 +250,21 @@ _MONTHLY_ROWS = [
     (5, "South", "2024-02-15", 15.0),
     (6, "West", "2024-02-15", None),
 ]
+# (id, region, ordered_at, amount) — TWO rows per (region, month), the months >90
+# days apart so a trailing-90d window stays within one month. Per-(region,month)
+# amount:sum cells: North Jan 10 / Jun 30, South Jan 5 / Jun 20. A second-order
+# aggregation counts each of the four cells once (Axiom 2.4); a naive count over
+# the eight base rows would double it.
+_MONTHLY_MULTI_ROWS = [
+    (1, "North", "2024-01-10", 6.0),
+    (2, "North", "2024-01-20", 4.0),
+    (3, "North", "2024-06-10", 18.0),
+    (4, "North", "2024-06-20", 12.0),
+    (5, "South", "2024-01-10", 3.0),
+    (6, "South", "2024-01-20", 2.0),
+    (7, "South", "2024-06-10", 12.0),
+    (8, "South", "2024-06-20", 8.0),
+]
 
 
 def _seed_sqlite(db_path: str) -> None:
@@ -262,6 +299,10 @@ def _seed_sqlite(db_path: str) -> None:
         "CREATE TABLE monthly (id INTEGER PRIMARY KEY, region TEXT, "
         "ordered_at TEXT, amount REAL)")
     cur.executemany("INSERT INTO monthly VALUES (?,?,?,?)", _MONTHLY_ROWS)
+    cur.execute(
+        "CREATE TABLE monthly_multi (id INTEGER PRIMARY KEY, region TEXT, "
+        "ordered_at TEXT, amount REAL)")
+    cur.executemany("INSERT INTO monthly_multi VALUES (?,?,?,?)", _MONTHLY_MULTI_ROWS)
     con.commit()
     con.close()
 
@@ -296,6 +337,10 @@ def _seed_duckdb(db_path: str) -> None:
         "CREATE TABLE monthly (id INTEGER, region VARCHAR, ordered_at TIMESTAMP, "
         "amount DOUBLE)")
     con.executemany("INSERT INTO monthly VALUES (?,?,?,?)", _MONTHLY_ROWS)
+    con.execute(
+        "CREATE TABLE monthly_multi (id INTEGER, region VARCHAR, "
+        "ordered_at TIMESTAMP, amount DOUBLE)")
+    con.executemany("INSERT INTO monthly_multi VALUES (?,?,?,?)", _MONTHLY_MULTI_ROWS)
     con.close()
 
 
@@ -388,6 +433,47 @@ LAG_SUM_BY_MONTH = {"2024-02": 15.0, "2024-03": 20.0}
 LEAD_SUM_BY_MONTH = {"2024-01": 35.0, "2024-02": 30.0}
 CONSEC_SUM_BY_MONTH = {"2024-01": 0, "2024-02": 2, "2024-03": 2}
 
+# DEV-1928: re-aggregation constituents in a mixed row source (X per region-month as
+# above). last(X) collapses to the region's latest value (North 30 / South 15 / West
+# NULL), min(X, partition_by=region) to its minimum (North 10 / South 5 / West NULL);
+# each broadcasts onto the region's rows, times the row amount, summed per month.
+COLLAPSE_MIXED_BY_MONTH = {"2024-01": 375.0, "2024-02": 825.0, "2024-03": 900.0}
+HANDWRITTEN_MIN_MIXED_BY_MONTH = {"2024-01": 125.0, "2024-02": 275.0, "2024-03": 300.0}
+#: sum(amount * last(amount:sum(partition_by=ordered_at))): the inner collapses the
+#: ordered_at axis to an empty grain (one value = the latest month's cross-region total,
+#: Mar 30), broadcast onto every row: amount * 30 summed per month.
+EMPTY_GRAIN_MIXED_BY_MONTH = {"2024-01": 450.0, "2024-02": 1050.0, "2024-03": 900.0}
+#: weighted_avg(amount, weight=min(X, partition_by=region)): SUM(amount*w)/SUM(w) per
+#: month, w the region minimum broadcast onto its rows.
+WAVG_MIN_MIXED_BY_MONTH = {"2024-01": 125.0 / 15.0, "2024-02": 275.0 / 15.0,
+                           "2024-03": 30.0}
+#: sum(amount * min(X, partition_by=region)) + amount:sum(partition_by=region) over
+#: [region] + month: the mixed re-aggregation root plus the coarser region total
+#: broadcast across months, keyed by (region, month); West's all-NULL cell drops out.
+MIXED_COMBINED_BY_REGION_MONTH = {
+    ("North", "2024-01"): 160.0, ("North", "2024-02"): 260.0,
+    ("North", "2024-03"): 360.0, ("South", "2024-01"): 45.0,
+    ("South", "2024-02"): 95.0}
+#: sum(rank(amount:sum(window='90d', partition_by=region))) by month: the trailing-90d
+#: per-region sum (North 10/30/60, South 5/20, West NULL), ranked DESC over the
+#: (region, month) cells (NULLs last) → North 4/2/1, South 5/3, West 6; summed per month.
+WINDOWED_INNER_BY_MONTH = {"2024-01": 9.0, "2024-02": 11.0, "2024-03": 1.0}
+#: sum(cumsum(amount:sum(partition_by=[customers.tier, ordered_at]))) rooted at orders,
+#: by month — the to-one cross-model partition key (customers.tier is determined from
+#: orders): amount:sum per (tier, month), cumsum per tier over months, summed per month.
+XMODEL_TIER_CUMSUM_BY_MONTH = {"2024-01": 33.0, "2024-02": 55.0, "2024-03": 85.0,
+                               "2024-04": 120.0}
+
+# DEV-1928 axiom compliance (monthly_multi, two rows per cell). A pure re-aggregation
+# — no row leaf — is a second-order aggregation whose home is the operand dataset
+# (Axiom 2.4), so it counts each (region, month) CELL once, never the two base rows.
+#: sum(rank(amount:sum(window='90d', partition_by=region))): cells North 10/30,
+#: South 5/20 → ranks DESC 3/1, 4/2 → summed per month over the four cells.
+WINDOWED_MULTI_BY_MONTH = {"2024-01": 7.0, "2024-06": 3.0}
+#: A ROW leaf flips the home back to the model rows: sum(amount * min(X, partition_by=
+#: region)) sums over all eight rows — each amount times its region's minimum cell.
+MIXED_MULTI_BY_MONTH = {"2024-01": 125.0, "2024-06": 400.0}
+
 DEGENERATE_KIND = "degenerate_reaggregation"
 BROADCAST_KIND = "broadcast"
 
@@ -410,9 +496,11 @@ __all__ = [
     "Aggregation", "AggregationParam", "Column", "ColumnRef", "DataType",
     "ModelMeasure", "SlayerModel", "SlayerQuery", "TimeDimension",
     "TimeGranularity",
-    "monthly_model", "dev1832_models", "dev1832_unparseable_models",
+    "monthly_model", "monthly_multi_model",
+    "dev1832_models", "dev1832_unparseable_models",
     "sales_model",
-    "orders_q", "cust_q", "sales_q", "monthly_q", "month_td", "bundle", "gen",
+    "orders_q", "cust_q", "sales_q", "monthly_q", "monthly_multi_q",
+    "month_td", "bundle", "gen",
     "make_exec_engine", "rows_by", "status_key", "month_key",
     "degenerate_warnings", "DEGENERATE_KIND",
     "AVG_CITY_TOTAL_BY_REGION", "MIXED_SUM_BY_REGION",
@@ -425,7 +513,12 @@ __all__ = [
     "LAST_SUM_BY_MONTH", "FIRST_SUM_BY_MONTH", "CUMSUM_MINUS_LAST_BY_MONTH",
     "CHANGE_SUM_BY_MONTH", "CHANGE_PCT_SUM_BY_MONTH", "TIME_SHIFT_BACK_SUM_BY_MONTH",
     "LAG_SUM_BY_MONTH", "LEAD_SUM_BY_MONTH", "CONSEC_SUM_BY_MONTH",
+    "COLLAPSE_MIXED_BY_MONTH", "HANDWRITTEN_MIN_MIXED_BY_MONTH",
+    "EMPTY_GRAIN_MIXED_BY_MONTH", "WAVG_MIN_MIXED_BY_MONTH",
+    "MIXED_COMBINED_BY_REGION_MONTH", "WINDOWED_INNER_BY_MONTH",
+    "XMODEL_TIER_CUMSUM_BY_MONTH",
+    "WINDOWED_MULTI_BY_MONTH", "MIXED_MULTI_BY_MONTH",
     "broadcast_warnings", "BROADCAST_KIND",
     "_ORDERS_ROWS", "_CUSTOMERS_ROWS", "_REGIONS_ROWS", "_SALES_ROWS",
-    "_MONTHLY_ROWS",
+    "_MONTHLY_ROWS", "_MONTHLY_MULTI_ROWS",
 ]

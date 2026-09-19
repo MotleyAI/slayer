@@ -1858,7 +1858,7 @@ class TestRankFamilyTransforms:
         )
         sql = await _generate(generator, query, orders_model)
         assert (
-            'RANK() OVER (ORDER BY "orders.revenue_sum" DESC)'
+            'RANK() OVER (ORDER BY "orders.revenue_sum" DESC NULLS LAST)'
             in _norm(sql)
         )
 
@@ -1873,7 +1873,7 @@ class TestRankFamilyTransforms:
         )
         sql = await _generate(generator, query, orders_model)
         assert (
-            'RANK() OVER (PARTITION BY "orders.status" ORDER BY "orders.revenue_sum" DESC)'
+            'RANK() OVER (PARTITION BY "orders.status" ORDER BY "orders.revenue_sum" DESC NULLS LAST)'
             in _norm(sql)
         )
 
@@ -1904,7 +1904,7 @@ class TestRankFamilyTransforms:
         assert window is not None, sql
         assert window.sql(dialect="postgres") == (
             'RANK() OVER (PARTITION BY "orders.customer_id", "orders.status" '
-            'ORDER BY "orders.revenue_sum" DESC)'
+            'ORDER BY "orders.revenue_sum" DESC NULLS LAST)'
         )
 
     async def test_percent_rank_default(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
@@ -1918,7 +1918,7 @@ class TestRankFamilyTransforms:
         )
         sql = await _generate(generator, query, orders_model)
         assert (
-            'PERCENT_RANK() OVER (ORDER BY "orders.revenue_sum" DESC)'
+            'PERCENT_RANK() OVER (ORDER BY "orders.revenue_sum" DESC NULLS LAST)'
             in _norm(sql)
         )
 
@@ -1936,7 +1936,7 @@ class TestRankFamilyTransforms:
         sql = await _generate(generator, query, orders_model)
         assert (
             'PERCENT_RANK() OVER (PARTITION BY "orders.status" '
-            'ORDER BY "orders.revenue_sum" DESC)'
+            'ORDER BY "orders.revenue_sum" DESC NULLS LAST)'
             in _norm(sql)
         )
 
@@ -1951,7 +1951,7 @@ class TestRankFamilyTransforms:
         )
         sql = await _generate(generator, query, orders_model)
         assert (
-            'DENSE_RANK() OVER (ORDER BY "orders.revenue_sum" DESC)'
+            'DENSE_RANK() OVER (ORDER BY "orders.revenue_sum" DESC NULLS LAST)'
             in _norm(sql)
         )
 
@@ -1969,7 +1969,7 @@ class TestRankFamilyTransforms:
         sql = await _generate(generator, query, orders_model)
         assert (
             'DENSE_RANK() OVER (PARTITION BY "orders.status" '
-            'ORDER BY "orders.revenue_sum" DESC)'
+            'ORDER BY "orders.revenue_sum" DESC NULLS LAST)'
             in _norm(sql)
         )
 
@@ -1984,7 +1984,7 @@ class TestRankFamilyTransforms:
         )
         sql = await _generate(generator, query, orders_model)
         assert (
-            'NTILE(4) OVER (ORDER BY "orders.revenue_sum" DESC)'
+            'NTILE(4) OVER (ORDER BY "orders.revenue_sum" DESC NULLS LAST)'
             in _norm(sql)
         )
 
@@ -2003,7 +2003,7 @@ class TestRankFamilyTransforms:
         sql = await _generate(generator, query, orders_model)
         assert (
             'NTILE(4) OVER (PARTITION BY "orders.status" '
-            'ORDER BY "orders.revenue_sum" DESC)'
+            'ORDER BY "orders.revenue_sum" DESC NULLS LAST)'
             in _norm(sql)
         )
 
@@ -2069,7 +2069,7 @@ class TestRankFamilyTransforms:
         inner_sql, outer_sql = sql.split("_filtered", 1)
         assert (
             'RANK() OVER (PARTITION BY "orders.status" '
-            'ORDER BY "orders.revenue_sum" DESC)'
+            'ORDER BY "orders.revenue_sum" DESC NULLS LAST)'
             in _norm(inner_sql)
         ), f"PARTITION BY status should appear in the inner SELECT, got:\n{sql}"
         assert "RANK()" not in outer_sql, (
@@ -2100,7 +2100,7 @@ class TestRankFamilyTransforms:
         sql = await _generate(generator, query, orders_model)
         assert (
             'RANK() OVER (PARTITION BY "orders.created_at" '
-            'ORDER BY "orders.revenue_sum" DESC)'
+            'ORDER BY "orders.revenue_sum" DESC NULLS LAST)'
             in _norm(sql)
         )
 

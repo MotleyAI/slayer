@@ -4546,9 +4546,9 @@ class SQLGenerator:
             if time_col is not None
             else None
         )
-        # The rank family orders by the MEASURE descending, not by time.
+        # Rank has no frame; pin uniform NULLS LAST (not frame-safe native) for cross-dialect parity.
         rank_order = exp.Order(
-            expressions=[self._window_ordered(measure.copy(), descending=True)],
+            expressions=[self._dialect.build_ordered(measure.copy(), descending=True)],
         )
         unbounded_frame = exp.WindowSpec(
             kind="ROWS",
