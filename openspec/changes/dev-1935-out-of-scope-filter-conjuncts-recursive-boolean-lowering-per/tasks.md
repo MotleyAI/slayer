@@ -78,10 +78,9 @@
   the sqlglot AST, not text matching.
 - Finding 2: handled as the OPEN QUESTION above.
 
-NORMATIVE-DOC FIX PENDING (needs the same care as any spec edit, applied at spec-implement): the
-`specs/queries/semantics/spec.md` scenario "A materialised branch binds to the grouped row inside a multi-branch
-conjunct" should read cells `{null, 1, 3, 5, 7, 9, 10}` — the orderless South customer's null-order cell was
-omitted. (Deferred to keep the plan doc stable this stage; the test already pins the correct set.)
+NORMATIVE-DOC FIX DONE: the `specs/queries/semantics/spec.md` scenario "A materialised branch binds to the
+grouped row inside a multi-branch conjunct" now reads cells `{null, 1, 3, 5, 7, 9, 10}` — the orderless South
+customer's null-order cell (its LEFT-extended row satisfies the region leg) is included; the test pins the same set.
       Intended-red set (this stage): all of `tests/test_dev1935_boolean_lowering.py` except
       `TestEventLessNullExtension::test_rejecting_predicate_excludes_event_less` and
       `TestGroupingAndDeterminism::test_two_disjoint_branches_yield_two_exists` (byte-identity/invariant anchors

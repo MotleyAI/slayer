@@ -163,8 +163,10 @@ related row.
 - **WHEN** a query rooted at `customers` selects `dimensions: ["orders.id"]` and no measures
   with `filters: ["orders.status = 'ok' or regions.name = 'South'"]`
 - **THEN** by executed values the result has one cell per order that is itself `ok` or whose
-  customer's region is `South` (orders 1, 3, 5, 7, 9 and 10 on the reference dataset) — never
-  a cell for a customer's other order admitted because a sibling order is `ok`
+  customer's region is `South` (orders 1, 3, 5, 7, 9 and 10 on the reference dataset), plus the
+  null-order cell for the orderless customer whose region is `South` (its LEFT-extended row
+  satisfies the region leg: `NULL = 'ok' OR 'South' = 'South'` is TRUE) — never a cell for a
+  customer's other order admitted because a sibling order is `ok`
 
 #### Scenario: Out-of-scope conjunct without an inline aggregate keeps applying
 - **WHEN** a query rooted at `customers` selects `sum(spend, partition_by=tier)` by `tier`
