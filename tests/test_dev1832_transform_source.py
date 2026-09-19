@@ -631,6 +631,15 @@ class TestWindowedInnerConstituent:
         assert_scope_closed(sql, dialect="duckdb")
         assert "__regroup__" not in sql
 
+    async def test_rank_pins_nulls_last_on_postgres(self):
+        # Rank ranks NULLs last on EVERY dialect: Postgres's native DESC is NULLS
+        # FIRST, so the NULL window cell would else take rank 1 and shift the rest.
+        sql = await gen(monthly_q(
+            measures=[ModelMeasure(formula=WINDOWED_INNER, name="m")],
+            time_dimensions=month_td()), dialect="postgres")
+        assert "RANK() OVER (ORDER BY" in sql, sql
+        assert "DESC NULLS LAST" in sql, sql
+
 
 class TestCrossModelGrainedInnerBoundary:
     """queries/partitioned-aggregates › a target-homed inner naming a host time axis is
