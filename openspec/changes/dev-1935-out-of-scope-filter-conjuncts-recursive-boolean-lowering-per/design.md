@@ -134,6 +134,28 @@ subtrees).
     `dev1840_sql_baseline.json` re-blesses with a recorded reason. The declared-INNER-descendant pin
     needs a fixture variant with an event-less region (every DEV-1900 region has events).
 
+12. **Producer genuinely-unreachable arm is dead — delete it (Egor, 2026-09-19, spec-tests Codex
+    review).** Once pushdown is total (decision 2), the producer's `excluded`/genuinely-unreachable
+    disposition has no reachable trigger, exactly as the population's dropped arm does not: a
+    target-rooted producer joins back to the host to attach its grain, so its root reaches — by the
+    same bidirectional traversal every push uses (root → host → N) — every model the host reaches;
+    and a reference that does *not* resolve from the query root fails earlier at dimension routing
+    with `UnresolvableDimensionJoinError`, in **every** mode, before the producer disposition runs.
+    So the only feeders of the producer `UNREACHABLE_NO_PATH` → `UnreachableFilterDroppedWarning`
+    arm (`stages.py` ~1125/1287) were the mixed-OR / multi-branch `_PushBlocked` reasons decision 2
+    removes. **Do at implement:** (a) enumerate every feeder of the producer
+    `UnreachableFilterDroppedWarning` / `excluded` disposition and prove none survives (grep callers;
+    confirm no reroot/traversal edge case yields `UNREACHABLE_NO_PATH` for a host-resolvable ref) —
+    if a live trigger is found, STOP and flag (do not silently keep the arm); (b) delete the
+    producer `excluded` disposition, `dropped_warnings`, and the producer `UnreachableFilterDropped`
+    emission as dead code (the two-way disposition mirrors decision 2's population arm); (c) reword
+    the `queries/cross-model-aggregates` requirement sentence and its *"Genuinely unreachable filter
+    keeps the established behavior"* scenario: a reference with no resolvable join path is **refused
+    at resolution in every mode with a typed error, never routed as if it crossed nothing** — there
+    is no producer-level silent drop. *Rejected:* keeping the arm defensively (leaves dead, untested
+    code and a spec scenario describing an unreachable state — the option-B fixture is topologically
+    inconstructible, since any producer that attaches to the host reaches everything the host does).
+
 ## Risks / Trade-offs
 
 - [MySQL < 8.0.20, BigQuery, ClickHouse reject the spine shape] → reached only by shapes that error or

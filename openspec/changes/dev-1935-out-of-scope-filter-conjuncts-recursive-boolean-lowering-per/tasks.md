@@ -55,28 +55,26 @@
         `test_dev1836_warning_collector.py`, `test_dev1838_interning.py`.
       * `test_dev1840_golden_sql.py`: `excluded/mixed_or` in `dev1840_sql_baseline.json` re-blesses to the
         spine-shaped EXISTS via ALLOWED_DELTAS with a recorded reason (SQL only moves once the lowering lands).
-      OPEN QUESTION (Codex review finding 2) — spec scenario "Genuinely unreachable filter keeps the
-      established behavior" (cross-model-aggregates) says a genuinely unreachable filter is *dropped-and-warned
-      in lenient modes*. Empirically, in the connected dev1900/1840 graph a reference with no join path (e.g.
-      `promos.discount`) is HARD-refused in EVERY mode (`UnresolvableDimensionJoinError` at dimension routing),
-      never a lenient dropped-filter warning; and there is no host-reachable/producer-unreachable topology
-      (customers reaches everything orders reaches via the reverse hop), so the producer `UNREACHABLE_NO_PATH`
-      -> dropped-warning arm (stages.py:1125/1287) appears UNREACHABLE for connected graphs once mixed-OR /
-      multi-branch (its former triggers) push. `TestGenuinelyUnreachableFilterRefused` pins the actual behaviour
-      (refused every mode). spec-implement must reconcile: either (a) the dropped-filter-warning path is dead for
-      connected graphs post-DEV-1935 and the spec scenario should say "refused" (update the delta), or (b) a
-      bespoke disconnected-producer fixture is needed to exercise the warning — decide against the implementation.
+      RESOLVED (Codex review finding 2) — DECISION A, Egor 2026-09-19, recorded as design.md decision 12:
+      the producer genuinely-unreachable `excluded`/dropped-warning arm is dead post-DEV-1935 (a producer
+      that attaches to the host reaches everything the host reaches; an unresolvable ref hard-errors at
+      dimension routing in every mode). At implement, per decision 12: prove the arm has no surviving feeder
+      (STOP and flag if one is found), delete it, and reword the `queries/cross-model-aggregates` requirement
+      sentence + "Genuinely unreachable filter keeps the established behavior" scenario to "refused at
+      resolution in every mode with a typed error." `TestGenuinelyUnreachableFilterRefused` already pins the
+      refused-every-mode behaviour.
 
 ## Codex review of the tests (spec-tests Step 2) — folded in
 - Finding 1 (HIGH): materialised oracle corrected to `{None,1,3,5,7,9,10}` (c7's LEFT-extended South row survives
   via the region leg); main already emits this inline, so it is a same-row-binding + null-extension anchor, not a
-  RED. **The `queries/semantics` delta scenario "A materialised branch binds to the grouped row" states the cells
-  as `1,3,5,7,9,10` and omits the null-order cell — normative-doc correction pending (see below).**
+  RED. The `queries/semantics` delta scenario "A materialised branch binds to the grouped row" was aligned to
+  include the null-order cell (DONE this stage).
 - Finding 3: dev1909 `test_producer_pushes_not_drops` strengthened to assert the restricted values + no dropped
   warning in every mode (was tier-set only → false-green for broadcast/associate).
 - Findings 4 & 5: the decision-7 (`EXISTS` not under `OR`) and two-spellings (one `orders` relation) pins now use
   the sqlglot AST, not text matching.
-- Finding 2: handled as the OPEN QUESTION above.
+- Finding 2: RESOLVED as DECISION A — design.md decision 12 + task 2.9 below (delete the dead producer
+  genuinely-unreachable arm, reword the cross-model-aggregates scenario to "refused in every mode").
 
 NORMATIVE-DOC FIX DONE: the `specs/queries/semantics/spec.md` scenario "A materialised branch binds to the
 grouped row inside a multi-branch conjunct" now reads cells `{null, 1, 3, 5, 7, 9, 10}` — the orderless South
@@ -107,6 +105,18 @@ customer's null-order cell (its LEFT-extended row satisfies the region leg) is i
       the ledger and `tests/test_dev1871_raise_parity.py` pass
 - [ ] 2.8 `stages.py` association arm: confirm no change needed beyond 2.3; verify the association
       scenarios (ok 270 / new 250, ok 270 / new 100)
+- [ ] 2.9 (design.md decision 12, DECISION A) `stages.py` / `elaborate_env.py`: PROVE the producer
+      genuinely-unreachable arm has no surviving feeder — enumerate every producer emitter of
+      `UnreachableFilterDroppedWarning` / the `_conjunct_disposition` `excluded` branch, confirm the only
+      feeders were the mixed-OR / multi-branch `_PushBlocked` reasons deleted in 2.3, and that no
+      reroot/traversal edge case yields `UNREACHABLE_NO_PATH` for a host-resolvable ref (a host-resolvable
+      ref is always reachable from a host-attached producer; an unresolvable ref hard-errors at dimension
+      routing first). If a live trigger is found, STOP and flag — do NOT silently keep the arm. Then delete
+      the producer `excluded` disposition + `dropped_warnings` + producer `UnreachableFilterDropped` emission
+      as dead code, and reword the `queries/cross-model-aggregates` requirement sentence + "Genuinely
+      unreachable filter keeps the established behavior" scenario to "a reference with no resolvable join path
+      is refused at resolution in every mode with a typed error, never routed as if it crossed nothing."
+      Verify `TestGenuinelyUnreachableFilterRefused` (already refused-every-mode) still passes.
 
 ## 3. Renderer
 
