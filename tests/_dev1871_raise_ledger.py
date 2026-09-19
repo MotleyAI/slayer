@@ -122,7 +122,7 @@ ROWS: Tuple[LedgerRow, ...] = (
          "Cross-model aggregate … reads an input across an unproven join hop to … from …; ….",
          "checker", "cross-model", True, "checker"),
     _row(_EE, "check_cross_model_inputs_safe", "ValueError",
-         "Cross-model aggregate … ranks/reads by …, which is not attributable from … (crosses a fanning join); ….",
+         "Cross-model aggregate … ranks/reads by …, which is not attributable from … (…); ….",
          "checker", "cross-model", True, "checker"),
     # An input whose derived-column definition cannot be analysed is unsafe, not empty.
     _row(_EE, "check_input_dependencies_analyzable", "ValueError",
@@ -131,9 +131,6 @@ ROWS: Tuple[LedgerRow, ...] = (
     # Its unnameable arm: the closure is unanalysable but no single column can be named.
     _row(_EE, "check_input_dependencies_analyzable", "ValueError",
          "Aggregate … has an input dependency whose definition no supported dialect can analyse for join dependencies; an unanalyzable dependency is unsafe. Fix the input's SQL, or remove it from the aggregate.",
-         "checker", "cross-model", True, "checker"),
-    _row(_EE, "check_attached_inputs_attributable", "SlayerError",
-         "Cross-model aggregate … runs over … rows under to_many_handling=…, but its attached input … reads …, which …; that input's producer cannot nest inside the …-rooted producer. Use to_many_handling='associate', or aggregate the input over columns attributable from ….",
          "checker", "cross-model", True, "checker"),
     _row(_EE, "check_local_producer_inputs_safe", "ValueError",
          "Aggregate … ranks/reads by …, which crosses an unproven join hop to … from …; ….",

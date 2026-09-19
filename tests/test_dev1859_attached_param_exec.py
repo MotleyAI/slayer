@@ -1,9 +1,8 @@
 """DEV-1859 task 4.4 — leg C executed values (SQLite + DuckDB): an attached
 (aggregate-valued) parameter on a row-level / literal / mixed source compiles by
-row-attaching the parameter's producer into the aggregation's input relation.
-Every oracle is a raw-row reduction in ``tests/_dev1859_fixtures``. The one
-residue: under broadcast a parameter reading host columns inside a
-target-rooted producer is a typed error (DEV-1906 re-roots it).
+row-attaching the parameter's producer into the aggregation's input relation,
+rooted at the parameter's own home in every mode.
+Every oracle is a raw-row reduction in ``tests/_dev1859_fixtures``.
 
 Spec: openspec …/specs/queries/partitioned-aggregates — "Attached parameters on
 row-level sources"; queries/semantics — "Ungrained aggregate parameters type at
@@ -123,25 +122,11 @@ class TestAssociateHeadline:
 
 
 class TestDefaultAndErrorModeTwins:
-    async def test_default_mode_refuses_the_host_rooted_parameter(self, orders_engine):
-        """Scenario: Default-mode twin — the broadcast producer is rooted at
-        customers and the parameter reads orders.amount, which customers cannot
-        reach: a plan-time typed error names the root, the leaf and the
-        associate remedy (decision 14 residue; DEV-1906 re-roots it)."""
-        q = orders_q(dimensions=["status"],
-                     measures=[ModelMeasure(formula=_HEADLINE, name="w")])
-        with pytest.raises(SlayerError) as ei:
-            await orders_engine.execute(q)
-        msg = str(ei.value)
-        assert "'customers'" in msg
-        assert "'amount'" in msg
-        assert "to_many_handling='associate'" in msg
-
-    @pytest.mark.xfail(strict=True, reason="host-rooted parameter re-rooting (DEV-1906)")
     async def test_default_mode_broadcasts_the_global_value(self, orders_engine):
-        """DEV-1906 target: the OMITTED (default) to_many_handling broadcasts the
-        customers-rooted global weighted value identically to both status cells,
-        with the broadcast warning."""
+        """Scenario: Default-mode twin — the OMITTED (default) to_many_handling
+        roots the parameter's producer at orders inside the customers-rooted
+        producer and broadcasts the global weighted value identically to both
+        status cells, with the broadcast warning."""
         resp = await orders_engine.execute(orders_q(
             dimensions=["status"],
             measures=[ModelMeasure(formula=_HEADLINE, name="w")]))
