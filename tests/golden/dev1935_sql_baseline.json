@@ -1,0 +1,163 @@
+{
+  "is_null/absence::bigquery": "SELECT\n  CAST(SUM(customers.spend) AS FLOAT64) AS `customers___sp`\nFROM customers AS customers\nWHERE\n  EXISTS(\n    SELECT\n      1\n    FROM orders AS orders\n    WHERE\n      customers.id = orders.customer_id AND orders.id IS NULL\n  )",
+  "is_null/absence::duckdb": "SELECT\n  CAST(SUM(customers.spend) AS DOUBLE) AS \"customers.sp\"\nFROM customers AS customers\nWHERE\n  EXISTS(\n    SELECT\n      1\n    FROM orders AS orders\n    WHERE\n      customers.id = orders.customer_id AND orders.id IS NULL\n  )",
+  "is_null/absence::mysql": "SELECT\n  CAST(SUM(customers.spend) AS DOUBLE) AS `customers.sp`\nFROM customers AS customers\nWHERE\n  EXISTS(\n    SELECT\n      1\n    FROM orders AS orders\n    WHERE\n      customers.id = orders.customer_id AND orders.id IS NULL\n  )",
+  "is_null/absence::postgres": "SELECT\n  CAST(SUM(customers.spend) AS DOUBLE PRECISION) AS \"customers.sp\"\nFROM customers AS customers\nWHERE\n  EXISTS(\n    SELECT\n      1\n    FROM orders AS orders\n    WHERE\n      customers.id = orders.customer_id AND orders.id IS NULL\n  )",
+  "is_null/absence::snowflake": "SELECT\n  CAST(SUM(customers.spend) AS DOUBLE) AS \"customers.sp\"\nFROM customers AS customers\nWHERE\n  EXISTS(\n    SELECT\n      1\n    FROM orders AS orders\n    WHERE\n      customers.id = orders.customer_id AND orders.id IS NULL\n  )",
+  "is_null/absence::sqlite": "SELECT\n  CAST(SUM(customers.spend) AS REAL) AS \"customers.sp\"\nFROM customers AS customers\nWHERE\n  EXISTS(\n    SELECT\n      1\n    FROM orders AS orders\n    WHERE\n      customers.id = orders.customer_id AND orders.id IS NULL\n  )",
+  "is_null/absence::tsql": "SELECT\n  CAST(SUM(customers.spend) AS FLOAT) AS [customers___sp]\nFROM customers AS customers\nWHERE\n  EXISTS(\n    SELECT\n      1\n    FROM orders AS orders\n    WHERE\n      customers.id = orders.customer_id AND orders.id IS NULL\n  )",
+  "materialised/host_base::bigquery": "SELECT\n  orders.id AS `customers___orders___id`\nFROM customers AS customers\nLEFT JOIN orders AS orders\n  ON customers.id = orders.customer_id\nLEFT JOIN regions AS regions\n  ON customers.region_id = regions.id\nWHERE\n  (\n    orders.status = 'ok' OR regions.name = 'South'\n  )\nGROUP BY\n  orders.id",
+  "materialised/host_base::duckdb": "SELECT\n  orders.id AS \"customers.orders.id\"\nFROM customers AS customers\nLEFT JOIN orders AS orders\n  ON customers.id = orders.customer_id\nLEFT JOIN regions AS regions\n  ON customers.region_id = regions.id\nWHERE\n  (\n    orders.status = 'ok' OR regions.name = 'South'\n  )\nGROUP BY\n  orders.id",
+  "materialised/host_base::mysql": "SELECT\n  orders.id AS `customers.orders.id`\nFROM customers AS customers\nLEFT JOIN orders AS orders\n  ON customers.id = orders.customer_id\nLEFT JOIN regions AS regions\n  ON customers.region_id = regions.id\nWHERE\n  (\n    orders.status = 'ok' OR regions.name = 'South'\n  )\nGROUP BY\n  orders.id",
+  "materialised/host_base::postgres": "SELECT\n  orders.id AS \"customers.orders.id\"\nFROM customers AS customers\nLEFT JOIN orders AS orders\n  ON customers.id = orders.customer_id\nLEFT JOIN regions AS regions\n  ON customers.region_id = regions.id\nWHERE\n  (\n    orders.status = 'ok' OR regions.name = 'South'\n  )\nGROUP BY\n  orders.id",
+  "materialised/host_base::snowflake": "SELECT\n  orders.id AS \"customers.orders.id\"\nFROM customers AS customers\nLEFT JOIN orders AS orders\n  ON customers.id = orders.customer_id\nLEFT JOIN regions AS regions\n  ON customers.region_id = regions.id\nWHERE\n  (\n    orders.status = 'ok' OR regions.name = 'South'\n  )\nGROUP BY\n  orders.id",
+  "materialised/host_base::sqlite": "SELECT\n  orders.id AS \"customers.orders.id\"\nFROM customers AS customers\nLEFT JOIN orders AS orders\n  ON customers.id = orders.customer_id\nLEFT JOIN regions AS regions\n  ON customers.region_id = regions.id\nWHERE\n  (\n    orders.status = 'ok' OR regions.name = 'South'\n  )\nGROUP BY\n  orders.id",
+  "materialised/host_base::tsql": "SELECT\n  orders.id AS [customers___orders___id]\nFROM customers AS customers\nLEFT JOIN orders AS orders\n  ON customers.id = orders.customer_id\nLEFT JOIN regions AS regions\n  ON customers.region_id = regions.id\nWHERE\n  (\n    orders.status = 'ok' OR regions.name = 'South'\n  )\nGROUP BY\n  orders.id",
+  "mixed_or/gold_null_extended::bigquery": {
+    "error": "ValueError",
+    "message": "Filter \"tier = 'gold' or orders.status = 'ok'\" cannot restrict the population by association: mixes a root-anchored predicate with a cross-path predicate under OR/NOT, which a semi-join cannot preserve. With a plain aggregate inline over the population, or in raw-row mode, this would multiply the population's rows. Split the filter into separate conjuncts, or restate it on a single join branch."
+  },
+  "mixed_or/gold_null_extended::duckdb": {
+    "error": "ValueError",
+    "message": "Filter \"tier = 'gold' or orders.status = 'ok'\" cannot restrict the population by association: mixes a root-anchored predicate with a cross-path predicate under OR/NOT, which a semi-join cannot preserve. With a plain aggregate inline over the population, or in raw-row mode, this would multiply the population's rows. Split the filter into separate conjuncts, or restate it on a single join branch."
+  },
+  "mixed_or/gold_null_extended::mysql": {
+    "error": "ValueError",
+    "message": "Filter \"tier = 'gold' or orders.status = 'ok'\" cannot restrict the population by association: mixes a root-anchored predicate with a cross-path predicate under OR/NOT, which a semi-join cannot preserve. With a plain aggregate inline over the population, or in raw-row mode, this would multiply the population's rows. Split the filter into separate conjuncts, or restate it on a single join branch."
+  },
+  "mixed_or/gold_null_extended::postgres": {
+    "error": "ValueError",
+    "message": "Filter \"tier = 'gold' or orders.status = 'ok'\" cannot restrict the population by association: mixes a root-anchored predicate with a cross-path predicate under OR/NOT, which a semi-join cannot preserve. With a plain aggregate inline over the population, or in raw-row mode, this would multiply the population's rows. Split the filter into separate conjuncts, or restate it on a single join branch."
+  },
+  "mixed_or/gold_null_extended::snowflake": {
+    "error": "ValueError",
+    "message": "Filter \"tier = 'gold' or orders.status = 'ok'\" cannot restrict the population by association: mixes a root-anchored predicate with a cross-path predicate under OR/NOT, which a semi-join cannot preserve. With a plain aggregate inline over the population, or in raw-row mode, this would multiply the population's rows. Split the filter into separate conjuncts, or restate it on a single join branch."
+  },
+  "mixed_or/gold_null_extended::sqlite": {
+    "error": "ValueError",
+    "message": "Filter \"tier = 'gold' or orders.status = 'ok'\" cannot restrict the population by association: mixes a root-anchored predicate with a cross-path predicate under OR/NOT, which a semi-join cannot preserve. With a plain aggregate inline over the population, or in raw-row mode, this would multiply the population's rows. Split the filter into separate conjuncts, or restate it on a single join branch."
+  },
+  "mixed_or/gold_null_extended::tsql": {
+    "error": "ValueError",
+    "message": "Filter \"tier = 'gold' or orders.status = 'ok'\" cannot restrict the population by association: mixes a root-anchored predicate with a cross-path predicate under OR/NOT, which a semi-join cannot preserve. With a plain aggregate inline over the population, or in raw-row mode, this would multiply the population's rows. Split the filter into separate conjuncts, or restate it on a single join branch."
+  },
+  "mixed_or/negation::bigquery": {
+    "error": "ValueError",
+    "message": "Filter \"not (tier = 'gold' and orders.status = 'ok')\" cannot restrict the population by association: mixes a root-anchored predicate with a cross-path predicate under OR/NOT, which a semi-join cannot preserve. With a plain aggregate inline over the population, or in raw-row mode, this would multiply the population's rows. Split the filter into separate conjuncts, or restate it on a single join branch."
+  },
+  "mixed_or/negation::duckdb": {
+    "error": "ValueError",
+    "message": "Filter \"not (tier = 'gold' and orders.status = 'ok')\" cannot restrict the population by association: mixes a root-anchored predicate with a cross-path predicate under OR/NOT, which a semi-join cannot preserve. With a plain aggregate inline over the population, or in raw-row mode, this would multiply the population's rows. Split the filter into separate conjuncts, or restate it on a single join branch."
+  },
+  "mixed_or/negation::mysql": {
+    "error": "ValueError",
+    "message": "Filter \"not (tier = 'gold' and orders.status = 'ok')\" cannot restrict the population by association: mixes a root-anchored predicate with a cross-path predicate under OR/NOT, which a semi-join cannot preserve. With a plain aggregate inline over the population, or in raw-row mode, this would multiply the population's rows. Split the filter into separate conjuncts, or restate it on a single join branch."
+  },
+  "mixed_or/negation::postgres": {
+    "error": "ValueError",
+    "message": "Filter \"not (tier = 'gold' and orders.status = 'ok')\" cannot restrict the population by association: mixes a root-anchored predicate with a cross-path predicate under OR/NOT, which a semi-join cannot preserve. With a plain aggregate inline over the population, or in raw-row mode, this would multiply the population's rows. Split the filter into separate conjuncts, or restate it on a single join branch."
+  },
+  "mixed_or/negation::snowflake": {
+    "error": "ValueError",
+    "message": "Filter \"not (tier = 'gold' and orders.status = 'ok')\" cannot restrict the population by association: mixes a root-anchored predicate with a cross-path predicate under OR/NOT, which a semi-join cannot preserve. With a plain aggregate inline over the population, or in raw-row mode, this would multiply the population's rows. Split the filter into separate conjuncts, or restate it on a single join branch."
+  },
+  "mixed_or/negation::sqlite": {
+    "error": "ValueError",
+    "message": "Filter \"not (tier = 'gold' and orders.status = 'ok')\" cannot restrict the population by association: mixes a root-anchored predicate with a cross-path predicate under OR/NOT, which a semi-join cannot preserve. With a plain aggregate inline over the population, or in raw-row mode, this would multiply the population's rows. Split the filter into separate conjuncts, or restate it on a single join branch."
+  },
+  "mixed_or/negation::tsql": {
+    "error": "ValueError",
+    "message": "Filter \"not (tier = 'gold' and orders.status = 'ok')\" cannot restrict the population by association: mixes a root-anchored predicate with a cross-path predicate under OR/NOT, which a semi-join cannot preserve. With a plain aggregate inline over the population, or in raw-row mode, this would multiply the population's rows. Split the filter into separate conjuncts, or restate it on a single join branch."
+  },
+  "mixed_or/structural::bigquery": {
+    "error": "ValueError",
+    "message": "Filter \"tier = 'bronze' or orders.status = 'ok'\" cannot restrict the population by association: mixes a root-anchored predicate with a cross-path predicate under OR/NOT, which a semi-join cannot preserve. With a plain aggregate inline over the population, or in raw-row mode, this would multiply the population's rows. Split the filter into separate conjuncts, or restate it on a single join branch."
+  },
+  "mixed_or/structural::duckdb": {
+    "error": "ValueError",
+    "message": "Filter \"tier = 'bronze' or orders.status = 'ok'\" cannot restrict the population by association: mixes a root-anchored predicate with a cross-path predicate under OR/NOT, which a semi-join cannot preserve. With a plain aggregate inline over the population, or in raw-row mode, this would multiply the population's rows. Split the filter into separate conjuncts, or restate it on a single join branch."
+  },
+  "mixed_or/structural::mysql": {
+    "error": "ValueError",
+    "message": "Filter \"tier = 'bronze' or orders.status = 'ok'\" cannot restrict the population by association: mixes a root-anchored predicate with a cross-path predicate under OR/NOT, which a semi-join cannot preserve. With a plain aggregate inline over the population, or in raw-row mode, this would multiply the population's rows. Split the filter into separate conjuncts, or restate it on a single join branch."
+  },
+  "mixed_or/structural::postgres": {
+    "error": "ValueError",
+    "message": "Filter \"tier = 'bronze' or orders.status = 'ok'\" cannot restrict the population by association: mixes a root-anchored predicate with a cross-path predicate under OR/NOT, which a semi-join cannot preserve. With a plain aggregate inline over the population, or in raw-row mode, this would multiply the population's rows. Split the filter into separate conjuncts, or restate it on a single join branch."
+  },
+  "mixed_or/structural::snowflake": {
+    "error": "ValueError",
+    "message": "Filter \"tier = 'bronze' or orders.status = 'ok'\" cannot restrict the population by association: mixes a root-anchored predicate with a cross-path predicate under OR/NOT, which a semi-join cannot preserve. With a plain aggregate inline over the population, or in raw-row mode, this would multiply the population's rows. Split the filter into separate conjuncts, or restate it on a single join branch."
+  },
+  "mixed_or/structural::sqlite": {
+    "error": "ValueError",
+    "message": "Filter \"tier = 'bronze' or orders.status = 'ok'\" cannot restrict the population by association: mixes a root-anchored predicate with a cross-path predicate under OR/NOT, which a semi-join cannot preserve. With a plain aggregate inline over the population, or in raw-row mode, this would multiply the population's rows. Split the filter into separate conjuncts, or restate it on a single join branch."
+  },
+  "mixed_or/structural::tsql": {
+    "error": "ValueError",
+    "message": "Filter \"tier = 'bronze' or orders.status = 'ok'\" cannot restrict the population by association: mixes a root-anchored predicate with a cross-path predicate under OR/NOT, which a semi-join cannot preserve. With a plain aggregate inline over the population, or in raw-row mode, this would multiply the population's rows. Split the filter into separate conjuncts, or restate it on a single join branch."
+  },
+  "multi_branch/atom::bigquery": {
+    "error": "ValueError",
+    "message": "Filter 'orders.amount < regions.region_events.value' cannot restrict the population by association: its cross-path references span multiple join branches from customers, so no single semi-join tree covers them. With a plain aggregate inline over the population, or in raw-row mode, this would multiply the population's rows. Split the filter into separate conjuncts, or restate it on a single join branch."
+  },
+  "multi_branch/atom::duckdb": {
+    "error": "ValueError",
+    "message": "Filter 'orders.amount < regions.region_events.value' cannot restrict the population by association: its cross-path references span multiple join branches from customers, so no single semi-join tree covers them. With a plain aggregate inline over the population, or in raw-row mode, this would multiply the population's rows. Split the filter into separate conjuncts, or restate it on a single join branch."
+  },
+  "multi_branch/atom::mysql": {
+    "error": "ValueError",
+    "message": "Filter 'orders.amount < regions.region_events.value' cannot restrict the population by association: its cross-path references span multiple join branches from customers, so no single semi-join tree covers them. With a plain aggregate inline over the population, or in raw-row mode, this would multiply the population's rows. Split the filter into separate conjuncts, or restate it on a single join branch."
+  },
+  "multi_branch/atom::postgres": {
+    "error": "ValueError",
+    "message": "Filter 'orders.amount < regions.region_events.value' cannot restrict the population by association: its cross-path references span multiple join branches from customers, so no single semi-join tree covers them. With a plain aggregate inline over the population, or in raw-row mode, this would multiply the population's rows. Split the filter into separate conjuncts, or restate it on a single join branch."
+  },
+  "multi_branch/atom::snowflake": {
+    "error": "ValueError",
+    "message": "Filter 'orders.amount < regions.region_events.value' cannot restrict the population by association: its cross-path references span multiple join branches from customers, so no single semi-join tree covers them. With a plain aggregate inline over the population, or in raw-row mode, this would multiply the population's rows. Split the filter into separate conjuncts, or restate it on a single join branch."
+  },
+  "multi_branch/atom::sqlite": {
+    "error": "ValueError",
+    "message": "Filter 'orders.amount < regions.region_events.value' cannot restrict the population by association: its cross-path references span multiple join branches from customers, so no single semi-join tree covers them. With a plain aggregate inline over the population, or in raw-row mode, this would multiply the population's rows. Split the filter into separate conjuncts, or restate it on a single join branch."
+  },
+  "multi_branch/atom::tsql": {
+    "error": "ValueError",
+    "message": "Filter 'orders.amount < regions.region_events.value' cannot restrict the population by association: its cross-path references span multiple join branches from customers, so no single semi-join tree covers them. With a plain aggregate inline over the population, or in raw-row mode, this would multiply the population's rows. Split the filter into separate conjuncts, or restate it on a single join branch."
+  },
+  "multi_branch/or::bigquery": {
+    "error": "ValueError",
+    "message": "Filter \"orders.status = 'new' or regions.region_events.value >= 50\" cannot restrict the population by association: its cross-path references span multiple join branches from customers, so no single semi-join tree covers them. With a plain aggregate inline over the population, or in raw-row mode, this would multiply the population's rows. Split the filter into separate conjuncts, or restate it on a single join branch."
+  },
+  "multi_branch/or::duckdb": {
+    "error": "ValueError",
+    "message": "Filter \"orders.status = 'new' or regions.region_events.value >= 50\" cannot restrict the population by association: its cross-path references span multiple join branches from customers, so no single semi-join tree covers them. With a plain aggregate inline over the population, or in raw-row mode, this would multiply the population's rows. Split the filter into separate conjuncts, or restate it on a single join branch."
+  },
+  "multi_branch/or::mysql": {
+    "error": "ValueError",
+    "message": "Filter \"orders.status = 'new' or regions.region_events.value >= 50\" cannot restrict the population by association: its cross-path references span multiple join branches from customers, so no single semi-join tree covers them. With a plain aggregate inline over the population, or in raw-row mode, this would multiply the population's rows. Split the filter into separate conjuncts, or restate it on a single join branch."
+  },
+  "multi_branch/or::postgres": {
+    "error": "ValueError",
+    "message": "Filter \"orders.status = 'new' or regions.region_events.value >= 50\" cannot restrict the population by association: its cross-path references span multiple join branches from customers, so no single semi-join tree covers them. With a plain aggregate inline over the population, or in raw-row mode, this would multiply the population's rows. Split the filter into separate conjuncts, or restate it on a single join branch."
+  },
+  "multi_branch/or::snowflake": {
+    "error": "ValueError",
+    "message": "Filter \"orders.status = 'new' or regions.region_events.value >= 50\" cannot restrict the population by association: its cross-path references span multiple join branches from customers, so no single semi-join tree covers them. With a plain aggregate inline over the population, or in raw-row mode, this would multiply the population's rows. Split the filter into separate conjuncts, or restate it on a single join branch."
+  },
+  "multi_branch/or::sqlite": {
+    "error": "ValueError",
+    "message": "Filter \"orders.status = 'new' or regions.region_events.value >= 50\" cannot restrict the population by association: its cross-path references span multiple join branches from customers, so no single semi-join tree covers them. With a plain aggregate inline over the population, or in raw-row mode, this would multiply the population's rows. Split the filter into separate conjuncts, or restate it on a single join branch."
+  },
+  "multi_branch/or::tsql": {
+    "error": "ValueError",
+    "message": "Filter \"orders.status = 'new' or regions.region_events.value >= 50\" cannot restrict the population by association: its cross-path references span multiple join branches from customers, so no single semi-join tree covers them. With a plain aggregate inline over the population, or in raw-row mode, this would multiply the population's rows. Split the filter into separate conjuncts, or restate it on a single join branch."
+  },
+  "producer/mixed_or_partitioned::bigquery": "WITH _base AS (\n  SELECT\n    customers.tier AS `customers___tier`\n  FROM customers AS customers\n  LEFT JOIN orders AS orders\n    ON customers.id = orders.customer_id\n  WHERE\n    (\n      customers.tier = 'bronze' OR orders.status = 'ok'\n    )\n  GROUP BY\n    customers.tier\n), _cm_customers__spend_sum_partition_by_tier AS (\n  SELECT\n    customers.tier AS `customers___tier`,\n    CAST(SUM(customers.spend) AS FLOAT64) AS `customers___pt`\n  FROM customers AS customers\n  GROUP BY\n    customers.tier\n)\nSELECT\n  _base.`customers___tier`,\n  _cm_customers__spend_sum_partition_by_tier.`customers___pt`\nFROM _base\nLEFT JOIN _cm_customers__spend_sum_partition_by_tier\n  ON _base.`customers___tier` IS NOT DISTINCT FROM _cm_customers__spend_sum_partition_by_tier.`customers___tier`",
+  "producer/mixed_or_partitioned::duckdb": "WITH _base AS (\n  SELECT\n    customers.tier AS \"customers.tier\"\n  FROM customers AS customers\n  LEFT JOIN orders AS orders\n    ON customers.id = orders.customer_id\n  WHERE\n    (\n      customers.tier = 'bronze' OR orders.status = 'ok'\n    )\n  GROUP BY\n    customers.tier\n), _cm_customers__spend_sum_partition_by_tier AS (\n  SELECT\n    customers.tier AS \"customers.tier\",\n    CAST(SUM(customers.spend) AS DOUBLE) AS \"customers.pt\"\n  FROM customers AS customers\n  GROUP BY\n    customers.tier\n)\nSELECT\n  _base.\"customers.tier\",\n  _cm_customers__spend_sum_partition_by_tier.\"customers.pt\"\nFROM _base\nLEFT JOIN _cm_customers__spend_sum_partition_by_tier\n  ON _base.\"customers.tier\" IS NOT DISTINCT FROM _cm_customers__spend_sum_partition_by_tier.\"customers.tier\"",
+  "producer/mixed_or_partitioned::mysql": "WITH _base AS (\n  SELECT\n    customers.tier AS `customers.tier`\n  FROM customers AS customers\n  LEFT JOIN orders AS orders\n    ON customers.id = orders.customer_id\n  WHERE\n    (\n      customers.tier = 'bronze' OR orders.status = 'ok'\n    )\n  GROUP BY\n    customers.tier\n), _cm_customers__spend_sum_partition_by_tier AS (\n  SELECT\n    customers.tier AS `customers.tier`,\n    CAST(SUM(customers.spend) AS DOUBLE) AS `customers.pt`\n  FROM customers AS customers\n  GROUP BY\n    customers.tier\n)\nSELECT\n  _base.`customers.tier`,\n  _cm_customers__spend_sum_partition_by_tier.`customers.pt`\nFROM _base\nLEFT JOIN _cm_customers__spend_sum_partition_by_tier\n  ON _base.`customers.tier` <=> _cm_customers__spend_sum_partition_by_tier.`customers.tier`",
+  "producer/mixed_or_partitioned::postgres": "WITH _base AS (\n  SELECT\n    customers.tier AS \"customers.tier\"\n  FROM customers AS customers\n  LEFT JOIN orders AS orders\n    ON customers.id = orders.customer_id\n  WHERE\n    (\n      customers.tier = 'bronze' OR orders.status = 'ok'\n    )\n  GROUP BY\n    customers.tier\n), _cm_customers__spend_sum_partition_by_tier AS (\n  SELECT\n    customers.tier AS \"customers.tier\",\n    CAST(SUM(customers.spend) AS DOUBLE PRECISION) AS \"customers.pt\"\n  FROM customers AS customers\n  GROUP BY\n    customers.tier\n)\nSELECT\n  _base.\"customers.tier\",\n  _cm_customers__spend_sum_partition_by_tier.\"customers.pt\"\nFROM _base\nLEFT JOIN _cm_customers__spend_sum_partition_by_tier\n  ON _base.\"customers.tier\" IS NOT DISTINCT FROM _cm_customers__spend_sum_partition_by_tier.\"customers.tier\"",
+  "producer/mixed_or_partitioned::snowflake": "WITH _base AS (\n  SELECT\n    customers.tier AS \"customers.tier\"\n  FROM customers AS customers\n  LEFT JOIN orders AS orders\n    ON customers.id = orders.customer_id\n  WHERE\n    (\n      customers.tier = 'bronze' OR orders.status = 'ok'\n    )\n  GROUP BY\n    customers.tier\n), _cm_customers__spend_sum_partition_by_tier AS (\n  SELECT\n    customers.tier AS \"customers.tier\",\n    CAST(SUM(customers.spend) AS DOUBLE) AS \"customers.pt\"\n  FROM customers AS customers\n  GROUP BY\n    customers.tier\n)\nSELECT\n  _base.\"customers.tier\",\n  _cm_customers__spend_sum_partition_by_tier.\"customers.pt\"\nFROM _base\nLEFT JOIN _cm_customers__spend_sum_partition_by_tier\n  ON _base.\"customers.tier\" IS NOT DISTINCT FROM _cm_customers__spend_sum_partition_by_tier.\"customers.tier\"",
+  "producer/mixed_or_partitioned::sqlite": "WITH _base AS (\n  SELECT\n    customers.tier AS \"customers.tier\"\n  FROM customers AS customers\n  LEFT JOIN orders AS orders\n    ON customers.id = orders.customer_id\n  WHERE\n    (\n      customers.tier = 'bronze' OR orders.status = 'ok'\n    )\n  GROUP BY\n    customers.tier\n), _cm_customers__spend_sum_partition_by_tier AS (\n  SELECT\n    customers.tier AS \"customers.tier\",\n    CAST(SUM(customers.spend) AS REAL) AS \"customers.pt\"\n  FROM customers AS customers\n  GROUP BY\n    customers.tier\n)\nSELECT\n  _base.\"customers.tier\",\n  _cm_customers__spend_sum_partition_by_tier.\"customers.pt\"\nFROM _base\nLEFT JOIN _cm_customers__spend_sum_partition_by_tier\n  ON _base.\"customers.tier\" IS _cm_customers__spend_sum_partition_by_tier.\"customers.tier\"",
+  "producer/mixed_or_partitioned::tsql": "WITH _base AS (\n  SELECT\n    customers.tier AS [customers___tier]\n  FROM customers AS customers\n  LEFT JOIN orders AS orders\n    ON customers.id = orders.customer_id\n  WHERE\n    (\n      customers.tier = 'bronze' OR orders.status = 'ok'\n    )\n  GROUP BY\n    customers.tier\n), _cm_customers__spend_sum_partition_by_tier AS (\n  SELECT\n    customers.tier AS [customers___tier],\n    CAST(SUM(customers.spend) AS FLOAT) AS [customers___pt]\n  FROM customers AS customers\n  GROUP BY\n    customers.tier\n)\nSELECT\n  _base.[customers___tier],\n  _cm_customers__spend_sum_partition_by_tier.[customers___pt]\nFROM _base\nLEFT JOIN _cm_customers__spend_sum_partition_by_tier\n  ON (\n    _base.[customers___tier] = _cm_customers__spend_sum_partition_by_tier.[customers___tier]\n    OR (\n      _base.[customers___tier] IS NULL\n      AND _cm_customers__spend_sum_partition_by_tier.[customers___tier] IS NULL\n    )\n  )"
+}
