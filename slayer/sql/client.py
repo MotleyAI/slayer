@@ -357,6 +357,16 @@ def classify_model_sql(sql: str, *, dialect: str | None = None) -> str:
     return "modifying" if tree.find(*_DATA_MODIFYING_NODES) is not None else "read_only"
 
 
+def _exec_verbatim(conn, sql: str) -> Any:
+    """Run rendered SQL verbatim: no bind-param or ``%`` reinterpretation."""
+    return conn.exec_driver_sql(sql, execution_options={"no_parameters": True})
+
+
+async def _exec_verbatim_async(conn, sql: str) -> Any:
+    """Async sibling: the one verbatim door for async execution paths."""
+    return await conn.exec_driver_sql(sql, execution_options={"no_parameters": True})
+
+
 def _apply_type_probe_timeout(conn, db_type: str | None, timeout_seconds: int) -> None:
     """Apply the dialect's statement-timeout SQL before a type probe.
 
@@ -366,7 +376,7 @@ def _apply_type_probe_timeout(conn, db_type: str | None, timeout_seconds: int) -
         return
     timeout_sql = dialect_for_ds_type(db_type).statement_timeout_sql(timeout_seconds)
     if timeout_sql:
-        conn.execute(sa.text(timeout_sql))
+        _exec_verbatim(conn, timeout_sql)
 
 
 async def _apply_type_probe_timeout_async(conn, db_type: str | None, timeout_seconds: int) -> None:
@@ -375,7 +385,7 @@ async def _apply_type_probe_timeout_async(conn, db_type: str | None, timeout_sec
         return
     timeout_sql = dialect_for_ds_type(db_type).statement_timeout_sql(timeout_seconds)
     if timeout_sql:
-        await conn.execute(sa.text(timeout_sql))
+        await _exec_verbatim_async(conn, timeout_sql)
 
 
 # Type probes only compile (LIMIT 0/1); 60s is generous.
@@ -404,9 +414,9 @@ def _get_column_types_sync(
     with engine.connect() as conn:
         ro_sql = _read_only_transaction_sql(db_type)
         if ro_sql:
-            conn.execute(sa.text(ro_sql))
+            _exec_verbatim(conn, ro_sql)
         _apply_type_probe_timeout(conn, db_type, _TYPE_PROBE_TIMEOUT_SECONDS)
-        result = conn.execute(sa.text(limit_sql))
+        result = _exec_verbatim(conn, limit_sql)
         types = _extract_types_from_cursor(result, db_type=db_type)
         conn.rollback()
     return types
@@ -429,9 +439,9 @@ async def _get_column_types_async(
     async with engine.connect() as conn:
         ro_sql = _read_only_transaction_sql(db_type)
         if ro_sql:
-            await conn.execute(sa.text(ro_sql))
+            await _exec_verbatim_async(conn, ro_sql)
         await _apply_type_probe_timeout_async(conn, db_type, _TYPE_PROBE_TIMEOUT_SECONDS)
-        result = await conn.execute(sa.text(limit_sql))
+        result = await _exec_verbatim_async(conn, limit_sql)
         types = _extract_types_from_cursor(result, db_type=db_type)
         await conn.rollback()
     return types
@@ -807,20 +817,20 @@ async def _execute_sql_async(
         timeout_ms = timeout_seconds * 1000
         _t = timing.start()
         if db_type in ("mysql", "mariadb"):
-            await conn.execute(sa.text(f"SET max_execution_time = {timeout_ms}"))
+            await _exec_verbatim_async(conn, f"SET max_execution_time = {timeout_ms}")
         elif db_type in ("postgres", "postgresql", None):
             try:
-                await conn.execute(sa.text(f"SET statement_timeout = {timeout_ms}"))
+                await _exec_verbatim_async(conn, f"SET statement_timeout = {timeout_ms}")
             except Exception:
                 pass
         else:
             # Dialect-specific timeout SET; base returns None (only Snowflake emits one).
             timeout_sql = dialect_for_ds_type(db_type).statement_timeout_sql(timeout_seconds)
             if timeout_sql:
-                await conn.execute(sa.text(timeout_sql))
+                await _exec_verbatim_async(conn, timeout_sql)
         timing.record("set_timeout", _t)
         _t = timing.start()
-        result = await conn.execute(sa.text(sql))
+        result = await _exec_verbatim_async(conn, sql)
         columns = list(result.keys())
         rows = [dict(zip(columns, row)) for row in result.fetchall()]
         timing.record("query", _t)
@@ -897,19 +907,19 @@ def _execute_sql_sync(
     with engine.connect() as conn:
         timeout_ms = timeout_seconds * 1000
         if db_type in ("mysql", "mariadb"):
-            conn.execute(sa.text(f"SET max_execution_time = {timeout_ms}"))
+            _exec_verbatim(conn, f"SET max_execution_time = {timeout_ms}")
         elif db_type == "clickhouse":
-            conn.execute(sa.text(f"SET max_execution_time = {timeout_seconds}"))
+            _exec_verbatim(conn, f"SET max_execution_time = {timeout_seconds}")
         elif db_type in ("postgres", "postgresql", None):
             try:
-                conn.execute(sa.text(f"SET statement_timeout = {timeout_ms}"))
+                _exec_verbatim(conn, f"SET statement_timeout = {timeout_ms}")
             except Exception:
                 pass
         else:
             # Dialect-specific timeout SET; base returns None (only Snowflake emits one).
             timeout_sql = dialect_for_ds_type(db_type).statement_timeout_sql(timeout_seconds)
             if timeout_sql:
-                conn.execute(sa.text(timeout_sql))
-        result = conn.execute(sa.text(sql))
+                _exec_verbatim(conn, timeout_sql)
+        result = _exec_verbatim(conn, sql)
         columns = list(result.keys())
         return [dict(zip(columns, row)) for row in result.fetchall()]

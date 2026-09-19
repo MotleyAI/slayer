@@ -9,7 +9,7 @@ import pytest
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
-from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
+from slayer.core.query import ColumnRef, ModelExtension, OrderItem, SlayerQuery, TimeDimension
 from slayer.engine.ingestion import ingest_datasource
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
@@ -116,6 +116,26 @@ class TestDuckDBQueries:
         result = await duckdb_env.execute(query=query)
         assert result.row_count == 1
         assert result.data[0]["orders._count"] == 6
+
+    async def test_dev1933_regex_literal_extension_column(self, duckdb_env: SlayerQueryEngine) -> None:
+        """DEV-1933: an ad-hoc column holding a ``(?:...)`` regex literal and a ``%``
+        LIKE pattern executes verbatim; text() misread ``:too`` as a bind parameter."""
+        query = SlayerQuery(
+            source_model=ModelExtension(
+                source_name="orders",
+                columns=[Column(
+                    name="rx",
+                    sql="CASE WHEN status LIKE '%pend%' "
+                        "OR status = '(?i)(?:too complicated|too complex)' THEN 1 ELSE 0 END",
+                    type=DataType.DOUBLE,
+                )],
+            ),
+            dimensions=[ColumnRef(name="rx")],
+            measures=[ModelMeasure(formula="*:count")],
+        )
+        result = await duckdb_env.execute(query=query)
+        by_rx = {int(r["orders.rx"]): r["orders._count"] for r in result.data}
+        assert by_rx == {1: 2, 0: 4}
 
     async def test_sum_measure(self, duckdb_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(source_model="orders", measures=[{"formula": "total:sum"}])
