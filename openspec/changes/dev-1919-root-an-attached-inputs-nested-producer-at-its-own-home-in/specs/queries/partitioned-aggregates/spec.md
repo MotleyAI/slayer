@@ -14,9 +14,12 @@ parameter's producer is computed at the parameter's OWN home — the deepest
 dataset determining the parameter's own inputs, resolved bottom-up — at its own
 declared grain, and its value attached into the aggregation's input relation
 per home row of the aggregation, in every `to_many_handling` mode, null-safely
-on the producer's complete grain; the mode governs only the aggregation's own
-unattributable dimensions, never where a parameter is computed or whether it
-compiles. The source alone decides that the aggregation runs over rows: a
+on the producer's complete grain; the attachment is well-defined only when the
+home determines every member of the parameter's resolved grain, judged by one
+home-determination rule on the plain and association paths alike; the mode
+governs the aggregation's own unattributable dimensions and, inside the
+parameter's own producer, its explicit-partition-key rule — never where the
+parameter is computed. The source alone decides that the aggregation runs over rows: a
 source with any row-level leaf, or with no attached constituent at all (a
 literal), is row grain; a parameter never changes that, and an attached
 parameter beside a mixed source is attached by the same mechanism as the
@@ -105,6 +108,8 @@ SHALL be legal in measure, filter (typing as a measure) and ORDER BY positions.
   customer's NULL innermost weight excludes it), on SQLite and DuckDB
 
 #### Scenario: Ranked transform as the attached parameter
+(Target behaviour, deferred to DEV-1903 — bind refuses a transform argument
+today; pinned by a strict xfail.)
 - **WHEN** a query rooted at `orders` selects
   `customers.spend:weighted_avg(weight=rank(sum(amount, partition_by=customers.regions.name)))`
   — the region cells ranked by their order-amount total, the NULL-name region
@@ -114,6 +119,8 @@ SHALL be legal in measure, filter (typing as a measure) and ORDER BY positions.
   mode by `customers.tier` with identical hand-computed values
 
 #### Scenario: Transform parameter whose grain the home does not determine fails closed
+(Target behaviour, deferred to DEV-1903 — bind refuses a transform argument
+today; pinned by a strict xfail.)
 - **WHEN** a query rooted at `orders` over a month time dimension on `ordered_at`
   selects
   `customers.spend:weighted_avg(weight=cumsum(sum(amount, partition_by=[customers.regions.name, ordered_at])))`
@@ -122,6 +129,10 @@ SHALL be legal in measure, filter (typing as a measure) and ORDER BY positions.
   transform's grain — never a multiplied or broadcast value
 
 #### Scenario: Windowed aggregation with an attached parameter
+(Target behaviour, deferred to DEV-1915 — the `window=` sum/avg allowlist refuses
+it today; pinned by a strict xfail. The constituent form executes: see
+`aggregations/expression-aggregation` › Windowed aggregation with an attached
+constituent.)
 - **WHEN** a query rooted at `orders` over a month time dimension on
   `customers.signup_at` selects
   `customers.spend:weighted_avg(window='1y', weight=sum(amount, partition_by=customers.regions.name))`
@@ -139,10 +150,23 @@ SHALL be legal in measure, filter (typing as a measure) and ORDER BY positions.
 
 #### Scenario: Attached parameter whose own partition key fans from its own home fails closed
 - **WHEN** a query rooted at `orders` selects
-  `amount:weighted_avg(weight=sum(customers.spend, partition_by=status))` — the
-  parameter's home is `customers` and `status` fans from it
+  `amount:weighted_avg(weight=sum(customers.regions.pop, partition_by=customers.regions.bad_pop))`
+  — the parameter's home is `regions` and `bad_pop` crosses the fanning
+  `regions → region_events` hop from it
 - **THEN** the query fails in every mode with the existing mode-invariant
-  partition-key error, never a multiplied value
+  partition-key error naming `bad_pop` and the hop `region_events`, never a
+  multiplied value
+
+#### Scenario: Attached parameter keyed by a host column keeps the mode-aware rule
+- **WHEN** a query rooted at `orders` over `[status]` selects
+  `amount:weighted_avg(weight=sum(customers.spend, partition_by=status))` — `status`
+  is a plain host column, unattributable only from the parameter's home
+  `customers`
+- **THEN** under `broadcast` and `error` the query fails with the explicit
+  partition-key error naming `status` and `customers`; under `associate` the
+  parameter associates `status` per cell (per `queries/attribution-modes`) and
+  each order is weighted by its cell's distinct-customer spend total — 82 / 7 for
+  `ok`, 85 / 3 for `new` on the reference dataset — by executed values
 
 #### Scenario: Attached parameter in filter and order positions
 - **WHEN** the ordinary-mode measure or the mixed-plus-parameter measure above
@@ -161,6 +185,9 @@ SHALL be legal in measure, filter (typing as a measure) and ORDER BY positions.
 
 #### Scenario: Undetermined attached parameter stays rejected
 - **WHEN** the aggregation's operating grain does not determine the attached
-  parameter
-- **THEN** the query fails with the typed determination error, never wrong
-  values
+  parameter — e.g. `customers.spend:weighted_avg(weight=sum(customers.spend, partition_by=status))`
+  rooted at `orders`, whose home `customers` does not determine the grain member
+  `status` — under any `to_many_handling` mode, by an attributable
+  (`customers.tier`) or an unattributable (`status`) dimension
+- **THEN** the query fails with the typed determination error naming the
+  parameter, never wrong values; the plain and association paths refuse alike

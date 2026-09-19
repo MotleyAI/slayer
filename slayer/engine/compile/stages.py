@@ -77,7 +77,6 @@ from slayer.engine.elaborate_env import (
     check_input_dependencies_analyzable,
     check_local_producer_inputs_safe,
     check_order_target_has_slot,
-    check_attached_inputs_attributable,
     check_parameter_determined,
     check_filter_dependencies_analyzable,
     check_population_filter_in_pushdown_scope,
@@ -527,66 +526,42 @@ def _first_unattributable_arg_leaf(
     root_model: SlayerModel, models_by_name: Dict[str, SlayerModel],
     bundle: ResolvedSourceBundle, host_model: Optional[SlayerModel] = None,
     host_name: Optional[str] = None,
-) -> List[str]:
-    # Positional args and column-valued kwargs in HOST coordinates (a ranking
-    # first/last time key, a weight column); a fail-closed backstop under the
-    # home rule, judged on each input's dependency closure (DEV-1900). host_name
-    # lets an off-home input traverse a proven reverse hop, as the home rule judged.
+) -> List[Tuple[str, str]]:
+    """``[(leaf, reason)]`` for the first explicit column argument (positional or
+    kwarg, HOST coordinates) not attributable from the root, judged on its
+    dependency closure; host_name lets an off-home input traverse a proven reverse hop."""
     for arg in (*agg.args, *(v for _, v in agg.kwargs)):
         if not isinstance(arg, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
             continue
-        attributable = (
-            key_attributable_from_root(
+        if host_model is not None:
+            attributable = key_attributable_from_root(
+                key=arg, target_path=target_path, root_model=root_model,
+                models_by_name=models_by_name, bundle=bundle,
+                host_model=host_model, host_name=host_name,
+            )
+        else:
+            attributable = attributable_from_root(
+                host_path=key_host_path(arg), target_path=target_path,
+                root_model=root_model, models_by_name=models_by_name,
+                host_name=host_name,
+            )
+        if attributable:
+            continue
+        leaf = column_leaf(arg.column if isinstance(arg, TimeTruncKey) else arg)
+        reason = (
+            key_broadcast_reason(
                 key=arg, target_path=target_path, root_model=root_model,
                 models_by_name=models_by_name, bundle=bundle,
                 host_model=host_model, host_name=host_name,
             )
             if host_model is not None
-            else attributable_from_root(
+            else broadcast_reason(
                 host_path=key_host_path(arg), target_path=target_path,
                 root_model=root_model, models_by_name=models_by_name,
                 host_name=host_name,
             )
         )
-        if not attributable:
-            leaf = getattr(arg, "leaf", None) or getattr(
-                getattr(arg, "column", None), "leaf", None,
-            ) or "input"
-            return [leaf]
-    return []
-
-
-def _first_unattributable_attached_leaf(
-    *, agg: AggregateKey, target_path: Tuple[str, ...],
-    root_model: SlayerModel, models_by_name: Dict[str, SlayerModel],
-    host_name: str, bundle: ResolvedSourceBundle, host_model: SlayerModel,
-) -> List[Tuple[str, str, str]]:
-    """(input alias, dotted leaf, reason) of the first row leaf inside an attached input the root cannot reach — judged on the leaf's dependency closure (DEV-1900)."""
-    for inp in attached_inputs(agg):
-        for leaf in walk_value_keys(inp):
-            if not isinstance(leaf, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
-                continue
-            hp = key_host_path(leaf)
-            if key_attributable_from_root(
-                key=leaf, target_path=target_path, root_model=root_model,
-                models_by_name=models_by_name, bundle=bundle,
-                host_model=host_model, host_name=host_name,
-            ):
-                continue
-            name = (
-                getattr(leaf, "leaf", None)
-                or getattr(leaf, "column_name", None)
-                or getattr(getattr(leaf, "column", None), "leaf", None)
-                or "input"
-            )
-            return [(
-                _constituent_alias(inp) or "input",
-                ".".join([*hp, name]),
-                broadcast_reason(
-                    host_path=hp, target_path=target_path, root_model=root_model,
-                    models_by_name=models_by_name, host_name=host_name,
-                ),
-            )]
+        return [(leaf, reason)]
     return []
 
 
@@ -596,8 +571,16 @@ def _assert_cross_model_inputs_safe(
     models_by_name: Dict[str, SlayerModel], host_name: Optional[str] = None,
     host_model: Optional[SlayerModel] = None,
 ) -> None:
-    """Resolve every cross-model input's attributability from its root; the checker raises on a fanning/unproven join or an unanalysable derived dependency."""
+    """Resolve every cross-model input's attributability from its root; the checker
+    raises on a fanning/unproven join or an unanalysable derived dependency. Attached
+    inputs are opaque (Axiom 2.3): masked by a literal, judged by their own producer."""
     alias = canonical_aggregate_alias(agg, profile="stage_formula")
+    attached = attached_inputs(agg_rooted)
+    if attached:
+        agg_rooted = substitute_value_keys(
+            key=agg_rooted,
+            mapping={a: LiteralKey(value=Decimal(1)) for a in attached},
+        )
     paths = _cross_model_input_paths(
         agg_rooted=agg_rooted, root_model=root_model, root_name=root_name,
         bundle=bundle,
@@ -611,16 +594,16 @@ def _assert_cross_model_inputs_safe(
             ),
         )
         paths = []
-    unsafe_input_hops = _first_unsafe_input_hop(
+    # An explicit argument's violation names the column and its hop, ahead of the
+    # closure's hop-only message.
+    unattributable_arg_leaves = _first_unattributable_arg_leaf(
+        agg=agg, target_path=target_path, root_model=root_model,
+        models_by_name=models_by_name, host_name=host_name,
+        bundle=bundle, host_model=host_model,
+    )
+    unsafe_input_hops = [] if unattributable_arg_leaves else _first_unsafe_input_hop(
         paths=paths, root_model=root_model, root_name=root_name,
         models_by_name=models_by_name,
-    )
-    unattributable_arg_leaves = [] if unsafe_input_hops else (
-        _first_unattributable_arg_leaf(
-            agg=agg, target_path=target_path, root_model=root_model,
-            models_by_name=models_by_name, host_name=host_name,
-            bundle=bundle, host_model=host_model,
-        )
     )
     check_cross_model_inputs_safe(
         alias=alias,
@@ -1614,15 +1597,15 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
                 reachable=reason != UNREACHABLE_NO_PATH,
             ))
 
-    # Arm-specific state shared into the common tail. Associate also when only an
-    # attached INPUT (not a dimension) is unattributable from the home — its producer
-    # then nests per home entity rather than the broadcast arm refusing it (DEV-1832).
-    attached_leaf = _first_unattributable_attached_leaf(
-        agg=agg, target_path=target_path, root_model=root_model,
+    # One rooting law (Axiom 2.5): re-anchor into the home's coordinates once, a
+    # host-side leaf becoming a reverse-hop reference, so every attached input's
+    # producer compiles at its own home whatever the mode.
+    agg_rooted = reroot_from_root(
+        key=agg, target_path=target_path, root_model=root_model,
         models_by_name=models_by_name, host_name=host_model.name,
-        bundle=bundle, host_model=host_model,
     )
-    associate = mode == "associate" and (bool(unattributable) or bool(attached_leaf))
+    # Association only when a DIMENSION is unattributable; attached inputs never need it.
+    associate = mode == "associate" and bool(unattributable)
     window_td_key: Optional[ValueKey] = None
     semi_joins: List[SemiJoinFilter] = []
     broadcast: List[Tuple[str, str]] = []
@@ -1634,13 +1617,14 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
     associated_dimensions: List[str] = []
 
     if associate:
-        # ASSOCIATION ARM (D2-4, 8): root at the home, keep every unattributable
-        # dimension as a rerooted grain member joined back on the host key, and
-        # dedup per home entity via the association kernel — a home entity absent
-        # from the population still counts in the cells its own path reaches.
-        agg_rooted, picked_params, entity_keys_root, present_keys, assoc_pairs = (
+        # ASSOCIATION ARM (D2-4, 8): keep every unattributable dimension as a
+        # rerooted grain member joined back on the host key, and dedup per home
+        # entity via the association kernel — a home entity absent from the
+        # population still counts in the cells its own path reaches.
+        agg_rooted = agg_rooted.model_copy(update={"locus": "host"})
+        picked_params, entity_keys_root, present_keys, assoc_pairs = (
             _association_arm(
-                agg=agg, alias=alias, root_model=root_model,
+                agg=agg, agg_rooted=agg_rooted, alias=alias, root_model=root_model,
                 target_path=target_path, unattributable=unattributable,
                 host_model=host_model, models_by_name=models_by_name,
                 bundle=bundle,
@@ -1653,9 +1637,7 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
             root_model=root_model, models_by_name=models_by_name,
             host_model=host_model, bundle=bundle,
         )
-        # No unattributable dimension (associate triggered by an attached input only)
-        # means no association warning — nothing degraded per dimension.
-        associated_measure = None if (explicit or not unattributable) else alias
+        associated_measure = None if explicit else alias
         associated_dimensions = (
             [] if explicit else [u.name for u in unattributable]
         )
@@ -1666,23 +1648,11 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
             unattributable=[(u.name, u.reason) for u in unattributable],
         )
         broadcast = [(u.name, u.reason) for u in unattributable]
-        # Attached inputs nest as producers rooted here; error mode's dimension refusal wins.
-        if mode != "error" or not unattributable:
-            check_attached_inputs_attributable(
-                alias=alias, root_name=root_name, mode=mode,
-                unattributable=attached_leaf,
-            )
-
         if target_path != source_anchor_path(agg.source):
-            # The source sits beyond the home; re-anchor off-home inputs via the host
-            # and render it inline as a host-locus aggregate joining the to-one path
-            # from the home, never a source-rooted producer.
-            agg_rooted = reroot_from_root(
-                key=agg, target_path=target_path, root_model=root_model,
-                models_by_name=models_by_name, host_name=host_model.name,
-            ).model_copy(update={"locus": "host"})
-        else:
-            agg_rooted = reroot_value_key(key=agg, target_path=target_path)
+            # The source sits beyond the home: render inline as a host-locus
+            # aggregate joining the to-one path from the home, never a
+            # source-rooted producer.
+            agg_rooted = agg_rooted.model_copy(update={"locus": "host"})
         _assert_cross_model_inputs_safe(
             agg=agg, agg_rooted=agg_rooted, root_model=root_model, root_name=root_name,
             target_path=target_path, bundle=bundle, models_by_name=models_by_name,
@@ -1717,7 +1687,10 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
         )
 
     # SHARED TAIL: root at the home, compile the producer, attach on the host key.
-    assert isinstance(agg_rooted, AggregateKey)  # both arms reroot an aggregate
+    _check_attached_params_determined(
+        agg=agg, alias=alias, target_path=target_path, root_model=root_model,
+        host_model=host_model, models_by_name=models_by_name, bundle=bundle,
+    )
     root_bundle = bundle.rerooted(root_model)
     root_scope = (
         ModelScope(source_model=root_model)
@@ -1866,17 +1839,69 @@ def _grain_display(grain: Grain) -> str:
     return ", ".join(names) if names else "the grand total"
 
 
-def _association_arm(
-    *, agg: AggregateKey, alias: str, root_model: SlayerModel,
-    target_path: Tuple[str, ...], unattributable: List[_UnattributableDim],
+def _home_determines_grain_member(
+    *, key: ValueKey, target_path: Tuple[str, ...], root_model: SlayerModel,
     host_model: SlayerModel, models_by_name: Dict[str, SlayerModel],
     bundle: ResolvedSourceBundle,
+) -> bool:
+    """A grain member the home determines: a column attributable from it (as
+    ``safe_pairs`` judges a dimension) or a grained aggregate whose grain it
+    determines; an expression key never."""
+    if isinstance(key, AggregateKey):
+        return key.partition_keys is not None and all(
+            _home_determines_grain_member(
+                key=pk, target_path=target_path, root_model=root_model,
+                host_model=host_model, models_by_name=models_by_name, bundle=bundle,
+            )
+            for pk in key.partition_keys
+        )
+    if not isinstance(key, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
+        return False
+    return shared_join_key_reroot(
+        key=key, target_path=target_path, host_model=host_model,
+        models_by_name=models_by_name,
+    ) is not None or grain_member_attributable(
+        key=key, target_path=target_path, root_model=root_model,
+        models_by_name=models_by_name, bundle=bundle, host_model=host_model,
+        host_name=host_model.name,
+    )
+
+
+def _check_attached_params_determined(
+    *, agg: AggregateKey, alias: str, target_path: Tuple[str, ...],
+    root_model: SlayerModel, host_model: SlayerModel,
+    models_by_name: Dict[str, SlayerModel], bundle: ResolvedSourceBundle,
+) -> None:
+    """One home-determination rule, every mode: the home determines every grain
+    member of each explicitly grained attached parameter (Axiom 2.3); an ungrained
+    one types at the query grain (DEV-1859 decision 12)."""
+    key_sets = _unique_key_sets(root_model)
+    grain_display = _grain_display(Grain.of(
+        ColumnKey(path=target_path, leaf=col) for col in key_sets[0]
+    )) if key_sets else f"{root_model.name} rows"
+    for name, value in agg.kwargs:
+        if isinstance(value, AggregateKey) and value.partition_keys is not None:
+            check_parameter_determined(
+                alias=alias, param_name=name, grain_display=grain_display,
+                determined=_home_determines_grain_member(
+                    key=value, target_path=target_path, root_model=root_model,
+                    host_model=host_model, models_by_name=models_by_name,
+                    bundle=bundle,
+                ),
+            )
+
+
+def _association_arm(
+    *, agg: AggregateKey, agg_rooted: AggregateKey, alias: str,
+    root_model: SlayerModel, target_path: Tuple[str, ...],
+    unattributable: List[_UnattributableDim], host_model: SlayerModel,
+    models_by_name: Dict[str, SlayerModel], bundle: ResolvedSourceBundle,
 ) -> Tuple[
-    ValueKey, List[PickedParam], List[ValueKey], List[ValueKey],
+    List[PickedParam], List[ValueKey], List[ValueKey],
     List[Tuple[ValueKey, ValueKey]],
 ]:
     """The home-rooted association arm (DEV-1910 D2-3): eligibility + mode-invariant
-    input safety; the rerooted host-locus aggregate (compiled inline at its fanning
+    input safety on the rerooted host-locus aggregate (compiled inline at its fanning
     grain, its level-1 dedup removing the fan-out); the kernel entity keys in ROOT
     coordinates and the parameters the entity grain picks, rerooted into the home;
     the reverse-hop presence guard; and each unattributable dimension rerooted to
@@ -1891,33 +1916,17 @@ def _association_arm(
     check_association_root_unique_key(
         alias=alias, root_name=root_model.name, has_unique_key=bool(key_sets),
     )
-    # Input safety is mode-invariant — an input crossing an unproven/fanning hop is
-    # not constant per home entity. An attached input row-attaches its own nested
-    # producer (DEV-1859 decision 13), so strip it from the hop check while keeping
-    # it in ``agg`` for parameter typing and the producer compile.
-    _safety_rooted = agg
-    if attached_inputs(agg):
-        _safety_rooted = substitute_value_keys(
-            key=agg,
-            mapping={a: LiteralKey(value=Decimal(1)) for a in attached_inputs(agg)})
-    agg_rooted = reroot_from_root(
-        key=agg, target_path=target_path, root_model=root_model,
-        models_by_name=models_by_name, host_name=host_model.name,
-    ).model_copy(update={"locus": "host"})
     _assert_cross_model_inputs_safe(
-        agg=agg, agg_rooted=reroot_from_root(
-            key=_safety_rooted, target_path=target_path, root_model=root_model,
-            models_by_name=models_by_name, host_name=host_model.name,
-        ).model_copy(update={"locus": "host"}),
-        root_model=root_model, root_name=root_model.name, target_path=target_path,
-        bundle=bundle, models_by_name=models_by_name, host_name=host_model.name,
+        agg=agg, agg_rooted=agg_rooted, root_model=root_model,
+        root_name=root_model.name, target_path=target_path, bundle=bundle,
+        models_by_name=models_by_name, host_name=host_model.name,
         host_model=host_model,
     )
-    # Type each GRAINED parameter against the ENTITY grain in HOST coordinates (the
-    # aggregation reads it once per associated entity); an ungrained parameter types
-    # at the query grain and is always determined (DEV-1859 decision 12). Lift the
-    # legal ones, rerooted into the home so the level-1 pick reads them there; the
-    # kernel dedups by the entity key in ROOT coordinates.
+    # Type each column-valued / default parameter against the ENTITY grain in HOST
+    # coordinates (the aggregation reads it once per associated entity); an attached
+    # one is judged by the shared home-determination rule. Lift every parameter,
+    # rerooted into the home so the level-1 pick reads it there; the kernel dedups
+    # by the entity key in ROOT coordinates.
     host_entity_keys: List[ValueKey] = [
         ColumnKey(path=target_path, leaf=col) for col in key_sets[0]
     ]
@@ -1939,14 +1948,15 @@ def _association_arm(
     for _ps in resolve_aggregation_params(
         agg=agg, owner_model=source_model, owner_path=source_path, bundle=bundle,
     ):
-        check_parameter_determined(
-            alias=alias, param_name=_ps.name,
-            grain_display=_grain_display(entity_grain),
-            determined=_param_is_determined(
-                spec=_ps, grain=entity_grain, host_model=host_model,
-                models_by_name=models_by_name, bundle=bundle,
-            ),
-        )
+        if not isinstance(_ps.key, AggregateKey):
+            check_parameter_determined(
+                alias=alias, param_name=_ps.name,
+                grain_display=_grain_display(entity_grain),
+                determined=_param_is_determined(
+                    spec=_ps, grain=entity_grain, host_model=host_model,
+                    models_by_name=models_by_name, bundle=bundle,
+                ),
+            )
         picked_params.append(PickedParam(
             name=_ps.name,
             key=(reroot_from_root(
@@ -1967,7 +1977,7 @@ def _association_arm(
         root_model=root_model, host_model=host_model, models_by_name=models_by_name,
         bundle=bundle,
     )
-    return agg_rooted, picked_params, entity_keys_root, present_keys, assoc_pairs
+    return picked_params, entity_keys_root, present_keys, assoc_pairs
 
 
 def _association_inline_filters(

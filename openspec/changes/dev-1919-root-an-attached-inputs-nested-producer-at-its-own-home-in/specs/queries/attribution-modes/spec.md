@@ -66,7 +66,8 @@ fail associate-mode resolution with a clear typed error naming the model and the
 #### Scenario: Attributable dimensions need no association
 - **WHEN** an associate-mode query rooted at `orders` selects
   `customers.spend:weighted_avg(weight=sum(amount, partition_by=customers.regions.name))`
-  by `customers.tier` against a `customers` model declaring no primary or unique key
+  by `customers.tier` against a `customers` model declaring no primary or unique key,
+  the `orders → customers` hop declared many-to-one
 - **THEN** the query executes with the same values as under `broadcast` and no
   association warning — the home determines every dimension, so no entity
   deduplication is needed and the unique-key rule does not apply

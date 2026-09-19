@@ -109,8 +109,9 @@ async def _assert_broadcast_to_status(engine, formula: str, expected, mode=None)
 
 
 async def _assert_error_mode_refuses_status(engine, formula: str) -> None:
+    q = mode_q("error", dimensions=["status"], measures=[_m(formula)])
     with pytest.raises(SlayerError) as ei:
-        await engine.execute(mode_q("error", dimensions=["status"], measures=[_m(formula)]))
+        await engine.execute(q)
     msg = str(ei.value)
     assert "status" in msg
     assert "attached input" not in msg
@@ -188,9 +189,9 @@ class TestAttributableDimensionsNeedNoAssociation:
         _assert_no_mode_warnings(resp)
 
     async def test_association_still_needs_a_unique_key(self, keyless_engine):
+        q = mode_q("associate", dimensions=["status"], measures=[_m(HEADLINE)])
         with pytest.raises(SlayerError) as ei:
-            await keyless_engine.execute(
-                mode_q("associate", dimensions=["status"], measures=[_m(HEADLINE)]))
+            await keyless_engine.execute(q)
         msg = str(ei.value)
         assert "unique key" in msg
         assert "customers" in msg
@@ -294,17 +295,17 @@ class TestFailClosedEveryMode:
     @pytest.mark.parametrize("mode", MODES)
     async def test_transform_parameter_grain_not_determined(self, orders_engine, mode):
         """Scenario: Transform parameter whose grain the home does not determine fails closed."""
+        q = mode_q(mode, time_dimensions=ordered_month_td(), measures=[_m(CUMSUM_PARAM)])
         with pytest.raises(SlayerError) as ei:
-            await orders_engine.execute(mode_q(
-                mode, time_dimensions=ordered_month_td(), measures=[_m(CUMSUM_PARAM)]))
+            await orders_engine.execute(q)
         assert_grain_residue(ei.value, param="weight")
 
     @pytest.mark.parametrize("mode", MODES)
     async def test_unanalysable_dependency_inside_the_parameter(self, unparse_engine, mode):
         """Scenario: Unanalysable dependency inside an attached parameter fails closed."""
+        q = mode_q(mode, dimensions=["customers.tier"], measures=[_m(UNPARSE_PARAM)])
         with pytest.raises(ValueError) as ei:
-            await unparse_engine.execute(
-                mode_q(mode, dimensions=["customers.tier"], measures=[_m(UNPARSE_PARAM)]))
+            await unparse_engine.execute(q)
         msg = str(ei.value)
         assert "unparseable" in msg
         assert "no supported dialect can analyse" in msg
@@ -313,9 +314,9 @@ class TestFailClosedEveryMode:
     @pytest.mark.parametrize("mode", MODES)
     async def test_parameter_key_fanning_from_its_own_home(self, dev1900_engine, mode):
         """Scenario: Attached parameter whose own partition key fans from its own home fails closed."""
+        q = mode_q(mode, dimensions=["status"], measures=[_m(OWN_FAN_BADPOP)])
         with pytest.raises(ValueError) as ei:
-            await dev1900_engine.execute(
-                mode_q(mode, dimensions=["status"], measures=[_m(OWN_FAN_BADPOP)]))
+            await dev1900_engine.execute(q)
         msg = str(ei.value)
         assert "bad_pop" in msg
         assert "region_events" in msg
@@ -324,9 +325,9 @@ class TestFailClosedEveryMode:
     @pytest.mark.parametrize("mode", ["broadcast", "error"])
     async def test_host_keyed_parameter_refused_outside_associate(self, orders_engine, mode):
         """Scenario: Attached parameter keyed by a host column keeps the mode-aware rule."""
+        q = mode_q(mode, dimensions=["status"], measures=[_m(OWN_FAN_STATUS)])
         with pytest.raises(ValueError) as ei:
-            await orders_engine.execute(
-                mode_q(mode, dimensions=["status"], measures=[_m(OWN_FAN_STATUS)]))
+            await orders_engine.execute(q)
         msg = str(ei.value)
         assert "status" in msg
         assert "attributable from customers" in msg
@@ -344,9 +345,9 @@ class TestFailClosedEveryMode:
     async def test_undetermined_parameter_refused_in_every_mode(self, orders_engine, mode, dims):
         """Scenario: Undetermined attached parameter stays rejected (D2b) — the plain
         path refuses exactly what the association arm refuses."""
+        q = mode_q(mode, dimensions=dims, measures=[_m(UNDETERMINED_PARAM)])
         with pytest.raises(SlayerError) as ei:
-            await orders_engine.execute(
-                mode_q(mode, dimensions=dims, measures=[_m(UNDETERMINED_PARAM)]))
+            await orders_engine.execute(q)
         assert_grain_residue(ei.value, param="weight")
 
 
@@ -359,8 +360,9 @@ class TestArgumentMessagePrecedence:
     ])
     async def test_host_ranking_key_names_column_root_and_hop(self, orders_engine, mode, dims):
         kw = {} if dims is None else {"dimensions": dims}
+        q = mode_q(mode, measures=[_m(LAST_HOST)], **kw)
         with pytest.raises(ValueError) as ei:
-            await orders_engine.execute(mode_q(mode, measures=[_m(LAST_HOST)], **kw))
+            await orders_engine.execute(q)
         msg = str(ei.value)
         assert "ordered_at" in msg
         assert "customers" in msg
@@ -370,8 +372,9 @@ class TestArgumentMessagePrecedence:
 
     @pytest.mark.parametrize("mode", MODES)
     async def test_argument_violation_wins_over_source_violation(self, dev1900_engine, mode):
+        q = mode_q(mode, measures=[_m(LAST_BADPOP)])
         with pytest.raises(ValueError) as ei:
-            await dev1900_engine.execute(mode_q(mode, measures=[_m(LAST_BADPOP)]))
+            await dev1900_engine.execute(q)
         msg = str(ei.value)
         assert "ordered_at" in msg
         assert "not attributable from regions" in msg

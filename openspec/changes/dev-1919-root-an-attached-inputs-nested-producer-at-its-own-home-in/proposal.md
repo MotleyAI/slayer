@@ -20,7 +20,9 @@ input's producer at its own home; the lift makes every arm do so.
   null-safely, in every mode. The arms differ only in locus, kernel, filter routing
   and warnings.
 - Attached inputs are opaque to the outer input-safety check: the masking the
-  association arm did privately moves into the shared safety helper.
+  association arm did privately moves into the shared safety helper; one
+  home-determination rule for attached parameters serves both arms, so a parameter
+  whose grain the home does not determine is refused in every mode.
 - The guard (`_first_unattributable_attached_leaf`, `check_attached_inputs_attributable`)
   and its raise-ledger row are deleted.
 - The association arm is entered only when some dimension is unattributable; an

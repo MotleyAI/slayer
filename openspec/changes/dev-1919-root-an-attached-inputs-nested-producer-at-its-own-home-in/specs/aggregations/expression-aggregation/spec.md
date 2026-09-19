@@ -26,8 +26,11 @@ aggregation's operating grain determines it (per `queries/partitioned-aggregates
 Attached parameters on row-level sources). An attached input — a source constituent
 or a parameter — is opaque to the enclosing aggregation: it is compiled at its own
 home in every `to_many_handling` mode and attached onto the aggregation's home rows
-by its grain; the mode governs only the aggregation's own unattributable dimensions,
-so no mode restricts which columns an attached input may read. Whether an aggregation
+by its grain — well-defined only when the home determines every member of that
+grain, else the typed determination error in every mode; the enclosing aggregation
+never inspects the input's interior, and the input's own producer applies its own
+rules (including the mode-aware explicit-partition-key rule) as any producer does;
+the mode governs only the aggregation's own unattributable dimensions. Whether an aggregation
 runs over rows or over an operand dataset's cells is decided by its source alone;
 every attached input, in the source or in a parameter, is then attached by one
 mechanism — into the input relation for a row-level source, as a constituent of the
@@ -106,12 +109,24 @@ operand dataset for an attached one.
 #### Scenario: Attached parameter on a row-level source rejected
 - **WHEN** a measure is written
   `customers.spend:weighted_avg(weight=sum(customers.spend, partition_by=status))`
-  rooted at `orders`, in any `to_many_handling` mode — the parameter's own home is
-  `customers` and `status` fans from it
-- **THEN** it fails with the mode-invariant partition-key error naming `status`
-  (per `queries/attribution-modes` › Partition key fanning from its host fails closed
-  in every mode); what is rejected is the parameter's own ill-typed grain, never the
+  rooted at `orders`, in any `to_many_handling` mode, by an attributable
+  (`customers.tier`) or an unattributable (`status`) dimension — the aggregation's
+  home `customers` does not determine the parameter's grain member `status`
+- **THEN** it fails with the typed parameter-determination error naming `weight`
+  (per `queries/partitioned-aggregates` › Undetermined attached parameter stays
+  rejected); what is rejected is the parameter's grain against the home, never the
   mode or the columns the parameter reads
+
+#### Scenario: Windowed aggregation with an attached constituent
+- **WHEN** a query rooted at `orders` over a month time dimension on
+  `customers.signup_at` selects
+  `sum(customers.spend * sum(amount, partition_by=customers.regions.name), window='1y')`
+- **THEN** each signup-month bucket carries the trailing-window total, over the
+  customers signed up in the window, of spend times the region's order total —
+  the constituent rooted at `orders` and attached per customer row — identical
+  under every mode with no warning (10000, 25000, 28080, 33780 on the reference
+  dataset; the orphan order's NULL bucket NULL): the bucket is attributable, so
+  `associate` needs no association and the windowed combination is not refused
 
 #### Scenario: Mixed-source constituent homed toward the host executes in every mode
 - **WHEN** a query rooted at `orders` selects

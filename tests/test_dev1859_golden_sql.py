@@ -27,6 +27,7 @@ _MODEL_SETS = {
 _REGION_SUM = "sum(amount, partition_by=region)"
 _HEADLINE = ("customers.spend:weighted_avg("
              "weight=sum(amount, partition_by=customers.regions.name))")
+_MIXED_TWIN = "sum(customers.spend * sum(amount, partition_by=customers.regions.name))"
 
 
 def _cases() -> dict:
@@ -44,6 +45,14 @@ def _cases() -> dict:
             "models": "orders", "source": "orders", "mode": "associate",
             "kw": {"dimensions": ["status"],
                    "measures": [{"formula": _HEADLINE, "name": "w"}]}},
+        "param/broadcast": {
+            "models": "orders", "source": "orders", "mode": None,
+            "kw": {"dimensions": ["status"],
+                   "measures": [{"formula": _HEADLINE, "name": "w"}]}},
+        "mixed/cross_model_constituent": {
+            "models": "orders", "source": "orders", "mode": None,
+            "kw": {"dimensions": ["status"],
+                   "measures": [{"formula": _MIXED_TWIN, "name": "w"}]}},
         "param/ordinary": {
             "models": "sales_wsum", "source": "sales", "mode": None,
             "kw": {"dimensions": ["region"], "measures": [
@@ -81,7 +90,12 @@ async def _generate_one(case, dialect: str):
         return record_raise(exc)
 
 
-ALLOWED_DELTAS: dict[str, str] = {}  # DEV-1910 associate deltas re-blessed
+ALLOWED_DELTAS: dict[str, str] = {
+    f"param/associate::{d}": (
+        "DEV-1919: the nested parameter's partition key is spelled in producer "
+        "coordinates (alias-only)")
+    for d in DIALECTS
+}
 
 bind_golden_tests(
     namespace=globals(),
