@@ -96,9 +96,17 @@ asserts the run fails on 3.13+ (skipped below).
 canonicalise every call target before matching (Codex finding, folded — `tests/integration/test_mcp_inspect.py`
 already uses `import sqlite3 as _sqlite3`). Allowed: `sqlite3.connect` only in
 `slayer/storage/sqlite_conn.py`; `create_engine` only in `slayer/sql/engine_factory.py`, lexically
-inside a `build_engine` function under `slayer/sql/dialects/`, and in `tests/_engine_helpers.py`;
+inside a dialect engine-build hook under `slayer/sql/dialects/` — a function named `build_engine`
+**or** a `_build_*_engine` helper it delegates to — and in `tests/_engine_helpers.py`;
 `create_async_engine` only inside `slayer/sql/client.py::_get_async_engine`. Self-checks cover
 every alias form. Baseline: none — zero tolerance, like `ALLOWED_EXPRESSIVENESS`.
+
+_spec-tests calibration (2026-09-19):_ the pure `build_engine`-only allowlist could never go green
+while `bigquery.py`'s `_build_oauth_engine` helper exists, so the dialect allowance is the build
+hook — `build_engine` and the `_build_*_engine` helpers it factors its auth paths into. This still
+honours the arc42 principle (engines are built only in the factory and the dialects' build hooks)
+and needs no churn to the bigquery dialect. Pinned by
+`tests/test_law_resource_ownership.py::TestMatcherSelfChecks::test_dialect_create_engine_allowed_only_in_build_hooks`.
 
 **D9 — The seeded context tears down completely.** `seeded_exec_engine` calls
 `SlayerQueryEngine.close()` and then `engine_factory.invalidate_engine(datasource)` in `finally`,
@@ -121,8 +129,9 @@ need James's per-change OK before any of the three files is touched.**
     owner — `engine_factory` for the engines it caches (eviction and
     `reset_cache` always dispose; `:memory:` is built by its single StaticPool
     builder, keyed per datasource), `SlayerSQLClient` for its private in-memory
-    engine (via `close()`, with a finalizer backstop). `create_engine` is called
-    nowhere else. [enforced: test:tests/test_law_resource_ownership.py]
+    engine (via `close()`, with a finalizer backstop). `create_engine` runs only
+    in the factory and the dialects' build hooks; `create_async_engine` only in
+    the client's async builder. [enforced: test:tests/test_law_resource_ownership.py]
 ```
 
 New `architecture/storage.arc42.md`:
