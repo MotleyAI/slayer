@@ -27,12 +27,12 @@ from slayer.ir.source_bundle import ResolvedSourceBundle
 from tests._dev1841_fixtures import assoc_q, bcast_q, error_q, make_exec_engine
 from tests._dev1847_fixtures import (
     INNER_CR,
-    _engine_for,
     _seed_sqlite,
     dev1847_models,
     gen,
     sales_q,
 )
+from tests._engine_helpers import build_exec_engine
 from tests._dev1892_fixtures import (
     ModelMeasure,
     assert_grain_residue,
@@ -132,8 +132,8 @@ class TestRestSurfaceResidue:
         with tempfile.TemporaryDirectory() as d:
             db_path = os.path.join(d, "data.sqlite")
             _seed_sqlite(db_path)
-            engine = await _engine_for(
-                dialect="sqlite", db_path=db_path, models=dev1847_models())
+            engine = await build_exec_engine(
+                db_path, dialect="sqlite", models=dev1847_models())
             yield engine.storage
 
     async def test_residue_maps_to_400(self, sales_storage):

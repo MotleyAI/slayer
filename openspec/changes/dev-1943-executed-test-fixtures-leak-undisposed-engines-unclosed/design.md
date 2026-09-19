@@ -185,6 +185,12 @@ the class impossible instead of re-auditing every site.
 | `reset_cache` API change; checked-out connections | Folded (D5 docstring + test) |
 | `close()` robustness | Folded (D4) |
 
+## Codex review (working tree) — resolutions
+
+| Finding | Resolution |
+|---|---|
+| `SlayerQueryEngine.close()` → `client.close()` disposed the private sync engine but not the client's async engine, then cleared `_sql_clients`, orphaning an async pool if a client had used an async datasource | Partly folded; residue accepted by-design (James, 2026-09-19, option A). An async engine is event-loop-bound and cannot be disposed synchronously — `sync_engine.dispose()` raises `MissingGreenlet` for a real asyncpg/aiomysql pool (a first attempt swallowed that and orphaned the pool anyway). `SlayerSQLClient.close()` therefore does NOT fake-dispose it: it disposes the private sync engine and, if a loop-bound async engine is still live, **warns** (test `test_close_warns_and_retains_a_loop_bound_async_engine`). `close()` is the synchronous teardown (sync / in-memory datasources, where no async engine is ever created); **`aclose()` — unchanged — is the async teardown**: it disposes the async pools on their loop and keeps the clients. The remaining orphan only occurs under the misuse "async `execute()` then synchronous `close()` instead of `aclose()`"; making `SlayerQueryEngine.close()` retain async-bearing clients would contradict the approved spec (`clears _sql_clients`, pinned by `test_close_closes_every_client_and_clears`), so it is accepted as a documented boundary rather than fixed here (out of DEV-1943's sqlite-leak scope). |
+
 ## Risks / Trade-offs
 
 - [Gate failures land in a later test] → tasks.md and the ratchet docstring carry the recipe:

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import sqlite3
+import contextlib
 from typing import Any, Iterable, Optional
 
 import pytest
@@ -10,6 +10,7 @@ import pytest
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 
 BACKENDS = ("sqlite", "duckdb")
@@ -123,14 +124,19 @@ async def make_engine(
 
     ``tables`` items: ``{"name", "columns": [(col, kind)], "rows": [tuple, ...]}``.
     DuckDB is skipped (``importorskip``) when the driver is absent.
+
+    DEV-1943: not folded onto ``seeded_exec_engine`` — the caller supplies
+    ``base_dir``/``db_path`` and a dynamic ``tables`` spec, so it does not fit
+    the tempdir-owning context; its sqlite seeding already routes through the door.
     """
     types = _SQLITE_TYPE if backend == "sqlite" else _DUCKDB_TYPE
+    con_cm: Any
     if backend == "sqlite":
-        con: Any = sqlite3.connect(db_path)
+        con_cm = transaction(db_path)
     else:
         duckdb = pytest.importorskip("duckdb")
-        con = duckdb.connect(db_path)
-    try:
+        con_cm = contextlib.closing(duckdb.connect(db_path))
+    with con_cm as con:
         for tbl in tables:
             col_ddl = ", ".join(f"{name} {types[kind]}" for name, kind in tbl["columns"])
             con.execute(f"CREATE TABLE {tbl['name']} ({col_ddl})")
@@ -138,10 +144,6 @@ async def make_engine(
             con.executemany(
                 f"INSERT INTO {tbl['name']} VALUES ({placeholders})", tbl["rows"],
             )
-        if backend == "sqlite":
-            con.commit()
-    finally:
-        con.close()
     storage = YAMLStorage(base_dir=base_dir)
     await storage.save_datasource(
         DatasourceConfig(name=models[0].data_source, type=backend, database=db_path),

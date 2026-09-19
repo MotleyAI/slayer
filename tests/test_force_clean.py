@@ -5,7 +5,6 @@ See DEV-1356 stage 4.
 
 from __future__ import annotations
 
-import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -14,6 +13,7 @@ from unittest.mock import patch
 
 import pytest
 
+from slayer.async_utils import run_sync
 from slayer.core.enums import DataType
 from slayer.core.models import (
     Column,
@@ -29,6 +29,7 @@ from slayer.engine.schema_drift import (
     ToDeleteEntry,
     WholeModelDelete,
 )
+from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._cli_inprocess import run_cli_in_process
 
@@ -44,22 +45,20 @@ def workspace():
 
 async def _setup(workspace: Path) -> tuple[SlayerQueryEngine, str]:
     db_path = str(workspace / "live.db")
-    conn = sqlite3.connect(db_path)
-    conn.executescript(
-        """
-        CREATE TABLE customers (id INTEGER PRIMARY KEY, region TEXT NOT NULL);
-        CREATE TABLE orders (
-            id INTEGER PRIMARY KEY,
-            amount REAL NOT NULL,
-            status TEXT NOT NULL,
-            customer_id INTEGER REFERENCES customers(id)
-        );
-        INSERT INTO customers VALUES (1, 'US');
-        INSERT INTO orders VALUES (1, 100.0, 'completed', 1);
-        """
-    )
-    conn.commit()
-    conn.close()
+    with transaction(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE customers (id INTEGER PRIMARY KEY, region TEXT NOT NULL);
+            CREATE TABLE orders (
+                id INTEGER PRIMARY KEY,
+                amount REAL NOT NULL,
+                status TEXT NOT NULL,
+                customer_id INTEGER REFERENCES customers(id)
+            );
+            INSERT INTO customers VALUES (1, 'US');
+            INSERT INTO orders VALUES (1, 100.0, 'completed', 1);
+            """
+        )
 
     storage = YAMLStorage(base_dir=str(workspace / "storage"))
     await storage.save_datasource(
@@ -186,10 +185,8 @@ class TestApplyDriftDeletes:
         engine, db_path = await _setup(workspace)
         # Drop one column externally; apply drift deletes; another column
         # is dropped in between → post-apply validate sees residual drift.
-        conn = sqlite3.connect(db_path)
-        conn.execute("ALTER TABLE customers DROP COLUMN region")
-        conn.commit()
-        conn.close()
+        with transaction(db_path) as conn:
+            conn.execute("ALTER TABLE customers DROP COLUMN region")
 
         # Apply only the orders.status drop (which doesn't exist as drift —
         # but the test purpose is residual after apply, not the drift
@@ -231,8 +228,6 @@ class TestForceCleanCLI:
     def cli_workspace(self, workspace):
         # Build the same sqlite + storage as _setup, but synchronously so
         # subprocess CLI can read it.
-        from slayer.async_utils import run_sync
-
         async def _build():
             return await _setup(workspace)
 
@@ -242,10 +237,8 @@ class TestForceCleanCLI:
     def test_default_no_flags_prints_diff_and_exits_zero(self, cli_workspace) -> None:
         # Drop a column externally first
         db_path = str(cli_workspace / "live.db")
-        conn = sqlite3.connect(db_path)
-        conn.execute("ALTER TABLE customers DROP COLUMN region")
-        conn.commit()
-        conn.close()
+        with transaction(db_path) as conn:
+            conn.execute("ALTER TABLE customers DROP COLUMN region")
 
         storage_arg = str(cli_workspace / "storage")
         result = run_cli_in_process(
@@ -256,10 +249,8 @@ class TestForceCleanCLI:
 
     def test_force_clean_yes_applies_without_prompt(self, cli_workspace) -> None:
         db_path = str(cli_workspace / "live.db")
-        conn = sqlite3.connect(db_path)
-        conn.execute("ALTER TABLE customers DROP COLUMN region")
-        conn.commit()
-        conn.close()
+        with transaction(db_path) as conn:
+            conn.execute("ALTER TABLE customers DROP COLUMN region")
 
         storage_arg = str(cli_workspace / "storage")
         result = run_cli_in_process(
@@ -276,10 +267,8 @@ class TestForceCleanCLI:
 
     def test_force_clean_n_aborts(self, cli_workspace) -> None:
         db_path = str(cli_workspace / "live.db")
-        conn = sqlite3.connect(db_path)
-        conn.execute("ALTER TABLE customers DROP COLUMN region")
-        conn.commit()
-        conn.close()
+        with transaction(db_path) as conn:
+            conn.execute("ALTER TABLE customers DROP COLUMN region")
 
         result = _run_cli(
             ["validate-models", "--datasource", "ds", "--force-clean"],
@@ -288,8 +277,6 @@ class TestForceCleanCLI:
         )
         assert result.returncode == 0, result.stderr
         # Aborted — region should still be on the persisted model
-        from slayer.async_utils import run_sync
-
         async def _check():
             engine = SlayerQueryEngine(
                 storage=YAMLStorage(base_dir=str(cli_workspace / "storage"))

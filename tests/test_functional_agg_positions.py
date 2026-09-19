@@ -11,7 +11,6 @@ arithmetic.
 from __future__ import annotations
 
 import os
-import sqlite3
 import tempfile
 
 import pytest
@@ -34,6 +33,7 @@ from slayer.core.query import (
     TimeDimension,
 )
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 
 from tests._dev1740_fixtures import gen as gen40
@@ -632,30 +632,28 @@ class TestMixedGrainPosition:
 class TestExecutedParity:
     async def test_functional_query_returns_identical_rows(self, tmp_path) -> None:
         db_path = os.path.join(str(tmp_path), "parity.db")
-        con = sqlite3.connect(db_path)
-        cur = con.cursor()
-        cur.execute(
-            "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, "
-            "status TEXT, revenue REAL, price REAL, balance REAL, "
-            "updated_at TEXT, created_at TEXT)"
-        )
-        cur.executemany(
-            "INSERT INTO orders VALUES (?,?,?,?,?,?,?,?)",
-            [
-                (1, 1, "new", 10.0, 2.0, 100.0, "2024-01-05", "2024-01-01"),
-                (2, 1, "old", 5.0, 1.0, 110.0, "2024-02-05", "2024-02-01"),
-                (3, 2, "new", 7.0, 3.0, 120.0, "2024-03-05", "2024-03-01"),
-                (4, 2, "old", 9.0, 4.0, 130.0, "2024-04-05", "2024-04-01"),
-            ],
-        )
-        cur.execute(
-            "CREATE TABLE customers (id INTEGER PRIMARY KEY, score REAL)"
-        )
-        cur.executemany(
-            "INSERT INTO customers VALUES (?,?)", [(1, 5.0), (2, 7.0)]
-        )
-        con.commit()
-        con.close()
+        with transaction(db_path) as con:
+            cur = con.cursor()
+            cur.execute(
+                "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, "
+                "status TEXT, revenue REAL, price REAL, balance REAL, "
+                "updated_at TEXT, created_at TEXT)"
+            )
+            cur.executemany(
+                "INSERT INTO orders VALUES (?,?,?,?,?,?,?,?)",
+                [
+                    (1, 1, "new", 10.0, 2.0, 100.0, "2024-01-05", "2024-01-01"),
+                    (2, 1, "old", 5.0, 1.0, 110.0, "2024-02-05", "2024-02-01"),
+                    (3, 2, "new", 7.0, 3.0, 120.0, "2024-03-05", "2024-03-01"),
+                    (4, 2, "old", 9.0, 4.0, 130.0, "2024-04-05", "2024-04-01"),
+                ],
+            )
+            cur.execute(
+                "CREATE TABLE customers (id INTEGER PRIMARY KEY, score REAL)"
+            )
+            cur.executemany(
+                "INSERT INTO customers VALUES (?,?)", [(1, 5.0), (2, 7.0)]
+            )
         engine = await make_seeded_sqlite_engine(
             base_dir=os.path.join(str(tmp_path), "store"),
             db_path=db_path,

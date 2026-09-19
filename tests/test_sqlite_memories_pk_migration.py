@@ -16,17 +16,17 @@ recover from:
 from __future__ import annotations
 
 import os
-import sqlite3
 import tempfile
 
 import pytest
 
 from slayer.storage.sqlite_storage import SQLiteStorage
+from slayer.storage.sqlite_conn import transaction
 
 
 def _create_legacy_db(db_path: str, with_data: bool = True) -> None:
     """Build the full pre-DEV-1428 schema with INTEGER PK / FK."""
-    with sqlite3.connect(db_path) as conn:
+    with transaction(db_path) as conn:
         conn.executescript("""
             CREATE TABLE memories (
                 id INTEGER PRIMARY KEY,
@@ -52,7 +52,7 @@ def _create_legacy_db(db_path: str, with_data: bool = True) -> None:
 
 
 def _id_column_type(db_path: str, table: str, col: str) -> str:
-    with sqlite3.connect(db_path) as conn:
+    with transaction(db_path) as conn:
         for row in conn.execute(f"PRAGMA table_info({table})"):
             if row[1] == col:
                 return row[2].upper()
@@ -72,7 +72,7 @@ class TestSqliteMemoriesPkMigration:
                 == "TEXT"
             )
             # Data preserved through the CAST.
-            with sqlite3.connect(db_path) as conn:
+            with transaction(db_path) as conn:
                 rows = conn.execute("SELECT id FROM memories").fetchall()
             assert rows == [("1",)]
 
@@ -84,7 +84,7 @@ class TestSqliteMemoriesPkMigration:
         the FK side instead of returning early."""
         with tempfile.TemporaryDirectory() as tmp:
             db_path = os.path.join(tmp, "partial.db")
-            with sqlite3.connect(db_path) as conn:
+            with transaction(db_path) as conn:
                 conn.executescript("""
                     CREATE TABLE memories (
                         id TEXT PRIMARY KEY,
@@ -114,7 +114,7 @@ class TestSqliteMemoriesPkMigration:
                 _id_column_type(db_path, "memory_entities", "memory_id")
                 == "TEXT"
             )
-            with sqlite3.connect(db_path) as conn:
+            with transaction(db_path) as conn:
                 ent_rows = conn.execute(
                     "SELECT memory_id, entity FROM memory_entities"
                 ).fetchall()
@@ -126,7 +126,7 @@ class TestSqliteMemoriesPkMigration:
         without raising."""
         with tempfile.TemporaryDirectory() as tmp:
             db_path = os.path.join(tmp, "weird.db")
-            with sqlite3.connect(db_path) as conn:
+            with transaction(db_path) as conn:
                 conn.executescript("""
                     CREATE TABLE memory_entities (
                         memory_id INTEGER NOT NULL,
@@ -138,7 +138,7 @@ class TestSqliteMemoriesPkMigration:
             # _init_db's CREATE IF NOT EXISTS.
             SQLiteStorage(db_path=db_path)
             # memories table now exists (created by _init_db).
-            with sqlite3.connect(db_path) as conn:
+            with transaction(db_path) as conn:
                 tables = {
                     r[0] for r in conn.execute(
                         "SELECT name FROM sqlite_master WHERE type='table'"

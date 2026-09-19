@@ -139,6 +139,13 @@ markers = [
     "metabase_e2e: live-Metabase end-to-end suite (requires Docker)",
 ]
 asyncio_mode = "auto"
+# DEV-1943 gate: a leaked sqlite connection / undisposed engine is an error on
+# CPython 3.13+ (both filters are inert on 3.11/3.12, where the warnings do not
+# exist). See tests/test_law_resource_ownership.py.
+filterwarnings = [
+    "error:unclosed database:ResourceWarning",
+    "error::pytest.PytestUnraisableExceptionWarning",
+]
 
 [tool.basedpyright]
 typeCheckingMode = "basic"

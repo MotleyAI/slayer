@@ -11,7 +11,6 @@ import copy
 import csv
 import io
 import json
-import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +26,7 @@ from slayer.engine.query_engine import (
     SlayerResponse,
 )
 from slayer.mcp.server import create_mcp_server
+from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 
 CAP = 20
@@ -35,14 +35,12 @@ NOTICE = f"showing first {CAP} rows — more rows exist"
 
 def _make_db(workspace: Path, *, rows: int = 30) -> Path:
     db = workspace / "live.db"
-    conn = sqlite3.connect(db)
-    conn.execute("CREATE TABLE nums (id INTEGER PRIMARY KEY, v INTEGER)")
-    conn.executemany(
-        "INSERT INTO nums (id, v) VALUES (?, ?)",
-        [(i, i * 10) for i in range(1, rows + 1)],
-    )
-    conn.commit()
-    conn.close()
+    with transaction(db) as conn:
+        conn.execute("CREATE TABLE nums (id INTEGER PRIMARY KEY, v INTEGER)")
+        conn.executemany(
+            "INSERT INTO nums (id, v) VALUES (?, ?)",
+            [(i, i * 10) for i in range(1, rows + 1)],
+        )
     return db
 
 

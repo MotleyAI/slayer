@@ -22,7 +22,7 @@ behavioural breaks it INTENDS:
 from __future__ import annotations
 
 import os
-import sqlite3
+from slayer.storage.sqlite_conn import transaction
 import tempfile
 from typing import List, Tuple
 from unittest.mock import patch
@@ -255,17 +255,16 @@ class TestStoredSourceQueriesTopoSort:
             # at construction time. The same guard exists in
             # ``topologically_order_stages`` as defence in depth, but the
             # user-facing error surfaces here first.
+            stage_a1 = SlayerQuery(name="a", source_model="orders")
+            stage_a2 = SlayerQuery(name="a", source_model="orders")
+            stage_c = SlayerQuery(source_model="a")
             with pytest.raises(
                 (ValueError, Exception), match="[Dd]uplicate",
             ):
                 SlayerModel(
                     name="qb_dup",
                     data_source="ds",
-                    source_queries=[
-                        SlayerQuery(name="a", source_model="orders"),
-                        SlayerQuery(name="a", source_model="orders"),
-                        SlayerQuery(source_model="a"),
-                    ],
+                    source_queries=[stage_a1, stage_a2, stage_c],
                 )
             del engine  # explicit unused (silence linter)
         finally:
@@ -602,18 +601,16 @@ class TestGetColumnTypesTypedPipeline:
         """
         d = tempfile.mkdtemp()
         db_path = os.path.join(d, "t.db")
-        con = sqlite3.connect(db_path)
-        cur = con.cursor()
-        cur.execute(
-            "CREATE TABLE orders ("
-            "id INTEGER PRIMARY KEY, status TEXT, amount REAL)"
-        )
-        cur.executemany(
-            "INSERT INTO orders VALUES (?,?,?)",
-            [(1, "paid", 10.0), (2, "open", 7.0)],
-        )
-        con.commit()
-        con.close()
+        with transaction(db_path) as con:
+            cur = con.cursor()
+            cur.execute(
+                "CREATE TABLE orders ("
+                "id INTEGER PRIMARY KEY, status TEXT, amount REAL)"
+            )
+            cur.executemany(
+                "INSERT INTO orders VALUES (?,?,?)",
+                [(1, "paid", 10.0), (2, "open", 7.0)],
+            )
 
         storage = YAMLStorage(base_dir=os.path.join(d, "store"))
         await storage.save_datasource(

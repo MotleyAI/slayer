@@ -44,6 +44,8 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql import engine_factory
 from slayer.storage.yaml_storage import YAMLStorage
 
+from tests._engine_helpers import disposable_engine
+
 pytest.importorskip("testcontainers.clickhouse")
 pytest.importorskip("clickhouse_sqlalchemy")
 
@@ -102,10 +104,9 @@ def _ds_url_for_db(clickhouse_container, db_name: str) -> str:
 def _create_module_db(clickhouse_container) -> str:
     """Create a fresh per-module database; return its name."""
     db_name = f"test_{uuid.uuid4().hex[:12]}"
-    engine = sa.create_engine(_admin_url(clickhouse_container))
-    with engine.begin() as conn:
-        conn.execute(sa.text(f"CREATE DATABASE {db_name}"))
-    engine.dispose()
+    with disposable_engine(_admin_url(clickhouse_container)) as engine:
+        with engine.begin() as conn:
+            conn.execute(sa.text(f"CREATE DATABASE {db_name}"))
     return db_name
 
 
@@ -115,10 +116,9 @@ def _drop_module_db(clickhouse_container, db_name: str) -> None:
         engine.dispose()
     engine_factory.reset_cache()
 
-    engine = sa.create_engine(_admin_url(clickhouse_container))
-    with engine.begin() as conn:
-        conn.execute(sa.text(f"DROP DATABASE IF EXISTS {db_name}"))
-    engine.dispose()
+    with disposable_engine(_admin_url(clickhouse_container)) as engine:
+        with engine.begin() as conn:
+            conn.execute(sa.text(f"DROP DATABASE IF EXISTS {db_name}"))
 
 
 def _ds_config(clickhouse_container, db_name: str) -> DatasourceConfig:
@@ -147,8 +147,7 @@ def _clickhouse_env_storage(clickhouse_container, tmp_path_factory):
     """Module-scoped: seeded ClickHouse orders + customers tables + storage."""
     db_name = _create_module_db(clickhouse_container)
     try:
-        engine = sa.create_engine(_ds_url_for_db(clickhouse_container, db_name))
-        try:
+        with disposable_engine(_ds_url_for_db(clickhouse_container, db_name)) as engine:
             with engine.begin() as conn:
                 conn.execute(sa.text("""
                     CREATE TABLE customers (
@@ -181,8 +180,6 @@ def _clickhouse_env_storage(clickhouse_container, tmp_path_factory):
                         (5, 'cancelled', 75, 3, '2024-03-01 08:00:00'),
                         (6, 'pending', 300, 3, '2024-03-10 16:00:00')
                 """))
-        finally:
-            engine.dispose()
 
         tmpdir = str(tmp_path_factory.mktemp("clickhouse_env"))
         storage = YAMLStorage(base_dir=tmpdir)
@@ -520,8 +517,7 @@ def clickhouse_cross_model_env(clickhouse_container):
     """ClickHouse env with orders + customers (with score) and explicit join.
     No FK metadata is exposed by ClickHouse — the join is hand-declared."""
     db_name = _create_module_db(clickhouse_container)
-    engine = sa.create_engine(_ds_url_for_db(clickhouse_container, db_name))
-    try:
+    with disposable_engine(_ds_url_for_db(clickhouse_container, db_name)) as engine:
         with engine.begin() as conn:
             conn.execute(sa.text("""
                 CREATE TABLE customers (
@@ -555,8 +551,6 @@ def clickhouse_cross_model_env(clickhouse_container):
                     (5, 'completed', 300, 3, '2024-03-01 08:00:00'),
                     (6, 'pending', 25, 1, '2024-03-10 16:00:00')
             """))
-    finally:
-        engine.dispose()
 
     tmpdir = tempfile.mkdtemp()
     storage = YAMLStorage(base_dir=tmpdir)
@@ -853,8 +847,7 @@ def clickhouse_log10_env(clickhouse_container):
     """Dedicated env for the log10 round-trip so the Column-add doesn't
     leak into the shared module-scoped storage."""
     db_name = _create_module_db(clickhouse_container)
-    engine = sa.create_engine(_ds_url_for_db(clickhouse_container, db_name))
-    try:
+    with disposable_engine(_ds_url_for_db(clickhouse_container, db_name)) as engine:
         with engine.begin() as conn:
             conn.execute(sa.text("""
                 CREATE TABLE orders (
@@ -865,8 +858,6 @@ def clickhouse_log10_env(clickhouse_container):
             conn.execute(sa.text(
                 "INSERT INTO orders VALUES (1, 100), (2, 200), (3, 300)"
             ))
-    finally:
-        engine.dispose()
 
     tmpdir = tempfile.mkdtemp()
     storage = YAMLStorage(base_dir=tmpdir)
@@ -916,8 +907,7 @@ async def test_log10_round_trip_clickhouse(clickhouse_log10_env: SlayerQueryEngi
 @pytest.fixture
 def planets_clickhouse_env(clickhouse_container):
     db_name = _create_module_db(clickhouse_container)
-    engine = sa.create_engine(_ds_url_for_db(clickhouse_container, db_name))
-    try:
+    with disposable_engine(_ds_url_for_db(clickhouse_container, db_name)) as engine:
         with engine.begin() as conn:
             conn.execute(sa.text("""
                 CREATE TABLE planets (
@@ -937,8 +927,6 @@ def planets_clickhouse_env(clickhouse_container):
                     (7, 'Uranus', 86.8),
                     (8, 'Neptune', 102.0)
             """))
-    finally:
-        engine.dispose()
 
     tmpdir = tempfile.mkdtemp()
     storage = YAMLStorage(base_dir=tmpdir)
@@ -984,8 +972,7 @@ async def test_filter_on_windowed_column_clickhouse_raises(planets_clickhouse_en
 @pytest.fixture
 def clickhouse_derived_chain_env(clickhouse_container):
     db_name = _create_module_db(clickhouse_container)
-    engine = sa.create_engine(_ds_url_for_db(clickhouse_container, db_name))
-    try:
+    with disposable_engine(_ds_url_for_db(clickhouse_container, db_name)) as engine:
         with engine.begin() as conn:
             conn.execute(sa.text(
                 "CREATE TABLE b_tbl (id Int32, foo_raw Float64) "
@@ -999,8 +986,6 @@ def clickhouse_derived_chain_env(clickhouse_container):
             conn.execute(sa.text(
                 "INSERT INTO a_tbl VALUES (10, 4, 1, 100), (11, 1, 2, 5)"
             ))
-    finally:
-        engine.dispose()
 
     tmpdir = tempfile.mkdtemp()
     storage = YAMLStorage(base_dir=tmpdir)
@@ -1069,8 +1054,7 @@ def clickhouse_ingest_for_types_env(clickhouse_container):
     """Seed a ClickHouse table with each scalar type we care about,
     then auto-ingest. The test asserts the inferred DataType vocabulary."""
     db_name = _create_module_db(clickhouse_container)
-    engine = sa.create_engine(_ds_url_for_db(clickhouse_container, db_name))
-    try:
+    with disposable_engine(_ds_url_for_db(clickhouse_container, db_name)) as engine:
         with engine.begin() as conn:
             conn.execute(sa.text("""
                 CREATE TABLE orders (
@@ -1086,8 +1070,6 @@ def clickhouse_ingest_for_types_env(clickhouse_container):
                 INSERT INTO orders VALUES
                     (1, 1, 5, 100.0, 'completed', '2024-01-01 00:00:00')
             """))
-    finally:
-        engine.dispose()
     ds = _ds_config(clickhouse_container, db_name)
     yield ds
     _drop_module_db(clickhouse_container, db_name)
@@ -1147,8 +1129,7 @@ def _clickhouse_esc_storage(clickhouse_container, tmp_path_factory):
     a model whose Mode-A filter carries a ``{v}`` placeholder."""
     db_name = _create_module_db(clickhouse_container)
     try:
-        engine = sa.create_engine(_ds_url_for_db(clickhouse_container, db_name))
-        try:
+        with disposable_engine(_ds_url_for_db(clickhouse_container, db_name)) as engine:
             with engine.begin() as conn:
                 conn.execute(sa.text("""
                     CREATE TABLE esc (
@@ -1167,8 +1148,6 @@ def _clickhouse_esc_storage(clickhouse_container, tmp_path_factory):
                     sa.Column("amount", sa.Float),
                 )
                 conn.execute(esc.insert(), _CH_ESC_ROWS)
-        finally:
-            engine.dispose()
 
         tmpdir = str(tmp_path_factory.mktemp("clickhouse_esc"))
         storage = YAMLStorage(base_dir=tmpdir)
@@ -1239,8 +1218,7 @@ def _clickhouse_decimal_storage(clickhouse_container, tmp_path_factory):
     """Module-scoped: ingested table with wrapped and short decimal columns."""
     db_name = _create_module_db(clickhouse_container)
     try:
-        engine = sa.create_engine(_ds_url_for_db(clickhouse_container, db_name))
-        try:
+        with disposable_engine(_ds_url_for_db(clickhouse_container, db_name)) as engine:
             with engine.begin() as conn:
                 conn.execute(sa.text("""
                     CREATE TABLE decimal_orders (
@@ -1254,8 +1232,6 @@ def _clickhouse_decimal_storage(clickhouse_container, tmp_path_factory):
                         (1, '90071992547409.91', '900719925474.0992'),
                         (2, '0.02', '0.0001')
                 """))
-        finally:
-            engine.dispose()
 
         datasource = _ds_config(clickhouse_container, db_name)
         model = next(

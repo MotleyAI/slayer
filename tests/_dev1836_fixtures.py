@@ -55,9 +55,6 @@ first=100 last=60, silver 150/150, bronze 40/40.
 
 from __future__ import annotations
 
-import os
-import sqlite3
-import tempfile
 from typing import AsyncIterator, List
 
 import pytest
@@ -65,14 +62,14 @@ import pytest
 from slayer.core.enums import DataType, JoinCardinality, TimeGranularity
 from slayer.core.models import (
     Column,
-    DatasourceConfig,
     ModelJoin,
     ModelMeasure,
     SlayerModel,
 )
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.storage.yaml_storage import YAMLStorage
+from tests._engine_helpers import seeded_exec_engine
+from slayer.storage.sqlite_conn import transaction
 
 from tests._engine_helpers import _engine_generate
 
@@ -247,24 +244,22 @@ _ORDERS_ROWS = [
 
 
 def _seed_sqlite(db_path: str) -> None:
-    con = sqlite3.connect(db_path)
-    cur = con.cursor()
-    cur.execute("CREATE TABLE regions (id INTEGER PRIMARY KEY, name TEXT, pop REAL)")
-    cur.executemany("INSERT INTO regions VALUES (?,?,?)", _REGIONS_ROWS)
-    cur.execute("CREATE TABLE segments (code TEXT, label TEXT, discount REAL)")
-    cur.executemany("INSERT INTO segments VALUES (?,?,?)", _SEGMENTS_ROWS)
-    cur.execute(
-        "CREATE TABLE customers (id INTEGER PRIMARY KEY, region_id INTEGER, "
-        "segment_code TEXT, tier TEXT, spend REAL, signup_at TEXT)"
-    )
-    cur.executemany("INSERT INTO customers VALUES (?,?,?,?,?,?)", _CUSTOMERS_ROWS)
-    cur.execute(
-        "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, "
-        "status TEXT, channel TEXT, amount REAL, ordered_at TEXT)"
-    )
-    cur.executemany("INSERT INTO orders VALUES (?,?,?,?,?,?)", _ORDERS_ROWS)
-    con.commit()
-    con.close()
+    with transaction(db_path) as con:
+        cur = con.cursor()
+        cur.execute("CREATE TABLE regions (id INTEGER PRIMARY KEY, name TEXT, pop REAL)")
+        cur.executemany("INSERT INTO regions VALUES (?,?,?)", _REGIONS_ROWS)
+        cur.execute("CREATE TABLE segments (code TEXT, label TEXT, discount REAL)")
+        cur.executemany("INSERT INTO segments VALUES (?,?,?)", _SEGMENTS_ROWS)
+        cur.execute(
+            "CREATE TABLE customers (id INTEGER PRIMARY KEY, region_id INTEGER, "
+            "segment_code TEXT, tier TEXT, spend REAL, signup_at TEXT)"
+        )
+        cur.executemany("INSERT INTO customers VALUES (?,?,?,?,?,?)", _CUSTOMERS_ROWS)
+        cur.execute(
+            "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, "
+            "status TEXT, channel TEXT, amount REAL, ordered_at TEXT)"
+        )
+        cur.executemany("INSERT INTO orders VALUES (?,?,?,?,?,?)", _ORDERS_ROWS)
 
 
 def _seed_duckdb(db_path: str) -> None:
@@ -287,29 +282,15 @@ def _seed_duckdb(db_path: str) -> None:
     con.close()
 
 
-async def _engine_for(*, dialect: str, db_path: str) -> SlayerQueryEngine:
-    storage = YAMLStorage(base_dir=os.path.join(os.path.dirname(db_path), "store"))
-    await storage.save_datasource(
-        DatasourceConfig(name="test", type=dialect, database=db_path)
-    )
-    for model in dev1836_models():
-        await storage.save_model(model, _validate=False)
-    return SlayerQueryEngine(storage=storage)
-
-
 async def make_exec_engine(request) -> AsyncIterator[SlayerQueryEngine]:
     """Body for a ``params=["sqlite", "duckdb"]`` fixture; each test module
     wraps this in ``@pytest.fixture`` so the fixture name lives where used."""
     dialect = request.param
     if dialect == "duckdb":
         pytest.importorskip("duckdb")
-    with tempfile.TemporaryDirectory() as d:
-        db_path = os.path.join(d, f"data.{dialect}")
-        if dialect == "sqlite":
-            _seed_sqlite(db_path)
-        else:
-            _seed_duckdb(db_path)
-        yield await _engine_for(dialect=dialect, db_path=db_path)
+    seed = _seed_duckdb if dialect == "duckdb" else _seed_sqlite
+    async with seeded_exec_engine(dialect=dialect, seed=seed, models=dev1836_models()) as (engine, _db):
+        yield engine
 
 
 def month_key(value) -> str:

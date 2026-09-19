@@ -848,6 +848,26 @@ class SlayerQueryEngine:
         for client in self._sql_clients.values():
             await client.aclose()
 
+    def close(self) -> None:
+        """Close every cached client (disposing private in-memory engines) and clear the cache.
+
+        Idempotent; continues past a client that fails to close; leaves the
+        engine reusable — a later query rebuilds its clients (D4). This is the
+        synchronous teardown; loop-bound async engines (async datasources) are
+        disposed by ``aclose()`` on their event loop, not here.
+        """
+        try:
+            for client in list(self._sql_clients.values()):
+                try:
+                    client.close()
+                except Exception:
+                    logger.warning(
+                        "Failed to close a SQL client during engine close.",
+                        exc_info=True,
+                    )
+        finally:
+            self._sql_clients.clear()
+
     async def execute(
         self,
         query: "SlayerQuery | dict | list[SlayerQuery | dict] | str",

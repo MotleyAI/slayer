@@ -10,7 +10,6 @@ pinned here (implement §5.1 follows it):
 
 from __future__ import annotations
 
-import sqlite3
 import sys
 import warnings
 from pathlib import Path
@@ -23,6 +22,7 @@ from slayer.core.models import Column, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql import engine_factory
+from slayer.storage.sqlite_conn import transaction
 from tests._engine_helpers import seeded_exec_engine
 
 _ON_313 = sys.version_info >= (3, 13)
@@ -37,11 +37,9 @@ def _seed_nums(dialect: str):
             con.executemany("INSERT INTO nums VALUES (?)", [(i,) for i in range(3)])
             con.close()
         else:
-            con = sqlite3.connect(db_path)
-            con.execute("CREATE TABLE nums (v INTEGER)")
-            con.executemany("INSERT INTO nums VALUES (?)", [(i,) for i in range(3)])
-            con.commit()
-            con.close()
+            with transaction(db_path) as con:
+                con.execute("CREATE TABLE nums (v INTEGER)")
+                con.executemany("INSERT INTO nums VALUES (?)", [(i,) for i in range(3)])
     return seed
 
 
@@ -82,7 +80,7 @@ async def test_seeded_exec_engine_smoke(dialect: str) -> None:
             holder["path"] = db_path
             assert Path(db_path).exists()
             response = await engine.execute(
-                SlayerQuery(source_model="nums", measures=["*:count"]),
+                SlayerQuery(source_model="nums", measures=["*:count"]),  # type: ignore[arg-type]
             )
             assert response.data[0]["nums._count"] == 3
         # D9: close() ran, then invalidate_engine(), while the db file still existed

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import gc
-import sqlite3
+import logging
 import sys
 import tempfile
 import warnings
@@ -30,6 +30,7 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql import engine_factory
 from slayer.sql.client import SlayerSQLClient
 from slayer.sql.engine_factory import _sql_client_cache_key
+from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 
 _ON_313 = sys.version_info >= (3, 13)
@@ -49,13 +50,9 @@ def workspace() -> Iterator[Path]:
 
 
 def _seed_counter(db: Path, rows: int) -> None:
-    con = sqlite3.connect(db)
-    try:
+    with transaction(db) as con:
         con.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER)")
         con.executemany("INSERT INTO t (v) VALUES (?)", [(i,) for i in range(rows)])
-        con.commit()
-    finally:
-        con.close()
 
 
 def _file_engine(db: Path) -> SlayerQueryEngine:
@@ -157,7 +154,8 @@ class TestClientClose:
             client._discard_sync_engine_on_auth_failure(Exception("authentication failed"))
             assert _count_disposed(spy, first) == 1
             second = client._get_sync_engine_for_client()
-            assert second is not None and second is not first
+            assert second is not None
+            assert second is not first
             client.close()
             assert _count_disposed(spy, second) == 1
             assert _count_disposed(spy, first) == 1  # not disposed twice
@@ -200,6 +198,23 @@ class TestClientClose:
                 "SELECT name FROM sqlite_master WHERE type='table'"
             ).fetchall()
         assert tables == [], "reused in-memory datasource must start empty"
+
+    def test_close_warns_and_retains_a_loop_bound_async_engine(self, caplog) -> None:
+        """A loop-bound async engine can only be disposed by aclose() inside its
+        event loop, so a synchronous close() must NOT fake-dispose it (which
+        would swallow a MissingGreenlet) — it warns and leaves the reference in
+        place so aclose() can still reach it."""
+        client = SlayerSQLClient(
+            datasource=DatasourceConfig(name="pg", type="postgres", host="h", database="db"),
+        )
+        fake_async = MagicMock()
+        client._async_engine = fake_async
+        with caplog.at_level(logging.WARNING, logger="slayer.sql.client"):
+            client.close()
+        fake_async.sync_engine.dispose.assert_not_called()
+        fake_async.dispose.assert_not_called()
+        assert client._async_engine is fake_async, "async engine must not be dropped by sync close()"
+        assert any("async" in r.message.lower() for r in caplog.records)
 
 
 # --------------------------------------------------------------------------- #
@@ -262,10 +277,10 @@ class TestQueryEngineClose:
         db = workspace / "reuse.db"
         _seed_counter(db, rows=3)
         engine = _file_engine(db)
-        first = engine.execute_sync(SlayerQuery(source_model="t", measures=["*:count"]))
+        first = engine.execute_sync(SlayerQuery(source_model="t", measures=["*:count"]))  # type: ignore[arg-type]
         assert first.data[0]["t._count"] == 3
         engine.close()
-        again = engine.execute_sync(SlayerQuery(source_model="t", measures=["*:count"]))
+        again = engine.execute_sync(SlayerQuery(source_model="t", measures=["*:count"]))  # type: ignore[arg-type]
         assert again.data[0]["t._count"] == 3
 
     def test_in_memory_query_engine_rebuilds_empty_after_close(self, workspace: Path) -> None:
@@ -274,13 +289,14 @@ class TestQueryEngineClose:
         trace of the seeded table, then a re-seeded query succeeds."""
         engine_factory.reset_cache()
         engine, _client = _seeded_in_memory_engine(workspace, rows=2)
-        seeded = asyncio.run(engine.execute(SlayerQuery(source_model="t", measures=["*:count"])))
+        seeded = asyncio.run(engine.execute(SlayerQuery(source_model="t", measures=["*:count"])))  # type: ignore[arg-type]
         assert seeded.data[0]["t._count"] == 2
         engine.close()
         assert engine._sql_clients == {}
         # The fresh in-memory db is empty — the seeded table is specifically gone.
+        empty_probe = engine.execute(SlayerQuery(source_model="t", measures=["*:count"]))  # type: ignore[arg-type]
         with pytest.raises(Exception) as excinfo:
-            asyncio.run(engine.execute(SlayerQuery(source_model="t", measures=["*:count"])))
+            asyncio.run(empty_probe)
         assert "no such table" in str(excinfo.value).lower()
         # Reusable: re-seed through a fresh client and the query succeeds again.
         ds = _mem_ds("mem")
@@ -292,7 +308,7 @@ class TestQueryEngineClose:
             conn.exec_driver_sql("INSERT INTO t (v) VALUES (5)")
             conn.commit()
         engine._sql_clients[_sql_client_cache_key(ds)] = fresh
-        reused = asyncio.run(engine.execute(SlayerQuery(source_model="t", measures=["*:count"])))
+        reused = asyncio.run(engine.execute(SlayerQuery(source_model="t", measures=["*:count"])))  # type: ignore[arg-type]
         assert reused.data[0]["t._count"] == 1
         engine_factory.reset_cache()
 

@@ -56,9 +56,6 @@ LAST/FIRST_BY_SHIPPED  on the shipped-at variant (dates below): North's latest
 
 from __future__ import annotations
 
-import os
-import sqlite3
-import tempfile
 from typing import AsyncIterator, List
 
 import pytest
@@ -66,9 +63,10 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
+from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.storage.yaml_storage import YAMLStorage
+from slayer.storage.sqlite_conn import transaction
+from tests._engine_helpers import seeded_exec_engine
 
 from tests._dev1824_fixtures import (  # noqa: F401 — re-exported fixture surface
     REGION_FIRST,
@@ -284,15 +282,13 @@ def shipped_orders_model() -> SlayerModel:
 
 
 def _seed_shipped_sqlite(db_path: str) -> None:
-    con = sqlite3.connect(db_path)
-    con.execute(
-        "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, "
-        "region TEXT, city TEXT, channel TEXT, amount REAL, status TEXT, "
-        "ordered_at TEXT, shipped_at TEXT)"
-    )
-    con.executemany("INSERT INTO orders VALUES (?,?,?,?,?,?,?,?,?)", _SHIPPED_ROWS)
-    con.commit()
-    con.close()
+    with transaction(db_path) as con:
+        con.execute(
+            "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, "
+            "region TEXT, city TEXT, channel TEXT, amount REAL, status TEXT, "
+            "ordered_at TEXT, shipped_at TEXT)"
+        )
+        con.executemany("INSERT INTO orders VALUES (?,?,?,?,?,?,?,?,?)", _SHIPPED_ROWS)
 
 
 def _seed_shipped_duckdb(db_path: str) -> None:
@@ -313,18 +309,11 @@ async def make_shipped_exec_engine(request) -> AsyncIterator[SlayerQueryEngine]:
     dialect = request.param
     if dialect == "duckdb":
         pytest.importorskip("duckdb")
-    with tempfile.TemporaryDirectory() as d:
-        db_path = os.path.join(d, f"data.{dialect}")
-        if dialect == "sqlite":
-            _seed_shipped_sqlite(db_path)
-        else:
-            _seed_shipped_duckdb(db_path)
-        storage = YAMLStorage(base_dir=os.path.join(d, "store"))
-        await storage.save_datasource(
-            DatasourceConfig(name="test", type=dialect, database=db_path)
-        )
-        await storage.save_model(shipped_orders_model(), _validate=False)
-        yield SlayerQueryEngine(storage=storage)
+    seed = _seed_shipped_duckdb if dialect == "duckdb" else _seed_shipped_sqlite
+    async with seeded_exec_engine(
+        dialect=dialect, seed=seed, models=[shipped_orders_model()],
+    ) as (engine, _db):
+        yield engine
 
 
 # Shared executed-value response reducers (the per-dialect exec_backend /

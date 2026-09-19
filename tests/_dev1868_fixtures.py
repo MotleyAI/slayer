@@ -9,17 +9,15 @@ Underscore-prefixed so pytest skips collection.
 
 from __future__ import annotations
 
-import os
-import sqlite3
-import tempfile
 from typing import AsyncIterator, Optional
 
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import Column, SlayerModel
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.storage.yaml_storage import YAMLStorage
+from tests._engine_helpers import seeded_exec_engine
+from slayer.storage.sqlite_conn import transaction
 
 # --------------------------------------------------------------------------- #
 # W1 — cross-model first/last × partition_by (DEV-1836 stack).
@@ -130,14 +128,12 @@ def daily_model() -> SlayerModel:
 
 
 def _seed_daily_sqlite(db_path: str) -> None:
-    con = sqlite3.connect(db_path)
-    con.execute(
-        "CREATE TABLE daily (id INTEGER PRIMARY KEY, revenue REAL, "
-        "ordered_at TEXT)"
-    )
-    con.executemany("INSERT INTO daily VALUES (?,?,?)", _DAILY_ROWS)
-    con.commit()
-    con.close()
+    with transaction(db_path) as con:
+        con.execute(
+            "CREATE TABLE daily (id INTEGER PRIMARY KEY, revenue REAL, "
+            "ordered_at TEXT)"
+        )
+        con.executemany("INSERT INTO daily VALUES (?,?,?)", _DAILY_ROWS)
 
 
 def _seed_daily_duckdb(db_path: str) -> None:
@@ -153,18 +149,11 @@ def _seed_daily_duckdb(db_path: str) -> None:
 async def make_daily_exec_engine(request) -> AsyncIterator[SlayerQueryEngine]:
     """Body for a ``params=["sqlite", "duckdb"]`` fixture over the daily stack."""
     dialect = request.param
-    with tempfile.TemporaryDirectory() as d:
-        db_path = os.path.join(d, f"daily.{dialect}")
-        if dialect == "sqlite":
-            _seed_daily_sqlite(db_path)
-        else:
-            _seed_daily_duckdb(db_path)
-        storage = YAMLStorage(base_dir=os.path.join(d, "store"))
-        await storage.save_datasource(
-            DatasourceConfig(name="test", type=dialect, database=db_path)
-        )
-        await storage.save_model(daily_model(), _validate=False)
-        yield SlayerQueryEngine(storage=storage)
+    seed = _seed_daily_duckdb if dialect == "duckdb" else _seed_daily_sqlite
+    async with seeded_exec_engine(
+        dialect=dialect, seed=seed, models=[daily_model()],
+    ) as (engine, _db):
+        yield engine
 
 
 def as_bool(value) -> Optional[bool]:

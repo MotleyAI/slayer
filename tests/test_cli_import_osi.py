@@ -16,6 +16,8 @@ from slayer.cli import _run_import_osi
 from slayer.core.models import DatasourceConfig
 from slayer.storage.yaml_storage import YAMLStorage
 
+from tests._engine_helpers import disposable_engine
+
 FIXTURES = Path(__file__).parent / "fixtures" / "osi"
 
 _SCHEMA = [
@@ -31,12 +33,10 @@ _SCHEMA = [
 @pytest.fixture
 def shop_setup(tmp_path: Path):
     db = tmp_path / "shop.db"
-    engine = sa.create_engine(f"sqlite:///{db}")
-    with engine.connect() as conn:
+    with disposable_engine(f"sqlite:///{db}") as engine, engine.connect() as conn:
         for ddl in _SCHEMA:
             conn.execute(sa.text(ddl))
         conn.commit()
-    engine.dispose()
 
     store = tmp_path / "store"
     storage = YAMLStorage(base_dir=str(store))

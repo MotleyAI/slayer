@@ -21,9 +21,6 @@ count: A Jan 30/5/2 Feb 40/5/1 Mar 50/5/1; B Jan 30/5/1 Feb 60/6/1 Mar 10/2/1.
 
 from __future__ import annotations
 
-import os
-import sqlite3
-import tempfile
 from typing import AsyncIterator, List
 
 import pytest
@@ -33,14 +30,14 @@ from slayer.core.models import (
     Aggregation,
     AggregationParam,
     Column,
-    DatasourceConfig,
     ModelJoin,
     ModelMeasure,
     SlayerModel,
 )
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.storage.yaml_storage import YAMLStorage
+from slayer.storage.sqlite_conn import transaction
+from tests._engine_helpers import seeded_exec_engine
 
 from tests._engine_helpers import _engine_generate
 
@@ -121,18 +118,16 @@ _SALES_ROWS = [
 
 
 def _seed_sqlite(db_path: str) -> None:
-    con = sqlite3.connect(db_path)
-    cur = con.cursor()
-    cur.execute("CREATE TABLE regions (id INTEGER PRIMARY KEY, factor REAL)")
-    cur.executemany("INSERT INTO regions VALUES (?,?)", _REGIONS_ROWS)
-    cur.execute(
-        "CREATE TABLE sales (id INTEGER PRIMARY KEY, region_id INTEGER, "
-        "store TEXT, status TEXT, revenue REAL, qty REAL, cost REAL, "
-        "weight REAL, sku TEXT, ordered_at TEXT)"
-    )
-    cur.executemany("INSERT INTO sales VALUES (?,?,?,?,?,?,?,?,?,?)", _SALES_ROWS)
-    con.commit()
-    con.close()
+    with transaction(db_path) as con:
+        cur = con.cursor()
+        cur.execute("CREATE TABLE regions (id INTEGER PRIMARY KEY, factor REAL)")
+        cur.executemany("INSERT INTO regions VALUES (?,?)", _REGIONS_ROWS)
+        cur.execute(
+            "CREATE TABLE sales (id INTEGER PRIMARY KEY, region_id INTEGER, "
+            "store TEXT, status TEXT, revenue REAL, qty REAL, cost REAL, "
+            "weight REAL, sku TEXT, ordered_at TEXT)"
+        )
+        cur.executemany("INSERT INTO sales VALUES (?,?,?,?,?,?,?,?,?,?)", _SALES_ROWS)
 
 
 def _seed_duckdb(db_path: str) -> None:
@@ -149,29 +144,14 @@ def _seed_duckdb(db_path: str) -> None:
     con.close()
 
 
-async def _engine_for(*, dialect: str, db_path: str) -> SlayerQueryEngine:
-    storage = YAMLStorage(base_dir=os.path.join(os.path.dirname(db_path), "store"))
-    await storage.save_datasource(
-        DatasourceConfig(name="test", type=dialect, database=db_path)
-    )
-    for model in dev1846_models():
-        await storage.save_model(model, _validate=False)
-    return SlayerQueryEngine(storage=storage)
-
-
 async def make_exec_engine(request) -> AsyncIterator[SlayerQueryEngine]:
     """Body for a ``params=["sqlite", "duckdb"]`` fixture; a module wraps it in
     ``@pytest.fixture`` so the name lives where consumed (no F811 shadow)."""
     dialect = request.param
     if dialect == "duckdb":
         pytest.importorskip("duckdb")
-    with tempfile.TemporaryDirectory() as d:
-        db_path = os.path.join(d, f"data.{dialect}")
-        if dialect == "sqlite":
-            _seed_sqlite(db_path)
-        else:
-            _seed_duckdb(db_path)
-        engine = await _engine_for(dialect=dialect, db_path=db_path)
+    seed = _seed_duckdb if dialect == "duckdb" else _seed_sqlite
+    async with seeded_exec_engine(dialect=dialect, seed=seed, models=dev1846_models()) as (engine, _db):
         yield engine
 
 

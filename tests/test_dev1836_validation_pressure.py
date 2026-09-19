@@ -10,7 +10,6 @@ hard-contradicts. CLI: ``slayer validate-models`` prints the flags.
 
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -28,6 +27,7 @@ from slayer.engine.cardinality import (
 )
 from slayer.engine.join_safety import audit_join_safety
 from slayer.storage.yaml_storage import YAMLStorage
+from slayer.storage.sqlite_conn import transaction
 
 from tests._dev1836_fixtures import dev1836_models
 
@@ -153,17 +153,15 @@ class TestCliValidateModels:
     @pytest.fixture
     def store(self, tmp_path: Path) -> str:
         db = str(tmp_path / "ds.db")
-        conn = sqlite3.connect(db)
-        conn.executescript(
-            """
-            CREATE TABLE hosts (id INTEGER PRIMARY KEY, tag TEXT);
-            CREATE TABLE tags (tag TEXT, label TEXT);
-            INSERT INTO hosts VALUES (1, 'a'), (2, 'b');
-            INSERT INTO tags VALUES ('a', 'A'), ('b', 'B');
-            """
-        )
-        conn.commit()
-        conn.close()
+        with transaction(db) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE hosts (id INTEGER PRIMARY KEY, tag TEXT);
+                CREATE TABLE tags (tag TEXT, label TEXT);
+                INSERT INTO hosts VALUES (1, 'a'), (2, 'b');
+                INSERT INTO tags VALUES ('a', 'A'), ('b', 'B');
+                """
+            )
         store = str(tmp_path / "store")
         storage = YAMLStorage(base_dir=store)
         run_sync(storage.save_datasource(

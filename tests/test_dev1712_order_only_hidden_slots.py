@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import re
-import sqlite3
 
 import pydantic
 import pytest
@@ -15,6 +14,7 @@ from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
+from slayer.storage.sqlite_conn import transaction
 
 
 def _outermost_select(sql: str, *, dialect: str = "postgres") -> exp.Select:
@@ -128,29 +128,27 @@ async def _sql(engine_and_model, query: SlayerQuery) -> str:
 async def exec_engine(tmp_path):
     """On-disk SQLite seeded for execution / top-N ordering assertions."""
     db_path = tmp_path / "t.db"
-    conn = sqlite3.connect(str(db_path))
-    conn.executescript(
-        """
-        CREATE TABLE regions (id INTEGER PRIMARY KEY, name TEXT);
-        CREATE TABLE customers (id INTEGER PRIMARY KEY, region_id INTEGER,
-                                region TEXT, lifetime_revenue REAL);
-        CREATE TABLE suppliers (id INTEGER PRIMARY KEY, region TEXT,
-                                supplier_revenue REAL);
-        CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER,
-                             supplier_id INTEGER, status TEXT, created_at TEXT,
-                             ActivityTs TEXT, amount REAL);
-        INSERT INTO regions VALUES (10,'West'),(11,'East');
-        INSERT INTO customers VALUES (100,10,'West',500.0),(101,11,'East',700.0);
-        INSERT INTO suppliers VALUES (200,'West',1000.0),(201,'East',2000.0);
-        INSERT INTO orders VALUES
-            (1,100,200,'paid','2025-01-01','2025-01-05',10.0),
-            (2,100,200,'paid','2025-01-02','2025-01-06',40.0),
-            (3,101,201,'open','2025-02-01','2025-02-05',20.0),
-            (4,101,201,'open','2025-02-02','2025-02-06',5.0);
-        """
-    )
-    conn.commit()
-    conn.close()
+    with transaction(str(db_path)) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE regions (id INTEGER PRIMARY KEY, name TEXT);
+            CREATE TABLE customers (id INTEGER PRIMARY KEY, region_id INTEGER,
+                                    region TEXT, lifetime_revenue REAL);
+            CREATE TABLE suppliers (id INTEGER PRIMARY KEY, region TEXT,
+                                    supplier_revenue REAL);
+            CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER,
+                                 supplier_id INTEGER, status TEXT, created_at TEXT,
+                                 ActivityTs TEXT, amount REAL);
+            INSERT INTO regions VALUES (10,'West'),(11,'East');
+            INSERT INTO customers VALUES (100,10,'West',500.0),(101,11,'East',700.0);
+            INSERT INTO suppliers VALUES (200,'West',1000.0),(201,'East',2000.0);
+            INSERT INTO orders VALUES
+                (1,100,200,'paid','2025-01-01','2025-01-05',10.0),
+                (2,100,200,'paid','2025-01-02','2025-01-06',40.0),
+                (3,101,201,'open','2025-02-01','2025-02-05',20.0),
+                (4,101,201,'open','2025-02-02','2025-02-06',5.0);
+            """
+        )
     storage = YAMLStorage(base_dir=str(tmp_path / "store"))
     await storage.save_datasource(
         DatasourceConfig(name="test", type="sqlite", database=str(db_path))

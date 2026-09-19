@@ -21,11 +21,8 @@ _ON_313 = sys.version_info >= (3, 13)
 
 
 def _rows(db: Path) -> list[tuple]:
-    con = sqlite3.connect(db)
-    try:
+    with open_connection(db) as con:
         return con.execute("SELECT v FROM t ORDER BY v").fetchall()
-    finally:
-        con.close()
 
 
 @pytest.fixture
@@ -43,7 +40,7 @@ def test_transaction_commits_on_success(seeded_db: Path) -> None:
 
 
 def test_transaction_rolls_back_on_error(seeded_db: Path) -> None:
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError):  # ALLOW(raises-single-throw): the write and the raise must occur inside the transaction context under test
         with transaction(seeded_db) as conn:
             conn.execute("INSERT INTO t (v) VALUES (99)")
             raise RuntimeError("boom")

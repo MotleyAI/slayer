@@ -27,7 +27,6 @@ only form correct for both ``ifnull`` and ``log10``.
 from __future__ import annotations
 
 import os
-import sqlite3
 from datetime import datetime
 from decimal import Decimal
 from typing import Optional
@@ -90,6 +89,7 @@ from slayer.sql.render.value_expr import (
 )
 from slayer.sql.scope import ScopeFrame
 from slayer.storage.yaml_storage import YAMLStorage
+from slayer.storage.sqlite_conn import transaction
 
 
 # ===========================================================================
@@ -1032,22 +1032,20 @@ class TestAggregationRegistry:
 async def _e2e_engine(*, base_dir: str, dialect: str = "sqlite") -> SlayerQueryEngine:
     d = base_dir
     db_path = os.path.join(d, "ve.db")
-    con = sqlite3.connect(db_path)
-    cur = con.cursor()
-    cur.execute(
-        "CREATE TABLE orders (id INTEGER PRIMARY KEY, status TEXT, "
-        "amount REAL, disc REAL, qty REAL, created_at TEXT)"
-    )
-    cur.executemany(
-        "INSERT INTO orders VALUES (?,?,?,?,?,?)",
-        [
-            (1, "new", 10.0, None, 2.0, "2024-01-01"),
-            (2, "new", 20.0, 5.0, 4.0, "2024-02-01"),
-            (3, "old", 30.0, None, 1.0, "2024-01-15"),
-        ],
-    )
-    con.commit()
-    con.close()
+    with transaction(db_path) as con:
+        cur = con.cursor()
+        cur.execute(
+            "CREATE TABLE orders (id INTEGER PRIMARY KEY, status TEXT, "
+            "amount REAL, disc REAL, qty REAL, created_at TEXT)"
+        )
+        cur.executemany(
+            "INSERT INTO orders VALUES (?,?,?,?,?,?)",
+            [
+                (1, "new", 10.0, None, 2.0, "2024-01-01"),
+                (2, "new", 20.0, 5.0, 4.0, "2024-02-01"),
+                (3, "old", 30.0, None, 1.0, "2024-01-15"),
+            ],
+        )
 
     storage = YAMLStorage(base_dir=os.path.join(d, "store"))
     await storage.save_datasource(
@@ -1202,29 +1200,27 @@ class TestOuterWrapperAndShiftedCteFamilies:
     async def _engine(self, tmp_path, *, dialect: str = "sqlite") -> SlayerQueryEngine:
         d = str(tmp_path)
         db_path = os.path.join(d, "routes.db")
-        con = sqlite3.connect(db_path)
-        cur = con.cursor()
-        cur.execute(
-            "CREATE TABLE regions (id INTEGER PRIMARY KEY, tier TEXT)"
-        )
-        cur.executemany(
-            "INSERT INTO regions VALUES (?,?)", [(1, "gold"), (2, "silver")],
-        )
-        cur.execute(
-            "CREATE TABLE orders (id INTEGER PRIMARY KEY, region_id INTEGER, "
-            "status TEXT, amount REAL, disc REAL, created_at TEXT)"
-        )
-        cur.executemany(
-            "INSERT INTO orders VALUES (?,?,?,?,?,?)",
-            [
-                (1, 1, "new", 100.0, None, "2024-01-15"),
-                (2, 1, "new", 200.0, 5.0, "2024-02-15"),
-                (3, 2, "old", 300.0, None, "2024-01-20"),
-                (4, 2, "old", 400.0, 7.0, "2024-02-20"),
-            ],
-        )
-        con.commit()
-        con.close()
+        with transaction(db_path) as con:
+            cur = con.cursor()
+            cur.execute(
+                "CREATE TABLE regions (id INTEGER PRIMARY KEY, tier TEXT)"
+            )
+            cur.executemany(
+                "INSERT INTO regions VALUES (?,?)", [(1, "gold"), (2, "silver")],
+            )
+            cur.execute(
+                "CREATE TABLE orders (id INTEGER PRIMARY KEY, region_id INTEGER, "
+                "status TEXT, amount REAL, disc REAL, created_at TEXT)"
+            )
+            cur.executemany(
+                "INSERT INTO orders VALUES (?,?,?,?,?,?)",
+                [
+                    (1, 1, "new", 100.0, None, "2024-01-15"),
+                    (2, 1, "new", 200.0, 5.0, "2024-02-15"),
+                    (3, 2, "old", 300.0, None, "2024-01-20"),
+                    (4, 2, "old", 400.0, 7.0, "2024-02-20"),
+                ],
+            )
 
         storage = YAMLStorage(base_dir=os.path.join(d, "store"))
         await storage.save_datasource(

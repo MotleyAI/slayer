@@ -2,7 +2,6 @@
 
 import os
 import shutil
-import sqlite3
 import tempfile
 
 import pytest
@@ -16,6 +15,7 @@ from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.sql.client import SlayerSQLClient
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -705,13 +705,11 @@ class TestSaveTimeSqlValidation:
 
     def _register_live_ds(self, client: TestClient, tmp_path) -> None:
         db_path = str(tmp_path / "live.db")
-        conn = sqlite3.connect(db_path)
-        conn.executescript(
-            "CREATE TABLE orders (id INTEGER PRIMARY KEY, amount REAL);"
-            "INSERT INTO orders VALUES (1, 100.0);"
-        )
-        conn.commit()
-        conn.close()
+        with transaction(db_path) as conn:
+            conn.executescript(
+                "CREATE TABLE orders (id INTEGER PRIMARY KEY, amount REAL);"
+                "INSERT INTO orders VALUES (1, 100.0);"
+            )
         resp = client.post(
             "/datasources",
             json={"name": "livedb", "type": "sqlite", "database": db_path},
