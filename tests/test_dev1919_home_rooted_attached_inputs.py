@@ -339,7 +339,7 @@ class TestFailClosedEveryMode:
     @pytest.mark.parametrize("mode, dims", [
         (None, ["status"]), (None, ["customers.tier"]),
         ("associate", ["customers.tier"]), ("associate", ["status"]),
-        ("error", ["customers.tier"]),
+        ("error", ["customers.tier"]), ("error", ["status"]),
     ])
     async def test_undetermined_parameter_refused_in_every_mode(self, orders_engine, mode, dims):
         """Scenario: Undetermined attached parameter stays rejected (D2b) — the plain
