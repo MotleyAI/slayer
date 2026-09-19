@@ -36,14 +36,14 @@ test harness enables it suite-wide.
 from __future__ import annotations
 
 import os
-from typing import Optional
+from typing import Dict, Optional
 
 import sqlglot
 from pydantic import BaseModel, ConfigDict
 from sqlglot import exp
 from sqlglot.optimizer.scope import Scope, ScopeType, traverse_scope
 
-from slayer.sql.naming import assert_unique_cte_names
+from slayer.sql.naming import assert_unique_cte_names, dialect_folds_case
 
 # The session-policy transform's correlated-EXISTS source alias (see
 # ``session_policy._RLS_SRC``); the only legal correlated ref in post-RLS SQL.
@@ -77,6 +77,86 @@ class ScopeCheckResult(BaseModel):
 
 class ScopeLeakError(AssertionError):
     """Raised by :func:`assert_scope_closed` when a statement is not closed."""
+
+
+class CteOrderError(AssertionError):
+    """A CTE reads a sibling declared LATER in the same ``WITH`` (a forward
+    reference: SQLite tolerates it, DuckDB and others reject it)."""
+
+
+def assert_dependency_ordered_ctes(sql: str, *, dialect: str = "postgres") -> None:
+    """Raise :class:`CteOrderError` if any CTE reads a sibling declared later in
+    its enclosing ``WITH`` — the emission-order backstop for sql.arc42 P6.
+
+    A table reference flags only when it carries no catalog/schema qualifier and
+    matches a CTE the NEAREST enclosing ``WITH`` (defining that name) declares
+    strictly AFTER the CTE containing the reference. Name folding matches the
+    allocator (``slayer/sql/naming.py``): ``str.lower()`` on a case-insensitive
+    dialect (BigQuery et al.), identity on a case-sensitive one (ClickHouse keeps
+    ``Foo``/``foo`` distinct); ``casefold`` is avoided (it over-equates ``ß``/``ss``).
+    Physical tables, schema-qualified names, derived-table aliases and
+    nested-``WITH`` scopes are left alone; a reference from the main query body is
+    always backward. A self reference (position == containing) is NOT flagged:
+    without full scope resolution it is indistinguishable from a non-recursive CTE
+    shadowing a physical table of the same name (a legal pattern), so — like
+    :func:`assert_scope_closed` — this backstop stays sound on the corpus (no false
+    positives); SLayer emits no ``WITH RECURSIVE`` for it to miss."""
+    ast = sqlglot.parse_one(sql, dialect=dialect)
+    if ast is None:
+        return
+    fold = (lambda s: s.lower()) if dialect_folds_case(dialect) else (lambda s: s)
+    for tbl in ast.find_all(exp.Table):
+        if tbl.args.get("db") is not None or tbl.args.get("catalog") is not None:
+            continue  # schema-qualified → physical, never a bare CTE reference
+        name = fold(tbl.name)
+        binding = _nearest_defining_with(tbl, name, fold)
+        if binding is None:
+            continue
+        with_node, positions = binding
+        containing = _containing_cte_index(tbl, with_node)
+        if containing is None:
+            continue  # a main-body reference is always after every CTE
+        if positions[name] > containing:
+            raise CteOrderError(
+                f"CTE at position {containing} in a WITH reads sibling "
+                f"{tbl.name!r} declared later (position {positions[name]}); a "
+                f"forward CTE reference is undeclared dependency order.\n"
+                f"SQL:\n{sql}"
+            )
+
+
+def _cte_positions(with_node: exp.With, fold) -> Dict[str, int]:
+    """CTE name (``fold``-normalised) → declaration index within ``with_node``."""
+    return {
+        fold(cte.alias_or_name): i
+        for i, cte in enumerate(with_node.expressions)
+    }
+
+
+def _nearest_defining_with(tbl: exp.Table, name: str, fold):
+    """The nearest ancestor ``WITH`` that declares a CTE named ``name`` (already
+    ``fold``-normalised), with its position map; ``None`` when none defines it."""
+    node = tbl.parent
+    while node is not None:
+        if isinstance(node, exp.With):
+            positions = _cte_positions(node, fold)
+            if name in positions:
+                return node, positions
+        node = node.parent
+    return None
+
+
+def _containing_cte_index(tbl: exp.Table, with_node: exp.With) -> Optional[int]:
+    """Index of the ``with_node`` CTE whose body contains ``tbl``, or ``None`` when
+    ``tbl`` sits in the query the WITH decorates rather than in a CTE body."""
+    node = tbl.parent
+    while node is not None and node is not with_node:
+        if isinstance(node, exp.CTE) and node.parent is with_node:
+            for i, cte in enumerate(with_node.expressions):
+                if cte is node:
+                    return i
+        node = node.parent
+    return None
 
 
 def check_scope_closed(
@@ -124,6 +204,8 @@ def maybe_validate_scopes(sql: str, *, dialect: str = "postgres") -> None:
         assert_scope_closed(sql=sql, dialect=dialect)
         # DEV-1692 belt: per-WITH-scope CTE-name uniqueness on the final output.
         assert_unique_cte_names(sql=sql, dialect=dialect)
+        # DEV-1942 belt: no CTE reads a sibling declared later (sql P6).
+        assert_dependency_ordered_ctes(sql=sql, dialect=dialect)
 
 
 # --------------------------------------------------------------------------- #

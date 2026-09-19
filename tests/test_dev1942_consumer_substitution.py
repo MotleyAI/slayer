@@ -73,8 +73,9 @@ def test_partition_keys_are_traversed() -> None:
     root = AggregateKey(source=MIXED_SRC, agg="sum", partition_keys=Grain.of([band]))
     got = substitute_consumer_keys(root, {pb_inner: PH2})
     seen = set(walk_value_keys(got))
-    assert PH2 in seen and pb_inner not in seen   # partition key rewritten
-    assert AVG_UP_PRODUCT in seen                 # source still opaque, unchanged
+    assert PH2 in seen             # partition key rewritten
+    assert pb_inner not in seen
+    assert AVG_UP_PRODUCT in seen  # source still opaque, unchanged
 
 
 def test_plain_composite_is_traversed() -> None:

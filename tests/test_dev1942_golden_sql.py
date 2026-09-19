@@ -107,11 +107,10 @@ bind_golden_tests(
 )
 
 
-def test_fail_closed_cases_record_a_raise(baseline) -> None:
-    """The standalone+mixed shapes fail closed today: their baseline is a recorded
-    raise, never SQL. When the emission-ordering fix lands (tasks.md §3.5), re-bless
-    these keys to SQL and FLIP this pin to ``assert not isinstance(value, dict)``
-    (rename ``…_generate_sql``) — a stale raise then means the fix regressed."""
+def test_fail_closed_cases_generate_sql(baseline) -> None:
+    """The standalone+mixed shapes now execute (DEV-1942): once the emission-ordering
+    fix lands they emit SQL, never a recorded raise — a stale raise means the fix
+    regressed."""
     for key, value in baseline.items():
         if key.split("::", 1)[0] in FAIL_CLOSED:
-            assert isinstance(value, dict), f"{key} unexpectedly emits SQL: {value}"
+            assert not isinstance(value, dict), f"{key} still records a raise: {value}"

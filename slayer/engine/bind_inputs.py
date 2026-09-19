@@ -56,7 +56,6 @@ from slayer.core.scope import ModelScope, StageSchema, host_model_name
 from slayer.engine import dimension_routing
 from slayer.engine.binding import bind_expr, bind_filter, bind_time_dimension
 from slayer.engine.elaborate_env import (
-    check_reaggregation_not_standalone_and_mixed,
     check_computed_dim_name_collision,
     check_computed_dimension,
     check_measure_dedupe_collision,
@@ -698,14 +697,6 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         bound_filters=bound_filters,
         order_specs=order_specs,
     )
-
-    # A re-aggregation used both on its own and as a mixed constituent is deferred
-    # (DEV-1942); check on the lowered keys so a collapse-produced re-aggregation counts.
-    check_reaggregation_not_standalone_and_mixed(roots=[
-        *(dm.bound.value_key for dm in declared_measures),
-        *(bf.value_key for bf in bound_filters),
-        *(sp.bound.value_key for sp in order_specs),
-    ])
 
     return PreboundQuery(
         declared_measures=declared_measures,

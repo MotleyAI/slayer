@@ -141,8 +141,8 @@ class TestDualPhaseEmissionOrder:
         def pos(prefix: str) -> int:
             return next(i for i, c in enumerate(ctes) if c.startswith(prefix))
 
-        assert pos("_cm_amount_sum") < pos("_cm_min_amount_sum")  # min carrier first
-        assert pos("_cm_amount_max") < pos("_cm_max_amount_max")  # max carrier first
+        assert pos("_cm_amount_sum") < pos("_cm_monthly___min")  # min carrier first
+        assert pos("_cm_amount_max") < pos("_cm_monthly___max")  # max carrier first
         assert_dependency_ordered_ctes(sql, dialect="duckdb")
         assert_scope_closed(sql, dialect="duckdb")
 

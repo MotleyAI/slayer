@@ -5,7 +5,7 @@ checker, ``elaborate_env``); orchestration lives in ``compile/stages``."""
 
 from __future__ import annotations
 
-from typing import Dict, Mapping
+from typing import Callable, Dict, Mapping
 
 from slayer.core.keys import REGROUP_LEAF_PREFIX, AggregateKey, ColumnKey, ValueKey, substitute_value_keys, walk_value_keys
 from slayer.sql.naming import canonical_aggregate_alias
@@ -54,9 +54,13 @@ class RegroupPlaceholderRegistry:
 
 def substitute_in_bound_filter(
     bf: BoundFilter, mapping: Mapping[ValueKey, ValueKey],
+    *, substitute: Callable[..., ValueKey] = substitute_value_keys,
 ) -> BoundFilter:
-    """Substitute placeholders in a filter and RECOMPUTE its phase (may lower to ROW)."""
-    new_vk = substitute_value_keys(key=bf.value_key, mapping=mapping)
+    """Substitute placeholders in a filter and RECOMPUTE its phase (may lower to ROW).
+
+    ``substitute`` selects the traversal law (deep by default; the re-aggregation
+    pre-substitution passes the consumer-scoped one)."""
+    new_vk = substitute(key=bf.value_key, mapping=mapping)
     refs = tuple(walk_value_keys(new_vk))
     phase = max((k.phase for k in refs), default=new_vk.phase)
     return BoundFilter(value_key=new_vk, phase=phase, referenced_keys=refs)
