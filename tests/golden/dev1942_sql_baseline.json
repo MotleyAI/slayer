@@ -1,0 +1,149 @@
+{
+  "dual_phase/filter_position::bigquery": {
+    "error": "ValueError",
+    "message": "Re-aggregation 'min' is used both on its own and inside a mixed row-level aggregation in the same query; this shape is not yet supported. Select the two in separate queries."
+  },
+  "dual_phase/filter_position::duckdb": {
+    "error": "ValueError",
+    "message": "Re-aggregation 'min' is used both on its own and inside a mixed row-level aggregation in the same query; this shape is not yet supported. Select the two in separate queries."
+  },
+  "dual_phase/filter_position::mysql": {
+    "error": "ValueError",
+    "message": "Re-aggregation 'min' is used both on its own and inside a mixed row-level aggregation in the same query; this shape is not yet supported. Select the two in separate queries."
+  },
+  "dual_phase/filter_position::postgres": {
+    "error": "ValueError",
+    "message": "Re-aggregation 'min' is used both on its own and inside a mixed row-level aggregation in the same query; this shape is not yet supported. Select the two in separate queries."
+  },
+  "dual_phase/filter_position::snowflake": {
+    "error": "ValueError",
+    "message": "Re-aggregation 'min' is used both on its own and inside a mixed row-level aggregation in the same query; this shape is not yet supported. Select the two in separate queries."
+  },
+  "dual_phase/filter_position::sqlite": {
+    "error": "ValueError",
+    "message": "Re-aggregation 'min' is used both on its own and inside a mixed row-level aggregation in the same query; this shape is not yet supported. Select the two in separate queries."
+  },
+  "dual_phase/filter_position::tsql": {
+    "error": "ValueError",
+    "message": "Re-aggregation 'min' is used both on its own and inside a mixed row-level aggregation in the same query; this shape is not yet supported. Select the two in separate queries."
+  },
+  "dual_phase/measure::bigquery": {
+    "error": "ValueError",
+    "message": "Re-aggregation 'min' is used both on its own and inside a mixed row-level aggregation in the same query; this shape is not yet supported. Select the two in separate queries."
+  },
+  "dual_phase/measure::duckdb": {
+    "error": "ValueError",
+    "message": "Re-aggregation 'min' is used both on its own and inside a mixed row-level aggregation in the same query; this shape is not yet supported. Select the two in separate queries."
+  },
+  "dual_phase/measure::mysql": {
+    "error": "ValueError",
+    "message": "Re-aggregation 'min' is used both on its own and inside a mixed row-level aggregation in the same query; this shape is not yet supported. Select the two in separate queries."
+  },
+  "dual_phase/measure::postgres": {
+    "error": "ValueError",
+    "message": "Re-aggregation 'min' is used both on its own and inside a mixed row-level aggregation in the same query; this shape is not yet supported. Select the two in separate queries."
+  },
+  "dual_phase/measure::snowflake": {
+    "error": "ValueError",
+    "message": "Re-aggregation 'min' is used both on its own and inside a mixed row-level aggregation in the same query; this shape is not yet supported. Select the two in separate queries."
+  },
+  "dual_phase/measure::sqlite": {
+    "error": "ValueError",
+    "message": "Re-aggregation 'min' is used both on its own and inside a mixed row-level aggregation in the same query; this shape is not yet supported. Select the two in separate queries."
+  },
+  "dual_phase/measure::tsql": {
+    "error": "ValueError",
+    "message": "Re-aggregation 'min' is used both on its own and inside a mixed row-level aggregation in the same query; this shape is not yet supported. Select the two in separate queries."
+  },
+  "dual_phase/order_position::bigquery": {
+    "error": "ValueError",
+    "message": "Re-aggregation 'min' is used both on its own and inside a mixed row-level aggregation in the same query; this shape is not yet supported. Select the two in separate queries."
+  },
+  "dual_phase/order_position::duckdb": {
+    "error": "ValueError",
+    "message": "Re-aggregation 'min' is used both on its own and inside a mixed row-level aggregation in the same query; this shape is not yet supported. Select the two in separate queries."
+  },
+  "dual_phase/order_position::mysql": {
+    "error": "ValueError",
+    "message": "Re-aggregation 'min' is used both on its own and inside a mixed row-level aggregation in the same query; this shape is not yet supported. Select the two in separate queries."
+  },
+  "dual_phase/order_position::postgres": {
+    "error": "ValueError",
+    "message": "Re-aggregation 'min' is used both on its own and inside a mixed row-level aggregation in the same query; this shape is not yet supported. Select the two in separate queries."
+  },
+  "dual_phase/order_position::snowflake": {
+    "error": "ValueError",
+    "message": "Re-aggregation 'min' is used both on its own and inside a mixed row-level aggregation in the same query; this shape is not yet supported. Select the two in separate queries."
+  },
+  "dual_phase/order_position::sqlite": {
+    "error": "ValueError",
+    "message": "Re-aggregation 'min' is used both on its own and inside a mixed row-level aggregation in the same query; this shape is not yet supported. Select the two in separate queries."
+  },
+  "dual_phase/order_position::tsql": {
+    "error": "ValueError",
+    "message": "Re-aggregation 'min' is used both on its own and inside a mixed row-level aggregation in the same query; this shape is not yet supported. Select the two in separate queries."
+  },
+  "dual_phase/with_transform::bigquery": {
+    "error": "ValueError",
+    "message": "Re-aggregation 'min' is used both on its own and inside a mixed row-level aggregation in the same query; this shape is not yet supported. Select the two in separate queries."
+  },
+  "dual_phase/with_transform::duckdb": {
+    "error": "ValueError",
+    "message": "Re-aggregation 'min' is used both on its own and inside a mixed row-level aggregation in the same query; this shape is not yet supported. Select the two in separate queries."
+  },
+  "dual_phase/with_transform::mysql": {
+    "error": "ValueError",
+    "message": "Re-aggregation 'min' is used both on its own and inside a mixed row-level aggregation in the same query; this shape is not yet supported. Select the two in separate queries."
+  },
+  "dual_phase/with_transform::postgres": {
+    "error": "ValueError",
+    "message": "Re-aggregation 'min' is used both on its own and inside a mixed row-level aggregation in the same query; this shape is not yet supported. Select the two in separate queries."
+  },
+  "dual_phase/with_transform::snowflake": {
+    "error": "ValueError",
+    "message": "Re-aggregation 'min' is used both on its own and inside a mixed row-level aggregation in the same query; this shape is not yet supported. Select the two in separate queries."
+  },
+  "dual_phase/with_transform::sqlite": {
+    "error": "ValueError",
+    "message": "Re-aggregation 'min' is used both on its own and inside a mixed row-level aggregation in the same query; this shape is not yet supported. Select the two in separate queries."
+  },
+  "dual_phase/with_transform::tsql": {
+    "error": "ValueError",
+    "message": "Re-aggregation 'min' is used both on its own and inside a mixed row-level aggregation in the same query; this shape is not yet supported. Select the two in separate queries."
+  },
+  "population/dual_phase_with_filter::bigquery": {
+    "error": "ValueError",
+    "message": "Re-aggregation 'avg' is used both on its own and inside a mixed row-level aggregation in the same query; this shape is not yet supported. Select the two in separate queries."
+  },
+  "population/dual_phase_with_filter::duckdb": {
+    "error": "ValueError",
+    "message": "Re-aggregation 'avg' is used both on its own and inside a mixed row-level aggregation in the same query; this shape is not yet supported. Select the two in separate queries."
+  },
+  "population/dual_phase_with_filter::mysql": {
+    "error": "ValueError",
+    "message": "Re-aggregation 'avg' is used both on its own and inside a mixed row-level aggregation in the same query; this shape is not yet supported. Select the two in separate queries."
+  },
+  "population/dual_phase_with_filter::postgres": {
+    "error": "ValueError",
+    "message": "Re-aggregation 'avg' is used both on its own and inside a mixed row-level aggregation in the same query; this shape is not yet supported. Select the two in separate queries."
+  },
+  "population/dual_phase_with_filter::snowflake": {
+    "error": "ValueError",
+    "message": "Re-aggregation 'avg' is used both on its own and inside a mixed row-level aggregation in the same query; this shape is not yet supported. Select the two in separate queries."
+  },
+  "population/dual_phase_with_filter::sqlite": {
+    "error": "ValueError",
+    "message": "Re-aggregation 'avg' is used both on its own and inside a mixed row-level aggregation in the same query; this shape is not yet supported. Select the two in separate queries."
+  },
+  "population/dual_phase_with_filter::tsql": {
+    "error": "ValueError",
+    "message": "Re-aggregation 'avg' is used both on its own and inside a mixed row-level aggregation in the same query; this shape is not yet supported. Select the two in separate queries."
+  },
+  "population/mixed_reagg_constituent::bigquery": "WITH _cm_spend_sum_partition_by_plan_code_tier AS (\n  SELECT\n    `_stage_inner`.`customers___plan_code` AS `plan_code`,\n    `_stage_inner`.`customers___tier` AS `tier`,\n    `_stage_inner`.`customers___spend_sum_partition_by_plan_code_tier` AS `spend_sum_partition_by_plan_code_tier`\n  FROM (\n    SELECT\n      customers.plan_code AS `customers___plan_code`,\n      customers.tier AS `customers___tier`,\n      CAST(SUM(customers.spend) AS FLOAT64) AS `customers___spend_sum_partition_by_plan_code_tier`\n    FROM customers AS customers\n    LEFT JOIN orders AS orders\n      ON customers.id = orders.customer_id\n    WHERE\n      orders.status = 'ok'\n    GROUP BY\n      customers.plan_code,\n      customers.tier\n  ) AS _stage_inner\n), _cm_avg_spend_sum_partition_by_plan_code_tier AS (\n  SELECT\n    _stage_inner.`customers___tier` AS `tier`,\n    _stage_inner.`customers___avg_spend_sum_partition_by_plan_code_tier` AS `avg_spend_sum_partition_by_plan_code_tier`\n  FROM (\n    SELECT\n      `_base`.`customers___tier` AS `customers___tier`,\n      CAST(AVG(_base._v) AS FLOAT64) AS `customers___avg_spend_sum_partition_by_plan_code_tier`\n    FROM (\n      SELECT\n        customers.tier AS `customers___tier`,\n        customers.plan_code AS _ek0,\n        customers.tier AS _ek1,\n        MAX(\n          _cm_spend_sum_partition_by_plan_code_tier.`spend_sum_partition_by_plan_code_tier`\n        ) AS _v\n      FROM customers AS customers\n      LEFT JOIN orders AS orders\n        ON customers.id = orders.customer_id\n      LEFT JOIN _cm_spend_sum_partition_by_plan_code_tier\n        ON customers.plan_code IS NOT DISTINCT FROM _cm_spend_sum_partition_by_plan_code_tier.`plan_code`\n        AND customers.tier IS NOT DISTINCT FROM _cm_spend_sum_partition_by_plan_code_tier.`tier`\n      WHERE\n        orders.status = 'ok'\n      GROUP BY\n        customers.tier,\n        customers.plan_code,\n        customers.tier\n    ) AS _base\n    GROUP BY\n      `_base`.`customers___tier`\n  ) AS _stage_inner\n)\nSELECT\n  customers.tier AS `customers___tier`,\n  SUM(\n    customers.spend * _cm_avg_spend_sum_partition_by_plan_code_tier.`avg_spend_sum_partition_by_plan_code_tier`\n  ) AS `customers___m`\nFROM customers AS customers\nLEFT JOIN _cm_avg_spend_sum_partition_by_plan_code_tier\n  ON customers.tier IS NOT DISTINCT FROM _cm_avg_spend_sum_partition_by_plan_code_tier.`tier`\nWHERE\n  EXISTS(\n    SELECT\n      1\n    FROM orders AS orders\n    WHERE\n      customers.id = orders.customer_id AND orders.status = 'ok'\n  )\nGROUP BY\n  customers.tier",
+  "population/mixed_reagg_constituent::duckdb": "WITH _cm_spend_sum_partition_by_plan_code_tier AS (\n  SELECT\n    _stage_inner.\"customers.plan_code\" AS \"plan_code\",\n    _stage_inner.\"customers.tier\" AS \"tier\",\n    _stage_inner.\"customers.spend_sum_partition_by_plan_code_tier\" AS \"spend_sum_partition_by_plan_code_tier\"\n  FROM (\n    SELECT\n      customers.plan_code AS \"customers.plan_code\",\n      customers.tier AS \"customers.tier\",\n      CAST(SUM(customers.spend) AS DOUBLE) AS \"customers.spend_sum_partition_by_plan_code_tier\"\n    FROM customers AS customers\n    LEFT JOIN orders AS orders\n      ON customers.id = orders.customer_id\n    WHERE\n      orders.status = 'ok'\n    GROUP BY\n      customers.plan_code,\n      customers.tier\n  ) AS _stage_inner\n), _cm_avg_spend_sum_partition_by_plan_code_tier AS (\n  SELECT\n    _stage_inner.\"customers.tier\" AS \"tier\",\n    _stage_inner.\"customers.avg_spend_sum_partition_by_plan_code_tier\" AS \"avg_spend_sum_partition_by_plan_code_tier\"\n  FROM (\n    SELECT\n      _base.\"customers.tier\" AS \"customers.tier\",\n      CAST(AVG(_base._v) AS DOUBLE) AS \"customers.avg_spend_sum_partition_by_plan_code_tier\"\n    FROM (\n      SELECT\n        customers.tier AS \"customers.tier\",\n        customers.plan_code AS _ek0,\n        customers.tier AS _ek1,\n        MAX(\n          _cm_spend_sum_partition_by_plan_code_tier.\"spend_sum_partition_by_plan_code_tier\"\n        ) AS _v\n      FROM customers AS customers\n      LEFT JOIN orders AS orders\n        ON customers.id = orders.customer_id\n      LEFT JOIN _cm_spend_sum_partition_by_plan_code_tier\n        ON customers.plan_code IS NOT DISTINCT FROM _cm_spend_sum_partition_by_plan_code_tier.\"plan_code\"\n        AND customers.tier IS NOT DISTINCT FROM _cm_spend_sum_partition_by_plan_code_tier.\"tier\"\n      WHERE\n        orders.status = 'ok'\n      GROUP BY\n        customers.tier,\n        customers.plan_code,\n        customers.tier\n    ) AS _base\n    GROUP BY\n      _base.\"customers.tier\"\n  ) AS _stage_inner\n)\nSELECT\n  customers.tier AS \"customers.tier\",\n  SUM(\n    customers.spend * _cm_avg_spend_sum_partition_by_plan_code_tier.\"avg_spend_sum_partition_by_plan_code_tier\"\n  ) AS \"customers.m\"\nFROM customers AS customers\nLEFT JOIN _cm_avg_spend_sum_partition_by_plan_code_tier\n  ON customers.tier IS NOT DISTINCT FROM _cm_avg_spend_sum_partition_by_plan_code_tier.\"tier\"\nWHERE\n  EXISTS(\n    SELECT\n      1\n    FROM orders AS orders\n    WHERE\n      customers.id = orders.customer_id AND orders.status = 'ok'\n  )\nGROUP BY\n  customers.tier",
+  "population/mixed_reagg_constituent::mysql": "WITH _cm_spend_sum_partition_by_plan_code_tier AS (\n  SELECT\n    _stage_inner.`customers.plan_code` AS `plan_code`,\n    _stage_inner.`customers.tier` AS `tier`,\n    _stage_inner.`customers.spend_sum_partition_by_plan_code_tier` AS `spend_sum_partition_by_plan_code_tier`\n  FROM (\n    SELECT\n      customers.plan_code AS `customers.plan_code`,\n      customers.tier AS `customers.tier`,\n      CAST(SUM(customers.spend) AS DOUBLE) AS `customers.spend_sum_partition_by_plan_code_tier`\n    FROM customers AS customers\n    LEFT JOIN orders AS orders\n      ON customers.id = orders.customer_id\n    WHERE\n      orders.status = 'ok'\n    GROUP BY\n      customers.plan_code,\n      customers.tier\n  ) AS _stage_inner\n), _cm_avg_spend_sum_partition_by_plan_code_tier AS (\n  SELECT\n    _stage_inner.`customers.tier` AS `tier`,\n    _stage_inner.`customers.avg_spend_sum_partition_by_plan_code_tier` AS `avg_spend_sum_partition_by_plan_code_tier`\n  FROM (\n    SELECT\n      _base.`customers.tier` AS `customers.tier`,\n      CAST(AVG(_base._v) AS DOUBLE) AS `customers.avg_spend_sum_partition_by_plan_code_tier`\n    FROM (\n      SELECT\n        customers.tier AS `customers.tier`,\n        customers.plan_code AS _ek0,\n        customers.tier AS _ek1,\n        MAX(\n          _cm_spend_sum_partition_by_plan_code_tier.`spend_sum_partition_by_plan_code_tier`\n        ) AS _v\n      FROM customers AS customers\n      LEFT JOIN orders AS orders\n        ON customers.id = orders.customer_id\n      LEFT JOIN _cm_spend_sum_partition_by_plan_code_tier\n        ON customers.plan_code <=> _cm_spend_sum_partition_by_plan_code_tier.`plan_code`\n        AND customers.tier <=> _cm_spend_sum_partition_by_plan_code_tier.`tier`\n      WHERE\n        orders.status = 'ok'\n      GROUP BY\n        customers.tier,\n        customers.plan_code,\n        customers.tier\n    ) AS _base\n    GROUP BY\n      _base.`customers.tier`\n  ) AS _stage_inner\n)\nSELECT\n  customers.tier AS `customers.tier`,\n  SUM(\n    customers.spend * _cm_avg_spend_sum_partition_by_plan_code_tier.`avg_spend_sum_partition_by_plan_code_tier`\n  ) AS `customers.m`\nFROM customers AS customers\nLEFT JOIN _cm_avg_spend_sum_partition_by_plan_code_tier\n  ON customers.tier <=> _cm_avg_spend_sum_partition_by_plan_code_tier.`tier`\nWHERE\n  EXISTS(\n    SELECT\n      1\n    FROM orders AS orders\n    WHERE\n      customers.id = orders.customer_id AND orders.status = 'ok'\n  )\nGROUP BY\n  customers.tier",
+  "population/mixed_reagg_constituent::postgres": "WITH _cm_spend_sum_partition_by_plan_code_tier AS (\n  SELECT\n    _stage_inner.\"customers.plan_code\" AS \"plan_code\",\n    _stage_inner.\"customers.tier\" AS \"tier\",\n    _stage_inner.\"customers.spend_sum_partition_by_plan_code_tier\" AS \"spend_sum_partition_by_plan_code_tier\"\n  FROM (\n    SELECT\n      customers.plan_code AS \"customers.plan_code\",\n      customers.tier AS \"customers.tier\",\n      CAST(SUM(customers.spend) AS DOUBLE PRECISION) AS \"customers.spend_sum_partition_by_plan_code_tier\"\n    FROM customers AS customers\n    LEFT JOIN orders AS orders\n      ON customers.id = orders.customer_id\n    WHERE\n      orders.status = 'ok'\n    GROUP BY\n      customers.plan_code,\n      customers.tier\n  ) AS _stage_inner\n), _cm_avg_spend_sum_partition_by_plan_code_tier AS (\n  SELECT\n    _stage_inner.\"customers.tier\" AS \"tier\",\n    _stage_inner.\"customers.avg_spend_sum_partition_by_plan_code_tier\" AS \"avg_spend_sum_partition_by_plan_code_tier\"\n  FROM (\n    SELECT\n      _base.\"customers.tier\" AS \"customers.tier\",\n      CAST(AVG(_base._v) AS DOUBLE PRECISION) AS \"customers.avg_spend_sum_partition_by_plan_code_tier\"\n    FROM (\n      SELECT\n        customers.tier AS \"customers.tier\",\n        customers.plan_code AS _ek0,\n        customers.tier AS _ek1,\n        MAX(\n          _cm_spend_sum_partition_by_plan_code_tier.\"spend_sum_partition_by_plan_code_tier\"\n        ) AS _v\n      FROM customers AS customers\n      LEFT JOIN orders AS orders\n        ON customers.id = orders.customer_id\n      LEFT JOIN _cm_spend_sum_partition_by_plan_code_tier\n        ON customers.plan_code IS NOT DISTINCT FROM _cm_spend_sum_partition_by_plan_code_tier.\"plan_code\"\n        AND customers.tier IS NOT DISTINCT FROM _cm_spend_sum_partition_by_plan_code_tier.\"tier\"\n      WHERE\n        orders.status = 'ok'\n      GROUP BY\n        customers.tier,\n        customers.plan_code,\n        customers.tier\n    ) AS _base\n    GROUP BY\n      _base.\"customers.tier\"\n  ) AS _stage_inner\n)\nSELECT\n  customers.tier AS \"customers.tier\",\n  SUM(\n    customers.spend * _cm_avg_spend_sum_partition_by_plan_code_tier.\"avg_spend_sum_partition_by_plan_code_tier\"\n  ) AS \"customers.m\"\nFROM customers AS customers\nLEFT JOIN _cm_avg_spend_sum_partition_by_plan_code_tier\n  ON customers.tier IS NOT DISTINCT FROM _cm_avg_spend_sum_partition_by_plan_code_tier.\"tier\"\nWHERE\n  EXISTS(\n    SELECT\n      1\n    FROM orders AS orders\n    WHERE\n      customers.id = orders.customer_id AND orders.status = 'ok'\n  )\nGROUP BY\n  customers.tier",
+  "population/mixed_reagg_constituent::snowflake": "WITH _cm_spend_sum_partition_by_plan_code_tier AS (\n  SELECT\n    _stage_inner.\"customers.plan_code\" AS \"plan_code\",\n    _stage_inner.\"customers.tier\" AS \"tier\",\n    _stage_inner.\"customers.spend_sum_partition_by_plan_code_tier\" AS \"spend_sum_partition_by_plan_code_tier\"\n  FROM (\n    SELECT\n      customers.plan_code AS \"customers.plan_code\",\n      customers.tier AS \"customers.tier\",\n      CAST(SUM(customers.spend) AS DOUBLE) AS \"customers.spend_sum_partition_by_plan_code_tier\"\n    FROM customers AS customers\n    LEFT JOIN orders AS orders\n      ON customers.id = orders.customer_id\n    WHERE\n      orders.status = 'ok'\n    GROUP BY\n      customers.plan_code,\n      customers.tier\n  ) AS _stage_inner\n), _cm_avg_spend_sum_partition_by_plan_code_tier AS (\n  SELECT\n    _stage_inner.\"customers.tier\" AS \"tier\",\n    _stage_inner.\"customers.avg_spend_sum_partition_by_plan_code_tier\" AS \"avg_spend_sum_partition_by_plan_code_tier\"\n  FROM (\n    SELECT\n      _base.\"customers.tier\" AS \"customers.tier\",\n      CAST(AVG(_base._v) AS DOUBLE) AS \"customers.avg_spend_sum_partition_by_plan_code_tier\"\n    FROM (\n      SELECT\n        customers.tier AS \"customers.tier\",\n        customers.plan_code AS _ek0,\n        customers.tier AS _ek1,\n        MAX(\n          _cm_spend_sum_partition_by_plan_code_tier.\"spend_sum_partition_by_plan_code_tier\"\n        ) AS _v\n      FROM customers AS customers\n      LEFT JOIN orders AS orders\n        ON customers.id = orders.customer_id\n      LEFT JOIN _cm_spend_sum_partition_by_plan_code_tier\n        ON customers.plan_code IS NOT DISTINCT FROM _cm_spend_sum_partition_by_plan_code_tier.\"plan_code\"\n        AND customers.tier IS NOT DISTINCT FROM _cm_spend_sum_partition_by_plan_code_tier.\"tier\"\n      WHERE\n        orders.status = 'ok'\n      GROUP BY\n        customers.tier,\n        customers.plan_code,\n        customers.tier\n    ) AS _base\n    GROUP BY\n      _base.\"customers.tier\"\n  ) AS _stage_inner\n)\nSELECT\n  customers.tier AS \"customers.tier\",\n  SUM(\n    customers.spend * _cm_avg_spend_sum_partition_by_plan_code_tier.\"avg_spend_sum_partition_by_plan_code_tier\"\n  ) AS \"customers.m\"\nFROM customers AS customers\nLEFT JOIN _cm_avg_spend_sum_partition_by_plan_code_tier\n  ON customers.tier IS NOT DISTINCT FROM _cm_avg_spend_sum_partition_by_plan_code_tier.\"tier\"\nWHERE\n  EXISTS(\n    SELECT\n      1\n    FROM orders AS orders\n    WHERE\n      customers.id = orders.customer_id AND orders.status = 'ok'\n  )\nGROUP BY\n  customers.tier",
+  "population/mixed_reagg_constituent::sqlite": "WITH _cm_spend_sum_partition_by_plan_code_tier AS (\n  SELECT\n    _stage_inner.\"customers.plan_code\" AS \"plan_code\",\n    _stage_inner.\"customers.tier\" AS \"tier\",\n    _stage_inner.\"customers.spend_sum_partition_by_plan_code_tier\" AS \"spend_sum_partition_by_plan_code_tier\"\n  FROM (\n    SELECT\n      customers.plan_code AS \"customers.plan_code\",\n      customers.tier AS \"customers.tier\",\n      CAST(SUM(customers.spend) AS REAL) AS \"customers.spend_sum_partition_by_plan_code_tier\"\n    FROM customers AS customers\n    LEFT JOIN orders AS orders\n      ON customers.id = orders.customer_id\n    WHERE\n      orders.status = 'ok'\n    GROUP BY\n      customers.plan_code,\n      customers.tier\n  ) AS _stage_inner\n), _cm_avg_spend_sum_partition_by_plan_code_tier AS (\n  SELECT\n    _stage_inner.\"customers.tier\" AS \"tier\",\n    _stage_inner.\"customers.avg_spend_sum_partition_by_plan_code_tier\" AS \"avg_spend_sum_partition_by_plan_code_tier\"\n  FROM (\n    SELECT\n      _base.\"customers.tier\" AS \"customers.tier\",\n      CAST(AVG(_base._v) AS REAL) AS \"customers.avg_spend_sum_partition_by_plan_code_tier\"\n    FROM (\n      SELECT\n        customers.tier AS \"customers.tier\",\n        customers.plan_code AS _ek0,\n        customers.tier AS _ek1,\n        MAX(\n          _cm_spend_sum_partition_by_plan_code_tier.\"spend_sum_partition_by_plan_code_tier\"\n        ) AS _v\n      FROM customers AS customers\n      LEFT JOIN orders AS orders\n        ON customers.id = orders.customer_id\n      LEFT JOIN _cm_spend_sum_partition_by_plan_code_tier\n        ON customers.plan_code IS _cm_spend_sum_partition_by_plan_code_tier.\"plan_code\"\n        AND customers.tier IS _cm_spend_sum_partition_by_plan_code_tier.\"tier\"\n      WHERE\n        orders.status = 'ok'\n      GROUP BY\n        customers.tier,\n        customers.plan_code,\n        customers.tier\n    ) AS _base\n    GROUP BY\n      _base.\"customers.tier\"\n  ) AS _stage_inner\n)\nSELECT\n  customers.tier AS \"customers.tier\",\n  SUM(\n    customers.spend * _cm_avg_spend_sum_partition_by_plan_code_tier.\"avg_spend_sum_partition_by_plan_code_tier\"\n  ) AS \"customers.m\"\nFROM customers AS customers\nLEFT JOIN _cm_avg_spend_sum_partition_by_plan_code_tier\n  ON customers.tier IS _cm_avg_spend_sum_partition_by_plan_code_tier.\"tier\"\nWHERE\n  EXISTS(\n    SELECT\n      1\n    FROM orders AS orders\n    WHERE\n      customers.id = orders.customer_id AND orders.status = 'ok'\n  )\nGROUP BY\n  customers.tier",
+  "population/mixed_reagg_constituent::tsql": "WITH _cm_spend_sum_partition_by_plan_code_tier AS (\n  SELECT\n    _stage_inner.[customers___plan_code] AS [plan_code],\n    _stage_inner.[customers___tier] AS [tier],\n    _stage_inner.[customers___spend_sum_partition_by_plan_code_tier] AS [spend_sum_partition_by_plan_code_tier]\n  FROM (\n    SELECT\n      customers.plan_code AS [customers___plan_code],\n      customers.tier AS [customers___tier],\n      CAST(SUM(customers.spend) AS FLOAT) AS [customers___spend_sum_partition_by_plan_code_tier]\n    FROM customers AS customers\n    LEFT JOIN orders AS orders\n      ON customers.id = orders.customer_id\n    WHERE\n      orders.status = 'ok'\n    GROUP BY\n      customers.plan_code,\n      customers.tier\n  ) AS _stage_inner\n), _cm_avg_spend_sum_partition_by_plan_code_tier AS (\n  SELECT\n    _stage_inner.[customers___tier] AS [tier],\n    _stage_inner.[customers___avg_spend_sum_partition_by_plan_code_tier] AS [avg_spend_sum_partition_by_plan_code_tier]\n  FROM (\n    SELECT\n      _base.[customers___tier] AS [customers___tier],\n      CAST(AVG(_base._v) AS FLOAT) AS [customers___avg_spend_sum_partition_by_plan_code_tier]\n    FROM (\n      SELECT\n        customers.tier AS [customers___tier],\n        customers.plan_code AS _ek0,\n        customers.tier AS _ek1,\n        MAX(\n          _cm_spend_sum_partition_by_plan_code_tier.[spend_sum_partition_by_plan_code_tier]\n        ) AS _v\n      FROM customers AS customers\n      LEFT JOIN orders AS orders\n        ON customers.id = orders.customer_id\n      LEFT JOIN _cm_spend_sum_partition_by_plan_code_tier\n        ON (\n          customers.plan_code = _cm_spend_sum_partition_by_plan_code_tier.[plan_code]\n          OR (\n            customers.plan_code IS NULL\n            AND _cm_spend_sum_partition_by_plan_code_tier.[plan_code] IS NULL\n          )\n        )\n        AND (\n          customers.tier = _cm_spend_sum_partition_by_plan_code_tier.[tier]\n          OR (\n            customers.tier IS NULL\n            AND _cm_spend_sum_partition_by_plan_code_tier.[tier] IS NULL\n          )\n        )\n      WHERE\n        orders.status = 'ok'\n      GROUP BY\n        customers.tier,\n        customers.plan_code,\n        customers.tier\n    ) AS _base\n    GROUP BY\n      _base.[customers___tier]\n  ) AS _stage_inner\n)\nSELECT\n  customers.tier AS [customers___tier],\n  SUM(\n    customers.spend * _cm_avg_spend_sum_partition_by_plan_code_tier.[avg_spend_sum_partition_by_plan_code_tier]\n  ) AS [customers___m]\nFROM customers AS customers\nLEFT JOIN _cm_avg_spend_sum_partition_by_plan_code_tier\n  ON (\n    customers.tier = _cm_avg_spend_sum_partition_by_plan_code_tier.[tier]\n    OR (\n      customers.tier IS NULL\n      AND _cm_avg_spend_sum_partition_by_plan_code_tier.[tier] IS NULL\n    )\n  )\nWHERE\n  EXISTS(\n    SELECT\n      1\n    FROM orders AS orders\n    WHERE\n      customers.id = orders.customer_id AND orders.status = 'ok'\n  )\nGROUP BY\n  customers.tier"
+}
