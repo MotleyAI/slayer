@@ -1302,7 +1302,7 @@ class _DisposedConjunct(BaseModel):
 
     conjunct: ValueKey
     inline_bf: BoundFilter
-    text: Optional[str]
+    text: Optional[str] = None
     is_date_range: bool
     disposition: Literal["inline", "semi_join", "excluded"]
     fanning_paths: Tuple[Tuple[str, ...], ...] = ()
@@ -1405,6 +1405,46 @@ class PopulationFilters(BaseModel):
         ]
 
 
+def _dispose_one_conjunct(
+    cj: ValueKey, *, text: Optional[str], is_date: bool,
+    host_model: SlayerModel, models_by_name: Dict[str, SlayerModel],
+    bundle: ResolvedSourceBundle,
+) -> _DisposedConjunct:
+    """Dispose one top-level population conjunct (D1), recording its fanning paths
+    for the per-consumer same-row rule (D2)."""
+    inline_bf, pushed, dropped_w = _conjunct_disposition(
+        cj, text=text, target_path=(), root_model=host_model,
+        models_by_name=models_by_name, host_name=host_model.name,
+        host_model=host_model, bundle=bundle,
+    )
+    closure = key_closure(
+        key=cj, anchor_model=host_model,
+        anchor_relation=host_model.name, bundle=bundle,
+    ) or ()
+    fanning = tuple(
+        p for p in closure
+        if p and not safe_reachable(
+            root=host_model, path=p, models_by_name=models_by_name,
+        )
+    )
+    if inline_bf is not None:
+        disposition: Literal["inline", "semi_join", "excluded"] = "inline"
+        push, warning, reason = None, None, None
+    elif pushed is not None:
+        disposition, push, warning, reason = ("semi_join", pushed, None, None)
+        inline_bf = bound_filter_from_key(cj)
+    else:
+        disposition = "excluded"
+        push, warning = None, dropped_w
+        reason = dropped_w.reason if dropped_w is not None else None
+        inline_bf = bound_filter_from_key(cj)
+    return _DisposedConjunct(
+        conjunct=cj, inline_bf=inline_bf, text=text, is_date_range=is_date,
+        disposition=disposition, fanning_paths=fanning, push=push,
+        warning=warning, reason=reason,
+    )
+
+
 def dispose_population_filters(
     *, prebound: PreboundQuery, filter_typings: Sequence[ConjunctTyping],
     scope: Union[ModelScope, StageSchema], bundle: ResolvedSourceBundle,
@@ -1426,37 +1466,9 @@ def dispose_population_filters(
         text = texts[i] if i < len(texts) else None
         is_date = i < prebound.n_date_range
         for cj in split_top_level_and(bf.value_key):
-            inline_bf, pushed, dropped_w = _conjunct_disposition(
-                cj, text=text, target_path=(), root_model=host_model,
-                models_by_name=models_by_name, host_name=host_model.name,
-                host_model=host_model, bundle=bundle,
-            )
-            closure = key_closure(
-                key=cj, anchor_model=host_model,
-                anchor_relation=host_model.name, bundle=bundle,
-            ) or ()
-            fanning = tuple(
-                p for p in closure
-                if p and not safe_reachable(
-                    root=host_model, path=p, models_by_name=models_by_name,
-                )
-            )
-            if inline_bf is not None:
-                disposition: Literal["inline", "semi_join", "excluded"] = "inline"
-                push, warning, reason = None, None, None
-            elif pushed is not None:
-                disposition, push, warning, reason = (
-                    "semi_join", pushed, None, None)
-                inline_bf = bound_filter_from_key(cj)
-            else:
-                disposition = "excluded"
-                push, warning = None, dropped_w
-                reason = dropped_w.reason if dropped_w is not None else None
-                inline_bf = bound_filter_from_key(cj)
-            out.append(_DisposedConjunct(
-                conjunct=cj, inline_bf=inline_bf, text=text,
-                is_date_range=is_date, disposition=disposition,
-                fanning_paths=fanning, push=push, warning=warning, reason=reason,
+            out.append(_dispose_one_conjunct(
+                cj, text=text, is_date=is_date, host_model=host_model,
+                models_by_name=models_by_name, bundle=bundle,
             ))
     return PopulationFilters(conjuncts=out)
 
