@@ -1,0 +1,786 @@
+{
+  "corr::bigquery": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'corr'."
+  },
+  "corr::duckdb": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'corr'."
+  },
+  "corr::mysql": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'corr'."
+  },
+  "corr::postgres": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'corr'."
+  },
+  "corr::snowflake": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'corr'."
+  },
+  "corr::sqlite": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'corr'."
+  },
+  "corr::tsql": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'corr'."
+  },
+  "count::bigquery": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'count'."
+  },
+  "count::duckdb": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'count'."
+  },
+  "count::mysql": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'count'."
+  },
+  "count::postgres": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'count'."
+  },
+  "count::snowflake": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'count'."
+  },
+  "count::sqlite": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'count'."
+  },
+  "count::tsql": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'count'."
+  },
+  "count_distinct::bigquery": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'count_distinct'."
+  },
+  "count_distinct::duckdb": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'count_distinct'."
+  },
+  "count_distinct::mysql": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'count_distinct'."
+  },
+  "count_distinct::postgres": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'count_distinct'."
+  },
+  "count_distinct::snowflake": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'count_distinct'."
+  },
+  "count_distinct::sqlite": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'count_distinct'."
+  },
+  "count_distinct::tsql": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'count_distinct'."
+  },
+  "count_distinct_approx::bigquery": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'count_distinct_approx'."
+  },
+  "count_distinct_approx::duckdb": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'count_distinct_approx'."
+  },
+  "count_distinct_approx::mysql": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'count_distinct_approx'."
+  },
+  "count_distinct_approx::postgres": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'count_distinct_approx'."
+  },
+  "count_distinct_approx::snowflake": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'count_distinct_approx'."
+  },
+  "count_distinct_approx::sqlite": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'count_distinct_approx'."
+  },
+  "count_distinct_approx::tsql": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'count_distinct_approx'."
+  },
+  "covar_pop::bigquery": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'covar_pop'."
+  },
+  "covar_pop::duckdb": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'covar_pop'."
+  },
+  "covar_pop::mysql": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'covar_pop'."
+  },
+  "covar_pop::postgres": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'covar_pop'."
+  },
+  "covar_pop::snowflake": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'covar_pop'."
+  },
+  "covar_pop::sqlite": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'covar_pop'."
+  },
+  "covar_pop::tsql": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'covar_pop'."
+  },
+  "covar_samp::bigquery": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'covar_samp'."
+  },
+  "covar_samp::duckdb": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'covar_samp'."
+  },
+  "covar_samp::mysql": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'covar_samp'."
+  },
+  "covar_samp::postgres": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'covar_samp'."
+  },
+  "covar_samp::snowflake": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'covar_samp'."
+  },
+  "covar_samp::sqlite": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'covar_samp'."
+  },
+  "covar_samp::tsql": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'covar_samp'."
+  },
+  "cross_model_last::bigquery": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'last'."
+  },
+  "cross_model_last::duckdb": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'last'."
+  },
+  "cross_model_last::mysql": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'last'."
+  },
+  "cross_model_last::postgres": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'last'."
+  },
+  "cross_model_last::snowflake": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'last'."
+  },
+  "cross_model_last::sqlite": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'last'."
+  },
+  "cross_model_last::tsql": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'last'."
+  },
+  "custom_default_literal_p::bigquery": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'trimmed_mean'."
+  },
+  "custom_default_literal_p::duckdb": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'trimmed_mean'."
+  },
+  "custom_default_literal_p::mysql": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'trimmed_mean'."
+  },
+  "custom_default_literal_p::postgres": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'trimmed_mean'."
+  },
+  "custom_default_literal_p::snowflake": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'trimmed_mean'."
+  },
+  "custom_default_literal_p::sqlite": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'trimmed_mean'."
+  },
+  "custom_default_literal_p::tsql": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'trimmed_mean'."
+  },
+  "custom_joined_default_column::bigquery": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'disc_spend'."
+  },
+  "custom_joined_default_column::duckdb": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'disc_spend'."
+  },
+  "custom_joined_default_column::mysql": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'disc_spend'."
+  },
+  "custom_joined_default_column::postgres": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'disc_spend'."
+  },
+  "custom_joined_default_column::snowflake": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'disc_spend'."
+  },
+  "custom_joined_default_column::sqlite": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'disc_spend'."
+  },
+  "custom_joined_default_column::tsql": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'disc_spend'."
+  },
+  "custom_trimmed_mean::bigquery": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'trimmed_mean'."
+  },
+  "custom_trimmed_mean::duckdb": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'trimmed_mean'."
+  },
+  "custom_trimmed_mean::mysql": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'trimmed_mean'."
+  },
+  "custom_trimmed_mean::postgres": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'trimmed_mean'."
+  },
+  "custom_trimmed_mean::snowflake": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'trimmed_mean'."
+  },
+  "custom_trimmed_mean::sqlite": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'trimmed_mean'."
+  },
+  "custom_trimmed_mean::tsql": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'trimmed_mean'."
+  },
+  "expression_source_count_distinct::bigquery": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'count_distinct'."
+  },
+  "expression_source_count_distinct::duckdb": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'count_distinct'."
+  },
+  "expression_source_count_distinct::mysql": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'count_distinct'."
+  },
+  "expression_source_count_distinct::postgres": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'count_distinct'."
+  },
+  "expression_source_count_distinct::snowflake": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'count_distinct'."
+  },
+  "expression_source_count_distinct::sqlite": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'count_distinct'."
+  },
+  "expression_source_count_distinct::tsql": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'count_distinct'."
+  },
+  "filter_only_count::bigquery": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'count'."
+  },
+  "filter_only_count::duckdb": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'count'."
+  },
+  "filter_only_count::mysql": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'count'."
+  },
+  "filter_only_count::postgres": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'count'."
+  },
+  "filter_only_count::snowflake": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'count'."
+  },
+  "filter_only_count::sqlite": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'count'."
+  },
+  "filter_only_count::tsql": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'count'."
+  },
+  "first::bigquery": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'first'."
+  },
+  "first::duckdb": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'first'."
+  },
+  "first::mysql": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'first'."
+  },
+  "first::postgres": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'first'."
+  },
+  "first::snowflake": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'first'."
+  },
+  "first::sqlite": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'first'."
+  },
+  "first::tsql": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'first'."
+  },
+  "last::bigquery": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'last'."
+  },
+  "last::duckdb": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'last'."
+  },
+  "last::mysql": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'last'."
+  },
+  "last::postgres": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'last'."
+  },
+  "last::snowflake": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'last'."
+  },
+  "last::sqlite": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'last'."
+  },
+  "last::tsql": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'last'."
+  },
+  "last_explicit_time::bigquery": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'last'."
+  },
+  "last_explicit_time::duckdb": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'last'."
+  },
+  "last_explicit_time::mysql": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'last'."
+  },
+  "last_explicit_time::postgres": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'last'."
+  },
+  "last_explicit_time::snowflake": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'last'."
+  },
+  "last_explicit_time::sqlite": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'last'."
+  },
+  "last_explicit_time::tsql": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'last'."
+  },
+  "max::bigquery": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'max'."
+  },
+  "max::duckdb": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'max'."
+  },
+  "max::mysql": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'max'."
+  },
+  "max::postgres": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'max'."
+  },
+  "max::snowflake": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'max'."
+  },
+  "max::sqlite": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'max'."
+  },
+  "max::tsql": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'max'."
+  },
+  "median::bigquery": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'median'."
+  },
+  "median::duckdb": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'median'."
+  },
+  "median::mysql": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'median'."
+  },
+  "median::postgres": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'median'."
+  },
+  "median::snowflake": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'median'."
+  },
+  "median::sqlite": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'median'."
+  },
+  "median::tsql": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'median'."
+  },
+  "min::bigquery": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'min'."
+  },
+  "min::duckdb": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'min'."
+  },
+  "min::mysql": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'min'."
+  },
+  "min::postgres": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'min'."
+  },
+  "min::snowflake": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'min'."
+  },
+  "min::sqlite": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'min'."
+  },
+  "min::tsql": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'min'."
+  },
+  "order_only_max::bigquery": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'max'."
+  },
+  "order_only_max::duckdb": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'max'."
+  },
+  "order_only_max::mysql": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'max'."
+  },
+  "order_only_max::postgres": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'max'."
+  },
+  "order_only_max::snowflake": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'max'."
+  },
+  "order_only_max::sqlite": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'max'."
+  },
+  "order_only_max::tsql": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'max'."
+  },
+  "partitioned_count::bigquery": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'count'."
+  },
+  "partitioned_count::duckdb": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'count'."
+  },
+  "partitioned_count::mysql": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'count'."
+  },
+  "partitioned_count::postgres": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'count'."
+  },
+  "partitioned_count::snowflake": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'count'."
+  },
+  "partitioned_count::sqlite": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'count'."
+  },
+  "partitioned_count::tsql": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'count'."
+  },
+  "percentile_p09::bigquery": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'percentile'."
+  },
+  "percentile_p09::duckdb": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'percentile'."
+  },
+  "percentile_p09::mysql": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'percentile'."
+  },
+  "percentile_p09::postgres": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'percentile'."
+  },
+  "percentile_p09::snowflake": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'percentile'."
+  },
+  "percentile_p09::sqlite": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'percentile'."
+  },
+  "percentile_p09::tsql": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'percentile'."
+  },
+  "star_count::bigquery": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'count'."
+  },
+  "star_count::duckdb": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'count'."
+  },
+  "star_count::mysql": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'count'."
+  },
+  "star_count::postgres": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'count'."
+  },
+  "star_count::snowflake": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'count'."
+  },
+  "star_count::sqlite": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'count'."
+  },
+  "star_count::tsql": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'count'."
+  },
+  "stddev_pop::bigquery": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'stddev_pop'."
+  },
+  "stddev_pop::duckdb": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'stddev_pop'."
+  },
+  "stddev_pop::mysql": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'stddev_pop'."
+  },
+  "stddev_pop::postgres": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'stddev_pop'."
+  },
+  "stddev_pop::snowflake": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'stddev_pop'."
+  },
+  "stddev_pop::sqlite": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'stddev_pop'."
+  },
+  "stddev_pop::tsql": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'stddev_pop'."
+  },
+  "stddev_samp::bigquery": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'stddev_samp'."
+  },
+  "stddev_samp::duckdb": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'stddev_samp'."
+  },
+  "stddev_samp::mysql": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'stddev_samp'."
+  },
+  "stddev_samp::postgres": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'stddev_samp'."
+  },
+  "stddev_samp::snowflake": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'stddev_samp'."
+  },
+  "stddev_samp::sqlite": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'stddev_samp'."
+  },
+  "stddev_samp::tsql": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'stddev_samp'."
+  },
+  "var_pop::bigquery": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'var_pop'."
+  },
+  "var_pop::duckdb": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'var_pop'."
+  },
+  "var_pop::mysql": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'var_pop'."
+  },
+  "var_pop::postgres": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'var_pop'."
+  },
+  "var_pop::snowflake": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'var_pop'."
+  },
+  "var_pop::sqlite": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'var_pop'."
+  },
+  "var_pop::tsql": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'var_pop'."
+  },
+  "var_samp::bigquery": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'var_samp'."
+  },
+  "var_samp::duckdb": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'var_samp'."
+  },
+  "var_samp::mysql": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'var_samp'."
+  },
+  "var_samp::postgres": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'var_samp'."
+  },
+  "var_samp::snowflake": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'var_samp'."
+  },
+  "var_samp::sqlite": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'var_samp'."
+  },
+  "var_samp::tsql": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'var_samp'."
+  },
+  "weighted_avg::bigquery": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'weighted_avg'."
+  },
+  "weighted_avg::duckdb": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'weighted_avg'."
+  },
+  "weighted_avg::mysql": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'weighted_avg'."
+  },
+  "weighted_avg::postgres": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'weighted_avg'."
+  },
+  "weighted_avg::snowflake": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'weighted_avg'."
+  },
+  "weighted_avg::sqlite": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'weighted_avg'."
+  },
+  "weighted_avg::tsql": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'weighted_avg'."
+  },
+  "weighted_avg_attached_weight::bigquery": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'weighted_avg'."
+  },
+  "weighted_avg_attached_weight::duckdb": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'weighted_avg'."
+  },
+  "weighted_avg_attached_weight::mysql": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'weighted_avg'."
+  },
+  "weighted_avg_attached_weight::postgres": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'weighted_avg'."
+  },
+  "weighted_avg_attached_weight::snowflake": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'weighted_avg'."
+  },
+  "weighted_avg_attached_weight::sqlite": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'weighted_avg'."
+  },
+  "weighted_avg_attached_weight::tsql": {
+    "error": "ValueError",
+    "message": "Aggregation parameter 'window' is only supported for sum and avg, not 'weighted_avg'."
+  }
+}
