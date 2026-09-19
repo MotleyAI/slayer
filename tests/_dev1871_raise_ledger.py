@@ -104,7 +104,7 @@ ROWS: Tuple[LedgerRow, ...] = (
          "TimeDimension … must reference a temporal column (DATE / TIMESTAMP); got column type ….",
          "checker", "time-axis", True, "checker"),
     _row(_EE, "check_time_dimension_column", "TimeDimensionColumnError",
-         "TimeDimension … cannot re-bucket to '…': its upstream stage bucketed it at '…', which does not nest into '…'. Request the same or a nesting-coarser granularity, or bucket the raw column in the upstream stage.",
+         "TimeDimension … cannot re-bucket to '…': its column is already bucketed at '…', which does not nest into '…'. Request the same or a nesting-coarser granularity, or bucket the raw column instead.",
          "checker", "time-axis", True, "checker"),
     _row(_EE, "check_time_transforms_resolved", "ValueError",
          "Transform '…' requires an unambiguous time dimension. Add a single time_dimensions entry, or set main_time_dimension to select among multiple time dimensions.",
