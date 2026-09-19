@@ -231,7 +231,8 @@ async def test_order_only_windowed_max(exec_backend):
     resp = await engine.execute(F.q(
         time_dimensions=F.month_td(),
         measures=[_m("amount:sum", "s")],
-        order=[OrderItem(column="amount:max(window='90d')", direction="desc")],
+        order=[OrderItem.model_validate(
+            {"column": "amount:max(window='90d')", "direction": "desc"})],
     ))
     order = [F.month_key(r["orders.created_at"]) for r in resp.data]
     assert order == F.ORDER_MAX_DESC_MONTHS
@@ -347,3 +348,31 @@ async def test_windowed_last_ranking_across_fanning_hop_fails_closed(exec_backen
     )
     with pytest.raises(ValueError, match="unproven join hop"):
         await engine.execute(query)
+
+
+async def test_windowed_star_non_count_fails_closed():
+    # `*` is legal only with count, windowed or not — a non-count star must raise,
+    # never silently render <agg>(1) over the interval rows.
+    query = F.q(time_dimensions=F.month_td(),
+                measures=[_m("*:sum(window='90d')", "w")])
+    with pytest.raises(ValueError, match="not allowed with measure"):
+        await F.gen(query)
+
+
+async def test_windowed_star_count_rejects_stray_args():
+    # `*:count` takes no inputs but its own window= — a stray kwarg would otherwise
+    # be projected and silently ignored.
+    query = F.q(time_dimensions=F.month_td(),
+                measures=[_m("*:count(other=qty, window='90d')", "w")])
+    with pytest.raises(ValueError, match="no args or kwargs"):
+        await F.gen(query)
+
+
+async def test_windowed_custom_def_resolves_on_source_owner():
+    # `wprod` is defined only on customers; overriding its param with a root
+    # (orders) column widens the home to orders while the def stays on customers.
+    # The renderer must resolve the definition on the source owner, not the root.
+    query = F.q(time_dimensions=F.month_td("customers.signup_at"),
+                measures=[_m("customers.spend:wprod(w=amount, window='1y')", "w")])
+    sql = await F.gen(query)
+    assert "__regroup__" not in sql

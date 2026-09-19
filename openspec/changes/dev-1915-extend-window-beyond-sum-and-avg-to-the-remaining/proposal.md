@@ -29,8 +29,9 @@ reason is a closure violation, and two lists that must agree by hand are the bug
 - **No aggregation allowlist survives.** The checker keeps only the duration checks
   (compact duration string, non-empty, positive, well-formed); the render registry loses
   its windowability field. Dialect gaps are unchanged: an aggregation a dialect cannot
-  render plain raises the same error windowed (median/percentile on MySQL, T-SQL,
-  BigQuery; corr/covar on MySQL). `count_distinct` needs no framed DISTINCT — the emission
+  render plain raises the same error windowed — the only render-time gaps are
+  median/percentile on MySQL and T-SQL (corr/covar are emulated everywhere and
+  BigQuery renders median). `count_distinct` needs no framed DISTINCT — the emission
   is a range join — so no new per-dialect error exists.
 - Unchanged: time-dimension resolution and attributability, the association refusal for
   `window=`/`first`/`last` (DEV-1914), the re-aggregation outer-window refusal, the
@@ -65,6 +66,13 @@ transform, stage time axis, association refusal, re-aggregation refusal) stays t
   is built with the root model and bundle; picked parameters remapped through the
   sub-plan's substitutions), `slayer/engine/elaborate_env.py`
   (`check_windowed_key_supported` → `check_window_duration`).
+- `slayer/sql/dialects/{base,sqlite}.py` — a new `frame_time_operand` hook normalises the
+  source time column in the trailing-window range comparison (identity everywhere except
+  SQLite, whose bare-date numeric affinity string-sorted a value BEFORE a DATETIME frame
+  bound, leaking the exclusive `bucket_end` row into the previous bucket). This makes the
+  half-open interval exact on SQLite for **every** windowed aggregation, sum and avg
+  included — a pre-existing correctness bug surfaced by the two-stage / date-column tests;
+  the six existing windowed golden baselines' SQLite rows are re-blessed to the wrapped form.
 - Tests: new `tests/test_dev1915_golden_sql.py` + `tests/golden/dev1915_sql_baseline.json`,
   new `tests/test_dev1915_windowed_exec.py` + `tests/_dev1915_fixtures.py`; consented
   edits to `tests/test_dev1835_guards.py`, `tests/test_dev1744_value_expr.py`,

@@ -89,10 +89,10 @@ The former "only supported for sum and avg" error SHALL NOT exist; duration vali
   identical to the same shapes evaluated over a model-backed dataset holding the same rows
 
 #### Scenario: Dialect gaps are unchanged
-- **WHEN** `amount:median(window='90d')` is rendered for MySQL, T-SQL or BigQuery, or
-  `amount:corr(other=qty, window='90d')` for MySQL
+- **WHEN** `amount:median(window='90d')` is rendered for MySQL or T-SQL
 - **THEN** the query fails with the same dialect error the plain aggregation raises, and
-  every other Tier-1 dialect renders SQL
+  every other Tier-1 dialect renders SQL — including BigQuery median and MySQL
+  `corr`/`covar`, which the plain path already emulates, so a window adds no new gap
 
 ### Requirement: An empty interval follows SQL empty-set semantics
 For an output cell whose trailing interval contains no home rows, `count`,

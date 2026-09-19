@@ -482,6 +482,12 @@ class SqlDialect(BaseModel):
             result = op_cls(this=result, expression=iv)
         return result
 
+    def frame_time_operand(self, expr: exp.Expression) -> exp.Expression:
+        """The source time column as it must appear in a trailing-window frame
+        comparison. Default: unchanged — the frame bounds (``add_intervals_expr``)
+        carry the same time type, so ``expr < bucket_end`` is already exact."""
+        return expr
+
     # ------------------------------------------------------------------
     # Median / percentile / stat aggregates
     # ------------------------------------------------------------------

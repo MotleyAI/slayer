@@ -251,7 +251,7 @@ SLayer. Write `{"column": "revenue:sum / cnt:sum"}` instead.
 A windowed measure inside a **declared** composite measure
 (`{"formula": "revenue:sum(window='90d') / cnt:sum"}`), and any combination of a
 windowed measure with a transform, are still rejected — see
-[formulas](formulas.md#windowed-sum-and-average).
+[formulas](formulas.md#windowed-aggregations).
 
 ## Response
 

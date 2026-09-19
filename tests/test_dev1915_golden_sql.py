@@ -102,7 +102,9 @@ def test_first_last_cases_rank_and_never_raise(baseline) -> None:
 def test_only_median_percentile_gaps_record_raises(baseline) -> None:
     for key, value in baseline.items():
         if key in AGG_UNSUPPORTED:
-            assert isinstance(value, dict) and value.get("error") == "NotImplementedError", (
+            assert isinstance(value, dict), (
+                f"{key} should record the plain dialect gap: {render_value(value)}")
+            assert value.get("error") == "NotImplementedError", (
                 f"{key} should record the plain dialect gap: {render_value(value)}")
         else:
             assert not isinstance(value, dict), (

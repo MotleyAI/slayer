@@ -107,6 +107,12 @@ def customers_model() -> SlayerModel:
                 name="disc_spend", formula="SUM({value} * {d})",
                 params=[AggregationParam(name="d", sql="discount")],
             ),
+            # A custom agg on customers whose param can be overridden by a root
+            # (orders) column, widening the home above the source (def-owner test).
+            Aggregation(
+                name="wprod", formula="SUM({value} * {w})",
+                params=[AggregationParam(name="w", sql="1")],
+            ),
         ],
     )
 
