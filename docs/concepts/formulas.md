@@ -183,7 +183,7 @@ stage of a multi-stage query so the windowed stage never sees the raw column.
 
 A windowed measure (`spend:sum(window=…)`, `customers.revenue:sum(window=…)`)
 works when the query's active time dimension is *attributable* from the
-measure's own model — reachable from it over provably many-to-one join hops (see
+aggregation's home dataset — reachable from it over provably many-to-one join hops (see
 [cross-model measures](queries.md#cross-model-measures)); the window buckets by
 that time dimension inside the measure's sub-query. When it is not
 attributable, the query errors naming the time dimension and the remedy.

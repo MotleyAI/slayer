@@ -498,15 +498,16 @@ def _population_pushed_entries(planned) -> Iterator[Tuple[Optional[str], str]]:
 
 
 def _attach_pushed_entries(planned) -> Iterator[Tuple[str, str]]:
-    """Semi-join-pushed entries for each regroup attach, keyed on the producer's
-    public measure."""
+    """Semi-join-pushed entries for each regroup attach, one per (public measure,
+    filter text) — a producer may carry several public measures under one push."""
     for attach in _walk_regroup_attaches(planned):
-        measure = (
-            attach.population_semi_join_measure or attach.broadcast_measure
-            or attach.associated_measure or attach.alias_hint or "<aggregate>"
-        )
+        measures = attach.population_semi_join_measures or [
+            attach.broadcast_measure or attach.associated_measure
+            or attach.alias_hint or "<aggregate>"
+        ]
         for text in _attach_semi_join_texts(attach):
-            yield measure, text
+            for measure in measures:
+                yield measure, text
 
 
 def _collect_semi_join_pushed_warnings(

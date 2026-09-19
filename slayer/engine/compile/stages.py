@@ -1356,7 +1356,7 @@ class PopulationFilters(BaseModel):
                 if dc.warning is not None:
                     dropped.append(dc.warning)
                 continue
-            if self._inline_for(dc, grain_paths):
+            if self._inline_for(dc=dc, grain_paths=grain_paths):
                 (inline_dates if dc.is_date_range else inline_others).append(
                     dc.inline_bf)
             elif dc.push is not None:
@@ -1388,7 +1388,7 @@ class PopulationFilters(BaseModel):
                 if drop_excluded:
                     pushed_keys.append(dc.conjunct)
                 continue
-            if not self._inline_for(dc, grain_paths):
+            if not self._inline_for(dc=dc, grain_paths=grain_paths):
                 assert dc.push is not None
                 pushes.append(dc.push)
                 pushed_keys.append(dc.conjunct)
@@ -1697,9 +1697,10 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
                 active_td_name=(
                     None if active_td is None else _regroup_grain_name(active_td)
                 ),
-                attributable=active_td is not None and attributable_from_root(
-                    host_path=key_host_path(active_td), target_path=target_path,
+                attributable=active_td is not None and key_attributable_from_root(
+                    key=active_td, target_path=target_path,
                     root_model=root_model, models_by_name=models_by_name,
+                    bundle=bundle, host_model=host_model,
                     host_name=host_model.name,
                 ),
             )
@@ -2981,10 +2982,11 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
                            if isinstance(producer_aggs[0], AggregateKey) else None),
                     root_name=producer_model.name,
                     active_td_name=_regroup_grain_name(active_td),
-                    attributable=attributable_from_root(
-                        host_path=key_host_path(active_td), target_path=(),
+                    attributable=key_attributable_from_root(
+                        key=active_td, target_path=(),
                         root_model=producer_model,
                         models_by_name=bundle.models_by_name,
+                        bundle=bundle, host_model=producer_model,
                         host_name=producer_model.name,
                     ),
                 )
@@ -3098,12 +3100,13 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
                 join_pairs=join_pairs,
                 substitutions=substitutions,
                 partition_display=[_regroup_grain_name(pk) for pk in ordered_pks],
-                # A population semi-join inherited into this producer reports the
-                # producer's own public measure (DEV-1909), not its stage alias.
-                population_semi_join_measure=(
-                    alias_map.get(aggs[0])
-                    if producer_plan.semi_join_filters
-                    and isinstance(aggs[0], AggregateKey) else None
+                # A population semi-join inherited into this producer reports each of
+                # the producer's own public measures, not its stage alias. DEV-1944:
+                # an aggregate selected under two names warns only the first.
+                population_semi_join_measures=(
+                    [alias_map[a] for a in aggs
+                     if isinstance(a, AggregateKey) and a in alias_map]
+                    if producer_plan.semi_join_filters else []
                 ),
                 # An out-of-scope population conjunct is dropped from every
                 # host-rooted producer with the dropped-filter warning (D5).
@@ -3538,7 +3541,7 @@ def compile_prebound(  # NOSONAR(S3776) — compiler entry-point dispatcher. The
     # surviving frame bounds (readers: sql.generator lowering, _plan_src_row_filters).
     surviving_date_range = 0
     for i, (bf, ct) in enumerate(zip(bound_filters, filter_typings)):
-        key = _drop_conjuncts(bf.value_key, pushed_set)
+        key = _drop_conjuncts(value_key=bf.value_key, drop=pushed_set)
         if key is None:
             continue  # every conjunct of this filter moved to the EXISTS
         mask_sid = projection.registry.find_by_key(key)

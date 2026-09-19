@@ -28,6 +28,7 @@ from slayer.core.errors import (
     SlayerError,
     UnreachableFilterDroppedWarning,
 )
+from slayer.core.models import Column, DataType
 from slayer.core.query import ColumnRef, TimeDimension
 from slayer.engine.plan import plan_query
 from slayer.ir.source_bundle import ResolvedSourceBundle
@@ -168,6 +169,50 @@ class TestOrderWrapInheritsPopulation:
         assert pp.semi_join_filters, "the wrap must inherit the population EXISTS"
         # the fanning conjunct rode the EXISTS, so it is not an inline producer mask.
         assert pp.masks == []
+
+
+class TestWindowedDerivedFanningAxisFailsClosed:
+    """Decision 12 is closure-aware: a windowed measure whose active time axis is a
+    host-local derived column — pathless in its own coordinates, but whose SQL
+    crosses a fanning hop — fails closed in every mode. The bare host-path is empty
+    (reads as safe); only the dependency closure reveals the fan."""
+
+    def _bundle(self) -> ResolvedSourceBundle:
+        m = dev1900_models()
+        cust = next(x for x in m if x.name == "customers")
+        cust.columns.append(Column(
+            name="bad_date", type=DataType.DATE,
+            sql="CAST(regions.region_events.value AS DATE)"))
+        return ResolvedSourceBundle(
+            source_model=cust, referenced_models=[x for x in m if x.name != "customers"])
+
+    @pytest.mark.parametrize("mode", MODES)
+    def test_pathless_derived_window_axis_raises(self, mode):
+        q = cust_q(
+            time_dimensions=[{"dimension": "bad_date", "granularity": "month"}],
+            measures=[WINDOWED], to_many_handling=mode)
+        bundle = self._bundle()
+        with pytest.raises((SlayerError, ValueError)) as ei:
+            plan_query(query=q, bundle=bundle)
+        assert "bad_date" in str(ei.value)
+
+
+class TestMultiMeasureProducerNamesEveryMeasure:
+    """A host-rooted producer carrying several public aggregates under one
+    population semi-join reports a semi_join_pushed entry for EACH measure, not
+    just the first (DEV-1909)."""
+
+    async def test_every_producer_measure_named(self, backend):
+        _, engine = backend
+        resp = await engine.execute(cust_q(
+            dimensions=["tier"],
+            measures=[
+                ModelMeasure(formula="spend:sum(partition_by=tier)", name="ptsum"),
+                ModelMeasure(formula="spend:max(partition_by=tier)", name="ptmax"),
+            ],
+            filters=[OK]))
+        named = {i.measure for i in pushed_filter_infos(resp)}
+        assert {"ptsum", "ptmax"} <= named
 
 
 class TestHostBaseRestrictsByAssociation:

@@ -399,10 +399,10 @@ class RegroupAttachPlan(BaseModel):
     # empty for association producers, so the informational entry a semi-join
     # push would raise is kept.
     association_restricted_filter_texts: List[str] = Field(default_factory=list)
-    # Public measure name for a population semi-join inherited into a host-rooted
-    # producer (DEV-1909): the informational entry names the producer's own
-    # measure, not its internal stage alias.
-    population_semi_join_measure: Optional[str] = None
+    # Public measure names for a population semi-join inherited into a host-rooted
+    # producer (DEV-1909): the informational entry names each of the producer's own
+    # public measures (a producer may carry several), not its internal stage alias.
+    population_semi_join_measures: List[str] = Field(default_factory=list)
     # Degenerate second-order aggregation (DEV-1847): the re-aggregation whose
     # operand grain equals the outer grain (the identity), with both grains for
     # the warning.
