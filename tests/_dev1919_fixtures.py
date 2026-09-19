@@ -51,6 +51,8 @@ OWN_FAN_BADPOP = ("amount:weighted_avg(weight=sum(customers.regions.pop, "
 OWN_FAN_STATUS = "amount:weighted_avg(weight=sum(customers.spend, partition_by=status))"
 #: the outer home (customers) does not determine the parameter's grain member.
 UNDETERMINED_PARAM = "customers.spend:weighted_avg(weight=sum(customers.spend, partition_by=status))"
+#: a positional value on a parameterless aggregation: refused at bind (D8).
+STRAY_POSITIONAL = "customers.spend:sum(sum(customers.spend, partition_by=status))"
 LAST_HOST = "customers.spend:last(ordered_at)"
 LAST_BADPOP = "customers.regions.bad_pop:last(ordered_at)"
 

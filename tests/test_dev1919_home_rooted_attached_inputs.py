@@ -37,6 +37,7 @@ from tests._dev1919_fixtures import (
     OWN_FAN_STATUS,
     RANKED,
     RECURSIVE,
+    STRAY_POSITIONAL,
     UNDETERMINED_PARAM,
     UNPARSE_PARAM,
     WINDOWED_CONSTITUENT,
@@ -349,6 +350,13 @@ class TestFailClosedEveryMode:
         with pytest.raises(SlayerError) as ei:
             await orders_engine.execute(q)
         assert_grain_residue(ei.value, param="weight")
+
+    @pytest.mark.parametrize("mode", MODES)
+    async def test_stray_positional_attached_value_refused_at_bind(self, orders_engine, mode):
+        """Scenario: Positional value on a parameterless aggregation errors (D8)."""
+        q = mode_q(mode, dimensions=["customers.tier"], measures=[_m(STRAY_POSITIONAL)])
+        with pytest.raises(ValueError, match="takes no parameters"):
+            await orders_engine.execute(q)
 
 
 class TestArgumentMessagePrecedence:

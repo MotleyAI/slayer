@@ -76,6 +76,12 @@ message-precedence change (below).
   attributable dimensions takes the plain path in every mode, so the association eligibility
   checks (root unique key, no `window=`/`first`/`last`) apply only when association is
   needed; values are identical because there is no fan-out to dedup.
+- **D8 Attached parameters live in kwargs only** (spec-review, Egor 2026-09-19). The
+  binder folds positionals onto declared names and refuses a positional value on an
+  aggregation declaring none (ranked `first`/`last`: exactly one column ranking key), so after
+  bind an attached parameter can only be a kwarg and the D2b rule is total by
+  construction. Rejected: iterating `args` in `_check_attached_params_determined` — a
+  second hand-kept channel, and the stray spelling stays a functional-form violation.
 - **D5 Message precedence.** Honest coordinates make a host column used as a target ranking
   key (`customers.spend:last(ordered_at)`) trip the closure hop check before the
   argument-leaf check. In `_assert_cross_model_inputs_safe` the argument-leaf check now runs

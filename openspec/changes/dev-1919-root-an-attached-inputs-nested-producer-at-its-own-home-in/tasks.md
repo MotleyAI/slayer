@@ -27,4 +27,5 @@
 ## 3. Review (spec-review stage)
 
 - [ ] 3.1 `/process-reviews` until CodeRabbit, Sonar, Codex and CI are green; every check shows `pass`
+- [ ] 3.1a Codex finding, option 1 approved by Egor 2026-09-19 (design D8): `_fold_positional_agg_args` refuses any positional value on an aggregation declaring no parameters (ranked first/last take exactly one positional, a column ranking key; an aggregate, literal or extra value there is refused — Codex round 2) — with the guard gone, `customers.spend:sum(sum(customers.spend, partition_by=status))` executed multiplied (gold 445 vs 245, no warning); tests: `tests/test_agg_positional_params.py::TestPositionalErrors` (5 new) + dev1919 every-mode pin; spec delta `aggregations/functional-form` (two scenarios); verified RED without the binder change
 - [ ] 3.2 With Egor's explicit OK: `openspec archive` the change, commit, push
