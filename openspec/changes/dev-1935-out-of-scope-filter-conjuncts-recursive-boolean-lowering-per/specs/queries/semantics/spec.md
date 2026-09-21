@@ -25,11 +25,11 @@ exactly once.
 
 ### Requirement: Filters restrict by association or fail loudly
 A row-level filter conjunct that reaches a dataset's root only across non-determining
-paths SHALL either restrict that dataset's population by association — the dataset
-computes over exactly the root rows related to at least one surviving row combination,
-each counted once — or be loudly excluded (dropped-filter warning, an error under
-`to_many_handling: "error"`) per the pushdown-scope rules in
-`queries/cross-model-aggregates`. This applies to the query population itself exactly as
+paths SHALL restrict that dataset's population by association — the dataset computes
+over exactly the root rows related to at least one surviving row combination, each
+counted once; a conjunct naming a reference with no resolvable join path SHALL fail at
+resolution with a typed error in every `to_many_handling` mode, never be dropped (spec:
+`queries/cross-model-aggregates`). This applies to the query population itself exactly as
 to an aggregate's root: a conjunct reaching the population root only across a
 non-determining path restricts the population by association, every aggregate evaluated
 over the population rows — inline or in a producer rooted at the population — counts each
@@ -66,9 +66,10 @@ related row.
   order passing the predicate, each once
 
 #### Scenario: A restriction is never silently ignored
-- **WHEN** a filter conjunct cannot be applied to an aggregate's population
-- **THEN** the response carries the dropped-filter warning (or the query errors under
-  `to_many_handling: "error"`) — never an unrestricted value presented as restricted
+- **WHEN** a filter conjunct names a reference with no resolvable join path from the
+  query root
+- **THEN** the query fails at resolution with a typed error in every `to_many_handling`
+  mode — never an unrestricted value presented as restricted
 
 #### Scenario: Population filter across a fanning hop restricts the population
 - **WHEN** a query rooted at `customers` filters on `orders.status = 'ok'` and selects the

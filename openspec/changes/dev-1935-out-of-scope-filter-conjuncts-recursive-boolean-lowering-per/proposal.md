@@ -11,8 +11,9 @@ class here.
 ## What Changes
 
 - **Pushdown becomes total over the conjunct's boolean shape.** Every ROW conjunct whose references
-  resolve to join paths from the root restricts the dataset by association; only a genuinely
-  unreachable reference (no resolvable join path from a producer's root) stays dropped-and-warned.
+  resolve to join paths from the root restricts the dataset by association; a genuinely
+  unreachable reference (no resolvable join path) is refused at resolution with a typed error in
+  every mode (decision 12).
 - **One semantic, stated once.** A root row survives iff the conjunct holds on at least one row of
   the root row's join product over the branches it references, built as the inline path would join
   them (each hop with its declared join type, LEFT by default, so a hop with no related row contributes
