@@ -987,7 +987,7 @@ class TestRunByNamePlanFlags:
     so REST/MCP/CLI run-by-name doesn't silently execute when plan-only was asked.
     """
 
-    async def test_dry_run_kwarg_returns_sql_without_executing(self) -> None:
+    async def test_dry_run_kwarg_returns_sql_without_executing(self, monkeypatch) -> None:
         """Caller passes dry_run=True on a stored stage that has dry_run=False."""
         saved = SlayerModel(
             name="rev_by_region",
@@ -1010,18 +1010,15 @@ class TestRunByNamePlanFlags:
                 execute_calls += 1
                 return await real_execute(self, *a, **kw)
 
-            SlayerSQLClient.execute = counting_execute  # type: ignore[method-assign]
-            try:
-                resp = await engine.execute("rev_by_region", dry_run=True)
-            finally:
-                SlayerSQLClient.execute = real_execute  # type: ignore[method-assign]
+            monkeypatch.setattr(SlayerSQLClient, "execute", counting_execute)
+            resp = await engine.execute("rev_by_region", dry_run=True)
             assert resp.sql is not None
             assert "amount" in resp.sql.lower()
             assert execute_calls == 0, "dry_run=True must not execute SQL"
         finally:
             tmp.cleanup()
 
-    async def test_explain_kwarg_routes_through_explain_builder(self) -> None:
+    async def test_explain_kwarg_routes_through_explain_builder(self, monkeypatch) -> None:
         """Caller passes explain=True; engine should invoke the EXPLAIN-SQL
         builder rather than executing the raw query.
         """
@@ -1043,14 +1040,11 @@ class TestRunByNamePlanFlags:
                 calls.append(sql)
                 return real_explain(dialect=dialect, sql=sql)
 
-            qe._build_explain_sql = tracking_explain  # type: ignore[assignment]
-            try:
-                # Don't care about the actual EXPLAIN output (no table created);
-                # we just want to confirm the explain path was reached.
-                with pytest.raises(Exception):  # noqa: BLE001 — DB error is fine
-                    await engine.execute("rev_by_region", explain=True)
-            finally:
-                qe._build_explain_sql = real_explain  # type: ignore[assignment]
+            monkeypatch.setattr(qe, "_build_explain_sql", tracking_explain)
+            # Don't care about the actual EXPLAIN output (no table created);
+            # we just want to confirm the explain path was reached.
+            with pytest.raises(Exception):  # noqa: BLE001 — DB error is fine
+                await engine.execute("rev_by_region", explain=True)
             assert calls, "explain=True must route through _build_explain_sql"
         finally:
             tmp.cleanup()

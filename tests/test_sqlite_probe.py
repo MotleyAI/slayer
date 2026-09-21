@@ -325,44 +325,35 @@ class TestProbeBlob:
 
 
 class TestProbeSampleSaturation:
-    def test_sample_saturated_all_int_returns_none(self, conn, caplog) -> None:
+    def test_sample_saturated_all_int_returns_none(self, conn, caplog, monkeypatch) -> None:
         """When the sample exhausts at PROBE_SCAN_CAP + 1 and would otherwise
         verdict INT, return None so the caller keeps declared INT but logs."""
-        # Tiny override for test speed: monkeypatch the cap to 50.
-        original_cap = sqlite_introspect.PROBE_SCAN_CAP
-        sqlite_introspect.PROBE_SCAN_CAP = 50
-        try:
-            conn.execute(sa.text('CREATE TABLE t (v INTEGER)'))
-            _insert_typed(conn, "t", "v", list(range(60)))
-            with caplog.at_level(logging.WARNING):
-                verdict = sqlite_introspect.probe_sqlite_integer_column(
-                    conn=conn, table="t", column="v"
-                )
-            assert verdict is None
-            warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
-            assert any("saturat" in r.getMessage().lower() for r in warnings)
-        finally:
-            sqlite_introspect.PROBE_SCAN_CAP = original_cap
+        monkeypatch.setattr(sqlite_introspect, "PROBE_SCAN_CAP", 50)  # tiny cap for test speed
+        conn.execute(sa.text('CREATE TABLE t (v INTEGER)'))
+        _insert_typed(conn, "t", "v", list(range(60)))
+        with caplog.at_level(logging.WARNING):
+            verdict = sqlite_introspect.probe_sqlite_integer_column(
+                conn=conn, table="t", column="v"
+            )
+        assert verdict is None
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("saturat" in r.getMessage().lower() for r in warnings)
 
     def test_sample_saturated_with_real_still_returns_double(
-        self, conn
+        self, conn, monkeypatch
     ) -> None:
         """When the sample saturates but we already saw REAL values in the
         sample, we have enough evidence for DOUBLE — saturation doesn't
         downgrade the verdict back to None."""
-        original_cap = sqlite_introspect.PROBE_SCAN_CAP
-        sqlite_introspect.PROBE_SCAN_CAP = 50
-        try:
-            conn.execute(sa.text('CREATE TABLE t (v INTEGER)'))
-            # First row REAL, rest INT — sample saturates but n_real > 0.
-            _insert_typed(conn, "t", "v", [0.5])
-            _insert_typed(conn, "t", "v", list(range(60)))
-            verdict = sqlite_introspect.probe_sqlite_integer_column(
-                conn=conn, table="t", column="v"
-            )
-            assert verdict is DataType.DOUBLE
-        finally:
-            sqlite_introspect.PROBE_SCAN_CAP = original_cap
+        monkeypatch.setattr(sqlite_introspect, "PROBE_SCAN_CAP", 50)
+        conn.execute(sa.text('CREATE TABLE t (v INTEGER)'))
+        # First row REAL, rest INT — sample saturates but n_real > 0.
+        _insert_typed(conn, "t", "v", [0.5])
+        _insert_typed(conn, "t", "v", list(range(60)))
+        verdict = sqlite_introspect.probe_sqlite_integer_column(
+            conn=conn, table="t", column="v"
+        )
+        assert verdict is DataType.DOUBLE
 
 
 # ===========================================================================
@@ -371,7 +362,7 @@ class TestProbeSampleSaturation:
 
 
 class TestProbeDistinctTextSaturation:
-    def test_distinct_text_saturated_returns_text(self, conn) -> None:
+    def test_distinct_text_saturated_returns_text(self, conn, monkeypatch) -> None:
         """When the distinct-text coerce probe saturates, we can't prove
         every distinct value coerces — widen to TEXT conservatively.
 
@@ -381,25 +372,21 @@ class TestProbeDistinctTextSaturation:
         column (any unrecognized type name yields BLOB affinity, which
         preserves storage classes verbatim).
         """
-        original = sqlite_introspect.COERCE_DISTINCT_LIMIT
-        sqlite_introspect.COERCE_DISTINCT_LIMIT = 10
-        try:
-            # BLOB affinity (via no declared type) preserves the incoming
-            # Python type as the storage class.
-            conn.execute(sa.text('CREATE TABLE t (v)'))
-            # 20 distinct numeric text values; cap is 10, saturation hits.
-            _insert_typed(
-                conn, "t", "v",
-                [str(i) for i in range(20)],
-            )
-            verdict = sqlite_introspect.probe_sqlite_integer_column(
-                conn=conn, table="t", column="v"
-            )
-            assert verdict is DataType.TEXT
-        finally:
-            sqlite_introspect.COERCE_DISTINCT_LIMIT = original
+        monkeypatch.setattr(sqlite_introspect, "COERCE_DISTINCT_LIMIT", 10)
+        # BLOB affinity (via no declared type) preserves the incoming
+        # Python type as the storage class.
+        conn.execute(sa.text('CREATE TABLE t (v)'))
+        # 20 distinct numeric text values; cap is 10, saturation hits.
+        _insert_typed(
+            conn, "t", "v",
+            [str(i) for i in range(20)],
+        )
+        verdict = sqlite_introspect.probe_sqlite_integer_column(
+            conn=conn, table="t", column="v"
+        )
+        assert verdict is DataType.TEXT
 
-    def test_many_duplicate_low_distinct_text_returns_double(self, conn) -> None:
+    def test_many_duplicate_low_distinct_text_returns_double(self, conn, monkeypatch) -> None:
         """A column with many duplicate numeric-text values but very few
         DISTINCT values must NOT trigger saturation — distinct-text count
         is the trigger, not row count. Verdict: DOUBLE.
@@ -407,21 +394,17 @@ class TestProbeDistinctTextSaturation:
         Same BLOB-affinity trick as the saturated test, so text storage
         is preserved verbatim.
         """
-        original = sqlite_introspect.COERCE_DISTINCT_LIMIT
-        sqlite_introspect.COERCE_DISTINCT_LIMIT = 10
-        try:
-            conn.execute(sa.text('CREATE TABLE t (v)'))
-            # 100 rows, only 3 distinct values (well under the cap of 10).
-            _insert_typed(
-                conn, "t", "v",
-                ["1"] * 40 + ["2.5"] * 40 + ["7"] * 20,
-            )
-            verdict = sqlite_introspect.probe_sqlite_integer_column(
-                conn=conn, table="t", column="v"
-            )
-            assert verdict is DataType.DOUBLE
-        finally:
-            sqlite_introspect.COERCE_DISTINCT_LIMIT = original
+        monkeypatch.setattr(sqlite_introspect, "COERCE_DISTINCT_LIMIT", 10)
+        conn.execute(sa.text('CREATE TABLE t (v)'))
+        # 100 rows, only 3 distinct values (well under the cap of 10).
+        _insert_typed(
+            conn, "t", "v",
+            ["1"] * 40 + ["2.5"] * 40 + ["7"] * 20,
+        )
+        verdict = sqlite_introspect.probe_sqlite_integer_column(
+            conn=conn, table="t", column="v"
+        )
+        assert verdict is DataType.DOUBLE
 
 
 class TestProbeCoerceQueryFailure:

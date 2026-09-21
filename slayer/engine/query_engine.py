@@ -879,7 +879,7 @@ class SlayerQueryEngine:
         disposed by ``aclose()`` on their event loop, not here.
         """
         try:
-            for client in list(self._sql_clients.values()):
+            for client in self._sql_clients.values():
                 try:
                     client.close()
                 except Exception:

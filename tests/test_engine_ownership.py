@@ -301,7 +301,7 @@ class TestQueryEngineClose:
         assert engine._sql_clients == {}
         # The fresh in-memory db is empty — the seeded table is specifically gone.
         empty_probe = engine.execute(SlayerQuery(source_model="t", measures=["*:count"]))  # type: ignore[arg-type]
-        with pytest.raises(Exception) as excinfo:
+        with pytest.raises(Exception) as excinfo:  # NOSONAR(S5958) — DB error type varies (schema-drift vs no-such-table across the path); the message asserted next is the contract
             asyncio.run(empty_probe)
         assert "no such table" in str(excinfo.value).lower()
         # Reusable: re-seed through a fresh client and the query succeeds again.
