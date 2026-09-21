@@ -33,10 +33,10 @@ from tests._dev1945_fixtures import (
     dev1945_models,
     make_engine,
     measure,
+    month_key,
     month_td,
     orders_q,
 )
-from tests._exec_fixture_helpers import month_key
 
 HOST_HOP = "unproven join hop to line_items from orders"
 MODES = ["broadcast", "error", "associate"]

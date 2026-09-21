@@ -19,7 +19,6 @@ ranking over the fanned ``li_ts`` join would pick order 1 (its line item dated
 from __future__ import annotations
 
 import os
-import sqlite3
 from typing import List, Optional
 
 from slayer.core.enums import DataType, TimeGranularity
@@ -27,6 +26,7 @@ from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ir.source_bundle import ResolvedSourceBundle
+from slayer.storage.sqlite_conn import transaction
 
 from tests._engine_helpers import make_seeded_sqlite_engine
 
@@ -129,29 +129,24 @@ _SHIPMENTS_ROWS = [(1, 1, "2024-01-06"), (2, 1, "2024-01-07"), (3, 3, "2024-01-0
 
 
 def seed_dev1945_sqlite(db_path: str) -> None:
-    con = sqlite3.connect(db_path)
-    try:
-        cur = con.cursor()
-        cur.execute(
+    with transaction(db_path) as con:
+        con.execute(
             "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, "
             "amount REAL, created_at TEXT)"
         )
-        cur.executemany("INSERT INTO orders VALUES (?,?,?,?)", _ORDERS_ROWS)
-        cur.execute("CREATE TABLE customers (id INTEGER PRIMARY KEY, signup_at TEXT)")
-        cur.executemany("INSERT INTO customers VALUES (?,?)", _CUSTOMERS_ROWS)
-        cur.execute(
+        con.executemany("INSERT INTO orders VALUES (?,?,?,?)", _ORDERS_ROWS)
+        con.execute("CREATE TABLE customers (id INTEGER PRIMARY KEY, signup_at TEXT)")
+        con.executemany("INSERT INTO customers VALUES (?,?)", _CUSTOMERS_ROWS)
+        con.execute(
             "CREATE TABLE line_items (id INTEGER PRIMARY KEY, order_id INTEGER, "
             "qty REAL, created_at TEXT)"
         )
-        cur.executemany("INSERT INTO line_items VALUES (?,?,?,?)", _LINE_ITEMS_ROWS)
-        cur.execute(
+        con.executemany("INSERT INTO line_items VALUES (?,?,?,?)", _LINE_ITEMS_ROWS)
+        con.execute(
             "CREATE TABLE shipments (id INTEGER PRIMARY KEY, line_item_id INTEGER, "
             "shipped_at TEXT)"
         )
-        cur.executemany("INSERT INTO shipments VALUES (?,?,?)", _SHIPMENTS_ROWS)
-        con.commit()
-    finally:
-        con.close()
+        con.executemany("INSERT INTO shipments VALUES (?,?,?)", _SHIPMENTS_ROWS)
 
 
 async def make_engine(
@@ -194,9 +189,15 @@ FIRST_AMOUNT = 10.0
 #: The only month bucket; its trailing 30d window holds both orders.
 JAN = "2024-01"
 
+
+def month_key(value) -> str:
+    """Stable per-month key across SQLite text and DuckDB timestamp values."""
+    return str(value)[:7]
+
+
 __all__ = [
     "orders_model", "line_items_model", "shipments_model",
     "customers_model", "dev1945_models", "dev1945_bundle", "seed_dev1945_sqlite",
-    "make_engine", "orders_q", "month_td", "measure",
+    "make_engine", "orders_q", "month_td", "measure", "month_key",
     "LAST_AMOUNT", "FIRST_AMOUNT", "JAN",
 ]
