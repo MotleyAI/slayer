@@ -73,6 +73,6 @@ class here.
   `test_dev1838_interning.py` re-point to the `semi_join_pushed` entry; the ledger row is removed;
   `dev1840` golden re-blessed.
 - Docs: one sentence in `docs/concepts/queries.md` and one in `docs/database-support.md` (the spine
-  shape needs MySQL 8.0.20+; BigQuery may refuse to decorrelate it — a loud engine error).
+  shape needs MySQL 8.0.14+; BigQuery may refuse to decorrelate it — a loud engine error).
 - `architecture/semantics.arc42.md`: Axiom 3, Axiom 14 and Laws 5 and 6 gain an enforced tag
   (normative edit, exact diff shown for approval before applying).
