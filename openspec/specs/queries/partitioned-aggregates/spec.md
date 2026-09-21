@@ -316,12 +316,14 @@ keep their transform dispatch. The outer aggregation's parameters — explicit,
 positional, or defaulted by the aggregation definition — follow
 `queries/semantics` › Aggregation parameters are typed by the home dataset's
 grain against the operand dataset's grain: an aggregate grained within the
-operand grain, or a column that grain determines, is picked once per cell and
+operand grain, a grained transform whose result grain the operand grain determines
+(riding the carrier as a constituent exactly like a transform source constituent),
+or a column that grain determines, is picked once per cell and
 read by the outer aggregation, and its partition keys are exempt from the
 combined-consumer partition-key rule exactly as the source's constituents are;
 a population-row column against a coarser cell grain, a definition default
-naming such a column, or an aggregate grained outside the operand grain is a
-typed error naming the parameter and the remedy. The outer aggregation SHALL
+naming such a column, or an aggregate or transform grained outside the operand grain
+is a typed error naming the parameter and the remedy. The outer aggregation SHALL
 reject, with typed errors naming the combination and the remedy: `window=` or
 ranked (`first`/`last`) aggregation over an attached operand, and a
 measure-local `filter=` on the outer aggregation.
@@ -467,6 +469,21 @@ measure-local `filter=` on the outer aggregation.
 #### Scenario: First and last keep transform dispatch
 - **WHEN** a query selects `last(sum(amount, partition_by=[city, region]))`
 - **THEN** it is the `last` transform over the aggregated series, unchanged
+
+#### Scenario: Transform-valued outer parameter rides the carrier
+- **WHEN** a query over `[region]` selects
+  `weighted_avg(sum(amount, partition_by=[city, region]), weight=rank(count(id, partition_by=[city, region])))`
+- **THEN** the rank of each city cell's row count (across all cells: Alpha/North 1;
+  Alpha/South, NULL/Gap and Xi/Void 2; every other cell 5) is a constituent of the
+  operand carrier, and each region carries the rank-weighted average of its city
+  totals — North 55, South 580 / 7, East 60, Gap 64 / 7, Void NULL — by executed
+  values on SQLite and DuckDB, the emitted SQL scope-closed
+
+#### Scenario: Transform-valued outer parameter outside the operand grain fails closed
+- **WHEN** the outer parameter is `rank(count(id, partition_by=product))` — a grain
+  `[product]` the operand grain `[city, region]` does not determine
+- **THEN** the query fails at plan time with the typed determination error naming the
+  parameter and the grain, never a scope leak or a value
 
 ### Requirement: Nested producers compose to arbitrary depth
 Producers SHALL nest to arbitrary depth: a producer's sub-plan may carry nested
@@ -802,7 +819,18 @@ aggregate is determined by a grain iff that grain determines each of its
 partition keys: a grain member, a column reached from a grain member over
 provably to-one join hops, or an aggregate-valued key whose own grain is so
 determined; an expression-valued partition key is determined only as an exact
-grain member; a transform is determined iff its result grain is. The
+grain member; a transform is determined iff its result grain is — the union of its
+inner aggregates' grains (each inner's explicit `partition_by=`, else the query's
+dimensions and time buckets, a windowed inner contributing the query's active time
+bucket), minus its time axis for `first`/`last`. A transform parameter is classified,
+normalised, lowered and checked exactly as a transform source constituent, in the
+keyword and positional positions alike: a time-ordered transform parameter whose
+grain does not contain its time axis SHALL fail with the same time-axis error in
+every position and mode; its own `partition_by=` is exempt from the
+combined-consumer partition-key rule exactly as the source's constituents are; the
+association and trailing-window kernels pick it once per cell exactly like an
+aggregate-valued parameter; and a transform nested inside an attached aggregate
+parameter resolves bottom-up like any nested attached input. The
 parameter's producer is computed at the parameter's OWN home — the deepest
 dataset determining the parameter's own inputs, resolved bottom-up — at its own
 declared grain, and its value attached into the aggregation's input relation
@@ -827,10 +855,6 @@ fail closed with the existing typed error in every mode; the enclosing
 aggregation never inspects the parameter's interior. Outer parameters on
 fully-attached (re-aggregation) sources keep their existing rules. The shape
 SHALL be legal in measure, filter (typing as a measure) and ORDER BY positions.
-An attached parameter SHALL compose with `window=` on the enclosing non-ranked
-aggregation, built-in or custom, the parameter read on each interval row per
-`aggregations/trailing-window`; the ranked family's ordering key keeps its own
-rules.
 
 #### Scenario: Associate-mode attached parameter executes
 - **WHEN** a query rooted at `orders` over `[status]` under
@@ -905,19 +929,17 @@ rules.
   customer's NULL innermost weight excludes it), on SQLite and DuckDB
 
 #### Scenario: Ranked transform as the attached parameter
-(Target behaviour, deferred to DEV-1903 — bind refuses a transform argument
-today; pinned by a strict xfail.)
 - **WHEN** a query rooted at `orders` selects
   `customers.spend:weighted_avg(weight=rank(sum(amount, partition_by=customers.regions.name)))`
   — the region cells ranked by their order-amount total, the NULL-name region
   forming its own ranked cell
 - **THEN** the transform is the attached input at its result grain, and the query
   executes under the default mode by `status` (broadcast, warned) and under every
-  mode by `customers.tier` with identical hand-computed values
+  mode by `customers.tier` with identical hand-computed values — 945 / 14 on both
+  `status` cells; gold 475 / 8, silver 97.5, bronze 40, the orphan order's NULL tier
+  NULL by tier — on SQLite and DuckDB
 
 #### Scenario: Transform parameter whose grain the home does not determine fails closed
-(Target behaviour, deferred to DEV-1903 — bind refuses a transform argument
-today; pinned by a strict xfail.)
 - **WHEN** a query rooted at `orders` over a month time dimension on `ordered_at`
   selects
   `customers.spend:weighted_avg(weight=cumsum(sum(amount, partition_by=[customers.regions.name, ordered_at])))`
@@ -998,3 +1020,113 @@ today; pinned by a strict xfail.)
   (`customers.tier`) or an unattributable (`status`) dimension
 - **THEN** the query fails with the typed determination error naming the
   parameter, never wrong values; the plain and association paths refuse alike
+
+#### Scenario: Positional transform parameter folds onto the declared name
+- **WHEN** a query rooted at `orders` over `[customers.tier]` selects
+  `customers.spend:weighted_avg(rank(sum(amount, partition_by=customers.regions.name)))`
+- **THEN** it binds to the same aggregation identity as the `weight=` spelling and
+  returns identical result keys and values (gold 475 / 8, silver 97.5, bronze 40)
+
+#### Scenario: Associate-mode transform parameter
+- **WHEN** the ranked-transform shape above is selected by `status` under
+  `to_many_handling: "associate"`
+- **THEN** each status cell aggregates its distinct associated customers weighted by
+  their region's rank — `ok` 700 / 9 (customers 1, 2, 3, 5, 6), `new` 330 / 4
+  (customers 1, 2, 4) — with the association warning, never NULL, on SQLite and DuckDB
+
+#### Scenario: Local-root transform parameter
+- **WHEN** a query rooted at `sales` selects
+  `weighted_avg(amount, weight=rank(sum(amount, partition_by=region)))` by `region`,
+  by `[region, city]` with the inner grained by `city`, and with no dimensions
+- **THEN** it executes with the row-attached rank of the row's cell — by region North
+  22.5, South 140 / 3, East 60, Gap 20 / 3, Void NULL; by region and city Alpha/North
+  10, Beta/North 60, Alpha/South 20, Gamma/South 100, Delta/East 50, Epsilon/East 50,
+  Zeta/East 80, NULL/Gap 6, Kappa/Gap 8, Xi/Void NULL; globally 810 / 43, the
+  NULL-total Void cell ranking last (weight 5) on SQLite and DuckDB alike
+
+#### Scenario: Collapsing transform parameter drops the axis
+- **WHEN** a query rooted at `orders` over an `ordered_at` month time dimension selects
+  `customers.spend:weighted_avg(weight=last(sum(amount, partition_by=[customers.regions.name, ordered_at])))`
+- **THEN** the parameter is typed at `[customers.regions.name]` — each region's
+  latest-month total (North 12, South 15, NULL 47) — so the query executes: under the
+  default mode 8165 / 128 on every month with the broadcast warning naming the month,
+  and by `[customers.tier]` and month gold 3285 / 54, silver 3000 / 27, bronze 40 on
+  each of the tier's months with the same warning; never a determination error
+
+#### Scenario: Time-ordered transform parameter without its axis fails closed
+- **WHEN** a query rooted at `orders` over an `ordered_at` month time dimension selects
+  `customers.spend:weighted_avg(weight=cumsum(sum(amount, partition_by=customers.regions.name)))`,
+  as a measure or only as a filter
+- **THEN** it fails in every mode with the time-axis error naming the `partition_by=`
+  remedy, never a value
+
+#### Scenario: Time-ordered transform parameter over a determined axis executes
+- **WHEN** a query rooted at `orders` over a `customers.signup_at` month time dimension
+  selects
+  `customers.spend:weighted_avg(weight=cumsum(sum(amount, partition_by=[customers.regions.name, customers.signup_at])))`
+- **THEN** it executes in every mode with no warning: 100, 150, 1900 / 45, 5700 / 140
+  for January to April 2024, the NULL bucket NULL; as a filter `> 50` it keeps January
+  and February with every other value unchanged, and as a raw ORDER BY descending it
+  orders February, January, March, April
+
+#### Scenario: Transform over an ungrained inner types at the query grain
+- **WHEN** a query rooted at `orders` selects
+  `customers.spend:weighted_avg(weight=rank(sum(amount)))`
+- **THEN** by `customers.tier` the inner is grained at `[customers.tier]` and the query
+  executes in every mode with no warning (gold 61.25, silver 115, bronze 40, NULL tier
+  NULL); by `status` the query fails in every mode with the typed determination error
+  naming `weight`, since `customers` does not determine `status`
+
+#### Scenario: Windowed inner joins the bucket to the parameter's grain
+- **WHEN** a query rooted at `orders` over an `ordered_at` month time dimension selects
+  `customers.spend:weighted_avg(weight=rank(sum(amount, window='1y', partition_by=customers.regions.name)))`
+- **THEN** it fails in every mode with the typed determination error naming `weight` —
+  the order-month bucket is in the transform's grain and `customers` does not
+  determine it
+
+#### Scenario: Windowed aggregation with a transform parameter
+- **WHEN** a query rooted at `orders` over a `customers.signup_at` month time dimension
+  selects
+  `customers.spend:weighted_avg(window='1y', weight=rank(sum(amount, partition_by=customers.regions.name)))`
+- **THEN** each signup-month bucket carries the trailing-window weighted average over
+  the customers signed up in the window, each weighted by its region's rank — 100,
+  125, 510 / 7, 945 / 14, the NULL bucket NULL — identical under every mode with no
+  warning, and the trailing-window producer picks the transform once per interval row
+
+#### Scenario: Transform parameter in filter and order positions
+- **WHEN** the ranked-transform shape above appears only as a filter `> 50` by
+  `customers.tier`, or only as a raw ORDER BY formula descending
+- **THEN** the filter keeps gold and silver with every other value unchanged, and the
+  order is silver, gold, bronze
+
+#### Scenario: Transform parameter plan shape
+- **WHEN** the ranked-transform shape above is planned under the default and error modes
+- **THEN** the `customers`-rooted attach uses the plain kernel (not an association
+  kernel), the emitted SQL is scope-closed with no placeholder leak, and adding the
+  measure changes neither the row count nor any other column
+
+#### Scenario: Nested transform parameter inside an attached aggregate parameter
+- **WHEN** a query rooted at `orders` selects
+  `customers.spend:weighted_avg(weight=weighted_avg(amount, weight=rank(sum(amount, partition_by=customers.regions.name)), partition_by=customers.regions.name))`
+- **THEN** each level resolves bottom-up — the innermost rank over the region cells,
+  the middle weighted average per region (North 50 / 3, South 10, NULL 23.5), the
+  outer over customers — and the query executes: 7556.67 / 103.5 broadcast to both
+  `status` cells under the default mode with the warning, and by `customers.tier`
+  under every mode gold 3316.67 / 53.33, silver 123.75, bronze 40, NULL tier NULL
+
+#### Scenario: Cross-model transform parameter on a local root
+- **WHEN** a query rooted at `orders` selects
+  `amount:weighted_avg(weight=rank(sum(customers.spend, partition_by=customers.regions.name)))`
+- **THEN** the parameter's producer is rooted at `customers` grouped by region (spend
+  North 280, South 195, NULL 40 → ranks 1, 2, 3) and attached per order row, the
+  orphan order taking the NULL cell; the query executes in every mode with no warning —
+  281 / 16 globally, `ok` 116 / 11 and `new` 33 by `status`
+
+#### Scenario: Transform parameter with its own partition_by outside the query dimensions
+- **WHEN** a query rooted at `orders` selects
+  `customers.spend:weighted_avg(weight=rank(sum(amount, partition_by=[customers.regions.name, customers.tier]), partition_by=customers.regions.name))`
+  with no dimensions, and by `customers.tier`
+- **THEN** the transform's own partition key is exempt from the combined-consumer
+  partition-key rule exactly as a source constituent's is, and the query executes in
+  every mode with no warning: 760 / 11 globally; gold 61.25, silver 115, bronze 40 by
+  tier

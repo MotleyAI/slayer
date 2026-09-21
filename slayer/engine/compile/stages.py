@@ -27,7 +27,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from slayer.core.enums import DataType, JoinType, RANKED_AGGREGATIONS, TimeGranularity
 from slayer.core.errors import AmbiguousJoinPathError
-from slayer.core.keys import AggregateKey, Grain, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, PREDICATE_COMPARISON_OPS, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, regroup_root_grain, effective_root_grain, constituent_grain, substitute_value_keys, substitute_consumer_keys, walk_value_keys, walk_consumer_keys, REGROUP_LEAF_PREFIX, is_cross_model_agg, is_local_partitioned_agg, split_top_level_and, window_kwarg_of, is_reaggregation_key, is_row_attach_root, attached_inputs, operand_aggregates, operand_constituents, source_anchor_path
+from slayer.core.keys import AggregateKey, Grain, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, PREDICATE_COMPARISON_OPS, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, regroup_root_grain, effective_root_grain, constituent_grain, attached_parameter_grain, substitute_value_keys, substitute_consumer_keys, walk_value_keys, walk_consumer_keys, REGROUP_LEAF_PREFIX, is_cross_model_agg, is_local_partitioned_agg, split_top_level_and, window_kwarg_of, is_reaggregation_key, is_row_attach_root, attached_inputs, operand_aggregates, operand_constituents, source_anchor_path
 from slayer.core.models import Column, SlayerModel
 from slayer.engine.reference_closure import (
     ParamSpec,
@@ -1893,6 +1893,8 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
     _check_attached_params_determined(
         agg=agg, alias=alias, target_path=target_path, root_model=root_model,
         host_model=host_model, models_by_name=models_by_name, bundle=bundle,
+        projected_dim_keys=projected_dim_keys, projected_td_keys=projected_td_keys,
+        active_bucket=prebound.main_time_key,
     )
     root_bundle = bundle.rerooted(root_model)
     root_scope = (
@@ -2019,15 +2021,31 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
 def _param_is_determined(
     *, spec: ParamSpec, grain: Grain, host_model: SlayerModel,
     models_by_name: Dict[str, SlayerModel], bundle: ResolvedSourceBundle,
+    projected_dim_keys: Sequence[ValueKey] = (),
+    projected_td_keys: Sequence[ValueKey] = (),
+    active_bucket: Optional[ValueKey] = None,
 ) -> bool:
     """A parameter is legal iff the dataset grain determines it — the bound key,
     or (for an expression default) every column it references — judged on each
     reference's dependency closure (DEV-1900). An UNGRAINED aggregate parameter
     types at the query grain, which the operand grain always refines, so it is
-    determined (DEV-1859 decision 12)."""
+    determined (DEV-1859 decision 12). A grained transform parameter (D5) resolves
+    to its result grain first; the grain must determine every member."""
     if spec.key is not None:
         if isinstance(spec.key, AggregateKey) and spec.key.partition_keys is None:
             return True
+        if isinstance(spec.key, TransformKey):
+            pgrain = attached_parameter_grain(
+                key=spec.key, projected_dim_keys=list(projected_dim_keys),
+                projected_td_keys=list(projected_td_keys), active_bucket=active_bucket,
+            )
+            return all(
+                grain_determines(
+                    key=member, grain=grain, host_model=host_model,
+                    models_by_name=models_by_name, bundle=bundle,
+                )
+                for member in (pgrain or ())
+            )
         return grain_determines(
             key=spec.key, grain=grain, host_model=host_model,
             models_by_name=models_by_name, bundle=bundle,
@@ -2079,24 +2097,38 @@ def _check_attached_params_determined(
     *, agg: AggregateKey, alias: str, target_path: Tuple[str, ...],
     root_model: SlayerModel, host_model: SlayerModel,
     models_by_name: Dict[str, SlayerModel], bundle: ResolvedSourceBundle,
+    projected_dim_keys: List[ValueKey], projected_td_keys: List[ValueKey],
+    active_bucket: Optional[ValueKey],
 ) -> None:
     """One home-determination rule, every mode: the home determines every grain
-    member of each explicitly grained attached parameter (Axiom 2.3); an ungrained
-    one types at the query grain (DEV-1859 decision 12)."""
+    member of each attached parameter typed at its result grain (Axiom 2.3 / 11.4);
+    an ungrained aggregate types at the query grain and is determined by
+    construction (DEV-1859 decision 12). A grained transform (D5) resolves to its
+    result grain first, so this predicate needs no transform arm."""
     key_sets = _unique_key_sets(root_model)
     grain_display = _grain_display(Grain.of(
         ColumnKey(path=target_path, leaf=col) for col in key_sets[0]
     )) if key_sets else f"{root_model.name} rows"
     for name, value in agg.kwargs:
-        if isinstance(value, AggregateKey) and value.partition_keys is not None:
-            check_parameter_determined(
-                alias=alias, param_name=name, grain_display=grain_display,
-                determined=_home_determines_grain_member(
-                    key=value, target_path=target_path, root_model=root_model,
+        if not isinstance(value, (AggregateKey, TransformKey)):
+            continue
+        grain = attached_parameter_grain(
+            key=value, projected_dim_keys=projected_dim_keys,
+            projected_td_keys=projected_td_keys, active_bucket=active_bucket,
+        )
+        if grain is None:  # ungrained aggregate — determined by construction
+            continue
+        check_parameter_determined(
+            alias=alias, param_name=name, grain_display=grain_display,
+            determined=all(
+                _home_determines_grain_member(
+                    key=member, target_path=target_path, root_model=root_model,
                     host_model=host_model, models_by_name=models_by_name,
                     bundle=bundle,
-                ),
-            )
+                )
+                for member in grain
+            ),
+        )
 
 
 def _association_arm(
@@ -2157,7 +2189,9 @@ def _association_arm(
         agg=agg, owner_model=source_model, owner_path=source_path, bundle=bundle,
         root_model=host_model,
     ):
-        if not isinstance(_ps.key, AggregateKey):
+        # Attached kinds (aggregate- and transform-valued) are judged by the shared
+        # home-determination tail (D5); only column / default params are column-typed here.
+        if not isinstance(_ps.key, (AggregateKey, TransformKey)):
             check_parameter_determined(
                 alias=alias, param_name=_ps.name,
                 grain_display=_grain_display(entity_grain),
@@ -2494,6 +2528,9 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
             determined=_param_is_determined(
                 spec=_ps, grain=union_grain, host_model=host_model,
                 models_by_name=models_by_name, bundle=bundle,
+                projected_dim_keys=context.projected_dim_keys,
+                projected_td_keys=context.projected_td_keys,
+                active_bucket=prebound.main_time_key,
             ),
         )
         if isinstance(_ps.key, AggregateKey):
@@ -2504,6 +2541,10 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
                 constituents.append(ck)
             if ck != _ps.key:
                 param_constituent_of[_ps.key] = ck
+        elif isinstance(_ps.key, TransformKey) and _ps.key not in constituents:
+            # A transform parameter rides the carrier as a constituent at its own
+            # (explicit, post-D2) result grain — no ungrained normalisation (D4).
+            constituents.append(_ps.key)
 
     # Attributability to the operand dataset: a grain member, or determined from
     # an entity-key grain field over to-one hops. Unattributable dims resolve per
@@ -2615,7 +2656,7 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
         PickedParam(
             name=_ps.name,
             key=(constituent_placeholders[_ps.key]
-                 if isinstance(_ps.key, AggregateKey) else _ps.key),
+                 if isinstance(_ps.key, (AggregateKey, TransformKey)) else _ps.key),
             sql=_ps.expr_sql, anchor_path=(),
         )
         for _ps in reagg_param_specs

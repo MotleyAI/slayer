@@ -71,7 +71,9 @@ A source mixing row-level columns with attached values
 — the attached value broadcasts onto each base row, weighted per row — while a
 fully-attached source is a
 [re-aggregation](#re-aggregation-aggregate-over-an-attached-value).
-An attached value may also arrive as a *parameter* of a row-level aggregation
+An attached value — an aggregate or a grained transform
+(`weight=rank(sum(amount, partition_by=region))`) — may also arrive as a
+*parameter* of a row-level aggregation
 (`weighted_avg(amount, weight=sum(amount, partition_by=region))`): it is
 attached into the input relation, so each row is weighted by its cell's value.
 
@@ -282,7 +284,7 @@ Wrapping a partitioned aggregate in another aggregation re-aggregates its
 row-weighted average would be wrong, and is exactly what this shape avoids).
 The operand may compose several attached aggregates (their grains union), and
 `partition_by=` may name a computed dimension — including one carrying an
-attached aggregate itself. The outer aggregation's parameters (`weight=` and friends) are typed by the operand grain — a cell of the operand dataset (`weighted_avg(amount:sum(partition_by=[city, region]), weight=id:count(partition_by=[city, region]))`) or a column that grain determines; anything else is a typed error naming the `partition_by=` remedy.
+attached aggregate itself. The outer aggregation's parameters (`weight=` and friends) are typed by the operand grain — a cell of the operand dataset (`weighted_avg(amount:sum(partition_by=[city, region]), weight=id:count(partition_by=[city, region]))`), a grained transform over such cells, or a column that grain determines; anything else is a typed error naming the `partition_by=` remedy.
 An outer dimension not determined by the operand's
 grain resolves per `to_many_handling` (broadcast + warning by default), and an
 operand grain equal to the outer grain is the identity plus a degenerate
