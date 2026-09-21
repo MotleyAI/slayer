@@ -4,12 +4,16 @@ Run manually (tests/perf is CI-ignored):
     poetry run pytest tests/perf/compare/test_logic.py -o addopts=""
 """
 
+import ast
 import datetime as dt
+import json
 import math
 from decimal import Decimal
+from pathlib import Path
 
 import pandas as pd
 import pytest
+from pydantic import BaseModel
 
 import classify
 import compare
@@ -24,6 +28,7 @@ from classify import (
     decode_cell,
     encode_cell,
     flag_perf,
+    is_problem,
     pool_abba,
     row_sort_key,
     warning_drift,
@@ -66,16 +71,11 @@ def test_encode_cell_floats_stay_numbers():
 
 
 def test_encode_cell_tags_are_strict_json_safe():
-    import json
-
     for value in ROUNDTRIP_VALUES:
         json.dumps(encode_cell(value), allow_nan=False)
 
 
 def test_encode_cell_nan_and_inf_tagged():
-    import json
-    import math
-
     for value in [float("nan"), float("inf"), float("-inf")]:
         encoded = encode_cell(value)
         json.dumps(encoded, allow_nan=False)  # never bare NaN/Infinity in JSON
@@ -394,8 +394,9 @@ def test_flag_perf_boundaries_are_strict():
 def test_flag_perf_degenerate_inputs():
     with pytest.raises(ValueError):
         flag_perf("q1", "exec", pypi_times=[], branch_times=[0.1])
+    nan_times = [float("nan")]
     with pytest.raises(ValueError):
-        flag_perf("q1", "exec", pypi_times=[0.1], branch_times=[float("nan")])
+        flag_perf("q1", "exec", pypi_times=[0.1], branch_times=nan_times)
     # zero baseline: flag iff absolute delta clears the floor
     flag = flag_perf("q1", "exec", pypi_times=[0.0] * 7, branch_times=[0.500] * 7)
     assert flag.flagged is True
@@ -437,10 +438,10 @@ def test_warning_drift_none_when_identical():
 def test_warning_drift_reports_kind_and_multiplicity():
     drift = warning_drift(
         [{"kind": "normalization"}],
-        [{"kind": "normalization"}, {"kind": "unreachable_filter_dropped"}],
+        [{"kind": "normalization"}, {"kind": "extra_kind"}],
     )
     assert drift is not None
-    assert "unreachable_filter_dropped" in drift
+    assert "extra_kind" in drift
     assert warning_drift([{"kind": "a"}], [{"kind": "a"}, {"kind": "a"}]) is not None
 
 
@@ -812,9 +813,6 @@ def test_corpus_models_and_datasource():
 
 
 def test_corpus_no_slayer_imports():
-    import ast
-    from pathlib import Path
-
     tree = ast.parse(Path(str(corpus.__file__)).read_text())
     for node in ast.walk(tree):
         names = []
@@ -860,8 +858,6 @@ def test_corpus_adversarial_tables():
 
 
 def test_corpus_is_strict_json_serializable():
-    import json
-
     payload = {
         "entries": corpus.ENTRIES,
         "models": corpus.MODELS,
@@ -901,16 +897,11 @@ def test_corpus_variables_entries():
 # ---------------------------------------------------------------------------
 
 def test_verdict_is_pydantic_model():
-    from pydantic import BaseModel
-
     assert issubclass(Verdict, BaseModel)
     assert issubclass(PerfFlag, BaseModel)
 
 
 def test_classify_module_is_slayer_free():
-    import ast
-    from pathlib import Path
-
     tree = ast.parse(Path(str(classify.__file__)).read_text())
     for node in ast.walk(tree):
         names = []
@@ -926,8 +917,6 @@ def test_classify_module_is_slayer_free():
 # ---------------------------------------------------------------------------
 
 def test_is_problem_covers_error_match_failures():
-    from classify import is_problem
-
     clean = Verdict(status="BOTH_ERROR")
     assert is_problem(clean) is False
     assert is_problem(Verdict(status="MATCH")) is False

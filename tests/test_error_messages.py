@@ -30,7 +30,6 @@ from slayer.core.errors import (
     SlayerError,
     UnknownFunctionError,
     UnknownReferenceError,
-    UnreachableFilterDroppedWarning,
 )
 from slayer.core.warnings import NormalizationWarning, SlayerNormalizationWarning
 
@@ -53,7 +52,6 @@ class TestInheritance:
         assert issubclass(cls, SlayerError)
 
     def test_warning_subclasses_user_warning(self):
-        assert issubclass(UnreachableFilterDroppedWarning, UserWarning)
         assert issubclass(SlayerNormalizationWarning, UserWarning)
 
 
@@ -297,21 +295,6 @@ class TestCanonicalAliasShadowsColumnError:
             "CanonicalAliasShadowsColumnError: Canonical alias 'status_count' for "
             "formula 'status:count' shadows a source column on model 'orders'."
         )
-
-
-# ---------------------------------------------------------------------------
-# Warning classes
-# ---------------------------------------------------------------------------
-
-
-class TestUnreachableFilterDroppedWarning:
-    def test_basic(self):
-        w = UnreachableFilterDroppedWarning(
-            filter_text="customers.score > 5",
-            reason="filter refs slots unreachable from the cross-model CTE root",
-        )
-        assert "customers.score > 5" in str(w)
-        assert "unreachable" in str(w)
 
 
 # ---------------------------------------------------------------------------

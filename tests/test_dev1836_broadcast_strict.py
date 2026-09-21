@@ -168,17 +168,18 @@ class TestStrictMode:
         assert float(by[("gold",)]["orders.m"]) == pytest.approx(30.0)
         assert float(by[("gold",)]["orders.cm"]) == pytest.approx(160.0)
 
-    async def test_strict_still_errors_on_excluded_filter(self, exec_backend):
-        """A conjunct outside pushdown scope (root-local OR cross-path) is
-        still excluded, and strict still errors on it."""
+    async def test_mixed_disjunction_pushes_in_error_mode(self, exec_backend):
+        """DEV-1935: a root-local OR cross-path conjunct no longer errors — the
+        producer is restricted by a boolean-total semi-join (gold cm = 160)."""
         _, engine = exec_backend
-        query = q(
+        resp = await engine.execute(q(
             to_many_handling="error", dimensions=["customers.tier"], measures=[M, CM],
             filters=["customers.tier = 'gold' OR channel = 'app'"],
-        )
-        with pytest.raises((SlayerError, ValueError)) as ei:
-            await engine.execute(query)
-        assert "channel" in str(ei.value)
+        ))
+        by = rows_by(resp, "orders.customers.tier")
+        # Every app order belongs to a gold customer, so both legs yield gold only.
+        assert set(by) == {("gold",)}
+        assert float(by[("gold",)]["orders.cm"]) == pytest.approx(160.0)
 
     async def test_strict_passes_when_all_attributable(self, exec_backend):
         _, engine = exec_backend

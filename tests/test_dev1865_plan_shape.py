@@ -104,7 +104,6 @@ class TestDev1840DispositionUnchanged:
             dimensions=["customers.tier"], measures=[_DEV1840_CM],
             filters=["customers.tier = 'gold'"],
         ), bundle=_dev1840_bundle()), "customers")
-        assert att.dropped_filter_warnings == []
         assert list(att.producer_plan.semi_join_filters) == []
 
     def test_unsafe_reverse_hop_pushes_one_semi_join(self) -> None:
@@ -112,7 +111,6 @@ class TestDev1840DispositionUnchanged:
             dimensions=["customers.tier"], measures=[_DEV1840_CM],
             filters=["channel = 'app'"],
         ), bundle=_dev1840_bundle()), "customers")
-        assert att.dropped_filter_warnings == []
         (sj,) = att.producer_plan.semi_join_filters
         assert [h.target_model for h in sj.hops] == ["orders"]
         assert [tuple(p) for p in sj.hops[0].join_pairs] == [("id", "customer_id")]

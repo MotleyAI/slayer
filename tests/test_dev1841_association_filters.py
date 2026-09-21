@@ -26,7 +26,6 @@ from tests._dev1841_fixtures import (
     ASSOC_BASIC_SPEND_BY_STATUS,
     ModelMeasure,
     assoc_q,
-    dropped_filter_warnings,
     make_exec_engine,
     status_key,
 )
@@ -88,14 +87,15 @@ class TestFilterRoutingIntoAssociation:
         assert float(by[("ok",)]["orders.cm"]) != pytest.approx(270.0)
         assert float(by[("new",)]["orders.cm"]) == pytest.approx(100.0)
 
-    async def test_out_of_scope_conjunct_stays_dropped_and_warns(
+    async def test_mixed_disjunction_pushes_on_association(
         self, exec_backend,
     ):
-        """A mixed disjunction is outside pushdown scope: excluded from the
-        association and reported by the dropped-filter warning."""
+        """DEV-1935: a mixed disjunction is pushed on the association arm (ok 270,
+        new 250), reported through the informational entry, no dropped warning."""
         _, engine = exec_backend
         resp = await engine.execute(assoc_q(
             dimensions=["status"], measures=[CM],
             filters=["customers.tier = 'gold' OR channel = 'app'"]))
-        (w,) = dropped_filter_warnings(resp)
-        assert "channel" in w.filter_text
+        by = status_key(resp)
+        for status, spend in {"ok": 270.0, "new": 250.0}.items():
+            assert float(by[(status,)]["orders.cm"]) == pytest.approx(spend), status

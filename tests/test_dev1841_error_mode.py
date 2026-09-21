@@ -66,16 +66,16 @@ class TestErrorModeRefusesBroadcast:
 
 
 class TestErrorModeRefusesExcludedFilters:
-    async def test_excluded_filter_errors(self, exec_backend):
-        """Scenario: excluded filter errors — a mixed disjunction stays dropped
-        and error mode turns it into an error naming the filter."""
+    async def test_mixed_disjunction_pushes_in_error_mode(self, exec_backend):
+        """DEV-1935: a mixed disjunction no longer errors in error mode — it
+        restricts the producer by semi-join (gold 160, silver 230, bronze 40)."""
         _, engine = exec_backend
-        query = error_q(
+        resp = await engine.execute(error_q(
             dimensions=["customers.tier"], measures=[CM],
-            filters=["customers.tier = 'gold' OR channel = 'app'"])
-        with pytest.raises((SlayerError, ValueError)) as ei:
-            await engine.execute(query)
-        assert "channel" in str(ei.value)
+            filters=["customers.tier = 'bronze' OR channel = 'app'"]))
+        by = rows_by(resp, "orders.customers.tier")
+        for tier, spend in {"gold": 160.0, "silver": 230.0, "bronze": 40.0}.items():
+            assert float(by[(tier,)]["orders.cm"]) == pytest.approx(spend), tier
 
     async def test_ambiguous_hop_errors_in_error_mode(self, exec_backend_amb):
         """An ambiguous correlation hop fails closed in every mode — not an

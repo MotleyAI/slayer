@@ -241,3 +241,34 @@ def test_unmangle_folds_four_segment_dotted_column() -> None:
     assert col.table == "_stage_inner"
     assert col.name == "orders.customers.regions.name"
     assert "`_stage_inner`.`orders.customers.regions.name`" in tree.sql(dialect="bigquery")
+
+
+def test_unmangle_keeps_spine_correlation_to_outer_root() -> None:
+    """A derived table nested in an EXISTS (the semi-join spine) correlates to
+    the outer root: ``customers.id`` is a real qualified column, never folded
+    into a dotted result key."""
+    sql = (
+        "SELECT customers.tier FROM customers AS customers WHERE EXISTS("
+        "SELECT 1 FROM (SELECT customers.id AS id) AS __slayer_spine "
+        "LEFT JOIN orders AS orders ON __slayer_spine.id = orders.customer_id)"
+    )
+    tree = sqlglot.parse_one(sql, dialect="sqlite")
+    unmangle_dotted_table_refs(tree)  # pyright: ignore[reportArgumentType] — parse_one Expr/Expression stub gap
+    spine = next(
+        c for c in tree.find_all(exp.Column) if c.parent and c.parent.alias == "id"
+    )
+    assert (spine.table, spine.name) == ("customers", "id")
+    assert tree.sql(dialect="sqlite") == sql
+
+
+def test_unmangle_folds_inside_derived_table_of_root() -> None:
+    """A derived table in the root sees no outer source: a re-parsed dotted key
+    there still folds back into one column name."""
+    sql = (
+        "SELECT d.x FROM customers AS customers "
+        "CROSS JOIN (SELECT `orders.region` AS x FROM t) AS d"
+    )
+    tree = sqlglot.parse_one(sql, dialect="bigquery")
+    unmangle_dotted_table_refs(tree)  # pyright: ignore[reportArgumentType] — parse_one Expr/Expression stub gap
+    (folded,) = [c for c in tree.find_all(exp.Column) if c.name == "orders.region"]
+    assert folded.table == ""

@@ -86,6 +86,7 @@ is the coercion from coarser to finer.
    of it. [review] Association is derivable from forward join declarations
    alone (bidirectional traversal).
    [enforced: test:tests/test_dev1853_mirror_parity.py]
+   [enforced: test:tests/test_dev1935_boolean_lowering.py]
 4. **The home-dataset axiom**: an aggregation runs over the rows of its home
    dataset, each counted exactly once — never over the row product of a join,
    so no fan-out can multiply its inputs (spec: `queries/semantics` › No double
@@ -194,6 +195,7 @@ is the coercion from coarser to finer.
     ignored (spec: `queries/semantics` › Filters restrict by association or
     fail loudly). [enforced: test:tests/test_dev1840_execution.py]
     [enforced: test:tests/test_dev1909_population_pushdown.py]
+    [enforced: test:tests/test_dev1935_boolean_lowering.py]
 
 ## 3. Laws
 
@@ -219,10 +221,12 @@ enforced test ids as its instances land.
    groupby on `d` — exact in associate mode; the broadcast default consciously
    trades this law away and must warn.
    [enforced: test:tests/test_law_dice_slice.py]
+   [enforced: test:tests/test_dev1935_boolean_lowering.py]
 6. **Lowering soundness**: every emission trick is a pure optimization —
    inlining an association-restricting filter on a proven to-one path and
    fusing pipeline phases into one SELECT
-   [enforced: test:tests/test_law_lowering_soundness.py]; compiling a filter
+   [enforced: test:tests/test_law_lowering_soundness.py]
+   [enforced: test:tests/test_dev1935_boolean_lowering.py]; compiling a filter
    as a hidden measure. [review]
 
 ## 4. Notes
