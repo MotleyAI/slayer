@@ -680,13 +680,9 @@ def check_time_transforms_resolved(*, roots) -> None:
             )
 
 
-def check_windowed_key_supported(*, key: AggregateKey, window_val) -> None:
-    """Per-key windowed guards (DEV-1871 G11, was ``_reject_unsupported_windowed_key``): sum/avg only, compact-duration-string window."""
-    if key.agg not in ("sum", "avg"):
-        raise ValueError(
-            f"Aggregation parameter 'window' is only supported for sum and avg, "
-            f"not '{key.agg}'."
-        )
+def check_window_duration(*, window_val) -> None:
+    """The ``window=`` duration is a well-formed compact string (DEV-1871 G11);
+    every aggregation accepts it — no aggregation allowlist (DEV-1915)."""
     if not isinstance(window_val, str):
         raise ValueError(
             f"Window duration must be a compact duration string like '90d', got "
@@ -895,21 +891,23 @@ def check_windowed_time_axis_attributable(
 
 def check_cross_model_inputs_safe(
     *, alias: Optional[str], root_name: str,
-    unsafe_input_hops: Sequence[str], unattributable_arg_leaves: Sequence[str],
+    unsafe_input_hops: Sequence[str],
+    unattributable_arg_leaves: Sequence[Tuple[str, str]],
 ) -> None:
-    """Every input of a cross-model aggregate must be attributable from its root (DEV-1871 G12, was the raises of ``_assert_cross_model_inputs_safe``); hops/leaves are the compiler-resolved violations."""
+    """Every input of a cross-model aggregate must be attributable from its root; hops / (leaf, reason) pairs are the compiler-resolved violations, an explicit argument's reported first."""
     remedy = "declare join cardinality or a covering unique key on the target"
+    if unattributable_arg_leaves:
+        leaf, reason = unattributable_arg_leaves[0]
+        raise ValueError(
+            f"Cross-model aggregate {alias!r} "
+            f"ranks/reads by {leaf}, which is not attributable from "
+            f"{root_name} ({reason}); {remedy}."
+        )
     if unsafe_input_hops:
         raise ValueError(
             f"Cross-model aggregate {alias!r} "
             f"reads an input across an unproven join hop to {unsafe_input_hops[0]} from "
             f"{root_name}; {remedy}."
-        )
-    if unattributable_arg_leaves:
-        raise ValueError(
-            f"Cross-model aggregate {alias!r} "
-            f"ranks/reads by {unattributable_arg_leaves[0]}, which is not attributable from "
-            f"{root_name} (crosses a fanning join); {remedy}."
         )
 
 
@@ -956,24 +954,6 @@ def check_filter_dependencies_analyzable(
         f"definition no supported dialect can analyse for join dependencies; an "
         f"unanalyzable dependency is unsafe. Fix the column's SQL, or remove the "
         f"filter."
-    )
-
-
-def check_attached_inputs_attributable(
-    *, alias: Optional[str], root_name: str, mode: str,
-    unattributable: Sequence[Tuple[str, str, str]],
-) -> None:
-    """An attached input nests as a producer rooted at the target, so every row leaf it reads must be attributable from there; ``unattributable`` = (input alias, leaf, reason) of the first violation."""
-    if not unattributable:
-        return
-    input_alias, leaf, reason = unattributable[0]
-    raise SlayerError(
-        f"Cross-model aggregate {alias!r} runs over {root_name!r} rows under "
-        f"to_many_handling={mode!r}, but its attached input {input_alias!r} "
-        f"reads {leaf!r}, which {reason}; that input's producer cannot nest "
-        f"inside the {root_name!r}-rooted producer. Use "
-        f"to_many_handling='associate', or aggregate the input over columns "
-        f"attributable from {root_name!r}."
     )
 
 

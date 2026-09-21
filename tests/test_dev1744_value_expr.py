@@ -74,7 +74,6 @@ from slayer.sql.naming import AliasAllocator
 from slayer.sql.render.aggregates import (
     AGG_REGISTRY,
     resolve_agg_entry,
-    window_agg_class,
 )
 from slayer.sql.render.value_expr import (
     AliasFacilities,
@@ -987,20 +986,6 @@ class TestAggregationRegistry:
         with pytest.raises(ValueError):
             resolve_agg_entry("definitely_not_an_aggregation")
 
-    def test_windowable_flags_are_exact(self) -> None:
-        """Only ``sum`` and ``avg`` are windowable today — that is precisely
-        what ``stage_planner`` gates on, and the registry must agree with it
-        rather than restating it."""
-        assert resolve_agg_entry("sum").windowable is True
-        assert resolve_agg_entry("avg").windowable is True
-        for name in ("count", "min", "max", "median", "percentile", "first"):
-            assert resolve_agg_entry(name).windowable is False, name
-
-    def test_window_agg_class_replaces_the_hardcode(self) -> None:
-
-        assert window_agg_class("sum") is exp.Sum
-        assert window_agg_class("avg") is exp.Avg
-
     def test_registry_and_builtins_agree_both_ways(self) -> None:
         """The import-time invariant, asserted in both directions.
 
@@ -1010,18 +995,6 @@ class TestAggregationRegistry:
         that path, so the typo would render as if it were a real aggregation.
         """
         assert set(AGG_REGISTRY) == set(BUILTIN_AGGREGATIONS)
-
-    def test_non_windowable_aggregation_fails_closed(self) -> None:
-        """The generator's windowed path currently reads
-        ``exp.Sum if plan.agg == "sum" else exp.Avg`` — a silent catch-all that
-        renders ANY other aggregation as AVG. It is unreachable through the
-        planner today, which is exactly why it would stay silently wrong.
-
-        Approved divergence: it raises instead.
-        """
-        for name in ("median", "count", "min", "max", "percentile"):
-            with pytest.raises(ValueError):
-                window_agg_class(name)
 
 
 # ===========================================================================

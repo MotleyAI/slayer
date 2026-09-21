@@ -529,6 +529,13 @@ class SqliteDialect(SqlDialect):
         """
         return exp.Anonymous(this="DATETIME", expressions=[expr, *intervals])
 
+    def frame_time_operand(self, expr: exp.Expression) -> exp.Expression:
+        """Under numeric affinity a bare-date column (``'2025-02-01'``) string-sorts
+        BEFORE a DATETIME frame bound (``'2025-02-01 00:00:00'``), leaking the
+        exclusive ``bucket_end`` row into the previous bucket. Wrap it in DATETIME
+        so both sides carry the time part and the half-open interval is exact."""
+        return exp.Anonymous(this="DATETIME", expressions=[expr])
+
     def build_median(
         self,
         inner: exp.Expression,

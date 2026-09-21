@@ -310,21 +310,6 @@ class RankedProducerKernel(BaseModel):
     ranking_time_key: ValueKey
 
 
-class TrailingWindowProducerKernel(BaseModel):
-    """A trailing-window producer: per bucket, aggregate source rows in the trailing interval."""
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    kind: Literal["trailing-window"] = "trailing-window"
-    window_raw: str
-    window_parts: List[Tuple[int, str]]
-    window_granularity: str
-    bucket_slot_id: SlotId
-    #: ROW filters inherited into ``_src`` — frame bounds excluded.
-    src_where_filter_ids: List[BoundFilterId] = Field(default_factory=list)
-    src_filter_rewrites: List["SrcFilterRewrite"] = Field(default_factory=list)
-
-
 class PickedParam(BaseModel):
     """An aggregation parameter lifted onto the two-level kernel:
     picked once per level-1 cell as ``MAX(<value>) AS _p<i>`` and read by level 2
@@ -340,6 +325,27 @@ class PickedParam(BaseModel):
     key: Optional[ValueKey] = None
     sql: Optional[str] = None
     anchor_path: Tuple[str, ...] = ()
+
+
+class TrailingWindowProducerKernel(BaseModel):
+    """A trailing-window producer: per bucket, aggregate source rows in the trailing interval."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    kind: Literal["trailing-window"] = "trailing-window"
+    window_raw: str
+    window_parts: List[Tuple[int, str]]
+    window_granularity: str
+    bucket_slot_id: SlotId
+    #: ROW filters inherited into ``_src`` — frame bounds excluded.
+    src_where_filter_ids: List[BoundFilterId] = Field(default_factory=list)
+    src_filter_rewrites: List["SrcFilterRewrite"] = Field(default_factory=list)
+    #: Set for a windowed ``first``/``last``: the column ``_src`` ranks by within
+    #: the interval (``_w_rank``); the outer picks rank 1 per bucket.
+    ranking_time_key: Optional[ValueKey] = None
+    #: Reference-bearing parameters (column / attached-aggregate / column-naming
+    #: default) read per interval row as ``_src._w_p<i>``; literals never lift.
+    picked_params: List[PickedParam] = Field(default_factory=list)
 
 
 class AssociationProducerKernel(BaseModel):

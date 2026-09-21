@@ -55,9 +55,7 @@ first=100 last=60, silver 150/150, bronze 40/40.
 
 from __future__ import annotations
 
-import os
 import sqlite3
-import tempfile
 from typing import AsyncIterator, List
 
 import pytest
@@ -65,16 +63,19 @@ import pytest
 from slayer.core.enums import DataType, JoinCardinality, TimeGranularity
 from slayer.core.models import (
     Column,
-    DatasourceConfig,
     ModelJoin,
     ModelMeasure,
     SlayerModel,
 )
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.storage.yaml_storage import YAMLStorage
 
 from tests._engine_helpers import _engine_generate
+from tests._exec_fixture_helpers import (
+    make_exec_engine as _shared_exec_engine,
+    month_key,
+    rows_by,
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -287,43 +288,12 @@ def _seed_duckdb(db_path: str) -> None:
     con.close()
 
 
-async def _engine_for(*, dialect: str, db_path: str) -> SlayerQueryEngine:
-    storage = YAMLStorage(base_dir=os.path.join(os.path.dirname(db_path), "store"))
-    await storage.save_datasource(
-        DatasourceConfig(name="test", type=dialect, database=db_path)
-    )
-    for model in dev1836_models():
-        await storage.save_model(model, _validate=False)
-    return SlayerQueryEngine(storage=storage)
-
-
 async def make_exec_engine(request) -> AsyncIterator[SlayerQueryEngine]:
-    """Body for a ``params=["sqlite", "duckdb"]`` fixture; each test module
-    wraps this in ``@pytest.fixture`` so the fixture name lives where used."""
-    dialect = request.param
-    if dialect == "duckdb":
-        pytest.importorskip("duckdb")
-    with tempfile.TemporaryDirectory() as d:
-        db_path = os.path.join(d, f"data.{dialect}")
-        if dialect == "sqlite":
-            _seed_sqlite(db_path)
-        else:
-            _seed_duckdb(db_path)
-        yield await _engine_for(dialect=dialect, db_path=db_path)
-
-
-def month_key(value) -> str:
-    """Stable per-month key across SQLite text and DuckDB timestamp values."""
-    return str(value)[:7]
-
-
-def rows_by(resp, *keys) -> dict:
-    """Index ``resp.data`` rows by the given result-column key tuple."""
-    out = {}
-    for r in resp.data:
-        out[tuple(r[k] for k in keys)] = r
-    assert len(out) == len(resp.data), "duplicate result rows for one group key"
-    return out
+    """Wrap the shared exec-engine body with this module's seeds and models."""
+    async for engine in _shared_exec_engine(
+        request, seed_sqlite=_seed_sqlite, seed_duckdb=_seed_duckdb, models=dev1836_models(),
+    ):
+        yield engine
 
 
 def broadcast_warnings(resp) -> list:
