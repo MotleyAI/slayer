@@ -131,7 +131,7 @@ async def _dry(engine, query, dialect: str) -> str:
     return dry.sql
 
 
-def _bundle(models, root: str) -> ResolvedSourceBundle:
+def _bundle(*, models, root: str) -> ResolvedSourceBundle:
     src = next(x for x in models if x.name == root)
     return ResolvedSourceBundle(
         source_model=src, referenced_models=[x for x in models if x.name != root])
@@ -257,7 +257,7 @@ class TestReducedPushOnPartialMaterialisation:
     def test_reduced_push_drops_the_materialised_hop(self):
         planned = plan_query(
             query=cust_q(dimensions=["orders.id"], filters=[REDUCED_PUSH_OR]),
-            bundle=_bundle(dev1900_models(), "customers"))
+            bundle=_bundle(models=dev1900_models(), root="customers"))
         assert {h.target_model for h in _base_hops(planned)} == {
             "regions", "region_events"}
 
@@ -483,7 +483,7 @@ class TestNullExtendedFlag:
                     measures=[SPEND if root == "customers" else
                               ModelMeasure(formula="amount:sum", name="amt")],
                     filters=[flt]),
-                bundle=_bundle(dev1900_models(), root))
+                bundle=_bundle(models=dev1900_models(), root=root))
             hops = _base_hops(planned)
             assert hops, flt
             assert all(h.null_extended is False for h in hops), (flt, hops)
@@ -494,7 +494,7 @@ class TestNullExtendedFlag:
         planned = plan_query(
             query=SlayerQuery(source_model="customers", measures=[SPEND],
                               filters=[GOLD_OR_OK]),
-            bundle=_bundle(dev1900_models(), "customers"))
+            bundle=_bundle(models=dev1900_models(), root="customers"))
         assert _hop(planned, "orders").null_extended is True
 
     def test_declared_inner_descendant_stays_inner(self):
@@ -503,7 +503,7 @@ class TestNullExtendedFlag:
             query=SlayerQuery(
                 source_model="customers", measures=[SPEND],
                 filters=["tier = 'gold' or regions.region_events.value >= 50"]),
-            bundle=_bundle(event_less_models(inner_events=True), "customers"))
+            bundle=_bundle(models=event_less_models(inner_events=True), root="customers"))
         assert _hop(planned, "region_events").null_extended is False
 
 
@@ -514,7 +514,7 @@ class TestPopulationDroppedArmImpossible:
         disposition (the two-way disposition's dropped arm is impossible)."""
         dialect, engine = backend
         q = cust_q(measures=[SPEND], filters=[OR_MIX_LOCAL])
-        planned = plan_query(query=q, bundle=_bundle(dev1900_models(), "customers"))
+        planned = plan_query(query=q, bundle=_bundle(models=dev1900_models(), root="customers"))
         assert planned.semi_join_filters, "the OR-mix population must push"
         await engine.execute(q)
         # the host base carries the EXISTS and never joins orders into the OUTER
@@ -577,7 +577,7 @@ class TestNullRejectionAnalysis:
         planned = plan_query(
             query=SlayerQuery(source_model="customers", measures=[SPEND],
                               filters=[predicate]),
-            bundle=_bundle(event_less_models(derived_events=True), "customers"))
+            bundle=_bundle(models=event_less_models(derived_events=True), root="customers"))
         assert _hop(planned, "region_events").null_extended is expected
 
     def test_filter_dependency_never_nulls_the_masked_value(self):
@@ -587,7 +587,7 @@ class TestNullRejectionAnalysis:
         planned = plan_query(
             query=SlayerQuery(source_model="customers", measures=[SPEND],
                               filters=["regions.region_events.value_if_kind >= 50"]),
-            bundle=_bundle(event_less_models(derived_events=True), "customers"))
+            bundle=_bundle(models=event_less_models(derived_events=True), root="customers"))
         assert _hop(planned, "event_kinds").null_extended is True
         assert _hop(planned, "region_events").null_extended is False
 
@@ -599,5 +599,5 @@ class TestNullRejectionAnalysis:
         planned = plan_query(
             query=SlayerQuery(source_model="customers", measures=[SPEND],
                               filters=[predicate]),
-            bundle=_bundle(event_less_models(), "customers"))
+            bundle=_bundle(models=event_less_models(), root="customers"))
         assert _hop(planned, "region_events").null_extended is expected
