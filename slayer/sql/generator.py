@@ -5779,7 +5779,7 @@ class SQLGenerator:
         return scope.enter_expression(sql, location=location, owner_path=tuple(owner_path))
 
     def _default_frag_entry(
-        self, *, frag: str, scope: ScopeFrame, model, source_owner_path: Tuple[str, ...],
+        self, *, frag: str, scope: ScopeFrame, source_owner_path: Tuple[str, ...],
     ) -> Tuple[str, Tuple[str, ...]]:
         """The (fragment, owner_path) to enter for a definition default on a
         host-locus aggregate (DEV-1908 D7). Every reference resolves owner-first
@@ -5833,7 +5833,7 @@ class SQLGenerator:
                 continue
             if source_owner_path is not None:
                 frag_sql, frag_owner_path = self._default_frag_entry(
-                    frag=p.sql, scope=scope, model=model,
+                    frag=p.sql, scope=scope,
                     source_owner_path=source_owner_path,
                 )
             else:
