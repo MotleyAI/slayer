@@ -1,16 +1,7 @@
-"""DEV-1935 — boolean-total semi-join pushdown.
-
-Every out-of-scope ROW conjunct restricts the population/producer by association
-instead of failing closed or dropping: a root row survives iff the conjunct holds
-on >=1 row of its join product over the referenced branches, each hop joined as
-declared (LEFT -> NULL-extended when absent). Negation keeps the existential
-reading; a null-test on a related column reads as absence; a branch the grain
-materialises binds to the grouped row.
-
-Covers ``queries/semantics`` (Filters restrict by association or fail loudly;
-Grain guarantee) and ``queries/cross-model-aggregates`` (Producer filter routing).
-Executed dual-engine (SQLite + DuckDB); structural pins via ``plan_query``.
-"""
+"""DEV-1935 — boolean-total semi-join pushdown: a root row survives iff the
+conjunct holds on >=1 row of its join product (hops joined as declared, LEFT ->
+null-extended). Executed dual-engine (SQLite + DuckDB); structural pins via
+``plan_query``."""
 
 from __future__ import annotations
 
@@ -24,13 +15,11 @@ from slayer.core.errors import (
     AssociatedGrainWarning,
     BroadcastGrainWarning,
     SlayerError,
-    UnreachableFilterDroppedWarning,
 )
 from slayer.engine.plan import plan_query
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.scope_check import assert_scope_closed
 
-from tests._engine_helpers import _join_aliases
 from tests._dev1935_fixtures import (
     ASSOC_OR,
     ASSOC_OR_ABSENT,
@@ -45,6 +34,8 @@ from tests._dev1935_fixtures import (
     GOLD_OR_OK,
     GOLD_OR_OK_SPEND,
     MATERIALISED_OR,
+    REDUCED_PUSH_OR,
+    REDUCED_PUSH_ORDER_CELLS,
     MATERIALISED_ORDER_CELLS,
     ModelMeasure,
     NEW_OR_EVENT,
@@ -73,7 +64,6 @@ from tests._dev1935_fixtures import (
     two_spellings_models,
     unproven_plans_models,
 )
-from tests._dev1900_fixtures import dropped_filter_warnings
 
 MODES = ["broadcast", "associate", "error"]
 
@@ -83,7 +73,7 @@ PARTITIONED = ModelMeasure(formula="spend:sum(partition_by=tier)", name="pt")
 
 #: Python-warning carriers the boolean-total push must never emit.
 _SLAYER_WARNS = (
-    BroadcastGrainWarning, AssociatedGrainWarning, UnreachableFilterDroppedWarning)
+    BroadcastGrainWarning, AssociatedGrainWarning)
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -167,7 +157,6 @@ class TestOrMixRestrictsPopulation:
         assert float(resp.data[0]["customers.sp"]) == pytest.approx(OR_MIX_SPEND)
         (info,) = _pop_infos(resp)
         assert "status" in info.filter_text
-        assert dropped_filter_warnings(resp) == []
         assert [w for w in caught if issubclass(w.category, _SLAYER_WARNS)] == []
 
     async def test_null_extended_row_kept(self, backend):
@@ -211,7 +200,6 @@ class TestMultiBranch:
             measures=[SPEND], filters=[ATOM_TWO_BRANCH]))
         assert float(resp.data[0]["customers.sp"]) == pytest.approx(
             ATOM_TWO_BRANCH_SPEND)
-        assert dropped_filter_warnings(resp) == []
 
 
 class TestMaterialisedBranchBinding:
@@ -227,6 +215,44 @@ class TestMaterialisedBranchBinding:
         cells = {r["customers.orders.id"] for r in resp.data}
         cells = {int(c) if c is not None else None for c in cells}
         assert cells == MATERIALISED_ORDER_CELLS
+
+
+class TestReducedPushOnPartialMaterialisation:
+    """D6: a conjunct whose grain materialises SOME fanning branches quantifies
+    only the rest — the materialised refs bind to the outer query's own join."""
+
+    async def test_materialised_branch_binds_and_the_rest_is_quantified(
+            self, backend):
+        """dims=[orders.id], orders.status='ok' or regions.region_events.value>=50:
+        one cell per order that is itself ok or whose region has an event >= 50
+        (never a sibling order admitted through another order of the customer)."""
+        _, engine = backend
+        resp = await engine.execute(cust_q(
+            dimensions=["orders.id"], filters=[REDUCED_PUSH_OR]))
+        cells = {r["customers.orders.id"] for r in resp.data}
+        assert {int(c) if c is not None else None for c in cells} == \
+            REDUCED_PUSH_ORDER_CELLS
+        assert _pop_infos(resp), "expected a population entry"
+
+    async def test_orders_joined_once_outside_the_exists(self, backend):
+        """The statement joins orders exactly once, in the outer query; the EXISTS
+        holds only the unmaterialised branch."""
+        dialect, engine = backend
+        sql = await _dry(engine, cust_q(
+            dimensions=["orders.id"], filters=[REDUCED_PUSH_OR]), dialect)
+        tree = sqlglot.parse_one(sql, dialect=dialect)
+        (exists_node,) = list(tree.find_all(exp.Exists))
+        inside = {t.name for t in exists_node.find_all(exp.Table)}
+        assert "region_events" in inside, sql
+        assert "orders" not in inside, sql
+        assert len([t for t in tree.find_all(exp.Table) if t.name == "orders"]) == 1
+
+    def test_reduced_push_drops_the_materialised_hop(self):
+        planned = plan_query(
+            query=cust_q(dimensions=["orders.id"], filters=[REDUCED_PUSH_OR]),
+            bundle=_bundle(dev1900_models(), "customers"))
+        assert {h.target_model for h in _base_hops(planned)} == {
+            "regions", "region_events"}
 
 
 class TestPartitionedOverOrMix:
@@ -245,8 +271,8 @@ class TestPartitionedOverOrMix:
         for tier, spend in OR_MIX_PARTITIONED.items():
             assert float(by[(tier,)]["customers.pt"]) == pytest.approx(spend), tier
         measures = {i.measure for i in pushed_filter_infos(resp)}
-        assert None in measures and "pt" in measures, measures
-        assert dropped_filter_warnings(resp) == []
+        assert None in measures, measures
+        assert "pt" in measures, measures
 
 
 class TestRawRowMode:
@@ -278,7 +304,6 @@ class TestProducerSideMixedOr:
         named = {(i.measure, "tier" in (i.filter_text or ""))
                  for i in pushed_filter_infos(resp)}
         assert ("csp", True) in named, named
-        assert dropped_filter_warnings(resp) == []
 
 
 class TestAssociationArmMixedOr:
@@ -293,7 +318,6 @@ class TestAssociationArmMixedOr:
         by = rows_by(resp, "orders.status")
         for status, spend in ASSOC_OR_BY_STATUS.items():
             assert float(by[(status,)]["orders.csp"]) == pytest.approx(spend), status
-        assert dropped_filter_warnings(resp) == []
         assert pushed_filter_infos(resp), "expected the informational entry"
 
     async def test_mixed_or_branch_absent_from_query(self, unproven_backend):
@@ -379,10 +403,10 @@ class TestGenuinelyUnreachableFilterRefused:
     @pytest.mark.parametrize("mode", MODES)
     async def test_unreachable_ref_is_refused(self, unreachable_backend, mode):
         _, engine = unreachable_backend
+        q = cust_q(dimensions=["tier"], measures=[PARTITIONED],
+                   filters=["promos.discount > 0"], to_many_handling=mode)
         with pytest.raises((SlayerError, ValueError)):
-            await engine.execute(cust_q(
-                dimensions=["tier"], measures=[PARTITIONED],
-                filters=["promos.discount > 0"], to_many_handling=mode))
+            await engine.execute(q)
 
 
 # =========================================================================== #
@@ -473,11 +497,16 @@ class TestPopulationDroppedArmImpossible:
         q = cust_q(measures=[SPEND], filters=[OR_MIX_LOCAL])
         planned = plan_query(query=q, bundle=_bundle(dev1900_models(), "customers"))
         assert planned.semi_join_filters, "the OR-mix population must push"
-        resp = await engine.execute(q)
-        assert dropped_filter_warnings(resp) == []
-        # the host base carries the EXISTS and never joins orders.
+        await engine.execute(q)
+        # the host base carries the EXISTS and never joins orders into the OUTER
+        # query — the semi-join (its LEFT/INNER join) lives inside the EXISTS.
         sql = await _dry(engine, q, dialect)
-        assert "orders" not in _join_aliases(sql, dialect=dialect), sql
+        outer_joins = {
+            j.this.alias_or_name
+            for j in (sqlglot.parse_one(sql, dialect=dialect).args.get("joins") or [])
+            if isinstance(j.this, exp.Table)
+        }
+        assert "orders" not in outer_joins, sql
 
 
 # =========================================================================== #
@@ -489,7 +518,8 @@ _NULL_REJECTION_CASES = [
     ("regions.region_events.value is null", True),         # is null -> TRUE
     ("regions.region_events.value is not null", False),    # is not null -> FALSE
     ("regions.region_events.value in (50, 60)", False),    # IN -> UNKNOWN
-    ("regions.region_events.value between 40 and 60", False),  # BETWEEN -> UNKNOWN
+    # (BETWEEN is not expressible in the filter DSL — BetweenKey is date-range-only;
+    #  the IN case above covers the same InKey/BetweenKey -> UNKNOWN rule.)
     ("regions.region_events.value >= 50 and regions.region_events.value < 100",
      False),                                               # AND of UNKNOWN -> UNKNOWN
     ("not (regions.region_events.value >= 50)", False),    # NOT UNKNOWN -> UNKNOWN

@@ -60,10 +60,9 @@ distinct join branches, and an atom comparing columns of two branches are all re
 association with the product semantics above — negation keeping the existential reading
 (`NOT B` holds when some related row fails `B`) and a null-test on a related column holding
 for a root row with no related row — never dropped and never an error in any mode. A
-conjunct SHALL remain excluded from the producer — reported through the established
-dropped-filter warning (and erroring under `to_many_handling: "error"`) while still
-applying to the result rows — only when it is genuinely unreachable (no resolvable join path
-from the root). The reverse path resolves through the same bidirectional
+reference with no resolvable join path from the root SHALL be refused at resolution in
+every mode with a typed error, never routed as if it crossed nothing — there is no
+producer-level silent drop. The reverse path resolves through the same bidirectional
 traversal as every other hop: any declared edge, in either orientation, with oriented
 provability governing inline-vs-semi-join classification; a home several hops from the
 population root reverses every hop of its path. A hop of the correlation path
@@ -196,10 +195,9 @@ only in the filter.
   is applied automatically and the query executes
 
 #### Scenario: Genuinely unreachable filter keeps the established behavior
-- **WHEN** a filter references a model with no resolvable join path from the producer
-  root
-- **THEN** it is excluded with the dropped-filter warning and error mode errors,
-  exactly as before
+- **WHEN** a filter references a model with no resolvable join path from the query root
+- **THEN** the query fails with a typed error in every `to_many_handling` mode — the
+  filter is never dropped from a producer and never routed as if it crossed nothing
 
 #### Scenario: Partitioned local producer restricts by association
 - **WHEN** a query rooted at `customers` selects `sum(spend, partition_by=tier)` by `tier`

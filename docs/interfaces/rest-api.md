@@ -80,7 +80,6 @@ presence of a field:
 | `kind` | Meaning | Extra fields |
 | -- | -- | -- |
 | `normalization` | The input was rewritten to canonical form | `rule_id`, `original`, `normalized`, `location`, `rule_doc_url` (nullable) |
-| `unreachable_filter_dropped` | A filter could not be applied inside a cross-model CTE and was dropped from it (it still applies at the host) | `filter_text`, `location`, `reason` |
 
 The filter still applies to the host's own rows; it is dropped only from the
 cross-model CTE, whose aggregate is therefore computed without it. That measure

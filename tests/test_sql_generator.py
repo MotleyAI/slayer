@@ -6904,11 +6904,6 @@ Column(name="total_policy_amount", sql="policy_amount", type=DataType.DOUBLE)],
             # The host-sibling filter inherits through the root's own join.
             assert "agreement_party_role" in cte_body
             assert "party_role_code" in cte_body
-            dropped = [
-                w for w in (resp.warnings or [])
-                if getattr(w, "kind", None) == "unreachable_filter_dropped"
-            ]
-            assert not dropped, dropped
 
     async def test_rerooted_cte_without_filters(self, generator, _models):
         """Cross-model measure with no filters still uses re-rooted CTE."""

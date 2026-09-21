@@ -26,6 +26,7 @@ from tests._dev1935_fixtures import (
     NO_ORDERS,
     NOT_GOLD_AND_OK,
     OR_MIX_LOCAL,
+    REDUCED_PUSH_OR,
     dev1900_models,
 )
 from tests._engine_helpers import _engine_generate
@@ -71,6 +72,11 @@ def _cases() -> dict:
         "materialised/host_base": {
             "source": "customers",
             "kw": {"dimensions": ["orders.id"], "filters": [MATERIALISED_OR]}},
+        # materialised/reduced_push — the orders branch binds to the outer query;
+        # only the regions branch is quantified (D6).
+        "materialised/reduced_push": {
+            "source": "customers",
+            "kw": {"dimensions": ["orders.id"], "filters": [REDUCED_PUSH_OR]}},
         # producer/* — a host-rooted producer inherits the population semi-join.
         "producer/mixed_or_partitioned": {
             "source": "customers",

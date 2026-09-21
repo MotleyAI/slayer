@@ -43,21 +43,6 @@ class NormalizationWarning(SlayerWarning):
         )
 
 
-class DroppedFilterWarning(SlayerWarning):
-    """A user filter that couldn't be applied where routed; carries its original author text, surface, and reason."""
-
-    kind: Literal["unreachable_filter_dropped"] = "unreachable_filter_dropped"
-    filter_text: str
-    location: str
-    reason: str
-
-    def human_message(self) -> str:
-        return (
-            f"dropped filter {self.filter_text!r} (at {self.location}): "
-            f"{self.reason}"
-        )
-
-
 class BroadcastDimension(BaseModel):
     """One query dimension a metric could not attribute, with the broadcast reason."""
 
@@ -167,7 +152,6 @@ class ResponseTruncationWarning(SlayerWarning):
 AnySlayerWarning = Annotated[
     Union[
         NormalizationWarning,
-        DroppedFilterWarning,
         BroadcastGrainWarningPayload,
         AssociatedWarningPayload,
         DegenerateReaggregationWarningPayload,

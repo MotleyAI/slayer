@@ -1,20 +1,7 @@
-"""Shared fixtures for DEV-1935 — boolean-total semi-join pushdown.
-
-Every out-of-scope ROW conjunct (a root-local ref mixed with a cross-path ref
-under ``OR``/``NOT``, cross-path refs spanning several branches, or an atom
-comparing two branches) restricts the population/producer by association instead
-of failing closed or dropping. One semantic: a root row survives iff the conjunct
-holds on >=1 row of its join product over the referenced branches, each hop joined
-as declared (LEFT by default -> NULL-extended when absent).
-
-Reuses the DEV-1900 graph and its dual-engine (SQLite + DuckDB) dataset verbatim,
-so every oracle here derives from the same rows documented in
-``tests/_dev1840_fixtures.py``. Three model variants add what that graph lacks:
-a NAMED reverse edge (``purchases``) for the two-spellings same-node pin, an
-unproven ``customers -> plans`` hop for the branch-absent association pin, and a
-self-contained ``customers -> regions -> region_events`` mini-graph with an
-event-less region for the LEFT-vs-INNER null-extension pins.
-"""
+"""Shared fixtures for DEV-1935 — boolean-total semi-join pushdown: the DEV-1900
+graph and dual-engine dataset (rows documented in ``tests/_dev1840_fixtures.py``)
+plus three model variants (named reverse edge, unproven plans hop, event-less
+region mini-graph)."""
 
 from __future__ import annotations
 
@@ -62,6 +49,8 @@ NEW_OR_EVENT = "orders.status = 'new' or regions.region_events.value >= 50"
 ATOM_TWO_BRANCH = "orders.amount < regions.region_events.value"
 #: A materialised branch (orders.id dimension) OR a to-one branch (regions.name).
 MATERIALISED_OR = "orders.status = 'ok' or regions.name = 'South'"
+#: A materialised fanning branch (orders.id dimension) OR an unmaterialised one.
+REDUCED_PUSH_OR = "orders.status = 'ok' or regions.region_events.value >= 50"
 #: Two spellings of the customers->orders edge sharing one related row.
 TWO_SPELLINGS = ["purchases.status = 'ok'", "orders.channel = 'app'"]
 #: Producer-side (orders-rooted) mixed OR that stays dropped-and-warned today.
@@ -71,20 +60,15 @@ ASSOC_OR = "customers.tier = 'gold' OR channel = 'app'"
 #: Association-arm mixed OR whose second leg crosses an unproven plans hop.
 ASSOC_OR_ABSENT = "customers.tier = 'gold' OR customers.plans.level = 'basic'"
 
-# --------------------------------------------------------------------------- #
-# Oracles — hand-computed from the DEV-1840/1900 dataset; see that docstring.
-# --------------------------------------------------------------------------- #
+# Oracles — hand-computed from the DEV-1840/1900 dataset.
 #: bronze {c4} OR >=1 ok order {c1,c2,c3,c5,c6} = {c1..c6} spend 460 (never 560).
 OR_MIX_SPEND = 460.0
 OR_MIX_SPEND_FAN_DEFECT = 560.0
-#: gold {c1,c3,c6,c7} OR ok {c1,c2,c3,c5,c6} = {c1,c2,c3,c5,c6,c7} spend 475;
-#: c7 (gold, no orders) kept via the null-extended row. 420 drops it (strict
-#: INNER); 675 is the join-multiplied fan.
+#: gold OR ok = {c1,c2,c3,c5,c6,c7} = 475 (c7 kept null-extended); 420 = strict INNER; 675 = fan.
 GOLD_OR_OK_SPEND = 475.0
 GOLD_OR_OK_STRICT_INNER = 420.0
 GOLD_OR_OK_FAN_DEFECT = 675.0
-#: non-gold {c2,c4,c5}=270 + gold with >=1 non-ok order {c1}=100 -> 370; a gold
-#: customer with no orders (c7) is NOT counted; 520 is the fan.
+#: non-gold {c2,c4,c5} + gold with a non-ok order {c1} = 370 (c7 not counted); 520 = fan.
 NOT_GOLD_AND_OK_SPEND = 370.0
 NOT_GOLD_AND_OK_FAN_DEFECT = 520.0
 #: customers with no orders: c7 -> 55.
@@ -93,37 +77,29 @@ NO_ORDERS_SPEND = 55.0
 NEW_OR_EVENT_SPEND = 320.0
 #: customers with some order.amount < some region-event value, each once = 420.
 ATOM_TWO_BRANCH_SPEND = 420.0
-#: dims=[orders.id], MATERIALISED_OR: one cell per order that is itself ok OR
-#: whose customer's region is South, PLUS the null-order cell for the orderless
-#: South customer c7 (its LEFT-extended row satisfies the region leg: NULL='ok'
-#: OR 'South'='South' = TRUE). Orphan o8 excluded (no customer). Same-row binding
-#: keeps a sibling order (o2) out. Main already emits this inline, so it is a
-#: correctness anchor, not a RED — it guards same-row binding + null extension.
+#: dims=[orders.id], MATERIALISED_OR: orders that are ok or in South, plus c7's
+#: null-order cell (its LEFT-extended row passes the region leg); o2 stays out.
 MATERIALISED_ORDER_CELLS = {None, 1, 3, 5, 7, 9, 10}
+#: dims=[orders.id], REDUCED_PUSH_OR: orders that are ok, or whose customer's
+#: region (North only) has an event >= 50; no orderless customer qualifies.
+REDUCED_PUSH_ORDER_CELLS = {1, 2, 3, 4, 5, 7, 9, 10}
 #: sum(spend, partition_by=tier) by tier over the OR_MIX population.
 OR_MIX_PARTITIONED = {"gold": 190.0, "silver": 230.0, "bronze": 40.0}
-#: raw-row mode (distinct_dimension_values=false), OR_MIX: one row per population
-#: customer {c1..c6} = 6 (never 7 — c1's two ok orders).
+#: raw-row mode, OR_MIX: one row per population customer {c1..c6} = 6 (never 7).
 OR_MIX_RAW_ROWS = 6
-#: two spellings bind to one order (ok AND app): c3, c5 -> gold 60 / silver 80;
-#: 160/230 is the split-node defect (separate ok and app orders).
+#: two spellings bind to ONE order (ok AND app): gold 60 / silver 80; 160/230 = split-node defect.
 TWO_SPELLINGS_BY_TIER = {"gold": 60.0, "silver": 80.0}
 TWO_SPELLINGS_SPLIT_DEFECT = {"gold": 160.0, "silver": 230.0}
-#: producer-side OR_MIX_PRODUCER by customers.tier: bronze {c4} OR >=1 app order
-#: {c1,c2,c3,c5} -> gold 160 / silver 230 / bronze 40 (never gold 245).
+#: producer-side OR_MIX_PRODUCER by tier: bronze OR an app order (never gold 245).
 OR_MIX_PRODUCER_BY_TIER = {"gold": 160.0, "silver": 230.0, "bronze": 40.0}
-#: associate ASSOC_OR by status: distinct customers with an order of that status
-#: that is app OR belongs to a gold customer.
+#: associate ASSOC_OR by status: customers with an order of that status that is app or gold.
 ASSOC_OR_BY_STATUS = {"ok": 270.0, "new": 250.0}
-#: associate ASSOC_OR_ABSENT (unproven plans) by status: gold OR basic-plan
-#: customers with an order of that status.
+#: associate ASSOC_OR_ABSENT (unproven plans) by status: gold or basic-plan customers.
 ASSOC_OR_ABSENT_BY_STATUS = {"ok": 270.0, "new": 100.0}
 
 # Event-less-region mini-graph oracles (see event_less_models / _seed below).
-#: tier='gold' OR region_events.value>=50: gold {ec1,ec3} OR event>=50 {ec1} =
-#: {ec1,ec3} = 190; ec3's event-less region is null-extended (LEFT), kept via
-#: the gold leg. Under a DECLARED-INNER region_events hop ec3 has no product row
-#: and is dropped -> 100.
+#: gold OR event>=50 = {ec1,ec3} = 190 (ec3's event-less region null-extended);
+#: under a declared-INNER hop ec3 has no product row -> 100.
 EVENTLESS_GOLD_OR_EVENT_LEFT = 190.0
 EVENTLESS_GOLD_OR_EVENT_INNER = 100.0
 #: region_events.value>=50 alone rejects the null extension (UNKNOWN) -> INNER,
@@ -283,12 +259,14 @@ __all__ = [
     "two_spellings_models", "unproven_plans_models", "event_less_models",
     "disconnected_model_models", "make_eventless_engine",
     "OR_MIX_LOCAL", "GOLD_OR_OK", "NOT_GOLD_AND_OK", "NO_ORDERS",
-    "NEW_OR_EVENT", "ATOM_TWO_BRANCH", "MATERIALISED_OR", "TWO_SPELLINGS",
+    "NEW_OR_EVENT", "ATOM_TWO_BRANCH", "MATERIALISED_OR", "REDUCED_PUSH_OR",
+    "TWO_SPELLINGS",
     "OR_MIX_PRODUCER", "ASSOC_OR", "ASSOC_OR_ABSENT",
     "OR_MIX_SPEND", "OR_MIX_SPEND_FAN_DEFECT", "GOLD_OR_OK_SPEND",
     "GOLD_OR_OK_STRICT_INNER", "GOLD_OR_OK_FAN_DEFECT", "NOT_GOLD_AND_OK_SPEND",
     "NOT_GOLD_AND_OK_FAN_DEFECT", "NO_ORDERS_SPEND", "NEW_OR_EVENT_SPEND",
-    "ATOM_TWO_BRANCH_SPEND", "MATERIALISED_ORDER_CELLS", "OR_MIX_PARTITIONED",
+    "ATOM_TWO_BRANCH_SPEND", "MATERIALISED_ORDER_CELLS", "REDUCED_PUSH_ORDER_CELLS",
+    "OR_MIX_PARTITIONED",
     "OR_MIX_RAW_ROWS", "TWO_SPELLINGS_BY_TIER", "TWO_SPELLINGS_SPLIT_DEFECT",
     "OR_MIX_PRODUCER_BY_TIER", "ASSOC_OR_BY_STATUS", "ASSOC_OR_ABSENT_BY_STATUS",
     "EVENTLESS_GOLD_OR_EVENT_LEFT", "EVENTLESS_GOLD_OR_EVENT_INNER",

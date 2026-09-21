@@ -30,7 +30,7 @@
       current SQL). `test_new_shapes_generate_sql` is the RED tripwire (flip cases must become SQL, not a
       raise). At IMPLEMENT: the SQL for all 8 cases moves → add each to ALLOWED_DELTAS with a reason,
       `SLAYER_UPDATE_GOLDEN=1`, empty the manifest.
-- [~] 1.5 Consented flips — DONE (RED-verified, left UNSTAGED for spec-implement's commit gate):
+- [x] 1.5 Consented flips — DONE (deferred set done at implement; decision 12(d) sweep covered the remaining channel references):
       `test_dev1840_disposition.py::TestBooleanTotalPushdown` (4, dropped→pushed, plan-level),
       `test_dev1909_population_pushdown.py::TestOutOfScopeNowPushed` (5, fail-closed→pushed/460/6-rows),
       `test_dev1841_error_mode.py` (1, error→pushed gold 160), `test_dev1841_association_filters.py` (1,
@@ -87,25 +87,25 @@ customer's null-order cell (its LEFT-extended row satisfies the region leg) is i
 
 ## 2. Planner (spec-implement stage)
 
-- [ ] 2.1 `slayer/ir/planned.py`: `SemiJoinHop.null_extended: bool = False`; verify existing goldens
+- [x] 2.1 `slayer/ir/planned.py`: `SemiJoinHop.null_extended: bool = False`; verify existing goldens
       unchanged
-- [ ] 2.2 `stages.py`: canonical hop tokens in `_forward_hops` / `_reverse_hops` / `_remap_ref_path`
+- [x] 2.2 `stages.py`: canonical hop tokens in `_forward_hops` / `_reverse_hops` / `_remap_ref_path`
       (edge name, else target model); verify the two-spellings test and the golden corpus
-- [ ] 2.3 `stages.py`: delete `_reject_mixed_or_not` and the single-first-hop block in
+- [x] 2.3 `stages.py`: delete `_reject_mixed_or_not` and the single-first-hop block in
       `_conjunct_push_plan`; verify the DEV-1840 disposition tests flip to pushed
-- [ ] 2.4 `stages.py`: union-find grouping in `_semi_join_groups_from_pushes` with first-appearance
+- [x] 2.4 `stages.py`: union-find grouping in `_semi_join_groups_from_pushes` with first-appearance
       order; verify the grouping and determinism pins
-- [ ] 2.5 `stages.py`: the null-rejection analysis (design decision 5) setting `null_extended` per hop
+- [x] 2.5 `stages.py`: the null-rejection analysis (design decision 5) setting `null_extended` per hop
       after grouping; verify 1.3 and `null_extended` false on every existing fixture push
-- [ ] 2.6 `stages.py`: `PopulationFilters` two-way with the asserted dropped arm; delete the residue
+- [x] 2.6 `stages.py`: `PopulationFilters` two-way with the asserted dropped arm; delete the residue
       check, `drop_excluded`, `dropped_warnings`; per-branch materialisation in `host_split` (reduced push
       for a partially materialised conjunct); verify the DEV-1909 residue tests and the materialised-branch
       scenario
-- [ ] 2.7 `slayer/engine/elaborate_env.py`: delete `check_population_filter_in_pushdown_scope`; verify
+- [x] 2.7 `slayer/engine/elaborate_env.py`: delete `check_population_filter_in_pushdown_scope`; verify
       the ledger and `tests/test_dev1871_raise_parity.py` pass
-- [ ] 2.8 `stages.py` association arm: confirm no change needed beyond 2.3; verify the association
+- [x] 2.8 `stages.py` association arm: confirm no change needed beyond 2.3; verify the association
       scenarios (ok 270 / new 250, ok 270 / new 100)
-- [ ] 2.9 (design.md decision 12, DECISION A) `stages.py` / `elaborate_env.py`: PROVE the producer
+- [x] 2.9 (design.md decision 12, DECISION A) `stages.py` / `elaborate_env.py`: PROVE the producer
       genuinely-unreachable arm has no surviving feeder — enumerate every producer emitter of
       `UnreachableFilterDroppedWarning` / the `_conjunct_disposition` `excluded` branch, confirm the only
       feeders were the mixed-OR / multi-branch `_PushBlocked` reasons deleted in 2.3, and that no
@@ -120,21 +120,21 @@ customer's null-order cell (its LEFT-extended row satisfies the region leg) is i
 
 ## 3. Renderer
 
-- [ ] 3.1 `slayer/sql/generator.py::_build_semi_join_exists`: CROSS-joined further first-level hops with
+- [x] 3.1 `slayer/sql/generator.py::_build_semi_join_exists`: CROSS-joined further first-level hops with
       WHERE correlations; per-hop INNER/LEFT for deeper hops; verify byte-identity of every existing golden
-- [ ] 3.2 Same builder: the spine shape (`FROM (SELECT 1 AS one) AS <alias>`, correlations in ON,
+- [x] 3.2 Same builder: the spine shape (`FROM (SELECT 1 AS one) AS <alias>`, correlations in ON,
       allocator-reserved alias, scope-closure validator updated); verify the dev1935 goldens on every
       Tier-1 dialect and `assert_scope_closed`
-- [ ] 3.3 Refs on a materialised branch render against the outer alias; verify the materialised-branch
+- [x] 3.3 Refs on a materialised branch render against the outer alias; verify the materialised-branch
       scenario SQL joins `orders` once, outside the EXISTS
 
 ## 4. Docs, harness, gates
 
-- [ ] 4.1 `docs/concepts/queries.md` (one sentence: product rule, `is null` idiom; drop the OR/NOT
-      exclusion) and `docs/database-support.md` (one sentence: MySQL 8.0.20+, BigQuery); verify with
+- [x] 4.1 `docs/concepts/queries.md` (one sentence: product rule, `is null` idiom; drop the OR/NOT
+      exclusion) and `docs/database-support.md` (one sentence: MySQL 8.0.14+, BigQuery); verify with
       `grep -n "OR\`/\`NOT" docs/` finding nothing stale
-- [ ] 4.2 `architecture/semantics.arc42.md` tags (Axiom 3, Axiom 14, Law 5, Law 6) — present the exact
+- [x] 4.2 `architecture/semantics.arc42.md` tags (Axiom 3, Axiom 14, Law 5, Law 6) — present the exact
       diff and apply only on explicit approval; verify `poetry run python tools/arch_check.py`
-- [ ] 4.3 Full gates: `poetry run pytest -m "not integration"`, `poetry run ruff check slayer/ tests/`,
+- [x] 4.3 Full gates: `poetry run pytest -m "not integration"`, `poetry run ruff check slayer/ tests/`,
       `poetry run basedpyright` (no new errors), `poetry run python tools/arch_check.py`,
       `npx -y likec4@1.47.0 validate architecture`; then the CI integration invocation

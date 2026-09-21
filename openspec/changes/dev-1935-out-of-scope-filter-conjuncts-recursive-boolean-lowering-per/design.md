@@ -86,6 +86,9 @@ subtrees).
      OR: TRUE if any TRUE, else DEPENDS if any DEPENDS, else UNKNOWN if any UNKNOWN, else FALSE;
      NOT: TRUE↔FALSE, UNKNOWN and DEPENDS unchanged;
    - rejects(h) iff the value is FALSE or UNKNOWN; `null_extended(h) = declared LEFT ∧ ¬rejects(h)`.
+     A reverse hop (root → host, the population correlation) has no declaration and is never
+     null-extended: a producer row is restricted by its association with a population row,
+     exactly as the population's own EXISTS restricts it.
    Rejecting h's NULLs covers the parent-absent row too (its h columns are NULL), so an INNER child
    under a LEFT parent is exact; a declared-INNER hop stays INNER and kills the parent's NULL row
    exactly as the inline product does. DEPENDS never rejects, so a wrong answer can only choose LEFT
@@ -104,12 +107,20 @@ subtrees).
 7. **Emission — one builder, two shapes.** `_build_semi_join_exists`: when no first-level hop is
    null-extended, today's shape — `FROM <first hop>` with its correlation in WHERE, further first-level
    hops CROSS-joined with their correlations in WHERE, deeper hops `INNER JOIN` (or `LEFT JOIN` when
-   null-extended) ON their parent pairs. Otherwise the spine shape — `FROM (SELECT 1 AS one) AS
-   <alias>` (SQL Server needs the column name), every hop `LEFT JOIN`/`INNER JOIN` per its flag with its
-   correlation or parent pairs in the ON. The EXISTS stays a conjunct of the outer WHERE in both
-   shapes. The spine alias comes from the allocator under a reserved `__slayer_` token; the
-   scope-closure validator accepts it. Refs on a materialised branch (decision 6) render against the
-   outer query's alias for that path, exactly as root-local refs do today.
+   null-extended) ON their parent pairs. Otherwise the spine shape — `FROM (SELECT <outer>.<k1> AS
+   <k1>, …) AS <alias>`, a one-row derived table projecting each distinct root-side correlation
+   column of the first-level hops from the outer body; every first-level hop `LEFT JOIN`/`INNER JOIN`
+   per its flag ON its pairs against the spine's columns, deeper hops ON their parent pairs. The
+   correlation lives in the spine's projection, never in a JOIN ON: DuckDB rejects a non-inner join
+   whose ON references the outer query, while an outer reference inside a derived table executes on
+   SQLite, DuckDB, PostgreSQL and MySQL ≥ 8.0.14 (measured) with no LATERAL keyword. The EXISTS stays
+   a conjunct of the outer WHERE in both shapes. The spine alias comes from the allocator under a
+   reserved `__slayer_` token; the scope-closure validator accepts it. Refs on a materialised branch
+   (decision 6) render against the outer query's alias for that path, exactly as root-local refs do
+   today. *Rejected:* correlation in the LEFT JOIN ON (DuckDB); per-dialect LATERAL / OUTER APPLY
+   variants (unverifiable shapes and a dialect hook for a doubt — sql P2/P9); a root re-scan spine
+   correlated null-safely in WHERE (exact only in the null-safe form, which defeats hash semi-joins,
+   and re-embeds the root relation per EXISTS).
 
 8. **Association arm.** `_association_inline_filters` is unchanged in shape: with the push plan no
    longer blocking mixed or multi-branch conjuncts, they inline through the association producer's
@@ -152,14 +163,23 @@ subtrees).
     the `queries/cross-model-aggregates` requirement sentence and its *"Genuinely unreachable filter
     keeps the established behavior"* scenario: a reference with no resolvable join path is **refused
     at resolution in every mode with a typed error, never routed as if it crossed nothing** — there
-    is no producer-level silent drop. *Rejected:* keeping the arm defensively (leaves dead, untested
+    is no producer-level silent drop; (d) (Egor, 2026-09-21) with no writer left, the dropped-filter
+    channel goes end to end — `RegroupAttachPlan.dropped_filter_warnings`, its collector, the
+    error-mode branch, the `unreachable_filter_dropped` payload kind, the
+    `UnreachableFilterDroppedWarning` Python warning and their docs rows — and the DEV-1745
+    boundary-contract suite re-points to the `semi_join_pushed` entries (one per location, measure,
+    text; no Python warning for a push). *Rejected:* keeping the arm defensively (leaves dead, untested
     code and a spec scenario describing an unreachable state — the option-B fixture is topologically
-    inconstructible, since any producer that attaches to the host reaches everything the host does).
+    inconstructible, since any producer that attaches to the host reaches everything the host does);
+    keeping the channel as unreachable plumbing (same test surgery, dead code, a documented warning
+    kind that can never occur).
 
 ## Risks / Trade-offs
 
-- [MySQL < 8.0.20, BigQuery, ClickHouse reject the spine shape] → reached only by shapes that error or
-  drop today; the failure is the engine's own error, never a wrong value; documented in one sentence.
+- [MySQL < 8.0.14, BigQuery, ClickHouse, and possibly SQL Server / Snowflake (outer reference inside a
+  derived table, unverified) reject the spine shape] → reached only by shapes that error or drop today;
+  the failure is the engine's own error, never a wrong value; documented in one sentence; a rejecting
+  Tier-1 engine gets a `dialects/` hook (OUTER APPLY / LATERAL) for that dialect only.
 - [Null-rejection misjudged] → conservative by construction: DEPENDS never rejects, so the only
   possible mistake is LEFT where INNER would do; unit tests pin every rule and the golden corpus pins
   byte-identity.
