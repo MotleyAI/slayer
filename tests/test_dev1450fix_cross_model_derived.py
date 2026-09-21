@@ -16,7 +16,7 @@ Extends the #4a/#4b ``ColumnSqlKey`` support to the cross-model CTE path:
 from __future__ import annotations
 
 import os
-import sqlite3
+from slayer.storage.sqlite_conn import transaction
 import tempfile
 from typing import AsyncIterator
 
@@ -57,29 +57,27 @@ def test_agg_kwarg_canonical_str_columnsqlkey_joined():
 async def engine() -> AsyncIterator[SlayerQueryEngine]:
     d = tempfile.mkdtemp()
     db_path = os.path.join(d, "t.db")
-    con = sqlite3.connect(db_path)
-    cur = con.cursor()
-    cur.execute(
-        "CREATE TABLE customers (id INTEGER PRIMARY KEY, region TEXT, "
-        "status TEXT, revenue REAL)"
-    )
-    cur.executemany(
-        "INSERT INTO customers VALUES (?,?,?,?)",
-        [
-            (1, "NA", "active", 100.0),
-            (2, "NA", "inactive", 50.0),
-            (3, "EU", "active", 70.0),
-        ],
-    )
-    cur.execute(
-        "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, amount REAL)"
-    )
-    cur.executemany(
-        "INSERT INTO orders VALUES (?,?,?)",
-        [(1, 1, 10.0), (2, 1, 5.0), (3, 2, 7.0), (4, 3, 3.0), (5, 3, 9.0)],
-    )
-    con.commit()
-    con.close()
+    with transaction(db_path) as con:
+        cur = con.cursor()
+        cur.execute(
+            "CREATE TABLE customers (id INTEGER PRIMARY KEY, region TEXT, "
+            "status TEXT, revenue REAL)"
+        )
+        cur.executemany(
+            "INSERT INTO customers VALUES (?,?,?,?)",
+            [
+                (1, "NA", "active", 100.0),
+                (2, "NA", "inactive", 50.0),
+                (3, "EU", "active", 70.0),
+            ],
+        )
+        cur.execute(
+            "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, amount REAL)"
+        )
+        cur.executemany(
+            "INSERT INTO orders VALUES (?,?,?)",
+            [(1, 1, 10.0), (2, 1, 5.0), (3, 2, 7.0), (4, 3, 3.0), (5, 3, 9.0)],
+        )
 
     storage = YAMLStorage(base_dir=os.path.join(d, "store"))
     await storage.save_datasource(
@@ -141,7 +139,8 @@ async def test_c1_target_derived_model_filter_expands(engine):
         dry_run=True,
     )
     assert "is_active" not in dry.sql, dry.sql
-    assert "status" in dry.sql and "'active'" in dry.sql
+    assert "status" in dry.sql
+    assert "'active'" in dry.sql
     by_region = {
         r["orders.customers.region"]: r["orders.customers.revenue_sum"]
         for r in resp.data

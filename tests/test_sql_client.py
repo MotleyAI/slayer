@@ -2,7 +2,7 @@
 
 import logging
 import sqlite3
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import sqlalchemy as sa
@@ -24,6 +24,8 @@ from slayer.sql.client import (
     build_sql_model_trial_query,
     classify_model_sql,
 )
+
+from tests._engine_helpers import disposable_engine
 
 
 class TestMapTypeCode:
@@ -275,11 +277,12 @@ class TestRetryFiltersDeterministicErrors:
 
         monkeypatch.setattr(sql_client, "_execute_sql_sync", fake_execute)
 
+        engine = MagicMock()
         with pytest.raises(sqlalchemy.exc.OperationalError, match="no such table"):
             await _execute_with_retry_threaded(
                 sql="SELECT 1",
-                connection_string="sqlite:///:memory:",
                 db_type="sqlite",
+                engine=engine,
                 initial_delay=10.0, max_delay=10.0,
             )
 
@@ -296,11 +299,12 @@ class TestRetryFiltersDeterministicErrors:
 
         monkeypatch.setattr(sql_client, "_execute_sql_sync", fake_execute)
 
+        engine = MagicMock()
         with pytest.raises(sqlalchemy.exc.OperationalError, match="no such table"):
             _execute_with_retry_sync(
                 sql="SELECT 1",
-                connection_string="sqlite:///:memory:",
                 db_type="sqlite",
+                engine=engine,
                 initial_delay=10.0, max_delay=10.0,
             )
 
@@ -390,8 +394,8 @@ class TestRetryEmptySqlExcerpt:
         with caplog.at_level(logging.WARNING, logger="slayer.sql.client"):
             result = await _execute_with_retry_threaded(
                 sql=sql,
-                connection_string="sqlite:///:memory:",
                 db_type="sqlite",
+                engine=MagicMock(),
                 initial_delay=0.0,
                 max_delay=0.0,
             )
@@ -423,8 +427,8 @@ class TestRetryEmptySqlExcerpt:
         with caplog.at_level(logging.WARNING, logger="slayer.sql.client"):
             result = _execute_with_retry_sync(
                 sql=sql,
-                connection_string="sqlite:///:memory:",
                 db_type="sqlite",
+                engine=MagicMock(),
                 initial_delay=0.0,
                 max_delay=0.0,
             )
@@ -820,21 +824,21 @@ class TestProbeRollsBack:
 
     def test_probe_rolls_back_and_still_infers_types(self, tmp_path) -> None:
         db = str(tmp_path / "probe.db")
-        eng = sa.create_engine(f"sqlite:///{db}")
-        with eng.connect() as conn:
-            conn.execute(sa.text("CREATE TABLE t (a INTEGER, b TEXT)"))
-            conn.execute(sa.text("INSERT INTO t VALUES (1, 'x')"))
-            conn.commit()
-        seen: list[str] = []
-        real_rollback = sa.Connection.rollback
+        with disposable_engine(f"sqlite:///{db}") as eng:
+            with eng.connect() as conn:
+                conn.execute(sa.text("CREATE TABLE t (a INTEGER, b TEXT)"))
+                conn.execute(sa.text("INSERT INTO t VALUES (1, 'x')"))
+                conn.commit()
+            seen: list[str] = []
+            real_rollback = sa.Connection.rollback
 
-        def _spy_rollback(self):  # noqa: ANN001
-            seen.append("rollback")
-            return real_rollback(self)
+            def _spy_rollback(self):  # noqa: ANN001
+                seen.append("rollback")
+                return real_rollback(self)
 
-        with patch.object(sa.Connection, "rollback", _spy_rollback):
-            types = _get_column_types_sync(
-                "SELECT a, b FROM t", connection_string="", db_type="sqlite", engine=eng,
-            )
-        assert types == {"a": "number", "b": "string"}
-        assert "rollback" in seen
+            with patch.object(sa.Connection, "rollback", _spy_rollback):
+                types = _get_column_types_sync(
+                    "SELECT a, b FROM t", db_type="sqlite", engine=eng,
+                )
+            assert types == {"a": "number", "b": "string"}
+            assert "rollback" in seen

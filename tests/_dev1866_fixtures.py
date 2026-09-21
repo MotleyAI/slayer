@@ -34,7 +34,7 @@ amount:sum by customers.region:  North=35 (10+5+20)  South=30  West=NULL
 from __future__ import annotations
 
 import os
-import sqlite3
+from slayer.storage.sqlite_conn import transaction
 import tempfile
 from typing import AsyncIterator
 
@@ -51,6 +51,7 @@ from slayer.core.models import (
 )
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
+from tests._engine_helpers import seeded_exec_engine
 
 DS_CHAIN = "ds_chain"
 DS_PAIR = "ds_pair"
@@ -378,22 +379,20 @@ CHAIN_REVENUE_BY_REGION = {"North": 35.0, "South": 30.0, "West": None}
 
 
 def _seed_chain_sqlite(db_path: str) -> None:
-    con = sqlite3.connect(db_path)
-    cur = con.cursor()
-    cur.execute("CREATE TABLE regions (id INTEGER PRIMARY KEY, name TEXT)")
-    cur.executemany("INSERT INTO regions VALUES (?,?)", _REGIONS_ROWS)
-    cur.execute(
-        "CREATE TABLE customers (id INTEGER PRIMARY KEY, region TEXT, "
-        "region_id INTEGER, tier TEXT, name TEXT)"
-    )
-    cur.executemany("INSERT INTO customers VALUES (?,?,?,?,?)", _CUSTOMERS_ROWS)
-    cur.execute(
-        "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, "
-        "status TEXT, amount REAL, ordered_at TEXT)"
-    )
-    cur.executemany("INSERT INTO orders VALUES (?,?,?,?,?)", _ORDERS_ROWS)
-    con.commit()
-    con.close()
+    with transaction(db_path) as con:
+        cur = con.cursor()
+        cur.execute("CREATE TABLE regions (id INTEGER PRIMARY KEY, name TEXT)")
+        cur.executemany("INSERT INTO regions VALUES (?,?)", _REGIONS_ROWS)
+        cur.execute(
+            "CREATE TABLE customers (id INTEGER PRIMARY KEY, region TEXT, "
+            "region_id INTEGER, tier TEXT, name TEXT)"
+        )
+        cur.executemany("INSERT INTO customers VALUES (?,?,?,?,?)", _CUSTOMERS_ROWS)
+        cur.execute(
+            "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, "
+            "status TEXT, amount REAL, ordered_at TEXT)"
+        )
+        cur.executemany("INSERT INTO orders VALUES (?,?,?,?,?)", _ORDERS_ROWS)
 
 
 def _seed_chain_duckdb(db_path: str) -> None:
@@ -444,23 +443,12 @@ async def make_chain_exec_engine(dialect: str) -> AsyncIterator[SlayerQueryEngin
     """Seeded, executing chain engine — one backend per call."""
     if dialect == "duckdb":
         pytest.importorskip("duckdb")
-    with tempfile.TemporaryDirectory() as d:
-        db_path = os.path.join(d, f"data.{dialect}")
-        if dialect == "sqlite":
-            _seed_chain_sqlite(db_path)
-        else:
-            _seed_chain_duckdb(db_path)
-        storage = YAMLStorage(base_dir=os.path.join(d, "store"))
-        await storage.save_datasource(
-            DatasourceConfig(name=DS_CHAIN, type=dialect, database=db_path),
-        )
-        for model in chain_models():
-            await storage.save_model(model)
-        engine = SlayerQueryEngine(storage=storage)
-        try:
-            yield engine
-        finally:
-            await engine.aclose()
+    seed = _seed_chain_duckdb if dialect == "duckdb" else _seed_chain_sqlite
+    async with seeded_exec_engine(
+        dialect=dialect, seed=seed, models=chain_models(),
+        datasource=DS_CHAIN, validate=True,
+    ) as (engine, _db):
+        yield engine
 
 
 # --------------------------------------------------------------------------- #

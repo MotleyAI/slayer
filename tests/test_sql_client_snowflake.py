@@ -17,7 +17,7 @@ Where the **dialect-class methods** are tested in
 """
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -92,7 +92,6 @@ class TestSnowflakeStatementTimeout:
 
         client._execute_sql_sync(
             sql="SELECT 1",
-            connection_string="snowflake://?connection_name=default",
             db_type="snowflake",
             timeout_seconds=42,
             engine=fake_engine,
@@ -145,13 +144,11 @@ class TestSnowflakeStatementTimeout:
         fake_result.cursor.description = fake_cursor_desc
         fake_conn.exec_driver_sql.return_value = fake_result
 
-        with patch.object(client, "_resolve_sync_engine", return_value=fake_engine):
-            client._get_column_types_sync(
-                sql="SELECT 1 AS col",
-                connection_string="snowflake://?connection_name=default",
-                db_type="snowflake",
-                engine=fake_engine,
-            )
+        client._get_column_types_sync(
+            sql="SELECT 1 AS col",
+            db_type="snowflake",
+            engine=fake_engine,
+        )
 
         assert fake_conn.exec_driver_sql.call_count >= 2
         first_sql = _extract_text(fake_conn.exec_driver_sql.call_args_list[0])

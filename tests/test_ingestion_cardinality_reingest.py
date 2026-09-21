@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-import sqlite3
 import tempfile
 from pathlib import Path
 
 import pytest
 
-from slayer.core.enums import JoinCardinality
-from slayer.core.models import DatasourceConfig
+from slayer.core.enums import DataType, JoinCardinality
+from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.engine.ingestion import ingest_datasource_idempotent
+from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -24,25 +24,23 @@ def workspace():
 
 
 def _create_schema(db_path: str) -> None:
-    conn = sqlite3.connect(db_path)
-    conn.executescript(
-        """
-        CREATE TABLE customers (
-            id INTEGER PRIMARY KEY,
-            email TEXT UNIQUE,
-            region TEXT NOT NULL
-        );
-        CREATE TABLE orders (
-            id INTEGER PRIMARY KEY,
-            amount REAL NOT NULL,
-            customer_id INTEGER REFERENCES customers(id)
-        );
-        INSERT INTO customers VALUES (1, 'a@x.com', 'US');
-        INSERT INTO orders VALUES (1, 100.0, 1);
-        """
-    )
-    conn.commit()
-    conn.close()
+    with transaction(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE customers (
+                id INTEGER PRIMARY KEY,
+                email TEXT UNIQUE,
+                region TEXT NOT NULL
+            );
+            CREATE TABLE orders (
+                id INTEGER PRIMARY KEY,
+                amount REAL NOT NULL,
+                customer_id INTEGER REFERENCES customers(id)
+            );
+            INSERT INTO customers VALUES (1, 'a@x.com', 'US');
+            INSERT INTO orders VALUES (1, 100.0, 1);
+            """
+        )
 
 
 async def _setup(workspace: Path) -> tuple:
@@ -140,24 +138,17 @@ class TestLegacyJoinTargetNormalisation:
     async def test_dunder_join_target_is_preserved_across_reingest(
         self, workspace: Path
     ) -> None:
-        import sqlite3
-
-        from slayer.core.models import DatasourceConfig
-        from slayer.storage.yaml_storage import YAMLStorage
-
         db = str(workspace / "legacy.db")
-        conn = sqlite3.connect(db)
-        conn.executescript(
-            """
-            CREATE TABLE reports__patient__drug (id INTEGER PRIMARY KEY);
-            CREATE TABLE visits (
-                id INTEGER PRIMARY KEY,
-                report_id INTEGER REFERENCES reports__patient__drug(id)
-            );
-            """
-        )
-        conn.commit()
-        conn.close()
+        with transaction(db) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE reports__patient__drug (id INTEGER PRIMARY KEY);
+                CREATE TABLE visits (
+                    id INTEGER PRIMARY KEY,
+                    report_id INTEGER REFERENCES reports__patient__drug(id)
+                );
+                """
+            )
 
         storage = YAMLStorage(base_dir=str(workspace / "store"))
         ds = DatasourceConfig(name="ds", type="sqlite", database=db)
@@ -186,30 +177,17 @@ class TestLegacyJoinTargetNormalisation:
         Looped, so this also covers idempotence: a repaired target sanitizes
         to itself and later runs are no-ops.
         """
-        import sqlite3
-
-        from slayer.core.enums import DataType
-        from slayer.core.models import (
-            Column,
-            DatasourceConfig,
-            ModelJoin,
-            SlayerModel,
-        )
-        from slayer.storage.yaml_storage import YAMLStorage
-
         db = str(workspace / "collide.db")
-        conn = sqlite3.connect(db)
-        conn.executescript(
-            """
-            CREATE TABLE a_b (id INTEGER PRIMARY KEY);
-            CREATE TABLE src (
-                id INTEGER PRIMARY KEY,
-                x INTEGER REFERENCES a_b(id)
-            );
-            """
-        )
-        conn.commit()
-        conn.close()
+        with transaction(db) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE a_b (id INTEGER PRIMARY KEY);
+                CREATE TABLE src (
+                    id INTEGER PRIMARY KEY,
+                    x INTEGER REFERENCES a_b(id)
+                );
+                """
+            )
 
         storage = YAMLStorage(base_dir=str(workspace / "store"))
         ds = DatasourceConfig(name="ds", type="sqlite", database=db)

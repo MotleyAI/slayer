@@ -33,7 +33,6 @@ controls (they assert the invariant is preserved).
 from __future__ import annotations
 
 import re
-import sqlite3
 
 import pytest
 
@@ -48,6 +47,7 @@ from slayer.core.models import (
 )
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 
 # Canonical auto-aliases of the two aggregates the formula expands to. If
@@ -106,31 +106,29 @@ async def _make_engine(
     """
     db_file = tmp_path / "slayer_test.db"
     if seed:
-        conn = sqlite3.connect(db_file)
-        conn.executescript(
-            """
-            CREATE TABLE stores (id INTEGER PRIMARY KEY, name TEXT);
-            INSERT INTO stores VALUES (1, 'North'), (2, 'South');
-            CREATE TABLE orders (
-                id INTEGER PRIMARY KEY, customer TEXT, amount REAL,
-                store_id INTEGER, created_at TEXT
-            );
-            -- North: 6 orders, 2 distinct customers → habit = 3
-            INSERT INTO orders VALUES
-                (1, 'A', 10, 1, '2026-01-01'),
-                (2, 'A', 20, 1, '2026-01-02'),
-                (3, 'A', 30, 1, '2026-01-03'),
-                (4, 'B', 40, 1, '2026-02-01'),
-                (5, 'B', 50, 1, '2026-02-02'),
-                (6, 'B', 60, 1, '2026-02-03'),
-            -- South: 2 orders, 2 distinct customers → habit = 1
-                (7, 'C', 70, 2, '2026-01-01'),
-                (8, 'D', 80, 2, '2026-02-01');
-            -- Ungrouped: 8 orders, 4 distinct customers → habit = 2 (exact)
-            """
-        )
-        conn.commit()
-        conn.close()
+        with transaction(db_file) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE stores (id INTEGER PRIMARY KEY, name TEXT);
+                INSERT INTO stores VALUES (1, 'North'), (2, 'South');
+                CREATE TABLE orders (
+                    id INTEGER PRIMARY KEY, customer TEXT, amount REAL,
+                    store_id INTEGER, created_at TEXT
+                );
+                -- North: 6 orders, 2 distinct customers → habit = 3
+                INSERT INTO orders VALUES
+                    (1, 'A', 10, 1, '2026-01-01'),
+                    (2, 'A', 20, 1, '2026-01-02'),
+                    (3, 'A', 30, 1, '2026-01-03'),
+                    (4, 'B', 40, 1, '2026-02-01'),
+                    (5, 'B', 50, 1, '2026-02-02'),
+                    (6, 'B', 60, 1, '2026-02-03'),
+                -- South: 2 orders, 2 distinct customers → habit = 1
+                    (7, 'C', 70, 2, '2026-01-01'),
+                    (8, 'D', 80, 2, '2026-02-01');
+                -- Ungrouped: 8 orders, 4 distinct customers → habit = 2 (exact)
+                """
+            )
 
     storage = YAMLStorage(base_dir=str(tmp_path / "store"))
     await storage.save_datasource(

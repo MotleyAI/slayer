@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import argparse
 import io
-import sqlite3
 import sys
 import tempfile
 import types
@@ -41,6 +40,14 @@ from slayer.engine.schema_drift import (
     WholeModelDelete,
 )
 from slayer.storage.yaml_storage import YAMLStorage
+from slayer.storage.sqlite_conn import transaction
+
+import slayer.api.server as api_server
+import slayer.engine.schema_drift as _sd
+import slayer.mcp.server as mcp_server_mod
+from slayer.api.server import create_app
+from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.mcp.server import create_mcp_server
 
 
 # ─────────────────────────────────────────────────────────────────────────────  # NOSONAR(S125) — section separator, not commented-out code
@@ -313,15 +320,11 @@ class TestOrchestrator:
         # Patch wherever it could be imported from — both engine and a
         # potential future re-export. The orchestrator must never reach it.
         try:
-            import slayer.engine.schema_drift as _sd
-
             if hasattr(_sd, "apply_drift_deletes"):
                 monkeypatch.setattr(_sd, "apply_drift_deletes", apply_mock)
         except Exception:
             pass
         try:
-            from slayer.engine.query_engine import SlayerQueryEngine
-
             if hasattr(SlayerQueryEngine, "apply_drift_deletes"):
                 monkeypatch.setattr(
                     SlayerQueryEngine, "apply_drift_deletes", apply_mock
@@ -660,9 +663,6 @@ class TestProgrammaticKwarg:
         async def _noop(*, storage):  # noqa: ANN001, ANN002 # NOSONAR(S7503) — async signature required; replaces the awaited seed_help_memories
             return 0
 
-        import slayer.api.server as api_server
-        import slayer.mcp.server as mcp_server_mod
-
         monkeypatch.setattr(api_server, "seed_help_memories", _noop)
         monkeypatch.setattr(mcp_server_mod, "seed_help_memories", _noop)
 
@@ -680,8 +680,6 @@ class TestProgrammaticKwarg:
         )
 
         storage = _stub_storage(names=[])
-        from slayer.api.server import create_app
-
         app = create_app(storage=storage, ingest_on_startup=True)
 
         assert app is not None
@@ -705,8 +703,6 @@ class TestProgrammaticKwarg:
         )
 
         storage = _stub_storage(names=[])
-        from slayer.api.server import create_app
-
         create_app(storage=storage)
         create_app(storage=storage, ingest_on_startup=False)
 
@@ -726,8 +722,6 @@ class TestProgrammaticKwarg:
         )
 
         storage = _stub_storage(names=[])
-        from slayer.mcp.server import create_mcp_server
-
         server = create_mcp_server(storage=storage, ingest_on_startup=True)
 
         assert server is not None
@@ -750,8 +744,6 @@ class TestProgrammaticKwarg:
         )
 
         storage = _stub_storage(names=[])
-        from slayer.mcp.server import create_mcp_server
-
         create_mcp_server(storage=storage)
         create_mcp_server(storage=storage, ingest_on_startup=False)
 
@@ -765,8 +757,6 @@ class TestProgrammaticKwarg:
             names=[], list_raises=RuntimeError("storage offline")
         )
 
-        from slayer.api.server import create_app
-
         with pytest.raises(RuntimeError, match="storage offline"):
             create_app(storage=storage, ingest_on_startup=True)
 
@@ -774,8 +764,6 @@ class TestProgrammaticKwarg:
         storage = _stub_storage(
             names=[], list_raises=RuntimeError("storage offline")
         )
-
-        from slayer.mcp.server import create_mcp_server
 
         with pytest.raises(RuntimeError, match="storage offline"):
             create_mcp_server(storage=storage, ingest_on_startup=True)
@@ -802,8 +790,9 @@ class TestListDatasourcesRaiseAtBoot:
 
         fake_api.create_app = raising_create_app
 
+        serve_args = _serve_args(ingest_on_startup=True)
         with pytest.raises(RuntimeError, match="storage offline"):
-            cli._run_serve(_serve_args(ingest_on_startup=True))
+            cli._run_serve(serve_args)
 
         # uvicorn must NOT have been called.
         assert not any(c[0] == "uvicorn_run" for c in capture)
@@ -821,8 +810,9 @@ class TestListDatasourcesRaiseAtBoot:
 
         fake_mcp.create_mcp_server = raising_create_mcp_server
 
+        mcp_args = _mcp_args(ingest_on_startup=True)
         with pytest.raises(RuntimeError, match="storage offline"):
-            cli._run_mcp(_mcp_args(ingest_on_startup=True))
+            cli._run_mcp(mcp_args)
 
         assert not any(c[0] == "mcp_run" for c in capture)
 
@@ -843,18 +833,16 @@ class TestMemoryEmbeddingsOnStartup:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             db_path = str(tmp_path / "live.db")
-            conn = sqlite3.connect(db_path)
-            conn.executescript(
-                """
-                CREATE TABLE orders (
-                    id INTEGER PRIMARY KEY,
-                    amount REAL NOT NULL
-                );
-                INSERT INTO orders VALUES (1, 100.0);
-                """
-            )
-            conn.commit()
-            conn.close()
+            with transaction(db_path) as conn:
+                conn.executescript(
+                    """
+                    CREATE TABLE orders (
+                        id INTEGER PRIMARY KEY,
+                        amount REAL NOT NULL
+                    );
+                    INSERT INTO orders VALUES (1, 100.0);
+                    """
+                )
 
             storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
             ds = DatasourceConfig(name="ds", type="sqlite", database=db_path)

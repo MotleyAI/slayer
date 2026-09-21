@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 import io
-import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -44,7 +43,10 @@ from slayer.engine.introspect_utils import (
 from slayer.engine.schema_scope import SchemaRef
 from slayer.engine.schema_drift import IdempotentIngestResult, ModelAddition
 from slayer.mcp.server import _render_ingest_result
+from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
+
+from tests._engine_helpers import disposable_engine
 
 
 # ---------------------------------------------------------------------------
@@ -225,15 +227,15 @@ class TestSqliteProbePreservesComments:
         assert out[0].comment == "kept"
 
     def test_widened_column_keeps_comment(self) -> None:
-        engine = sa.create_engine("sqlite:///:memory:")
-        with engine.connect() as conn:
-            conn.execute(sa.text("CREATE TABLE t (a INTEGER)"))
-            conn.execute(sa.text("INSERT INTO t VALUES (1.5)"))
-            conn.commit()
-        cols = [IntrospectedColumn(name="a", type=DataType.INT, comment="probed")]
-        out = _sqlite_probe_integer_columns(sa_engine=engine, sql_table="t", columns=cols)
-        assert out[0].type is DataType.DOUBLE
-        assert out[0].comment == "probed"
+        with disposable_engine("sqlite:///:memory:") as engine:
+            with engine.connect() as conn:
+                conn.execute(sa.text("CREATE TABLE t (a INTEGER)"))
+                conn.execute(sa.text("INSERT INTO t VALUES (1.5)"))
+                conn.commit()
+            cols = [IntrospectedColumn(name="a", type=DataType.INT, comment="probed")]
+            out = _sqlite_probe_integer_columns(sa_engine=engine, sql_table="t", columns=cols)
+            assert out[0].type is DataType.DOUBLE
+            assert out[0].comment == "probed"
 
 
 # ---------------------------------------------------------------------------
@@ -646,10 +648,8 @@ class TestIngestDatasourceReport:
 
 def _sqlite_live_db(tmp_path: Path) -> str:
     db_path = str(tmp_path / "live.db")
-    conn = sqlite3.connect(db_path)
-    conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)")
-    conn.commit()
-    conn.close()
+    with transaction(db_path) as conn:
+        conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)")
     return db_path
 
 
@@ -860,17 +860,13 @@ class TestCliDatasourcesCreateIngest:
 
 class TestBigQueryDriverContract:
     def test_get_columns_carries_field_description(self) -> None:
-        pytest.importorskip("sqlalchemy_bigquery")
-        from google.cloud.bigquery import SchemaField
-        from sqlalchemy_bigquery._types import get_columns as bq_get_columns
-
+        SchemaField = pytest.importorskip("google.cloud.bigquery").SchemaField
+        bq_get_columns = pytest.importorskip("sqlalchemy_bigquery._types").get_columns
         cols = bq_get_columns([SchemaField("id", "INTEGER", description="row id")])
         assert cols[0]["comment"] == "row id"
 
     def test_get_table_comment_returns_table_description(self) -> None:
-        pytest.importorskip("sqlalchemy_bigquery")
-        from sqlalchemy_bigquery import BigQueryDialect
-
+        BigQueryDialect = pytest.importorskip("sqlalchemy_bigquery").BigQueryDialect
         dialect = BigQueryDialect()
         dialect._get_table = MagicMock(
             return_value=SimpleNamespace(description="tbl desc")
@@ -882,10 +878,9 @@ class TestBigQueryDriverContract:
         """Run the REAL BigQueryDialect reflection over a locally built
         Table — only the network call is mocked — and feed its genuine
         output through introspect_table_to_model."""
-        pytest.importorskip("sqlalchemy_bigquery")
-        from google.cloud.bigquery import SchemaField, Table
-        from sqlalchemy_bigquery import BigQueryDialect
-
+        bq = pytest.importorskip("google.cloud.bigquery")
+        SchemaField, Table = bq.SchemaField, bq.Table
+        BigQueryDialect = pytest.importorskip("sqlalchemy_bigquery").BigQueryDialect
         table = Table("proj.dset.orders", schema=[
             SchemaField("id", "INTEGER", description="row id"),
             SchemaField("amount", "FLOAT", description="order amount"),

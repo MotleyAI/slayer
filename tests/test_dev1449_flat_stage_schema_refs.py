@@ -14,7 +14,6 @@ the rendered/executed result and the rejection of the dotted form.
 from __future__ import annotations
 
 import os
-import sqlite3
 import tempfile
 from typing import AsyncIterator, Tuple
 
@@ -25,6 +24,7 @@ from slayer.core.errors import IllegalScopeReferenceError
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -32,31 +32,29 @@ from slayer.storage.yaml_storage import YAMLStorage
 async def engine() -> AsyncIterator[Tuple[SlayerQueryEngine, str]]:
     d = tempfile.mkdtemp()
     db_path = os.path.join(d, "t.db")
-    con = sqlite3.connect(db_path)
-    cur = con.cursor()
-    cur.execute(
-        "CREATE TABLE customers (id INTEGER PRIMARY KEY, region TEXT, revenue REAL)"
-    )
-    cur.executemany(
-        "INSERT INTO customers VALUES (?,?,?)",
-        [(1, "NA", 100.0), (2, "NA", 50.0), (3, "EU", 70.0)],
-    )
-    cur.execute(
-        "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, "
-        "status TEXT, amount REAL)"
-    )
-    cur.executemany(
-        "INSERT INTO orders VALUES (?,?,?,?)",
-        [
-            (1, 1, "paid", 10.0),
-            (2, 1, "paid", 5.0),
-            (3, 2, "open", 7.0),
-            (4, 3, "open", 3.0),
-            (5, 3, "paid", 9.0),
-        ],
-    )
-    con.commit()
-    con.close()
+    with transaction(db_path) as con:
+        cur = con.cursor()
+        cur.execute(
+            "CREATE TABLE customers (id INTEGER PRIMARY KEY, region TEXT, revenue REAL)"
+        )
+        cur.executemany(
+            "INSERT INTO customers VALUES (?,?,?)",
+            [(1, "NA", 100.0), (2, "NA", 50.0), (3, "EU", 70.0)],
+        )
+        cur.execute(
+            "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, "
+            "status TEXT, amount REAL)"
+        )
+        cur.executemany(
+            "INSERT INTO orders VALUES (?,?,?,?)",
+            [
+                (1, 1, "paid", 10.0),
+                (2, 1, "paid", 5.0),
+                (3, 2, "open", 7.0),
+                (4, 3, "open", 3.0),
+                (5, 3, "paid", 9.0),
+            ],
+        )
 
     storage = YAMLStorage(base_dir=os.path.join(d, "store"))
     await storage.save_datasource(
@@ -138,5 +136,6 @@ async def test_dev1449_dotted_form_raises(engine):
         dimensions=["customers.region"],
         measures=[{"formula": "amount_sum:sum"}],
     )
+    stage1 = _stage1()
     with pytest.raises(IllegalScopeReferenceError):
-        await eng.execute([_stage1(), root])
+        await eng.execute([stage1, root])

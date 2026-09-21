@@ -23,7 +23,6 @@ leak across tests.
 from __future__ import annotations
 
 import json
-import sqlite3
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -37,6 +36,7 @@ from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.engine.query_engine import SlayerQueryEngine, _sql_client_cache_key
 from slayer.mcp.server import create_mcp_server
+from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -51,11 +51,9 @@ def workspace() -> Iterator[Path]:
 
 def _make_sqlite_db(workspace: Path) -> Path:
     db = workspace / "live.db"
-    conn = sqlite3.connect(db)
-    conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER)")
-    conn.execute("INSERT INTO t (v) VALUES (10), (20), (30)")
-    conn.commit()
-    conn.close()
+    with transaction(db) as conn:
+        conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER)")
+        conn.execute("INSERT INTO t (v) VALUES (10), (20), (30)")
     return db
 
 

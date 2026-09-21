@@ -2,7 +2,8 @@
 
 import logging
 import os
-import sqlite3
+from slayer.storage.sqlite_conn import transaction
+from tests._engine_helpers import disposable_engine
 import tempfile
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -478,47 +479,47 @@ class TestSqliteSafeGetters:
 
     def test_safe_get_pk_constraint_sqlite_no_pk(self):
         """Empty inspector PK on SQLite returns empty without info_schema query."""
-        engine = sa.create_engine("sqlite:///:memory:")
-        with engine.connect() as conn:
-            conn.execute(sa.text("CREATE TABLE t (a TEXT, b INTEGER)"))
-            conn.commit()
-        insp = sa.inspect(engine)
-        result = _safe_get_pk_constraint(
-            inspector=insp, sa_engine=engine, table_name="t", ref=None
-        )
-        assert result.get("constrained_columns") == []
+        with disposable_engine("sqlite:///:memory:") as engine:
+            with engine.connect() as conn:
+                conn.execute(sa.text("CREATE TABLE t (a TEXT, b INTEGER)"))
+                conn.commit()
+            insp = sa.inspect(engine)
+            result = _safe_get_pk_constraint(
+                inspector=insp, sa_engine=engine, table_name="t", ref=None
+            )
+            assert result.get("constrained_columns") == []
 
     def test_safe_get_pk_constraint_sqlite_fk_only(self):
         """Tables with FK but no PK (the robot DB pattern) — must not crash."""
-        engine = sa.create_engine("sqlite:///:memory:")
-        with engine.connect() as conn:
-            conn.execute(sa.text("CREATE TABLE parent (id INTEGER PRIMARY KEY)"))
-            conn.execute(
-                sa.text(
-                    "CREATE TABLE child (parent_ref INTEGER, "
-                    "FOREIGN KEY (parent_ref) REFERENCES parent(id))"
+        with disposable_engine("sqlite:///:memory:") as engine:
+            with engine.connect() as conn:
+                conn.execute(sa.text("CREATE TABLE parent (id INTEGER PRIMARY KEY)"))
+                conn.execute(
+                    sa.text(
+                        "CREATE TABLE child (parent_ref INTEGER, "
+                        "FOREIGN KEY (parent_ref) REFERENCES parent(id))"
+                    )
                 )
+                conn.commit()
+            insp = sa.inspect(engine)
+            result = _safe_get_pk_constraint(
+                inspector=insp, sa_engine=engine, table_name="child", ref=None
             )
-            conn.commit()
-        insp = sa.inspect(engine)
-        result = _safe_get_pk_constraint(
-            inspector=insp, sa_engine=engine, table_name="child", ref=None
-        )
-        assert result.get("constrained_columns") == []
+            assert result.get("constrained_columns") == []
 
     def test_safe_get_pk_constraint_sqlite_real_pk(self):
         """SQLite tables with declared PK still report it correctly."""
-        engine = sa.create_engine("sqlite:///:memory:")
-        with engine.connect() as conn:
-            conn.execute(
-                sa.text("CREATE TABLE u (id INTEGER PRIMARY KEY, name TEXT)")
+        with disposable_engine("sqlite:///:memory:") as engine:
+            with engine.connect() as conn:
+                conn.execute(
+                    sa.text("CREATE TABLE u (id INTEGER PRIMARY KEY, name TEXT)")
+                )
+                conn.commit()
+            insp = sa.inspect(engine)
+            result = _safe_get_pk_constraint(
+                inspector=insp, sa_engine=engine, table_name="u", ref=None
             )
-            conn.commit()
-        insp = sa.inspect(engine)
-        result = _safe_get_pk_constraint(
-            inspector=insp, sa_engine=engine, table_name="u", ref=None
-        )
-        assert result.get("constrained_columns") == ["id"]
+            assert result.get("constrained_columns") == ["id"]
 
 
 # ---------------------------------------------------------------------------
@@ -655,14 +656,13 @@ class TestUnmappedTypeBecomesOpaque:
     def test_ingest_retains_db_type_when_logical_type_loses_information(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = os.path.join(tmpdir, "opaque.db")
-            engine = sa.create_engine(f"sqlite:///{db_path}")
-            with engine.connect() as c:
-                c.execute(sa.text(
-                    "CREATE TABLE t (id INTEGER PRIMARY KEY, "
-                    "name VARCHAR(64), amount NUMERIC(18,2), payload JSON, blob_col BLOB)"
-                ))
-                c.commit()
-            engine.dispose()
+            with disposable_engine(f"sqlite:///{db_path}") as engine:
+                with engine.connect() as c:
+                    c.execute(sa.text(
+                        "CREATE TABLE t (id INTEGER PRIMARY KEY, "
+                        "name VARCHAR(64), amount NUMERIC(18,2), payload JSON, blob_col BLOB)"
+                    ))
+                    c.commit()
 
             ds = DatasourceConfig(name="opaque_ds", type="sqlite", database=db_path)
             model = next(m for m in ingest_datasource(datasource=ds) if m.name == "t")
@@ -693,13 +693,13 @@ class TestSqliteIngestionRoundTrip:
     def test_int_double_text_distinction_via_inspector(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = os.path.join(tmpdir, "live.db")
-            conn = sa.create_engine(f"sqlite:///{db_path}")
-            with conn.connect() as c:
-                c.execute(sa.text(
-                    "CREATE TABLE t (id INTEGER PRIMARY KEY, amt REAL, "
-                    "n VARCHAR(64), q INTEGER, ts TIMESTAMP, d DATE, b BOOLEAN)"
-                ))
-                c.commit()
+            with disposable_engine(f"sqlite:///{db_path}") as conn:
+                with conn.connect() as c:
+                    c.execute(sa.text(
+                        "CREATE TABLE t (id INTEGER PRIMARY KEY, amt REAL, "
+                        "n VARCHAR(64), q INTEGER, ts TIMESTAMP, d DATE, b BOOLEAN)"
+                    ))
+                    c.commit()
             ds = DatasourceConfig(name="live", type="sqlite", database=db_path)
             schema = _live_schema_for_datasource(datasource=ds)
             cols = schema["t"].columns
@@ -725,15 +725,11 @@ def _create_sqlite_db_with_typed_data(
     executed one row at a time so SQLite preserves the storage class.
     """
     db_path = os.path.join(tmpdir, "live.db")
-    conn = sqlite3.connect(db_path)
-    try:
+    with transaction(db_path) as conn:
         conn.executescript(schema_sql)
         for sql, rows in inserts:
             for row in rows:
                 conn.execute(sql, row if isinstance(row, tuple) else (row,))
-        conn.commit()
-    finally:
-        conn.close()
     return db_path
 
 
@@ -883,36 +879,35 @@ class TestSqliteIngestionProbe:
         '.' — dotted aliases are joined-column references that belong to
         the target model's own probe pass, not the source table's."""
         # Build a dummy SA engine just so the helper's dialect check passes.
-        sa_engine = sa.create_engine("sqlite:///:memory:")
-        with sa_engine.connect() as conn:
-            conn.execute(sa.text('CREATE TABLE t (qty INTEGER)'))
-            conn.commit()
+        with disposable_engine("sqlite:///:memory:") as sa_engine:
+            with sa_engine.connect() as conn:
+                conn.execute(sa.text('CREATE TABLE t (qty INTEGER)'))
+                conn.commit()
 
-        seen_columns: list[str] = []
+            seen_columns: list[str] = []
 
-        def _capture(*, conn, table, column, schema=None):
-            seen_columns.append(column)
-            return DataType.INT
+            def _capture(*, conn, table, column, schema=None):
+                seen_columns.append(column)
+                return DataType.INT
 
-        with patch(
-            "slayer.sql.sqlite_introspect.probe_sqlite_integer_column",
-            side_effect=_capture,
-        ):
-            # Mixed bag: one base column (no '.') and one dotted alias.
-            columns = [
-                IntrospectedColumn(name="qty", type=DataType.INT),
-                IntrospectedColumn(name="customers.region_id", type=DataType.INT),
-            ]
-            _sqlite_probe_integer_columns(
-                sa_engine=sa_engine,
-                sql_table="t",
-                columns=columns,
-            )
+            with patch(
+                "slayer.sql.sqlite_introspect.probe_sqlite_integer_column",
+                side_effect=_capture,
+            ):
+                # Mixed bag: one base column (no '.') and one dotted alias.
+                columns = [
+                    IntrospectedColumn(name="qty", type=DataType.INT),
+                    IntrospectedColumn(name="customers.region_id", type=DataType.INT),
+                ]
+                _sqlite_probe_integer_columns(
+                    sa_engine=sa_engine,
+                    sql_table="t",
+                    columns=columns,
+                )
 
-        # The dotted alias must never be passed to the probe.
-        assert "qty" in seen_columns
-        assert "customers.region_id" not in seen_columns
-        sa_engine.dispose()
+            # The dotted alias must never be passed to the probe.
+            assert "qty" in seen_columns
+            assert "customers.region_id" not in seen_columns
 
     def test_joined_column_probed_via_owning_model(self) -> None:
         """DEV-1538 + Codex #9 restated: each table's columns are probed

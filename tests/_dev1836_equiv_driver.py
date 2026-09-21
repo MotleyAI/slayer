@@ -20,7 +20,7 @@ import importlib
 import json
 import os
 import random
-import sqlite3
+from slayer.storage.sqlite_conn import transaction
 import sys
 import tempfile
 import traceback
@@ -103,44 +103,42 @@ def _topo(models):
 
 def seed_sqlite(models, db_path, *, seed=20240501, n_rows=9):
     rng = random.Random(seed)
-    con = sqlite3.connect(db_path)
-    pk_values: dict[str, dict[str, list]] = {}
-    for m in _topo(models):
-        if not m.sql_table:
-            continue
-        cols = _physical_columns(m)
-        if not cols:
-            continue
-        coldefs = ", ".join(f'"{c.name}" {_SQLITE_TYPE.get(c.type, "TEXT")}' for c in cols)
-        con.execute(f'CREATE TABLE "{m.sql_table}" ({coldefs})')
-        colnames = {c.name for c in cols}
-        # FK columns: source-side join cols sample from the target's target-col values.
-        fk: dict[str, list] = {}
-        for j in m.joins:
-            for src_col, tgt_col in j.join_pairs:
-                vals = pk_values.get(j.target_model, {}).get(tgt_col)
-                if vals and src_col in colnames:
-                    fk[src_col] = vals
-        rows = []
-        for i in range(n_rows):
-            row = {}
-            for c in cols:
-                if c.name in fk:
-                    # repetition -> fan-out; plus an occasional orphan NULL.
-                    row[c.name] = rng.choice(fk[c.name] + fk[c.name] + [None])
-                elif c.primary_key or c.unique:
-                    row[c.name] = (i + 1) if c.type == DataType.INT else f"{c.name[:3]}{i + 1}"
-                else:
-                    row[c.name] = _rand_value(c.type, rng)
-            rows.append(row)
-        placeholders = ", ".join("?" for _ in cols)
-        con.executemany(
-            f'INSERT INTO "{m.sql_table}" VALUES ({placeholders})',
-            [[r[c.name] for c in cols] for r in rows],
-        )
-        pk_values[m.name] = {c.name: [r[c.name] for r in rows] for c in cols}
-    con.commit()
-    con.close()
+    with transaction(db_path) as con:
+        pk_values: dict[str, dict[str, list]] = {}
+        for m in _topo(models):
+            if not m.sql_table:
+                continue
+            cols = _physical_columns(m)
+            if not cols:
+                continue
+            coldefs = ", ".join(f'"{c.name}" {_SQLITE_TYPE.get(c.type, "TEXT")}' for c in cols)
+            con.execute(f'CREATE TABLE "{m.sql_table}" ({coldefs})')
+            colnames = {c.name for c in cols}
+            # FK columns: source-side join cols sample from the target's target-col values.
+            fk: dict[str, list] = {}
+            for j in m.joins:
+                for src_col, tgt_col in j.join_pairs:
+                    vals = pk_values.get(j.target_model, {}).get(tgt_col)
+                    if vals and src_col in colnames:
+                        fk[src_col] = vals
+            rows = []
+            for i in range(n_rows):
+                row = {}
+                for c in cols:
+                    if c.name in fk:
+                        # repetition -> fan-out; plus an occasional orphan NULL.
+                        row[c.name] = rng.choice(fk[c.name] + fk[c.name] + [None])
+                    elif c.primary_key or c.unique:
+                        row[c.name] = (i + 1) if c.type == DataType.INT else f"{c.name[:3]}{i + 1}"
+                    else:
+                        row[c.name] = _rand_value(c.type, rng)
+                rows.append(row)
+            placeholders = ", ".join("?" for _ in cols)
+            con.executemany(
+                f'INSERT INTO "{m.sql_table}" VALUES ({placeholders})',
+                [[r[c.name] for c in cols] for r in rows],
+            )
+            pk_values[m.name] = {c.name: [r[c.name] for r in rows] for c in cols}
 
 
 def _canon_rows(rows):

@@ -1,5 +1,6 @@
 """dbt / OSI / facade producers set and carry join cardinality."""
 
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,8 @@ from slayer.facade.catalog import FacadeJoin, build_catalog, _facade_join_from
 from slayer.facade.translator import translate
 from slayer.osi.converter import OsiToSlayerConverter
 from slayer.osi.parser import parse_osi_path
+
+from tests._engine_helpers import disposable_engine
 
 FIXTURES = Path(__file__).parent / "fixtures" / "osi"
 
@@ -149,13 +152,13 @@ class TestDbtConverterMirror:
 
 
 @pytest.fixture
-def osi_engine(tmp_path: Path) -> sa.Engine:
-    engine = sa.create_engine(f"sqlite:///{tmp_path}/shop.db")
-    with engine.connect() as conn:
-        for ddl in _OSI_SCHEMA:
-            conn.execute(sa.text(ddl))
-        conn.commit()
-    return engine
+def osi_engine(tmp_path: Path) -> Iterator[sa.Engine]:
+    with disposable_engine(f"sqlite:///{tmp_path}/shop.db") as engine:
+        with engine.connect() as conn:
+            for ddl in _OSI_SCHEMA:
+                conn.execute(sa.text(ddl))
+            conn.commit()
+        yield engine
 
 
 class TestOsi:

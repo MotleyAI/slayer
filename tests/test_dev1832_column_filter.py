@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import os
 import re
-import sqlite3
 import tempfile
 
 import pytest
@@ -29,6 +28,7 @@ from slayer.core.models import (
 )
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 
 from slayer.core.errors import ColumnCycleError
@@ -93,12 +93,10 @@ async def _tsales_engine(rows: list[tuple]) -> SlayerQueryEngine:
     """A seeded SQLite engine over a timed ``tsales(id, product, amount, ts)``."""
     d = tempfile.mkdtemp()
     db_path = os.path.join(d, "t.db")
-    con = sqlite3.connect(db_path)
-    con.execute("CREATE TABLE tsales (id INTEGER PRIMARY KEY, product TEXT, "
-                "amount REAL, ts TEXT)")
-    con.executemany("INSERT INTO tsales VALUES (?,?,?,?)", rows)
-    con.commit()
-    con.close()
+    with transaction(db_path) as con:
+        con.execute("CREATE TABLE tsales (id INTEGER PRIMARY KEY, product TEXT, "
+                    "amount REAL, ts TEXT)")
+        con.executemany("INSERT INTO tsales VALUES (?,?,?,?)", rows)
     storage = YAMLStorage(base_dir=os.path.join(d, "store"))
     await storage.save_datasource(
         DatasourceConfig(name="test", type="sqlite", database=db_path))

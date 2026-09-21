@@ -44,13 +44,13 @@ a test reading the wrong column fails rather than accidentally agreeing.
 
 from __future__ import annotations
 
-import sqlite3
 from typing import List
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ir.source_bundle import ResolvedSourceBundle
+from slayer.storage.sqlite_conn import transaction
 
 from tests._engine_helpers import make_seeded_sqlite_engine
 
@@ -126,89 +126,87 @@ _ORDERS_DDL = """
 
 def seed_dev1748_sqlite(db_path: str) -> None:
     """Create + seed the DEV-1748 SQLite corpus at ``db_path``."""
-    con = sqlite3.connect(db_path)
-    con.executescript(
-        f"""
-        CREATE TABLE regions (
-            id INTEGER PRIMARY KEY,
-            name TEXT,
-            opened_at TEXT,
-            population REAL
-        );
-        CREATE TABLE customers (
-            id INTEGER PRIMARY KEY,
-            region_id INTEGER,
-            tier TEXT,
-            spend REAL,
-            signup_at TEXT
-        );
-        CREATE TABLE orders ({_ORDERS_DDL});
-        CREATE TABLE empty_orders ({_ORDERS_DDL});
-        CREATE TABLE order_tags (
-            id INTEGER PRIMARY KEY,
-            order_id INTEGER,
-            name TEXT
-        );
-        """
-    )
-    con.executemany(
-        "INSERT INTO regions VALUES (?,?,?,?)",
-        # Region 2's name is NULL — a joined nullable grain member.
-        [(1, "Alpha", "2020-01-01", 100.0), (2, None, "2021-01-01", 200.0)],
-    )
-    con.executemany(
-        "INSERT INTO customers VALUES (?,?,?,?,?)",
-        [
-            (100, 1, "gold", CUSTOMER_SPEND_FIRST, "2024-01-01"),
-            (102, 2, "silver", 75.0, "2024-02-01"),
-            # Signed up last -> wins ``customers.spend:last``.
-            (101, 2, None, CUSTOMER_SPEND_LAST, "2024-03-01"),
-        ],
-    )
-    con.executemany(
-        "INSERT INTO orders VALUES (?,?,?,?,?,?)",
-        [
-            # paid — the plain ordered pair. The customers are INVERTED against
-            # the created_at order (customer 101 signed up LAST, customer 100
-            # FIRST), so ranking this group through the customers join reverses
-            # the winner. See PAID_BY_JOINED_SIGNUP.
-            (1, 101, "paid", "2024-01-01", "2024-01-02", PAID_FIRST),
-            (2, 100, "paid", "2024-03-01", "2024-03-02", PAID_LAST),
-            # tie — same timestamp, different values.
-            (3, 100, "tie", "2024-02-02", "2024-02-03", TIE_CANDIDATES[0]),
-            (4, 100, "tie", "2024-02-02", "2024-02-04", TIE_CANDIDATES[1]),
-            # nulltime — a NULL ranking timestamp against a real one.
-            (5, 100, "nulltime", None, "2024-01-06", NULLTIME_NULL_ROW_AMOUNT),
-            (6, 100, "nulltime", "2024-01-05", None, NULLTIME_DATED_ROW_AMOUNT),
-            # nullval — the newest row's VALUE is NULL.
-            (7, 100, "nullval", "2024-01-07", "2024-01-08", NULLVAL_OLDER),
-            (8, 100, "nullval", "2024-02-07", "2024-02-08", None),
-            # NULL status — the nullable grain member.
-            (9, 101, None, "2024-01-09", "2024-01-10", NULL_STATUS_FIRST),
-            (10, 101, None, "2024-02-09", "2024-02-10", NULL_STATUS_LAST),
-            # nomatch — no row clears the big_amount threshold.
-            (11, 101, "nomatch", "2024-01-11", "2024-01-12", NOMATCH_AMOUNTS[0]),
-            (12, 101, "nomatch", "2024-02-11", "2024-02-12", NOMATCH_AMOUNTS[1]),
-            # filt — the NEWEST row does not match; an older one does.
-            (13, 102, "filt", "2024-01-13", "2024-01-14", FILT_MATCHING),
-            (14, 102, "filt", "2024-02-13", "2024-02-14", FILT_NEWER_NONMATCHING),
-            # fan — order 15 carries four tag rows (``rush`` twice).
-            (15, 102, "fan", "2024-01-15", "2024-01-16", FAN_FIRST),
-            (16, 102, "fan", "2024-03-15", "2024-03-16", FAN_LAST),
-        ],
-    )
-    con.executemany(
-        "INSERT INTO order_tags VALUES (?,?,?)",
-        [
-            (1, 15, "rush"), (2, 15, "gift"), (3, 15, "fragile"),
-            # The DUPLICATE match: order 15 is tagged ``rush`` twice.
-            (7, 15, "rush"),
-            (4, 16, "rush"),
-            (5, 1, "rush"), (6, 2, "rush"),
-        ],
-    )
-    con.commit()
-    con.close()
+    with transaction(db_path) as con:
+        con.executescript(
+            f"""
+            CREATE TABLE regions (
+                id INTEGER PRIMARY KEY,
+                name TEXT,
+                opened_at TEXT,
+                population REAL
+            );
+            CREATE TABLE customers (
+                id INTEGER PRIMARY KEY,
+                region_id INTEGER,
+                tier TEXT,
+                spend REAL,
+                signup_at TEXT
+            );
+            CREATE TABLE orders ({_ORDERS_DDL});
+            CREATE TABLE empty_orders ({_ORDERS_DDL});
+            CREATE TABLE order_tags (
+                id INTEGER PRIMARY KEY,
+                order_id INTEGER,
+                name TEXT
+            );
+            """
+        )
+        con.executemany(
+            "INSERT INTO regions VALUES (?,?,?,?)",
+            # Region 2's name is NULL — a joined nullable grain member.
+            [(1, "Alpha", "2020-01-01", 100.0), (2, None, "2021-01-01", 200.0)],
+        )
+        con.executemany(
+            "INSERT INTO customers VALUES (?,?,?,?,?)",
+            [
+                (100, 1, "gold", CUSTOMER_SPEND_FIRST, "2024-01-01"),
+                (102, 2, "silver", 75.0, "2024-02-01"),
+                # Signed up last -> wins ``customers.spend:last``.
+                (101, 2, None, CUSTOMER_SPEND_LAST, "2024-03-01"),
+            ],
+        )
+        con.executemany(
+            "INSERT INTO orders VALUES (?,?,?,?,?,?)",
+            [
+                # paid — the plain ordered pair. The customers are INVERTED against
+                # the created_at order (customer 101 signed up LAST, customer 100
+                # FIRST), so ranking this group through the customers join reverses
+                # the winner. See PAID_BY_JOINED_SIGNUP.
+                (1, 101, "paid", "2024-01-01", "2024-01-02", PAID_FIRST),
+                (2, 100, "paid", "2024-03-01", "2024-03-02", PAID_LAST),
+                # tie — same timestamp, different values.
+                (3, 100, "tie", "2024-02-02", "2024-02-03", TIE_CANDIDATES[0]),
+                (4, 100, "tie", "2024-02-02", "2024-02-04", TIE_CANDIDATES[1]),
+                # nulltime — a NULL ranking timestamp against a real one.
+                (5, 100, "nulltime", None, "2024-01-06", NULLTIME_NULL_ROW_AMOUNT),
+                (6, 100, "nulltime", "2024-01-05", None, NULLTIME_DATED_ROW_AMOUNT),
+                # nullval — the newest row's VALUE is NULL.
+                (7, 100, "nullval", "2024-01-07", "2024-01-08", NULLVAL_OLDER),
+                (8, 100, "nullval", "2024-02-07", "2024-02-08", None),
+                # NULL status — the nullable grain member.
+                (9, 101, None, "2024-01-09", "2024-01-10", NULL_STATUS_FIRST),
+                (10, 101, None, "2024-02-09", "2024-02-10", NULL_STATUS_LAST),
+                # nomatch — no row clears the big_amount threshold.
+                (11, 101, "nomatch", "2024-01-11", "2024-01-12", NOMATCH_AMOUNTS[0]),
+                (12, 101, "nomatch", "2024-02-11", "2024-02-12", NOMATCH_AMOUNTS[1]),
+                # filt — the NEWEST row does not match; an older one does.
+                (13, 102, "filt", "2024-01-13", "2024-01-14", FILT_MATCHING),
+                (14, 102, "filt", "2024-02-13", "2024-02-14", FILT_NEWER_NONMATCHING),
+                # fan — order 15 carries four tag rows (``rush`` twice).
+                (15, 102, "fan", "2024-01-15", "2024-01-16", FAN_FIRST),
+                (16, 102, "fan", "2024-03-15", "2024-03-16", FAN_LAST),
+            ],
+        )
+        con.executemany(
+            "INSERT INTO order_tags VALUES (?,?,?)",
+            [
+                (1, 15, "rush"), (2, 15, "gift"), (3, 15, "fragile"),
+                # The DUPLICATE match: order 15 is tagged ``rush`` twice.
+                (7, 15, "rush"),
+                (4, 16, "rush"),
+                (5, 1, "rush"), (6, 2, "rush"),
+            ],
+        )
 
 
 # --------------------------------------------------------------------------- #
