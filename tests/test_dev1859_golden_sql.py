@@ -9,9 +9,10 @@ from pathlib import Path
 
 from slayer.core.query import SlayerQuery
 
-from tests._dev1840_fixtures import dev1840_models
+from tests._dev1840_fixtures import dev1840_models, signup_month_td
 from tests._dev1847_fixtures import INNER_UP_PRODUCT, dev1847_models
 from tests._dev1859_fixtures import customers_wsum_models, sales_wsum_models
+from tests._dev1919_fixtures import WINDOWED_CUSTOM_PARAM, WINDOWED_PARAM
 from tests._engine_helpers import _engine_generate
 from tests._golden_harness import bind_golden_tests, record_raise
 
@@ -72,6 +73,14 @@ def _cases() -> dict:
             "kw": {"dimensions": ["region"], "measures": [
                 {"formula": ("wsum(sum(amount, partition_by=[city, region]), "
                              "weight=count(id))"), "name": "w"}]}},
+        "param/windowed": {
+            "models": "orders", "source": "orders", "mode": None,
+            "kw": {"time_dimensions": signup_month_td(),
+                   "measures": [{"formula": WINDOWED_PARAM, "name": "w"}]}},
+        "param/windowed_custom": {
+            "models": "orders_wsum", "source": "orders", "mode": None,
+            "kw": {"time_dimensions": signup_month_td(),
+                   "measures": [{"formula": WINDOWED_CUSTOM_PARAM, "name": "w"}]}},
     }
 
 
