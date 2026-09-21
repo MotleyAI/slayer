@@ -567,7 +567,7 @@ def resolve_aggregation_params(
     out: List[ParamSpec] = [
         ParamSpec(name=name, key=v, expr_sql=None)
         for name, v in agg.kwargs
-        if isinstance(v, (ColumnKey, ColumnSqlKey, AggregateKey))
+        if isinstance(v, (ColumnKey, ColumnSqlKey, AggregateKey, TransformKey))
     ]
     agg_def = next(
         (a for a in (owner_model.aggregations or []) if a.name == agg.agg), None,

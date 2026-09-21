@@ -1329,21 +1329,29 @@ def _bind_agg_arg(
     dim_alias_map: Optional[Dict[str, "ValueKey"]] = None,
 ):
     """Bind one aggregation arg: identifiers → ``ColumnKey`` / ``ColumnSqlKey``,
-    a nested aggregate → ``AggregateKey`` (aggregate-valued parameter),
-    literals → inline scalar via ``normalize_scalar`` (stored inline, not as LiteralKey).
-    ``dim_alias_map`` rides into a nested aggregate so its ``partition_by=`` can
-    name a computed dimension (as the outer aggregate's can)."""
+    a nested aggregate → ``AggregateKey`` (aggregate-valued parameter), a grained
+    transform → ``TransformKey`` at its result grain (DEV-1946), literals → inline
+    scalar via ``normalize_scalar`` (stored inline, not as LiteralKey).
+    ``dim_alias_map`` rides into a nested aggregate / transform so its
+    ``partition_by=`` can name a computed dimension (as the outer aggregate's can)."""
     if isinstance(parsed, Literal):
         return normalize_scalar(parsed.value)
     if isinstance(parsed, AggCall):
         return _bind_agg(
             parsed, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map,
         )
+    if isinstance(parsed, TransformCall):
+        # A transform param binds like a source constituent (Axiom 2.3 / 11.4): its
+        # INPUT only, no alias_map / measure_ctx (a measure is illegal inside an aggregation).
+        return _bind_transform(
+            parsed=parsed, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map,
+        )
     if isinstance(parsed, (Ref, DottedRef)):
         return _bind(parsed, scope=scope, bundle=bundle, in_filter=False)
     raise ValueError(
         f"Aggregation argument of kind {type(parsed).__name__} is not "
-        f"supported. Pass a column reference, a scalar, or a partitioned aggregate."
+        f"supported. Pass a column reference, a scalar, a partitioned aggregate, "
+        f"or a grained transform."
     )
 
 

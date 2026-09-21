@@ -25,6 +25,7 @@ from slayer.core.formula import TIME_TRANSFORMS
 from slayer.core.window_duration import parse_window_duration
 from slayer.core.keys import (
     AggregateKey,
+    attached_inputs,
     is_boolean_shaped,
     is_cross_model_agg,
     is_local_combined_regroup_ref,
@@ -40,7 +41,6 @@ from slayer.core.keys import (
     TimeTruncKey,
     TransformKey,
     ValueKey,
-    operand_constituents,
     regroup_root_grain,
     source_anchor_path,
     walk_value_keys,
@@ -536,7 +536,7 @@ def _temporal_axis_transforms(vk: ValueKey, *, is_dimension: bool):
         return
     for k in walk_value_keys(vk):
         if isinstance(k, AggregateKey):
-            for c in operand_constituents(k.source):
+            for c in attached_inputs(k):
                 if isinstance(c, TransformKey):
                     yield from (
                         t for t in walk_value_keys(c)

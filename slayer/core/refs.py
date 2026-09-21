@@ -285,6 +285,8 @@ def agg_kwarg_canonical_str(value: Any) -> str:
         return value.column_name
     if isinstance(value, AggregateKey):
         return _agg_key_canonical_str(value)
+    if isinstance(value, TransformKey):
+        return _transform_key_canonical_str(value)
     raise TypeError(
         f"AggregateKey kwarg value of type {type(value).__name__!r} "
         f"is not supported: {value!r}",
@@ -311,6 +313,35 @@ def _agg_key_canonical_str(value: AggregateKey) -> str:
         )
         if pks:
             parts.append("by_" + "_".join(pks))
+    return "_".join(parts)
+
+
+def _time_aware_key_display(key: ValueKey) -> str:
+    """A partition/time key's display with a ``TimeTruncKey``'s granularity kept, so
+    the same column bucketed month vs year yields distinct fragments (identity)."""
+    display = _partition_key_display(key)
+    if isinstance(key, TimeTruncKey):
+        return f"{display}_{key.granularity}"
+    return display
+
+
+def _transform_key_canonical_str(value: TransformKey) -> str:
+    """Canonical fragment for a transform-valued parameter (DEV-1946; alias/identity
+    only — render reads the picked column). Op, its scalar kwargs, the input
+    fragment, its rank partition keys, and the resolved time key — every time key
+    carrying its granularity (a bucketed ``cumsum`` differs from an unbucketed one)."""
+    parts = [value.op]
+    parts.extend(f"{k}_{agg_kwarg_canonical_str(v)}" for k, v in value.kwargs)
+    if isinstance(value.input, (ColumnKey, ColumnSqlKey, AggregateKey, TransformKey)):
+        parts.append(agg_kwarg_canonical_str(value.input))
+    else:
+        parts.append(_NON_IDENT_RE.sub("_", legacy_key_str(value.input)).strip("_"))
+    if value.partition_keys:
+        parts.append(
+            "by_" + "_".join(sorted(_time_aware_key_display(p) for p in value.partition_keys))
+        )
+    if value.time_key is not None:
+        parts.append(_time_aware_key_display(value.time_key))
     return "_".join(parts)
 
 

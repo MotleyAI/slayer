@@ -29,6 +29,9 @@ _REGION_SUM = "sum(amount, partition_by=region)"
 _HEADLINE = ("customers.spend:weighted_avg("
              "weight=sum(amount, partition_by=customers.regions.name))")
 _MIXED_TWIN = "sum(customers.spend * sum(amount, partition_by=customers.regions.name))"
+_RANKED_TRANSFORM = ("customers.spend:weighted_avg("
+                     "weight=rank(sum(amount, partition_by=customers.regions.name)))")
+_LOCAL_RANKED_TRANSFORM = f"weighted_avg(amount, weight=rank({_REGION_SUM}))"
 
 
 def _cases() -> dict:
@@ -73,6 +76,14 @@ def _cases() -> dict:
             "kw": {"dimensions": ["region"], "measures": [
                 {"formula": ("wsum(sum(amount, partition_by=[city, region]), "
                              "weight=count(id))"), "name": "w"}]}},
+        "param/ranked_transform": {
+            "models": "orders", "source": "orders", "mode": None,
+            "kw": {"dimensions": ["status"],
+                   "measures": [{"formula": _RANKED_TRANSFORM, "name": "w"}]}},
+        "param/local_ranked_transform": {
+            "models": "sales", "source": "sales", "mode": None,
+            "kw": {"dimensions": ["region"],
+                   "measures": [{"formula": _LOCAL_RANKED_TRANSFORM, "name": "w"}]}},
         "param/windowed": {
             "models": "orders", "source": "orders", "mode": None,
             "kw": {"time_dimensions": signup_month_td(),
