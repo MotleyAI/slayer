@@ -1,26 +1,25 @@
 """Ranking-key resolution for ``first`` / ``last``: WHICH column a ranked
-aggregate's ``ROW_NUMBER`` orders by, settled at plan time. host-rooted — explicit
-time arg, else first DATE/TIMESTAMP row dimension, else first time dimension's RAW
+aggregate's ``ROW_NUMBER`` orders by, settled at plan time — the explicit time arg,
+else the first DATE/TIMESTAMP row dimension, else the first time dimension's RAW
 column (never the truncated bucket, which ties every row), else the model default.
-target-rooted — the same arg re-anchored, else the target default (host out of scope)."""
+A target-rooted producer passes its already-re-rooted aggregate, so it resolves
+host-style on its own root."""
 
 from __future__ import annotations
 
-from typing import List, Optional, Sequence, Tuple
+from typing import List, Optional, Sequence
 
-from slayer.core.enums import DataType
+from slayer.core.enums import DataType, RANKED_AGGREGATIONS
 from slayer.core.keys import (
     AggregateKey,
     ColumnKey,
     ColumnSqlKey,
     TimeTruncKey,
     ValueKey,
-    reroot_value_key,
 )
-from slayer.core.errors import AmbiguousJoinPathError
-from slayer.core.enums import RANKED_AGGREGATIONS
-from slayer.core.join_walker import terminal_model, walk
+from slayer.core.join_walker import terminal_model
 from slayer.core.models import SlayerModel
+from slayer.engine.reference_closure import column_default_key
 from slayer.ir.planned import (
     SlotId,
     ValueSlot,
@@ -43,43 +42,6 @@ def explicit_ranking_time_arg(key: AggregateKey) -> Optional[ValueKey]:
     for arg in key.args:
         return arg if isinstance(arg, (ColumnKey, ColumnSqlKey)) else None
     return None
-
-
-def _ranking_key_name(key: ValueKey) -> str:
-    if isinstance(key, ColumnKey):
-        return ".".join((*key.path, key.leaf))
-    if isinstance(key, ColumnSqlKey):
-        return ".".join((*key.path, key.column_name))
-    return type(key).__name__
-
-
-def _resolves_on(
-    *, key: ValueKey, model: SlayerModel,
-    models_by_name: dict[str, SlayerModel],
-) -> bool:
-    """Whether ``key`` is reachable FROM ``model`` — walks the full path and
-    requires the leaf on the terminal, catching a HOST column (or a stale
-    rerooted path) as a TARGET-rooted ranking key at plan time."""
-    if isinstance(key, ColumnKey):
-        leaf, path = key.leaf, key.path
-    elif isinstance(key, ColumnSqlKey):
-        leaf, path = key.column_name, key.path
-    else:
-        return True
-    if path:
-        try:
-            chain = walk(
-                root=model, path=tuple(path), models_by_name=models_by_name,
-            )
-        except AmbiguousJoinPathError:
-            return True  # a join hop exists; the strict door disambiguates
-        if not chain:
-            return False
-        terminal = models_by_name.get(chain[-1].target_model)
-        return terminal is not None and any(
-            c.name == leaf for c in terminal.columns
-        )
-    return any(c.name == leaf for c in model.columns)
 
 
 def _temporal_row_dimension_key(
@@ -119,56 +81,32 @@ def resolve_ranking_time_key(
     root_model: SlayerModel,
     bundle: ResolvedSourceBundle,
     row_keys: Sequence[ValueKey] = (),
-    target_path: Tuple[str, ...] = (),
 ) -> ValueKey:
-    """The column a ranked aggregate's ``ROW_NUMBER`` orders by, in the RANKED
-    scope's coordinates. ``row_keys`` (host row dimensions) are candidates only for
-    a HOST-rooted plan; a target-rooted CTE goes straight to the target's default."""
+    """The column a ranked aggregate's ``ROW_NUMBER`` orders by, in the producer's
+    root coordinates: explicit positional arg, else the first temporal row dimension,
+    else the first time dimension's raw column, else the model ``default_time_dimension``
+    (typed via ``column_default_key`` so a derived default's crossings close). A
+    target-rooted producer passes its already-re-rooted aggregate, so this is host-style."""
     arg = explicit_ranking_time_arg(key)
     if arg is not None:
-        # Re-anchor into the target's coordinates in lockstep with the source.
-        rerooted = reroot_value_key(arg, target_path=target_path)
-        if target_path and not _resolves_on(
-            key=rerooted, model=root_model,
-            models_by_name=bundle.models_by_name,
-        ):
-            # A host column can't rank a target-rooted CTE (the relation runs 1:N).
-            raise ValueError(
-                f"first/last ranking column "
-                f"{_ranking_key_name(rerooted)!r} is not resolvable on model "
-                f"{root_model.name!r}, where a cross-model first/last ranks "
-                f"its rows. Name a column of {root_model.name!r} (or one it "
-                f"joins to), or drop the argument to rank by its "
-                f"default_time_dimension."
-            )
-        return rerooted
-
-    if not target_path:
-        temporal = _temporal_row_dimension_key(
-            row_keys=row_keys, source_model=root_model, bundle=bundle,
-        )
-        if temporal is not None:
-            return temporal
-        raw = _time_dimension_raw_column(row_keys=row_keys)
-        if raw is not None:
-            return raw
-        if root_model.default_time_dimension:
-            return ColumnKey(path=(), leaf=root_model.default_time_dimension)
-        raise ValueError(
-            "first/last aggregation requires a ranking time column "
-            "(a time_dimension, a DATE/TIMESTAMP dimension, or the "
-            "model's default_time_dimension); none is resolvable for "
-            f"model {root_model.name!r}."
-        )
-
+        return arg
+    temporal = _temporal_row_dimension_key(
+        row_keys=row_keys, source_model=root_model, bundle=bundle,
+    )
+    if temporal is not None:
+        return temporal
+    raw = _time_dimension_raw_column(row_keys=row_keys)
+    if raw is not None:
+        return raw
     if root_model.default_time_dimension:
-        return ColumnKey(path=(), leaf=root_model.default_time_dimension)
+        return column_default_key(
+            path=(), leaf=root_model.default_time_dimension, base=root_model,
+        )
     raise ValueError(
-        f"first/last aggregation requires a ranking time column "
-        f"(an explicit positional time arg, or the target "
-        f"model's default_time_dimension); none is resolvable "
-        f"for cross-model aggregate on target "
-        f"{root_model.name!r}."
+        "first/last aggregation requires a ranking time column "
+        "(a time_dimension, a DATE/TIMESTAMP dimension, or the "
+        "model's default_time_dimension); none is resolvable for "
+        f"model {root_model.name!r}."
     )
 
 
