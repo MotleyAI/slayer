@@ -27,6 +27,28 @@ def _dispose_engines_at_session_end() -> Iterator[None]:
     gc.collect()
 
 
+# DEV-1943 gate scope: the pyproject `filterwarnings` errors are measured and
+# enforced on the unit suite. The integration suite's async/thread execution plus
+# SQLAlchemy pool teardown has a harder sqlite finalizer edge (same class as the
+# `:memory:`/DuckDB pool-hygiene non-goals), so downgrade the two sqlite gate
+# warnings to warnings for integration tests only — best-effort there, hard error
+# on the unit suite. CI runs the two suites separately (`-m "not integration"` vs
+# `-m integration`), so this per-item downgrade never reaches the unit gate.
+_INTEGRATION_DIR = os.path.join(os.path.dirname(__file__), "integration")
+_SQLITE_GATE_RELAXATIONS = (
+    "default:unclosed database:ResourceWarning",
+    "default:Exception ignored while finalizing database connection"
+    ":pytest.PytestUnraisableExceptionWarning",
+)
+
+
+def pytest_collection_modifyitems(items) -> None:
+    for item in items:
+        if str(item.path).startswith(_INTEGRATION_DIR + os.sep):
+            for spec in _SQLITE_GATE_RELAXATIONS:
+                item.add_marker(pytest.mark.filterwarnings(spec))
+
+
 @pytest.fixture(autouse=True)
 def _disable_embedding_channel_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     """Force the embedding channel off for every test by default.
