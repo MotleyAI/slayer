@@ -43,7 +43,11 @@ DEV-1931 landed):
   "requalify through the same door".
 - Bundle-level validation of edge-name / model-name collisions for hand-built bundles
   or extension-added joins (precedence makes a collision deterministic instead).
-- Cancellation for query-typed paths or Mode-A fragments (they stay refused).
+- Cancellation for query-typed paths or Mode-A fragments (cancellation is not extended
+  to them; a query-typed revisit stays refused with the circular-join error).
+- Refusing a `Column.sql` derived column that itself revisits a dataset on its path; it
+  silently returns a wrong value today and is DEV-1952's fix, not this change's. arc42
+  Axiom 2.4 states that refusal as the target, tagged `[target: DEV-1952]`.
 - The "resolved through the root's own join to a sibling" branch and the self-named
   host guard in `attributable_from_root` (untouched).
 

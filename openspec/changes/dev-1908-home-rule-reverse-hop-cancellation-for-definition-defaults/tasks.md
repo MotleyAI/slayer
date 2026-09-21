@@ -104,7 +104,8 @@
   path (the query root included) cancels the path back to that dataset and reads its row
   there, any other qualifier the owner cannot reach forward anchored at the query root
   instead — only a definition default cancels; a query-typed path that revisits a
-  dataset stays refused."; Axiom 2.6 → "…is resolved there, a qualifier naming a dataset
+  dataset stays refused, and a model-SQL derived column whose own definition revisits a
+  dataset is refused likewise `[target: DEV-1952]`."; Axiom 2.6 → "…is resolved there, a qualifier naming a dataset
   on the anchor's path cancelling back to it, any other qualifier the anchor cannot reach
   forward anchored at the query root instead."; add
   `[enforced: test:tests/test_dev1908_default_cancellation.py]` to Axiom 2's tags. Axiom 1

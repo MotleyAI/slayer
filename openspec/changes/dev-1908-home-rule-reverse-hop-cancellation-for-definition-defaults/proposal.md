@@ -21,8 +21,9 @@ provably to-one reverse suffix that Axiom 1 already admits.
   its row there, keeping the path's own spelling; an edge-name token never cancels;
   any other owner-unreachable qualifier still falls back to the query root; a chain
   whose first token resolves but a later one misses fails closed. Only definition
-  defaults cancel — a query-typed path or a model-SQL fragment that revisits a dataset
-  stays refused.
+  defaults cancel — a query-typed path that revisits a dataset stays refused (the
+  circular-join error). (Refusing a derived column whose own `Column.sql` revisits is
+  out of scope here — DEV-1952.)
 - **One resolver for every caller.** The DEV-1931 legacy owner-only routes and both
   forward-validity guards are deleted; home, input safety, parameter typing,
   re-aggregation and both render doors consume the same owner-first / cancel /

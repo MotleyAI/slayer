@@ -21,8 +21,10 @@ reach forward otherwise SHALL instead be anchored at the query root, while an
 ambiguous or only partially resolvable owner reference — a first segment that
 resolves, by cancellation or as a hop, followed by one that does not — SHALL fail
 closed rather than silently re-anchor at the root. An edge-name segment never
-cancels. Only a definition default cancels: a query-typed path or a model-SQL
-fragment that revisits a dataset stays refused. A default that resolves to a genuine
+cancels. Only a definition default cancels: a query-typed path that revisits a
+dataset stays refused with the circular-join error. (Whether a derived column whose
+own `Column.sql` revisits is likewise refused is out of scope here — DEV-1952.) A
+default that resolves to a genuine
 host-local (root) column SHALL widen the home to the root exactly as spelling that
 column explicitly would. This same owning-model resolution governs the input-safety
 check and every rendering of the default in every producer kind — plain, association,
@@ -151,10 +153,8 @@ applies exactly as for a single-column source rooted at the home.
   `weight=customers.spend` twin raises
 
 #### Scenario: A query-typed revisit is refused
-- **WHEN** a query selects `customers.regions.customers.spend:sum` from `orders`, or a
-  model-SQL derived column's definition revisits a dataset on its own path
-- **THEN** the query is refused with the circular-join error (the derived column with
-  its own typed refusal), never silently cancelled
+- **WHEN** a query selects `customers.regions.customers.spend:sum` from `orders`
+- **THEN** the query is refused with the circular-join error, never silently cancelled
 
 #### Scenario: The path's own spelling survives cancellation
 - **WHEN** the query root is an inline extension of `orders` adding a named join
