@@ -125,7 +125,7 @@ is the coercion from coarser to finer.
 9. **Closure**: every operator consumes and produces aggregates and may
    inspect only its operands' types (grain, home dataset), never how they were
    constructed — any "not supported inside" refusal of a well-typed term is a
-   closure violation. [enforced: test:tests/test_law_guard_ratchet.py] Typed
+   closure violation. [enforced: test:tests/test_law_guard_ratchet.py] [enforced: test:tests/test_dev1919_home_rooted_attached_inputs.py] Typed
    residue, by design and NOT a closure violation: an aggregate in dimension
    position must declare its grain explicitly — the ungrained default (the
    query's dimensions) would include the dimension being defined, a

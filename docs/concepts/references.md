@@ -46,7 +46,9 @@ custom aggregations. Neither spelling is rewritten or warned about; a saved
 model keeps the author's spelling. Declared parameters may be passed
 positionally in declaration order — `percentile(price, 0.9)` and
 `price:percentile(0.9)` both mean `p=0.9` (`first`/`last` keep their
-positional ranking column instead).
+positional ranking column instead). An aggregation that declares no parameters
+takes no positional value at all, and `first`/`last` at most one — their ranking column, a column
+reference, never a literal or a nested aggregate.
 
 | Colon form | Functional form |
 |---|---|

@@ -17,6 +17,7 @@ from sqlglot import exp
 
 from slayer.sql.scope_check import assert_scope_closed
 
+from tests._dev1841_fixtures import associated_warnings, broadcast_warnings
 from tests._dev1832_fixtures import (
     _CUSTOMERS_ROWS,
     _ORDERS_ROWS,
@@ -346,15 +347,24 @@ class TestExpressionSourceTyping:
         assert {t: v for t, v in vals.items() if t is not None}
         assert all(v is not None for t, v in vals.items() if t is not None)
 
-    async def test_attached_parameter_rejected_under_broadcast(self):
-        query = orders_q(measures=[ModelMeasure(formula=self._ATTACHED_PARAM, name="m")])
-        with pytest.raises(ValueError) as ei:
-            await gen(query)
-        msg = str(ei.value)
-        assert "customers" in msg
-        assert "amount" in msg
-        assert "associate" in msg.lower()
-        assert not re.search(r"DEV-\d+", msg)
+    async def test_attached_parameter_identical_in_every_mode(self, exec_backend):
+        # Scenario: Attached parameter on a row-level source executes under broadcast —
+        # the parameter's producer roots at orders inside the customers-rooted producer.
+        cells = {}
+        for mode in (None, "broadcast", "associate", "error"):
+            kw = {} if mode is None else {"to_many_handling": mode}
+            resp = await exec_backend.execute(orders_q(
+                dimensions=["customers.tier"],
+                measures=[ModelMeasure(formula=self._ATTACHED_PARAM, name="m")], **kw))
+            assert not broadcast_warnings(resp)
+            assert not associated_warnings(resp)
+            cells[mode] = {k[0]: v["orders.m"]
+                           for k, v in rows_by(resp, "orders.customers.tier").items()
+                           if k[0] is not None}
+            assert cells[mode]
+            assert all(v is not None for v in cells[mode].values())
+        for mode, got in cells.items():
+            assert got == pytest.approx(cells[None]), mode
 
 
 # --------------------------------------------------------------------------- #
