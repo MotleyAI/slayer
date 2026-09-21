@@ -27,12 +27,12 @@ orders (id, billing_customer_id, shipping_customer_id, status, amount, ordered_a
 from __future__ import annotations
 
 import os
-import sqlite3
 from typing import Literal
 
 from slayer.core.enums import DataType, JoinCardinality, JoinType, invert_cardinality
 from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.storage.sqlite_conn import transaction
 
 from tests._engine_helpers import make_seeded_sqlite_engine
 
@@ -119,23 +119,21 @@ _CHAIN_ORDERS_ROWS = [
 
 
 def seed_chain(db_path: str) -> None:
-    con = sqlite3.connect(db_path)
-    cur = con.cursor()
-    cur.execute("CREATE TABLE regions (id INTEGER PRIMARY KEY, name TEXT, pop REAL)")
-    cur.executemany("INSERT INTO regions VALUES (?,?,?)", _REGIONS_ROWS)
-    cur.execute(
-        "CREATE TABLE customers (id INTEGER PRIMARY KEY, region_id INTEGER, "
-        "name TEXT, tier TEXT, spend REAL, signup_at TEXT)"
-    )
-    cur.executemany("INSERT INTO customers VALUES (?,?,?,?,?,?)",
-                    _CHAIN_CUSTOMERS_ROWS)
-    cur.execute(
-        "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, "
-        "status TEXT, amount REAL, ordered_at TEXT)"
-    )
-    cur.executemany("INSERT INTO orders VALUES (?,?,?,?,?)", _CHAIN_ORDERS_ROWS)
-    con.commit()
-    con.close()
+    with transaction(db_path) as con:
+        cur = con.cursor()
+        cur.execute("CREATE TABLE regions (id INTEGER PRIMARY KEY, name TEXT, pop REAL)")
+        cur.executemany("INSERT INTO regions VALUES (?,?,?)", _REGIONS_ROWS)
+        cur.execute(
+            "CREATE TABLE customers (id INTEGER PRIMARY KEY, region_id INTEGER, "
+            "name TEXT, tier TEXT, spend REAL, signup_at TEXT)"
+        )
+        cur.executemany("INSERT INTO customers VALUES (?,?,?,?,?,?)",
+                        _CHAIN_CUSTOMERS_ROWS)
+        cur.execute(
+            "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, "
+            "status TEXT, amount REAL, ordered_at TEXT)"
+        )
+        cur.executemany("INSERT INTO orders VALUES (?,?,?,?,?)", _CHAIN_ORDERS_ROWS)
 
 
 # --------------------------------------------------------------------------- #
@@ -200,25 +198,23 @@ _PARALLEL_ORDERS_ROWS = [
 
 
 def seed_parallel(db_path: str) -> None:
-    con = sqlite3.connect(db_path)
-    cur = con.cursor()
-    cur.execute("CREATE TABLE regions (id INTEGER PRIMARY KEY, name TEXT, pop REAL)")
-    cur.executemany("INSERT INTO regions VALUES (?,?,?)", _REGIONS_ROWS)
-    cur.execute(
-        "CREATE TABLE customers (id INTEGER PRIMARY KEY, region_id INTEGER, "
-        "name TEXT, tier TEXT, spend REAL, signup_at TEXT)"
-    )
-    cur.executemany("INSERT INTO customers VALUES (?,?,?,?,?,?)",
-                    _CHAIN_CUSTOMERS_ROWS)
-    cur.execute(
-        "CREATE TABLE orders (id INTEGER PRIMARY KEY, "
-        "billing_customer_id INTEGER, shipping_customer_id INTEGER, "
-        "status TEXT, amount REAL, ordered_at TEXT)"
-    )
-    cur.executemany("INSERT INTO orders VALUES (?,?,?,?,?,?)",
-                    _PARALLEL_ORDERS_ROWS)
-    con.commit()
-    con.close()
+    with transaction(db_path) as con:
+        cur = con.cursor()
+        cur.execute("CREATE TABLE regions (id INTEGER PRIMARY KEY, name TEXT, pop REAL)")
+        cur.executemany("INSERT INTO regions VALUES (?,?,?)", _REGIONS_ROWS)
+        cur.execute(
+            "CREATE TABLE customers (id INTEGER PRIMARY KEY, region_id INTEGER, "
+            "name TEXT, tier TEXT, spend REAL, signup_at TEXT)"
+        )
+        cur.executemany("INSERT INTO customers VALUES (?,?,?,?,?,?)",
+                        _CHAIN_CUSTOMERS_ROWS)
+        cur.execute(
+            "CREATE TABLE orders (id INTEGER PRIMARY KEY, "
+            "billing_customer_id INTEGER, shipping_customer_id INTEGER, "
+            "status TEXT, amount REAL, ordered_at TEXT)"
+        )
+        cur.executemany("INSERT INTO orders VALUES (?,?,?,?,?,?)",
+                        _PARALLEL_ORDERS_ROWS)
 
 
 # --------------------------------------------------------------------------- #

@@ -26,6 +26,8 @@ from slayer.sql.dialects.sqlite import (
     rewrite_sqlite_json_extract,
 )
 
+from slayer.storage.sqlite_conn import transaction
+
 
 def _parse_sqlite(sql: str) -> exp.Expression:
     """SQLite-style parse: parses then runs the JSON-extract rewrite."""
@@ -123,21 +125,16 @@ def test_sqlite_build_date_trunc_week_sunday_executes_to_sunday(
     Sunday (not merely 'a Sunday', and not a week early). Native DATE()
     math — no UDFs required.
     """
-    import sqlite3
-
     d = SqliteDialect()
     col = sqlglot.parse_one("ts", dialect="sqlite")
     expr = d.build_date_trunc(
         col, TimeGranularity.WEEK_SUNDAY, parse=_parse_sqlite
     ).sql(dialect="sqlite")
 
-    con = sqlite3.connect(":memory:")
-    try:
+    with transaction(":memory:") as con:
         con.execute("CREATE TABLE t(ts TEXT)")
         con.execute("INSERT INTO t VALUES (?)", (input_date,))
         (got,) = con.execute(f"SELECT {expr} FROM t").fetchone()
-    finally:
-        con.close()
     assert got == expected_sunday
 
 

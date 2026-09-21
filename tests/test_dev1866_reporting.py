@@ -9,7 +9,6 @@ is covered here too.
 
 from __future__ import annotations
 
-import sqlite3
 import tempfile
 
 import pytest
@@ -27,6 +26,7 @@ from slayer.core.models import (
 from slayer.core.query import ModelExtension, SlayerQuery
 from slayer.engine.cache import CacheConfig
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 
 from tests._dev1866_fixtures import (
@@ -141,10 +141,8 @@ class TestReportedAcrossExecutionModes:
         engine.cache_config = CacheConfig(refresh_keys=[("orders", "MAX(ordered_at)")])
         try:
             await engine.execute(_INFERRED, cache=True)
-            con = sqlite3.connect(db_path)
-            con.execute("INSERT INTO orders VALUES (5, 2, 'ok', 7.0, '2024-12-31')")
-            con.commit()
-            con.close()
+            with transaction(db_path) as con:
+                con.execute("INSERT INTO orders VALUES (5, 2, 'ok', 7.0, '2024-12-31')")
             result = await engine.refresh()
             assert result.refreshed  # the entry was actually re-executed
             refreshed = await engine.execute(_INFERRED, cache=True)

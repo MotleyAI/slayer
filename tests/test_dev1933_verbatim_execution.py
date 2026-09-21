@@ -11,7 +11,6 @@ The literal ``'(?i)(?:too complicated|too complex)'`` carries ``:too``, which
 """
 
 import ast
-import sqlite3
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -20,8 +19,10 @@ from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerMod
 from slayer.core.query import ColumnRef, ModelExtension, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql import client as sql_client
+from slayer.sql import engine_factory
 from slayer.sql.client import SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
+from slayer.storage.sqlite_conn import transaction
 
 # The production shape: ``:too`` is what text() misreads; ``%Y-%m`` is the format
 # hazard. Both live inside string literals, so the driver must see them unchanged.
@@ -127,17 +128,23 @@ class TestSqliteDoorsPassRegexLiteralVerbatim:
         assert types == _DOOR_TYPES
 
     def test_execute_sql_sync_direct(self) -> None:
-        engine = sql_client._create_in_memory_sqlite_engine("sqlite:///:memory:")
-        rows = sql_client._execute_sql_sync(
-            sql=_DOOR_SQL, connection_string="sqlite:///:memory:", db_type="sqlite", engine=engine,
-        )
+        engine = engine_factory.build_in_memory_sqlite_engine("sqlite:///:memory:")
+        try:
+            rows = sql_client._execute_sql_sync(
+                sql=_DOOR_SQL, db_type="sqlite", engine=engine,
+            )
+        finally:
+            engine.dispose()
         assert rows == [_DOOR_ROW]
 
     def test_get_column_types_sync_direct(self) -> None:
-        engine = sql_client._create_in_memory_sqlite_engine("sqlite:///:memory:")
-        types = sql_client._get_column_types_sync(
-            sql=_DOOR_SQL, connection_string="", db_type="sqlite", engine=engine,
-        )
+        engine = engine_factory.build_in_memory_sqlite_engine("sqlite:///:memory:")
+        try:
+            types = sql_client._get_column_types_sync(
+                sql=_DOOR_SQL, db_type="sqlite", engine=engine,
+            )
+        finally:
+            engine.dispose()
         assert types == _DOOR_TYPES
 
 
@@ -235,7 +242,7 @@ class TestSyncPathsUseVerbatimDoor:
     def test_execute_sql_sync(self) -> None:
         conn = _fake_sync_conn()
         rows = sql_client._execute_sql_sync(
-            sql=_DOOR_SQL, connection_string="", db_type="postgres", timeout_seconds=30,
+            sql=_DOOR_SQL, db_type="postgres", timeout_seconds=30,
             engine=_fake_sync_engine(conn),
         )
         assert rows == [_DOOR_ROW]
@@ -247,7 +254,7 @@ class TestSyncPathsUseVerbatimDoor:
     def test_get_column_types_sync(self) -> None:
         conn = _fake_sync_conn()
         types = sql_client._get_column_types_sync(
-            sql=_DOOR_SQL, connection_string="", db_type="postgres",
+            sql=_DOOR_SQL, db_type="postgres",
             engine=_fake_sync_engine(conn),
         )
         assert types == _DOOR_TYPES
@@ -268,14 +275,12 @@ class TestModelExtensionRegexColumnEndToEnd:
 
     async def _seed_engine(self, tmp_path) -> SlayerQueryEngine:
         db_path = tmp_path / "dev1933.sqlite"
-        conn = sqlite3.connect(db_path)
-        conn.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, status TEXT NOT NULL)")
-        conn.executemany(
-            "INSERT INTO orders VALUES (?, ?)",
-            [(1, "completed"), (2, "pending"), (3, "pending"), (4, "cancelled")],
-        )
-        conn.commit()
-        conn.close()
+        with transaction(db_path) as conn:
+            conn.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, status TEXT NOT NULL)")
+            conn.executemany(
+                "INSERT INTO orders VALUES (?, ?)",
+                [(1, "completed"), (2, "pending"), (3, "pending"), (4, "cancelled")],
+            )
 
         storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
         await storage.save_datasource(

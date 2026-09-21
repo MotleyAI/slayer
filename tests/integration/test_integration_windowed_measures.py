@@ -25,8 +25,6 @@ fall IN even though they precede a March-only ``date_range`` — proving the
 window reaches before the range start.
 """
 
-import sqlite3
-
 import pytest
 
 from slayer.async_utils import run_sync
@@ -34,6 +32,7 @@ from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 
 # (id, amount, created_at, region) — ``region`` is NULL for the Feb/Mar rows so
@@ -139,13 +138,11 @@ def _duckdb_windowed_storage(tmp_path_factory):
 def _sqlite_windowed_storage(tmp_path_factory):
     tmp = tmp_path_factory.mktemp("wm_sqlite")
     db_path = tmp / "w.sqlite"
-    conn = sqlite3.connect(str(db_path))
-    conn.execute("CREATE TABLE orders (id INTEGER, amount REAL, created_at TIMESTAMP, region TEXT)")
-    conn.executemany("INSERT INTO orders VALUES (?, ?, ?, ?)", _ORDERS)
-    conn.execute("CREATE TABLE orders_c (id INTEGER, amount REAL, created_at TIMESTAMP)")
-    conn.executemany("INSERT INTO orders_c VALUES (?, ?, ?)", _COMPOSITE_ORDERS)
-    conn.commit()
-    conn.close()
+    with transaction(str(db_path)) as conn:
+        conn.execute("CREATE TABLE orders (id INTEGER, amount REAL, created_at TIMESTAMP, region TEXT)")
+        conn.executemany("INSERT INTO orders VALUES (?, ?, ?, ?)", _ORDERS)
+        conn.execute("CREATE TABLE orders_c (id INTEGER, amount REAL, created_at TIMESTAMP)")
+        conn.executemany("INSERT INTO orders_c VALUES (?, ?, ?)", _COMPOSITE_ORDERS)
     storage = YAMLStorage(base_dir=str(tmp / "storage"))
     run_sync(storage.save_datasource(
         DatasourceConfig(name="wm", type="sqlite", database=str(db_path)),
@@ -560,13 +557,11 @@ def _duckdb_fb_storage(tmp_path_factory):
 def _sqlite_fb_storage(tmp_path_factory):
     tmp = tmp_path_factory.mktemp("fb_sqlite")
     db_path = tmp / "fb.sqlite"
-    conn = sqlite3.connect(str(db_path))
-    conn.execute(
-        "CREATE TABLE orders (id INTEGER, amount REAL, created_at TIMESTAMP, status TEXT)",
-    )
-    conn.executemany("INSERT INTO orders VALUES (?, ?, ?, ?)", _FB_ORDERS)
-    conn.commit()
-    conn.close()
+    with transaction(str(db_path)) as conn:
+        conn.execute(
+            "CREATE TABLE orders (id INTEGER, amount REAL, created_at TIMESTAMP, status TEXT)",
+        )
+        conn.executemany("INSERT INTO orders VALUES (?, ?, ?, ?)", _FB_ORDERS)
     storage = YAMLStorage(base_dir=str(tmp / "storage"))
     run_sync(storage.save_datasource(
         DatasourceConfig(name="fb", type="sqlite", database=str(db_path)),

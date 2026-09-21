@@ -1,5 +1,5 @@
 """Shared fixtures for the DEV-1883 functional time-granularity tests."""
-import sqlite3
+from slayer.storage.sqlite_conn import transaction
 from typing import Any
 
 from slayer.core.enums import DataType
@@ -57,18 +57,16 @@ async def save_models(storage: YAMLStorage) -> None:
 
 
 def seed_db(db_path: str) -> None:
-    conn = sqlite3.connect(db_path)
-    conn.executescript(
-        """
-        CREATE TABLE customers (id INTEGER PRIMARY KEY, region TEXT, created_at TEXT);
-        CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER,
-                             status TEXT, created_at TEXT, amount REAL);
-        INSERT INTO customers VALUES (100,'West','2023-05-10'),(101,'East','2024-07-20');
-        """
-    )
-    conn.executemany("INSERT INTO orders VALUES (?, ?, ?, ?, ?)", ORDER_ROWS)
-    conn.commit()
-    conn.close()
+    with transaction(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE customers (id INTEGER PRIMARY KEY, region TEXT, created_at TEXT);
+            CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER,
+                                 status TEXT, created_at TEXT, amount REAL);
+            INSERT INTO customers VALUES (100,'West','2023-05-10'),(101,'East','2024-07-20');
+            """
+        )
+        conn.executemany("INSERT INTO orders VALUES (?, ?, ?, ?, ?)", ORDER_ROWS)
 
 
 async def build_engine(tmp_path) -> SlayerQueryEngine:

@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import os
 import re
-import sqlite3
 import tempfile
 from typing import AsyncIterator, Tuple
 
@@ -26,6 +25,7 @@ from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -33,24 +33,22 @@ from slayer.storage.yaml_storage import YAMLStorage
 async def engine() -> AsyncIterator[Tuple[SlayerQueryEngine, str]]:
     d = tempfile.mkdtemp()
     db_path = os.path.join(d, "t.db")
-    con = sqlite3.connect(db_path)
-    cur = con.cursor()
-    cur.execute(
-        "CREATE TABLE orders (id INTEGER PRIMARY KEY, status TEXT, amount REAL, "
-        "created_at TEXT)"
-    )
-    cur.executemany(
-        "INSERT INTO orders VALUES (?,?,?,?)",
-        [
-            (1, "paid", 10.0, "2024-01-15"),
-            (2, "paid", 5.0, "2024-02-15"),
-            (3, "open", 7.0, "2024-01-20"),
-            (4, "open", 3.0, "2024-02-20"),
-            (5, "paid", 9.0, "2024-03-10"),
-        ],
-    )
-    con.commit()
-    con.close()
+    with transaction(db_path) as con:
+        cur = con.cursor()
+        cur.execute(
+            "CREATE TABLE orders (id INTEGER PRIMARY KEY, status TEXT, amount REAL, "
+            "created_at TEXT)"
+        )
+        cur.executemany(
+            "INSERT INTO orders VALUES (?,?,?,?)",
+            [
+                (1, "paid", 10.0, "2024-01-15"),
+                (2, "paid", 5.0, "2024-02-15"),
+                (3, "open", 7.0, "2024-01-20"),
+                (4, "open", 3.0, "2024-02-20"),
+                (5, "paid", 9.0, "2024-03-10"),
+            ],
+        )
 
     storage = YAMLStorage(base_dir=os.path.join(d, "store"))
     await storage.save_datasource(

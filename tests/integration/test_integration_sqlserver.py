@@ -49,6 +49,7 @@ import uuid
 
 import pytest
 import sqlalchemy as sa
+from tests._engine_helpers import disposable_engine
 
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType, TimeGranularity
@@ -140,10 +141,9 @@ def _admin_url(sqlserver_container, *, database: str = "master") -> str:
 
 def _create_module_db(sqlserver_container) -> str:
     db_name = f"test_{uuid.uuid4().hex[:12]}"
-    engine = sa.create_engine(_admin_url(sqlserver_container), isolation_level="AUTOCOMMIT")
-    with engine.connect() as conn:
-        conn.execute(sa.text(f"CREATE DATABASE [{db_name}]"))
-    engine.dispose()
+    with disposable_engine(_admin_url(sqlserver_container), isolation_level="AUTOCOMMIT") as engine:
+        with engine.connect() as conn:
+            conn.execute(sa.text(f"CREATE DATABASE [{db_name}]"))
     return db_name
 
 
@@ -156,15 +156,12 @@ def _drop_module_db(sqlserver_container, db_name: str) -> None:
 
     # 2) Kick anyone else off the DB; then drop it. AUTOCOMMIT so the ALTER
     #    isolation change takes effect immediately.
-    engine = sa.create_engine(_admin_url(sqlserver_container), isolation_level="AUTOCOMMIT")
-    try:
+    with disposable_engine(_admin_url(sqlserver_container), isolation_level="AUTOCOMMIT") as engine:
         with engine.connect() as conn:
             conn.execute(sa.text(
                 f"ALTER DATABASE [{db_name}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE"
             ))
             conn.execute(sa.text(f"DROP DATABASE [{db_name}]"))
-    finally:
-        engine.dispose()
 
 
 def _ds_config(sqlserver_container, db_name: str) -> DatasourceConfig:
@@ -203,8 +200,7 @@ def _sqlserver_env_storage(sqlserver_container, tmp_path_factory):
     """Module-scoped: seeded SQL Server orders + customers + storage."""
     db_name = _create_module_db(sqlserver_container)
     try:
-        engine = sa.create_engine(_db_url(sqlserver_container, db_name))
-        try:
+        with disposable_engine(_db_url(sqlserver_container, db_name)) as engine:
             with engine.begin() as conn:
                 conn.execute(sa.text("""
                     CREATE TABLE customers (
@@ -237,8 +233,6 @@ def _sqlserver_env_storage(sqlserver_container, tmp_path_factory):
                     "(5, 'cancelled', 75, 3, '2024-03-01 08:00:00'), "
                     "(6, 'pending', 300, 3, '2024-03-10 16:00:00')"
                 ))
-        finally:
-            engine.dispose()
 
         tmpdir = str(tmp_path_factory.mktemp("sqlserver_env"))
         storage = YAMLStorage(base_dir=tmpdir)
@@ -518,8 +512,7 @@ class TestSQLServerQueries:
 def sqlserver_cross_model_env(sqlserver_container):
     """SQL Server env with orders + customers (with score) + join."""
     db_name = _create_module_db(sqlserver_container)
-    engine = sa.create_engine(_db_url(sqlserver_container, db_name))
-    try:
+    with disposable_engine(_db_url(sqlserver_container, db_name)) as engine:
         with engine.begin() as conn:
             conn.execute(sa.text("""
                 CREATE TABLE customers (
@@ -553,8 +546,6 @@ def sqlserver_cross_model_env(sqlserver_container):
                 "(5, 'completed', 300, 3, '2024-03-01 08:00:00'), "
                 "(6, 'pending', 25, 1, '2024-03-10 16:00:00')"
             ))
-    finally:
-        engine.dispose()
 
     tmpdir = tempfile.mkdtemp()
     storage = YAMLStorage(base_dir=tmpdir)
@@ -654,8 +645,7 @@ def sqlserver_ingest_env(sqlserver_container):
     """Set up tables with FK relationships and ingest."""
     db_name = _create_module_db(sqlserver_container)
     try:
-        engine = sa.create_engine(_db_url(sqlserver_container, db_name))
-        try:
+        with disposable_engine(_db_url(sqlserver_container, db_name)) as engine:
             with engine.begin() as conn:
                 conn.execute(sa.text("""
                     CREATE TABLE regions (
@@ -696,8 +686,6 @@ def sqlserver_ingest_env(sqlserver_container):
                     "EXEC sp_addextendedproperty 'MS_Description', 'Order amount', "
                     "'SCHEMA', 'dbo', 'TABLE', 'orders', 'COLUMN', 'amount'"
                 ))
-        finally:
-            engine.dispose()
 
         ds = _ds_config(sqlserver_container, db_name)
         models = ingest_datasource(datasource=ds, schema=None)
@@ -1102,8 +1090,7 @@ class TestSQLServerStatAggregations:
 @pytest.fixture
 def sqlserver_log10_env(sqlserver_container):
     db_name = _create_module_db(sqlserver_container)
-    engine = sa.create_engine(_db_url(sqlserver_container, db_name))
-    try:
+    with disposable_engine(_db_url(sqlserver_container, db_name)) as engine:
         with engine.begin() as conn:
             conn.execute(sa.text("""
                 CREATE TABLE orders (
@@ -1114,8 +1101,6 @@ def sqlserver_log10_env(sqlserver_container):
             conn.execute(sa.text(
                 "INSERT INTO orders (id, amount) VALUES (1, 100), (2, 200), (3, 300)"
             ))
-    finally:
-        engine.dispose()
 
     tmpdir = tempfile.mkdtemp()
     storage = YAMLStorage(base_dir=tmpdir)
@@ -1215,8 +1200,7 @@ async def test_sqlserver_time_shift_uses_dateadd(sqlserver_env: SlayerQueryEngin
 @pytest.fixture
 def planets_sqlserver_env(sqlserver_container):
     db_name = _create_module_db(sqlserver_container)
-    engine = sa.create_engine(_db_url(sqlserver_container, db_name))
-    try:
+    with disposable_engine(_db_url(sqlserver_container, db_name)) as engine:
         with engine.begin() as conn:
             conn.execute(sa.text("""
                 CREATE TABLE planets (
@@ -1236,8 +1220,6 @@ def planets_sqlserver_env(sqlserver_container):
                 "(7, 'Uranus', 86.8), "
                 "(8, 'Neptune', 102.0)"
             ))
-    finally:
-        engine.dispose()
 
     tmpdir = tempfile.mkdtemp()
     storage = YAMLStorage(base_dir=tmpdir)
@@ -1283,8 +1265,7 @@ async def test_filter_on_windowed_column_sqlserver_raises(planets_sqlserver_env)
 @pytest.fixture
 def sqlserver_derived_chain_env(sqlserver_container):
     db_name = _create_module_db(sqlserver_container)
-    engine = sa.create_engine(_db_url(sqlserver_container, db_name))
-    try:
+    with disposable_engine(_db_url(sqlserver_container, db_name)) as engine:
         with engine.begin() as conn:
             conn.execute(sa.text(
                 "CREATE TABLE b_tbl (id INTEGER PRIMARY KEY, foo_raw DECIMAL(10,2))"
@@ -1301,8 +1282,6 @@ def sqlserver_derived_chain_env(sqlserver_container):
                 "INSERT INTO a_tbl (id, bar, b_id, raw_a) VALUES "
                 "(10, 4, 1, 100), (11, 1, 2, 5)"
             ))
-    finally:
-        engine.dispose()
 
     tmpdir = tempfile.mkdtemp()
     storage = YAMLStorage(base_dir=tmpdir)

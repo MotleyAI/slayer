@@ -7,9 +7,6 @@ raw rows by ``test_dev1847_fixtures_smoke.py``."""
 
 from __future__ import annotations
 
-import os
-import sqlite3
-import tempfile
 from typing import AsyncIterator, List, Optional
 
 import pytest
@@ -19,14 +16,14 @@ from slayer.core.models import (
     Aggregation,
     AggregationParam,
     Column,
-    DatasourceConfig,
     ModelJoin,
     ModelMeasure,
     SlayerModel,
 )
 from slayer.core.query import ColumnRef, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.storage.yaml_storage import YAMLStorage
+from slayer.storage.sqlite_conn import transaction
+from tests._engine_helpers import seeded_exec_engine
 
 from tests._dev1836_fixtures import broadcast_warnings, rows_by
 from tests._dev1841_fixtures import associated_warnings
@@ -294,21 +291,19 @@ _CORDERS_ROWS = [(1, 1, 10.0), (2, 1, 20.0), (3, 2, 40.0), (4, 3, 100.0)]
 
 
 def _seed_sqlite(db_path: str) -> None:
-    con = sqlite3.connect(db_path)
-    cur = con.cursor()
-    cur.execute("CREATE TABLE sales (id INTEGER PRIMARY KEY, region TEXT, "
-                "city TEXT, product TEXT, amount REAL, quantity REAL, "
-                "unit_price REAL)")
-    cur.executemany("INSERT INTO sales VALUES (?,?,?,?,?,?,?)", _SALES_ROWS_WIDE)
-    cur.execute("CREATE TABLE regions (id INTEGER PRIMARY KEY, name TEXT)")
-    cur.executemany("INSERT INTO regions VALUES (?,?)", _REGIONS_ROWS)
-    cur.execute("CREATE TABLE customers (id INTEGER PRIMARY KEY, region_id INTEGER)")
-    cur.executemany("INSERT INTO customers VALUES (?,?)", _CUSTOMERS_ROWS)
-    cur.execute("CREATE TABLE corders (id INTEGER PRIMARY KEY, customer_id INTEGER, "
-                "amount REAL)")
-    cur.executemany("INSERT INTO corders VALUES (?,?,?)", _CORDERS_ROWS)
-    con.commit()
-    con.close()
+    with transaction(db_path) as con:
+        cur = con.cursor()
+        cur.execute("CREATE TABLE sales (id INTEGER PRIMARY KEY, region TEXT, "
+                    "city TEXT, product TEXT, amount REAL, quantity REAL, "
+                    "unit_price REAL)")
+        cur.executemany("INSERT INTO sales VALUES (?,?,?,?,?,?,?)", _SALES_ROWS_WIDE)
+        cur.execute("CREATE TABLE regions (id INTEGER PRIMARY KEY, name TEXT)")
+        cur.executemany("INSERT INTO regions VALUES (?,?)", _REGIONS_ROWS)
+        cur.execute("CREATE TABLE customers (id INTEGER PRIMARY KEY, region_id INTEGER)")
+        cur.executemany("INSERT INTO customers VALUES (?,?)", _CUSTOMERS_ROWS)
+        cur.execute("CREATE TABLE corders (id INTEGER PRIMARY KEY, customer_id INTEGER, "
+                    "amount REAL)")
+        cur.executemany("INSERT INTO corders VALUES (?,?,?)", _CORDERS_ROWS)
 
 
 def _seed_duckdb(db_path: str) -> None:
@@ -327,16 +322,6 @@ def _seed_duckdb(db_path: str) -> None:
     con.close()
 
 
-async def _engine_for(*, dialect: str, db_path: str,
-                      models: List[SlayerModel]) -> SlayerQueryEngine:
-    storage = YAMLStorage(base_dir=os.path.join(os.path.dirname(db_path), "store"))
-    await storage.save_datasource(
-        DatasourceConfig(name="test", type=dialect, database=db_path))
-    for model in models:
-        await storage.save_model(model, _validate=False)
-    return SlayerQueryEngine(storage=storage)
-
-
 async def make_exec_engine(
     request, *, models: Optional[List[SlayerModel]] = None,
 ) -> AsyncIterator[SlayerQueryEngine]:
@@ -344,15 +329,11 @@ async def make_exec_engine(
     dialect = request.param
     if dialect == "duckdb":
         pytest.importorskip("duckdb")
-    with tempfile.TemporaryDirectory() as d:
-        db_path = os.path.join(d, f"data.{dialect}")
-        if dialect == "sqlite":
-            _seed_sqlite(db_path)
-        else:
-            _seed_duckdb(db_path)
-        yield await _engine_for(
-            dialect=dialect, db_path=db_path,
-            models=models if models is not None else dev1847_models())
+    seed = _seed_duckdb if dialect == "duckdb" else _seed_sqlite
+    async with seeded_exec_engine(
+        dialect=dialect, seed=seed, models=models if models is not None else dev1847_models(),
+    ) as (engine, _db):
+        yield engine
 
 
 def region_key(resp) -> dict:

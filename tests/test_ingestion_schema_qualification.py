@@ -13,24 +13,59 @@ resolution over an inspector that happens to see attached catalogs.
 """
 from __future__ import annotations
 
+import io
+from collections.abc import Iterator
+from contextlib import contextmanager
+
 import pytest
 import sqlalchemy as sa
+from httpx import ASGITransport, AsyncClient
+from pydantic import ValidationError
 
-duckdb = pytest.importorskip("duckdb")
-
-from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer import cli
+from slayer.api.server import IngestRequest, create_app
+from slayer.async_utils import run_sync
+from slayer.core.enums import DataType
+from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
+from slayer.engine import ingestion as mod
+from slayer.engine import schema_drift as drift_mod
 from slayer.engine.ingestion import (
+    _get_pk_constraint_fallback,
+    _print_ingest_addition,
+    ingest_datasource,
     ingest_datasource_idempotent,
     ingest_datasource_report,
+    introspect_table_to_model,
+    list_ingestable_objects,
+)
+from slayer.engine.introspect_utils import (
+    _get_column_comments_fallback,
+    _get_columns_fallback,
+    _safe_get_columns,
 )
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.engine.schema_drift import (
+    LiveTable,
+    ModelAddition,
+    _live_schema_refs,
+    _resolve_live_table,
+    validate_datasource,
+)
 from slayer.engine.schema_scope import (
     SchemaEnumerationError,
     SchemaRef,
     resolve_ingest_scope,
 )
+from slayer.mcp.server import _fetch_tables, create_mcp_server
+from slayer.sql import engine_factory
+from slayer.storage.sqlite_conn import transaction
+from slayer.storage.type_refinement import _parse_sql_table_with_default_schema
 from slayer.storage.yaml_storage import YAMLStorage
+
+from tests._engine_helpers import disposable_engine
+
+duckdb = pytest.importorskip("duckdb")
 
 
 # ===========================================================================
@@ -190,15 +225,16 @@ def attached_paths(tmp_path_factory) -> tuple[str, str]:
     return main_path, aaa_path
 
 
-def _open_attached(paths: tuple[str, str]) -> sa.Engine:
+@contextmanager
+def _open_attached(paths: tuple[str, str]) -> Iterator[sa.Engine]:
     main_path, aaa_path = paths
-    engine = sa.create_engine(f"duckdb:///{main_path}")
+    with disposable_engine(f"duckdb:///{main_path}") as engine:
 
-    @sa.event.listens_for(engine, "connect")
-    def _attach(dbapi_conn, _rec):  # noqa: ANN001
-        dbapi_conn.execute(f"ATTACH IF NOT EXISTS '{aaa_path}' AS aaa")
+        @sa.event.listens_for(engine, "connect")  # type: ignore[attr-defined]
+        def _attach(dbapi_conn, _rec):  # noqa: ANN001
+            dbapi_conn.execute(f"ATTACH IF NOT EXISTS '{aaa_path}' AS aaa")
 
-    return engine
+        yield engine
 
 
 # --- shared helpers --------------------------------------------------------
@@ -300,16 +336,12 @@ class TestColumnCorruption:
 class TestAttachedCatalogs:
     def test_get_schema_names_are_catalog_qualified(self, attached_paths) -> None:
         """Sanity: the fixture actually attached, and DuckDB qualifies tokens."""
-        engine = _open_attached(attached_paths)
-        try:
+        with _open_attached(attached_paths) as engine:
             names = set(sa.inspect(engine).get_schema_names())
             assert {"att_main.main", "aaa.main", "att_main.openfda_rest"} <= names
-        finally:
-            engine.dispose()
 
     def test_all_schemas_covers_only_the_current_catalog(self, attached_paths) -> None:
-        engine = _open_attached(attached_paths)
-        try:
+        with _open_attached(attached_paths) as engine:
             insp = sa.inspect(engine)
             scope = resolve_ingest_scope(
                 inspector=insp, sa_engine=engine, requested=None,
@@ -324,14 +356,11 @@ class TestAttachedCatalogs:
             aaa_skip = next(s for s in scope.skipped if s.token == "aaa.main")
             assert "catalog" in aaa_skip.reason.lower()
             assert "aaa" in aaa_skip.reason           # names the offending catalog
-        finally:
-            engine.dispose()
 
     def test_bare_scope_does_not_reach_into_the_attached_catalog(self, attached_paths) -> None:
         """The default ref must be the QUALIFIED default token, so discovery
         under it does not sweep ``aaa``."""
-        engine = _open_attached(attached_paths)
-        try:
+        with _open_attached(attached_paths) as engine:
             insp = sa.inspect(engine)
             scope = resolve_ingest_scope(
                 inspector=insp, sa_engine=engine, requested=None,
@@ -340,120 +369,84 @@ class TestAttachedCatalogs:
             assert len(scope.schemas) == 1
             assert scope.schemas[0].token == "att_main.main"
             assert scope.schemas[0].is_default is True
-        finally:
-            engine.dispose()
 
     def test_column_fallback_accepts_a_qualified_token(self, attached_paths) -> None:
-        from slayer.engine.introspect_utils import _get_columns_fallback
-        engine = _open_attached(attached_paths)
-        try:
+        with _open_attached(attached_paths) as engine:
             ref = SchemaRef(catalog="att_main", name="openfda_rest")
             cols = {c["name"] for c in _get_columns_fallback(engine, "reports", ref)}
             assert cols == {"id", "val"}
-        finally:
-            engine.dispose()
 
     def test_column_fallback_never_unions_across_catalogs(self, attached_paths) -> None:
         """``shared`` lives in both catalogs; the qualified token yields only the
         current catalog's column, never the ``['m','o']`` union."""
-        from slayer.engine.introspect_utils import _get_columns_fallback
-        engine = _open_attached(attached_paths)
-        try:
+        with _open_attached(attached_paths) as engine:
             ref = SchemaRef(catalog="att_main", name="main")
             cols = {c["name"] for c in _get_columns_fallback(engine, "shared", ref)}
             assert cols == {"m"}
-        finally:
-            engine.dispose()
 
     def test_primary_key_survives_a_qualified_token(self, attached_paths) -> None:
-        from slayer.engine.ingestion import _get_pk_constraint_fallback
-        engine = _open_attached(attached_paths)
-        try:
+        with _open_attached(attached_paths) as engine:
             ref = SchemaRef(catalog="att_main", name="openfda_rest")
             pk = _get_pk_constraint_fallback(engine, "reports", ref)
             assert pk["constrained_columns"] == ["id"]
-        finally:
-            engine.dispose()
 
     def test_qualified_token_never_retries_bare(self, attached_paths) -> None:
         """The strongest no-bare-retry proof: ``only_in_other`` exists ONLY in
         ``aaa``. A correct qualified probe of ``att_main.main`` finds nothing; a
         bare retry would wrongly reach into the attached catalog and return
         ``[y]``. The result MUST be empty (§3.2b: never retry bare)."""
-        from slayer.engine.introspect_utils import _get_columns_fallback
-        engine = _open_attached(attached_paths)
-        try:
+        with _open_attached(attached_paths) as engine:
             ref = SchemaRef(catalog="att_main", name="main")
             cols = [c["name"] for c in _get_columns_fallback(engine, "only_in_other", ref)]
             assert cols == []
-        finally:
-            engine.dispose()
 
     def test_pk_fallback_joins_on_the_catalog_too(self, attached_paths) -> None:
         """``pktbl(id PK)`` exists in BOTH catalogs' ``main`` and DuckDB gives
         both the SAME auto-generated constraint name. A schema-only join
         duplicates the PK column (``['id','id']``); the three-way catalog join
         keeps it to the current catalog's single ``id``."""
-        from slayer.engine.ingestion import _get_pk_constraint_fallback
-        engine = _open_attached(attached_paths)
-        try:
+        with _open_attached(attached_paths) as engine:
             ref = SchemaRef(catalog="att_main", name="main")
             pk = _get_pk_constraint_fallback(engine, "pktbl", ref)
             assert pk["constrained_columns"] == ["id"]
-        finally:
-            engine.dispose()
 
     def test_comment_fallback_does_not_bleed_across_catalogs(self, attached_paths) -> None:
         """DEV-1809: ``commented.v`` carries a DIFFERENT comment in each catalog.
         The qualified token must read only the current catalog's comment (needs
         ``duckdb_columns().database_name = :catalog``)."""
-        from slayer.engine.introspect_utils import _get_column_comments_fallback
-        engine = _open_attached(attached_paths)
-        try:
+        with _open_attached(attached_paths) as engine:
             ref = SchemaRef(catalog="att_main", name="main")
             comments = _get_column_comments_fallback(engine, "commented", ref)
             assert comments.get("v") == "att_main comment"
-        finally:
-            engine.dispose()
 
     def test_column_fallback_ref_none_never_unions(self, attached_paths) -> None:
         """Defensive branch: with ``ref=None`` and ``shared`` present in several
         (catalog, schema) groups, the fallback must NOT silently union. It may
         resolve to the default group ({m}) or refuse (ValueError) — never
         ``{m, o}`` (§3.10, lowest-sorted-wins explicitly rejected)."""
-        from slayer.engine.introspect_utils import _get_columns_fallback
-        engine = _open_attached(attached_paths)
-        try:
+        with _open_attached(attached_paths) as engine:
             try:
                 cols = {c["name"] for c in _get_columns_fallback(engine, "shared", None)}
             except ValueError:
                 return                 # refusing to guess is acceptable
             assert cols == {"m"}       # if it resolves, the default group; never the union
-        finally:
-            engine.dispose()
 
     def test_discovery_ref_none_does_not_sweep_the_attached_catalog(
         self, attached_paths
     ) -> None:
         """``list_ingestable_objects(ref=None)`` resolves None to the QUALIFIED
         default ref before listing, so it never returns ``aaa``'s objects."""
-        from slayer.engine.ingestion import list_ingestable_objects
-        engine = _open_attached(attached_paths)
-        try:
+        with _open_attached(attached_paths) as engine:
             insp = sa.inspect(engine)
             names = {o.name for o in list_ingestable_objects(inspector=insp, ref=None)}
             assert "only_in_other" not in names
             assert "in_default" in names
-        finally:
-            engine.dispose()
 
     def test_introspect_table_schema_none_resolves_the_qualified_default(
         self, attached_paths
     ) -> None:
         """schema=None probes the qualified default: {m} not {m,o}, bare sql_table."""
-        from slayer.engine.ingestion import introspect_table_to_model
-        engine = _open_attached(attached_paths)
-        try:
+        with _open_attached(attached_paths) as engine:
             insp = sa.inspect(engine)
             model = introspect_table_to_model(
                 sa_engine=engine, inspector=insp, table_name="shared",
@@ -461,17 +454,13 @@ class TestAttachedCatalogs:
             )
             assert {c.name for c in model.columns} == {"m"}
             assert model.sql_table == "shared"      # default stays bare
-        finally:
-            engine.dispose()
 
     def test_introspect_table_schema_none_never_unions_a_bare_result(
         self, attached_paths, monkeypatch
     ) -> None:
         """Even when the Inspector RETURNS a bare-schema union, schema=None probes
         the qualified default and keeps only {m}."""
-        from slayer.engine.ingestion import introspect_table_to_model
-        engine = _open_attached(attached_paths)
-        try:
+        with _open_attached(attached_paths) as engine:
             insp = sa.inspect(engine)
             real_get_columns = insp.get_columns
 
@@ -491,16 +480,13 @@ class TestAttachedCatalogs:
                 schema=None, data_source="ds",
             )
             assert {c.name for c in model.columns} == {"m"}
-        finally:
-            engine.dispose()
 
     def test_requested_foreign_catalog_is_skipped_not_ingested(self, attached_paths) -> None:
         """Codex-review: explicitly requesting a foreign attached catalog
         (``--schema aaa.main``) drops it to ``skipped`` and out of scope, like
         the all_schemas enumeration filter — never ingesting a catalog this
         datasource does not own."""
-        engine = _open_attached(attached_paths)
-        try:
+        with _open_attached(attached_paths) as engine:
             insp = sa.inspect(engine)
             scope = resolve_ingest_scope(
                 inspector=insp, sa_engine=engine, requested=["aaa.main"],
@@ -508,8 +494,6 @@ class TestAttachedCatalogs:
             )
             assert scope.schemas == []
             assert any(s.token == "aaa.main" for s in scope.skipped)
-        finally:
-            engine.dispose()
 
 
 # ===========================================================================
@@ -520,7 +504,6 @@ class TestAttachedCatalogs:
 class TestScopeResolution:
     def _scope(self, path, **kw):
         ds = _ds(path)
-        from slayer.sql import engine_factory
         engine = engine_factory.get_engine(ds.resolve_env_vars())
         insp = sa.inspect(engine)
         defaults = dict(requested=None, all_schemas=False, datasource_schema=None)
@@ -579,7 +562,6 @@ class TestScopeResolution:
     ) -> None:
         """--all-schemas raises rather than returning a silent empty scope."""
         ds = _ds(basic_db)
-        from slayer.sql import engine_factory
         engine = engine_factory.get_engine(ds.resolve_env_vars())
         insp = sa.inspect(engine)
 
@@ -598,7 +580,6 @@ class TestScopeResolution:
     ) -> None:
         """The implicit default request still resolves when enumeration fails."""
         ds = _ds(basic_db)
-        from slayer.sql import engine_factory
         engine = engine_factory.get_engine(ds.resolve_env_vars())
         insp = sa.inspect(engine)
 
@@ -635,7 +616,6 @@ class TestSkippedSchemasReported:
 
 def _reversed_scan(monkeypatch):
     """Reverse the per-schema discovery order to prove order-independence."""
-    from slayer.engine import ingestion as mod
     real = mod.list_ingestable_objects
 
     def _rev(**kwargs):
@@ -776,8 +756,6 @@ class TestSelfHeal:
         await storage.save_model(model)
 
     async def test_missing_qualifier_is_healed(self, basic_db, tmp_path) -> None:
-        from slayer.core.models import Column
-        from slayer.core.enums import DataType
         storage = YAMLStorage(base_dir=str(tmp_path / "store"))
         ds = _ds(basic_db)
         # Pretend an older run stored ``reports`` unqualified with hand metadata.
@@ -797,8 +775,6 @@ class TestSelfHeal:
                    for a in result.additions)
 
     async def test_existing_qualifier_is_never_rewritten(self, basic_db, tmp_path) -> None:
-        from slayer.core.models import Column
-        from slayer.core.enums import DataType
         storage = YAMLStorage(base_dir=str(tmp_path / "store"))
         ds = _ds(basic_db)
         model = SlayerModel(
@@ -818,8 +794,6 @@ class TestSelfHeal:
         already match the fresh introspection, so the ONLY difference is the
         missing qualifier. It must still be saved and reported — an
         implementation that ignores ``sql_table_change`` in the save gate fails."""
-        from slayer.core.models import Column
-        from slayer.core.enums import DataType
         storage = YAMLStorage(base_dir=str(tmp_path / "store"))
         ds = _ds(basic_db)
         await storage.save_datasource(ds)
@@ -848,8 +822,6 @@ class TestSelfHeal:
         """A fresh DEFAULT-schema-qualified ``main.reports`` (from explicit
         ``--schema main``) heals a persisted bare ``reports`` rather than being
         treated as a cross-schema conflict — main IS the default (§3.6)."""
-        from slayer.core.models import Column
-        from slayer.core.enums import DataType
         storage = YAMLStorage(base_dir=str(tmp_path / "store"))
         ds = _ds(same_name_db)
         await storage.save_datasource(ds)
@@ -869,9 +841,6 @@ class TestAdditionRendering:
     def test_updated_line_names_the_qualifier_repair(self) -> None:
         """A qualifier repair adds no columns, so the ``Updated:`` line must be
         driven by ``sql_table_change`` alone (§3.7 rendering)."""
-        import io
-        from slayer.engine.ingestion import _print_ingest_addition
-        from slayer.engine.schema_drift import ModelAddition
         addition = ModelAddition(
             model_name="reports", data_source="ds", created=False,
             sql_table_change="reports → openfda_rest.reports",
@@ -893,8 +862,6 @@ class TestCrossSchemaMergeGuard:
     ) -> None:
         """Persisted bare ``reports`` (main) must not merge/heal with
         ``s2.reports`` — different physical table."""
-        from slayer.core.models import Column
-        from slayer.core.enums import DataType
         storage = YAMLStorage(base_dir=str(tmp_path / "store"))
         ds = _ds(same_name_db)
         await storage.save_datasource(ds)
@@ -915,9 +882,6 @@ class TestCrossSchemaMergeGuard:
     ) -> None:
         """If the default-schema object listing fails, membership is UNKNOWN and
         the merge is refused (never repoint on a guess)."""
-        from slayer.core.models import Column
-        from slayer.core.enums import DataType
-        from slayer.engine import ingestion as mod
 
         storage = YAMLStorage(base_dir=str(tmp_path / "store"))
         ds = _ds(same_name_db)
@@ -951,7 +915,6 @@ class TestCrossSchemaMergeGuard:
 
 class TestValidateModels:
     async def _validate(self, ds, models):
-        from slayer.engine.schema_drift import validate_datasource
         return await validate_datasource(datasource=ds, models=models)
 
     async def test_no_whole_model_delete_after_multi_schema_ingest(
@@ -976,8 +939,6 @@ class TestValidateModels:
         """A pre-existing unqualified ``orders`` must still resolve to the
         default-schema live table even though ``analytics.orders`` now exists —
         the contested bare alias resolves the way the database would."""
-        from slayer.core.models import Column
-        from slayer.core.enums import DataType
         storage = YAMLStorage(base_dir=str(tmp_path / "store"))
         ds = _ds(legacy_db)
         await storage.save_datasource(ds)
@@ -997,8 +958,6 @@ class TestValidateModels:
         same-named table exists in the DEFAULT schema. The pre-fix
         ``_resolve_live_table`` last-one fallback silently diffed against the
         default twin (``analytics.orders`` → ``orders``) and hid the drop."""
-        from slayer.core.models import Column
-        from slayer.core.enums import DataType
         path = str(tmp_path / "drop.duckdb")
         _duck(path=path, statements=["CREATE TABLE orders(id INTEGER)"])   # default only; no analytics
         storage = YAMLStorage(base_dir=str(tmp_path / "store"))
@@ -1019,9 +978,6 @@ class TestValidateModels:
         report that schema's models for deletion — a transient error would hand
         ``--force-clean`` the whole schema. The partial live map is refused
         (IntrospectionUnavailable), so no drift verdict is produced."""
-        from slayer.core.models import Column
-        from slayer.core.enums import DataType
-        from slayer.engine import ingestion as mod
         storage = YAMLStorage(base_dir=str(tmp_path / "store"))
         ds = _ds(basic_db)
         await storage.save_datasource(ds)
@@ -1048,8 +1004,6 @@ class TestValidateModels:
         """A model qualified to ``s2.reports`` (cols b,c) must diff against that
         table, not ``main.reports`` (col a) — else it reads every column as
         dropped and whole-deletes."""
-        from slayer.core.models import Column
-        from slayer.core.enums import DataType
         storage = YAMLStorage(base_dir=str(tmp_path / "store"))
         ds = _ds(same_name_db)
         await storage.save_datasource(ds)
@@ -1068,8 +1022,6 @@ class TestValidateModels:
         self, legacy_db, tmp_path
     ) -> None:
         """A model qualified to a non-pinned own schema isn't false-deleted."""
-        from slayer.core.models import Column
-        from slayer.core.enums import DataType
         storage = YAMLStorage(base_dir=str(tmp_path / "store"))
         ds = _ds(legacy_db, schema_name="main")
         await storage.save_datasource(ds)
@@ -1090,9 +1042,6 @@ class TestValidateModels:
     ) -> None:
         """Enumeration fails, yet a pinned-schema model still gets a real drift
         verdict via the configured-schema fallback, not a silent skip."""
-        from slayer.core.models import Column
-        from slayer.core.enums import DataType
-        from slayer.engine import schema_drift as drift_mod
         storage = YAMLStorage(base_dir=str(tmp_path / "store"))
         ds = _ds(legacy_db, schema_name="main")
         await storage.save_datasource(ds)
@@ -1123,9 +1072,6 @@ class TestValidateModels:
         """Enumeration fails, but a model qualified to a NON-pinned own schema
         still resolves — the fallback scopes to the models' own schemas, so it is
         not false-deleted."""
-        from slayer.core.models import Column
-        from slayer.core.enums import DataType
-        from slayer.engine import schema_drift as drift_mod
         storage = YAMLStorage(base_dir=str(tmp_path / "store"))
         ds = _ds(legacy_db, schema_name="main")
         await storage.save_datasource(ds)
@@ -1156,9 +1102,6 @@ class TestValidateModels:
         """Fallback: a model token equal to the catalog-qualified default
         (``cat.main.x``) must not un-bare-key the default, or a bare model
         alongside another schema gets false-deleted."""
-        from slayer.core.models import Column
-        from slayer.core.enums import DataType
-        from slayer.engine import schema_drift as drift_mod
         path = str(tmp_path / "cat.duckdb")           # catalog "cat", default "main"
         _duck(path=path, statements=[
             "CREATE TABLE orders(id INTEGER)",
@@ -1200,11 +1143,9 @@ class TestLiveTableResolution:
     would let a dropped non-default table masquerade as its default twin."""
 
     def _live(self):
-        from slayer.engine.schema_drift import LiveTable
         return LiveTable(columns={}, pk_columns=set(), fk_relationships=[])
 
     def test_three_part_resolves_via_last_two_segments(self) -> None:
-        from slayer.engine.schema_drift import _resolve_live_table
         live = self._live()
         assert _resolve_live_table(
             sql_table="cat.schema.tbl", live_tables={"schema.tbl": live}
@@ -1213,7 +1154,6 @@ class TestLiveTableResolution:
     def test_bare_model_resolves_against_the_bare_key(self) -> None:
         """A legacy unqualified model finds its default-schema live table (which
         ``_collect_live_tables`` keys bare)."""
-        from slayer.engine.schema_drift import _resolve_live_table
         live = self._live()
         assert _resolve_live_table(
             sql_table="orders", live_tables={"orders": live}
@@ -1222,7 +1162,6 @@ class TestLiveTableResolution:
     def test_default_qualified_model_resolves_against_the_qualified_key(self) -> None:
         """An explicit ``main.orders`` resolves because the default schema is
         dual-keyed (bare AND qualified) in the live map."""
-        from slayer.engine.schema_drift import _resolve_live_table
         live = self._live()
         assert _resolve_live_table(
             sql_table="main.orders", live_tables={"main.orders": live}
@@ -1233,14 +1172,12 @@ class TestLiveTableResolution:
         table is GONE must resolve to None (→ WholeModelDelete), never to a
         same-named default ``orders`` twin — which would silently hide the drop.
         The pre-fix ``full → last-two → last-one`` walk returned the bare twin."""
-        from slayer.engine.schema_drift import _resolve_live_table
         live = self._live()
         assert _resolve_live_table(
             sql_table="analytics.orders", live_tables={"orders": live}
         ) is None
 
     def test_quoted_identifier_is_unquoted(self) -> None:
-        from slayer.engine.schema_drift import _resolve_live_table
         live = self._live()
         assert _resolve_live_table(
             sql_table='prod."Company"', live_tables={"prod.Company": live}
@@ -1250,9 +1187,7 @@ class TestLiveTableResolution:
         """Codex-review: the validate-models live-schema path for a configured
         schema must carry the current catalog on DuckDB, else the bare token
         re-arms the cross-catalog sweep. Pre-fix the ref's catalog was None."""
-        from slayer.engine.schema_drift import _live_schema_refs
-        engine = sa.create_engine(f"duckdb:///{basic_db}")
-        try:
+        with disposable_engine(f"duckdb:///{basic_db}") as engine:
             insp = sa.inspect(engine)
             refs = _live_schema_refs(
                 inspector=insp, sa_engine=engine, datasource=_ds(basic_db),
@@ -1261,8 +1196,6 @@ class TestLiveTableResolution:
             assert len(refs) == 1
             assert refs[0].catalog is not None
             assert refs[0].token == f"{refs[0].catalog}.openfda_rest"
-        finally:
-            engine.dispose()
 
 
 # ===========================================================================
@@ -1301,7 +1234,6 @@ class TestFirstDotParsers:
     schema ``c`` / table ``s.t`` and silently match nothing."""
 
     def test_type_refinement_parser_keeps_the_catalog(self) -> None:
-        from slayer.storage.type_refinement import _parse_sql_table_with_default_schema
         ds = DatasourceConfig(name="s", type="duckdb", database=":memory:")
         assert _parse_sql_table_with_default_schema("proj.dataset.tbl", ds) == (
             "proj.dataset", "tbl"
@@ -1318,15 +1250,11 @@ class TestForcedFilterProbe:
         """The forced-filter presence probe goes through ``_safe_get_columns``;
         with same-named tables across catalogs it must see the current
         catalog's columns, never the union."""
-        from slayer.engine.introspect_utils import _safe_get_columns
-        engine = _open_attached(attached_paths)
-        try:
+        with _open_attached(attached_paths) as engine:
             insp = sa.inspect(engine)
             ref = SchemaRef(catalog="att_main", name="main")
             cols = {c["name"] for c in _safe_get_columns(insp, engine, "shared", ref)}
             assert cols == {"m"}
-        finally:
-            engine.dispose()
 
 
 # ===========================================================================
@@ -1391,7 +1319,6 @@ class TestIncludeExcludeAcrossSchemas:
 
 def _run_cli(monkeypatch, argv: list[str]) -> None:
     """Drive the real ``slayer`` CLI by argv (``main`` reads ``sys.argv``)."""
-    from slayer import cli
     monkeypatch.setattr("sys.argv", ["slayer", *argv])
     cli.main()
 
@@ -1402,7 +1329,6 @@ class TestSchemaNamePersistence:
     ) -> None:
         """``datasources create --schema X --ingest`` persists ``schema_name``;
         a subsequent bare ``slayer ingest`` scans X (D-3 fix, D-7)."""
-        from slayer.async_utils import run_sync
         store = str(tmp_path / "store")
         storage = YAMLStorage(base_dir=store)
 
@@ -1421,7 +1347,6 @@ class TestSchemaNamePersistence:
     def test_all_schemas_does_not_persist_schema_name(
         self, basic_db, tmp_path, monkeypatch
     ) -> None:
-        from slayer.async_utils import run_sync
         store = str(tmp_path / "store")
         storage = YAMLStorage(base_dir=store)
         _run_cli(monkeypatch, [
@@ -1465,7 +1390,6 @@ class TestEngineConflicts:
 
     @pytest.mark.parametrize("kwargs", _CONFLICTS)
     def test_ingest_datasource_rejects_conflicts(self, basic_db, kwargs) -> None:
-        from slayer.engine.ingestion import ingest_datasource
         ds = _ds(basic_db)
         with pytest.raises(ValueError):
             ingest_datasource(datasource=ds, **kwargs)
@@ -1481,23 +1405,18 @@ class TestEngineConflicts:
 
 class TestRestParity:
     def test_conflicting_scope_is_a_validation_error(self) -> None:
-        from pydantic import ValidationError
-        from slayer.api.server import IngestRequest
         with pytest.raises(ValidationError):
             IngestRequest(datasource="ds", schema_name="a", schemas=["b"])
         with pytest.raises(ValidationError):
             IngestRequest(datasource="ds", all_schemas=True, schemas=["b"])
 
     def test_legacy_schema_name_still_accepted(self) -> None:
-        from slayer.api.server import IngestRequest
         req = IngestRequest(datasource="ds", schema_name="public")
         assert req.schema_name == "public"
 
     async def test_http_ingest_qualifies_and_conflicts_are_422(self, basic_db, tmp_path) -> None:
         """The route actually applies the scope (qualifies) and returns 422 on a
         conflicting body — not just the request model in isolation."""
-        from httpx import ASGITransport, AsyncClient
-        from slayer.api.server import create_app
         storage = YAMLStorage(base_dir=str(tmp_path / "store"))
         await storage.save_datasource(_ds(basic_db))
         app = create_app(storage=storage)
@@ -1519,7 +1438,6 @@ class TestRestParity:
 
 class TestMcpParity:
     async def _server(self, storage):
-        from slayer.mcp.server import create_mcp_server
         return create_mcp_server(storage=storage)
 
     async def _text(self, server, name, arguments):
@@ -1574,7 +1492,6 @@ class TestMcpParity:
     async def test_show_tables_does_not_sweep_non_default_schemas(self, basic_db, tmp_path) -> None:
         """MCP ``datasources show``'s table listing routes through scope
         resolution, so DuckDB no longer sweeps every schema (§3.9)."""
-        from slayer.mcp.server import _fetch_tables
         # DEV-1750: _fetch_tables returns IngestableObjects (name + kind).
         objects, err = _fetch_tables(ds=_ds(basic_db), schema_name=None)
         assert err is None
@@ -1609,12 +1526,9 @@ class TestCliArgumentParsing:
 
 class TestUnqualifiedNonRegression:
     def test_sqlite_ingest_stays_unqualified(self, tmp_path) -> None:
-        import sqlite3
         db = str(tmp_path / "app.db")
-        con = sqlite3.connect(db)
-        con.executescript("CREATE TABLE orders(id INTEGER PRIMARY KEY, amount REAL);")
-        con.commit()
-        con.close()
+        with transaction(db) as con:
+            con.executescript("CREATE TABLE orders(id INTEGER PRIMARY KEY, amount REAL);")
         ds = DatasourceConfig(name="s", type="sqlite", database=db)
         report = ingest_datasource_report(datasource=ds)
         assert _sql_tables(report) == {"orders": "orders"}

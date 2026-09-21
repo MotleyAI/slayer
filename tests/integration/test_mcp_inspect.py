@@ -7,7 +7,7 @@ output.
 Run with: poetry run pytest tests/integration/test_mcp_inspect.py -m integration
 """
 
-import sqlite3
+import json as _json
 from typing import Any
 
 import pytest
@@ -18,13 +18,16 @@ from slayer.core.models import (
     DatasourceConfig,
     SlayerModel,
 )
+from slayer.core.query import SlayerQuery
 from slayer.engine.profiling import _collect_dim_profile
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.mcp import server as mcp_server
 from slayer.mcp.server import (
     _collect_measure_profile,
     _get_row_count,
     create_mcp_server,
 )
+from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 
 pytestmark = pytest.mark.integration
@@ -34,32 +37,30 @@ pytestmark = pytest.mark.integration
 async def env(tmp_path):
     """Real SQLite DB + YAMLStorage + a saved ``orders`` model."""
     db_path = tmp_path / "test.db"
-    conn = sqlite3.connect(str(db_path))
-    cur = conn.cursor()
-    cur.execute(
-        """
-        CREATE TABLE orders (
-            id INTEGER PRIMARY KEY,
-            status TEXT NOT NULL,
-            is_paid INTEGER NOT NULL,
-            amount REAL NOT NULL,
-            quantity INTEGER NOT NULL,
-            ordered_at TEXT NOT NULL,
-            notes TEXT
+    with transaction(str(db_path)) as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE orders (
+                id INTEGER PRIMARY KEY,
+                status TEXT NOT NULL,
+                is_paid INTEGER NOT NULL,
+                amount REAL NOT NULL,
+                quantity INTEGER NOT NULL,
+                ordered_at TEXT NOT NULL,
+                notes TEXT
+            )
+            """
         )
-        """
-    )
-    rows = [
-        (1, "completed", 1, 100.0, 2, "2025-01-15 09:00:00", "first"),
-        (2, "completed", 1, 250.0, 5, "2025-01-20 14:30:00", "second"),
-        (3, "pending",   0, 50.0,  1, "2025-02-10 11:15:00", None),
-        (4, "cancelled", 0, 75.0,  3, "2025-02-15 16:45:00", "cancelled"),
-        (5, "completed", 1, 300.0, 6, "2025-03-05 08:00:00", None),
-        (6, "pending",   0, 25.0,  1, "2025-03-20 20:10:00", "small"),
-    ]
-    cur.executemany("INSERT INTO orders VALUES (?, ?, ?, ?, ?, ?, ?)", rows)
-    conn.commit()
-    conn.close()
+        rows = [
+            (1, "completed", 1, 100.0, 2, "2025-01-15 09:00:00", "first"),
+            (2, "completed", 1, 250.0, 5, "2025-01-20 14:30:00", "second"),
+            (3, "pending",   0, 50.0,  1, "2025-02-10 11:15:00", None),
+            (4, "cancelled", 0, 75.0,  3, "2025-02-15 16:45:00", "cancelled"),
+            (5, "completed", 1, 300.0, 6, "2025-03-05 08:00:00", None),
+            (6, "pending",   0, 25.0,  1, "2025-03-20 20:10:00", "small"),
+        ]
+        cur.executemany("INSERT INTO orders VALUES (?, ?, ?, ?, ?, ?, ?)", rows)
 
     storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
     ds = DatasourceConfig(name="test_sqlite", type="sqlite", database=str(db_path))
@@ -130,10 +131,8 @@ class TestGetRowCount:
 
     async def test_empty_table(self, tmp_path) -> None:
         db_path = tmp_path / "empty.db"
-        conn = sqlite3.connect(str(db_path))
-        conn.cursor().execute("CREATE TABLE t (id INTEGER PRIMARY KEY)")
-        conn.commit()
-        conn.close()
+        with transaction(str(db_path)) as conn:
+            conn.cursor().execute("CREATE TABLE t (id INTEGER PRIMARY KEY)")
 
         storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
         await storage.save_datasource(DatasourceConfig(
@@ -190,14 +189,12 @@ class TestCollectDimProfile:
         it remains in the overflow regime.
         """
         db_path = tmp_path / "hc.db"
-        conn = sqlite3.connect(str(db_path))
-        conn.cursor().execute("CREATE TABLE t (id INTEGER PRIMARY KEY, label TEXT)")
-        conn.executemany(
-            "INSERT INTO t(label) VALUES (?)",
-            [(f"v{i:03d}",) for i in range(60)],
-        )
-        conn.commit()
-        conn.close()
+        with transaction(str(db_path)) as conn:
+            conn.cursor().execute("CREATE TABLE t (id INTEGER PRIMARY KEY, label TEXT)")
+            conn.executemany(
+                "INSERT INTO t(label) VALUES (?)",
+                [(f"v{i:03d}",) for i in range(60)],
+            )
 
         storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
         await storage.save_datasource(DatasourceConfig(
@@ -221,12 +218,10 @@ class TestCollectDimProfile:
 
     async def test_empty_table_produces_no_entries(self, tmp_path) -> None:
         db_path = tmp_path / "empty.db"
-        conn = sqlite3.connect(str(db_path))
-        conn.cursor().execute(
-            "CREATE TABLE t (id INTEGER PRIMARY KEY, status TEXT, amount REAL)"
-        )
-        conn.commit()
-        conn.close()
+        with transaction(str(db_path)) as conn:
+            conn.cursor().execute(
+                "CREATE TABLE t (id INTEGER PRIMARY KEY, status TEXT, amount REAL)"
+            )
 
         storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
         await storage.save_datasource(DatasourceConfig(
@@ -320,7 +315,6 @@ class TestInspectModelEndToEnd:
     async def test_no_longer_json(self, env) -> None:
         server = create_mcp_server(storage=env["storage"])
         result = await self._call(server, name="inspect_model", arguments={"model_name": "orders"})
-        import json as _json
         with pytest.raises(_json.JSONDecodeError):
             _json.loads(result)
 
@@ -392,14 +386,10 @@ class TestMeasureTypeInference:
 
     async def test_string_measure_inferred(self, tmp_path) -> None:
         """A VARCHAR/TEXT measure infers as 'string'."""
-        import sqlite3 as _sqlite3
-
         db_path = tmp_path / "types.db"
-        conn = _sqlite3.connect(str(db_path))
-        conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, label TEXT, price REAL)")
-        conn.execute("INSERT INTO t VALUES (1, 'hello', 9.99)")
-        conn.commit()
-        conn.close()
+        with transaction(str(db_path)) as conn:
+            conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, label TEXT, price REAL)")
+            conn.execute("INSERT INTO t VALUES (1, 'hello', 9.99)")
 
         storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
         await storage.save_datasource(DatasourceConfig(
@@ -434,8 +424,6 @@ class TestMeasureTypeInference:
 
     async def test_measure_sampled_shows_min_max(self, env) -> None:
         """Measures with data show min .. max in the sampled column."""
-        from slayer.mcp.server import _collect_measure_profile
-
         profile = await _collect_measure_profile(model=env["model"], engine=env["engine"])
         # amount: REAL values 25.0 .. 300.0
         assert "25" in profile["amount"]
@@ -447,16 +435,11 @@ class TestMeasureTypeInference:
 
     async def test_measure_sampled_all_null(self, tmp_path) -> None:
         """Measures with all-NULL data show 'all NULL' in the sampled column."""
-        import sqlite3 as _sqlite3
-        from slayer.mcp.server import _collect_measure_profile
-
         db_path = tmp_path / "nulls.db"
-        conn = _sqlite3.connect(str(db_path))
-        conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, val REAL)")
-        conn.execute("INSERT INTO t VALUES (1, NULL)")
-        conn.execute("INSERT INTO t VALUES (2, NULL)")
-        conn.commit()
-        conn.close()
+        with transaction(str(db_path)) as conn:
+            conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, val REAL)")
+            conn.execute("INSERT INTO t VALUES (1, NULL)")
+            conn.execute("INSERT INTO t VALUES (2, NULL)")
 
         storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
         await storage.save_datasource(DatasourceConfig(
@@ -485,8 +468,6 @@ class TestStringAggregationRejection:
     ValueError, not a database-level type error."""
 
     async def _run(self, env, formula: str) -> None:
-        from slayer.core.query import SlayerQuery
-
         q = SlayerQuery.model_validate({
             "source_model": "orders",
             "measures": [{"formula": formula}],
@@ -500,8 +481,6 @@ class TestStringAggregationRejection:
 
     async def test_min_max_allowed_on_string(self, env) -> None:
         """min/max work on strings (alphabetical ordering) — should pass."""
-        from slayer.core.query import SlayerQuery
-
         q = SlayerQuery.model_validate({
             "source_model": "orders",
             "measures": [{"formula": "status:min"}, {"formula": "status:max"}],
@@ -511,8 +490,6 @@ class TestStringAggregationRejection:
 
     async def test_count_and_count_distinct_allowed_on_string(self, env) -> None:
         """count/count_distinct always work regardless of type."""
-        from slayer.core.query import SlayerQuery
-
         q = SlayerQuery.model_validate({
             "source_model": "orders",
             "measures": [{"formula": "status:count"}, {"formula": "status:count_distinct"}],
@@ -522,8 +499,6 @@ class TestStringAggregationRejection:
 
     async def test_numeric_aggregations_allowed_on_numeric_measure(self, env) -> None:
         """avg/sum on the numeric `amount` measure must still work."""
-        from slayer.core.query import SlayerQuery
-
         q = SlayerQuery.model_validate({
             "source_model": "orders",
             "measures": [{"formula": "amount:sum"}, {"formula": "amount:avg"}],
@@ -538,8 +513,6 @@ class TestPrimaryKeyAggregationRule:
 
     async def test_sum_on_pk_rejected(self, env) -> None:
         """`:sum` on a numeric primary-key column is rejected at enrichment."""
-        from slayer.core.query import SlayerQuery
-
         q = SlayerQuery.model_validate({
             "source_model": "orders",
             "measures": [{"formula": "id:sum"}],
@@ -549,8 +522,6 @@ class TestPrimaryKeyAggregationRule:
 
     async def test_count_on_pk_allowed(self, env) -> None:
         """`:count` on a primary-key column is always allowed."""
-        from slayer.core.query import SlayerQuery
-
         q = SlayerQuery.model_validate({
             "source_model": "orders",
             "measures": [{"formula": "id:count"}],
@@ -568,12 +539,10 @@ class TestIngestDatasourceModelsTool:
 
     async def test_success_message_uses_columns_not_dims(self, tmp_path) -> None:
         db_path = tmp_path / "ingest.db"
-        conn = sqlite3.connect(str(db_path))
-        conn.cursor().execute(
-            "CREATE TABLE widgets (id INTEGER PRIMARY KEY, name TEXT, qty INTEGER)"
-        )
-        conn.commit()
-        conn.close()
+        with transaction(str(db_path)) as conn:
+            conn.cursor().execute(
+                "CREATE TABLE widgets (id INTEGER PRIMARY KEY, name TEXT, qty INTEGER)"
+            )
 
         storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
         await storage.save_datasource(DatasourceConfig(
@@ -604,7 +573,6 @@ class TestInspectModelSampledValuesAndDistinctCount:
     """End-to-end DEV-1480 contract through ``inspect_model``."""
 
     async def _call_json(self, server, *, model_name: str) -> dict:
-        import json as _json
         content, _ = await server.call_tool(
             name="inspect_model",
             arguments={"model_name": model_name, "format": "json"},
@@ -677,16 +645,14 @@ class TestInspectModelSampledValuesAndDistinctCount:
         (the latter is the numeric-fallback marker). JSON shows the structured
         ``sampled_values=[]``."""
         db_path = tmp_path / "nulls.db"
-        conn = sqlite3.connect(str(db_path))
-        conn.cursor().execute(
-            "CREATE TABLE t (id INTEGER PRIMARY KEY, notes TEXT)"
-        )
-        conn.executemany(
-            "INSERT INTO t(id, notes) VALUES (?, ?)",
-            [(i, None) for i in range(1, 6)],
-        )
-        conn.commit()
-        conn.close()
+        with transaction(str(db_path)) as conn:
+            conn.cursor().execute(
+                "CREATE TABLE t (id INTEGER PRIMARY KEY, notes TEXT)"
+            )
+            conn.executemany(
+                "INSERT INTO t(id, notes) VALUES (?, ?)",
+                [(i, None) for i in range(1, 6)],
+            )
 
         storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
         await storage.save_datasource(DatasourceConfig(
@@ -702,7 +668,6 @@ class TestInspectModelSampledValuesAndDistinctCount:
         await storage.save_model(model)
 
         server = create_mcp_server(storage=storage)
-        import json as _json
         content, _ = await server.call_tool(
             name="inspect_model",
             arguments={"model_name": "t", "format": "json"},
@@ -723,18 +688,16 @@ class TestInspectModelSampledValuesAndDistinctCount:
         even when ``sampled_values`` holds the full 50. The markdown table
         is the all-columns-at-once surface and stays readable."""
         db_path = tmp_path / "wide_values.db"
-        conn = sqlite3.connect(str(db_path))
-        conn.cursor().execute(
-            "CREATE TABLE many_values (id INTEGER PRIMARY KEY, kind TEXT)"
-        )
-        # Insert 30 distinct categorical values. <= 50 so no overflow, but
-        # > 20 so the markdown text cap kicks in.
-        conn.executemany(
-            "INSERT INTO many_values VALUES (?, ?)",
-            [(i, f"k_{i:02d}") for i in range(1, 31)],
-        )
-        conn.commit()
-        conn.close()
+        with transaction(str(db_path)) as conn:
+            conn.cursor().execute(
+                "CREATE TABLE many_values (id INTEGER PRIMARY KEY, kind TEXT)"
+            )
+            # Insert 30 distinct categorical values. <= 50 so no overflow, but
+            # > 20 so the markdown text cap kicks in.
+            conn.executemany(
+                "INSERT INTO many_values VALUES (?, ?)",
+                [(i, f"k_{i:02d}") for i in range(1, 31)],
+            )
         storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
         await storage.save_datasource(DatasourceConfig(
             name="mv_ds", type="sqlite", database=str(db_path),
@@ -840,18 +803,16 @@ class TestInspectModelSampledValuesAndDistinctCount:
         db_path = tmp_path / "wide.db"
         col_count = 15
         col_defs = ", ".join(f"c{i} TEXT" for i in range(col_count))
-        conn = sqlite3.connect(str(db_path))
-        conn.cursor().execute(
-            f"CREATE TABLE wide (id INTEGER PRIMARY KEY, {col_defs})"
-        )
-        placeholders = ", ".join(["?"] * (col_count + 1))
-        row_value = ("val",) * col_count
-        conn.execute(
-            f"INSERT INTO wide VALUES ({placeholders})",
-            (1, *row_value),
-        )
-        conn.commit()
-        conn.close()
+        with transaction(str(db_path)) as conn:
+            conn.cursor().execute(
+                f"CREATE TABLE wide (id INTEGER PRIMARY KEY, {col_defs})"
+            )
+            placeholders = ", ".join(["?"] * (col_count + 1))
+            row_value = ("val",) * col_count
+            conn.execute(
+                f"INSERT INTO wide VALUES ({placeholders})",
+                (1, *row_value),
+            )
 
         storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
         await storage.save_datasource(DatasourceConfig(
@@ -915,16 +876,14 @@ class TestInspectModelEmptyStringSampledNotClobberedByFallback:
         self, tmp_path, monkeypatch,
     ) -> None:
         db_path = tmp_path / "nulls.db"
-        conn = sqlite3.connect(str(db_path))
-        conn.cursor().execute(
-            "CREATE TABLE t (id INTEGER PRIMARY KEY, notes TEXT)"
-        )
-        conn.executemany(
-            "INSERT INTO t(id, notes) VALUES (?, ?)",
-            [(i, None) for i in range(1, 6)],
-        )
-        conn.commit()
-        conn.close()
+        with transaction(str(db_path)) as conn:
+            conn.cursor().execute(
+                "CREATE TABLE t (id INTEGER PRIMARY KEY, notes TEXT)"
+            )
+            conn.executemany(
+                "INSERT INTO t(id, notes) VALUES (?, ?)",
+                [(i, None) for i in range(1, 6)],
+            )
 
         storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
         await storage.save_datasource(DatasourceConfig(
@@ -940,8 +899,6 @@ class TestInspectModelEmptyStringSampledNotClobberedByFallback:
 
         # Inject a "fallback" value for the categorical column so the
         # truthiness ``or`` bug would silently swap "" → "FALLBACK".
-        from slayer.mcp import server as mcp_server
-
         async def injected_measure_profile(*, model, engine):  # noqa: ARG001  # NOSONAR(S7503) — must be async to replace _collect_measure_profile which the production caller awaits
             return {"notes": "FALLBACK_VALUE_SHOULD_NOT_APPEAR"}
 
@@ -951,7 +908,6 @@ class TestInspectModelEmptyStringSampledNotClobberedByFallback:
         )
 
         server = create_mcp_server(storage=storage)
-        import json as _json
         content, _ = await server.call_tool(
             name="inspect_model",
             arguments={"model_name": "t", "format": "json"},

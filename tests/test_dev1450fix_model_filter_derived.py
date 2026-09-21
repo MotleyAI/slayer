@@ -18,7 +18,6 @@ Each scenario is a distinct model over the SAME ``orders`` table so its
 from __future__ import annotations
 
 import os
-import sqlite3
 import tempfile
 from typing import AsyncIterator
 
@@ -34,6 +33,7 @@ from slayer.core.models import (
 )
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -41,29 +41,27 @@ from slayer.storage.yaml_storage import YAMLStorage
 async def engine() -> AsyncIterator[SlayerQueryEngine]:
     d = tempfile.mkdtemp()
     db_path = os.path.join(d, "t.db")
-    con = sqlite3.connect(db_path)
-    cur = con.cursor()
-    cur.execute("CREATE TABLE customers (id INTEGER PRIMARY KEY, region TEXT)")
-    cur.executemany(
-        "INSERT INTO customers VALUES (?,?)",
-        [(1, "NA"), (2, "NA"), (3, "EU")],
-    )
-    cur.execute(
-        "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, "
-        "status TEXT, amount REAL)"
-    )
-    cur.executemany(
-        "INSERT INTO orders VALUES (?,?,?,?)",
-        [
-            (1, 1, "paid", 10.0),
-            (2, 1, "paid", 5.0),
-            (3, 2, "open", 7.0),
-            (4, 3, "open", 3.0),
-            (5, 3, "paid", 9.0),
-        ],
-    )
-    con.commit()
-    con.close()
+    with transaction(db_path) as con:
+        cur = con.cursor()
+        cur.execute("CREATE TABLE customers (id INTEGER PRIMARY KEY, region TEXT)")
+        cur.executemany(
+            "INSERT INTO customers VALUES (?,?)",
+            [(1, "NA"), (2, "NA"), (3, "EU")],
+        )
+        cur.execute(
+            "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, "
+            "status TEXT, amount REAL)"
+        )
+        cur.executemany(
+            "INSERT INTO orders VALUES (?,?,?,?)",
+            [
+                (1, 1, "paid", 10.0),
+                (2, 1, "paid", 5.0),
+                (3, 2, "open", 7.0),
+                (4, 3, "open", 3.0),
+                (5, 3, "paid", 9.0),
+            ],
+        )
 
     storage = YAMLStorage(base_dir=os.path.join(d, "store"))
     await storage.save_datasource(
@@ -170,7 +168,8 @@ async def test_model_filter_inlines_same_model_derived(engine):
     sql = dry.sql
     assert sql is not None
     # Expanded expression appears; the derived column NAME does not leak.
-    assert "amount" in sql and "> 5" in sql
+    assert "amount" in sql
+    assert "> 5" in sql
     assert "big_order" not in sql, sql
     # Always-applied WHERE keeps only amount > 5 (10, 7, 9).
     resp = await engine.execute(q)
@@ -185,7 +184,9 @@ async def test_model_filter_derived_crosses_join(engine):
     sql = dry.sql
     assert sql is not None
     assert "LEFT JOIN" in sql.upper(), sql
-    assert "customers" in sql and "region" in sql and "'EU'" in sql
+    assert "customers" in sql
+    assert "region" in sql
+    assert "'EU'" in sql
     assert "eu_flag" not in sql, sql
     # Only orders whose customer is EU (customer 3 -> orders 4, 5).
     resp = await engine.execute(q)
@@ -198,7 +199,8 @@ async def test_base_only_model_filter_unchanged(engine):
     dry = await engine.execute(q, dry_run=True)
     sql = dry.sql
     assert sql is not None
-    assert "status" in sql and "'paid'" in sql
+    assert "status" in sql
+    assert "'paid'" in sql
     resp = await engine.execute(q)
     assert resp.data[0]["orders_base._count"] == 3
 

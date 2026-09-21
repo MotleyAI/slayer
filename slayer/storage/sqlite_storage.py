@@ -25,6 +25,7 @@ from slayer.storage.sidecar_embedding_store import (
     SidecarEmbeddingsMixin,
     SidecarEmbeddingStore,
 )
+from slayer.storage.sqlite_conn import open_connection, transaction
 from slayer.storage.v4_migration import migrate_sqlite_schema
 
 
@@ -56,7 +57,7 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
         check each table independently, and combine both rebuilds into
         a single transaction whenever both need migrating.
         """
-        with sqlite3.connect(self.db_path) as conn:
+        with transaction(self.db_path) as conn:
             memories_needs_rebuild = self._memories_needs_text_pk(conn)
             me_needs_rebuild = self._memory_entities_needs_text_fk(conn)
             if not memories_needs_rebuild and not me_needs_rebuild:
@@ -129,7 +130,7 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
         return me_col is not None and me_col[2].upper() != "TEXT"
 
     def _init_db(self) -> None:
-        with sqlite3.connect(self.db_path) as conn:
+        with transaction(self.db_path) as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS models (
                     data_source TEXT NOT NULL,
@@ -183,21 +184,21 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
 
     def _save_model_sync(self, model: SlayerModel) -> None:
         data = json.dumps(model.model_dump(mode="json", exclude_none=True))
-        with sqlite3.connect(self.db_path) as conn:
+        with transaction(self.db_path) as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO models (data_source, name, data) VALUES (?, ?, ?)",
                 (model.data_source, model.name, data),
             )
 
     def _list_all_identities_sync(self) -> list[tuple[str, str]]:
-        with sqlite3.connect(self.db_path) as conn:
+        with transaction(self.db_path) as conn:
             rows = conn.execute(
                 "SELECT data_source, name FROM models ORDER BY data_source, name"
             ).fetchall()
         return [(r[0], r[1]) for r in rows]
 
     def _get_model_sync(self, data_source: str, name: str) -> str | None:
-        with sqlite3.connect(self.db_path) as conn:
+        with transaction(self.db_path) as conn:
             row = conn.execute(
                 "SELECT data FROM models WHERE data_source = ? AND name = ?",
                 (data_source, name),
@@ -205,7 +206,7 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
         return row[0] if row else None
 
     def _delete_model_sync(self, data_source: str, name: str) -> bool:
-        with sqlite3.connect(self.db_path) as conn:
+        with transaction(self.db_path) as conn:
             cursor = conn.execute(
                 "DELETE FROM models WHERE data_source = ? AND name = ?",
                 (data_source, name),
@@ -214,35 +215,35 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
 
     def _save_datasource_sync(self, datasource: DatasourceConfig) -> None:
         data = json.dumps(datasource.model_dump(mode="json", exclude_none=True))
-        with sqlite3.connect(self.db_path) as conn:
+        with transaction(self.db_path) as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO datasources (name, data) VALUES (?, ?)",
                 (datasource.name, data),
             )
 
     def _get_datasource_sync(self, name: str) -> str | None:
-        with sqlite3.connect(self.db_path) as conn:
+        with transaction(self.db_path) as conn:
             row = conn.execute(
                 "SELECT data FROM datasources WHERE name = ?", (name,)
             ).fetchone()
         return row[0] if row else None
 
     def _list_datasources_sync(self) -> list[str]:
-        with sqlite3.connect(self.db_path) as conn:
+        with transaction(self.db_path) as conn:
             rows = conn.execute(
                 "SELECT name FROM datasources ORDER BY name"
             ).fetchall()
         return [r[0] for r in rows]
 
     def _delete_datasource_sync(self, name: str) -> bool:
-        with sqlite3.connect(self.db_path) as conn:
+        with transaction(self.db_path) as conn:
             cursor = conn.execute(
                 "DELETE FROM datasources WHERE name = ?", (name,)
             )
             return cursor.rowcount > 0
 
     def _get_priority_sync(self) -> list[str]:
-        with sqlite3.connect(self.db_path) as conn:
+        with transaction(self.db_path) as conn:
             row = conn.execute(
                 "SELECT value FROM settings WHERE key = ?", (_PRIORITY_KEY,)
             ).fetchone()
@@ -257,7 +258,7 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
         return [str(p) for p in value]
 
     def _set_priority_sync(self, priority: list[str]) -> None:
-        with sqlite3.connect(self.db_path) as conn:
+        with transaction(self.db_path) as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
                 (_PRIORITY_KEY, json.dumps(list(priority))),
@@ -311,7 +312,7 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
         sampled_values: list[str] | None,
         distinct_count: int | None,
     ) -> None:
-        with sqlite3.connect(self.db_path) as conn:
+        with transaction(self.db_path) as conn:
             row = conn.execute(
                 "SELECT data FROM models WHERE data_source = ? AND name = ?",
                 (data_source, model_name),
@@ -437,8 +438,9 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
         # transaction (cf. SQLite's default deferred BEGIN, which only
         # promotes to a write lock when a write actually happens — by
         # which time another writer may have updated ``memories``).
-        conn = sqlite3.connect(self.db_path, isolation_level=None, timeout=30.0)
-        try:
+        # ``open_connection`` (the door) only closes; this path drives its own
+        # BEGIN IMMEDIATE / COMMIT / ROLLBACK under autocommit.
+        with open_connection(self.db_path, isolation_level=None, timeout=30.0) as conn:
             conn.execute(_PRAGMA_FOREIGN_KEYS_ON)
             conn.execute("BEGIN IMMEDIATE")
             try:
@@ -483,8 +485,6 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
             except Exception:
                 conn.execute("ROLLBACK")
                 raise
-        finally:
-            conn.close()
         return memory
 
     def _next_memory_seq_sync_from_conn(
@@ -528,7 +528,7 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
 
     def _save_memory_sync(self, memory: Memory) -> None:
         data = json.dumps(memory.model_dump(mode="json"))
-        with sqlite3.connect(self.db_path) as conn:
+        with transaction(self.db_path) as conn:
             conn.execute(_PRAGMA_FOREIGN_KEYS_ON)
             conn.execute(
                 "INSERT OR REPLACE INTO memories (id, data) VALUES (?, ?)",
@@ -549,14 +549,14 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
         await asyncio.to_thread(self._save_memory_sync, memory)
 
     def _next_memory_seq_sync(self) -> str:
-        with sqlite3.connect(self.db_path) as conn:
+        with transaction(self.db_path) as conn:
             return self._next_memory_seq_sync_from_conn(conn)
 
     async def _next_memory_seq(self) -> str:
         return await asyncio.to_thread(self._next_memory_seq_sync)
 
     def _get_memory_sync(self, memory_id: str) -> str | None:
-        with sqlite3.connect(self.db_path) as conn:
+        with transaction(self.db_path) as conn:
             row = conn.execute(
                 "SELECT data FROM memories WHERE id = ?", (memory_id,)
             ).fetchone()
@@ -569,7 +569,7 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
     def _list_memories_sync(
         self, entities: list[str] | None
     ) -> list[str]:
-        with sqlite3.connect(self.db_path) as conn:
+        with transaction(self.db_path) as conn:
             if entities is None:
                 rows = conn.execute(
                     "SELECT data FROM memories ORDER BY id"
@@ -594,7 +594,7 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
         return [Memory.model_validate(json.loads(r)) for r in raws]
 
     def _delete_memory_sync(self, memory_id: str) -> bool:
-        with sqlite3.connect(self.db_path) as conn:
+        with transaction(self.db_path) as conn:
             conn.execute(_PRAGMA_FOREIGN_KEYS_ON)
             cursor = conn.execute(
                 "DELETE FROM memories WHERE id = ?", (memory_id,)

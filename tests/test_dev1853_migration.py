@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import os
-import sqlite3
+from slayer.storage.sqlite_conn import transaction
 import tempfile
 
 import pytest
@@ -102,7 +102,7 @@ async def _seed_sqlite(db_path: str, payloads: list[dict]) -> SQLiteStorage:
     storage = SQLiteStorage(db_path=db_path)
     await storage.save_datasource(
         DatasourceConfig(name="ds", type="sqlite", database=":memory:"))
-    with sqlite3.connect(db_path) as conn:
+    with transaction(db_path) as conn:
         for p in payloads:
             conn.execute(
                 "INSERT INTO models (data_source, name, data) VALUES (?, ?, ?)",

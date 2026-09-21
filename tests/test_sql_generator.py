@@ -13,7 +13,7 @@ from pydantic import ValidationError as PydanticValidationError
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Aggregation, AggregationParam, Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
-from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.engine.query_engine import SlayerQueryEngine, _sql_client_cache_key
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.plan import plan_query
 from slayer.sql.generator import (
@@ -8755,7 +8755,7 @@ class TestGetColumnTypesSql:
 
                 mock_client = MagicMock()
                 mock_client.get_column_types = capture_sql
-                engine._sql_clients[("sqlite://", "", "")] = mock_client
+                engine._sql_clients[_sql_client_cache_key(mock_ds)] = mock_client
 
                 await engine.get_column_types("orders")
 
@@ -8803,7 +8803,7 @@ class TestGetColumnTypesSql:
 
             mock_client = MagicMock()
             mock_client.get_column_types = capture_types
-            engine._sql_clients[("sqlite://", "", "")] = mock_client
+            engine._sql_clients[_sql_client_cache_key(mock_ds)] = mock_client
 
             result = await engine.get_column_types("orders")
 
