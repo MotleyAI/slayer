@@ -26,7 +26,7 @@ def _model(models: List[SlayerModel], name: str) -> SlayerModel:
 def dev1931_models() -> List[SlayerModel]:
     """DEV-1832 Graph A + the DEV-1931 custom aggregations. Host first (orders)."""
     models = dev1832_models()
-    cust = _model(models, "customers")
+    cust = _model(models=models, name="customers")
     cust.aggregations.extend([
         Aggregation(
             name="wsum_host", formula="SUM({value} * {weight})",
@@ -53,7 +53,7 @@ def dev1931_models() -> List[SlayerModel]:
             name="wsum_partial", formula="SUM({value} * {weight})",
             params=[AggregationParam(name="weight", sql="regions.plans.fee")]),
     ])
-    regions = _model(models, "regions")
+    regions = _model(models=models, name="regions")
     # F1: w1 widens the home to customers; w2 (`bad_pop`) crosses the fanning hop.
     regions.aggregations.append(Aggregation(
         name="wfan_widen", formula="SUM({value} * {w1} * {w2})",

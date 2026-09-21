@@ -85,7 +85,7 @@ class TestDefinitionDefaultExecution:
 
     @pytest.fixture(params=["sqlite", "duckdb"])
     async def engine(self, request):
-        async for e in make_exec_engine(request, models=dev1931_models()):
+        async for e in make_exec_engine(request=request, models=dev1931_models()):
             yield e
 
     @staticmethod
@@ -96,37 +96,37 @@ class TestDefinitionDefaultExecution:
 
     async def test_root_local_direct_default_matches_explicit(self, engine):
         explicit = await self._value(
-            engine, "customers.spend:wsum_host(weight=orders.amount)")
+            engine=engine, formula="customers.spend:wsum_host(weight=orders.amount)")
         assert explicit == pytest.approx(WSUM_HOST_VALUE)
-        default = await self._value(engine, "customers.spend:wsum_host")
+        default = await self._value(engine=engine, formula="customers.spend:wsum_host")
         assert default == pytest.approx(explicit)
 
     async def test_root_local_expression_default_matches_explicit(self, engine):
         explicit = await self._value(
-            engine, "customers.spend:wsum_host_expr(weight=orders.amount)")
+            engine=engine, formula="customers.spend:wsum_host_expr(weight=orders.amount)")
         assert explicit == pytest.approx(WSUM_HOST_VALUE)
-        default = await self._value(engine, "customers.spend:wsum_host_expr")
+        default = await self._value(engine=engine, formula="customers.spend:wsum_host_expr")
         assert default == pytest.approx(explicit)
 
     async def test_mixed_frame_default_resolves_per_reference(self, engine):
         # Independent oracle (a plain cross-model expression sum, works today):
         # spend broadcast onto each order + the order's own amount.
         oracle = await self._value(
-            engine, "sum(customers.spend * (customers.spend + amount))")
+            engine=engine, formula="sum(customers.spend * (customers.spend + amount))")
         assert oracle == pytest.approx(WSUM_MIXED_VALUE)
-        default = await self._value(engine, "customers.spend:wsum_mixed")
+        default = await self._value(engine=engine, formula="customers.spend:wsum_mixed")
         assert default == pytest.approx(oracle)
 
     async def test_owner_reachable_dotted_default_matches_explicit(self, engine):
         explicit = await self._value(
-            engine, "customers.spend:wsum_regions_pop(weight=customers.regions.pop)")
-        default = await self._value(engine, "customers.spend:wsum_regions_pop")
+            engine=engine, formula="customers.spend:wsum_regions_pop(weight=customers.regions.pop)")
+        default = await self._value(engine=engine, formula="customers.spend:wsum_regions_pop")
         assert default == pytest.approx(explicit)
 
     async def test_bare_default_matches_explicit(self, engine):
         explicit = await self._value(
-            engine, "customers.spend:wsum_bare(weight=customers.spend)")
-        default = await self._value(engine, "customers.spend:wsum_bare")
+            engine=engine, formula="customers.spend:wsum_bare(weight=customers.spend)")
+        default = await self._value(engine=engine, formula="customers.spend:wsum_bare")
         assert default == pytest.approx(explicit)
 
     async def test_windowed_root_local_default_matches_explicit(self, engine):
@@ -158,7 +158,7 @@ class TestFanningDefinitionDefaultFailsClosed:
             formula="customers.regions.pop:wfan_widen", name="m")])
         models = dev1931_models()
         with pytest.raises(ValueError, match="(?i)unproven join hop|fanning") as ei:
-            await gen(q, models=models)
+            await gen(query=q, models=models)
         assert "region_events" in str(ei.value)
 
 
@@ -171,7 +171,7 @@ class TestUnresolvableDefaultFailsClosed:
             formula="customers.spend:wsum_nowhere", name="m")])
         models = dev1931_models()
         with pytest.raises(ValueError):
-            await gen(q, models=models)
+            await gen(query=q, models=models)
 
     async def test_partially_resolvable_owner_reference(self):
         # regions.plans.fee: regions resolves from the owner, plans is missing on it.
@@ -179,7 +179,7 @@ class TestUnresolvableDefaultFailsClosed:
             formula="customers.spend:wsum_partial", name="m")])
         models = dev1931_models()
         with pytest.raises(ValueError):
-            await gen(q, models=models)
+            await gen(query=q, models=models)
 
     async def test_ambiguous_owner_hop_never_reanchors_at_root(self):
         # ag is ambiguous from owner o but clean from root r — must not re-anchor at r.
@@ -187,4 +187,4 @@ class TestUnresolvableDefaultFailsClosed:
             formula="o.val:wscore", name="m")])
         models = ambiguous_owner_models()
         with pytest.raises(ValueError):
-            await gen(q, models=models)
+            await gen(query=q, models=models)

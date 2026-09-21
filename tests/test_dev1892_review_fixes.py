@@ -350,8 +350,8 @@ class TestExprDefaultLiteralsAndResidue:
                 ModelMeasure(
                     formula="sum(customers.spend * (orders.amount + 0))", name="oracle"),
             ]))
-        default_vals = _status_vals(resp, "orders.w")
-        oracle_vals = _status_vals(resp, "orders.oracle")
+        default_vals = _status_vals(resp=resp, measure="orders.w")
+        oracle_vals = _status_vals(resp=resp, measure="orders.oracle")
         assert default_vals
         for status, expected in oracle_vals.items():
             assert float(default_vals[status]) == pytest.approx(float(expected))
