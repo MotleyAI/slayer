@@ -580,6 +580,17 @@ class TestNullRejectionAnalysis:
             bundle=_bundle(event_less_models(derived_events=True), "customers"))
         assert _hop(planned, "region_events").null_extended is expected
 
+    def test_filter_dependency_never_nulls_the_masked_value(self):
+        """``CASE WHEN f THEN v END`` is NULL only when ``v`` is: the hop that only
+        the filter crosses stays null-extended (its OR leg holds without it), the
+        value's own hop does not."""
+        planned = plan_query(
+            query=SlayerQuery(source_model="customers", measures=[SPEND],
+                              filters=["regions.region_events.value_if_kind >= 50"]),
+            bundle=_bundle(event_less_models(derived_events=True), "customers"))
+        assert _hop(planned, "event_kinds").null_extended is True
+        assert _hop(planned, "region_events").null_extended is False
+
     @pytest.mark.parametrize("predicate,expected", _NULL_REJECTION_CASES)
     def test_region_events_hop_null_extension(self, predicate, expected):
         """Each null-rejection rule sets null_extended on the fanning region_events

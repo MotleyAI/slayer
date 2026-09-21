@@ -177,6 +177,8 @@ class TestStrictMode:
             filters=["customers.tier = 'gold' OR channel = 'app'"],
         ))
         by = rows_by(resp, "orders.customers.tier")
+        # Every app order belongs to a gold customer, so both legs yield gold only.
+        assert set(by) == {("gold",)}
         assert float(by[("gold",)]["orders.cm"]) == pytest.approx(160.0)
 
     async def test_strict_passes_when_all_attributable(self, exec_backend):

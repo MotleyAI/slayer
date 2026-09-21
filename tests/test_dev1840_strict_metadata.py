@@ -77,10 +77,15 @@ class TestPushedFiltersAreSilent:
         self, exec_backend_weak,
     ):
         _, engine = exec_backend_weak
-        await engine.execute(q(
-            dimensions=["customers.tier"], measures=[CM],
-            filters=["customers.plans.level = 'basic'"],
-        ))
+        with _warnings.catch_warnings(record=True) as caught:
+            _warnings.simplefilter("always")
+            await engine.execute(q(
+                dimensions=["customers.tier"], measures=[CM],
+                filters=["customers.plans.level = 'basic'"],
+            ))
+        hits = [c for c in caught
+                if issubclass(c.category, (BroadcastGrainWarning, AssociatedGrainWarning))]
+        assert hits == []
 
 
 class TestStrictNarrows:

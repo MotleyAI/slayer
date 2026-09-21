@@ -845,14 +845,14 @@ class _SemiJoinOps:
     def is_attached(self, hop) -> bool:
         return tuple(hop.node_path) in self.attached
 
-    def eqs(self, hop, *, parent: str, parent_name=lambda c: c) -> List[Any]:
+    def eqs(self, *, hop, parent: str, parent_name=lambda c: c) -> List[Any]:
         alias = self.alias(tuple(hop.node_path))
         return [
             exp.EQ(this=self.col(parent, parent_name(pc)), expression=self.col(alias, hc))
             for pc, hc in hop.join_pairs
         ]
 
-    def join(self, inner, hop, eqs: List[Any]):
+    def join(self, *, inner, hop, eqs: List[Any]):
         on = exp.and_(*eqs) if len(eqs) > 1 else eqs[0]
         return inner.join(
             self.table(hop), on=on, join_type="left" if hop.null_extended else "inner",
@@ -891,11 +891,12 @@ def _semi_join_spine(*, ops: _SemiJoinOps, hops, inner, ident):
         parent = ops.alias(tuple(hop.node_path[:-1]))
         if ops.is_attached(hop):
             eqs = ops.eqs(
-                hop, parent=spine_alias, parent_name=lambda c, p=parent: spine_cols[(p, c)],
+                hop=hop, parent=spine_alias,
+                parent_name=lambda c, p=parent: spine_cols[(p, c)],
             )
         else:
-            eqs = ops.eqs(hop, parent=parent)
-        inner = ops.join(inner, hop, eqs)
+            eqs = ops.eqs(hop=hop, parent=parent)
+        inner = ops.join(inner=inner, hop=hop, eqs=eqs)
     return inner
 
 
@@ -905,9 +906,9 @@ def _semi_join_flat(*, ops: _SemiJoinOps, hops, inner):
     correlation: List[Any] = []
     first_seen = False
     for hop in hops:
-        eqs = ops.eqs(hop, parent=ops.alias(tuple(hop.node_path[:-1])))
+        eqs = ops.eqs(hop=hop, parent=ops.alias(tuple(hop.node_path[:-1])))
         if not ops.is_attached(hop):
-            inner = ops.join(inner, hop, eqs)
+            inner = ops.join(inner=inner, hop=hop, eqs=eqs)
             continue
         table = ops.table(hop)
         inner = inner.join(table, join_type="cross") if first_seen else inner.from_(table)

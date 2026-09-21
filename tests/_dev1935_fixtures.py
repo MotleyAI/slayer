@@ -172,6 +172,24 @@ def event_less_models(
         Column(name="region_id", type=DataType.INT),
         Column(name="value", type=DataType.DOUBLE),
     ]
+    event_joins: List[ModelJoin] = []
+    extra_models: List[SlayerModel] = []
+    if derived_events:
+        # A to-one LEFT hop for a Column.filter to cross: the filter's OR leg
+        # holds when event_kinds is absent, so the masked value stays non-NULL.
+        event_columns.append(Column(name="kind_id", type=DataType.INT))
+        event_joins.append(
+            ModelJoin(target_model="event_kinds", join_pairs=[["kind_id", "id"]]))
+        extra_models.append(SlayerModel(
+            name="event_kinds", data_source="test", sql_table="event_kinds",
+            columns=[
+                Column(name="id", type=DataType.INT, primary_key=True),
+                Column(name="label", type=DataType.TEXT),
+            ],
+        ))
+        event_columns.append(Column(
+            name="value_if_kind", type=DataType.DOUBLE, sql="value",
+            filter="event_kinds.label = 'x' OR value >= 0"))
     if derived_events:
         event_columns += [
             Column(name="value_bare", type=DataType.DOUBLE, sql="value"),
@@ -192,7 +210,7 @@ def event_less_models(
         ]
     region_events = SlayerModel(
         name="region_events", data_source="test", sql_table="region_events",
-        columns=event_columns,
+        columns=event_columns, joins=event_joins,
     )
     customers = SlayerModel(
         name="customers", data_source="test", sql_table="customers",
@@ -204,7 +222,7 @@ def event_less_models(
         ],
         joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
     )
-    return [customers, regions, region_events]
+    return [customers, regions, region_events, *extra_models]
 
 
 # --------------------------------------------------------------------------- #

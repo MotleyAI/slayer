@@ -665,7 +665,7 @@ def _semi_join_groups_from_pushes(
     firsts_by_push = [_first_level_hops(nodes) for _k, _t, nodes, _r in pushes]
     for firsts in firsts_by_push:
         for f in firsts:
-            uf.union(firsts[0], f)
+            uf.union(a=firsts[0], b=f)
     groups: Dict[Tuple[str, ...], Dict[str, Any]] = {}
     for (key_rewritten, conj_text, nodes, rejects), firsts in zip(pushes, firsts_by_push):
         group = groups.setdefault(
@@ -696,7 +696,7 @@ class _UnionFind:
             parent[x], x = root, parent[x]
         return root
 
-    def union(self, a: Tuple[str, ...], b: Tuple[str, ...]) -> None:
+    def union(self, *, a: Tuple[str, ...], b: Tuple[str, ...]) -> None:
         ra, rb = self.find(a), self.find(b)
         if ra != rb:
             self._parent[ra] = rb
@@ -1026,12 +1026,14 @@ def _derived_column_owner(
 def _ref_sql_dependency_paths(
     col: ValueKey, *, host_model: Optional[SlayerModel],
     models_by_name: Dict[str, SlayerModel], bundle: Optional[ResolvedSourceBundle],
+    include_filter: bool = True,
 ) -> Tuple[Tuple[str, ...], ...]:
     """Owner-relative join paths a derived column's ``Column.sql`` AND its
     ``Column.filter`` (DEV-1832) cross (the dependency closure at the owner) — the
-    semi-join push tree registers a hop for each. ``bundle.models_by_name`` is
-    host-inclusive (DEV-1900), so a dep pointing back at the host resolves without
-    a hand-patched bundle."""
+    semi-join push tree registers a hop for each; ``include_filter=False`` keeps
+    the value definition's paths only. ``bundle.models_by_name`` is host-inclusive
+    (DEV-1900), so a dep pointing back at the host resolves without a hand-patched
+    bundle."""
     if not isinstance(col, ColumnSqlKey) or bundle is None:
         return ()
     found = _derived_column_owner(
@@ -1041,7 +1043,7 @@ def _ref_sql_dependency_paths(
         return ()
     owner, column = found
     paths: List[Tuple[str, ...]] = []
-    for sql in (column.sql, column.filter):
+    for sql in (column.sql, column.filter if include_filter else None):
         if not sql:
             continue
         frag = fragment_closure(
@@ -1205,23 +1207,31 @@ def _register_dep_hops(
     lookup: Dict[str, SlayerModel], bundle: ResolvedSourceBundle,
     nodes: Dict[Tuple[str, ...], SemiJoinHop],
 ) -> List[Tuple[str, ...]]:
-    """Register the hops a ref's Mode-A dependencies cross; return each dependency's
-    terminal node path (empty when the ref has no crossing dependency)."""
+    """Register the hops a ref's Mode-A dependencies cross; return the terminal
+    node paths of the VALUE definition's dependencies only — a filtered column is
+    ``CASE WHEN f THEN v END``, NULL when ``v`` is, never because ``f``'s
+    dependencies are (D5)."""
     dep_rels = _ref_sql_dependency_paths(
         col, host_model=host_model, models_by_name=lookup, bundle=bundle,
     )
     if not dep_rels:
         return []
+    value_rels = set(_ref_sql_dependency_paths(
+        col, host_model=host_model, models_by_name=lookup, bundle=bundle,
+        include_filter=False,
+    ))
     owner = _owning_model(
         col.model, host_model=host_model, models_by_name=lookup,
     )
-    return [
-        _forward_hops(
+    terminals: List[Tuple[str, ...]] = []
+    for dep_rel in dep_rels:
+        terminal = _forward_hops(
             start_model=owner, rel_path=tuple(dep_rel),
             base_node_path=node_path, models_by_name=lookup, nodes=nodes,
         )
-        for dep_rel in dep_rels
-    ]
+        if dep_rel in value_rels:
+            terminals.append(terminal)
+    return terminals
 
 
 # --------------------------------------------------------------------------- #
@@ -1271,13 +1281,13 @@ def _unknown_if_null(
     return _U if any(_operand_null(o, h=h, srcs=srcs) for o in operands) else _D
 
 
-def _fold(vals: Iterable[str], order: Tuple[str, ...]) -> str:
+def _fold(*, vals: Iterable[str], order: Tuple[str, ...]) -> str:
     present = set(vals)
     return next((v for v in order if v in present), order[-1])
 
 
 def _is_value(
-    a: Any, b: Any, *, negated: bool, h: Tuple[str, ...], srcs: _NullSources,
+    *, a: Any, b: Any, negated: bool, h: Tuple[str, ...], srcs: _NullSources,
 ) -> str:
     """``IS`` / ``IS NOT`` between a literal and a null-valued operand, either
     order (NULL IS NULL, NULL IS NOT TRUE → TRUE; the mirrors → FALSE); anything
@@ -1299,12 +1309,12 @@ def _pred_value(cj: ValueKey, *, h: Tuple[str, ...], srcs: _NullSources) -> str:
     op = cj.op.lower()
     if op in ("and", "or"):
         vals = [_pred_value(o, h=h, srcs=srcs) for o in cj.operands]
-        return _fold(vals, _AND_ORDER if op == "and" else _OR_ORDER)
+        return _fold(vals=vals, order=_AND_ORDER if op == "and" else _OR_ORDER)
     if op == "not":
         return _NOT_VALUE[_pred_value(cj.operands[0], h=h, srcs=srcs)]
     if op in ("is", "is not"):
         return _is_value(
-            cj.operands[0], cj.operands[1], negated=op == "is not", h=h, srcs=srcs,
+            a=cj.operands[0], b=cj.operands[1], negated=op == "is not", h=h, srcs=srcs,
         )
     if op in PREDICATE_COMPARISON_OPS:
         return _unknown_if_null(cj.operands, h=h, srcs=srcs)
