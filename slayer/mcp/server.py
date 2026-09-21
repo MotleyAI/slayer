@@ -494,6 +494,8 @@ To connect a new database: create_datasource → describe_datasource (verify + l
         - Every aggregation also takes ``window='90d'`` (compact duration) for a trailing time
           window over the source rows ending at each output bucket, when the query has a time
           dimension; first/last pick within the interval, an empty interval is 0 for counts else NULL.
+          A window adds no dialect support — an aggregation a dialect cannot emit (e.g. median or
+          percentile on MySQL / SQL Server) stays unavailable windowed too.
         - All aggregations support ``partition_by=`` (bare names: ``partition_by=region``,
           ``partition_by=[region, city]``, ``partition_by=[]`` for the grand total), computing the
           aggregate at that coarser grain; the result is broadcast over the missing dimensions.

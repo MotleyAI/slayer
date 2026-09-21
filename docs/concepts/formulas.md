@@ -128,7 +128,8 @@ inside the formula.
 Windowed measures need exactly one resolvable time dimension (a single
 `time_dimensions` entry, or `main_time_dimension` to disambiguate). Filtering on
 a windowed measure (`{"formula": "revenue:sum(window='90d') > 100"}`) applies
-after aggregation, and the windowed measure must also be selected.
+after aggregation and, like an order-only target, needs no matching selected
+measure — a filter-only windowed value stays out of the result.
 
 A group whose dimension value is NULL gets its real windowed value, like any
 other group. (Earlier versions returned NULL for such groups: the rolling

@@ -255,19 +255,8 @@ async def test_cardinality_neutrality(exec_backend):
 # Two-stage: a windowed aggregate over the stage's own month axis equals the
 # model-backed evaluation over the same monthly rows (DEV-1471 stage fixture).
 # --------------------------------------------------------------------------- #
-_MONTHLY = [
-    (1, 100, 100.0, "W", "2025-01-10", "2025-02-10"),
-    (2, 101, 200.0, "E", "2025-02-05", "2025-03-05"),
-    (3, 102, 300.0, "N", "2025-03-15", "2025-04-15"),
-    (4, 103, 400.0, "S", "2025-04-20", "2025-05-20"),
-]
-_INNER = SlayerQuery.model_validate({
-    "name": "s1", "source_model": "orders",
-    "time_dimensions": [TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TG.MONTH)],
-    "measures": [{"formula": "amount:sum", "name": "rev"}],
-})
-
-
+# Inner stage rows + query shared with the DEV-1471 stage-axis tests
+# (``D71.MONTHLY_ROWS`` / ``D71.MONTHLY_INNER``).
 def _monthly_model() -> SlayerModel:
     return SlayerModel(
         name="monthly", sql_table="monthly", data_source="ds",
@@ -311,9 +300,9 @@ async def test_two_stage_windowed_over_stage_axis(backend, agg, oracle):
         stage_engine = await D71.make_engine(
             backend, base_dir=os.path.join(tmp, "store"),
             db_path=os.path.join(tmp, f"t.{backend}"),
-            tables=[D71.orders_table_spec(_MONTHLY)], models=[D71.orders_model()],
+            tables=[D71.orders_table_spec(D71.MONTHLY_ROWS)], models=[D71.orders_model()],
         )
-        stage_resp = await stage_engine.execute(query=[_INNER, stage_outer])
+        stage_resp = await stage_engine.execute(query=[D71.MONTHLY_INNER, stage_outer])
         model_engine = await D71.make_engine(
             backend, base_dir=os.path.join(tmp, "model_store"),
             db_path=os.path.join(tmp, f"m.{backend}"),
