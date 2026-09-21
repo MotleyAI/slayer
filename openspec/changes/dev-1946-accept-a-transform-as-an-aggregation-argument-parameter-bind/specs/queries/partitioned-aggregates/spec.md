@@ -353,7 +353,21 @@ SHALL be legal in measure, filter (typing as a measure) and ORDER BY positions.
 - **THEN** each signup-month bucket carries the trailing-window weighted average
   over the customers signed up in the window, each weighted by its region's
   total, identical under every mode with no warning (100, 125, 28080 / 267,
-  33780 / 407 on the reference dataset; the orphan order's NULL bucket NULL)
+  33780 / 407 on the reference dataset; the orphan order's NULL bucket NULL);
+  in a filter or as an ORDER BY target the same value prunes or sorts the
+  buckets, with no windowed column in the response
+
+#### Scenario: Custom aggregation with a windowed attached parameter
+- **WHEN** a model defines `wsum` as `SUM({value} * {weight})` on `customers`
+  and a query rooted at `orders` over a month time dimension on
+  `customers.signup_at` selects
+  `customers.spend:wsum(window='1y', weight=sum(amount, partition_by=customers.regions.name))`
+- **THEN** each signup-month bucket carries the trailing-window sum, over the
+  customers signed up in the window, of spend times the region's order total,
+  identical under every mode with no warning (10000, 25000, 28080, 33780 on the
+  reference dataset; the orphan order's NULL bucket NULL) — the same values as
+  the constituent form, the custom definition resolving on the source owner and
+  the attached weight read on each interval row
 
 #### Scenario: Unanalysable dependency inside an attached parameter fails closed
 - **WHEN** an attached parameter's own source names a derived column whose

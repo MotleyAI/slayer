@@ -1344,7 +1344,7 @@ def _bind_agg_arg(
         # A transform param binds like a source constituent (Axiom 2.3 / 11.4): its
         # INPUT only, no alias_map / measure_ctx (a measure is illegal inside an aggregation).
         return _bind_transform(
-            parsed, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map,
+            parsed=parsed, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map,
         )
     if isinstance(parsed, (Ref, DottedRef)):
         return _bind(parsed, scope=scope, bundle=bundle, in_filter=False)

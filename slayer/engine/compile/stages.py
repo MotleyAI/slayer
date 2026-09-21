@@ -2036,7 +2036,7 @@ def _param_is_determined(
             return True
         if isinstance(spec.key, TransformKey):
             pgrain = attached_parameter_grain(
-                spec.key, projected_dim_keys=list(projected_dim_keys),
+                key=spec.key, projected_dim_keys=list(projected_dim_keys),
                 projected_td_keys=list(projected_td_keys), active_bucket=active_bucket,
             )
             return all(
@@ -2113,7 +2113,7 @@ def _check_attached_params_determined(
         if not isinstance(value, (AggregateKey, TransformKey)):
             continue
         grain = attached_parameter_grain(
-            value, projected_dim_keys=projected_dim_keys,
+            key=value, projected_dim_keys=projected_dim_keys,
             projected_td_keys=projected_td_keys, active_bucket=active_bucket,
         )
         if grain is None:  # ungrained aggregate — determined by construction

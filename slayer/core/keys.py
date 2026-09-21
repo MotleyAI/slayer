@@ -1385,7 +1385,7 @@ def normalize_transform_constituents(
             return _grain_transform_inner_aggregates(t=c, query_grain=query_grain)
         return c
 
-    return map_attached_inputs(rebuilt, _grain)
+    return map_attached_inputs(key=rebuilt, fn=_grain)
 
 
 def lower_collapsing_constituents(key: ValueKey) -> ValueKey:
@@ -1412,7 +1412,7 @@ def lower_collapsing_constituents(key: ValueKey) -> ValueKey:
             )
         return c
 
-    return map_attached_inputs(rebuilt, _lower)
+    return map_attached_inputs(key=rebuilt, fn=_lower)
 
 
 def attached_inputs(k: ValueKey) -> List[ValueKey]:
