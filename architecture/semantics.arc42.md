@@ -162,12 +162,13 @@ is the coercion from coarser to finer.
       evaluation followed by an exact per-partition pick (Axiom 6).
     - **11.4 Position.** As a measure, filter or order key the result is broadcast onto
       the query grain (Axiom 10; a finer result is Axiom 6's implicit collapse); as an
-      aggregation-source constituent it is an opaque dataset at its result grain (2.3);
+      aggregation-source constituent or aggregation parameter it is an opaque dataset at its result grain (2.3);
       in dimension position every inner must be explicitly grained (Axiom 9 residue).
     - **11.5 Recursion.** A nested transform is an inner of the enclosing one; its
       result grain joins the enclosing operand's union like any grained inner.
     [enforced: test:tests/test_dev1871_terms.py]
     [enforced: test:tests/test_dev1832_transform_source.py]
+    [enforced: test:tests/test_dev1946_transform_parameter.py]
 12. **Population**: the population is the query's quantifier — exactly one
     result row per combination of dimension values among its row-filtered rows
     (raw-row mode is the one documented exception; spec: `queries/semantics` ›

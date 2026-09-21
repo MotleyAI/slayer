@@ -43,7 +43,6 @@ from slayer.core.keys import (
     TimeTruncKey,
     TransformKey,
     ValueKey,
-    operand_constituents,
     regroup_root_grain,
     source_anchor_path,
     walk_consumer_keys,
@@ -540,7 +539,7 @@ def _temporal_axis_transforms(vk: ValueKey, *, is_dimension: bool):
         return
     for k in walk_value_keys(vk):
         if isinstance(k, AggregateKey):
-            for c in operand_constituents(k.source):
+            for c in attached_inputs(k):
                 if isinstance(c, TransformKey):
                     yield from (
                         t for t in walk_value_keys(c)

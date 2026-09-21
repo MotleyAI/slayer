@@ -396,7 +396,8 @@ def _approx(got, want) -> None:
     if want is None:
         assert got is None, (got, want)
     else:
-        assert got is not None and float(got) == pytest.approx(want), (got, want)
+        assert got is not None, (got, want)
+        assert float(got) == pytest.approx(want), (got, want)
 
 
 def _approx_map(got: Dict, want: Dict) -> None:

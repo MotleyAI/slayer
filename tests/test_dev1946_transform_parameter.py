@@ -15,7 +15,8 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.errors import SlayerError
-from slayer.core.keys import AggregateKey, TransformKey
+from slayer.core.keys import AggregateKey, ColumnKey, Grain, TimeTruncKey, TransformKey
+from slayer.core.refs import agg_kwarg_canonical_str
 from slayer.core.scope import ModelScope
 from slayer.engine.binding import bind_expr
 from slayer.engine.plan import plan_query
@@ -520,12 +521,28 @@ class TestBindLevel:
 
     def test_transform_ranking_key_refused(self):
         scope, bundle = _orders_scope_bundle()
+        parsed = parse_expr(LAST_RANK_KEY)
         with pytest.raises(ValueError, match="ranks by a column"):
-            bind_expr(parse_expr(LAST_RANK_KEY), scope=scope, bundle=bundle)
+            bind_expr(parsed, scope=scope, bundle=bundle)
 
     def test_expression_argument_still_refused(self):
         """Non-goal: an expression parameter stays refused, and the reworded
         message names grained transforms among the accepted kinds (D1)."""
         scope, bundle = _sales_scope_bundle()
+        parsed = parse_expr(EXPR_ARG)
         with pytest.raises(ValueError, match="grained transform"):
-            bind_expr(parse_expr(EXPR_ARG), scope=scope, bundle=bundle)
+            bind_expr(parsed, scope=scope, bundle=bundle)
+
+    def test_time_bucketed_partition_key_granularity_in_fragment(self):
+        """A rank parameter partitioned by the same column at different
+        granularities gets distinct canonical fragments — the fragment keeps a
+        ``TimeTruncKey``'s granularity, as it already does for the resolved
+        ``time_key``, so month- and year-bucketed aliases stay legible and stable."""
+        inner = AggregateKey(source=ColumnKey(leaf="amount"), agg="sum",
+                             partition_keys=Grain.of([ColumnKey(leaf="region")]))
+
+        def _ranked(gran: str) -> TransformKey:
+            return TransformKey(op="rank", input=inner, partition_keys=Grain.of([
+                TimeTruncKey(column=ColumnKey(leaf="ordered_at"), granularity=gran)]))
+
+        assert agg_kwarg_canonical_str(_ranked("month")) != agg_kwarg_canonical_str(_ranked("year"))

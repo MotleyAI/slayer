@@ -348,11 +348,12 @@ _AggregateSource = Union[
     "ArithmeticKey", "ScalarCallKey", "LiteralKey", "AggregateKey", "TransformKey",
 ]
 # Positional and kwarg arg values share one union: `last(created_at)` binds an
-# identifier column, `weighted_avg(weight=qty)` a column, and
-# `weighted_avg(weight=count(id, partition_by=…))` an aggregate — all via
-# `_bind_agg_arg`.
+# identifier column, `weighted_avg(weight=qty)` a column,
+# `weighted_avg(weight=count(id, partition_by=…))` an aggregate, and
+# `weighted_avg(weight=rank(sum(amount, partition_by=…)))` a grained transform —
+# all via `_bind_agg_arg` (DEV-1946).
 _AggregateArgValue = Union[
-    ColumnKey, ColumnSqlKey, "AggregateKey", Decimal, str, bool, None,
+    ColumnKey, ColumnSqlKey, "AggregateKey", "TransformKey", Decimal, str, bool, None,
 ]
 _AggregateKwargValue = _AggregateArgValue
 
@@ -949,6 +950,29 @@ def constituent_grain(
     return grain
 
 
+def attached_parameter_grain(
+    key: ValueKey, *,
+    projected_dim_keys: List[ValueKey],
+    projected_td_keys: List[ValueKey],
+    active_bucket: Optional[ValueKey],
+) -> Optional[Grain]:
+    """The grain at which an attached aggregation parameter is typed (Axiom 11.4 /
+    2.3) — ``None`` when it is determined by construction. An ``AggregateKey`` types
+    at its ``partition_keys`` (``None`` = ungrained, at the enclosing grain and
+    determined — DEV-1859 decision 12; a lowered collapsing transform always carries
+    explicit keys). A ``TransformKey`` types at its result grain. Both home- and
+    operand-determination checks resolve the parameter to this grain first, so
+    neither predicate needs a transform arm (D5)."""
+    if isinstance(key, AggregateKey):
+        return key.partition_keys
+    if isinstance(key, TransformKey):
+        return constituent_grain(
+            c=key, projected_dim_keys=projected_dim_keys,
+            projected_td_keys=projected_td_keys, active_bucket=active_bucket,
+        )
+    return None
+
+
 def reroot_value_key(
     key: _RerootableT, *, target_path: Tuple[str, ...],
 ) -> _RerootableT:
@@ -1314,30 +1338,54 @@ def _grain_transform_inner_aggregates(
     return t if new_input is t.input else t.model_copy(update={"input": new_input})
 
 
+def map_attached_inputs(
+    key: AggregateKey, fn: Callable[[ValueKey], ValueKey],
+) -> AggregateKey:
+    """Apply ``fn`` to each top-level attached constituent of ``key`` across
+    source, positional args and keyword-arg values — the same enumeration as
+    :func:`attached_inputs` — substituting per position by identity (D2). Partition
+    keys are never rewritten. The one law both transform-constituent rewrites run
+    through, so the source, positional and keyword parameter positions share it."""
+    subs: Dict[ValueKey, ValueKey] = {}
+    for inp in (key.source, *key.args, *(v for _, v in key.kwargs)):
+        if isinstance(inp, _FrozenKey):
+            for c in operand_constituents(inp):
+                if c not in subs and (new_c := fn(c)) is not c:
+                    subs[c] = new_c
+    if not subs:
+        return key
+
+    def _sub(v):
+        return substitute_value_keys(key=v, mapping=subs) if isinstance(v, _FrozenKey) else v
+
+    return key.model_copy(update={
+        "source": _sub(key.source),
+        "args": tuple(_sub(a) for a in key.args),
+        "kwargs": tuple((k, _sub(v)) for k, v in key.kwargs),
+    })
+
+
 def normalize_transform_constituents(
     key: ValueKey, *, query_grain: Grain,
 ) -> ValueKey:
     """Explicitly grain the ungrained inner aggregates of a transform constituent
     at ``query_grain`` (D4b, Axiom 11.1): a time-ordered constituent then has an
-    axis and a mixed operand shares one canonical grain. Post-order; runs before
-    partition-key validation, so the synthesized keys face the same
-    attributability / resolution checks as a user-written ``partition_by=``."""
+    axis and a mixed operand shares one canonical grain. Post-order over source,
+    args and kwargs (D2); runs before partition-key validation, so the synthesized
+    keys face the same attributability / resolution checks as a user-written
+    ``partition_by=``."""
     rebuilt = key.map_children(
         lambda c: normalize_transform_constituents(key=c, query_grain=query_grain),
     )
     if not isinstance(rebuilt, AggregateKey):
         return cast("ValueKey", rebuilt)  # map_children preserves ValueKey-ness
-    subs: Dict[ValueKey, ValueKey] = {}
-    for c in operand_constituents(rebuilt.source):
+
+    def _grain(c: ValueKey) -> ValueKey:
         if isinstance(c, TransformKey):
-            grained = _grain_transform_inner_aggregates(t=c, query_grain=query_grain)
-            if grained is not c:
-                subs[c] = grained
-    if not subs:
-        return rebuilt
-    return rebuilt.model_copy(
-        update={"source": substitute_value_keys(key=rebuilt.source, mapping=subs)},
-    )
+            return _grain_transform_inner_aggregates(t=c, query_grain=query_grain)
+        return c
+
+    return map_attached_inputs(rebuilt, _grain)
 
 
 def lower_collapsing_constituents(key: ValueKey) -> ValueKey:
@@ -1346,27 +1394,25 @@ def lower_collapsing_constituents(key: ValueKey) -> ValueKey:
     partition_by=<operand grain − axis>)``, so the carrier, attributability and
     the mode axis see the collapsed grain while ``t`` still evaluates with its axis
     inside the nested producer. ``max`` is exact — the picked value is constant
-    along the axis within a partition. Post-order over ``map_children``; all
-    positions."""
+    along the axis within a partition. Post-order over source, args and kwargs (D2);
+    all positions."""
     rebuilt = key.map_children(lower_collapsing_constituents)
     if not isinstance(rebuilt, AggregateKey):
         return cast("ValueKey", rebuilt)  # map_children preserves ValueKey-ness
-    subs: Dict[ValueKey, ValueKey] = {}
-    for c in operand_constituents(rebuilt.source):
+
+    def _lower(c: ValueKey) -> ValueKey:
         if (
             isinstance(c, TransformKey)
             and c.op in AXIS_COLLAPSING_TRANSFORMS
             and c.time_key is not None
         ):
-            subs[c] = AggregateKey(
+            return AggregateKey(
                 source=c, agg="max",
                 partition_keys=regroup_root_grain(c) - {c.time_key},
             )
-    if not subs:
-        return rebuilt
-    return rebuilt.model_copy(
-        update={"source": substitute_value_keys(key=rebuilt.source, mapping=subs)},
-    )
+        return c
+
+    return map_attached_inputs(rebuilt, _lower)
 
 
 def attached_inputs(k: ValueKey) -> List[ValueKey]:
@@ -1404,11 +1450,11 @@ def is_row_attach_root(k: ValueKey) -> TypeGuard[AggregateKey]:
     )
 
 
-def attached_operand_keys(vks: Sequence[ValueKey]) -> FrozenSet[AggregateKey]:
-    """Aggregates nested (any depth) in the inputs of any root with attached
-    inputs — re-aggregation or row-attach. The lenient partition-key set the bind
-    pass needs so row-attached constituents and parameters are not mis-flagged as
-    combined consumers."""
+def attached_operand_keys(vks: Sequence[ValueKey]) -> FrozenSet[ValueKey]:
+    """Aggregates AND transforms nested (any depth) in the inputs of any root with
+    attached inputs — re-aggregation or row-attach. The lenient partition-key set
+    the bind pass needs so a row-attached constituent's or transform parameter's own
+    rank-family ``partition_by=`` is not mis-flagged as a combined consumer (D6)."""
     out: set = set()
 
     def _scan(k: ValueKey) -> None:
@@ -1416,7 +1462,7 @@ def attached_operand_keys(vks: Sequence[ValueKey]) -> FrozenSet[AggregateKey]:
             for r in (k.source, *k.args, *(v for _, v in k.kwargs)):
                 if isinstance(r, _FrozenKey):
                     out.update(c for c in walk_value_keys(r)
-                               if isinstance(c, AggregateKey))
+                               if isinstance(c, (AggregateKey, TransformKey)))
             return
         for c in k.children():
             _scan(c)
