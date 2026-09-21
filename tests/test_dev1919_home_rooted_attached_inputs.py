@@ -275,7 +275,6 @@ class TestWindowedOuter:
         _assert_no_mode_warnings(resp)
 
 
-@pytest.mark.xfail(strict=True, reason="a transform is refused as an aggregation argument (DEV-1903)")
 class TestRankedTransformParameter:
     """Scenario: Ranked transform as the attached parameter."""
 
@@ -291,7 +290,6 @@ class TestFailClosedEveryMode:
     """The attached input's own ill-typed inputs, and a grain the home does not
     determine, are refused in every mode — never a multiplied or broadcast value."""
 
-    @pytest.mark.xfail(strict=True, reason="a transform is refused as an aggregation argument (DEV-1903)")
     @pytest.mark.parametrize("mode", MODES)
     async def test_transform_parameter_grain_not_determined(self, orders_engine, mode):
         """Scenario: Transform parameter whose grain the home does not determine fails closed."""
