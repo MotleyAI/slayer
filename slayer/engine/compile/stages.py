@@ -86,7 +86,7 @@ from slayer.engine.elaborate_env import (
     check_reaggregation_no_window,
     check_reaggregation_partition_key_is_query_dim,
     check_windowed_time_axis_attributable,
-    check_windowed_key_supported,
+    check_window_duration,
     check_windowed_time_dimension,
 )
 from slayer.engine.elaborate import elaborate_query
@@ -185,7 +185,7 @@ def _guard_windowed_measures(
 
     for vk in all_vks:
         for key in _windowed_agg_keys(vk):
-            check_windowed_key_supported(key=key, window_val=window_kwarg_of(key))
+            check_window_duration(window_val=window_kwarg_of(key))
 
     selected_windowed: dict = {}
     for vk in measure_vks:
@@ -773,6 +773,8 @@ def _trailing_window_kernel(
     *,
     producer_plan: PlannedQuery,
     agg_key: AggregateKey,
+    root_model: SlayerModel,
+    bundle: ResolvedSourceBundle,
 ) -> TrailingWindowProducerKernel:
     window_raw = window_kwarg_of(agg_key)
     bucket_sid = producer_plan.active_time_dimension_slot_id
@@ -786,6 +788,45 @@ def _trailing_window_kernel(
     src_where_ids, src_rewrites = _plan_src_row_filters(
         producer_plan=producer_plan,
     )
+    # first/last rank the interval rows by the same key plain first/last would.
+    ranking_time_key = (
+        resolve_ranking_time_key(
+            key=agg_key, root_model=root_model, bundle=bundle,
+            row_keys=ordered_row_keys(
+                row_slots=producer_plan.row_slots,
+                public_projection=producer_plan.projection,
+            ),
+        )
+        if agg_key.agg in RANKED_AGGREGATIONS else None
+    )
+    # Reference-bearing parameters read per interval row (D4): resolved on the
+    # source owner, each key remapped through the sub-plan's regroup substitutions
+    # so an attached-aggregate parameter reads its row-attach column (association
+    # precedent). Literals are omitted by resolve_aggregation_params.
+    source_path = source_anchor_path(agg_key.source)
+    owner_model = walk_key_path(
+        model=root_model, path=source_path, bundle=bundle,
+    ) or root_model
+    picked_params = [
+        PickedParam(name=ps.name, key=ps.key, sql=ps.expr_sql,
+                    anchor_path=tuple(source_path))
+        for ps in resolve_aggregation_params(
+            agg=agg_key, owner_model=owner_model, owner_path=source_path,
+            bundle=bundle,
+        )
+    ]
+    param_subst = {
+        sub.original_key: sub.placeholder
+        for a in producer_plan.regroup_attach_plans
+        for sub in a.substitutions
+    }
+    if param_subst:
+        picked_params = [
+            pp.model_copy(update={
+                "key": substitute_value_keys(key=pp.key, mapping=param_subst),
+            }) if pp.key is not None else pp
+            for pp in picked_params
+        ]
     return TrailingWindowProducerKernel(
         window_raw=window_raw,
         window_parts=parse_window_duration(window_raw),
@@ -793,6 +834,8 @@ def _trailing_window_kernel(
         bucket_slot_id=bucket_sid,
         src_where_filter_ids=src_where_ids,
         src_filter_rewrites=src_rewrites,
+        ranking_time_key=ranking_time_key,
+        picked_params=picked_params,
     )
 
 
@@ -1808,6 +1851,7 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
     elif window_td_key is not None:
         cm_attach_kwargs["kernel"] = _trailing_window_kernel(
             producer_plan=producer_plan, agg_key=agg_rooted,
+            root_model=root_model, bundle=root_bundle,
         )
     elif isinstance(agg_rooted, AggregateKey) and agg_rooted.agg in RANKED_AGGREGATIONS:
         cm_attach_kwargs["kernel"] = _ranked_kernel(
@@ -3095,6 +3139,10 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
             ):
                 attach_kwargs["kernel"] = _trailing_window_kernel(
                     producer_plan=producer_plan, agg_key=producer_aggs[0],
+                    root_model=(
+                        producer_plan.render_source_model or bundle.source_model
+                    ),
+                    bundle=bundle,
                 )
             elif (
                 isinstance(producer_aggs[0], AggregateKey)

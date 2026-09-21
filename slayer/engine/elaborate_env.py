@@ -680,13 +680,9 @@ def check_time_transforms_resolved(*, roots) -> None:
             )
 
 
-def check_windowed_key_supported(*, key: AggregateKey, window_val) -> None:
-    """Per-key windowed guards (DEV-1871 G11, was ``_reject_unsupported_windowed_key``): sum/avg only, compact-duration-string window."""
-    if key.agg not in ("sum", "avg"):
-        raise ValueError(
-            f"Aggregation parameter 'window' is only supported for sum and avg, "
-            f"not '{key.agg}'."
-        )
+def check_window_duration(*, window_val) -> None:
+    """The ``window=`` duration is a well-formed compact string (DEV-1871 G11);
+    every aggregation accepts it — no aggregation allowlist (DEV-1915)."""
     if not isinstance(window_val, str):
         raise ValueError(
             f"Window duration must be a compact duration string like '90d', got "
