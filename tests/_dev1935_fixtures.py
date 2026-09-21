@@ -105,6 +105,9 @@ EVENTLESS_GOLD_OR_EVENT_INNER = 100.0
 #: region_events.value>=50 alone rejects the null extension (UNKNOWN) -> INNER,
 #: byte-identical LEFT/INNER: only ec1 -> 100.
 EVENTLESS_EVENT_ONLY = 100.0
+#: value_or_zero (COALESCE) < 40 = {ec2 (30), ec3 (no events -> 0)} = 170; an
+#: INNER correlation would drop ec3 -> 80.
+EVENTLESS_COALESCE_LT40 = 170.0
 
 
 # --------------------------------------------------------------------------- #
@@ -131,8 +134,8 @@ def unproven_plans_models() -> List[SlayerModel]:
 
 def disconnected_model_models() -> List[SlayerModel]:
     """DEV-1900 graph plus a standalone ``promos`` model with no join path from any
-    root — a genuinely unreachable filter reference (``promos.discount``) stays
-    dropped-and-warned, the one case DEV-1935 keeps excluded."""
+    root — a genuinely unreachable filter reference (``promos.discount``) is
+    refused at resolution with a typed error in every mode (D12)."""
     models = dev1900_models()
     models.append(SlayerModel(
         name="promos", data_source="test", sql_table="promos",
@@ -143,10 +146,13 @@ def disconnected_model_models() -> List[SlayerModel]:
     return models
 
 
-def event_less_models(*, inner_events: bool = False) -> List[SlayerModel]:
+def event_less_models(
+    *, inner_events: bool = False, derived_events: bool = False,
+) -> List[SlayerModel]:
     """A self-contained ``customers -> regions -> region_events`` graph. The
     fanning ``regions -> region_events`` hop is LEFT by default; ``inner_events``
-    declares it INNER, so an event-less region contributes no product row."""
+    declares it INNER, so an event-less region contributes no product row;
+    ``derived_events`` adds one derived event column per Mode-A fragment shape."""
     events_join = ModelJoin(
         target_model="region_events", join_pairs=[["id", "region_id"]],
         cardinality=JoinCardinality.ONE_TO_MANY,
@@ -161,13 +167,32 @@ def event_less_models(*, inner_events: bool = False) -> List[SlayerModel]:
         ],
         joins=[events_join],
     )
+    event_columns = [
+        Column(name="id", type=DataType.INT, primary_key=True),
+        Column(name="region_id", type=DataType.INT),
+        Column(name="value", type=DataType.DOUBLE),
+    ]
+    if derived_events:
+        event_columns += [
+            Column(name="value_bare", type=DataType.DOUBLE, sql="value"),
+            Column(name="value_x2", type=DataType.DOUBLE, sql="value * 2"),
+            Column(name="value_x2_x2", type=DataType.DOUBLE, sql="value_x2 * 2"),
+            Column(name="value_or_zero", type=DataType.DOUBLE,
+                   sql="COALESCE(value, 0)"),
+            Column(name="value_or_zero_x2", type=DataType.DOUBLE,
+                   sql="value_or_zero * 2"),
+            Column(name="one", type=DataType.INT, sql="1"),
+            Column(name="in_empty", type=DataType.BOOLEAN, sql="value IN ()"),
+            Column(name="col_in_list", type=DataType.BOOLEAN,
+                   sql="value IN (30, 50)"),
+            Column(name="lit_in_list", type=DataType.BOOLEAN,
+                   sql="1 IN (value, 1)"),
+            Column(name="lit_between", type=DataType.BOOLEAN,
+                   sql="1 BETWEEN value AND 0"),
+        ]
     region_events = SlayerModel(
         name="region_events", data_source="test", sql_table="region_events",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="region_id", type=DataType.INT),
-            Column(name="value", type=DataType.DOUBLE),
-        ],
+        columns=event_columns,
     )
     customers = SlayerModel(
         name="customers", data_source="test", sql_table="customers",
@@ -235,7 +260,7 @@ async def _engine_for(*, dialect: str, db_path: str,
 
 
 async def make_eventless_engine(
-    request, *, inner_events: bool = False,
+    request, *, inner_events: bool = False, derived_events: bool = False,
 ) -> AsyncIterator[SlayerQueryEngine]:
     """Body for a ``params=["sqlite", "duckdb"]`` fixture over the mini-graph."""
     dialect = request.param
@@ -249,7 +274,8 @@ async def make_eventless_engine(
             _seed_eventless_duckdb(db_path)
         yield await _engine_for(
             dialect=dialect, db_path=db_path,
-            models=event_less_models(inner_events=inner_events))
+            models=event_less_models(
+                inner_events=inner_events, derived_events=derived_events))
 
 
 __all__ = [
@@ -270,5 +296,5 @@ __all__ = [
     "OR_MIX_RAW_ROWS", "TWO_SPELLINGS_BY_TIER", "TWO_SPELLINGS_SPLIT_DEFECT",
     "OR_MIX_PRODUCER_BY_TIER", "ASSOC_OR_BY_STATUS", "ASSOC_OR_ABSENT_BY_STATUS",
     "EVENTLESS_GOLD_OR_EVENT_LEFT", "EVENTLESS_GOLD_OR_EVENT_INNER",
-    "EVENTLESS_EVENT_ONLY",
+    "EVENTLESS_EVENT_ONLY", "EVENTLESS_COALESCE_LT40",
 ]

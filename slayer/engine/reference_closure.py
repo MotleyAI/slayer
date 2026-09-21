@@ -38,7 +38,7 @@ from slayer.core.keys import (
     source_row_leaves,
 )
 from slayer.core.errors import SlayerError
-from slayer.core.models import AggregationParam, SlayerModel
+from slayer.core.models import AggregationParam, Column, SlayerModel
 from slayer.ir.prebound import walk_key_path
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.column_expansion import (
@@ -143,6 +143,55 @@ def fragment_closure(
     if cache is not None:
         cache[ck] = result
     return result
+
+
+#: Strict fragment nodes (NULL in, NULL out): a column, arithmetic, a binary
+#: comparison, a cast — never a function call, CASE, IS, AND/OR or a row tuple.
+_NULL_PROPAGATING_NODES = (
+    exp.Column, exp.Dot, exp.Identifier, exp.Literal, exp.Null, exp.Boolean,
+    exp.Neg, exp.Paren, exp.Not, exp.Add, exp.Sub, exp.Mul, exp.Div, exp.Mod,
+    exp.EQ, exp.NEQ, exp.GT, exp.GTE, exp.LT, exp.LTE, exp.Like, exp.ILike,
+    exp.Cast, exp.TryCast, exp.DataType, exp.DataTypeParam,
+)
+
+
+def _node_propagates_null(node: object) -> bool:
+    """IN / BETWEEN are OR / AND over their left operand: strict only when it is
+    column-valued (``1 IN (value, 1)`` is TRUE under a NULL value) and, for IN,
+    the list is non-empty (``NULL IN ()`` is FALSE on SQLite)."""
+    if isinstance(node, (exp.In, exp.Between)):
+        lhs_columned = any(isinstance(n, exp.Column) for n in node.this.walk())
+        return lhs_columned and (not isinstance(node, exp.In) or bool(node.expressions))
+    return isinstance(node, _NULL_PROPAGATING_NODES)
+
+
+def fragment_null_propagates(
+    *, column: Column, model: SlayerModel, anchor_relation: str,
+    bundle: ResolvedSourceBundle,
+) -> bool:
+    """Is a derived column NULL whenever its owner row is (DEV-1935 D5)? True for
+    a bare column, arithmetic or comparison over ≥1 column once derived references
+    are expanded; a function call, CASE, literal-only or unparseable definition
+    is data-dependent."""
+    if is_trivial_base(column=column):
+        return True
+    for dialect in _PLANNER_PARSE_DIALECT_CHAIN:
+        if dialect is None:
+            continue
+        try:
+            expanded = expand_derived_refs_sync(
+                sql=column.sql, model=model, alias_path=anchor_relation,
+                models_by_name=bundle.models_by_name, dialect=dialect,
+            )
+            nodes = list(sqlglot.parse_one(expanded or "", dialect=dialect).walk())
+        except ColumnCycleError:
+            raise
+        except Exception:
+            continue
+        return any(isinstance(n, exp.Column) for n in nodes) and all(
+            _node_propagates_null(n) for n in nodes
+        )
+    return False
 
 
 def _prefixes(path: Path) -> List[Path]:

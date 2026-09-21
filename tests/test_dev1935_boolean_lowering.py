@@ -27,6 +27,7 @@ from tests._dev1935_fixtures import (
     ASSOC_OR_BY_STATUS,
     ATOM_TWO_BRANCH,
     ATOM_TWO_BRANCH_SPEND,
+    EVENTLESS_COALESCE_LT40,
     EVENTLESS_EVENT_ONLY,
     EVENTLESS_GOLD_OR_EVENT_INNER,
     EVENTLESS_GOLD_OR_EVENT_LEFT,
@@ -103,6 +104,12 @@ async def eventless_backend(request):
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def eventless_inner_backend(request):
     async for e in make_eventless_engine(request, inner_events=True):
+        yield request.param, e
+
+
+@pytest.fixture(params=["sqlite", "duckdb"])
+async def eventless_derived_backend(request):
+    async for e in make_eventless_engine(request, derived_events=True):
         yield request.param, e
 
 
@@ -390,6 +397,18 @@ class TestEventLessNullExtension:
         assert float(resp.data[0]["customers.sp"]) == pytest.approx(
             EVENTLESS_GOLD_OR_EVENT_INNER)
 
+    async def test_non_propagating_fragment_null_extends(
+            self, eventless_derived_backend):
+        """region_events.value_or_zero < 40 (a COALESCE definition) cannot reject
+        the null extension: the event-less region's row is 0 < 40 and kept = 170,
+        never 80 (an INNER correlation would drop it)."""
+        _, engine = eventless_derived_backend
+        resp = await engine.execute(SlayerQuery(
+            source_model="customers", measures=[SPEND],
+            filters=["regions.region_events.value_or_zero < 40"]))
+        assert float(resp.data[0]["customers.sp"]) == pytest.approx(
+            EVENTLESS_COALESCE_LT40)
+
 
 class TestGenuinelyUnreachableFilterRefused:
     """DEV-1935 narrows exclusion to a genuinely unreachable reference (no
@@ -527,8 +546,40 @@ _NULL_REJECTION_CASES = [
     ("tier = 'gold' or regions.region_events.value >= 50", True),  # OR w/ DEPENDS
 ]
 
+#: (predicate over a derived event column or an IS operand, expected null_extended):
+#: the D5 Mode-A fragment rule (on the EXPANDED definition) and the IS rules.
+_FRAGMENT_AND_IS_CASES = [
+    ("regions.region_events.value_bare >= 50", False),     # bare column -> null-valued
+    ("regions.region_events.value_x2 >= 50", False),       # arithmetic -> null-valued
+    ("regions.region_events.value_x2_x2 >= 50", False),    # derived-on-derived arithmetic
+    ("regions.region_events.value_or_zero >= 50", True),   # COALESCE -> DEPENDS
+    ("regions.region_events.value_or_zero_x2 >= 50", True),  # arithmetic over COALESCE
+    ("regions.region_events.one >= 50", True),             # literal-only -> DEPENDS
+    ("regions.region_events.in_empty is not null", True),  # NULL IN () is FALSE -> DEPENDS
+    ("regions.region_events.col_in_list is not null", False),  # NULL IN (..) -> null-valued
+    ("regions.region_events.lit_in_list is not null", True),   # 1 IN (NULL, 1) is TRUE
+    ("regions.region_events.lit_between is not null", True),   # 1 BETWEEN NULL AND 0 is FALSE
+    ("regions.region_events.value is tier", True),         # IS <non-literal> -> DEPENDS
+    ("regions.region_events.value is not tier", True),
+    ("regions.region_events.value is True", False),        # NULL IS TRUE -> FALSE
+    ("regions.region_events.value is not True", True),     # NULL IS NOT TRUE -> TRUE
+    # a predicate as a value operand is NULL iff UNKNOWN: (UNKNOWN or DEPENDS) is DEPENDS
+    ("(regions.region_events.value >= 50 or tier = 'gold') is not null", True),
+    ("(regions.region_events.value >= 50) is not null", False),  # UNKNOWN -> NULL
+]
+
 
 class TestNullRejectionAnalysis:
+    @pytest.mark.parametrize("predicate,expected", _FRAGMENT_AND_IS_CASES)
+    def test_fragment_and_is_rules(self, predicate, expected):
+        """A derived ref is null-valued only when its expanded definition
+        propagates NULL; IS / IS NOT with a non-literal operand is DEPENDS."""
+        planned = plan_query(
+            query=SlayerQuery(source_model="customers", measures=[SPEND],
+                              filters=[predicate]),
+            bundle=_bundle(event_less_models(derived_events=True), "customers"))
+        assert _hop(planned, "region_events").null_extended is expected
+
     @pytest.mark.parametrize("predicate,expected", _NULL_REJECTION_CASES)
     def test_region_events_hop_null_extension(self, predicate, expected):
         """Each null-rejection rule sets null_extended on the fanning region_events

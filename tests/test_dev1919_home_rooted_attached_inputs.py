@@ -267,7 +267,6 @@ class TestWindowedOuter:
         assert_cells(month_vals(resp), {**windowed_constituent_by_month(), None: None})
         _assert_no_mode_warnings(resp)
 
-    @pytest.mark.xfail(strict=True, reason="window= restricted to sum/avg (DEV-1915)")
     @pytest.mark.parametrize("mode", MODES)
     async def test_windowed_parameter_every_mode(self, orders_engine, mode):
         resp = await orders_engine.execute(mode_q(

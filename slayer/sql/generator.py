@@ -828,6 +828,96 @@ def _cycle_public_aliases_in_projection_order(
     return public_aliases
 
 
+class _SemiJoinOps:
+    """Alias / column / table callbacks of one semi-join EXISTS (DEV-1935 D7)."""
+
+    def __init__(
+        self, *, alias: Callable[[Tuple[str, ...]], str],
+        col: Callable[[str, str], exp.Column],
+        table: Callable[[Any], exp.Expression],  # pyright: ignore[reportPrivateImportUsage] — sqlglot exports it
+        attached: Set[Tuple[str, ...]],
+    ) -> None:
+        self.alias = alias
+        self.col = col
+        self.table = table
+        self.attached = attached
+
+    def is_attached(self, hop) -> bool:
+        return tuple(hop.node_path) in self.attached
+
+    def eqs(self, hop, *, parent: str, parent_name=lambda c: c) -> List[Any]:
+        alias = self.alias(tuple(hop.node_path))
+        return [
+            exp.EQ(this=self.col(parent, parent_name(pc)), expression=self.col(alias, hc))
+            for pc, hc in hop.join_pairs
+        ]
+
+    def join(self, inner, hop, eqs: List[Any]):
+        on = exp.and_(*eqs) if len(eqs) > 1 else eqs[0]
+        return inner.join(
+            self.table(hop), on=on, join_type="left" if hop.null_extended else "inner",
+        )
+
+
+def _spine_projection(*, ops: _SemiJoinOps, hops, ident):
+    """The spine's distinct outer correlation columns: ``{(parent, col): name}``
+    and their projection list."""
+    spine_cols: Dict[Tuple[str, str], str] = {}
+    projection: List[Any] = []
+    for hop in hops:
+        if not ops.is_attached(hop):
+            continue
+        parent_path = tuple(hop.node_path[:-1])
+        parent = ops.alias(parent_path)
+        prefix = f"{parent}__" if parent_path else ""
+        for parent_col, _hop_col in hop.join_pairs:
+            if (parent, parent_col) in spine_cols:
+                continue
+            spine_cols[(parent, parent_col)] = prefix + parent_col
+            projection.append(
+                exp.alias_(ops.col(parent, parent_col), ident(prefix + parent_col)))
+    return spine_cols, projection
+
+
+def _semi_join_spine(*, ops: _SemiJoinOps, hops, inner, ident):
+    """Spine shape: FROM a one-row derived table projecting the outer correlation
+    keys; attached hops LEFT/INNER join ON it, deeper hops ON their parent."""
+    spine_alias = ops.alias(("__slayer_spine",))
+    spine_cols, projection = _spine_projection(ops=ops, hops=hops, ident=ident)
+    inner = inner.from_(exp.Subquery(
+        this=exp.select(*projection), alias=exp.to_identifier(spine_alias),
+    ))
+    for hop in hops:
+        parent = ops.alias(tuple(hop.node_path[:-1]))
+        if ops.is_attached(hop):
+            eqs = ops.eqs(
+                hop, parent=spine_alias, parent_name=lambda c, p=parent: spine_cols[(p, c)],
+            )
+        else:
+            eqs = ops.eqs(hop, parent=parent)
+        inner = ops.join(inner, hop, eqs)
+    return inner
+
+
+def _semi_join_flat(*, ops: _SemiJoinOps, hops, inner):
+    """Flat shape: FROM the first attached hop, further attached hops CROSS-joined
+    with their correlations in WHERE, deeper hops ON their parent."""
+    correlation: List[Any] = []
+    first_seen = False
+    for hop in hops:
+        eqs = ops.eqs(hop, parent=ops.alias(tuple(hop.node_path[:-1])))
+        if not ops.is_attached(hop):
+            inner = ops.join(inner, hop, eqs)
+            continue
+        table = ops.table(hop)
+        inner = inner.join(table, join_type="cross") if first_seen else inner.from_(table)
+        first_seen = True
+        correlation.extend(eqs)
+    for eq in correlation:
+        inner = inner.where(eq)
+    return inner
+
+
 class RenderState(BaseModel):
     """Frozen per-render constants threaded through the transform-chain emitters"""
 
@@ -6219,15 +6309,11 @@ class SQLGenerator:
     def _build_semi_join_exists(
         self, *, group, source_model, source_relation: str, bundle, allocator,
     ) -> exp.Exists:
-        """Build one correlated EXISTS lowering the group's join product (DEV-1935).
-        Outer-attached hops (parent outside the group: the root, or a materialised
-        branch) correlate to the outer body; the rest join ON their parent pairs.
-        When no outer-attached hop is null-extended: today's shape — the first as
-        the FROM, further ones CROSS-joined, correlations in WHERE. Otherwise the
-        spine shape — ``FROM (SELECT <outer>.<k> AS <k>, …) AS <spine>`` projecting
-        the outer correlation columns, every hop LEFT/INNER joined ON them (a
-        correlated LEFT JOIN ON is rejected by DuckDB; a derived table carrying
-        the outer keys is not)."""
+        """Build one correlated EXISTS lowering the group's join product (DEV-1935
+        D7): outer-attached hops (parent outside the group) correlate to the outer
+        body — the flat shape when none is null-extended, else the spine shape (a
+        correlated LEFT JOIN ON is rejected by DuckDB; a derived table carrying the
+        outer keys is not)."""
         limit = self._dialect.max_identifier_bytes
 
         def _alias(path) -> str:
@@ -6235,96 +6321,25 @@ class SQLGenerator:
                 root=source_relation, path=tuple(path), limit=limit,
             )
 
-        def _col(table: str, name: str) -> exp.Column:
-            return exp.Column(
-                this=self._to_ident(name), table=exp.to_identifier(table),
-            )
-
-        def _eqs(hop, *, parent: str, parent_name) -> List[Any]:
-            alias = _alias(tuple(hop.node_path))
-            return [
-                exp.EQ(
-                    this=_col(parent, parent_name(parent_col)),
-                    expression=_col(alias, hop_col),
-                )
-                for parent_col, hop_col in hop.join_pairs
-            ]
-
-        def _on(eqs: List[Any]) -> Any:
-            return exp.and_(*eqs) if len(eqs) > 1 else eqs[0]
-
-        def _table(hop) -> exp.Expression:  # pyright: ignore[reportPrivateImportUsage]
-            return self._hop_table_expr(
-                hop_model=self._hop_model(name=hop.target_model, bundle=bundle),
-                alias=_alias(tuple(hop.node_path)),
-            )
-
-        def _join_type(hop) -> str:
-            return "left" if hop.null_extended else "inner"
-
         in_group = {tuple(h.node_path) for h in group.hops}
-        attached = [
-            h for h in group.hops if tuple(h.node_path[:-1]) not in in_group
-        ]
-        attached_paths = {tuple(h.node_path) for h in attached}
-        use_spine = any(h.null_extended for h in attached)
+        ops = _SemiJoinOps(
+            alias=_alias,
+            col=lambda table, name: exp.Column(
+                this=self._to_ident(name), table=exp.to_identifier(table)),
+            table=lambda hop: self._hop_table_expr(
+                hop_model=self._hop_model(name=hop.target_model, bundle=bundle),
+                alias=_alias(hop.node_path)),
+            attached={
+                tuple(h.node_path) for h in group.hops
+                if tuple(h.node_path[:-1]) not in in_group
+            },
+        )
         inner = exp.select(exp.Literal.number(1))
-
-        if use_spine:
-            spine_alias = _alias(("__slayer_spine",))
-            spine_cols: Dict[Tuple[str, str], str] = {}
-            projection: List[Any] = []
-            for hop in attached:
-                parent_path = tuple(hop.node_path[:-1])
-                parent = _alias(parent_path)
-                for parent_col, _hop_col in hop.join_pairs:
-                    key = (parent, parent_col)
-                    if key not in spine_cols:
-                        name = (
-                            parent_col if not parent_path
-                            else f"{parent}__{parent_col}"
-                        )
-                        spine_cols[key] = name
-                        projection.append(exp.alias_(
-                            _col(parent, parent_col), self._to_ident(name),
-                        ))
-            inner = inner.from_(exp.Subquery(
-                this=exp.select(*projection),
-                alias=exp.to_identifier(spine_alias),
-            ))
-            for hop in group.hops:
-                parent = _alias(tuple(hop.node_path[:-1]))
-                if tuple(hop.node_path) in attached_paths:
-                    eqs = _eqs(
-                        hop, parent=spine_alias,
-                        parent_name=lambda c, p=parent: spine_cols[(p, c)],
-                    )
-                else:
-                    eqs = _eqs(hop, parent=parent, parent_name=lambda c: c)
-                inner = inner.join(
-                    _table(hop), on=_on(eqs), join_type=_join_type(hop),
-                )
+        if any(h.null_extended for h in group.hops if ops.is_attached(h)):
+            inner = _semi_join_spine(
+                ops=ops, hops=group.hops, inner=inner, ident=self._to_ident)
         else:
-            correlation: List[Any] = []
-            first_seen = False
-            for hop in group.hops:
-                eqs = _eqs(
-                    hop, parent=_alias(tuple(hop.node_path[:-1])),
-                    parent_name=lambda c: c,
-                )
-                if tuple(hop.node_path) in attached_paths:
-                    inner = (
-                        inner.join(_table(hop), join_type="cross") if first_seen
-                        else inner.from_(_table(hop))
-                    )
-                    first_seen = True
-                    correlation.extend(eqs)
-                else:
-                    inner = inner.join(
-                        _table(hop), on=_on(eqs), join_type=_join_type(hop),
-                    )
-            for eq in correlation:
-                inner = inner.where(eq)
+            inner = _semi_join_flat(ops=ops, hops=group.hops, inner=inner)
         # Conjunct refs carry tree-node paths, so the same allocator resolves
         # them to the hop aliases; root-local refs correlate to the outer body.
         ctx = RenderContext(

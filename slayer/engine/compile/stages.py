@@ -27,8 +27,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from slayer.core.enums import DataType, JoinType, RANKED_AGGREGATIONS, TimeGranularity
 from slayer.core.errors import AmbiguousJoinPathError
-from slayer.core.keys import AggregateKey, Grain, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, PREDICATE_COMPARISON_OPS, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, regroup_root_grain, effective_root_grain, constituent_grain, reroot_value_key, substitute_value_keys, walk_value_keys, walk_consumer_keys, REGROUP_LEAF_PREFIX, is_cross_model_agg, is_local_partitioned_agg, split_top_level_and, window_kwarg_of, is_reaggregation_key, is_row_attach_root, attached_inputs, operand_aggregates, operand_constituents, source_anchor_path
-from slayer.core.models import SlayerModel
+from slayer.core.keys import AggregateKey, Grain, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, PREDICATE_COMPARISON_OPS, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, regroup_root_grain, effective_root_grain, constituent_grain, substitute_value_keys, walk_value_keys, walk_consumer_keys, REGROUP_LEAF_PREFIX, is_cross_model_agg, is_local_partitioned_agg, split_top_level_and, window_kwarg_of, is_reaggregation_key, is_row_attach_root, attached_inputs, operand_aggregates, operand_constituents, source_anchor_path
+from slayer.core.models import Column, SlayerModel
 from slayer.engine.reference_closure import (
     ParamSpec,
     aggregate_input_closure,
@@ -36,6 +36,7 @@ from slayer.engine.reference_closure import (
     first_unanalyzable_input_column,
     first_unanalyzable_source_row_leaf,
     fragment_closure,
+    fragment_null_propagates,
     key_closure,
     resolve_aggregation_params,
     source_row_leaf_closure,
@@ -660,9 +661,33 @@ def _semi_join_groups_from_pushes(
     order (DEV-1935 D4). Each hop's ``null_extended`` = declared LEFT ∧ the group's
     AND-ed predicate does not reject its null row (the OR of its conjuncts' per-hop
     rejections, D5)."""
-    parent: Dict[Tuple[str, ...], Tuple[str, ...]] = {}
+    uf = _UnionFind()
+    firsts_by_push = [_first_level_hops(nodes) for _k, _t, nodes, _r in pushes]
+    for firsts in firsts_by_push:
+        for f in firsts:
+            uf.union(firsts[0], f)
+    groups: Dict[Tuple[str, ...], Dict[str, Any]] = {}
+    for (key_rewritten, conj_text, nodes, rejects), firsts in zip(pushes, firsts_by_push):
+        group = groups.setdefault(
+            uf.find(firsts[0]),
+            {"nodes": {}, "conjuncts": [], "texts": [], "rejects": {}})
+        for path, hop in nodes.items():
+            group["nodes"].setdefault(path, hop)
+        for path, r in rejects.items():
+            group["rejects"][path] = group["rejects"].get(path, False) or r
+        group["conjuncts"].append(key_rewritten)
+        group["texts"].append(conj_text)
+    return [_semi_join_filter(g) for g in groups.values()]
 
-    def _find(x: Tuple[str, ...]) -> Tuple[str, ...]:
+
+class _UnionFind:
+    """Path-compressing union-find over hop paths; a path registers on first sight."""
+
+    def __init__(self) -> None:
+        self._parent: Dict[Tuple[str, ...], Tuple[str, ...]] = {}
+
+    def find(self, x: Tuple[str, ...]) -> Tuple[str, ...]:
+        parent = self._parent
         parent.setdefault(x, x)
         root = x
         while parent[root] != root:
@@ -671,46 +696,29 @@ def _semi_join_groups_from_pushes(
             parent[x], x = root, parent[x]
         return root
 
-    def _union(a: Tuple[str, ...], b: Tuple[str, ...]) -> None:
-        ra, rb = _find(a), _find(b)
+    def union(self, a: Tuple[str, ...], b: Tuple[str, ...]) -> None:
+        ra, rb = self.find(a), self.find(b)
         if ra != rb:
-            parent[ra] = rb
+            self._parent[ra] = rb
 
-    push_firsts: List[List[Tuple[str, ...]]] = []
-    for _key, _text, nodes, _rejects in pushes:
-        firsts = [p for p in nodes if p[:-1] not in nodes]
-        for f in firsts:
-            _find(f)
-        for f in firsts[1:]:
-            _union(firsts[0], f)
-        push_firsts.append(firsts)
 
-    groups: Dict[Tuple[str, ...], Dict[str, Any]] = {}
-    for (key_rewritten, conj_text, nodes, rejects), firsts in zip(pushes, push_firsts):
-        rep = _find(firsts[0])
-        group = groups.setdefault(
-            rep, {"nodes": {}, "conjuncts": [], "texts": [], "rejects": {}})
-        for path, hop in nodes.items():
-            group["nodes"].setdefault(path, hop)
-        for path, r in rejects.items():
-            group["rejects"][path] = group["rejects"].get(path, False) or r
-        group["conjuncts"].append(key_rewritten)
-        group["texts"].append(conj_text)
-    return [
-        SemiJoinFilter(
-            hops=[
-                hop.model_copy(update={
-                    "null_extended": hop.declared_left
-                    and not g["rejects"].get(path, False),
-                })
-                for path, hop in sorted(
-                    g["nodes"].items(), key=lambda ph: len(ph[0]))
-            ],
-            conjuncts=g["conjuncts"],
-            filter_texts=g["texts"],
-        )
-        for g in groups.values()
-    ]
+def _first_level_hops(nodes: Mapping[Tuple[str, ...], Any]) -> List[Tuple[str, ...]]:
+    """The outer-attached hops of a push: those whose parent is not one of its nodes."""
+    return [p for p in nodes if p[:-1] not in nodes]
+
+
+def _semi_join_filter(g: Dict[str, Any]) -> SemiJoinFilter:
+    return SemiJoinFilter(
+        hops=[
+            hop.model_copy(update={
+                "null_extended": hop.declared_left
+                and not g["rejects"].get(path, False),
+            })
+            for path, hop in sorted(g["nodes"].items(), key=lambda ph: len(ph[0]))
+        ],
+        conjuncts=g["conjuncts"],
+        filter_texts=g["texts"],
+    )
 
 
 def _assert_local_producer_inputs_safe(
@@ -1002,6 +1010,19 @@ def _owning_model(
     return models_by_name.get(name)
 
 
+def _derived_column_owner(
+    col: ColumnSqlKey, *, host_model: Optional[SlayerModel],
+    models_by_name: Dict[str, SlayerModel],
+) -> Optional[Tuple[SlayerModel, Column]]:
+    """The derived column a ``ColumnSqlKey`` names, with its owning model."""
+    owner = _owning_model(
+        col.model, host_model=host_model, models_by_name=models_by_name,
+    )
+    column = None if owner is None else next(
+        (c for c in owner.columns if c.name == col.column_name), None)
+    return None if owner is None or column is None else (owner, column)
+
+
 def _ref_sql_dependency_paths(
     col: ValueKey, *, host_model: Optional[SlayerModel],
     models_by_name: Dict[str, SlayerModel], bundle: Optional[ResolvedSourceBundle],
@@ -1013,14 +1034,12 @@ def _ref_sql_dependency_paths(
     a hand-patched bundle."""
     if not isinstance(col, ColumnSqlKey) or bundle is None:
         return ()
-    owner = _owning_model(
-        col.model, host_model=host_model, models_by_name=models_by_name,
+    found = _derived_column_owner(
+        col, host_model=host_model, models_by_name=models_by_name,
     )
-    if owner is None:
+    if found is None:
         return ()
-    column = next((c for c in owner.columns if c.name == col.column_name), None)
-    if column is None:
-        return ()
+    owner, column = found
     paths: List[Tuple[str, ...]] = []
     for sql in (column.sql, column.filter):
         if not sql:
@@ -1214,6 +1233,10 @@ def _register_dep_hops(
 # AND-ed predicate rejects h iff ANY of its conjuncts does, so the per-conjunct
 # result combines by OR at grouping time.
 _T, _F, _U, _D = "T", "F", "U", "D"
+#: AND / OR folds: the first value present wins, the last is the identity.
+_AND_ORDER = (_F, _U, _D, _T)
+_OR_ORDER = (_T, _D, _U, _F)
+_NOT_VALUE = {_T: _F, _F: _T, _U: _U, _D: _D}
 
 #: null-source paths per ref: nulling any hop on/above one nulls the ref.
 _NullSources = Dict[ValueKey, "frozenset[Tuple[str, ...]]"]
@@ -1223,61 +1246,86 @@ def _is_prefix(prefix: Tuple[str, ...], path: Tuple[str, ...]) -> bool:
     return path[: len(prefix)] == prefix
 
 
+#: Predicate-valued operators: as a value operand they are NULL iff UNKNOWN.
+_PREDICATE_OPS = frozenset({"and", "or", "not"}) | PREDICATE_COMPARISON_OPS
+
+
 def _operand_null(k: Any, *, h: Tuple[str, ...], srcs: _NullSources) -> bool:
     """Is value operand ``k`` NULL when hop ``h`` and its descendants are NULL?
     A leaf's null-source paths decide it; arithmetic over a null operand is null;
-    a ScalarCall / Star (or a fragment carrying one) is data-dependent, never null."""
+    a predicate is null iff UNKNOWN; a ScalarCall / Star is data-dependent."""
     if isinstance(k, (ColumnKey, ColumnSqlKey, TimeTruncKey, StarKey)):
         return any(_is_prefix(h, p) for p in srcs.get(k, frozenset()))
-    if isinstance(k, ScalarCallKey):
-        return False
+    if isinstance(k, (InKey, BetweenKey)) or (
+        isinstance(k, ArithmeticKey) and k.op.lower() in _PREDICATE_OPS
+    ):
+        return _pred_value(k, h=h, srcs=srcs) == _U
     if isinstance(k, ArithmeticKey):
-        return any(
-            _operand_null(o, h=h, srcs=srcs) for o in k.operands
-            if isinstance(o, (ColumnKey, ColumnSqlKey, TimeTruncKey, ArithmeticKey))
-        )
+        return any(_operand_null(o, h=h, srcs=srcs) for o in k.operands)
     return False
 
 
-def _is_null_literal(k: Any) -> bool:
-    return isinstance(k, LiteralKey) and k.value is None
+def _unknown_if_null(
+    operands: Iterable[Any], *, h: Tuple[str, ...], srcs: _NullSources,
+) -> str:
+    return _U if any(_operand_null(o, h=h, srcs=srcs) for o in operands) else _D
+
+
+def _fold(vals: Iterable[str], order: Tuple[str, ...]) -> str:
+    present = set(vals)
+    return next((v for v in order if v in present), order[-1])
+
+
+def _is_value(
+    a: Any, b: Any, *, negated: bool, h: Tuple[str, ...], srcs: _NullSources,
+) -> str:
+    """``IS`` / ``IS NOT`` between a literal and a null-valued operand, either
+    order (NULL IS NULL, NULL IS NOT TRUE → TRUE; the mirrors → FALSE); anything
+    else is DEPENDS."""
+    lit, val = (a, b) if isinstance(a, LiteralKey) else (b, a)
+    if not isinstance(lit, LiteralKey) or not _operand_null(val, h=h, srcs=srcs):
+        return _D
+    return _T if (lit.value is None) != negated else _F
 
 
 def _pred_value(cj: ValueKey, *, h: Tuple[str, ...], srcs: _NullSources) -> str:
     """Three-valued (T/F/U/D) value of predicate ``cj`` under ``h``-NULL."""
-    if isinstance(cj, ArithmeticKey):
-        op = cj.op.lower()
-        if op == "and":
-            vals = [_pred_value(o, h=h, srcs=srcs) for o in cj.operands]
-            return _F if _F in vals else _U if _U in vals else _D if _D in vals else _T
-        if op == "or":
-            vals = [_pred_value(o, h=h, srcs=srcs) for o in cj.operands]
-            return _T if _T in vals else _D if _D in vals else _U if _U in vals else _F
-        if op == "not":
-            return {_T: _F, _F: _T, _U: _U, _D: _D}[
-                _pred_value(cj.operands[0], h=h, srcs=srcs)]
-        if op in ("is", "is not"):
-            a, b = cj.operands[0], cj.operands[1]
-            null_valued = (_operand_null(a, h=h, srcs=srcs)
-                           or _operand_null(b, h=h, srcs=srcs))
-            if not null_valued:
-                return _D
-            has_null_lit = _is_null_literal(a) or _is_null_literal(b)
-            negated = op == "is not"
-            if has_null_lit:  # NULL IS NULL → TRUE; IS NOT NULL → FALSE
-                return _F if negated else _T
-            return _T if negated else _F  # NULL IS <lit> → FALSE; IS NOT → TRUE
-        if op in PREDICATE_COMPARISON_OPS:
-            return _U if any(
-                _operand_null(o, h=h, srcs=srcs) for o in cj.operands) else _D
-        return _D
     if isinstance(cj, InKey):
-        return _U if _operand_null(cj.column, h=h, srcs=srcs) else _D
+        return _unknown_if_null((cj.column,), h=h, srcs=srcs)
     if isinstance(cj, BetweenKey):
-        return _U if any(
-            _operand_null(o, h=h, srcs=srcs) for o in (cj.column, cj.low, cj.high)
-        ) else _D
+        return _unknown_if_null((cj.column, cj.low, cj.high), h=h, srcs=srcs)
+    if not isinstance(cj, ArithmeticKey):
+        return _D
+    op = cj.op.lower()
+    if op in ("and", "or"):
+        vals = [_pred_value(o, h=h, srcs=srcs) for o in cj.operands]
+        return _fold(vals, _AND_ORDER if op == "and" else _OR_ORDER)
+    if op == "not":
+        return _NOT_VALUE[_pred_value(cj.operands[0], h=h, srcs=srcs)]
+    if op in ("is", "is not"):
+        return _is_value(
+            cj.operands[0], cj.operands[1], negated=op == "is not", h=h, srcs=srcs,
+        )
+    if op in PREDICATE_COMPARISON_OPS:
+        return _unknown_if_null(cj.operands, h=h, srcs=srcs)
     return _D
+
+
+def _ref_null_propagates(
+    col: ValueKey, *, host_model: SlayerModel,
+    models_by_name: Dict[str, SlayerModel], bundle: ResolvedSourceBundle,
+) -> bool:
+    """A structural ref is NULL under a NULL node; a derived ref only when its
+    expanded definition propagates NULL (D5), else it is data-dependent."""
+    if not isinstance(col, ColumnSqlKey):
+        return True
+    found = _derived_column_owner(
+        col, host_model=host_model, models_by_name=models_by_name,
+    )
+    return found is not None and fragment_null_propagates(
+        column=found[1], model=found[0], anchor_relation=found[0].name,
+        bundle=bundle,
+    )
 
 
 def _conjunct_rejects_by_hop(
@@ -1325,10 +1373,12 @@ def _conjunct_push_plan(
             bundle=bundle, nodes=nodes,
         )
         remapped = _remap_ref_path(r, node_path)
-        # Null sources: a structural ref is null when its own node (or an ancestor)
-        # is null; a derived ref is null when its owner or any dependency terminal
-        # is (arithmetic null-propagation). A star is data-dependent, never null.
-        if isinstance(r, StarKey):
+        # Null sources: a ref is null when its own node, an ancestor or a
+        # dependency terminal is — unless data-dependent (a star, a
+        # non-propagating derived definition).
+        if isinstance(r, StarKey) or not _ref_null_propagates(
+            col, host_model=host_model, models_by_name=lookup, bundle=bundle,
+        ):
             srcs[remapped] = frozenset()
         else:
             srcs[remapped] = frozenset({node_path, *dep_terminals})
