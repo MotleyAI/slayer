@@ -214,7 +214,9 @@ class TestMixedOrPushes:
             with warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter("always")
                 resp = await engine.execute(query)
-        assert not caught, [str(w.message) for w in caught]
+        # SLayer warnings are UserWarnings; a GC-timed ResourceWarning is not ours.
+        emitted = [w for w in caught if issubclass(w.category, UserWarning)]
+        assert not emitted, [str(w.message) for w in emitted]
         pushed = [w for w in resp.warnings if w.kind == "semi_join_pushed"]
         assert sorted((w.measure, w.filter_text) for w in pushed) == [
             ("cs", FILTER_MIXED_OR), ("pop", FILTER_MIXED_OR),
@@ -228,7 +230,7 @@ class TestMixedOrPushes:
             engine = await make_sqlite_engine(d, db)
             query = _query(FILTER_MIXED_OR)
             with warnings.catch_warnings():
-                warnings.simplefilter("error")
+                warnings.simplefilter("error", UserWarning)
                 resp = await engine.execute(query)
         assert resp.data
 
