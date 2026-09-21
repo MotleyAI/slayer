@@ -1,19 +1,7 @@
-"""DEV-1931 — definition-default home resolution: bare-vs-dotted split +
-host-local retention.
-
-A non-overridden definition default resolves from the OWNING model (the source
-anchor), a qualifier the owner cannot reach forward falls back to the query root
-(a leading root-model name self-strips to root-local), and a genuine host-local
-``()`` default is retained so it widens the home exactly as spelling that column
-explicitly would. The same owning-model resolution governs input safety, so a
-fanning definition default fails closed even when the home widens away from the
-declaring model.
-
-Home paths are asserted from ``Aggregate.home_path`` (mirroring
-test_dev1832_home); executed values compare each default against its explicit
-``weight=`` twin (or an independent expression oracle). The fail-closed cases
-raise during SQL generation.
-"""
+"""DEV-1931 — definition-default home resolution: owner-first with a query-root
+fallback, genuine host-local ``()`` retained, and the same resolution governing
+input safety. Home paths from ``Aggregate.home_path``; values compare each
+default to its explicit ``weight=`` twin or an oracle; fail-closed cases raise."""
 
 from __future__ import annotations
 
@@ -142,49 +130,44 @@ class TestDefinitionDefaultExecution:
 
 
 class TestFanningDefinitionDefaultFailsClosed:
-    """A fanning definition default fails closed even when the home widens (F1):
-    the fanning default is resolved on the declaring model, not omitted from
-    safety because another input widened the home."""
+    """F1: a fanning default is resolved on its declaring model and fails closed
+    even when another input widens the home away from it."""
 
     def test_home_widens_to_customers(self):
-        # w1=customers.spend pulls the home up from regions to customers.
         assert _home_path("customers.regions.pop:wfan_widen") == ("customers",)
 
     async def test_fanning_default_fails_closed(self):
+        q = orders_q(measures=[ModelMeasure(
+            formula="customers.regions.pop:wfan_widen", name="m")])
+        models = dev1931_models()
         with pytest.raises(ValueError, match="(?i)unproven join hop|fanning") as ei:
-            await gen(
-                orders_q(measures=[ModelMeasure(
-                    formula="customers.regions.pop:wfan_widen", name="m")]),
-                models=dev1931_models())
+            await gen(q, models=models)
         assert "region_events" in str(ei.value)
 
 
 class TestUnresolvableDefaultFailsClosed:
-    """A qualifier the owner-first resolution can reach from neither owner nor
-    root, a partially-resolvable owner reference, and an ambiguous owner hop all
-    fail closed — never a silent `()` and never a silent re-anchor at the root."""
+    """Unreachable-from-both, partially-resolvable, and ambiguous owner hops fail
+    closed — never a silent ``()`` and never a silent re-anchor at the root."""
 
     async def test_qualifier_unreachable_from_owner_and_root(self):
+        q = orders_q(measures=[ModelMeasure(
+            formula="customers.spend:wsum_nowhere", name="m")])
+        models = dev1931_models()
         with pytest.raises(ValueError):
-            await gen(
-                orders_q(measures=[ModelMeasure(
-                    formula="customers.spend:wsum_nowhere", name="m")]),
-                models=dev1931_models())
+            await gen(q, models=models)
 
     async def test_partially_resolvable_owner_reference(self):
-        # regions.plans.fee: the first hop `regions` resolves from the owner
-        # customers, the second hop `plans` is missing on regions → fail closed.
+        # regions.plans.fee: regions resolves from the owner, plans is missing on it.
+        q = orders_q(measures=[ModelMeasure(
+            formula="customers.spend:wsum_partial", name="m")])
+        models = dev1931_models()
         with pytest.raises(ValueError):
-            await gen(
-                orders_q(measures=[ModelMeasure(
-                    formula="customers.spend:wsum_partial", name="m")]),
-                models=dev1931_models())
+            await gen(q, models=models)
 
     async def test_ambiguous_owner_hop_never_reanchors_at_root(self):
-        # ag is ambiguous from the owner o but cleanly reachable from the root r;
-        # the default must fail closed, never re-anchor at r.
+        # ag is ambiguous from owner o but clean from root r — must not re-anchor at r.
+        q = SlayerQuery(source_model="r", measures=[ModelMeasure(
+            formula="o.val:wscore", name="m")])
+        models = ambiguous_owner_models()
         with pytest.raises(ValueError):
-            await gen(
-                SlayerQuery(source_model="r", measures=[ModelMeasure(
-                    formula="o.val:wscore", name="m")]),
-                models=ambiguous_owner_models())
+            await gen(q, models=models)

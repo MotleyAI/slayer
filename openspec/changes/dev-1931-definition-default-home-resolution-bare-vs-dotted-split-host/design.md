@@ -59,6 +59,25 @@ declaring model is always its source anchor (`binding.py::_resolve_agg_owner`,
 - **Opt-in frame parameters.** New owner+root frame arguments on
   `default_param_value_key` / `expr_default_ref_keys` default to current behavior, so the
   typing and reaggregation callers are unchanged unless they pass the new frame.
+- **Reading A — root-name wins, DEV-1853-consistent (Egor 2026-09-21).** Owner-first
+  resolution is forward-only via the bidirectional walk + a revisit-guard forward check:
+  a reference the owner can only reach by a reverse hop to an ancestor/root anchors at the
+  query root (a leading root-model name → root-local), even when the owner also declares a
+  forward edge to a same-named model. Consistent with DEV-1853 (direction is storage
+  trivia). DEV-1892's `wbad` (`orders.amount + 0`, which names the root) is thereby
+  superseded — same shape as this change's `wsum_host_expr`, which must widen; its
+  fixture/test are renamed to `wroot` / `test_root_named_expr_default_widens_to_root` and
+  assert widening. The genuine "fanning definition default fails closed" invariant stays
+  pinned by F1 (`TestFanningDefinitionDefaultFailsClosed`).
+- **Shared per-reference resolver (option 2, Egor 2026-09-21).** The per-reference
+  owner-first/root-fallback decision lives once in `sql/column_expansion.py`
+  (`resolve_default_reference_paths` + `requalify_default_references`, reachable by both
+  layers since `sql` cannot import `engine`). `reference_closure` consumes it to build keys
+  (home + safety); the generator consumes it to requalify a MIXED-frame default
+  (`spend + orders.amount` → `customers.spend + amount`) and enter it at the root,
+  replacing `_default_frag_owner_path`'s whole-fragment heuristic (single-frame fragments
+  keep it, byte-identical). Resolving each default ONCE at bind (retiring the render-time
+  re-resolution entirely) is the deeper cleanup, deferred to a follow-up.
 
 ## Risks / Trade-offs
 
