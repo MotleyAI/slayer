@@ -14,14 +14,13 @@ import warnings as _warnings
 
 import pytest
 
-from slayer.core.errors import UnreachableFilterDroppedWarning
+from slayer.core.errors import AssociatedGrainWarning, BroadcastGrainWarning
 from slayer.sql.scope_check import assert_scope_closed
 
 from tests._dev1836_fixtures import (
     AMOUNT_BY_TIER,
     ModelMeasure,
     SPEND_BY_TIER,
-    dropped_filter_warnings,
     make_exec_engine,
     q,
     rows_by,
@@ -55,7 +54,6 @@ class TestAttributableRowFilters:
             assert float(row["orders.cm"]) == pytest.approx(SPEND_BY_TIER["gold"])
         assert float(by[("ok",)]["orders.m"]) == pytest.approx(20.0)
         assert float(by[("new",)]["orders.m"]) == pytest.approx(20.0)
-        assert dropped_filter_warnings(resp) == []
         dry = await engine.execute(query, dry_run=True)
         assert_scope_closed(dry.sql, dialect=dialect)
 
@@ -83,9 +81,8 @@ class TestUnsafeRowFilters:
         assert float(by[("bronze",)]["orders.cm"]) == pytest.approx(40.0)
         assert by[(None,)]["orders.cm"] is None
         assert float(by[("gold",)]["orders.m"]) == pytest.approx(10.0)
-        assert dropped_filter_warnings(resp) == []
         hits = [c for c in caught
-                if issubclass(c.category, UnreachableFilterDroppedWarning)]
+                if issubclass(c.category, (BroadcastGrainWarning, AssociatedGrainWarning))]
         assert hits == []
 
     async def test_result_rows_still_honor_the_pushed_filter(self, exec_backend):

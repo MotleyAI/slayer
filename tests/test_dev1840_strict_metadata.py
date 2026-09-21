@@ -15,17 +15,17 @@ import pytest
 
 from slayer.core.errors import (
     AmbiguousJoinPathError,
-    SlayerError,
-    UnreachableFilterDroppedWarning,
+    AssociatedGrainWarning,
+    BroadcastGrainWarning,
 )
 
+from tests._dev1841_fixtures import pushed_filter_infos
 from tests._dev1840_fixtures import (
     ModelMeasure,
     SPEND_APP_BY_TIER,
     SPEND_BASIC_BY_TIER,
     ambiguity_models,
     dev1840_models,
-    dropped_filter_warnings,
     make_exec_engine,
     q,
     rows_by,
@@ -65,24 +65,27 @@ class TestPushedFiltersAreSilent:
         _, engine = exec_backend
         with _warnings.catch_warnings(record=True) as caught:
             _warnings.simplefilter("always")
-            resp = await engine.execute(q(
+            await engine.execute(q(
                 dimensions=["customers.tier"], measures=[M, CM],
                 filters=["channel = 'app'"],
             ))
-        assert dropped_filter_warnings(resp) == []
         hits = [c for c in caught
-                if issubclass(c.category, UnreachableFilterDroppedWarning)]
+                if issubclass(c.category, (BroadcastGrainWarning, AssociatedGrainWarning))]
         assert hits == []
 
     async def test_forward_unproven_pushdown_is_silent_too(
         self, exec_backend_weak,
     ):
         _, engine = exec_backend_weak
-        resp = await engine.execute(q(
-            dimensions=["customers.tier"], measures=[CM],
-            filters=["customers.plans.level = 'basic'"],
-        ))
-        assert dropped_filter_warnings(resp) == []
+        with _warnings.catch_warnings(record=True) as caught:
+            _warnings.simplefilter("always")
+            await engine.execute(q(
+                dimensions=["customers.tier"], measures=[CM],
+                filters=["customers.plans.level = 'basic'"],
+            ))
+        hits = [c for c in caught
+                if issubclass(c.category, (BroadcastGrainWarning, AssociatedGrainWarning))]
+        assert hits == []
 
 
 class TestStrictNarrows:
@@ -109,20 +112,16 @@ class TestStrictNarrows:
         for tier, spend in SPEND_BASIC_BY_TIER.items():
             assert float(by[(tier,)]["orders.cm"]) == pytest.approx(spend), tier
 
-    async def test_strict_still_errors_on_a_mixed_disjunction(self, exec_backend):
-        """Scenario: strict still errors on an excluded filter — naming the
-        filter and the remedy."""
+    async def test_mixed_disjunction_pushes_in_error_mode(self, exec_backend):
+        """DEV-1935: a mixed disjunction no longer errors in error mode — the
+        producer is restricted by a boolean-total semi-join (gold cm = 160)."""
         _, engine = exec_backend
-        query = q(
+        resp = await engine.execute(q(
             to_many_handling="error", dimensions=["customers.tier"], measures=[CM],
-            filters=["customers.tier = 'gold' OR channel = 'app'"],
-        )
-        with pytest.raises(SlayerError) as ei:
-            await engine.execute(query=query)
-        message = str(ei.value)
-        assert "channel" in message
-        assert "cardinality" in message or "unique" in message \
-            or "remove" in message
+            filters=["customers.tier = 'bronze' OR channel = 'app'"],
+        ))
+        by = rows_by(resp, "orders.customers.tier")
+        assert float(by[("gold",)]["orders.cm"]) == pytest.approx(160.0)
 
     async def test_strict_still_errors_on_an_ambiguous_path(
         self, exec_backend_amb,
@@ -150,32 +149,31 @@ class TestStrictNarrows:
         assert "closed_by" in str(ei.value)
 
 
-class TestExcludedFiltersKeepTheWarning:
-    async def test_mixed_disjunction_warns(self, exec_backend):
-        """Scenario: mixed disjunction stays dropped and warned."""
+class TestBooleanTotalPushdownReplacesTheWarning:
+    async def test_mixed_disjunction_pushes_without_warning(self, exec_backend):
+        """DEV-1935: a mixed disjunction is pushed by semi-join (gold cm = 160),
+        never dropped-and-warned; no Python-level warning is emitted."""
         _, engine = exec_backend
         with _warnings.catch_warnings(record=True) as caught:
             _warnings.simplefilter("always")
             resp = await engine.execute(q(
                 dimensions=["customers.tier"], measures=[CM],
-                filters=["customers.tier = 'gold' OR channel = 'app'"],
+                filters=["customers.tier = 'bronze' OR channel = 'app'"],
             ))
-        (w,) = dropped_filter_warnings(resp)
-        assert "channel" in w.filter_text
-        assert w.location
-        assert w.reason
+        by = rows_by(resp, "orders.customers.tier")
+        assert float(by[("gold",)]["orders.cm"]) == pytest.approx(160.0)
         hits = [c for c in caught
-                if issubclass(c.category, UnreachableFilterDroppedWarning)]
-        assert len(hits) == 1
+                if issubclass(c.category, (BroadcastGrainWarning, AssociatedGrainWarning))]
+        assert hits == []
 
-    async def test_cross_branch_atomic_warns(self, exec_backend_weak):
+    async def test_cross_branch_atomic_pushes_without_warning(self, exec_backend_weak):
+        """DEV-1935: a cross-branch atom is pushed, not dropped-and-warned."""
         _, engine = exec_backend_weak
         resp = await engine.execute(q(
             dimensions=["customers.tier"], measures=[CM],
             filters=["channel = customers.plans.level"],
         ))
-        (w,) = dropped_filter_warnings(resp)
-        assert "channel" in w.filter_text
+        assert pushed_filter_infos(resp)
 
     async def test_ambiguous_path_errors_in_lenient_mode(self, exec_backend_amb):
         """Ambiguous hop errors in BOTH modes — the drop+warn handling is

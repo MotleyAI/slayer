@@ -8,7 +8,7 @@ import warnings
 
 
 from slayer.core.enums import DataType
-from slayer.core.errors import UnreachableFilterDroppedWarning
+from slayer.core.errors import AssociatedGrainWarning, BroadcastGrainWarning
 from slayer.core.models import Column, ModelMeasure
 from slayer.core.query import SlayerQuery
 
@@ -69,7 +69,7 @@ class TestRoutedFilterPathE2E:
         assert "status" in cm_body, cm_body
         assert not [
             w for w in caught
-            if issubclass(w.category, UnreachableFilterDroppedWarning)
+            if issubclass(w.category, (BroadcastGrainWarning, AssociatedGrainWarning))
         ], [str(w.message) for w in caught]
 
     async def test_derived_column_owned_by_other_model_filter_pushes(self) -> None:
@@ -93,5 +93,5 @@ class TestRoutedFilterPathE2E:
         ), cm_body
         assert not [
             w for w in caught
-            if issubclass(w.category, UnreachableFilterDroppedWarning)
+            if issubclass(w.category, (BroadcastGrainWarning, AssociatedGrainWarning))
         ], [str(w.message) for w in caught]
