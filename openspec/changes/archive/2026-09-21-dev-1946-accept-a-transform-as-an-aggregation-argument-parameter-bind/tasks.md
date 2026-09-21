@@ -26,5 +26,5 @@
 
 ## 3. Review (spec-review stage)
 
-- [ ] 3.1 `/process-reviews` until CodeRabbit, Sonar, Codex and CI are green; every check shows `pass`
-- [ ] 3.2 With Egor's explicit OK: `openspec archive` the change, commit, push
+- [x] 3.1 `/process-reviews` until CodeRabbit, Sonar, Codex and CI are green; every check shows `pass`
+- [x] 3.2 With Egor's explicit OK: `openspec archive` the change, commit, push

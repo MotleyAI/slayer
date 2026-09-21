@@ -211,7 +211,8 @@ that declares none — SHALL fail with a clear error naming the rule. Ranked
 `first`/`last` declare no parameters — they take at most one positional value,
 their ranking column (the time axis when omitted), which, when given, SHALL be a
 column reference, never a literal or an attached value. After binding an
-attached (aggregate-valued) parameter is therefore always a named parameter.
+attached (aggregate- or transform-valued) parameter is therefore always a named
+parameter.
 
 #### Scenario: Positional percentile equals named
 - **WHEN** a measure is written `percentile(price, 0.9)` or `price:percentile(0.9)`
@@ -241,3 +242,10 @@ attached (aggregate-valued) parameter is therefore always a named parameter.
 - **WHEN** `last(amount, sum(amount, partition_by=region))`, `last(amount, 1)` or
   `last(amount, id, amount)` is submitted
 - **THEN** each fails at bind with a clear error naming the ranking-column rule
+
+#### Scenario: Positional transform parameter equals named
+- **WHEN** a measure is written
+  `customers.spend:weighted_avg(rank(sum(amount, partition_by=customers.regions.name)))`
+  rooted at `orders`
+- **THEN** it binds to the identical aggregation identity as the `weight=rank(...)`
+  spelling and returns identical result keys and values
