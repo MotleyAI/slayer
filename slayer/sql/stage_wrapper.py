@@ -38,23 +38,28 @@ def _select_source_names(select: exp.Select) -> set:
 
 def _visible_source_names(select: exp.Select) -> set:
     """``select``'s own sources plus those of ancestor SELECTs reachable across
-    expression-subquery boundaries only — where SQL permits correlation
-    (a semi-join EXISTS, DEV-1840). Derived tables and CTEs stop the climb."""
+    expression-subquery boundaries — where SQL permits correlation (a semi-join
+    EXISTS). A derived table hides its parent's own sources (siblings need
+    LATERAL) but keeps climbing, so one nested in an EXISTS sees the EXISTS's
+    ancestors (the semi-join spine); a CTE stops the climb."""
     names: set = set(_select_source_names(select))
     node: exp.Expression = select
     while True:
         parent = node.parent
+        siblings_hidden = False
         while parent is not None and not isinstance(parent, exp.Select):
-            if isinstance(parent, exp.CTE) or (
-                isinstance(parent, exp.Subquery)
-                and isinstance(parent.parent, (exp.From, exp.Join))
-            ):
+            if isinstance(parent, exp.CTE):
                 return names
+            if isinstance(parent, exp.Subquery) and isinstance(
+                parent.parent, (exp.From, exp.Join),
+            ):
+                siblings_hidden = True
             node = parent
             parent = node.parent
         if parent is None:
             return names
-        names |= _select_source_names(parent)
+        if not siblings_hidden:
+            names |= _select_source_names(parent)
         node = parent
 
 
@@ -82,10 +87,11 @@ def unmangle_dotted_table_refs(node: exp.Expression) -> None:
     fold back into the column. A no-op for every correctly-parsed AST.
 
     Visibility is the column's own SELECT plus correlation-legal ancestors
-    (expression subqueries only): a semi-join EXISTS correlates to the producer
-    body's root alias (DEV-1840), which must not be folded; a wider scope would
-    fold a dotted result key like ``\\`orders.region\\``` back into its
-    qualifier whenever some OUTER query happens to have an ``orders`` source."""
+    (:func:`_visible_source_names`): a semi-join EXISTS — and the spine derived
+    table nested in it — correlates to the producer body's root alias, which
+    must not be folded; a wider scope would fold a dotted result key like
+    ``\\`orders.region\\``` back into its qualifier whenever some OUTER query
+    happens to have an ``orders`` source."""
     for col in node.find_all(exp.Column):
         prefix = [
             p for p in (col.args.get(k) for k in ("catalog", "db", "table"))

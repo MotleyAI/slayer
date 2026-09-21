@@ -25,10 +25,10 @@ from typing import (
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from slayer.core.enums import DataType, RANKED_AGGREGATIONS, TimeGranularity
-from slayer.core.errors import AmbiguousJoinPathError, UnreachableFilterDroppedWarning
-from slayer.core.keys import AggregateKey, Grain, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, regroup_root_grain, effective_root_grain, constituent_grain, reroot_value_key, substitute_value_keys, walk_value_keys, walk_consumer_keys, REGROUP_LEAF_PREFIX, is_cross_model_agg, is_local_partitioned_agg, split_top_level_and, window_kwarg_of, is_reaggregation_key, is_row_attach_root, attached_inputs, operand_aggregates, operand_constituents, source_anchor_path
-from slayer.core.models import SlayerModel
+from slayer.core.enums import DataType, JoinType, RANKED_AGGREGATIONS, TimeGranularity
+from slayer.core.errors import AmbiguousJoinPathError
+from slayer.core.keys import AggregateKey, Grain, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, PREDICATE_COMPARISON_OPS, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, regroup_root_grain, effective_root_grain, constituent_grain, substitute_value_keys, walk_value_keys, walk_consumer_keys, REGROUP_LEAF_PREFIX, is_cross_model_agg, is_local_partitioned_agg, split_top_level_and, window_kwarg_of, is_reaggregation_key, is_row_attach_root, attached_inputs, operand_aggregates, operand_constituents, source_anchor_path
+from slayer.core.models import Column, SlayerModel
 from slayer.engine.reference_closure import (
     ParamSpec,
     aggregate_input_closure,
@@ -36,6 +36,7 @@ from slayer.engine.reference_closure import (
     first_unanalyzable_input_column,
     first_unanalyzable_source_row_leaf,
     fragment_closure,
+    fragment_null_propagates,
     key_closure,
     resolve_aggregation_params,
     source_row_leaf_closure,
@@ -79,7 +80,6 @@ from slayer.engine.elaborate_env import (
     check_order_target_has_slot,
     check_parameter_determined,
     check_filter_dependencies_analyzable,
-    check_population_filter_in_pushdown_scope,
     check_raw_rows_no_aggregate_slots,
     check_reaggregation_dims_attributable,
     check_reaggregation_no_window,
@@ -613,62 +613,112 @@ def _assert_cross_model_inputs_safe(
     )
 
 
+#: One pushed conjunct: (rewritten key, filter text, hop registry, per-hop
+#: null-rejection). Grouping merges pushes into correlated-EXISTS semi-joins.
+_Push = Tuple[
+    ValueKey, Optional[str], Dict[Tuple[str, ...], SemiJoinHop],
+    Dict[Tuple[str, ...], bool],
+]
+
+
 def _cross_model_inherited_filters(
     *, base_filters: List[Tuple[BoundFilter, Optional[str]]],
     target_path: Tuple[str, ...], root_model: SlayerModel,
-    models_by_name: Dict[str, SlayerModel], host_name: Optional[str] = None,
-    host_model: Optional[SlayerModel] = None,
-    bundle: Optional[ResolvedSourceBundle] = None,
-) -> Tuple[List[BoundFilter], List[SemiJoinFilter], List[UnreachableFilterDroppedWarning]]:
-    """Split base ROW filters into conjuncts and dispose each three ways: fully
-    attributable → inherits inline (re-rooted); reachable across an unproven hop →
-    pushed as a correlated EXISTS semi-join (one group per first reverse hop, D3);
-    else dropped and warned."""
+    models_by_name: Dict[str, SlayerModel], host_name: str,
+    host_model: SlayerModel, bundle: ResolvedSourceBundle,
+) -> Tuple[List[BoundFilter], List[SemiJoinFilter]]:
+    """Split base ROW filters into conjuncts and dispose each two ways: fully
+    attributable → inherits inline (re-rooted); else pushed as a correlated
+    EXISTS semi-join (grouped by shared branch, D3/D4)."""
     inherited: List[BoundFilter] = []
-    dropped: List[UnreachableFilterDroppedWarning] = []
-    pushes: List[Tuple[ValueKey, Optional[str], Dict[Tuple[str, ...], SemiJoinHop]]] = []
+    pushes: List[_Push] = []
     for bf, text in base_filters:
         if bf.phase != Phase.ROW:
             continue
         for cj in split_top_level_and(bf.value_key):
-            inherited_bf, pushed, dropped_w = _conjunct_disposition(
+            inherited_bf, pushed = _conjunct_disposition(
                 cj, text=text, target_path=target_path, root_model=root_model,
                 models_by_name=models_by_name, host_name=host_name,
                 host_model=host_model, bundle=bundle,
             )
             if inherited_bf is not None:
                 inherited.append(inherited_bf)
-            elif pushed is not None:
+            else:
+                assert pushed is not None
                 pushes.append(pushed)
-            elif dropped_w is not None:
-                dropped.append(dropped_w)
-    return inherited, _semi_join_groups_from_pushes(pushes), dropped
+    return inherited, _semi_join_groups_from_pushes(pushes)
 
 
 def _semi_join_groups_from_pushes(
-    pushes: Sequence[Tuple[ValueKey, Optional[str], Dict[Tuple[str, ...], SemiJoinHop]]],
+    pushes: Sequence["_Push"],
 ) -> List[SemiJoinFilter]:
-    """Group pushed conjuncts by their first reverse hop into correlated EXISTS
-    semi-joins: conjuncts sharing a first hop AND together in one group (D3)."""
-    groups: Dict[Tuple[str, Tuple[Tuple[str, str], ...]], Dict[str, Any]] = {}
-    for key_rewritten, conj_text, nodes in pushes:
-        first = next(h for p, h in nodes.items() if len(p) == 1)
+    """Group pushed conjuncts into correlated EXISTS semi-joins by union-find over
+    their outer-attached hops (branch roots; a reduced push's parent may be a
+    materialised outer alias, D6): a push spanning several branches merges
+    them (a product), and two pushes sharing a branch land in one group. Group
+    order and sibling-hop order are first-appearance (the union-find never
+    reorders), so disjoint single-branch pushes stay separate EXISTS in today's
+    order (DEV-1935 D4). Each hop's ``null_extended`` = declared LEFT ∧ the group's
+    AND-ed predicate does not reject its null row (the OR of its conjuncts' per-hop
+    rejections, D5)."""
+    uf = _UnionFind()
+    firsts_by_push = [_first_level_hops(nodes) for _k, _t, nodes, _r in pushes]
+    for firsts in firsts_by_push:
+        for f in firsts:
+            uf.union(a=firsts[0], b=f)
+    groups: Dict[Tuple[str, ...], Dict[str, Any]] = {}
+    for (key_rewritten, conj_text, nodes, rejects), firsts in zip(pushes, firsts_by_push):
         group = groups.setdefault(
-            (first.target_model, first.join_pairs),
-            {"nodes": {}, "conjuncts": [], "texts": []},
-        )
+            uf.find(firsts[0]),
+            {"nodes": {}, "conjuncts": [], "texts": [], "rejects": {}})
         for path, hop in nodes.items():
             group["nodes"].setdefault(path, hop)
+        for path, r in rejects.items():
+            group["rejects"][path] = group["rejects"].get(path, False) or r
         group["conjuncts"].append(key_rewritten)
         group["texts"].append(conj_text)
-    return [
-        SemiJoinFilter(
-            hops=sorted(g["nodes"].values(), key=lambda h: len(h.node_path)),
-            conjuncts=g["conjuncts"],
-            filter_texts=g["texts"],
-        )
-        for g in groups.values()
-    ]
+    return [_semi_join_filter(g) for g in groups.values()]
+
+
+class _UnionFind:
+    """Path-compressing union-find over hop paths; a path registers on first sight."""
+
+    def __init__(self) -> None:
+        self._parent: Dict[Tuple[str, ...], Tuple[str, ...]] = {}
+
+    def find(self, x: Tuple[str, ...]) -> Tuple[str, ...]:
+        parent = self._parent
+        parent.setdefault(x, x)
+        root = x
+        while parent[root] != root:
+            root = parent[root]
+        while parent[x] != root:
+            parent[x], x = root, parent[x]
+        return root
+
+    def union(self, *, a: Tuple[str, ...], b: Tuple[str, ...]) -> None:
+        ra, rb = self.find(a), self.find(b)
+        if ra != rb:
+            self._parent[ra] = rb
+
+
+def _first_level_hops(nodes: Mapping[Tuple[str, ...], Any]) -> List[Tuple[str, ...]]:
+    """The outer-attached hops of a push: those whose parent is not one of its nodes."""
+    return [p for p in nodes if p[:-1] not in nodes]
+
+
+def _semi_join_filter(g: Dict[str, Any]) -> SemiJoinFilter:
+    return SemiJoinFilter(
+        hops=[
+            hop.model_copy(update={
+                "null_extended": hop.declared_left
+                and not g["rejects"].get(path, False),
+            })
+            for path, hop in sorted(g["nodes"].items(), key=lambda ph: len(ph[0]))
+        ],
+        conjuncts=g["conjuncts"],
+        filter_texts=g["texts"],
+    )
 
 
 def _assert_local_producer_inputs_safe(
@@ -960,27 +1010,40 @@ def _owning_model(
     return models_by_name.get(name)
 
 
-def _ref_sql_dependency_paths(
-    col: ValueKey, *, host_model: Optional[SlayerModel],
-    models_by_name: Dict[str, SlayerModel], bundle: Optional[ResolvedSourceBundle],
-) -> Tuple[Tuple[str, ...], ...]:
-    """Owner-relative join paths a derived column's ``Column.sql`` AND its
-    ``Column.filter`` (DEV-1832) cross (the dependency closure at the owner) — the
-    semi-join push tree registers a hop for each. ``bundle.models_by_name`` is
-    host-inclusive (DEV-1900), so a dep pointing back at the host resolves without
-    a hand-patched bundle."""
-    if not isinstance(col, ColumnSqlKey) or bundle is None:
-        return ()
+def _derived_column_owner(
+    col: ColumnSqlKey, *, host_model: Optional[SlayerModel],
+    models_by_name: Dict[str, SlayerModel],
+) -> Optional[Tuple[SlayerModel, Column]]:
+    """The derived column a ``ColumnSqlKey`` names, with its owning model."""
     owner = _owning_model(
         col.model, host_model=host_model, models_by_name=models_by_name,
     )
-    if owner is None:
+    column = None if owner is None else next(
+        (c for c in owner.columns if c.name == col.column_name), None)
+    return None if owner is None or column is None else (owner, column)
+
+
+def _ref_sql_dependency_paths(
+    col: ValueKey, *, host_model: Optional[SlayerModel],
+    models_by_name: Dict[str, SlayerModel], bundle: Optional[ResolvedSourceBundle],
+    include_filter: bool = True,
+) -> Tuple[Tuple[str, ...], ...]:
+    """Owner-relative join paths a derived column's ``Column.sql`` AND its
+    ``Column.filter`` (DEV-1832) cross (the dependency closure at the owner) — the
+    semi-join push tree registers a hop for each; ``include_filter=False`` keeps
+    the value definition's paths only. ``bundle.models_by_name`` is host-inclusive
+    (DEV-1900), so a dep pointing back at the host resolves without a hand-patched
+    bundle."""
+    if not isinstance(col, ColumnSqlKey) or bundle is None:
         return ()
-    column = next((c for c in owner.columns if c.name == col.column_name), None)
-    if column is None:
+    found = _derived_column_owner(
+        col, host_model=host_model, models_by_name=models_by_name,
+    )
+    if found is None:
         return ()
+    owner, column = found
     paths: List[Tuple[str, ...]] = []
-    for sql in (column.sql, column.filter):
+    for sql in (column.sql, column.filter if include_filter else None):
         if not sql:
             continue
         frag = fragment_closure(
@@ -1019,12 +1082,13 @@ def _path_edges_exist(
 
 def _register_hop(
     nodes: Dict[Tuple[str, ...], SemiJoinHop], *, node_path: Tuple[str, ...],
-    target_model: str, pairs: List[Tuple[str, str]],
+    target_model: str, pairs: List[Tuple[str, str]], declared_left: bool,
 ) -> None:
     nodes.setdefault(node_path, SemiJoinHop(
         target_model=target_model,
         join_pairs=tuple((s, t) for s, t in pairs),
         node_path=node_path,
+        declared_left=declared_left,
     ))
 
 
@@ -1035,8 +1099,10 @@ def _forward_hops(
 ) -> Tuple[str, ...]:
     """Register hops along ``rel_path`` through the shared walker (reverse hops
     and edge-name tokens included); returns the final node path. The node-path
-    token stays as-typed for hop-alias identity while the hop's ``target_model``
-    is the resolved model. An ambiguous hop raises (fail closed)."""
+    token is the edge's CANONICAL token (its ``name`` when named, else its
+    ``target_model``) so two spellings of one physical edge share one node and
+    one alias (DEV-1935 D3); the hop's ``target_model`` is the resolved model.
+    An ambiguous hop raises (fail closed)."""
     current = start_model
     node_path = base_node_path
     for hop_name in rel_path:
@@ -1049,10 +1115,11 @@ def _forward_hops(
                 f"unreachable from the aggregate's root (no join edge from "
                 f"{current.name} to {hop_name})"
             )
-        node_path = (*node_path, hop_name)
+        node_path = (*node_path, edge.name or edge.target_model)
         _register_hop(
             nodes, node_path=node_path, target_model=edge.target_model,
             pairs=[(s, t) for s, t in edge.join_pairs],
+            declared_left=edge.join_type == JoinType.LEFT,
         )
         current = target
     return node_path
@@ -1077,10 +1144,13 @@ def _reverse_hops(
         )
     node_path: Tuple[str, ...] = ()
     for edge in reversed(fwd):
-        node_path = (*node_path, edge.source_model)
+        node_path = (*node_path, edge.name or edge.source_model)
+        # A reverse hop is the population correlation, not a declared join:
+        # never null-extended.
         _register_hop(
             nodes, node_path=node_path, target_model=edge.source_model,
             pairs=[(tgt, src) for src, tgt in edge.join_pairs],
+            declared_left=False,
         )
     return node_path
 
@@ -1091,49 +1161,6 @@ def _remap_ref_path(r: ValueKey, node_path: Tuple[str, ...]) -> ValueKey:
             "column": r.column.model_copy(update={"path": node_path}),
         })
     return r.model_copy(update={"path": node_path})
-
-
-def _child_keys(k: ValueKey) -> List[Any]:
-    """The nested operand keys of a composite ``ValueKey`` node. Asymmetric on
-    purpose: aggregates/transforms/truncs are scope boundaries here, not
-    ``children()`` — the push-down classifies whole refs."""
-    if isinstance(k, ArithmeticKey):
-        return list(k.operands)
-    if isinstance(k, ScalarCallKey):
-        return list(k.args)
-    if isinstance(k, BetweenKey):
-        return [k.column, k.low, k.high]
-    if isinstance(k, InKey):
-        return [k.column]
-    return []
-
-
-def _reject_mixed_or_not(cj: ValueKey, cross_by_ref: Dict[ValueKey, bool]) -> None:
-    """D2: an OR/NOT subtree mixing a root-anchored ref with a cross-path ref
-    changes meaning under EXISTS — such a conjunct stays dropped."""
-
-    def _walk(k) -> Tuple[bool, bool]:  # (has_local, has_cross)
-        if isinstance(k, (ColumnKey, ColumnSqlKey, TimeTruncKey, StarKey)):
-            cross = cross_by_ref.get(k, False)
-            return (not cross, cross)
-        has_local = has_cross = False
-        for child in _child_keys(k):
-            if isinstance(child, (Decimal, str, bool, int, float)) or child is None:
-                continue
-            local, cross = _walk(child)
-            has_local, has_cross = has_local or local, has_cross or cross
-        if (
-            isinstance(k, ArithmeticKey)
-            and k.op.lower() in ("or", "not")
-            and has_local and has_cross
-        ):
-            raise _PushBlocked(
-                "mixes a root-anchored predicate with a cross-path predicate "
-                "under OR/NOT, which a semi-join cannot preserve"
-            )
-        return has_local, has_cross
-
-    _walk(cj)
 
 
 def _resolve_ref_anchor(
@@ -1165,13 +1192,13 @@ def _resolve_ref_anchor(
     if shared:
         # The ref rides the reverse path itself: bind to that chain
         # node (same related combination, D3) instead of re-walking.
-        # ``host_node`` carries walked MODEL names (reversed), so index it
-        # rather than a token lookup — ``tp`` tokens may be edge names.
-        return (
-            lookup[host_node[len(tp) - shared - 1]],
-            host_node[: len(tp) - shared],
-            hp[shared:], host_node,
+        # ``host_node`` tokens are canonical (edge name when named), so resolve
+        # the base model through the node registry, not a token→model lookup.
+        base_node = host_node[: len(tp) - shared]
+        base_model = (
+            lookup[nodes[base_node].target_model] if base_node else root_model
         )
+        return base_model, base_node, hp[shared:], host_node
     return host_model, host_node, hp, host_node
 
 
@@ -1179,39 +1206,163 @@ def _register_dep_hops(
     col: ValueKey, *, node_path: Tuple[str, ...], host_model: SlayerModel,
     lookup: Dict[str, SlayerModel], bundle: ResolvedSourceBundle,
     nodes: Dict[Tuple[str, ...], SemiJoinHop],
-) -> bool:
-    """Register the hops a ref's Mode-A dependencies cross; True when any."""
+) -> List[Tuple[str, ...]]:
+    """Register the hops a ref's Mode-A dependencies cross; return the terminal
+    node paths of the VALUE definition's dependencies only — a filtered column is
+    ``CASE WHEN f THEN v END``, NULL when ``v`` is, never because ``f``'s
+    dependencies are (D5)."""
     dep_rels = _ref_sql_dependency_paths(
         col, host_model=host_model, models_by_name=lookup, bundle=bundle,
     )
     if not dep_rels:
-        return False
+        return []
+    value_rels = set(_ref_sql_dependency_paths(
+        col, host_model=host_model, models_by_name=lookup, bundle=bundle,
+        include_filter=False,
+    ))
     owner = _owning_model(
         col.model, host_model=host_model, models_by_name=lookup,
     )
+    terminals: List[Tuple[str, ...]] = []
     for dep_rel in dep_rels:
-        _forward_hops(
+        terminal = _forward_hops(
             start_model=owner, rel_path=tuple(dep_rel),
             base_node_path=node_path, models_by_name=lookup, nodes=nodes,
         )
-    return True
+        if dep_rel in value_rels:
+            terminals.append(terminal)
+    return terminals
+
+
+# --------------------------------------------------------------------------- #
+# Null-rejection analysis (DEV-1935 D5). A conservative three-valued evaluation
+# (values T/F/U/D) of a conjunct with hop ``h`` and its descendants NULL decides
+# whether the conjunct rejects ``h``'s null-extended row (value FALSE/UNKNOWN);
+# ``null_extended(h) = declared LEFT ∧ ¬rejects(h)``. DEPENDS never rejects, so a
+# wrong answer can only choose LEFT (always correct), never INNER. The group's
+# AND-ed predicate rejects h iff ANY of its conjuncts does, so the per-conjunct
+# result combines by OR at grouping time.
+_T, _F, _U, _D = "T", "F", "U", "D"
+#: AND / OR folds: the first value present wins, the last is the identity.
+_AND_ORDER = (_F, _U, _D, _T)
+_OR_ORDER = (_T, _D, _U, _F)
+_NOT_VALUE = {_T: _F, _F: _T, _U: _U, _D: _D}
+
+#: null-source paths per ref: nulling any hop on/above one nulls the ref.
+_NullSources = Dict[ValueKey, "frozenset[Tuple[str, ...]]"]
+
+
+def _is_prefix(prefix: Tuple[str, ...], path: Tuple[str, ...]) -> bool:
+    return path[: len(prefix)] == prefix
+
+
+#: Predicate-valued operators: as a value operand they are NULL iff UNKNOWN.
+_PREDICATE_OPS = frozenset({"and", "or", "not"}) | PREDICATE_COMPARISON_OPS
+
+
+def _operand_null(k: Any, *, h: Tuple[str, ...], srcs: _NullSources) -> bool:
+    """Is value operand ``k`` NULL when hop ``h`` and its descendants are NULL?
+    A leaf's null-source paths decide it; arithmetic over a null operand is null;
+    a predicate is null iff UNKNOWN; a ScalarCall / Star is data-dependent."""
+    if isinstance(k, (ColumnKey, ColumnSqlKey, TimeTruncKey, StarKey)):
+        return any(_is_prefix(h, p) for p in srcs.get(k, frozenset()))
+    if isinstance(k, (InKey, BetweenKey)) or (
+        isinstance(k, ArithmeticKey) and k.op.lower() in _PREDICATE_OPS
+    ):
+        return _pred_value(k, h=h, srcs=srcs) == _U
+    if isinstance(k, ArithmeticKey):
+        return any(_operand_null(o, h=h, srcs=srcs) for o in k.operands)
+    return False
+
+
+def _unknown_if_null(
+    operands: Iterable[Any], *, h: Tuple[str, ...], srcs: _NullSources,
+) -> str:
+    return _U if any(_operand_null(o, h=h, srcs=srcs) for o in operands) else _D
+
+
+def _fold(*, vals: Iterable[str], order: Tuple[str, ...]) -> str:
+    present = set(vals)
+    return next((v for v in order if v in present), order[-1])
+
+
+def _is_value(
+    *, a: Any, b: Any, negated: bool, h: Tuple[str, ...], srcs: _NullSources,
+) -> str:
+    """``IS`` / ``IS NOT`` between a literal and a null-valued operand, either
+    order (NULL IS NULL, NULL IS NOT TRUE → TRUE; the mirrors → FALSE); anything
+    else is DEPENDS."""
+    lit, val = (a, b) if isinstance(a, LiteralKey) else (b, a)
+    if not isinstance(lit, LiteralKey) or not _operand_null(val, h=h, srcs=srcs):
+        return _D
+    return _T if (lit.value is None) != negated else _F
+
+
+def _pred_value(cj: ValueKey, *, h: Tuple[str, ...], srcs: _NullSources) -> str:
+    """Three-valued (T/F/U/D) value of predicate ``cj`` under ``h``-NULL."""
+    if isinstance(cj, InKey):
+        return _unknown_if_null((cj.column,), h=h, srcs=srcs)
+    if isinstance(cj, BetweenKey):
+        return _unknown_if_null((cj.column, cj.low, cj.high), h=h, srcs=srcs)
+    if not isinstance(cj, ArithmeticKey):
+        return _D
+    op = cj.op.lower()
+    if op in ("and", "or"):
+        vals = [_pred_value(o, h=h, srcs=srcs) for o in cj.operands]
+        return _fold(vals=vals, order=_AND_ORDER if op == "and" else _OR_ORDER)
+    if op == "not":
+        return _NOT_VALUE[_pred_value(cj.operands[0], h=h, srcs=srcs)]
+    if op in ("is", "is not"):
+        return _is_value(
+            a=cj.operands[0], b=cj.operands[1], negated=op == "is not", h=h, srcs=srcs,
+        )
+    if op in PREDICATE_COMPARISON_OPS:
+        return _unknown_if_null(cj.operands, h=h, srcs=srcs)
+    return _D
+
+
+def _ref_null_propagates(
+    col: ValueKey, *, host_model: SlayerModel,
+    models_by_name: Dict[str, SlayerModel], bundle: ResolvedSourceBundle,
+) -> bool:
+    """A structural ref is NULL under a NULL node; a derived ref only when its
+    expanded definition propagates NULL (D5), else it is data-dependent."""
+    if not isinstance(col, ColumnSqlKey):
+        return True
+    found = _derived_column_owner(
+        col, host_model=host_model, models_by_name=models_by_name,
+    )
+    return found is not None and fragment_null_propagates(
+        column=found[1], model=found[0], anchor_relation=found[0].name,
+        bundle=bundle,
+    )
+
+
+def _conjunct_rejects_by_hop(
+    cj: ValueKey, *, hop_paths: Iterable[Tuple[str, ...]], srcs: _NullSources,
+) -> Dict[Tuple[str, ...], bool]:
+    """Per hop, whether ``cj`` rejects that hop's null-extended row (value F/U)."""
+    return {
+        hp: _pred_value(cj, h=hp, srcs=srcs) in (_F, _U) for hp in hop_paths
+    }
 
 
 def _conjunct_push_plan(
     cj: ValueKey, *, target_path: Tuple[str, ...], root_model: SlayerModel,
     host_model: SlayerModel, models_by_name: Dict[str, SlayerModel],
     bundle: ResolvedSourceBundle, host_name: Optional[str],
-) -> Tuple[ValueKey, Dict[Tuple[str, ...], SemiJoinHop]]:
+) -> Tuple[ValueKey, Dict[Tuple[str, ...], SemiJoinHop], Dict[Tuple[str, ...], bool]]:
     """Resolve a not-fully-attributable conjunct into a correlation-tree plan:
     the conjunct rewritten into producer-root coordinates (ref paths = tree-node
-    paths, root-local refs correlate as outer references) plus the hop registry.
-    Raises :class:`_PushBlocked` when outside pushdown scope (D2/D4)."""
+    paths, root-local refs correlate as outer references), the hop registry, and
+    per-hop null-rejection (D5). Raises :class:`_PushBlocked` when a reference has
+    no resolvable join path."""
     tp = tuple(target_path)
     lookup = dict(models_by_name)
     lookup.setdefault(host_model.name, host_model)
     nodes: Dict[Tuple[str, ...], SemiJoinHop] = {}
     mapping: Dict[ValueKey, ValueKey] = {}
-    cross_by_ref: Dict[ValueKey, bool] = {}
+    srcs: Dict[ValueKey, "frozenset[Tuple[str, ...]]"] = {}
     host_node: Optional[Tuple[str, ...]] = None
     for r in walk_value_keys(cj):
         if not isinstance(r, (ColumnKey, ColumnSqlKey, TimeTruncKey, StarKey)):
@@ -1227,35 +1378,39 @@ def _conjunct_push_plan(
             start_model=base_model, rel_path=rel, base_node_path=base_node,
             models_by_name=lookup, nodes=nodes,
         )
-        has_deps = _register_dep_hops(
+        dep_terminals = _register_dep_hops(
             col, node_path=node_path, host_model=host_model, lookup=lookup,
             bundle=bundle, nodes=nodes,
         )
-        cross_by_ref[r] = bool(node_path) or has_deps
         remapped = _remap_ref_path(r, node_path)
+        # Null sources: a ref is null when its own node, an ancestor or a
+        # dependency terminal is — unless data-dependent (a star, a
+        # non-propagating derived definition).
+        if isinstance(r, StarKey) or not _ref_null_propagates(
+            col, host_model=host_model, models_by_name=lookup, bundle=bundle,
+        ):
+            srcs[remapped] = frozenset()
+        else:
+            srcs[remapped] = frozenset({node_path, *dep_terminals})
         if remapped != r:
             mapping[r] = remapped
-    first_hops = [p for p in nodes if len(p) == 1]
-    if len(first_hops) != 1:
-        raise _PushBlocked(
-            "its cross-path references span multiple join branches from "
-            f"{root_model.name}, so no single semi-join tree covers them"
-        )
-    _reject_mixed_or_not(cj, cross_by_ref)
-    return substitute_value_keys(cj, mapping), nodes
+    # DEV-1935: pushdown is total over the conjunct's boolean shape — no OR/NOT
+    # or single-branch block. Multiple first-level hops are a product; grouping
+    # (union-find) merges shared branches downstream.
+    remapped_cj = substitute_value_keys(cj, mapping)
+    rejects = _conjunct_rejects_by_hop(
+        remapped_cj, hop_paths=nodes.keys(), srcs=srcs)
+    return remapped_cj, nodes, rejects
 
 
 def _conjunct_disposition(
     cj: ValueKey, *, text: Optional[str], target_path: Tuple[str, ...],
     root_model: SlayerModel, models_by_name: Dict[str, SlayerModel],
-    host_name: Optional[str], host_model: Optional[SlayerModel] = None,
-    bundle: Optional[ResolvedSourceBundle] = None,
-) -> Tuple[
-    Optional[BoundFilter],
-    Optional[Tuple[ValueKey, Optional[str], Dict[Tuple[str, ...], SemiJoinHop]]],
-    Optional[UnreachableFilterDroppedWarning],
-]:
-    """Three-way ROW-conjunct disposition (D1): inline / semi-join pushed / dropped."""
+    host_name: str, host_model: SlayerModel, bundle: ResolvedSourceBundle,
+) -> Tuple[Optional[BoundFilter], Optional[_Push]]:
+    """Two-way ROW-conjunct disposition (D1): inline / semi-join pushed. A
+    bound conjunct always resolves from the host, so a push-plan block is an
+    invariant violation and propagates (fail closed), never a silent drop."""
     refs = [
         k for k in walk_value_keys(cj)
         if isinstance(k, (ColumnKey, ColumnSqlKey, TimeTruncKey, StarKey))
@@ -1264,62 +1419,38 @@ def _conjunct_disposition(
     def _attributable(r: ValueKey) -> bool:
         # Judge each ref on its dependency closure (DEV-1900) — a derived column
         # crossing a fanning hop is unattributable exactly as a structural one is.
-        if host_model is not None and bundle is not None:
-            return key_attributable_from_root(
-                key=r, target_path=target_path, root_model=root_model,
-                models_by_name=models_by_name, bundle=bundle,
-                host_model=host_model, host_name=host_name,
-            )
-        return attributable_from_root(
-            host_path=key_host_path(r), target_path=target_path,
-            root_model=root_model, models_by_name=models_by_name,
-            host_name=host_name,
+        return key_attributable_from_root(
+            key=r, target_path=target_path, root_model=root_model,
+            models_by_name=models_by_name, bundle=bundle,
+            host_model=host_model, host_name=host_name,
         )
 
-    unsafe = next((r for r in refs if not _attributable(r)), None)
-    if unsafe is None:
-        rerooted = (
-            reroot_from_root(
-                cj, target_path=target_path, root_model=root_model,
-                models_by_name=models_by_name, host_name=host_name,
-            )
-            if host_name is not None
-            else reroot_value_key(cj, target_path=target_path)
+    if all(_attributable(r) for r in refs):
+        rerooted = reroot_from_root(
+            cj, target_path=target_path, root_model=root_model,
+            models_by_name=models_by_name, host_name=host_name,
         )
-        return bound_filter_from_key(rerooted), None, None
+        return bound_filter_from_key(rerooted), None
     display = text or _canonical_name(cj)
-    if host_model is not None and bundle is not None:
-        # A conjunct whose dependency closure no dialect can analyse is unsafe,
-        # never 'crosses nothing' — fail closed for host and producers alike.
-        if key_closure(
-            key=cj, anchor_model=host_model, anchor_relation=host_model.name,
-            bundle=bundle,
-        ) is None:
-            check_filter_dependencies_analyzable(
-                filter_text=display,
-                column=first_unanalyzable_filter_column(
-                    key=cj, anchor_model=host_model,
-                    anchor_relation=host_model.name, bundle=bundle,
-                ),
-            )
-        try:
-            key_rewritten, nodes = _conjunct_push_plan(
-                cj, target_path=target_path, root_model=root_model,
-                host_model=host_model, models_by_name=models_by_name,
-                bundle=bundle, host_name=host_name,
-            )
-            return None, (key_rewritten, display, nodes), None
-        except _PushBlocked as exc:
-            return None, None, UnreachableFilterDroppedWarning(
-                filter_text=display, reason=str(exc),
-            )
-    reason = broadcast_reason(
-        host_path=key_host_path(unsafe), target_path=target_path,
-        root_model=root_model, models_by_name=models_by_name,
+    # A conjunct whose dependency closure no dialect can analyse is unsafe,
+    # never 'crosses nothing' — fail closed for host and producers alike.
+    if key_closure(
+        key=cj, anchor_model=host_model, anchor_relation=host_model.name,
+        bundle=bundle,
+    ) is None:
+        check_filter_dependencies_analyzable(
+            filter_text=display,
+            column=first_unanalyzable_filter_column(
+                key=cj, anchor_model=host_model,
+                anchor_relation=host_model.name, bundle=bundle,
+            ),
+        )
+    key_rewritten, nodes, rejects = _conjunct_push_plan(
+        cj, target_path=target_path, root_model=root_model,
+        host_model=host_model, models_by_name=models_by_name,
+        bundle=bundle, host_name=host_name,
     )
-    return None, None, UnreachableFilterDroppedWarning(
-        filter_text=display, reason=reason,
-    )
+    return None, (key_rewritten, display, nodes, rejects)
 
 
 class _DisposedConjunct(BaseModel):
@@ -1332,13 +1463,9 @@ class _DisposedConjunct(BaseModel):
     inline_bf: BoundFilter
     text: Optional[str] = None
     is_date_range: bool
-    disposition: Literal["inline", "semi_join", "excluded"]
+    disposition: Literal["inline", "semi_join"]
     fanning_paths: Tuple[Tuple[str, ...], ...] = ()
-    push: Optional[
-        Tuple[ValueKey, Optional[str], Dict[Tuple[str, ...], SemiJoinHop]]
-    ] = None
-    warning: Optional[UnreachableFilterDroppedWarning] = None
-    reason: Optional[str] = None
+    push: Optional[_Push] = None
 
 
 class PopulationFilters(BaseModel):
@@ -1350,87 +1477,52 @@ class PopulationFilters(BaseModel):
 
     conjuncts: List[_DisposedConjunct] = Field(default_factory=list)
 
-    def _inline_for(
-        self, dc: _DisposedConjunct, grain_paths: AbstractSet[Tuple[str, ...]],
-    ) -> bool:
-        """Does this consumer apply the conjunct inline? An ``inline`` conjunct
-        always does; a ``semi_join`` conjunct does iff the consumer's grain
-        materialises every fanning path of the conjunct (D2)."""
-        if dc.disposition == "inline":
-            return True
-        if dc.disposition != "semi_join":
-            return False
-        return all(
-            any(len(fp) <= len(gp) and gp[: len(fp)] == fp for gp in grain_paths)
-            for fp in dc.fanning_paths
-        )
-
-    def producer_view(
-        self, grain_paths: AbstractSet[Tuple[str, ...]],
-    ) -> Tuple[List[BoundFilter], int, List[SemiJoinFilter],
-               List[UnreachableFilterDroppedWarning]]:
-        """(inline masks, n_date_range, semi-join groups, dropped warnings) for a
-        host-rooted producer whose grain materialises ``grain_paths``. Excluded
-        conjuncts drop from the producer with the dropped-filter warning (D5)."""
-        inline_dates: List[BoundFilter] = []
-        inline_others: List[BoundFilter] = []
-        pushes: List[Tuple[ValueKey, Optional[str],
-                           Dict[Tuple[str, ...], SemiJoinHop]]] = []
-        dropped: List[UnreachableFilterDroppedWarning] = []
-        for dc in self.conjuncts:
-            if dc.disposition == "excluded":
-                if dc.warning is not None:
-                    dropped.append(dc.warning)
-                continue
-            if self._inline_for(dc=dc, grain_paths=grain_paths):
-                (inline_dates if dc.is_date_range else inline_others).append(
-                    dc.inline_bf)
-            elif dc.push is not None:
-                pushes.append(dc.push)
-        return (
-            [*inline_dates, *inline_others], len(inline_dates),
-            _semi_join_groups_from_pushes(pushes), dropped,
-        )
-
     def host_split(
-        self, grain_paths: AbstractSet[Tuple[str, ...]], *,
-        drop_excluded: bool = False,
-    ) -> Tuple[List[SemiJoinFilter], List[ValueKey],
-               List[Tuple[Optional[str], Optional[str]]]]:
-        """(semi-join groups, conjunct keys to drop from the masks, excluded
-        (text, reason) pairs). A semi-join conjunct the grain does not materialise
-        moves to the EXISTS. ``drop_excluded`` (a producer) also drops the
-        out-of-scope conjuncts from the masks — they surface as the dropped-filter
-        warning on the attach; the host base keeps them inline and residue-checks
-        (D2/D5)."""
-        pushes: List[Tuple[ValueKey, Optional[str],
-                           Dict[Tuple[str, ...], SemiJoinHop]]] = []
+        self, grain_paths: AbstractSet[Tuple[str, ...]],
+    ) -> Tuple[List[SemiJoinFilter], List[ValueKey]]:
+        """(semi-join groups, conjunct keys to drop from the masks). A semi-join
+        conjunct whose fanning branches the grain all materialises binds inline
+        to the grouped row (D2); one it materialises some of quantifies only the
+        rest (D6); otherwise the push as planned."""
+        pushes: List[_Push] = []
         pushed_keys: List[ValueKey] = []
-        excluded: List[Tuple[Optional[str], Optional[str]]] = []
         for dc in self.conjuncts:
-            if dc.disposition == "excluded":
-                excluded.append(
-                    (dc.text or _canonical_name(dc.conjunct), dc.reason))
-                if drop_excluded:
-                    pushed_keys.append(dc.conjunct)
+            if dc.disposition != "semi_join":
                 continue
-            if not self._inline_for(dc=dc, grain_paths=grain_paths):
-                assert dc.push is not None
-                pushes.append(dc.push)
-                pushed_keys.append(dc.conjunct)
-        return _semi_join_groups_from_pushes(pushes), pushed_keys, excluded
+            materialised = [
+                fp for fp in dc.fanning_paths if _materialised(fp, grain_paths)
+            ]
+            if len(materialised) == len(dc.fanning_paths):
+                continue
+            assert dc.push is not None
+            pushes.append(
+                _reduce_push(dc.push, grain_paths=grain_paths) if materialised
+                else dc.push
+            )
+            pushed_keys.append(dc.conjunct)
+        return _semi_join_groups_from_pushes(pushes), pushed_keys
 
     @property
     def has_semi_joins(self) -> bool:
         return any(dc.disposition == "semi_join" for dc in self.conjuncts)
 
-    @property
-    def dropped_warnings(self) -> List[UnreachableFilterDroppedWarning]:
-        """Out-of-scope conjuncts dropped from every host-rooted producer."""
-        return [
-            dc.warning for dc in self.conjuncts
-            if dc.disposition == "excluded" and dc.warning is not None
-        ]
+def _materialised(
+    path: Tuple[str, ...], grain_paths: AbstractSet[Tuple[str, ...]],
+) -> bool:
+    return any(len(path) <= len(gp) and gp[: len(path)] == path for gp in grain_paths)
+
+
+def _reduce_push(
+    push: _Push, *, grain_paths: AbstractSet[Tuple[str, ...]],
+) -> _Push:
+    """Drop the hops the consumer's grain materialises — their refs bind to the
+    outer query's aliases — and quantify only the rest (D6)."""
+    key, text, nodes, rejects = push
+    kept = {p: h for p, h in nodes.items() if not _materialised(p, grain_paths)}
+    if len(kept) == len(nodes):
+        return push
+    assert kept, f"population conjunct {text!r}: every hop materialised yet not inlined"
+    return key, text, kept, {p: r for p, r in rejects.items() if p in kept}
 
 
 def _dispose_one_conjunct(
@@ -1438,9 +1530,9 @@ def _dispose_one_conjunct(
     host_model: SlayerModel, models_by_name: Dict[str, SlayerModel],
     bundle: ResolvedSourceBundle,
 ) -> _DisposedConjunct:
-    """Dispose one top-level population conjunct (D1), recording its fanning paths
-    for the per-consumer same-row rule (D2)."""
-    inline_bf, pushed, dropped_w = _conjunct_disposition(
+    """Dispose one top-level population conjunct (D1) — inline or semi-join —
+    recording its fanning paths for the per-consumer same-row rule (D2)."""
+    inline_bf, pushed = _conjunct_disposition(
         cj, text=text, target_path=(), root_model=host_model,
         models_by_name=models_by_name, host_name=host_model.name,
         host_model=host_model, bundle=bundle,
@@ -1450,26 +1542,22 @@ def _dispose_one_conjunct(
         anchor_relation=host_model.name, bundle=bundle,
     ) or ()
     fanning = tuple(
-        p for p in closure
+        _canonical_path(p, root=host_model, models_by_name=models_by_name)
+        for p in closure
         if p and not safe_reachable(
             root=host_model, path=p, models_by_name=models_by_name,
         )
     )
     if inline_bf is not None:
-        disposition: Literal["inline", "semi_join", "excluded"] = "inline"
-        push, warning, reason = None, None, None
-    elif pushed is not None:
-        disposition, push, warning, reason = ("semi_join", pushed, None, None)
-        inline_bf = bound_filter_from_key(cj)
+        disposition: Literal["inline", "semi_join"] = "inline"
+        push = None
     else:
-        disposition = "excluded"
-        push, warning = None, dropped_w
-        reason = dropped_w.reason if dropped_w is not None else None
+        assert pushed is not None
+        disposition, push = "semi_join", pushed
         inline_bf = bound_filter_from_key(cj)
     return _DisposedConjunct(
         conjunct=cj, inline_bf=inline_bf, text=text, is_date_range=is_date,
         disposition=disposition, fanning_paths=fanning, push=push,
-        warning=warning, reason=reason,
     )
 
 
@@ -1517,12 +1605,24 @@ def _drop_conjuncts(
     return result
 
 
+def _canonical_path(
+    path: Sequence[str], *, root: SlayerModel,
+    models_by_name: Dict[str, SlayerModel],
+) -> Tuple[str, ...]:
+    """A join path in canonical hop tokens (edge name, else target model — D3),
+    so closure paths and push nodes compare regardless of spelling."""
+    edges = walk(root=root, path=tuple(path), models_by_name=models_by_name)
+    if edges is None:
+        return tuple(path)
+    return tuple(e.name or e.target_model for e in edges)
+
+
 def _grain_closure_paths(
     grain_keys: Sequence[ValueKey], *, host_model: SlayerModel,
     bundle: ResolvedSourceBundle,
 ) -> "set[Tuple[str, ...]]":
-    """Every join path the grain keys' dependency closures cross — the paths a
-    consumer's grain materialises (D2)."""
+    """Every join path (canonical) the grain keys' dependency closures cross —
+    the paths a consumer's grain materialises (D2)."""
     out: "set[Tuple[str, ...]]" = set()
     for k in grain_keys:
         closure = key_closure(
@@ -1531,7 +1631,8 @@ def _grain_closure_paths(
         )
         for p in closure or ():
             if p:
-                out.add(tuple(p))
+                out.add(_canonical_path(
+                    p, root=host_model, models_by_name=bundle.models_by_name))
     return out
 
 
@@ -1675,7 +1776,7 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
         )
         # The unattributable dims join back on the host key exactly like safe_pairs.
         safe_pairs = [*safe_pairs, *assoc_pairs]
-        inherited, restricted_texts, dropped = _association_inline_filters(
+        inherited, restricted_texts = _association_inline_filters(
             base_filters=base_filters_with_text, target_path=target_path,
             root_model=root_model, models_by_name=models_by_name,
             host_model=host_model, bundle=bundle,
@@ -1723,7 +1824,7 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
                 models_by_name=models_by_name, host_name=host_model.name,
             )
 
-        inherited, semi_joins, dropped = _cross_model_inherited_filters(
+        inherited, semi_joins = _cross_model_inherited_filters(
             base_filters=base_filters_with_text, target_path=target_path,
             root_model=root_model, models_by_name=models_by_name,
             host_name=host_model.name, host_model=host_model, bundle=bundle,
@@ -1842,7 +1943,7 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
         )],
         partition_display=[_regroup_grain_name(rr) for rr in ordered_pks],
         producer_root_model=root_name,
-        dropped_filter_warnings=dropped,
+        semi_join_measure=alias,
         broadcast_measure=alias if broadcast else None,
         broadcast_dimensions=broadcast,
         associated_measure=associated_measure,
@@ -2030,39 +2131,35 @@ def _association_inline_filters(
     target_path: Tuple[str, ...], root_model: SlayerModel,
     models_by_name: Dict[str, SlayerModel], host_model: SlayerModel,
     bundle: ResolvedSourceBundle,
-) -> Tuple[List[BoundFilter], List[str], List[UnreachableFilterDroppedWarning]]:
+) -> Tuple[List[BoundFilter], List[str]]:
     """Route each ROW conjunct for a home-rooted association producer (DEV-1910
-    D4): attributable → inline re-rooted; reachable-but-unsafe → inline the
-    re-rooted conjunct too (the per-entity dedup makes the fanning join harmless)
-    with its text kept for the informational entry; out of scope → dropped and
-    warned. No semi-join is emitted, so membership equals the semi-join semantics
-    and a conjunct sharing a hop with an association dimension binds to the same
-    related row."""
+    D4): attributable → inline re-rooted; else inline the re-rooted conjunct too
+    (the per-entity dedup makes the fanning join harmless) with its text kept for
+    the informational entry. No semi-join is emitted, so membership equals the
+    semi-join semantics and a conjunct sharing a hop with an association
+    dimension binds to the same related row."""
     inherited: List[BoundFilter] = []
     restricted_texts: List[str] = []
-    dropped: List[UnreachableFilterDroppedWarning] = []
     for bf, text in base_filters:
         if bf.phase != Phase.ROW:
             continue
         for cj in split_top_level_and(bf.value_key):
-            inh, pushed, drop_w = _conjunct_disposition(
+            inh, pushed = _conjunct_disposition(
                 cj=cj, text=text, target_path=target_path, root_model=root_model,
                 models_by_name=models_by_name, host_name=host_model.name,
                 host_model=host_model, bundle=bundle,
             )
             if inh is not None:
                 inherited.append(inh)
-            elif pushed is not None:
+            else:
+                assert pushed is not None
                 inherited.append(bound_filter_from_key(reroot_from_root(
                     key=cj, target_path=target_path, root_model=root_model,
                     models_by_name=models_by_name, host_name=host_model.name,
                 )))
                 if pushed[1] is not None:
                     restricted_texts.append(pushed[1])
-            else:
-                assert drop_w is not None  # the disposition's third arm
-                dropped.append(drop_w)
-    return inherited, restricted_texts, dropped
+    return inherited, restricted_texts
 
 
 def _association_present_keys(
@@ -3187,12 +3284,6 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
                      if isinstance(a, AggregateKey) and a in alias_map]
                     if producer_plan.semi_join_filters else []
                 ),
-                # An out-of-scope population conjunct is dropped from every
-                # host-rooted producer with the dropped-filter warning (D5).
-                dropped_filter_warnings=(
-                    list(population_filters.dropped_warnings)
-                    if population_filters is not None else []
-                ),
                 **attach_kwargs,
             ))
 
@@ -3595,31 +3686,19 @@ def compile_prebound(  # NOSONAR(S3776) — compiler entry-point dispatcher. The
     # Population disposition consumer (D1/D2): this plan (host base or a
     # host-rooted producer) restricts by association whatever it does not
     # materialise on its own grain. Drop those conjuncts from the masks and carry
-    # them as correlated EXISTS on this plan; fail closed on a multiplying residue.
+    # them as correlated EXISTS on this plan (DEV-1935: total over the boolean
+    # shape, never fails closed).
     pop_semi_join_groups: List[SemiJoinFilter] = []
     pushed_conjunct_keys: List[ValueKey] = []
     host_population_gated = False
     if population_filters is not None and render_source_model is not None:
-        is_producer = disable_host_rooted_isolation
         host_grain_paths = _grain_closure_paths(
             [dm.bound.value_key for dm in declared_measures[:n_dims + n_tds]],
             host_model=render_source_model, bundle=bundle,
         )
-        pop_semi_join_groups, pushed_conjunct_keys, excluded = (
-            population_filters.host_split(host_grain_paths, drop_excluded=is_producer)
+        pop_semi_join_groups, pushed_conjunct_keys = (
+            population_filters.host_split(host_grain_paths)
         )
-        # Host base only (D5): an out-of-scope conjunct would multiply the
-        # population with a plain aggregate inline over it, or in raw-row mode.
-        # A producer instead drops it (the warning surfaces on the attach).
-        if not is_producer and excluded and (
-            _has_inline_population_aggregate(prebound)
-            or distinct_dimension_values is False
-        ):
-            text, reason = excluded[0]
-            check_population_filter_in_pushdown_scope(
-                filter_text=text or "<filter>",
-                reason=reason or "it is outside pushdown scope",
-            )
         # Backstop (D6): with a plain aggregate inline over the population, a
         # fanning conjunct always takes the EXISTS — its fanning dimension is
         # routed to a producer, never materialised on the base grain.

@@ -264,7 +264,7 @@ Query results are returned as a `SlayerResponse`:
 | `row_count` | int | Number of rows |
 | `sql` | string | The generated SQL (useful for debugging) |
 | `attributes` | ResponseAttributes | Field metadata split by type: `attributes.dimensions` and `attributes.measures`, each a dict of column alias → FieldMetadata (label, format) |
-| `warnings` | list[SlayerWarning] | Advisories, discriminated by `kind`: input normalizations (`"normalization"`), a [cross-model measure broadcast](#cross-model-measures) (`"broadcast"` — `measure`, `location`, and per-dimension `dimensions[].reason`), a distinct-entity attribution over an unattributable dimension (`"associated"` — `measure`, `location`, `dimensions`; cells overlap and are not additive), a filter dropped from a cross-model producer (`"unreachable_filter_dropped"` — `filter_text`, `location`, `reason`), and a semi-join-pushed filter (`"semi_join_pushed"` — `measure` (`null` for a population-level push), `location`, `filter_text`) |
+| `warnings` | list[SlayerWarning] | Advisories, discriminated by `kind`: input normalizations (`"normalization"`), a [cross-model measure broadcast](#cross-model-measures) (`"broadcast"` — `measure`, `location`, and per-dimension `dimensions[].reason`), a distinct-entity attribution over an unattributable dimension (`"associated"` — `measure`, `location`, `dimensions`; cells overlap and are not additive), and a semi-join-pushed filter (`"semi_join_pushed"` — `measure` (`null` for a population-level push), `location`, `filter_text`) |
 
 `columns` — and the key order of each row in `data` — follows the order you
 declared fields in the query: dimensions, then time dimensions, then measures,
@@ -719,12 +719,14 @@ in any mode). The correlation path resolves through the same
 [bidirectional traversal](models.md#bidirectional-traversal) as every other hop
 — no declared reverse join is needed, and a hop spanned by two or more edges
 fails the whole query with the ambiguous-hop error (in every mode) rather than
-guessing. Only a filter with no resolvable path from the
-sub-query's root (or one mixing local and joined references under `OR`/`NOT`)
-is excluded: it still applies to the local measures and is reported as
-`kind: "unreachable_filter_dropped"`. On ClickHouse the semi-join needs server
-≥ 25.4 (the required setting is attached automatically); older servers fail
-with a clear error.
+guessing. Pushdown is total over the conjunct's boolean shape: a row survives
+when the predicate holds on at least one row of its join product over the
+referenced branches, each hop joined as declared (LEFT by default), so
+`tier = 'gold' or orders.status = 'ok'` keeps a gold customer with no orders and
+`orders.id is null` reads as "no orders"; a reference with no resolvable join path
+is refused with a typed error in every mode. On ClickHouse the semi-join needs
+server ≥ 25.4 (the required setting is attached automatically); older servers
+fail with a clear error.
 
 `to_many_handling` chooses how a broadcast dimension resolves — `broadcast` (the
 default above), `associate` (each cell aggregates over the distinct entities

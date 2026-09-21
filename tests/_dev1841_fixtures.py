@@ -18,7 +18,6 @@ from slayer.core.models import Aggregation, AggregationParam, Column, SlayerMode
 
 from tests._dev1836_fixtures import (
     broadcast_warnings,
-    dropped_filter_warnings,
     rows_by,
 )
 from tests._dev1840_fixtures import (
@@ -148,7 +147,7 @@ __all__ = [
     "dev1840_models", "dev1841_models", "keyless_root_models",
     "crossing_input_models", "column_default_agg_models",
     "make_exec_engine", "q", "assoc_q", "error_q", "bcast_q", "cust_q",
-    "rows_by", "status_key", "broadcast_warnings", "dropped_filter_warnings",
+    "rows_by", "status_key", "broadcast_warnings",
     "associated_warnings", "pushed_filter_infos",
     "ASSOC_SPEND_BY_STATUS", "BCAST_SPEND_CROSS",
     "ASSOC_LOCAL_SPEND_BY_STATUS", "LOCAL_OK_FAN_DEFECT", "LOCAL_SPEND_TOTAL",

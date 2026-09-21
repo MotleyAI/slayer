@@ -310,7 +310,11 @@ A ROW-phase filter conjunct whose references are all attributable from an aggreg
 root SHALL apply inside that aggregate's computation. A conjunct reachable from the
 root only across hops that are not provably many-to-one SHALL still restrict the
 aggregate's population, by semi-join: the aggregate is computed over exactly the root
-rows related to at least one row (combination) passing the conjunct — never over
+rows for which the conjunct holds on at least one row of the root row's join product over
+the branches the conjunct references — the product built as the inline path would join
+it (each hop with its declared join type, LEFT by default, so a hop with no related row
+contributes NULL columns), root-local references taking the root row's values, SQL
+three-valued logic applying inside and the restriction itself never unknown — never over
 join-multiplied rows — uniformly with inline inheritance, in every
 `to_many_handling` mode. Each semi-join-pushed conjunct SHALL be reported through a
 machine-readable informational entry on the response naming the affected aggregate and
@@ -333,17 +337,18 @@ related row passing the conjunct, conjuncts on one branch satisfied by the same 
 row, branches independent — and a conjunct sharing a hop with an association dimension
 is satisfied by the same related row that carries the dimension value. Each such
 conjunct is reported through the same informational entry as a semi-join-pushed
-conjunct. Conjuncts pushed into the same producer that share their first reverse hop
-SHALL be satisfied by the same related row (combination); conjuncts on different
-branches are satisfied independently.
+conjunct. Conjuncts pushed into the same producer that share a join branch SHALL be
+satisfied by the same related row (combination) of that branch, whichever spelling names
+the branch's edge (its name or its target model); conjuncts on disjoint branches are
+satisfied independently, and a conjunct spanning several branches is judged on their
+product.
 
 Every producer rooted at the query population and built by the host regroup path —
 partitioned, windowed, first/last, host-grain wrap, broadcast-local — SHALL additionally
 inherit the query population's own filter disposition, computed once at the host root:
 a population conjunct the host applies inline applies inline, a population conjunct
-restricting the population by association restricts the producer by the same semi-join,
-and an excluded population conjunct is dropped from the producer with the dropped-filter
-warning; a producer nested inside such a producer and rooted at the same population
+restricting the population by association restricts the producer by the same semi-join;
+a producer nested inside such a producer and rooted at the same population
 inherits the same disposition during its own compilation. Such a producer's own grain — its
 partition keys and its window time axis — is attributable from the population (an
 unattributable partition key or window time axis is a typed error, per *Explicit grain and
@@ -354,12 +359,15 @@ the host: an association producer (even one whose root is the host) keeps the as
 routing of the paragraph above and receives no population semi-join, and a target-rooted
 producer keeps its own metric-root disposition.
 
-A conjunct SHALL remain excluded from the producer — reported through the established
-dropped-filter warning (and erroring under `to_many_handling: "error"`) while still
-applying to the result rows — when it is genuinely unreachable (no resolvable join path
-from the root), when its cross-path references span multiple distinct join branches
-within one conjunct, or when root-local and cross-path references mix under a
-disjunction or negation. The reverse path resolves through the same bidirectional
+Pushdown SHALL be total over the conjunct's boolean shape: a root-local and a cross-path
+reference mixed under a disjunction or negation, cross-path references spanning several
+distinct join branches, and an atom comparing columns of two branches are all restricted by
+association with the product semantics above — negation keeping the existential reading
+(`NOT B` holds when some related row fails `B`) and a null-test on a related column holding
+for a root row with no related row — never dropped and never an error in any mode. A
+reference with no resolvable join path from the root SHALL be refused at resolution in
+every mode with a typed error, never routed as if it crossed nothing — there is no
+producer-level silent drop. The reverse path resolves through the same bidirectional
 traversal as every other hop: any declared edge, in either orientation, with oriented
 provability governing inline-vs-semi-join classification; a home several hops from the
 population root reverses every hop of its path. A hop of the correlation path
@@ -404,6 +412,14 @@ only in the filter.
 - **THEN** that customer is excluded from the metric's population — both predicates
   must hold on one related row, by executed values
 
+#### Scenario: Two spellings of one edge bind to the same related row
+- **WHEN** the `customers → orders` edge is named `purchases` and a query rooted at
+  `customers` selects `spend:sum` by `tier` with
+  `filters: ["purchases.status = 'ok'", "orders.channel = 'app'"]`
+- **THEN** by executed values each cell counts the customers having one order that is both
+  `ok` and `app` (gold 60, silver 80 on the reference dataset, never gold 160 / silver 230),
+  and the generated SQL correlates a single `orders` relation for both conjuncts
+
 #### Scenario: Pushdown works without a declared reverse join
 - **WHEN** the only stored edge is the forward `orders → customers` join (default join
   type) and a query rooted at `orders` filters on an orders-level predicate with
@@ -418,17 +434,35 @@ only in the filter.
   candidate edges, rather than dropping the conjunct or guessing a correlation
 
 #### Scenario: Mixed disjunction stays dropped and warned
-- **WHEN** a single conjunct mixes a root-local predicate with a cross-path predicate
-  under an OR, or its cross-path references span multiple distinct join branches
-- **THEN** it is excluded with the established dropped-filter warning (error mode
-  errors), never pushed with altered semantics
+- **WHEN** a query rooted at `orders` selects `customers.spend:sum` by `customers.tier`
+  with `filters: ["customers.tier = 'bronze' OR channel = 'app'"]`, in any mode
+- **THEN** it is no longer dropped: by executed values each cell counts the distinct customers
+  that are bronze or have at least one `app` order, each once (gold 160, silver 230, bronze 40
+  on the reference dataset, never gold 245), the response carries the informational entry naming the
+  aggregate and the filter with no dropped-filter warning, and `to_many_handling: "error"`
+  does not error
+
+#### Scenario: Mixed disjunction on the association producer binds to the same related row
+- **WHEN** a query rooted at `orders` selects `customers.spend:sum` by `status` under
+  `to_many_handling: "associate"` with `filters: ["customers.tier = 'gold' OR channel = 'app'"]`
+- **THEN** by executed values each status cell counts the distinct customers having an
+  order of that status that is itself `app` or belongs to a gold customer (ok 270, new 250 on
+  the reference dataset), reported through the informational entry with no dropped-filter
+  warning
+
+#### Scenario: Association filter on a branch absent from the query restricts membership
+- **WHEN** the same association query filters on
+  `customers.tier = 'gold' OR customers.plans.level = 'basic'` with the `customers → plans`
+  hop unproven
+- **THEN** by executed values each status cell counts the distinct gold or basic-plan
+  customers having an order of that status (ok 270, new 100 on the reference dataset) — the
+  `plans` branch is joined for the filter alone
 
 #### Scenario: Derived-column dependencies drive classification
 - **WHEN** a filter references a SQL-defined column whose definition reads a model
   across a hop that is not provably many-to-one from the producer root
 - **THEN** the conjunct is classified by those actual dependencies — pushed by
-  semi-join (or excluded when outside pushdown scope), never inlined through the
-  unsafe hop
+  semi-join, never inlined through the unsafe hop
 
 #### Scenario: Pushdown reaches every producer kind
 - **WHEN** a query with an unsafe-but-reachable filter uses ranked, windowed, nested
@@ -466,10 +500,9 @@ only in the filter.
   is applied automatically and the query executes
 
 #### Scenario: Genuinely unreachable filter keeps the established behavior
-- **WHEN** a filter references a model with no resolvable join path from the producer
-  root
-- **THEN** it is excluded with the dropped-filter warning and error mode errors,
-  exactly as before
+- **WHEN** a filter references a model with no resolvable join path from the query root
+- **THEN** the query fails with a typed error in every `to_many_handling` mode — the
+  filter is never dropped from a producer and never routed as if it crossed nothing
 
 #### Scenario: Partitioned local producer restricts by association
 - **WHEN** a query rooted at `customers` selects `sum(spend, partition_by=tier)` by `tier`
@@ -500,3 +533,11 @@ only in the filter.
   `filters: ["orders.status = 'ok'"]`, and a second run uses a predicate no order passes
 - **THEN** the first run returns one row with the producer's value by executed values (82 on
   the reference dataset) and the second returns zero rows — never one row carrying a NULL
+
+#### Scenario: Existing semi-join shapes keep byte-identical SQL
+- **WHEN** any query whose pushed conjuncts already restricted by semi-join before this
+  change is planned again
+- **THEN** its generated SQL is byte-identical on every Tier-1 dialect — every hop of every
+  correlation tree renders as the inner correlation it rendered before — and only a conjunct
+  whose predicate can hold on a hop's null-extended row renders that hop as a left join from
+  a one-row spine

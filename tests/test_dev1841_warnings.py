@@ -17,7 +17,6 @@ import pytest
 from slayer.core.errors import (
     AssociatedGrainWarning,
     BroadcastGrainWarning,
-    UnreachableFilterDroppedWarning,
 )
 
 from tests._dev1841_fixtures import (
@@ -37,7 +36,7 @@ CM = ModelMeasure(formula="customers.spend:sum", name="cm")
 
 #: SLayer's own to-many warnings — scope past incidental (e.g. 3.14) warnings.
 _SLAYER_TO_MANY_WARNINGS = (
-    BroadcastGrainWarning, AssociatedGrainWarning, UnreachableFilterDroppedWarning,
+    BroadcastGrainWarning, AssociatedGrainWarning,
 )
 
 

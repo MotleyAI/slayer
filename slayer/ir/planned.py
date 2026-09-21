@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import functools
 from enum import Enum, IntEnum
-from typing import Any, Dict, List, Literal, Optional, Tuple, Union, Hashable
+from typing import Dict, List, Literal, Optional, Tuple, Union, Hashable
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -260,6 +260,12 @@ class SemiJoinHop(BaseModel):
     target_model: str
     join_pairs: Tuple[Tuple[str, str], ...]
     node_path: Tuple[str, ...]
+    #: The declared edge is LEFT (default) rather than INNER — the null-rejection
+    #: analysis's input (a declared-INNER hop is never null-extended) (DEV-1935).
+    declared_left: bool = True
+    #: The hop renders LEFT-joined from a one-row spine (its NULL extension can
+    #: satisfy the predicate); otherwise today's inner correlation (DEV-1935).
+    null_extended: bool = False
 
     @property
     def node_id(self) -> str:
@@ -392,7 +398,6 @@ class RegroupAttachPlan(BaseModel):
     substitutions: List[RegroupSubstitution] = Field(default_factory=list)
     partition_display: List[str] = Field(default_factory=list)
     producer_root_model: Optional[str] = None
-    dropped_filter_warnings: List[Any] = Field(default_factory=list)
     broadcast_measure: Optional[str] = None
     broadcast_dimensions: List[Tuple[str, str]] = Field(default_factory=list)
     # Associate-mode counterparts (DEV-1841): the aggregate resolved by
@@ -409,6 +414,10 @@ class RegroupAttachPlan(BaseModel):
     # producer (DEV-1909): the informational entry names each of the producer's own
     # public measures (a producer may carry several), not its internal stage alias.
     population_semi_join_measures: List[str] = Field(default_factory=list)
+    # Public measure name for a semi-join pushed into a target-rooted producer whose
+    # ``alias_hint`` is the CANONICAL stage alias (DEV-1935): the informational entry
+    # names the public measure, not that internal alias.
+    semi_join_measure: Optional[str] = None
     # Degenerate second-order aggregation (DEV-1847): the re-aggregation whose
     # operand grain equals the outer grain (the identity), with both grains for
     # the warning.
