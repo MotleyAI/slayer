@@ -590,7 +590,18 @@ operand is opaque and stands for its grain: its explicit `partition_by=`, else t
 query's dimensions; a transform's grain is the union of its inner aggregates', where
 a windowed inner's grain always includes the query's time bucket whether or not its
 `partition_by=` names it) — is
-reachable over provably to-one hops. Candidates are the input paths and their
+reachable over provably to-one hops. A non-overridden definition default SHALL be
+resolved as a reference from the owning model — the source anchor that declares the
+aggregation — with each column reference (bare, or one inside an expression default)
+taken in the owner's coordinates; a qualifier the owner cannot reach forward SHALL
+instead be anchored at the query root (a leading root-model name is a self-reference
+resolved root-local), while an ambiguous or only partially resolvable owner reference
+SHALL fail closed rather than silently re-anchor at the root. A default that resolves
+to a genuine host-local (root) column SHALL widen the home to the root exactly as
+spelling that column explicitly would. This same owning-model resolution governs the
+input-safety check, so a definition default whose definition crosses a fanning hop
+SHALL fail closed even when other inputs widen the home away from the declaring model.
+Candidates are the input paths and their
 longest common prefix, deepest first; a tie prefers the source's anchor, the longest
 common prefix of the source leaves' own paths. The aggregation is computed over the
 home's rows, each counted once, never over a join product. When no candidate
@@ -623,6 +634,35 @@ applies exactly as for a single-column source rooted at the home.
 - **THEN** the home is `orders` — the weight's dataset — and each order is weighted by
   its own amount, identical to the rule for a single-column source with the same
   parameter
+
+#### Scenario: A definition default naming a root column widens the home to the root
+- **WHEN** a query rooted at `orders` selects `customers.spend:<agg>`, where `<agg>` is
+  declared on `customers` and defaults its weight to the root column `orders.amount`
+  (bare-qualified or inside an expression such as `orders.amount * 1`)
+- **THEN** the home is `orders`, identical in value to the explicit
+  `weighted_avg(customers.spend, weight=orders.amount)` — the genuine root-local
+  default is retained as a home candidate rather than dropped
+
+#### Scenario: A bare definition default stays owner-local
+- **WHEN** a query rooted at `orders` selects a `customers`-declared aggregation over
+  `customers.spend` whose weight defaults to the bare identifier `spend`
+- **THEN** the default resolves to the owner's `customers.spend`, never a bogus
+  root-local `()`, and the home is exactly the home of the source alone
+
+#### Scenario: An owner-reachable dotted default resolves in the owner's frame
+- **WHEN** a `customers`-declared aggregation defaults its weight to `regions.pop`,
+  a model reachable forward from `customers`
+- **THEN** the default resolves to the owner-relative `customers.regions.pop`, not to a
+  root-anchored `regions`, and homes exactly as spelling `customers.regions.pop`
+  explicitly would
+
+#### Scenario: A fanning definition default fails closed even when the home widens
+- **WHEN** a `regions`-declared aggregation over `customers.regions.pop` has one default
+  that widens the home to `customers` and another default whose definition crosses the
+  fanning `regions → region_events` hop
+- **THEN** the query fails closed with the input-safety error naming the fanning hop —
+  the fanning default is resolved on the declaring `regions` model and never omitted
+  from safety because the home widened to `customers`
 
 #### Scenario: An attached constituent's grain widens the home
 - **WHEN** a query rooted at `orders` selects
