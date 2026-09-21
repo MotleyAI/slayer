@@ -26,6 +26,7 @@ from slayer.core.enums import (
     DEFAULT_AGGREGATIONS_BY_TYPE,
     NUMERIC_ONLY_AGGREGATIONS,
     PRIMARY_KEY_AGGREGATIONS,
+    RANKED_AGGREGATIONS,
     DataType,
     TimeGranularity,
     format_unknown_aggregation,
@@ -1192,12 +1193,29 @@ def _fold_positional_agg_args(
 ) -> "tuple[tuple, tuple]":
     """Fold positional call values onto declared parameter names, Python-call
     style, so ``percentile(x, 0.9)`` interns identically to ``p=0.9``. Ranked
-    ``first``/``last`` declare no parameters — their positional ranking column
-    stays in ``args``."""
+    ``first``/``last`` declare no parameters — their optional positional ranking
+    column stays in ``args``; any other parameterless aggregation takes no
+    positional, so an attached (aggregate-valued) parameter is always a kwarg
+    after binding."""
     if not args:
         return args, kwargs
     names = _declared_agg_param_names(agg=agg, source=source, bundle=bundle)
     if not names:
+        if agg not in RANKED_AGGREGATIONS:
+            raise ValueError(
+                f"Aggregation {agg!r} takes no parameters; got {len(args)} "
+                f"positional value(s)."
+            )
+        if len(args) != 1:
+            raise ValueError(
+                f"Aggregation {agg!r} ranks by at most one column; got "
+                f"{len(args)} positional value(s)."
+            )
+        if not isinstance(args[0], (ColumnKey, ColumnSqlKey)):
+            raise ValueError(
+                f"Aggregation {agg!r} ranks by a column; got "
+                f"{type(args[0]).__name__} as its ranking key."
+            )
         return args, kwargs
     if len(args) > len(names):
         raise ValueError(

@@ -878,15 +878,17 @@ class TestWindowedStillGuarded:
         assert "attributable from" in str(ei.value), ei.value
 
     async def test_non_sum_avg_windowed_order_target_still_raises(self, engine) -> None:
+        # DEV-1915 lift: a local non-sum/avg windowed order target now renders
+        # (cross-model windowed stays guarded above).
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=_MONTH,
             measures=[ModelMeasure(formula="id:count")],
             order=[OrderItem(column="amount:max(window='90d')", direction="desc")],
         )
-        with pytest.raises(ValueError) as ei:
-            await _sql(engine, query)
-        assert "sum and avg" in str(ei.value), ei.value
+        sql = await _sql(engine, query)
+        assert_scope_closed(sql, dialect="sqlite")
+        assert "__regroup__" not in sql
 
 
 # Group 8 — widening the hidden-order branch must not cross its boundaries: some

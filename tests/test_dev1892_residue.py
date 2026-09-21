@@ -24,7 +24,14 @@ from slayer.core.errors import SlayerError
 from slayer.engine.plan import plan_query
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
-from tests._dev1841_fixtures import assoc_q, bcast_q, error_q, make_exec_engine
+from tests._dev1841_fixtures import (
+    assoc_q,
+    bcast_q,
+    broadcast_warnings,
+    error_q,
+    make_exec_engine,
+    status_key,
+)
 from tests._dev1847_fixtures import (
     INNER_CR,
     _seed_sqlite,
@@ -94,13 +101,12 @@ class TestResidueFiresAtPlanTime:
 
 
 class TestAttachedParameterOnRowLevelSource:
-    """Re-point (consented 2026-09-15): an attached parameter on a row-level
-    source is legal — associate executes (the parameter's producer row-attaches
-    into the input relation); under broadcast the customers-rooted producer
-    cannot reach orders.amount, so a typed error names the root, the leaf and
-    the associate remedy (DEV-1906 re-roots it); error mode refuses the
-    unattributable dimension, never a parameter error. Executed oracles live in
-    ``test_dev1859_attached_param_exec.py``."""
+    """Re-point (consented 2026-09-15, 2026-09-19): an attached parameter on a
+    row-level source is legal in every mode — its producer is rooted at its own
+    home (orders) and row-attached per customer; broadcast repeats the
+    customers-rooted value across ``status`` with the warning; error mode refuses
+    the unattributable dimension, never a parameter error. Executed oracles live
+    in ``test_dev1859_attached_param_exec.py``."""
 
     async def test_executes_in_associate(self, assoc_engine):
         resp = await assoc_engine.execute(assoc_q(
@@ -108,15 +114,14 @@ class TestAttachedParameterOnRowLevelSource:
             measures=[ModelMeasure(formula=_ATTACHED_ON_ROW, name="w")]))
         assert {r["orders.status"] for r in resp.data} == {"ok", "new"}
 
-    async def test_default_mode_refuses_the_host_rooted_parameter(self, assoc_engine):
-        q = bcast_q(dimensions=["status"],
-                    measures=[ModelMeasure(formula=_ATTACHED_ON_ROW, name="w")])
-        with pytest.raises(SlayerError) as ei:
-            await assoc_engine.execute(q)
-        msg = str(ei.value)
-        assert "'customers'" in msg
-        assert "'amount'" in msg
-        assert "to_many_handling='associate'" in msg
+    async def test_default_mode_executes_and_broadcasts(self, assoc_engine):
+        resp = await assoc_engine.execute(bcast_q(
+            dimensions=["status"],
+            measures=[ModelMeasure(formula=_ATTACHED_ON_ROW, name="w")]))
+        by = status_key(resp)
+        assert set(by) == {("ok",), ("new",)}
+        assert by[("ok",)]["orders.w"] == by[("new",)]["orders.w"] is not None
+        assert broadcast_warnings(resp)
 
     async def test_error_mode_refuses_the_dimension(self, assoc_engine):
         q = error_q(dimensions=["status"],

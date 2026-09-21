@@ -485,12 +485,17 @@ To connect a new database: create_datasource → describe_datasource (verify + l
 
         - Aggregations are function calls over a column or a same-model scalar expression:
           ``count(*)``, ``sum(total)``, ``sum(amount - cost)``, ``percentile(price, p=0.95)``.
-          Available: sum, avg (both take window='90d' for trailing time windows), min, max, count,
+          Available: sum, avg, min, max, count,
           count_distinct, count_distinct_approx, median, percentile(x, p=),
           weighted_avg(x, weight=col), stddev_samp, stddev_pop, var_samp, var_pop,
           corr(x, other=col), covar_samp(x, other=col), covar_pop(x, other=col),
           first(x[, time_col]) / last(x[, time_col]) (earliest/latest record's value per group),
           plus model-defined custom aggregations. Write count_distinct(x), never count(distinct x).
+        - Every aggregation also takes ``window='90d'`` (compact duration) for a trailing time
+          window over the source rows ending at each output bucket, when the query has a time
+          dimension; first/last pick within the interval, an empty interval is 0 for counts else NULL.
+          A window adds no dialect support — an aggregation a dialect cannot emit (e.g. median or
+          percentile on MySQL / SQL Server) stays unavailable windowed too.
         - All aggregations support ``partition_by=`` (bare names: ``partition_by=region``,
           ``partition_by=[region, city]``, ``partition_by=[]`` for the grand total), computing the
           aggregate at that coarser grain; the result is broadcast over the missing dimensions.

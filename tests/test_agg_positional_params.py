@@ -67,6 +67,26 @@ class TestPositionalErrors:
         with pytest.raises(ValueError, match="takes at most 1 parameter"):
             await _rows(exec_engine, "percentile(amount, 0.9, 0.5)")
 
+    async def test_parameterless_aggregation_rejects_positional(self, exec_engine):
+        with pytest.raises(ValueError, match="takes no parameters"):
+            await _rows(exec_engine, "sum(amount, 1)")
+
+    async def test_parameterless_aggregation_rejects_positional_aggregate(self, exec_engine):
+        with pytest.raises(ValueError, match="takes no parameters"):
+            await _rows(exec_engine, "amount:sum(sum(amount, partition_by=region))")
+
+    async def test_ranked_rejects_aggregate_ranking_key(self, exec_engine):
+        with pytest.raises(ValueError, match="ranks by a column"):
+            await _rows(exec_engine, "last(amount, sum(amount, partition_by=region))")
+
+    async def test_ranked_rejects_literal_ranking_key(self, exec_engine):
+        with pytest.raises(ValueError, match="ranks by a column"):
+            await _rows(exec_engine, "last(amount, 1)")
+
+    async def test_ranked_rejects_extra_positionals(self, exec_engine):
+        with pytest.raises(ValueError, match="ranks by at most one column"):
+            await _rows(exec_engine, "last(amount, id, amount)")
+
 
 class TestRankedPositionalUntouched:
     async def test_last_ranking_column_still_positional(self, exec_engine):

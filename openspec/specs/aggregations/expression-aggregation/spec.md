@@ -166,14 +166,18 @@ reference SHALL be rejected with a typed error naming the shape (its broadcast o
 row-level operands is deferred to DEV-1928); an
 attached (aggregate-valued) parameter on a row-level source SHALL be accepted when the
 aggregation's operating grain determines it (per `queries/partitioned-aggregates` ›
-Attached parameters on row-level sources). Under `broadcast`/`error` a cross-model
-aggregation's attached input SHALL read only columns attributable from the
-aggregation's home — a typed error names the root, the leaf and the `associate`
-remedy otherwise (per `queries/partitioned-aggregates` › Default-mode twin of the
-associate shape). Whether an aggregation runs over rows or over an operand dataset's
-cells is decided by its source alone; every attached input, in the source or in a
-parameter, is then attached by one mechanism — into the input relation for a
-row-level source, as a constituent of the operand dataset for an attached one.
+Attached parameters on row-level sources). An attached input — a source constituent
+or a parameter — is opaque to the enclosing aggregation: it is compiled at its own
+home in every `to_many_handling` mode and attached onto the aggregation's home rows
+by its grain — well-defined only when the home determines every member of that
+grain, else the typed determination error in every mode; the enclosing aggregation
+never inspects the input's interior, and the input's own producer applies its own
+rules (including the mode-aware explicit-partition-key rule) as any producer does;
+the mode governs only the aggregation's own unattributable dimensions. Whether an aggregation
+runs over rows or over an operand dataset's cells is decided by its source alone;
+every attached input, in the source or in a parameter, is then attached by one
+mechanism — into the input relation for a row-level source, as a constituent of the
+operand dataset for an attached one.
 
 #### Scenario: Filtered-column operand accepted
 - **WHEN** a measure is written `sum(q_amount - 1)` where `q_amount` is `amount`
@@ -236,11 +240,44 @@ row-level source, as a constituent of the operand dataset for an attached one.
   the aggregation's input relation — never the attached-parameter rejection —
   and the same aggregation with a row-level parameter is unaffected
 
-#### Scenario: Attached parameter on a row-level source rejected
+#### Scenario: Attached parameter on a row-level source executes under broadcast
 - **WHEN** a measure is written
   `customers.spend:weighted_avg(weight=sum(amount, partition_by=customers.regions.name))`
   rooted at `orders` under the default `broadcast` `to_many_handling`
-- **THEN** it fails at plan time with a typed error naming the producer's root
-  `customers`, the unreachable leaf `amount` and the `associate` remedy,
-  containing no issue reference; the same aggregation with a parameter reading
-  only `customers`-side columns executes
+- **THEN** it executes — the parameter's producer rooted at `orders`, attached per
+  customer row inside the `customers`-rooted producer — with values identical to
+  `associate` and `error` on every dimension the home determines, never the former
+  typed rejection naming the `associate` remedy
+
+#### Scenario: Attached parameter on a row-level source rejected
+- **WHEN** a measure is written
+  `customers.spend:weighted_avg(weight=sum(customers.spend, partition_by=status))`
+  rooted at `orders`, in any `to_many_handling` mode, by an attributable
+  (`customers.tier`) or an unattributable (`status`) dimension — the aggregation's
+  home `customers` does not determine the parameter's grain member `status`
+- **THEN** it fails with the typed parameter-determination error naming `weight`
+  (per `queries/partitioned-aggregates` › Undetermined attached parameter stays
+  rejected); what is rejected is the parameter's grain against the home, never the
+  mode or the columns the parameter reads
+
+#### Scenario: Windowed aggregation with an attached constituent
+- **WHEN** a query rooted at `orders` over a month time dimension on
+  `customers.signup_at` selects
+  `sum(customers.spend * sum(amount, partition_by=customers.regions.name), window='1y')`
+- **THEN** each signup-month bucket carries the trailing-window total, over the
+  customers signed up in the window, of spend times the region's order total —
+  the constituent rooted at `orders` and attached per customer row — identical
+  under every mode with no warning (10000, 25000, 28080, 33780 on the reference
+  dataset; the orphan order's NULL bucket NULL): the bucket is attributable, so
+  `associate` needs no association and the windowed combination is not refused
+
+#### Scenario: Mixed-source constituent homed toward the host executes in every mode
+- **WHEN** a query rooted at `orders` selects
+  `sum(customers.spend * sum(amount, partition_by=customers.regions.name))` — a
+  row-grain source homed at `customers` whose constituent is homed at `orders`
+- **THEN** the constituent's producer is rooted at `orders` and attached per
+  customer row; by `status` under the default mode the customers-rooted total
+  (33780 on the reference dataset) is broadcast to both cells with the usual
+  warning, and by `customers.tier` every mode returns identical hand-computed
+  values (gold 15300, silver 16600, bronze 1880) — never the input-safety error the
+  constituent's interior would raise from `customers`
