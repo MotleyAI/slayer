@@ -47,12 +47,16 @@ def _longest_common_prefix(paths: List[Path]) -> Path:
 def _default_home_candidate_paths(
     *, agg: AggregateKey, host_model: SlayerModel, bundle: ResolvedSourceBundle,
 ) -> List[Path]:
-    """Home candidates from non-overridden definition defaults (the definition is
-    looked up on the source's anchor), each resolved as a reference FROM THE ROOT
-    (Axiom 2.4): a dotted default naming a shallower model widens the home exactly
-    as spelling it would, an expression default contributes every column it
-    references, and a local (bare) default has no join path and constrains nothing."""
-    owner = walk_key_path(model=host_model, path=source_anchor_path(agg.source), bundle=bundle)
+    """Home candidates from non-overridden definition defaults (Axiom 2.4). Each
+    default is resolved from the OWNING model — the source anchor that declares
+    the aggregation — with a query-root fallback for a qualifier the owner cannot
+    reach forward (a leading root-model name self-strips to root-local). A bare
+    default is owner-local (its join path is the anchor, constraining nothing new);
+    a dotted/expression default naming a shallower model widens the home; a genuine
+    host-local (root) default is retained so it widens the home to the root exactly
+    as spelling that column explicitly would."""
+    owner_path = source_anchor_path(agg.source)
+    owner = walk_key_path(model=host_model, path=owner_path, bundle=bundle)
     if owner is None:
         return []
     agg_def = next((a for a in (owner.aggregations or []) if a.name == agg.agg), None)
@@ -62,25 +66,36 @@ def _default_home_candidate_paths(
     keys = [
         k
         for p in agg_def.params if p.name not in explicit
-        for k in _default_param_keys(sql=p.sql, root=host_model, bundle=bundle)
+        for k in _default_param_keys(
+            sql=p.sql, owner_model=owner, owner_path=owner_path,
+            root_model=host_model, bundle=bundle,
+        )
         if isinstance(k, (ColumnKey, ColumnSqlKey))  # None = unanalysable; typing fails closed
     ]
     paths = [key_host_path(k) for k in keys]
     return [
         p for p in paths
-        if p and walk_key_path(model=host_model, path=p, bundle=bundle) is not None
+        if walk_key_path(model=host_model, path=p, bundle=bundle) is not None
     ]
 
 
 def _default_param_keys(
-    *, sql: str, root: SlayerModel, bundle: ResolvedSourceBundle,
+    *, sql: str, owner_model: SlayerModel, owner_path: Path,
+    root_model: SlayerModel, bundle: ResolvedSourceBundle,
 ) -> List[Optional[ValueKey]]:
-    """A definition default's column keys in the root's coordinates: one for a
-    bare/dotted default, every referenced column for an expression default."""
-    vk = default_param_value_key(sql=sql, owner_path=(), owner_model=root, bundle=bundle)
+    """A definition default's column keys, resolved owner-first with a query-root
+    fallback: one for a bare/dotted default, every referenced column for an
+    expression default."""
+    vk = default_param_value_key(
+        sql=sql, owner_path=owner_path, owner_model=owner_model,
+        root_model=root_model, bundle=bundle,
+    )
     if vk is not None:
         return [vk]
-    return expr_default_ref_keys(sql=sql, owner_model=root, owner_path=(), bundle=bundle)
+    return expr_default_ref_keys(
+        sql=sql, owner_model=owner_model, owner_path=owner_path,
+        root_model=root_model, bundle=bundle,
+    )
 
 
 def _grain_member_paths(

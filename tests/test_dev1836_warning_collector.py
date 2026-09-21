@@ -9,20 +9,18 @@ from types import SimpleNamespace
 
 import pytest
 
-from slayer.core.errors import UnreachableFilterDroppedWarning
 from slayer.core.query import OrderItem
 from slayer.engine.query_engine import (
     _collect_broadcast_warnings,
-    _collect_dropped_filter_warnings,
 )
 
+from tests._dev1841_fixtures import pushed_filter_infos
 from tests._dev1836_fixtures import (
     AMOUNT_BY_BAND,
     ModelMeasure,
     SPEND_BAND,
     SPEND_BY_BAND,
     broadcast_warnings,
-    dropped_filter_warnings,
     make_exec_engine,
     q,
     rows_by,
@@ -46,48 +44,48 @@ POP = ModelMeasure(formula="customers.regions.pop:sum", name="pop")
 _EXCLUDED_APP = "channel = 'app' OR customers.regions.name = '__none__'"
 
 
-class TestDroppedFilterDedup:
-    async def test_same_filter_dropped_by_two_producers_warns_once(
+class TestPushedFilterEntryIdentity:
+    """DEV-1935: the mixed-OR host filter pushes into every producer; entries
+    are keyed (location, measure, filter text) — one per measure, never one per
+    consumer, nested producers included."""
+
+    async def test_same_filter_pushed_into_two_producers_names_each_measure(
         self, exec_backend,
     ):
-        """F7 — both the spend and the pop producer exclude the host filter;
-        identity is (location, filter text), so ONE warning."""
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["customers.tier"], measures=[M, CM, POP],
             filters=[_EXCLUDED_APP],
         ))
-        dropped = dropped_filter_warnings(resp)
-        assert len(dropped) == 1
-        assert "channel" in dropped[0].filter_text
+        assert sorted((w.measure, w.filter_text) for w in pushed_filter_infos(resp)) == [
+            ("cm", _EXCLUDED_APP), ("pop", _EXCLUDED_APP),
+        ]
 
-    async def test_nested_producers_share_the_dropped_filter_warning(
-        self, exec_backend,
-    ):
+    async def test_nested_producers_each_push_the_filter(self, exec_backend):
         """The computed dimension's nested producer and the cross-model
-        measure's producer both drop the host conjunct — still one warning,
-        and the metric values stay unfanned/unfiltered."""
+        measure's producer both push the host conjunct — one entry each; the
+        metric counts the customers with an app order (c1, c3), unfanned."""
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=[{"expression": SPEND_BAND, "name": "sband"}],
             measures=[M, CM],
             filters=[_EXCLUDED_APP],
         ))
-        assert len(dropped_filter_warnings(resp)) == 1
+        pushed = pushed_filter_infos(resp)
+        assert {w.filter_text for w in pushed} == {_EXCLUDED_APP}
+        assert len({w.measure for w in pushed}) == 2, pushed
         by = rows_by(resp, "orders.sband")
         # Spine: app orders only (o2, o4, o5 — all gold customers → band hi).
         assert set(by) == {("hi",)}
         assert float(by[("hi",)]["orders.m"]) == pytest.approx(30.0)
-        assert float(by[("hi",)]["orders.cm"]) == pytest.approx(
-            SPEND_BY_BAND["hi"],
-        )
+        assert float(by[("hi",)]["orders.cm"]) == pytest.approx(160.0)
 
-    async def test_warning_arising_only_in_a_nested_producer_surfaces(
+    async def test_entry_arising_only_in_a_nested_producer_surfaces(
         self, exec_backend,
     ):
         """F7 traversal proof: the ONLY producer here is the computed
-        dimension's (rooted at regions); the sole measure is local and drops
-        nothing. A collector that never walks nested plans reports nothing."""
+        dimension's (rooted at regions); the sole measure is local. A collector
+        that never walks nested plans reports nothing."""
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=[{
@@ -99,12 +97,8 @@ class TestDroppedFilterDedup:
             measures=[M],
             filters=["customers.tier = 'gold' OR customers.regions.name = '__none__'"],
         ))
-        # The OR mixes a regions-local ref with the cross-path tier ref →
-        # excluded from the regions-rooted producer (DEV-1840 D2) and dropped
-        # there (it still restricts the result spine to gold customers' orders).
-        dropped = dropped_filter_warnings(resp)
-        assert len(dropped) == 1
-        assert "tier" in dropped[0].filter_text
+        (pushed,) = pushed_filter_infos(resp)
+        assert "tier" in pushed.filter_text
         by = rows_by(resp, "orders.pband")
         # Gold orders: o1/o2 (c1, North pop 100 → lo), o4/o5 (c3, South → hi).
         assert set(by) == {("hi",), ("lo",)}
@@ -167,8 +161,7 @@ class TestBroadcastDedup:
 def _attach(**overrides):
     empty = SimpleNamespace(regroup_attach_plans=[], cross_model_aggregate_plans=[])
     base = dict(
-        dropped_filter_warnings=[], broadcast_measure=None,
-        broadcast_dimensions=[], producer_plan=empty,
+        broadcast_measure=None, broadcast_dimensions=[], producer_plan=empty,
     )
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -181,41 +174,8 @@ def _planned(attaches):
 
 
 class TestCollectorIdentityUnits:
-    """Direct collector units for the identity rules the engine shapes above
-    cannot isolate: conjunct-level reason merging and per-stage broadcast
-    identity."""
-
-    def test_conjuncts_of_one_filter_merge_reasons_instead_of_raising(self):
-        """Two conjuncts of ONE filter can drop for different reasons; that is
-        not a planner inconsistency — one warning, reasons merged."""
-        text = "a.x = 1 AND b.y = 2"
-        plans = _planned([
-            _attach(dropped_filter_warnings=[UnreachableFilterDroppedWarning(
-                filter_text=text, reason="reason A",
-            )]),
-            _attach(dropped_filter_warnings=[UnreachableFilterDroppedWarning(
-                filter_text=text, reason="reason B",
-            )]),
-        ])
-        (w,) = _collect_dropped_filter_warnings(
-            planned_list=[plans], stages=[SimpleNamespace(name=None)],
-        )
-        assert w.filter_text == text
-        assert w.reason == "reason A; reason B"
-
-    def test_agreeing_reasons_still_collapse_to_one(self):
-        plans = _planned([
-            _attach(dropped_filter_warnings=[UnreachableFilterDroppedWarning(
-                filter_text="a.x = 1", reason="same",
-            )]),
-            _attach(dropped_filter_warnings=[UnreachableFilterDroppedWarning(
-                filter_text="a.x = 1", reason="same",
-            )]),
-        ])
-        (w,) = _collect_dropped_filter_warnings(
-            planned_list=[plans], stages=[SimpleNamespace(name=None)],
-        )
-        assert w.reason == "same"
+    """Direct collector unit for the identity rule the engine shapes above
+    cannot isolate: per-stage broadcast identity."""
 
     def test_same_label_broadcasts_in_two_stages_stay_two_payloads(self):
         """D6 identity is per stage: same-labeled aggregates in different DAG

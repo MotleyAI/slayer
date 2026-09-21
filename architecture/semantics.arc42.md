@@ -50,7 +50,8 @@ is the coercion from coarser to finer.
    - **2.4 Aggregation.** An aggregation over a row-level source is homed on the
      deepest dataset that determines the source's home (2.2) and every column-valued
      parameter and non-overridden definition default — each a row-level expression
-     under 2.1, defaults resolved as references from the owning model [target: DEV-1931]. It is counted over that
+     under 2.1, defaults resolved as references from the owning model, a qualifier
+     the owner cannot reach forward anchored at the query root instead. It is counted over that
      dataset's rows. The ordering key of a ranked aggregation must be determined by the
      home and never widens it; the aggregation's own `partition_by=` is not an input.
      A source with no row-level leaf is a second-order aggregation: its home is the
@@ -62,7 +63,8 @@ is the coercion from coarser to finer.
      ungrained constituent.
    - **2.6 Anchor and candidates.** The source anchor is the longest common prefix of
      the source leaves' paths — where the source lives: the aggregation's definition
-     (a custom aggregation and its parameter defaults) is resolved there. The home,
+     (a custom aggregation and its parameter defaults) is resolved there, a qualifier
+     the anchor cannot reach forward anchored at the query root instead. The home,
      when it exists, is among the inputs' paths and their longest common prefix;
      candidates are tried deepest-first, ties preferring the anchor.
    - **2.7 Spelling-invariance.** The home depends only on the inputs' paths and
@@ -78,11 +80,13 @@ is the coercion from coarser to finer.
      refused (Axioms 7–8); it never moves the home.
    [enforced: test:tests/test_dev1892_parameter_typing.py]
    [enforced: test:tests/test_dev1832_home.py]
+   [enforced: test:tests/test_dev1931_default_home.py]
 3. **Association**: any join path — to-one or not — defines which rows belong
    together; everything that crosses a non-determining path is defined in terms
    of it. [review] Association is derivable from forward join declarations
    alone (bidirectional traversal).
    [enforced: test:tests/test_dev1853_mirror_parity.py]
+   [enforced: test:tests/test_dev1935_boolean_lowering.py]
 4. **The home-dataset axiom**: an aggregation runs over the rows of its home
    dataset, each counted exactly once — never over the row product of a join,
    so no fan-out can multiply its inputs (spec: `queries/semantics` › No double
@@ -191,6 +195,7 @@ is the coercion from coarser to finer.
     ignored (spec: `queries/semantics` › Filters restrict by association or
     fail loudly). [enforced: test:tests/test_dev1840_execution.py]
     [enforced: test:tests/test_dev1909_population_pushdown.py]
+    [enforced: test:tests/test_dev1935_boolean_lowering.py]
 
 ## 3. Laws
 
@@ -216,10 +221,12 @@ enforced test ids as its instances land.
    groupby on `d` — exact in associate mode; the broadcast default consciously
    trades this law away and must warn.
    [enforced: test:tests/test_law_dice_slice.py]
+   [enforced: test:tests/test_dev1935_boolean_lowering.py]
 6. **Lowering soundness**: every emission trick is a pure optimization —
    inlining an association-restricting filter on a proven to-one path and
    fusing pipeline phases into one SELECT
-   [enforced: test:tests/test_law_lowering_soundness.py]; compiling a filter
+   [enforced: test:tests/test_law_lowering_soundness.py]
+   [enforced: test:tests/test_dev1935_boolean_lowering.py]; compiling a filter
    as a hidden measure. [review]
 
 ## 4. Notes

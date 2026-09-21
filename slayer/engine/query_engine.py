@@ -32,7 +32,6 @@ from slayer.core.errors import (
     ModelSqlValidationError,
     SchemaDriftError,
     SlayerError,
-    UnreachableFilterDroppedWarning,
 )
 from slayer.engine.cardinality import (
     CardinalityVerdict,
@@ -73,7 +72,6 @@ from slayer.core.warnings import (
     DegenerateReaggregationWarningPayload,
     BroadcastDimension,
     BroadcastGrainWarningPayload,
-    DroppedFilterWarning,
     NormalizationWarning,
     SemiJoinPushedWarningPayload,
 )
@@ -380,30 +378,6 @@ def _semi_join_filter_texts(planned_list) -> List[str]:
     return texts
 
 
-def _collect_dropped_filter_warnings(
-    *, planned_list, stages,
-) -> List[DroppedFilterWarning]:
-    """Dropped-filter payloads, one per user filter; identity ``(location, filter text)``, reasons merged."""
-    reasons_by_identity: "dict[tuple[str, str], list[str]]" = {}
-
-    def _record(w, location: str) -> None:
-        reasons = reasons_by_identity.setdefault((location, w.filter_text), [])
-        if w.reason not in reasons:
-            reasons.append(w.reason)
-
-    for index, planned in enumerate(planned_list):
-        location = _stage_location(stages=stages, index=index)
-        for attach in _walk_regroup_attaches(planned):
-            for w in attach.dropped_filter_warnings or ():
-                _record(w, location)
-    return [
-        DroppedFilterWarning(
-            filter_text=text, location=location, reason="; ".join(reasons),
-        )
-        for (location, text), reasons in reasons_by_identity.items()
-    ]
-
-
 def _collect_broadcast_warnings(
     *, planned_list, stages,
 ) -> List[BroadcastGrainWarningPayload]:
@@ -502,8 +476,8 @@ def _attach_pushed_entries(planned) -> Iterator[Tuple[str, str]]:
     filter text) — a producer may carry several public measures under one push."""
     for attach in _walk_regroup_attaches(planned):
         measures = attach.population_semi_join_measures or [
-            attach.broadcast_measure or attach.associated_measure
-            or attach.alias_hint or "<aggregate>"
+            attach.semi_join_measure or attach.broadcast_measure
+            or attach.associated_measure or attach.alias_hint or "<aggregate>"
         ]
         for text in _attach_semi_join_texts(attach):
             for measure in measures:
@@ -536,41 +510,25 @@ def _collect_semi_join_pushed_warnings(
 
 def _raise_on_error_events(
     *, broadcasts: List[BroadcastGrainWarningPayload],
-    dropped: List[DroppedFilterWarning],
 ) -> None:
-    """``to_many_handling: "error"``: turn any silent-semantics event into an error naming metric/filter + remedy."""
-    remedy = (
-        "declare join cardinality, a covering unique key, switch to "
-        "to_many_handling='associate', or remove the "
-    )
+    """``to_many_handling: "error"``: a broadcast is an error naming the metric + remedy."""
     if broadcasts:
         w = broadcasts[0]
         dims = ", ".join(d.dimension for d in w.dimensions)
         reason = w.dimensions[0].reason if w.dimensions else ""
         raise SlayerError(
             f"error mode: metric {w.measure!r} would broadcast across "
-            f"unattributable dimension(s) {dims} ({reason}); {remedy}dimension."
-        )
-    if dropped:
-        d = dropped[0]
-        raise SlayerError(
-            f"error mode: filter {d.filter_text!r} would be dropped from a "
-            f"producer ({d.reason}); {remedy}filter."
+            f"unattributable dimension(s) {dims} ({reason}); declare join "
+            f"cardinality, a covering unique key, switch to "
+            f"to_many_handling='associate', or remove the dimension."
         )
 
 
-def _emit_dropped_filter_warnings(response) -> None:
-    """Emit one Python ``UserWarning`` per dropped filter / broadcast metric."""
+def _emit_python_warnings(response) -> None:
+    """Emit one Python ``UserWarning`` per broadcast / associated metric."""
 
     for w in response.warnings or ():
-        if isinstance(w, DroppedFilterWarning):
-            _warnings_module.warn(
-                UnreachableFilterDroppedWarning(
-                    filter_text=w.filter_text, reason=w.reason,
-                ),
-                stacklevel=3,
-            )
-        elif isinstance(w, BroadcastGrainWarningPayload):
+        if isinstance(w, BroadcastGrainWarningPayload):
             reason = w.dimensions[0].reason if w.dimensions else ""
             _warnings_module.warn(
                 BroadcastGrainWarning(measure=w.measure, reason=reason),
@@ -592,8 +550,7 @@ class SlayerResponse(BaseModel):
     columns: List[str] = PydanticField(default_factory=list)
     sql: Optional[str] = None
     attributes: ResponseAttributes = PydanticField(default_factory=ResponseAttributes)
-    # Query advisories, discriminated on ``kind`` (normalization rewrites,
-    # dropped cross-model filters); empty for a clean query.
+    # Query advisories, discriminated on ``kind``; empty for a clean query.
     warnings: List[AnySlayerWarning] = PydanticField(default_factory=list)
     # DEV-1866: the effective population model and whether it was inferred.
     population: Optional[str] = None
@@ -917,7 +874,7 @@ class SlayerQueryEngine:
         )
         # The one Python-warnings emission: after the response is built (under
         # ``-W error`` this raises) and path-independent (dry_run/explain/execute).
-        _emit_dropped_filter_warnings(response)
+        _emit_python_warnings(response)
         return response
 
     async def _normalize_input(  # NOSONAR S3776 — public dispatch over str/dict/list/SlayerQuery; splitting hides the input-shape contract
@@ -1147,13 +1104,10 @@ class SlayerQueryEngine:
         planned_list = plan_stages(queries=stages, bundle=bundle)
         root_planned = planned_list[-1]
 
-        # Collect + dedup dropped-filter payloads across every plan (nested
-        # subplans included). ``plan_stages`` returns plans topo-ordered — align
-        # the stage list the same way so each warning names its own stage.
+        # Collect + dedup payloads across every plan (nested subplans included).
+        # ``plan_stages`` returns plans topo-ordered — align the stage list the
+        # same way so each warning names its own stage.
         ordered_stages = _topo_sort(stages) if len(stages) > 1 else stages
-        dropped_warnings = _collect_dropped_filter_warnings(
-            planned_list=planned_list, stages=ordered_stages,
-        )
         broadcast_warnings = _collect_broadcast_warnings(
             planned_list=planned_list, stages=ordered_stages,
         )
@@ -1167,10 +1121,7 @@ class SlayerQueryEngine:
             planned_list=planned_list, stages=ordered_stages,
         )
         if getattr(query, "to_many_handling", "broadcast") == "error":
-            _raise_on_error_events(
-                broadcasts=broadcast_warnings, dropped=dropped_warnings,
-            )
-        slack_warnings.extend(dropped_warnings)
+            _raise_on_error_events(broadcasts=broadcast_warnings)
         slack_warnings.extend(broadcast_warnings)
         slack_warnings.extend(associated_warnings)
         slack_warnings.extend(semi_join_infos)

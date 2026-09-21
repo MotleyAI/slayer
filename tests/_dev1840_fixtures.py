@@ -100,7 +100,6 @@ from tests._engine_helpers import seeded_exec_engine
 
 from tests._dev1836_fixtures import (
     broadcast_warnings,
-    dropped_filter_warnings,
     rows_by,
 )
 from tests._engine_helpers import _engine_generate
@@ -467,7 +466,7 @@ __all__ = [
     "plans_model", "agents_model", "tickets_model", "reviews_model",
     "dev1840_models", "ambiguity_models",
     "q", "tq", "bundle", "gen", "signup_month_td", "month_key", "rows_by",
-    "broadcast_warnings", "dropped_filter_warnings", "make_exec_engine",
+    "broadcast_warnings", "make_exec_engine",
     "SPEND_ALL_BY_TIER", "SPEND_APP_BY_TIER", "SPEND_APP_TOTAL",
     "SPEND_WEB_BY_TIER",
     "SPEND_OK_APP_SAMEROW", "SPEND_OK_APP_SPLIT_DEFECT",

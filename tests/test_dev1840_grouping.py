@@ -46,7 +46,6 @@ class TestGrouping:
             dimensions=["customers.tier"], measures=[CM],
             filters=["status = 'ok'", "channel = 'app'"],
         )), "customers")
-        assert att.dropped_filter_warnings == []
         (sj,) = att.producer_plan.semi_join_filters
         assert len(sj.conjuncts) == 2
         texts = " ".join(t or "" for t in sj.filter_texts)
@@ -59,7 +58,6 @@ class TestGrouping:
               filters=["channel = 'web'", "customers.plans.level = 'basic'"]),
             models=dev1840_models(strong_plans=False),
         ), "customers")
-        assert att.dropped_filter_warnings == []
         sjs = list(att.producer_plan.semi_join_filters)
         assert len(sjs) == 2
         assert {sj.hops[0].target_model for sj in sjs} == {"orders", "plans"}
@@ -72,7 +70,6 @@ class TestGrouping:
             dimensions=["status"], measures=[M, RM],
             filters=["channel = 'app'", "customers.tier = 'gold'"],
         )), "stores")
-        assert att.dropped_filter_warnings == []
         (sj,) = att.producer_plan.semi_join_filters
         assert [h.target_model for h in sj.hops] == ["orders", "customers"]
         assert _pairs(sj.hops[1]) == [("customer_id", "id")]
@@ -123,5 +120,3 @@ class TestThreading:
             and list(att.producer_plan.semi_join_filters)
         ]
         assert carrying, "no customers-rooted producer carries the semi-join"
-        for att in carrying:
-            assert att.dropped_filter_warnings == []

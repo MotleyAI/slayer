@@ -17,6 +17,7 @@ import pytest
 
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
+from tests._dev1841_fixtures import pushed_filter_infos
 from tests._dev1838_fixtures import (
     BAND,
     BAND_WM,
@@ -24,7 +25,6 @@ from tests._dev1838_fixtures import (
     SPEND_BAND,
     cte_aliases,
     dev1838_models,
-    dropped_filter_warnings,
     make_exec_engine,
     month_key,
     month_td,
@@ -256,30 +256,30 @@ class TestWarningsUnchangedBySharing:
     """D6 — warnings are keyed by semantic event, never by producer identity;
     interning must neither drop nor double-surface them (green pins)."""
 
-    async def test_dropped_filter_warns_once_across_producers(
+    async def test_pushed_filter_names_each_producer_once(
         self, exec_backend,
     ) -> None:
+        """Two producers (the band's inner and ``cm``) each push the mixed-OR
+        filter: one entry per measure; ``cm`` counts the CityA customer only."""
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=[{"expression": SPEND_BAND, "name": "sband"}],
             measures=[M, ModelMeasure(formula="customers.spend:sum", name="cm")],
-            # Mixed OR keeps the filter outside DEV-1840 pushdown scope (still
-            # dropped from the producer); spine-equivalent to city = 'CityA'.
             filters=["city = 'CityA' OR customers.tier = '__none__'"],
         ))
-        dropped = dropped_filter_warnings(resp)
-        assert len(dropped) == 1, [w.filter_text for w in dropped]
-        assert "city" in dropped[0].filter_text
+        pushed = pushed_filter_infos(resp)
+        assert len({w.measure for w in pushed}) == 2, pushed
+        assert all("city" in w.filter_text for w in pushed)
         (row,) = resp.data
         assert row["orders.sband"] == "lo"
         assert float(row["orders.m"]) == pytest.approx(30.0)
-        assert float(row["orders.cm"]) == pytest.approx(140.0)
+        assert float(row["orders.cm"]) == pytest.approx(100.0)
 
-    async def test_shared_producer_dropped_filter_warns_once(
+    async def test_shared_producer_pushed_filter_reports_once(
         self, exec_backend,
     ) -> None:
-        """The dual-role shape's ONE producer, consumed by both roles, drops
-        the host filter: exactly one warning — never one per consumer."""
+        """The dual-role shape's ONE producer, consumed by both roles, pushes
+        the host filter: exactly one entry — never one per consumer."""
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["customers.tier", {"expression": SPEND_BAND,
@@ -287,12 +287,10 @@ class TestWarningsUnchangedBySharing:
             measures=[M, ModelMeasure(
                 formula="customers.spend:sum(partition_by=customers.tier)",
                 name="rt")],
-            # Mixed OR keeps the filter outside DEV-1840 pushdown scope (still
-            # dropped from the producer); spine-equivalent to city = 'CityA'.
             filters=["city = 'CityA' OR customers.tier = '__none__'"],
         ))
-        dropped = dropped_filter_warnings(resp)
-        assert len(dropped) == 1, [w.filter_text for w in dropped]
+        pushed = pushed_filter_infos(resp)
+        assert len(pushed) == 1, [w.measure for w in pushed]
         (row,) = resp.data
         assert (row["orders.customers.tier"], row["orders.sband"]) == (
             "gold", "lo",
