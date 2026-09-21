@@ -47,6 +47,12 @@
   byte-identical). Reading A supersedes DEV-1892 `wbad` → renamed `wroot` /
   `test_root_named_expr_default_widens_to_root`, asserting widening (F1 keeps the
   fanning-fail-closed pin). Deeper "resolve defaults once at bind" → follow-up.
+- [x] 2.6 Thread the root frame to the value-pipeline default-resolution callers in
+  `compile/stages.py` that build parameter keys: `_trailing_window_kernel` (the
+  DEV-1915 windowed producer, merged in from main) and `_association_arm`, so a
+  windowed/associated aggregate with a root-relative or mixed default resolves
+  correctly (regression: `test_windowed_root_local_default_matches_explicit`). The
+  reaggregation caller keeps owner==root (unchanged).
 
 ## 3. Architecture (normative harness — per-change approval before each edit)
 - [x] 3.1 `architecture/semantics.arc42.md`: Axiom 2.4 → "…from the owning model, a

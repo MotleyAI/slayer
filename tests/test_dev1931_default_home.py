@@ -17,6 +17,7 @@ from tests._dev1832_fixtures import (
     bundle,
     gen,
     make_exec_engine,
+    month_td,
     orders_q,
 )
 from tests._dev1931_fixtures import (
@@ -127,6 +128,22 @@ class TestDefinitionDefaultExecution:
             engine, "customers.spend:wsum_bare(weight=customers.spend)")
         default = await self._value(engine, "customers.spend:wsum_bare")
         assert default == pytest.approx(explicit)
+
+    async def test_windowed_root_local_default_matches_explicit(self, engine):
+        # The trailing-window producer resolves the definition default too — a
+        # root-local default (orders.amount) must match its explicit twin per
+        # month, not resolve owner-only to a bogus reverse-hop key.
+        async def cells(formula):
+            resp = await engine.execute(orders_q(
+                time_dimensions=month_td(),
+                measures=[ModelMeasure(formula=formula, name="w")]))
+            return {tuple(v for k, v in sorted(r.items()) if k != "orders.w"):
+                    r["orders.w"] for r in resp.data}
+        explicit = await cells(
+            "customers.spend:wsum_host(window='90d', weight=orders.amount)")
+        default = await cells("customers.spend:wsum_host(window='90d')")
+        assert default == explicit
+        assert any(v is not None for v in default.values())
 
 
 class TestFanningDefinitionDefaultFailsClosed:
