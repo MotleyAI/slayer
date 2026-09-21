@@ -845,7 +845,7 @@ def _trailing_window_kernel(
                     anchor_path=tuple(source_path))
         for ps in resolve_aggregation_params(
             agg=agg_key, owner_model=owner_model, owner_path=source_path,
-            bundle=bundle,
+            bundle=bundle, root_model=root_model,
         )
     ]
     param_subst = {
@@ -2092,6 +2092,7 @@ def _association_arm(
     picked_params: List[PickedParam] = []
     for _ps in resolve_aggregation_params(
         agg=agg, owner_model=source_model, owner_path=source_path, bundle=bundle,
+        root_model=host_model,
     ):
         if not isinstance(_ps.key, AggregateKey):
             check_parameter_determined(
