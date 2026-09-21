@@ -40,10 +40,13 @@ def test_transaction_commits_on_success(seeded_db: Path) -> None:
 
 
 def test_transaction_rolls_back_on_error(seeded_db: Path) -> None:
-    with pytest.raises(RuntimeError):  # ALLOW(raises-single-throw): write and raise must both occur inside the transaction under test; NOSONAR(S5778)
+    def _write_then_fail() -> None:
         with transaction(seeded_db) as conn:
             conn.execute("INSERT INTO t (v) VALUES (99)")
             raise RuntimeError("boom")
+
+    with pytest.raises(RuntimeError):
+        _write_then_fail()
     assert _rows(seeded_db) == []
 
 
