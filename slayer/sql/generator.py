@@ -47,6 +47,8 @@ from slayer.sql.column_expansion import (
     collect_root_scope_joined_paths,
     collect_root_scope_reference_columns,
     expand_column_definition_parts_sync,
+    requalify_default_references,
+    resolve_default_reference_paths,
     wrap_column_filter,
 )
 from slayer.ir.planned import MaskTyping, RankedGrainMember, StageKind, ValueSlot, regroup_producer_identity
@@ -5612,6 +5614,39 @@ class SQLGenerator:
             return source_owner_path
         return () if all(path is not None for path, _ in refs) else source_owner_path
 
+    def _default_frag_entry(
+        self, *, frag: str, scope: ScopeFrame, model, source_owner_path: Tuple[str, ...],
+    ) -> Tuple[str, Tuple[str, ...]]:
+        """The (fragment, owner_path) to enter for a definition default on a
+        host-locus aggregate. A single-frame fragment keeps the whole-fragment
+        owner path (``_default_frag_owner_path``, byte-identical). A MIXED-frame
+        default — some references owner-local, others root-local (DEV-1931
+        ``spend + orders.amount``) — is requalified per reference to its absolute
+        path (the SAME owner-first/root-fallback resolution the home rule uses)
+        and entered at the root, so each reference resolves in its own frame."""
+        owner_path = self._default_frag_owner_path(
+            frag=frag, scope=scope, source_owner_path=source_owner_path,
+        )
+        try:
+            parsed = sqlglot.parse_one(frag, dialect=self.dialect)
+            abs_refs = resolve_default_reference_paths(
+                parsed=parsed,  # pyright: ignore[reportArgumentType] — parse_one's Expr TypeVar
+                owner_model=model, owner_path=source_owner_path,
+                root_model=scope.root_model, root_path=(), bundle=scope.bundle,
+            )
+        except Exception:
+            return frag, owner_path
+        # MIXED frame — some references owner-local, others root-local: requalify
+        # each to its absolute path and enter at the root.
+        n = len(source_owner_path)
+        frames = {tuple(a[:n]) == tuple(source_owner_path) for a, _ in abs_refs if a is not None}
+        if len(frames) < 2:
+            return frag, owner_path
+        return requalify_default_references(
+            parsed=parsed,  # pyright: ignore[reportArgumentType] — parse_one's Expr TypeVar
+            abs_refs=abs_refs, dialect=self.dialect,
+        ), ()
+
     def _register_fragment_kwarg_joins(
         self, *, key, scope: ScopeFrame, model, owner_path: Tuple[str, ...] = (),
         source_owner_path: Optional[Tuple[str, ...]] = None,
@@ -5631,16 +5666,17 @@ class SQLGenerator:
             (name, v, tuple(owner_path)) for name, v in key.kwargs
             if isinstance(v, str) and f"{{{name}}}" in formula
         ]
-        named_fragments.extend(
-            (p.name, p.sql, (
-                self._default_frag_owner_path(
-                    frag=p.sql, scope=scope, source_owner_path=source_owner_path,
+        for p in (agg_def.params or []):
+            if p.name in overridden or not p.sql:
+                continue
+            if source_owner_path is not None:
+                frag_sql, frag_owner_path = self._default_frag_entry(
+                    frag=p.sql, scope=scope, model=model,
+                    source_owner_path=source_owner_path,
                 )
-                if source_owner_path is not None else tuple(owner_path)
-            ))
-            for p in (agg_def.params or [])
-            if p.name not in overridden and p.sql
-        )
+            else:
+                frag_sql, frag_owner_path = p.sql, tuple(owner_path)
+            named_fragments.append((p.name, frag_sql, frag_owner_path))
         resolved: "Dict[str, exp.Expression]" = {}
         for name, frag, frag_owner_path in named_fragments:
             resolved[name] = self._enter_mode_a_expression(

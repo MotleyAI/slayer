@@ -32,6 +32,7 @@ from slayer.core.errors import (
 )
 from slayer.core.join_walker import resolve_hop, walk
 from slayer.core.models import Column, SlayerModel
+from slayer.ir.prebound import walk_key_path
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.reserved_keywords import prequote_reserved_identifiers
 
@@ -42,10 +43,15 @@ __all__ = [
     "expand_derived_refs_sync",
     "is_trivial_base",
     "reference_sites",
+    "requalify_default_references",
+    "resolve_default_qualifier_path",
+    "resolve_default_reference_paths",
     "resolve_ref_target",
     "root_scope_column_ids",
     "wrap_column_filter",
 ]
+
+Path = Tuple[str, ...]
 
 
 
@@ -293,6 +299,25 @@ def _resolve_qualifiers(
     return None
 
 
+def resolve_default_qualifier_path(
+    *,
+    qualifiers: Tuple[str, ...],
+    leaf: str,
+    frame_model: SlayerModel,
+    models_by_name: ModelsByName,
+) -> Optional[Tuple[str, ...]]:
+    """Strict resolution of a definition default's qualifier chain from
+    ``frame_model`` (the expansion door, reused by home/safety default
+    resolution): ``()`` = frame-local (a leading frame-model name self-strips),
+    a path = a resolved join walk, ``None`` = a clean miss (an opaque single
+    qualifier, or a first token that is not a join hop). Raises on an ambiguous
+    hop or a partially-broken multi-hop chain (fail closed)."""
+    return _resolve_qualifiers(
+        qualifiers=tuple(qualifiers), leaf=leaf, source_model=frame_model,
+        owner_alias=frame_model.name, models_by_name=models_by_name,
+    )
+
+
 def _raise_if_legacy_split_alias(
     *,
     qualifier: str,
@@ -454,6 +479,72 @@ def collect_root_scope_reference_columns(
         )
         for _node, quals, leaf in reference_sites(parsed, root_ids)
     ]
+
+
+def _forward_valid(*, root_model: SlayerModel, path: Path, bundle: ResolvedSourceBundle) -> bool:
+    """A resolved default path is forward-valid iff empty (frame-local) or it
+    walks forward from the frame root without stepping back to an ancestor —
+    ``walk_key_path``'s revisit guard blocks a reverse hop, so an ancestor
+    reference (which the bidirectional walker resolves) reads as non-forward and
+    falls back to the root."""
+    return not path or walk_key_path(model=root_model, path=path, bundle=bundle) is not None
+
+
+def resolve_default_reference_paths(
+    *, parsed: exp.Expression,  # pyright: ignore[reportPrivateImportUsage] — sqlglot ships no __all__
+    owner_model: SlayerModel, owner_path: Path,
+    root_model: SlayerModel, root_path: Path, bundle: ResolvedSourceBundle,
+) -> List[Tuple[Optional[Path], str]]:
+    """Per-reference frame resolution of a definition-default fragment, SHARED by
+    the home/safety planner (→ keys) and the SQL generator (→ a requalified
+    fragment). Each root-scope column reference is resolved owner-first with the
+    STRICT qualifier resolver — forward from ``owner_model`` — so an ambiguous or
+    partially-broken owner reference FAILS CLOSED (raises) rather than silently
+    re-anchoring at the root; a clean owner miss (including a reference the owner
+    can only reach by a reverse hop to an ancestor) falls back to the query root.
+    Returns ``(absolute path from the root frame, leaf)`` per reference in
+    reference-site order (path ``None`` = reachable from neither frame)."""
+    root_ids = root_scope_column_ids(parsed=parsed)
+    mbn = bundle.models_by_name
+    out: List[Tuple[Optional[Path], str]] = []
+    for _node, quals, leaf in reference_sites(parsed, root_ids):
+        owner_res = resolve_default_qualifier_path(
+            qualifiers=quals, leaf=leaf, frame_model=owner_model, models_by_name=mbn,
+        )
+        if owner_res is not None and _forward_valid(
+            root_model=root_model, path=tuple(owner_path) + owner_res, bundle=bundle,
+        ):
+            out.append((tuple(owner_path) + owner_res, leaf))
+            continue
+        root_res = resolve_default_qualifier_path(
+            qualifiers=quals, leaf=leaf, frame_model=root_model, models_by_name=mbn,
+        )
+        out.append(
+            (tuple(root_path) + root_res, leaf)
+            if root_res is not None and _forward_valid(
+                root_model=root_model, path=tuple(root_path) + root_res, bundle=bundle,
+            )
+            else (None, leaf)
+        )
+    return out
+
+
+def requalify_default_references(
+    *, parsed: exp.Expression,  # pyright: ignore[reportPrivateImportUsage] — sqlglot ships no __all__
+    abs_refs: List[Tuple[Optional[Path], str]], dialect: Optional[str],
+) -> str:
+    """Rewrite each root-scope reference of ``parsed`` to its absolute dotted path
+    from ``abs_refs`` (reference-site order) and return the SQL — so a
+    mixed-frame default (``spend + orders.amount``) renders correctly at the root
+    frame (``customers.spend + amount``). Mutates ``parsed`` in place."""
+    root_ids = root_scope_column_ids(parsed=parsed)
+    for (node, _quals, _leaf), (abs_path, leaf) in zip(
+        reference_sites(parsed, root_ids), abs_refs,
+    ):
+        if abs_path is None:
+            continue
+        node.replace(sqlglot.parse_one(".".join((*abs_path, leaf)), dialect=dialect))
+    return parsed.sql(dialect=dialect)
 
 
 # ---------------------------------------------------------------------------
