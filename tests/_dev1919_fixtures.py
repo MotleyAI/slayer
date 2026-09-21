@@ -38,6 +38,8 @@ RANKED = ("customers.spend:weighted_avg("
           "weight=rank(sum(amount, partition_by=customers.regions.name)))")
 WINDOWED_PARAM = ("customers.spend:weighted_avg(window='1y', "
                   "weight=sum(amount, partition_by=customers.regions.name))")
+WINDOWED_CUSTOM_PARAM = ("customers.spend:wsum(window='1y', "
+                         "weight=sum(amount, partition_by=customers.regions.name))")
 WINDOWED_CONSTITUENT = ("sum(customers.spend * sum(amount, "
                         "partition_by=customers.regions.name), window='1y')")
 CUMSUM_PARAM = ("customers.spend:weighted_avg(weight=cumsum(sum(amount, "
@@ -204,6 +206,14 @@ def windowed_param_by_month() -> Dict[str, Optional[float]]:
     return {month: _wavg_over_customers(w, _trailing_year(month, per)) for month in per}
 
 
+def windowed_custom_param_by_month() -> Dict[str, Optional[float]]:
+    """Custom ``wsum(spend, weight=region order total)`` = trailing-1y Σ spend ×
+    region total by signup month: 10000, 25000, 28080, 33780 — the custom form of
+    the constituent, coinciding in value."""
+    w, per = _region_weight(), _months()
+    return {month: _sum_product(_trailing_year(month, per), w) for month in per}
+
+
 def local_wavg_status_assoc_by_status() -> Dict[str, Optional[float]]:
     """``amount:weighted_avg(weight=sum(customers.spend, partition_by=status))`` under
     associate — the weight is the cell's distinct-customer spend total, constant per
@@ -244,12 +254,14 @@ def assert_cells(got: Dict, expected: Dict) -> None:
 
 __all__ = [
     "MODES", "HEADLINE", "MIXED", "RECURSIVE", "RANKED", "WINDOWED_PARAM",
+    "WINDOWED_CUSTOM_PARAM",
     "WINDOWED_CONSTITUENT", "CUMSUM_PARAM", "UNPARSE_PARAM", "OWN_FAN_BADPOP",
     "OWN_FAN_STATUS", "UNDETERMINED_PARAM", "LAST_HOST", "LAST_BADPOP",
     "keyless_declared_models", "mode_q", "ordered_month_td", "signup_month_td",
     "wavg_by_tier", "mixed_global", "mixed_by_tier", "recursive_global",
     "recursive_by_tier", "ranked_global", "ranked_by_tier",
     "windowed_constituent_by_month", "windowed_param_by_month",
+    "windowed_custom_param_by_month",
     "local_wavg_status_assoc_by_status",
     "tier_vals", "status_vals", "month_vals", "assert_cells",
 ]
