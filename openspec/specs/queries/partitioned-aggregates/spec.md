@@ -488,6 +488,15 @@ each warning surfaces once per semantic event regardless of consuming depth.
 - **THEN** the emitted SQL contains a single city-region producer relation,
   consumed by both the row attach and the outer producer, with correct values
 
+#### Scenario: A producer attached at two phases emits its nested producer first
+- **WHEN** a producer carrying a nested producer (a re-aggregation over an attached
+  operand) is attached both before aggregation (as a mixed constituent) and after it
+  (standalone), so the base relation and the final select both read it
+- **THEN** on every Tier-1 dialect the one flat `WITH` lists the nested producer before
+  the producer that reads it, and that producer before the base relation — no relation
+  references one declared later — and the statement executes on engines that reject
+  forward references
+
 ### Requirement: Re-aggregation null, empty, and keyless cases are pinned
 A NULL grain-key value SHALL form its own cell (null-safe grouping and
 attachment). An outer cell whose operand cells all carry NULL values SHALL
@@ -774,12 +783,15 @@ its `partition_by=` still gets the outer attach the grain join needs.
 #### Scenario: A re-aggregation used both standalone and as a mixed constituent is deferred
 - **WHEN** one query selects both `min(X, partition_by=region)` on its own and
   `sum(amount * min(X, partition_by=region))` — the same re-aggregation standalone
-  (combined phase) and as a mixed row-level constituent (row phase)
-- **THEN** it fails at bind time with a typed error naming the re-aggregation and the
-  remedy (select the two in separate queries): the one shared producer would need
-  attaching at two phases, and its nested-producer CTE emits out of dependency order on
-  strict dialects — a bounded emission-ordering gap tracked as DEV-1942, never a crash,
-  dialect-inconsistent SQL, or wrong numbers
+  (combined phase) and as a mixed row-level constituent (row phase) — over `[region]`
+  and a month time dimension, in measure, filter, or order position
+- **THEN** it is no longer deferred — never the former checker error — and executes on
+  every engine with the values each use has alone: the
+  standalone value is the region minimum broadcast onto every month cell (North 10,
+  South 5, NULL where the region has no non-null cell) and the mixed value is the
+  per-cell `amount` times that minimum, summed (North 100 / 200 / 300, South 25 / 75);
+  the emitted statement carries exactly one producer relation for the re-aggregation
+  and one for its nested operand, and adding either measure changes no other value
 
 ### Requirement: Attached parameters on row-level sources
 An aggregation over a row-level source whose parameter — keyword or

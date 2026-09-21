@@ -216,6 +216,24 @@ multiplied raw row (restricting such a conjunct by association is deferred to DE
 - **THEN** the retired guard blocks nothing: the query executes with values unchanged from
   today, the filter applied to the population and to each producer by association
 
+#### Scenario: Population filter across a fanning hop restricts a mixed re-aggregation constituent
+- **WHEN** a customers query over `[tier]` selects
+  `sum(spend * avg(spend:sum(partition_by=[tier, plan_code]), partition_by=tier))` with
+  the filter `orders.status = 'ok'`
+- **THEN** the constituent's operand cells and its per-tier average are computed over
+  the restricted population only (gold 18050 = 190 × 95, silver 26450 = 230 × 115),
+  never over rows multiplied by the fanning join; every producer relation carries the
+  semi-join and none joins `orders`; the semi-join informational entries name the
+  selected measure; and selecting the same re-aggregation standalone beside it shares
+  one producer relation and reports under its own name
+
+#### Scenario: Re-aggregation producers report a dropped out-of-scope conjunct
+- **WHEN** a customers query over `[tier]` selects
+  `min(spend:sum(partition_by=[tier, plan_code]), partition_by=tier)` with the filter
+  `tier = 'bronze' or orders.status = 'ok'`, which no semi-join can preserve
+- **THEN** the response carries the dropped-filter warning naming that conjunct exactly
+  as it does for a plain partitioned producer — never a silent drop
+
 ### Requirement: Compositionality
 Each result cell's values SHALL depend only on the evaluated expression, the
 population, and the row-level filters — never on which other measures, measure-typed
