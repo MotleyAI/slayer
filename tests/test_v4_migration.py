@@ -20,13 +20,13 @@ When the legacy file/row carries an empty ``data_source``:
 
 import json
 import os
-import sqlite3
 
 import pytest
 import yaml
 
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.storage import migrations as mig
+from slayer.storage.sqlite_conn import transaction
 from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.v4_migration import migrate_yaml_layout
 from slayer.storage.yaml_storage import YAMLStorage
@@ -94,7 +94,7 @@ async def test_yaml_legacy_flat_file_migrates_to_nested(tmp_path) -> None:
     # to be present when the migrated dict has refineable DOUBLE base columns.
     # A live SQLite stub satisfies that contract for this layout-migration test.
     live_db_path = os.path.join(base, "live.db")
-    with sqlite3.connect(live_db_path) as live:
+    with transaction(live_db_path) as live:
         live.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY)")
         live.commit()
     ds_dir = os.path.join(base, "datasources")
@@ -311,7 +311,7 @@ async def test_yaml_already_migrated_layout_is_no_op(tmp_path) -> None:
 
 def _create_legacy_sqlite_models_table(db_path: str) -> None:
     """Re-create the v3 schema (single-column PK on ``name``)."""
-    with sqlite3.connect(db_path) as conn:
+    with transaction(db_path) as conn:
         conn.execute(
             "CREATE TABLE models (name TEXT PRIMARY KEY, data TEXT NOT NULL)"
         )
@@ -333,7 +333,7 @@ async def test_sqlite_legacy_schema_migrates_to_composite_pk(tmp_path) -> None:
         "sql_table": "orders",
         "data_source": "warehouse",
     })
-    with sqlite3.connect(db_path) as conn:
+    with transaction(db_path) as conn:
         conn.execute("INSERT INTO models (name, data) VALUES (?, ?)", ("orders", blob))
 
     storage = SQLiteStorage(db_path=db_path)
@@ -343,7 +343,7 @@ async def test_sqlite_legacy_schema_migrates_to_composite_pk(tmp_path) -> None:
     assert loaded.data_source == "warehouse"
 
     # New schema: composite PK on (data_source, name).
-    with sqlite3.connect(db_path) as conn:
+    with transaction(db_path) as conn:
         cols = [r[1] for r in conn.execute("PRAGMA table_info(models)").fetchall()]
         pk_cols = [
             r[1] for r in conn.execute("PRAGMA table_info(models)").fetchall() if r[5] > 0
@@ -362,7 +362,7 @@ async def test_sqlite_legacy_schema_orphan_with_single_datasource_auto_assigned(
         # No data_source.
     })
     ds_blob = json.dumps({"name": "only_ds", "type": "postgres", "version": 1})
-    with sqlite3.connect(db_path) as conn:
+    with transaction(db_path) as conn:
         conn.execute("INSERT INTO models (name, data) VALUES (?, ?)", ("orders", blob_orphan))
         conn.execute("INSERT INTO datasources (name, data) VALUES (?, ?)", ("only_ds", ds_blob))
 
@@ -377,7 +377,7 @@ def test_sqlite_legacy_schema_orphan_with_multiple_datasources_hard_fails(tmp_pa
     db_path = str(tmp_path / "slayer.db")
     _create_legacy_sqlite_models_table(db_path)
     blob_orphan = json.dumps({"version": 3, "name": "orders", "sql_table": "orders"})
-    with sqlite3.connect(db_path) as conn:
+    with transaction(db_path) as conn:
         conn.execute("INSERT INTO models (name, data) VALUES (?, ?)", ("orders", blob_orphan))
         for n in ("a", "b"):
             conn.execute(

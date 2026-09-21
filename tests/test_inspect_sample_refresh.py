@@ -23,7 +23,7 @@ Contract pinned here (settled in the spec interview + Codex passes):
 from __future__ import annotations
 
 import json
-import sqlite3
+from slayer.storage.sqlite_conn import transaction
 from collections.abc import AsyncIterator
 
 import pytest
@@ -55,23 +55,21 @@ async def inspect_setup(tmp_path) -> AsyncIterator[tuple[InspectService, object]
     populated ``orders`` table. Columns are saved WITHOUT sampled values so
     every non-PK column starts uncached (the back-fill trigger)."""
     db_file = str(tmp_path / "data.db")
-    conn = sqlite3.connect(db_file)
-    conn.execute(
-        "CREATE TABLE orders (id INTEGER PRIMARY KEY, amount REAL, "
-        "status TEXT, secret TEXT, order_date DATE)"
-    )
-    conn.executemany(
-        "INSERT INTO orders VALUES (?, ?, ?, ?, ?)",
-        [
-            (1, 10.0, "paid", "x", "2024-01-01"),
-            (2, 20.5, "paid", "y", "2024-02-15"),
-            (3, 5.0, "refunded", "z", "2024-03-30"),
-            (4, 99.99, "cancelled", "w", "2024-04-10"),
-            (5, None, "paid", "v", "2024-05-20"),
-        ],
-    )
-    conn.commit()
-    conn.close()
+    with transaction(db_file) as conn:
+        conn.execute(
+            "CREATE TABLE orders (id INTEGER PRIMARY KEY, amount REAL, "
+            "status TEXT, secret TEXT, order_date DATE)"
+        )
+        conn.executemany(
+            "INSERT INTO orders VALUES (?, ?, ?, ?, ?)",
+            [
+                (1, 10.0, "paid", "x", "2024-01-01"),
+                (2, 20.5, "paid", "y", "2024-02-15"),
+                (3, 5.0, "refunded", "z", "2024-03-30"),
+                (4, 99.99, "cancelled", "w", "2024-04-10"),
+                (5, None, "paid", "v", "2024-05-20"),
+            ],
+        )
 
     storage = resolve_storage(str(tmp_path / "storage"))
     await storage.save_datasource(

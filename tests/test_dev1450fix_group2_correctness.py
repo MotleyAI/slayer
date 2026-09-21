@@ -14,7 +14,6 @@
 from __future__ import annotations
 
 import os
-import sqlite3
 import tempfile
 from typing import AsyncIterator
 
@@ -29,6 +28,7 @@ from slayer.core.scope import ModelScope
 from slayer.engine.binding import bind_expr
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.schema_drift import _measure_formula_refs
+from slayer.storage.sqlite_conn import transaction
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.syntax import parse_expr, parse_expr as _parse, parse_filter_expr
 from slayer.storage.yaml_storage import YAMLStorage
@@ -142,8 +142,9 @@ def test_aggregation_eligibility_primary_key_rejected():
     bind_expr(parsed=parse_expr("id:count_distinct"), scope=scope, bundle=bundle)
     # sum / avg / max / min on a PK are rejected.
     for agg in ("sum", "avg", "max", "min"):
+        parsed = parse_expr(f"id:{agg}")
         with pytest.raises(AggregationNotAllowedError, match="primary-key"):
-            bind_expr(parsed=parse_expr(f"id:{agg}"), scope=scope, bundle=bundle)
+            bind_expr(parsed=parsed, scope=scope, bundle=bundle)
 
 
 def test_aggregation_eligibility_type_default_rejected():
@@ -162,8 +163,9 @@ def test_aggregation_eligibility_type_default_rejected():
     bind_expr(parsed=parse_expr("status:count"), scope=scope, bundle=bundle)
     # avg / sum are not.
     for agg in ("avg", "sum"):
+        parsed = parse_expr(f"status:{agg}")
         with pytest.raises(AggregationNotAllowedError, match="not applicable"):
-            bind_expr(parsed=parse_expr(f"status:{agg}"), scope=scope, bundle=bundle)
+            bind_expr(parsed=parsed, scope=scope, bundle=bundle)
 
 
 async def test_is_null_filter_renders_end_to_end(engine):
@@ -220,8 +222,9 @@ def test_aggregation_eligibility_allowed_aggregations_whitelist():
     scope = ModelScope(source_model=orders)
     bind_expr(parsed=parse_expr("amount:sum"), scope=scope, bundle=bundle)
     bind_expr(parsed=parse_expr("amount:max"), scope=scope, bundle=bundle)
+    parsed = parse_expr("amount:avg")
     with pytest.raises(AggregationNotAllowedError, match="allowed_aggregations"):
-        bind_expr(parsed=parse_expr("amount:avg"), scope=scope, bundle=bundle)
+        bind_expr(parsed=parsed, scope=scope, bundle=bundle)
 
 
 def test_real_over_clause_still_rejected():
@@ -262,8 +265,9 @@ def _cyclic_bundle():
 def test_cyclic_dotted_star_rejected():
     bundle = _cyclic_bundle()
     scope = ModelScope(source_model=bundle.source_model)
+    parsed = parse_expr("a.b.a.*:count")
     with pytest.raises(ValueError, match="Circular join"):
-        bind_expr(parse_expr("a.b.a.*:count"), scope=scope, bundle=bundle)
+        bind_expr(parsed, scope=scope, bundle=bundle)
 
 
 def test_noncyclic_dotted_star_ok():
@@ -296,21 +300,19 @@ def test_measure_formula_refs_custom_agg():
 async def engine() -> AsyncIterator[SlayerQueryEngine]:
     d = tempfile.mkdtemp()
     db_path = os.path.join(d, "t.db")
-    con = sqlite3.connect(db_path)
-    cur = con.cursor()
-    cur.execute("CREATE TABLE customers (id INTEGER PRIMARY KEY, region TEXT)")
-    cur.executemany(
-        "INSERT INTO customers VALUES (?,?)", [(1, "NA"), (2, "EU")]
-    )
-    cur.execute(
-        "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, amount REAL)"
-    )
-    cur.executemany(
-        "INSERT INTO orders VALUES (?,?,?)",
-        [(1, 1, 10.0), (2, 2, 5.0)],
-    )
-    con.commit()
-    con.close()
+    with transaction(db_path) as con:
+        cur = con.cursor()
+        cur.execute("CREATE TABLE customers (id INTEGER PRIMARY KEY, region TEXT)")
+        cur.executemany(
+            "INSERT INTO customers VALUES (?,?)", [(1, "NA"), (2, "EU")]
+        )
+        cur.execute(
+            "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, amount REAL)"
+        )
+        cur.executemany(
+            "INSERT INTO orders VALUES (?,?,?)",
+            [(1, 1, 10.0), (2, 2, 5.0)],
+        )
     storage = YAMLStorage(base_dir=os.path.join(d, "store"))
     await storage.save_datasource(
         DatasourceConfig(name="prod", type="sqlite", database=db_path)

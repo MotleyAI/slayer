@@ -26,7 +26,6 @@ What lives here:
 
 from __future__ import annotations
 
-import sqlite3
 from typing import Dict, List, Optional, Set, Tuple
 
 import sqlglot
@@ -36,6 +35,7 @@ from slayer.core.enums import DataType
 from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ir.source_bundle import ResolvedSourceBundle
+from slayer.storage.sqlite_conn import transaction
 
 from tests._engine_helpers import make_seeded_sqlite_engine
 
@@ -63,90 +63,88 @@ ORDER_1_TAG_COUNT = 3
 
 def seed_dev1747_sqlite(db_path: str) -> None:
     """Create + seed the DEV-1747 SQLite corpus at ``db_path``."""
-    con = sqlite3.connect(db_path)
-    con.executescript(
-        """
-        CREATE TABLE regions (
-            id INTEGER PRIMARY KEY,
-            name TEXT,
-            population REAL
-        );
-        CREATE TABLE customers (
-            id INTEGER PRIMARY KEY,
-            region_id INTEGER,
-            tier TEXT,
-            spend REAL
-        );
-        CREATE TABLE orders (
-            id INTEGER PRIMARY KEY,
-            customer_id INTEGER,
-            status TEXT,
-            created_at TEXT,
-            amount REAL
-        );
-        CREATE TABLE order_tags (
-            id INTEGER PRIMARY KEY,
-            order_id INTEGER,
-            name TEXT
-        );
-        """
-    )
-    con.executemany(
-        "INSERT INTO regions VALUES (?,?,?)",
-        [
-            (1, REGION_A_LOW, 100.0),
-            (2, REGION_A_HIGH, 200.0),
-            (3, REGION_B_ONLY, 300.0),
-            # Region 4's name is NULL — the null-ordering group.
-            (4, None, 400.0),
-        ],
-    )
-    con.executemany(
-        "INSERT INTO customers VALUES (?,?,?,?)",
-        [
-            (100, 1, "gold", 1000.0),
-            (101, 2, "gold", 250.0),
-            (102, 3, "silver", 75.0),
-            (103, 4, "silver", 50.0),
-            # Region Alpha's SECOND customer, with NO orders and the other
-            # tier. It exists so a target-side filter can change a cross-model
-            # aggregate WITHIN a group that survives the filter, rather than
-            # only removing whole groups: ``customers.tier == 'gold'`` takes
-            # Alpha's spend from 1040 to 1000 while Alpha stays in the result.
-            # Without it, a re-rooted CTE that failed to apply its copy of the
-            # filter would still produce the right number for every surviving
-            # group, because the join-back picks the group the host kept.
-            (104, 1, "silver", 40.0),
-        ],
-    )
-    con.executemany(
-        "INSERT INTO orders VALUES (?,?,?,?,?)",
-        [
-            # Group A: two orders, two DIFFERENT regions (Alpha and Zulu).
-            (1, 100, "A", "2024-01-15", 11.0),
-            (2, 101, "A", "2024-02-15", 13.0),
-            # Group B: one order, region Bravo.
-            (3, 102, "B", "2024-01-20", 17.0),
-            # Group NULL-region: one order whose region name is NULL.
-            (4, 103, "N", "2024-02-20", 19.0),
-        ],
-    )
-    con.executemany(
-        "INSERT INTO order_tags VALUES (?,?,?)",
-        [
-            # Order 1 fans out 3:1 — the containment probe.
-            (1, 1, "rush"),
-            (2, 1, "gift"),
-            (3, 1, "fragile"),
-            (4, 2, "rush"),
-            # Distinct per group so the tag sort key never ties across groups
-            # (a tie makes the row order unstable and the assertion flaky).
-            (5, 3, "sale"),
-            (6, 4, "trial"),
-        ],
-    )
-    con.commit()
-    con.close()
+    with transaction(db_path) as con:
+        con.executescript(
+            """
+            CREATE TABLE regions (
+                id INTEGER PRIMARY KEY,
+                name TEXT,
+                population REAL
+            );
+            CREATE TABLE customers (
+                id INTEGER PRIMARY KEY,
+                region_id INTEGER,
+                tier TEXT,
+                spend REAL
+            );
+            CREATE TABLE orders (
+                id INTEGER PRIMARY KEY,
+                customer_id INTEGER,
+                status TEXT,
+                created_at TEXT,
+                amount REAL
+            );
+            CREATE TABLE order_tags (
+                id INTEGER PRIMARY KEY,
+                order_id INTEGER,
+                name TEXT
+            );
+            """
+        )
+        con.executemany(
+            "INSERT INTO regions VALUES (?,?,?)",
+            [
+                (1, REGION_A_LOW, 100.0),
+                (2, REGION_A_HIGH, 200.0),
+                (3, REGION_B_ONLY, 300.0),
+                # Region 4's name is NULL — the null-ordering group.
+                (4, None, 400.0),
+            ],
+        )
+        con.executemany(
+            "INSERT INTO customers VALUES (?,?,?,?)",
+            [
+                (100, 1, "gold", 1000.0),
+                (101, 2, "gold", 250.0),
+                (102, 3, "silver", 75.0),
+                (103, 4, "silver", 50.0),
+                # Region Alpha's SECOND customer, with NO orders and the other
+                # tier. It exists so a target-side filter can change a cross-model
+                # aggregate WITHIN a group that survives the filter, rather than
+                # only removing whole groups: ``customers.tier == 'gold'`` takes
+                # Alpha's spend from 1040 to 1000 while Alpha stays in the result.
+                # Without it, a re-rooted CTE that failed to apply its copy of the
+                # filter would still produce the right number for every surviving
+                # group, because the join-back picks the group the host kept.
+                (104, 1, "silver", 40.0),
+            ],
+        )
+        con.executemany(
+            "INSERT INTO orders VALUES (?,?,?,?,?)",
+            [
+                # Group A: two orders, two DIFFERENT regions (Alpha and Zulu).
+                (1, 100, "A", "2024-01-15", 11.0),
+                (2, 101, "A", "2024-02-15", 13.0),
+                # Group B: one order, region Bravo.
+                (3, 102, "B", "2024-01-20", 17.0),
+                # Group NULL-region: one order whose region name is NULL.
+                (4, 103, "N", "2024-02-20", 19.0),
+            ],
+        )
+        con.executemany(
+            "INSERT INTO order_tags VALUES (?,?,?)",
+            [
+                # Order 1 fans out 3:1 — the containment probe.
+                (1, 1, "rush"),
+                (2, 1, "gift"),
+                (3, 1, "fragile"),
+                (4, 2, "rush"),
+                # Distinct per group so the tag sort key never ties across groups
+                # (a tie makes the row order unstable and the assertion flaky).
+                (5, 3, "sale"),
+                (6, 4, "trial"),
+            ],
+        )
 
 
 def _regions_model(*, data_source: str = "test") -> SlayerModel:

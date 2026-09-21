@@ -1484,3 +1484,40 @@ def walk_consumer_keys(key: ValueKey):
         return
     for child in key.children():
         yield from walk_consumer_keys(child)
+
+
+def substitute_consumer_keys(
+    key: _RerootableT, mapping: Mapping["ValueKey", "ValueKey"],
+) -> _RerootableT:
+    """Replace sub-keys named in ``mapping`` where root discovery looks — the
+    substitution law mirroring :func:`walk_consumer_keys`.
+
+    Pre-order match-before-recurse like :func:`substitute_value_keys`, but below an
+    attach-owning aggregate the source/args/kwargs are opaque (they belong to its
+    own attach) and only ``partition_keys`` are traversed. Scalars ride through;
+    identity is preserved when nothing matches.
+    """
+    if key is None or isinstance(key, (Decimal, str, bool, int, float)):
+        return key
+    if not isinstance(key, _FrozenKey):
+        raise TypeError(
+            f"substitute_consumer_keys has no case for {type(key).__name__!r}: "
+            f"only value keys and scalars are substitutable."
+        )
+    if key in mapping:
+        return cast(_RerootableT, mapping[cast("ValueKey", key)])
+    if isinstance(key, AggregateKey) and attached_inputs(key):
+        if key.partition_keys is None:
+            return key
+        new_pks = Grain.of(
+            substitute_consumer_keys(p, mapping) for p in key.partition_keys
+        )
+        if new_pks == key.partition_keys:
+            return key
+        return cast(
+            _RerootableT, key.model_copy(update={"partition_keys": new_pks})
+        )
+    return cast(
+        _RerootableT,
+        key.map_children(lambda c: substitute_consumer_keys(c, mapping)),
+    )

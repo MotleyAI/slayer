@@ -16,14 +16,24 @@ strategy class carries the runtime hooks; this module covers:
 """
 
 import json
+import logging
+import sys
 import threading
+import warnings
 from unittest.mock import MagicMock, patch
 
 import pytest
 import sqlalchemy as sa
 
+from slayer import cli
 from slayer.core.models import DatasourceConfig
+from slayer.engine import ingestion, schema_drift
+from slayer.engine.query_engine import _sql_client_cache_key
+from slayer.mcp import server
+from slayer.sql import client as sql_client
 from slayer.sql import engine_factory
+from slayer.storage import type_refinement
+from tests._engine_helpers import disposable_engine
 
 
 class TestGetEngine:
@@ -127,17 +137,17 @@ class TestSessionOverridesListener:
             name="sf", type="snowflake",
             connection_name="default", schema_name="MY_SCHEMA",
         )
-        real_engine = sa.create_engine("sqlite:///:memory:")
-        with patch(
-            "slayer.sql.dialects.snowflake.SnowflakeDialect.build_engine",
-            return_value=real_engine,
-        ):
+        with disposable_engine("sqlite:///:memory:") as real_engine:
             with patch(
-                "slayer.sql.dialects.snowflake.SnowflakeDialect.apply_session_overrides",
-            ) as apply_mock:
-                engine = engine_factory.get_engine(ds)
-                with engine.connect() as _:
-                    pass  # NOSONAR(S108) — empty body is intentional; opening + closing fires the checkout-event listener under test
+                "slayer.sql.dialects.snowflake.SnowflakeDialect.build_engine",
+                return_value=real_engine,
+            ):
+                with patch(
+                    "slayer.sql.dialects.snowflake.SnowflakeDialect.apply_session_overrides",
+                ) as apply_mock:
+                    engine = engine_factory.get_engine(ds)
+                    with engine.connect() as _:
+                        pass  # NOSONAR(S108) — empty body is intentional; opening + closing fires the checkout-event listener under test
         assert apply_mock.call_count >= 1
         # Listener calls ``apply_session_overrides(dbapi_connection=..., datasource=...)``
         # by name; the datasource is the kwarg, not a positional arg.
@@ -209,32 +219,26 @@ class TestCallSiteMigration:
     """
 
     def test_ingestion_uses_engine_factory(self) -> None:
-        from slayer.engine import ingestion
         source = open(ingestion.__file__).read()
         assert "engine_factory.get_engine" in source or "from slayer.sql.engine_factory" in source
 
     def test_schema_drift_uses_engine_factory(self) -> None:
-        from slayer.engine import schema_drift
         source = open(schema_drift.__file__).read()
         assert "engine_factory.get_engine" in source or "from slayer.sql.engine_factory" in source
 
     def test_type_refinement_uses_engine_factory(self) -> None:
-        from slayer.storage import type_refinement
         source = open(type_refinement.__file__).read()
         assert "engine_factory.get_engine" in source or "from slayer.sql.engine_factory" in source
 
     def test_cli_uses_engine_factory(self) -> None:
-        from slayer import cli
         source = open(cli.__file__).read()
         assert "engine_factory" in source
 
     def test_mcp_server_uses_engine_factory(self) -> None:
-        from slayer.mcp import server
         source = open(server.__file__).read()
         assert "engine_factory" in source
 
     def test_sql_client_uses_engine_factory_for_engine_creation(self) -> None:
-        from slayer.sql import client as sql_client
         source = open(sql_client.__file__).read()
         assert "engine_factory" in source
 
@@ -271,7 +275,6 @@ class TestCredentialKeying:
     def test_query_engine_agrees_with_factory(self) -> None:
         """The two caches must key identically, or a caller can be handed a
         client whose engine was built for someone else's credentials."""
-        from slayer.engine.query_engine import _sql_client_cache_key
         ds = self._bq("bq", '{"type": "service_account", "client_email": "alice@x"}')
         assert _sql_client_cache_key(ds) == engine_factory._cache_key(
             ds, ds.get_connection_string(),
@@ -467,8 +470,8 @@ class TestLogSafety:
         assert log_id(alice) != log_id(bob)
 
     def test_reset_disposal_reason_carries_no_credentials(self) -> None:
-        """``reset_cache(dispose=True)`` builds its reason from the cache key,
-        and ``_dispose_quietly`` logs that when ``dispose()`` raises."""
+        """``reset_cache()`` builds its reason from the cache key, and
+        ``_dispose_quietly`` logs that when ``dispose()`` raises."""
         secret = "reset-time-secret"  # NOSONAR(S2068) — test fixture
         engine_factory.reset_cache()
         engine_factory.get_engine(self._pg_with_password(secret))
@@ -477,25 +480,44 @@ class TestLogSafety:
             engine_factory, "_dispose_quietly",
             side_effect=lambda *, engine, reason: reasons.append(reason),
         ):
-            engine_factory.reset_cache(dispose=True)
+            engine_factory.reset_cache()
         assert reasons, "precondition: disposal ran"
         assert not any(secret in reason for reason in reasons), reasons
 
 
 class TestResetCacheDisposal:
 
-    def test_reset_disposes_only_when_asked(self) -> None:
+    def test_reset_always_disposes(self) -> None:
+        """Every held engine is disposed exactly once and the cache ends empty."""
         engine_factory.reset_cache()
-        ds = DatasourceConfig(name="lite", type="sqlite", database="/tmp/slayer-reset.db")
-        engine = engine_factory.get_engine(ds)
-        with patch.object(engine, "dispose") as disposed:
+        a = DatasourceConfig(name="a", type="sqlite", database="/tmp/slayer-reset-a.db")
+        b = DatasourceConfig(name="b", type="sqlite", database="/tmp/slayer-reset-b.db")
+        ea, eb = engine_factory.get_engine(a), engine_factory.get_engine(b)
+        assert ea is not eb
+        with patch.object(ea, "dispose") as ea_disposed, \
+                patch.object(eb, "dispose") as eb_disposed:
             engine_factory.reset_cache()
-        disposed.assert_not_called()
+        ea_disposed.assert_called_once()
+        eb_disposed.assert_called_once()
+        assert len(engine_factory._engine_cache) == 0
 
-        engine = engine_factory.get_engine(ds)
-        with patch.object(engine, "dispose") as disposed:
-            engine_factory.reset_cache(dispose=True)
-        disposed.assert_called_once()
+    def test_checked_out_connection_finishes_after_reset(self) -> None:
+        """Dispose closes checked-in connections; a checked-out one keeps working.
+
+        A soft dispose swaps in a fresh pool, so a plain ``close()`` re-pools the
+        connection into the orphaned old pool (closed only on GC — a 3.13+ leak);
+        ``invalidate()`` closes the DBAPI connection there and then.
+        """
+        engine_factory.reset_cache()
+        ds = DatasourceConfig(name="lite", type="sqlite", database="/tmp/slayer-reset-live.db")
+        conn = engine_factory.get_engine(ds).connect()
+        try:
+            engine_factory.reset_cache()
+            assert conn.exec_driver_sql("SELECT 1").scalar() == 1
+        finally:
+            conn.invalidate()
+            conn.close()
+        engine_factory.reset_cache()
 
 
 class TestCacheConcurrency:
@@ -703,19 +725,156 @@ class TestConfigSnapshot:
         ds = DatasourceConfig(
             name="sf", type="snowflake", connection_name="default", warehouse="WH_AT_BUILD",
         )
-        real_engine = sa.create_engine("sqlite:///:memory:")
-        with (
-            patch(
-                "slayer.sql.dialects.snowflake.SnowflakeDialect.build_engine",
-                return_value=real_engine,
-            ),
-            patch(
-                "slayer.sql.dialects.snowflake.SnowflakeDialect.apply_session_overrides",
-            ) as apply_mock,
-        ):
-            engine = engine_factory.get_engine(ds)
-            ds.warehouse = "WH_MUTATED_AFTER"
-            with engine.connect() as _:
-                pass  # NOSONAR(S108) — opening + closing fires the checkout listener
+        with disposable_engine("sqlite:///:memory:") as real_engine:
+            with (
+                patch(
+                    "slayer.sql.dialects.snowflake.SnowflakeDialect.build_engine",
+                    return_value=real_engine,
+                ),
+                patch(
+                    "slayer.sql.dialects.snowflake.SnowflakeDialect.apply_session_overrides",
+                ) as apply_mock,
+            ):
+                engine = engine_factory.get_engine(ds)
+                ds.warehouse = "WH_MUTATED_AFTER"
+                with engine.connect() as _:
+                    pass  # NOSONAR(S108) — opening + closing fires the checkout listener
         assert apply_mock.call_args.kwargs["datasource"].warehouse == "WH_AT_BUILD"
         engine_factory.reset_cache()
+
+
+_ON_313 = sys.version_info >= (3, 13)
+
+
+def _in_worker(fn):
+    """Run ``fn`` on a worker thread, re-raise its exception, assert it finished."""
+    box: dict[str, object] = {}
+
+    def run() -> None:
+        try:
+            box["value"] = fn()
+        except BaseException as exc:  # re-raised on the caller thread below
+            box["error"] = exc
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    thread.join(timeout=5)
+    assert not thread.is_alive(), "worker thread did not finish"
+    if "error" in box:
+        raise box["error"]  # type: ignore[misc]
+    return box.get("value")
+
+
+class TestInMemorySqliteBuilder:
+    """DEV-1943 D2 — the factory's single StaticPool builder for in-memory SQLite."""
+
+    def test_builder_uses_static_pool(self) -> None:
+        engine = engine_factory.build_in_memory_sqlite_engine("sqlite:///:memory:")
+        try:
+            assert type(engine.pool).__name__ == "StaticPool"
+        finally:
+            engine.dispose()
+
+    def test_builder_normalizes_bare_memory(self) -> None:
+        engine = engine_factory.build_in_memory_sqlite_engine(":memory:")
+        try:
+            assert type(engine.pool).__name__ == "StaticPool"
+        finally:
+            engine.dispose()
+
+    def test_builder_registers_udfs(self) -> None:
+        engine = engine_factory.build_in_memory_sqlite_engine(":memory:")
+        try:
+            with engine.connect() as conn:
+                conn.exec_driver_sql("CREATE TABLE t (v REAL)")
+                conn.exec_driver_sql("INSERT INTO t VALUES (1), (2), (3)")
+                assert conn.exec_driver_sql("SELECT median(v) FROM t").scalar() == 2.0
+        finally:
+            engine.dispose()
+
+    def test_builder_engine_is_one_db_across_threads(self) -> None:
+        engine = engine_factory.build_in_memory_sqlite_engine(":memory:")
+        try:
+            with engine.connect() as conn:
+                conn.exec_driver_sql("CREATE TABLE t (v INTEGER)")
+                conn.exec_driver_sql("INSERT INTO t VALUES (42)")
+                conn.commit()
+
+            def read_v() -> object:
+                with engine.connect() as conn:
+                    return conn.exec_driver_sql("SELECT v FROM t").scalar()
+
+            assert _in_worker(read_v) == 42, "worker thread must see the same in-memory db"
+        finally:
+            engine.dispose()
+
+
+class TestInMemoryFactoryCoherence:
+    """DEV-1943 — in-memory SQLite through the shared factory: one db per
+    datasource name, coherent across threads, disposed cleanly on reset."""
+
+    @staticmethod
+    def _mem(name: str) -> DatasourceConfig:
+        return DatasourceConfig(name=name, type="sqlite", database=":memory:")
+
+    def test_cache_key_carries_the_datasource_name_for_memory(self) -> None:
+        a, b = self._mem("iso_a"), self._mem("iso_b")
+        key_a = engine_factory._cache_key(datasource=a, connection_string=a.get_connection_string())
+        key_b = engine_factory._cache_key(datasource=b, connection_string=b.get_connection_string())
+        assert key_a != key_b, "two :memory: datasources must not share a cache key"
+
+    def test_cross_thread_coherence_through_the_factory(self) -> None:
+        engine_factory.reset_cache()
+        ds = self._mem("coh")
+        engine = engine_factory.get_engine(ds)
+        with engine.connect() as conn:
+            conn.exec_driver_sql("CREATE TABLE t (v INTEGER)")
+            conn.exec_driver_sql("INSERT INTO t VALUES (7)")
+            conn.commit()
+
+        def read_v() -> object:
+            with engine_factory.get_engine(ds).connect() as conn:
+                return conn.exec_driver_sql("SELECT v FROM t").scalar()
+
+        assert _in_worker(read_v) == 7
+        engine_factory.reset_cache()
+
+    def test_per_datasource_isolation_in_the_factory(self) -> None:
+        engine_factory.reset_cache()
+        a, b = self._mem("iso_a"), self._mem("iso_b")
+        with engine_factory.get_engine(a).connect() as conn:
+            conn.exec_driver_sql("CREATE TABLE only_a (x INTEGER)")
+            conn.commit()
+        with engine_factory.get_engine(b).connect() as conn:
+            tables = [
+                r[0] for r in conn.exec_driver_sql(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            ]
+        assert "only_a" not in tables, "distinct in-memory datasources must not share a db"
+        engine_factory.reset_cache()
+
+    def test_reset_closes_a_multithread_in_memory_engine_cleanly(self, caplog) -> None:
+        engine_factory.reset_cache()
+        ds = self._mem("multi")
+        engine = engine_factory.get_engine(ds)
+        with engine.connect() as conn:
+            conn.exec_driver_sql("CREATE TABLE t (v INTEGER)")
+            conn.commit()
+
+        def read_all() -> object:
+            with engine.connect() as conn:
+                return conn.exec_driver_sql("SELECT * FROM t").fetchall()
+
+        _in_worker(read_all)  # touch the engine from a second thread
+        with caplog.at_level(logging.WARNING), warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            engine_factory.reset_cache()
+        bad = [
+            r.message for r in caplog.records
+            if any(sig in r.message.lower() for sig in ("dispose", "close", "thread", "programmingerror"))
+        ]
+        assert not bad, bad
+        if _ON_313:
+            unclosed = [w for w in caught if "unclosed database" in str(w.message).lower()]
+            assert not unclosed, [str(w.message) for w in unclosed]

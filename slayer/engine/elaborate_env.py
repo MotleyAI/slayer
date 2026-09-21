@@ -30,8 +30,6 @@ from slayer.core.keys import (
     is_cross_model_agg,
     is_local_combined_regroup_ref,
     is_local_partitioned_agg,
-    is_reaggregation_key,
-    is_row_attach_root,
     split_top_level_and,
     ArithmeticKey,
     BetweenKey,
@@ -45,7 +43,6 @@ from slayer.core.keys import (
     ValueKey,
     regroup_root_grain,
     source_anchor_path,
-    walk_consumer_keys,
     walk_value_keys,
 )
 from slayer.core.models import SlayerModel
@@ -1035,30 +1032,6 @@ def check_reaggregation_dims_attributable(
         f"to the inner partition_by= so the operand is grained by them, "
         f"or choose 'broadcast'/'associate'."
     )
-
-
-def check_reaggregation_not_standalone_and_mixed(*, roots) -> None:
-    """Fail closed: a re-aggregation used BOTH on its own (a standalone re-aggregation)
-    and as a constituent of a mixed row-level aggregation needs its one shared producer
-    attached at two phases, whose nested-producer CTE emits out of dependency order on
-    strict dialects — deferred to DEV-1942."""
-    standalone: set = set()
-    mixed: set = set()
-    for root in roots:
-        for k in walk_consumer_keys(root):
-            if is_reaggregation_key(k):
-                standalone.add(k)
-        for k in walk_value_keys(root):
-            if is_row_attach_root(k):
-                mixed.update(a for a in attached_inputs(k) if is_reaggregation_key(a))
-    both = standalone & mixed
-    if both:
-        name = next(iter(both)).agg
-        raise ValueError(
-            f"Re-aggregation '{name}' is used both on its own and inside a mixed "
-            f"row-level aggregation in the same query; this shape is not yet "
-            f"supported. Select the two in separate queries."
-        )
 
 
 _RAW_ROW_FIX_HINT = (

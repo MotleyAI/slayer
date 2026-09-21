@@ -33,7 +33,8 @@ from slayer.sql.dialects.base import SqlDialect
 from slayer.sql.naming import encode_alias
 from slayer.storage.yaml_storage import YAMLStorage
 
-from tests._dev1739_fixtures import _engine_for, _seed_duckdb, _seed_sqlite, gen
+from tests._dev1739_fixtures import _seed_duckdb, _seed_sqlite, dev1739_models, gen
+from tests._engine_helpers import build_exec_engine
 from tests._dev1824_fixtures import BAND35, dev1824_models, q
 from tests.test_dev1824_golden_sql import GOLDEN_PATH, _cases
 
@@ -267,7 +268,7 @@ class TestForcedLimitExecution:
         db_path = str(tmp_path / f"data.{exec_dialect}")
         (_seed_sqlite if exec_dialect == "sqlite" else _seed_duckdb)(db_path)
 
-        engine_free = await _engine_for(dialect=exec_dialect, db_path=db_path)
+        engine_free = await build_exec_engine(db_path, dialect=exec_dialect, models=dev1739_models())
         sql_free = (await engine_free.execute(COLLIDE_QUERY, dry_run=True)).sql
         assert sql_free is not None
         quote = get_dialect(exec_dialect).quote_identifier
@@ -277,7 +278,7 @@ class TestForcedLimitExecution:
         assert len(rows_free) == 4
 
         _force_limit(monkeypatch, exec_dialect, FORCED_LIMIT)
-        engine_fit = await _engine_for(dialect=exec_dialect, db_path=db_path)
+        engine_fit = await build_exec_engine(db_path, dialect=exec_dialect, models=dev1739_models())
         sql_fit = (await engine_fit.execute(COLLIDE_QUERY, dry_run=True)).sql
         assert sql_fit is not None
         for canon in (CANON_REGION, CANON_CITY):

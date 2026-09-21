@@ -1,7 +1,6 @@
 """Persist what kind of database object backs a model."""
 from __future__ import annotations
 
-import sqlite3
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -20,8 +19,11 @@ from slayer.engine.ingestion import (
     list_ingestable_objects,
 )
 from slayer.storage.migrations import CURRENT_VERSIONS, migrate
+from slayer.storage.sqlite_conn import transaction
 from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.yaml_storage import YAMLStorage
+
+from tests._engine_helpers import disposable_engine
 
 
 @pytest.fixture
@@ -35,10 +37,8 @@ def workspace():
 
 def _ds(workspace: Path, script: str, name: str = "live.db") -> tuple[str, DatasourceConfig]:
     db_path = str(workspace / name)
-    conn = sqlite3.connect(db_path)
-    conn.executescript(script)
-    conn.commit()
-    conn.close()
+    with transaction(db_path) as conn:
+        conn.executescript(script)
     return db_path, DatasourceConfig(name="ds", type="sqlite", database=db_path)
 
 
@@ -78,8 +78,7 @@ class TestClassification:
     ) -> None:
         """The dbt and OSI converters call this without a kind and must be unaffected."""
         db_path, ds = _ds(workspace, _TABLE_AND_VIEW)
-        engine = sa.create_engine(f"sqlite:///{db_path}")
-        try:
+        with disposable_engine(f"sqlite:///{db_path}") as engine:
             model = introspect_table_to_model(
                 sa_engine=engine,
                 inspector=sa.inspect(engine),
@@ -88,8 +87,6 @@ class TestClassification:
                 data_source="ds",
             )
             assert model.source_kind is None
-        finally:
-            engine.dispose()
 
 
 # ---------------------------------------------------------------------------
@@ -214,15 +211,13 @@ class TestSourceKindRefresh:
         assert first.source_kind == "view"
 
         # dbt's `+materialized: table` — same name, same columns, now a table.
-        conn = sqlite3.connect(db_path)
-        conn.executescript(
-            """
-            DROP VIEW foo;
-            CREATE TABLE foo (id INTEGER PRIMARY KEY, amount REAL);
-            """
-        )
-        conn.commit()
-        conn.close()
+        with transaction(db_path) as conn:
+            conn.executescript(
+                """
+                DROP VIEW foo;
+                CREATE TABLE foo (id INTEGER PRIMARY KEY, amount REAL);
+                """
+            )
 
         await ingest_datasource_idempotent(datasource=ds, storage=storage)
         second = await storage.get_model("foo", data_source="ds")
@@ -247,12 +242,10 @@ class TestSourceKindRefresh:
         assert first is not None
         assert first.source_kind == "table"
 
-        conn = sqlite3.connect(db_path)
-        conn.executescript(
-            "DROP TABLE foo; CREATE VIEW foo AS SELECT id, amount FROM src;"
-        )
-        conn.commit()
-        conn.close()
+        with transaction(db_path) as conn:
+            conn.executescript(
+                "DROP TABLE foo; CREATE VIEW foo AS SELECT id, amount FROM src;"
+            )
 
         await ingest_datasource_idempotent(datasource=ds, storage=storage)
         second = await storage.get_model("foo", data_source="ds")
@@ -271,12 +264,10 @@ class TestSourceKindRefresh:
         storage = YAMLStorage(base_dir=str(workspace / "storage"))
         await ingest_datasource_idempotent(datasource=ds, storage=storage)
 
-        conn = sqlite3.connect(db_path)
-        conn.executescript(
-            "DROP VIEW foo; CREATE TABLE foo (id INTEGER PRIMARY KEY, amount REAL);"
-        )
-        conn.commit()
-        conn.close()
+        with transaction(db_path) as conn:
+            conn.executescript(
+                "DROP VIEW foo; CREATE TABLE foo (id INTEGER PRIMARY KEY, amount REAL);"
+            )
 
         result = await ingest_datasource_idempotent(datasource=ds, storage=storage)
         addition = next(a for a in result.additions if a.model_name == "foo")

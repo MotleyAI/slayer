@@ -1,7 +1,5 @@
 """Unit tests for exact-numeric detection and native-type preservation."""
 
-import sqlite3
-
 import pytest
 
 from slayer.core.enums import DataType
@@ -15,6 +13,7 @@ from slayer.engine.introspect_utils import (
 from slayer.engine.key_metadata import measure_key_preserves_native_type
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.dialects import get_dialect
+from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -82,14 +81,12 @@ class TestSqliteKeepsInferredCast:
 
     async def test_sqlite_decimal_sum_keeps_double_cast(self, tmp_path):
         db_path = str(tmp_path / "decimal.db")
-        conn = sqlite3.connect(db_path)
-        with conn:
+        with transaction(db_path) as conn:
             conn.execute(
                 "CREATE TABLE orders (id INT PRIMARY KEY, amount DECIMAL(18,2))"
             )
             # Integral values get INTEGER affinity — an un-cast SUM returns int.
             conn.execute("INSERT INTO orders VALUES (1, 1.00), (2, 2.00)")
-        conn.close()
 
         datasource = DatasourceConfig(name="test", type="sqlite", database=db_path)
         model = next(

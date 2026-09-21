@@ -27,7 +27,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from slayer.core.enums import DataType, JoinType, RANKED_AGGREGATIONS, TimeGranularity
 from slayer.core.errors import AmbiguousJoinPathError
-from slayer.core.keys import AggregateKey, Grain, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, PREDICATE_COMPARISON_OPS, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, regroup_root_grain, effective_root_grain, constituent_grain, attached_parameter_grain, substitute_value_keys, walk_value_keys, walk_consumer_keys, REGROUP_LEAF_PREFIX, is_cross_model_agg, is_local_partitioned_agg, split_top_level_and, window_kwarg_of, is_reaggregation_key, is_row_attach_root, attached_inputs, operand_aggregates, operand_constituents, source_anchor_path
+from slayer.core.keys import AggregateKey, Grain, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, PREDICATE_COMPARISON_OPS, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, regroup_root_grain, effective_root_grain, constituent_grain, attached_parameter_grain, substitute_value_keys, substitute_consumer_keys, walk_value_keys, walk_consumer_keys, REGROUP_LEAF_PREFIX, is_cross_model_agg, is_local_partitioned_agg, split_top_level_and, window_kwarg_of, is_reaggregation_key, is_row_attach_root, attached_inputs, operand_aggregates, operand_constituents, source_anchor_path
 from slayer.core.models import Column, SlayerModel
 from slayer.engine.reference_closure import (
     ParamSpec,
@@ -2259,21 +2259,27 @@ def _association_present_keys(
 
 def _substitute_prebound(
     prebound: PreboundQuery, mapping: Mapping[ValueKey, ValueKey],
+    *, substitute: Callable[..., ValueKey] = substitute_value_keys,
 ) -> PreboundQuery:
-    """Substitute value keys across a prebound's measures / filters / orders."""
+    """Substitute value keys across a prebound's measures / filters / orders.
+
+    ``substitute`` selects the traversal law: deep by default; the re-aggregation
+    pre-substitution passes ``substitute_consumer_keys`` so a root nested where
+    discovery does not look (a mixed row-attach source) is never substituted away."""
     return prebound.model_copy(update={
         "declared_measures": [
             dm.model_copy(update={"bound": BoundExpr(
-                value_key=substitute_value_keys(dm.bound.value_key, mapping),
+                value_key=substitute(key=dm.bound.value_key, mapping=mapping),
             )})
             for dm in prebound.declared_measures
         ],
         "bound_filters": [
-            substitute_in_bound_filter(bf, mapping) for bf in prebound.bound_filters
+            substitute_in_bound_filter(bf, mapping, substitute=substitute)
+            for bf in prebound.bound_filters
         ],
         "order_specs": [
             sp.model_copy(update={"bound": BoundExpr(
-                value_key=substitute_value_keys(sp.bound.value_key, mapping),
+                value_key=substitute(key=sp.bound.value_key, mapping=mapping),
             )})
             for sp in prebound.order_specs
         ],
@@ -2396,6 +2402,7 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
     inherited: List[BoundFilter],
     n_date_range: int,
     population_filters: Optional["PopulationFilters"] = None,
+    population_semi_join_measures: Optional[List[str]] = None,
 ) -> RegroupAttachPlan:
     """Compile a re-aggregation (DEV-1847) as producer-over-producer: a carrier
     at the operand's union grain (the inner producers) and an outer aggregate
@@ -2551,6 +2558,14 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
     # placeholder (decision 12).
     for orig, ck in param_constituent_of.items():
         constituent_placeholders[orig] = constituent_placeholders[ck]
+    # The public measure names this re-aggregation reports under (D6): a standalone
+    # root its own alias; a mixed constituent the row-attach roots consuming it.
+    if population_semi_join_measures is not None:
+        semi_join_names = list(population_semi_join_measures)
+    elif public_alias:
+        semi_join_names = [public_alias]
+    else:
+        semi_join_names = []
     carrier_attach = _build_carrier_attach(
         union_grain=union_grain, constituents=constituents,
         constituent_placeholders=constituent_placeholders, host_model=host_model,
@@ -2561,6 +2576,7 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
         projected_td_keys=context.projected_td_keys,
         active_bucket=prebound.main_time_key,
         population_filters=population_filters,
+        population_semi_join_measures=semi_join_names,
     )
 
     # The outer producer: OUTER_AGG over the constituent composite (placeholders),
@@ -2679,6 +2695,9 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
         degenerate_outer_grain=(
             [_regroup_grain_name(g) for g in outer_grain] if degenerate else []
         ),
+        population_semi_join_measures=(
+            semi_join_names if outer_plan.semi_join_filters else []
+        ),
     )
 
 
@@ -2699,6 +2718,7 @@ def _build_carrier_attach(
     projected_td_keys: List[ValueKey],
     active_bucket: Optional[ValueKey],
     population_filters: Optional["PopulationFilters"] = None,
+    population_semi_join_measures: Optional[List[str]] = None,
 ) -> RegroupAttachPlan:
     """A row-attach producer at the union grain carrying every constituent (coarser
     ones broadcast within it) — the carrier / level-1 of the re-aggregation."""
@@ -2777,6 +2797,13 @@ def _build_carrier_attach(
         # Host-rooted like a local row attach (root None), so a structurally
         # identical standalone producer interns to one CTE.
         producer_root_model=None,
+        # The carrier reads the base rows, so a population semi-join inherited here
+        # reports under the enclosing measure names (D6).
+        population_semi_join_measures=(
+            list(population_semi_join_measures)
+            if population_semi_join_measures and carrier_plan.semi_join_filters
+            else []
+        ),
     )
 
 
@@ -2932,7 +2959,11 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
                         reagg_phase[k] = "row"
         for root in reagg_roots:
             reagg_phase.setdefault(root, "combined")
-        prebound = _substitute_prebound(prebound, reagg_mapping)
+        # Consumer-scoped: leave a root nested in a mixed row-attach source in
+        # place so the row-attach discovery below still finds it (DEV-1942 D1).
+        prebound = _substitute_prebound(
+            prebound, reagg_mapping, substitute=substitute_consumer_keys,
+        )
     # Row-attach roots: a partitioned aggregate or a transform over one; row_inner_aggs are bare aggregates inside dimensions.
     if local_discovery:
         row_aggs = dimension_regroup_roots(prebound.declared_measures)
@@ -3071,6 +3102,18 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
     # so no subtraction is needed.
     mixed_inline_inner: List[ValueKey] = []
     reagg_constituents: List[AggregateKey] = []
+    # Constituent -> public names of the row-attach measures consuming it: a mixed
+    # constituent's population semi-join reports under the selected measure (D6).
+    reagg_constituent_consumers: Dict[ValueKey, List[str]] = {}
+    root_public_names: Dict[ValueKey, List[str]] = {}
+    for dm in prebound.declared_measures:
+        if dm.is_dimension or not dm.public_name:
+            continue
+        for k in walk_value_keys(dm.bound.value_key):
+            if is_row_attach_root(k):
+                names = root_public_names.setdefault(k, [])
+                if dm.public_name not in names:
+                    names.append(dm.public_name)
     row_attach_roots = (
         _discover_roots(prebound, predicate=is_row_attach_root)
         if local_discovery else []
@@ -3082,15 +3125,20 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
             if root in producer_bound:  # own-producer: its sub-plan row-attaches
                 continue
             for a in attached_inputs(root):  # inline: broadcast each onto rows
-                if a in seen_inner:
-                    continue
-                seen_inner.add(a)
-                mixed_inline_inner.append(a)
                 # A re-aggregation constituent (an aggregate over attached values,
                 # hand-written or the first/last collapse) evaluates at its OWN
                 # grain and broadcasts per partition onto the rows — the
                 # second-order carrier / outer path, not the row-grain attach a
                 # plain aggregate or transform takes (DEV-1928).
+                if is_reaggregation_key(a):
+                    consumers_of = reagg_constituent_consumers.setdefault(a, [])
+                    for nm in root_public_names.get(root, []):
+                        if nm not in consumers_of:
+                            consumers_of.append(nm)
+                if a in seen_inner:
+                    continue
+                seen_inner.add(a)
+                mixed_inline_inner.append(a)
                 if is_reaggregation_key(a):
                     reagg_constituents.append(a)
                     continue
@@ -3392,6 +3440,8 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
             declared_type=None,
             producer_registry=producer_registry, registry=registry,
             inherited=inherited, n_date_range=n_inherited_date,
+            population_filters=population_filters,
+            population_semi_join_measures=reagg_constituent_consumers.get(c, []),
         ))
 
     # The ROW substitution applies ONLY to computed DIMENSIONS; a non-dim measure

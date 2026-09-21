@@ -14,6 +14,7 @@ SLayer model name) must keep lowering to a one-hop dotted ref.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -49,6 +50,7 @@ from slayer.osi.models import (
 
 # Shared fixtures (calling a ``__``-named builder raises TODAY — the fail signal).
 from tests._dev1743_fixtures import chain_models
+from tests._engine_helpers import disposable_engine
 
 DS = "test"
 
@@ -59,19 +61,19 @@ DS = "test"
 
 
 @pytest.fixture
-def sqlite_engine(tmp_path: Path) -> sa.Engine:
-    engine = sa.create_engine(f"sqlite:///{tmp_path}/live.db")
-    with engine.connect() as conn:
-        conn.execute(sa.text(
-            "CREATE TABLE orders (order_id INTEGER PRIMARY KEY, amount REAL)"
-        ))
-        # A regular dbt staging model whose materialized table name carries ``__``.
-        conn.execute(sa.text(
-            "CREATE TABLE stg_jaffle_shop__orders "
-            "(id INTEGER PRIMARY KEY, amount REAL)"
-        ))
-        conn.commit()
-    return engine
+def sqlite_engine(tmp_path: Path) -> Iterator[sa.Engine]:
+    with disposable_engine(f"sqlite:///{tmp_path}/live.db") as engine:
+        with engine.connect() as conn:
+            conn.execute(sa.text(
+                "CREATE TABLE orders (order_id INTEGER PRIMARY KEY, amount REAL)"
+            ))
+            # A regular dbt staging model whose materialized table name carries ``__``.
+            conn.execute(sa.text(
+                "CREATE TABLE stg_jaffle_shop__orders "
+                "(id INTEGER PRIMARY KEY, amount REAL)"
+            ))
+            conn.commit()
+        yield engine
 
 
 def _osi_expr(sql: str) -> OSIExpression:

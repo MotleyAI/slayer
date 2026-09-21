@@ -73,7 +73,7 @@ Stage-2 filter band==1 by region: North=60 South=40 NULL=7; re-agg by band:
 
 from __future__ import annotations
 
-import sqlite3
+from slayer.storage.sqlite_conn import transaction
 from typing import AsyncIterator, List
 
 import pytest
@@ -89,14 +89,10 @@ from slayer.core.models import (
 )
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
+from tests._engine_helpers import seeded_exec_engine
 
 from tests._dev1835_fixtures import cte_aliases  # noqa: F401 — re-exported
 from tests._engine_helpers import _engine_generate
-from tests._exec_fixture_helpers import (
-    make_exec_engine as _shared_exec_engine,
-    month_key,
-    rows_by,
-)
 
 
 # --------------------------------------------------------------------------- #
@@ -337,28 +333,26 @@ _TAGS_ROWS = [
 
 
 def _seed_sqlite(db_path: str) -> None:
-    con = sqlite3.connect(db_path)
-    cur = con.cursor()
-    cur.execute("CREATE TABLE regions (id INTEGER PRIMARY KEY, name TEXT, weight REAL)")
-    cur.executemany("INSERT INTO regions VALUES (?,?,?)", _REGIONS_ROWS)
-    cur.execute(
-        "CREATE TABLE segments (code TEXT, label TEXT, boost REAL, updated_at TEXT)"
-    )
-    cur.executemany("INSERT INTO segments VALUES (?,?,?,?)", _SEGMENTS_ROWS)
-    cur.execute(
-        "CREATE TABLE customers (id INTEGER PRIMARY KEY, region_id INTEGER, "
-        "segment_code TEXT, tier TEXT, spend REAL, signup_at TEXT)"
-    )
-    cur.executemany("INSERT INTO customers VALUES (?,?,?,?,?,?)", _CUSTOMERS_ROWS)
-    cur.execute(
-        "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, "
-        "region TEXT, city TEXT, amount REAL, status TEXT, ordered_at TEXT)"
-    )
-    cur.executemany("INSERT INTO orders VALUES (?,?,?,?,?,?,?)", _ORDERS_ROWS)
-    cur.execute("CREATE TABLE tags (order_id INTEGER, kind TEXT, factor REAL)")
-    cur.executemany("INSERT INTO tags VALUES (?,?,?)", _TAGS_ROWS)
-    con.commit()
-    con.close()
+    with transaction(db_path) as con:
+        cur = con.cursor()
+        cur.execute("CREATE TABLE regions (id INTEGER PRIMARY KEY, name TEXT, weight REAL)")
+        cur.executemany("INSERT INTO regions VALUES (?,?,?)", _REGIONS_ROWS)
+        cur.execute(
+            "CREATE TABLE segments (code TEXT, label TEXT, boost REAL, updated_at TEXT)"
+        )
+        cur.executemany("INSERT INTO segments VALUES (?,?,?,?)", _SEGMENTS_ROWS)
+        cur.execute(
+            "CREATE TABLE customers (id INTEGER PRIMARY KEY, region_id INTEGER, "
+            "segment_code TEXT, tier TEXT, spend REAL, signup_at TEXT)"
+        )
+        cur.executemany("INSERT INTO customers VALUES (?,?,?,?,?,?)", _CUSTOMERS_ROWS)
+        cur.execute(
+            "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, "
+            "region TEXT, city TEXT, amount REAL, status TEXT, ordered_at TEXT)"
+        )
+        cur.executemany("INSERT INTO orders VALUES (?,?,?,?,?,?,?)", _ORDERS_ROWS)
+        cur.execute("CREATE TABLE tags (order_id INTEGER, kind TEXT, factor REAL)")
+        cur.executemany("INSERT INTO tags VALUES (?,?,?)", _TAGS_ROWS)
 
 
 def _seed_duckdb(db_path: str) -> None:
@@ -387,11 +381,28 @@ def _seed_duckdb(db_path: str) -> None:
 
 
 async def make_exec_engine(request) -> AsyncIterator[SlayerQueryEngine]:
-    """Wrap the shared exec-engine body with this module's seeds and models."""
-    async for engine in _shared_exec_engine(
-        request, seed_sqlite=_seed_sqlite, seed_duckdb=_seed_duckdb, models=dev1838_models(),
-    ):
+    """Body for a ``params=["sqlite", "duckdb"]`` fixture; each test module
+    wraps this in ``@pytest.fixture`` so the fixture name lives where used."""
+    dialect = request.param
+    if dialect == "duckdb":
+        pytest.importorskip("duckdb")
+    seed = _seed_duckdb if dialect == "duckdb" else _seed_sqlite
+    async with seeded_exec_engine(dialect=dialect, seed=seed, models=dev1838_models()) as (engine, _db):
         yield engine
+
+
+def month_key(value) -> str:
+    """Stable per-month key across SQLite text and DuckDB timestamp values."""
+    return str(value)[:7]
+
+
+def rows_by(resp, *keys) -> dict:
+    """Index ``resp.data`` rows by the given result-column key tuple."""
+    out = {}
+    for r in resp.data:
+        out[tuple(r[k] for k in keys)] = r
+    assert len(out) == len(resp.data), "duplicate result rows for one group key"
+    return out
 
 
 def broadcast_warnings(resp) -> list:
