@@ -10616,8 +10616,10 @@ class TestWindowedMeasureGuards:
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
             measures=[{"formula": "revenue:min(window='30d')", "name": "rev_w"}],
         )
-        with pytest.raises(ValueError, match="only supported for sum and avg"):
-            await _engine_generate(query=query, model=orders_model)
+        # DEV-1915 lift: window= is no longer restricted to sum/avg; min renders.
+        sql = await _engine_generate(query=query, model=orders_model)
+        assert_scope_closed(sql, dialect="postgres")
+        assert "__regroup__" not in sql
 
     async def test_windowed_no_time_dimension_raises(self, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
@@ -10755,7 +10757,8 @@ class TestWindowedMeasureGuards:
             await _engine_generate(query=query, model=orders_model)
 
     async def test_custom_aggregation_with_window_raises(self) -> None:
-        """The ``window`` kwarg name is reserved for sum/avg; invoking a custom aggregation with ``window=`` must raise G1 (legacy parity — legacy pops ``window`` unconditionally before dispatch)."""
+        """DEV-1915: a custom model-level aggregation accepts ``window=`` like any
+        built-in; its formula renders over the trailing interval's rows."""
         model = SlayerModel(
             name="orders", sql_table="public.orders", data_source="test",
             columns=[
@@ -10770,8 +10773,9 @@ class TestWindowedMeasureGuards:
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
             measures=[{"formula": "amount_col:myagg(window='90d')", "name": "w"}],
         )
-        with pytest.raises(ValueError, match="only supported for sum and avg"):
-            await _engine_generate(query=query, model=model)
+        sql = await _engine_generate(query=query, model=model)
+        assert_scope_closed(sql, dialect="postgres")
+        assert "__regroup__" not in sql
 
     async def test_windowed_transform_input_precedence_not_selected(
         self, orders_model: SlayerModel,
@@ -10816,9 +10820,10 @@ class TestWindowedMeasureGuards:
             return ResolvedSourceBundle(source_model=model, referenced_models=referenced or [])
 
         if case == "g1_non_sum_avg":
+            # DEV-1915 lift: window= is no longer sum/avg-only — min plans cleanly.
             q = SlayerQuery(source_model="orders", time_dimensions=td,
                             measures=[{"formula": "revenue:min(window='30d')", "name": "rev_w"}])
-            bundle, exc, match = _bundle(_plain()), ValueError, "only supported for sum and avg"
+            bundle, exc, match = _bundle(_plain()), None, None
         elif case == "g2_no_time_dim":
             q = SlayerQuery(source_model="orders", dimensions=[ColumnRef(name="status")],
                             measures=[{"formula": "revenue:sum(window='30d')", "name": "rev_w"}])

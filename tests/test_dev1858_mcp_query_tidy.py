@@ -19,6 +19,7 @@ from slayer.core.query import SlayerQuery
 from slayer.mcp.server import create_mcp_server
 from slayer.storage.yaml_storage import YAMLStorage
 from tests import _dev1836_fixtures as fx
+from tests._exec_fixture_helpers import engine_for
 
 RETIRED_ARGS = {
     "source_model", "measures", "dimensions", "filters", "time_dimensions",
@@ -259,7 +260,7 @@ async def broadcast_server(tmp_path):
     ``to_many_handling='error'``."""
     db_path = str(tmp_path / "data.sqlite")
     fx._seed_sqlite(db_path)
-    engine = await fx._engine_for(dialect="sqlite", db_path=db_path)
+    engine = await engine_for(dialect="sqlite", db_path=db_path, models=fx.dev1836_models())
     return create_mcp_server(storage=engine.storage)
 
 

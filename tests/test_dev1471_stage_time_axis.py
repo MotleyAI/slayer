@@ -12,6 +12,8 @@ from slayer.core.models import Column, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
 from tests._dev1471_fixtures import (
     BACKENDS,
+    MONTHLY_INNER as _INNER,
+    MONTHLY_ROWS as _MONTHLY,
     date_str,
     make_engine,
     orders_model,
@@ -21,20 +23,6 @@ from tests._dev1471_fixtures import (
 )
 
 TG = TimeGranularity
-
-# One order per month, Jan–Apr 2025 (id, customer_id, amount, region, created_at, shipped_at).
-_MONTHLY = [
-    (1, 100, 100.0, "W", "2025-01-10", "2025-02-10"),
-    (2, 101, 200.0, "E", "2025-02-05", "2025-03-05"),
-    (3, 102, 300.0, "N", "2025-03-15", "2025-04-15"),
-    (4, 103, 400.0, "S", "2025-04-20", "2025-05-20"),
-]
-
-_INNER = SlayerQuery.model_validate({
-    "name": "s1", "source_model": "orders",
-    "time_dimensions": [TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TG.MONTH)],
-    "measures": [{"formula": "amount:sum", "name": "rev"}],
-})
 
 
 async def _exec_outer(backend: str, tmp: str, outer: SlayerQuery, *, tables=None, models=None, inner=None):

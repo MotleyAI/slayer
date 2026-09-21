@@ -92,7 +92,7 @@ These are always available — no definition needed:
 |------------|-------------|
 | `sum` | SUM(expr) |
 | `avg` | AVG(expr) |
-| `sum(window='90d')` / `avg(window='90d')` | trailing range SUM/AVG ending at each output bucket |
+| `<agg>(window='90d')` | any aggregation over the source rows in the trailing range ending at each output bucket |
 | `min` / `max` | MIN/MAX(expr) |
 | `count` | COUNT(expr), or COUNT(\*) with `*` |
 | `count_distinct` | COUNT(DISTINCT expr) |
@@ -129,7 +129,7 @@ These are always available — no definition needed:
 | Redshift | `APPROXIMATE COUNT(DISTINCT x)` |
 | Postgres / SQLite / MySQL | `COUNT(DISTINCT x)` (exact fallback) |
 
-`sum` and `avg` can take a trailing time `window` when the query has a time
+Any aggregation can take a trailing time `window` when the query has a time
 dimension:
 
 ```json

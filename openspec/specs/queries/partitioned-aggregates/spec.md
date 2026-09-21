@@ -784,27 +784,37 @@ its `partition_by=` still gets the outer attach the grain join needs.
 ### Requirement: Attached parameters on row-level sources
 An aggregation over a row-level source whose parameter — keyword or
 positional; a definition default is Mode-A text and cannot carry an attached
-value — is an attached (aggregate-valued) value SHALL compile when the
-aggregation's operating grain determines the parameter. An aggregate is
-determined by a grain iff that grain determines each of its partition keys: a
-grain member, a column reached from a grain member over provably to-one join
-hops, or an aggregate-valued key whose own grain is so determined; an
-expression-valued partition key is determined only as an exact grain member.
-The parameter's producer is computed at its own declared grain and its value
-attached into the aggregation's input relation — per entity row for an
-associate-mode aggregation, per population row otherwise — null-safely on the
-producer's complete grain. The source alone decides that the aggregation runs
-over rows: a source with any row-level leaf, or with no attached constituent at
-all (a literal), is row grain; a parameter never changes that, and an attached
+value — is an attached value (an aggregate or a grained transform) SHALL
+compile when the aggregation's operating grain determines the parameter. An
+aggregate is determined by a grain iff that grain determines each of its
+partition keys: a grain member, a column reached from a grain member over
+provably to-one join hops, or an aggregate-valued key whose own grain is so
+determined; an expression-valued partition key is determined only as an exact
+grain member; a transform is determined iff its result grain is. The
+parameter's producer is computed at the parameter's OWN home — the deepest
+dataset determining the parameter's own inputs, resolved bottom-up — at its own
+declared grain, and its value attached into the aggregation's input relation
+per home row of the aggregation, in every `to_many_handling` mode, null-safely
+on the producer's complete grain; the attachment is well-defined only when the
+home determines every member of the parameter's resolved grain, judged by one
+home-determination rule on the plain and association paths alike; the mode
+governs the aggregation's own unattributable dimensions and, inside the
+parameter's own producer, its explicit-partition-key rule — never where the
+parameter is computed. The source alone decides that the aggregation runs over rows: a
+source with any row-level leaf, or with no attached constituent at all (a
+literal), is row grain; a parameter never changes that, and an attached
 parameter beside a mixed source is attached by the same mechanism as the
 source's constituents. A cross-model attached parameter on a local root
 attaches through a target-rooted producer like any cross-model attached
 constituent, subject to the existing input-safety rules. A NULL grain-key value
 forms its own cell and attaches null-safely, per the established null rules. A
 parameter the operating grain does not determine SHALL keep its typed
-rejection. Outer parameters on fully-attached (re-aggregation) sources keep
-their existing rules. The shape SHALL be legal in measure, filter (typing as a
-measure) and ORDER BY positions.
+rejection. A parameter whose own inputs are unsafe — a partition key fanning
+from the parameter's own home, or a dependency no dialect can analyse — SHALL
+fail closed with the existing typed error in every mode; the enclosing
+aggregation never inspects the parameter's interior. Outer parameters on
+fully-attached (re-aggregation) sources keep their existing rules. The shape
+SHALL be legal in measure, filter (typing as a measure) and ORDER BY positions.
 
 #### Scenario: Associate-mode attached parameter executes
 - **WHEN** a query rooted at `orders` over `[status]` under
@@ -844,14 +854,21 @@ measure) and ORDER BY positions.
 #### Scenario: Default-mode twin of the associate shape
 - **WHEN** the associate-mode query above runs under the default
   `to_many_handling`
-- **THEN** it fails at plan time with a typed error naming the producer's root
-  `customers`, the leaf `amount` the root cannot reach, and the `associate`
-  remedy — the parameter's producer would have to be rooted at `orders` and
-  attached into the `customers`-rooted producer; the same aggregation with
-  `weight=sum(customers.spend, partition_by=customers.regions.name)` executes,
-  broadcast to every `status` cell with the usual warning; under
-  `to_many_handling: "error"` the query fails with the mode's refusal naming
-  the dimension, never a parameter error
+- **THEN** it executes: the parameter's producer is rooted at `orders` (its own
+  home) grouped by the customer's region, attached per customer row inside the
+  `customers`-rooted producer, and the customers-rooted weighted average over
+  every customer — the orderless one weighted by its region's total, the
+  region-less one by the NULL-region cell — is broadcast identically to both
+  `status` cells (33780 / 407 on the reference dataset) with the usual broadcast
+  warning naming `status`; under `to_many_handling: "error"` the query fails
+  with the mode's refusal naming the dimension, never a parameter error
+
+#### Scenario: Every mode agrees on attributable dimensions
+- **WHEN** the same aggregation is selected by `customers.tier` — a dimension
+  the home determines — under `broadcast`, `associate` and `error`
+- **THEN** all three modes return identical hand-computed values on SQLite and
+  DuckDB (gold 63.75, silver 138.33, bronze 40 on the reference dataset, the
+  orphan order's NULL tier NULL) with no broadcast or association warning
 
 #### Scenario: Cross-model attached parameter on a local root
 - **WHEN** a query rooted at `orders` selects
@@ -860,6 +877,77 @@ measure) and ORDER BY positions.
   row and the query executes with hand-computed values; a parameter whose
   path crosses a fanning or unproven hop fails with the existing typed
   input-safety error, never wrong values
+
+#### Scenario: Recursively nested attached parameters
+- **WHEN** a query rooted at `orders` selects
+  `customers.spend:weighted_avg(weight=weighted_avg(amount, weight=sum(customers.regions.pop, partition_by=customers.regions.name), partition_by=customers.regions.name))`
+  — three homes: `customers` for the outer, `orders` for the per-region
+  weighted average of order amounts, `regions` for the innermost population sum
+- **THEN** each level's producer is rooted at its own home and attached one
+  level up by its grain, and the query executes under the default mode with the
+  hand-computed value broadcast to every `status` cell (the region-less
+  customer's NULL innermost weight excludes it), on SQLite and DuckDB
+
+#### Scenario: Ranked transform as the attached parameter
+(Target behaviour, deferred to DEV-1903 — bind refuses a transform argument
+today; pinned by a strict xfail.)
+- **WHEN** a query rooted at `orders` selects
+  `customers.spend:weighted_avg(weight=rank(sum(amount, partition_by=customers.regions.name)))`
+  — the region cells ranked by their order-amount total, the NULL-name region
+  forming its own ranked cell
+- **THEN** the transform is the attached input at its result grain, and the query
+  executes under the default mode by `status` (broadcast, warned) and under every
+  mode by `customers.tier` with identical hand-computed values
+
+#### Scenario: Transform parameter whose grain the home does not determine fails closed
+(Target behaviour, deferred to DEV-1903 — bind refuses a transform argument
+today; pinned by a strict xfail.)
+- **WHEN** a query rooted at `orders` over a month time dimension on `ordered_at`
+  selects
+  `customers.spend:weighted_avg(weight=cumsum(sum(amount, partition_by=[customers.regions.name, ordered_at])))`
+- **THEN** the query fails in every mode with the typed determination error
+  naming the parameter — `customers` does not determine the order month in the
+  transform's grain — never a multiplied or broadcast value
+
+#### Scenario: Windowed aggregation with an attached parameter
+(Target behaviour, deferred to DEV-1915 — the `window=` sum/avg allowlist refuses
+it today; pinned by a strict xfail. The constituent form executes: see
+`aggregations/expression-aggregation` › Windowed aggregation with an attached
+constituent.)
+- **WHEN** a query rooted at `orders` over a month time dimension on
+  `customers.signup_at` selects
+  `customers.spend:weighted_avg(window='1y', weight=sum(amount, partition_by=customers.regions.name))`
+- **THEN** each signup-month bucket carries the trailing-window weighted average
+  over the customers signed up in the window, each weighted by its region's
+  total, identical under every mode with no warning (100, 125, 28080 / 267,
+  33780 / 407 on the reference dataset; the orphan order's NULL bucket NULL)
+
+#### Scenario: Unanalysable dependency inside an attached parameter fails closed
+- **WHEN** an attached parameter's own source names a derived column whose
+  definition no supported dialect can parse
+- **THEN** the query fails at plan time in every mode with the analyzability
+  error naming that column — the parameter's own producer fails closed even
+  though the enclosing aggregation never inspects it
+
+#### Scenario: Attached parameter whose own partition key fans from its own home fails closed
+- **WHEN** a query rooted at `orders` selects
+  `amount:weighted_avg(weight=sum(customers.regions.pop, partition_by=customers.regions.bad_pop))`
+  — the parameter's home is `regions` and `bad_pop` crosses the fanning
+  `regions → region_events` hop from it
+- **THEN** the query fails in every mode with the existing mode-invariant
+  partition-key error naming `bad_pop` and the hop `region_events`, never a
+  multiplied value
+
+#### Scenario: Attached parameter keyed by a host column keeps the mode-aware rule
+- **WHEN** a query rooted at `orders` over `[status]` selects
+  `amount:weighted_avg(weight=sum(customers.spend, partition_by=status))` — `status`
+  is a plain host column, unattributable only from the parameter's home
+  `customers`
+- **THEN** under `broadcast` and `error` the query fails with the explicit
+  partition-key error naming `status` and `customers`; under `associate` the
+  parameter associates `status` per cell (per `queries/attribution-modes`) and
+  each order is weighted by its cell's distinct-customer spend total — 82 / 7 for
+  `ok`, 85 / 3 for `new` on the reference dataset — by executed values
 
 #### Scenario: Attached parameter in filter and order positions
 - **WHEN** the ordinary-mode measure or the mixed-plus-parameter measure above
@@ -878,6 +966,9 @@ measure) and ORDER BY positions.
 
 #### Scenario: Undetermined attached parameter stays rejected
 - **WHEN** the aggregation's operating grain does not determine the attached
-  parameter
-- **THEN** the query fails with the typed determination error, never wrong
-  values
+  parameter — e.g. `customers.spend:weighted_avg(weight=sum(customers.spend, partition_by=status))`
+  rooted at `orders`, whose home `customers` does not determine the grain member
+  `status` — under any `to_many_handling` mode, by an attributable
+  (`customers.tier`) or an unattributable (`status`) dimension
+- **THEN** the query fails with the typed determination error naming the
+  parameter, never wrong values; the plain and association paths refuse alike
