@@ -3,7 +3,8 @@
 A derived ``Column.sql`` / ``Column.filter`` reference must be a function of its
 declaring model's row (Axiom 1): it may cross only provably to-one hops. Called
 from ``StorageBackend.save_model`` (skipped under ``_validate=False``), this
-early-failure layer rejects a path that provably fans (``DerivedColumnFanningError``),
+early-failure layer rejects a path that revisits a model already on it
+(``DerivedColumnCircularError``) or provably fans (``DerivedColumnFanningError``),
 warns on an unproven hop (query-time input-safety gate is the backstop), and
 rejects a derived-column cycle (``ColumnCycleError``). Best-effort, same-datasource,
 saved model only; unresolved/unloaded/ambiguous targets are skipped and the
@@ -19,7 +20,9 @@ import sqlglot
 
 from slayer.core.errors import (
     AmbiguousJoinPathError,
+    CircularJoinPathError,
     ColumnCycleError,
+    DerivedColumnCircularError,
     DerivedColumnFanningError,
 )
 from slayer.core.join_walker import resolve_hop, walk
@@ -288,7 +291,8 @@ def _classify_hop_path(
     the first fanning hop (beats any later hop), ``("unproven", token)`` on the first
     hop neither provably to-one nor fanning, else ``None``. Empty/unresolvable/
     ambiguous/unloaded → ``None`` (``walk`` returns ``None`` for a target absent from
-    ``reachable``, so arity is never proven on topology this prefetch cannot see)."""
+    ``reachable``, so arity is never proven on topology this prefetch cannot see); a
+    revisit propagates its ``CircularJoinPathError`` (caught one level up)."""
     if not path:
         return None
     try:
@@ -332,23 +336,33 @@ def _unproven_arity_message(*, column: str, model: str, hop: str, kind: str) -> 
 
 def _iter_arity_refs(
     *, model: SlayerModel,
-) -> Iterator[tuple[Column, str, tuple[str, ...], str]]:
-    """Yield ``(column, kind, hop_path, leaf)`` for every arity-bearing reference."""
+) -> Iterator[tuple[Column, str, tuple[str, ...], str, tuple[str, ...]]]:
+    """Yield ``(column, kind, hop_path, leaf, quals)`` for every arity-bearing
+    reference — ``quals`` is the raw pre-strip spelling, for the circular error."""
     for column in model.columns:
         for kind, fragment in _arity_reference_sources(column):
             for quals, leaf in _fragment_refs(fragment) or []:
-                yield column, kind, _hop_path(quals=quals, host=model), leaf
+                yield column, kind, _hop_path(quals=quals, host=model), leaf, tuple(quals)
 
 
 def _check_reference_arity(
     *, model: SlayerModel, reachable: dict[str, SlayerModel],
 ) -> None:
-    """Arity gate over the saved model's columns: a fanning-crossing reference
-    raises ``DerivedColumnFanningError``; an unproven hop warns once per
+    """Arity gate over the saved model's columns: a revisiting reference raises
+    ``DerivedColumnCircularError`` (the walk aborts before arity is judged, so it
+    precedes any fanning verdict); a fanning-crossing reference raises
+    ``DerivedColumnFanningError``; an unproven hop warns once per
     ``(column, kind, hop)``; to-one/unresolvable/unloaded/ambiguous skip."""
     warned: set[tuple[str, str, str]] = set()
-    for column, kind, path, leaf in _iter_arity_refs(model=model):
-        verdict = _classify_hop_path(host=model, path=path, reachable=reachable)
+    for column, kind, path, leaf, quals in _iter_arity_refs(model=model):
+        try:
+            verdict = _classify_hop_path(host=model, path=path, reachable=reachable)
+        except CircularJoinPathError as exc:
+            raise DerivedColumnCircularError(
+                column=column.name, model=model.name, kind=kind,
+                reference=".".join((*quals, leaf)), root_model=model.name,
+                revisited=exc.revisited, hop=exc.hop, via=exc.via,
+            ) from exc
         if verdict is None:
             continue
         status, hop = verdict

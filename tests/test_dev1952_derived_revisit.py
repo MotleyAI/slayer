@@ -41,6 +41,7 @@ from slayer.engine import join_safety
 from slayer.engine.compile.stages import _canonical_path
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.column_expansion import (
+    _lenient_path,
     resolve_default_qualifier_path,
     resolve_ref_target,
 )
@@ -273,7 +274,6 @@ class TestBestEffortConsumersUnchanged:
             frame_model=models["regions"], models_by_name=models) is None
 
     def test_lenient_scanner_none(self) -> None:
-        from slayer.sql.column_expansion import _lenient_path
         models = _chain()
         assert _lenient_path(
             qualifiers=("customers", "regions"), source_model=models["regions"],
@@ -630,10 +630,9 @@ class TestQueryTimeBackstop:
     async def test_refused_before_sql_executes(self, qengine) -> None:
         # dry_run builds SQL but does not execute it — a raise here proves the
         # refusal is at compile time, before any SQL runs.
+        query = _cust_q(measures=[ModelMeasure(formula="revisit_spend:sum", name="w")])
         with pytest.raises(CircularJoinPathError):
-            await qengine.execute(
-                _cust_q(measures=[ModelMeasure(formula="revisit_spend:sum", name="w")]),
-                dry_run=True)
+            await qengine.execute(query, dry_run=True)
 
     async def test_query_typed_spelling_same_class(self, qengine) -> None:
         # The binder builds its own reference fields; pin only the class, the

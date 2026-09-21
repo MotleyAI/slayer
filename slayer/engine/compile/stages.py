@@ -26,7 +26,7 @@ from typing import (
 from pydantic import BaseModel, ConfigDict, Field
 
 from slayer.core.enums import DataType, JoinType, RANKED_AGGREGATIONS, TimeGranularity
-from slayer.core.errors import AmbiguousJoinPathError
+from slayer.core.errors import AmbiguousJoinPathError, CircularJoinPathError
 from slayer.core.keys import AggregateKey, Grain, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, PREDICATE_COMPARISON_OPS, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, regroup_root_grain, effective_root_grain, constituent_grain, attached_parameter_grain, substitute_value_keys, substitute_consumer_keys, walk_value_keys, walk_consumer_keys, REGROUP_LEAF_PREFIX, is_cross_model_agg, is_local_partitioned_agg, split_top_level_and, window_kwarg_of, is_reaggregation_key, is_row_attach_root, attached_inputs, operand_aggregates, operand_constituents, source_anchor_path
 from slayer.core.models import Column, SlayerModel
 from slayer.engine.reference_closure import (
@@ -1194,7 +1194,10 @@ def _reverse_hops(
     through the exact edge the aggregate's path selected, never a re-parsed
     model name. An ambiguous forward hop raises (fail closed in both modes);
     an unresolvable one blocks the push. Returns the host node's path."""
-    fwd = walk(root=host_model, path=target_path, models_by_name=models_by_name)
+    try:
+        fwd = walk(root=host_model, path=target_path, models_by_name=models_by_name)
+    except CircularJoinPathError:
+        fwd = None  # a revisiting reverse chain blocks the push (one raise site)
     if fwd is None:
         raise _PushBlocked(
             f"unreachable from the aggregate's root (join path "
@@ -1670,7 +1673,10 @@ def _canonical_path(
 ) -> Tuple[str, ...]:
     """A join path in canonical hop tokens (edge name, else target model — D3),
     so closure paths and push nodes compare regardless of spelling."""
-    edges = walk(root=root, path=tuple(path), models_by_name=models_by_name)
+    try:
+        edges = walk(root=root, path=tuple(path), models_by_name=models_by_name)
+    except CircularJoinPathError:
+        return tuple(path)
     if edges is None:
         return tuple(path)
     return tuple(e.name or e.target_model for e in edges)

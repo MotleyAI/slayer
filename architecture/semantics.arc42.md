@@ -19,11 +19,14 @@ is the coercion from coarser to finer.
    fields, and a reference never leaves its join path ambiguous (spec:
    `models/join-cardinality` › Determination through to-one chains). A derived
    column, being a function of its declaring dataset's row, is well-formed only
-   when its definition crosses provably to-one hops: a definition that provably
-   crosses a fanning hop is rejected at save time, an unproven hop is accepted
+   when its definition crosses provably to-one hops and never revisits a dataset
+   already on its path (the declaring dataset included): a definition that provably
+   crosses a fanning hop is rejected at save time, a revisiting (circular) path is
+   rejected at save time as a circular definition, and an unproven hop is accepted
    with a warning and the query-time backstop (spec: `models/column-definitions`).
    [enforced: test:tests/test_dev1836_producer_execution.py]
    [enforced: test:tests/test_dev1930_save_time_arity.py]
+   [enforced: test:tests/test_dev1952_derived_revisit.py]
 2. **Home dataset**: every row-level expression, and every aggregation, has at most
    one home dataset — the dataset over whose rows it is evaluated with exactly one
    value per row (an aggregation is counted over it, Axiom 4). Datasets are the

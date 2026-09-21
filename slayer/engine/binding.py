@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict
 
 from slayer.core.errors import (
     AggregationNotAllowedError,
+    CircularJoinPathError,
     IllegalScopeReferenceError,
     IllegalWindowInFilterError,
     MeasureCycleError,
@@ -567,11 +568,15 @@ def _walk_join_chain(
                 suggestion=None,
             )
         # Revisiting a model is a circular join (``a -> b -> a``): reject here
-        # rather than fail confusingly on the leaf.
+        # rather than fail confusingly on the leaf. Same class as the derived
+        # save-time refusal (DEV-1952); still a ValueError, wording preserved.
         if nxt.name in visited_models:
-            raise ValueError(
-                f"Circular join detected resolving {'.'.join(parts)!r}: "
-                f"revisits model {nxt.name!r}."
+            raise CircularJoinPathError(
+                reference=".".join(parts),
+                root_model=host.name,
+                revisited=nxt.name,
+                hop=hop,
+                via=current.name,
             )
         visited_models.add(nxt.name)
         current = nxt

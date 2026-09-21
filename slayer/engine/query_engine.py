@@ -28,6 +28,8 @@ from slayer.core.errors import (
     AmbiguousModelError,
     AssociatedGrainWarning,
     BroadcastGrainWarning,
+    CircularJoinPathError,
+    DerivedColumnCircularError,
     ForcedFilterError,
     ModelSqlValidationError,
     SchemaDriftError,
@@ -3024,31 +3026,38 @@ class SlayerQueryEngine:
             ) from exc
 
     async def _validate_mode_a_join_paths(self, model: SlayerModel) -> None:
-        """Reject a broken dotted chain / legacy ``__`` split-alias at save time via the generator's resolver."""
+        """Reject a broken dotted chain / legacy ``__`` split-alias at save time via
+        the generator's resolver; a revisiting column surface becomes the same
+        ``DerivedColumnCircularError`` the storage door raises, while a model-level
+        filter propagates the base ``CircularJoinPathError`` (it is not a column)."""
         loaded = await self._preload_join_targets(model)
 
         # Parse with the datasource's own dialect (matching generation), else
         # valid non-Postgres Mode-A SQL could be mis-rejected. Missing → postgres.
         datasource = await self.storage.get_datasource(model.data_source)
         dialect = self._dialect_for_type(datasource.type if datasource else None)
+        models_by_name = {k: v for k, v in loaded.items() if v is not None}
 
-        surfaces: List[str] = []
-        for col in model.columns:
-            if col.sql:
-                surfaces.append(col.sql)
-            if col.filter:
-                surfaces.append(col.filter)
-        surfaces.extend(model.filters or [])
-        for sql in surfaces:
+        def _expand(sql: str) -> None:
             expand_derived_refs_sync(
-                sql=sql,
-                model=model,
-                alias_path=model.name,
-                models_by_name={
-                    k: v for k, v in loaded.items() if v is not None
-                },
-                dialect=dialect,
+                sql=sql, model=model, alias_path=model.name,
+                models_by_name=models_by_name, dialect=dialect,
             )
+
+        for col in model.columns:
+            for kind, fragment in (("sql", col.sql), ("filter", col.filter)):
+                if not fragment:
+                    continue
+                try:
+                    _expand(fragment)
+                except CircularJoinPathError as exc:
+                    raise DerivedColumnCircularError(
+                        column=col.name, model=model.name, kind=kind,
+                        reference=exc.reference, root_model=exc.root_model,
+                        revisited=exc.revisited, hop=exc.hop, via=exc.via,
+                    ) from exc
+        for sql in model.filters or []:
+            _expand(sql)
 
     async def _preload_join_targets(
         self, model: SlayerModel,

@@ -26,6 +26,7 @@ from sqlglot.optimizer.scope import ScopeType, traverse_scope
 
 from slayer.core.errors import (
     AmbiguousJoinPathError,
+    CircularJoinPathError,
     ColumnCycleError,
     LegacyDunderAliasError,
     UnresolvableDimensionJoinError,
@@ -220,8 +221,9 @@ def _walk_exact(
     """Walk ``hops`` as a chain of EXACT join hops from ``source_model`` via
     the shared walker — each token matches an incident edge's ``name`` or the
     opposite-endpoint model name (which MAY contain ``__``), in either
-    direction (DEV-1853). ``None`` when a hop is not a join / not resolvable /
-    revisiting; propagates :class:`AmbiguousJoinPathError`.
+    direction (DEV-1853). ``None`` when a hop is not a join / not resolvable;
+    propagates :class:`AmbiguousJoinPathError` and :class:`CircularJoinPathError`
+    (a revisiting hop) — the strict door fails closed on both.
     """
     models = dict(models_by_name)
     models.setdefault(source_model.name, source_model)
@@ -245,7 +247,7 @@ def resolve_ref_target(
     → the terminal model, in either traversal direction. Never ``__``-splits —
     the legacy split-alias is a hard D2 error at the runtime / save-time door,
     so here it simply fails to resolve (best-effort skip). Returns ``None``
-    when a hop is not a join / not reachable / ambiguous.
+    when a hop is not a join / not reachable / ambiguous / revisiting.
     """
     quals = list(qualifiers)
     if quals and quals[0] == source_model.name:
@@ -254,7 +256,7 @@ def resolve_ref_target(
         return source_model
     try:
         return _walk_exact(tuple(quals), source_model, models_by_name)
-    except AmbiguousJoinPathError:
+    except (AmbiguousJoinPathError, CircularJoinPathError):
         return None
 
 
@@ -265,6 +267,7 @@ def _resolve_qualifiers(
     source_model: SlayerModel,
     owner_alias: str,
     models_by_name: ModelsByName,
+    column: Optional[str] = None,
 ) -> Optional[Tuple[str, ...]]:
     """Classify a Mode-A qualifier chain (DEV-1743).
 
@@ -275,8 +278,11 @@ def _resolve_qualifiers(
         ``schema.table.column``), left untouched.
 
     Raises :class:`LegacyDunderAliasError` (D2) for a split-alias spelling,
-    :class:`UnresolvableDimensionJoinError` for a chain with a broken hop, and
-    :class:`AmbiguousJoinPathError` for an ambiguous hop (fail closed).
+    :class:`UnresolvableDimensionJoinError` for a chain with a broken hop,
+    :class:`AmbiguousJoinPathError` for an ambiguous hop, and
+    :class:`CircularJoinPathError` (re-raised with the complete pre-strip
+    ``reference`` and the ``column`` being expanded) for a revisiting hop — all
+    fail closed.
     """
     quals = list(qualifiers)
     if quals and quals[0] in (owner_alias, source_model.name):
@@ -284,7 +290,16 @@ def _resolve_qualifiers(
     if not quals:
         return ()
     path = tuple(quals)
-    if _walk_exact(path, source_model, models_by_name) is not None:
+    try:
+        walked = _walk_exact(path, source_model, models_by_name) is not None
+    except CircularJoinPathError as exc:
+        raise CircularJoinPathError(
+            reference=".".join((*qualifiers, leaf)),
+            root_model=source_model.name,
+            revisited=exc.revisited, hop=exc.hop, via=exc.via,
+            column=column,
+        ) from exc
+    if walked:
         return path
     if len(path) == 1:
         _raise_if_legacy_split_alias(
@@ -310,12 +325,17 @@ def resolve_default_qualifier_path(
     ``frame_model`` (the expansion door, reused by home/safety default
     resolution): ``()`` = frame-local (a leading frame-model name self-strips),
     a path = a resolved join walk, ``None`` = a clean miss (an opaque single
-    qualifier, or a first token that is not a join hop). Raises on an ambiguous
+    qualifier, a first token that is not a join hop, or a revisiting probe — a
+    default circular from the speculative owner frame is a clean miss so
+    owner-first/root-fallback resolution is unchanged). Raises on an ambiguous
     hop or a partially-broken multi-hop chain (fail closed)."""
-    return _resolve_qualifiers(
-        qualifiers=tuple(qualifiers), leaf=leaf, source_model=frame_model,
-        owner_alias=frame_model.name, models_by_name=models_by_name,
-    )
+    try:
+        return _resolve_qualifiers(
+            qualifiers=tuple(qualifiers), leaf=leaf, source_model=frame_model,
+            owner_alias=frame_model.name, models_by_name=models_by_name,
+        )
+    except CircularJoinPathError:
+        return None
 
 
 def _raise_if_legacy_split_alias(
@@ -409,7 +429,7 @@ def _lenient_path(
             naive = tuple(quals[0].split("__"))
             if _walk_exact(naive, source_model, models_by_name) is not None:
                 return naive
-    except AmbiguousJoinPathError:
+    except (AmbiguousJoinPathError, CircularJoinPathError):
         return None
     return None
 
@@ -626,6 +646,7 @@ def _process_reference_site(
     path = _resolve_qualifiers(
         qualifiers=qualifiers, leaf=leaf, source_model=model,
         owner_alias=alias_path, models_by_name=models_by_name,
+        column=visited[-1][1] if visited else None,
     )
     if path is None:
         return None  # opaque — leave untouched
