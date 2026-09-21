@@ -288,7 +288,7 @@ columns:
   - {name: balance, sql: balance, type: number}
 ```
 
-`balance:last(updated_at)` gives the most recent balance per group; `balance:first(updated_at)` the earliest. When grouped by month, each month returns the latest (or earliest) record's balance in that month. If no time column is specified, ordering resolves via: query's `main_time_dimension` → first time/date dimension in the query → first time dimension in filters → model's `default_time_dimension`.
+`balance:last(updated_at)` gives the most recent balance per group; `balance:first(updated_at)` the earliest. When grouped by month, each month returns the latest (or earliest) record's balance in that month. If no time column is specified, ordering resolves via: query's `main_time_dimension` → first time/date dimension in the query → first time dimension in filters → model's `default_time_dimension`. Whichever column wins is an input of the aggregation: if it, or a derived definition it names, crosses a join hop that is not provably to-one from the aggregation's root, the query fails with the input-safety error exactly as an explicit ranking argument would.
 
 Not to be confused with the [`last()` formula function](formulas.md#last-function) — a window-function transform that broadcasts a value across all rows. Same name, different layer.
 
