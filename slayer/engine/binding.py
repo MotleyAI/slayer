@@ -1193,7 +1193,7 @@ def _fold_positional_agg_args(
 ) -> "tuple[tuple, tuple]":
     """Fold positional call values onto declared parameter names, Python-call
     style, so ``percentile(x, 0.9)`` interns identically to ``p=0.9``. Ranked
-    ``first``/``last`` declare no parameters — their single positional ranking
+    ``first``/``last`` declare no parameters — their optional positional ranking
     column stays in ``args``; any other parameterless aggregation takes no
     positional, so an attached (aggregate-valued) parameter is always a kwarg
     after binding."""
@@ -1208,7 +1208,7 @@ def _fold_positional_agg_args(
             )
         if len(args) != 1:
             raise ValueError(
-                f"Aggregation {agg!r} ranks by exactly one column; got "
+                f"Aggregation {agg!r} ranks by at most one column; got "
                 f"{len(args)} positional value(s)."
             )
         if not isinstance(args[0], (ColumnKey, ColumnSqlKey)):

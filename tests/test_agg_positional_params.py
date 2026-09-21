@@ -84,7 +84,7 @@ class TestPositionalErrors:
             await _rows(exec_engine, "last(amount, 1)")
 
     async def test_ranked_rejects_extra_positionals(self, exec_engine):
-        with pytest.raises(ValueError, match="ranks by exactly one column"):
+        with pytest.raises(ValueError, match="ranks by at most one column"):
             await _rows(exec_engine, "last(amount, id, amount)")
 
 

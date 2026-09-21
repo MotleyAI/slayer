@@ -10,10 +10,10 @@ identical aggregation identity, SQL, results, and result keys as the named
 spelling. Passing a parameter both positionally and by name, or more positional
 values than declared parameters — any positional value at all on an aggregation
 that declares none — SHALL fail with a clear error naming the rule. Ranked
-`first`/`last` declare no parameters — they take exactly one positional value,
-their ranking column, which SHALL be a column reference, never a literal or an
-attached value. After binding an attached (aggregate-valued) parameter is
-therefore always a named parameter.
+`first`/`last` declare no parameters — they take at most one positional value,
+their ranking column (the time axis when omitted), which, when given, SHALL be a
+column reference, never a literal or an attached value. After binding an
+attached (aggregate-valued) parameter is therefore always a named parameter.
 
 #### Scenario: Positional percentile equals named
 - **WHEN** a measure is written `percentile(price, 0.9)` or `price:percentile(0.9)`
@@ -42,4 +42,4 @@ therefore always a named parameter.
 #### Scenario: Invalid first/last ranking key errors
 - **WHEN** `last(amount, sum(amount, partition_by=region))`, `last(amount, 1)` or
   `last(amount, id, amount)` is submitted
-- **THEN** each fails at bind with a clear error naming the single-ranking-column rule
+- **THEN** each fails at bind with a clear error naming the ranking-column rule

@@ -78,7 +78,7 @@ message-precedence change (below).
   needed; values are identical because there is no fan-out to dedup.
 - **D8 Attached parameters live in kwargs only** (spec-review, Egor 2026-09-19). The
   binder folds positionals onto declared names and refuses a positional value on an
-  aggregation declaring none (ranked `first`/`last`: exactly one column ranking key), so after
+  aggregation declaring none (ranked `first`/`last`: at most one positional, a column ranking key), so after
   bind an attached parameter can only be a kwarg and the D2b rule is total by
   construction. Rejected: iterating `args` in `_check_attached_params_determined` — a
   second hand-kept channel, and the stray spelling stays a functional-form violation.
