@@ -52,7 +52,13 @@ poetry run ruff check slayer/ tests/                 # lint
 ## Testing
 
 Integration tests are marked `@pytest.mark.integration` and skip when their DB is
-unavailable; shared fixtures in `tests/conftest.py`. ALWAYS run the integration
+unavailable; shared fixtures in `tests/conftest.py`. The `integration` marker is
+ONLY for tests that need an external DB server (MySQL, ClickHouse, SQL Server,
+Metabase — all under `tests/integration/`). Tests that execute SQL through our
+inline, in-process **SQLite and DuckDB** engines (e.g. the `make_exec_engine`
+sqlite/duckdb fixture, or any `tmp`/`:memory:` engine) are **unit** tests that run
+in the default `-m "not integration"` suite — do NOT mark them
+`@pytest.mark.integration`. ALWAYS run the integration
 suite with the CI invocation from `.github/workflows/ci.yml` (`-n logical
 --dist loadscope` + its `--ignore`s) — plain `-n auto` races the notebook
 suite's shared on-disk fixtures.
