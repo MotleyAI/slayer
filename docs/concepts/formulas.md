@@ -82,10 +82,10 @@ new derived quantity owned by the query author. Global validation still
 applies: the aggregation name must be known, and numeric-only aggregations
 reject a confidently non-numeric expression (`sum(lower(name))`).
 
-### Windowed sum and average
+### Windowed aggregations
 
-`sum` and `avg` accept an optional `window` parameter for trailing time-window
-aggregations:
+Every aggregation — built-in or custom — accepts an optional `window` parameter for
+trailing time-window aggregations:
 
 ```json
 {
@@ -103,6 +103,11 @@ interval ending at that bucket's end. This means the window can be larger than
 the query granularity (overlapping windows), equal to it (equivalent to normal
 `sum`/`avg` for that bucket), or smaller than it (only the trailing part of each
 bucket is included).
+
+An empty trailing interval yields 0 for the `count` family and NULL for every other
+aggregation; `first`/`last` pick the earliest/latest interval row by their ranking time
+column; and reference-bearing parameters (a column, an attached aggregate, a
+definition-default column) are read on each interval row while literals pass through.
 
 Window sizes use compact duration syntax:
 
@@ -123,7 +128,8 @@ inside the formula.
 Windowed measures need exactly one resolvable time dimension (a single
 `time_dimensions` entry, or `main_time_dimension` to disambiguate). Filtering on
 a windowed measure (`{"formula": "revenue:sum(window='90d') > 100"}`) applies
-after aggregation, and the windowed measure must also be selected.
+after aggregation and, like an order-only target, needs no matching selected
+measure — a filter-only windowed value stays out of the result.
 
 A group whose dimension value is NULL gets its real windowed value, like any
 other group. (Earlier versions returned NULL for such groups: the rolling
@@ -189,9 +195,9 @@ that time dimension inside the measure's sub-query. When it is not
 attributable, the query errors naming the time dimension and the remedy.
 
 The following windowed-measure shapes raise a clear error rather than returning
-wrong numbers, and are planned follow-ups: a windowed aggregation other than
-`sum`/`avg`; a windowed measure combined with a transform (`cumsum`,
-`time_shift`, …) in a measure, dimension, filter, or order position — though a
+wrong numbers, and are planned follow-ups: a windowed measure combined with a
+transform (`cumsum`, `time_shift`, …) in a measure, dimension, filter, or order
+position — though a
 windowed inner under a transform *constituent* of an aggregation source
 (`sum(rank(revenue:sum(window='90d', partition_by=region)))`) does execute; a
 windowed measure nested in an arithmetic/composite expression in `measures`

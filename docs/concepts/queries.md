@@ -251,7 +251,7 @@ SLayer. Write `{"column": "revenue:sum / cnt:sum"}` instead.
 A windowed measure inside a **declared** composite measure
 (`{"formula": "revenue:sum(window='90d') / cnt:sum"}`), and any combination of a
 windowed measure with a transform, are still rejected — see
-[formulas](formulas.md#windowed-sum-and-average).
+[formulas](formulas.md#windowed-aggregations).
 
 ## Response
 
@@ -734,7 +734,7 @@ are not additive), or `error` (refuse) — where a stored query's retired
 and a semi-join-pushed filter is applied, never erroring, in every mode.
 Example: `{"source_model": "orders", "dimensions": ["status"], "measures": [{"formula": "customers.spend:sum"}], "to_many_handling": "associate"}`.
 
-`associate` resolves only *eligible* aggregates — a plain scalar aggregate whose root declares a unique key; an unsupported combination (`window=`/`first`/`last`, a root without a unique key, or an input crossing an unproven hop) returns a typed error rather than a value, so `associate` does not turn every broadcast case exact. Each cell aggregates over the metric's own home rows by the home's join path, so an entity with no population row still counts in the cells its path reaches (a dimension reached only back through the population root needs a population row), and a pushed filter binds to the same related row as a dimension it shares a hop with. An attached (aggregate-valued) parameter the entity grain determines (`customers.spend:weighted_avg(weight=sum(amount, partition_by=customers.regions.name))`) is lifted under `associate`; under `broadcast` an attached input must read only columns attributable from the aggregate's root, otherwise a typed error names the `associate` remedy.
+`associate` resolves only *eligible* aggregates — a plain scalar aggregate whose root declares a unique key; an unsupported combination (`window=`/`first`/`last`, a root without a unique key, or an input crossing an unproven hop) returns a typed error rather than a value, so `associate` does not turn every broadcast case exact. Each cell aggregates over the metric's own home rows by the home's join path, so an entity with no population row still counts in the cells its path reaches (a dimension reached only back through the population root needs a population row), and a pushed filter binds to the same related row as a dimension it shares a hop with. An attached (aggregate-valued) parameter or source constituent is computed at its own home and attached per home row in every mode, so `customers.spend:weighted_avg(weight=sum(amount, partition_by=customers.regions.name))` weights each customer by its region's order total under `broadcast`, `associate` and `error` alike.
 
 Every input of an aggregate — its source, arguments (`weight=`), definition defaults, and its column-level `filter=` — is traced recursively through derived-column definitions, and an input whose expansion crosses a fanning (not provably to-one) hop fails closed with a typed error instead of silently multiplying rows.
 

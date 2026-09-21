@@ -73,7 +73,6 @@ from slayer.sql.naming import (
     result_key_from_alias,
     time_trunc_result_key,
 )
-from slayer.sql.render.aggregates import window_agg_class
 from slayer.sql.render.cte_assembly import CteEntry, assemble_with_chain
 from slayer.sql.render.nodes import Node, fusion_blockers
 from slayer.sql.render.joins import (
@@ -89,6 +88,7 @@ from slayer.sql.render.order_terms import (
     resolve_order_term,
 )
 from slayer.sql.render.ranked import (
+    RANKED_SOURCE_ALIAS,
     RankedGrainProjection,
     build_rank_column,
     build_ranked_cte_select,
@@ -197,6 +197,10 @@ class _WindowedEmission(BaseModel):
     grain_slot_ids: List[str]
     where_filter_ids: List[str]
     src_filter_rewrites: List[Any]
+    #: Set for a windowed first/last: the interval-row ranking key (_w_rank).
+    ranking_time_key: Any = None
+    #: Reference-bearing parameters read per interval row as _src._w_p<i>.
+    picked_params: List[Any] = []
 
 
 def _windowed_emission_from_kernel(*, planned_query, kernel) -> _WindowedEmission:
@@ -249,6 +253,8 @@ def _windowed_emission_from_kernel(*, planned_query, kernel) -> _WindowedEmissio
         grain_slot_ids=grain,
         where_filter_ids=list(kernel.src_where_filter_ids),
         src_filter_rewrites=list(kernel.src_filter_rewrites),
+        ranking_time_key=kernel.ranking_time_key,
+        picked_params=list(kernel.picked_params),
     )
 
 
@@ -2533,11 +2539,52 @@ class SQLGenerator:
         src_cols.append(raw_time.copy().as_("_w_time"))
         grain_aliases.append(wtd_alias)
 
-        # A Column.filter on the ranked source is baked into its ColumnSqlKey
-        # (CASE WHEN), so the picked value is masked while ranking spans all rows
+        # A Column.filter on the source is baked into its ColumnSqlKey (CASE WHEN),
+        # so a first/last picked value is masked while ranking spans all rows
         # (DEV-1832): the latest row's value may be NULL if it fails the filter.
-        val_expr = src_scope.resolve(key.source)
-        src_cols.append(val_expr.as_("_w_value"))
+        # ``*:count`` projects a literal so the outer COUNT(_w_value) counts interval
+        # rows (0, not 1, on an empty interval) — the star never enters resolve.
+        if isinstance(key.source, StarKey):
+            # ``*`` is only legal with count (as in the plain path); any other
+            # aggregation over the star would silently become ``<agg>(1)``.
+            if key.agg != "count":
+                raise ValueError(
+                    f"Aggregation {key.agg!r} not allowed with measure "
+                    f"'*' — use '*:count' for COUNT(*)."
+                )
+            # ``*:count`` takes no inputs but its own ``window=`` (plain-path guard);
+            # a stray arg/kwarg would otherwise be projected and silently ignored.
+            extra_kwargs = [(k, v) for k, v in key.kwargs if k != "window"]
+            if key.args or extra_kwargs:
+                raise ValueError(
+                    f"'*:count' takes no args or kwargs other than window; got "
+                    f"args={key.args!r}, kwargs={extra_kwargs!r}."
+                )
+            src_cols.append(exp.Literal.number("1").as_("_w_value"))
+        else:
+            src_cols.append(src_scope.resolve(key.source).as_("_w_value"))
+
+        # Reference-bearing parameters read per interval row (D4): each _w_p<i> is
+        # rendered through the _src scope so its join paths register for discovery.
+        picked_kwarg_exprs: Dict[str, ResolvedAggKwarg] = {}
+        for _i, _pp in enumerate(plan.picked_params):
+            _p_alias = f"_w_p{_i}"
+            _picked = self._render_picked_param_value(
+                pp=_pp, ctx=RenderContext(scope=src_scope, dialect=self._dialect),
+            )
+            src_cols.append(_picked.as_(_p_alias))
+            picked_kwarg_exprs[_pp.name] = ResolvedAggKwarg(
+                kind="expr", value=_src_col(_p_alias),
+            )
+
+        # A windowed first/last ranks the interval rows by this key, projected as
+        # _w_rank (uncast, like the plain ranked path).
+        if plan.ranking_time_key is not None:
+            src_cols.append(self._ranked_scope_expr(
+                key=plan.ranking_time_key, root_model=source_model,
+                root_relation=source_relation, bundle=bundle, scope=src_scope,
+                cast_derived=False,
+            ).as_("_w_rank"))
 
         # _src inherits row filters minus their frame bounds; one effective list feeds both join discovery and rendering
         # so they can't disagree.
@@ -2602,7 +2649,10 @@ class SQLGenerator:
             ),
             sign=-1,
         )
-        src_w_time = _src_col("_w_time")
+        # The frame bounds are dialect-built timestamps; the source time operand is
+        # normalised to the same type by the dialect (identity except SQLite, whose
+        # bare-date affinity would leak the exclusive bucket_end row — sql P2).
+        src_w_time = self._dialect.frame_time_operand(_src_col("_w_time"))
         # An empty grain yields None here, but the range predicates still correlate the sides, so this stays a LEFT
         # JOIN, not a CROSS JOIN.
         grain_condition = build_grain_joinback_condition(
@@ -2614,21 +2664,101 @@ class SQLGenerator:
             exp.LT(this=src_w_time.copy(), expression=bucket_end.copy()),
         )
 
-        # Registry lookup, not a catch-all: the old 'Sum if sum else Avg' rendered every other agg as AVG; raise
-        # instead.
-        agg_cls = window_agg_class(plan.agg)
+        base_from = (
+            base_relation if base_relation is not None
+            else exp.Table(this=exp.to_identifier("_base"))
+        )
+
+        # first/last: rank the range-joined interval rows and pick rank 1 per bucket
+        # through the one ranked shape — the LEFT JOIN's NULL row of an empty
+        # interval ranks 1 and yields NULL, matching sum (D3).
+        if plan.ranking_time_key is not None:
+            rank_inner = exp.Select()
+            for ga in grain_aliases:
+                rank_inner = rank_inner.select(
+                    _base_col(ga).as_(exp.to_identifier(ga, quoted=True)))
+            rank_inner = rank_inner.select(_src_col("_w_value").as_("_w_value"))
+            rank_inner = rank_inner.select(build_rank_column(
+                partition_by=[_base_col(ga) for ga in grain_aliases],
+                ranking_time=ranked_ordered(
+                    ranking_time=_src_col("_w_rank"), agg=plan.agg,
+                    native_nulls_first=self._dialect.native_nulls_first(
+                        descending=plan.agg == "last",
+                    ),
+                ),
+            ))
+            rank_inner = rank_inner.from_(base_from).join(
+                src_subq, on=on_range, join_type="LEFT")
+            pick = _wrap_cast_for_type(
+                expr=build_ranked_pick(value_ref=exp.Column(
+                    this=exp.to_identifier("_w_value"),
+                    table=exp.to_identifier(RANKED_SOURCE_ALIAS),
+                )),
+                dt=_ranked_value_cast_type(self._slot_cast_type(agg_slot)),
+            )
+            grain_proj = [
+                RankedGrainProjection(
+                    output_alias=ga,
+                    inner_ref=exp.Column(
+                        this=exp.to_identifier(ga, quoted=True),
+                        table=exp.to_identifier(RANKED_SOURCE_ALIAS),
+                    ),
+                )
+                for ga in grain_aliases
+            ]
+            outer, _ = build_ranked_cte_select(
+                inner=rank_inner, grain=grain_proj, pick=pick,
+                agg_alias=full_agg_alias,
+            )
+            return outer, grain_aliases
+
+        # Every other aggregation renders through the one aggregate builder over
+        # the _src value column (sql P5) — no per-name branch (engine P6). ``count``
+        # names _w_value (COUNT(*) would count an empty interval's unmatched grain
+        # row as 1); picked parameters read _src._w_p<i> (D2, D4).
+        level2_spec = AggRenderSpec(
+            name="_w_value",
+            sql="_w_value" if plan.agg == "count" else None,
+            aggregation=plan.agg,
+            alias=full_agg_alias,
+            model_name="_src",
+            type=agg_slot.type,
+            # The custom-aggregation definition lives on the source's owning model,
+            # which a parameter may widen the home above (D4) — resolve it there,
+            # not on the producer root, mirroring _trailing_window_kernel.
+            aggregation_def=(
+                None if is_builtin_agg(plan.agg)
+                else self._resolve_aggregation_def(
+                    key=key,
+                    source_model=(
+                        self._walk_join_path_model(
+                            source_model=source_model,
+                            path=source_anchor_path(key.source), bundle=bundle,
+                        ) or source_model
+                    ),
+                    src_leaf="_w_value",
+                )
+            ),
+            agg_kwargs={
+                **{
+                    k: ResolvedAggKwarg(kind="str", value=agg_kwarg_canonical_str(v))
+                    for k, v in key.kwargs
+                    if k not in ("window", "partition_by")
+                    and k not in picked_kwarg_exprs
+                },
+                **picked_kwarg_exprs,
+            },
+        )
+        agg_expr, _ = self._build_agg(level2_spec)
         agg_expr = _wrap_cast_for_type(
-            expr=agg_cls(this=_src_col("_w_value")), dt=self._slot_cast_type(agg_slot),
+            expr=agg_expr, dt=self._slot_cast_type(agg_slot),
         )
 
         outer = exp.Select()
         for ga in grain_aliases:
             outer = outer.select(_base_col(ga))
         outer = outer.select(agg_expr.as_(exp.to_identifier(full_agg_alias, quoted=True)))
-        if base_relation is not None:
-            outer = outer.from_(base_relation)
-        else:
-            outer = outer.from_(exp.Table(this=exp.to_identifier("_base")))
+        outer = outer.from_(base_from)
         outer = outer.join(src_subq, on=on_range, join_type="LEFT")
         for ga in grain_aliases:
             outer = outer.group_by(_base_col(ga))

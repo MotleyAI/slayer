@@ -1,31 +1,31 @@
 {
   "fanning/cross_model_kwarg::bigquery": {
     "error": "ValueError",
-    "message": "Cross-model aggregate 'customers.spend_weighted_avg_weight_customers_regions_bad_pop' reads an input across an unproven join hop to region_events from customers; declare join cardinality or a covering unique key on the target."
+    "message": "Cross-model aggregate 'customers.spend_weighted_avg_weight_customers_regions_bad_pop' ranks/reads by bad_pop, which is not attributable from customers (crosses a fanning or unproven join hop to region_events); declare join cardinality or a covering unique key on the target."
   },
   "fanning/cross_model_kwarg::duckdb": {
     "error": "ValueError",
-    "message": "Cross-model aggregate 'customers.spend_weighted_avg_weight_customers_regions_bad_pop' reads an input across an unproven join hop to region_events from customers; declare join cardinality or a covering unique key on the target."
+    "message": "Cross-model aggregate 'customers.spend_weighted_avg_weight_customers_regions_bad_pop' ranks/reads by bad_pop, which is not attributable from customers (crosses a fanning or unproven join hop to region_events); declare join cardinality or a covering unique key on the target."
   },
   "fanning/cross_model_kwarg::mysql": {
     "error": "ValueError",
-    "message": "Cross-model aggregate 'customers.spend_weighted_avg_weight_customers_regions_bad_pop' reads an input across an unproven join hop to region_events from customers; declare join cardinality or a covering unique key on the target."
+    "message": "Cross-model aggregate 'customers.spend_weighted_avg_weight_customers_regions_bad_pop' ranks/reads by bad_pop, which is not attributable from customers (crosses a fanning or unproven join hop to region_events); declare join cardinality or a covering unique key on the target."
   },
   "fanning/cross_model_kwarg::postgres": {
     "error": "ValueError",
-    "message": "Cross-model aggregate 'customers.spend_weighted_avg_weight_customers_regions_bad_pop' reads an input across an unproven join hop to region_events from customers; declare join cardinality or a covering unique key on the target."
+    "message": "Cross-model aggregate 'customers.spend_weighted_avg_weight_customers_regions_bad_pop' ranks/reads by bad_pop, which is not attributable from customers (crosses a fanning or unproven join hop to region_events); declare join cardinality or a covering unique key on the target."
   },
   "fanning/cross_model_kwarg::snowflake": {
     "error": "ValueError",
-    "message": "Cross-model aggregate 'customers.spend_weighted_avg_weight_customers_regions_bad_pop' reads an input across an unproven join hop to region_events from customers; declare join cardinality or a covering unique key on the target."
+    "message": "Cross-model aggregate 'customers.spend_weighted_avg_weight_customers_regions_bad_pop' ranks/reads by bad_pop, which is not attributable from customers (crosses a fanning or unproven join hop to region_events); declare join cardinality or a covering unique key on the target."
   },
   "fanning/cross_model_kwarg::sqlite": {
     "error": "ValueError",
-    "message": "Cross-model aggregate 'customers.spend_weighted_avg_weight_customers_regions_bad_pop' reads an input across an unproven join hop to region_events from customers; declare join cardinality or a covering unique key on the target."
+    "message": "Cross-model aggregate 'customers.spend_weighted_avg_weight_customers_regions_bad_pop' ranks/reads by bad_pop, which is not attributable from customers (crosses a fanning or unproven join hop to region_events); declare join cardinality or a covering unique key on the target."
   },
   "fanning/cross_model_kwarg::tsql": {
     "error": "ValueError",
-    "message": "Cross-model aggregate 'customers.spend_weighted_avg_weight_customers_regions_bad_pop' reads an input across an unproven join hop to region_events from customers; declare join cardinality or a covering unique key on the target."
+    "message": "Cross-model aggregate 'customers.spend_weighted_avg_weight_customers_regions_bad_pop' ranks/reads by bad_pop, which is not attributable from customers (crosses a fanning or unproven join hop to region_events); declare join cardinality or a covering unique key on the target."
   },
   "fanning/definition_default::bigquery": {
     "error": "ValueError",
