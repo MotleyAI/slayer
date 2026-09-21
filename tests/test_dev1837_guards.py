@@ -181,7 +181,7 @@ class TestCteBodyArms:
         return generator._split_statement_ctes(sql)
 
     def _assert_hoistable(self, hoisted, body: str) -> None:
-        assert any(name.startswith("_cm_") for name, _ in hoisted)
+        assert any(e.name.startswith("_cm_") for e in hoisted)
         parsed = sqlglot.parse_one(body, read="postgres")
         assert not list(parsed.find_all(exp.With)), body
         assert "__regroup__" not in body

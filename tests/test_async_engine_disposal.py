@@ -19,6 +19,7 @@ from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.client import SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
+from slayer.storage.sqlite_conn import transaction
 
 
 @pytest.fixture
@@ -97,13 +98,10 @@ class TestAsyncEngineDisposal:
 
     def test_execute_sync_disposes_on_success(self, workspace: Path) -> None:
         """``execute_sync`` triggers aclose in its ``finally`` before the loop closes."""
-        import sqlite3
         db = workspace / "live.db"
-        conn = sqlite3.connect(db)
-        conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, val REAL)")
-        conn.execute("INSERT INTO t (val) VALUES (1.0), (2.0), (3.0)")
-        conn.commit()
-        conn.close()
+        with transaction(db) as conn:
+            conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, val REAL)")
+            conn.execute("INSERT INTO t (val) VALUES (1.0), (2.0), (3.0)")
 
         storage = YAMLStorage(base_dir=str(workspace / "store"))
         asyncio.run(storage.save_datasource(
@@ -153,10 +151,11 @@ class TestAsyncEngineDisposal:
         client._async_engine = fake_engine
         engine._sql_clients[("leaky", "postgres")] = client
 
+        q = SlayerQuery(
+            source_model="missing", measures=["*:count"],  # type: ignore[arg-type]
+        )
         with pytest.raises(Exception):
-            engine.execute_sync(SlayerQuery(
-                source_model="missing", measures=["*:count"],
-            ))
+            engine.execute_sync(q)
         fake_engine.dispose.assert_awaited_once()
 
     def test_no_leak_across_repeated_execute_sync_calls(
@@ -165,12 +164,9 @@ class TestAsyncEngineDisposal:
         """Re-attach a fresh fake engine to one cached client across 20
         ``execute_sync`` calls; every previous engine must be disposed
         exactly once (the Storyline N-block pattern)."""
-        import sqlite3
         db = workspace / "live.db"
-        conn = sqlite3.connect(db)
-        conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)")
-        conn.commit()
-        conn.close()
+        with transaction(db) as conn:
+            conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)")
 
         storage = YAMLStorage(base_dir=str(workspace / "store"))
         asyncio.run(storage.save_datasource(
@@ -213,13 +209,10 @@ class TestAsyncEngineDisposal:
         identity that lets ``:memory:`` SQLite's StaticPool keep its data.
         File-backed DB stands in for ``:memory:`` since the cache logic is
         identical and ``:memory:`` can't be probed past DEV-1538's introspect."""
-        import sqlite3
         db = workspace / "live.db"
-        c = sqlite3.connect(db)
-        c.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER)")
-        c.execute("INSERT INTO t (v) VALUES (10), (20), (30)")
-        c.commit()
-        c.close()
+        with transaction(db) as c:
+            c.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER)")
+            c.execute("INSERT INTO t (v) VALUES (10), (20), (30)")
 
         storage = YAMLStorage(base_dir=str(workspace / "store"))
         asyncio.run(storage.save_datasource(

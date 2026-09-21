@@ -13,26 +13,35 @@ sides in ABBA order, and writes out/report.md + JSON artifacts.
 
 import argparse
 import datetime as dt
+import importlib.metadata as md
+import io
 import json
 import platform
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import urlsplit
+
+import psycopg2
+import sqlalchemy as sa
 
 _DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_DIR))
+sys.path.append(str(_DIR.parents[2]))  # repo root, for tests._engine_helpers
 
-import corpus  # noqa: E402
-import oracle  # noqa: E402
-from classify import (  # noqa: E402
+import corpus  # noqa: E402  # ALLOW(import-not-top): must follow the sys.path guard
+import oracle  # noqa: E402  # ALLOW(import-not-top): must follow the sys.path guard
+from classify import (  # noqa: E402  # ALLOW(import-not-top): must follow the sys.path guard
     Verdict, canonical_rows, cells_equal, classify_entry, flag_perf, is_problem,
     pool_abba, warning_drift,
 )
-from audit_params import (  # noqa: E402
+from audit_params import (  # noqa: E402  # ALLOW(import-not-top): must follow the sys.path guard
     ADVERSARIAL_DDL, BACKENDS, CORRECTNESS_SCALE, DATA_END_DATE, DATA_START_DATE,
     EXTRA_SCALES, INDEXES, PERF_FLOOR, PERF_RATIO, PYPI_PIN, REPEATS, SCALES,
     SEED, SUBSET_SCALE,
 )
+
+from tests._engine_helpers import disposable_engine  # noqa: E402  # ALLOW(import-not-top): must follow the sys.path guard
 
 ALL_SCALES = {**SCALES, **EXTRA_SCALES}
 
@@ -118,8 +127,6 @@ def _db_url(backend: str, path: Path) -> str:
 
 
 def _apply_indexes(engine) -> None:
-    import sqlalchemy as sa
-
     with engine.connect() as conn:
         for idx_sql in INDEXES:
             try:
@@ -130,35 +137,29 @@ def _apply_indexes(engine) -> None:
 
 
 def seed_generated(backend: str, path: Path, order_count: int, seed_mod) -> None:
-    import sqlalchemy as sa
-
     dataset = seed_mod.generate_dataset(
         order_count=order_count, start_date=DATA_START_DATE,
         end_date=DATA_END_DATE, seed=SEED,
     )
-    engine = sa.create_engine(_db_url(backend, path))
-    seed_mod.seed_database(engine=engine, dataset=dataset)
-    _apply_indexes(engine)
-    engine.dispose()
+    with disposable_engine(_db_url(backend, path)) as engine:
+        seed_mod.seed_database(engine=engine, dataset=dataset)
+        _apply_indexes(engine)
 
 
 def seed_adversarial(backend: str, path: Path) -> None:
-    import sqlalchemy as sa
-
-    engine = sa.create_engine(_db_url(backend, path))
-    with engine.connect() as conn:
-        for stmt in ADVERSARIAL_DDL.strip().split(";"):
-            if stmt.strip():
-                conn.execute(sa.text(stmt))
-        for table, rows in corpus.ADVERSARIAL_TABLES.items():
-            cols = list(rows[0])
-            insert = sa.text(
-                f"INSERT INTO {table} ({', '.join(cols)}) "
-                f"VALUES ({', '.join(':' + c for c in cols)})"
-            )
-            conn.execute(insert, rows)
-        conn.commit()
-    engine.dispose()
+    with disposable_engine(_db_url(backend, path)) as engine:
+        with engine.connect() as conn:
+            for stmt in ADVERSARIAL_DDL.strip().split(";"):
+                if stmt.strip():
+                    conn.execute(sa.text(stmt))
+            for table, rows in corpus.ADVERSARIAL_TABLES.items():
+                cols = list(rows[0])
+                insert = sa.text(
+                    f"INSERT INTO {table} ({', '.join(cols)}) "
+                    f"VALUES ({', '.join(':' + c for c in cols)})"
+                )
+                conn.execute(insert, rows)
+            conn.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -463,8 +464,6 @@ def build_manifest(args) -> dict:
         return subprocess.run(["git", *cmd], capture_output=True, text=True,
                               cwd=str(REPO_ROOT)).stdout.strip()
 
-    import importlib.metadata as md
-
     versions = {}
     for pkg in ("motley-slayer", "duckdb", "pandas", "sqlalchemy", "pydantic"):
         try:
@@ -493,22 +492,19 @@ def build_manifest(args) -> dict:
 
 def _seed_external(args, seed_mod, count: int) -> None:
     """Drop + reseed the external DB at ``count`` orders; COPY on postgres."""
-    import sqlalchemy as sa
-
     dataset = seed_mod.generate_dataset(
         order_count=count, start_date=DATA_START_DATE,
         end_date=DATA_END_DATE, seed=SEED,
     )
     print(f"[seed] external {args.db_type} ({count} orders, clean=True) ...")
-    engine = sa.create_engine(args.db_url)
-    if args.db_type in ("postgres", "postgresql"):
-        _seed_postgres_copy(args.db_url, seed_mod, dataset)
-    else:
-        seed_mod.seed_database(engine=engine, dataset=dataset, clean=True)
-    _apply_indexes(engine)
-    with engine.connect() as conn:
-        seeded = conn.execute(sa.text("SELECT COUNT(*) FROM orders")).scalar()
-    engine.dispose()
+    with disposable_engine(args.db_url) as engine:
+        if args.db_type in ("postgres", "postgresql"):
+            _seed_postgres_copy(args.db_url, seed_mod, dataset)
+        else:
+            seed_mod.seed_database(engine=engine, dataset=dataset, clean=True)
+        _apply_indexes(engine)
+        with engine.connect() as conn:
+            seeded = conn.execute(sa.text("SELECT COUNT(*) FROM orders")).scalar()
     if seeded != count:
         raise SystemExit(
             f"external seed check failed: orders has {seeded} rows, expected {count}")
@@ -518,10 +514,6 @@ def _seed_postgres_copy(url: str, seed_mod, dataset) -> None:
     """COPY-based bulk load via psycopg2 directly — executemany is far too
     slow at 1M+ rows, and mixing raw-driver COPY with a SQLAlchemy-managed
     transaction loses the data (the driver-level txn rolls back on close)."""
-    import io
-
-    import psycopg2
-
     conn = psycopg2.connect(url)
     try:
         with conn.cursor() as cursor:
@@ -600,8 +592,6 @@ def main() -> None:
     args = _parse_args()
     SUBPROCESS_TIMEOUT = args.subprocess_timeout
     if args.db_url:
-        from urllib.parse import urlsplit
-
         if not args.db_type:
             raise SystemExit("--db-url requires --db-type")
         if "bench" not in urlsplit(args.db_url).path.lower():

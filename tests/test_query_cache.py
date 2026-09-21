@@ -18,7 +18,7 @@ Two layers of coverage:
 """
 
 import asyncio
-import sqlite3
+from slayer.storage.sqlite_conn import transaction
 
 import pydantic
 import pytest
@@ -69,45 +69,41 @@ def _make_entry(*, created_at: float = 0.0, sql: str = "SELECT 1", response=None
 
 
 def _seed_db(db_path) -> None:
-    conn = sqlite3.connect(str(db_path))
-    cur = conn.cursor()
-    cur.execute(
-        """
-        CREATE TABLE orders (
-            id INTEGER PRIMARY KEY,
-            status TEXT NOT NULL,
-            amount REAL NOT NULL,
-            updated_at TEXT NOT NULL
+    with transaction(str(db_path)) as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE orders (
+                id INTEGER PRIMARY KEY,
+                status TEXT NOT NULL,
+                amount REAL NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
         )
-        """
-    )
-    cur.executemany(
-        "INSERT INTO orders VALUES (?, ?, ?, ?)",
-        [
-            (1, "completed", 100.0, "2025-01-01"),
-            (2, "pending", 50.0, "2025-01-02"),
-            (3, "completed", 200.0, "2025-01-03"),
-        ],
-    )
-    # A second physical table used only by the "unreferenced-table" test.
-    cur.execute("CREATE TABLE aux (id INTEGER PRIMARY KEY, n INTEGER NOT NULL)")
-    cur.executemany("INSERT INTO aux VALUES (?, ?)", [(1, 10), (2, 20)])
-    conn.commit()
-    conn.close()
+        cur.executemany(
+            "INSERT INTO orders VALUES (?, ?, ?, ?)",
+            [
+                (1, "completed", 100.0, "2025-01-01"),
+                (2, "pending", 50.0, "2025-01-02"),
+                (3, "completed", 200.0, "2025-01-03"),
+            ],
+        )
+        # A second physical table used only by the "unreferenced-table" test.
+        cur.execute("CREATE TABLE aux (id INTEGER PRIMARY KEY, n INTEGER NOT NULL)")
+        cur.executemany("INSERT INTO aux VALUES (?, ?)", [(1, 10), (2, 20)])
 
 
 def _seed_orders_single(db_path, *, amount: float) -> None:
     """A second datasource's ``orders`` table with a single distinguishable row."""
-    conn = sqlite3.connect(str(db_path))
-    conn.execute(
-        "CREATE TABLE orders (id INTEGER PRIMARY KEY, status TEXT NOT NULL, "
-        "amount REAL NOT NULL, updated_at TEXT NOT NULL)"
-    )
-    conn.execute(
-        "INSERT INTO orders VALUES (1, 'completed', ?, '2025-01-01')", (amount,)
-    )
-    conn.commit()
-    conn.close()
+    with transaction(str(db_path)) as conn:
+        conn.execute(
+            "CREATE TABLE orders (id INTEGER PRIMARY KEY, status TEXT NOT NULL, "
+            "amount REAL NOT NULL, updated_at TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO orders VALUES (1, 'completed', ?, '2025-01-01')", (amount,)
+        )
 
 
 def _orders_model(ds: str = "ds") -> SlayerModel:
@@ -143,10 +139,8 @@ def _sum_query() -> SlayerQuery:
 
 
 def _mutate(db_path, sql: str) -> None:
-    conn = sqlite3.connect(str(db_path))
-    conn.execute(sql)
-    conn.commit()
-    conn.close()
+    with transaction(str(db_path)) as conn:
+        conn.execute(sql)
 
 
 def _install_spy(monkeypatch):

@@ -43,18 +43,8 @@ def _in_memory_client(name: str = "test") -> SlayerSQLClient:
 
 
 def _setup(client: SlayerSQLClient, statements: Iterable[str]) -> None:
-    """Run DDL/DML on whichever engine the client would use.
-
-    Before the fix, ``_get_sync_engine_for_client`` does not exist, so the
-    helper falls back to the module-level cache via ``_get_sync_engine``.
-    That mirrors the production path's engine lookup and lets the test
-    proceed to its real assertion (where the bug surfaces). After the fix,
-    the per-client engine is used.
-    """
-    getter = getattr(client, "_get_sync_engine_for_client", None)
-    engine = getter() if getter is not None else None
-    if engine is None:
-        engine = sql_client._get_sync_engine(client.datasource.get_connection_string())
+    """Run DDL/DML on the client's per-client engine (the same one its calls use)."""
+    engine = client._get_sync_engine_for_client()
     with engine.begin() as conn:
         for stmt in statements:
             conn.execute(sa.text(stmt))
@@ -174,7 +164,7 @@ async def test_bare_memory_connection_string_works_end_to_end() -> None:
     """A bare ``:memory:`` (no ``sqlite:///`` scheme) must reach a working engine.
 
     ``sa.create_engine(":memory:")`` raises ``ArgumentError`` because the bare
-    DBAPI form is not a valid SQLAlchemy URL. ``_create_in_memory_sqlite_engine``
+    DBAPI form is not a valid SQLAlchemy URL. ``build_in_memory_sqlite_engine``
     must normalize it to ``sqlite:///:memory:`` before creating the engine,
     otherwise any caller passing the bare form (which the detector accepts)
     would crash on the first DB call.

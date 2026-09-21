@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import os
-import sqlite3
+from slayer.storage.sqlite_conn import transaction
 import tempfile
 
 import pytest
@@ -513,13 +513,11 @@ class TestIngestion:
     async def test_ingestion_leaves_granularity_unset(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db = os.path.join(tmp, "live.db")
-            conn = sqlite3.connect(db)
-            conn.executescript(
-                "CREATE TABLE events (id INTEGER PRIMARY KEY, created_at TEXT, label TEXT);"
-                "INSERT INTO events VALUES (1, '2024-01-01', 'a');"
-            )
-            conn.commit()
-            conn.close()
+            with transaction(db) as conn:
+                conn.executescript(
+                    "CREATE TABLE events (id INTEGER PRIMARY KEY, created_at TEXT, label TEXT);"
+                    "INSERT INTO events VALUES (1, '2024-01-01', 'a');"
+                )
             storage = YAMLStorage(base_dir=os.path.join(tmp, "store"))
             ds = DatasourceConfig(name="ds", type="sqlite", database=db)
             await storage.save_datasource(ds)

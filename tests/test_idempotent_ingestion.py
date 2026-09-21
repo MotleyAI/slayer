@@ -13,12 +13,16 @@ The function:
 
 from __future__ import annotations
 
-import sqlite3
+from slayer.storage.sqlite_conn import transaction
+import io
+import logging as _logging
 import tempfile
 from pathlib import Path
 from typing import Any
 from collections.abc import Iterable
+from unittest.mock import patch
 
+import duckdb
 import pytest
 
 from slayer.core.enums import DataType
@@ -31,9 +35,11 @@ from slayer.core.models import (
 from slayer.core.query import SlayerQuery
 from slayer.embeddings import client as embedding_client
 from slayer.engine.ingestion import (
+    _print_ingest_addition,
     _refresh_datasource_embeddings,
     ingest_datasource_idempotent,
 )
+from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.schema_drift import (
     IdempotentIngestResult,
     ModelAddition,
@@ -53,25 +59,23 @@ def workspace():
 
 
 def _create_schema(db_path: str) -> None:
-    conn = sqlite3.connect(db_path)
-    conn.executescript(
-        """
-        CREATE TABLE customers (
-            id INTEGER PRIMARY KEY,
-            region TEXT NOT NULL
-        );
-        CREATE TABLE orders (
-            id INTEGER PRIMARY KEY,
-            amount REAL NOT NULL,
-            status TEXT NOT NULL,
-            customer_id INTEGER REFERENCES customers(id)
-        );
-        INSERT INTO customers VALUES (1, 'US'), (2, 'EU');
-        INSERT INTO orders VALUES (1, 100.0, 'completed', 1);
-        """
-    )
-    conn.commit()
-    conn.close()
+    with transaction(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE customers (
+                id INTEGER PRIMARY KEY,
+                region TEXT NOT NULL
+            );
+            CREATE TABLE orders (
+                id INTEGER PRIMARY KEY,
+                amount REAL NOT NULL,
+                status TEXT NOT NULL,
+                customer_id INTEGER REFERENCES customers(id)
+            );
+            INSERT INTO customers VALUES (1, 'US'), (2, 'EU');
+            INSERT INTO orders VALUES (1, 100.0, 'completed', 1);
+            """
+        )
 
 
 async def _setup(workspace: Path, *, persist_models: bool = True) -> tuple:
@@ -115,10 +119,8 @@ class TestAdditive:
         self, workspace: Path
     ) -> None:
         storage, ds, db_path = await _setup(workspace)
-        conn = sqlite3.connect(db_path)
-        conn.execute("ALTER TABLE orders ADD COLUMN delivery_address TEXT")
-        conn.commit()
-        conn.close()
+        with transaction(db_path) as conn:
+            conn.execute("ALTER TABLE orders ADD COLUMN delivery_address TEXT")
 
         result = await ingest_datasource_idempotent(datasource=ds, storage=storage)
         addition = _addition_for("orders", result.additions)
@@ -132,13 +134,11 @@ class TestAdditive:
 
     async def test_new_table_creates_model(self, workspace: Path) -> None:
         storage, ds, db_path = await _setup(workspace)
-        conn = sqlite3.connect(db_path)
-        conn.execute(
-            "CREATE TABLE products (id INTEGER PRIMARY KEY, sku TEXT NOT NULL)"
-        )
-        conn.execute("INSERT INTO products VALUES (1, 'A1')")
-        conn.commit()
-        conn.close()
+        with transaction(db_path) as conn:
+            conn.execute(
+                "CREATE TABLE products (id INTEGER PRIMARY KEY, sku TEXT NOT NULL)"
+            )
+            conn.execute("INSERT INTO products VALUES (1, 'A1')")
 
         result = await ingest_datasource_idempotent(datasource=ds, storage=storage)
         addition = _addition_for("products", result.additions)
@@ -155,21 +155,19 @@ class TestAdditive:
         # builds a scenario where the orders.customer_id exists but no
         # FK was defined initially.
         db_path = str(workspace / "live.db")
-        conn = sqlite3.connect(db_path)
-        conn.executescript(
-            """
-            CREATE TABLE customers (id INTEGER PRIMARY KEY, region TEXT NOT NULL);
-            CREATE TABLE orders (
-                id INTEGER PRIMARY KEY,
-                amount REAL NOT NULL,
-                customer_id INTEGER
-            );
-            INSERT INTO customers VALUES (1, 'US');
-            INSERT INTO orders VALUES (1, 100.0, 1);
-            """
-        )
-        conn.commit()
-        conn.close()
+        with transaction(db_path) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE customers (id INTEGER PRIMARY KEY, region TEXT NOT NULL);
+                CREATE TABLE orders (
+                    id INTEGER PRIMARY KEY,
+                    amount REAL NOT NULL,
+                    customer_id INTEGER
+                );
+                INSERT INTO customers VALUES (1, 'US');
+                INSERT INTO orders VALUES (1, 100.0, 1);
+                """
+            )
         storage = YAMLStorage(base_dir=str(workspace / "storage"))
         ds = DatasourceConfig(name="ds", type="sqlite", database=db_path)
         await storage.save_datasource(ds)
@@ -208,21 +206,19 @@ class TestAdditive:
         )
         # Recreate orders with an FK now via DROP + CREATE (SQLite has no
         # ALTER to add FKs).
-        conn = sqlite3.connect(db_path)
-        conn.executescript(
-            """
-            CREATE TABLE orders_new (
-                id INTEGER PRIMARY KEY,
-                amount REAL NOT NULL,
-                customer_id INTEGER REFERENCES customers(id)
-            );
-            INSERT INTO orders_new SELECT * FROM orders;
-            DROP TABLE orders;
-            ALTER TABLE orders_new RENAME TO orders;
-            """
-        )
-        conn.commit()
-        conn.close()
+        with transaction(db_path) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE orders_new (
+                    id INTEGER PRIMARY KEY,
+                    amount REAL NOT NULL,
+                    customer_id INTEGER REFERENCES customers(id)
+                );
+                INSERT INTO orders_new SELECT * FROM orders;
+                DROP TABLE orders;
+                ALTER TABLE orders_new RENAME TO orders;
+                """
+            )
 
         result = await ingest_datasource_idempotent(datasource=ds, storage=storage)
         loaded = await storage.get_model("orders", data_source="ds")
@@ -248,10 +244,8 @@ class TestPreservation:
         await storage.save_model(loaded)
 
         # Add a new live column to trigger the additive pass.
-        conn = sqlite3.connect(db_path)
-        conn.execute("ALTER TABLE orders ADD COLUMN extra TEXT")
-        conn.commit()
-        conn.close()
+        with transaction(db_path) as conn:
+            conn.execute("ALTER TABLE orders ADD COLUMN extra TEXT")
 
         await ingest_datasource_idempotent(datasource=ds, storage=storage)
         loaded2 = await storage.get_model("orders", data_source="ds")
@@ -294,8 +288,6 @@ class TestSkipNonSqlTableModes:
         storage, ds, _ = await _setup(workspace)
         # Save a query-backed model that references orders. Use the engine
         # so the cache populates correctly.
-        from slayer.engine.query_engine import SlayerQueryEngine
-
         engine = SlayerQueryEngine(storage=storage)
         await engine.create_model_from_query(
             query=SlayerQuery(
@@ -319,23 +311,21 @@ class TestCombinedReturnShape:
         storage, ds, db_path = await _setup(workspace)
         # Persisted orders.amount = NUMBER. Mutate live so it returns text:
         # SQLite has dynamic typing, so we drop and recreate as TEXT.
-        conn = sqlite3.connect(db_path)
-        conn.executescript(
-            """
-            CREATE TABLE orders_new (
-                id INTEGER PRIMARY KEY,
-                amount TEXT NOT NULL,
-                status TEXT NOT NULL,
-                customer_id INTEGER REFERENCES customers(id)
-            );
-            INSERT INTO orders_new (id, amount, status, customer_id)
-                SELECT id, CAST(amount AS TEXT), status, customer_id FROM orders;
-            DROP TABLE orders;
-            ALTER TABLE orders_new RENAME TO orders;
-            """
-        )
-        conn.commit()
-        conn.close()
+        with transaction(db_path) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE orders_new (
+                    id INTEGER PRIMARY KEY,
+                    amount TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    customer_id INTEGER REFERENCES customers(id)
+                );
+                INSERT INTO orders_new (id, amount, status, customer_id)
+                    SELECT id, CAST(amount AS TEXT), status, customer_id FROM orders;
+                DROP TABLE orders;
+                ALTER TABLE orders_new RENAME TO orders;
+                """
+            )
 
         result = await ingest_datasource_idempotent(datasource=ds, storage=storage)
         # No additions for this drift — the additive pass simply skips the
@@ -357,11 +347,9 @@ class TestErrorIsolation:
     ) -> None:
         storage, ds, db_path = await _setup(workspace)
         # Add two new tables so the additive pass tries to save two models.
-        conn = sqlite3.connect(db_path)
-        conn.execute("CREATE TABLE a_new (id INTEGER PRIMARY KEY, x TEXT)")
-        conn.execute("CREATE TABLE b_new (id INTEGER PRIMARY KEY, y TEXT)")
-        conn.commit()
-        conn.close()
+        with transaction(db_path) as conn:
+            conn.execute("CREATE TABLE a_new (id INTEGER PRIMARY KEY, x TEXT)")
+            conn.execute("CREATE TABLE b_new (id INTEGER PRIMARY KEY, y TEXT)")
 
         # Patch save_model on the storage to fail for "a_new" only.
         original_save = storage.save_model
@@ -649,10 +637,8 @@ class TestExcludeTables:
     async def test_excluded_tables_not_touched(self, workspace: Path) -> None:
         storage, ds, db_path = await _setup(workspace)
         # Add a column to orders, but exclude orders from the pass.
-        conn = sqlite3.connect(db_path)
-        conn.execute("ALTER TABLE orders ADD COLUMN extra TEXT")
-        conn.commit()
-        conn.close()
+        with transaction(db_path) as conn:
+            conn.execute("ALTER TABLE orders ADD COLUMN extra TEXT")
 
         result = await ingest_datasource_idempotent(
             datasource=ds, storage=storage, exclude_tables=["orders"]
@@ -678,8 +664,7 @@ def _create_probe_workspace_db(
 ) -> None:
     """Build a SQLite DB with one INTEGER-declared column populated with
     per-row typed inserts so storage class is preserved."""
-    conn = sqlite3.connect(db_path)
-    try:
+    with transaction(db_path) as conn:
         conn.execute(
             f'CREATE TABLE sensordata (id INTEGER PRIMARY KEY, "{column}" INTEGER)'
         )
@@ -687,9 +672,6 @@ def _create_probe_workspace_db(
             conn.execute(
                 'INSERT INTO sensordata VALUES (?, ?)', (i, v),
             )
-        conn.commit()
-    finally:
-        conn.close()
 
 
 async def _persist_int_model(
@@ -823,8 +805,6 @@ class TestSqliteProbeWideningOnReingest:
     async def test_no_widening_for_non_sqlite(self, workspace: Path) -> None:
         """DuckDB datasource: the probe must never fire on re-ingest."""
         pytest.importorskip("duckdb")
-        import duckdb
-
         db_path = str(workspace / "live.duckdb")
         con = duckdb.connect(db_path)
         con.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, qty INTEGER)")
@@ -836,7 +816,6 @@ class TestSqliteProbeWideningOnReingest:
         await storage.save_datasource(ds)
         await _persist_int_model(storage, "ds", "t", "qty")
 
-        from unittest.mock import patch
         with patch(
             "slayer.sql.sqlite_introspect.probe_sqlite_integer_column",
             side_effect=AssertionError("probe must not run on DuckDB"),
@@ -857,8 +836,6 @@ class TestSqliteProbeWideningOnReingest:
         validate-models``, not via silent re-ingest overwrites.
         """
         pytest.importorskip("duckdb")
-        import duckdb
-
         db_path = str(workspace / "live.duckdb")
         # Live schema declares ``qty`` as DOUBLE; persisted will say INT.
         con = duckdb.connect(db_path)
@@ -908,9 +885,6 @@ class TestSqliteProbeWideningOnReingest:
         """The CLI renderer (``_print_ingest_addition``) must include
         widened columns in user-visible output so re-ingest events are
         discoverable from the terminal."""
-        import io
-        from slayer.engine.ingestion import _print_ingest_addition
-
         db_path = str(workspace / "live.db")
         _create_probe_workspace_db(
             db_path, "tempstabidx", [1, 0.5, 0.7],
@@ -973,8 +947,6 @@ class TestSqliteProbeWideningOnReingest:
         auto-default INTEGER format. A user-set custom format (precision,
         currency) is preserved untouched on a widening pass and an INFO
         log is emitted as a hint."""
-        import logging as _logging
-
         db_path = str(workspace / "live.db")
         _create_probe_workspace_db(
             db_path, "amount", [1, 0.99, 0.5, 0.7],

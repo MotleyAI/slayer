@@ -24,6 +24,7 @@ nodes:
   storage:
     package: slayer.storage
     children: [migrations]
+    arc42: architecture/storage.arc42.md
   importers:
     virtual: true
     packages: [slayer.dbt, slayer.cube, slayer.osi, slayer.ingest_report]

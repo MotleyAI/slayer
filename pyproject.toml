@@ -139,6 +139,16 @@ markers = [
     "metabase_e2e: live-Metabase end-to-end suite (requires Docker)",
 ]
 asyncio_mode = "auto"
+# DEV-1943 gate: a leaked sqlite connection / undisposed engine is an error on
+# CPython 3.13+. Both filters are sqlite-specific and inert on 3.11/3.12 (the
+# messages are 3.13+). The unraisable filter is scoped to sqlite's finalizer
+# message so a non-sqlite driver's connection finalizer (e.g. aiomysql's
+# "Exception ignored in: <function Connection.__del__>" after the loop closes)
+# stays a warning — DEV-1943's scope is sqlite. See test_law_resource_ownership.py.
+filterwarnings = [
+    "error:unclosed database:ResourceWarning",
+    "error:Exception ignored while finalizing database connection:pytest.PytestUnraisableExceptionWarning",
+]
 
 [tool.basedpyright]
 typeCheckingMode = "basic"

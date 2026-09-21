@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-import sqlite3
+from slayer.storage.sqlite_conn import transaction
+from tests._engine_helpers import disposable_engine
 import tempfile
 from pathlib import Path
 
@@ -35,53 +36,51 @@ def workspace():
 
 
 def _create_schema(db_path: str) -> None:
-    conn = sqlite3.connect(db_path)
-    conn.executescript(
-        """
-        CREATE TABLE customers (
-            id INTEGER PRIMARY KEY,
-            email TEXT UNIQUE,
-            region TEXT NOT NULL
-        );
-        CREATE TABLE orders (
-            id INTEGER PRIMARY KEY,
-            amount REAL NOT NULL,
-            customer_id INTEGER REFERENCES customers(id)
-        );
-        -- one-to-one: the FK source column is itself the PK.
-        CREATE TABLE user_profiles (
-            customer_id INTEGER PRIMARY KEY REFERENCES customers(id),
-            bio TEXT
-        );
-        -- composite FK target.
-        CREATE TABLE org_units (
-            org_id INTEGER,
-            code TEXT,
-            name TEXT NOT NULL,
-            PRIMARY KEY (org_id, code)
-        );
-        CREATE TABLE memberships (
-            id INTEGER PRIMARY KEY,
-            org_id INTEGER,
-            code TEXT,
-            FOREIGN KEY (org_id, code) REFERENCES org_units(org_id, code)
-        );
-        -- one-to-one via a non-PK UNIQUE source column.
-        CREATE TABLE accounts (
-            id INTEGER PRIMARY KEY,
-            customer_id INTEGER UNIQUE REFERENCES customers(id),
-            balance REAL
-        );
-        INSERT INTO customers VALUES (1, 'a@x.com', 'US'), (2, 'b@x.com', 'EU');
-        INSERT INTO orders VALUES (1, 100.0, 1), (2, 50.0, 1);
-        INSERT INTO user_profiles VALUES (1, 'hi'), (2, 'yo');
-        INSERT INTO org_units VALUES (1, 'A', 'Alpha'), (1, 'B', 'Beta');
-        INSERT INTO memberships VALUES (1, 1, 'A'), (2, 1, 'A');
-        INSERT INTO accounts VALUES (1, 1, 10.0), (2, 2, 20.0);
-        """
-    )
-    conn.commit()
-    conn.close()
+    with transaction(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE customers (
+                id INTEGER PRIMARY KEY,
+                email TEXT UNIQUE,
+                region TEXT NOT NULL
+            );
+            CREATE TABLE orders (
+                id INTEGER PRIMARY KEY,
+                amount REAL NOT NULL,
+                customer_id INTEGER REFERENCES customers(id)
+            );
+            -- one-to-one: the FK source column is itself the PK.
+            CREATE TABLE user_profiles (
+                customer_id INTEGER PRIMARY KEY REFERENCES customers(id),
+                bio TEXT
+            );
+            -- composite FK target.
+            CREATE TABLE org_units (
+                org_id INTEGER,
+                code TEXT,
+                name TEXT NOT NULL,
+                PRIMARY KEY (org_id, code)
+            );
+            CREATE TABLE memberships (
+                id INTEGER PRIMARY KEY,
+                org_id INTEGER,
+                code TEXT,
+                FOREIGN KEY (org_id, code) REFERENCES org_units(org_id, code)
+            );
+            -- one-to-one via a non-PK UNIQUE source column.
+            CREATE TABLE accounts (
+                id INTEGER PRIMARY KEY,
+                customer_id INTEGER UNIQUE REFERENCES customers(id),
+                balance REAL
+            );
+            INSERT INTO customers VALUES (1, 'a@x.com', 'US'), (2, 'b@x.com', 'EU');
+            INSERT INTO orders VALUES (1, 100.0, 1), (2, 50.0, 1);
+            INSERT INTO user_profiles VALUES (1, 'hi'), (2, 'yo');
+            INSERT INTO org_units VALUES (1, 'A', 'Alpha'), (1, 'B', 'Beta');
+            INSERT INTO memberships VALUES (1, 1, 'A'), (2, 1, 'A');
+            INSERT INTO accounts VALUES (1, 1, 10.0), (2, 2, 20.0);
+            """
+        )
 
 
 async def _setup(workspace: Path) -> tuple:
@@ -121,49 +120,49 @@ class TestCompositeFk:
     async def test_generate_joins_groups_composite_fk(self, workspace: Path) -> None:
         db_path = str(workspace / "live.db")
         _create_schema(db_path)
-        eng = sa.create_engine(f"sqlite:///{db_path}")
-        insp = sa.inspect(eng)
-        table_set = {
-            "customers",
-            "orders",
-            "user_profiles",
-            "org_units",
-            "memberships",
-        }
-        joins = _generate_joins(
-            inspector=insp,
-            source_table="memberships",
-            referenced_tables={"org_units"},
-            schema=None,
-            table_set=table_set,
-        )
-        org_joins = [j for j in joins if j.target_model == "org_units"]
-        assert len(org_joins) == 1
-        assert {tuple(p) for p in org_joins[0].join_pairs} == {
-            ("org_id", "org_id"),
-            ("code", "code"),
-        }
-
-    async def test_build_fk_graph_one_edge_per_group(self, workspace: Path) -> None:
-        db_path = str(workspace / "live.db")
-        _create_schema(db_path)
-        eng = sa.create_engine(f"sqlite:///{db_path}")
-        insp = sa.inspect(eng)
-        graph = _build_fk_graph(
-            inspector=insp,
-            table_names=[
+        with disposable_engine(f"sqlite:///{db_path}") as eng:
+            insp = sa.inspect(eng)
+            table_set = {
                 "customers",
                 "orders",
                 "user_profiles",
                 "org_units",
                 "memberships",
-            ],
-            schema=None,
-        )
-        # Composite FK contributes a single edge memberships -> org_units.
-        assert graph.get("memberships") == {"org_units"}
-        assert graph.get("orders") == {"customers"}
-        assert graph.get("user_profiles") == {"customers"}
+            }
+            joins = _generate_joins(
+                inspector=insp,
+                source_table="memberships",
+                referenced_tables={"org_units"},
+                schema=None,
+                table_set=table_set,
+            )
+            org_joins = [j for j in joins if j.target_model == "org_units"]
+            assert len(org_joins) == 1
+            assert {tuple(p) for p in org_joins[0].join_pairs} == {
+                ("org_id", "org_id"),
+                ("code", "code"),
+            }
+
+    async def test_build_fk_graph_one_edge_per_group(self, workspace: Path) -> None:
+        db_path = str(workspace / "live.db")
+        _create_schema(db_path)
+        with disposable_engine(f"sqlite:///{db_path}") as eng:
+            insp = sa.inspect(eng)
+            graph = _build_fk_graph(
+                inspector=insp,
+                table_names=[
+                    "customers",
+                    "orders",
+                    "user_profiles",
+                    "org_units",
+                    "memberships",
+                ],
+                schema=None,
+            )
+            # Composite FK contributes a single edge memberships -> org_units.
+            assert graph.get("memberships") == {"org_units"}
+            assert graph.get("orders") == {"customers"}
+            assert graph.get("user_profiles") == {"customers"}
 
 
 # ---------------------------------------------------------------------------

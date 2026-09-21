@@ -1,7 +1,8 @@
 """Ingestion, drift, and MCP listing must all see views."""
 from __future__ import annotations
 
-import sqlite3
+from slayer.storage.sqlite_conn import transaction
+import inspect as _inspect
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -19,9 +20,11 @@ from slayer.engine.ingestion import (
 from slayer.engine.schema_drift import (
     ModelAddition,
     WholeModelDelete,
+    _live_schema_for_datasource,
     validate_datasource,
 )
 from slayer.engine.ingestion import _print_ingest_addition
+from slayer.mcp.server import _fetch_tables
 
 
 @pytest.fixture
@@ -36,21 +39,19 @@ def workspace():
 def _db_with_view(workspace: Path) -> tuple[str, DatasourceConfig]:
     """A table plus a view over it — the dbt staging-model shape."""
     db_path = str(workspace / "live.db")
-    conn = sqlite3.connect(db_path)
-    conn.executescript(
-        """
-        CREATE TABLE orders (
-            id INTEGER PRIMARY KEY,
-            amount REAL NOT NULL,
-            status TEXT NOT NULL
-        );
-        INSERT INTO orders VALUES (1, 100.0, 'completed');
-        CREATE VIEW stg_orders AS
-            SELECT id, amount, status FROM orders WHERE status = 'completed';
-        """
-    )
-    conn.commit()
-    conn.close()
+    with transaction(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE orders (
+                id INTEGER PRIMARY KEY,
+                amount REAL NOT NULL,
+                status TEXT NOT NULL
+            );
+            INSERT INTO orders VALUES (1, 100.0, 'completed');
+            CREATE VIEW stg_orders AS
+                SELECT id, amount, status FROM orders WHERE status = 'completed';
+            """
+        )
     return db_path, DatasourceConfig(name="ds", type="sqlite", database=db_path)
 
 
@@ -271,10 +272,6 @@ class TestDriftSeesViews:
 
     def test_drift_sees_views_unconditionally(self, workspace: Path) -> None:
         """The drift side takes no include_views flag, so --no-views can't re-arm the bug."""
-        import inspect as _inspect
-
-        from slayer.engine.schema_drift import _live_schema_for_datasource
-
         params = _inspect.signature(_live_schema_for_datasource).parameters
         assert "include_views" not in params, (
             "drift introspection must not be gated on the ingest views flag"
@@ -293,8 +290,6 @@ class TestDriftSeesViews:
 class TestMcpListing:
     def test_fetch_tables_includes_views(self, workspace: Path) -> None:
         """describe_datasource hid views; the empty-ingest probe shares this helper."""
-        from slayer.mcp.server import _fetch_tables
-
         _, ds = _db_with_view(workspace)
         objects, err = _fetch_tables(ds=ds)
         assert err is None

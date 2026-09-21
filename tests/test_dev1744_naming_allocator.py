@@ -12,7 +12,7 @@ import inspect
 import os
 import pathlib
 import re
-import sqlite3
+from slayer.storage.sqlite_conn import transaction
 from collections import Counter
 from decimal import Decimal
 from typing import List
@@ -63,34 +63,32 @@ async def _build_engine(*, base_dir: str, dialect: str = "sqlite") -> SlayerQuer
     isolated aggregate colliding with the cross-model ``customers.revenue_sum``)."""
     d = base_dir
     db_path = os.path.join(d, "b4.db")
-    con = sqlite3.connect(db_path)
-    cur = con.cursor()
-    cur.execute(
-        "CREATE TABLE customers (id INTEGER PRIMARY KEY, region_id INTEGER, "
-        "revenue REAL, revx REAL, revy REAL)"
-    )
-    cur.executemany(
-        "INSERT INTO customers VALUES (?,?,?,?,?)",
-        [
-            (1, 1, 100.0, 7.0, 70.0),
-            (2, 2, 200.0, 8.0, 80.0),
-            (3, 1, 300.0, 9.0, 90.0),
-        ],
-    )
-    cur.execute(
-        "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, "
-        "status TEXT, amount REAL, created_at TEXT)"
-    )
-    cur.executemany(
-        "INSERT INTO orders VALUES (?,?,?,?,?)",
-        [
-            (1, 1, "a", 10.0, "2024-01-01"),
-            (2, 2, "a", 20.0, "2024-02-01"),
-            (3, 3, "a", 30.0, "2024-03-01"),
-        ],
-    )
-    con.commit()
-    con.close()
+    with transaction(db_path) as con:
+        cur = con.cursor()
+        cur.execute(
+            "CREATE TABLE customers (id INTEGER PRIMARY KEY, region_id INTEGER, "
+            "revenue REAL, revx REAL, revy REAL)"
+        )
+        cur.executemany(
+            "INSERT INTO customers VALUES (?,?,?,?,?)",
+            [
+                (1, 1, 100.0, 7.0, 70.0),
+                (2, 2, 200.0, 8.0, 80.0),
+                (3, 1, 300.0, 9.0, 90.0),
+            ],
+        )
+        cur.execute(
+            "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, "
+            "status TEXT, amount REAL, created_at TEXT)"
+        )
+        cur.executemany(
+            "INSERT INTO orders VALUES (?,?,?,?,?)",
+            [
+                (1, 1, "a", 10.0, "2024-01-01"),
+                (2, 2, "a", 20.0, "2024-02-01"),
+                (3, 3, "a", 30.0, "2024-03-01"),
+            ],
+        )
 
     storage = YAMLStorage(base_dir=os.path.join(d, "store"))
     await storage.save_datasource(
@@ -493,22 +491,20 @@ async def _hostile_engine(*, column: str, base_dir: str) -> SlayerQueryEngine:
     """A store whose ``orders`` model carries a user column named like an internal alias."""
     d = base_dir
     db_path = os.path.join(d, "hostile.db")
-    con = sqlite3.connect(db_path)
-    cur = con.cursor()
-    cur.execute(
-        'CREATE TABLE orders (id INTEGER PRIMARY KEY, status TEXT, '
-        'amount REAL, created_at TEXT, "hostile" REAL)'
-    )
-    cur.executemany(
-        "INSERT INTO orders VALUES (?,?,?,?,?)",
-        [
-            (1, "a", 10.0, "2024-01-01", 1.0),
-            (2, "a", 20.0, "2024-02-01", 2.0),
-            (3, "b", 30.0, "2024-01-15", 3.0),
-        ],
-    )
-    con.commit()
-    con.close()
+    with transaction(db_path) as con:
+        cur = con.cursor()
+        cur.execute(
+            'CREATE TABLE orders (id INTEGER PRIMARY KEY, status TEXT, '
+            'amount REAL, created_at TEXT, "hostile" REAL)'
+        )
+        cur.executemany(
+            "INSERT INTO orders VALUES (?,?,?,?,?)",
+            [
+                (1, "a", 10.0, "2024-01-01", 1.0),
+                (2, "a", 20.0, "2024-02-01", 2.0),
+                (3, "b", 30.0, "2024-01-15", 3.0),
+            ],
+        )
 
     storage = YAMLStorage(base_dir=os.path.join(d, "store"))
     await storage.save_datasource(

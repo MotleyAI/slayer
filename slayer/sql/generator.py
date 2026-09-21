@@ -15,6 +15,7 @@ from typing import (
     Set,
     Tuple,
     Union,
+    cast,
 )
 
 from decimal import Decimal
@@ -966,6 +967,10 @@ class SQLGenerator:
         ] = None
         self._gen_split_consumers: List[str] = []
         self._gen_reuse_deps: Dict[str, Set[str]] = {}
+        #: Statement-scoped CTE-dependency registry (sql P6): a stack of
+        #: {cte name -> declared deps}, one per statement being rendered, so a
+        #: later split recovers a hoisted producer's edges (never AST-scanned).
+        self._gen_dep_stack: List[Dict[str, List[str]]] = []
 
     def install_generation(self, *, reserve: "Iterable[str]" = ()) -> None:
         """Open one generation scope spanning SEVERAL ``reuse_allocator=True``"""
@@ -975,6 +980,7 @@ class SQLGenerator:
         self._gen_rendered_producers = {}
         self._gen_split_consumers = []
         self._gen_reuse_deps = {}
+        self._gen_dep_stack = []
 
     @property
     def dialect(self) -> str:
@@ -1486,10 +1492,12 @@ class SQLGenerator:
             prev_rendered = getattr(self, "_gen_rendered_producers", None)
             prev_split_consumers = self._gen_split_consumers
             prev_reuse_deps = self._gen_reuse_deps
+            prev_dep_stack = self._gen_dep_stack
             self._gen_allocator = self._new_allocator()
             self._gen_rendered_producers = {}
             self._gen_split_consumers = []
             self._gen_reuse_deps = {}
+            self._gen_dep_stack = []
             try:
                 result = self._generate_from_planned_impl(
                     planned_query, bundle=bundle, as_cte_body=as_cte_body,
@@ -1500,6 +1508,7 @@ class SQLGenerator:
                 self._gen_rendered_producers = prev_rendered
                 self._gen_split_consumers = prev_split_consumers
                 self._gen_reuse_deps = prev_reuse_deps
+                self._gen_dep_stack = prev_dep_stack
         # Hoist consumes the producer AST, not re-parsed SQL text (a round-trip mis-binds a dotted result-key column on
         # BigQuery / T-SQL).
         if as_ast and not isinstance(result, exp.Expression):
@@ -1587,7 +1596,7 @@ class SQLGenerator:
         # this path carries no combined attaches, so nothing is isolated.
         base_render_order = staged_plan.base_render_order(planned_query)
 
-        regroup_ctes, regroup_env, regroup_join_specs, _reused = (
+        regroup_ctes, regroup_env, regroup_join_specs, reused_row_ctes = (
             self._prepare_regroup_attaches(planned_query=planned_query, bundle=bundle)
             if _row_attaches
             else ([], {}, [], [])
@@ -1674,7 +1683,7 @@ class SQLGenerator:
                     aliases_by_slot_id=aliases_by_slot_id,
                 )
             if regroup_ctes:
-                final_select = assemble_with_chain(
+                final_select = self._assemble_with_chain(
                     entries=regroup_ctes, final=final_select,
                     external_names=self._external_cte_names(),
                 )
@@ -1697,6 +1706,7 @@ class SQLGenerator:
             regroup_env=regroup_env,
             regroup_join_specs=regroup_join_specs,
             reserve_bare_aliases=True,
+            reused_names=reused_row_ctes,
         )
 
 
@@ -1795,13 +1805,17 @@ class SQLGenerator:
         regroup_env: Optional[Dict[Any, exp.Expression]] = None,
         regroup_join_specs: Optional[List[Tuple[str, List[Tuple[Any, str]]]]] = None,
         reserve_bare_aliases: bool = False,
+        reused_names: Sequence[str] = (),
     ) -> str:
         """Steps + post phases over a built relation tail (D1) — shared by the"""
+        # The base relation joins the prelude producers AND any reused producer its
+        # tail_select reads (a dual-role producer shared with the combined/row phase);
+        # both are declared so the split re-keys the edge onto the hoisted base (P6).
         base_node = Node(
             name="base",
             phase=tail_phase,
             query=tail_select,
-            depends_on=[e.name for e in prelude_nodes],
+            depends_on=[*[e.name for e in prelude_nodes], *reused_names],
             schema_by_slot={sid: list(a) for sid, a in tail_schema.items()},
         )
         ctes: List[CteEntry] = [*prelude_nodes, base_node]
@@ -2052,7 +2066,7 @@ class SQLGenerator:
         inner_select = self._inner_select_from_final_cte(
             chain_tail=chain_tail, aliases_by_slot_id=aliases_by_slot_id,
         )
-        chain_sql = assemble_with_chain(
+        chain_sql = self._assemble_with_chain(
             entries=ctes, final=inner_select,
             external_names=self._external_cte_names(),
         ).sql(dialect=self.dialect, pretty=True)
@@ -2500,6 +2514,11 @@ class SQLGenerator:
                 base_select = base_select.join(
                     exp.to_identifier(cte_name), on=condition, join_type="LEFT",
                 )
+        # A regroup value carrying a dotted producer alias (`_cm_x.`a.b``) round-trips
+        # through `_resolve_sql` and BigQuery/T-SQL re-parse it as `_cm_x.a.b`; repair
+        # it here, where the base select's FROM/JOIN sources are complete (same fix as
+        # `_parse_cte_body`, which needs the source context this select now has).
+        unmangle_dotted_table_refs(base_select)
         return (
             base_select, aliases_by_slot_id, has_aggregation, group_by_keys,
         )
@@ -3213,7 +3232,7 @@ class SQLGenerator:
             )
 
         if regroup_ctes:
-            body = assemble_with_chain(
+            body = self._assemble_with_chain(
                 entries=regroup_ctes, final=body,
                 external_names=self._external_cte_names(),
             )
@@ -3570,6 +3589,7 @@ class SQLGenerator:
             regroup_placeholder_slot_ids,
             regroup_joinbacks,
             regroup_shift_specs,
+            reused_combined_ctes,
         ) = self._prepare_combined_regroup_attaches(
             planned_query=planned_query, bundle=bundle,
             source_relation=source_relation, slot_by_key=slot_by_key,
@@ -3952,17 +3972,12 @@ class SQLGenerator:
                         ],
                         schema_by_slot=dict(aliases_by_slot_id),
                     ),
-                    *[
-                        Node(
-                            name=n, phase="producer", query=q,
-                            depends_on=self._reuse_deps_of(n),
-                        )
-                        for n, q in cm_regroup_ctes
-                    ],
+                    *cm_regroup_ctes,
                 ],
                 tail_select=combined_select,
                 tail_schema=combined_aliases_by_slot_id,
                 tail_phase="combined",
+                reused_names=reused_combined_ctes,
                 planned_query=planned_query,
                 bundle=bundle,
                 source_model=source_model,
@@ -3992,14 +4007,8 @@ class SQLGenerator:
             ),
             *row_regroup_ctes,
         ]
-        cte_entries += [
-            CteEntry(
-                name=name, query=query,
-                depends_on=self._reuse_deps_of(name),
-            )
-            for name, query in cm_regroup_ctes
-        ]
-        combined_statement = assemble_with_chain(
+        cte_entries += cm_regroup_ctes
+        combined_statement = self._assemble_with_chain(
             entries=cte_entries, final=combined_select,
             external_names=self._external_cte_names(),
         )
@@ -4090,40 +4099,105 @@ class SQLGenerator:
             )
         return bundle.rerooted(root)
 
+    def _assemble_with_chain(
+        self, *, entries, final, external_names=frozenset(),
+    ):
+        """``assemble_with_chain`` recording each entry's declared deps into the
+        top statement-scoped registry, so a later split recovers a hoisted
+        producer's edges without AST-scanning (sql P6)."""
+        if self._gen_dep_stack:
+            top = self._gen_dep_stack[-1]
+            for e in entries:
+                deps = top.setdefault(e.name, [])
+                for d in e.depends_on:
+                    if d not in deps:
+                        deps.append(d)
+        return assemble_with_chain(
+            entries=entries, final=final, external_names=external_names,
+        )
+
     def _render_producer_split(
         self, *, producer, bundle, kernel=None,
-    ) -> Tuple[List[Tuple[str, exp.Expression]], str]:
-        """Render a regroup producer, split into (hoisted CTEs, body SQL) — D2."""
-        producer_sql = self.generate_from_planned(
-            planned_query=producer, bundle=bundle, as_cte_body=True,
-            reuse_allocator=True, producer_kernel=kernel,
-        )
-        return self._split_statement_ctes(producer_sql)
+    ) -> Tuple[List[CteEntry], str]:
+        """Render a regroup producer, split into (hoisted CTEs, body SQL) — D2.
+        A pushed registry scope captures the producer statement's declared CTE
+        deps for :meth:`_split_statement_ctes`."""
+        self._gen_dep_stack.append({})
+        try:
+            producer_sql = cast(str, self.generate_from_planned(
+                planned_query=producer, bundle=bundle, as_cte_body=True,
+                reuse_allocator=True, producer_kernel=kernel,
+            ))
+            return self._split_statement_ctes(producer_sql)
+        finally:
+            self._gen_dep_stack.pop()
 
     def _split_statement_ctes(
         self, sql: str,
-    ) -> Tuple[List[Tuple[str, exp.Expression]], str]:
-        """Split a rendered statement into (hoisted CTEs, de-WITHed body SQL)."""
+    ) -> Tuple[List[CteEntry], str]:
+        """Split a rendered statement into (hoisted CTE entries, de-WITHed body).
+
+        Each entry's ``depends_on`` comes from the top statement-scoped registry
+        (declared at assembly time), re-keyed through the ``_base`` rename map so
+        an edge onto a renamed base still resolves. Fails closed if one CTE name
+        appears in two ``WITH`` nodes of the statement."""
         parsed = sqlglot.parse_one(sql, dialect=self.dialect)
         self._unmangle_dotted_table_refs(parsed)
         with_nodes = list(parsed.find_all(exp.With))
         if not with_nodes:
             return [], sql
         allocator = self._gen_allocator or self._new_allocator()
-        hoisted: List[Tuple[str, exp.Expression]] = []
+        captured = self._gen_dep_stack[-1] if self._gen_dep_stack else {}
+        entries: List[CteEntry] = []
+        seen: Set[str] = set()
         for with_node in with_nodes:
-            self._uniquify_producer_base_ctes(with_node=with_node, allocator=allocator)
-            hoisted.extend(
-                (cte.alias_or_name, cte.this.copy()) for cte in with_node.expressions
+            rename = self._uniquify_producer_base_ctes(
+                with_node=with_node, allocator=allocator,
             )
+            reverse = {new: old for old, new in rename.items()}
+            for cte in with_node.expressions:
+                name = cast(str, cte.alias_or_name)
+                if name in seen:
+                    raise ValueError(
+                        f"CTE name {name!r} appears in two WITH nodes of one "
+                        f"producer statement; cannot order it deterministically",
+                    )
+                seen.add(name)
+                orig = reverse.get(name, name)
+                deps = [rename.get(d, d) for d in captured.get(orig, ())]
+                entries.append(CteEntry(
+                    name=name, query=cte.this.copy(), depends_on=deps,
+                ))
             with_node.pop()
-        return hoisted, parsed.sql(dialect=self.dialect, pretty=True)
+        return entries, parsed.sql(dialect=self.dialect, pretty=True)
+
+    def _split_root_ctes(
+        self, sql: str,
+    ) -> Tuple[List[CteEntry], "exp.Select"]:
+        """Split the multi-stage ROOT statement into (its own CTE entries, de-WITHed
+        body). The root is the outermost consumer, so its base CTE is NOT renamed;
+        each entry takes its declared deps from the top registry (identity re-key)."""
+        parsed = cast("exp.Select", sqlglot.parse_one(sql, dialect=self.dialect))
+        with_node = parsed.args.get("with_")
+        if with_node is None:
+            return [], parsed
+        captured = self._gen_dep_stack[-1] if self._gen_dep_stack else {}
+        entries = [
+            CteEntry(
+                name=cast(str, cte.alias_or_name), query=cte.this.copy(),
+                depends_on=list(captured.get(cast(str, cte.alias_or_name), ())),
+            )
+            for cte in with_node.expressions
+        ]
+        parsed.set("with_", None)
+        return entries, parsed
 
     _unmangle_dotted_table_refs = staticmethod(unmangle_dotted_table_refs)
 
     @staticmethod
-    def _uniquify_producer_base_ctes(*, with_node, allocator) -> None:  # NOSONAR(S3776) — one rename pass; the collect / table-ref / column-qualifier / cte-alias rewrites share the rename map.
-        """Rename a hoisted producer's hardcoded base CTE(s) (``_base``/``base``)"""
+    def _uniquify_producer_base_ctes(*, with_node, allocator) -> Dict[str, str]:  # NOSONAR(S3776) — one rename pass; the collect / table-ref / column-qualifier / cte-alias rewrites share the rename map.
+        """Rename a hoisted producer's hardcoded base CTE(s) (``_base``/``base``),
+        returning the ``{old: new}`` rename map so a caller can re-key declared deps."""
         parsed = with_node.parent
         rename: Dict[str, str] = {}
         for cte in with_node.expressions:
@@ -4131,7 +4205,7 @@ class SQLGenerator:
             if name in ("_base", "base") and name not in rename:
                 rename[name] = allocator.allocate_cte(name)
         if not rename:
-            return
+            return rename
         # A nested windowed producer aliases its inline grain subquery _base, shadowing a same-named hoisted CTE; the
         # CTE rename must skip refs bound to the local subquery.
         shadow: Dict[str, set] = {name: set() for name in rename}
@@ -4171,16 +4245,18 @@ class SQLGenerator:
                 alias.set("this", exp.to_identifier(
                     rename[ident.name], quoted=ident.quoted,
                 ))
+        return rename
 
     def _prepare_combined_regroup_attaches(  # NOSONAR(S3776) — one cohesive combined-attach render (producer CTE → placeholder env → join-back); the phases share local state and reads clearer inline.
         self, *, planned_query, bundle, source_relation, slot_by_key,
     ):
         """Render each DEV-1829 combined regroup producer as a ``_cm_*`` CTE."""
-        ctes: List[Tuple[str, exp.Expression]] = []
+        ctes: List[Node] = []
         placeholder_to_cm: Dict[Any, Tuple[str, str]] = {}
         placeholder_slot_ids: Set[str] = set()
         joinbacks: List[Tuple[str, List[Tuple[str, str]]]] = []
         shift_specs: List[Tuple[str, List[Tuple[Any, str]]]] = []
+        reused_cte_names: List[str] = []
         allocator = self._gen_allocator or self._new_allocator()
         for attach in planned_query.regroup_attach_plans:
             if attach.attach_phase != "combined":
@@ -4204,6 +4280,7 @@ class SQLGenerator:
             rec = rendered_map.get(ident) if rendered_map is not None else None
             if rec is not None:
                 cte_name, col_by_sid = rec
+                reused_cte_names.append(cte_name)
                 self._record_reuse_edges(cte_name)
             else:
                 seed_key = attach.substitutions[0].original_key
@@ -4228,8 +4305,25 @@ class SQLGenerator:
                     )
                 finally:
                     self._gen_split_consumers.pop()
-                ctes.extend(producer_hoisted)
-                ctes.append((cte_name, self._parse_cte_body(producer_body_sql)))
+                # Declared edges through the hoist (sql P6): the consumer reads
+                # its hoisted nested producers, each of which keeps its own deps —
+                # so a doubly-attached carrier is ordered before every consumer.
+                # Reuse edges are per node (its OWN name): giving a hoisted producer
+                # the consumer's reuse deps would make it depend on itself when the
+                # consumer reuses it.
+                for h in producer_hoisted:
+                    ctes.append(Node(
+                        name=h.name, phase="producer", query=h.query,
+                        depends_on=[*h.depends_on, *self._reuse_deps_of(h.name)],
+                    ))
+                ctes.append(Node(
+                    name=cte_name, phase="producer",
+                    query=self._parse_cte_body(producer_body_sql),
+                    depends_on=[
+                        *[h.name for h in producer_hoisted],
+                        *self._reuse_deps_of(cte_name),
+                    ],
+                ))
                 producer_relation = producer.source_relation
                 col_by_sid = {
                     sid: self._full_alias_for_slot(
@@ -4282,6 +4376,7 @@ class SQLGenerator:
             shift_specs.append((cte_name, shift_pairs))
         return (
             ctes, placeholder_to_cm, placeholder_slot_ids, joinbacks, shift_specs,
+            reused_cte_names,
         )
 
     def _record_reuse_edges(self, shared_cte: str) -> None:
@@ -4393,17 +4488,17 @@ class SQLGenerator:
                 source_relation=relation, stage_sql=producer_body_sql,
                 expected_columns=expected, dialect=self.dialect,
             )
-            reuse_deps = self._reuse_deps_of(cte_name)
-            for hoisted_name, hoisted_body in producer_hoisted:
+            for h in producer_hoisted:
                 ctes.append(Node(
-                    name=hoisted_name, phase="producer", query=hoisted_body,
-                    depends_on=list(reuse_deps),
+                    name=h.name, phase="producer", query=h.query,
+                    depends_on=[*h.depends_on, *self._reuse_deps_of(h.name)],
                 ))
             exposed_by_sid = {sid: _flat(slot) for sid, slot in sub_slots.items()}
             ctes.append(Node(
                 name=cte_name, phase="producer", query=wrapped,
                 depends_on=[
-                    *[name for name, _ in producer_hoisted], *reuse_deps,
+                    *[h.name for h in producer_hoisted],
+                    *self._reuse_deps_of(cte_name),
                 ],
                 schema_by_slot={sid: [col] for sid, col in exposed_by_sid.items()},
             ))
@@ -6872,50 +6967,46 @@ def generate_planned_stages(
     generator = SQLGenerator(dialect=dialect)
     generator.install_generation(reserve=schema_by_name.keys())
 
-    # Hoist each stage's internal CTEs and de-WITH its body into one flat WITH — a nested WITH inside a stage CTE is
-    # invalid on T-SQL.
-    stage_ctes: List[Tuple[str, exp.Expression]] = []
-    root_sql: Optional[str] = None
+    # Hoist each stage's internal CTEs and de-WITH its body into one flat WITH
+    # assembled by declared edges (sql P6) — a nested WITH inside a stage CTE is
+    # invalid on T-SQL. Stage relations follow their hoisted producers; the plan's
+    # topological stage order is the insertion tiebreak (byte-stable output).
+    stage_entries: List[CteEntry] = []
+    root_entries: List[CteEntry] = []
+    root_final: Optional[exp.Select] = None
     for planned in planned_queries:
         stage_bundle = _bundle_for_stage(planned, bundle, schema_by_name)
-        stage_sql = generator.generate_from_planned(
-            planned, bundle=stage_bundle, reuse_allocator=True,
-        )
-        if planned is planned_queries[-1]:
-            root_sql = stage_sql
-            continue
-        if planned.stage_schema is None:
-            raise ValueError(
-                "non-root stage must carry a stage_schema for CTE chaining; "
-                f"source_relation={planned.source_relation!r}",
-            )
-        hoisted, body_sql = generator._split_statement_ctes(stage_sql)
-        stage_ctes.extend(hoisted)
-        stage_ctes.append((
-            planned.stage_schema.relation_name,
-            _stage_rename_wrapper(
+        generator._gen_dep_stack.append({})
+        try:
+            stage_sql = cast(str, generator.generate_from_planned(
+                planned, bundle=stage_bundle, reuse_allocator=True,
+            ))
+            if planned is planned_queries[-1]:
+                root_entries, root_final = generator._split_root_ctes(stage_sql)
+                continue
+            if planned.stage_schema is None:
+                raise ValueError(
+                    "non-root stage must carry a stage_schema for CTE chaining; "
+                    f"source_relation={planned.source_relation!r}",
+                )
+            hoisted, body_sql = generator._split_statement_ctes(stage_sql)
+        finally:
+            generator._gen_dep_stack.pop()
+        stage_entries.extend(hoisted)
+        stage_entries.append(CteEntry(
+            name=planned.stage_schema.relation_name,
+            query=_stage_rename_wrapper(
                 planned=planned, stage_sql=body_sql, dialect=dialect,
             ),
+            depends_on=[h.name for h in hoisted],
         ))
 
-    assert root_sql is not None
-    root_ast = sqlglot.parse_one(root_sql, dialect=dialect)
-
-    # The root's own CTEs read FROM the stage relations, so clear them, add the stage CTEs first (dependency order),
-    # then re-append the root's.
-    existing_with = root_ast.args.get("with_")
-    existing_ctes = (
-        list(existing_with.expressions) if existing_with is not None else []
+    assert root_final is not None
+    combined = assemble_with_chain(
+        entries=[*stage_entries, *root_entries], final=root_final,
+        external_names=generator._external_cte_names(),
     )
-    if existing_with is not None:
-        root_ast.set("with_", None)
-
-    for name, wrapped in stage_ctes:
-        root_ast = root_ast.with_(name, as_=wrapped, dialect=dialect)
-    for cte in existing_ctes:
-        root_ast = root_ast.with_(cte.args["alias"], as_=cte.this, dialect=dialect)
-
-    sql = root_ast.sql(dialect=dialect, pretty=True)
+    sql = combined.sql(dialect=dialect, pretty=True)
     sql = get_dialect(dialect).rewrite_emitted_sql(
         sql, aliases=projection_aliases, exempt=exempt,
     )

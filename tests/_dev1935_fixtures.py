@@ -6,7 +6,6 @@ region mini-graph)."""
 from __future__ import annotations
 
 import os
-import sqlite3
 import tempfile
 from typing import AsyncIterator, List
 
@@ -16,6 +15,7 @@ from slayer.core.enums import DataType, JoinCardinality, JoinType
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 
 from tests._dev1840_fixtures import (
@@ -236,20 +236,17 @@ _EL_EVENTS = [(1, 1, 50.0), (2, 1, 50.0), (3, 2, 30.0)]  # none for region 3
 
 
 def _seed_eventless_sqlite(db_path: str) -> None:
-    con = sqlite3.connect(db_path)
-    cur = con.cursor()
-    cur.execute("CREATE TABLE regions (id INTEGER PRIMARY KEY, name TEXT, pop REAL)")
-    cur.executemany("INSERT INTO regions VALUES (?,?,?)", _EL_REGIONS)
-    cur.execute(
-        "CREATE TABLE customers (id INTEGER PRIMARY KEY, region_id INTEGER, "
-        "tier TEXT, spend REAL)")
-    cur.executemany("INSERT INTO customers VALUES (?,?,?,?)", _EL_CUSTOMERS)
-    cur.execute(
-        "CREATE TABLE region_events (id INTEGER PRIMARY KEY, region_id INTEGER, "
-        "value REAL)")
-    cur.executemany("INSERT INTO region_events VALUES (?,?,?)", _EL_EVENTS)
-    con.commit()
-    con.close()
+    with transaction(db_path) as con:
+        con.execute("CREATE TABLE regions (id INTEGER PRIMARY KEY, name TEXT, pop REAL)")
+        con.executemany("INSERT INTO regions VALUES (?,?,?)", _EL_REGIONS)
+        con.execute(
+            "CREATE TABLE customers (id INTEGER PRIMARY KEY, region_id INTEGER, "
+            "tier TEXT, spend REAL)")
+        con.executemany("INSERT INTO customers VALUES (?,?,?,?)", _EL_CUSTOMERS)
+        con.execute(
+            "CREATE TABLE region_events (id INTEGER PRIMARY KEY, region_id INTEGER, "
+            "value REAL)")
+        con.executemany("INSERT INTO region_events VALUES (?,?,?)", _EL_EVENTS)
 
 
 def _seed_eventless_duckdb(db_path: str) -> None:

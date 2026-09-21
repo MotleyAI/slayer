@@ -19,7 +19,6 @@ Ratified decisions (DEV-1753 decision trail, git history):
 from __future__ import annotations
 
 import os
-import sqlite3
 
 import pytest
 import sqlglot
@@ -42,6 +41,7 @@ from slayer.core.query import ColumnRef, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.dialects import get_dialect
 from slayer.sql.render.value_expr import render_arithmetic, render_scalar_call
+from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 
 TIER1 = [
@@ -243,23 +243,21 @@ class TestModPrecedence:
 
 async def _engine(base_dir: str, *, dialect: str = "sqlite") -> SlayerQueryEngine:
     db_path = os.path.join(base_dir, "s.db")
-    con = sqlite3.connect(db_path)
-    cur = con.cursor()
-    cur.execute(
-        "CREATE TABLE orders (id INTEGER PRIMARY KEY, status TEXT, "
-        "amount REAL, disc REAL, qty REAL)"
-    )
-    cur.executemany(
-        "INSERT INTO orders VALUES (?,?,?,?,?)",
-        [
-            (1, "new", 10.0, None, 2.0),
-            (2, "new", 20.0, 5.0, 4.0),
-            (3, "old", 30.0, None, 1.0),
-            (4, "old", None, None, 3.0),
-        ],
-    )
-    con.commit()
-    con.close()
+    with transaction(db_path) as con:
+        cur = con.cursor()
+        cur.execute(
+            "CREATE TABLE orders (id INTEGER PRIMARY KEY, status TEXT, "
+            "amount REAL, disc REAL, qty REAL)"
+        )
+        cur.executemany(
+            "INSERT INTO orders VALUES (?,?,?,?,?)",
+            [
+                (1, "new", 10.0, None, 2.0),
+                (2, "new", 20.0, 5.0, 4.0),
+                (3, "old", 30.0, None, 1.0),
+                (4, "old", None, None, 3.0),
+            ],
+        )
 
     storage = YAMLStorage(base_dir=os.path.join(base_dir, "store"))
     await storage.save_datasource(

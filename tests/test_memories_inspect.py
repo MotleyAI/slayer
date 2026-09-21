@@ -8,9 +8,10 @@ auto-pruned when no matching learning-shaped memory exists. The
 ``search`` first.
 """
 
+import json
 import os
 import shutil
-import sqlite3
+from slayer.storage.sqlite_conn import transaction
 import tempfile
 from typing import Any
 from collections.abc import Generator
@@ -63,7 +64,7 @@ def _reset_storage(storage: YAMLStorage) -> None:
     # rather than deleting the SidecarEmbeddingStore's open db file.
     emb_path = os.path.join(storage.base_dir, "embeddings.db")
     if os.path.exists(emb_path):
-        with sqlite3.connect(emb_path) as conn:
+        with transaction(emb_path) as conn:
             conn.execute("DELETE FROM embeddings")
 
 
@@ -252,8 +253,6 @@ class TestInspectModelLearningsSection:
         emit ``learning`` (the Memory field name) — not the legacy
         ``body`` alias, which would AttributeError as soon as a memory
         matches."""
-        import json
-
         await seeded.save_memory(
             learning="amount is in cents",
             entities=["mydb.orders.amount"],

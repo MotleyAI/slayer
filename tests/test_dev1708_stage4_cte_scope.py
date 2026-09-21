@@ -37,7 +37,7 @@ from __future__ import annotations
 
 import os
 import re as _re
-import sqlite3
+from slayer.storage.sqlite_conn import transaction
 import tempfile
 from typing import AsyncIterator
 
@@ -662,43 +662,41 @@ class TestNullSafeJoinBackDialects:
 # Null-safe grain join-back — SQLite EXECUTION (NULL dim retains its row).
 # =========================================================================== #
 def _seed_sqlite(db_path: str) -> None:
-    con = sqlite3.connect(db_path)
-    cur = con.cursor()
-    cur.execute(
-        "CREATE TABLE regions (id INTEGER PRIMARY KEY, name TEXT, population REAL)"
-    )
-    cur.executemany(
-        "INSERT INTO regions VALUES (?,?,?)",
-        # region 2 has a NULL name — the nullable grain the rerooted join-back
-        # test groups on.
-        [(1, "NA", 100.0), (2, None, 200.0)],
-    )
-    cur.execute(
-        "CREATE TABLE customers (id INTEGER PRIMARY KEY, region_id INTEGER, "
-        "lifetime_value REAL, status TEXT)"
-    )
-    cur.executemany(
-        "INSERT INTO customers VALUES (?,?,?,?)",
-        [
-            (1, 1, 10.0, "active"),
-            (2, 2, 20.0, None),   # NULL status — the grain value under test
-            (3, 1, 30.0, None),   # NULL status
-        ],
-    )
-    cur.execute(
-        "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, "
-        "amount REAL, status TEXT)"
-    )
-    cur.executemany(
-        "INSERT INTO orders VALUES (?,?,?,?)",
-        [
-            (1, 1, 5.0, "paid"),
-            (2, 2, 7.0, "paid"),
-            (3, 3, 9.0, "paid"),
-        ],
-    )
-    con.commit()
-    con.close()
+    with transaction(db_path) as con:
+        cur = con.cursor()
+        cur.execute(
+            "CREATE TABLE regions (id INTEGER PRIMARY KEY, name TEXT, population REAL)"
+        )
+        cur.executemany(
+            "INSERT INTO regions VALUES (?,?,?)",
+            # region 2 has a NULL name — the nullable grain the rerooted join-back
+            # test groups on.
+            [(1, "NA", 100.0), (2, None, 200.0)],
+        )
+        cur.execute(
+            "CREATE TABLE customers (id INTEGER PRIMARY KEY, region_id INTEGER, "
+            "lifetime_value REAL, status TEXT)"
+        )
+        cur.executemany(
+            "INSERT INTO customers VALUES (?,?,?,?)",
+            [
+                (1, 1, 10.0, "active"),
+                (2, 2, 20.0, None),   # NULL status — the grain value under test
+                (3, 1, 30.0, None),   # NULL status
+            ],
+        )
+        cur.execute(
+            "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, "
+            "amount REAL, status TEXT)"
+        )
+        cur.executemany(
+            "INSERT INTO orders VALUES (?,?,?,?)",
+            [
+                (1, 1, 5.0, "paid"),
+                (2, 2, 7.0, "paid"),
+                (3, 3, 9.0, "paid"),
+            ],
+        )
 
 
 @pytest.fixture
