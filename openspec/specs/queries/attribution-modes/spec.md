@@ -139,11 +139,15 @@ determines it (per `queries/semantics` › Aggregation parameters are typed by t
 dataset's grain) and is then picked once per associated entity alongside the aggregate's
 own value; `*:count` counts the distinct associated entities per cell. An
 aggregation's own column filter restricts the associated entities before per-cell
-aggregation. Combining associate-mode resolution with `window=` or `first`/`last` on
-the same aggregate SHALL fail with a clear typed error naming the combination and the
-remedy. An aggregate root model without a declared unique key SHALL fail associate-mode
-resolution with a clear typed error naming the model and the remedy (declare a primary
-or unique key).
+aggregation. Association is needed only when at least one grain dimension is
+unattributable from the aggregate's home: an aggregate whose grain dimensions the home
+all determines takes the plain path under `associate` exactly as under `broadcast`,
+its attached inputs compiled at their own homes, so the eligibility rules below apply
+only when association is needed. Combining associate-mode resolution with `window=` or
+`first`/`last` on the same aggregate SHALL fail with a clear typed error naming the
+combination and the remedy. An aggregate root model without a declared unique key SHALL
+fail associate-mode resolution with a clear typed error naming the model and the remedy
+(declare a primary or unique key).
 
 #### Scenario: Percentile attributes over the association
 - **WHEN** an associate-mode query slices a cross-model percentile aggregate by an
@@ -183,6 +187,15 @@ or unique key).
 - **WHEN** an associate-mode query needs association for an aggregate whose root model
   declares no primary or unique key
 - **THEN** the query fails with a clear typed error naming the model and the remedy
+
+#### Scenario: Attributable dimensions need no association
+- **WHEN** an associate-mode query rooted at `orders` selects
+  `customers.spend:weighted_avg(weight=sum(amount, partition_by=customers.regions.name))`
+  by `customers.tier` against a `customers` model declaring no primary or unique key,
+  the `orders → customers` hop declared many-to-one
+- **THEN** the query executes with the same values as under `broadcast` and no
+  association warning — the home determines every dimension, so no entity
+  deduplication is needed and the unique-key rule does not apply
 
 ### Requirement: Error mode refuses silent semantics
 Under `to_many_handling: "error"`, every event the retired strict flag rejected SHALL

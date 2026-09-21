@@ -206,9 +206,12 @@ the aggregation's declared parameter order — the built-in registry
 → `other`) or a custom aggregation's `params` declaration order — yielding the
 identical aggregation identity, SQL, results, and result keys as the named
 spelling. Passing a parameter both positionally and by name, or more positional
-values than declared parameters, SHALL fail with a clear error naming the rule.
-Ranked `first`/`last` declare no parameters — their positional ranking column
-is untouched.
+values than declared parameters — any positional value at all on an aggregation
+that declares none — SHALL fail with a clear error naming the rule. Ranked
+`first`/`last` declare no parameters — they take at most one positional value,
+their ranking column (the time axis when omitted), which, when given, SHALL be a
+column reference, never a literal or an attached value. After binding an
+attached (aggregate-valued) parameter is therefore always a named parameter.
 
 #### Scenario: Positional percentile equals named
 - **WHEN** a measure is written `percentile(price, 0.9)` or `price:percentile(0.9)`
@@ -227,3 +230,14 @@ is untouched.
 - **WHEN** `percentile(price, 0.9, p=0.5)` or `percentile(price, 0.9, 0.5)` is submitted
 - **THEN** each fails with a clear error naming the duplicated parameter or the
   declared-parameter count
+
+#### Scenario: Positional value on a parameterless aggregation errors
+- **WHEN** `sum(amount, 1)` or `customers.spend:sum(sum(customers.spend, partition_by=status))`
+  is submitted, under any `to_many_handling` mode
+- **THEN** each fails at bind with a clear error naming the aggregation and that it
+  takes no parameters — never an executed value
+
+#### Scenario: Invalid first/last ranking key errors
+- **WHEN** `last(amount, sum(amount, partition_by=region))`, `last(amount, 1)` or
+  `last(amount, id, amount)` is submitted
+- **THEN** each fails at bind with a clear error naming the ranking-column rule
