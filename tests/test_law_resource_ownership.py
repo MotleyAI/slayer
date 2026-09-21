@@ -162,7 +162,12 @@ def _filterwarnings() -> list[str]:
 def test_gate_config_is_pinned() -> None:
     filters = _filterwarnings()
     assert "error:unclosed database:ResourceWarning" in filters, filters
-    assert "error::pytest.PytestUnraisableExceptionWarning" in filters, filters
+    # Scoped to sqlite's finalizer message: a non-sqlite driver's connection
+    # finalizer (e.g. aiomysql after the loop closes) must stay a warning.
+    assert (
+        "error:Exception ignored while finalizing database connection"
+        ":pytest.PytestUnraisableExceptionWarning" in filters
+    ), filters
 
 
 # --------------------------------------------------------------------------- #

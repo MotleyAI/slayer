@@ -73,8 +73,10 @@ client, continues past a failing one, clears `_sql_clients` in `finally`, is ide
 leaves the engine reusable. `aclose()` is unchanged.
 
 **D5 — `reset_cache()` always disposes; the kwarg goes.** No production caller exists; a reset
-that leaves live pools behind is the leak. SQLAlchemy dispose closes checked-in connections and
-lets checked-out ones finish and close on return — pinned by a test.
+that leaves live pools behind is the leak. SQLAlchemy dispose closes checked-in connections; a
+checked-out one keeps working, and the caller `invalidate()`s it on return so its DBAPI connection
+closes rather than re-pooling into the orphaned old pool (closed only on GC — a 3.13+ leak) —
+pinned by a test.
 
 **D6 — Retire the client module's engine cache.** `engine` becomes a required keyword on
 `_execute_sql_sync` / `_get_column_types_sync`; their unused `connection_string` parameters (and
@@ -82,8 +84,13 @@ those of the retry wrappers) go; `_INLINE_SYNC_DB_TYPES` and its two dead branch
 factory is the one sync-engine cache.
 
 **D7 — The gate is config plus an active-hook teardown.** `filterwarnings` errors for
-`unclosed database` and `PytestUnraisableExceptionWarning` (measured: no other unraisable
-exceptions in the suite). A session-scoped autouse fixture in `tests/conftest.py` runs
+`unclosed database` (ResourceWarning) and — scoped to sqlite's finalizer message
+`Exception ignored while finalizing database connection` — `PytestUnraisableExceptionWarning`; a
+leaked sqlite connection surfaces as either, depending on when it is finalized. The unraisable
+filter is message-scoped so a non-sqlite driver's connection finalizer (e.g. aiomysql's
+`Exception ignored in: <function Connection.__del__>` after the loop closes, seen in the MySQL
+integration suite on 3.11) stays a warning — DEV-1943's scope is sqlite. A session-scoped autouse
+fixture in `tests/conftest.py` runs
 `engine_factory.reset_cache()` then `gc.collect()` in its finalizer — inside the last test's
 teardown, while pytest's warning filters and unraisable hook are still installed in every xdist
 worker (Codex finding, folded: a `pytest_sessionfinish` hook may run after the hooks are gone).

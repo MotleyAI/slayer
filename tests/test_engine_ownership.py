@@ -104,8 +104,14 @@ def _dispose_spy():
     """Class-level spy on ``Engine.dispose``, installed BEFORE engine construction
     so it records disposal whether ``close()`` / the finalizer calls dispose
     directly or through a callback that captured the (now-mocked) bound method —
-    an instance-level patch applied afterwards would miss the latter (D4)."""
+    an instance-level patch applied afterwards would miss the latter (D4).
+
+    Calls through to the real dispose so the connection actually closes — a plain
+    mock would leave the private StaticPool connection open, leaking it on 3.13+.
+    """
+    real = sa.engine.base.Engine.dispose
     with patch.object(sa.engine.base.Engine, "dispose", autospec=True) as spy:
+        spy.side_effect = lambda self, *a, **k: real(self, *a, **k)
         yield spy
 
 
