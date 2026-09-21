@@ -11,7 +11,7 @@ import pytest
 from pydantic import ValidationError
 
 from slayer.core.enums import JoinCardinality, JoinType
-from slayer.core.errors import AmbiguousJoinPathError
+from slayer.core.errors import AmbiguousJoinPathError, CircularJoinPathError
 from slayer.core.join_walker import (
     OrientedJoin,
     edges_between,
@@ -223,9 +223,11 @@ class TestWalk:
                     models_by_name=models) is None
 
     def test_revisit_is_guarded(self) -> None:
+        # DEV-1952: a revisit is a typed circular refusal, not a silent ``None``.
         models = self._chain()
-        assert walk(root=models["regions"], path=("customers", "regions"),
-                    models_by_name=models) is None
+        with pytest.raises(CircularJoinPathError):
+            walk(root=models["regions"], path=("customers", "regions"),
+                 models_by_name=models)
 
     def test_ambiguous_hop_raises(self) -> None:
         models = _parallel_pair(named=False)

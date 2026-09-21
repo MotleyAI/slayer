@@ -16,8 +16,7 @@ even if its declared cardinality is contradictorily `one_to_many` (the proof
 takes precedence over the declaration).
 
 Such a reference SHALL never revisit a model already on its join path from the
-declaring model — the declaring model itself included, so a self-join edge is a
-revisit on its first hop. A revisiting path is circular: the model save SHALL be
+declaring model — the declaring model itself included. A revisiting path is circular: the model save SHALL be
 rejected with a circular-definition error naming the column, the kind (`sql` or
 `filter`), the complete reference as spelled, the revisited model, the hop that
 revisits it and the model that hop leaves, plus the remedy (reference the column
@@ -70,10 +69,6 @@ with the query-time door refusing it as unresolvable.
 - **WHEN** `orders` with a join declared `one_to_many` to `line_items` is saved with a derived column whose `sql` is `line_items.orders.amount`
 - **THEN** the save is rejected with the circular-definition error, not the fanning error
 
-#### Scenario: a self-join edge is circular on its first hop
-- **WHEN** `customers` declares a named self-join edge `parent` and is saved with a derived column whose `sql` is `parent.name`
-- **THEN** the save is rejected with the circular-definition error naming revisited model `customers` and hop `parent`
-
 #### Scenario: the engine's save door rejects the same definition identically
 - **WHEN** the `regions.customers.spend` definition is saved through the engine's `save_model`
 - **THEN** the save is rejected with the same circular-definition error, naming the same column, kind, reference, revisited model, hop and remedy
@@ -116,10 +111,6 @@ SHALL be refused as unresolvable, never emitted verbatim.
 #### Scenario: a filter-kind definition
 - **WHEN** a stored column with `sql` `spend` and `filter` `regions.customers.spend > 0` is aggregated
 - **THEN** the query fails with the same circular error
-
-#### Scenario: a stored self-join definition
-- **WHEN** a stored column whose `sql` is `parent.name` over a named self-join edge `parent` is queried in any position
-- **THEN** the query fails with the circular error naming revisited model `customers` and hop `parent`
 
 #### Scenario: the query-typed spelling fails with the same error class
 - **WHEN** `customers.regions.customers.spend:sum` is queried from `orders`

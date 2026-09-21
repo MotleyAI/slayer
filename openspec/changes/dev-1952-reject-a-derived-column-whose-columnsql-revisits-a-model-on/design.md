@@ -139,8 +139,10 @@ door) BEFORE `storage.save_model`. Composed via-host reroot paths
   shape and a root-spelled default probed from the owner frame.
 - [Binder message wording changes] → existing tests only substring-match
   "Circular join" / "revisit"; both preserved.
-- [Self-join edges in `Column.sql` now refused where they went opaque] → parity
-  with the binder; an opaque self-join reference was never renderable.
+- [Self-join edges] → a real self-join is rejected at model construction
+  (`SlayerModel._reject_self_joins`), so save/query paths never see one and the
+  revisit rule never has to; the walker's own first-hop revisit guard is still
+  covered by a walker-only unit test built via `model_construct`.
 
 ## Migration Plan
 
