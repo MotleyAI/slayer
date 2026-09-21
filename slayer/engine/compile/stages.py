@@ -2235,7 +2235,7 @@ def _substitute_prebound(
     return prebound.model_copy(update={
         "declared_measures": [
             dm.model_copy(update={"bound": BoundExpr(
-                value_key=substitute(dm.bound.value_key, mapping),
+                value_key=substitute(key=dm.bound.value_key, mapping=mapping),
             )})
             for dm in prebound.declared_measures
         ],
@@ -2245,7 +2245,7 @@ def _substitute_prebound(
         ],
         "order_specs": [
             sp.model_copy(update={"bound": BoundExpr(
-                value_key=substitute(sp.bound.value_key, mapping),
+                value_key=substitute(key=sp.bound.value_key, mapping=mapping),
             )})
             for sp in prebound.order_specs
         ],
