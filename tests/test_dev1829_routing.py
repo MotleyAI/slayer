@@ -7,13 +7,13 @@ from __future__ import annotations
 
 import os
 import re
-import sqlite3
 
 import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.engine.plan import plan_stages
+from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 
 from tests._dev1739_fixtures import (
@@ -183,13 +183,11 @@ class TestReservedPrefixAcrossStages:
 
     async def test_upstream_reserved_prefix_column_rejected(self, tmp_path) -> None:
         db_path = os.path.join(tmp_path, "t.db")
-        con = sqlite3.connect(db_path)
-        con.execute("CREATE TABLE orders (region TEXT, amount REAL)")
-        con.executemany(
-            "INSERT INTO orders VALUES (?, ?)", [("North", 10.0), ("South", 20.0)],
-        )
-        con.commit()
-        con.close()
+        with transaction(db_path) as con:
+            con.execute("CREATE TABLE orders (region TEXT, amount REAL)")
+            con.executemany(
+                "INSERT INTO orders VALUES (?, ?)", [("North", 10.0), ("South", 20.0)],
+            )
 
         storage = YAMLStorage(base_dir=os.path.join(tmp_path, "store"))
         await storage.save_datasource(

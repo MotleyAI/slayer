@@ -11,7 +11,7 @@ Covers the two helpers, the engine choke point, and the boundaries that must
 NOT change: hand-written models, undeclared variables, empty lists, and the
 scalar-position arrow variables.
 """
-import sqlite3
+from slayer.storage.sqlite_conn import transaction
 import tempfile
 
 import pytest
@@ -263,15 +263,13 @@ def test_arrow_style_declared_variable_is_not_wrapped():
 
 
 def _seed(db_path: str) -> None:
-    conn = sqlite3.connect(db_path)
-    cur = conn.cursor()
-    cur.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, region TEXT, amount REAL)")
-    cur.executemany(
-        "INSERT INTO orders VALUES (?, ?, ?)",
-        [(1, "US", 100.0), (2, "US", 60.0), (3, "EU", 200.0), (4, "CA", 300.0)],
-    )
-    conn.commit()
-    conn.close()
+    with transaction(db_path) as conn:
+        cur = conn.cursor()
+        cur.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, region TEXT, amount REAL)")
+        cur.executemany(
+            "INSERT INTO orders VALUES (?, ?, ?)",
+            [(1, "US", 100.0), (2, "US", 60.0), (3, "EU", 200.0), (4, "CA", 300.0)],
+        )
 
 
 async def _engine_with(model: SlayerModel):

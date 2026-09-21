@@ -32,7 +32,6 @@ matching.
 
 from __future__ import annotations
 
-import sqlite3
 from typing import List, Optional
 
 import sqlglot
@@ -41,6 +40,7 @@ from sqlglot import exp
 from slayer.core.enums import DataType
 from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.storage.sqlite_conn import transaction
 
 from tests._engine_helpers import make_seeded_sqlite_engine
 
@@ -63,8 +63,7 @@ PAID_FEB_WINDOW = PAID_JAN + PAID_FEB  # 30.0
 
 def seed_dev1746_sqlite(db_path: str) -> None:
     """Create + seed the DEV-1746 SQLite corpus at ``db_path``."""
-    con = sqlite3.connect(db_path)
-    try:
+    with transaction(db_path) as con:
         con.executescript(
             """
             CREATE TABLE regions (
@@ -111,9 +110,6 @@ def seed_dev1746_sqlite(db_path: str) -> None:
                 (4, 101, None, "2024-02-20", NULL_STATUS_FEB),
             ],
         )
-        con.commit()
-    finally:
-        con.close()
 
 
 def dev1746_models() -> List[SlayerModel]:

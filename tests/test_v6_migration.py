@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 import os
-import sqlite3
 import tempfile
 
 import pytest
@@ -18,6 +17,7 @@ import yaml
 
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.storage import migrations as mig
+from slayer.storage.sqlite_conn import transaction
 from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -140,7 +140,7 @@ async def test_sqlite_round_trips_v5_payload_to_v6_with_sampled_none() -> None:
                 {"name": "amount", "type": "DOUBLE"},
             ],
         }
-        with sqlite3.connect(db_path) as conn:
+        with transaction(db_path) as conn:
             conn.execute(
                 "INSERT INTO models (data_source, name, data) VALUES (?, ?, ?)",
                 ("ds", "orders", json.dumps(v5_payload)),

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import sqlite3
 
 import pytest
 import sqlglot
@@ -31,6 +30,7 @@ from slayer.engine.schema_drift import (
     compute_datasource_drops,
 )
 from slayer.storage.base import resolve_storage
+from slayer.storage.sqlite_conn import transaction
 
 from tests._engine_helpers import make_seeded_sqlite_engine
 
@@ -121,25 +121,23 @@ async def _seeded_chain_engine(tmp_path) -> SlayerQueryEngine:
     """Chain models bound to a populated SQLite file: three invoices fold to
     Ann=30 (10+20) and Bob=30 through Subscription → Customer → Consumer."""
     db_path = os.path.join(str(tmp_path), "data.db")
-    con = sqlite3.connect(db_path)
-    cur = con.cursor()
-    cur.execute("CREATE TABLE Consumer (id INTEGER PRIMARY KEY, name TEXT, "
-                "email TEXT, signup_at TEXT, amount REAL, geo TEXT)")
-    cur.executemany("INSERT INTO Consumer VALUES (?,?,?,?,?,?)",
-                    [(1, "Ann", None, None, None, None),
-                     (2, "Bob", None, None, None, None)])
-    cur.execute("CREATE TABLE Customer (id INTEGER PRIMARY KEY, consumerId INTEGER)")
-    cur.executemany("INSERT INTO Customer VALUES (?,?)", [(1, 1), (2, 2)])
-    cur.execute("CREATE TABLE Subscription (id INTEGER PRIMARY KEY, customerId INTEGER)")
-    cur.executemany("INSERT INTO Subscription VALUES (?,?)", [(1, 1), (2, 2)])
-    cur.execute("CREATE TABLE Invoice (id INTEGER PRIMARY KEY, subscriptionId INTEGER, "
-                "customerId INTEGER, amount REAL, status TEXT, issued_at TEXT)")
-    cur.executemany("INSERT INTO Invoice VALUES (?,?,?,?,?,?)",
-                    [(1, 1, 1, 10.0, "ok", None),
-                     (2, 1, 1, 20.0, "ok", None),
-                     (3, 2, 2, 30.0, "ok", None)])
-    con.commit()
-    con.close()
+    with transaction(db_path) as con:
+        cur = con.cursor()
+        cur.execute("CREATE TABLE Consumer (id INTEGER PRIMARY KEY, name TEXT, "
+                    "email TEXT, signup_at TEXT, amount REAL, geo TEXT)")
+        cur.executemany("INSERT INTO Consumer VALUES (?,?,?,?,?,?)",
+                        [(1, "Ann", None, None, None, None),
+                         (2, "Bob", None, None, None, None)])
+        cur.execute("CREATE TABLE Customer (id INTEGER PRIMARY KEY, consumerId INTEGER)")
+        cur.executemany("INSERT INTO Customer VALUES (?,?)", [(1, 1), (2, 2)])
+        cur.execute("CREATE TABLE Subscription (id INTEGER PRIMARY KEY, customerId INTEGER)")
+        cur.executemany("INSERT INTO Subscription VALUES (?,?)", [(1, 1), (2, 2)])
+        cur.execute("CREATE TABLE Invoice (id INTEGER PRIMARY KEY, subscriptionId INTEGER, "
+                    "customerId INTEGER, amount REAL, status TEXT, issued_at TEXT)")
+        cur.executemany("INSERT INTO Invoice VALUES (?,?,?,?,?,?)",
+                        [(1, 1, 1, 10.0, "ok", None),
+                         (2, 1, 1, 20.0, "ok", None),
+                         (3, 2, 2, 30.0, "ok", None)])
     return await make_seeded_sqlite_engine(
         base_dir=str(tmp_path), db_path=db_path, models=_chain_models())
 

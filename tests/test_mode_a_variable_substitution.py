@@ -9,7 +9,7 @@ All end-to-end cases run against a real file-backed SQLite datasource and
 assert on RESULT DATA, not just generated SQL strings.
 """
 import ast
-import sqlite3
+from slayer.storage.sqlite_conn import transaction
 import tempfile
 
 import pytest
@@ -48,29 +48,27 @@ def _seed_orders_db_at(db_path) -> None:
     Row 6 carries a single-quote in ``status`` ("O'Brien") to exercise the
     escaping path.
     """
-    conn = sqlite3.connect(str(db_path))
-    cur = conn.cursor()
-    cur.execute(
-        """
-        CREATE TABLE orders (
-            id INTEGER PRIMARY KEY,
-            region TEXT NOT NULL,
-            status TEXT NOT NULL,
-            amount REAL NOT NULL
+    with transaction(str(db_path)) as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE orders (
+                id INTEGER PRIMARY KEY,
+                region TEXT NOT NULL,
+                status TEXT NOT NULL,
+                amount REAL NOT NULL
+            )
+            """
         )
-        """
-    )
-    rows = [
-        (1, "US", "completed", 100.0),
-        (2, "US", "pending", 50.0),
-        (3, "EU", "completed", 200.0),
-        (4, "EU", "cancelled", 75.0),
-        (5, "CA", "completed", 300.0),
-        (6, "US", "O'Brien", 10.0),
-    ]
-    cur.executemany("INSERT INTO orders VALUES (?, ?, ?, ?)", rows)
-    conn.commit()
-    conn.close()
+        rows = [
+            (1, "US", "completed", 100.0),
+            (2, "US", "pending", 50.0),
+            (3, "EU", "completed", 200.0),
+            (4, "EU", "cancelled", 75.0),
+            (5, "CA", "completed", 300.0),
+            (6, "US", "O'Brien", 10.0),
+        ]
+        cur.executemany("INSERT INTO orders VALUES (?, ?, ?, ?)", rows)
 
 
 async def _engine_with(*models: SlayerModel) -> tuple:
@@ -397,17 +395,15 @@ _TRICKY_ROWS = [
 async def _engine_with_tricky_status(model: SlayerModel) -> tuple:
     tmp = tempfile.TemporaryDirectory()
     db_path = f"{tmp.name}/tricky.db"
-    conn = sqlite3.connect(db_path)
-    cur = conn.cursor()
-    cur.execute(
-        "CREATE TABLE t (id INTEGER PRIMARY KEY, status TEXT NOT NULL, amount REAL NOT NULL)"
-    )
-    cur.executemany(
-        "INSERT INTO t (status, amount) VALUES (?, ?)",
-        _TRICKY_ROWS + [("a\\b", 30.0)],  # a\b row exists only for the xfail pin
-    )
-    conn.commit()
-    conn.close()
+    with transaction(db_path) as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, status TEXT NOT NULL, amount REAL NOT NULL)"
+        )
+        cur.executemany(
+            "INSERT INTO t (status, amount) VALUES (?, ?)",
+            _TRICKY_ROWS + [("a\\b", 30.0)],  # a\b row exists only for the xfail pin
+        )
     storage = YAMLStorage(base_dir=tmp.name)
     await storage.save_datasource(
         DatasourceConfig(name="ds", type="sqlite", database=db_path)
@@ -663,22 +659,20 @@ class TestCrossModelConsistency:
     async def _engine(self) -> tuple:
         tmp = tempfile.TemporaryDirectory()
         db_path = f"{tmp.name}/orders.db"
-        conn = sqlite3.connect(db_path)
-        cur = conn.cursor()
-        cur.execute("CREATE TABLE customers (id INTEGER PRIMARY KEY, name TEXT)")
-        cur.executemany(
-            "INSERT INTO customers VALUES (?, ?)",
-            [(1, "Ann"), (2, "Bob"), (3, "Cid")],
-        )
-        cur.execute(
-            "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, amount REAL)"
-        )
-        cur.executemany(
-            "INSERT INTO orders VALUES (?, ?, ?)",
-            [(1, 1, 100.0), (2, 2, 50.0), (3, 3, 200.0)],
-        )
-        conn.commit()
-        conn.close()
+        with transaction(db_path) as conn:
+            cur = conn.cursor()
+            cur.execute("CREATE TABLE customers (id INTEGER PRIMARY KEY, name TEXT)")
+            cur.executemany(
+                "INSERT INTO customers VALUES (?, ?)",
+                [(1, "Ann"), (2, "Bob"), (3, "Cid")],
+            )
+            cur.execute(
+                "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, amount REAL)"
+            )
+            cur.executemany(
+                "INSERT INTO orders VALUES (?, ?, ?)",
+                [(1, 1, 100.0), (2, 2, 50.0), (3, 3, 200.0)],
+            )
         storage = YAMLStorage(base_dir=tmp.name)
         await storage.save_datasource(
             DatasourceConfig(name="ds", type="sqlite", database=db_path)
@@ -782,18 +776,16 @@ class TestDeferredScope:
         )
         tmp = tempfile.TemporaryDirectory()
         db_path = f"{tmp.name}/orders.db"
-        conn = sqlite3.connect(db_path)
-        cur = conn.cursor()
-        cur.execute("CREATE TABLE customers (id INTEGER PRIMARY KEY, name TEXT)")
-        cur.executemany("INSERT INTO customers VALUES (?, ?)", [(1, "Ann"), (2, "Bob")])
-        cur.execute(
-            "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, amount REAL)"
-        )
-        cur.executemany(
-            "INSERT INTO orders VALUES (?, ?, ?)", [(1, 1, 100.0), (2, 2, 50.0)]
-        )
-        conn.commit()
-        conn.close()
+        with transaction(db_path) as conn:
+            cur = conn.cursor()
+            cur.execute("CREATE TABLE customers (id INTEGER PRIMARY KEY, name TEXT)")
+            cur.executemany("INSERT INTO customers VALUES (?, ?)", [(1, "Ann"), (2, "Bob")])
+            cur.execute(
+                "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, amount REAL)"
+            )
+            cur.executemany(
+                "INSERT INTO orders VALUES (?, ?, ?)", [(1, 1, 100.0), (2, 2, 50.0)]
+            )
         storage = YAMLStorage(base_dir=tmp.name)
         await storage.save_datasource(
             DatasourceConfig(name="ds", type="sqlite", database=db_path)
@@ -1040,22 +1032,25 @@ class TestSubstituteVariablesHardened:
 
     def test_nan_value_raises(self) -> None:
 
+        nan = float("nan")
         with pytest.raises(ValueError, match="finite"):
             substitute_variables(
-                filter_str="x = {v}", variables={"v": float("nan")},
+                filter_str="x = {v}", variables={"v": nan},
                 escape="sql", backslash_escapes=False,
             )
 
     def test_inf_value_raises(self) -> None:
 
+        inf = float("inf")
         with pytest.raises(ValueError, match="finite"):
             substitute_variables(
-                filter_str="x = {v}", variables={"v": float("inf")},
+                filter_str="x = {v}", variables={"v": inf},
                 escape="sql", backslash_escapes=False,
             )
+        neg_inf = float("-inf")
         with pytest.raises(ValueError, match="finite"):
             substitute_variables(
-                filter_str="x = {v}", variables={"v": float("-inf")}, escape="python"
+                filter_str="x = {v}", variables={"v": neg_inf}, escape="python"
             )
 
     def test_dict_value_raises(self) -> None:
@@ -2397,17 +2392,15 @@ async def _engine_with_ctrl_status(model: SlayerModel) -> tuple:
     Mode-B (python-escaped) query filter can be shown to match end-to-end."""
     tmp = tempfile.TemporaryDirectory()
     db_path = f"{tmp.name}/ctrl.db"
-    conn = sqlite3.connect(db_path)
-    cur = conn.cursor()
-    cur.execute(
-        "CREATE TABLE t (id INTEGER PRIMARY KEY, status TEXT NOT NULL, amount REAL NOT NULL)"
-    )
-    cur.executemany(
-        "INSERT INTO t (status, amount) VALUES (?, ?)",
-        [("line1\nline2", 11.0), ("tab\there", 22.0), ("cr\rhere", 33.0), ("plain", 44.0)],
-    )
-    conn.commit()
-    conn.close()
+    with transaction(db_path) as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, status TEXT NOT NULL, amount REAL NOT NULL)"
+        )
+        cur.executemany(
+            "INSERT INTO t (status, amount) VALUES (?, ?)",
+            [("line1\nline2", 11.0), ("tab\there", 22.0), ("cr\rhere", 33.0), ("plain", 44.0)],
+        )
     storage = YAMLStorage(base_dir=tmp.name)
     await storage.save_datasource(
         DatasourceConfig(name="ds", type="sqlite", database=db_path)

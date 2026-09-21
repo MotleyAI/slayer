@@ -14,7 +14,7 @@ never overflow), then re-truncates for non-aligned offsets.
 from __future__ import annotations
 
 import asyncio
-import sqlite3
+from slayer.storage.sqlite_conn import transaction
 import tempfile
 from pathlib import Path
 
@@ -23,18 +23,15 @@ import pytest
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.storage.yaml_storage import YAMLStorage
 
 
 def _make_engine(rows: list[tuple[int, float, str]]) -> SlayerQueryEngine:
-    from slayer.storage.yaml_storage import YAMLStorage
-
     tmp = tempfile.mkdtemp()
     db_path = str(Path(tmp) / "boundary.db")
-    con = sqlite3.connect(db_path)
-    con.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, cost REAL, created_at TEXT)")
-    con.executemany("INSERT INTO orders VALUES (?, ?, ?)", rows)
-    con.commit()
-    con.close()
+    with transaction(db_path) as con:
+        con.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, cost REAL, created_at TEXT)")
+        con.executemany("INSERT INTO orders VALUES (?, ?, ?)", rows)
 
     storage = YAMLStorage(base_dir=tmp)
     asyncio.run(storage.save_datasource(

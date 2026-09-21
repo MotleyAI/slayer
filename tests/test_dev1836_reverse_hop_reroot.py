@@ -10,7 +10,6 @@ same-named join).
 from __future__ import annotations
 
 import os
-import sqlite3
 import tempfile
 from typing import AsyncIterator
 
@@ -21,6 +20,7 @@ from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.scope_check import assert_scope_closed
+from slayer.storage.sqlite_conn import transaction
 
 from tests._engine_helpers import make_seeded_sqlite_engine
 
@@ -68,26 +68,24 @@ def _models() -> list[SlayerModel]:
 
 
 def _seed(db_path: str) -> None:
-    conn = sqlite3.connect(db_path)
-    conn.execute("CREATE TABLE policy (policy_identifier INTEGER PRIMARY KEY, policy_number TEXT, created_at TEXT, party_a INTEGER)")
-    conn.execute("CREATE TABLE policy_amount (pa_id INTEGER PRIMARY KEY, policy_identifier INTEGER, policy_amount REAL, party_b INTEGER)")
-    conn.execute("CREATE TABLE party (id INTEGER PRIMARY KEY, code TEXT)")
-    conn.executemany("INSERT INTO party VALUES (?, ?)", [(1, "X"), (2, "Y")])
-    # Full datetimes: a date-only string sorts BELOW a computed datetime
-    # window bound ("2024-02-10" < "2024-02-10 00:00:00"), which would turn
-    # the inclusive-boundary case below into a string-comparison artifact.
-    conn.executemany("INSERT INTO policy VALUES (?, ?, ?, ?)", [
-        (1, "POL-1", "2024-01-15 00:00:00", 1),
-        (2, "POL-2", "2024-02-10 00:00:00", 2),
-    ])
-    # party_b deliberately OPPOSITE of the owning policy's party_a, so the
-    # root's own party join selects different rows than the host's instance.
-    conn.executemany("INSERT INTO policy_amount VALUES (?, ?, ?, ?)", [
-        (10, 1, 100.0, 2), (11, 1, 200.0, 2),
-        (20, 2, 300.0, 1), (21, 2, 400.0, 1),
-    ])
-    conn.commit()
-    conn.close()
+    with transaction(db_path) as conn:
+        conn.execute("CREATE TABLE policy (policy_identifier INTEGER PRIMARY KEY, policy_number TEXT, created_at TEXT, party_a INTEGER)")
+        conn.execute("CREATE TABLE policy_amount (pa_id INTEGER PRIMARY KEY, policy_identifier INTEGER, policy_amount REAL, party_b INTEGER)")
+        conn.execute("CREATE TABLE party (id INTEGER PRIMARY KEY, code TEXT)")
+        conn.executemany("INSERT INTO party VALUES (?, ?)", [(1, "X"), (2, "Y")])
+        # Full datetimes: a date-only string sorts BELOW a computed datetime
+        # window bound ("2024-02-10" < "2024-02-10 00:00:00"), which would turn
+        # the inclusive-boundary case below into a string-comparison artifact.
+        conn.executemany("INSERT INTO policy VALUES (?, ?, ?, ?)", [
+            (1, "POL-1", "2024-01-15 00:00:00", 1),
+            (2, "POL-2", "2024-02-10 00:00:00", 2),
+        ])
+        # party_b deliberately OPPOSITE of the owning policy's party_a, so the
+        # root's own party join selects different rows than the host's instance.
+        conn.executemany("INSERT INTO policy_amount VALUES (?, ?, ?, ?)", [
+            (10, 1, 100.0, 2), (11, 1, 200.0, 2),
+            (20, 2, 300.0, 1), (21, 2, 400.0, 1),
+        ])
 
 
 @pytest.fixture

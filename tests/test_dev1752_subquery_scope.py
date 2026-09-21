@@ -20,7 +20,7 @@ correlation is unsupported/undefined rather than hard-rejected at runtime.
 from __future__ import annotations
 
 import os
-import sqlite3
+from slayer.storage.sqlite_conn import transaction
 import tempfile
 
 import sqlglot
@@ -202,8 +202,7 @@ class TestJoinDiscoveryRootOnly:
 # Execution: real SQLite differential
 # --------------------------------------------------------------------------- #
 def _seed_sqlite(db_path: str) -> None:
-    con = sqlite3.connect(db_path)
-    try:
+    with transaction(db_path) as con:
         con.executescript(
             """
             CREATE TABLE orders (
@@ -234,9 +233,6 @@ def _seed_sqlite(db_path: str) -> None:
             "INSERT INTO line_items VALUES (?,?,?)",
             [(501, 1, "x"), (502, 3, "y")],
         )
-        con.commit()
-    finally:
-        con.close()
 
 
 async def _engine_with_filter(base_dir: str, db_path: str, *, model_filter: str) -> SlayerQueryEngine:

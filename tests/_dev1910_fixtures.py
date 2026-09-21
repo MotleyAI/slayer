@@ -6,13 +6,13 @@ orders, and ``make_null_status_engine`` adds a NULL-status order for c1 (SQLite
 
 from __future__ import annotations
 
-import sqlite3
 from typing import AsyncIterator, List, Optional
 
 import pytest
 
 from slayer.core.models import ModelMeasure, SlayerModel
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.storage.sqlite_conn import transaction
 
 from tests._dev1840_fixtures import rows_by
 from tests._dev1900_fixtures import (
@@ -39,10 +39,8 @@ def _append_order(*, dialect: str, db_path: str, row: tuple) -> None:
         con.execute(sql, list(row))
         con.close()
     else:
-        con = sqlite3.connect(db_path)
-        con.execute(sql, row)
-        con.commit()
-        con.close()
+        with transaction(db_path) as con:
+            con.execute(sql, row)
 
 
 async def make_null_status_engine(
@@ -52,7 +50,9 @@ async def make_null_status_engine(
     NULL-status order (appended before the engine opens the db)."""
     async for engine in make_exec_engine(request, models=models):
         ds = await engine.storage.get_datasource("test")
-        assert ds is not None and ds.type is not None and ds.database is not None
+        assert ds is not None
+        assert ds.type is not None
+        assert ds.database is not None
         _append_order(dialect=ds.type, db_path=ds.database, row=NULL_STATUS_ORDER)
         yield engine
 

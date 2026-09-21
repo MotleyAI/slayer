@@ -9,7 +9,6 @@ re-raises untouched.
 
 from __future__ import annotations
 
-import sqlite3
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
@@ -35,6 +34,8 @@ from slayer.engine.schema_drift import (
     _live_schema_for_datasource,
 )
 from slayer.storage.yaml_storage import YAMLStorage
+from slayer.storage.sqlite_conn import transaction
+from tests._engine_helpers import disposable_engine
 
 
 @pytest.fixture
@@ -48,21 +49,19 @@ def workspace():
 
 async def _setup(workspace: Path) -> tuple[SlayerQueryEngine, str]:
     db_path = str(workspace / "live.db")
-    conn = sqlite3.connect(db_path)
-    conn.executescript(
-        """
-        CREATE TABLE customers (id INTEGER PRIMARY KEY, region TEXT NOT NULL);
-        CREATE TABLE orders (
-            id INTEGER PRIMARY KEY,
-            amount REAL NOT NULL,
-            customer_id INTEGER REFERENCES customers(id)
-        );
-        INSERT INTO customers VALUES (1, 'US');
-        INSERT INTO orders VALUES (1, 100.0, 1);
-        """
-    )
-    conn.commit()
-    conn.close()
+    with transaction(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE customers (id INTEGER PRIMARY KEY, region TEXT NOT NULL);
+            CREATE TABLE orders (
+                id INTEGER PRIMARY KEY,
+                amount REAL NOT NULL,
+                customer_id INTEGER REFERENCES customers(id)
+            );
+            INSERT INTO customers VALUES (1, 'US');
+            INSERT INTO orders VALUES (1, 100.0, 1);
+            """
+        )
 
     storage = YAMLStorage(base_dir=str(workspace / "storage"))
     await storage.save_datasource(
@@ -113,10 +112,8 @@ class TestSchemaDriftErrorWrap:
     ) -> None:
         engine, db_path = await _setup(workspace)
         # Drop orders externally — query against it will fail.
-        conn = sqlite3.connect(db_path)
-        conn.execute("DROP TABLE orders")
-        conn.commit()
-        conn.close()
+        with transaction(db_path) as conn:
+            conn.execute("DROP TABLE orders")
 
         q = SlayerQuery(
             source_model="orders",
@@ -222,10 +219,8 @@ class TestSchemaDriftErrorWrap:
                 ],
             )
         )
-        conn = sqlite3.connect(db_path)
-        conn.execute("ALTER TABLE orders DROP COLUMN amount")
-        conn.commit()
-        conn.close()
+        with transaction(db_path) as conn:
+            conn.execute("ALTER TABLE orders DROP COLUMN amount")
 
         q = SlayerQuery(
             source_model="orders_view",
@@ -240,11 +235,9 @@ class TestSchemaDriftErrorWrap:
     ) -> None:
         """A dropped ``JOIN .. USING`` key is real drift, not invalid SQL."""
         engine, db_path = await _setup(workspace)
-        conn = sqlite3.connect(db_path)
-        conn.execute("ALTER TABLE orders ADD COLUMN batch_tag TEXT")
-        conn.execute("ALTER TABLE customers ADD COLUMN batch_tag TEXT")
-        conn.commit()
-        conn.close()
+        with transaction(db_path) as conn:
+            conn.execute("ALTER TABLE orders ADD COLUMN batch_tag TEXT")
+            conn.execute("ALTER TABLE customers ADD COLUMN batch_tag TEXT")
         await engine.storage.save_model(
             SlayerModel(
                 name="orders_by_batch",
@@ -259,10 +252,8 @@ class TestSchemaDriftErrorWrap:
                 ],
             )
         )
-        conn = sqlite3.connect(db_path)
-        conn.execute("ALTER TABLE orders DROP COLUMN batch_tag")
-        conn.commit()
-        conn.close()
+        with transaction(db_path) as conn:
+            conn.execute("ALTER TABLE orders DROP COLUMN batch_tag")
 
         q = SlayerQuery(
             source_model="orders_by_batch",
@@ -292,10 +283,8 @@ class TestSchemaDriftErrorWrap:
                 ],
             )
         )
-        conn = sqlite3.connect(db_path)
-        conn.execute("ALTER TABLE orders DROP COLUMN amount")
-        conn.commit()
-        conn.close()
+        with transaction(db_path) as conn:
+            conn.execute("ALTER TABLE orders DROP COLUMN amount")
 
         q = SlayerQuery(
             source_model="orders_cte",
@@ -320,10 +309,8 @@ class TestSchemaDriftErrorWrap:
                 ],
             )
         )
-        conn = sqlite3.connect(db_path)
-        conn.execute("DROP TABLE orders")
-        conn.commit()
-        conn.close()
+        with transaction(db_path) as conn:
+            conn.execute("DROP TABLE orders")
 
         q = SlayerQuery(
             source_model="orders_view",
@@ -339,10 +326,8 @@ class TestSchemaDriftErrorWrap:
         self, workspace: Path
     ) -> None:
         engine, db_path = await _setup(workspace)
-        conn = sqlite3.connect(db_path)
-        conn.execute("DROP TABLE orders")
-        conn.commit()
-        conn.close()
+        with transaction(db_path) as conn:
+            conn.execute("DROP TABLE orders")
 
         async def _boom(*args, **kwargs):
             raise RuntimeError("validate_models exploded")
@@ -384,10 +369,8 @@ class TestModelsTouchedComputation:
         # Drop customers; orders query joins to customers, so customers must
         # appear in the touched-models set even though the query syntactically
         # only names "orders" as source.
-        conn = sqlite3.connect(db_path)
-        conn.execute("DROP TABLE customers")
-        conn.commit()
-        conn.close()
+        with transaction(db_path) as conn:
+            conn.execute("DROP TABLE customers")
 
         q = SlayerQuery(
             source_model="orders",
@@ -407,13 +390,10 @@ class TestIntrospectionUnavailable:
 
     def _ds_with_one_table(self, tmpdir: str) -> DatasourceConfig:
         db_path = str(Path(tmpdir) / "live.db")
-        engine = sa.create_engine(f"sqlite:///{db_path}")
-        try:
+        with disposable_engine(f"sqlite:///{db_path}") as engine:
             with engine.connect() as c:
                 c.execute(sa.text("CREATE TABLE t (id INTEGER PRIMARY KEY)"))
                 c.commit()
-        finally:
-            engine.dispose()
         return DatasourceConfig(name="live", type="sqlite", database=db_path)
 
     def test_live_schema_raises_when_every_table_fails(self) -> None:

@@ -3,7 +3,6 @@
 import json
 import os
 import shutil
-import sqlite3
 import tempfile
 from typing import Any
 from collections.abc import Generator
@@ -25,6 +24,7 @@ from slayer.core.models import (
 )
 from slayer.engine.ingestion import _is_id_column
 from slayer.sql.client import SlayerSQLClient
+from slayer.storage.sqlite_conn import transaction
 from slayer.inspect.model_render import (
     _choose_sample_agg,
     render_model_inspection,
@@ -568,7 +568,8 @@ Column(name="val", sql="val", type=DataType.DOUBLE)
         })
         assert "## SQL" not in result
         # Dimension table should not have an "sql" column header
-        assert "| sql " not in result and "| sql|" not in result
+        assert "| sql " not in result
+        assert "| sql|" not in result
 
     async def test_shows_sql_when_requested_markdown(self, mcp_server, storage: YAMLStorage) -> None:
         """With show_sql=True, markdown output includes ## SQL section and sql columns."""
@@ -1172,7 +1173,8 @@ class TestInspectModelHelpers:
         # Newline never reaches the rendered output
         assert "\n> evil" not in result
         # The escaped form does
-        assert "\\n" in result and "evil-injected" in result
+        assert "\\n" in result
+        assert "evil-injected" in result
 
     def test_render_inspect_footer_none_when_no_trim(self) -> None:
         result = _render_inspect_footer(
@@ -2159,8 +2161,10 @@ class TestEditModelDatasourceMoveSafety:
         # Both models still in their original places, untouched.
         src = await storage.get_model("orders", data_source="db_a")
         tgt = await storage.get_model("orders", data_source="db_b")
-        assert src is not None and src.description == "source"
-        assert tgt is not None and tgt.description == "target"
+        assert src is not None
+        assert src.description == "source"
+        assert tgt is not None
+        assert tgt.description == "target"
 
     async def test_move_query_backed_when_engine_recomputes_data_source_back(
         self, mcp_server, storage: YAMLStorage,
@@ -2332,7 +2336,10 @@ class TestEditModelMultiStageRename:
         sql = after.backing_query_sql
         assert "new" in sql, f"backing_query_sql must contain new name:\n{sql}"
         # The stale name must not survive in the wrap aliases or measure refs.
-        assert " AS old " not in sql and 'AS "old"' not in sql, (
+        assert " AS old " not in sql, (
+            f"backing_query_sql must not retain stale 'old' alias:\n{sql}"
+        )
+        assert 'AS "old"' not in sql, (
             f"backing_query_sql must not retain stale 'old' alias:\n{sql}"
         )
 
@@ -2389,7 +2396,10 @@ class TestEditModelMultiStageRename:
         assert after is not None
         after_sql = after.backing_query_sql or ""
         # Stale `n` must be gone from the inner wrap.
-        assert " AS n " not in after_sql and 'AS "n"' not in after_sql, (
+        assert " AS n " not in after_sql, (
+            f"stale inner 'n' alias must be evicted:\n{after_sql}"
+        )
+        assert 'AS "n"' not in after_sql, (
             f"stale inner 'n' alias must be evicted:\n{after_sql}"
         )
         # New `avg_amount` must be present.
@@ -2732,10 +2742,8 @@ class TestDatasources:
         self, mcp_server, storage: YAMLStorage, tmp_path, monkeypatch
     ) -> None:
         db_path = str(tmp_path / "live.db")
-        conn = sqlite3.connect(db_path)
-        conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)")
-        conn.commit()
-        conn.close()
+        with transaction(db_path) as conn:
+            conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)")
 
         real = ingestion_mod.ingest_datasource_report
 
@@ -2976,13 +2984,11 @@ class TestDataProfileRetryScope:
 
 def _seed_live_db(path: str) -> None:
     """A real SQLite file with an ``orders`` table for save-time trial-execute."""
-    conn = sqlite3.connect(path)
-    conn.executescript(
-        "CREATE TABLE orders (id INTEGER PRIMARY KEY, amount REAL, status TEXT);"
-        "INSERT INTO orders VALUES (1, 100.0, 'ok');"
-    )
-    conn.commit()
-    conn.close()
+    with transaction(path) as conn:
+        conn.executescript(
+            "CREATE TABLE orders (id INTEGER PRIMARY KEY, amount REAL, status TEXT);"
+            "INSERT INTO orders VALUES (1, 100.0, 'ok');"
+        )
 
 
 async def _register_live_ds(storage: YAMLStorage, db_path: str) -> None:

@@ -12,12 +12,12 @@ the function-call form on every dialect (a no-op on dialects that already
 emit ``JSON_EXTRACT(`` natively).
 """
 
-import sqlite3
 
 import sqlglot
 from sqlglot import exp
 
 from slayer.sql.dialects.sqlite import rewrite_sqlite_json_extract
+from slayer.storage.sqlite_conn import transaction
 
 
 def _parse_rewrite_emit(sql: str, *, dialect: str = "sqlite") -> str:
@@ -65,24 +65,23 @@ def test_sqlite_json_extract_executes_correctly() -> None:
     """End-to-end sanity check: round-tripped SQL through real SQLite must
     return the unquoted scalar so CASE WHEN matches.
     """
-    conn = sqlite3.connect(":memory:")
-    cur = conn.cursor()
-    cur.execute("CREATE TABLE t (j TEXT)")
-    cur.executemany(
-        "INSERT INTO t VALUES (?)",
-        [
-            ('{"Tenure_Type": "Owned"}',),
-            ('{"Tenure_Type": "Rented"}',),
-            ('{"Tenure_Type": "Owned"}',),
-        ],
-    )
-    sql = (
-        "SELECT SUM(CASE LOWER(json_extract(j, '$.Tenure_Type')) "
-        "WHEN 'owned' THEN 1 ELSE 0 END) FROM t"
-    )
-    rewritten = _parse_rewrite_emit(sql)
-    (got,) = cur.execute(rewritten).fetchone()
-    conn.close()
+    with transaction(":memory:") as conn:
+        cur = conn.cursor()
+        cur.execute("CREATE TABLE t (j TEXT)")
+        cur.executemany(
+            "INSERT INTO t VALUES (?)",
+            [
+                ('{"Tenure_Type": "Owned"}',),
+                ('{"Tenure_Type": "Rented"}',),
+                ('{"Tenure_Type": "Owned"}',),
+            ],
+        )
+        sql = (
+            "SELECT SUM(CASE LOWER(json_extract(j, '$.Tenure_Type')) "
+            "WHEN 'owned' THEN 1 ELSE 0 END) FROM t"
+        )
+        rewritten = _parse_rewrite_emit(sql)
+        (got,) = cur.execute(rewritten).fetchone()
     assert got == 2, f"expected 2, got {got!r} from rewritten SQL:\n{rewritten}"
 
 

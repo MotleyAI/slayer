@@ -16,7 +16,6 @@ Integration coverage on DuckDB lives in
 
 from __future__ import annotations
 
-import sqlite3
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
@@ -52,6 +51,7 @@ from slayer.engine.schema_drift import (
     diff_sql_model,
     diff_sql_table_model,
 )
+from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -955,25 +955,23 @@ class TestValidateModelsEndToEnd:
         """Create a SQLite DB with two tables (orders, customers), persist
         SlayerModels for them, and return the engine + db path."""
         db_path = str(workspace / db_name)
-        conn = sqlite3.connect(db_path)
-        conn.executescript(
-            """
-            CREATE TABLE customers (
-                id INTEGER PRIMARY KEY,
-                region TEXT NOT NULL
-            );
-            CREATE TABLE orders (
-                id INTEGER PRIMARY KEY,
-                amount REAL NOT NULL,
-                status TEXT NOT NULL,
-                customer_id INTEGER REFERENCES customers(id)
-            );
-            INSERT INTO customers VALUES (1, 'US'), (2, 'EU');
-            INSERT INTO orders VALUES (1, 100.0, 'completed', 1);
-            """
-        )
-        conn.commit()
-        conn.close()
+        with transaction(db_path) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE customers (
+                    id INTEGER PRIMARY KEY,
+                    region TEXT NOT NULL
+                );
+                CREATE TABLE orders (
+                    id INTEGER PRIMARY KEY,
+                    amount REAL NOT NULL,
+                    status TEXT NOT NULL,
+                    customer_id INTEGER REFERENCES customers(id)
+                );
+                INSERT INTO customers VALUES (1, 'US'), (2, 'EU');
+                INSERT INTO orders VALUES (1, 100.0, 'completed', 1);
+                """
+            )
 
         storage = YAMLStorage(base_dir=str(workspace / "storage"))
         await storage.save_datasource(
@@ -1020,10 +1018,8 @@ class TestValidateModelsEndToEnd:
     async def test_dropped_column_is_reported(self, workspace: Path) -> None:
         engine, db_path = await self._setup(workspace)
         # Externally drop orders.status
-        conn = sqlite3.connect(db_path)
-        conn.execute("ALTER TABLE orders DROP COLUMN status")
-        conn.commit()
-        conn.close()
+        with transaction(db_path) as conn:
+            conn.execute("ALTER TABLE orders DROP COLUMN status")
 
         result = await engine.validate_models(data_source="ds")
         orders_entry = _entry_for("orders", result)
@@ -1034,10 +1030,8 @@ class TestValidateModelsEndToEnd:
         self, workspace: Path
     ) -> None:
         engine, db_path = await self._setup(workspace)
-        conn = sqlite3.connect(db_path)
-        conn.execute("DROP TABLE orders")
-        conn.commit()
-        conn.close()
+        with transaction(db_path) as conn:
+            conn.execute("DROP TABLE orders")
 
         result = await engine.validate_models(data_source="ds")
         orders_entry = _entry_for("orders", result)
@@ -1052,10 +1046,8 @@ class TestValidateModelsEndToEnd:
         before_dump = before.model_dump()
 
         # Mutate live DB and re-validate.
-        conn = sqlite3.connect(db_path)
-        conn.execute("ALTER TABLE orders DROP COLUMN status")
-        conn.commit()
-        conn.close()
+        with transaction(db_path) as conn:
+            conn.execute("ALTER TABLE orders DROP COLUMN status")
         await engine.validate_models(data_source="ds")
 
         after = await engine.storage.get_model("orders", data_source="ds")
@@ -1070,15 +1062,13 @@ class TestValidateModelsEndToEnd:
         engine, _ = await self._setup(workspace, db_name="ds_a.db")
         # Second DS in a separate sqlite file
         db_b = str(workspace / "ds_b.db")
-        conn = sqlite3.connect(db_b)
-        conn.executescript(
-            """
-            CREATE TABLE products (id INTEGER PRIMARY KEY, sku TEXT NOT NULL);
-            INSERT INTO products VALUES (1, 'sku-1');
-            """
-        )
-        conn.commit()
-        conn.close()
+        with transaction(db_b) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE products (id INTEGER PRIMARY KEY, sku TEXT NOT NULL);
+                INSERT INTO products VALUES (1, 'sku-1');
+                """
+            )
         await engine.storage.save_datasource(
             DatasourceConfig(name="ds_b", type="sqlite", database=db_b)
         )
@@ -1096,14 +1086,10 @@ class TestValidateModelsEndToEnd:
             )
         )
         # Drop a column in each DS
-        conn_a = sqlite3.connect(str(workspace / "ds_a.db"))
-        conn_a.execute("ALTER TABLE orders DROP COLUMN status")
-        conn_a.commit()
-        conn_a.close()
-        conn_b = sqlite3.connect(db_b)
-        conn_b.execute("ALTER TABLE products DROP COLUMN sku")
-        conn_b.commit()
-        conn_b.close()
+        with transaction(str(workspace / "ds_a.db")) as conn_a:
+            conn_a.execute("ALTER TABLE orders DROP COLUMN status")
+        with transaction(db_b) as conn_b:
+            conn_b.execute("ALTER TABLE products DROP COLUMN sku")
 
         # Default datasource arg → both DSes
         result = await engine.validate_models()
@@ -1125,8 +1111,7 @@ class TestValidateModelsEndToEnd:
 def _create_sqlite_with_mixed_storage(
     db_path: str, table: str, column: str, values: list
 ) -> None:
-    conn = sqlite3.connect(db_path)
-    try:
+    with transaction(db_path) as conn:
         conn.execute(
             f'CREATE TABLE "{table}" (id INTEGER PRIMARY KEY, "{column}" INTEGER)'
         )
@@ -1134,9 +1119,6 @@ def _create_sqlite_with_mixed_storage(
             conn.execute(
                 f'INSERT INTO "{table}" VALUES (?, ?)', (i, v),
             )
-        conn.commit()
-    finally:
-        conn.close()
 
 
 class TestValidateModelsSqliteProbe:

@@ -217,8 +217,8 @@ When several consumed aggregates resolve to the same producer — same source an
 - THEN each consumer joins the shared relation on its own keys and both executed values are correct
 
 #### Scenario: A shared producer's warning surfaces once
-- WHEN a producer that triggers a broadcast or dropped-filter warning is consumed from two scopes
-- THEN the response carries that warning exactly once per semantic event
+- WHEN a producer that triggers a broadcast warning or a `semi_join_pushed` entry is consumed from two scopes
+- THEN the response carries that warning or entry exactly once per semantic event
 
 ### Requirement: Measure-local filters stay inside the producer
 An aggregation's own filter SHALL restrict only the rows aggregated by its producer, never the query's result rows; query- and model-level row filters SHALL apply consistently to both the query and the producer.
@@ -487,6 +487,15 @@ each warning surfaces once per semantic event regardless of consuming depth.
   and a measure selects `avg(sum(amount, partition_by=[city, region]))`
 - **THEN** the emitted SQL contains a single city-region producer relation,
   consumed by both the row attach and the outer producer, with correct values
+
+#### Scenario: A producer attached at two phases emits its nested producer first
+- **WHEN** a producer carrying a nested producer (a re-aggregation over an attached
+  operand) is attached both before aggregation (as a mixed constituent) and after it
+  (standalone), so the base relation and the final select both read it
+- **THEN** on every Tier-1 dialect the one flat `WITH` lists the nested producer before
+  the producer that reads it, and that producer before the base relation — no relation
+  references one declared later — and the statement executes on engines that reject
+  forward references
 
 ### Requirement: Re-aggregation null, empty, and keyless cases are pinned
 A NULL grain-key value SHALL form its own cell (null-safe grouping and
@@ -774,12 +783,15 @@ its `partition_by=` still gets the outer attach the grain join needs.
 #### Scenario: A re-aggregation used both standalone and as a mixed constituent is deferred
 - **WHEN** one query selects both `min(X, partition_by=region)` on its own and
   `sum(amount * min(X, partition_by=region))` — the same re-aggregation standalone
-  (combined phase) and as a mixed row-level constituent (row phase)
-- **THEN** it fails at bind time with a typed error naming the re-aggregation and the
-  remedy (select the two in separate queries): the one shared producer would need
-  attaching at two phases, and its nested-producer CTE emits out of dependency order on
-  strict dialects — a bounded emission-ordering gap tracked as DEV-1942, never a crash,
-  dialect-inconsistent SQL, or wrong numbers
+  (combined phase) and as a mixed row-level constituent (row phase) — over `[region]`
+  and a month time dimension, in measure, filter, or order position
+- **THEN** it is no longer deferred — never the former checker error — and executes on
+  every engine with the values each use has alone: the
+  standalone value is the region minimum broadcast onto every month cell (North 10,
+  South 5, NULL where the region has no non-null cell) and the mixed value is the
+  per-cell `amount` times that minimum, summed (North 100 / 200 / 300, South 25 / 75);
+  the emitted statement carries exactly one producer relation for the re-aggregation
+  and one for its nested operand, and adding either measure changes no other value
 
 ### Requirement: Attached parameters on row-level sources
 An aggregation over a row-level source whose parameter — keyword or

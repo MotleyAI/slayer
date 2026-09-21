@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sqlite3
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
@@ -17,6 +16,7 @@ from slayer.engine.cardinality import CardinalityVerdict, JoinCardinalityReport
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.client import SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
+from slayer.storage.sqlite_conn import transaction
 
 
 @pytest.fixture
@@ -29,45 +29,43 @@ def workspace():
 
 
 def _seed_db(db_path: str) -> None:
-    conn = sqlite3.connect(db_path)
-    conn.executescript(
-        """
-        CREATE TABLE customers (id INTEGER PRIMARY KEY, region TEXT);
-        CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER);
-        CREATE TABLE user_profiles (customer_id INTEGER PRIMARY KEY, bio TEXT);
-        CREATE TABLE carts (id INTEGER PRIMARY KEY);
-        CREATE TABLE cart_lines (id INTEGER PRIMARY KEY, cart_id INTEGER);
-        CREATE TABLE left_tbl (k INTEGER);
-        CREATE TABLE right_tbl (k INTEGER, label TEXT);
-        CREATE TABLE ck_parent (a INTEGER, b TEXT, PRIMARY KEY (a, b));
-        CREATE TABLE ck_child (a INTEGER, b TEXT);
-        CREATE TABLE empty_src (k INTEGER);
-        CREATE TABLE empty_tgt (k INTEGER PRIMARY KEY);
-        CREATE TABLE all_null_src (k INTEGER);
-        CREATE TABLE populated_src (k INTEGER);
+    with transaction(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE customers (id INTEGER PRIMARY KEY, region TEXT);
+            CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER);
+            CREATE TABLE user_profiles (customer_id INTEGER PRIMARY KEY, bio TEXT);
+            CREATE TABLE carts (id INTEGER PRIMARY KEY);
+            CREATE TABLE cart_lines (id INTEGER PRIMARY KEY, cart_id INTEGER);
+            CREATE TABLE left_tbl (k INTEGER);
+            CREATE TABLE right_tbl (k INTEGER, label TEXT);
+            CREATE TABLE ck_parent (a INTEGER, b TEXT, PRIMARY KEY (a, b));
+            CREATE TABLE ck_child (a INTEGER, b TEXT);
+            CREATE TABLE empty_src (k INTEGER);
+            CREATE TABLE empty_tgt (k INTEGER PRIMARY KEY);
+            CREATE TABLE all_null_src (k INTEGER);
+            CREATE TABLE populated_src (k INTEGER);
 
-        INSERT INTO customers VALUES (1,'US'),(2,'EU'),(3,'AP');
-        -- customer_id has duplicates (1,1) and a NULL -> NOT unique.
-        INSERT INTO orders VALUES (1,1),(2,1),(3,2),(4,NULL);
-        -- customer_id unique -> one row per customer.
-        INSERT INTO user_profiles VALUES (1,'a'),(2,'b'),(3,'c');
-        INSERT INTO carts VALUES (1),(2);
-        -- cart_id has duplicates -> NOT unique.
-        INSERT INTO cart_lines VALUES (1,1),(2,1),(3,2);
-        INSERT INTO left_tbl VALUES (1),(1),(2);
-        INSERT INTO right_tbl VALUES (1,'x'),(1,'y'),(3,'z');
-        -- composite parent key is unique; child (a,b) has a dup + a NULL-key row.
-        INSERT INTO ck_parent VALUES (1,'x'),(1,'y'),(2,'x');
-        INSERT INTO ck_child VALUES (1,'x'),(1,'x'),(2,'x'),(1,NULL);
-        -- empty_src / empty_tgt stay empty on purpose.
-        -- all_null_src has rows, but every key is NULL -> empty population.
-        INSERT INTO all_null_src VALUES (NULL),(NULL);
-        -- populated source pointing at an EMPTY target.
-        INSERT INTO populated_src VALUES (1),(2),(3);
-        """
-    )
-    conn.commit()
-    conn.close()
+            INSERT INTO customers VALUES (1,'US'),(2,'EU'),(3,'AP');
+            -- customer_id has duplicates (1,1) and a NULL -> NOT unique.
+            INSERT INTO orders VALUES (1,1),(2,1),(3,2),(4,NULL);
+            -- customer_id unique -> one row per customer.
+            INSERT INTO user_profiles VALUES (1,'a'),(2,'b'),(3,'c');
+            INSERT INTO carts VALUES (1),(2);
+            -- cart_id has duplicates -> NOT unique.
+            INSERT INTO cart_lines VALUES (1,1),(2,1),(3,2);
+            INSERT INTO left_tbl VALUES (1),(1),(2);
+            INSERT INTO right_tbl VALUES (1,'x'),(1,'y'),(3,'z');
+            -- composite parent key is unique; child (a,b) has a dup + a NULL-key row.
+            INSERT INTO ck_parent VALUES (1,'x'),(1,'y'),(2,'x');
+            INSERT INTO ck_child VALUES (1,'x'),(1,'x'),(2,'x'),(1,NULL);
+            -- empty_src / empty_tgt stay empty on purpose.
+            -- all_null_src has rows, but every key is NULL -> empty population.
+            INSERT INTO all_null_src VALUES (NULL),(NULL);
+            -- populated source pointing at an EMPTY target.
+            INSERT INTO populated_src VALUES (1),(2),(3);
+            """
+        )
 
 
 def _col(name: str, *, pk: bool = False, dtype: DataType = DataType.INT) -> Column:

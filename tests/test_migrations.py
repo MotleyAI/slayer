@@ -4,7 +4,6 @@ import asyncio
 import json
 import logging
 import os
-import sqlite3
 import tempfile
 import warnings
 from pathlib import Path
@@ -20,6 +19,7 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage import migrations as mig
 from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.yaml_storage import YAMLStorage
+from slayer.storage.sqlite_conn import open_connection, transaction
 
 
 # --- Pure migrate() unit tests --------------------------------------------
@@ -273,7 +273,7 @@ async def test_sqlite_storage_migrates_legacy_model_on_load(monkeypatch) -> None
         )
         # Insert directly into the v4 composite-PK schema; we're testing the
         # Pydantic-level migration hook, not the SQLite schema migrator.
-        with sqlite3.connect(db_path) as conn:
+        with transaction(db_path) as conn:
             conn.execute(
                 "INSERT INTO models (data_source, name, data) VALUES (?, ?, ?)",
                 ("ds", "orders", legacy_blob),
@@ -591,7 +591,7 @@ async def test_v1_yaml_round_trip_to_v2() -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
         # First-load type refinement needs a live datasource: a minimal SQLite DB.
         live_db_path = os.path.join(tmpdir, "live.db")
-        with sqlite3.connect(live_db_path) as live:
+        with open_connection(live_db_path) as live:
             live.execute(
                 "CREATE TABLE orders (id INTEGER PRIMARY KEY, status TEXT, amount REAL)"
             )
@@ -641,7 +641,7 @@ async def test_v1_sqlite_round_trip_to_v2() -> None:
         db_path = os.path.join(tmpdir, "slayer.db")
         # First-load type refinement introspects the datasource: a real SQLite DB.
         live_db_path = os.path.join(tmpdir, "live.db")
-        with sqlite3.connect(live_db_path) as live:
+        with open_connection(live_db_path) as live:
             live.execute(
                 "CREATE TABLE orders (id INTEGER PRIMARY KEY, status TEXT, amount REAL)"
             )
@@ -649,7 +649,7 @@ async def test_v1_sqlite_round_trip_to_v2() -> None:
 
         # Build the v3 legacy single-PK schema by hand, drop a v1 row in,
         # then open SQLiteStorage so the schema migrator upgrades to v4.
-        with sqlite3.connect(db_path) as conn:
+        with transaction(db_path) as conn:
             conn.execute(
                 "CREATE TABLE models (name TEXT PRIMARY KEY, data TEXT NOT NULL)"
             )
@@ -676,7 +676,7 @@ async def test_v1_sqlite_round_trip_to_v2() -> None:
             "dimensions": [{"name": "status", "type": "string"}],
             "measures": [{"name": "revenue", "sql": "amount"}],
         })
-        with sqlite3.connect(db_path) as conn:
+        with transaction(db_path) as conn:
             conn.execute(
                 "INSERT INTO models (name, data) VALUES (?, ?)",
                 ("orders", legacy_blob),

@@ -25,25 +25,24 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.schema_drift import _live_columns_for_sql_model
 from slayer.sql.client import SlayerSQLClient, build_sql_model_trial_query
 from slayer.storage.yaml_storage import YAMLStorage
+from slayer.storage.sqlite_conn import transaction
 
 _DS = "livedb"
 _ENGINE_LOGGER = "slayer.engine.query_engine"
 
 
 def _seed_db(path: str) -> None:
-    conn = sqlite3.connect(path)
-    conn.executescript(
-        """
-        CREATE TABLE orders (
-            id INTEGER PRIMARY KEY,
-            amount REAL NOT NULL,
-            status TEXT NOT NULL
-        );
-        INSERT INTO orders VALUES (1, 100.0, 'completed');
-        """
-    )
-    conn.commit()
-    conn.close()
+    with transaction(path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE orders (
+                id INTEGER PRIMARY KEY,
+                amount REAL NOT NULL,
+                status TEXT NOT NULL
+            );
+            INSERT INTO orders VALUES (1, 100.0, 'completed');
+            """
+        )
 
 
 async def _make_engine(
@@ -366,11 +365,8 @@ class TestNonReadOnlySqlRejected:
             await engine.save_model(model)
         assert executed == []  # static guard short-circuits before execution
         assert await storage.get_model("mutating", data_source=_DS) is None
-        conn = sqlite3.connect(str(tmp_path / "live.db"))
-        try:
+        with transaction(str(tmp_path / "live.db")) as conn:
             count = conn.execute("SELECT COUNT(*) FROM orders").fetchone()[0]
-        finally:
-            conn.close()
         assert count == 1  # datasource untouched
 
     async def test_read_only_select_still_saves(self, tmp_path: Path) -> None:
