@@ -131,7 +131,8 @@ def test_exists_cases_carry_an_exists(baseline) -> None:
             continue
         assert not isinstance(value, dict), f"{key} unexpectedly raised: {value}"
         assert "__regroup__" not in value, f"{key} leaked a placeholder"
-        if case_id.startswith("exists/"):
+        # DEV-1935: the mixed disjunction pushes too (boolean-total pushdown).
+        if case_id.startswith("exists/") or case_id == "excluded/mixed_or":
             assert "EXISTS" in value.upper(), f"{key} lacks the semi-join"
         else:
             assert "EXISTS" not in value.upper(), f"{key} grew an EXISTS"

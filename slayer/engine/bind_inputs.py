@@ -404,7 +404,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
 
     # Filter list in WHERE order: date_range, model filters (Mode-A SQL), then user query filters.
     bound_filters: List[BoundFilter] = []
-    # Parallel original filter text (None for date_range bounds), for dropped-filter warnings.
+    # Parallel original filter text (None for date_range bounds), for semi-join push entries.
     bound_filter_texts: List[Optional[str]] = []
 
     # 1. date_range filters (one per TD with a 2-element date_range)

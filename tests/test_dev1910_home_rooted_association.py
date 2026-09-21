@@ -19,7 +19,6 @@ from tests._dev1840_fixtures import dev1840_models
 from tests._dev1841_fixtures import (
     ASSOC_BASIC_SPEND_BY_STATUS,
     assoc_q as assoc_status_q,
-    dropped_filter_warnings,
     pushed_filter_infos,
 )
 from tests._dev1900_fixtures import make_exec_engine
@@ -262,4 +261,3 @@ class TestAssociationRestrictedConjunctEntry:
         infos = pushed_filter_infos(resp)
         assert {i.measure for i in infos} == {None, "csp"}, infos
         assert all("basic" in i.filter_text for i in infos)
-        assert not dropped_filter_warnings(resp)

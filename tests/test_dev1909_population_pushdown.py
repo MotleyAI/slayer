@@ -26,7 +26,6 @@ from slayer.core.errors import (
     AssociatedGrainWarning,
     BroadcastGrainWarning,
     SlayerError,
-    UnreachableFilterDroppedWarning,
 )
 from slayer.core.models import Column, DataType
 from slayer.core.query import ColumnRef, TimeDimension
@@ -54,7 +53,6 @@ from tests._dev1900_fixtures import (
     TO_ONE_FILTER_AMOUNT,
     cust_q,
     dev1900_models,
-    dropped_filter_warnings,
     make_exec_engine,
     month_key,
     orders_q,
@@ -77,7 +75,7 @@ ORDERS_AMOUNT = ModelMeasure(formula="orders.amount:sum", name="oa")
 
 #: Python-warning carriers the semi-join push must never emit.
 _SLAYER_WARNS = (
-    BroadcastGrainWarning, AssociatedGrainWarning, UnreachableFilterDroppedWarning)
+    BroadcastGrainWarning, AssociatedGrainWarning)
 
 
 def _orders_month_td():
@@ -406,55 +404,55 @@ class TestRawRowMode:
         assert len(resp.data) == POP_FILTER_RAW_ROWS
 
 
-class TestOutOfScopeResidue:
+class TestOutOfScopeNowPushed:
+    """DEV-1935: the out-of-scope OR-mix conjunct no longer fails closed or drops —
+    it restricts the population/producer by a boolean-total semi-join."""
+
     async def test_dims_only_keeps_applying(self, backend):
-        """An out-of-scope OR conjunct still restricts dims-only result rows."""
+        """An out-of-scope OR conjunct restricts dims-only result rows, no warning."""
         _, engine = backend
         resp = await engine.execute(cust_q(
             dimensions=["tier"], filters=[OR_MIX]))
         assert {r["customers.tier"] for r in resp.data} == POP_FILTER_OUT_OF_SCOPE_TIERS
 
-    async def test_dropped_from_host_producer_and_warns(self, backend):
-        """A host-rooted producer drops the out-of-scope conjunct with the
-        dropped-filter warning while the result rows stay restricted."""
+    async def test_host_producer_pushes_not_drops(self, backend):
+        """A host-rooted producer pushes the OR-mix conjunct by semi-join: gold 190
+        / silver 230 / bronze 40, no dropped warning."""
         _, engine = backend
         resp = await engine.execute(cust_q(
             dimensions=["tier"], measures=[PARTITIONED], filters=[OR_MIX]))
-        assert {r["customers.tier"] for r in resp.data} == POP_FILTER_OUT_OF_SCOPE_TIERS
-        assert dropped_filter_warnings(resp), "expected the dropped-filter warning"
-
-    async def test_producer_errors_under_error_mode(self, backend):
-        """error mode turns the dropped out-of-scope conjunct into an error."""
-        _, engine = backend
-        query = cust_q(
-            dimensions=["tier"], measures=[PARTITIONED], filters=[OR_MIX],
-            to_many_handling="error")
-        with pytest.raises((SlayerError, ValueError)):
-            await engine.execute(query)
+        by = rows_by(resp, "customers.tier")
+        for tier, spend in {"gold": 190.0, "silver": 230.0, "bronze": 40.0}.items():
+            assert float(by[(tier,)]["customers.pt"]) == pytest.approx(spend), tier
 
     @pytest.mark.parametrize("mode", MODES)
-    async def test_inline_aggregate_fails_closed(self, backend, mode):
-        """OR-mix over the population with a plain inline aggregate fails closed,
-        naming the filter, the reason (the OR/NOT mix) and the remedy; no issue ref."""
+    async def test_producer_pushes_not_drops(self, backend, mode):
+        """The OR-mix conjunct restricts the producer by semi-join in every mode
+        (gold 190 / silver 230 / bronze 40), never dropped-and-warned, never an
+        error under error mode."""
         _, engine = backend
-        query = cust_q(measures=[SPEND], filters=[OR_MIX], to_many_handling=mode)
-        with pytest.raises(ValueError) as ei:
-            await engine.execute(query)
-        msg = str(ei.value)
-        assert "status" in msg, msg
-        assert "OR/NOT" in msg, msg
-        assert "split" in msg.lower(), msg
-        assert "branch" in msg.lower(), msg
-        assert_ref_free(msg)
+        resp = await engine.execute(cust_q(
+            dimensions=["tier"], measures=[PARTITIONED], filters=[OR_MIX],
+            to_many_handling=mode))
+        by = rows_by(resp, "customers.tier")
+        for tier, spend in {"gold": 190.0, "silver": 230.0, "bronze": 40.0}.items():
+            assert float(by[(tier,)]["customers.pt"]) == pytest.approx(spend), tier
 
-    async def test_raw_row_fails_closed(self, backend):
-        """OR-mix in raw-row mode fails closed rather than returning fanned rows."""
+    @pytest.mark.parametrize("mode", MODES)
+    async def test_inline_aggregate_pushes(self, backend, mode):
+        """OR-mix over the population with a plain inline aggregate restricts by
+        association = 460 (never 560), every mode; no dropped warning."""
         _, engine = backend
-        query = cust_q(
-            dimensions=["tier"], filters=[OR_MIX], distinct_dimension_values=False)
-        with pytest.raises(ValueError) as ei:
-            await engine.execute(query)
-        assert_ref_free(str(ei.value))
+        resp = await engine.execute(cust_q(
+            measures=[SPEND], filters=[OR_MIX], to_many_handling=mode))
+        assert float(resp.data[0]["customers.sp"]) == pytest.approx(460.0)
+
+    async def test_raw_row_pushes(self, backend):
+        """OR-mix in raw-row mode returns one row per population customer (6)."""
+        _, engine = backend
+        resp = await engine.execute(cust_q(
+            dimensions=["tier"], filters=[OR_MIX], distinct_dimension_values=False))
+        assert len(resp.data) == 6
 
 
 class TestUnanalyzableFailsClosed:

@@ -399,16 +399,11 @@ def broadcast_warnings(resp) -> list:
             if getattr(w, "kind", None) == "broadcast"]
 
 
-def dropped_filter_warnings(resp) -> list:
-    return [w for w in (resp.warnings or [])
-            if getattr(w, "kind", None) == "unreachable_filter_dropped"]
-
-
 __all__ = [
     "orders_model", "customers_model", "regions_model", "segments_model",
     "tags_model", "dev1838_models",
     "q", "gen", "month_td", "month_key", "rows_by", "cte_aliases",
-    "broadcast_warnings", "dropped_filter_warnings",
+    "broadcast_warnings",
     "BAND25", "BAND", "BAND25_OF", "SPEND_BAND",
     "AMOUNT_TOTAL", "AMOUNT_BY_STATUS", "AMOUNT_BY_REGION", "CITY_TOTAL",
     "GOLD_BY_STATUS", "ALPHA_TRUE_BY_STATUS", "ALPHA_FANNED_BY_STATUS",

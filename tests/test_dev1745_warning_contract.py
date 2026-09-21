@@ -1,28 +1,9 @@
-"""DEV-1745 (W5 / mechanism contract 5.5) — the dropped-filter warning contract.
-
-Exactly ONE ``UnreachableFilterDroppedWarning`` per user filter per execute,
-carrying the filter's original text, location and drop reason, emitted at the
-ENGINE BOUNDARY so every entry point sees it.
-
-What it replaces: a bare ``warnings.warn(str(w), UserWarning)`` fired MID-RENDER,
-once per cross-model plan — so nested subplans double-fired, and any path that
-did not reach that render step emitted nothing at all. Nothing downstream could
-observe it either: ``SlayerResponse.warnings`` was typed to normalization
-warnings only, and no entry point rendered warnings of any kind.
-
-Dedup identity (D8) is ``(location, original filter text)`` — the user-facing
-identity, because the contract is stated in user-facing terms. Drop reasons for
-the same filter must AGREE; disagreement is a planner inconsistency and is
-asserted, not silently resolved by taking the first.
-
-Binder/planner internal failures RAISE. They never masquerade as expected drops.
-
-Ordering under warnings-as-errors: collection completes and the structured
-payload is built FIRST; the Python ``warnings.warn`` emission happens LAST at
-the outermost boundary. Under ``-W error`` that raises and the response is not
-delivered — intended, and asserted here rather than left implicit.
+"""DEV-1745 — the boundary warning contract, exercised through the
+``semi_join_pushed`` entries a pushed host filter produces: one entry per
+``(location, measure, original filter text)``, the text verbatim, built at the
+ENGINE BOUNDARY so every entry point (Python, REST, MCP, CLI) sees it; no Python
+warning is emitted for a push. Binder/planner internal failures RAISE.
 """
-
 from __future__ import annotations
 
 import asyncio
@@ -39,10 +20,10 @@ from fastapi.testclient import TestClient
 from slayer.api.server import create_app
 from slayer.cli import _run_query
 from slayer.core.enums import DataType
-from slayer.core.errors import SlayerError, UnreachableFilterDroppedWarning
+from slayer.core.errors import AssociatedGrainWarning, BroadcastGrainWarning, SlayerError
 from slayer.core.warnings import (
-    DroppedFilterWarning,
     NormalizationWarning,
+    SemiJoinPushedWarningPayload,
     SlayerWarning,
 )
 from slayer.ir.source_bundle import ResolvedSourceBundle
@@ -56,11 +37,8 @@ from slayer.storage.yaml_storage import YAMLStorage
 
 
 # --------------------------------------------------------------------------- #
-# Fixtures — a query whose host filter is genuinely excluded from the CTE root.
-# DEV-1853 retired the ambiguous-reverse-hop route to drop+warn (parallel edges
-# now fail closed, and any single edge inverts into a semi-join pushdown), so
-# the excluded filter is the D2 shape that STAYS dropped: a producer-root-local
-# ref mixed with a cross-path ref under OR.
+# Fixtures — a host filter mixing a producer-root-local ref with a cross-path
+# ref under OR: pushed into the producer by semi-join (DEV-1935).
 # --------------------------------------------------------------------------- #
 def _warehouses() -> SlayerModel:
     return SlayerModel(
@@ -112,7 +90,7 @@ def _orders() -> SlayerModel:
 
 
 #: Mixed-OR (D2): producer-root-local + cross-path — stays dropped + warned.
-DROPPED_FILTER = "customers.revenue > 0 or warehouses.code == 'X'"
+PUSHED_FILTER = "customers.revenue > 0 or warehouses.code == 'X'"
 
 
 def _query(*, extra_filters: list | None = None) -> SlayerQuery:
@@ -120,7 +98,7 @@ def _query(*, extra_filters: list | None = None) -> SlayerQuery:
         source_model="orders",
         dimensions=[{"formula": "status", "name": "status"}],
         measures=[{"formula": "customers.revenue:sum"}],
-        filters=[DROPPED_FILTER, *(extra_filters or [])],
+        filters=[PUSHED_FILTER, *(extra_filters or [])],
     )
 
 
@@ -164,14 +142,8 @@ async def _engine(tmpdir: str, *, with_tables: bool = False) -> SlayerQueryEngin
 
 
 def _two_plan_query() -> SlayerQuery:
-    """ONE user filter, excluded from TWO different cross-model targets.
-
-    ``customers.revenue > 0 or shippers.cost > 0`` is the D2 mixed-OR shape for
-    BOTH producers (each sees its own root-local ref mixed with a cross-path
-    ref), so both drop it with one agreeing reason. Deduping the two entries to
-    a single warning is the contract's core claim; without this shape nothing in
-    the suite distinguishes "one per filter" from "one per plan".
-    """
+    """ONE user filter pushed into TWO different cross-model producers — one
+    entry per (location, measure, text), never one per consumer."""
     return SlayerQuery(
         source_model="orders",
         dimensions=[{"formula": "status", "name": "status"}],
@@ -183,11 +155,11 @@ def _two_plan_query() -> SlayerQuery:
     )
 
 
-def _dropped(response) -> list:
-    """Dropped-filter payloads on a SlayerResponse."""
+def _pushed(response) -> list:
+    """Semi-join-pushed payloads on a SlayerResponse."""
     return [
         w for w in (response.warnings or [])
-        if getattr(w, "kind", None) == "unreachable_filter_dropped"
+        if getattr(w, "kind", None) == "semi_join_pushed"
     ]
 
 
@@ -197,73 +169,48 @@ def _dropped(response) -> list:
 @pytest.mark.asyncio
 class TestExecuteEntryPoint:
 
-    async def test_exactly_one_python_warning_per_filter(self) -> None:
-
+    async def test_pushed_filter_emits_no_python_warning(self) -> None:
+        """A push is informational: the structured entry is the whole surface
+        (the query's broadcast warning is unrelated and may fire)."""
         with tempfile.TemporaryDirectory() as d:
             engine = await _engine(d)
             with warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter("always")
                 await engine.execute(_query(), dry_run=True)
-        hits = [
-            w for w in caught
-            if issubclass(w.category, UnreachableFilterDroppedWarning)
-        ]
-        assert len(hits) == 1, (
-            f"expected exactly one UnreachableFilterDroppedWarning, got "
-            f"{len(hits)}: {[str(w.message) for w in caught]}"
-        )
-
-    async def test_warning_is_the_typed_class_not_bare_userwarning(self) -> None:
-
-        with tempfile.TemporaryDirectory() as d:
-            engine = await _engine(d)
-            with warnings.catch_warnings(record=True) as caught:
-                warnings.simplefilter("always")
-                await engine.execute(_query(), dry_run=True)
-        assert any(
-            w.category is UnreachableFilterDroppedWarning for w in caught
-        ), f"categories seen: {[w.category for w in caught]}"
+        hits = [w for w in caught if "warehouses.code" in str(w.message)]
+        assert hits == [], [str(w.message) for w in hits]
 
     async def test_response_carries_a_structured_payload(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             engine = await _engine(d)
             resp = await engine.execute(_query(), dry_run=True)
-        payloads = _dropped(resp)
+        payloads = _pushed(resp)
         assert len(payloads) == 1, f"warnings: {resp.warnings!r}"
 
-    async def test_payload_carries_text_location_and_reason(self) -> None:
+    async def test_payload_carries_text_location_and_measure(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             engine = await _engine(d)
             resp = await engine.execute(_query(), dry_run=True)
-        (payload,) = _dropped(resp)
+        (payload,) = _pushed(resp)
         # ORIGINAL author text — not normalized, prequoted or re-rendered
-        assert payload.filter_text == DROPPED_FILTER, (
+        assert payload.filter_text == PUSHED_FILTER, (
             f"payload must carry the filter's ORIGINAL text verbatim; got "
-            f"{payload.filter_text!r} vs {DROPPED_FILTER!r}"
+            f"{payload.filter_text!r} vs {PUSHED_FILTER!r}"
         )
         assert payload.location, "the payload must carry a location"
-        assert payload.reason, "the payload must carry a drop reason"
-        assert payload.kind == "unreachable_filter_dropped", payload.kind
+        assert payload.measure, "the payload must name the producer's measure"
+        assert payload.kind == "semi_join_pushed", payload.kind
 
-    async def test_two_dropped_filters_produce_two_warnings(self) -> None:
-
+    async def test_two_pushed_filters_produce_two_entries(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             engine = await _engine(d)
-            with warnings.catch_warnings(record=True) as caught:
-                warnings.simplefilter("always")
-                await engine.execute(
-                    _query(extra_filters=[
-                        "customers.revenue > 0 or warehouses.code == 'Y'",
-                    ]),
-                    dry_run=True,
-                )
-        hits = [
-            w for w in caught
-            if issubclass(w.category, UnreachableFilterDroppedWarning)
-        ]
-        assert len(hits) == 2, (
-            f"one warning PER FILTER; got {len(hits)}"
-        )
+            resp = await engine.execute(
+                _query(extra_filters=[
+                    "customers.revenue > 0 or warehouses.code == 'Y'",
+                ]),
+                dry_run=True,
+            )
+        assert len(_pushed(resp)) == 2, "one entry PER FILTER"
 
     async def test_clean_query_warns_nothing(self) -> None:
 
@@ -279,9 +226,9 @@ class TestExecuteEntryPoint:
                 resp = await engine.execute(clean, dry_run=True)
         assert not [
             w for w in caught
-            if issubclass(w.category, UnreachableFilterDroppedWarning)
+            if issubclass(w.category, (BroadcastGrainWarning, AssociatedGrainWarning))
         ]
-        assert _dropped(resp) == []
+        assert _pushed(resp) == []
 
 
 @pytest.mark.asyncio
@@ -297,70 +244,24 @@ class TestEmissionIsBoundaryNotRender:
         with tempfile.TemporaryDirectory() as d:
             engine = await _engine(d, with_tables="explain" in kwargs)
             resp = await engine.execute(_query(), **kwargs)
-        assert len(_dropped(resp)) == 1, (
-            f"no dropped-filter payload for execute(**{kwargs})"
+        assert len(_pushed(resp)) == 1, (
+            f"no semi-join-pushed payload for execute(**{kwargs})"
         )
 
-    async def test_one_filter_dropped_by_two_plans_warns_once(self) -> None:
-        """The decisive dedup case. Pre-dedup this produces TWO raw
-        dropped-filter entries for one user filter — the old per-plan emission
-        fired both."""
-        with tempfile.TemporaryDirectory() as d:
-            engine = await _engine(d)
-            with warnings.catch_warnings(record=True) as caught:
-                warnings.simplefilter("always")
-                resp = await engine.execute(_two_plan_query(), dry_run=True)
-        hits = [
-            w for w in caught
-            if issubclass(w.category, UnreachableFilterDroppedWarning)
-        ]
-        assert len(hits) == 1, (
-            f"one user filter dropped by two plans must warn ONCE, got "
-            f"{len(hits)}"
-        )
-        assert len(_dropped(resp)) == 1, (
-            f"structured payloads must dedup too, got {_dropped(resp)!r}"
-        )
-
-    async def test_two_plan_drop_reasons_agree(self) -> None:
-        """D8: the same filter dropped by several plans must carry ONE reason.
-
-        Asserting only that the surviving reason is truthy would pass an
-        implementation that produced two CONFLICTING reasons and arbitrarily
-        kept the first. So compare the PRE-dedup reasons the planner produced
-        directly, then check the boundary collapsed them to one.
-        """
-        bundle = ResolvedSourceBundle(
-            source_model=_orders(),
-            referenced_models=[_customers(), _warehouses(), _shippers()],
-        )
-        planned = plan_query(query=_two_plan_query(), bundle=bundle)
-
-        def _raw(attaches: list) -> list:
-            out: list = []
-            for plan in attaches:
-                out.extend(plan.dropped_filter_warnings)
-                out.extend(_raw(plan.producer_plan.regroup_attach_plans))
-            return out
-
-        raw = _raw(planned.regroup_attach_plans)
-        assert len(raw) >= 2, (
-            f"fixture must produce the multi-plan drop; got {len(raw)}"
-        )
-        reasons = {getattr(w, "reason", str(w)) for w in raw}
-        assert len(reasons) == 1, (
-            f"the same filter was dropped for DIFFERENT reasons by different "
-            f"plans — a planner inconsistency that must not be hidden by "
-            f"keeping the first: {reasons!r}"
-        )
-
+    async def test_one_filter_pushed_into_two_producers_names_each_measure(
+        self,
+    ) -> None:
+        """Identity is (location, measure, text): one filter pushed into two
+        producers is two entries, one per measure, each carrying the text."""
         with tempfile.TemporaryDirectory() as d:
             engine = await _engine(d)
             resp = await engine.execute(_two_plan_query(), dry_run=True)
-        (payload,) = _dropped(resp)
-        assert payload.reason == next(iter(reasons)), (
-            "the surfaced reason must be the one the planner produced"
-        )
+        pushed = _pushed(resp)
+        assert len(pushed) == 2, pushed
+        assert len({w.measure for w in pushed}) == 2, pushed
+        assert {w.filter_text for w in pushed} == {
+            "customers.revenue > 0 or shippers.cost > 0",
+        }
 
     async def test_identical_text_at_different_locations_stays_two(self) -> None:
         """D8's identity is (location, text) — NOT text alone. Two stages each
@@ -370,31 +271,27 @@ class TestEmissionIsBoundaryNotRender:
             source_model="orders",
             dimensions=[{"formula": "status", "name": "status"}],
             measures=[{"formula": "customers.revenue:sum"}],
-            filters=[DROPPED_FILTER],
+            filters=[PUSHED_FILTER],
         )
         outer = SlayerQuery(
             source_model="orders",
             dimensions=[{"formula": "status", "name": "status"}],
             measures=[{"formula": "customers.revenue:sum"}],
-            filters=[DROPPED_FILTER],
+            filters=[PUSHED_FILTER],
         )
         with tempfile.TemporaryDirectory() as d:
             engine = await _engine(d)
-            with warnings.catch_warnings(record=True) as caught:
-                warnings.simplefilter("always")
-                await engine.execute([inner, outer], dry_run=True)
-        hits = [
-            w for w in caught
-            if issubclass(w.category, UnreachableFilterDroppedWarning)
-        ]
-        assert len(hits) == 2, (
+            resp = await engine.execute([inner, outer], dry_run=True)
+        pushed = _pushed(resp)
+        assert len(pushed) == 2, (
             f"same text in two different stages is two distinct user "
-            f"filters; got {len(hits)}"
+            f"filters; got {len(pushed)}"
         )
+        assert len({w.location for w in pushed}) == 2, pushed
 
     async def test_location_survives_topo_reordering(self) -> None:
         """Stage order in the INPUT list is free (the engine topo-sorts); the
-        warning's location must name the stage that dropped the filter, not
+        entry's location must name the stage that pushed the filter, not
         whichever stage sits at the same input index."""
         # Input order [a, b, root]; topo order [b, a, root] — a reads from b.
         stage_a = SlayerQuery(
@@ -405,7 +302,7 @@ class TestEmissionIsBoundaryNotRender:
             source_model="orders",
             dimensions=[{"formula": "status", "name": "status"}],
             measures=[{"formula": "customers.revenue:sum"}],
-            filters=[DROPPED_FILTER],
+            filters=[PUSHED_FILTER],
         )
         root = SlayerQuery(source_model="a", measures=[{"formula": "*:count"}])
         with tempfile.TemporaryDirectory() as d:
@@ -413,8 +310,8 @@ class TestEmissionIsBoundaryNotRender:
             resp = await engine.execute(
                 query=[stage_a, stage_b, root], dry_run=True,
             )
-        (payload,) = _dropped(resp)
-        assert payload.location == "stage 'b'.filters", payload.location
+        (payload,) = _pushed(resp)
+        assert payload.location == "stage 'b'", payload.location
 
     async def test_repeated_execution_does_not_accumulate(self) -> None:
         """Per EXECUTE, not per process."""
@@ -422,17 +319,17 @@ class TestEmissionIsBoundaryNotRender:
             engine = await _engine(d)
             first = await engine.execute(_query(), dry_run=True)
             second = await engine.execute(_query(), dry_run=True)
-        assert len(_dropped(first)) == 1
-        assert len(_dropped(second)) == 1
+        assert len(_pushed(first)) == 1
+        assert len(_pushed(second)) == 1
 
 
 class TestWarningTypeHierarchy:
     """D6: one discriminated family, so a consumer reads ONE list and switches
     on ``kind``."""
 
-    def test_dropped_filter_warning_subclasses_the_base(self) -> None:
+    def test_semi_join_pushed_payload_subclasses_the_base(self) -> None:
 
-        assert issubclass(DroppedFilterWarning, SlayerWarning)
+        assert issubclass(SemiJoinPushedWarningPayload, SlayerWarning)
 
     def test_normalization_warning_subclasses_the_base(self) -> None:
 
@@ -442,9 +339,9 @@ class TestWarningTypeHierarchy:
 
         kinds = {
             NormalizationWarning.model_fields["kind"].default,
-            DroppedFilterWarning.model_fields["kind"].default,
+            SemiJoinPushedWarningPayload.model_fields["kind"].default,
         }
-        assert kinds == {"normalization", "unreachable_filter_dropped"}, kinds
+        assert kinds == {"normalization", "semi_join_pushed"}, kinds
 
 
 class TestLowerLayersStaySilent:
@@ -453,13 +350,7 @@ class TestLowerLayersStaySilent:
 
     @staticmethod
     def _filter_warnings(caught) -> list:
-        """Any warning mentioning the dropped filter, WHATEVER its category.
-
-        Filtering on ``UnreachableFilterDroppedWarning`` would miss the thing
-        this test exists to catch: today the generator emits a BARE
-        ``UserWarning``, which is that class's parent, not a subclass — so a
-        subclass check passes vacuously.
-        """
+        """Any warning mentioning the pushed filter, WHATEVER its category."""
         return [w for w in caught if "warehouses.code" in str(w.message)]
 
     def test_planning_emits_no_python_warning(self) -> None:
@@ -472,7 +363,7 @@ class TestLowerLayersStaySilent:
             warnings.simplefilter("always")
             plan_query(query=_query(), bundle=bundle)
         assert not self._filter_warnings(caught), (
-            "the PLANNER emitted a dropped-filter warning; emission belongs "
+            "the PLANNER emitted a filter warning; emission belongs "
             "at the engine boundary"
         )
 
@@ -488,23 +379,9 @@ class TestLowerLayersStaySilent:
             warnings.simplefilter("always")
             gen.generate_from_planned(planned_query=planned, bundle=bundle)
         assert not self._filter_warnings(caught), (
-            "the GENERATOR emitted a dropped-filter warning; emission belongs "
+            "the GENERATOR emitted a filter warning; emission belongs "
             "at the engine boundary"
         )
-
-
-@pytest.mark.asyncio
-class TestWarningsAsErrors:
-
-    async def test_warnings_as_errors_raises(self) -> None:
-
-        with tempfile.TemporaryDirectory() as d:
-            engine = await _engine(d)
-            query = _query()
-            with warnings.catch_warnings():
-                warnings.simplefilter("error", UnreachableFilterDroppedWarning)
-                with pytest.raises(UnreachableFilterDroppedWarning):
-                    await engine.execute(query, dry_run=True)
 
 
 @pytest.mark.asyncio
@@ -557,13 +434,13 @@ class TestRestEntryPoint:
             f"REST QueryResponse must surface warnings; got keys {list(body)}"
         )
         kinds = [w.get("kind") for w in (body.get("warnings") or [])]
-        assert "unreachable_filter_dropped" in kinds, body.get("warnings")
+        assert "semi_join_pushed" in kinds, body.get("warnings")
 
 
 @pytest.mark.asyncio
 class TestMcpEntryPoint:
 
-    async def test_mcp_query_output_mentions_the_dropped_filter(self) -> None:
+    async def test_mcp_query_output_mentions_the_pushed_filter(self) -> None:
 
         with tempfile.TemporaryDirectory() as d:
             storage = YAMLStorage(base_dir=d)
@@ -581,19 +458,19 @@ class TestMcpEntryPoint:
                     "source_model": "orders",
                     "dimensions": ["status"],
                     "measures": [{"formula": "customers.revenue:sum"}],
-                    "filters": [DROPPED_FILTER],
+                    "filters": [PUSHED_FILTER],
                 },
                 "dry_run": True,
             })
         text = str(result)
         assert "warehouses.code" in text, (
-            f"MCP query output must surface the dropped filter; got:\n{text}"
+            f"MCP query output must surface the pushed filter; got:\n{text}"
         )
 
 
 class TestCliEntryPoint:
 
-    def test_cli_surfaces_the_dropped_filter(self, capsys) -> None:
+    def test_cli_surfaces_the_pushed_filter(self, capsys) -> None:
 
 
         with tempfile.TemporaryDirectory() as d:
@@ -623,7 +500,7 @@ class TestCliEntryPoint:
         captured = capsys.readouterr()
         combined = captured.err + captured.out
         assert "warehouses.code" in combined, (
-            f"CLI must surface the dropped filter; got:\n{combined}"
+            f"CLI must surface the pushed filter; got:\n{combined}"
         )
         assert "warehouses.code" in captured.err, (
             "warnings belong on stderr so stdout stays pipeable"

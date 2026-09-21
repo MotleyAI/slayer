@@ -8,7 +8,7 @@ placeholder (phases row + combined), that placeholder staged BASE; the emitted
 statement lists the carrier before the re-aggregation CTE on every dialect. Under a
 fanning-hop population filter the constituent's producers restrict by association
 (EXISTS, no fanning join), report the semi-join under the selected measure, and a
-standalone re-aggregation reports a dropped out-of-scope conjunct.
+standalone re-aggregation pushes an out-of-scope (OR-mix) conjunct by semi-join too.
 
 Red today: the shape fails closed in the checker (dual-phase cases) and the population
 constituent multiplies its rows / drops the restriction silently.
@@ -41,7 +41,7 @@ from tests._dev1832_fixtures import (
     month_td,
     monthly_q,
 )
-from tests._dev1900_fixtures import dropped_filter_warnings, pushed_filter_infos
+from tests._dev1900_fixtures import pushed_filter_infos
 from tests._engine_helpers import _extract_cte_body, _join_aliases
 
 DIALECTS = ["postgres", "sqlite", "duckdb", "mysql", "tsql", "bigquery", "snowflake"]
@@ -70,6 +70,10 @@ POP_AVG = "avg(spend:sum(partition_by=[tier, plan_code]), partition_by=tier)"
 POP_MIN = "min(spend:sum(partition_by=[tier, plan_code]), partition_by=tier)"
 POP_MIXED_BY_TIER = {"gold": 18050.0, "silver": 26450.0}
 POP_AVG_BY_TIER = {"gold": 95.0, "silver": 115.0}
+# Under the OR-mix the population is c1/c2/c3/c5/c6 (an ok order) + c4 (bronze); c7
+# (gold, no orders) is out. Per-(tier, plan) spend: gold p1 160 / NULL 30, silver p2
+# 150 / p3 80, bronze p2 40 → min gold 30, silver 80, bronze 40.
+POP_MIN_OR_MIX_BY_TIER = {"gold": 30.0, "silver": 80.0, "bronze": 40.0}
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -252,16 +256,29 @@ class TestPopulationRestriction:
             filters=[_OK]), dialect="duckdb")
         assert len([c for c in _cm_ctes(sql) if "avg" in c]) == 1  # avg producer, once
 
-    async def test_standalone_reaggregation_reports_dropped_conjunct(self, exec_backend) -> None:
-        # An OR-mix out-of-scope conjunct: the re-aggregation producer must warn, exactly
-        # as a plain partitioned producer does — never a silent drop.
+    async def test_standalone_reaggregation_pushes_out_of_scope_conjunct(self, exec_backend) -> None:
+        # An OR-mix out-of-scope conjunct restricts the re-aggregation's producers by
+        # semi-join, exactly as a plain partitioned producer — never a silent drop.
         _, engine = exec_backend
         resp = await engine.execute(cust_q(
             dimensions=["tier"],
             measures=[ModelMeasure(formula=POP_MIN, name="mn")],
             filters=[_OR_MIX]))
-        dropped = dropped_filter_warnings(resp)
-        assert dropped
-        # The warning names the full out-of-scope conjunct — both legs of the OR.
-        assert all("status" in w.filter_text and "bronze" in w.filter_text
-                   for w in dropped)
+        assert _by_tier(resp, "mn") == pytest.approx(POP_MIN_OR_MIX_BY_TIER)
+        pushed = pushed_filter_infos(resp)
+        assert {i.measure for i in pushed if i.measure is not None} == {"mn"}
+        # The entries name the full out-of-scope conjunct — both legs of the OR.
+        assert all("status" in i.filter_text and "bronze" in i.filter_text
+                   for i in pushed)
+
+    async def test_standalone_reaggregation_sql_carries_exists_in_every_producer(self) -> None:
+        # The pushed conjunct lands in the carrier AND the outer producer (a dropped
+        # conjunct would leave a producer without its EXISTS).
+        sql = await gen(cust_q(
+            dimensions=["tier"],
+            measures=[ModelMeasure(formula=POP_MIN, name="mn")],
+            filters=[_OR_MIX]), dialect="duckdb")
+        ctes = _cm_ctes(sql)
+        assert len(ctes) == 2, ctes
+        for name in ctes:
+            assert "EXISTS" in _extract_cte_body(sql, re.escape(name)), name

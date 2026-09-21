@@ -18,7 +18,6 @@ from slayer.core.models import ModelMeasure
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 
-from tests._dev1836_fixtures import dropped_filter_warnings
 from tests._dev1853_fixtures import (
     CHAIN_PUSHDOWN_OK_SPEND,
     PARALLEL_PUSHDOWN_BILLING_OK_POP,
@@ -54,7 +53,6 @@ class TestPushdownWithoutDeclaredReverseJoin:
             measures=[{"formula": "customers.spend:sum", "name": "cs"}]))
         assert len(resp.data) == 1
         assert resp.data[0]["orders.cs"] == pytest.approx(CHAIN_PUSHDOWN_OK_SPEND)
-        assert not dropped_filter_warnings(resp)
 
 
 class TestAmbiguousCorrelationFailsClosed:
@@ -95,7 +93,6 @@ class TestNamedEdgeTargetPathPushesDown:
         assert len(resp.data) == 1
         # Billing customers with an ok order: Alice (o1) 100 + Bob (o3) 150.
         assert resp.data[0]["orders.cs"] == pytest.approx(250.0)
-        assert not dropped_filter_warnings(resp)
 
     async def test_filter_sharing_the_named_edge_prefix_binds_to_the_chain(
         self, named_engine,
@@ -125,7 +122,6 @@ class TestNamedEdgeCarriesTheCorrelation:
         assert len(resp.data) == 1
         assert resp.data[0]["customers.rp"] == \
             pytest.approx(PARALLEL_PUSHDOWN_BILLING_OK_POP)
-        assert not dropped_filter_warnings(resp)
 
 
 class TestReverseRoundTripStaysRejected:

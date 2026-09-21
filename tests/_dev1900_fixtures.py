@@ -49,7 +49,6 @@ from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev1840_fixtures import (
     broadcast_warnings,
     dev1840_models,
-    dropped_filter_warnings,
     month_key,
     rows_by,
     _CUSTOMERS_ROWS,
@@ -366,7 +365,7 @@ __all__ = [
     "dev1840_models", "dev1900_models", "region_events_model",
     "home_path_models", "unparseable_derived_models",
     "make_exec_engine", "orders_q", "cust_q",
-    "rows_by", "bad_pop_vals", "broadcast_warnings", "dropped_filter_warnings",
+    "rows_by", "bad_pop_vals", "broadcast_warnings",
     "associated_warnings",
     "BAD_POP", "AMOUNT_SUM", "SPEND_SUM", "REAGG_GOOD", "REAGG_BAD",
     "ASSOC_AMOUNT_BY_BAD_POP", "ASSOC_SPEND_BY_BAD_POP",

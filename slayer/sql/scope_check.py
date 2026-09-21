@@ -264,13 +264,19 @@ def _resolve_source(scope: Scope, qualifier: str):
 
 def _resolve_correlated(scope: Scope, qualifier: str):
     """Resolve ``qualifier`` against ancestor scopes, crossing only expression-
-    subquery boundaries — the one place SQL permits correlation."""
+    subquery boundaries — the one place SQL permits correlation. A derived table
+    sees nothing of its own parent (sibling FROM items need LATERAL) but, nested
+    in an expression subquery, correlates to that subquery's ancestors."""
     current = scope
-    while current.scope_type == ScopeType.SUBQUERY and current.parent is not None:
+    while current.parent is not None:
+        kind = current.scope_type
         current = current.parent
-        source = _resolve_source(scope=current, qualifier=qualifier)
-        if source is not None:
-            return source
+        if kind == ScopeType.SUBQUERY:
+            source = _resolve_source(scope=current, qualifier=qualifier)
+            if source is not None:
+                return source
+        elif kind != ScopeType.DERIVED_TABLE:
+            break
     return None
 
 

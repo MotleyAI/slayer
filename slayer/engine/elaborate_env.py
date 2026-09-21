@@ -931,23 +931,6 @@ def check_input_dependencies_analyzable(
     )
 
 
-def check_population_filter_in_pushdown_scope(
-    *, filter_text: str, reason: str,
-) -> NoReturn:
-    """An out-of-scope population conjunct — root-local and cross-path references
-    mixed under OR/NOT, or cross-path references spanning several join branches —
-    cannot restrict the population by a single semi-join; with a plain aggregate
-    inline over the population, or in raw-row mode, it would multiply the
-    population's rows. ``reason`` names why it is out of scope. Per-branch EXISTS
-    lowering is deferred to DEV-1935."""
-    raise ValueError(
-        f"Filter {filter_text!r} cannot restrict the population by association: "
-        f"{reason}. With a plain aggregate inline over the population, or in "
-        f"raw-row mode, this would multiply the population's rows. Split the "
-        f"filter into separate conjuncts, or restate it on a single join branch."
-    )
-
-
 def check_filter_dependencies_analyzable(
     *, filter_text: str, column: Optional[str],
 ) -> NoReturn:

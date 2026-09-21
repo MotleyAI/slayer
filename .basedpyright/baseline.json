@@ -6600,22 +6600,6 @@
             {
                 "code": "reportPrivateImportUsage",
                 "range": {
-                    "startColumn": 30,
-                    "endColumn": 40,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportPrivateImportUsage",
-                "range": {
-                    "startColumn": 26,
-                    "endColumn": 36,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportPrivateImportUsage",
-                "range": {
                     "startColumn": 44,
                     "endColumn": 54,
                     "lineCount": 1

@@ -217,8 +217,8 @@ When several consumed aggregates resolve to the same producer — same source an
 - THEN each consumer joins the shared relation on its own keys and both executed values are correct
 
 #### Scenario: A shared producer's warning surfaces once
-- WHEN a producer that triggers a broadcast or dropped-filter warning is consumed from two scopes
-- THEN the response carries that warning exactly once per semantic event
+- WHEN a producer that triggers a broadcast warning or a `semi_join_pushed` entry is consumed from two scopes
+- THEN the response carries that warning or entry exactly once per semantic event
 
 ### Requirement: Measure-local filters stay inside the producer
 An aggregation's own filter SHALL restrict only the rows aggregated by its producer, never the query's result rows; query- and model-level row filters SHALL apply consistently to both the query and the producer.

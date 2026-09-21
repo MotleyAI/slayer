@@ -1,11 +1,10 @@
-"""DEV-1840 task 1.2 — three-way conjunct disposition (design D1/D2/D4).
+"""DEV-1840 task 1.2 — conjunct disposition (design D1/D2/D4).
 
 Spec: openspec …/specs/queries/cross-model-aggregates — "Producer filter
 inheritance". Each test names the delta scenario it pins. Contract: a pushed
 group appears as ``producer_plan.semi_join_filters`` (hops carry
 ``target_model``, oriented ``join_pairs``, ``node_id``; the group carries
-``conjuncts`` and ``filter_texts``); excluded conjuncts keep
-``attach.dropped_filter_warnings``.
+``conjuncts`` and ``filter_texts``).
 """
 
 from __future__ import annotations
@@ -54,7 +53,6 @@ class TestInlineUnchanged:
             dimensions=["customers.tier"], measures=[CM],
             filters=["customers.regions.name = 'North'"],
         )), "customers")
-        assert att.dropped_filter_warnings == []
         assert list(att.producer_plan.semi_join_filters) == []
 
     def test_root_local_stays_inline(self):
@@ -62,7 +60,6 @@ class TestInlineUnchanged:
             dimensions=["customers.tier"], measures=[CM],
             filters=["customers.tier = 'gold'"],
         )), "customers")
-        assert att.dropped_filter_warnings == []
         assert list(att.producer_plan.semi_join_filters) == []
 
 
@@ -74,7 +71,6 @@ class TestSemiJoinPushdown:
             dimensions=["customers.tier"], measures=[CM],
             filters=["channel = 'app'"],
         )), "customers")
-        assert att.dropped_filter_warnings == []
         (sj,) = att.producer_plan.semi_join_filters
         assert [h.target_model for h in sj.hops] == ["orders"]
         assert _pairs(sj.hops[0]) == [("id", "customer_id")]
@@ -90,7 +86,6 @@ class TestSemiJoinPushdown:
         att = _attach(_plan(
             query, models=dev1840_models(declare_reverse=True),
         ), "customers")
-        assert att.dropped_filter_warnings == []
         (sj,) = att.producer_plan.semi_join_filters
         assert [h.target_model for h in sj.hops] == ["orders"]
         assert _pairs(sj.hops[0]) == [("id", "customer_id")]
@@ -106,7 +101,6 @@ class TestSemiJoinPushdown:
               filters=["customers.plans.level = 'basic'"]),
             models=dev1840_models(strong_plans=False),
         ), "customers")
-        assert att.dropped_filter_warnings == []
         (sj,) = att.producer_plan.semi_join_filters
         assert [h.target_model for h in sj.hops] == ["plans"]
         assert _pairs(sj.hops[0]) == [("plan_code", "code")]
@@ -117,7 +111,6 @@ class TestSemiJoinPushdown:
             dimensions=["customers.tier"], measures=[CM],
             filters=["status = 'ok' OR channel = 'app'"],
         )), "customers")
-        assert att.dropped_filter_warnings == []
         (sj,) = att.producer_plan.semi_join_filters
         assert len(sj.conjuncts) == 1
 
@@ -126,7 +119,6 @@ class TestSemiJoinPushdown:
             dimensions=["customers.tier"], measures=[CM],
             filters=["NOT (channel = 'app')"],
         )), "customers")
-        assert att.dropped_filter_warnings == []
         (sj,) = att.producer_plan.semi_join_filters
         assert [h.target_model for h in sj.hops] == ["orders"]
 
@@ -137,7 +129,6 @@ class TestSemiJoinPushdown:
             dimensions=["customers.tier"], measures=[CM],
             filters=["customers.spend > amount"],
         )), "customers")
-        assert att.dropped_filter_warnings == []
         (sj,) = att.producer_plan.semi_join_filters
         assert [h.target_model for h in sj.hops] == ["orders"]
 
@@ -151,7 +142,6 @@ class TestExpandedDependencies:
             dimensions=["status"], measures=[CM],
             filters=["cust_tier = 'gold'"],
         )), "customers")
-        assert att.dropped_filter_warnings == []
         sjs = list(att.producer_plan.semi_join_filters)
         assert len(sjs) == 1
         assert sjs[0].hops[0].target_model == "orders"
@@ -165,53 +155,49 @@ class TestExpandedDependencies:
               filters=["customers.last_status = 'ok'"]),
             models=dev1840_models(declare_reverse=True),
         ), "customers")
-        assert att.dropped_filter_warnings == []
         (sj,) = att.producer_plan.semi_join_filters
         assert [h.target_model for h in sj.hops] == ["orders"]
 
 
-class TestExcludedConjuncts:
-    def test_mixed_disjunction_stays_dropped(self):
-        """Scenario: mixed disjunction stays dropped and warned."""
+class TestBooleanTotalPushdown:
+    """DEV-1935: out-of-scope conjuncts (OR/NOT mixing a local and a cross-path
+    ref, several branches, or a cross-branch atom) flip from dropped-and-warned to
+    a boolean-total semi-join on the producer."""
+
+    def test_mixed_disjunction_pushes(self):
         att = _attach(_plan(q(
             dimensions=["customers.tier"], measures=[CM],
             filters=["customers.tier = 'gold' OR channel = 'app'"],
         )), "customers")
-        (w,) = att.dropped_filter_warnings
-        assert "channel" in w.filter_text
-        assert w.reason
-        assert list(getattr(att.producer_plan, "semi_join_filters", ())) == []
+        (sj,) = att.producer_plan.semi_join_filters
+        assert any("channel" in (t or "") for t in sj.filter_texts)
 
-    def test_mixed_negation_stays_dropped(self):
+    def test_mixed_negation_pushes(self):
         att = _attach(_plan(q(
             dimensions=["customers.tier"], measures=[CM],
             filters=["NOT (customers.tier = 'gold' AND channel = 'app')"],
         )), "customers")
-        (w,) = att.dropped_filter_warnings
-        assert "channel" in w.filter_text
-        assert list(getattr(att.producer_plan, "semi_join_filters", ())) == []
+        assert att.producer_plan.semi_join_filters
 
-    def test_cross_branch_disjunction_stays_dropped(self):
+    def test_cross_branch_disjunction_pushes(self):
         att = _attach(_plan(
             q(dimensions=["customers.tier"], measures=[CM],
               filters=["channel = 'app' OR customers.plans.level = 'basic'"]),
             models=dev1840_models(strong_plans=False),
         ), "customers")
-        (w,) = att.dropped_filter_warnings
-        assert "channel" in w.filter_text
-        assert list(getattr(att.producer_plan, "semi_join_filters", ())) == []
+        assert att.producer_plan.semi_join_filters
 
-    def test_cross_branch_atomic_comparison_stays_dropped(self):
-        """Cross-path refs spanning two join branches in ONE conjunct."""
+    def test_cross_branch_atomic_comparison_pushes(self):
+        """Cross-path refs spanning two join branches in ONE conjunct -> product."""
         att = _attach(_plan(
             q(dimensions=["customers.tier"], measures=[CM],
               filters=["channel = customers.plans.level"]),
             models=dev1840_models(strong_plans=False),
         ), "customers")
-        (w,) = att.dropped_filter_warnings
-        assert "channel" in w.filter_text
-        assert list(getattr(att.producer_plan, "semi_join_filters", ())) == []
+        assert att.producer_plan.semi_join_filters
 
+
+class TestExcludedConjuncts:
     def test_ambiguous_measure_hop_fails_closed(self):
         """Scenario: ambiguous hops fail closed — two unnamed edges
         tickets→agents make the measure's hop an error, retiring the silent
