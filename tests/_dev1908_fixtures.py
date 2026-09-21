@@ -1,31 +1,12 @@
-"""Shared fixtures for DEV-1908 — reverse-hop cancellation for definition
-defaults that land back on the home.
+"""Shared fixtures for DEV-1908 — reverse-hop cancellation for definition defaults.
 
-Extends the DEV-1900 ``orders → customers → regions → region_events`` graph with
-a to-one ``regions → countries`` hop (PK-covered) so a default declared on
-``countries`` can name a model already on the query's path to it. A default
-qualifier naming a dataset already on the owner's path from the query root (the
-root included) cancels the path back to that dataset and reads its row there
-(``a.b.a ≡ a``), keeping the path's own spelling; a reverse hop to a dataset NOT
-on the path still fans and fails closed.
-
-Graph extension
----------------
-``regions → countries``  m:1 (PK-covered; ``regions.country_id``). Its inverse
-``countries → regions`` fans (``regions.country_id`` is not unique), so a
-``countries``-rooted aggregation determines a region's columns only by the
-default naming a region on the path (cancellation), never by a reverse join.
-``orders.ship_region_id``  a plain column an inline ``ModelExtension`` joins to
-``regions`` under the edge name ``ship_region`` (each order's customer's region).
-``orders.cost``  a local derived column (``amount * 2``) for the owner-at-root
-self-name default.
-
-Dataset (extensions; the DEV-1900 dataset is reused verbatim)
--------------------------------------------------------------
-countries (id, name, gdp): 1 North 1000 | 2 South 2000
-regions.country_id: North → 1, South → 2
-orders.ship_region_id: each order's customer's region (NULL for the region-less
-customer c4 and the orphan order).
+Extends the DEV-1900 ``orders → customers → regions → region_events`` graph with a
+to-one ``regions → countries`` hop (PK-covered ``regions.country_id``; its inverse
+fans), plus ``orders.ship_region_id`` (an inline ``ModelExtension`` edge
+``ship_region`` → regions) and ``orders.cost`` (``amount * 2``). Dataset extensions
+(DEV-1900 dataset reused verbatim): countries (id, name, gdp) = 1 North 1000 |
+2 South 2000; regions.country_id North→1 South→2; orders.ship_region_id = each
+order's customer's region (NULL where none).
 """
 
 from __future__ import annotations

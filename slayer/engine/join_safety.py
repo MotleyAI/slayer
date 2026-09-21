@@ -268,6 +268,37 @@ def _back_path(
     return tuple(reversed([edge.name or edge.source_model for edge in chain]))
 
 
+def _common_prefix_len(a: Tuple[str, ...], b: Tuple[str, ...]) -> int:
+    n = 0
+    for x, y in zip(a, b):
+        if x != y:
+            break
+        n += 1
+    return n
+
+
+def _route_via_common_prefix(
+    *, host_name: str, target_path: Tuple[str, ...], host_path: Tuple[str, ...],
+    models_by_name: Dict[str, SlayerModel],
+) -> Tuple[str, ...]:
+    """The route from the aggregate's root (at ``target_path``) to a
+    host-coordinate ``host_path`` (DEV-1908 D9): step back only to the two paths'
+    longest common prefix — the reversed per-hop tokens of ``target_path`` past
+    it — then forward along ``host_path``'s own suffix. When they share nothing
+    this is ``_back_path`` + ``host_path`` (byte-identical to the old round trip);
+    an ambiguous reverse hop propagates from ``walk``."""
+    host_model = models_by_name.get(host_name)
+    if host_model is None or not target_path:
+        return (host_name, *host_path)
+    chain = walk(root=host_model, path=target_path, models_by_name=models_by_name)
+    if chain is None:
+        return (host_name, *host_path)
+    cp = _common_prefix_len(target_path, host_path)
+    reverse_suffix = tuple(
+        reversed([edge.name or edge.source_model for edge in chain[cp:]]))
+    return (*reverse_suffix, *host_path[cp:])
+
+
 def attributable_from_root(
     *, host_path: Tuple[str, ...], target_path: Tuple[str, ...],
     root_model: SlayerModel, models_by_name: Dict[str, SlayerModel],
@@ -283,11 +314,12 @@ def attributable_from_root(
         return False
     if hp and safe_reachable(root=root_model, path=hp, models_by_name=models_by_name):
         return True
-    back = _back_path(
-        host_name=host_name, target_path=tp, models_by_name=models_by_name,
+    route = _route_via_common_prefix(
+        host_name=host_name, target_path=tp, host_path=hp,
+        models_by_name=models_by_name,
     )
     return safe_reachable(
-        root=root_model, path=(*back, *hp), models_by_name=models_by_name,
+        root=root_model, path=route, models_by_name=models_by_name,
     )
 
 
@@ -370,10 +402,10 @@ def _reroot_leaf_via_host(
         return None  # reroot_value_key strips the prefix
     if target_path and host_name == target_path[0]:
         return None
-    back = _back_path(
-        host_name=host_name, target_path=target_path, models_by_name=models_by_name,
+    via_host = _route_via_common_prefix(
+        host_name=host_name, target_path=target_path, host_path=hp,
+        models_by_name=models_by_name,
     )
-    via_host = (*back, *hp)
     if not safe_reachable(
         root=root_model, path=via_host, models_by_name=models_by_name,
     ) and hp and safe_reachable(
@@ -457,11 +489,12 @@ def broadcast_reason(
         return reason or UNREACHABLE_NO_PATH
     # Off the forward path: reachable only back through the reverse (fanning) hop?
     if host_name is not None and not (tp and host_name == tp[0]):
-        back = _back_path(
-            host_name=host_name, target_path=tp, models_by_name=models_by_name,
+        route = _route_via_common_prefix(
+            host_name=host_name, target_path=tp, host_path=hp,
+            models_by_name=models_by_name,
         )
         reason = _hop_walk_reason(
-            root_model=root_model, path=(*back, *hp), models_by_name=models_by_name,
+            root_model=root_model, path=route, models_by_name=models_by_name,
         )
         if reason is not None:
             return reason

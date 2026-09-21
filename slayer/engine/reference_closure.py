@@ -44,9 +44,9 @@ from slayer.ir.prebound import walk_key_path
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.column_expansion import (
     ColumnCycleError,
-    collect_root_scope_reference_columns,
     expand_derived_refs_sync,
     is_trivial_base,
+    requalify_default_references,
     resolve_default_qualifier_path,
     resolve_default_reference_paths,
 )
@@ -352,28 +352,6 @@ def _leaf_closure(
     return []
 
 
-def compute_expr_reference_columns(
-    *, canonical_sql: Optional[str], anchor_model: SlayerModel,
-    anchor_relation: str, bundle: ResolvedSourceBundle,
-) -> Optional[Tuple[Tuple[Optional[Path], str], ...]]:
-    """Root-scope column refs of an expression fragment as ``(join path, leaf)``:
-    ``()`` path = anchor-local, non-empty = a resolved walk, ``None`` path =
-    opaque. ``()`` overall = analysed and column-free; ``None`` overall = the
-    fragment could not be analysed (callers fail closed on both ``None`` shapes)."""
-    if not canonical_sql:
-        return ()
-    parsed = _parse_filter_sql_any_dialect(canonical_sql)
-    if parsed is None:
-        return None
-    try:
-        return tuple(collect_root_scope_reference_columns(
-            parsed=parsed, source_model=anchor_model,
-            source_relation=anchor_relation, bundle=bundle,
-        ))
-    except Exception:
-        return None
-
-
 # ---------------------------------------------------------------------------
 # Aggregation-parameter defaults (moved from compile/stages).
 # ---------------------------------------------------------------------------
@@ -404,144 +382,79 @@ def column_default_key(
     return ColumnKey(path=path, leaf=leaf)
 
 
-def _forward_valid(
-    *, root_model: Optional[SlayerModel], path: Path,
-    bundle: Optional[ResolvedSourceBundle],
-) -> bool:
-    """A resolved default path is forward-valid iff it is empty (frame-local) or
-    walks forward from the frame root without stepping back to an ancestor —
-    ``walk_key_path``'s revisit guard blocks a reverse hop to the root/ancestor,
-    so an ancestor reference (resolved bidirectionally) reads as non-forward and
-    falls back to the root."""
-    if not path:
-        return True
-    return root_model is not None and bundle is not None and walk_key_path(
-        model=root_model, path=path, bundle=bundle,
-    ) is not None
-
-
-def _dotted_key_legacy(
-    *, parts: List[str], owner_path: Path, owner_model: Optional[SlayerModel],
-    bundle: Optional[ResolvedSourceBundle],
-) -> ValueKey:
-    """Owner-frame-only dotted resolution (no root fallback) — the behavior when
-    no root frame is supplied (typing / reaggregation callers)."""
-    if owner_model is not None and parts[0] == owner_model.name:
-        parts = parts[1:]  # a leading owner-model qualifier is a self-reference
-    if len(parts) == 1:
-        return column_default_key(path=tuple(owner_path), leaf=parts[0], base=owner_model)
-    terminal = (
-        walk_key_path(model=owner_model, path=tuple(parts[:-1]), bundle=bundle)
-        if owner_model is not None and bundle is not None else None
+def _resolve_default_abs(
+    *, chain: Tuple[str, ...], leaf: str, root_model: SlayerModel,
+    owner_path: Path, root_path: Path, bundle: ResolvedSourceBundle,
+) -> Path:
+    """The absolute (root-frame) path of a dotted default's qualifier chain,
+    resolved owner-first with cancellation and a query-root fallback (DEV-1908);
+    fails closed on an ambiguous or partially-broken chain, or one unreachable
+    from both frames."""
+    mbn = bundle.models_by_name
+    abs_path = resolve_default_qualifier_path(
+        qualifiers=chain, leaf=leaf, root_model=root_model,
+        owner_path=tuple(owner_path), models_by_name=mbn,
     )
-    return column_default_key(
-        path=tuple(owner_path) + tuple(parts[:-1]), leaf=parts[-1], base=terminal,
-    )
-
-
-def _frame_dotted_key(
-    *, chain: Tuple[str, ...], leaf: str, frame_model: SlayerModel,
-    frame_path: Path, query_root: SlayerModel, bundle: ResolvedSourceBundle,
-) -> Optional[ValueKey]:
-    """Resolve a dotted default's qualifier chain in one frame, returning the key
-    when it resolves FORWARD in the query tree (``()`` = frame-local) and ``None``
-    on a clean miss — including a chain that only resolves via a reverse hop to an
-    ancestor (its absolute path fails the forward walk from ``query_root``). Raises
-    on an ambiguous or partially-broken chain (fail closed)."""
-    resolved = resolve_default_qualifier_path(
-        qualifiers=chain, leaf=leaf, frame_model=frame_model,
-        models_by_name=bundle.models_by_name,
-    )
-    if resolved is None:
-        return None
-    abs_path = tuple(frame_path) + resolved
-    if not _forward_valid(root_model=query_root, path=abs_path, bundle=bundle):
-        return None
-    return column_default_key(
-        path=abs_path, leaf=leaf,
-        base=walk_key_path(model=frame_model, path=resolved, bundle=bundle)
-        if resolved else frame_model,
-    )
+    if abs_path is None:
+        abs_path = resolve_default_qualifier_path(
+            qualifiers=chain, leaf=leaf, root_model=root_model,
+            owner_path=tuple(root_path), models_by_name=mbn,
+        )
+    if abs_path is None:
+        raise UnresolvableDimensionJoinError(
+            reference=".".join((*chain, leaf)), root_model=root_model.name,
+            reason="not reachable forward from the owning model or the query root.",
+        )
+    return abs_path
 
 
 def default_param_value_key(
     *, sql: str, owner_path: Path, owner_model: Optional[SlayerModel] = None,
-    bundle: Optional[ResolvedSourceBundle] = None,
-    root_model: Optional[SlayerModel] = None, root_path: Path = (),
+    bundle: ResolvedSourceBundle, root_model: SlayerModel, root_path: Path = (),
 ) -> Optional[ValueKey]:
     """A bare-identifier or dotted-path definition default → a structured key (a
     ``ColumnSqlKey`` when the named column is derived); an expression or literal
-    default → ``None``. A bare default is owner-local. With a ``root_model`` frame
-    a dotted default resolves owner-first — forward from the owning model — falling
-    back to the query root when the owner cannot reach it forward (a leading
-    root-model name self-strips to root-local), and failing closed on an ambiguous
-    or partially-broken chain or one unreachable from both frames. Without a root
-    frame it keeps the owner-only behavior (typing / reaggregation callers)."""
+    default → ``None``. A bare default is owner-local; a dotted default resolves
+    owner-first with reverse-hop cancellation (DEV-1908) — a qualifier naming a
+    dataset already on the owner's path (the query root included) cancels back to
+    it — falling back to the query root for an owner-unreachable qualifier, and
+    failing closed on an ambiguous or partially-broken chain or one unreachable
+    from both frames."""
     text = sql.strip()
     if _BARE_IDENT_RE.match(text):
         return column_default_key(path=tuple(owner_path), leaf=text, base=owner_model)
     if not _DOTTED_PATH_RE.match(text):
         return None
     parts = text.split(".")
-    if root_model is None or bundle is None:
-        return _dotted_key_legacy(
-            parts=parts, owner_path=owner_path, owner_model=owner_model, bundle=bundle,
-        )
-    chain, leaf = tuple(parts[:-1]), parts[-1]
-    if owner_model is not None:
-        owner_key = _frame_dotted_key(
-            chain=chain, leaf=leaf, frame_model=owner_model,
-            frame_path=owner_path, query_root=root_model, bundle=bundle,
-        )
-        if owner_key is not None:
-            return owner_key
-    root_key = _frame_dotted_key(
-        chain=chain, leaf=leaf, frame_model=root_model,
-        frame_path=root_path, query_root=root_model, bundle=bundle,
+    abs_path = _resolve_default_abs(
+        chain=tuple(parts[:-1]), leaf=parts[-1], root_model=root_model,
+        owner_path=owner_path, root_path=root_path, bundle=bundle,
     )
-    if root_key is not None:
-        return root_key
-    raise UnresolvableDimensionJoinError(
-        reference=text, root_model=root_model.name,
-        reason="not reachable forward from the owning model or the query root.",
+    return column_default_key(
+        path=abs_path, leaf=parts[-1],
+        base=walk_key_path(model=root_model, path=abs_path, bundle=bundle),
     )
 
 
 def expr_default_ref_keys(
     *, sql: str, owner_model: Optional[SlayerModel], owner_path: Path,
-    bundle: Optional[ResolvedSourceBundle],
-    root_model: Optional[SlayerModel] = None, root_path: Path = (),
+    bundle: ResolvedSourceBundle,
+    root_model: SlayerModel, root_path: Path = (),
 ) -> List[Optional[ValueKey]]:
-    """Parse-based column refs of an expression default, as keys. Each reference
-    resolves owner-first (forward from the owning model); with a ``root_model``
-    frame a reference the owner cannot reach forward is retried root-relative,
-    per reference (so ``spend + orders.amount`` resolves ``spend`` owner-local and
-    ``orders.amount`` root-local). ``None`` entries — an unresolvable qualifier, or
-    an unanalysable fragment — fail closed at typing."""
-    if owner_model is None or bundle is None:
+    """Parse-based column refs of an expression default, as absolute (root-frame)
+    keys. Each reference resolves owner-first with reverse-hop cancellation
+    (DEV-1908), retried root-relative when the owner cannot reach it (so
+    ``spend + orders.amount`` resolves ``spend`` owner-local and ``orders.amount``
+    root-local). ``None`` entries — an unresolvable qualifier, or an unanalysable
+    fragment — fail closed at typing. An ambiguous / partially-broken owner
+    qualifier raises (fail closed), never silently re-anchors at the root."""
+    if owner_model is None:
         return []
-    if root_model is None:  # legacy: owner-frame resolution only (typing / reaggregation)
-        owner_refs = compute_expr_reference_columns(
-            canonical_sql=sql, anchor_model=owner_model,
-            anchor_relation=owner_model.name, bundle=bundle,
-        )
-        if owner_refs is None:
-            return [None]
-        return [
-            column_default_key(
-                path=tuple(owner_path) + path, leaf=leaf,
-                base=walk_key_path(model=owner_model, path=path, bundle=bundle),
-            )
-            if path is not None else None
-            for path, leaf in owner_refs
-        ]
     parsed = _parse_filter_sql_any_dialect(sql)
     if parsed is None:
         return [None]
-    # STRICT per reference: an ambiguous / partially-broken owner qualifier raises
-    # here (fail closed), never silently re-anchors at the root.
     abs_refs = resolve_default_reference_paths(
-        parsed=parsed, owner_model=owner_model, owner_path=owner_path,
+        parsed=parsed, owner_path=owner_path,
         root_model=root_model, root_path=root_path, bundle=bundle,
     )
     return [
@@ -556,13 +469,13 @@ def expr_default_ref_keys(
 
 def resolve_aggregation_params(
     *, agg: AggregateKey, owner_model: Optional[SlayerModel], owner_path: Path,
-    bundle: Optional[ResolvedSourceBundle] = None,
-    root_model: Optional[SlayerModel] = None, root_path: Path = (),
+    bundle: ResolvedSourceBundle,
+    root_model: SlayerModel, root_path: Path = (),
 ) -> List[ParamSpec]:
     """Every aggregation parameter that references data — explicit non-scalar
-    kwargs and non-overridden definition defaults resolved on the owner
-    (terminal of the source path), with an optional query-root frame for
-    owner-unreachable qualifiers. Literal params are omitted."""
+    kwargs and non-overridden definition defaults resolved on the owner (terminal
+    of the source path) owner-first with reverse-hop cancellation and a query-root
+    fallback (DEV-1908). Literal params are omitted."""
     explicit = {name for name, _ in agg.kwargs}
     out: List[ParamSpec] = [
         ParamSpec(name=name, key=v, expr_sql=None)
@@ -585,12 +498,13 @@ def resolve_aggregation_params(
 
 def _default_param_spec(
     *, p: AggregationParam, owner_model: SlayerModel, owner_path: Path,
-    bundle: Optional[ResolvedSourceBundle],
-    root_model: Optional[SlayerModel] = None, root_path: Path = (),
+    bundle: ResolvedSourceBundle,
+    root_model: SlayerModel, root_path: Path = (),
 ) -> Optional[ParamSpec]:
     """A non-overridden definition default → its ``ParamSpec`` (a bound key, or a
-    lifted expression with its referenced columns), or ``None`` when it rides the
-    plain kwarg/default machinery unchanged."""
+    lifted expression whose referenced columns and ``expr_sql`` are both in
+    query-root coordinates, D8), or ``None`` when it rides the plain kwarg/default
+    machinery unchanged."""
     vk = default_param_value_key(
         sql=p.sql, owner_path=owner_path, owner_model=owner_model, bundle=bundle,
         root_model=root_model, root_path=root_path,
@@ -602,8 +516,48 @@ def _default_param_spec(
         root_model=root_model, root_path=root_path,
     )
     if refs:
-        return ParamSpec(name=p.name, key=None, expr_sql=p.sql, expr_refs=tuple(refs))
+        return ParamSpec(
+            name=p.name, key=None,
+            expr_sql=_canonical_default_sql(
+                sql=p.sql, owner_path=owner_path, root_model=root_model,
+                root_path=root_path, bundle=bundle,
+            ),
+            expr_refs=tuple(refs),
+        )
     return None
+
+
+def _canonical_default_sql(
+    *, sql: str, owner_path: Path, root_model: SlayerModel, root_path: Path,
+    bundle: ResolvedSourceBundle,
+) -> str:
+    """An expression default requalified into query-root coordinates (D8) — each
+    reference to its absolute path so a kernel can reroot it into a producer root.
+    The raw text is kept when the fragment is unparseable or any reference fails
+    closed (typing rejects it before it renders)."""
+    parsed = _parse_filter_sql_any_dialect(sql)
+    if parsed is None:
+        return sql
+    abs_refs = resolve_default_reference_paths(
+        parsed=parsed, owner_path=owner_path, root_model=root_model,
+        root_path=root_path, bundle=bundle,
+    )
+    if any(a is None for a, _ in abs_refs):
+        return sql
+    return requalify_default_references(parsed=parsed, abs_refs=abs_refs, dialect=None)
+
+
+def requalify_expr_to_paths(
+    *, sql: str, abs_refs: List[Tuple[Optional[Path], str]],
+    dialect: Optional[str] = None,
+) -> str:
+    """Rewrite an expression default's references to the absolute dotted paths in
+    ``abs_refs`` (reference-site order); the raw text when unparseable. A kernel
+    rerooting a canonical default into its producer root (D8) passes the rerooted
+    ``(path, leaf)`` per reference here."""
+    parsed = _parse_filter_sql_any_dialect(sql)
+    return sql if parsed is None else requalify_default_references(
+        parsed=parsed, abs_refs=abs_refs, dialect=dialect)
 
 
 # ---------------------------------------------------------------------------

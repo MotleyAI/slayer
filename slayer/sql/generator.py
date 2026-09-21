@@ -46,7 +46,6 @@ from slayer.core.window_duration import parse_window_duration as _parse_window_d
 from slayer.sql.column_expansion import (
     is_trivial_base,
     collect_root_scope_joined_paths,
-    collect_root_scope_reference_columns,
     expand_column_definition_parts_sync,
     requalify_default_references,
     resolve_default_reference_paths,
@@ -3239,14 +3238,14 @@ class SQLGenerator:
         return body.sql(dialect=self.dialect, pretty=True)
 
     def _render_picked_param_value(self, *, pp, ctx) -> exp.Expression:  # pyright: ignore[reportPrivateImportUsage]
-        """The level-1 SQL for a picked parameter: an owner-anchored Mode-A
-        expression default entered through the scope (its owner-relative joins
-        register), else the parameter's value key rendered through the scope (a
-        column / placeholder / composite; a derived ``Column.sql`` expands, a
-        carrier placeholder resolves to its carrier column)."""
+        """The level-1 SQL for a picked parameter: a canonical expression default
+        entered at the producer root (DEV-1908 D8 — the kernel already rerooted it
+        into producer coordinates), else the parameter's value key rendered through
+        the scope (a column / placeholder / composite; a derived ``Column.sql``
+        expands, a carrier placeholder resolves to its carrier column)."""
         if pp.sql is not None:
             return ctx.scope.enter_expression(
-                pp.sql, owner_path=tuple(pp.anchor_path),
+                pp.sql, owner_path=(),
                 location=f"parameter default {pp.name!r}",
             )
         return render_value_key(key=pp.key, ctx=ctx)
@@ -5779,55 +5778,32 @@ class SQLGenerator:
         """Enter a Mode-A scalar EXPRESSION (a ``Column.sql`` / aggregation"""
         return scope.enter_expression(sql, location=location, owner_path=tuple(owner_path))
 
-    def _default_frag_owner_path(
-        self, *, frag: str, scope: ScopeFrame, source_owner_path: Tuple[str, ...],
-    ) -> Tuple[str, ...]:
-        """Owner path for a definition-default fragment on a host-locus aggregate:
-        the ROOT (``()``) when every reference resolves forward from the root — a
-        home-frame default like ``customers.spend`` after the home rule widens the
-        home — else the source owner (a source-relative default like ``regions.pop``).
-        Minimal reverse-hop handling (DEV-1900); DEV-1908 generalises it."""
-        if not source_owner_path:
-            return ()
-        try:
-            parsed = sqlglot.parse_one(frag, dialect=self.dialect)
-            refs = collect_root_scope_reference_columns(
-                parsed=parsed,  # pyright: ignore[reportArgumentType] — parse_one's Expr TypeVar
-                source_model=scope.root_model,
-                source_relation=scope.root_model.name, bundle=scope.bundle,
-            )
-        except Exception:
-            return source_owner_path
-        return () if all(path is not None for path, _ in refs) else source_owner_path
-
     def _default_frag_entry(
         self, *, frag: str, scope: ScopeFrame, model, source_owner_path: Tuple[str, ...],
     ) -> Tuple[str, Tuple[str, ...]]:
         """The (fragment, owner_path) to enter for a definition default on a
-        host-locus aggregate. A single-frame fragment keeps the whole-fragment
-        owner path (``_default_frag_owner_path``, byte-identical). A MIXED-frame
-        default — some references owner-local, others root-local (DEV-1931
-        ``spend + orders.amount``) — is requalified per reference to its absolute
-        path (the SAME owner-first/root-fallback resolution the home rule uses)
-        and entered at the root, so each reference resolves in its own frame."""
-        owner_path = self._default_frag_owner_path(
-            frag=frag, scope=scope, source_owner_path=source_owner_path,
-        )
+        host-locus aggregate (DEV-1908 D7). Every reference resolves owner-first
+        with reverse-hop cancellation and a root fallback. A fragment whose every
+        reference is owner-forward (its absolute path extends the source owner
+        path) enters raw at the owner path — byte-identical by construction. Any
+        cancelled or root-anchored reference makes the fragment MIXED: it is
+        requalified per reference to its absolute path and entered at the root, so
+        each reference resolves in its own frame, never as a reverse join."""
         try:
             parsed = sqlglot.parse_one(frag, dialect=self.dialect)
             abs_refs = resolve_default_reference_paths(
                 parsed=parsed,  # pyright: ignore[reportArgumentType] — parse_one's Expr TypeVar
-                owner_model=model, owner_path=source_owner_path,
+                owner_path=source_owner_path,
                 root_model=scope.root_model, root_path=(), bundle=scope.bundle,
             )
         except Exception:
-            return frag, owner_path
-        # MIXED frame — some references owner-local, others root-local: requalify
-        # each to its absolute path and enter at the root.
+            return frag, source_owner_path  # unanalysable: raw at the source owner
         n = len(source_owner_path)
-        frames = {tuple(a[:n]) == tuple(source_owner_path) for a, _ in abs_refs if a is not None}
-        if len(frames) < 2:
-            return frag, owner_path
+        if all(
+            a is not None and tuple(a[:n]) == tuple(source_owner_path)
+            for a, _ in abs_refs
+        ):
+            return frag, tuple(source_owner_path)  # owner-forward: raw at the owner
         return requalify_default_references(
             parsed=parsed,  # pyright: ignore[reportArgumentType] — parse_one's Expr TypeVar
             abs_refs=abs_refs, dialect=self.dialect,
