@@ -94,6 +94,8 @@ def assert_dependency_ordered_ctes(sql: str, *, dialect: str = "postgres") -> No
     allocator (``slayer/sql/naming.py``): ``str.lower()`` on a case-insensitive
     dialect (BigQuery et al.), identity on a case-sensitive one (ClickHouse keeps
     ``Foo``/``foo`` distinct); ``casefold`` is avoided (it over-equates ``ß``/``ss``).
+    It validates SLayer's own emitted SQL — unquoted, allocator-folded names — so
+    it does not model per-dialect quoted-identifier case rules.
     Physical tables, schema-qualified names, derived-table aliases and
     nested-``WITH`` scopes are left alone; a reference from the main query body is
     always backward. A self reference (position == containing) is NOT flagged:
@@ -109,11 +111,11 @@ def assert_dependency_ordered_ctes(sql: str, *, dialect: str = "postgres") -> No
         if tbl.args.get("db") is not None or tbl.args.get("catalog") is not None:
             continue  # schema-qualified → physical, never a bare CTE reference
         name = fold(tbl.name)
-        binding = _nearest_defining_with(tbl, name, fold)
+        binding = _nearest_defining_with(tbl=tbl, name=name, fold=fold)
         if binding is None:
             continue
         with_node, positions = binding
-        containing = _containing_cte_index(tbl, with_node)
+        containing = _containing_cte_index(tbl=tbl, with_node=with_node)
         if containing is None:
             continue  # a main-body reference is always after every CTE
         if positions[name] > containing:
@@ -125,7 +127,7 @@ def assert_dependency_ordered_ctes(sql: str, *, dialect: str = "postgres") -> No
             )
 
 
-def _cte_positions(with_node: exp.With, fold) -> Dict[str, int]:
+def _cte_positions(*, with_node: exp.With, fold) -> Dict[str, int]:
     """CTE name (``fold``-normalised) → declaration index within ``with_node``."""
     return {
         fold(cte.alias_or_name): i
@@ -133,20 +135,20 @@ def _cte_positions(with_node: exp.With, fold) -> Dict[str, int]:
     }
 
 
-def _nearest_defining_with(tbl: exp.Table, name: str, fold):
+def _nearest_defining_with(*, tbl: exp.Table, name: str, fold):
     """The nearest ancestor ``WITH`` that declares a CTE named ``name`` (already
     ``fold``-normalised), with its position map; ``None`` when none defines it."""
     node = tbl.parent
     while node is not None:
         if isinstance(node, exp.With):
-            positions = _cte_positions(node, fold)
+            positions = _cte_positions(with_node=node, fold=fold)
             if name in positions:
                 return node, positions
         node = node.parent
     return None
 
 
-def _containing_cte_index(tbl: exp.Table, with_node: exp.With) -> Optional[int]:
+def _containing_cte_index(*, tbl: exp.Table, with_node: exp.With) -> Optional[int]:
     """Index of the ``with_node`` CTE whose body contains ``tbl``, or ``None`` when
     ``tbl`` sits in the query the WITH decorates rather than in a CTE body."""
     node = tbl.parent

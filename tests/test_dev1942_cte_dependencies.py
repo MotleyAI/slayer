@@ -93,12 +93,14 @@ class TestForwardReferenceValidator:
         assert_dependency_ordered_ctes(sql, dialect="postgres")
 
     def test_case_folded_forward_reference_raises(self) -> None:
-        sql = 'WITH a AS (SELECT x FROM "B"), "B" AS (SELECT 1 AS x) SELECT x FROM a'
+        # Unquoted `B` folds to `b` (postgres); only folding matches it to the later
+        # `b` CTE — a quoted "B" on both sides would match under identity too.
+        sql = "WITH a AS (SELECT x FROM B), b AS (SELECT 1 AS x) SELECT x FROM a"
         with pytest.raises(CteOrderError):
             assert_dependency_ordered_ctes(sql, dialect="postgres")
 
     def test_case_folded_backward_reference_passes(self) -> None:
-        sql = 'WITH "B" AS (SELECT 1 AS x), a AS (SELECT x FROM b) SELECT x FROM a'
+        sql = "WITH B AS (SELECT 1 AS x), a AS (SELECT x FROM b) SELECT x FROM a"
         assert_dependency_ordered_ctes(sql, dialect="postgres")
 
 

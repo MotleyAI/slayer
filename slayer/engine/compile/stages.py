@@ -2367,11 +2367,12 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
         constituent_placeholders[orig] = constituent_placeholders[ck]
     # The public measure names this re-aggregation reports under (D6): a standalone
     # root its own alias; a mixed constituent the row-attach roots consuming it.
-    semi_join_names = (
-        list(population_semi_join_measures)
-        if population_semi_join_measures is not None
-        else ([public_alias] if public_alias else [])
-    )
+    if population_semi_join_measures is not None:
+        semi_join_names = list(population_semi_join_measures)
+    elif public_alias:
+        semi_join_names = [public_alias]
+    else:
+        semi_join_names = []
     carrier_attach = _build_carrier_attach(
         union_grain=union_grain, constituents=constituents,
         constituent_placeholders=constituent_placeholders, host_model=host_model,
