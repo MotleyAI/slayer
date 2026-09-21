@@ -1,0 +1,303 @@
+{
+  "cancel/association_expr::bigquery": {
+    "error": "ValueError",
+    "message": "Cross-model aggregate 'customers.regions.countries.gdp_wsum_region_pop_expr' reads an input across an unproven join hop to regions from countries; declare join cardinality or a covering unique key on the target."
+  },
+  "cancel/association_expr::duckdb": {
+    "error": "ValueError",
+    "message": "Cross-model aggregate 'customers.regions.countries.gdp_wsum_region_pop_expr' reads an input across an unproven join hop to regions from countries; declare join cardinality or a covering unique key on the target."
+  },
+  "cancel/association_expr::mysql": {
+    "error": "ValueError",
+    "message": "Cross-model aggregate 'customers.regions.countries.gdp_wsum_region_pop_expr' reads an input across an unproven join hop to regions from countries; declare join cardinality or a covering unique key on the target."
+  },
+  "cancel/association_expr::postgres": {
+    "error": "ValueError",
+    "message": "Cross-model aggregate 'customers.regions.countries.gdp_wsum_region_pop_expr' reads an input across an unproven join hop to regions from countries; declare join cardinality or a covering unique key on the target."
+  },
+  "cancel/association_expr::snowflake": {
+    "error": "ValueError",
+    "message": "Cross-model aggregate 'customers.regions.countries.gdp_wsum_region_pop_expr' reads an input across an unproven join hop to regions from countries; declare join cardinality or a covering unique key on the target."
+  },
+  "cancel/association_expr::sqlite": {
+    "error": "ValueError",
+    "message": "Cross-model aggregate 'customers.regions.countries.gdp_wsum_region_pop_expr' reads an input across an unproven join hop to regions from countries; declare join cardinality or a covering unique key on the target."
+  },
+  "cancel/association_expr::tsql": {
+    "error": "ValueError",
+    "message": "Cross-model aggregate 'customers.regions.countries.gdp_wsum_region_pop_expr' reads an input across an unproven join hop to regions from countries; declare join cardinality or a covering unique key on the target."
+  },
+  "cancel/double::bigquery": {
+    "error": "UnresolvableDimensionJoinError",
+    "message": "Cannot resolve dimension 'regions.customers.spend': not a valid join path from 'orders'. not reachable forward from the owning model or the query root."
+  },
+  "cancel/double::duckdb": {
+    "error": "UnresolvableDimensionJoinError",
+    "message": "Cannot resolve dimension 'regions.customers.spend': not a valid join path from 'orders'. not reachable forward from the owning model or the query root."
+  },
+  "cancel/double::mysql": {
+    "error": "UnresolvableDimensionJoinError",
+    "message": "Cannot resolve dimension 'regions.customers.spend': not a valid join path from 'orders'. not reachable forward from the owning model or the query root."
+  },
+  "cancel/double::postgres": {
+    "error": "UnresolvableDimensionJoinError",
+    "message": "Cannot resolve dimension 'regions.customers.spend': not a valid join path from 'orders'. not reachable forward from the owning model or the query root."
+  },
+  "cancel/double::snowflake": {
+    "error": "UnresolvableDimensionJoinError",
+    "message": "Cannot resolve dimension 'regions.customers.spend': not a valid join path from 'orders'. not reachable forward from the owning model or the query root."
+  },
+  "cancel/double::sqlite": {
+    "error": "UnresolvableDimensionJoinError",
+    "message": "Cannot resolve dimension 'regions.customers.spend': not a valid join path from 'orders'. not reachable forward from the owning model or the query root."
+  },
+  "cancel/double::tsql": {
+    "error": "UnresolvableDimensionJoinError",
+    "message": "Cannot resolve dimension 'regions.customers.spend': not a valid join path from 'orders'. not reachable forward from the owning model or the query root."
+  },
+  "cancel/events_reverse_hop::bigquery": {
+    "error": "UnresolvableDimensionJoinError",
+    "message": "Cannot resolve dimension 'regions.pop': not a valid join path from 'orders'. not reachable forward from the owning model or the query root."
+  },
+  "cancel/events_reverse_hop::duckdb": {
+    "error": "UnresolvableDimensionJoinError",
+    "message": "Cannot resolve dimension 'regions.pop': not a valid join path from 'orders'. not reachable forward from the owning model or the query root."
+  },
+  "cancel/events_reverse_hop::mysql": {
+    "error": "UnresolvableDimensionJoinError",
+    "message": "Cannot resolve dimension 'regions.pop': not a valid join path from 'orders'. not reachable forward from the owning model or the query root."
+  },
+  "cancel/events_reverse_hop::postgres": {
+    "error": "UnresolvableDimensionJoinError",
+    "message": "Cannot resolve dimension 'regions.pop': not a valid join path from 'orders'. not reachable forward from the owning model or the query root."
+  },
+  "cancel/events_reverse_hop::snowflake": {
+    "error": "UnresolvableDimensionJoinError",
+    "message": "Cannot resolve dimension 'regions.pop': not a valid join path from 'orders'. not reachable forward from the owning model or the query root."
+  },
+  "cancel/events_reverse_hop::sqlite": {
+    "error": "UnresolvableDimensionJoinError",
+    "message": "Cannot resolve dimension 'regions.pop': not a valid join path from 'orders'. not reachable forward from the owning model or the query root."
+  },
+  "cancel/events_reverse_hop::tsql": {
+    "error": "UnresolvableDimensionJoinError",
+    "message": "Cannot resolve dimension 'regions.pop': not a valid join path from 'orders'. not reachable forward from the owning model or the query root."
+  },
+  "cancel/forward::bigquery": {
+    "error": "UnresolvableDimensionJoinError",
+    "message": "Cannot resolve dimension 'regions.customers.plans.fee': not a valid join path from 'orders'. not reachable forward from the owning model or the query root."
+  },
+  "cancel/forward::duckdb": {
+    "error": "UnresolvableDimensionJoinError",
+    "message": "Cannot resolve dimension 'regions.customers.plans.fee': not a valid join path from 'orders'. not reachable forward from the owning model or the query root."
+  },
+  "cancel/forward::mysql": {
+    "error": "UnresolvableDimensionJoinError",
+    "message": "Cannot resolve dimension 'regions.customers.plans.fee': not a valid join path from 'orders'. not reachable forward from the owning model or the query root."
+  },
+  "cancel/forward::postgres": {
+    "error": "UnresolvableDimensionJoinError",
+    "message": "Cannot resolve dimension 'regions.customers.plans.fee': not a valid join path from 'orders'. not reachable forward from the owning model or the query root."
+  },
+  "cancel/forward::snowflake": {
+    "error": "UnresolvableDimensionJoinError",
+    "message": "Cannot resolve dimension 'regions.customers.plans.fee': not a valid join path from 'orders'. not reachable forward from the owning model or the query root."
+  },
+  "cancel/forward::sqlite": {
+    "error": "UnresolvableDimensionJoinError",
+    "message": "Cannot resolve dimension 'regions.customers.plans.fee': not a valid join path from 'orders'. not reachable forward from the owning model or the query root."
+  },
+  "cancel/forward::tsql": {
+    "error": "UnresolvableDimensionJoinError",
+    "message": "Cannot resolve dimension 'regions.customers.plans.fee': not a valid join path from 'orders'. not reachable forward from the owning model or the query root."
+  },
+  "cancel/owner_at_root::bigquery": "SELECT\n  CAST(SUM(orders.amount * (\n    (\n      orders.amount * 2\n    )\n  )) AS FLOAT64) AS `orders___w`\nFROM orders AS orders",
+  "cancel/owner_at_root::duckdb": "SELECT\n  CAST(SUM(orders.amount * (\n    (\n      orders.amount * 2\n    )\n  )) AS DOUBLE) AS \"orders.w\"\nFROM orders AS orders",
+  "cancel/owner_at_root::mysql": "SELECT\n  CAST(SUM(orders.amount * (\n    (\n      orders.amount * 2\n    )\n  )) AS DOUBLE) AS `orders.w`\nFROM orders AS orders",
+  "cancel/owner_at_root::postgres": "SELECT\n  CAST(SUM(orders.amount * (\n    (\n      orders.amount * 2\n    )\n  )) AS DOUBLE PRECISION) AS \"orders.w\"\nFROM orders AS orders",
+  "cancel/owner_at_root::snowflake": "SELECT\n  CAST(SUM(orders.amount * (\n    (\n      orders.amount * 2\n    )\n  )) AS DOUBLE) AS \"orders.w\"\nFROM orders AS orders",
+  "cancel/owner_at_root::sqlite": "SELECT\n  CAST(SUM(orders.amount * (\n    (\n      orders.amount * 2\n    )\n  )) AS REAL) AS \"orders.w\"\nFROM orders AS orders",
+  "cancel/owner_at_root::tsql": "SELECT\n  CAST(SUM(orders.amount * (\n    (\n      orders.amount * 2\n    )\n  )) AS FLOAT) AS [orders___w]\nFROM orders AS orders",
+  "cancel/second_order_root_frame::bigquery": "WITH _base AS (\n  SELECT\n    1 AS _placeholder\n), _cm_amount_sum_partition_by_customers_regions_id AS (\n  SELECT\n    `_stage_inner`.`orders___customers___regions___id` AS `customers__regions__id`,\n    `_stage_inner`.`orders___amount_sum_partition_by_customers_regions_id` AS `amount_sum_partition_by_customers_regions_id`\n  FROM (\n    SELECT\n      customers__regions.id AS `orders___customers___regions___id`,\n      CAST(SUM(orders.amount) AS FLOAT64) AS `orders___amount_sum_partition_by_customers_regions_id`\n    FROM orders AS orders\n    LEFT JOIN customers AS customers\n      ON orders.customer_id = customers.id\n    LEFT JOIN regions AS customers__regions\n      ON customers.region_id = customers__regions.id\n    GROUP BY\n      customers__regions.id\n  ) AS _stage_inner\n), _cm_orders___wavg_pop_expr AS (\n  SELECT\n    SUM(_base._v * _base._p0) AS `orders___w`\n  FROM (\n    SELECT\n      customers__regions.id AS _ek0,\n      MAX(\n        _cm_amount_sum_partition_by_customers_regions_id.`amount_sum_partition_by_customers_regions_id`\n      ) AS _v,\n      MAX(customers__regions.pop * 1) AS _p0\n    FROM orders AS orders\n    LEFT JOIN customers AS customers\n      ON orders.customer_id = customers.id\n    LEFT JOIN regions AS customers__regions\n      ON customers.region_id = customers__regions.id\n    LEFT JOIN _cm_amount_sum_partition_by_customers_regions_id\n      ON customers__regions.id IS NOT DISTINCT FROM _cm_amount_sum_partition_by_customers_regions_id.`customers__regions__id`\n    GROUP BY\n      customers__regions.id\n  ) AS _base\n)\nSELECT\n  _cm_orders___wavg_pop_expr.`orders___w`\nFROM _base\nCROSS JOIN _cm_orders___wavg_pop_expr",
+  "cancel/second_order_root_frame::duckdb": "WITH _base AS (\n  SELECT\n    1 AS _placeholder\n), _cm_amount_sum_partition_by_customers_regions_id AS (\n  SELECT\n    _stage_inner.\"orders.customers.regions.id\" AS \"customers__regions__id\",\n    _stage_inner.\"orders.amount_sum_partition_by_customers_regions_id\" AS \"amount_sum_partition_by_customers_regions_id\"\n  FROM (\n    SELECT\n      customers__regions.id AS \"orders.customers.regions.id\",\n      CAST(SUM(orders.amount) AS DOUBLE) AS \"orders.amount_sum_partition_by_customers_regions_id\"\n    FROM orders AS orders\n    LEFT JOIN customers AS customers\n      ON orders.customer_id = customers.id\n    LEFT JOIN regions AS customers__regions\n      ON customers.region_id = customers__regions.id\n    GROUP BY\n      customers__regions.id\n  ) AS _stage_inner\n), _cm_orders___wavg_pop_expr AS (\n  SELECT\n    SUM(_base._v * _base._p0) AS \"orders.w\"\n  FROM (\n    SELECT\n      customers__regions.id AS _ek0,\n      MAX(\n        _cm_amount_sum_partition_by_customers_regions_id.\"amount_sum_partition_by_customers_regions_id\"\n      ) AS _v,\n      MAX(customers__regions.pop * 1) AS _p0\n    FROM orders AS orders\n    LEFT JOIN customers AS customers\n      ON orders.customer_id = customers.id\n    LEFT JOIN regions AS customers__regions\n      ON customers.region_id = customers__regions.id\n    LEFT JOIN _cm_amount_sum_partition_by_customers_regions_id\n      ON customers__regions.id IS NOT DISTINCT FROM _cm_amount_sum_partition_by_customers_regions_id.\"customers__regions__id\"\n    GROUP BY\n      customers__regions.id\n  ) AS _base\n)\nSELECT\n  _cm_orders___wavg_pop_expr.\"orders.w\"\nFROM _base\nCROSS JOIN _cm_orders___wavg_pop_expr",
+  "cancel/second_order_root_frame::mysql": "WITH _base AS (\n  SELECT\n    1 AS _placeholder\n), _cm_amount_sum_partition_by_customers_regions_id AS (\n  SELECT\n    _stage_inner.`orders.customers.regions.id` AS `customers__regions__id`,\n    _stage_inner.`orders.amount_sum_partition_by_customers_regions_id` AS `amount_sum_partition_by_customers_regions_id`\n  FROM (\n    SELECT\n      customers__regions.id AS `orders.customers.regions.id`,\n      CAST(SUM(orders.amount) AS DOUBLE) AS `orders.amount_sum_partition_by_customers_regions_id`\n    FROM orders AS orders\n    LEFT JOIN customers AS customers\n      ON orders.customer_id = customers.id\n    LEFT JOIN regions AS customers__regions\n      ON customers.region_id = customers__regions.id\n    GROUP BY\n      customers__regions.id\n  ) AS _stage_inner\n), _cm_orders___wavg_pop_expr AS (\n  SELECT\n    SUM(_base._v * _base._p0) AS `orders.w`\n  FROM (\n    SELECT\n      customers__regions.id AS _ek0,\n      MAX(\n        _cm_amount_sum_partition_by_customers_regions_id.`amount_sum_partition_by_customers_regions_id`\n      ) AS _v,\n      MAX(customers__regions.pop * 1) AS _p0\n    FROM orders AS orders\n    LEFT JOIN customers AS customers\n      ON orders.customer_id = customers.id\n    LEFT JOIN regions AS customers__regions\n      ON customers.region_id = customers__regions.id\n    LEFT JOIN _cm_amount_sum_partition_by_customers_regions_id\n      ON customers__regions.id <=> _cm_amount_sum_partition_by_customers_regions_id.`customers__regions__id`\n    GROUP BY\n      customers__regions.id\n  ) AS _base\n)\nSELECT\n  _cm_orders___wavg_pop_expr.`orders.w`\nFROM _base\nCROSS JOIN _cm_orders___wavg_pop_expr",
+  "cancel/second_order_root_frame::postgres": "WITH _base AS (\n  SELECT\n    1 AS _placeholder\n), _cm_amount_sum_partition_by_customers_regions_id AS (\n  SELECT\n    _stage_inner.\"orders.customers.regions.id\" AS \"customers__regions__id\",\n    _stage_inner.\"orders.amount_sum_partition_by_customers_regions_id\" AS \"amount_sum_partition_by_customers_regions_id\"\n  FROM (\n    SELECT\n      customers__regions.id AS \"orders.customers.regions.id\",\n      CAST(SUM(orders.amount) AS DOUBLE PRECISION) AS \"orders.amount_sum_partition_by_customers_regions_id\"\n    FROM orders AS orders\n    LEFT JOIN customers AS customers\n      ON orders.customer_id = customers.id\n    LEFT JOIN regions AS customers__regions\n      ON customers.region_id = customers__regions.id\n    GROUP BY\n      customers__regions.id\n  ) AS _stage_inner\n), _cm_orders___wavg_pop_expr AS (\n  SELECT\n    SUM(_base._v * _base._p0) AS \"orders.w\"\n  FROM (\n    SELECT\n      customers__regions.id AS _ek0,\n      MAX(\n        _cm_amount_sum_partition_by_customers_regions_id.\"amount_sum_partition_by_customers_regions_id\"\n      ) AS _v,\n      MAX(customers__regions.pop * 1) AS _p0\n    FROM orders AS orders\n    LEFT JOIN customers AS customers\n      ON orders.customer_id = customers.id\n    LEFT JOIN regions AS customers__regions\n      ON customers.region_id = customers__regions.id\n    LEFT JOIN _cm_amount_sum_partition_by_customers_regions_id\n      ON customers__regions.id IS NOT DISTINCT FROM _cm_amount_sum_partition_by_customers_regions_id.\"customers__regions__id\"\n    GROUP BY\n      customers__regions.id\n  ) AS _base\n)\nSELECT\n  _cm_orders___wavg_pop_expr.\"orders.w\"\nFROM _base\nCROSS JOIN _cm_orders___wavg_pop_expr",
+  "cancel/second_order_root_frame::snowflake": "WITH _base AS (\n  SELECT\n    1 AS _placeholder\n), _cm_amount_sum_partition_by_customers_regions_id AS (\n  SELECT\n    _stage_inner.\"orders.customers.regions.id\" AS \"customers__regions__id\",\n    _stage_inner.\"orders.amount_sum_partition_by_customers_regions_id\" AS \"amount_sum_partition_by_customers_regions_id\"\n  FROM (\n    SELECT\n      customers__regions.id AS \"orders.customers.regions.id\",\n      CAST(SUM(orders.amount) AS DOUBLE) AS \"orders.amount_sum_partition_by_customers_regions_id\"\n    FROM orders AS orders\n    LEFT JOIN customers AS customers\n      ON orders.customer_id = customers.id\n    LEFT JOIN regions AS customers__regions\n      ON customers.region_id = customers__regions.id\n    GROUP BY\n      customers__regions.id\n  ) AS _stage_inner\n), _cm_orders___wavg_pop_expr AS (\n  SELECT\n    SUM(_base._v * _base._p0) AS \"orders.w\"\n  FROM (\n    SELECT\n      customers__regions.id AS _ek0,\n      MAX(\n        _cm_amount_sum_partition_by_customers_regions_id.\"amount_sum_partition_by_customers_regions_id\"\n      ) AS _v,\n      MAX(customers__regions.pop * 1) AS _p0\n    FROM orders AS orders\n    LEFT JOIN customers AS customers\n      ON orders.customer_id = customers.id\n    LEFT JOIN regions AS customers__regions\n      ON customers.region_id = customers__regions.id\n    LEFT JOIN _cm_amount_sum_partition_by_customers_regions_id\n      ON customers__regions.id IS NOT DISTINCT FROM _cm_amount_sum_partition_by_customers_regions_id.\"customers__regions__id\"\n    GROUP BY\n      customers__regions.id\n  ) AS _base\n)\nSELECT\n  _cm_orders___wavg_pop_expr.\"orders.w\"\nFROM _base\nCROSS JOIN _cm_orders___wavg_pop_expr",
+  "cancel/second_order_root_frame::sqlite": "WITH _base AS (\n  SELECT\n    1 AS _placeholder\n), _cm_amount_sum_partition_by_customers_regions_id AS (\n  SELECT\n    _stage_inner.\"orders.customers.regions.id\" AS \"customers__regions__id\",\n    _stage_inner.\"orders.amount_sum_partition_by_customers_regions_id\" AS \"amount_sum_partition_by_customers_regions_id\"\n  FROM (\n    SELECT\n      customers__regions.id AS \"orders.customers.regions.id\",\n      CAST(SUM(orders.amount) AS REAL) AS \"orders.amount_sum_partition_by_customers_regions_id\"\n    FROM orders AS orders\n    LEFT JOIN customers AS customers\n      ON orders.customer_id = customers.id\n    LEFT JOIN regions AS customers__regions\n      ON customers.region_id = customers__regions.id\n    GROUP BY\n      customers__regions.id\n  ) AS _stage_inner\n), _cm_orders___wavg_pop_expr AS (\n  SELECT\n    SUM(_base._v * _base._p0) AS \"orders.w\"\n  FROM (\n    SELECT\n      customers__regions.id AS _ek0,\n      MAX(\n        _cm_amount_sum_partition_by_customers_regions_id.\"amount_sum_partition_by_customers_regions_id\"\n      ) AS _v,\n      MAX(customers__regions.pop * 1) AS _p0\n    FROM orders AS orders\n    LEFT JOIN customers AS customers\n      ON orders.customer_id = customers.id\n    LEFT JOIN regions AS customers__regions\n      ON customers.region_id = customers__regions.id\n    LEFT JOIN _cm_amount_sum_partition_by_customers_regions_id\n      ON customers__regions.id IS _cm_amount_sum_partition_by_customers_regions_id.\"customers__regions__id\"\n    GROUP BY\n      customers__regions.id\n  ) AS _base\n)\nSELECT\n  _cm_orders___wavg_pop_expr.\"orders.w\"\nFROM _base\nCROSS JOIN _cm_orders___wavg_pop_expr",
+  "cancel/second_order_root_frame::tsql": "WITH _base AS (\n  SELECT\n    1 AS _placeholder\n), _cm_amount_sum_partition_by_customers_regions_id AS (\n  SELECT\n    _stage_inner.[orders___customers___regions___id] AS [customers__regions__id],\n    _stage_inner.[orders___amount_sum_partition_by_customers_regions_id] AS [amount_sum_partition_by_customers_regions_id]\n  FROM (\n    SELECT\n      customers__regions.id AS [orders___customers___regions___id],\n      CAST(SUM(orders.amount) AS FLOAT) AS [orders___amount_sum_partition_by_customers_regions_id]\n    FROM orders AS orders\n    LEFT JOIN customers AS customers\n      ON orders.customer_id = customers.id\n    LEFT JOIN regions AS customers__regions\n      ON customers.region_id = customers__regions.id\n    GROUP BY\n      customers__regions.id\n  ) AS _stage_inner\n), _cm_orders___wavg_pop_expr AS (\n  SELECT\n    SUM(_base._v * _base._p0) AS [orders___w]\n  FROM (\n    SELECT\n      customers__regions.id AS _ek0,\n      MAX(\n        _cm_amount_sum_partition_by_customers_regions_id.[amount_sum_partition_by_customers_regions_id]\n      ) AS _v,\n      MAX(customers__regions.pop * 1) AS _p0\n    FROM orders AS orders\n    LEFT JOIN customers AS customers\n      ON orders.customer_id = customers.id\n    LEFT JOIN regions AS customers__regions\n      ON customers.region_id = customers__regions.id\n    LEFT JOIN _cm_amount_sum_partition_by_customers_regions_id\n      ON (\n        customers__regions.id = _cm_amount_sum_partition_by_customers_regions_id.[customers__regions__id]\n        OR (\n          customers__regions.id IS NULL\n          AND _cm_amount_sum_partition_by_customers_regions_id.[customers__regions__id] IS NULL\n        )\n      )\n    GROUP BY\n      customers__regions.id\n  ) AS _base\n)\nSELECT\n  _cm_orders___wavg_pop_expr.[orders___w]\nFROM _base\nCROSS JOIN _cm_orders___wavg_pop_expr",
+  "cancel/ship_region_extension::bigquery": "WITH _base AS (\n  SELECT\n    1 AS _placeholder\n), _cm_orders__ship_region__countries__gdp_wsum_region_pop AS (\n  SELECT\n    SUM(ship_region__countries.gdp * regions.pop) AS `orders___ship_region___countries___gdp_wsum_region_pop_host`\n  FROM orders AS orders\n  LEFT JOIN regions AS ship_region\n    ON orders.ship_region_id = ship_region.id\n  LEFT JOIN countries AS ship_region__countries\n    ON ship_region.country_id = ship_region__countries.id\n  LEFT JOIN regions AS regions\n    ON orders.ship_region_id = regions.id\n)\nSELECT\n  _cm_orders__ship_region__countries__gdp_wsum_region_pop.`orders___ship_region___countries___gdp_wsum_region_pop_host` AS `orders___w`\nFROM _base\nCROSS JOIN _cm_orders__ship_region__countries__gdp_wsum_region_pop",
+  "cancel/ship_region_extension::duckdb": "WITH _base AS (\n  SELECT\n    1 AS _placeholder\n), _cm_orders__ship_region__countries__gdp_wsum_region_pop AS (\n  SELECT\n    SUM(ship_region__countries.gdp * regions.pop) AS \"orders.ship_region.countries.gdp_wsum_region_pop_host\"\n  FROM orders AS orders\n  LEFT JOIN regions AS ship_region\n    ON orders.ship_region_id = ship_region.id\n  LEFT JOIN countries AS ship_region__countries\n    ON ship_region.country_id = ship_region__countries.id\n  LEFT JOIN regions AS regions\n    ON orders.ship_region_id = regions.id\n)\nSELECT\n  _cm_orders__ship_region__countries__gdp_wsum_region_pop.\"orders.ship_region.countries.gdp_wsum_region_pop_host\" AS \"orders.w\"\nFROM _base\nCROSS JOIN _cm_orders__ship_region__countries__gdp_wsum_region_pop",
+  "cancel/ship_region_extension::mysql": "WITH _base AS (\n  SELECT\n    1 AS _placeholder\n), _cm_orders__ship_region__countries__gdp_wsum_region_pop AS (\n  SELECT\n    SUM(ship_region__countries.gdp * regions.pop) AS `orders.ship_region.countries.gdp_wsum_region_pop_host`\n  FROM orders AS orders\n  LEFT JOIN regions AS ship_region\n    ON orders.ship_region_id = ship_region.id\n  LEFT JOIN countries AS ship_region__countries\n    ON ship_region.country_id = ship_region__countries.id\n  LEFT JOIN regions AS regions\n    ON orders.ship_region_id = regions.id\n)\nSELECT\n  _cm_orders__ship_region__countries__gdp_wsum_region_pop.`orders.ship_region.countries.gdp_wsum_region_pop_host` AS `orders.w`\nFROM _base\nCROSS JOIN _cm_orders__ship_region__countries__gdp_wsum_region_pop",
+  "cancel/ship_region_extension::postgres": "WITH _base AS (\n  SELECT\n    1 AS _placeholder\n), _cm_orders__ship_region__countries__gdp_wsum_region_pop AS (\n  SELECT\n    SUM(ship_region__countries.gdp * regions.pop) AS \"orders.ship_region.countries.gdp_wsum_region_pop_host\"\n  FROM orders AS orders\n  LEFT JOIN regions AS ship_region\n    ON orders.ship_region_id = ship_region.id\n  LEFT JOIN countries AS ship_region__countries\n    ON ship_region.country_id = ship_region__countries.id\n  LEFT JOIN regions AS regions\n    ON orders.ship_region_id = regions.id\n)\nSELECT\n  _cm_orders__ship_region__countries__gdp_wsum_region_pop.\"orders.ship_region.countries.gdp_wsum_region_pop_host\" AS \"orders.w\"\nFROM _base\nCROSS JOIN _cm_orders__ship_region__countries__gdp_wsum_region_pop",
+  "cancel/ship_region_extension::snowflake": "WITH _base AS (\n  SELECT\n    1 AS _placeholder\n), _cm_orders__ship_region__countries__gdp_wsum_region_pop AS (\n  SELECT\n    SUM(ship_region__countries.gdp * regions.pop) AS \"orders.ship_region.countries.gdp_wsum_region_pop_host\"\n  FROM orders AS orders\n  LEFT JOIN regions AS ship_region\n    ON orders.ship_region_id = ship_region.id\n  LEFT JOIN countries AS ship_region__countries\n    ON ship_region.country_id = ship_region__countries.id\n  LEFT JOIN regions AS regions\n    ON orders.ship_region_id = regions.id\n)\nSELECT\n  _cm_orders__ship_region__countries__gdp_wsum_region_pop.\"orders.ship_region.countries.gdp_wsum_region_pop_host\" AS \"orders.w\"\nFROM _base\nCROSS JOIN _cm_orders__ship_region__countries__gdp_wsum_region_pop",
+  "cancel/ship_region_extension::sqlite": "WITH _base AS (\n  SELECT\n    1 AS _placeholder\n), _cm_orders__ship_region__countries__gdp_wsum_region_pop AS (\n  SELECT\n    SUM(ship_region__countries.gdp * regions.pop) AS \"orders.ship_region.countries.gdp_wsum_region_pop_host\"\n  FROM orders AS orders\n  LEFT JOIN regions AS ship_region\n    ON orders.ship_region_id = ship_region.id\n  LEFT JOIN countries AS ship_region__countries\n    ON ship_region.country_id = ship_region__countries.id\n  LEFT JOIN regions AS regions\n    ON orders.ship_region_id = regions.id\n)\nSELECT\n  _cm_orders__ship_region__countries__gdp_wsum_region_pop.\"orders.ship_region.countries.gdp_wsum_region_pop_host\" AS \"orders.w\"\nFROM _base\nCROSS JOIN _cm_orders__ship_region__countries__gdp_wsum_region_pop",
+  "cancel/ship_region_extension::tsql": "WITH _base AS (\n  SELECT\n    1 AS _placeholder\n), _cm_orders__ship_region__countries__gdp_wsum_region_pop AS (\n  SELECT\n    SUM(ship_region__countries.gdp * regions.pop) AS [orders___ship_region___countries___gdp_wsum_region_pop_host]\n  FROM orders AS orders\n  LEFT JOIN regions AS ship_region\n    ON orders.ship_region_id = ship_region.id\n  LEFT JOIN countries AS ship_region__countries\n    ON ship_region.country_id = ship_region__countries.id\n  LEFT JOIN regions AS regions\n    ON orders.ship_region_id = regions.id\n)\nSELECT\n  _cm_orders__ship_region__countries__gdp_wsum_region_pop.[orders___ship_region___countries___gdp_wsum_region_pop_host] AS [orders___w]\nFROM _base\nCROSS JOIN _cm_orders__ship_region__countries__gdp_wsum_region_pop",
+  "cancel/single::bigquery": {
+    "error": "UnresolvableDimensionJoinError",
+    "message": "Cannot resolve dimension 'regions.pop': not a valid join path from 'orders'. not reachable forward from the owning model or the query root."
+  },
+  "cancel/single::duckdb": {
+    "error": "UnresolvableDimensionJoinError",
+    "message": "Cannot resolve dimension 'regions.pop': not a valid join path from 'orders'. not reachable forward from the owning model or the query root."
+  },
+  "cancel/single::mysql": {
+    "error": "UnresolvableDimensionJoinError",
+    "message": "Cannot resolve dimension 'regions.pop': not a valid join path from 'orders'. not reachable forward from the owning model or the query root."
+  },
+  "cancel/single::postgres": {
+    "error": "UnresolvableDimensionJoinError",
+    "message": "Cannot resolve dimension 'regions.pop': not a valid join path from 'orders'. not reachable forward from the owning model or the query root."
+  },
+  "cancel/single::snowflake": {
+    "error": "UnresolvableDimensionJoinError",
+    "message": "Cannot resolve dimension 'regions.pop': not a valid join path from 'orders'. not reachable forward from the owning model or the query root."
+  },
+  "cancel/single::sqlite": {
+    "error": "UnresolvableDimensionJoinError",
+    "message": "Cannot resolve dimension 'regions.pop': not a valid join path from 'orders'. not reachable forward from the owning model or the query root."
+  },
+  "cancel/single::tsql": {
+    "error": "UnresolvableDimensionJoinError",
+    "message": "Cannot resolve dimension 'regions.pop': not a valid join path from 'orders'. not reachable forward from the owning model or the query root."
+  },
+  "cancel/two_frame::bigquery": {
+    "error": "UnresolvableDimensionJoinError",
+    "message": "Cannot resolve dimension 'regions.pop': not a valid join path from 'orders'. not reachable forward from the owning model or the query root."
+  },
+  "cancel/two_frame::duckdb": {
+    "error": "UnresolvableDimensionJoinError",
+    "message": "Cannot resolve dimension 'regions.pop': not a valid join path from 'orders'. not reachable forward from the owning model or the query root."
+  },
+  "cancel/two_frame::mysql": {
+    "error": "UnresolvableDimensionJoinError",
+    "message": "Cannot resolve dimension 'regions.pop': not a valid join path from 'orders'. not reachable forward from the owning model or the query root."
+  },
+  "cancel/two_frame::postgres": {
+    "error": "UnresolvableDimensionJoinError",
+    "message": "Cannot resolve dimension 'regions.pop': not a valid join path from 'orders'. not reachable forward from the owning model or the query root."
+  },
+  "cancel/two_frame::snowflake": {
+    "error": "UnresolvableDimensionJoinError",
+    "message": "Cannot resolve dimension 'regions.pop': not a valid join path from 'orders'. not reachable forward from the owning model or the query root."
+  },
+  "cancel/two_frame::sqlite": {
+    "error": "UnresolvableDimensionJoinError",
+    "message": "Cannot resolve dimension 'regions.pop': not a valid join path from 'orders'. not reachable forward from the owning model or the query root."
+  },
+  "cancel/two_frame::tsql": {
+    "error": "UnresolvableDimensionJoinError",
+    "message": "Cannot resolve dimension 'regions.pop': not a valid join path from 'orders'. not reachable forward from the owning model or the query root."
+  },
+  "cancel/windowed_expr::bigquery": {
+    "error": "ValueError",
+    "message": "Cross-model aggregate 'customers.regions.countries.gdp_wsum_cust_spend2_expr_window_1y' reads an input across an unproven join hop to regions from countries; declare join cardinality or a covering unique key on the target."
+  },
+  "cancel/windowed_expr::duckdb": {
+    "error": "ValueError",
+    "message": "Cross-model aggregate 'customers.regions.countries.gdp_wsum_cust_spend2_expr_window_1y' reads an input across an unproven join hop to regions from countries; declare join cardinality or a covering unique key on the target."
+  },
+  "cancel/windowed_expr::mysql": {
+    "error": "ValueError",
+    "message": "Cross-model aggregate 'customers.regions.countries.gdp_wsum_cust_spend2_expr_window_1y' reads an input across an unproven join hop to regions from countries; declare join cardinality or a covering unique key on the target."
+  },
+  "cancel/windowed_expr::postgres": {
+    "error": "ValueError",
+    "message": "Cross-model aggregate 'customers.regions.countries.gdp_wsum_cust_spend2_expr_window_1y' reads an input across an unproven join hop to regions from countries; declare join cardinality or a covering unique key on the target."
+  },
+  "cancel/windowed_expr::snowflake": {
+    "error": "ValueError",
+    "message": "Cross-model aggregate 'customers.regions.countries.gdp_wsum_cust_spend2_expr_window_1y' reads an input across an unproven join hop to regions from countries; declare join cardinality or a covering unique key on the target."
+  },
+  "cancel/windowed_expr::sqlite": {
+    "error": "ValueError",
+    "message": "Cross-model aggregate 'customers.regions.countries.gdp_wsum_cust_spend2_expr_window_1y' reads an input across an unproven join hop to regions from countries; declare join cardinality or a covering unique key on the target."
+  },
+  "cancel/windowed_expr::tsql": {
+    "error": "ValueError",
+    "message": "Cross-model aggregate 'customers.regions.countries.gdp_wsum_cust_spend2_expr_window_1y' reads an input across an unproven join hop to regions from countries; declare join cardinality or a covering unique key on the target."
+  },
+  "closed/cancel_then_fanning::bigquery": {
+    "error": "UnresolvableDimensionJoinError",
+    "message": "Cannot resolve dimension 'regions.region_events.value': not a valid join path from 'orders'. not reachable forward from the owning model or the query root."
+  },
+  "closed/cancel_then_fanning::duckdb": {
+    "error": "UnresolvableDimensionJoinError",
+    "message": "Cannot resolve dimension 'regions.region_events.value': not a valid join path from 'orders'. not reachable forward from the owning model or the query root."
+  },
+  "closed/cancel_then_fanning::mysql": {
+    "error": "UnresolvableDimensionJoinError",
+    "message": "Cannot resolve dimension 'regions.region_events.value': not a valid join path from 'orders'. not reachable forward from the owning model or the query root."
+  },
+  "closed/cancel_then_fanning::postgres": {
+    "error": "UnresolvableDimensionJoinError",
+    "message": "Cannot resolve dimension 'regions.region_events.value': not a valid join path from 'orders'. not reachable forward from the owning model or the query root."
+  },
+  "closed/cancel_then_fanning::snowflake": {
+    "error": "UnresolvableDimensionJoinError",
+    "message": "Cannot resolve dimension 'regions.region_events.value': not a valid join path from 'orders'. not reachable forward from the owning model or the query root."
+  },
+  "closed/cancel_then_fanning::sqlite": {
+    "error": "UnresolvableDimensionJoinError",
+    "message": "Cannot resolve dimension 'regions.region_events.value': not a valid join path from 'orders'. not reachable forward from the owning model or the query root."
+  },
+  "closed/cancel_then_fanning::tsql": {
+    "error": "UnresolvableDimensionJoinError",
+    "message": "Cannot resolve dimension 'regions.region_events.value': not a valid join path from 'orders'. not reachable forward from the owning model or the query root."
+  },
+  "closed/query_typed_revisit::bigquery": {
+    "error": "ValueError",
+    "message": "Circular join detected resolving 'customers.regions.customers.spend': revisits model 'customers'."
+  },
+  "closed/query_typed_revisit::duckdb": {
+    "error": "ValueError",
+    "message": "Circular join detected resolving 'customers.regions.customers.spend': revisits model 'customers'."
+  },
+  "closed/query_typed_revisit::mysql": {
+    "error": "ValueError",
+    "message": "Circular join detected resolving 'customers.regions.customers.spend': revisits model 'customers'."
+  },
+  "closed/query_typed_revisit::postgres": {
+    "error": "ValueError",
+    "message": "Circular join detected resolving 'customers.regions.customers.spend': revisits model 'customers'."
+  },
+  "closed/query_typed_revisit::snowflake": {
+    "error": "ValueError",
+    "message": "Circular join detected resolving 'customers.regions.customers.spend': revisits model 'customers'."
+  },
+  "closed/query_typed_revisit::sqlite": {
+    "error": "ValueError",
+    "message": "Circular join detected resolving 'customers.regions.customers.spend': revisits model 'customers'."
+  },
+  "closed/query_typed_revisit::tsql": {
+    "error": "ValueError",
+    "message": "Circular join detected resolving 'customers.regions.customers.spend': revisits model 'customers'."
+  },
+  "closed/second_order_nowhere::bigquery": {
+    "error": "UnresolvableDimensionJoinError",
+    "message": "Cannot resolve dimension 'nowhere.col': not a valid join path from 'orders'. not reachable forward from the owning model or the query root."
+  },
+  "closed/second_order_nowhere::duckdb": {
+    "error": "UnresolvableDimensionJoinError",
+    "message": "Cannot resolve dimension 'nowhere.col': not a valid join path from 'orders'. not reachable forward from the owning model or the query root."
+  },
+  "closed/second_order_nowhere::mysql": {
+    "error": "UnresolvableDimensionJoinError",
+    "message": "Cannot resolve dimension 'nowhere.col': not a valid join path from 'orders'. not reachable forward from the owning model or the query root."
+  },
+  "closed/second_order_nowhere::postgres": {
+    "error": "UnresolvableDimensionJoinError",
+    "message": "Cannot resolve dimension 'nowhere.col': not a valid join path from 'orders'. not reachable forward from the owning model or the query root."
+  },
+  "closed/second_order_nowhere::snowflake": {
+    "error": "UnresolvableDimensionJoinError",
+    "message": "Cannot resolve dimension 'nowhere.col': not a valid join path from 'orders'. not reachable forward from the owning model or the query root."
+  },
+  "closed/second_order_nowhere::sqlite": {
+    "error": "UnresolvableDimensionJoinError",
+    "message": "Cannot resolve dimension 'nowhere.col': not a valid join path from 'orders'. not reachable forward from the owning model or the query root."
+  },
+  "closed/second_order_nowhere::tsql": {
+    "error": "UnresolvableDimensionJoinError",
+    "message": "Cannot resolve dimension 'nowhere.col': not a valid join path from 'orders'. not reachable forward from the owning model or the query root."
+  }
+}
