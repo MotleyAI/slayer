@@ -119,6 +119,7 @@ from slayer.ir.planned import (
     ValueSlot,
 )
 from slayer.engine.ranked_planner import (
+    explicit_ranking_time_arg,
     ordered_row_keys,
     resolve_ranking_time_key,
 )
@@ -721,6 +722,29 @@ def _semi_join_filter(g: Dict[str, Any]) -> SemiJoinFilter:
     )
 
 
+def _ranking_key_crossing(
+    *, key: ValueKey, root_model: SlayerModel, bundle: ResolvedSourceBundle,
+    alias: Optional[str],
+) -> Optional[Tuple[str, str]]:
+    """The ``(leaf, hop)`` a ranked aggregate's ordering key crosses unsafely from
+    ``root_model``, judged by its dependency closure (engine P10); ``None`` when every
+    path is provably to-one. An unanalysable definition fails closed through
+    ``check_input_dependencies_analyzable`` naming the column (Axiom 2.8)."""
+    leaf = column_leaf(key) if isinstance(key, (ColumnKey, ColumnSqlKey)) else str(key)
+    closure = key_closure(
+        key=key, anchor_model=root_model, anchor_relation=root_model.name, bundle=bundle,
+    )
+    if closure is None:
+        check_input_dependencies_analyzable(alias=alias, column=leaf)
+        closure = ()
+    for path in closure:
+        if not safe_reachable(
+            root=root_model, path=path, models_by_name=bundle.models_by_name,
+        ):
+            return leaf, path[-1]
+    return None
+
+
 def _assert_local_producer_inputs_safe(
     *,
     agg: AggregateKey,
@@ -734,23 +758,21 @@ def _assert_local_producer_inputs_safe(
             root=host_model, path=tuple(path), models_by_name=models_by_name,
         )
 
-    # Role: crossed argument, explicitly named (a first/last ranking arg).
-    ranked_crossings = []
-    for arg in agg.args:
-        if not isinstance(arg, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
-            continue
-        path = key_host_path(arg)
-        if path and not _safe(path):
-            leaf = getattr(arg, "leaf", None) or getattr(
-                getattr(arg, "column", None), "leaf", None,
-            ) or "input"
-            ranked_crossings.append((leaf, path[-1]))
-            break  # first violation wins; the checker raises it
+    alias = canonical_aggregate_alias(agg, profile="stage_formula")
+    # Role: crossed ranking argument, explicitly named (a first/last ranking arg),
+    # judged by its closure so a derived argument names itself (D1).
+    ranked_crossings: List[Tuple[str, str]] = []
+    ranking_arg = explicit_ranking_time_arg(agg)
+    if ranking_arg is not None:
+        crossing = _ranking_key_crossing(
+            key=ranking_arg, root_model=host_model, bundle=bundle, alias=alias,
+        )
+        if crossing is not None:
+            ranked_crossings.append(crossing)
 
     # Crossed predicate + remaining crossed args; the SOURCE's own crossings are separate.
     gated_crossings: List[str] = []
     source_crossings: List[str] = []
-    alias = canonical_aggregate_alias(agg, profile="stage_formula")
     if not ranked_crossings:
         gated = local_crossing_input_paths(
             key=agg, bundle=bundle, host_model=host_model, include_source=False,
@@ -802,12 +824,55 @@ def _source_crossings(
     return [p[-1] for p in src if p and not safe(p)]
 
 
+def _checked_ranking_time_key(
+    *,
+    producer_plan: PlannedQuery,
+    agg_key: AggregateKey,
+    root_model: SlayerModel,
+    bundle: ResolvedSourceBundle,
+    alias: Optional[str],
+    target_rooted: bool,
+) -> ValueKey:
+    """Resolve a ranked producer's ordering key, then judge it by closure (D5): a
+    crossing key raises through the same checker its explicit spelling uses — the
+    cross-model attributability form when target-rooted, the local ranked form else."""
+    resolved = resolve_ranking_time_key(
+        key=agg_key, root_model=root_model, bundle=bundle,
+        row_keys=ordered_row_keys(
+            row_slots=producer_plan.row_slots,
+            public_projection=producer_plan.projection,
+        ),
+    )
+    crossing = _ranking_key_crossing(
+        key=resolved, root_model=root_model, bundle=bundle, alias=alias,
+    )
+    if crossing is not None:
+        leaf, hop = crossing
+        if target_rooted:
+            check_cross_model_inputs_safe(
+                alias=alias, root_name=root_model.name, unsafe_input_hops=[],
+                unattributable_arg_leaves=[(leaf, key_broadcast_reason(
+                    key=resolved, target_path=(), root_model=root_model,
+                    models_by_name=bundle.models_by_name, bundle=bundle,
+                    host_model=root_model, host_name=root_model.name,
+                ))],
+            )
+        else:
+            check_local_producer_inputs_safe(
+                alias=alias, host=root_model.name,
+                ranked_crossings=[(leaf, hop)], gated_crossings=[],
+            )
+    return resolved
+
+
 def _trailing_window_kernel(
     *,
     producer_plan: PlannedQuery,
     agg_key: AggregateKey,
     root_model: SlayerModel,
     bundle: ResolvedSourceBundle,
+    alias: Optional[str],
+    target_rooted: bool,
 ) -> TrailingWindowProducerKernel:
     window_raw = window_kwarg_of(agg_key)
     bucket_sid = producer_plan.active_time_dimension_slot_id
@@ -821,14 +886,11 @@ def _trailing_window_kernel(
     src_where_ids, src_rewrites = _plan_src_row_filters(
         producer_plan=producer_plan,
     )
-    # first/last rank the interval rows by the same key plain first/last would.
+    # first/last rank the interval rows by the same closure-judged key plain first/last would.
     ranking_time_key = (
-        resolve_ranking_time_key(
-            key=agg_key, root_model=root_model, bundle=bundle,
-            row_keys=ordered_row_keys(
-                row_slots=producer_plan.row_slots,
-                public_projection=producer_plan.projection,
-            ),
+        _checked_ranking_time_key(
+            producer_plan=producer_plan, agg_key=agg_key, root_model=root_model,
+            bundle=bundle, alias=alias, target_rooted=target_rooted,
         )
         if agg_key.agg in RANKED_AGGREGATIONS else None
     )
@@ -878,17 +940,14 @@ def _ranked_kernel(
     agg_key: AggregateKey,
     root_model: SlayerModel,
     bundle: ResolvedSourceBundle,
+    alias: Optional[str],
+    target_rooted: bool,
 ) -> RankedProducerKernel:
     return RankedProducerKernel(
         agg=agg_key.agg,
-        ranking_time_key=resolve_ranking_time_key(
-            key=agg_key,
-            root_model=root_model,
-            bundle=bundle,
-            row_keys=ordered_row_keys(
-                row_slots=producer_plan.row_slots,
-                public_projection=producer_plan.projection,
-            ),
+        ranking_time_key=_checked_ranking_time_key(
+            producer_plan=producer_plan, agg_key=agg_key, root_model=root_model,
+            bundle=bundle, alias=alias, target_rooted=target_rooted,
         ),
     )
 
@@ -1926,11 +1985,15 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
         cm_attach_kwargs["kernel"] = _trailing_window_kernel(
             producer_plan=producer_plan, agg_key=agg_rooted,
             root_model=root_model, bundle=root_bundle,
+            alias=canonical_aggregate_alias(agg, profile="stage_formula"),
+            target_rooted=True,
         )
     elif isinstance(agg_rooted, AggregateKey) and agg_rooted.agg in RANKED_AGGREGATIONS:
         cm_attach_kwargs["kernel"] = _ranked_kernel(
             producer_plan=producer_plan, agg_key=agg_rooted,
             root_model=root_model, bundle=root_bundle,
+            alias=canonical_aggregate_alias(agg, profile="stage_formula"),
+            target_rooted=True,
         )
     return RegroupAttachPlan(
         producer_plan=producer_plan,
@@ -3251,6 +3314,9 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
                         producer_plan.render_source_model or bundle.source_model
                     ),
                     bundle=bundle,
+                    alias=canonical_aggregate_alias(
+                        producer_aggs[0], profile="stage_formula"),
+                    target_rooted=False,
                 )
             elif (
                 isinstance(producer_aggs[0], AggregateKey)
@@ -3262,6 +3328,9 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
                         producer_plan.render_source_model or bundle.source_model
                     ),
                     bundle=bundle,
+                    alias=canonical_aggregate_alias(
+                        producer_aggs[0], profile="stage_formula"),
+                    target_rooted=False,
                 )
             attaches.append(RegroupAttachPlan(
                 producer_plan=producer_plan,

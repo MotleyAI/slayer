@@ -65,8 +65,9 @@ def _alias_of(msg: str) -> str:
 async def _refused(
     engine: SlayerQueryEngine, *fragments: str, agg_key: AggregateKey, **kw,
 ) -> str:
+    query = orders_q(**kw)
     with pytest.raises(ValueError) as ei:
-        await engine.execute(orders_q(**kw), dry_run=True)
+        await engine.execute(query, dry_run=True)
     msg = str(ei.value)
     for fragment in fragments:
         assert fragment in msg, f"{fragment!r} missing from: {msg}"
@@ -86,13 +87,14 @@ def _joined_tables(select: exp.Select) -> set:
     }
 
 
-def _assert_plain_ranking_expr(expr: exp.Expression, *, leaf: str) -> None:
+def _assert_plain_ranking_expr(expr: exp.Expression, *, leaf: str) -> None:  # pyright: ignore[reportPrivateImportUsage]
     """The ranking expression is the bare column ``leaf`` — no CAST, no wrapper."""
     assert expr.find(exp.Cast) is None, expr.sql()
-    assert isinstance(expr, exp.Column) and expr.name == leaf, expr.sql()
+    assert isinstance(expr, exp.Column), expr.sql()
+    assert expr.name == leaf, expr.sql()
 
 
-def _ranked_cte_order_expr(sql: str) -> tuple[exp.Expression, exp.Select]:
+def _ranked_cte_order_expr(sql: str) -> tuple[exp.Expression, exp.Select]:  # pyright: ignore[reportPrivateImportUsage]
     """(ORDER BY expression, enclosing SELECT) of the single ranked ``ROW_NUMBER``."""
     tree = sqlglot.parse_one(sql, dialect="sqlite")
     [window] = [w for w in tree.find_all(exp.Window) if isinstance(w.this, exp.RowNumber)]
@@ -102,7 +104,7 @@ def _ranked_cte_order_expr(sql: str) -> tuple[exp.Expression, exp.Select]:
     return ordered.this, select
 
 
-def _w_rank_expr(sql: str) -> tuple[exp.Expression, exp.Select]:
+def _w_rank_expr(sql: str) -> tuple[exp.Expression, exp.Select]:  # pyright: ignore[reportPrivateImportUsage]
     """(expression aliased ``_w_rank``, the ``_src`` SELECT projecting it)."""
     tree = sqlglot.parse_one(sql, dialect="sqlite")
     [alias] = [a for a in tree.find_all(exp.Alias) if a.alias == "_w_rank"]
@@ -252,7 +254,8 @@ class TestSafeKeysExecute:
             time_dimensions=month_td(), measures=[measure("amount:last(window='30d')")],
         ))
         assert _by_month(resp) == {JAN: LAST_AMOUNT}
-        assert resp.sql is not None and "line_items" not in resp.sql
+        assert resp.sql is not None
+        assert "line_items" not in resp.sql
 
     async def test_windowed_explicit_derived_key_over_proven_hop(self, tmp_path) -> None:
         engine = await make_engine(str(tmp_path), orders_default="created_at")

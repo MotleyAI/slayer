@@ -80,6 +80,7 @@ is the coercion from coarser to finer.
      refused (Axioms 7–8); it never moves the home.
    [enforced: test:tests/test_dev1892_parameter_typing.py]
    [enforced: test:tests/test_dev1832_home.py]
+   [enforced: test:tests/test_dev1945_ranking_key_safety.py]
    [enforced: test:tests/test_dev1931_default_home.py]
 3. **Association**: any join path — to-one or not — defines which rows belong
    together; everything that crosses a non-determining path is defined in terms
