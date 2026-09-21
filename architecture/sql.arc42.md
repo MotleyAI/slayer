@@ -67,7 +67,7 @@ flowchart TD
 5. **One ValueKey renderer**: `render_value_key` / `render_scalar_call` /
    `render_arithmetic` are the sole render paths for typed keys. [review]
 6. **CTE dependencies are declared**, never rediscovered by scanning rendered
-   SQL. [review]
+   SQL. [enforced: test:tests/test_dev1942_cte_dependencies.py]
 7. **Grain join-backs are null-safe**, built by the one builder in
    `render/joins.py`; an empty grain is an explicit CROSS JOIN, never `TRUE`.
    [review]

@@ -711,16 +711,29 @@ class TestReaggAxiomCompliance:
         [mixed] = _reagg_multi_plan(HANDWRITTEN_MIN).regroup_attach_plans
         assert mixed.attach_phase == "row"  # row leaf → over model rows
 
-    async def test_reagg_used_standalone_and_mixed_fails_closed(self):
+    async def test_reagg_used_standalone_and_mixed_executes(self, exec_backend):
         # The same re-aggregation both on its own (combined phase) and inside a mixed
-        # row aggregation (row phase) needs its shared producer at two phases; the
-        # nested-producer CTE emits out of dependency order on strict dialects, so it
-        # fails closed with a clear typed error until DEV-1942 — never a crash, never
-        # dialect-inconsistent SQL, never wrong numbers.
-        query = monthly_q(
+        # row aggregation (row phase): one shared producer at two phases whose nested
+        # carrier is emitted before every consumer on strict dialects (DEV-1942). Each
+        # use keeps the value it has alone — the standalone region-min broadcast per
+        # month, the mixed per-cell amount × region-min summed.
+        _, engine = exec_backend
+        resp = await engine.execute(monthly_q(
             dimensions=["region"],
             measures=[ModelMeasure(formula=REAGG_STANDALONE, name="a"),
                       ModelMeasure(formula=HANDWRITTEN_MIN, name="b")],
-            time_dimensions=month_td())
-        with pytest.raises(ValueError, match="both on its own and inside a mixed"):
-            await gen(query)
+            time_dimensions=month_td()))
+        mcol = next(c for c in resp.columns if "ordered_at" in c)
+
+        def rm(name: str) -> dict:
+            return {(r["monthly.region"], month_key(r[mcol])): r[f"monthly.{name}"]
+                    for r in resp.data if r[f"monthly.{name}"] is not None}
+
+        assert rm("a") == pytest.approx(
+            {("North", "2024-01"): 10.0, ("North", "2024-02"): 10.0,
+             ("North", "2024-03"): 10.0, ("South", "2024-01"): 5.0,
+             ("South", "2024-02"): 5.0})
+        assert rm("b") == pytest.approx(
+            {("North", "2024-01"): 100.0, ("North", "2024-02"): 200.0,
+             ("North", "2024-03"): 300.0, ("South", "2024-01"): 25.0,
+             ("South", "2024-02"): 75.0})
