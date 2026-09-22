@@ -75,7 +75,9 @@ Whenever an aggregate's implicit grain loses a dimension to broadcasting, the re
 SHALL carry a machine-readable warning naming the affected metric, each broadcast
 dimension, and a per-dimension reason that reflects the actual path classification: a
 fanning or unproven join hop when a path exists, or unreachable when no join path
-resolves — a reachable-but-fanning dimension MUST NOT be reported as unreachable. Every
+resolves — a reachable-but-fanning dimension MUST NOT be reported as unreachable, and a
+dimension on a prefix of the aggregate's own path is reachable back over that prefix,
+never a round trip through the query root. Every
 broadcast warning SHALL carry the dice–slice hint (per `queries/semantics` › Loud
 degradation). One warning SHALL be emitted per distinct aggregate: identified by its
 public measure name when directly selected, else by its canonical aggregate form and
@@ -96,6 +98,14 @@ warnings too. Explicit `partition_by=` broadcasting is by design and MUST NOT wa
 - **WHEN** a broadcast dimension is reachable from the aggregate's root only across a
   fanning or unproven hop
 - **THEN** the warning's reason names that hop classification — never "unreachable"
+
+#### Scenario: A prefix-side dimension names the fanning hop
+- **WHEN** a broadcast-mode query rooted at `orders` selects
+  `customers.regions.countries.gdp:sum` by `customers.tier`, `regions → countries`
+  provably to-one
+- **THEN** the warning's reason names the fanning reverse hop to `regions` on the way
+  back from `countries` to `customers` — never "unreachable", which the round trip
+  through `orders` used to report
 
 ### Requirement: Unsafe aggregate inputs fail closed
 An aggregate whose inputs — positional args, keyword args (including aggregation-parameter fragments and the aggregation definition's non-overridden defaults), or measure-level column filter references — cross a join hop that is not provably many-to-one from the aggregate's root SHALL fail with a clear error in all three modes, whatever the aggregate's root: target-rooted, host-rooted, and local aggregates alike. An input's dependencies are its *dependency closure*: its own join path plus every join path the definition of any derived column it names crosses, recursively through chains of derived columns, whether the reference is bare or path-bearing — a derived column whose definition crosses a fanning hop is an unsafe input exactly as a structural reference across that hop is. An input whose derived-column definition cannot be analyzed for join dependencies SHALL fail closed with a typed error naming the aggregate and the column — never be treated as crossing nothing. Multiplying a host-side operand through a fanning join is ambiguous and MUST never silently compute over multiplied rows. The rule applies per input role: a *filter reference* or *argument* crossing an unproven hop fails closed, whatever the aggregate's root. A crossing *source* stays legal only where the aggregate is evaluated over the join result at host grain — a host-grain wrap (an ORDER BY sort key over an unprojected joined column) consumes the target's values per matched row and keeps its established values; a definition default's references local to its owner ride with the source. A target-rooted cross-model producer re-roots its source to the target; a source that then reads through an unproven hop fans the aggregate and fails closed like any other crossing input. An attached (aggregate- or transform-valued) input is opaque to this rule: its own inputs are judged by its own producer at its own home, never by the enclosing aggregate. When an explicit column argument is the violation, the error SHALL name that argument and the hop it crosses, taking precedence over the closure's hop-only message — a derived argument included, judged by its closure. The *ranking key* of a `first`/`last` aggregation is an input under this rule whichever way it is chosen: the explicit positional argument, else the producer's first temporal row dimension, else the time dimension's raw column, else the model's `default_time_dimension` — a key whose dependency closure crosses a hop that is not provably many-to-one from the producer's root SHALL fail closed in every mode, naming the column and the hop, for host-rooted, target-rooted and `window=` producers alike, and a key whose derived definition cannot be analyzed SHALL fail closed naming the column; a ranked producer's grain may still fan (each cell ranks the rows that reached it) — only the ordering key is refused.
