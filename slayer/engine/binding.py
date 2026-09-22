@@ -521,6 +521,7 @@ def _walk_join_chain(
     bundle: ResolvedSourceBundle,
     parts: Tuple[str, ...],
     leaf: str,
+    original_parts: Optional[Tuple[str, ...]] = None,
 ):
     """Walk ``hop_path`` join hops from ``host`` through the shared bidirectional
     walker; returns ``(terminal_model, effective_hop_path)``. Each token resolves
@@ -533,7 +534,8 @@ def _walk_join_chain(
     when the target is uniquely routable. ``AmbiguousJoinPathError`` from a
     parallel-pair hop propagates untouched; an edge that resolves onto a target
     absent from the bundle stays ``UnknownReferenceError``. ``parts`` is the full
-    dotted ref, for error messages."""
+    dotted ref, for error messages; ``original_parts`` (pre-self-prefix-strip,
+    defaulting to ``parts``) spells the circular error's reference in full."""
     models_by_name = bundle.models_by_name
     models_by_name.setdefault(host.name, host)
     current = host
@@ -572,7 +574,7 @@ def _walk_join_chain(
         # save-time refusal (DEV-1952); still a ValueError, wording preserved.
         if nxt.name in visited_models:
             raise CircularJoinPathError(
-                reference=".".join(parts),
+                reference=".".join(parts if original_parts is None else original_parts),
                 root_model=host.name,
                 revisited=nxt.name,
                 hop=hop,
@@ -674,6 +676,7 @@ def _resolve_dotted(
     leaf = parts[-1]
     current, effective_hop_path = _walk_join_chain(
         hop_path=hop_path, host=host, bundle=bundle, parts=parts, leaf=leaf,
+        original_parts=original_parts,
     )
 
     return _resolve_terminal_leaf(

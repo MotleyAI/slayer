@@ -290,8 +290,23 @@ def _resolve_qualifiers(
     if not quals:
         return ()
     path = tuple(quals)
+    # A revisit surfaces either from the direct walk or from the legacy
+    # ``a__b`` split-alias probe; re-raise both with the complete pre-strip
+    # reference and the column being expanded.
     try:
-        walked = _walk_exact(path, source_model, models_by_name) is not None
+        if _walk_exact(path, source_model, models_by_name) is not None:
+            return path
+        if len(path) == 1:
+            _raise_if_legacy_split_alias(
+                qualifier=path[0], leaf=leaf,
+                source_model=source_model, models_by_name=models_by_name,
+            )
+            return None  # opaque single qualifier
+        _raise_if_broken_join_walk(
+            path=path, leaf=leaf,
+            source_model=source_model, models_by_name=models_by_name,
+        )
+        return None
     except CircularJoinPathError as exc:
         raise CircularJoinPathError(
             reference=".".join((*qualifiers, leaf)),
@@ -299,19 +314,6 @@ def _resolve_qualifiers(
             revisited=exc.revisited, hop=exc.hop, via=exc.via,
             column=column,
         ) from exc
-    if walked:
-        return path
-    if len(path) == 1:
-        _raise_if_legacy_split_alias(
-            qualifier=path[0], leaf=leaf,
-            source_model=source_model, models_by_name=models_by_name,
-        )
-        return None  # opaque single qualifier
-    _raise_if_broken_join_walk(
-        path=path, leaf=leaf,
-        source_model=source_model, models_by_name=models_by_name,
-    )
-    return None
 
 
 def resolve_default_qualifier_path(

@@ -37,11 +37,16 @@ from slayer.core.models import (
     SlayerModel,
 )
 from slayer.core.query import SlayerQuery
+from slayer.core.scope import ModelScope
 from slayer.engine import join_safety
+from slayer.engine.binding import bind_expr
 from slayer.engine.compile.stages import _canonical_path
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.engine.syntax import parse_expr
+from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.column_expansion import (
     _lenient_path,
+    _resolve_qualifiers,
     resolve_default_qualifier_path,
     resolve_ref_target,
 )
@@ -286,6 +291,24 @@ class TestBestEffortConsumersUnchanged:
             models_by_name=models) == ("customers", "regions")
 
 
+class TestExpansionDoorRevisit:
+    """The strict expansion door re-raises a revisit with the complete pre-strip
+    reference and the column whether it surfaces from the direct walk or from the
+    legacy ``a__b`` split-alias probe (which walks the naive split)."""
+
+    def test_legacy_split_alias_revisit_keeps_full_spelling(self) -> None:
+        models = {m.name: m for m in (_regions(), _customers())}
+        with pytest.raises(CircularJoinPathError) as ei:
+            _resolve_qualifiers(
+                qualifiers=("regions__customers",), leaf="spend",
+                source_model=models["customers"], owner_alias="customers",
+                models_by_name=models, column="rc")
+        exc = ei.value
+        assert exc.reference == "regions__customers.spend"
+        assert exc.column == "rc"
+        assert exc.revisited == "customers"
+
+
 # --------------------------------------------------------------------------- #
 # Section C — Save-time rejection, storage door (task 4.1).
 # --------------------------------------------------------------------------- #
@@ -459,6 +482,32 @@ class TestSaveTimeEngineDoor:
             assert exc.hop == "customers"
             assert exc.via == "regions"
         assert str(storage_exc) == str(engine_exc)  # identical message + remedy
+
+    async def test_transitive_revisit_names_the_inner_column(self, tmp_path) -> None:
+        # ``chain`` (declared first, so the engine expands it before the inner one)
+        # references the revisiting ``revisit_spend``. Both doors name the inner
+        # column that actually revisits, with an identical message — the engine
+        # must not attribute the cycle to the outer referring column.
+        storage = _storage(tmp_path)
+        await storage.save_datasource(DatasourceConfig(name=DS, type="sqlite"))
+        await storage.save_model(_regions())
+        model = _customers(cols=(
+            Column(name="chain", type=DataType.DOUBLE, sql="revisit_spend * 2"),
+            Column(name="revisit_spend", type=DataType.DOUBLE,
+                   sql="regions.customers.spend"),
+        ))
+        with pytest.raises(DerivedColumnCircularError) as storage_ei:
+            await storage.save_model(model)
+        engine = SlayerQueryEngine(storage=storage)
+        with pytest.raises(DerivedColumnCircularError) as engine_ei:
+            await engine.save_model(model)
+        storage_exc, engine_exc = storage_ei.value, engine_ei.value
+        for exc in (storage_exc, engine_exc):
+            assert exc.column == "revisit_spend"
+            assert exc.kind == "sql"
+            assert exc.reference == "regions.customers.spend"
+            assert exc.revisited == "customers"
+        assert str(storage_exc) == str(engine_exc)
 
     async def test_model_filter_surface_propagates_base_error(self, tmp_path) -> None:
         # A model-level filter that revisits propagates the base error, not the
@@ -668,6 +717,21 @@ class TestBinderParity:
         assert isinstance(exc, CircularJoinPathError)
         assert isinstance(exc, ValueError)
         # The binder adopts the base class, not the save-time derived subclass.
+        assert not isinstance(exc, DerivedColumnCircularError)
+
+    def test_leading_self_prefix_keeps_full_spelling(self) -> None:
+        # C14's ``_strip_self_prefix`` drops a leading same-model prefix for
+        # resolution, but the circular error keeps the complete reference as
+        # spelled (bound directly, before the query layer's own prefix strip).
+        bundle = ResolvedSourceBundle(
+            source_model=_orders(), referenced_models=[_customers(), _regions()])
+        parsed = parse_expr("orders.customers.regions.customers.spend")
+        scope = ModelScope(source_model=_orders())
+        with pytest.raises(CircularJoinPathError) as ei:
+            bind_expr(parsed, scope=scope, bundle=bundle)
+        exc = ei.value
+        assert exc.reference == "orders.customers.regions.customers.spend"
+        assert exc.revisited == "customers"
         assert not isinstance(exc, DerivedColumnCircularError)
 
 

@@ -3051,8 +3051,10 @@ class SlayerQueryEngine:
                 try:
                     _expand(fragment)
                 except CircularJoinPathError as exc:
+                    # A revisit inside a referenced derived column carries that
+                    # inner column, matching the storage door's per-column walk.
                     raise DerivedColumnCircularError(
-                        column=col.name, model=model.name, kind=kind,
+                        column=exc.column or col.name, model=model.name, kind=kind,
                         reference=exc.reference, root_model=exc.root_model,
                         revisited=exc.revisited, hop=exc.hop, via=exc.via,
                     ) from exc
