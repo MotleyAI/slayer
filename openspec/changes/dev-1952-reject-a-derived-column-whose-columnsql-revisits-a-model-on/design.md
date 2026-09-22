@@ -10,8 +10,8 @@ consumers: `terminal_model`; `join_safety.safe_reachable`, `_back_path`,
 `column_expansion._resolve_qualifiers` classifies a Mode-A reference as a join
 walk / opaque / broken; its `_raise_if_broken_join_walk` re-walks hop by hop, so
 a revisit (every hop resolves) passes as opaque. Definition defaults resolve
-owner-first / root-fallback through `resolve_default_qualifier_path` (→ the
-same door). The closure's dialect loops in `engine/reference_closure.py`
+owner-first / root-fallback through `resolve_default_qualifier_path`. The
+closure's dialect loops in `engine/reference_closure.py`
 swallow `Exception`, re-raising only `ColumnCycleError`. Two save doors:
 `StorageBackend.save_model` → `validate_derived_columns`; the engine's
 `save_model` → `_validate_mode_a_join_paths` (expands every surface through the
@@ -66,11 +66,11 @@ door) BEFORE `storage.save_model`. Composed via-host reroot paths
 
 - **Consumer handling (catch → today's answer).** `terminal_model` → `None`;
   `safe_reachable` → `False`; `_back_path` → `(host_name,)`;
+  `_route_via_common_prefix` (DEV-1908) → `(host_name, *host_path)`;
   `_hop_walk_reason` → `None`; `_path_grain_determined` → `False`;
   `_canonical_path` → `tuple(path)`; `_reverse_hops` sets `fwd = None` inside
   the `except` so its existing ledgered `_PushBlocked` raise stays one site;
-  `resolve_ref_target`, `_lenient_path`, `resolve_default_qualifier_path` →
-  `None`.
+  `resolve_ref_target`, `_lenient_path` → `None`.
 
 - **The door fails closed.** `_walk_exact` propagates; `_resolve_qualifiers`
   catches and re-raises with `reference` built from the ORIGINAL qualifiers
@@ -87,12 +87,12 @@ door) BEFORE `storage.save_model`. Composed via-host reroot paths
 
 - **Definition defaults unchanged (Codex, high).** A default can be circular
   from the speculative owner frame yet valid from the root (owner `regions`,
-  root `customers`, default `customers.regions.pop`); today that is a clean
-  owner miss with root fallback. `resolve_default_qualifier_path` therefore
-  catches the raise and returns `None` in both frames; a root-frame circular
-  ends in today's "not reachable forward from the owning model or the query
-  root" refusal. Alternative (propagate from the root attempt) rejected: it
-  moves default-path semantics, which DEV-1908 owns.
+  root `customers`, default `customers.regions.pop`).
+  `resolve_default_qualifier_path` resolves through DEV-1908's
+  `walk_cancelling`, which cancels a revisit (`a.b.a ≡ a`) and never raises
+  the circular error, so default-path semantics stay DEV-1908's. Alternative
+  (propagate from the root attempt) rejected: it moves default-path semantics,
+  which DEV-1908 owns.
 
 - **Save time, two doors, one error.** `_classify_hop_path` catches the walker
   error and `_check_reference_arity` raises `DerivedColumnCircularError`, with
@@ -134,9 +134,10 @@ door) BEFORE `storage.save_model`. Composed via-host reroot paths
 - [A revisit through an unloaded intermediate is not refused at save time] →
   best-effort by design (DEV-1930); the query-time door refuses it as
   unresolvable; pinned by a scenario at both times.
-- [Definition-default probing newly raising] → the door catch returns `None`;
-  pinned by scalar and expression default regressions in the DEV-1900 back-hop
-  shape and a root-spelled default probed from the owner frame.
+- [Definition-default probing newly raising] → the default door resolves through
+  DEV-1908's `walk_cancelling`, which cancels a revisit and never raises the
+  circular error; pinned by scalar and expression default regressions in the
+  DEV-1900 back-hop shape and a revisiting default probed from the owner frame.
 - [Binder message wording changes] → existing tests only substring-match
   "Circular join" / "revisit"; both preserved.
 - [Self-join edges] → a real self-join is rejected at model construction

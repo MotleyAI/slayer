@@ -34,6 +34,7 @@ __all__ = [
     "resolve_hop",
     "terminal_model",
     "walk",
+    "walk_cancelling",
 ]
 
 
@@ -179,6 +180,95 @@ def walk(
         chain.append(edge)
         current = nxt
     return chain
+
+
+def _owner_stack(
+    *, root: SlayerModel, owner_path: Sequence[str],
+    models_by_name: dict[str, SlayerModel],
+) -> list[SlayerModel] | None:
+    """The model sequence of the (trusted, already-resolved) ``owner_path`` from
+    ``root``. Only the target model of each token is needed, so parallel edges
+    that agree on it never raise here (the default's own tokens resolve strictly);
+    ``None`` on an unresolvable or revisiting owner hop."""
+    stack: list[SlayerModel] = [root]
+    for token in owner_path:
+        incident = neighbors(model=stack[-1], models_by_name=models_by_name)
+        cands = [e for e in incident if e.name == token] or [
+            e for e in incident if e.target_model == token]
+        target = {e.target_model for e in cands}
+        if len(target) != 1:
+            return None
+        nxt = models_by_name.get(next(iter(target)))
+        if nxt is None or any(m.name == nxt.name for m in stack):
+            return None
+        stack.append(nxt)
+    return stack
+
+
+def _incident_named(
+    *, current: SlayerModel, token: str, models_by_name: dict[str, SlayerModel],
+) -> OrientedJoin | None:
+    """The incident edge of ``current`` whose declared ``name`` is ``token``, or
+    ``None``. Raises :class:`AmbiguousJoinPathError` when two share the name."""
+    named = [e for e in neighbors(model=current, models_by_name=models_by_name)
+             if e.name == token]
+    if not named:
+        return None
+    if len(named) > 1:
+        raise AmbiguousJoinPathError(
+            source_model=current.name, target_model=named[0].target_model,
+            candidates=named, token=token,
+        )
+    return named[0]
+
+
+def walk_cancelling(
+    *,
+    root: SlayerModel,
+    owner_path: Sequence[str],
+    tokens: Sequence[str],
+    models_by_name: dict[str, SlayerModel],
+) -> tuple[str, ...] | None:
+    """Resolve a definition default's qualifier ``tokens`` in the owner's frame
+    (the owner is ``root`` walked along ``owner_path``), with reverse-hop
+    cancellation (DEV-1908 D1/D2).
+
+    Per token, precedence is incident edge name → a model name on the path
+    (cancel) → a model-name hop: an incident edge-name token always hops and
+    never cancels; a token equal to a dataset already on ``root + owner_path``
+    truncates the absolute path back to it — keeping ``owner_path``'s spelling —
+    then resolution continues forward from there. Returns the absolute token
+    path from ``root`` (``()`` = the root itself), ``None`` on a miss or a hop
+    onto an already-visited model; ambiguity raises."""
+    models = dict(models_by_name)
+    models.setdefault(root.name, root)
+    stack = _owner_stack(root=root, owner_path=owner_path, models_by_name=models)
+    if stack is None:
+        return None
+    path_tokens: list[str] = list(owner_path)
+    for token in tokens:
+        edge = _incident_named(current=stack[-1], token=token, models_by_name=models)
+        if edge is not None:  # edge name wins over a same-named path model
+            nxt = models.get(edge.target_model)
+            if nxt is None or any(m.name == edge.target_model for m in stack):
+                return None
+            stack.append(nxt)
+            path_tokens.append(token)
+            continue
+        cancel_at = next((i for i, m in enumerate(stack) if m.name == token), None)
+        if cancel_at is not None:
+            del stack[cancel_at + 1:]
+            del path_tokens[cancel_at:]
+            continue
+        edge = resolve_hop(current=stack[-1], token=token, models_by_name=models)
+        if edge is None or edge.target_model in {m.name for m in stack}:
+            return None
+        nxt = models.get(edge.target_model)
+        if nxt is None:
+            return None
+        stack.append(nxt)
+        path_tokens.append(token)
+    return tuple(path_tokens)
 
 
 def terminal_model(

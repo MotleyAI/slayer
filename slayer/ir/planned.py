@@ -315,16 +315,15 @@ class PickedParam(BaseModel):
     picked once per level-1 cell as ``MAX(<value>) AS _p<i>`` and read by level 2
     as ``_base._p<i>``. Exactly one source form is set — ``key`` (a column /
     placeholder / composite value key rendered through the scope, with a
-    ``ColumnSqlKey`` taking the derived expansion) or ``sql`` (an owner-anchored
-    Mode-A fragment for an expression default). ``anchor_path`` is the owner join
-    path an expression default (or bare-name default) expands against."""
+    ``ColumnSqlKey`` taking the derived expansion) or ``sql`` (a canonical Mode-A
+    fragment for an expression default, in producer-root coordinates — DEV-1908 D8
+    — so it always enters at the producer root)."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     name: str
     key: Optional[ValueKey] = None
     sql: Optional[str] = None
-    anchor_path: Tuple[str, ...] = ()
 
 
 class TrailingWindowProducerKernel(BaseModel):

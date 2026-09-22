@@ -31,8 +31,8 @@ reference that crosses nothing.
   value.
 - The binder's query-typed circular refusal adopts the same error class; its
   message keeps the "Circular join" / "revisits model" wording.
-- Definition-default resolution (owner-first, root-fallback) treats a circular
-  frame probe as a clean miss, so default-parameter behaviour is unchanged.
+- Definition-default resolution is untouched: it resolves through the
+  cancelling walk (DEV-1908), which never sees the revisit signal.
 - Normative harness: the approved Axiom 1 clause in
   `architecture/semantics.arc42.md`; one sentence in `docs/concepts/models.md`.
 

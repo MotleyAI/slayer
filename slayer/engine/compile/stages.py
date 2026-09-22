@@ -38,6 +38,7 @@ from slayer.engine.reference_closure import (
     fragment_closure,
     fragment_null_propagates,
     key_closure,
+    requalify_expr_to_paths,
     resolve_aggregation_params,
     source_row_leaf_closure,
 )
@@ -902,9 +903,11 @@ def _trailing_window_kernel(
     owner_model = walk_key_path(
         model=root_model, path=source_path, bundle=bundle,
     ) or root_model
+    # The producer roots at the home (``root_model``), so the resolver already
+    # returns the picked expression default in producer coordinates (D8); it enters
+    # at the producer root.
     picked_params = [
-        PickedParam(name=ps.name, key=ps.key, sql=ps.expr_sql,
-                    anchor_path=tuple(source_path))
+        PickedParam(name=ps.name, key=ps.key, sql=ps.expr_sql)
         for ps in resolve_aggregation_params(
             agg=agg_key, owner_model=owner_model, owner_path=source_path,
             bundle=bundle, root_model=root_model,
@@ -2137,6 +2140,29 @@ def _check_attached_params_determined(
         )
 
 
+def _reroot_picked_expr(
+    *, spec: ParamSpec, target_path: Tuple[str, ...], root_model: SlayerModel,
+    models_by_name: Dict[str, SlayerModel], host_name: str,
+) -> Optional[str]:
+    """An expression default's canonical (query-root) fragment rerooted into the
+    producer root ``target_path`` (D8): reroot each reference key exactly as the
+    bound key is rerooted, then requalify, so it enters at the producer root — never
+    as a reverse join from the owner. ``None`` / raw text ride through unchanged."""
+    if spec.expr_sql is None:
+        return spec.expr_sql
+    abs_refs: List[Tuple[Optional[Tuple[str, ...]], str]] = []
+    for ref in spec.expr_refs:
+        if not isinstance(ref, (ColumnKey, ColumnSqlKey)):
+            abs_refs.append((None, ""))  # None ref fails closed at typing
+            continue
+        rr = reroot_from_root(
+            ref, target_path=target_path, root_model=root_model,
+            models_by_name=models_by_name, host_name=host_name,
+        )
+        abs_refs.append((tuple(key_host_path(rr)), column_leaf(rr)))
+    return requalify_expr_to_paths(sql=spec.expr_sql, abs_refs=abs_refs)
+
+
 def _association_arm(
     *, agg: AggregateKey, agg_rooted: AggregateKey, alias: str,
     root_model: SlayerModel, target_path: Tuple[str, ...],
@@ -2185,10 +2211,6 @@ def _association_arm(
     source_model = walk_key_path(
         model=host_model, path=source_path, bundle=bundle,
     ) or root_model
-    rel_source = (
-        source_path[len(target_path):]
-        if source_path[: len(target_path)] == target_path else source_path
-    )
     entity_grain = Grain.of(host_entity_keys)
     picked_params: List[PickedParam] = []
     for _ps in resolve_aggregation_params(
@@ -2212,7 +2234,10 @@ def _association_arm(
                 key=_ps.key, target_path=target_path, root_model=root_model,
                 models_by_name=models_by_name, host_name=host_model.name,
             ) if _ps.key is not None else None),
-            sql=_ps.expr_sql, anchor_path=tuple(rel_source),
+            sql=_reroot_picked_expr(
+                spec=_ps, target_path=target_path, root_model=root_model,
+                models_by_name=models_by_name, host_name=host_model.name,
+            ),
         ))
     assoc_pairs = [
         (u.key, reroot_from_root(
@@ -2526,6 +2551,7 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
     # normalised constituent's placeholder below.
     reagg_param_specs = resolve_aggregation_params(
         agg=root, owner_model=host_model, owner_path=(), bundle=bundle,
+        root_model=host_model, root_path=(),
     )
     param_constituent_of: Dict[ValueKey, ValueKey] = {}
     for _ps in reagg_param_specs:
@@ -2663,7 +2689,7 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
             name=_ps.name,
             key=(constituent_placeholders[_ps.key]
                  if isinstance(_ps.key, (AggregateKey, TransformKey)) else _ps.key),
-            sql=_ps.expr_sql, anchor_path=(),
+            sql=_ps.expr_sql,  # host-rooted producer: canonical SQL is already root-frame (D8)
         )
         for _ps in reagg_param_specs
     ]

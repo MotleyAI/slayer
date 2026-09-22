@@ -243,6 +243,14 @@ class TestBestEffortConsumersUnchanged:
             host_name="regions", target_path=("customers", "regions"),
             models_by_name=models) == ("regions",)
 
+    def test_route_via_common_prefix_falls_back_to_round_trip(self) -> None:
+        # DEV-1908's determination route walks the aggregate path from the host
+        # like ``_back_path``; a revisit keeps the round-trip fallback, never raises.
+        models = _chain()
+        assert join_safety._route_via_common_prefix(
+            host_name="regions", target_path=("customers", "regions"),
+            host_path=("name",), models_by_name=models) == ("regions", "name")
+
     def test_hop_walk_reason_none(self) -> None:
         models = _chain()
         assert join_safety._hop_walk_reason(
@@ -270,13 +278,18 @@ class TestBestEffortConsumersUnchanged:
             qualifiers=("customers", "regions"), source_model=models["regions"],
             models_by_name=models) is None
 
-    def test_resolve_default_qualifier_path_none(self) -> None:
-        # A default circular from the speculative owner frame is a clean miss, so
-        # owner-first/root-fallback default resolution is unchanged.
+    def test_resolve_default_qualifier_path_cancels(self) -> None:
+        # The definition-default door resolves through the cancelling walk
+        # (DEV-1908): a revisiting default cancels back to the dataset on the
+        # path and never surfaces the circular signal.
         models = _chain()
         assert resolve_default_qualifier_path(
             qualifiers=("customers", "regions"), leaf="pop",
-            frame_model=models["regions"], models_by_name=models) is None
+            root_model=models["regions"], owner_path=(), models_by_name=models) == ()
+        assert resolve_default_qualifier_path(
+            qualifiers=("customers", "regions"), leaf="pop",
+            root_model=models["orders"], owner_path=("customers", "regions"),
+            models_by_name=models) == ("customers", "regions")
 
     def test_lenient_scanner_none(self) -> None:
         models = _chain()

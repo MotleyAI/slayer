@@ -119,28 +119,33 @@ class TestBroadcastMetadata:
         for row in resp.data:
             assert float(row["orders.total"]) == pytest.approx(SPEND_TOTAL)
 
-    async def test_broadcast_reasons_distinguish_hop_from_unreachable(
+    async def test_broadcast_reason_names_the_hop_forward_and_reverse(
         self, exec_backend,
     ):
-        """The per-dimension reason separates 'unproven/fanning hop' from
-        'unreachable from the root' (no stored edge at all)."""
+        """The per-dimension reason names the actual join hop — an unproven forward
+        hop by its target, a fanning reverse hop by the model it fans back to —
+        never 'unreachable' (DEV-1908: a prefix-side dimension reached back over a
+        fanning hop names that hop, not the old round-trip artifact)."""
         _, engine = exec_backend
-        # segments.label: a stored but unproven hop from customers.
+        # segments.label: a stored but unproven FORWARD hop from customers.
         via_hop = await engine.execute(
             q(dimensions=["customers.segments.label"], measures=[CM]),
         )
         (w_hop,) = broadcast_warnings(via_hop)
-        # tier from the regions-rooted pop aggregate: no stored edge.
-        no_edge = await engine.execute(q(
+        # tier from the regions-rooted pop aggregate: reachable only back over the
+        # fanning REVERSE hop regions → customers (never 'unreachable' post-DEV-1908).
+        via_reverse = await engine.execute(q(
             dimensions=["customers.tier"],
             measures=[ModelMeasure(formula="customers.regions.pop:sum",
                                    name="pop")],
         ))
-        (w_edge,) = broadcast_warnings(no_edge)
+        (w_rev,) = broadcast_warnings(via_reverse)
         hop_reasons = " ".join(d.reason for d in w_hop.dimensions).lower()
-        edge_reasons = " ".join(d.reason for d in w_edge.dimensions).lower()
-        assert "unreachable" in edge_reasons
+        rev_reasons = " ".join(d.reason for d in w_rev.dimensions).lower()
+        assert "segments" in hop_reasons
         assert "unreachable" not in hop_reasons
+        assert "customers" in rev_reasons
+        assert "unreachable" not in rev_reasons
 
 
 class TestStrictMode:
