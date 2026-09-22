@@ -50,8 +50,12 @@ is the coercion from coarser to finer.
    - **2.4 Aggregation.** An aggregation over a row-level source is homed on the
      deepest dataset that determines the source's home (2.2) and every column-valued
      parameter and non-overridden definition default — each a row-level expression
-     under 2.1, defaults resolved as references from the owning model, a qualifier
-     the owner cannot reach forward anchored at the query root instead. It is counted over that
+     under 2.1, defaults resolved as references from the owning model with
+     **cancellation**: a qualifier naming a dataset already on its path reads that
+     row (`a.b.a ≡ a`) rather than re-joining, any other unreachable qualifier
+     anchored at the query root. Only definition defaults cancel — a revisiting
+     query path is refused, a revisiting `Column.sql` likewise `[target: DEV-1952]`.
+     It is counted over that
      dataset's rows. The ordering key of a ranked aggregation must be determined by the
      home and never widens it; the aggregation's own `partition_by=` is not an input.
      A source with no row-level leaf is a second-order aggregation: its home is the
@@ -64,6 +68,7 @@ is the coercion from coarser to finer.
    - **2.6 Anchor and candidates.** The source anchor is the longest common prefix of
      the source leaves' paths — where the source lives: the aggregation's definition
      (a custom aggregation and its parameter defaults) is resolved there, a qualifier
+     naming a dataset on the anchor's path cancelling back to it, any other qualifier
      the anchor cannot reach forward anchored at the query root instead. The home,
      when it exists, is among the inputs' paths and their longest common prefix;
      candidates are tried deepest-first, ties preferring the anchor.
@@ -82,6 +87,7 @@ is the coercion from coarser to finer.
    [enforced: test:tests/test_dev1832_home.py]
    [enforced: test:tests/test_dev1945_ranking_key_safety.py]
    [enforced: test:tests/test_dev1931_default_home.py]
+   [enforced: test:tests/test_dev1908_default_cancellation.py]
 3. **Association**: any join path — to-one or not — defines which rows belong
    together; everything that crosses a non-determining path is defined in terms
    of it. [review] Association is derivable from forward join declarations

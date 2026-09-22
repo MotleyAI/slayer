@@ -306,6 +306,8 @@ aggregations:
 
 Use at query time: `price:weighted_avg(weight=quantity)`, `revenue:trimmed_mean(low=10, high=1000)`. An aggregation entry can also override a built-in's default parameters without redefining the SQL. Like columns and measures, aggregations accept an optional `meta` dict for caller bookkeeping.
 
+A parameter default resolves from the model that declares the aggregation, and a qualifier naming a model already on the query's path to it reads that row rather than re-joining (`weight: customers.spend` on a `regions` aggregation queried as `customers.regions.pop:…` weights by that customer's own spend), while any other qualifier the declaring model cannot reach resolves from the query root.
+
 ## Joins
 
 Models declare explicit LEFT JOINs to other models:

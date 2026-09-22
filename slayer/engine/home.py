@@ -24,7 +24,7 @@ from slayer.core.keys import (
     walk_value_keys,
 )
 from slayer.core.models import SlayerModel
-from slayer.engine.join_safety import attributable_from_root, key_host_path
+from slayer.engine.join_safety import attributable_from_root, key_host_path, safe_reachable
 from slayer.engine.reference_closure import default_param_value_key, expr_default_ref_keys
 from slayer.ir.prebound import walk_key_path
 from slayer.ir.source_bundle import ResolvedSourceBundle
@@ -48,13 +48,14 @@ def _default_home_candidate_paths(
     *, agg: AggregateKey, host_model: SlayerModel, bundle: ResolvedSourceBundle,
 ) -> List[Path]:
     """Home candidates from non-overridden definition defaults (Axiom 2.4). Each
-    default is resolved from the OWNING model — the source anchor that declares
-    the aggregation — with a query-root fallback for a qualifier the owner cannot
-    reach forward (a leading root-model name self-strips to root-local). A bare
-    default is owner-local (its join path is the anchor, constraining nothing new);
-    a dotted/expression default naming a shallower model widens the home; a genuine
-    host-local (root) default is retained so it widens the home to the root exactly
-    as spelling that column explicitly would."""
+    default is resolved from the OWNING model with reverse-hop cancellation and a
+    query-root fallback (DEV-1908): a qualifier naming a dataset already on the
+    owner's path (root included) cancels back to it. A bare default is owner-local
+    (constraining nothing new); a cancelled/dotted default naming a shallower or
+    to-one-related model widens the home; a genuine host-local (root) default
+    widens it to the root. Every resolvable path is returned (the path-validity
+    filter) — ``home_path_for`` decides which may seed a home vs. only bind input
+    safety (a fanning default can never be the home)."""
     owner_path = source_anchor_path(agg.source)
     owner = walk_key_path(model=host_model, path=owner_path, bundle=bundle)
     if owner is None:
@@ -138,10 +139,13 @@ def home_path_for(
 ) -> Path:
     """The home dataset of an aggregate (Axiom 2): the deepest join path that
     determines every input — each source leaf, each column-valued arg/kwarg, and
-    each definition default — over provably to-one hops. Candidates are the input
-    paths and their longest common prefix, deepest first (ties prefer the source
-    anchor); the first from which every input is attributable wins. Falls back to
-    the anchor, where input safety then raises on an unproven hop."""
+    each definition default — over provably to-one hops. Candidates are the source
+    and to-one-reachable input paths and their longest common prefix, deepest first
+    (ties prefer the source anchor); the first from which every input is
+    attributable wins. A definition default that reaches its dataset only over a
+    fanning hop still binds input safety but can never seed the home (it would
+    multiply the source), so on no valid home the home falls to the inputs' common
+    prefix, where input safety names the fanning forward hop (DEV-1908)."""
     anchor = source_anchor_path(agg.source)
     input_paths: List[Path] = list(source_leaf_paths(agg.source)) or [anchor]
     # A ranked aggregate's positional args are ranking keys, not value inputs;
@@ -150,19 +154,28 @@ def home_path_for(
     for v in (*arg_values, *(val for _, val in agg.kwargs)):
         if isinstance(v, (ColumnKey, ColumnSqlKey)):
             input_paths.append(key_host_path(v))
-    input_paths.extend(_default_home_candidate_paths(
+    # Source / arg paths always seed a home; a default only when it is reachable
+    # over provably to-one hops (a fanning default never homes — see the docstring).
+    seed_paths = list(input_paths)
+    default_paths = _default_home_candidate_paths(
         agg=agg, host_model=host_model, bundle=bundle,
-    ))
+    )
+    input_paths.extend(default_paths)
+    seed_paths.extend(
+        p for p in default_paths
+        if safe_reachable(root=host_model, path=p, models_by_name=models_by_name)
+    )
     # A constituent of the SOURCE combination broadcasts onto the home's rows, so
     # the home must determine every one of its grain members (Axiom 2.3). An
     # aggregate-valued parameter is not a source operand — a query dimension it does
     # not share is associated / broadcast, never moved into the home (Axioms 2.4, 2.9).
     for c in operand_constituents(agg.source):
-        input_paths.extend(_constituent_grain_paths(
+        input_paths.extend(cg := _constituent_grain_paths(
             c=c, dim_keys=dim_keys, td_keys=td_keys, active_bucket=active_bucket,
         ))
+        seed_paths.extend(cg)
     candidates = sorted(
-        {anchor, _longest_common_prefix(input_paths), *input_paths},
+        {anchor, _longest_common_prefix(input_paths), *seed_paths},
         key=lambda p: (-len(p), p != anchor, p),
     )
     for p in candidates:
@@ -177,7 +190,10 @@ def home_path_for(
             for q in input_paths
         ):
             return p
-    return anchor
+    # No valid home: fall to the inputs' common prefix (never deeper than the
+    # source anchor) so input safety walks each input forward from there and names
+    # the fanning forward hop, not a cancelled reverse hop back onto the path.
+    return _longest_common_prefix(input_paths)
 
 
 def resolve_aggregate_homes(
