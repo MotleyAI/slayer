@@ -98,32 +98,32 @@
     "message": "Cross-model aggregate 'customers.regions.countries.gdp_wsum_fan' reads an input across an unproven join hop to region_events from regions; declare join cardinality or a covering unique key on the target."
   },
   "closed/query_typed_revisit::bigquery": {
-    "error": "ValueError",
-    "message": "Circular join detected resolving 'customers.regions.customers.spend': revisits model 'customers'."
+    "error": "CircularJoinPathError",
+    "message": "Circular join detected resolving 'customers.regions.customers.spend' from 'orders': hop 'customers' revisits model 'customers'."
   },
   "closed/query_typed_revisit::duckdb": {
-    "error": "ValueError",
-    "message": "Circular join detected resolving 'customers.regions.customers.spend': revisits model 'customers'."
+    "error": "CircularJoinPathError",
+    "message": "Circular join detected resolving 'customers.regions.customers.spend' from 'orders': hop 'customers' revisits model 'customers'."
   },
   "closed/query_typed_revisit::mysql": {
-    "error": "ValueError",
-    "message": "Circular join detected resolving 'customers.regions.customers.spend': revisits model 'customers'."
+    "error": "CircularJoinPathError",
+    "message": "Circular join detected resolving 'customers.regions.customers.spend' from 'orders': hop 'customers' revisits model 'customers'."
   },
   "closed/query_typed_revisit::postgres": {
-    "error": "ValueError",
-    "message": "Circular join detected resolving 'customers.regions.customers.spend': revisits model 'customers'."
+    "error": "CircularJoinPathError",
+    "message": "Circular join detected resolving 'customers.regions.customers.spend' from 'orders': hop 'customers' revisits model 'customers'."
   },
   "closed/query_typed_revisit::snowflake": {
-    "error": "ValueError",
-    "message": "Circular join detected resolving 'customers.regions.customers.spend': revisits model 'customers'."
+    "error": "CircularJoinPathError",
+    "message": "Circular join detected resolving 'customers.regions.customers.spend' from 'orders': hop 'customers' revisits model 'customers'."
   },
   "closed/query_typed_revisit::sqlite": {
-    "error": "ValueError",
-    "message": "Circular join detected resolving 'customers.regions.customers.spend': revisits model 'customers'."
+    "error": "CircularJoinPathError",
+    "message": "Circular join detected resolving 'customers.regions.customers.spend' from 'orders': hop 'customers' revisits model 'customers'."
   },
   "closed/query_typed_revisit::tsql": {
-    "error": "ValueError",
-    "message": "Circular join detected resolving 'customers.regions.customers.spend': revisits model 'customers'."
+    "error": "CircularJoinPathError",
+    "message": "Circular join detected resolving 'customers.regions.customers.spend' from 'orders': hop 'customers' revisits model 'customers'."
   },
   "closed/second_order_nowhere::bigquery": {
     "error": "UnresolvableDimensionJoinError",

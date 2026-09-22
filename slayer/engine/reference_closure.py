@@ -38,7 +38,11 @@ from slayer.core.keys import (
     source_anchor_path,
     source_row_leaves,
 )
-from slayer.core.errors import SlayerError, UnresolvableDimensionJoinError
+from slayer.core.errors import (
+    CircularJoinPathError,
+    SlayerError,
+    UnresolvableDimensionJoinError,
+)
 from slayer.core.models import AggregationParam, Column, SlayerModel
 from slayer.ir.prebound import walk_key_path
 from slayer.ir.source_bundle import ResolvedSourceBundle
@@ -87,6 +91,8 @@ def _expand_derived_refs_any_dialect(
                 sql=sql, model=model, alias_path=alias_path,
                 models_by_name=bundle.models_by_name, dialect=dialect,
             )
+        except (ColumnCycleError, CircularJoinPathError):
+            raise
         except Exception:
             continue
         if expanded:
@@ -136,7 +142,7 @@ def fragment_closure(
                 owner_path=tuple(owner_path), models_by_name=bundle.models_by_name,
                 dialect=dialect, crossed_paths=sink,
             )
-        except ColumnCycleError:
+        except (ColumnCycleError, CircularJoinPathError):
             raise
         except Exception:
             continue
@@ -187,7 +193,7 @@ def fragment_null_propagates(
                 models_by_name=bundle.models_by_name, dialect=dialect,
             )
             nodes = list(sqlglot.parse_one(expanded or "", dialect=dialect).walk())
-        except ColumnCycleError:
+        except (ColumnCycleError, CircularJoinPathError):
             raise
         except Exception:
             continue

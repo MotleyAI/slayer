@@ -11,9 +11,10 @@ Two faces:
 * total enumeration (:func:`edges_between`, :func:`neighbors`) — never errors;
   used by route counting, closures, and rendering;
 * strict resolution (:func:`resolve_hop`, :func:`walk`) — a path token matches
-  an incident edge's name, else the opposite-endpoint model name; ``None`` on a
-  miss so callers keep their own errors, and raises
-  :class:`AmbiguousJoinPathError` when two or more edges span the hop.
+  an incident edge's name, else the opposite-endpoint model name; ``None`` only on
+  an unknown/unloaded hop so callers keep their own errors, raises
+  :class:`AmbiguousJoinPathError` when two or more edges span the hop, and
+  :class:`CircularJoinPathError` when a hop revisits a model already on the path.
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ from typing import Sequence
 from pydantic import BaseModel, ConfigDict
 
 from slayer.core.enums import JoinCardinality, JoinType, invert_cardinality
-from slayer.core.errors import AmbiguousJoinPathError
+from slayer.core.errors import AmbiguousJoinPathError, CircularJoinPathError
 from slayer.core.models import ModelJoin, SlayerModel
 
 __all__ = [
@@ -152,16 +153,26 @@ def walk(
 ) -> list[OrientedJoin] | None:
     """Resolve a full ``path`` of tokens from ``root`` into an oriented chain.
 
-    Returns the chain, ``None`` on an unresolvable or revisiting hop, and
-    propagates :class:`AmbiguousJoinPathError` from any ambiguous hop.
+    Returns the chain, ``None`` only on an unknown/unloaded hop, propagates
+    :class:`AmbiguousJoinPathError` from any ambiguous hop, and raises
+    :class:`CircularJoinPathError` when a hop revisits a model already on the path
+    (a definite malformation, not a miss).
     """
     current = root
     visited = {root.name}
     chain: list[OrientedJoin] = []
     for token in path:
         edge = resolve_hop(current=current, token=token, models_by_name=models_by_name)
-        if edge is None or edge.target_model in visited:
+        if edge is None:
             return None
+        if edge.target_model in visited:
+            raise CircularJoinPathError(
+                reference=".".join(path),
+                root_model=root.name,
+                revisited=edge.target_model,
+                hop=token,
+                via=current.name,
+            )
         nxt = models_by_name.get(edge.target_model)
         if nxt is None:
             return None
@@ -273,7 +284,7 @@ def terminal_model(
     models.setdefault(root.name, root)
     try:
         chain = walk(root=root, path=path, models_by_name=models)
-    except AmbiguousJoinPathError:
+    except (AmbiguousJoinPathError, CircularJoinPathError):
         return None
     if chain is None:
         return None

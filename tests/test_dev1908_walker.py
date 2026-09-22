@@ -15,7 +15,7 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.enums import JoinCardinality
-from slayer.core.errors import AmbiguousJoinPathError
+from slayer.core.errors import AmbiguousJoinPathError, CircularJoinPathError
 from slayer.core.join_walker import walk, walk_cancelling
 from slayer.core.models import Column, ModelJoin, SlayerModel
 
@@ -127,6 +127,8 @@ class TestMissAndAmbiguity:
 
 class TestPlainWalkUnchanged:
     def test_plain_walk_still_refuses_revisits(self):
+        # DEV-1952: the plain walk refuses a revisit with a typed raise; only
+        # ``walk_cancelling`` cancels.
         M = _named_chain()
-        assert walk(root=M["regions"], path=("customers", "regions"),
-                    models_by_name=M) is None
+        with pytest.raises(CircularJoinPathError):
+            walk(root=M["regions"], path=("customers", "regions"), models_by_name=M)

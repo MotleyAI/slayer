@@ -134,6 +134,64 @@ class DerivedColumnFanningError(SlayerError, ValueError):
         )
 
 
+class CircularJoinPathError(SlayerError, ValueError):
+    """A join path revisits a model already on it (``a → b → a``) — a definite
+    malformation, like ambiguity, which the shared walker raises. ``None`` from the
+    walker now means only an unknown/unloaded hop. Carries the ``reference`` (full
+    user spelling), ``root_model``, the ``revisited`` model, the revisiting ``hop``
+    token and the ``via`` model it leaves; an optional declaring ``column``."""
+
+    def __init__(
+        self, *, reference: str, root_model: str, revisited: str,
+        hop: str, via: str, column: str | None = None,
+    ) -> None:
+        self.reference = reference
+        self.root_model = root_model
+        self.revisited = revisited
+        self.hop = hop
+        self.via = via
+        self.column = column
+        super().__init__(self._message())
+
+    def _message(self) -> str:
+        msg = (
+            f"Circular join detected resolving {self.reference!r} from "
+            f"{self.root_model!r}: hop {self.hop!r} revisits model {self.revisited!r}."
+        )
+        if self.column is not None:
+            msg += f" (in the definition of column {self.column!r})"
+        return msg
+
+
+class DerivedColumnCircularError(CircularJoinPathError):
+    """A derived ``Column.sql``/``Column.filter`` whose path revisits a model on it —
+    so it is not a function of its declaring model's row. Adds ``model``/``kind`` and
+    the remedy (reference the column on the revisited model, or aggregate on the model
+    the hop leaves, which reaches it forward)."""
+
+    def __init__(
+        self, *, column: str, model: str, kind: str, reference: str,
+        root_model: str, revisited: str, hop: str, via: str,
+    ) -> None:
+        self.model = model
+        self.kind = kind
+        super().__init__(
+            reference=reference, root_model=root_model, revisited=revisited,
+            hop=hop, via=via, column=column,
+        )
+
+    def _message(self) -> str:
+        return (
+            f"Derived column {self.column!r} on model {self.model!r} has a "
+            f"{self.kind} reference {self.reference!r} that revisits model "
+            f"{self.revisited!r} (hop {self.hop!r} from {self.via!r}): a join path "
+            f"never revisits a model on it, so this is not a column of {self.model!r}. "
+            f"Reference the column on {self.revisited!r} directly if you mean this "
+            f"row's value, or declare the aggregate on {self.via!r}, which reaches "
+            f"{self.revisited!r} forward."
+        )
+
+
 class TimeDimensionColumnError(SlayerError, ValueError):
     """A time dimension's column is non-temporal / untyped, or re-buckets to a granularity its upstream bucket does not nest into. Plain message (both variants pinned by the raise ledger)."""
 
