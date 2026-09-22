@@ -552,41 +552,41 @@ class TestStatAggsPerDialect:
 
     # --- filter wrapping ---------------------------------------------------
 
-    def test_build_stddev_samp_with_filter_wraps_value(self) -> None:
+    def test_build_stddev_samp_over_a_masked_value(self) -> None:
         gen = SQLGenerator(dialect="postgres")
+        # DEV-1832: a Column.filter arrives pre-masked in ``sql`` (its ColumnSqlKey
+        # expansion), so the stat agg embeds the CASE value as-is.
         m = AggRenderSpec(
             name="amount",
-            sql="amount",
+            sql="CASE WHEN status = 'completed' THEN orders.amount END",
             model_name="orders",
             alias="amount_stddev_samp",
             aggregation="stddev_samp",
             agg_kwargs={},
-            filter_sql="status = 'completed'",
         )
         sql = gen._build_agg(spec=m)[0].sql(dialect="postgres")
-        # Filter wraps the qualified column reference.
         assert "CASE WHEN status = 'completed' THEN orders.amount END" in sql
         assert "STDDEV_SAMP" in sql
 
-    def test_build_corr_with_filter_wraps_both_columns(self) -> None:
+    def test_build_corr_masks_only_the_value_not_the_other_column(self) -> None:
         gen = SQLGenerator(dialect="postgres")
+        # DEV-1832: a Column.filter masks only its own value; the ``other=`` param
+        # is masked solely by ITS column's filter, never the source's. The value
+        # arrives pre-masked in ``sql``; ``other`` stays bare.
         m = AggRenderSpec(
             name="amount",
-            sql="amount",
+            sql="CASE WHEN status = 'completed' THEN orders.amount END",
             model_name="orders",
             alias="amount_corr",
             aggregation="corr",
             agg_kwargs={"other": "quantity"},
-            filter_sql="status = 'completed'",
         )
         sql = gen._build_agg(spec=m)[0].sql(dialect="postgres")
-        # Both legs of corr() must be wrapped in CASE WHEN so non-matching
-        # rows contribute NULL pairs (which the aggregate skips entirely).
-        assert sql.count("CASE WHEN status = 'completed'") == 2
+        # Exactly one CASE — the value; the other column is never wrapped by it.
+        assert sql.count("CASE WHEN status = 'completed'") == 1
         assert "CORR(" in sql
-        # Both legs are also qualified.
         assert "orders.amount" in sql
-        assert "orders.quantity" in sql
+        assert "quantity" in sql
 
 
 class TestTsqlDialect:

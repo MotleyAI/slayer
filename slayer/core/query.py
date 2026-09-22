@@ -5,22 +5,31 @@ import datetime
 import logging
 import math
 import re
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, Union
 
 from pydantic import (
+    AliasChoices,
     BaseModel,
     BeforeValidator,
     ConfigDict,
+    Discriminator,
     Field,
+    Tag,
     field_validator,
     model_validator,
 )
 
-from slayer.core.enums import TimeGranularity
-from slayer.core.errors import DistinctDimensionValuesError
-from slayer.core.models import ModelMeasure, SlayerModel, _validate_model_name
+from slayer.core.enums import BUILTIN_AGGREGATIONS, TimeGranularity, normalize_aggregation_name
+from slayer.core.errors import DistinctDimensionValuesError, GranularityCallError
+from slayer.core.models import (
+    Column,
+    ModelJoin,
+    ModelMeasure,
+    SlayerModel,
+    _validate_model_name,
+)
 from slayer.core.refs import auto_name_from_expression
-from slayer.engine.syntax import AggCall, parse_expr, walk_parsed_refs
+from slayer.engine.syntax import AggCall, DottedRef, Ref, parse_expr, walk_parsed_refs
 from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
 from slayer.storage.migrations import CURRENT_VERSIONS, migrate as _migrate_schema
 
@@ -28,6 +37,144 @@ logger = logging.getLogger(__name__)
 
 _NAME_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 _VAR_PATTERN = re.compile(r"\{\{|\}\}|\{([a-zA-Z_][a-zA-Z0-9_]*)\}|\{([^}]*)\}")
+
+_GRANULARITY_VALUES = frozenset(g.value for g in TimeGranularity)
+# Leading callee of a whole-string single call ``name( ... )``; used only when
+# ``parse_expr`` rejects the shape (e.g. ``month()``) but the callee still names a
+# granularity, so the wrong-shape error can fire.
+_WHOLE_CALL_RE = re.compile(r"^\s*([A-Za-z_]\w*)\s*\(.*\)\s*$", re.S)
+
+
+def _granularity_names() -> str:
+    return ", ".join(g.value for g in TimeGranularity)
+
+
+def _single_col_of_source(node: AggCall) -> str | None:
+    """The dotted column name if ``node``'s source is a lone ref, else ``None``."""
+    src = node.source
+    if isinstance(src, Ref):
+        return src.name
+    if isinstance(src, DottedRef):
+        return ".".join(src.parts)
+    return None
+
+
+def _time_dimension_from_functional(entry: str) -> dict | None:
+    """A valid ``gran(col)`` string → its ``TimeDimension`` dict; a non-granularity
+    call or non-call → ``None``; a granularity callee of any other shape → raise."""
+    try:
+        node: Any = parse_expr(entry)
+    except Exception:
+        node = None
+    if isinstance(node, AggCall):
+        callee: str | None = node.agg
+    else:
+        m = _WHOLE_CALL_RE.match(entry)
+        callee = m.group(1) if m else None
+    if callee is None or callee.lower() not in _GRANULARITY_VALUES:
+        return None
+    if isinstance(node, AggCall) and not node.args and not node.kwargs:
+        col = _single_col_of_source(node)
+        if col is not None:
+            return {"dimension": col, "granularity": callee.lower()}
+    raise GranularityCallError(
+        f"Granularity call {entry!r} must be a single column reference "
+        f"``gran(col)`` (e.g. ``month(created_at)``) for one of: "
+        f"{_granularity_names()}."
+    )
+
+
+def granularity_call_parts(entry: str) -> tuple[str, str] | None:
+    """``(col, gran)`` for a well-formed ``gran(col)`` string, else ``None`` (never raises);
+    used to resolve a functional order key against projected time dimensions."""
+    try:
+        td = _time_dimension_from_functional(entry)
+    except GranularityCallError:
+        return None
+    return (td["dimension"], td["granularity"]) if td is not None else None
+
+
+def _reject_unknown_dimension_call(entry: str) -> None:
+    """A ``name(col)`` dimension whose callee is not a granularity, scalar, transform,
+    or builtin aggregation is a typo — raise naming the granularities and the
+    ``partition_by=`` requirement for a real custom aggregation."""
+    try:
+        node = parse_expr(entry)
+    except Exception:
+        return
+    if (
+        not isinstance(node, AggCall)
+        or node.args
+        or node.kwargs
+        or _single_col_of_source(node) is None
+    ):
+        return
+    # Normalize aliases (stddev→stddev_samp, variance→var_samp, …) so a bare
+    # builtin-alias aggregate keeps its binding-time ``partition_by=`` error.
+    if (
+        node.agg.lower() in _GRANULARITY_VALUES
+        or normalize_aggregation_name(node.agg) in BUILTIN_AGGREGATIONS
+    ):
+        return
+    raise GranularityCallError(
+        f"Unknown function in dimension {entry!r}. For a time bucket use "
+        f"``gran(col)`` with one of: {_granularity_names()}. A custom "
+        f"aggregation used as a dimension must carry ``partition_by=``."
+    )
+
+
+def _split_functional_dimensions(dims: "list | tuple") -> tuple[list, list]:
+    """Partition ``dimensions`` into (kept, extracted-TD-dicts): a ``gran(col)``
+    string becomes a ``TimeDimension`` dict; a non-granularity ``name(col)`` typo raises."""
+    kept: list = []
+    rewritten: list = []
+    for item in dims:
+        if isinstance(item, str):
+            td = _time_dimension_from_functional(item)
+            if td is not None:
+                rewritten.append(td)
+                continue
+            _reject_unknown_dimension_call(item)
+        kept.append(item)
+    return kept, rewritten
+
+
+def _coerce_time_dimension_entry(entry: Any) -> Any:
+    """A string ``time_dimensions`` entry must be the functional ``gran(col)`` form;
+    dicts/objects pass through untouched."""
+    if not isinstance(entry, str):
+        return entry
+    td = _time_dimension_from_functional(entry)
+    if td is None:
+        raise GranularityCallError(
+            f"Time dimension {entry!r} must be the functional form "
+            f"``gran(col)`` (e.g. ``month(created_at)``) for one of: "
+            f"{_granularity_names()}; no default granularity is invented."
+        )
+    return td
+
+
+def _rewrite_functional_granularity(data: dict) -> dict:
+    """Move ``gran(col)`` dimension strings into ``time_dimensions`` and coerce
+    string ``time_dimensions`` entries; both accept only the functional form."""
+    rewritten: list = []
+    dims = data.get("dimensions")
+    if isinstance(dims, (list, tuple)):
+        kept, rewritten = _split_functional_dimensions(dims)
+        if len(kept) != len(dims):
+            # Consuming every entry leaves ``None`` (not ``[]``) so the dump
+            # matches an explicitly time-dimension-only query.
+            data = {**data, "dimensions": kept or None}
+    tds = data.get("time_dimensions")
+    # A malformed non-list ``time_dimensions`` is left untouched so field
+    # validation rejects it cleanly, rather than a silent replace / TypeError.
+    if tds is not None and not isinstance(tds, (list, tuple)):
+        return data
+    if tds or rewritten:
+        coerced = [_coerce_time_dimension_entry(entry) for entry in (tds or [])]
+        coerced.extend(rewritten)
+        data = {**data, "time_dimensions": coerced}
+    return data
 
 
 def _validate_query_filter_string(formula: str) -> None:
@@ -588,10 +735,22 @@ def _is_direction(value: Any) -> bool:
 
 class TimeDimension(BaseModel):
     """Group-by on ``dimension`` truncated to ``granularity``; optional ``date_range`` [start, end] (ISO dates)."""
-    dimension: Annotated[ColumnRef, BeforeValidator(_coerce_column_ref)]
+    dimension: Annotated[ColumnRef, BeforeValidator(_coerce_column_ref)] = Field(
+        validation_alias=AliasChoices("dimension", "column"),
+    )
     granularity: TimeGranularity
     date_range: list[str] | None = None
     label: str | None = None
+
+
+def _advertise_string_time_dimensions(schema: dict[str, Any]) -> None:
+    """Add the functional ``gran(col)`` string alternative to each ``time_dimensions``
+    item in the derived JSON/MCP input schema, without widening the field's Python
+    type (strings are coerced by the model before-validator). A callable
+    ``json_schema_extra`` works on the pydantic >=2.0 floor (DEV-1883)."""
+    for option in schema.get("anyOf", [schema]):
+        if option.get("type") == "array" and "items" in option:
+            option["items"] = {"anyOf": [option["items"], {"type": "string"}]}
 
 
 class OrderItem(BaseModel):
@@ -707,25 +866,35 @@ def _coerce_order(v: Any) -> Any:
 
 class ModelExtension(BaseModel):
     """Extend a model inline on a query with extra columns, measures, or joins, without modifying the stored model."""
+
+    model_config = ConfigDict(extra="forbid")
+
     source_name: str                                # Model/query to extend
-    columns: list | None = None                  # Extra Column objects
-    measures: list[ModelMeasure] | None = None   # Extra ModelMeasure formulas
-    joins: list | None = None                    # Extra ModelJoin objects
+    columns: list[Column] | None = None
+    measures: list[ModelMeasure] | None = None
+    joins: list[ModelJoin] | None = None
 
 
-def _get_source_model_name(source_model: object) -> str | None:
-    """Model name from any ``source_model`` type, before model resolution."""
-    if isinstance(source_model, str):
-        return source_model
-    if isinstance(source_model, dict):
-        return source_model.get("source_name") or source_model.get("name")
-    source_name = getattr(source_model, "source_name", None)
-    if isinstance(source_name, str):
-        return source_name
-    name = getattr(source_model, "name", None)
-    if isinstance(name, str):
-        return name
-    return None
+def _source_spec_tag(value: Any) -> str:
+    """Classify a raw ``source_model``: an object carrying ``source_name`` is always an extension."""
+    if isinstance(value, ModelExtension):
+        return "extension"
+    if isinstance(value, SlayerModel):
+        return "model"
+    if isinstance(value, dict):
+        return "extension" if "source_name" in value else "model"
+    return "name"
+
+
+# Anything accepted as ``SlayerQuery.source_model``; validated at construction.
+SourceSpec = Annotated[
+    Union[
+        Annotated[str, Tag("name")],
+        Annotated[ModelExtension, Tag("extension")],
+        Annotated[SlayerModel, Tag("model")],
+    ],
+    Discriminator(_source_spec_tag),
+]
 
 
 def _strip_column_ref(ref, model_name: str):
@@ -755,12 +924,12 @@ class SlayerQuery(BaseModel):
             "their source_model."
         ),
     )
-    source_model: object | None = Field(
+    source_model: SourceSpec | None = Field(
         default=None,
         description=(
             "The query's population: a saved model name, an inline ModelExtension "
-            '({"source_name": ..., plus optional "columns"/"measures"/"joins"/"filters"}), '
-            "or a full inline model dict. Omit to infer the smallest model determining "
+            '({"source_name": ..., plus optional "columns"/"measures"/"joins"}), '
+            "or a full inline model. Omit to infer the smallest model determining "
             "every queried dimension, time dimension, and row-level filter column (the "
             "choice is reported in response metadata)."
         ),
@@ -777,7 +946,10 @@ class SlayerQuery(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def _apply_schema_migrations(cls, data: Any) -> Any:
+    def _migrate_and_rewrite(cls, data: Any) -> Any:
+        # Single before-validator: migrate, THEN rewrite the functional granularity
+        # form. Pydantic runs before-validators in reverse declaration order, so
+        # sequencing them explicitly here keeps the rewrite on migrated input.
         # `strict` is retired. Reject it for fresh (no version), current-version,
         # or malformed payloads; only a pre-current *integer* stored version
         # migrates it (v3→v4 maps strict:true→to_many_handling='error'). ``version``
@@ -798,7 +970,10 @@ class SlayerQuery(BaseModel):
                     "`strict` is retired; set to_many_handling='error' instead "
                     "(one of broadcast|associate|error)."
                 )
-        return _migrate_schema(entity="SlayerQuery", data=data)
+        data = _migrate_schema(entity="SlayerQuery", data=data)
+        if isinstance(data, dict):
+            data = _rewrite_functional_granularity(data)
+        return data
 
     @field_validator("name")
     @classmethod
@@ -820,7 +995,12 @@ class SlayerQuery(BaseModel):
     )
     time_dimensions: list[TimeDimension] | None = Field(
         default=None,
-        description="Time-bucketed group-bys — one result row per bucket.",
+        json_schema_extra=_advertise_string_time_dimensions,
+        description=(
+            "Time-bucketed group-bys — one result row per bucket. Each entry is a "
+            "TimeDimension dict or the functional string gran(col), e.g. "
+            "\"month(created_at)\"."
+        ),
     )
     main_time_dimension: str | None = Field(
         default=None,
@@ -900,6 +1080,39 @@ class SlayerQuery(BaseModel):
         self._validate_distinct_dimension_values()
         return self
 
+    @model_validator(mode="after")
+    def _dedupe_time_dimensions(self) -> "SlayerQuery":
+        """Collapse exact-duplicate time dimensions; reject same column+granularity
+        differing in date range or label (their result keys would collide). Compares
+        on the source-model-prefix-stripped column so ``created_at`` and
+        ``orders.created_at`` (the same column) are treated as one."""
+        if not self.time_dimensions:
+            return self
+        model_name = self.source_model_name
+
+        def _canon(td: TimeDimension) -> tuple:
+            col = _strip_column_ref(td.dimension, model_name) if model_name else td.dimension
+            return (col.full_name, td.granularity, tuple(td.date_range or ()), td.label)
+
+        seen: dict[tuple[str, TimeGranularity], tuple] = {}
+        result: list[TimeDimension] = []
+        for td in self.time_dimensions:
+            canon = _canon(td)
+            base = (canon[0], canon[1])
+            prior = seen.get(base)
+            if prior is None:
+                seen[base] = canon
+                result.append(td)
+            elif prior != canon:
+                raise GranularityCallError(
+                    f"Conflicting time dimensions on {td.dimension.full_name!r} at "
+                    f"{td.granularity.value} granularity: same column and "
+                    f"granularity must not differ in date range or label."
+                )
+        if len(result) != len(self.time_dimensions):
+            self.time_dimensions = result
+        return self
+
     def _validate_distinct_dimension_values(self) -> None:
         """Cheap, model-free rejection for ``distinct_dimension_values=False``: non-empty
         ``measures``, or both ``dimensions``/``time_dimensions`` empty. Deep filter/order
@@ -941,9 +1154,22 @@ class SlayerQuery(BaseModel):
 
         return self.model_copy(update={"filters": filters, "whole_periods_only": False})
 
+    @property
+    def source_model_name(self) -> str | None:
+        """The population's model name before resolution (an extension names its base)."""
+        match self.source_model:
+            case str() as name:
+                return name
+            case ModelExtension(source_name=name):
+                return name
+            case SlayerModel(name=name):
+                return name
+            case _:
+                return None
+
     def strip_source_model_prefix(self) -> "SlayerQuery":
         """Strip a redundant source-model-name prefix from all dotted references (agents write ``orders.revenue:sum``)."""
-        model_name = _get_source_model_name(self.source_model)
+        model_name = self.source_model_name
         if model_name is None:
             return self
 

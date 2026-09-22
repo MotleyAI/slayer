@@ -26,7 +26,6 @@ from tests._golden_harness import bind_golden_tests, record_raise
 GOLDEN_PATH = Path(__file__).parent / "golden" / "dev1841_sql_baseline.json"
 DIALECTS = ["postgres", "sqlite", "duckdb", "mysql", "tsql", "bigquery",
             "snowflake"]
-ALLOWED_DELTAS: dict[str, str] = {}
 
 _MODEL_SETS = {
     "default": dev1840_models,
@@ -79,6 +78,8 @@ async def _generate_one(case, dialect: str):
     except Exception as exc:  # noqa: BLE001 — the raise itself is the contract
         return record_raise(exc)
 
+
+ALLOWED_DELTAS: dict[str, str] = {}  # DEV-1910 associate deltas re-blessed
 
 bind_golden_tests(
     namespace=globals(),

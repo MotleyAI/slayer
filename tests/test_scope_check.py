@@ -454,3 +454,58 @@ class TestEnvGatedRuntimeHook:
     def test_closed_sql_passes_when_enabled(self, monkeypatch) -> None:
         monkeypatch.setenv("SLAYER_VALIDATE_SCOPES", "1")
         maybe_validate_scopes(SQL_CROSS_MODEL_CM)  # closed ⇒ no raise
+
+
+# --------------------------------------------------------------------------- #
+# DEV-1935: a derived table nested in an expression subquery correlates to the
+# subquery's ancestors (the semi-join spine), never to its sibling FROM items.
+# --------------------------------------------------------------------------- #
+SQL_SPINE_CORRELATED = """
+SELECT SUM(customers.spend) AS "customers.sp"
+FROM customers AS customers
+WHERE EXISTS(
+  SELECT 1
+  FROM (SELECT customers.id AS id) AS __slayer_spine
+  LEFT JOIN orders AS orders ON __slayer_spine.id = orders.customer_id
+  WHERE (customers.tier = 'gold' OR orders.status = 'ok')
+)
+""".strip()
+
+SQL_DERIVED_SIBLING_REF = """
+SELECT SUM(customers.spend) AS "customers.sp"
+FROM customers AS customers
+WHERE EXISTS(
+  SELECT 1
+  FROM orders AS orders
+  CROSS JOIN (SELECT orders.customer_id AS id) AS d
+  WHERE d.id = customers.id
+)
+""".strip()
+
+SQL_DERIVED_IN_ROOT_UNBOUND = """
+SELECT d.id
+FROM customers AS customers
+CROSS JOIN (SELECT other.id AS id) AS d
+""".strip()
+
+
+class TestDerivedTableCorrelation:
+    def test_spine_derived_table_correlates_to_outer_root(self) -> None:
+        assert_scope_closed(SQL_SPINE_CORRELATED)
+        assert check_scope_closed(SQL_SPINE_CORRELATED).closed is True
+
+    @pytest.mark.parametrize("dialect", ["postgres", "sqlite", "duckdb", "mysql", "tsql"])
+    def test_spine_correlation_closes_across_dialects(self, dialect: str) -> None:
+        assert check_scope_closed(SQL_SPINE_CORRELATED, dialect=dialect).closed is True
+
+    def test_derived_table_sibling_reference_is_a_leak(self) -> None:
+        result = check_scope_closed(SQL_DERIVED_SIBLING_REF)
+        assert [(leak.kind, leak.reference) for leak in result.leaks] == [
+            ("unbound_table", "orders.customer_id"),
+        ]
+
+    def test_derived_table_in_root_never_correlates(self) -> None:
+        result = check_scope_closed(SQL_DERIVED_IN_ROOT_UNBOUND)
+        assert [(leak.kind, leak.reference) for leak in result.leaks] == [
+            ("unbound_table", "other.id"),
+        ]

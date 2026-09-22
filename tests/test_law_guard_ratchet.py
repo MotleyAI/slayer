@@ -59,7 +59,6 @@ ALLOWED_EXPRESSIVENESS = [
     r"NULL is not allowed inside an IN list",
     r"ScopeFrame\.resolve does not yet handle",
     r"^Row-level expression cannot contain",
-    r"^Cross-model operand inside an aggregated expression is not supported\.$",
     r"^A time-ordered transform .* accumulates within its own grain\.$",
     r"^Scalar arity check failed:",
 ]

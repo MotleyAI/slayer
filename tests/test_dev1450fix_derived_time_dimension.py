@@ -23,7 +23,7 @@ Before the #4a implementation these all fail because
 from __future__ import annotations
 
 import os
-import sqlite3
+from slayer.storage.sqlite_conn import transaction
 import tempfile
 from typing import AsyncIterator, Tuple
 
@@ -96,41 +96,39 @@ def _customers_model() -> SlayerModel:
 async def engine() -> AsyncIterator[Tuple[SlayerQueryEngine, str]]:
     d = tempfile.mkdtemp()
     db_path = os.path.join(d, "t.db")
-    con = sqlite3.connect(db_path)
-    cur = con.cursor()
-    cur.execute(
-        "CREATE TABLE customers (id INTEGER PRIMARY KEY, region TEXT, "
-        "revenue REAL, signed_up_at TEXT)"
-    )
-    cur.executemany(
-        "INSERT INTO customers VALUES (?,?,?,?)",
-        [
-            (1, "NA", 100.0, "2023-01-15 00:00:00"),
-            (2, "NA", 50.0, "2023-02-20 00:00:00"),
-            (3, "EU", 70.0, "2023-03-10 00:00:00"),
-        ],
-    )
-    cur.execute(
-        "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, "
-        "created_at TEXT, shipped_at TEXT, amount REAL)"
-    )
-    # effective_at = coalesce(shipped_at, created_at):
-    #   row1 -> 2024-01, row2 -> 2024-02 (shipped overrides created Jan),
-    #   row3 -> 2024-02, row4 -> 2024-03, row5 -> 2024-03.
-    # By DERIVED month:  Jan=10/1, Feb=12/2, Mar=12/2.
-    # By BARE created_at: Jan=15/2, Feb=7/1,  Mar=12/2  (distinguishes).
-    cur.executemany(
-        "INSERT INTO orders VALUES (?,?,?,?,?)",
-        [
-            (1, 1, "2024-01-10 00:00:00", None, 10.0),
-            (2, 1, "2024-01-20 00:00:00", "2024-02-05 00:00:00", 5.0),
-            (3, 2, "2024-02-15 00:00:00", None, 7.0),
-            (4, 3, "2024-03-05 00:00:00", None, 3.0),
-            (5, 3, "2024-03-25 00:00:00", "2024-03-28 00:00:00", 9.0),
-        ],
-    )
-    con.commit()
-    con.close()
+    with transaction(db_path) as con:
+        cur = con.cursor()
+        cur.execute(
+            "CREATE TABLE customers (id INTEGER PRIMARY KEY, region TEXT, "
+            "revenue REAL, signed_up_at TEXT)"
+        )
+        cur.executemany(
+            "INSERT INTO customers VALUES (?,?,?,?)",
+            [
+                (1, "NA", 100.0, "2023-01-15 00:00:00"),
+                (2, "NA", 50.0, "2023-02-20 00:00:00"),
+                (3, "EU", 70.0, "2023-03-10 00:00:00"),
+            ],
+        )
+        cur.execute(
+            "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, "
+            "created_at TEXT, shipped_at TEXT, amount REAL)"
+        )
+        # effective_at = coalesce(shipped_at, created_at):
+        #   row1 -> 2024-01, row2 -> 2024-02 (shipped overrides created Jan),
+        #   row3 -> 2024-02, row4 -> 2024-03, row5 -> 2024-03.
+        # By DERIVED month:  Jan=10/1, Feb=12/2, Mar=12/2.
+        # By BARE created_at: Jan=15/2, Feb=7/1,  Mar=12/2  (distinguishes).
+        cur.executemany(
+            "INSERT INTO orders VALUES (?,?,?,?,?)",
+            [
+                (1, 1, "2024-01-10 00:00:00", None, 10.0),
+                (2, 1, "2024-01-20 00:00:00", "2024-02-05 00:00:00", 5.0),
+                (3, 2, "2024-02-15 00:00:00", None, 7.0),
+                (4, 3, "2024-03-05 00:00:00", None, 3.0),
+                (5, 3, "2024-03-25 00:00:00", "2024-03-28 00:00:00", 9.0),
+            ],
+        )
 
     storage = YAMLStorage(base_dir=os.path.join(d, "store"))
     await storage.save_datasource(
@@ -164,12 +162,12 @@ class TestBindDerivedTimeDimension:
             scope=ModelScope(source_model=_orders_model()),
             bundle=_bundle_local(),
         )
-        assert isinstance(bound.value_key, TimeTruncKey)
-        assert bound.value_key.column == ColumnSqlKey(
+        assert isinstance(bound.bound.value_key, TimeTruncKey)
+        assert bound.bound.value_key.column == ColumnSqlKey(
             path=(), model="orders", column_name="effective_at",
         )
-        assert bound.value_key.granularity == "month"
-        assert bound.phase == Phase.ROW
+        assert bound.bound.value_key.granularity == "month"
+        assert bound.bound.phase == Phase.ROW
 
     def test_joined_derived_td_carries_path(self) -> None:
         td = TimeDimension(
@@ -181,8 +179,8 @@ class TestBindDerivedTimeDimension:
             scope=ModelScope(source_model=_orders_model()),
             bundle=_bundle_local(),
         )
-        assert isinstance(bound.value_key, TimeTruncKey)
-        assert bound.value_key.column == ColumnSqlKey(
+        assert isinstance(bound.bound.value_key, TimeTruncKey)
+        assert bound.bound.value_key.column == ColumnSqlKey(
             path=("customers",), model="customers", column_name="signup_eff",
         )
 

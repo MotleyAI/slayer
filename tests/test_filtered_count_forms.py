@@ -62,9 +62,8 @@ async def test_filtered_sum_uses_case_inside_sum() -> None:
 async def test_filtered_count_distinct_approx_wraps_case_in_exact_fallback() -> None:
     # DEV-1595: count_distinct_approx routes through its own builder, which must
     # compose with the filter CASE wrapper. Postgres has no native approximate
-    # distinct, so the exact COUNT(DISTINCT ...) fallback is emitted.
-    # The dialect-aware builder wraps the value in _wrap_filter's parenthesised
-    # CASE (like the percentile / stat-agg builders), so the fallback emits
-    # COUNT(DISTINCT (CASE WHEN ... THEN col END)).
+    # distinct, so the exact COUNT(DISTINCT ...) fallback is emitted. DEV-1832: the
+    # filter now rides the source column's expansion (no _wrap_filter parens), so
+    # the fallback emits COUNT(DISTINCT CASE WHEN ... THEN col END).
     sql = re.sub(r"\s+", "", (await _gen("cust:count_distinct_approx")).upper())
-    assert "COUNT(DISTINCT(CASEWHENORDERS.REGION='US'THENORDERS.CUSTOMER_IDEND))" in sql
+    assert "COUNT(DISTINCTCASEWHENORDERS.REGION='US'THENORDERS.CUSTOMER_IDEND)" in sql

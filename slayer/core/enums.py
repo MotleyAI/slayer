@@ -120,6 +120,33 @@ class TimeGranularity(StrEnum):
             return date.replace(month=12, day=31)
         raise ValueError(f"Unexpected granularity: {self}")
 
+    def nests_into(self, other: "TimeGranularity") -> bool:
+        """True iff this bucket tiles ``other`` exactly (finer-or-equal, aligned): reflexive plus the transitive closure of second→minute→hour→day, day→week, day→week_sunday, day→month→quarter→year; week/week_sunday tile nothing coarser."""
+        if self == other:
+            return True
+        seen: set["TimeGranularity"] = {self}
+        frontier: list["TimeGranularity"] = [self]
+        while frontier:
+            for parent in _GRANULARITY_PARENTS.get(frontier.pop(), ()):
+                if parent == other:
+                    return True
+                if parent not in seen:
+                    seen.add(parent)
+                    frontier.append(parent)
+        return False
+
+
+_GRANULARITY_PARENTS: dict[TimeGranularity, tuple[TimeGranularity, ...]] = {
+    TimeGranularity.SECOND: (TimeGranularity.MINUTE,),
+    TimeGranularity.MINUTE: (TimeGranularity.HOUR,),
+    TimeGranularity.HOUR: (TimeGranularity.DAY,),
+    TimeGranularity.DAY: (
+        TimeGranularity.WEEK, TimeGranularity.WEEK_SUNDAY, TimeGranularity.MONTH,
+    ),
+    TimeGranularity.MONTH: (TimeGranularity.QUARTER,),
+    TimeGranularity.QUARTER: (TimeGranularity.YEAR,),
+}
+
 
 class OrderDirection(StrEnum):
     ASC = "asc"
@@ -184,6 +211,11 @@ RANKED_AGGREGATIONS = ("first", "last")
 # Default partition is the whole result set, not the group-by dimensions;
 # ``partition_by=`` opts into per-partition ranking.
 RANK_FAMILY_TRANSFORMS = {"rank", "percent_rank", "dense_rank", "ntile"}
+
+# Time-ordered transforms that reduce along the axis: one value per partition
+# (Axiom 11.3b). As an aggregation-source constituent they collapse to an exact
+# per-partition pick (DEV-1832 D4c).
+AXIS_COLLAPSING_TRANSFORMS = frozenset({"first", "last"})
 
 # ``classify_aggregation`` buckets each aggregation by result-vs-source relation;
 # slot type and display format both read the bucket, so the axes cannot drift.

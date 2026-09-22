@@ -29,7 +29,7 @@ from slayer.core.models import (
     ModelMeasure,
     SlayerModel,
 )
-from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
+from slayer.core.query import ColumnRef, ModelExtension, SlayerQuery, TimeDimension
 from slayer.engine.ingestion import ingest_datasource
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql import client, engine_factory
@@ -334,6 +334,27 @@ def test_query_with_dimension(sf_storage_with_models) -> None:
     assert statuses == {"completed", "pending", "cancelled"}
 
 
+def test_dev1933_regex_literal_extension_column(sf_storage_with_models) -> None:
+    """DEV-1933: an ad-hoc column holding a ``(?:...)`` regex literal and a ``%``
+    LIKE pattern executes verbatim; text() misread ``:too`` as a bind parameter."""
+    engine = SlayerQueryEngine(storage=sf_storage_with_models)
+    result = run_sync(engine.execute(SlayerQuery(
+        source_model=ModelExtension(
+            source_name="orders",
+            columns=[Column(
+                name="rx",
+                sql="CASE WHEN status LIKE '%pend%' "
+                    "OR status = '(?i)(?:too complicated|too complex)' THEN 1 ELSE 0 END",
+                type=DataType.DOUBLE,
+            )],
+        ),
+        dimensions=[ColumnRef(name="rx")],
+        measures=[ModelMeasure(formula="*:count")],
+    )))
+    by_rx = {int(r["orders.rx"]): r["orders._count"] for r in result.data}
+    assert by_rx == {1: 2, 0: 4}
+
+
 def test_rollup_join_via_explicit_joins(sf_storage_with_models) -> None:
     """Cross-model measure: orders.customers.regions.name (multi-hop join).
 
@@ -526,11 +547,9 @@ def test_statement_timeout_aborts_long_query(sf_engine) -> None:
 
     Uses 5 seconds (not 10) to bound suite latency.
     """
-    connection_string = "snowflake://?connection_name=" + _CONNECTION_NAME
     with pytest.raises((sf_errors.ProgrammingError, sa.exc.DBAPIError)) as exc_info:
         client._execute_sql_sync(
             sql="CALL SYSTEM$WAIT(5, 'SECONDS')",
-            connection_string=connection_string,
             db_type="snowflake",
             timeout_seconds=1,
             engine=sf_engine,
@@ -557,7 +576,6 @@ def test_statement_timeout_aborts_long_query(sf_engine) -> None:
 def test_column_types_round_trip(sf_engine) -> None:
     """A SELECT against each Snowflake type code must round-trip through
     ``_get_column_types_sync`` and produce the expected SLayer categories."""
-    connection_string = "snowflake://?connection_name=" + _CONNECTION_NAME
     sql = """
         SELECT
             CAST(1 AS NUMBER) AS as_number,
@@ -569,7 +587,6 @@ def test_column_types_round_trip(sf_engine) -> None:
     """
     types = client._get_column_types_sync(
         sql=sql,
-        connection_string=connection_string,
         db_type="snowflake",
         engine=sf_engine,
     )
@@ -708,8 +725,9 @@ def test_quoted_lowercase_identifier_fails(sf_engine) -> None:
     ``"Revenue"`` in Column.sql on Snowflake must match storage exactly.
     '''
     with sf_engine.connect() as conn:
+        stmt = sa.text('SELECT COUNT(*) FROM "orders"')
         with pytest.raises((ProgrammingError, sa.exc.DBAPIError)):
-            conn.execute(sa.text('SELECT COUNT(*) FROM "orders"'))
+            conn.execute(stmt)
 
 
 def test_inspector_returns_lowercase_column_names(sf_engine, sf_transient_schema) -> None:

@@ -11,7 +11,7 @@ from typing import (
     Sequence, Tuple, Union,
 )
 
-from slayer.core.enums import DataType
+from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.errors import (
     CanonicalAliasShadowsColumnError,
     DistinctDimensionValuesError,
@@ -19,11 +19,13 @@ from slayer.core.errors import (
     MeasureNameCollidesWithColumnError,
     PositionTypingError,
     SlayerError,
+    TimeDimensionColumnError,
 )
 from slayer.core.formula import TIME_TRANSFORMS
 from slayer.core.window_duration import parse_window_duration
 from slayer.core.keys import (
     AggregateKey,
+    attached_inputs,
     is_boolean_shaped,
     is_cross_model_agg,
     is_local_combined_regroup_ref,
@@ -40,6 +42,7 @@ from slayer.core.keys import (
     TransformKey,
     ValueKey,
     regroup_root_grain,
+    source_anchor_path,
     walk_value_keys,
 )
 from slayer.core.models import SlayerModel
@@ -121,7 +124,7 @@ def _measure_blockers(cj: ValueKey, dim_keys: frozenset) -> List[ValueKey]:
 def _key_display(k: ValueKey) -> str:
     if isinstance(k, AggregateKey):
         leaf = getattr(k.source, "leaf", None) or getattr(k.source, "column_name", None) or "*"
-        path = getattr(k.source, "path", ())
+        path = source_anchor_path(k.source)
         name = f"{'.'.join((*path, leaf))}:{k.agg}"
         return f"{name} (partition_by)" if k.partition_keys is not None else name
     if isinstance(k, TransformKey):
@@ -355,8 +358,10 @@ def validate_model_filter(
 
 def _aggregate_terms(
     roots: List[ValueKey], *, home: DatasetT, query_grain: Grain,
+    home_paths: Dict[AggregateKey, Tuple[str, ...]],
 ) -> Tuple[Dict[ValueKey, Term], List[TransformKey]]:
-    """(aggregate terms, transform keys seen) across ``roots``."""
+    """(aggregate terms, transform keys seen) across ``roots``. Each aggregate's
+    home path comes from the elaborator's map (fallback: the source anchor)."""
     terms: Dict[ValueKey, Term] = {}
     transforms: List[TransformKey] = []
     for root in roots:
@@ -366,7 +371,10 @@ def _aggregate_terms(
                     k.partition_keys if k.partition_keys is not None
                     else query_grain
                 )
-                terms[k] = Aggregate(home=home, recipe=k, grain=grain)
+                terms[k] = Aggregate(
+                    home=home, recipe=k, grain=grain,
+                    home_path=home_paths.get(k, source_anchor_path(k.source)),
+                )
             elif isinstance(k, TransformKey):
                 transforms.append(k)
     return terms, transforms
@@ -387,6 +395,7 @@ def _add_transform_terms(
 
 def _terms_for(
     roots: List[ValueKey], *, home: Optional[DatasetT], query_grain: Grain,
+    home_paths: Dict[AggregateKey, Tuple[str, ...]],
 ) -> Dict[ValueKey, Term]:
     """One term per unique aggregate/transform key, memoized by key identity.
 
@@ -397,7 +406,7 @@ def _terms_for(
     if home is None:
         return {}
     terms, transforms = _aggregate_terms(
-        roots, home=home, query_grain=query_grain,
+        roots, home=home, query_grain=query_grain, home_paths=home_paths,
     )
     _add_transform_terms(terms=terms, transforms=transforms)
     return terms
@@ -515,25 +524,51 @@ def check_opaque_grouping_dim(
         )
 
 
-def check_dimension_temporal_axis(declared_measures) -> None:
-    """Fail closed if a time-ordered transform inside a dimension evaluates at a grain not containing its time axis (DEV-1871 G10, was ``_guard_dimension_temporal_axis``)."""
-    for dm in declared_measures:
-        if not dm.is_dimension:
-            continue
-        for tk in walk_value_keys(dm.bound.value_key):
-            if not isinstance(tk, TransformKey):
-                continue
+def _temporal_axis_transforms(vk: ValueKey, *, is_dimension: bool):
+    """Time-ordered transforms whose grain must contain their axis: any transform
+    in a dimension expression, and every transform reachable inside an
+    aggregation-source constituent of a measure/filter/order expression — nested
+    ones included, mirroring the dimension arm, so a nested time transform cannot
+    evade Axiom 11.5 (a top-level transform measure carries its bucket through the
+    windowed producer instead)."""
+    if is_dimension:
+        yield from (k for k in walk_value_keys(vk) if isinstance(k, TransformKey))
+        return
+    for k in walk_value_keys(vk):
+        if isinstance(k, AggregateKey):
+            for c in attached_inputs(k):
+                if isinstance(c, TransformKey):
+                    yield from (
+                        t for t in walk_value_keys(c)
+                        if isinstance(t, TransformKey)
+                    )
+
+
+def check_dimension_temporal_axis(
+    declared_measures, *, bound_filters=(), order_specs=(),
+) -> None:
+    """Fail closed if a time-ordered transform — in a dimension, or aggregated as
+    a source constituent in a measure / filter / order expression — evaluates at a
+    grain not containing its time axis (DEV-1871 G10 / DEV-1832 D4, was
+    ``_guard_dimension_temporal_axis``)."""
+    roots = [
+        (dm.bound.value_key, dm.is_dimension) for dm in declared_measures
+    ]
+    roots += [(bf.value_key, False) for bf in bound_filters]
+    roots += [(sp.bound.value_key, False) for sp in order_specs]
+    for vk, is_dimension in roots:
+        for tk in _temporal_axis_transforms(vk, is_dimension=is_dimension):
             if tk.op not in TIME_TRANSFORMS or tk.time_key is None:
                 continue
             if tk.time_key not in regroup_root_grain(tk):
                 axis = dotted_key_display(tk.time_key)
                 raise NotImplementedError(
-                    f"A time-ordered transform '{tk.op}' inside a computed "
-                    f"dimension evaluates at a grain that does not contain its "
-                    f"time axis '{axis}'; a producer bucketed by time joined back "
-                    f"on the coarser grain would duplicate result rows. Include "
-                    f"the time key in the aggregate's partition_by= so the "
-                    f"transform accumulates within its own grain."
+                    f"A time-ordered transform '{tk.op}' evaluates at a grain "
+                    f"that does not contain its time axis '{axis}'; a producer "
+                    f"bucketed by time joined back on the coarser grain would "
+                    f"duplicate result rows. Include the time key in the "
+                    f"aggregate's partition_by= so the transform accumulates "
+                    f"within its own grain."
                 )
 
 
@@ -558,7 +593,44 @@ def check_time_dimension_date_range(*, full_name: str, date_range) -> None:
         )
 
 
+def check_time_dimension_column(
+    *,
+    name: str,
+    column_type: Optional[DataType],
+    upstream_granularity: Optional[TimeGranularity],
+    requested_granularity: TimeGranularity,
+) -> None:
+    """A time dimension's column must be temporal (DATE / TIMESTAMP); a bucketed column — stage, query-backed cache, or hand-set ``Column.granularity`` — re-buckets only to the same or a nesting-coarser granularity (DEV-1471 / DEV-1929, closure Axiom 9). One message for all three origins."""
+    if column_type not in (DataType.DATE, DataType.TIMESTAMP):
+        raise TimeDimensionColumnError(
+            f"TimeDimension {name!r} must reference a temporal column "
+            f"(DATE / TIMESTAMP); got column type {column_type!r}."
+        )
+    if (
+        upstream_granularity is not None
+        and requested_granularity != upstream_granularity
+        and not upstream_granularity.nests_into(requested_granularity)
+    ):
+        raise TimeDimensionColumnError(
+            f"TimeDimension {name!r} cannot re-bucket to "
+            f"'{requested_granularity.value}': its column is already bucketed "
+            f"at '{upstream_granularity.value}', which does not nest into "
+            f"'{requested_granularity.value}'. Request the same or a "
+            f"nesting-coarser granularity, or bucket the raw column instead."
+        )
+
+
 def _time_search_children(key: ValueKey) -> List[ValueKey]:
+    if isinstance(key, AggregateKey):
+        # A transform constituent lives in the source (or a composite parameter);
+        # descend so its no-time-dimension error reaches an aggregated transform.
+        return [
+            key.source,
+            *[a for a in key.args if isinstance(
+                a, (AggregateKey, TransformKey, ArithmeticKey, ScalarCallKey))],
+            *[v for _, v in key.kwargs if isinstance(
+                v, (AggregateKey, TransformKey, ArithmeticKey, ScalarCallKey))],
+        ]
     if isinstance(key, TransformKey):
         return [key.input]
     if isinstance(key, ArithmeticKey):
@@ -567,7 +639,7 @@ def _time_search_children(key: ValueKey) -> List[ValueKey]:
         return [
             a for a in key.args
             if isinstance(
-                a, (TransformKey, ArithmeticKey, ScalarCallKey, BetweenKey, InKey),
+                a, (AggregateKey, TransformKey, ArithmeticKey, ScalarCallKey, BetweenKey, InKey),
             )
         ]
     if isinstance(key, BetweenKey):
@@ -604,13 +676,9 @@ def check_time_transforms_resolved(*, roots) -> None:
             )
 
 
-def check_windowed_key_supported(*, key: AggregateKey, window_val) -> None:
-    """Per-key windowed guards (DEV-1871 G11, was ``_reject_unsupported_windowed_key``): sum/avg only, compact-duration-string window."""
-    if key.agg not in ("sum", "avg"):
-        raise ValueError(
-            f"Aggregation parameter 'window' is only supported for sum and avg, "
-            f"not '{key.agg}'."
-        )
+def check_window_duration(*, window_val) -> None:
+    """The ``window=`` duration is a well-formed compact string (DEV-1871 G11);
+    every aggregation accepts it — no aggregation allowlist (DEV-1915)."""
     if not isinstance(window_val, str):
         raise ValueError(
             f"Window duration must be a compact duration string like '90d', got "
@@ -748,6 +816,7 @@ def check_local_producer_inputs_safe(
     *, alias: Optional[str], host: str,
     ranked_crossings: Sequence[Tuple[str, str]],
     gated_crossings: Sequence[str],
+    source_crossings: Sequence[str] = (),
 ) -> None:
     """Per-role crossing-input safety for a HOST-rooted producer answer (DEV-1871 G11, was ``_assert_local_producer_inputs_safe``); crossings are the compiler-resolved unproven hops."""
     remedy = "declare join cardinality or a covering unique key on the target"
@@ -762,6 +831,14 @@ def check_local_producer_inputs_safe(
         raise ValueError(
             f"Aggregate {alias!r} reads an input across an unproven join "
             f"hop to {gated_crossings[0]} from {host}; {remedy}."
+        )
+    if source_crossings:
+        raise ValueError(
+            f"Aggregate {alias!r} reads its source across an unproven or fanning join "
+            f"hop to {source_crossings[0]} from {host}: a column of {host} cannot be "
+            f"aggregated across a to-many target — aggregate the target column directly "
+            f"({source_crossings[0]}.<column>:<aggregation>), or declare a to-one "
+            f"cardinality or a covering unique key if the hop is to-one."
         )
 
 
@@ -789,19 +866,19 @@ def check_cross_model_partition_keys_attributable(
     )
 
 
-def check_windowed_cross_model_time_axis(
+def check_windowed_time_axis_attributable(
     *, alias: Optional[str], root_name: str, active_td_name: Optional[str],
     attributable: bool,
 ) -> None:
-    """A windowed cross-model aggregate needs the query's active time dimension, attributable from its root (DEV-1871 G12)."""
+    """A windowed aggregate needs the query's active time dimension, attributable from its root (DEV-1871 G12)."""
     if active_td_name is None:
         raise ValueError(
-            f"Windowed cross-model aggregate {alias!r} has no active time "
+            f"Windowed aggregate {alias!r} has no active time "
             f"dimension; add a single time_dimensions entry."
         )
     if not attributable:
         raise ValueError(
-            f"Windowed cross-model aggregate {alias!r} needs the query's "
+            f"Windowed aggregate {alias!r} needs the query's "
             f"active time dimension ('{active_td_name}') "
             f"attributable from {root_name}, but it crosses a fanning join; "
             f"declare join cardinality or a covering unique key on the target."
@@ -810,21 +887,23 @@ def check_windowed_cross_model_time_axis(
 
 def check_cross_model_inputs_safe(
     *, alias: Optional[str], root_name: str,
-    unsafe_input_hops: Sequence[str], unattributable_arg_leaves: Sequence[str],
+    unsafe_input_hops: Sequence[str],
+    unattributable_arg_leaves: Sequence[Tuple[str, str]],
 ) -> None:
-    """Every input of a cross-model aggregate must be attributable from its root (DEV-1871 G12, was the raises of ``_assert_cross_model_inputs_safe``); hops/leaves are the compiler-resolved violations."""
+    """Every input of a cross-model aggregate must be attributable from its root; hops / (leaf, reason) pairs are the compiler-resolved violations, an explicit argument's reported first."""
     remedy = "declare join cardinality or a covering unique key on the target"
+    if unattributable_arg_leaves:
+        leaf, reason = unattributable_arg_leaves[0]
+        raise ValueError(
+            f"Cross-model aggregate {alias!r} "
+            f"ranks/reads by {leaf}, which is not attributable from "
+            f"{root_name} ({reason}); {remedy}."
+        )
     if unsafe_input_hops:
         raise ValueError(
             f"Cross-model aggregate {alias!r} "
             f"reads an input across an unproven join hop to {unsafe_input_hops[0]} from "
             f"{root_name}; {remedy}."
-        )
-    if unattributable_arg_leaves:
-        raise ValueError(
-            f"Cross-model aggregate {alias!r} "
-            f"ranks/reads by {unattributable_arg_leaves[0]}, which is not attributable from "
-            f"{root_name} (crosses a fanning join); {remedy}."
         )
 
 
@@ -852,47 +931,25 @@ def check_input_dependencies_analyzable(
     )
 
 
-def check_population_filter_no_fanout(
-    *, filter_text: str, hop: Optional[str], unanalyzable: bool = False,
-) -> None:
-    """Interim guard: a row-level filter conjunct reaching the
-    population root only across a fanning hop, with an aggregate inline over the
-    population rows, would multiply its rows. ``hop`` = the fanning hop when one
-    exists, else ``None``; ``unanalyzable`` = the conjunct's dependency closure
-    could not be analysed (fail closed) (DEV-1909 replaces this with association
-    semantics)."""
-    if unanalyzable:
+def check_filter_dependencies_analyzable(
+    *, filter_text: str, column: Optional[str],
+) -> NoReturn:
+    """A filter conjunct whose dependency closure no dialect can analyse for join
+    dependencies is unsafe, never 'crosses nothing'. ``column`` names the
+    offending derived column (the common case for a filter, which references
+    columns by name), else ``None``."""
+    if column is None:
         raise ValueError(
-            f"Filter {filter_text!r} has a dependency no supported dialect can "
-            f"analyse for join dependencies; with an aggregate computed inline "
-            f"over the population, an unanalyzable dependency is unsafe. Fix the "
-            f"referenced column's SQL, or remove the filter."
+            f"Filter {filter_text!r} has a dependency whose definition no "
+            f"supported dialect can analyse for join dependencies; an "
+            f"unanalyzable dependency is unsafe. Fix the referenced column's SQL, "
+            f"or remove the filter."
         )
-    if hop is None:
-        return
     raise ValueError(
-        f"Filter {filter_text!r} reaches the population root only across a "
-        f"fanning join hop to {hop!r}; with an aggregate computed inline over the "
-        f"population, this would multiply its rows. Aggregate the filtered "
-        f"relation to the population grain, or select it only through a producer."
-    )
-
-
-def check_attached_inputs_attributable(
-    *, alias: Optional[str], root_name: str, mode: str,
-    unattributable: Sequence[Tuple[str, str, str]],
-) -> None:
-    """An attached input nests as a producer rooted at the target, so every row leaf it reads must be attributable from there; ``unattributable`` = (input alias, leaf, reason) of the first violation."""
-    if not unattributable:
-        return
-    input_alias, leaf, reason = unattributable[0]
-    raise SlayerError(
-        f"Cross-model aggregate {alias!r} runs over {root_name!r} rows under "
-        f"to_many_handling={mode!r}, but its attached input {input_alias!r} "
-        f"reads {leaf!r}, which {reason}; that input's producer cannot nest "
-        f"inside the {root_name!r}-rooted producer. Use "
-        f"to_many_handling='associate', or aggregate the input over columns "
-        f"attributable from {root_name!r}."
+        f"Filter {filter_text!r} names derived column {column!r}, whose "
+        f"definition no supported dialect can analyse for join dependencies; an "
+        f"unanalyzable dependency is unsafe. Fix the column's SQL, or remove the "
+        f"filter."
     )
 
 
@@ -1048,8 +1105,10 @@ def build_environment(
     dim_keys: frozenset,
     row_agg_set: frozenset,
     filter_typings: List[ConjunctTyping],
+    home_paths: Optional[Dict[AggregateKey, Tuple[str, ...]]] = None,
 ) -> ElaboratedQuery:
     """Assemble the typing environment for one typed, split prebound query."""
+    home_paths = home_paths or {}
     query_grain = Grain.of(dim_keys)
     n_leading = prebound.n_dims + prebound.n_time_dimensions
     dim_roots = [
@@ -1063,7 +1122,7 @@ def build_environment(
 
     terms = _terms_for(
         [*dim_roots, *measure_roots, *filter_roots, *order_roots],
-        home=home, query_grain=query_grain,
+        home=home, query_grain=query_grain, home_paths=home_paths,
     )
 
     def _typed_verdict(root: ValueKey) -> PositionVerdict:

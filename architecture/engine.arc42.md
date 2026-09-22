@@ -53,6 +53,7 @@ flowchart TD
   engine__bind_inputs --> engine__binding
   engine__bind_inputs --> engine__elaborate_env
   engine__bind_inputs --> engine__syntax
+  engine__compile --> engine__elaborate
   engine__compile --> engine__elaborate_env
   engine__elaborate --> engine__bind_inputs
   engine__elaborate --> engine__elaborate_env
@@ -94,6 +95,7 @@ flowchart TD
   engine__bind_inputs --> engine__binding
   engine__bind_inputs --> engine__elaborate_env
   engine__bind_inputs --> engine__syntax
+  engine__compile --> engine__elaborate
   engine__compile --> engine__elaborate_env
   engine__elaborate --> engine__bind_inputs
   engine__elaborate --> engine__elaborate_env

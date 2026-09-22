@@ -18,7 +18,6 @@ from slayer.core.query import SlayerQuery
 
 GOLDEN_PATH = Path(__file__).parent / "golden" / "dev1900_sql_baseline.json"
 DIALECTS = ["postgres", "sqlite", "duckdb", "mysql", "tsql", "bigquery", "snowflake"]
-ALLOWED_DELTAS: dict[str, str] = {}
 
 _MODEL_SETS = {"dev1900": dev1900_models}
 _REAGG_GOOD = ("weighted_avg(sum(amount, partition_by=customers.regions.id), "
@@ -69,7 +68,12 @@ def _cases() -> dict:
     }
 
 
-FAIL_CLOSED = {k for k in _cases() if k.startswith("fanning/")}
+# DEV-1909 flips the derived population filter to an EXISTS restriction, so it is
+# no longer fail-closed here — it generates SQL like the positive shapes.
+FAIL_CLOSED = {
+    k for k in _cases()
+    if k.startswith("fanning/") and k != "fanning/pop_filter_derived"
+}
 
 
 async def _generate_one(case, dialect: str):
@@ -86,6 +90,13 @@ async def _generate_one(case, dialect: str):
     except Exception as exc:  # noqa: BLE001 — the raise itself is the contract
         return record_raise(exc)
 
+
+ALLOWED_DELTAS: dict[str, str] = {
+    f"fanning/cross_model_kwarg::{d}": (
+        "DEV-1919 D5: the argument-leaf message naming bad_pop and its hop "
+        "region_events now precedes the hop-only closure message")
+    for d in DIALECTS
+}
 
 bind_golden_tests(
     namespace=globals(),

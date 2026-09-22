@@ -15,9 +15,6 @@ The reroot rule is prefix-strip-with-residual, identical to the one
 starting with ``target_path`` drops that prefix and keeps the residual hops;
 any other ``path``, and any scalar, is returned unchanged.
 
-``AggregateKey.column_filter_key`` is deliberately copied UNCHANGED — see
-``TestColumnFilterKeyInvariance`` for why that is not an oversight.
-
 Refs: DEV-1747 (§5.4), DEV-1707 (the symmetric ``reroot_aggregate_key`` this
 generalises), DEV-1742 P-E.
 """
@@ -36,7 +33,6 @@ from slayer.core.keys import (
     InKey,
     LiteralKey,
     ScalarCallKey,
-    SqlExprKey,
     StarKey,
     TimeTruncKey,
     TransformKey,
@@ -125,65 +121,6 @@ class TestLeafKinds:
         )
         assert out.column == ColumnSqlKey(
             path=(), model="customers", column_name="signup_d",
-        )
-
-    def test_sql_expr_key_strips_referenced_join_paths(self) -> None:
-        """§5.4 lists ``SqlExprKey`` paths explicitly. A standalone fragment
-        anchored at the query root must be re-anchored at the target.
-
-        The EXACT-match path (``("customers",)`` under target ``("customers",)``)
-        does not survive as ``()``: the field is documented as "non-anchor
-        join-path prefixes", and ``()`` is its "same-model filter, no crossing"
-        marker. Carrying an empty tuple in the list said the opposite of what
-        the strip means (CodeRabbit)."""
-        out = reroot_value_key(
-            SqlExprKey(
-                canonical_sql="customers__regions.name = 'US'",
-                referenced_join_paths=(("customers",), ("customers", "regions")),
-            ),
-            target_path=TARGET,
-        )
-        assert out.canonical_sql == "customers__regions.name = 'US'"
-        assert out.referenced_join_paths == (("regions",),)
-
-    def test_stripping_re_canonicalises_for_identity(self) -> None:
-        """``model_copy`` skips validators in Pydantic v2, and the ``before``
-        validator is what sorts and de-duplicates the paths — while
-        ``__hash__`` / ``__eq__`` read the tuple directly.
-
-        So a strip that leaves two paths sharing a residual, or leaves them out
-        of sorted order, produces a key that will not intern against its own
-        equal. Both inputs below reroot to the same residual set; the two
-        results must be equal AND hash equal, or the registry mints two slots
-        for one value."""
-        a = reroot_value_key(
-            SqlExprKey(
-                canonical_sql="x",
-                # ``("customers", "regions")`` and a bare ``("regions",)``
-                # collapse onto the SAME residual after the strip.
-                referenced_join_paths=(("customers", "regions"), ("regions",)),
-            ),
-            target_path=TARGET,
-        )
-        assert a.referenced_join_paths == (("regions",),), (
-            f"duplicate residuals survived the strip: {a.referenced_join_paths}"
-        )
-
-        b = reroot_value_key(
-            SqlExprKey(
-                canonical_sql="x",
-                referenced_join_paths=(("regions",), ("customers", "regions")),
-            ),
-            target_path=TARGET,
-        )
-        assert a == b, (
-            "two orderings of the same paths rerooted to keys that compare "
-            "unequal — identity depends on the canonical form the validator "
-            "produces, which model_copy would have skipped"
-        )
-        assert hash(a) == hash(b), (
-            "the keys compare equal but hash differently, so they still land "
-            "in different registry buckets and mint two slots for one value"
         )
 
 
@@ -455,80 +392,6 @@ class TestTotalityAndFailClosed:
 
 
 # ---------------------------------------------------------------------------
-# Group 4 — column_filter_key invariance
-# ---------------------------------------------------------------------------
-class TestColumnFilterKeyInvariance:
-    """``AggregateKey.column_filter_key`` is copied unchanged, and that is
-    correct rather than an oversight.
-
-    ``binding._resolve_column_filter_key`` walks ``source.path`` FIRST and then
-    stamps ``anchor_model = <terminal model>``, so the fragment's
-    ``referenced_join_paths`` are expressed relative to the model that OWNS the
-    filtered column. Rerooting only changes how that owner is reached from the
-    query root; it never moves the owner. Hence the paths are invariant.
-
-    A standalone ``SqlExprKey`` (not attached to an aggregate) is a different
-    animal — it can be anchored at the query root, so it DOES strip. Both
-    directions are pinned so a future "simplification" that reroutes
-    ``column_filter_key`` through the stripping case fails here.
-    """
-
-    def _filtered_agg(self) -> AggregateKey:
-        return AggregateKey(
-            source=ColumnKey(path=("customers",), leaf="spend"),
-            agg="sum",
-            column_filter_key=SqlExprKey(
-                canonical_sql="regions.name = 'US'",
-                referenced_join_paths=(("regions",),),
-            ),
-        )
-
-    def test_column_filter_key_survives_reroot_unchanged(self) -> None:
-        key = self._filtered_agg()
-        out = reroot_value_key(key, target_path=TARGET)
-        assert out.source == ColumnKey(path=(), leaf="spend")
-        assert out.column_filter_key == key.column_filter_key
-
-    def test_column_filter_key_unchanged_even_when_paths_share_the_prefix(self) -> None:
-        """The adversarial case: the fragment's own paths LOOK strippable.
-        They must still not be stripped — they are owner-relative, and a strip
-        here would silently re-anchor the filter one hop too shallow."""
-        key = AggregateKey(
-            source=ColumnKey(path=("customers",), leaf="spend"),
-            agg="sum",
-            column_filter_key=SqlExprKey(
-                canonical_sql="customers.tier = 'gold'",
-                referenced_join_paths=(("customers",),),
-            ),
-        )
-        out = reroot_value_key(key, target_path=TARGET)
-        assert out.column_filter_key.referenced_join_paths == (("customers",),)
-
-    def test_standalone_sql_expr_key_does_strip(self) -> None:
-        """The contrasting direction — proves the invariance above is a
-        deliberate per-position rule, not a missing traversal."""
-        out = reroot_value_key(
-            SqlExprKey(
-                canonical_sql="x", referenced_join_paths=(("customers", "regions"),),
-            ),
-            target_path=TARGET,
-        )
-        assert out.referenced_join_paths == (("regions",),)
-
-    def test_multi_hop_target_keeps_owner_relative_filter(self) -> None:
-        key = AggregateKey(
-            source=ColumnKey(path=("customers", "regions"), leaf="pop"),
-            agg="sum",
-            column_filter_key=SqlExprKey(
-                canonical_sql="active = 1", referenced_join_paths=(),
-            ),
-        )
-        out = reroot_value_key(key, target_path=DEEP_TARGET)
-        assert out.source == ColumnKey(path=(), leaf="pop")
-        assert out.column_filter_key == key.column_filter_key
-
-
-# ---------------------------------------------------------------------------
 # Group 5 — the public-identity invariant §5.4 names explicitly
 # ---------------------------------------------------------------------------
 class TestPublicResultKeysUnchanged:
@@ -546,22 +409,20 @@ class TestPublicResultKeysUnchanged:
             key, target_path=TARGET,
         )
 
-    def test_agg_and_column_filter_fields_ride_through(self) -> None:
+    def test_agg_and_locus_fields_ride_through(self) -> None:
         """Fields the visitor does not own must survive — a rebuild that
         enumerated only the rerootable fields would silently drop them.
 
-        ``grain`` is set NON-default ("host"): left at its "target" default a
-        dropped-grain rebuild would re-default to the same value, so the
+        ``locus`` is set NON-default ("host"): left at its "target" default a
+        dropped-field rebuild would re-default to the same value, so the
         assertion could not fail."""
         key = AggregateKey(
             source=ColumnKey(path=("customers",), leaf="spend"),
             agg="approx_count_distinct",
-            column_filter_key=SqlExprKey(canonical_sql="a = 1"),
             locus="host",
         )
         out = reroot_value_key(key, target_path=TARGET)
         assert out.agg == "approx_count_distinct"
-        assert out.column_filter_key is not None
         assert out.locus == "host"
 
     def test_kwargs_stay_canonically_sorted_after_reroot(self) -> None:

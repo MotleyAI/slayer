@@ -25,9 +25,6 @@ region_events (id, region_id, value): 1 r1 50 | 2 r1 50 | 3 r2 30
 
 from __future__ import annotations
 
-import os
-import sqlite3
-import tempfile
 from typing import AsyncIterator, List, Optional
 
 import pytest
@@ -37,19 +34,19 @@ from slayer.core.models import (
     Aggregation,
     AggregationParam,
     Column,
-    DatasourceConfig,
     ModelJoin,
     ModelMeasure,
     SlayerModel,
 )
 from slayer.core.query import ColumnRef, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.storage.yaml_storage import YAMLStorage
+from slayer.storage.sqlite_conn import transaction
+from tests._engine_helpers import seeded_exec_engine
 
 from tests._dev1840_fixtures import (
     broadcast_warnings,
     dev1840_models,
-    dropped_filter_warnings,
+    month_key,
     rows_by,
     _CUSTOMERS_ROWS,
     _ORDERS_ROWS,
@@ -57,7 +54,7 @@ from tests._dev1840_fixtures import (
     _REGIONS_ROWS,
     _STORES_ROWS,
 )
-from tests._dev1841_fixtures import associated_warnings
+from tests._dev1841_fixtures import associated_warnings, pushed_filter_infos
 
 # --------------------------------------------------------------------------- #
 # Models — one rich graph; tests select the role via the measure / dimension.
@@ -169,31 +166,29 @@ def unparseable_derived_models() -> List[SlayerModel]:
 # Dual-engine seed (DEV-1840 tables used by the graph + region_events).
 # --------------------------------------------------------------------------- #
 def _seed_sqlite(db_path: str) -> None:
-    con = sqlite3.connect(db_path)
-    cur = con.cursor()
-    cur.execute("CREATE TABLE regions (id INTEGER PRIMARY KEY, name TEXT, pop REAL)")
-    cur.executemany("INSERT INTO regions VALUES (?,?,?)", _REGIONS_ROWS)
-    cur.execute("CREATE TABLE plans (code TEXT PRIMARY KEY, level TEXT, fee REAL)")
-    cur.executemany("INSERT INTO plans VALUES (?,?,?)", _PLANS_ROWS)
-    cur.execute(
-        "CREATE TABLE customers (id INTEGER PRIMARY KEY, region_id INTEGER, "
-        "plan_code TEXT, tier TEXT, spend REAL, signup_at TEXT)")
-    cur.executemany("INSERT INTO customers VALUES (?,?,?,?,?,?)", _CUSTOMERS_ROWS)
-    cur.execute(
-        "CREATE TABLE stores (co TEXT, no INTEGER, city TEXT, rent REAL, "
-        "PRIMARY KEY (co, no))")
-    cur.executemany("INSERT INTO stores VALUES (?,?,?,?)", _STORES_ROWS)
-    cur.execute(
-        "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, "
-        "status TEXT, channel TEXT, amount REAL, ordered_at TEXT, "
-        "store_co TEXT, store_no INTEGER)")
-    cur.executemany("INSERT INTO orders VALUES (?,?,?,?,?,?,?,?)", _ORDERS_ROWS)
-    cur.execute(
-        "CREATE TABLE region_events (id INTEGER PRIMARY KEY, region_id INTEGER, "
-        "value REAL)")
-    cur.executemany("INSERT INTO region_events VALUES (?,?,?)", _REGION_EVENTS_ROWS)
-    con.commit()
-    con.close()
+    with transaction(db_path) as con:
+        cur = con.cursor()
+        cur.execute("CREATE TABLE regions (id INTEGER PRIMARY KEY, name TEXT, pop REAL)")
+        cur.executemany("INSERT INTO regions VALUES (?,?,?)", _REGIONS_ROWS)
+        cur.execute("CREATE TABLE plans (code TEXT PRIMARY KEY, level TEXT, fee REAL)")
+        cur.executemany("INSERT INTO plans VALUES (?,?,?)", _PLANS_ROWS)
+        cur.execute(
+            "CREATE TABLE customers (id INTEGER PRIMARY KEY, region_id INTEGER, "
+            "plan_code TEXT, tier TEXT, spend REAL, signup_at TEXT)")
+        cur.executemany("INSERT INTO customers VALUES (?,?,?,?,?,?)", _CUSTOMERS_ROWS)
+        cur.execute(
+            "CREATE TABLE stores (co TEXT, no INTEGER, city TEXT, rent REAL, "
+            "PRIMARY KEY (co, no))")
+        cur.executemany("INSERT INTO stores VALUES (?,?,?,?)", _STORES_ROWS)
+        cur.execute(
+            "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, "
+            "status TEXT, channel TEXT, amount REAL, ordered_at TEXT, "
+            "store_co TEXT, store_no INTEGER)")
+        cur.executemany("INSERT INTO orders VALUES (?,?,?,?,?,?,?,?)", _ORDERS_ROWS)
+        cur.execute(
+            "CREATE TABLE region_events (id INTEGER PRIMARY KEY, region_id INTEGER, "
+            "value REAL)")
+        cur.executemany("INSERT INTO region_events VALUES (?,?,?)", _REGION_EVENTS_ROWS)
 
 
 def _seed_duckdb(db_path: str) -> None:
@@ -221,16 +216,6 @@ def _seed_duckdb(db_path: str) -> None:
     con.close()
 
 
-async def _engine_for(*, dialect: str, db_path: str,
-                      models: List[SlayerModel]) -> SlayerQueryEngine:
-    storage = YAMLStorage(base_dir=os.path.join(os.path.dirname(db_path), "store"))
-    await storage.save_datasource(
-        DatasourceConfig(name="test", type=dialect, database=db_path))
-    for model in models:
-        await storage.save_model(model, _validate=False)
-    return SlayerQueryEngine(storage=storage)
-
-
 async def make_exec_engine(
     request, *, models: Optional[List[SlayerModel]] = None,
 ) -> AsyncIterator[SlayerQueryEngine]:
@@ -239,15 +224,11 @@ async def make_exec_engine(
     dialect = request.param
     if dialect == "duckdb":
         pytest.importorskip("duckdb")
-    with tempfile.TemporaryDirectory() as d:
-        db_path = os.path.join(d, f"data.{dialect}")
-        if dialect == "sqlite":
-            _seed_sqlite(db_path)
-        else:
-            _seed_duckdb(db_path)
-        yield await _engine_for(
-            dialect=dialect, db_path=db_path,
-            models=models if models is not None else dev1900_models())
+    seed = _seed_duckdb if dialect == "duckdb" else _seed_sqlite
+    async with seeded_exec_engine(
+        dialect=dialect, seed=seed, models=models if models is not None else dev1900_models(),
+    ) as (engine, _db):
+        yield engine
 
 
 # --------------------------------------------------------------------------- #
@@ -320,13 +301,52 @@ POP_FILTER_STRUCTURAL_FAN_DEFECT = 520.0
 POP_FILTER_DERIVED_ASSOC = 120.0
 POP_FILTER_DERIVED_FAN_DEFECT = 220.0
 
+# --- DEV-1909 host-rooted regroup producers under the same 'ok' population ---
+#: sum(spend, partition_by=tier) by tier; the fan defect double-counts c1's two
+#: ok orders in gold (190 -> 290).
+POP_FILTER_PARTITIONED_BY_TIER = {"gold": 190.0, "silver": 230.0}
+POP_FILTER_PARTITIONED_GOLD_FAN_DEFECT = 290.0
+#: *:count of the distinct population customers per tier (gold c1,c3,c6; silver c2,c5).
+POP_FILTER_COUNT_BY_TIER = {"gold": 3, "silver": 2}
+#: sum(spend, window='1y') bucketed by customers.signup_at month over the 'ok'
+#: population, each customer once: trailing-1y cumulative 100/250/310/420 (April =
+#: c1+c2+c3+c5+c6). The fanning orders.ordered_at axis fails closed (decision 12);
+#: 520 was its pre-fix April fan defect (c1's two Jan ok orders double-counted).
+POP_FILTER_WINDOWED_BY_MONTH = {
+    "2024-01": 100.0, "2024-02": 250.0, "2024-03": 310.0, "2024-04": 420.0}
+POP_FILTER_WINDOWED_APRIL = 420.0
+POP_FILTER_WINDOWED_APRIL_FAN_DEFECT = 520.0
+#: first/last(spend, customers.signup_at) over the 'ok' population per tier:
+#: oldest-signup spend (gold c1=100, silver c2=150), newest (gold c6=30, silver
+#: c5=80). Fan-immune picks, but a sibling spend:sum must not multiply.
+POP_FILTER_FIRST_BY_TIER = {"gold": 100.0, "silver": 150.0}
+POP_FILTER_LAST_BY_TIER = {"gold": 30.0, "silver": 80.0}
+#: Nested avg(sum(spend, partition_by=tier)) with dims=[tier] is the degenerate
+#: identity: per-tier the inner total, each customer once (gold 190 not 290).
+POP_FILTER_NESTED_INNER_BY_TIER = {"gold": 190.0, "silver": 230.0}
+#: Two independent branches: customers with an ok order AND a region event >= 50
+#: (region North: c1,c2,c6) = 280.
+POP_FILTER_TWO_BRANCH = 280.0
+#: Producer-only orders.amount:sum over ok orders = 82; a predicate no order
+#: passes yields zero rows (empty-base spine carries the EXISTS).
+POP_FILTER_PRODUCER_ONLY = 82.0
+#: Raw-row mode: one row per distinct population customer with an ok order (5),
+#: never one per matching order (fan defect 6: c1's two ok orders).
+POP_FILTER_RAW_ROWS = 5
+#: Out-of-scope conjunct (tier='bronze' OR orders.status='ok') without an inline
+#: aggregate still restricts the result rows: tiers bronze, gold, silver.
+POP_FILTER_OUT_OF_SCOPE_TIERS = {"bronze", "gold", "silver"}
+#: Association arm untouched: associate spend:sum by orders.status filtered
+#: orders.amount in (20, 30) — new c1=100 / ok c2=150 (dev-1910, unchanged).
+POP_FILTER_ASSOC_BY_STATUS = {"new": 100.0, "ok": 150.0}
+
 __all__ = [
     "Aggregation", "AggregationParam", "Column", "ColumnRef", "DataType",
     "ModelJoin", "ModelMeasure", "SlayerModel", "SlayerQuery", "JoinCardinality",
     "dev1840_models", "dev1900_models", "region_events_model",
     "home_path_models", "unparseable_derived_models",
     "make_exec_engine", "orders_q", "cust_q",
-    "rows_by", "bad_pop_vals", "broadcast_warnings", "dropped_filter_warnings",
+    "rows_by", "bad_pop_vals", "broadcast_warnings",
     "associated_warnings",
     "BAD_POP", "AMOUNT_SUM", "SPEND_SUM", "REAGG_GOOD", "REAGG_BAD",
     "ASSOC_AMOUNT_BY_BAD_POP", "ASSOC_SPEND_BY_BAD_POP",
@@ -335,4 +355,12 @@ __all__ = [
     "TO_ONE_FILTER_AMOUNT", "HOME_WIDEN_VALUE", "POP_FILTER_STRUCTURAL_ASSOC",
     "POP_FILTER_STRUCTURAL_FAN_DEFECT", "POP_FILTER_DERIVED_ASSOC",
     "POP_FILTER_DERIVED_FAN_DEFECT",
+    "POP_FILTER_PARTITIONED_BY_TIER", "POP_FILTER_PARTITIONED_GOLD_FAN_DEFECT",
+    "POP_FILTER_COUNT_BY_TIER", "POP_FILTER_WINDOWED_BY_MONTH",
+    "POP_FILTER_WINDOWED_APRIL", "POP_FILTER_WINDOWED_APRIL_FAN_DEFECT",
+    "POP_FILTER_FIRST_BY_TIER", "POP_FILTER_LAST_BY_TIER",
+    "POP_FILTER_NESTED_INNER_BY_TIER", "POP_FILTER_TWO_BRANCH",
+    "POP_FILTER_PRODUCER_ONLY", "POP_FILTER_RAW_ROWS",
+    "POP_FILTER_OUT_OF_SCOPE_TIERS", "POP_FILTER_ASSOC_BY_STATUS",
+    "pushed_filter_infos", "month_key",
 ]

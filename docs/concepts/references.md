@@ -46,7 +46,9 @@ expressions, transform and arithmetic operands) and for **every** aggregation
 — builtin, aliased (`countD(x)` = `count_distinct(x)`), and model-defined
 custom aggregations. Declared parameters may be passed positionally in
 declaration order — `percentile(price, 0.9)` means `p=0.9` (`first`/`last`
-keep their positional ranking column instead).
+keep their positional ranking column instead). An aggregation that declares no
+parameters takes no positional value at all, and `first`/`last` at most one —
+their ranking column, a column reference, never a literal or a nested aggregate.
 
 Naming and matching read the parse tree, not the text: a measure declared
 `{"formula": "sum(revenue)", "name": "rev"}` is matched by a filter written

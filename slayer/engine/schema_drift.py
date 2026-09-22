@@ -23,9 +23,10 @@ from slayer.core.enums import DataType
 from slayer.core.models import (
     Column,
     DatasourceConfig,
+    ModelJoin,
     SlayerModel,
 )
-from slayer.core.query import SlayerQuery
+from slayer.core.query import ModelExtension, SlayerQuery, SourceSpec
 from slayer.core.refs import IDENTIFIER_RE
 from slayer.sql.sql_predicate import parse_sql_predicate
 from slayer.engine.introspect_utils import _safe_get_columns
@@ -682,10 +683,10 @@ def _add_remove_filter(
 
 def _resolve_stage_source_to_base(
     *,
-    source_model: object,
+    source_model: SourceSpec | None,
     prior_stages_by_name: dict[str, SlayerQuery],
 ) -> str | None:
-    """Walk a ``source_model`` ref (str / SlayerModel / ModelExtension / prior-stage name) back to a real persisted base model name."""
+    """Walk a ``source_model`` spec (or prior-stage name) back to a real persisted base model name."""
     seen: set[str] = set()
     current = source_model
     while True:
@@ -697,10 +698,8 @@ def _resolve_stage_source_to_base(
                 current = prior_stages_by_name[current].source_model
                 continue
             return current
-        # ModelExtension wraps a base model — unwrap via source_name (str).
-        source_name = getattr(current, "source_name", None)
-        if isinstance(source_name, str):
-            current = source_name
+        if isinstance(current, ModelExtension):
+            current = current.source_name
             continue
         if isinstance(current, SlayerModel):
             return current.name
@@ -923,35 +922,32 @@ def _stage_referenced_columns_for_base(
     )
 
 
+def _stage_source_joins(stage: SlayerQuery) -> list[ModelJoin]:
+    """Joins declared on a stage's inline source (extension or inline model); none for a bare name."""
+    source = stage.source_model
+    if isinstance(source, ModelExtension):
+        return source.joins or []
+    if isinstance(source, SlayerModel):
+        return source.joins
+    return []
+
+
 def _stage_join_targets(stage: SlayerQuery) -> set[str]:
-    """Join target_model names referenced by a stage (they live on a ``ModelExtension`` source_model; plain stages return the empty set)."""
-    source = getattr(stage, "source_model", None)
-    joins = getattr(source, "joins", None) or []
-    out: set[str] = set()
-    for j in joins:
-        target = getattr(j, "target_model", None)
-        if isinstance(target, str):
-            out.add(target)
-    return out
+    """Join target_model names referenced by a stage's inline source."""
+    return {j.target_model for j in _stage_source_joins(stage)}
 
 
 def _stage_extension_hops(stage: SlayerQuery) -> dict[str, str]:
-    """Addressable hop token → target model for a stage's ``ModelExtension``
+    """Addressable hop token → target model for a stage's inline-source
     joins: the join ``name`` when set; the bare target name only while a
     single join targets it (a parallel pair is unaddressable by target,
     matching the engine's ambiguity rule)."""
-    source = getattr(stage, "source_model", None)
-    joins = getattr(source, "joins", None) or []
     out: dict[str, str] = {}
     target_counts: dict[str, int] = {}
-    for j in joins:
-        target = getattr(j, "target_model", None)
-        if not isinstance(target, str):
-            continue
-        target_counts[target] = target_counts.get(target, 0) + 1
-        name = getattr(j, "name", None)
-        if name:
-            out[name] = target
+    for j in _stage_source_joins(stage):
+        target_counts[j.target_model] = target_counts.get(j.target_model, 0) + 1
+        if j.name:
+            out[j.name] = j.target_model
     for target, count in target_counts.items():
         if count == 1:
             out.setdefault(target, target)

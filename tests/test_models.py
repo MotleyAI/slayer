@@ -2031,10 +2031,10 @@ class TestStripSourceModelPrefix:
 
     def test_model_extension_dict_source(self) -> None:
         """ModelExtension dict with source_name is used for stripping."""
-        q = SlayerQuery(
-            source_model={"source_name": "orders"},
-            dimensions=["orders.status"],
-        )
+        q = SlayerQuery.model_validate({
+            "source_model": {"source_name": "orders"},
+            "dimensions": ["orders.status"],
+        })
         stripped = q.strip_source_model_prefix()
         assert stripped.dimensions[0].model is None
         assert stripped.dimensions[0].name == "status"

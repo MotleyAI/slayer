@@ -112,6 +112,35 @@ class ColumnCycleError(SlayerError, ValueError):
         super().__init__(f"Circular column reference detected: {chain}")
 
 
+class DerivedColumnFanningError(SlayerError, ValueError):
+    """A derived ``Column.sql``/``Column.filter`` reference provably crosses a fanning hop from its declaring model — a set per row, not a column; carries ``column``/``model``/``hop``/``kind``."""
+
+    def __init__(
+        self, *, column: str, model: str, hop: str, kind: str,
+        reference: str | None = None,
+    ) -> None:
+        self.column = column
+        self.model = model
+        self.hop = hop
+        self.kind = kind
+        self.reference = reference
+        remedy = f"{reference or f'{hop}.<column>'}:<aggregation>"
+        super().__init__(
+            f"Derived column {column!r} on model {model!r} has a {kind} reference "
+            f"crossing a fanning join hop to {hop!r}: it is a set per row, not a "
+            f"column of {model!r}. Aggregate the target column ({remedy}) or filter "
+            f"by it; if the hop is really to-one, declare its cardinality "
+            f"(many_to_one/one_to_one) or a covering unique key."
+        )
+
+
+class TimeDimensionColumnError(SlayerError, ValueError):
+    """A time dimension's column is non-temporal / untyped, or re-buckets to a granularity its upstream bucket does not nest into. Plain message (both variants pinned by the raise ledger)."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+
+
 class ModelSqlValidationError(SlayerError, ValueError):
     """Raw-``sql`` model source rejected by its reachable datasource at save time.
 
@@ -366,21 +395,6 @@ class CanonicalAliasShadowsColumnError(SlayerError, ValueError):
         ))
 
 
-class UnreachableFilterDroppedWarning(UserWarning):
-    """A host filter referenced slots unreachable from a cross-model CTE's root, so it was dropped from the CTE (still applied to host rows). Visibility warning, not an error."""
-
-    def __init__(self, filter_text: str, reason: str) -> None:
-        super().__init__(filter_text, reason)  # args mirror params so cls(*w.args) reconstructs across pytest-xdist
-        self.filter_text = filter_text
-        self.reason = reason
-
-    def __str__(self) -> str:
-        return (
-            f"Filter {self.filter_text!r} dropped from cross-model CTE "
-            f"(unreachable from CTE root): {self.reason}"
-        )
-
-
 class BroadcastGrainWarning(UserWarning):
     """A cross-model aggregate's implicit grain lost a dimension (not attributable from its root) to broadcasting; result grain unchanged. Visibility warning, not an error."""
 
@@ -532,6 +546,10 @@ class ForcedFilterError(SlayerError):
 
 class DistinctDimensionValuesError(SlayerError, ValueError):
     """``distinct_dimension_values=False`` (raw rows, no top-level ``GROUP BY``) conflicts with any aggregation or a query with no projected columns."""
+
+
+class GranularityCallError(SlayerError, ValueError):
+    """A functional ``gran(col)`` query entry is malformed or unresolvable: wrong-shape granularity call, an unknown ``name(col)`` dimension, a bare ``time_dimensions`` string, a same-column+granularity metadata conflict, or an order key with no matching projected time dimension."""
 
 
 class PositionTypingError(SlayerError, ValueError):

@@ -4,10 +4,16 @@ turns syntax into keys; expression-level binding lives in ``binding``)."""
 
 from __future__ import annotations
 
+from collections import Counter
 from typing import Callable, Dict, FrozenSet, List, Optional, Tuple, Union
 
 from slayer.core.enums import DataType
-from slayer.core.errors import AmbiguousJoinPathError, AmbiguousReferenceError, UnknownReferenceError
+from slayer.core.errors import (
+    AmbiguousJoinPathError,
+    AmbiguousReferenceError,
+    GranularityCallError,
+    UnknownReferenceError,
+)
 from slayer.core.format import NumberFormat
 from slayer.core.formula import TIME_TRANSFORMS
 from slayer.core.join_walker import resolve_hop, terminal_model
@@ -24,8 +30,10 @@ from slayer.core.keys import (
     TimeTruncKey,
     TransformKey,
     ValueKey,
+    lower_collapsing_constituents,
     lower_sugar_transforms,
     normalize_scalar,
+    normalize_transform_constituents,
     attached_operand_keys,
     rewrite_rank_partition_keys,
     walk_value_keys,
@@ -37,6 +45,7 @@ from slayer.core.query import (
     ORDER_PLACEHOLDER_NAMES,
     SlayerQuery,
     TimeDimension,
+    granularity_call_parts,
 )
 from slayer.core.refs import (
     AGG_REF_RE,
@@ -57,6 +66,7 @@ from slayer.engine.elaborate_env import (
     check_partition_key_resolves,
     check_raw_rows_filter_measure_ref,
     check_raw_rows_order_measure_ref,
+    check_time_dimension_column,
     check_time_dimension_date_range,
     check_time_shift_input,
     check_time_transforms_resolved,
@@ -123,7 +133,7 @@ def _attach_time_to_scalar_call(key: ScalarCallKey, *, td_key: TimeTruncKey) -> 
     new_args = tuple(
         _attach_time_keys(a, td_key=td_key)
         if isinstance(
-            a, (TransformKey, ArithmeticKey, ScalarCallKey, BetweenKey, InKey),
+            a, (AggregateKey, TransformKey, ArithmeticKey, ScalarCallKey, BetweenKey, InKey),
         )
         else a
         for a in key.args
@@ -150,10 +160,18 @@ def _attach_time_to_in(key: InKey, *, td_key: TimeTruncKey) -> ValueKey:
     return InKey(column=nc, values=key.values, negated=key.negated)
 
 
+def _attach_time_to_aggregate(key: AggregateKey, *, td_key: TimeTruncKey) -> ValueKey:
+    # An aggregated transform constituent gets the query's bucket too — descend
+    # source, args and kwargs (identity-preserving, like ``map_children``).
+    return key.map_children(lambda c: _attach_time_keys(c, td_key=td_key))
+
+
 def _attach_time_keys(
     key: ValueKey, *, td_key: TimeTruncKey,
 ) -> ValueKey:
     """Set ``time_key=td_key`` on every time-needing TransformKey with a null one (identity-preserving)."""
+    if isinstance(key, AggregateKey):
+        return _attach_time_to_aggregate(key, td_key=td_key)
     if isinstance(key, TransformKey):
         return _attach_time_to_transform(key, td_key=td_key)
     if isinstance(key, ArithmeticKey):
@@ -282,11 +300,15 @@ def _map_bound_keys(
     declared_measures: List[DeclaredMeasure],
     bound_filters: List[BoundFilter],
     order_specs: List[OrderSpec],
+    skip_dimensions: bool = False,
 ) -> Tuple[List[DeclaredMeasure], List[BoundFilter], List[OrderSpec]]:
     new_measures = [
         DeclaredMeasure(
             bound=BoundExpr(
-                value_key=key_fn(dm.bound.value_key),
+                value_key=(
+                    dm.bound.value_key if (skip_dimensions and dm.is_dimension)
+                    else key_fn(dm.bound.value_key)
+                ),
                 routed_dotted=dm.bound.routed_dotted,
             ),
             declared_name=dm.declared_name,
@@ -382,19 +404,18 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
 
     # Filter list in WHERE order: date_range, model filters (Mode-A SQL), then user query filters.
     bound_filters: List[BoundFilter] = []
-    # Parallel original filter text (None for date_range bounds), for dropped-filter warnings.
+    # Parallel original filter text (None for date_range bounds), for semi-join push entries.
     bound_filter_texts: List[Optional[str]] = []
 
     # 1. date_range filters (one per TD with a 2-element date_range)
     for td in (query.time_dimensions or []):
         if not td.date_range or len(td.date_range) != 2:
             continue
-        # Checked before the scope skip so non-ModelScope stages raise too.
         check_time_dimension_date_range(
             full_name=td.dimension.full_name, date_range=td.date_range,
         )
-        if not isinstance(scope, ModelScope):
-            continue
+        # A stage date_range filters the stage's rows on its bare column, exactly
+        # as a model-scope range filters a model's rows (DEV-1471).
         bf = _build_date_range_filter(td=td, scope=scope, bundle=bundle)
         bound_filters.append(bf)
         bound_filter_texts.append(None)
@@ -425,6 +446,32 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
     for o in (query.order or []):
         col_name = o.column.name
         full_name = o.column.full_name
+        # A functional ``gran(col)`` order key sorts by the projected time
+        # dimension's bucket — resolved to its column binding (DEV-1883).
+        gran_parts = granularity_call_parts(o.raw_formula) if o.raw_formula else None
+        if gran_parts is not None:
+            _col, _gran = gran_parts
+            matching_td = next(
+                (
+                    td for td in (query.time_dimensions or [])
+                    if td.dimension.full_name == _col and td.granularity.value == _gran
+                ),
+                None,
+            )
+            if matching_td is None:
+                raise GranularityCallError(
+                    f"Order key {_gran}({_col}) has no matching projected time "
+                    f"dimension. Project a time_dimension on {_col!r} at {_gran} "
+                    f"granularity (e.g. {_gran}({_col}) in dimensions) to order by "
+                    f"its bucket."
+                )
+            order_specs.append(OrderSpec(
+                bound=bind_time_dimension(
+                    td=matching_td, scope=scope, bundle=bundle,
+                ).bound,
+                direction=o.direction,
+            ))
+            continue
         # A placeholder ColumnRef means the item is an EXPRESSION: bind raw_formula, skip alias lookups.
         if col_name in ORDER_PLACEHOLDER_NAMES and o.raw_formula:
             order_specs.append(OrderSpec(
@@ -488,19 +535,17 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
             )
         order_specs.append(OrderSpec(bound=bo, direction=o.direction))
 
-    # Attach the active TD as time_key on every time-needing TransformKey the binder left at None.
+    # Attach the active TD as time_key on every time-needing TransformKey the binder
+    # left at None — the stage's own bucket is the axis on a StageSchema (DEV-1471).
     active_td_key: Optional[TimeTruncKey] = None
-    if isinstance(scope, ModelScope) and scope.source_model is not None:
-        active_td = _resolve_main_time_dimension(
-            query=query, model=scope.source_model,
-        )
-        if active_td is not None:
-            active_td_bound = bind_time_dimension(
-                td=active_td, scope=scope, bundle=bundle,
-            )
-            atd_key = active_td_bound.value_key
-            assert isinstance(atd_key, TimeTruncKey)
-            active_td_key = atd_key
+    _active_model = scope.source_model if isinstance(scope, ModelScope) else None
+    active_td = _resolve_main_time_dimension(query=query, model=_active_model)
+    if active_td is not None:
+        atd_key = bind_time_dimension(
+            td=active_td, scope=scope, bundle=bundle,
+        ).bound.value_key
+        assert isinstance(atd_key, TimeTruncKey)
+        active_td_key = atd_key
 
     if active_td_key is not None:
         declared_measures, bound_filters, order_specs = _map_bound_keys(
@@ -554,6 +599,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
     # A source column at two granularities maps to two buckets — a bare partition_by is then ambiguous.
     _td_by_source: Dict[ValueKey, TimeTruncKey] = {}
     _td_ambiguous_sources: set = set()
+    _td_key_set: set[TimeTruncKey] = set()  # every projected bucket, not one per column
     for dm in _td_dms:
         vk = dm.bound.value_key
         if not isinstance(vk, TimeTruncKey):
@@ -562,8 +608,24 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         if vk.column in _td_by_source and _td_by_source[vk.column] != vk:
             _td_ambiguous_sources.add(vk.column)
         _td_by_source[vk.column] = vk
-    _td_key_set = set(_td_by_source.values())
+        _td_key_set.add(vk)
     _available_dims = [dm.declared_name for dm in (*_dim_dms, *_td_dms)]
+
+    # Normalise transform constituents (D4b, Axiom 11.1): an ungrained, non-windowed,
+    # local inner aggregate inside a transform constituent (measure/filter/order, not
+    # dimensions) is explicitly grained at the query grain — BEFORE partition-key
+    # validation, so the synthesized keys face the same attributability / resolution
+    # checks as a user-written partition_by=. Every dependent set below (dim-agg,
+    # combined-consumer, reagg-operand) is computed AFTER, over the normalised keys.
+    _query_grain = Grain.of([*_dim_key_set, *_td_key_set])
+    declared_measures, bound_filters, order_specs = _map_bound_keys(
+        lambda vk: normalize_transform_constituents(vk, query_grain=_query_grain),
+        declared_measures=declared_measures,
+        bound_filters=bound_filters,
+        order_specs=order_specs,
+        skip_dimensions=True,
+    )
+
     # A partitioned aggregate inside a computed dimension declares a producer grain (partition_by may be finer than the query).
     _dim_agg_keys = frozenset(dimension_partitioned_aggregates(declared_measures))
     # A COMBINED-position partitioned aggregate needs query-dimension partition keys
@@ -621,7 +683,20 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         order_specs=order_specs,
     )
 
-    check_dimension_temporal_axis(declared_measures)
+    check_dimension_temporal_axis(
+        declared_measures, bound_filters=bound_filters, order_specs=order_specs,
+    )
+
+    # Lower a collapsing transform constituent (first/last, D4c) to an exact
+    # per-partition pick AFTER the axis check (which sees the raw transform); the
+    # synthesized max's partition_by is a carrier grain key, validated inside the
+    # carrier sub-plan, so it runs after _rw. All positions.
+    declared_measures, bound_filters, order_specs = _map_bound_keys(
+        lower_collapsing_constituents,
+        declared_measures=declared_measures,
+        bound_filters=bound_filters,
+        order_specs=order_specs,
+    )
 
     return PreboundQuery(
         declared_measures=declared_measures,
@@ -938,17 +1013,36 @@ def _declared_measures_from_query(  # NOSONAR(S3776) — three sequential projec
             format=fmt,
             description=desc,
         ))
-    # Time dimensions follow dimensions in the public projection.
+    # Time dimensions follow dimensions in the public projection. Same-column
+    # time dimensions (distinct granularities) get granularity-suffixed public
+    # names so their result keys disambiguate (DEV-1883); a lone one keeps the
+    # DEV-1744 granularity-free key.
+    bound_tds: List[Tuple[TimeDimension, BoundExpr, str]] = []
     for td in (query.time_dimensions or []):
-        full = td.dimension.full_name
-        bound = bind_time_dimension(td=td, scope=scope, bundle=bundle)
-        canonical = bound.routed_dotted or full
-        flat_name = _flatten_dotted(canonical)
-        _guard_flatten(flat_name=flat_name, origin=canonical)
+        btd = bind_time_dimension(td=td, scope=scope, bundle=bundle)
+        # The temporal / re-bucketing type rules are the checker's (P9).
+        check_time_dimension_column(
+            name=td.dimension.full_name,
+            column_type=btd.column_type,
+            upstream_granularity=btd.upstream_granularity,
+            requested_granularity=td.granularity,
+        )
+        bound_tds.append(
+            (td, btd.bound, btd.bound.routed_dotted or td.dimension.full_name)
+        )
+    _assert_equivalent_tds_agree(bound_tds)
+    _td_flat_counts = Counter(_flatten_dotted(canon) for _, _, canon in bound_tds)
+    for td, bound, canonical in bound_tds:
+        base_flat = _flatten_dotted(canonical)
+        public = (
+            f"{base_flat}.{td.granularity.value}"
+            if _td_flat_counts[base_flat] > 1 else base_flat
+        )
+        _guard_flatten(flat_name=_flatten_dotted(public), origin=canonical)
         declared.append(DeclaredMeasure(
             bound=bound,
-            declared_name=flat_name,
-            public_name=flat_name,
+            declared_name=public,
+            public_name=public,
             label=td.label,
             type=DataType.TIMESTAMP,
         ))
@@ -1060,7 +1154,7 @@ def _canonical_alias_for_formula(
 def _build_date_range_filter(
     *,
     td: TimeDimension,
-    scope: ModelScope,
+    scope: Union[ModelScope, StageSchema],
     bundle: ResolvedSourceBundle,
 ) -> BoundFilter:
     """Build a row-phase ``BoundFilter`` from a TimeDimension's ``date_range`` as an inclusive ``BetweenKey``, bound against the bare underlying column (not the TimeTruncKey)."""
@@ -1089,32 +1183,56 @@ def _build_date_range_filter(
     )
 
 
+def _assert_equivalent_tds_agree(
+    bound_tds: List[Tuple[TimeDimension, BoundExpr, str]],
+) -> None:
+    """Time dimensions binding to one ``TimeTruncKey`` (equivalent column spellings) must
+    agree on ``date_range``/``label``; otherwise their date-range filters and shared
+    projection column silently conflict. Construction dedup catches this once the query is
+    rooted — this is the bind-time backstop for spellings that only prove equivalent here
+    (full identity matching lands in DEV-1925)."""
+    seen: Dict[ValueKey, TimeDimension] = {}
+    for td, bound, _ in bound_tds:
+        prior = seen.setdefault(bound.value_key, td)
+        if prior is not td and (prior.date_range, prior.label) != (td.date_range, td.label):
+            raise GranularityCallError(
+                f"Conflicting time dimensions on {td.dimension.full_name!r} at "
+                f"{td.granularity.value} granularity: equivalent columns must not "
+                f"differ in date range or label."
+            )
+
+
 def _named_td_matches(
     *, tds: List[TimeDimension], target: str,
-) -> Tuple[Optional[TimeDimension], List[TimeDimension]]:
-    """(full-name match, leaf matches) for ``target`` among ``tds``."""
-    for td in tds:
-        if td.dimension.full_name == target:
-            return td, []
-    return None, [td for td in tds if td.dimension.name == target]
+) -> Tuple[List[TimeDimension], List[TimeDimension]]:
+    """(full-name matches, leaf matches) for ``target`` among ``tds``. Two same-column
+    buckets share a full_name, so full matches is a list, not a single TD (DEV-1883)."""
+    full = [td for td in tds if td.dimension.full_name == target]
+    if full:
+        return full, []
+    return [], [td for td in tds if td.dimension.name == target]
 
 
 def _host_local_default_td(
     *, tds: List[TimeDimension], default: str,
 ) -> Optional[TimeDimension]:
     # The default points only at the host model; prefer a host-local TD over a same-leaf joined one.
-    for td in tds:
-        if td.dimension.model is None and td.dimension.name == default:
-            return td
-    return None
+    matches = [
+        td for td in tds
+        if td.dimension.model is None and td.dimension.name == default
+    ]
+    # Same column at several granularities: the passive model default can't pick a
+    # bucket. Resolve to None (not raise) so no-transform queries still run; a
+    # transform that needs the axis then fails via check_time_transforms_resolved.
+    return matches[0] if len(matches) == 1 else None
 
 
 def _resolve_main_time_dimension(
     *,
     query: SlayerQuery,
-    model: SlayerModel,
+    model: Optional[SlayerModel],
 ) -> Optional[TimeDimension]:
-    """Resolve the active time dimension for transform/windowing: 0 TDs → None; 1 → that TD; 2+ → main_time_dimension (full_name then leaf) else default_time_dimension else None."""
+    """Resolve the active time dimension for transform/windowing: 0 TDs → None; 1 → that TD; 2+ → main_time_dimension (full_name then leaf) else the model's default_time_dimension else None. A stage has no model, so its default step is skipped."""
     tds = list(query.time_dimensions or [])
     if not tds:
         return None
@@ -1124,9 +1242,19 @@ def _resolve_main_time_dimension(
     if query.main_time_dimension:
         target = query.main_time_dimension
         # Prefer full-name (more specific) over leaf match.
-        full_match, leaf_matches = _named_td_matches(tds=tds, target=target)
-        if full_match is not None:
-            return full_match
+        full_matches, leaf_matches = _named_td_matches(tds=tds, target=target)
+        if len(full_matches) == 1:
+            return full_matches[0]
+        if len(full_matches) > 1:
+            # Same column, several granularities: a bare column can't pick a bucket.
+            # Per-granularity selection (e.g. year(created_at)) lands in DEV-1925.
+            raise AmbiguousReferenceError(
+                name=target,
+                candidates=[
+                    f"{td.granularity.value}({td.dimension.full_name})"
+                    for td in full_matches
+                ],
+            )
         if len(leaf_matches) == 1:
             return leaf_matches[0]
         if len(leaf_matches) > 1:
@@ -1145,7 +1273,7 @@ def _resolve_main_time_dimension(
             suggestion=None,
         )
 
-    default = model.default_time_dimension
+    default = model.default_time_dimension if model is not None else None
     if default:
         return _host_local_default_td(tds=tds, default=default)
     return None

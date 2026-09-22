@@ -73,9 +73,7 @@ Stage-2 filter band==1 by region: North=60 South=40 NULL=7; re-agg by band:
 
 from __future__ import annotations
 
-import os
-import sqlite3
-import tempfile
+from slayer.storage.sqlite_conn import transaction
 from typing import AsyncIterator, List
 
 import pytest
@@ -85,14 +83,13 @@ from slayer.core.models import (
     Aggregation,
     AggregationParam,
     Column,
-    DatasourceConfig,
     ModelJoin,
     ModelMeasure,
     SlayerModel,
 )
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.storage.yaml_storage import YAMLStorage
+from tests._engine_helpers import seeded_exec_engine
 
 from tests._dev1835_fixtures import cte_aliases  # noqa: F401 — re-exported
 from tests._engine_helpers import _engine_generate
@@ -264,7 +261,6 @@ SPEND_TOTAL = 350.0
 SPEND_BY_TIER = {"gold": 100.0, "silver": 210.0, "bronze": 40.0}
 
 #: Value-preservation pins for shapes that STAY legal under per-role safety.
-GOLD_LAST_BY_STATUS = {"ok": 10.0, "new": 20.0}
 LAST_BY_SIGNUP_BY_STATUS = {"ok": 5.0, "new": 40.0}
 
 #: band × wm — (region, band, month) → (m, w). The interning flagship shape.
@@ -337,28 +333,26 @@ _TAGS_ROWS = [
 
 
 def _seed_sqlite(db_path: str) -> None:
-    con = sqlite3.connect(db_path)
-    cur = con.cursor()
-    cur.execute("CREATE TABLE regions (id INTEGER PRIMARY KEY, name TEXT, weight REAL)")
-    cur.executemany("INSERT INTO regions VALUES (?,?,?)", _REGIONS_ROWS)
-    cur.execute(
-        "CREATE TABLE segments (code TEXT, label TEXT, boost REAL, updated_at TEXT)"
-    )
-    cur.executemany("INSERT INTO segments VALUES (?,?,?,?)", _SEGMENTS_ROWS)
-    cur.execute(
-        "CREATE TABLE customers (id INTEGER PRIMARY KEY, region_id INTEGER, "
-        "segment_code TEXT, tier TEXT, spend REAL, signup_at TEXT)"
-    )
-    cur.executemany("INSERT INTO customers VALUES (?,?,?,?,?,?)", _CUSTOMERS_ROWS)
-    cur.execute(
-        "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, "
-        "region TEXT, city TEXT, amount REAL, status TEXT, ordered_at TEXT)"
-    )
-    cur.executemany("INSERT INTO orders VALUES (?,?,?,?,?,?,?)", _ORDERS_ROWS)
-    cur.execute("CREATE TABLE tags (order_id INTEGER, kind TEXT, factor REAL)")
-    cur.executemany("INSERT INTO tags VALUES (?,?,?)", _TAGS_ROWS)
-    con.commit()
-    con.close()
+    with transaction(db_path) as con:
+        cur = con.cursor()
+        cur.execute("CREATE TABLE regions (id INTEGER PRIMARY KEY, name TEXT, weight REAL)")
+        cur.executemany("INSERT INTO regions VALUES (?,?,?)", _REGIONS_ROWS)
+        cur.execute(
+            "CREATE TABLE segments (code TEXT, label TEXT, boost REAL, updated_at TEXT)"
+        )
+        cur.executemany("INSERT INTO segments VALUES (?,?,?,?)", _SEGMENTS_ROWS)
+        cur.execute(
+            "CREATE TABLE customers (id INTEGER PRIMARY KEY, region_id INTEGER, "
+            "segment_code TEXT, tier TEXT, spend REAL, signup_at TEXT)"
+        )
+        cur.executemany("INSERT INTO customers VALUES (?,?,?,?,?,?)", _CUSTOMERS_ROWS)
+        cur.execute(
+            "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, "
+            "region TEXT, city TEXT, amount REAL, status TEXT, ordered_at TEXT)"
+        )
+        cur.executemany("INSERT INTO orders VALUES (?,?,?,?,?,?,?)", _ORDERS_ROWS)
+        cur.execute("CREATE TABLE tags (order_id INTEGER, kind TEXT, factor REAL)")
+        cur.executemany("INSERT INTO tags VALUES (?,?,?)", _TAGS_ROWS)
 
 
 def _seed_duckdb(db_path: str) -> None:
@@ -386,29 +380,15 @@ def _seed_duckdb(db_path: str) -> None:
     con.close()
 
 
-async def _engine_for(*, dialect: str, db_path: str) -> SlayerQueryEngine:
-    storage = YAMLStorage(base_dir=os.path.join(os.path.dirname(db_path), "store"))
-    await storage.save_datasource(
-        DatasourceConfig(name="test", type=dialect, database=db_path)
-    )
-    for model in dev1838_models():
-        await storage.save_model(model, _validate=False)
-    return SlayerQueryEngine(storage=storage)
-
-
 async def make_exec_engine(request) -> AsyncIterator[SlayerQueryEngine]:
     """Body for a ``params=["sqlite", "duckdb"]`` fixture; each test module
     wraps this in ``@pytest.fixture`` so the fixture name lives where used."""
     dialect = request.param
     if dialect == "duckdb":
         pytest.importorskip("duckdb")
-    with tempfile.TemporaryDirectory() as d:
-        db_path = os.path.join(d, f"data.{dialect}")
-        if dialect == "sqlite":
-            _seed_sqlite(db_path)
-        else:
-            _seed_duckdb(db_path)
-        yield await _engine_for(dialect=dialect, db_path=db_path)
+    seed = _seed_duckdb if dialect == "duckdb" else _seed_sqlite
+    async with seeded_exec_engine(dialect=dialect, seed=seed, models=dev1838_models()) as (engine, _db):
+        yield engine
 
 
 def month_key(value) -> str:
@@ -430,16 +410,11 @@ def broadcast_warnings(resp) -> list:
             if getattr(w, "kind", None) == "broadcast"]
 
 
-def dropped_filter_warnings(resp) -> list:
-    return [w for w in (resp.warnings or [])
-            if getattr(w, "kind", None) == "unreachable_filter_dropped"]
-
-
 __all__ = [
     "orders_model", "customers_model", "regions_model", "segments_model",
     "tags_model", "dev1838_models",
     "q", "gen", "month_td", "month_key", "rows_by", "cte_aliases",
-    "broadcast_warnings", "dropped_filter_warnings",
+    "broadcast_warnings",
     "BAND25", "BAND", "BAND25_OF", "SPEND_BAND",
     "AMOUNT_TOTAL", "AMOUNT_BY_STATUS", "AMOUNT_BY_REGION", "CITY_TOTAL",
     "GOLD_BY_STATUS", "ALPHA_TRUE_BY_STATUS", "ALPHA_FANNED_BY_STATUS",
@@ -447,7 +422,7 @@ __all__ = [
     "WSCALED_BY_STATUS", "TSCALED_BY_STATUS",
     "FACTOR_MIN_BY_STATUS", "FACTOR_MAX_BY_STATUS",
     "SPEND_TOTAL", "SPEND_BY_TIER",
-    "GOLD_LAST_BY_STATUS", "LAST_BY_SIGNUP_BY_STATUS",
+    "LAST_BY_SIGNUP_BY_STATUS",
     "BAND_WM", "BAND_GOLD", "BAND_TIER_ORDER", "LASTDIM_GOLD",
     "SPEND_LAST_BAND",
     "STAGE1_BANDED", "BAND1_BY_REGION", "BT_BY_BAND",

@@ -4,7 +4,6 @@ Blocks + list-valued IN pushdowns are exercised against a real file-backed
 SQLite datasource, asserting on RESULT DATA. Also pins the substitution
 fast-path boundary (the documented DEV-1625 required-only-zero-vars hole).
 """
-import sqlite3
 import tempfile
 
 import pytest
@@ -17,22 +16,21 @@ from slayer.engine.query_engine import (
     _substitute_model_sql_surfaces,
 )
 from slayer.sql.dialects import SqliteDialect
+from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 
 
 def _seed(db_path) -> None:
-    conn = sqlite3.connect(str(db_path))
-    cur = conn.cursor()
-    cur.execute(
-        "CREATE TABLE orders (id INTEGER PRIMARY KEY, region TEXT, amount REAL)"
-    )
-    cur.executemany(
-        "INSERT INTO orders VALUES (?, ?, ?)",
-        [(1, "US", 100.0), (2, "US", 60.0), (3, "EU", 200.0),
-         (4, "EU", 75.0), (5, "CA", 300.0)],
-    )
-    conn.commit()
-    conn.close()
+    with transaction(str(db_path)) as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "CREATE TABLE orders (id INTEGER PRIMARY KEY, region TEXT, amount REAL)"
+        )
+        cur.executemany(
+            "INSERT INTO orders VALUES (?, ?, ?)",
+            [(1, "US", 100.0), (2, "US", 60.0), (3, "EU", 200.0),
+             (4, "EU", 75.0), (5, "CA", 300.0)],
+        )
 
 
 async def _engine_with(*models: SlayerModel):

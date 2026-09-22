@@ -21,7 +21,6 @@ Also pins:
 from __future__ import annotations
 
 import asyncio
-import sqlite3
 import tempfile
 from collections.abc import AsyncIterator
 
@@ -39,6 +38,7 @@ from slayer.search.service import (
     SearchService,
 )
 from slayer.storage.base import DatasourceConfig, StorageBackend, resolve_storage
+from slayer.storage.sqlite_conn import open_connection, transaction
 
 from tests.search_helpers import seed_warehouse_models
 
@@ -512,18 +512,16 @@ async def stale_setup() -> AsyncIterator[tuple[StorageBackend, SlayerQueryEngine
     sample-value data (``sampled_values=None``)."""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_file = f"{tmpdir}/data.db"
-        conn = sqlite3.connect(db_file)
-        conn.execute(
-            "CREATE TABLE orders (id INTEGER PRIMARY KEY, amount REAL, status TEXT)"
-        )
-        # Populate with two distinct statuses so distinct_count is meaningful.
-        rows = [
-            (i, float(i), "paid" if i % 2 == 0 else "refunded")
-            for i in range(1, 21)
-        ]
-        conn.executemany("INSERT INTO orders VALUES (?, ?, ?)", rows)
-        conn.commit()
-        conn.close()
+        with transaction(db_file) as conn:
+            conn.execute(
+                "CREATE TABLE orders (id INTEGER PRIMARY KEY, amount REAL, status TEXT)"
+            )
+            # Populate with two distinct statuses so distinct_count is meaningful.
+            rows = [
+                (i, float(i), "paid" if i % 2 == 0 else "refunded")
+                for i in range(1, 21)
+            ]
+            conn.executemany("INSERT INTO orders VALUES (?, ?, ?)", rows)
 
         storage = resolve_storage(f"{tmpdir}/storage")
         await storage.save_datasource(DatasourceConfig(
@@ -641,7 +639,10 @@ async def test_search_refreshes_stale_column_hit_via_question_corpus(
     )
     text = column_hits[0].text
     # Refreshed text must include the live values.
-    assert "paid" in text and "refunded" in text, (
+    assert "paid" in text, (
+        "question-path column hit must also receive the post-fusion refresh"
+    )
+    assert "refunded" in text, (
         "question-path column hit must also receive the post-fusion refresh"
     )
     # And the refresh persisted to storage.
@@ -803,12 +804,9 @@ async def test_search_per_model_serialization_concurrent_hits(
     ds = await storage.get_datasource("warehouse")
     assert ds is not None
     assert ds.database is not None
-    conn = sqlite3.connect(ds.database)
-    try:
+    with open_connection(ds.database) as conn:
         conn.execute("ALTER TABLE orders ADD COLUMN region TEXT DEFAULT 'EMEA'")
         conn.commit()
-    finally:
-        conn.close()
     # Track the order of update_column_sampled calls per model. Capture
     # the column name and a start/stop marker so we can detect overlap.
     persist_events: list = []
@@ -892,8 +890,7 @@ async def test_search_cross_model_concurrency_is_allowed(
     ds = await storage.get_datasource("warehouse")
     assert ds is not None
     assert ds.database is not None
-    conn = sqlite3.connect(ds.database)
-    try:
+    with open_connection(ds.database) as conn:
         conn.execute(
             "CREATE TABLE customers (id INTEGER PRIMARY KEY, region TEXT)"
         )
@@ -902,8 +899,6 @@ async def test_search_cross_model_concurrency_is_allowed(
             [(i, "EMEA" if i % 2 == 0 else "APAC") for i in range(1, 11)],
         )
         conn.commit()
-    finally:
-        conn.close()
     await storage.save_model(SlayerModel(
         name="customers",
         sql_table="customers",

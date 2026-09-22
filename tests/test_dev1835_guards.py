@@ -3,8 +3,8 @@
 Deleted: the DEV-1837 windowed/ranked coexistence arm, DEV-1504 G4/G5/G6/G7 +
 the post-projection mixed-filter twin, ``time_shift``-over-ranked, and the
 residual DEV-1839 windowed/first-last union-grain guard — asserted absent from
-the package sources. Preserved verbatim: G1 (sum/avg only), G8 (duration
-syntax), G2 (time resolution), and the ranked no-ranking-column error.
+the package sources. Preserved verbatim: G8 (duration syntax), G2 (time
+resolution), and the ranked no-ranking-column error.
 Resolved: G3 (windowed cross-model) is now a precise DEV-1836 attributability
 error naming the unreachable time dimension, no longer a DEV-1504 deferral.
 
@@ -53,10 +53,6 @@ DELETED_MESSAGE_FRAGMENTS = {
     ),
 }
 
-G1_MESSAGE = (
-    "Aggregation parameter 'window' is only supported for sum and avg, "
-    "not '{agg}'."
-)
 G8_MALFORMED = "Invalid window duration '90x'. Use syntax like '1y2m3w5d6h7min8s'."
 G2_MESSAGE = (
     "Windowed measure could not resolve its time dimension. Add a single "
@@ -89,16 +85,6 @@ class TestDeletedGuardResidue:
 
 
 class TestPreservedGuardsVerbatim:
-    @pytest.mark.parametrize("agg", ["max", "count"])
-    async def test_g1_windowed_sum_avg_only(self, agg: str) -> None:
-        query = q(
-            dimensions=["region"], time_dimensions=month_td(),
-            measures=[ModelMeasure(formula=f"amount:{agg}(window='90d')", name="w")],
-        )
-        with pytest.raises(ValueError) as ei:
-            await _gen(query)
-        assert str(ei.value) == G1_MESSAGE.format(agg=agg)
-
     async def test_g8_malformed_duration(self) -> None:
         query = q(
             dimensions=["region"], time_dimensions=month_td(),
@@ -142,7 +128,7 @@ class TestRepointedGuards:
                 formula="customers.spend:sum(window='90d')", name="w",
             )],
         )
-        with pytest.raises(ValueError, match=r"(?i)cross-model") as ei:
+        with pytest.raises(ValueError, match=r"attributable from") as ei:
             await _gen(query)
         msg = str(ei.value)
         assert "ordered_at_month" in msg

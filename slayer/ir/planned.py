@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import functools
 from enum import Enum, IntEnum
-from typing import Any, Dict, List, Literal, Optional, Tuple, Union, Hashable
+from typing import Dict, List, Literal, Optional, Tuple, Union, Hashable
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -242,9 +242,12 @@ class FilterReachability(BaseModel):
 class EmptyBaseGrainPlan(BaseModel):
     """Host base has no columns of its own — ``_base`` is a one-row spine for the CROSS
     JOIN. ``host_filter_ids`` (if any) gate it via ``FROM <host> WHERE ... LIMIT 1``, the
-    LIMIT stopping the N filtered rows from repeating the scalar N times."""
+    LIMIT stopping the N filtered rows from repeating the scalar N times.
+    ``host_gated`` (DEV-1909) marks a population restricted by a correlated semi-join, so
+    the spine builds the host FROM and applies the EXISTS even without a plain field mask."""
 
     host_filter_ids: List[BoundFilterId] = Field(default_factory=list)
+    host_gated: bool = False
 
 
 class SemiJoinHop(BaseModel):
@@ -257,6 +260,12 @@ class SemiJoinHop(BaseModel):
     target_model: str
     join_pairs: Tuple[Tuple[str, str], ...]
     node_path: Tuple[str, ...]
+    #: The declared edge is LEFT (default) rather than INNER — the null-rejection
+    #: analysis's input (a declared-INNER hop is never null-extended) (DEV-1935).
+    declared_left: bool = True
+    #: The hop renders LEFT-joined from a one-row spine (its NULL extension can
+    #: satisfy the predicate); otherwise today's inner correlation (DEV-1935).
+    null_extended: bool = False
 
     @property
     def node_id(self) -> str:
@@ -301,6 +310,22 @@ class RankedProducerKernel(BaseModel):
     ranking_time_key: ValueKey
 
 
+class PickedParam(BaseModel):
+    """An aggregation parameter lifted onto the two-level kernel:
+    picked once per level-1 cell as ``MAX(<value>) AS _p<i>`` and read by level 2
+    as ``_base._p<i>``. Exactly one source form is set — ``key`` (a column /
+    placeholder / composite value key rendered through the scope, with a
+    ``ColumnSqlKey`` taking the derived expansion) or ``sql`` (a canonical Mode-A
+    fragment for an expression default, in producer-root coordinates — DEV-1908 D8
+    — so it always enters at the producer root)."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    name: str
+    key: Optional[ValueKey] = None
+    sql: Optional[str] = None
+
+
 class TrailingWindowProducerKernel(BaseModel):
     """A trailing-window producer: per bucket, aggregate source rows in the trailing interval."""
 
@@ -314,23 +339,12 @@ class TrailingWindowProducerKernel(BaseModel):
     #: ROW filters inherited into ``_src`` — frame bounds excluded.
     src_where_filter_ids: List[BoundFilterId] = Field(default_factory=list)
     src_filter_rewrites: List["SrcFilterRewrite"] = Field(default_factory=list)
-
-
-class PickedParam(BaseModel):
-    """An aggregation parameter lifted onto the two-level kernel:
-    picked once per level-1 cell as ``MAX(<value>) AS _p<i>`` and read by level 2
-    as ``_base._p<i>``. Exactly one source form is set — ``key`` (a column /
-    placeholder / composite value key rendered through the scope, with a
-    ``ColumnSqlKey`` taking the derived expansion) or ``sql`` (an owner-anchored
-    Mode-A fragment for an expression default). ``anchor_path`` is the owner join
-    path an expression default (or bare-name default) expands against."""
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    name: str
-    key: Optional[ValueKey] = None
-    sql: Optional[str] = None
-    anchor_path: Tuple[str, ...] = ()
+    #: Set for a windowed ``first``/``last``: the column ``_src`` ranks by within
+    #: the interval (``_w_rank``); the outer picks rank 1 per bucket.
+    ranking_time_key: Optional[ValueKey] = None
+    #: Reference-bearing parameters (column / attached-aggregate / column-naming
+    #: default) read per interval row as ``_src._w_p<i>``; literals never lift.
+    picked_params: List[PickedParam] = Field(default_factory=list)
 
 
 class AssociationProducerKernel(BaseModel):
@@ -353,6 +367,11 @@ class AssociationProducerKernel(BaseModel):
     entity_keys: List[ValueKey] = Field(default_factory=list)
     null_safe: bool = False
     picked_params: List[PickedParam] = Field(default_factory=list)
+    #: Host-side join columns of the reverse hop (in the home-rooted producer's
+    #: coordinates), guarded ``NOT (<col> IS NULL)`` in level 1 so a home entity
+    #: absent from the population is excluded from a cell it reaches only back
+    #: through the population root (DEV-1910); empty for a home-side dimension.
+    present_keys: List[ValueKey] = Field(default_factory=list)
 
 
 ProducerKernel = Union[
@@ -378,7 +397,6 @@ class RegroupAttachPlan(BaseModel):
     substitutions: List[RegroupSubstitution] = Field(default_factory=list)
     partition_display: List[str] = Field(default_factory=list)
     producer_root_model: Optional[str] = None
-    dropped_filter_warnings: List[Any] = Field(default_factory=list)
     broadcast_measure: Optional[str] = None
     broadcast_dimensions: List[Tuple[str, str]] = Field(default_factory=list)
     # Associate-mode counterparts (DEV-1841): the aggregate resolved by
@@ -386,6 +404,19 @@ class RegroupAttachPlan(BaseModel):
     # are not additive across (empty for an explicit ``partition_by=`` grain).
     associated_measure: Optional[str] = None
     associated_dimensions: List[str] = Field(default_factory=list)
+    # Reachable-but-unsafe conjuncts inlined on a home-rooted association
+    # producer's joins (DEV-1910): carried here since ``semi_join_filters`` is
+    # empty for association producers, so the informational entry a semi-join
+    # push would raise is kept.
+    association_restricted_filter_texts: List[str] = Field(default_factory=list)
+    # Public measure names for a population semi-join inherited into a host-rooted
+    # producer (DEV-1909): the informational entry names each of the producer's own
+    # public measures (a producer may carry several), not its internal stage alias.
+    population_semi_join_measures: List[str] = Field(default_factory=list)
+    # Public measure name for a semi-join pushed into a target-rooted producer whose
+    # ``alias_hint`` is the CANONICAL stage alias (DEV-1935): the informational entry
+    # names the public measure, not that internal alias.
+    semi_join_measure: Optional[str] = None
     # Degenerate second-order aggregation (DEV-1847): the re-aggregation whose
     # operand grain equals the outer grain (the identity), with both grains for
     # the warning.

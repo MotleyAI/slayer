@@ -19,7 +19,9 @@ from collections.abc import Callable
 
 from sqlglot import exp
 
-from slayer.core.enums import TimeGranularity
+from typing import Optional
+
+from slayer.core.enums import DataType, TimeGranularity
 from slayer.sql.dialects.base import SqlDialect
 
 
@@ -410,6 +412,12 @@ class SqliteDialect(SqlDialect):
     exact_decimal_native: bool = False
     max_identifier_bytes: int | None = None  # unbounded
 
+    def declared_cast_type(self, dt: Optional[DataType]) -> Optional[DataType]:
+        """SQLite stores dates as text under numeric affinity, so a declared DATE / TIMESTAMP cast collapses a text date to its leading year — suppress it (P2)."""
+        if dt in (DataType.DATE, DataType.TIMESTAMP):
+            return None
+        return dt
+
     def build_null_safe_eq(
         self, left: exp.Expression, right: exp.Expression,
     ) -> exp.Expression:
@@ -520,6 +528,13 @@ class SqliteDialect(SqlDialect):
         ignored here.
         """
         return exp.Anonymous(this="DATETIME", expressions=[expr, *intervals])
+
+    def frame_time_operand(self, expr: exp.Expression) -> exp.Expression:
+        """Under numeric affinity a bare-date column (``'2025-02-01'``) string-sorts
+        BEFORE a DATETIME frame bound (``'2025-02-01 00:00:00'``), leaking the
+        exclusive ``bucket_end`` row into the previous bucket. Wrap it in DATETIME
+        so both sides carry the time part and the half-open interval is exact."""
+        return exp.Anonymous(this="DATETIME", expressions=[expr])
 
     def build_median(
         self,

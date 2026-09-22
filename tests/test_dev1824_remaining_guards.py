@@ -35,7 +35,7 @@ class TestCrossModelPartitionedStillGuarded:
                 name="w",
             )],
         )
-        with pytest.raises(ValueError, match=r"(?i)cross-model"):
+        with pytest.raises(ValueError, match=r"attributable from"):
             await gen(query)
 
     async def test_cross_model_first_last_plus_partition(self) -> None:
@@ -175,7 +175,8 @@ class TestAttachGrainCoverage:
         )
 
     def test_keyless_with_producer_grain_raises(self) -> None:
+        joined: set = set()
         with pytest.raises(ValueError, match=r"complete grain"):
             _assert_attach_covers_producer_grain(
-                joined_slot_ids=set(), producer_grain_slot_ids={"s1"},
+                joined_slot_ids=joined, producer_grain_slot_ids={"s1"},
             )

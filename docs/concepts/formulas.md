@@ -53,21 +53,16 @@ same key). Very long expressions fold to a stable-hash key. An explicit
 keys collide (`sum(amount - cost)` and `sum(amount + cost)`) fail with a
 duplicate-key error asking for a rename.
 
-**Boundaries** (rejected with clear errors):
-
-* joined-model refs / dotted paths inside the expression
-  (`sum(amount - customers.discount)`) — cross-model expression aggregation
-  is not yet supported;
-* operands whose column carries a column-level `filter` — define a derived
-  model column instead;
-* nested transforms inside the aggregated expression (`sum(cumsum(x) - 1)`).
+Expression sources also accept joined-model refs (`sum(amount - customers.discount)`, homed at the deepest dataset that determines every operand — see [cross-model measures](queries.md#cross-model-measures)), operands whose column carries a `filter` (which masks that operand's value), and nested transforms (`sum(cumsum(amount:sum(partition_by=[region, ordered_at])) - 1)`, aggregated over the transform's own cells). A re-aggregation constituent mixed with a row-level column (`sum(amount * last(X))`) executes at its own grain and broadcasts per partition onto the rows, and one query may select the same re-aggregation both on its own and inside a mixed source; a windowed inner under a transform constituent (`sum(rank(revenue:sum(window='90d', partition_by=region)))`) is a second-order aggregation over the operand cells (COMBINED phase, not a row broadcast); a target-homed inner whose `partition_by=` names the host's time axis stays a typed error.
 
 A source mixing row-level columns with attached values
 (`sum(quantity * avg(price, partition_by=product))`) is a row-grain aggregation
 — the attached value broadcasts onto each base row, weighted per row — while a
 fully-attached source is a
 [re-aggregation](#re-aggregation-aggregate-over-an-attached-value).
-An attached value may also arrive as a *parameter* of a row-level aggregation
+An attached value — an aggregate or a grained transform
+(`weight=rank(sum(amount, partition_by=region))`) — may also arrive as a
+*parameter* of a row-level aggregation
 (`weighted_avg(amount, weight=sum(amount, partition_by=region))`): it is
 attached into the input relation, so each row is weighted by its cell's value.
 
@@ -78,10 +73,10 @@ new derived quantity owned by the query author. Global validation still
 applies: the aggregation name must be known, and numeric-only aggregations
 reject a confidently non-numeric expression (`sum(lower(name))`).
 
-### Windowed sum and average
+### Windowed aggregations
 
-`sum` and `avg` accept an optional `window` parameter for trailing time-window
-aggregations:
+Every aggregation — built-in or custom — accepts an optional `window` parameter for
+trailing time-window aggregations:
 
 ```json
 {
@@ -99,6 +94,11 @@ interval ending at that bucket's end. This means the window can be larger than
 the query granularity (overlapping windows), equal to it (equivalent to normal
 `sum`/`avg` for that bucket), or smaller than it (only the trailing part of each
 bucket is included).
+
+An empty trailing interval yields 0 for the `count` family and NULL for every other
+aggregation; `first`/`last` pick the earliest/latest interval row by their ranking time
+column; and reference-bearing parameters (a column, an attached aggregate, a
+definition-default column) are read on each interval row while literals pass through.
 
 Window sizes use compact duration syntax:
 
@@ -119,7 +119,8 @@ inside the formula.
 Windowed measures need exactly one resolvable time dimension (a single
 `time_dimensions` entry, or `main_time_dimension` to disambiguate). Filtering on
 a windowed measure (`{"formula": "sum(revenue, window='90d') > 100"}`) applies
-after aggregation, and the windowed measure must also be selected.
+after aggregation and, like an order-only target, needs no matching selected
+measure — a filter-only windowed value stays out of the result.
 
 A group whose dimension value is NULL gets its real windowed value, like any
 other group. (Earlier versions returned NULL for such groups: the rolling
@@ -177,18 +178,20 @@ visible bucket still gets its prior-period value under either spelling.
 If you genuinely want to clip the underlying rows, apply the bound in an inner
 stage of a multi-stage query so the windowed stage never sees the raw column.
 
-A cross-model windowed measure (`sum(customers.revenue, window=…)`) works when
-the query's active time dimension is *attributable* from the measure's own
-model — reachable from it over provably many-to-one join hops (see
+A windowed measure (`sum(spend, window=…)`, `sum(customers.revenue, window=…)`)
+works when the query's active time dimension is *attributable* from the
+aggregation's home dataset — reachable from it over provably many-to-one join hops (see
 [cross-model measures](queries.md#cross-model-measures)); the window buckets by
 that time dimension inside the measure's sub-query. When it is not
 attributable, the query errors naming the time dimension and the remedy.
 
 The following windowed-measure shapes raise a clear error rather than returning
-wrong numbers, and are planned follow-ups: a windowed aggregation other than
-`sum`/`avg`; a windowed measure combined with a transform (`cumsum`,
-`time_shift`, …) in any position; a windowed measure nested in an
-arithmetic/composite expression in `measures`
+wrong numbers, and are planned follow-ups: a windowed measure combined with a
+transform (`cumsum`, `time_shift`, …) in a measure, dimension, filter, or order
+position — though a
+windowed inner under a transform *constituent* of an aggregation source
+(`sum(rank(sum(revenue, window='90d', partition_by=region)))`) does execute; a
+windowed measure nested in an arithmetic/composite expression in `measures`
 (`{"formula": "sum(revenue, window='90d') / 2"}`); or one compared
 against a plain aggregate inside one filter
 (`sum(revenue, window='90d') > 100 and sum(revenue) > 50`).
@@ -270,7 +273,7 @@ Wrapping a partitioned aggregate in another aggregation re-aggregates its
 row-weighted average would be wrong, and is exactly what this shape avoids).
 The operand may compose several attached aggregates (their grains union), and
 `partition_by=` may name a computed dimension — including one carrying an
-attached aggregate itself. The outer aggregation's parameters (`weight=` and friends) are typed by the operand grain — a cell of the operand dataset (`weighted_avg(sum(amount, partition_by=[city, region]), weight=count(id, partition_by=[city, region]))`) or a column that grain determines; anything else is a typed error naming the `partition_by=` remedy.
+attached aggregate itself. The outer aggregation's parameters (`weight=` and friends) are typed by the operand grain — a cell of the operand dataset (`weighted_avg(sum(amount, partition_by=[city, region]), weight=count(id, partition_by=[city, region]))`), a grained transform over such cells, or a column that grain determines; anything else is a typed error naming the `partition_by=` remedy.
 An outer dimension not determined by the operand's
 grain resolves per `to_many_handling` (broadcast + warning by default), and an
 operand grain equal to the outer grain is the identity plus a degenerate
@@ -357,7 +360,7 @@ Functions apply window operations to measures:
 | `first(x)` | Earliest time bucket's value | `FIRST_VALUE(x) OVER (ORDER BY time ASC ...)` |
 | `last(x)` | Most recent time bucket's value | `FIRST_VALUE(x) OVER (ORDER BY time DESC ...)` |
 
-**Time dimension requirement:** All time-ordered transforms (`cumsum`, `time_shift`, `change`, `change_pct`, `first`, `last`, `lag`, `lead`, `consecutive_periods`) require an explicit `time_dimensions` entry in the query. With a single entry, it's used automatically. With 2+ time dimensions, specify the query's `main_time_dimension` to disambiguate, or the model's `default_time_dimension` is used if it's among the query's time dimensions. The rank-family transforms (`rank`, `percent_rank`, `dense_rank`, `ntile`) do not need a time dimension.
+**Time dimension requirement:** All time-ordered transforms (`cumsum`, `time_shift`, `change`, `change_pct`, `first`, `last`, `lag`, `lead`, `consecutive_periods`) require an explicit `time_dimensions` entry in the query. With a single entry, it's used automatically. With 2+ time dimensions, specify the query's `main_time_dimension` to disambiguate, or the model's `default_time_dimension` is used if it's among the query's time dimensions. A downstream stage's own time dimension counts, so these transforms work over a re-bucketed stage column too. A stage has no model-level default, so set `main_time_dimension` when a stage has 2+ time dimensions. The rank-family transforms (`rank`, `percent_rank`, `dense_rank`, `ntile`) do not need a time dimension.
 
 Time-ordered window transforms partition by **every** projected non-time
 dimension — plain columns, joined and derived columns, and

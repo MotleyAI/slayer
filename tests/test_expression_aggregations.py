@@ -406,16 +406,16 @@ class TestExpressionKeyTraversal:
 
 
 class TestExpressionErrors:
-    async def test_cross_model_expression_rejected(self) -> None:
-        q = _q(measures=["sum(amount - customers.discount)"])
-        with pytest.raises(ValueError, match="(?i)cross-model"):
-            await _dry(q)
+    async def test_cross_model_expression_accepted(self) -> None:
+        # DEV-1832 lifts the cross-model boundary (covered in test_dev1832_*).
+        resp = await _dry(_q(measures=["sum(amount - customers.discount)"]))
+        assert resp.sql
 
-    async def test_filtered_column_operand_rejected(self) -> None:
-        q = _q(measures=["sum(ok_amount - cost)"])
-        with pytest.raises(ValueError, match="ok_amount") as ei:
-            await _dry(q)
-        assert "filter" in str(ei.value).lower()
+    async def test_filtered_column_operand_accepted(self) -> None:
+        # DEV-1832: a filtered operand desugars to CASE WHEN, not a rejection.
+        resp = await _dry(_q(measures=["sum(ok_amount - cost)"]))
+        assert resp.sql
+        assert "CASE WHEN" in resp.sql.upper()
 
     async def test_mixed_row_and_attached_source_accepted(self) -> None:
         # ``sum(sum(amount))`` is a degenerate re-aggregation (DEV-1847); a
@@ -424,11 +424,6 @@ class TestExpressionErrors:
         q = _q(measures=["sum(amount + sum(amount))"])
         resp = await _dry(q)
         assert resp.sql
-
-    async def test_nested_transform_rejected(self) -> None:
-        q = _q(measures=["sum(cumsum(amount) - 1)"])
-        with pytest.raises(ValueError, match="(?i)nest"):
-            await _dry(q)
 
     async def test_first_last_over_expression_rejected(self) -> None:
         # first/last need a plain column — the ranked kernel can't rank an

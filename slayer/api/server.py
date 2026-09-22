@@ -18,7 +18,7 @@ from slayer.core.errors import (
 )
 from slayer.core.format import NumberFormat
 from slayer.core.models import DatasourceConfig, SlayerModel
-from slayer.core.query import SlayerQuery
+from slayer.core.query import SlayerQuery, SourceSpec
 from slayer.async_utils import run_sync
 from slayer.engine import ingestion as engine_ingestion
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -38,13 +38,7 @@ class QueryRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     name: str | None = None  # Run-by-name: backing query for a query-backed model
-    # ``source_model`` accepts a string (stored model name) or a dict
-    # — the dict form is an inline ``ModelExtension`` (``{"source_name":
-    # "<model>", "columns": [...], "joins": [...]}``) or an inline
-    # ``SlayerModel`` (``{"name": "...", "sql_table": "...", "data_source":
-    # "...", "columns": [...]}``). The full polymorphism is handled by
-    # ``SlayerQuery.model_validate`` downstream.
-    source_model: str | dict[str, Any] | None = None
+    source_model: SourceSpec | None = None
     # ``measures`` and ``dimensions`` accept bare strings as a shorthand,
     # mirroring the Python API: ``"*:count"`` is lifted to
     # ``{"formula": "*:count"}``, ``"status"`` to ``{"name": "status"}``.
@@ -52,7 +46,9 @@ class QueryRequest(BaseModel):
     # ``_coerce_dimensions``) do the actual lifting downstream.
     measures: list[str | dict[str, Any]] | None = None
     dimensions: list[str | dict[str, Any]] | None = None
-    time_dimensions: list[dict[str, Any]] | None = None
+    # A string entry is the functional ``gran(col)`` form, coerced downstream by
+    # ``SlayerQuery`` (DEV-1883).
+    time_dimensions: list[str | dict[str, Any]] | None = None
     filters: list[str] | None = None
     order: list[dict[str, Any]] | None = None
     limit: int | None = None

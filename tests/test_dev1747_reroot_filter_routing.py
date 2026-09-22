@@ -9,7 +9,7 @@ import warnings
 
 import pytest
 
-from slayer.core.errors import UnreachableFilterDroppedWarning
+from slayer.core.errors import AssociatedGrainWarning, BroadcastGrainWarning
 from slayer.core.keys import AggregateKey
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery
 from slayer.engine.plan import plan_query
@@ -96,10 +96,6 @@ class TestRoutingSurvivesReroot:
         assert attach.producer_plan.masks, (
             "the reachable filter did not inherit into the producer sub-plan"
         )
-        assert not attach.dropped_filter_warnings, (
-            f"a reachable filter was reported dropped: "
-            f"{attach.dropped_filter_warnings}"
-        )
 
     def test_host_local_filter_pushes_down_by_semi_join(self) -> None:
         # DEV-1853 divergences.md class (c): drop+warn → semi-join pushdown
@@ -108,14 +104,12 @@ class TestRoutingSurvivesReroot:
         assert attach.producer_plan.semi_join_filters, (
             "the host-local filter did not push into the producer by semi-join"
         )
-        assert not attach.dropped_filter_warnings
 
-    def test_mixed_or_filter_is_dropped_and_warned(self) -> None:
-        """The D2 mixed-OR conjunct stays excluded from the producer and warned; the host base still applies it locally."""
+    def test_mixed_or_filter_pushes_down_by_semi_join(self) -> None:
+        """The mixed-OR conjunct pushes into the producer by semi-join (DEV-1935); the host base still applies it locally."""
         attach = _sole_attach(FILTER_MIXED_OR)
         assert not attach.producer_plan.masks
-        assert not attach.producer_plan.semi_join_filters
-        assert attach.dropped_filter_warnings
+        assert attach.producer_plan.semi_join_filters
 
     def test_routing_lists_are_not_cleared_wholesale(self) -> None:
         attach = _sole_attach(FILTER_REACHABLE, FILTER_MIXED_OR)
@@ -126,7 +120,7 @@ class TestRoutingSurvivesReroot:
     def test_mixed_filters_route_independently(self) -> None:
         attach = _sole_attach(FILTER_REACHABLE, FILTER_HOST_LOCAL, FILTER_MIXED_OR)
         assert attach.producer_plan.masks, "the reachable filter did not inherit"
-        assert attach.dropped_filter_warnings, "the mixed-OR filter did not warn"
+        assert attach.producer_plan.semi_join_filters, "the mixed-OR filter did not push"
 
 
 def _classifier_spy(monkeypatch) -> list:
@@ -177,38 +171,32 @@ class TestClassifiedExactlyOnce:
     def test_the_classifier_receives_the_structural_summary(
         self, monkeypatch,
     ) -> None:
-        """The decision input must carry the excluded filter itself, else the warning tests below pass vacuously."""
+        """The decision input must carry the mixed-OR filter itself, else the push tests below pass vacuously."""
         calls = _classifier_spy(monkeypatch)
         attach = _sole_attach(FILTER_MIXED_OR)
         texts = {
             text for call in calls for _bf, text in call["base_filters"]
         }
         assert FILTER_MIXED_OR in texts, (
-            f"the excluded filter never reached the inheritance pass; "
+            f"the mixed-OR filter never reached the inheritance pass; "
             f"saw {texts}"
         )
-        assert attach.dropped_filter_warnings, "the mixed-OR filter was not dropped"
+        assert attach.producer_plan.semi_join_filters, "the mixed-OR filter was not pushed"
 
 
-class TestExcludedWarns:
-    def test_excluded_filter_produces_a_warning_on_the_plan(self) -> None:
+class TestMixedOrPushes:
+    """DEV-1935: the mixed-OR conjunct pushes by semi-join — no dropped-filter warning."""
+
+    def test_mixed_or_filter_produces_a_semi_join_on_the_plan(self) -> None:
         attach = _sole_attach(FILTER_MIXED_OR)
-        assert attach.dropped_filter_warnings, (
-            "an excluded filter was dropped from the producer with no "
-            "warning — the B6 defect"
-        )
+        assert attach.producer_plan.semi_join_filters
 
-    def test_warning_carries_the_original_filter_text(self) -> None:
-        warning = _sole_attach(FILTER_MIXED_OR).dropped_filter_warnings[0]
-        assert FILTER_MIXED_OR in warning.filter_text
+    def test_semi_join_carries_the_original_filter_text(self) -> None:
+        (group,) = _sole_attach(FILTER_MIXED_OR).producer_plan.semi_join_filters
+        assert FILTER_MIXED_OR in group.filter_texts
 
-    def test_warning_carries_a_reason(self) -> None:
-        warning = _sole_attach(FILTER_MIXED_OR).dropped_filter_warnings[0]
-        assert warning.reason, "the warning carries no reason at all"
-        assert "or/not" in warning.reason.lower(), warning.reason
-
-    async def test_exactly_one_warning_per_filter_per_execute(self) -> None:
-        """Every producer classifies the filter, the user sees one warning: the customers producer drops the mixed-OR conjunct, the regions producer pushes it (all-cross on one branch)."""
+    async def test_one_pushed_entry_per_producer_per_execute(self) -> None:
+        """Every producer pushes the filter: one ``semi_join_pushed`` entry per measure (cs, pop), no Python warning."""
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="name", model="customers.regions")],
@@ -225,30 +213,29 @@ class TestExcludedWarns:
             engine = await make_sqlite_engine(d, db)
             with warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter("always")
-                await engine.execute(query)
-        dropped = [
-            w for w in caught
-            if isinstance(w.message, UnreachableFilterDroppedWarning)
+                resp = await engine.execute(query)
+        # SLayer warnings are UserWarnings; a GC-timed ResourceWarning is not ours.
+        emitted = [w for w in caught if issubclass(w.category, UserWarning)]
+        assert not emitted, [str(w.message) for w in emitted]
+        pushed = [w for w in resp.warnings if w.kind == "semi_join_pushed"]
+        assert sorted((w.measure, w.filter_text) for w in pushed) == [
+            ("cs", FILTER_MIXED_OR), ("pop", FILTER_MIXED_OR),
         ]
-        assert len(dropped) == 1, (
-            f"expected exactly one UnreachableFilterDroppedWarning, got "
-            f"{len(dropped)}: {[str(w.message) for w in dropped]}"
-        )
 
-    async def test_warnings_as_errors_mode_surfaces_the_drop(self) -> None:
-        """Under ``-W error`` the drop must stop execution, not silently return fewer rows."""
+    async def test_warnings_as_errors_mode_does_not_stop_a_push(self) -> None:
+        """Under ``-W error`` a pushed filter is not a warning: execution completes."""
         with tempfile.TemporaryDirectory() as d:
             db = os.path.join(d, "dev1747.db")
             seed_dev1747_sqlite(db)
             engine = await make_sqlite_engine(d, db)
             query = _query(FILTER_MIXED_OR)
             with warnings.catch_warnings():
-                warnings.simplefilter("error", UnreachableFilterDroppedWarning)
-                with pytest.raises(UnreachableFilterDroppedWarning):
-                    await engine.execute(query)
+                warnings.simplefilter("error", UserWarning)
+                resp = await engine.execute(query)
+        assert resp.data
 
-    async def test_two_textually_distinct_filters_warn_separately(self) -> None:
-        """Identity is per filter, not per text bucket: two different excluded filters warn separately."""
+    async def test_two_textually_distinct_filters_push_separately(self) -> None:
+        """Identity is per filter text: two different mixed-OR filters yield two entries."""
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="name", model="customers.regions")],
@@ -262,14 +249,12 @@ class TestExcludedWarns:
             db = os.path.join(d, "dev1747.db")
             seed_dev1747_sqlite(db)
             engine = await make_sqlite_engine(d, db)
-            with warnings.catch_warnings(record=True) as caught:
-                warnings.simplefilter("always")
-                await engine.execute(query)
-        dropped = [
-            w for w in caught
-            if isinstance(w.message, UnreachableFilterDroppedWarning)
-        ]
-        assert len(dropped) == 2
+            resp = await engine.execute(query)
+        pushed = {w.filter_text for w in resp.warnings if w.kind == "semi_join_pushed"}
+        assert pushed == {
+            "customers.tier == 'gold' or status == 'A'",
+            "customers.tier == 'silver' or status == 'B'",
+        }
 
 
 class TestInternalFailuresRaise:
@@ -342,9 +327,6 @@ class TestUnreachableDimensionsStillDrop:
         )
         assert attach.broadcast_dimensions, (
             "the unreachable dimension should broadcast off the producer grain"
-        )
-        assert not attach.dropped_filter_warnings, (
-            "a dropped DIMENSION must not raise a dropped-FILTER warning (D7)"
         )
 
     def test_reachable_dimensions_still_form_the_grain(self) -> None:
@@ -430,7 +412,7 @@ class TestRerootedFilterStillNarrowsTheHost:
                 response = await engine.execute(_query(*filters))
         dropped = [
             w for w in caught
-            if isinstance(w.message, UnreachableFilterDroppedWarning)
+            if isinstance(w.message, (BroadcastGrainWarning, AssociatedGrainWarning))
         ]
         return response.data, dropped
 
@@ -439,8 +421,6 @@ class TestRerootedFilterStillNarrowsTheHost:
         rows, _ = await cls._rows_and_warnings(*filters)
         return rows
 
-    @pytest.mark.xfail(strict=True, reason=(
-        "DEV-1909: a fanning population filter with an aggregate inline over the population now fails closed (DEV-1900 interim guard); DEV-1909 restores it via association pushdown."))
     def test_every_fixture_here_actually_reroots(self) -> None:
         """Vacuity guard: if the planner stopped re-rooting and used a forward plan, the row assertions below would pass while testing nothing."""
         for label, flt in (
@@ -499,8 +479,6 @@ class TestRerootedFilterStillNarrowsTheHost:
         assert regions == sorted([REGION_A_LOW, REGION_A_HIGH]), regions
         assert sum(r["orders.rev"] for r in rows) == GROUP_A_AMOUNT, rows
 
-    @pytest.mark.xfail(strict=True, reason=(
-        "DEV-1909: a fanning population filter with an aggregate inline over the population now fails closed (DEV-1900 interim guard); DEV-1909 restores it via association pushdown."))
     async def test_the_tags_filter_narrows_without_fanning_out(self) -> None:
         """``rush`` tags orders 1 and 2 only; a join-based pushdown (instead of containment) would multiply order 1 by its three tags."""
         rows = await self._rows(FILTER_TAGS)
@@ -510,8 +488,8 @@ class TestRerootedFilterStillNarrowsTheHost:
         assert regions == sorted([REGION_A_LOW, REGION_A_HIGH]), regions
         assert sum(r["orders.rev"] for r in rows) == GROUP_A_AMOUNT, rows
 
-    async def test_an_excluded_filter_still_narrows_the_host(self) -> None:
-        """An excluded (mixed-OR) filter must still apply at the host — that is the promise the dropped-filter warning makes."""
+    async def test_a_mixed_or_filter_still_narrows_the_host(self) -> None:
+        """A mixed-OR filter applies at the host as well as inside the producer's semi-join."""
         rows = await self._rows(FILTER_MIXED_OR)
         regions = sorted(
             str(r["orders.customers.regions.name"]) for r in rows
@@ -535,8 +513,6 @@ class TestRerootedFilterStillNarrowsTheHost:
             f"{ALPHA_SPEND_ALL})"
         )
 
-    @pytest.mark.xfail(strict=True, reason=(
-        "DEV-1909: a fanning population filter with an aggregate inline over the population now fails closed (DEV-1900 interim guard); DEV-1909 restores it via association pushdown."))
     async def test_no_warning_when_every_filter_is_reachable(self) -> None:
         """A misclassified predicate still yields right-looking rows; the warning is the only tell. Host-local and tags filters push by semi-join now (DEV-1853) — no warning."""
         for flt in (FILTER_REACHABLE, FILTER_TARGET_ATTRIBUTE,
@@ -547,10 +523,9 @@ class TestRerootedFilterStillNarrowsTheHost:
                 f"dropped: {[str(w.message) for w in dropped]}"
             )
 
-    async def test_the_excluded_filter_warns_exactly_once(self) -> None:
+    async def test_the_mixed_or_filter_pushes_without_a_warning(self) -> None:
         rows, dropped = await self._rows_and_warnings(FILTER_MIXED_OR)
-        assert len(dropped) == 1, [str(w.message) for w in dropped]
-        assert FILTER_MIXED_OR in str(dropped[0].message)
+        assert not dropped, [str(w.message) for w in dropped]
         regions = sorted(str(r["orders.customers.regions.name"]) for r in rows)
         assert regions == sorted([REGION_A_LOW, REGION_A_HIGH]), regions
 
@@ -588,9 +563,7 @@ class TestRowPhaseFiltersAlwaysApplyAtTheHost:
             db = os.path.join(d, "dev1747.db")
             seed_dev1747_sqlite(db)
             engine = await make_sqlite_engine(d, db)
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore", UnreachableFilterDroppedWarning)
-                return (await engine.execute(query)).data
+            return (await engine.execute(query)).data
 
     #: Mixes a re-rooted plan (``customers``) and a forward plan (``regions``); the filter is reachable from both, and the union used to make the host skip it.
     _MIXED_ROUTES = SlayerQuery(
@@ -643,8 +616,6 @@ class TestRowPhaseFiltersAlwaysApplyAtTheHost:
             == [r["orders.rev"] for r in mixed_rows]
         ), "the sibling local measure changed when a cross-model one was added"
 
-    @pytest.mark.xfail(strict=True, reason=(
-        "DEV-1909: a fanning population filter with an aggregate inline over the population now fails closed (DEV-1900 interim guard); DEV-1909 restores it via association pushdown."))
     async def test_applying_at_the_host_does_not_fan_out_a_sibling(self) -> None:
         """Ruled out: the host's copy of a filter on a 1:N path (``order_tags``) must not fan out a sibling ``amount:sum`` — group A reads 24.0, not the 46.0 a three-way fan-out gives."""
         rows = await self._rows(SlayerQuery(

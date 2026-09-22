@@ -7,7 +7,6 @@ import math
 import math as _math
 import os
 import re
-import sqlite3
 import statistics
 import tempfile
 
@@ -35,7 +34,8 @@ from slayer.engine.ingestion import ingest_datasource, ingest_datasource_idempot
 from slayer.engine.profiling import handle_edit_refresh, refresh_all_table_backed_sampled
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.search.service import SearchService
-from slayer.sql.client import _sync_engines
+from slayer.sql import engine_factory
+from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 
 pytestmark = pytest.mark.integration
@@ -47,50 +47,48 @@ async def integration_env(tmp_path):
 
     # -- SQLite database --
     db_path = tmp_path / "test.db"
-    conn = sqlite3.connect(str(db_path))
-    cur = conn.cursor()
+    with transaction(str(db_path)) as conn:
+        cur = conn.cursor()
 
-    cur.execute(
-        """
-        CREATE TABLE customers (
-            id INTEGER PRIMARY KEY,
-            name TEXT NOT NULL,
-            region TEXT NOT NULL
+        cur.execute(
+            """
+            CREATE TABLE customers (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                region TEXT NOT NULL
+            )
+            """
         )
-        """
-    )
-    cur.execute(
-        """
-        CREATE TABLE orders (
-            id INTEGER PRIMARY KEY,
-            status TEXT NOT NULL,
-            amount REAL NOT NULL,
-            customer_id INTEGER NOT NULL,
-            created_at TEXT NOT NULL,
-            FOREIGN KEY (customer_id) REFERENCES customers(id)
+        cur.execute(
+            """
+            CREATE TABLE orders (
+                id INTEGER PRIMARY KEY,
+                status TEXT NOT NULL,
+                amount REAL NOT NULL,
+                customer_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (customer_id) REFERENCES customers(id)
+            )
+            """
         )
-        """
-    )
 
-    customers = [
-        (1, "Alice", "US"),
-        (2, "Bob", "EU"),
-        (3, "Charlie", "US"),
-    ]
-    cur.executemany("INSERT INTO customers VALUES (?, ?, ?)", customers)
+        customers = [
+            (1, "Alice", "US"),
+            (2, "Bob", "EU"),
+            (3, "Charlie", "US"),
+        ]
+        cur.executemany("INSERT INTO customers VALUES (?, ?, ?)", customers)
 
-    orders = [
-        (1, "completed", 100.0, 1, "2025-01-15"),
-        (2, "completed", 200.0, 2, "2025-01-20"),
-        (3, "pending", 50.0, 1, "2025-02-10"),
-        (4, "cancelled", 75.0, 3, "2025-02-15"),
-        (5, "completed", 300.0, 2, "2025-03-05"),
-        (6, "pending", 25.0, 3, "2025-03-20"),
-    ]
-    cur.executemany("INSERT INTO orders VALUES (?, ?, ?, ?, ?)", orders)
+        orders = [
+            (1, "completed", 100.0, 1, "2025-01-15"),
+            (2, "completed", 200.0, 2, "2025-01-20"),
+            (3, "pending", 50.0, 1, "2025-02-10"),
+            (4, "cancelled", 75.0, 3, "2025-02-15"),
+            (5, "completed", 300.0, 2, "2025-03-05"),
+            (6, "pending", 25.0, 3, "2025-03-20"),
+        ]
+        cur.executemany("INSERT INTO orders VALUES (?, ?, ?, ?, ?)", orders)
 
-    conn.commit()
-    conn.close()
 
     # -- YAML storage --
     storage_dir = tmp_path / "storage"
@@ -1119,24 +1117,22 @@ async def joined_time_env(tmp_path):
     Tests that type=last resolves through join paths correctly.
     """
     db_path = tmp_path / "test.db"
-    conn = sqlite3.connect(str(db_path))
-    conn.execute("CREATE TABLE stores (id INTEGER PRIMARY KEY, name TEXT, opened_at TEXT)")
-    conn.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, store_id INTEGER, amount REAL, created_at TEXT)")
-    conn.execute("CREATE TABLE order_items (id INTEGER PRIMARY KEY, order_id INTEGER, qty INTEGER)")
-    conn.executemany("INSERT INTO stores VALUES (?, ?, ?)", [
-        (1, "Downtown", "2020-01-01"), (2, "Uptown", "2021-06-15"),
-    ])
-    conn.executemany("INSERT INTO orders VALUES (?, ?, ?, ?)", [
-        (1, 1, 100.0, "2025-01-15"), (2, 1, 200.0, "2025-01-20"),
-        (3, 2, 50.0, "2025-02-10"), (4, 2, 75.0, "2025-02-15"),
-        (5, 1, 300.0, "2025-03-05"), (6, 2, 25.0, "2025-03-20"),
-    ])
-    conn.executemany("INSERT INTO order_items VALUES (?, ?, ?)", [
-        (1, 1, 2), (2, 2, 3), (3, 3, 1),
-        (4, 4, 5), (5, 5, 4), (6, 6, 1),
-    ])
-    conn.commit()
-    conn.close()
+    with transaction(str(db_path)) as conn:
+        conn.execute("CREATE TABLE stores (id INTEGER PRIMARY KEY, name TEXT, opened_at TEXT)")
+        conn.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, store_id INTEGER, amount REAL, created_at TEXT)")
+        conn.execute("CREATE TABLE order_items (id INTEGER PRIMARY KEY, order_id INTEGER, qty INTEGER)")
+        conn.executemany("INSERT INTO stores VALUES (?, ?, ?)", [
+            (1, "Downtown", "2020-01-01"), (2, "Uptown", "2021-06-15"),
+        ])
+        conn.executemany("INSERT INTO orders VALUES (?, ?, ?, ?)", [
+            (1, 1, 100.0, "2025-01-15"), (2, 1, 200.0, "2025-01-20"),
+            (3, 2, 50.0, "2025-02-10"), (4, 2, 75.0, "2025-02-15"),
+            (5, 1, 300.0, "2025-03-05"), (6, 2, 25.0, "2025-03-20"),
+        ])
+        conn.executemany("INSERT INTO order_items VALUES (?, ?, ?)", [
+            (1, 1, 2), (2, 2, 3), (3, 3, 1),
+            (4, 4, 5), (5, 5, 4), (6, 6, 1),
+        ])
 
     storage_dir = tmp_path / "storage"
     storage_dir.mkdir()
@@ -1250,19 +1246,17 @@ async def test_last_with_multihop_joined_time_dimension(joined_time_env):
 async def cross_model_env(tmp_path):
     """SQLite env with orders + customers models and an explicit join."""
     db_path = tmp_path / "test.db"
-    conn = sqlite3.connect(str(db_path))
-    conn.execute("CREATE TABLE customers (id INTEGER PRIMARY KEY, name TEXT, score REAL)")
-    conn.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, amount REAL, created_at TEXT)")
-    conn.executemany("INSERT INTO customers VALUES (?, ?, ?)", [
-        (1, "Alice", 90.0), (2, "Bob", 60.0), (3, "Charlie", 80.0),
-    ])
-    conn.executemany("INSERT INTO orders VALUES (?, ?, ?, ?)", [
-        (1, 1, 100.0, "2025-01-15"), (2, 1, 200.0, "2025-01-20"),
-        (3, 2, 50.0, "2025-02-10"), (4, 2, 75.0, "2025-02-15"),
-        (5, 3, 300.0, "2025-03-05"), (6, 1, 25.0, "2025-03-20"),
-    ])
-    conn.commit()
-    conn.close()
+    with transaction(str(db_path)) as conn:
+        conn.execute("CREATE TABLE customers (id INTEGER PRIMARY KEY, name TEXT, score REAL)")
+        conn.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, amount REAL, created_at TEXT)")
+        conn.executemany("INSERT INTO customers VALUES (?, ?, ?)", [
+            (1, "Alice", 90.0), (2, "Bob", 60.0), (3, "Charlie", 80.0),
+        ])
+        conn.executemany("INSERT INTO orders VALUES (?, ?, ?, ?)", [
+            (1, 1, 100.0, "2025-01-15"), (2, 1, 200.0, "2025-01-20"),
+            (3, 2, 50.0, "2025-02-10"), (4, 2, 75.0, "2025-02-15"),
+            (5, 3, 300.0, "2025-03-05"), (6, 1, 25.0, "2025-03-20"),
+        ])
 
     storage_dir = tmp_path / "storage"
     storage_dir.mkdir()
@@ -1347,32 +1341,30 @@ async def test_cross_model_measure_with_target_join_filters(cross_model_env):
     engine = cross_model_env
     tmp = tempfile.mkdtemp()
     db_path = f"{tmp}/test.db"
-    conn = sqlite3.connect(db_path)
-    conn.execute("CREATE TABLE policy (policy_identifier INTEGER PRIMARY KEY, policy_number TEXT)")
-    conn.execute("CREATE TABLE policy_amount (policy_amount_identifier INTEGER PRIMARY KEY, policy_identifier INTEGER, policy_amount REAL)")
-    conn.execute("CREATE TABLE premium (policy_amount_identifier INTEGER PRIMARY KEY)")
-    conn.execute("CREATE TABLE agreement_party_role (agreement_identifier INTEGER, party_role_code TEXT)")
+    with transaction(db_path) as conn:
+        conn.execute("CREATE TABLE policy (policy_identifier INTEGER PRIMARY KEY, policy_number TEXT)")
+        conn.execute("CREATE TABLE policy_amount (policy_amount_identifier INTEGER PRIMARY KEY, policy_identifier INTEGER, policy_amount REAL)")
+        conn.execute("CREATE TABLE premium (policy_amount_identifier INTEGER PRIMARY KEY)")
+        conn.execute("CREATE TABLE agreement_party_role (agreement_identifier INTEGER, party_role_code TEXT)")
 
-    # Policy 1: 2 amounts (100, 200), both have premium rows, PH role
-    # Policy 2: 2 amounts (300, 400), only 300 has a premium row, PH role
-    # Policy 3: 1 amount (500), has premium, but AG role (not PH)
-    conn.executemany("INSERT INTO policy VALUES (?, ?)", [
-        (1, "POL-001"), (2, "POL-002"), (3, "POL-003"),
-    ])
-    conn.executemany("INSERT INTO policy_amount VALUES (?, ?, ?)", [
-        (10, 1, 100.0), (11, 1, 200.0),
-        (20, 2, 300.0), (21, 2, 400.0),
-        (30, 3, 500.0),
-    ])
-    # Premium rows: existence = is a premium. Amount 21 has no premium row.
-    conn.executemany("INSERT INTO premium VALUES (?)", [
-        (10,), (11,), (20,), (30,),
-    ])
-    conn.executemany("INSERT INTO agreement_party_role VALUES (?, ?)", [
-        (1, "PH"), (2, "PH"), (3, "AG"),
-    ])
-    conn.commit()
-    conn.close()
+        # Policy 1: 2 amounts (100, 200), both have premium rows, PH role
+        # Policy 2: 2 amounts (300, 400), only 300 has a premium row, PH role
+        # Policy 3: 1 amount (500), has premium, but AG role (not PH)
+        conn.executemany("INSERT INTO policy VALUES (?, ?)", [
+            (1, "POL-001"), (2, "POL-002"), (3, "POL-003"),
+        ])
+        conn.executemany("INSERT INTO policy_amount VALUES (?, ?, ?)", [
+            (10, 1, 100.0), (11, 1, 200.0),
+            (20, 2, 300.0), (21, 2, 400.0),
+            (30, 3, 500.0),
+        ])
+        # Premium rows: existence = is a premium. Amount 21 has no premium row.
+        conn.executemany("INSERT INTO premium VALUES (?)", [
+            (10,), (11,), (20,), (30,),
+        ])
+        conn.executemany("INSERT INTO agreement_party_role VALUES (?, ?)", [
+            (1, "PH"), (2, "PH"), (3, "AG"),
+        ])
 
     storage_dir = f"{tmp}/storage"
     os.makedirs(storage_dir)
@@ -1568,10 +1560,10 @@ async def test_query_list_with_joins(cross_model_env):
     # In the virtual model, inner measures become dimensions with auto-generated
     # SUM/AVG measures. Use avg_score_avg to re-average the inner avg_score.
     main = SlayerQuery(
-        source_model=ModelExtension(
-            source_name="orders",
-            joins=[{"target_model": "customer_scores", "join_pairs": [["customer_id", "id"]]}],
-        ),
+        source_model=ModelExtension.model_validate({
+            "source_name": "orders",
+            "joins": [{"target_model": "customer_scores", "join_pairs": [["customer_id", "id"]]}],
+        }),
         time_dimensions=[TimeDimension(
             dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
         )],
@@ -1615,10 +1607,10 @@ async def test_sibling_stage_joins_dag(cross_model_env):
         ),
         SlayerQuery(
             name="tagged",
-            source_model=ModelExtension(
-                source_name="customers",
-                joins=[{"target_model": "kpis", "join_pairs": [["id", "customer_id"]]}],
-            ),
+            source_model=ModelExtension.model_validate({
+                "source_name": "customers",
+                "joins": [{"target_model": "kpis", "join_pairs": [["id", "customer_id"]]}],
+            }),
             # ``kpis.total_amount_sum`` is a join-traversed dimension, so
             # each customer row carries their own kpis sum.
             dimensions=[ColumnRef(name="name"), ColumnRef(name="kpis.total_amount_sum")],
@@ -1647,10 +1639,10 @@ async def test_sql_dimension_via_model_extension(integration_env):
     engine = integration_env
 
     query = SlayerQuery(
-        source_model=ModelExtension(
-            source_name="orders",
-            columns=[{"name": "tier", "sql": "CASE WHEN amount > 100 THEN 'high' ELSE 'low' END"}],
-        ),
+        source_model=ModelExtension.model_validate({
+            "source_name": "orders",
+            "columns": [{"name": "tier", "sql": "CASE WHEN amount > 100 THEN 'high' ELSE 'low' END"}],
+        }),
         dimensions=[ColumnRef(name="tier")],
         measures=[ModelMeasure(formula="*:count")],
     )
@@ -1666,10 +1658,10 @@ async def test_sql_dimension_with_regular(integration_env):
     engine = integration_env
 
     query = SlayerQuery(
-        source_model=ModelExtension(
-            source_name="orders",
-            columns=[{"name": "tier", "sql": "CASE WHEN amount > 100 THEN 'high' ELSE 'low' END"}],
-        ),
+        source_model=ModelExtension.model_validate({
+            "source_name": "orders",
+            "columns": [{"name": "tier", "sql": "CASE WHEN amount > 100 THEN 'high' ELSE 'low' END"}],
+        }),
         dimensions=[ColumnRef(name="status"), ColumnRef(name="tier")],
         measures=[ModelMeasure(formula="*:count")],
     )
@@ -1697,11 +1689,11 @@ async def test_formula_dimension_via_query_list(integration_env):
 
     # Outer: group by amount tier via ModelExtension on the inner query's result
     outer = SlayerQuery(
-        source_model=ModelExtension(
-            source_name="monthly",
-            columns=[{"name": "amount_tier",
+        source_model=ModelExtension.model_validate({
+            "source_name": "monthly",
+            "columns": [{"name": "amount_tier",
                          "sql": "CASE WHEN total_amount_sum > 200 THEN 'high' ELSE 'low' END"}],
-        ),
+        }),
         dimensions=[ColumnRef(name="amount_tier")],
         measures=[ModelMeasure(formula="*:count")],
     )
@@ -1783,13 +1775,11 @@ async def test_circular_query_reference_raises(integration_env):
 async def _mutual_join_engine(tmp_path, *, ab_name=None, ba_name=None):
     """Engine over models a/b with mutual declared joins (optionally named)."""
     db_path = tmp_path / "test.db"
-    conn = sqlite3.connect(str(db_path))
-    conn.execute("CREATE TABLE a (id INTEGER PRIMARY KEY, b_id INTEGER)")
-    conn.execute("CREATE TABLE b (id INTEGER PRIMARY KEY, a_id INTEGER)")
-    conn.executemany("INSERT INTO a VALUES (?, ?)", [(1, 1)])
-    conn.executemany("INSERT INTO b VALUES (?, ?)", [(1, 1)])
-    conn.commit()
-    conn.close()
+    with transaction(str(db_path)) as conn:
+        conn.execute("CREATE TABLE a (id INTEGER PRIMARY KEY, b_id INTEGER)")
+        conn.execute("CREATE TABLE b (id INTEGER PRIMARY KEY, a_id INTEGER)")
+        conn.executemany("INSERT INTO a VALUES (?, ?)", [(1, 1)])
+        conn.executemany("INSERT INTO b VALUES (?, ?)", [(1, 1)])
 
     storage_dir = tmp_path / "storage"
     storage_dir.mkdir()
@@ -1849,15 +1839,13 @@ async def test_circular_join_graph_raises(tmp_path):
 async def test_model_filter_on_joined_column(tmp_path):
     """Model-level filter on a joined column applies WHERE correctly."""
     db_path = tmp_path / "test.db"
-    conn = sqlite3.connect(str(db_path))
-    conn.execute("CREATE TABLE customers (id INTEGER PRIMARY KEY, name TEXT, region TEXT)")
-    conn.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, amount REAL)")
-    conn.executemany("INSERT INTO customers VALUES (?, ?, ?)", [
-        (1, "Alice", "US"), (2, "Bob", "EU"), (3, "Charlie", "US")])
-    conn.executemany("INSERT INTO orders VALUES (?, ?, ?)", [
-        (1, 1, 100), (2, 1, 200), (3, 2, 50), (4, 3, 300)])
-    conn.commit()
-    conn.close()
+    with transaction(str(db_path)) as conn:
+        conn.execute("CREATE TABLE customers (id INTEGER PRIMARY KEY, name TEXT, region TEXT)")
+        conn.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, amount REAL)")
+        conn.executemany("INSERT INTO customers VALUES (?, ?, ?)", [
+            (1, "Alice", "US"), (2, "Bob", "EU"), (3, "Charlie", "US")])
+        conn.executemany("INSERT INTO orders VALUES (?, ?, ?)", [
+            (1, 1, 100), (2, 1, 200), (3, 2, 50), (4, 3, 300)])
 
     storage_dir = tmp_path / "storage"
     storage_dir.mkdir()
@@ -1911,35 +1899,33 @@ async def diamond_env(tmp_path):
     Two paths to regions, requiring path-based aliases to disambiguate.
     """
     db_path = tmp_path / "diamond.db"
-    conn = sqlite3.connect(str(db_path))
-    conn.execute("CREATE TABLE regions (id INTEGER PRIMARY KEY, name TEXT)")
-    conn.execute("CREATE TABLE customers (id INTEGER PRIMARY KEY, name TEXT, region_id INTEGER REFERENCES regions(id))")
-    conn.execute("CREATE TABLE warehouses (id INTEGER PRIMARY KEY, name TEXT, region_id INTEGER REFERENCES regions(id))")
-    conn.execute("""
-        CREATE TABLE shipments (
-            id INTEGER PRIMARY KEY,
-            amount REAL,
-            customer_id INTEGER REFERENCES customers(id),
-            warehouse_id INTEGER REFERENCES warehouses(id)
-        )
-    """)
-    conn.executemany("INSERT INTO regions VALUES (?, ?)", [
-        (1, "US"), (2, "EU"), (3, "Asia"),
-    ])
-    conn.executemany("INSERT INTO customers VALUES (?, ?, ?)", [
-        (1, "Alice", 1), (2, "Bob", 2),
-    ])
-    conn.executemany("INSERT INTO warehouses VALUES (?, ?, ?)", [
-        (1, "WH-East", 1), (2, "WH-West", 3),
-    ])
-    conn.executemany("INSERT INTO shipments VALUES (?, ?, ?, ?)", [
-        (1, 100, 1, 1),  # Alice(US) from WH-East(US)
-        (2, 200, 1, 2),  # Alice(US) from WH-West(Asia)
-        (3, 50, 2, 1),   # Bob(EU) from WH-East(US)
-        (4, 150, 2, 2),  # Bob(EU) from WH-West(Asia)
-    ])
-    conn.commit()
-    conn.close()
+    with transaction(str(db_path)) as conn:
+        conn.execute("CREATE TABLE regions (id INTEGER PRIMARY KEY, name TEXT)")
+        conn.execute("CREATE TABLE customers (id INTEGER PRIMARY KEY, name TEXT, region_id INTEGER REFERENCES regions(id))")
+        conn.execute("CREATE TABLE warehouses (id INTEGER PRIMARY KEY, name TEXT, region_id INTEGER REFERENCES regions(id))")
+        conn.execute("""
+            CREATE TABLE shipments (
+                id INTEGER PRIMARY KEY,
+                amount REAL,
+                customer_id INTEGER REFERENCES customers(id),
+                warehouse_id INTEGER REFERENCES warehouses(id)
+            )
+        """)
+        conn.executemany("INSERT INTO regions VALUES (?, ?)", [
+            (1, "US"), (2, "EU"), (3, "Asia"),
+        ])
+        conn.executemany("INSERT INTO customers VALUES (?, ?, ?)", [
+            (1, "Alice", 1), (2, "Bob", 2),
+        ])
+        conn.executemany("INSERT INTO warehouses VALUES (?, ?, ?)", [
+            (1, "WH-East", 1), (2, "WH-West", 3),
+        ])
+        conn.executemany("INSERT INTO shipments VALUES (?, ?, ?, ?)", [
+            (1, 100, 1, 1),  # Alice(US) from WH-East(US)
+            (2, 200, 1, 2),  # Alice(US) from WH-West(Asia)
+            (3, 50, 2, 1),   # Bob(EU) from WH-East(US)
+            (4, 150, 2, 2),  # Bob(EU) from WH-West(Asia)
+        ])
 
     storage = YAMLStorage(base_dir=str(tmp_path / "slayer_data"))
     ds = DatasourceConfig(name="diamond_db", type="sqlite", database=str(db_path))
@@ -2112,8 +2098,9 @@ async def test_filtered_measure_with_dimensions(integration_env):
 
 
 async def test_filtered_last_picks_correct_row(integration_env):
-    """Filtered last measure picks the latest row that matches the filter,
-    not the globally latest row.
+    """A ``Column.filter`` masks the value and never restricts the ranking: ``last``
+    picks the globally latest row and reads its masked value (NULL when that row
+    fails the filter).
 
     Fixture: orders (1..6), Order 6 (pending, Mar-20) is globally latest,
     Order 5 (completed, 300.0, Mar-5) is the latest completed.
@@ -2142,11 +2129,11 @@ async def test_filtered_last_picks_correct_row(integration_env):
         ],
     ))
     rows_by_month = {row["orders.created_at"]: row for row in result.data}
-    # March: globally latest is Order 6 (pending, 25.0), but the latest
-    # completed is Order 5 (completed, 300.0). The filter must participate
-    # in ranking so the correct row is picked.
+    # March: the globally latest row is Order 6 (pending) — its masked value is
+    # NULL; the older completed Order 5 (300.0) is not reached (a WHERE belongs
+    # in the query).
     mar = rows_by_month["2025-03-01"]
-    assert mar["orders.completed_latest_last"] == pytest.approx(300.0)
+    assert mar["orders.completed_latest_last"] is None
     assert mar["orders.latest_amount_last"] == pytest.approx(25.0)  # unfiltered picks Order 6
 
     # January: latest is Order 2 (completed, 200.0) — passes filter
@@ -2294,8 +2281,9 @@ async def test_sqlite_udf_pool_reuse(integration_env):
     engine = integration_env
     q = SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="total_amount:median")])
     r1 = await engine.execute(q)
-    for sa_engine in _sync_engines.values():
-        sa_engine.dispose()
+    # Dispose the cached engine so the second execute opens a fresh physical
+    # connection and the connect listener (UDF registration) fires again.
+    engine_factory.reset_cache()
     r2 = await engine.execute(q)
     assert r1.data[0]["orders.total_amount_median"] == pytest.approx(87.5)
     assert r2.data[0]["orders.total_amount_median"] == pytest.approx(87.5)
@@ -2310,35 +2298,33 @@ async def test_sqlite_udf_pool_reuse(integration_env):
 async def stat_env(tmp_path):
     """Independent fixture with a richer numeric dataset for stat UDFs."""
     db_path = tmp_path / "stat.db"
-    conn = sqlite3.connect(str(db_path))
-    cur = conn.cursor()
-    cur.execute(
-        """
-        CREATE TABLE samples (
-            id INTEGER PRIMARY KEY,
-            x REAL NOT NULL,
-            y REAL NOT NULL,
-            bucket TEXT NOT NULL
+    with transaction(str(db_path)) as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE samples (
+                id INTEGER PRIMARY KEY,
+                x REAL NOT NULL,
+                y REAL NOT NULL,
+                bucket TEXT NOT NULL
+            )
+            """
         )
-        """
-    )
-    rows = [
-        # bucket "a": linearly correlated x,y (corr ≈ 1)
-        (1, 1.0, 2.0, "a"),
-        (2, 2.0, 4.0, "a"),
-        (3, 3.0, 6.0, "a"),
-        (4, 4.0, 8.0, "a"),
-        (5, 5.0, 10.0, "a"),
-        # bucket "b": noisy positive correlation
-        (6, 1.0, 1.9, "b"),
-        (7, 2.0, 4.2, "b"),
-        (8, 3.0, 5.7, "b"),
-        (9, 4.0, 8.1, "b"),
-        (10, 5.0, 10.3, "b"),
-    ]
-    cur.executemany("INSERT INTO samples VALUES (?, ?, ?, ?)", rows)
-    conn.commit()
-    conn.close()
+        rows = [
+            # bucket "a": linearly correlated x,y (corr ≈ 1)
+            (1, 1.0, 2.0, "a"),
+            (2, 2.0, 4.0, "a"),
+            (3, 3.0, 6.0, "a"),
+            (4, 4.0, 8.0, "a"),
+            (5, 5.0, 10.0, "a"),
+            # bucket "b": noisy positive correlation
+            (6, 1.0, 1.9, "b"),
+            (7, 2.0, 4.2, "b"),
+            (8, 3.0, 5.7, "b"),
+            (9, 4.0, 8.1, "b"),
+            (10, 5.0, 10.3, "b"),
+        ]
+        cur.executemany("INSERT INTO samples VALUES (?, ?, ?, ?)", rows)
 
     storage_dir = tmp_path / "storage"
     storage_dir.mkdir()
@@ -2543,12 +2529,10 @@ async def test_n_one_bucket_returns_postgres_semantics(tmp_path):
     """With a single sample, stddev_samp/var_samp must be NULL and
     stddev_pop/var_pop must be 0 — matching Postgres."""
     db_path = tmp_path / "single.db"
-    conn = sqlite3.connect(str(db_path))
-    cur = conn.cursor()
-    cur.execute("CREATE TABLE one (id INTEGER PRIMARY KEY, x REAL NOT NULL)")
-    cur.execute("INSERT INTO one VALUES (1, 42.0)")
-    conn.commit()
-    conn.close()
+    with transaction(str(db_path)) as conn:
+        cur = conn.cursor()
+        cur.execute("CREATE TABLE one (id INTEGER PRIMARY KEY, x REAL NOT NULL)")
+        cur.execute("INSERT INTO one VALUES (1, 42.0)")
 
     storage_dir = tmp_path / "storage"
     storage_dir.mkdir()
@@ -2599,32 +2583,30 @@ async def test_n_one_bucket_returns_postgres_semantics(tmp_path):
 async def planets_env(tmp_path):
     """Planets fixture: a Column.sql with `row_number() over (...)` for top-N."""
     db_path = tmp_path / "planets.db"
-    conn = sqlite3.connect(str(db_path))
-    cur = conn.cursor()
-    cur.execute(
-        """
-        CREATE TABLE planets (
-            id INTEGER PRIMARY KEY,
-            name TEXT NOT NULL,
-            mass REAL NOT NULL
+    with transaction(str(db_path)) as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE planets (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                mass REAL NOT NULL
+            )
+            """
         )
-        """
-    )
-    cur.executemany(
-        "INSERT INTO planets VALUES (?, ?, ?)",
-        [
-            (1, "Mercury", 0.33),
-            (2, "Venus", 4.87),
-            (3, "Earth", 5.97),
-            (4, "Mars", 0.642),
-            (5, "Jupiter", 1898.0),
-            (6, "Saturn", 568.0),
-            (7, "Uranus", 86.8),
-            (8, "Neptune", 102.0),
-        ],
-    )
-    conn.commit()
-    conn.close()
+        cur.executemany(
+            "INSERT INTO planets VALUES (?, ?, ?)",
+            [
+                (1, "Mercury", 0.33),
+                (2, "Venus", 4.87),
+                (3, "Earth", 5.97),
+                (4, "Mars", 0.642),
+                (5, "Jupiter", 1898.0),
+                (6, "Saturn", 568.0),
+                (7, "Uranus", 86.8),
+                (8, "Neptune", 102.0),
+            ],
+        )
 
     storage_dir = tmp_path / "storage"
     storage_dir.mkdir()
@@ -2680,21 +2662,19 @@ async def test_json_extract_case_when_matches_in_sqlite(tmp_path):
     ``'owned'`` therefore never matches and the sum is 0.
     """
     db_path = tmp_path / "households.db"
-    conn = sqlite3.connect(str(db_path))
-    cur = conn.cursor()
-    cur.execute(
-        "CREATE TABLE households (id INTEGER PRIMARY KEY, socioeconomic TEXT NOT NULL)"
-    )
-    cur.executemany(
-        "INSERT INTO households VALUES (?, ?)",
-        [
-            (1, '{"Tenure_Type": "Owned"}'),
-            (2, '{"Tenure_Type": "Rented"}'),
-            (3, '{"Tenure_Type": "Owned"}'),
-        ],
-    )
-    conn.commit()
-    conn.close()
+    with transaction(str(db_path)) as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "CREATE TABLE households (id INTEGER PRIMARY KEY, socioeconomic TEXT NOT NULL)"
+        )
+        cur.executemany(
+            "INSERT INTO households VALUES (?, ?)",
+            [
+                (1, '{"Tenure_Type": "Owned"}'),
+                (2, '{"Tenure_Type": "Rented"}'),
+                (3, '{"Tenure_Type": "Owned"}'),
+            ],
+        )
 
     storage_dir = tmp_path / "storage"
     storage_dir.mkdir()
@@ -2743,22 +2723,20 @@ async def derived_chain_env(tmp_path):
     derived columns. Used to verify recursive expansion at execution time.
     """
     db_path = tmp_path / "derived_chain.db"
-    conn = sqlite3.connect(str(db_path))
-    cur = conn.cursor()
-    cur.execute("CREATE TABLE B (id INTEGER PRIMARY KEY, foo_raw REAL)")
-    cur.execute(
-        "CREATE TABLE A (id INTEGER PRIMARY KEY, bar REAL, b_id INTEGER, raw_a REAL)"
-    )
-    cur.executemany(
-        "INSERT INTO B VALUES (?, ?)",
-        [(1, 200.0), (2, 50.0)],
-    )
-    cur.executemany(
-        "INSERT INTO A VALUES (?, ?, ?, ?)",
-        [(10, 4.0, 1, 100.0), (11, 1.0, 2, 5.0)],
-    )
-    conn.commit()
-    conn.close()
+    with transaction(str(db_path)) as conn:
+        cur = conn.cursor()
+        cur.execute("CREATE TABLE B (id INTEGER PRIMARY KEY, foo_raw REAL)")
+        cur.execute(
+            "CREATE TABLE A (id INTEGER PRIMARY KEY, bar REAL, b_id INTEGER, raw_a REAL)"
+        )
+        cur.executemany(
+            "INSERT INTO B VALUES (?, ?)",
+            [(1, 200.0), (2, 50.0)],
+        )
+        cur.executemany(
+            "INSERT INTO A VALUES (?, ?, ?, ?)",
+            [(10, 4.0, 1, 100.0), (11, 1.0, 2, 5.0)],
+        )
 
     storage_dir = tmp_path / "storage_derived"
     storage_dir.mkdir()
@@ -2811,7 +2789,7 @@ async def derived_chain_env(tmp_path):
     )
     engine = SlayerQueryEngine(storage=storage)
     yield engine
-    _sync_engines.clear()
+    engine_factory.reset_cache()
 
 
 async def test_integration_cross_model_derived_columnsql(derived_chain_env):
@@ -2862,20 +2840,18 @@ async def orders_customers_env(tmp_path):
     auto-join behavior end-to-end.
     """
     db_path = tmp_path / "orders_customers.db"
-    conn = sqlite3.connect(str(db_path))
-    cur = conn.cursor()
-    cur.execute("CREATE TABLE customers (id INTEGER PRIMARY KEY, region TEXT)")
-    cur.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER)")
-    cur.executemany(
-        "INSERT INTO customers VALUES (?, ?)",
-        [(1, "EU"), (2, "US"), (3, "EU"), (4, "APAC")],
-    )
-    cur.executemany(
-        "INSERT INTO orders VALUES (?, ?)",
-        [(10, 1), (11, 2), (12, 1), (13, 3), (14, 4)],
-    )
-    conn.commit()
-    conn.close()
+    with transaction(str(db_path)) as conn:
+        cur = conn.cursor()
+        cur.execute("CREATE TABLE customers (id INTEGER PRIMARY KEY, region TEXT)")
+        cur.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER)")
+        cur.executemany(
+            "INSERT INTO customers VALUES (?, ?)",
+            [(1, "EU"), (2, "US"), (3, "EU"), (4, "APAC")],
+        )
+        cur.executemany(
+            "INSERT INTO orders VALUES (?, ?)",
+            [(10, 1), (11, 2), (12, 1), (13, 3), (14, 4)],
+        )
 
     storage_dir = tmp_path / "storage_oc"
     storage_dir.mkdir()
@@ -2905,7 +2881,7 @@ async def orders_customers_env(tmp_path):
     ))
     engine = SlayerQueryEngine(storage=storage)
     yield engine
-    _sync_engines.clear()
+    engine_factory.reset_cache()
 
 
 async def test_filter_on_derived_column_with_cross_table_ref_executes(
@@ -2940,15 +2916,13 @@ async def test_log10_round_trip_sqlite(tmp_path):
     `LOG(10, ...)` form. Same shape for `log2(x)` (which depends on the
     `log2` UDF added in this change)."""
     db_path = tmp_path / "log_round_trip.db"
-    conn = sqlite3.connect(str(db_path))
-    cur = conn.cursor()
-    cur.execute("CREATE TABLE players (id INTEGER PRIMARY KEY, raw_score REAL NOT NULL)")
-    cur.executemany(
-        "INSERT INTO players VALUES (?, ?)",
-        [(1, 100.0), (2, 1000.0), (3, 10000.0), (4, 8.0)],
-    )
-    conn.commit()
-    conn.close()
+    with transaction(str(db_path)) as conn:
+        cur = conn.cursor()
+        cur.execute("CREATE TABLE players (id INTEGER PRIMARY KEY, raw_score REAL NOT NULL)")
+        cur.executemany(
+            "INSERT INTO players VALUES (?, ?)",
+            [(1, 100.0), (2, 1000.0), (3, 10000.0), (4, 8.0)],
+        )
 
     storage_dir = tmp_path / "storage"
     storage_dir.mkdir()
@@ -3064,21 +3038,19 @@ async def test_json_extract_double_casts_to_real_in_sqlite(tmp_path):
     benchmark's tuple comparison fails (TEXT '"1.5"' != REAL 1.5).
     """
     db_path = tmp_path / "blobs.db"
-    conn = sqlite3.connect(str(db_path))
-    cur = conn.cursor()
-    cur.execute(
-        "CREATE TABLE blobs (id INTEGER PRIMARY KEY, payload TEXT NOT NULL)"
-    )
-    cur.executemany(
-        "INSERT INTO blobs VALUES (?, ?)",
-        [
-            (1, '{"score": 1.5}'),
-            (2, '{"score": 2.5}'),
-            (3, '{"score": 3.0}'),
-        ],
-    )
-    conn.commit()
-    conn.close()
+    with transaction(str(db_path)) as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "CREATE TABLE blobs (id INTEGER PRIMARY KEY, payload TEXT NOT NULL)"
+        )
+        cur.executemany(
+            "INSERT INTO blobs VALUES (?, ?)",
+            [
+                (1, '{"score": 1.5}'),
+                (2, '{"score": 2.5}'),
+                (3, '{"score": 3.0}'),
+            ],
+        )
 
     storage_dir = tmp_path / "storage"
     storage_dir.mkdir()
@@ -3126,14 +3098,11 @@ async def test_json_extract_double_casts_to_real_in_sqlite(tmp_path):
     assert "real" in sql_lower
 
     # Hand-written gold using CAST AS REAL produces the same value.
-    gold_conn = sqlite3.connect(str(db_path))
-    try:
+    with transaction(str(db_path)) as gold_conn:
         gold = gold_conn.execute(
             "SELECT SUM(CAST(json_extract(payload, '$.score') AS REAL)) FROM blobs"
         ).fetchone()[0]
         assert total == pytest.approx(gold)
-    finally:
-        gold_conn.close()
 
 
 async def test_dense_rank_partition_by_customer_executes(integration_env):
@@ -3194,50 +3163,48 @@ async def search_env(tmp_path):
     ``Column.sampled`` snapshot, plus one seeded memory tagged on
     ``test_sqlite.orders`` for the entity-channel test."""
     db_path = tmp_path / "search.db"
-    conn = sqlite3.connect(str(db_path))
-    cur = conn.cursor()
-    cur.execute(
-        """
-        CREATE TABLE customers (
-            id INTEGER PRIMARY KEY,
-            name TEXT NOT NULL,
-            region TEXT NOT NULL
+    with transaction(str(db_path)) as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE customers (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                region TEXT NOT NULL
+            )
+            """
         )
-        """
-    )
-    cur.execute(
-        """
-        CREATE TABLE orders (
-            id INTEGER PRIMARY KEY,
-            status TEXT NOT NULL,
-            amount REAL NOT NULL,
-            customer_id INTEGER NOT NULL,
-            created_at TEXT NOT NULL,
-            FOREIGN KEY (customer_id) REFERENCES customers(id)
+        cur.execute(
+            """
+            CREATE TABLE orders (
+                id INTEGER PRIMARY KEY,
+                status TEXT NOT NULL,
+                amount REAL NOT NULL,
+                customer_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (customer_id) REFERENCES customers(id)
+            )
+            """
         )
-        """
-    )
-    cur.executemany(
-        "INSERT INTO customers VALUES (?, ?, ?)",
-        [
-            (1, "Alice", "US"),
-            (2, "Bob", "EU"),
-            (3, "Charlie", "US"),
-        ],
-    )
-    cur.executemany(
-        "INSERT INTO orders VALUES (?, ?, ?, ?, ?)",
-        [
-            (1, "completed", 100.0, 1, "2025-01-15"),
-            (2, "completed", 200.0, 2, "2025-01-20"),
-            (3, "pending", 50.0, 1, "2025-02-10"),
-            (4, "cancelled", 75.0, 3, "2025-02-15"),
-            (5, "completed", 300.0, 2, "2025-03-05"),
-            (6, "pending", 25.0, 3, "2025-03-20"),
-        ],
-    )
-    conn.commit()
-    conn.close()
+        cur.executemany(
+            "INSERT INTO customers VALUES (?, ?, ?)",
+            [
+                (1, "Alice", "US"),
+                (2, "Bob", "EU"),
+                (3, "Charlie", "US"),
+            ],
+        )
+        cur.executemany(
+            "INSERT INTO orders VALUES (?, ?, ?, ?, ?)",
+            [
+                (1, "completed", 100.0, 1, "2025-01-15"),
+                (2, "completed", 200.0, 2, "2025-01-20"),
+                (3, "pending", 50.0, 1, "2025-02-10"),
+                (4, "cancelled", 75.0, 3, "2025-02-15"),
+                (5, "completed", 300.0, 2, "2025-03-05"),
+                (6, "pending", 25.0, 3, "2025-03-20"),
+            ],
+        )
 
     storage_dir = tmp_path / "storage"
     storage_dir.mkdir()
@@ -3384,15 +3351,13 @@ async def _setup_items_db(tmp_path) -> YAMLStorage:
     """Build the shared SQLite ``items`` table + storage used by the
     DEV-1378 ``lower(...)`` filter tests below."""
     db_path = tmp_path / "ds.db"
-    conn = sqlite3.connect(str(db_path))
-    cur = conn.cursor()
-    cur.execute("CREATE TABLE items (id INTEGER PRIMARY KEY, status TEXT NOT NULL, amount REAL NOT NULL)")
-    cur.executemany(
-        "INSERT INTO items VALUES (?, ?, ?)",
-        [(1, "Active", 10.0), (2, "ACTIVE", 20.0), (3, "inactive", 5.0), (4, "active", 30.0)],
-    )
-    conn.commit()
-    conn.close()
+    with transaction(str(db_path)) as conn:
+        cur = conn.cursor()
+        cur.execute("CREATE TABLE items (id INTEGER PRIMARY KEY, status TEXT NOT NULL, amount REAL NOT NULL)")
+        cur.executemany(
+            "INSERT INTO items VALUES (?, ?, ?)",
+            [(1, "Active", 10.0), (2, "ACTIVE", 20.0), (3, "inactive", 5.0), (4, "active", 30.0)],
+        )
 
     storage_dir = tmp_path / "storage"
     storage_dir.mkdir()
@@ -3465,25 +3430,23 @@ async def test_model_filter_with_double_underscore_join_path_runs(tmp_path):
     (``customers__regions.name = 'EU'``) must drive the join planner
     correctly so the filter is applied against the joined table."""
     db_path = tmp_path / "ds.db"
-    conn = sqlite3.connect(str(db_path))
-    cur = conn.cursor()
-    cur.execute("CREATE TABLE regions (id INTEGER PRIMARY KEY, name TEXT NOT NULL)")
-    cur.execute(
-        "CREATE TABLE customers (id INTEGER PRIMARY KEY, region_id INTEGER NOT NULL,"
-        " FOREIGN KEY(region_id) REFERENCES regions(id))"
-    )
-    cur.execute(
-        "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER NOT NULL, amount REAL NOT NULL,"
-        " FOREIGN KEY(customer_id) REFERENCES customers(id))"
-    )
-    cur.executemany("INSERT INTO regions VALUES (?, ?)", [(1, "US"), (2, "EU")])
-    cur.executemany("INSERT INTO customers VALUES (?, ?)", [(1, 1), (2, 2), (3, 1)])
-    cur.executemany(
-        "INSERT INTO orders VALUES (?, ?, ?)",
-        [(1, 1, 100.0), (2, 2, 50.0), (3, 3, 75.0), (4, 2, 25.0)],
-    )
-    conn.commit()
-    conn.close()
+    with transaction(str(db_path)) as conn:
+        cur = conn.cursor()
+        cur.execute("CREATE TABLE regions (id INTEGER PRIMARY KEY, name TEXT NOT NULL)")
+        cur.execute(
+            "CREATE TABLE customers (id INTEGER PRIMARY KEY, region_id INTEGER NOT NULL,"
+            " FOREIGN KEY(region_id) REFERENCES regions(id))"
+        )
+        cur.execute(
+            "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER NOT NULL, amount REAL NOT NULL,"
+            " FOREIGN KEY(customer_id) REFERENCES customers(id))"
+        )
+        cur.executemany("INSERT INTO regions VALUES (?, ?)", [(1, "US"), (2, "EU")])
+        cur.executemany("INSERT INTO customers VALUES (?, ?)", [(1, 1), (2, 2), (3, 1)])
+        cur.executemany(
+            "INSERT INTO orders VALUES (?, ?, ?)",
+            [(1, 1, 100.0), (2, 2, 50.0), (3, 3, 75.0), (4, 2, 25.0)],
+        )
 
     storage_dir = tmp_path / "storage"
     storage_dir.mkdir()
@@ -3539,21 +3502,19 @@ async def test_model_filter_with_json_extract_runs(tmp_path):
     built-in function) executes end-to-end. Pre-DEV-1378 this raised
     ``Unknown filter function 'json_extract'`` at enrichment time."""
     db_path = tmp_path / "ds.db"
-    conn = sqlite3.connect(str(db_path))
-    cur = conn.cursor()
-    cur.execute(
-        "CREATE TABLE items (id INTEGER PRIMARY KEY, metadata TEXT NOT NULL, amount REAL NOT NULL)"
-    )
-    cur.executemany(
-        "INSERT INTO items VALUES (?, ?, ?)",
-        [
-            (1, '{"active": 1}', 10.0),
-            (2, '{"active": 0}', 20.0),
-            (3, '{"active": 1}', 30.0),
-        ],
-    )
-    conn.commit()
-    conn.close()
+    with transaction(str(db_path)) as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "CREATE TABLE items (id INTEGER PRIMARY KEY, metadata TEXT NOT NULL, amount REAL NOT NULL)"
+        )
+        cur.executemany(
+            "INSERT INTO items VALUES (?, ?, ?)",
+            [
+                (1, '{"active": 1}', 10.0),
+                (2, '{"active": 0}', 20.0),
+                (3, '{"active": 1}', 30.0),
+            ],
+        )
 
     storage_dir = tmp_path / "storage"
     storage_dir.mkdir()
@@ -3655,36 +3616,34 @@ async def test_dev1501_order_by_two_last_with_different_time_cols(tmp_path):
     """
 
     db_path = tmp_path / "dev1501.db"
-    conn = sqlite3.connect(str(db_path))
-    cur = conn.cursor()
-    cur.execute(
-        """
-        CREATE TABLE orders (
-            id INTEGER PRIMARY KEY,
-            status TEXT NOT NULL,
-            amount REAL NOT NULL,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
+    with transaction(str(db_path)) as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE orders (
+                id INTEGER PRIMARY KEY,
+                status TEXT NOT NULL,
+                amount REAL NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
         )
-        """
-    )
-    # Per-group last(created_at) is tied at 50 across A and B; the
-    # secondary ORDER BY last(updated_at) ASC must break the tie with
-    # B (10) before A (99). The expected order intentionally CONTRADICTS
-    # natural alphabetical status ordering so a silently-dropped secondary
-    # ORDER BY would surface as a test failure (CR PR #153 thread
-    # r3350000263).
-    rows = [
-        # Status A: last(created_at)=50, last(updated_at)=99.
-        (1, "A", 50.0, "2025-03-01", "2025-01-01"),
-        (2, "A", 99.0, "2025-02-01", "2025-04-01"),
-        # Status B: last(created_at)=50 (tied), last(updated_at)=10.
-        (3, "B", 50.0, "2025-03-01", "2025-02-01"),
-        (4, "B", 10.0, "2025-01-15", "2025-04-01"),
-    ]
-    cur.executemany("INSERT INTO orders VALUES (?, ?, ?, ?, ?)", rows)
-    conn.commit()
-    conn.close()
+        # Per-group last(created_at) is tied at 50 across A and B; the
+        # secondary ORDER BY last(updated_at) ASC must break the tie with
+        # B (10) before A (99). The expected order intentionally CONTRADICTS
+        # natural alphabetical status ordering so a silently-dropped secondary
+        # ORDER BY would surface as a test failure (CR PR #153 thread
+        # r3350000263).
+        rows = [
+            # Status A: last(created_at)=50, last(updated_at)=99.
+            (1, "A", 50.0, "2025-03-01", "2025-01-01"),
+            (2, "A", 99.0, "2025-02-01", "2025-04-01"),
+            # Status B: last(created_at)=50 (tied), last(updated_at)=10.
+            (3, "B", 50.0, "2025-03-01", "2025-02-01"),
+            (4, "B", 10.0, "2025-01-15", "2025-04-01"),
+        ]
+        cur.executemany("INSERT INTO orders VALUES (?, ?, ?, ?, ?)", rows)
 
     storage_dir = tmp_path / "storage_dev1501"
     storage_dir.mkdir()
@@ -3746,28 +3705,26 @@ async def test_measure_source_sql_with_path_alias_executes_sqlite(tmp_path):
     against real columns.
     """
     db_path = tmp_path / "orders_customers_regions.db"
-    conn = sqlite3.connect(str(db_path))
-    cur = conn.cursor()
-    cur.execute("CREATE TABLE regions (id INTEGER PRIMARY KEY, population REAL)")
-    cur.execute("CREATE TABLE customers (id INTEGER PRIMARY KEY, region_id INTEGER)")
-    cur.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER)")
-    cur.executemany(
-        "INSERT INTO regions VALUES (?, ?)",
-        [(1, 100.0), (2, 50.0)],
-    )
-    cur.executemany(
-        "INSERT INTO customers VALUES (?, ?)",
-        # 3 customers; 2 in region 1 (pop 100), 1 in region 2 (pop 50).
-        [(1, 1), (2, 1), (3, 2)],
-    )
-    cur.executemany(
-        "INSERT INTO orders VALUES (?, ?)",
-        # 4 orders: 2 by customer 1 (region 1), 1 by customer 2 (region 1),
-        # 1 by customer 3 (region 2).
-        [(10, 1), (11, 1), (12, 2), (13, 3)],
-    )
-    conn.commit()
-    conn.close()
+    with transaction(str(db_path)) as conn:
+        cur = conn.cursor()
+        cur.execute("CREATE TABLE regions (id INTEGER PRIMARY KEY, population REAL)")
+        cur.execute("CREATE TABLE customers (id INTEGER PRIMARY KEY, region_id INTEGER)")
+        cur.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER)")
+        cur.executemany(
+            "INSERT INTO regions VALUES (?, ?)",
+            [(1, 100.0), (2, 50.0)],
+        )
+        cur.executemany(
+            "INSERT INTO customers VALUES (?, ?)",
+            # 3 customers; 2 in region 1 (pop 100), 1 in region 2 (pop 50).
+            [(1, 1), (2, 1), (3, 2)],
+        )
+        cur.executemany(
+            "INSERT INTO orders VALUES (?, ?)",
+            # 4 orders: 2 by customer 1 (region 1), 1 by customer 2 (region 1),
+            # 1 by customer 3 (region 2).
+            [(10, 1), (11, 1), (12, 2), (13, 3)],
+        )
 
     storage_dir = tmp_path / "storage_ocr"
     storage_dir.mkdir()
@@ -3821,7 +3778,7 @@ async def test_measure_source_sql_with_path_alias_executes_sqlite(tmp_path):
         f"{response.data[0].get('orders.region_pop_sum')!r}; row: "
         f"{response.data[0]!r}"
     )
-    _sync_engines.clear()
+    engine_factory.reset_cache()
 # ---------------------------------------------------------------------------
 # DEV-1538: end-to-end SQLite affinity probe — vaccine-style fixture.
 #
@@ -3838,26 +3795,24 @@ async def test_sqlite_mixed_real_int_ingest_query_no_truncation(tmp_path):
     column actually stores REAL values, then run a SUM/AVG measure and
     confirm the result reflects the REAL values (not zero-truncated)."""
     db_path = tmp_path / "vaccine.db"
-    conn = sqlite3.connect(str(db_path))
-    cur = conn.cursor()
-    cur.execute(
-        "CREATE TABLE sensordata ("
-        "  id INTEGER PRIMARY KEY,"
-        "  tempstabidx INTEGER"  # declared INTEGER affinity
-        ")"
-    )
-    # 3 INT rows + 9 REAL rows. AVG of the actual stored values is
-    # (1+2+3 + 0.99+0.943+0.969+0.85+0.92+0.91+0.83+0.96+0.88) / 12 ≈ 1.10.
-    rows = [
-        (1, 1), (2, 2), (3, 3),
-        (4, 0.99), (5, 0.943), (6, 0.969),
-        (7, 0.85), (8, 0.92), (9, 0.91),
-        (10, 0.83), (11, 0.96), (12, 0.88),
-    ]
-    for r in rows:
-        cur.execute("INSERT INTO sensordata VALUES (?, ?)", r)
-    conn.commit()
-    conn.close()
+    with transaction(str(db_path)) as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "CREATE TABLE sensordata ("
+            "  id INTEGER PRIMARY KEY,"
+            "  tempstabidx INTEGER"  # declared INTEGER affinity
+            ")"
+        )
+        # 3 INT rows + 9 REAL rows. AVG of the actual stored values is
+        # (1+2+3 + 0.99+0.943+0.969+0.85+0.92+0.91+0.83+0.96+0.88) / 12 ≈ 1.10.
+        rows = [
+            (1, 1), (2, 2), (3, 3),
+            (4, 0.99), (5, 0.943), (6, 0.969),
+            (7, 0.85), (8, 0.92), (9, 0.91),
+            (10, 0.83), (11, 0.96), (12, 0.88),
+        ]
+        for r in rows:
+            cur.execute("INSERT INTO sensordata VALUES (?, ?)", r)
 
     storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
     ds = DatasourceConfig(name="vac", type="sqlite", database=str(db_path))
@@ -3894,22 +3849,20 @@ async def composite_score_env(tmp_path):
     paren-wrap integration tests.
     """
     db_path = tmp_path / "score.db"
-    conn = sqlite3.connect(str(db_path))
-    cur = conn.cursor()
-    cur.execute(
-        "CREATE TABLE entities (id INTEGER PRIMARY KEY, a REAL, b REAL, c REAL, d REAL)"
-    )
-    rows = [
-        # Two rows engineered so that the weighted-sum semantics and the
-        # "compare binds to last term" misreading would return different
-        # row sets — defending against precedence regression even on
-        # dialects that handle the unparenthesised form correctly today.
-        (1, 10.0, 10.0, 10.0, 10.0),  # weighted sum = 10 → passes > 7
-        (2, 0.0, 0.0, 0.0, 5.0),      # weighted sum = 1 → fails > 7
-    ]
-    cur.executemany("INSERT INTO entities VALUES (?, ?, ?, ?, ?)", rows)
-    conn.commit()
-    conn.close()
+    with transaction(str(db_path)) as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "CREATE TABLE entities (id INTEGER PRIMARY KEY, a REAL, b REAL, c REAL, d REAL)"
+        )
+        rows = [
+            # Two rows engineered so that the weighted-sum semantics and the
+            # "compare binds to last term" misreading would return different
+            # row sets — defending against precedence regression even on
+            # dialects that handle the unparenthesised form correctly today.
+            (1, 10.0, 10.0, 10.0, 10.0),  # weighted sum = 10 → passes > 7
+            (2, 0.0, 0.0, 0.0, 5.0),      # weighted sum = 1 → fails > 7
+        ]
+        cur.executemany("INSERT INTO entities VALUES (?, ?, ?, ?, ?)", rows)
 
     storage_dir = tmp_path / "storage"
     storage_dir.mkdir()
@@ -4047,7 +4000,13 @@ async def test_dev1539_having_multiterm_measure_emits_outer_parens(composite_sco
     assert having.startswith("("), (
         f"Expected HAVING body to start with `(` (outer wrap); got:\n{having}"
     )
-    assert "SUM(" in having.upper() and "/" in having and "NULLIF" in having.upper(), (
+    assert "SUM(" in having.upper(), (
+        f"Expected HAVING body to combine SUM/NULLIF via `/`; got:\n{having}"
+    )
+    assert "/" in having, (
+        f"Expected HAVING body to combine SUM/NULLIF via `/`; got:\n{having}"
+    )
+    assert "NULLIF" in having.upper(), (
         f"Expected HAVING body to combine SUM/NULLIF via `/`; got:\n{having}"
     )
 

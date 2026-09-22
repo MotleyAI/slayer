@@ -23,6 +23,7 @@ from slayer.core.keys import (
     TimeTruncKey,
     ValueKey,
     reroot_value_key,
+    source_anchor_path,
     substitute_value_keys,
     walk_value_keys,
     window_kwarg_of,
@@ -41,6 +42,7 @@ from slayer.engine.cardinality import (
 
 __all__ = [
     "provably_to_one",
+    "provably_fans",
     "safe_reachable",
     "may_inline_crossing_inputs",
     "audit_join_safety",
@@ -94,6 +96,19 @@ def provably_to_one(*, edge: OrientedLike, target_model: SlayerModel) -> bool:
     ]
     return is_key_set_unique(
         key_columns=target_cols, unique_key_sets=_unique_key_sets(target_model)
+    )
+
+
+def provably_fans(*, edge: OrientedLike, target_model: SlayerModel) -> bool:
+    """Is ``edge`` provably fanning onto ``target_model`` in its orientation?
+    True iff it is NOT provably many-to-one and its declared cardinality is
+    ``one_to_many``/``many_to_many`` — proof beats a contradictory to-many
+    declaration, so a reverse-PK-covered or undeclared hop is unproven, not
+    fanning (absence of a target unique key permits a fan but does not prove one)."""
+    if provably_to_one(edge=edge, target_model=target_model):
+        return False
+    return edge.cardinality in (
+        JoinCardinality.ONE_TO_MANY, JoinCardinality.MANY_TO_MANY,
     )
 
 
@@ -236,29 +251,52 @@ def key_host_path(key: ValueKey) -> Tuple[str, ...]:
     return tuple(getattr(key, "path", ()) or ())
 
 
-def _back_token(
-    *, root_model: SlayerModel, host_name: str, target_path: Tuple[str, ...],
+def _back_path(
+    *, host_name: str, target_path: Tuple[str, ...],
     models_by_name: Dict[str, SlayerModel],
-) -> str:
-    """The token that traverses from the aggregate's root back to the host.
+) -> Tuple[str, ...]:
+    """Reverse path from the aggregate's root back to the host (per hop, the
+    reverse token: edge name if declared, else source model; then reversed).
+    Falls back to ``(host_name,)`` with no forward path; an ambiguous reverse hop
+    fails closed at walk time (DEV-1853 D5)."""
+    host_model = models_by_name.get(host_name)
+    if host_model is None or not target_path:
+        return (host_name,)
+    chain = walk(root=host_model, path=target_path, models_by_name=models_by_name)
+    if chain is None:
+        return (host_name,)
+    return tuple(reversed([edge.name or edge.source_model for edge in chain]))
 
-    An edge-name hop is direction-agnostic, so when the last target-path token
-    is a named edge it also names the reverse hop and resolves unambiguously
-    (the bare host model name can be ambiguous across parallel edges). Falls
-    back to the host model name otherwise (DEV-1853 D5)."""
-    if target_path:
-        last = target_path[-1]
-        if last != host_name:
-            try:
-                edge = resolve_hop(
-                    current=root_model, token=last,
-                    models_by_name=models_by_name,
-                )
-            except AmbiguousJoinPathError:
-                edge = None
-            if edge is not None and edge.target_model == host_name:
-                return last
-    return host_name
+
+def _common_prefix_len(a: Tuple[str, ...], b: Tuple[str, ...]) -> int:
+    n = 0
+    for x, y in zip(a, b):
+        if x != y:
+            break
+        n += 1
+    return n
+
+
+def _route_via_common_prefix(
+    *, host_name: str, target_path: Tuple[str, ...], host_path: Tuple[str, ...],
+    models_by_name: Dict[str, SlayerModel],
+) -> Tuple[str, ...]:
+    """The route from the aggregate's root (at ``target_path``) to a
+    host-coordinate ``host_path`` (DEV-1908 D9): step back only to the two paths'
+    longest common prefix — the reversed per-hop tokens of ``target_path`` past
+    it — then forward along ``host_path``'s own suffix. When they share nothing
+    this is ``_back_path`` + ``host_path`` (byte-identical to the old round trip);
+    an ambiguous reverse hop propagates from ``walk``."""
+    host_model = models_by_name.get(host_name)
+    if host_model is None or not target_path:
+        return (host_name, *host_path)
+    chain = walk(root=host_model, path=target_path, models_by_name=models_by_name)
+    if chain is None:
+        return (host_name, *host_path)
+    cp = _common_prefix_len(target_path, host_path)
+    reverse_suffix = tuple(
+        reversed([edge.name or edge.source_model for edge in chain[cp:]]))
+    return (*reverse_suffix, *host_path[cp:])
 
 
 def attributable_from_root(
@@ -276,12 +314,12 @@ def attributable_from_root(
         return False
     if hp and safe_reachable(root=root_model, path=hp, models_by_name=models_by_name):
         return True
-    back = _back_token(
-        root_model=root_model, host_name=host_name, target_path=tp,
+    route = _route_via_common_prefix(
+        host_name=host_name, target_path=tp, host_path=hp,
         models_by_name=models_by_name,
     )
     return safe_reachable(
-        root=root_model, path=(back, *hp), models_by_name=models_by_name,
+        root=root_model, path=route, models_by_name=models_by_name,
     )
 
 
@@ -364,11 +402,10 @@ def _reroot_leaf_via_host(
         return None  # reroot_value_key strips the prefix
     if target_path and host_name == target_path[0]:
         return None
-    back = _back_token(
-        root_model=root_model, host_name=host_name, target_path=target_path,
+    via_host = _route_via_common_prefix(
+        host_name=host_name, target_path=target_path, host_path=hp,
         models_by_name=models_by_name,
     )
-    via_host = (back, *hp)
     if not safe_reachable(
         root=root_model, path=via_host, models_by_name=models_by_name,
     ) and hp and safe_reachable(
@@ -452,12 +489,12 @@ def broadcast_reason(
         return reason or UNREACHABLE_NO_PATH
     # Off the forward path: reachable only back through the reverse (fanning) hop?
     if host_name is not None and not (tp and host_name == tp[0]):
-        back = _back_token(
-            root_model=root_model, host_name=host_name, target_path=tp,
+        route = _route_via_common_prefix(
+            host_name=host_name, target_path=tp, host_path=hp,
             models_by_name=models_by_name,
         )
         reason = _hop_walk_reason(
-            root_model=root_model, path=(back, *hp), models_by_name=models_by_name,
+            root_model=root_model, path=route, models_by_name=models_by_name,
         )
         if reason is not None:
             return reason
@@ -468,28 +505,30 @@ def assert_partition_key_attributable(
     *, key: ValueKey, pk: ValueKey, label: str,
     scope: Union[ModelScope, StageSchema], bundle: ResolvedSourceBundle,
 ) -> None:
-    """Resolve a partition key's attributability from the aggregate's root; the checker raises on an unproven/fanning hop."""
-    hp = key_host_path(pk)
-    if not hp:
-        return  # a local column — no join to cross
+    """A partition key whose dependency closure crosses a fanning hop is unattributable; the checker raises. Path-less keys are judged from the host (DEV-1911), path-bearing from the aggregate's root."""
+    # StageSchema binds flat stage outputs — no join graph, so no fanning closure exists.
     host_m = scope.source_model if isinstance(scope, ModelScope) else None
     if host_m is None:
         return
-    agg_target = (
-        tuple(getattr(key.source, "path", ()) or ())
-        if isinstance(key, AggregateKey) else ()
-    )
     models_by_name = bundle.models_by_name
-    root = walk_key_path(model=host_m, path=agg_target, bundle=bundle) or host_m
-    host_name = host_m.name if agg_target else None
+    hp = key_host_path(pk)
+    if not hp:
+        # Path-less derived key: a fan from its own host is a mode-invariant safety
+        # error; a host-safe key's cross-model-root concern stays the planner's.
+        root, target, host_name = host_m, (), None
+    else:
+        target = source_anchor_path(key.source) if isinstance(key, AggregateKey) else ()
+        root = walk_key_path(model=host_m, path=target, bundle=bundle) or host_m
+        host_name = host_m.name if target else None
     attributable = key_attributable_from_root(
-        key=pk, target_path=agg_target, root_model=root,
+        key=pk, target_path=target, root_model=root,
         models_by_name=models_by_name, bundle=bundle, host_model=host_m,
         host_name=host_name,
     )
-    reason = None if attributable else broadcast_reason(
-        host_path=hp, target_path=agg_target, root_model=root,
-        models_by_name=models_by_name, host_name=host_name,
+    reason = None if attributable else key_broadcast_reason(
+        key=pk, target_path=target, root_model=root,
+        models_by_name=models_by_name, bundle=bundle, host_model=host_m,
+        host_name=host_name,
     )
     check_partition_key_attributable(
         label=label, pk=pk, attributable=attributable, reason=reason,
@@ -531,7 +570,7 @@ def grain_member_attributable(
         if isinstance(r, AggregateKey):
             saw = True
             if not attributable_from_root(
-                host_path=tuple(getattr(r.source, "path", ()) or ()), target_path=target_path,
+                host_path=source_anchor_path(r.source), target_path=target_path,
                 root_model=root_model, models_by_name=models_by_name,
             ):
                 return False
@@ -560,14 +599,11 @@ def grain_determines(
     models_by_name: Dict[str, SlayerModel],
     bundle: Optional[ResolvedSourceBundle] = None,
 ) -> bool:
-    """Does a dataset grain determine ``key`` (Axiom 1)? True iff ``key``
-    is a grain member, an aggregate whose ``partition_by=`` grain ⊆ the grain (a
-    cell of the same dataset), or a column every path of whose dependency closure
-    (DEV-1900 — its own path plus every path its derived definition crosses) is
-    reached over provably to-one hops from a model the grain pins. A derived
-    column crossing a fanning hop the grain does not pin is not determined,
-    however its own path is reached; an unanalysable definition is not
-    determined."""
+    """Does a dataset grain determine ``key`` (Axiom 1)? True iff ``key`` is a
+    grain member, an aggregate whose ``partition_by=`` grain ⊆ the grain, or a
+    column whose every dependency-closure path (DEV-1900) is reached over provably
+    to-one hops from a model the grain pins. A fanning or unanalysable closure is
+    not determined."""
     if key in grain:
         return True
     if isinstance(key, AggregateKey):
@@ -695,7 +731,11 @@ def crossing_local_root_predicate(
         return (
             isinstance(k, AggregateKey)
             and k.partition_keys is None
-            and not getattr(k.source, "path", ())
+            and not source_anchor_path(k.source)
+            # A host-locus wrap already compiles inline at the producer grain; its
+            # attached parameter's crossing closure must not re-route it onto a
+            # host-rooted producer (DEV-1910 D6, as ``_local_broadcasts`` excludes).
+            and k.locus != "host"
             and window_kwarg_of(k) is None
             and k.agg not in RANKED_AGGREGATIONS
             and host_model is not None

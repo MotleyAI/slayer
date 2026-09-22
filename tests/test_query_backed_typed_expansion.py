@@ -22,7 +22,7 @@ behavioural breaks it INTENDS:
 from __future__ import annotations
 
 import os
-import sqlite3
+from slayer.storage.sqlite_conn import transaction
 import tempfile
 from typing import List, Tuple
 from unittest.mock import patch
@@ -123,14 +123,12 @@ class TestStoredSourceQueriesTopoSort:
                 # joins.target_model but appears FIRST.
                 SlayerQuery(
                     name="main",
-                    source_model={
+                    source_model=ModelExtension.model_validate({
                         "source_name": "orders",
-                        # DEV-1853: the reverse hop is traversable now, so the
-                        # pair must name kpi's real exported column ("id" — the
-                        # old "kpi_id" was only a display label and was never
-                        # exercised while the hop was unreachable).
+                        # The reverse hop is traversable, so the pair names kpi's
+                        # real exported column ("id"; "kpi_id" is only a label).
                         "joins": [{"target_model": "kpi", "join_pairs": [["id", "id"]]}],
-                    },
+                    }),
                     dimensions=["status"],
                     measures=[{"formula": "kpi._count:sum"}],
                 ),
@@ -163,14 +161,12 @@ class TestStoredSourceQueriesTopoSort:
                 # main references kpi (forward ref under legacy strict order)
                 SlayerQuery(
                     name="main",
-                    source_model={
+                    source_model=ModelExtension.model_validate({
                         "source_name": "orders",
-                        # DEV-1853: the reverse hop is traversable now, so the
-                        # pair must name kpi's real exported column ("id" — the
-                        # old "kpi_id" was only a display label and was never
-                        # exercised while the hop was unreachable).
+                        # The reverse hop is traversable, so the pair names kpi's
+                        # real exported column ("id"; "kpi_id" is only a label).
                         "joins": [{"target_model": "kpi", "join_pairs": [["id", "id"]]}],
-                    },
+                    }),
                     dimensions=["status"],
                     measures=[{"formula": "kpi._count:sum"}],
                 ),
@@ -200,17 +196,17 @@ class TestStoredSourceQueriesTopoSort:
                 source_queries=[
                     SlayerQuery(
                         name="a",
-                        source_model={
+                        source_model=ModelExtension.model_validate({
                             "source_name": "orders",
                             "joins": [{"target_model": "b", "join_pairs": [["id", "id"]]}],
-                        },
+                        }),
                     ),
                     SlayerQuery(
                         name="b",
-                        source_model={
+                        source_model=ModelExtension.model_validate({
                             "source_name": "orders",
                             "joins": [{"target_model": "a", "join_pairs": [["id", "id"]]}],
-                        },
+                        }),
                     ),
                     SlayerQuery(source_model="a"),
                 ],
@@ -259,17 +255,16 @@ class TestStoredSourceQueriesTopoSort:
             # at construction time. The same guard exists in
             # ``topologically_order_stages`` as defence in depth, but the
             # user-facing error surfaces here first.
+            stage_a1 = SlayerQuery(name="a", source_model="orders")
+            stage_a2 = SlayerQuery(name="a", source_model="orders")
+            stage_c = SlayerQuery(source_model="a")
             with pytest.raises(
                 (ValueError, Exception), match="[Dd]uplicate",
             ):
                 SlayerModel(
                     name="qb_dup",
                     data_source="ds",
-                    source_queries=[
-                        SlayerQuery(name="a", source_model="orders"),
-                        SlayerQuery(name="a", source_model="orders"),
-                        SlayerQuery(source_model="a"),
-                    ],
+                    source_queries=[stage_a1, stage_a2, stage_c],
                 )
             del engine  # explicit unused (silence linter)
         finally:
@@ -606,18 +601,16 @@ class TestGetColumnTypesTypedPipeline:
         """
         d = tempfile.mkdtemp()
         db_path = os.path.join(d, "t.db")
-        con = sqlite3.connect(db_path)
-        cur = con.cursor()
-        cur.execute(
-            "CREATE TABLE orders ("
-            "id INTEGER PRIMARY KEY, status TEXT, amount REAL)"
-        )
-        cur.executemany(
-            "INSERT INTO orders VALUES (?,?,?)",
-            [(1, "paid", 10.0), (2, "open", 7.0)],
-        )
-        con.commit()
-        con.close()
+        with transaction(db_path) as con:
+            cur = con.cursor()
+            cur.execute(
+                "CREATE TABLE orders ("
+                "id INTEGER PRIMARY KEY, status TEXT, amount REAL)"
+            )
+            cur.executemany(
+                "INSERT INTO orders VALUES (?,?,?)",
+                [(1, "paid", 10.0), (2, "open", 7.0)],
+            )
 
         storage = YAMLStorage(base_dir=os.path.join(d, "store"))
         await storage.save_datasource(
@@ -787,13 +780,13 @@ class TestNestedQueryBackedSavePath:
             name="qb_a_orders_with_kpi",
             data_source="ds",
             source_queries=[SlayerQuery(
-                source_model={
+                source_model=ModelExtension.model_validate({
                     "source_name": "orders",
                     "joins": [{
                         "target_model": "qb_b_customers_kpi",
                         "join_pairs": [["region", "region"]],
                     }],
-                },
+                }),
                 dimensions=["status"],
                 measures=[{"formula": "qb_b_customers_kpi._count:sum"}],
             )],
@@ -974,13 +967,13 @@ class TestNestedQueryBackedExpansion:
             # as a join target AND references a column on it so the
             # planner doesn't drop the join as unused.
             outer = SlayerQuery(
-                source_model={
+                source_model=ModelExtension.model_validate({
                     "source_name": "orders",
                     "joins": [{
                         "target_model": "customers_kpi",
                         "join_pairs": [["region", "region"]],
                     }],
-                },
+                }),
                 measures=[{"formula": "customers_kpi._count:sum"}],
                 dimensions=["status"],
             )
@@ -1081,13 +1074,13 @@ class TestCrossDatasourceJoin:
             name="xds_qb",
             data_source="ds",
             source_queries=[SlayerQuery(
-                source_model={
+                source_model=ModelExtension.model_validate({
                     "source_name": "orders",
                     "joins": [{
                         "target_model": "customers",
                         "join_pairs": [["region", "region"]],
                     }],
-                },
+                }),
                 dimensions=["status", "customers.name"],
             )],
         )

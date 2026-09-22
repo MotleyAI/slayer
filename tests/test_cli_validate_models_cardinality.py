@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 import sys
 import tempfile
 from contextlib import contextmanager
@@ -18,6 +17,7 @@ from slayer.cli import main as cli_main
 from slayer.core.enums import DataType, JoinCardinality
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -36,17 +36,15 @@ def workspace():
 
 
 def _seed_db(db_path: str) -> None:
-    conn = sqlite3.connect(db_path)
-    conn.executescript(
-        """
-        CREATE TABLE customers (id INTEGER PRIMARY KEY, region TEXT);
-        CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER);
-        INSERT INTO customers VALUES (1,'US'),(2,'EU');
-        INSERT INTO orders VALUES (1,1),(2,1),(3,2);
-        """
-    )
-    conn.commit()
-    conn.close()
+    with transaction(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE customers (id INTEGER PRIMARY KEY, region TEXT);
+            CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER);
+            INSERT INTO customers VALUES (1,'US'),(2,'EU');
+            INSERT INTO orders VALUES (1,1),(2,1),(3,2);
+            """
+        )
 
 
 def _customers_model(*, data_source: str, drift: bool) -> SlayerModel:

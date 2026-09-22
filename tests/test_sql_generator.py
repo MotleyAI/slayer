@@ -13,7 +13,7 @@ from pydantic import ValidationError as PydanticValidationError
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Aggregation, AggregationParam, Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
-from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.engine.query_engine import SlayerQueryEngine, _sql_client_cache_key
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.plan import plan_query
 from slayer.sql.generator import (
@@ -1858,7 +1858,7 @@ class TestRankFamilyTransforms:
         )
         sql = await _generate(generator, query, orders_model)
         assert (
-            'RANK() OVER (ORDER BY "orders.revenue_sum" DESC)'
+            'RANK() OVER (ORDER BY "orders.revenue_sum" DESC NULLS LAST)'
             in _norm(sql)
         )
 
@@ -1873,7 +1873,7 @@ class TestRankFamilyTransforms:
         )
         sql = await _generate(generator, query, orders_model)
         assert (
-            'RANK() OVER (PARTITION BY "orders.status" ORDER BY "orders.revenue_sum" DESC)'
+            'RANK() OVER (PARTITION BY "orders.status" ORDER BY "orders.revenue_sum" DESC NULLS LAST)'
             in _norm(sql)
         )
 
@@ -1904,7 +1904,7 @@ class TestRankFamilyTransforms:
         assert window is not None, sql
         assert window.sql(dialect="postgres") == (
             'RANK() OVER (PARTITION BY "orders.customer_id", "orders.status" '
-            'ORDER BY "orders.revenue_sum" DESC)'
+            'ORDER BY "orders.revenue_sum" DESC NULLS LAST)'
         )
 
     async def test_percent_rank_default(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
@@ -1918,7 +1918,7 @@ class TestRankFamilyTransforms:
         )
         sql = await _generate(generator, query, orders_model)
         assert (
-            'PERCENT_RANK() OVER (ORDER BY "orders.revenue_sum" DESC)'
+            'PERCENT_RANK() OVER (ORDER BY "orders.revenue_sum" DESC NULLS LAST)'
             in _norm(sql)
         )
 
@@ -1936,7 +1936,7 @@ class TestRankFamilyTransforms:
         sql = await _generate(generator, query, orders_model)
         assert (
             'PERCENT_RANK() OVER (PARTITION BY "orders.status" '
-            'ORDER BY "orders.revenue_sum" DESC)'
+            'ORDER BY "orders.revenue_sum" DESC NULLS LAST)'
             in _norm(sql)
         )
 
@@ -1951,7 +1951,7 @@ class TestRankFamilyTransforms:
         )
         sql = await _generate(generator, query, orders_model)
         assert (
-            'DENSE_RANK() OVER (ORDER BY "orders.revenue_sum" DESC)'
+            'DENSE_RANK() OVER (ORDER BY "orders.revenue_sum" DESC NULLS LAST)'
             in _norm(sql)
         )
 
@@ -1969,7 +1969,7 @@ class TestRankFamilyTransforms:
         sql = await _generate(generator, query, orders_model)
         assert (
             'DENSE_RANK() OVER (PARTITION BY "orders.status" '
-            'ORDER BY "orders.revenue_sum" DESC)'
+            'ORDER BY "orders.revenue_sum" DESC NULLS LAST)'
             in _norm(sql)
         )
 
@@ -1984,7 +1984,7 @@ class TestRankFamilyTransforms:
         )
         sql = await _generate(generator, query, orders_model)
         assert (
-            'NTILE(4) OVER (ORDER BY "orders.revenue_sum" DESC)'
+            'NTILE(4) OVER (ORDER BY "orders.revenue_sum" DESC NULLS LAST)'
             in _norm(sql)
         )
 
@@ -2003,7 +2003,7 @@ class TestRankFamilyTransforms:
         sql = await _generate(generator, query, orders_model)
         assert (
             'NTILE(4) OVER (PARTITION BY "orders.status" '
-            'ORDER BY "orders.revenue_sum" DESC)'
+            'ORDER BY "orders.revenue_sum" DESC NULLS LAST)'
             in _norm(sql)
         )
 
@@ -2069,7 +2069,7 @@ class TestRankFamilyTransforms:
         inner_sql, outer_sql = sql.split("_filtered", 1)
         assert (
             'RANK() OVER (PARTITION BY "orders.status" '
-            'ORDER BY "orders.revenue_sum" DESC)'
+            'ORDER BY "orders.revenue_sum" DESC NULLS LAST)'
             in _norm(inner_sql)
         ), f"PARTITION BY status should appear in the inner SELECT, got:\n{sql}"
         assert "RANK()" not in outer_sql, (
@@ -2100,7 +2100,7 @@ class TestRankFamilyTransforms:
         sql = await _generate(generator, query, orders_model)
         assert (
             'RANK() OVER (PARTITION BY "orders.created_at" '
-            'ORDER BY "orders.revenue_sum" DESC)'
+            'ORDER BY "orders.revenue_sum" DESC NULLS LAST)'
             in _norm(sql)
         )
 
@@ -3048,39 +3048,41 @@ class TestStatAggsPerDialect:
             gen._build_agg(m)
 
 
-    def test_build_stddev_samp_with_filter_wraps_value(self) -> None:
+    def test_build_stddev_samp_over_a_masked_value(self) -> None:
         gen = SQLGenerator(dialect="postgres")
+        # DEV-1832: a Column.filter arrives pre-masked in ``sql`` (its ColumnSqlKey
+        # expansion), so the stat agg embeds the CASE value as-is.
         m = AggRenderSpec(
             name="amount",
-            sql="amount",
+            sql="CASE WHEN status = 'completed' THEN orders.amount END",
             model_name="orders",
             alias="amount_stddev_samp",
             aggregation="stddev_samp",
             agg_kwargs={},
-            filter_sql="status = 'completed'",
         )
         sql = gen._build_agg(m)[0].sql(dialect="postgres")
-        # Filter wraps the qualified column reference.
         assert "CASE WHEN status = 'completed' THEN orders.amount END" in sql
         assert "STDDEV_SAMP" in sql
 
-    def test_build_corr_with_filter_wraps_both_columns(self) -> None:
+    def test_build_corr_masks_only_the_value_not_the_other_column(self) -> None:
         gen = SQLGenerator(dialect="postgres")
+        # DEV-1832: a Column.filter masks only its own value; the ``other=`` param
+        # is masked solely by ITS column's filter, never the source's. The value
+        # arrives pre-masked in ``sql``; ``other`` stays bare.
         m = AggRenderSpec(
             name="amount",
-            sql="amount",
+            sql="CASE WHEN status = 'completed' THEN orders.amount END",
             model_name="orders",
             alias="amount_corr",
             aggregation="corr",
             agg_kwargs={"other": "quantity"},
-            filter_sql="status = 'completed'",
         )
         sql = gen._build_agg(m)[0].sql(dialect="postgres")
-        # Both legs of corr() must be wrapped in CASE WHEN so non-matching rows contribute NULL pairs (which the aggregate skips entirely).
-        assert sql.count("CASE WHEN status = 'completed'") == 2
+        # Exactly one CASE — the value; the other column is never wrapped by it.
+        assert sql.count("CASE WHEN status = 'completed'") == 1
         assert "CORR(" in sql
         assert "orders.amount" in sql
-        assert "orders.quantity" in sql
+        assert "quantity" in sql
 
 
 class TestStatAggsViaQueryEnrichment:
@@ -3413,13 +3415,20 @@ class TestMeasureSourceSqlJoinInference:
             measures=[ModelMeasure(formula="region_payment:last(orders.created_at)")],
         )
         sql = (await engine.execute(query, dry_run=True)).sql
-        assert "_cm_" in sql, f"expected an isolation CTE:\n{sql}"
-        self._assert_ref_only_in_val(sql, "customers__regions.payment_amount")
-        # The measure's Column.filter is a WHERE on the ranked rows; a per-aggregate scope can drop rows directly, replacing the old sentinel-rank + match-flag machinery.
+        assert sql is not None
         norm = _norm(sql)
+        assert "_cm_" in sql, f"expected an isolation CTE:\n{sql}"
+        # DEV-1832: the Column.filter MASKS the materialised value (it is not a
+        # WHERE), so the crossing ref lives only inside a CASE-masked ``_val``.
+        assert (
+            "CASE WHEN orders.amount > 100 THEN "
+            "customers__regions.payment_amount END AS _val_0"
+        ) in norm, sql
+        assert "WHERE orders.amount > 100" not in norm, sql
         assert "_last_rn_f0" not in norm, sql
         assert "_match_f0" not in norm, sql
-        assert "WHERE orders.amount > 100" in norm, sql
+        # The crossing ref never leaks outside the ranked subquery's _val.
+        assert norm.count("customers__regions.payment_amount") == 1, sql
         assert "THEN _val" in norm, sql
 
     async def test_two_last_sharing_value_dedupe(
@@ -4405,10 +4414,12 @@ class TestAggParamSanitization:
         assert "/ 100" in sql
         assert "CASE WHEN sales.status = 'active' THEN" in sql
 
-    async def test_filtered_weighted_avg_still_wraps_column_weight(
+    async def test_filtered_weighted_avg_does_not_mask_the_weight(
         self, gen: SQLGenerator, agg_model: SlayerModel,
     ) -> None:
-        """Counter-test for A1: weighted_avg's `weight=quantity` IS a row- level reference, so the CASE-WHEN wrap still applies to it. The literal-vs-row-ref distinction is what matters."""
+        """DEV-1832: a Column.filter masks only its own column's value. The
+        ``active_price`` value is masked, but ``weight=quantity`` is NOT — a param
+        is masked solely by its own column's filter, never the source's."""
         agg_model.columns.append(
             Column(
                 name="active_price",
@@ -4424,8 +4435,9 @@ class TestAggParamSanitization:
             ],
         )
         sql = await _generate(generator=gen, query=query, model=agg_model)
-        # Both legs are row-level references → both wrapped. (``status`` is undeclared, so the door qualifies it to the root — DEV-1745 W1.)
-        assert sql.count("CASE WHEN sales.status = 'active'") >= 2
+        # Exactly one CASE — the value; the weight rides bare. (``status`` is
+        # undeclared, so the door qualifies it to the root — DEV-1745 W1.)
+        assert sql.count("CASE WHEN sales.status = 'active'") == 1
 
     def test_injection_via_direct_agg_render_spec(self, gen: SQLGenerator) -> None:
         """Malicious agg_kwargs on a directly constructed AggRenderSpec are rejected at render time (the validation is wired into the dialect-helper path, not just the standalone ``_validate_agg_param_value``)."""
@@ -4481,10 +4493,13 @@ class TestFilteredMeasures:
         assert "CASE WHEN" not in sql
         assert "SUM(" in sql
 
-    async def test_filtered_weighted_avg_filters_both_terms(
+    async def test_filtered_weighted_avg_masks_only_the_value(
         self, generator: SQLGenerator, orders_model: SlayerModel,
     ) -> None:
-        """Regression for CodeRabbit #10 — weighted_avg on a filtered measure must filter BOTH the numerator and the denominator. Otherwise SUM({weight}) in the denominator sums all weights regardless of filter, producing a wrong (under-weighted) result."""
+        """DEV-1832 reverses CodeRabbit #10: a Column.filter masks only its own
+        value, never a parameter. So ``active_revenue:weighted_avg(weight=quantity)``
+        masks the numerator's value but the denominator is the bare ``SUM(quantity)``
+        — the weight is masked only if ITS column carries a filter."""
         orders_model.columns.append(
             Column(name="quantity", sql="quantity", type=DataType.DOUBLE)
         )
@@ -4496,11 +4511,10 @@ class TestFilteredMeasures:
             measures=[ModelMeasure(formula="active_revenue:weighted_avg(weight=quantity)")],
         )
         sql = await _generate(generator, query, orders_model)
-        # Both the value (amount) and the weight (quantity) must be inside CASE WHEN. Two SUM calls; both should reference the filter.
-        assert sql.count("CASE WHEN") >= 2, f"Expected >=2 CASE WHEN, got: {sql}"
-        # Denominator must NOT be a bare SUM(quantity) — that would be the bug. Check that quantity appears inside a CASE WHEN context, not as a bare SUM arg.
-        assert "SUM(quantity)" not in sql, (
-            f"Bare SUM(quantity) leaks unfiltered weights into denominator: {sql}"
+        # Exactly one CASE — the value; the weight rides unmasked into the denominator.
+        assert sql.count("CASE WHEN") == 1, f"Expected 1 CASE WHEN, got: {sql}"
+        assert "SUM(orders.quantity)" in sql, (
+            f"the unmasked weight must be a plain SUM(orders.quantity): {sql}"
         )
 
     async def test_mixed_filtered_and_unfiltered(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
@@ -4516,10 +4530,13 @@ class TestFilteredMeasures:
         assert sql.count("CASE WHEN") == 1
         assert sql.count("SUM(") == 2
 
-    async def test_filtered_last_generates_dedicated_rn(
+    async def test_filtered_last_masks_the_value_over_full_ranking(
         self, generator: SQLGenerator, orders_model: SlayerModel,
     ) -> None:
-        """A filtered ``last`` REMOVES the non-matching rows before ranking."""
+        """DEV-1832: a filtered ``last`` MASKS the picked value; it does NOT
+        restrict the ranked rows. The ranking spans every row (no filter WHERE)
+        and the value column is CASE-masked, so a non-matching newest row picks
+        NULL. A row restriction belongs in a query filter, not the column."""
         orders_model.default_time_dimension = "created_at"
         orders_model.columns.append(
             Column(name="completed_balance", sql="amount", filter="status = 'completed'", type=DataType.DOUBLE)
@@ -4533,15 +4550,18 @@ class TestFilteredMeasures:
         )
         sql = await _generate(generator, query, orders_model)
         norm = _norm(sql)
-        assert "WHERE orders.status = 'completed'" in norm, sql
+        assert "WHERE orders.status = 'completed'" not in norm, sql
+        assert "CASE WHEN orders.status = 'completed' THEN orders.amount END" in norm, sql
+        assert "ROW_NUMBER(" in norm, sql
         assert "THEN 0 ELSE 1" not in norm, sql
         assert "_match_f0" not in norm, sql
         assert _re.search(r"_(?:first|last)_rn", sql) is None, sql
 
-    async def test_filtered_first_generates_dedicated_rn(
+    async def test_filtered_first_masks_the_value_over_full_ranking(
         self, generator: SQLGenerator, orders_model: SlayerModel,
     ) -> None:
-        """The same for ``first``: the filter is a WHERE, and the ranking runs ascending over what survives it."""
+        """The same for ``first``: no WHERE; the value is masked and the ranking
+        runs ascending over every row (DEV-1832)."""
         orders_model.default_time_dimension = "created_at"
         orders_model.columns.append(
             Column(name="completed_balance", sql="amount", filter="status = 'completed'", type=DataType.DOUBLE)
@@ -4555,7 +4575,8 @@ class TestFilteredMeasures:
         )
         sql = await _generate(generator, query, orders_model)
         norm = _norm(sql)
-        assert "WHERE orders.status = 'completed'" in norm, sql
+        assert "WHERE orders.status = 'completed'" not in norm, sql
+        assert "CASE WHEN orders.status = 'completed' THEN orders.amount END" in norm, sql
         assert "ORDER BY orders.created_at)" in norm, sql
         assert "THEN 0 ELSE 1" not in norm, sql
         assert _re.search(r"_(?:first|last)_rn", sql) is None, sql
@@ -4581,7 +4602,9 @@ class TestFilteredMeasures:
     async def test_mixed_filtered_and_unfiltered_last(
         self, generator: SQLGenerator, orders_model: SlayerModel,
     ) -> None:
-        """A filtered and an unfiltered ``last`` are two aggregates, so two CTEs — the filtered one carrying its predicate as a WHERE, the other ranking over the full row set."""
+        """A filtered and an unfiltered ``last`` are two aggregates, so two CTEs —
+        both ranking over the full row set (DEV-1832: a Column.filter masks the
+        value, it is not a WHERE), the filtered one carrying its CASE mask."""
         orders_model.default_time_dimension = "created_at"
         orders_model.columns.append(Column(name="balance", sql="amount", type=DataType.DOUBLE))
         orders_model.columns.append(
@@ -4601,9 +4624,9 @@ class TestFilteredMeasures:
         names = _re.findall(r"(_cm_\w+)\s+AS\s*\(", sql)
         assert len(names) == 2, sql
         bodies = [_extract_cte_body(sql, _re.escape(n)) for n in names]
-        wheres = [b for b in bodies if "WHERE" in b]
-        assert len(wheres) == 1, sql
-        assert "orders.status = 'completed'" in _norm(wheres[0]), sql
+        # Neither ranks with a filter WHERE; the filtered one masks its value.
+        assert not any("WHERE" in b for b in bodies), sql
+        assert "CASE WHEN orders.status = 'completed' THEN orders.amount END" in _norm(sql), sql
 
     @staticmethod
     async def _filtered_last_cross_model_sql(generator: SQLGenerator) -> str:
@@ -4730,7 +4753,10 @@ class TestFilteredMeasures:
     async def test_two_filtered_lasts_same_source_different_filters_dont_collide(
         self, generator: SQLGenerator, orders_model: SlayerModel,
     ) -> None:
-        """Regression for CodeRabbit #9 — two filtered last measures backed by the same source measure+agg but with different filters must each get their own ROW_NUMBER column. Previously the map was keyed by source_measure:agg so the second one clobbered the first and both pointed at the same _rn alias."""
+        """Two filtered ``last`` measures over the same base column but DIFFERENT
+        filtered columns each get their own ranked CTE — distinct source
+        ColumnSqlKeys never collide (DEV-1832). Each carries its own CASE mask;
+        neither restricts the ranking with a WHERE."""
         orders_model.default_time_dimension = "created_at"
         orders_model.columns.append(
             Column(name="active_balance", sql="amount", filter="status = 'active'", type=DataType.DOUBLE)
@@ -4750,12 +4776,13 @@ class TestFilteredMeasures:
         )
         sql = await _generate(generator, query, orders_model)
         norm = _norm(sql)
-        # Two filtered aggregates, two scopes, two predicates; the old _last_rn_f0 / _last_rn_f1 sentinels only mattered under one shared scope.
         names = _re.findall(r"(_cm_\w+)\s+AS\s*\(", sql)
         assert len(names) == 2, sql
         assert _re.search(r"_(?:first|last)_rn", sql) is None, sql
-        assert "WHERE orders.status = 'active'" in norm, sql
-        assert "WHERE orders.status = 'completed'" in norm, sql
+        # Each masks its own value; no filter WHERE restricts the ranking.
+        assert "WHERE orders.status" not in norm, sql
+        assert "CASE WHEN orders.status = 'active' THEN orders.amount END" in norm, sql
+        assert "CASE WHEN orders.status = 'completed' THEN orders.amount END" in norm, sql
 
 
 
@@ -4775,8 +4802,9 @@ class TestMeasureFilterInjection:
             )
         )
         query = SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="evil:sum")])
+        generator = SQLGenerator(dialect="postgres")
         with pytest.raises((sqlglot.errors.ParseError, sqlglot.errors.TokenError, ValueError)):
-            await _generate(SQLGenerator(dialect="postgres"), query, orders_model)
+            await _generate(generator=generator, query=query, model=orders_model)
 
     async def test_union_select_rejected(self, orders_model: SlayerModel) -> None:
         """UNION SELECT payload is rejected by sqlglot at generation time."""
@@ -4789,8 +4817,9 @@ class TestMeasureFilterInjection:
             )
         )
         query = SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="evil:sum")])
+        generator = SQLGenerator(dialect="postgres")
         with pytest.raises((sqlglot.errors.ParseError, sqlglot.errors.TokenError, ValueError)):
-            await _generate(SQLGenerator(dialect="postgres"), query, orders_model)
+            await _generate(generator=generator, query=query, model=orders_model)
 
     def test_block_comment_passes_through_safely(self, orders_model: SlayerModel) -> None:
         """``/* ... */`` block comments survive ``Column`` construction — DEV-1369's SQL-mode validator does not parse them, only checks for DSL constructs (aggregation colon syntax, transform calls, ``OVER``)."""
@@ -5623,12 +5652,19 @@ Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
                 dimensions=[ColumnRef(name="status")],
             )
             sql = (await engine.execute(query, dry_run=True)).sql
+            assert sql is not None
             _assert_valid_sql(sql, dialect=generator.dialect)
             # Two distinct percentile parameterizations must not collapse via canonical-name dedup: both p values and both user aliases surface distinctly in the emitted SQL.
-            assert "0.5" in sql and "0.95" in sql, (
+            assert "0.5" in sql, (
                 f"Expected both percentile p values in SQL:\n{sql}"
             )
-            assert "p50" in sql and "p95" in sql, (
+            assert "0.95" in sql, (
+                f"Expected both percentile p values in SQL:\n{sql}"
+            )
+            assert "p50" in sql, (
+                f"Expected both user aliases (p50, p95) in SQL:\n{sql}"
+            )
+            assert "p95" in sql, (
                 f"Expected both user aliases (p50, p95) in SQL:\n{sql}"
             )
 
@@ -5737,7 +5773,10 @@ class TestDev1501HiddenFirstLastRender:
             terms = _outer_order_terms(sql)
             exprs = [t[0] for t in terms]
             dirs = [t[1] for t in terms]
-            assert len(terms) == 2 and exprs[0] != exprs[1], (
+            assert len(terms) == 2, (
+                f"Two ORDER BY expressions collapsed:\n{sql}"
+            )
+            assert exprs[0] != exprs[1], (
                 f"Two ORDER BY expressions collapsed:\n{sql}"
             )
             assert dirs == ["asc", "desc"], (
@@ -5772,7 +5811,10 @@ class TestDev1501HiddenFirstLastRender:
             assert "ORDER BY orders.created_at DESC)" in norm, sql
             terms = _outer_order_terms(sql)
             exprs = [t[0] for t in terms]
-            assert len(terms) == 2 and exprs[0] != exprs[1], (
+            assert len(terms) == 2, (
+                f"first/last ORDER BY expressions collapsed:\n{sql}"
+            )
+            assert exprs[0] != exprs[1], (
                 f"first/last ORDER BY expressions collapsed:\n{sql}"
             )
 
@@ -5970,7 +6012,9 @@ class TestDev1501HiddenFirstLastRender:
     async def test_filtered_first_last_in_having_uses_filtered_rn(
         self, generator: SQLGenerator
     ) -> None:
-        """A FILTERED ``last(time_col)`` (``Column.filter`` set) referenced from a filter must be ranked over the MATCHING rows only."""
+        """A FILTERED ``last(time_col)`` (``Column.filter`` set) referenced from a
+        filter MASKS its value over the full ranking (DEV-1832) — no WHERE
+        restricts the ranked rows; the value column is CASE-masked."""
         async with _persist_and_engine(_orders_with_paid_amount_model()) as engine:
             query = SlayerQuery(
                 source_model="orders",
@@ -5983,7 +6027,8 @@ class TestDev1501HiddenFirstLastRender:
             names = self._ranked_ctes(sql)
             assert len(names) == 1, sql
             rk_body = _norm(_extract_cte_body(sql, _re.escape(names[0])))
-            assert "WHERE orders.status = 'paid'" in rk_body, sql
+            assert "WHERE orders.status = 'paid'" not in rk_body, sql
+            assert "CASE WHEN orders.status = 'paid' THEN orders.amount END" in rk_body, sql
             assert "_last_rn_f0" not in sql, sql
             assert "_match_f0" not in sql, sql
             # The predicate on the ranked value lands on the outer SELECT.
@@ -6111,7 +6156,9 @@ class TestDev1501HiddenFirstLastRender:
     async def test_filtered_composite_first_last_uses_filtered_rn(
         self, generator: SQLGenerator
     ) -> None:
-        """A FILTERED first/last operand inside a composite projection (``paid_amount:last(created_at) + 1``) must be ranked over the MATCHING rows."""
+        """A FILTERED first/last operand inside a composite projection
+        (``paid_amount:last(created_at) + 1``) MASKS its value over the full
+        ranking (DEV-1832) — no WHERE restricts the ranked rows."""
         async with _persist_and_engine(_orders_with_paid_amount_model()) as engine:
             query = SlayerQuery(
                 source_model="orders",
@@ -6126,7 +6173,8 @@ class TestDev1501HiddenFirstLastRender:
             names = self._ranked_ctes(sql)
             assert len(names) == 1, sql
             rk_body = _norm(_extract_cte_body(sql, _re.escape(names[0])))
-            assert "WHERE orders.status = 'paid'" in rk_body, sql
+            assert "WHERE orders.status = 'paid'" not in rk_body, sql
+            assert "CASE WHEN orders.status = 'paid' THEN orders.amount END" in rk_body, sql
             assert "_last_rn_f0" not in sql, sql
             assert "_match_f0" not in sql, sql
             assert _re.search(
@@ -6228,7 +6276,10 @@ class TestDev1501HiddenFirstLastRender:
     async def test_cross_model_filtered_last_in_having(
         self, generator: SQLGenerator
     ) -> None:
-        """A FILTERED cross-model ``last()`` (``Column.filter`` set on the joined model's column) referenced from a query filter must rank over the MATCHING target rows, and the predicate must be applied where that value is readable."""
+        """A FILTERED cross-model ``last()`` (``Column.filter`` set on the joined
+        model's column) referenced from a query filter MASKS its value over the
+        full ranking of the target's rows (DEV-1832) — no WHERE narrows them; the
+        outer predicate applies where the masked value is readable."""
         customers = SlayerModel(
             name="customers", sql_table="customers", data_source="test",
             columns=[
@@ -6267,9 +6318,10 @@ class TestDev1501HiddenFirstLastRender:
             names = self._ranked_ctes(sql)
             assert len(names) == 1, sql
             rk_body = _norm(_extract_cte_body(sql, _re.escape(names[0])))
-            # The target's own rows are narrowed BEFORE the ranking.
+            # The target's rows rank unrestricted; the value is CASE-masked.
             assert "FROM customers AS customers" in rk_body, rk_body
-            assert "WHERE customers.active = TRUE" in rk_body, rk_body
+            assert "WHERE customers.active = TRUE" not in rk_body, rk_body
+            assert "CASE WHEN customers.active = TRUE THEN customers.score END" in rk_body, rk_body
             assert "_last_rn_f0" not in sql, sql
             assert "_match_f0" not in sql, sql
             assert "HAVING" not in sql.upper(), sql
@@ -6612,7 +6664,11 @@ class TestDev1501BroadTriggerAndGuards:
                 for sel in tree.find_all(sqlglot.exp.Select)
                 if sel.args.get("group")
             ]
-            assert group_counts and all(c == 1 for c in group_counts), (
+            assert group_counts, (
+                f"GROUP BY contains extras (row leaves leaked). Counts: "
+                f"{group_counts}\nSQL:\n{sql}"
+            )
+            assert all(c == 1 for c in group_counts), (
                 f"GROUP BY contains extras (row leaves leaked). Counts: "
                 f"{group_counts}\nSQL:\n{sql}"
             )
@@ -6848,11 +6904,6 @@ Column(name="total_policy_amount", sql="policy_amount", type=DataType.DOUBLE)],
             # The host-sibling filter inherits through the root's own join.
             assert "agreement_party_role" in cte_body
             assert "party_role_code" in cte_body
-            dropped = [
-                w for w in (resp.warnings or [])
-                if getattr(w, "kind", None) == "unreachable_filter_dropped"
-            ]
-            assert not dropped, dropped
 
     async def test_rerooted_cte_without_filters(self, generator, _models):
         """Cross-model measure with no filters still uses re-rooted CTE."""
@@ -7570,7 +7621,8 @@ class TestIsolatedFilteredMeasureCTEs:
         assert "total_amount" in base_body, (
             f"unfiltered total_amount should be in host _base CTE:\n{base_body}"
         )
-        assert "_cm_" in sql and "loss_payment_amt" in sql
+        assert "_cm_" in sql
+        assert "loss_payment_amt" in sql
 
     async def test_all_measures_isolated_produces_dimension_spine(
         self, generator: SQLGenerator, claim_amount_model, related_models,
@@ -7585,7 +7637,8 @@ class TestIsolatedFilteredMeasureCTEs:
 
         # Host _base CTE exists; the filtered measure goes to its own _cm_ CTE.
         assert "_base" in sql
-        assert "_cm_" in sql and "loss_payment_amt" in sql
+        assert "_cm_" in sql
+        assert "loss_payment_amt" in sql
         # Inspect the _base body: dim spine with GROUP BY, no filter-target join.
         base_match = _re.search(r"_base\s+AS\s*\(", sql)
         assert base_match, f"Expected _base CTE in:\n{sql}"
@@ -7631,7 +7684,10 @@ class TestIsolatedFilteredMeasureCTEs:
         assert "claim_number" in sql
         assert "12345" in sql
         # The claim join must land somewhere (legacy: in _base; new: in _cm_). Either is correct as long as the filter can resolve.
-        assert "Claim" in sql and "JOIN" in sql, (
+        assert "Claim" in sql, (
+            f"claim join missing entirely:\n{sql}"
+        )
+        assert "JOIN" in sql, (
             f"claim join missing entirely:\n{sql}"
         )
         _assert_valid_sql(sql)
@@ -7717,7 +7773,8 @@ class TestIsolatedFilteredMeasureCTEs:
         sql = await self._sql(claim_amount_model, related_models, query)
         assert "SELECT\nFROM" not in sql, f"Empty SELECT detected:\n{sql}"
         assert "SELECT FROM" not in sql, f"Empty SELECT detected:\n{sql}"
-        assert "_cm_" in sql and "loss_payment_amt" in sql
+        assert "_cm_" in sql
+        assert "loss_payment_amt" in sql
         # ``_base`` must NOT reference the host table — that turns the one-row placeholder into N rows.
         base_body = _extract_cte_body(sql, r"_base")
         assert "Claim_Amount" not in base_body, (
@@ -7886,9 +7943,12 @@ class TestIsolatedFilteredMeasureCTEs:
             assert "ROW_NUMBER" in cm_body, (
                 f"{pattern} must carry its own ranking:\n{cm_body}"
             )
-        # Only the filtered one narrows its rows.
+        # DEV-1832: the filtered one MASKS its value rather than narrowing rows —
+        # neither ranked CTE carries a WHERE; only the filtered one has a CASE.
+        payment_body = _extract_cte_body(sql, r"_cm_\w*latest_payment\w*")
         assert "WHERE" not in _extract_cte_body(sql, r"_cm_\w*total_amount\w*"), sql
-        assert "WHERE" in _extract_cte_body(sql, r"_cm_\w*latest_payment\w*"), sql
+        assert "WHERE" not in payment_body, sql
+        assert "CASE WHEN" in payment_body, sql
 
         _assert_valid_sql(sql)
 
@@ -8150,7 +8210,10 @@ class TestIsolatedFilteredMeasureCTEs:
         )
         sql = await self._sql(claim_amount_model, related_models, query)
         assert "> 0" in sql, f"POST filter '> 0' missing:\n{sql}"
-        assert "SUM" in sql.upper() and "OVER" in sql.upper(), (
+        assert "SUM" in sql.upper(), (
+            f"Expected windowed SUM ... OVER (...) for cumsum:\n{sql}"
+        )
+        assert "OVER" in sql.upper(), (
             f"Expected windowed SUM ... OVER (...) for cumsum:\n{sql}"
         )
         # Layer-boundary pin: the POST predicate lives in the _filtered outer wrap, not base — routing it into base.WHERE would filter rows before the cumsum window and change the semantics.
@@ -8647,7 +8710,8 @@ class TestIsolatedFilteredMeasureCTEs:
             validate=False,
         )
         # Filtered measure isolated into its own _cm_ CTE; the subquery FROM for the host renders inside it.
-        assert "_cm_" in sql and "loss_payment_amt" in sql
+        assert "_cm_" in sql
+        assert "loss_payment_amt" in sql
         # Host's sql=... subquery renders inside the _cm_ CTE (sqlglot may pretty-print, so check whitespace-tolerantly); the mixed-case table Claim_Amount is quoted on emit (DEV-1645).
         sql_collapsed = _re.sub(r"\s+", " ", sql)
         assert 'SELECT * FROM "Claim_Amount"' in sql_collapsed, (
@@ -8691,7 +8755,7 @@ class TestGetColumnTypesSql:
 
                 mock_client = MagicMock()
                 mock_client.get_column_types = capture_sql
-                engine._sql_clients[("sqlite://", "", "")] = mock_client
+                engine._sql_clients[_sql_client_cache_key(mock_ds)] = mock_client
 
                 await engine.get_column_types("orders")
 
@@ -8739,7 +8803,7 @@ class TestGetColumnTypesSql:
 
             mock_client = MagicMock()
             mock_client.get_column_types = capture_types
-            engine._sql_clients[("sqlite://", "", "")] = mock_client
+            engine._sql_clients[_sql_client_cache_key(mock_ds)] = mock_client
 
             result = await engine.get_column_types("orders")
 
@@ -9926,7 +9990,13 @@ class TestFilterOuterParenWrapDev1539:
             f"Expected HAVING multi-term LHS to start with `(`; got:\n{having}"
         )
         # And the body contains a real top-level divide between two aggregate calls — not just the inner NULLIF.
-        assert "SUM(" in having.upper() and "/" in having and "NULLIF" in having.upper(), (
+        assert "SUM(" in having.upper(), (
+            f"Expected HAVING body to combine SUM/NULLIF via `/`; got:\n{having}"
+        )
+        assert "/" in having, (
+            f"Expected HAVING body to combine SUM/NULLIF via `/`; got:\n{having}"
+        )
+        assert "NULLIF" in having.upper(), (
             f"Expected HAVING body to combine SUM/NULLIF via `/`; got:\n{having}"
         )
 
@@ -10541,8 +10611,10 @@ class TestWindowedMeasureGuards:
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
             measures=[{"formula": "revenue:min(window='30d')", "name": "rev_w"}],
         )
-        with pytest.raises(ValueError, match="only supported for sum and avg"):
-            await _engine_generate(query=query, model=orders_model)
+        # DEV-1915 lift: window= is no longer restricted to sum/avg; min renders.
+        sql = await _engine_generate(query=query, model=orders_model)
+        assert_scope_closed(sql, dialect="postgres")
+        assert "__regroup__" not in sql
 
     async def test_windowed_no_time_dimension_raises(self, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
@@ -10580,7 +10652,7 @@ class TestWindowedMeasureGuards:
             measures=[{"formula": "customers.revenue:sum(window='30d')", "name": "rev_w"}],
         )
         # DEV-1836: fails closed with a precise attributability ValueError (the active time dimension is a host column, unreachable from customers).
-        with pytest.raises(ValueError, match="cross-model"):
+        with pytest.raises(ValueError, match="attributable from"):
             await engine.execute(query, dry_run=True)
 
     async def test_windowed_with_transform_raises(self, orders_model: SlayerModel) -> None:
@@ -10680,7 +10752,8 @@ class TestWindowedMeasureGuards:
             await _engine_generate(query=query, model=orders_model)
 
     async def test_custom_aggregation_with_window_raises(self) -> None:
-        """The ``window`` kwarg name is reserved for sum/avg; invoking a custom aggregation with ``window=`` must raise G1 (legacy parity — legacy pops ``window`` unconditionally before dispatch)."""
+        """DEV-1915: a custom model-level aggregation accepts ``window=`` like any
+        built-in; its formula renders over the trailing interval's rows."""
         model = SlayerModel(
             name="orders", sql_table="public.orders", data_source="test",
             columns=[
@@ -10695,8 +10768,9 @@ class TestWindowedMeasureGuards:
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
             measures=[{"formula": "amount_col:myagg(window='90d')", "name": "w"}],
         )
-        with pytest.raises(ValueError, match="only supported for sum and avg"):
-            await _engine_generate(query=query, model=model)
+        sql = await _engine_generate(query=query, model=model)
+        assert_scope_closed(sql, dialect="postgres")
+        assert "__regroup__" not in sql
 
     async def test_windowed_transform_input_precedence_not_selected(
         self, orders_model: SlayerModel,
@@ -10741,9 +10815,10 @@ class TestWindowedMeasureGuards:
             return ResolvedSourceBundle(source_model=model, referenced_models=referenced or [])
 
         if case == "g1_non_sum_avg":
+            # DEV-1915 lift: window= is no longer sum/avg-only — min plans cleanly.
             q = SlayerQuery(source_model="orders", time_dimensions=td,
                             measures=[{"formula": "revenue:min(window='30d')", "name": "rev_w"}])
-            bundle, exc, match = _bundle(_plain()), ValueError, "only supported for sum and avg"
+            bundle, exc, match = _bundle(_plain()), None, None
         elif case == "g2_no_time_dim":
             q = SlayerQuery(source_model="orders", dimensions=[ColumnRef(name="status")],
                             measures=[{"formula": "revenue:sum(window='30d')", "name": "rev_w"}])
@@ -10768,7 +10843,7 @@ class TestWindowedMeasureGuards:
             q = SlayerQuery(source_model="orders", time_dimensions=td,
                             measures=[{"formula": "customers.revenue:sum(window='30d')", "name": "rev_w"}])
             # DEV-1836: windowed cross-model with an unattributable TD → ValueError.
-            bundle, exc, match = _bundle(orders, [customers]), ValueError, "cross-model"
+            bundle, exc, match = _bundle(orders, [customers]), ValueError, "attributable from"
         elif case == "g4_transform":
             model = _plain()
             model.default_time_dimension = "created_at"

@@ -34,7 +34,7 @@ from tests._dev1892_fixtures import (
     UNWEIGHTED_CITY_BY_REGION,
     assert_grain_residue,
     derived_local_expr_default_models,
-    fanning_expr_default_models,
+    root_named_expr_default_models,
     literal_collision_reagg_models,
     literal_only_reagg_models,
     mixed_expr_default_models,
@@ -119,10 +119,12 @@ class TestGrainDeterminesRenamedKey:
         )
 
 
-class TestPickedParamInheritsSourceFilter:
-    async def test_picked_weight_wrapped_in_source_filter(self) -> None:
-        # ``north_spend`` is filtered on regions.name='North'; the picked weight
-        # ``_p0`` must carry the same CASE as ``_v`` so the denominator excludes it.
+class TestPickedParamDoesNotInheritSourceFilter:
+    async def test_picked_weight_not_masked_by_source_filter(self) -> None:
+        # ``north_spend`` is filtered on regions.name='North'. Only the VALUE (_v)
+        # carries that CASE mask; the picked weight ``customers.spend`` (_p0) is NOT
+        # masked by the source's filter (DEV-1832: a parameter is masked only by its
+        # own column's filter, never the source's).
         models = toone_filter_models()
         orders = next(m for m in models if m.name == "orders")
         extra = [m for m in models if m.name != "orders"]
@@ -135,8 +137,10 @@ class TestPickedParamInheritsSourceFilter:
             model=orders, extra_models=extra, dialect="sqlite", validate=False,
         )
         p0_line = next(line for line in sql.splitlines() if "AS _p0" in line)
-        assert "CASE WHEN" in p0_line, sql
-        assert "'North'" in p0_line, sql
+        assert "CASE WHEN" not in p0_line, sql
+        v_line = next(line for line in sql.splitlines() if "AS _v" in line)
+        assert "CASE WHEN" in v_line, sql
+        assert "'North'" in v_line, sql
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -152,8 +156,8 @@ async def mixed_expr_engine(request):
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
-async def fanning_expr_engine(request):
-    async for engine in make_assoc_engine(request, models=fanning_expr_default_models()):
+async def root_named_expr_engine(request):
+    async for engine in make_assoc_engine(request, models=root_named_expr_default_models()):
         yield engine
 
 
@@ -333,10 +337,21 @@ class TestExprDefaultLiteralsAndResidue:
         with pytest.raises(ValueError, match="no supported dialect can analyse"):
             await unparseable_engine.execute(q)
 
-    async def test_fanning_expr_default_still_fails_closed(self, fanning_expr_engine):
-        # Regression pin: input safety keeps rejecting the fanning fragment.
-        q = assoc_q(
+    async def test_root_named_expr_default_widens_to_root(self, root_named_expr_engine):
+        # DEV-1931 (Reading A): the default ``orders.amount + 0`` names the query
+        # root, so it resolves root-local and widens the home to orders —
+        # identical to spelling the weight explicitly. A genuinely fanning
+        # definition default still fails closed
+        # (tests/test_dev1931_default_home.py::TestFanningDefinitionDefaultFailsClosed).
+        resp = await root_named_expr_engine.execute(assoc_q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula="customers.spend:wbad", name="w")])
-        with pytest.raises(ValueError, match="unproven join hop"):
-            await fanning_expr_engine.execute(q)
+            measures=[
+                ModelMeasure(formula="customers.spend:wroot", name="w"),
+                ModelMeasure(
+                    formula="sum(customers.spend * (orders.amount + 0))", name="oracle"),
+            ]))
+        default_vals = _status_vals(resp=resp, measure="orders.w")
+        oracle_vals = _status_vals(resp=resp, measure="orders.oracle")
+        assert default_vals
+        for status, expected in oracle_vals.items():
+            assert float(default_vals[status]) == pytest.approx(float(expected))

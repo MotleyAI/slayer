@@ -1,31 +1,31 @@
 {
   "fanning/cross_model_kwarg::bigquery": {
     "error": "ValueError",
-    "message": "Cross-model aggregate 'customers.spend_weighted_avg_weight_customers_regions_bad_pop' reads an input across an unproven join hop to region_events from customers; declare join cardinality or a covering unique key on the target."
+    "message": "Cross-model aggregate 'customers.spend_weighted_avg_weight_customers_regions_bad_pop' ranks/reads by bad_pop, which is not attributable from customers (crosses a fanning or unproven join hop to region_events); declare join cardinality or a covering unique key on the target."
   },
   "fanning/cross_model_kwarg::duckdb": {
     "error": "ValueError",
-    "message": "Cross-model aggregate 'customers.spend_weighted_avg_weight_customers_regions_bad_pop' reads an input across an unproven join hop to region_events from customers; declare join cardinality or a covering unique key on the target."
+    "message": "Cross-model aggregate 'customers.spend_weighted_avg_weight_customers_regions_bad_pop' ranks/reads by bad_pop, which is not attributable from customers (crosses a fanning or unproven join hop to region_events); declare join cardinality or a covering unique key on the target."
   },
   "fanning/cross_model_kwarg::mysql": {
     "error": "ValueError",
-    "message": "Cross-model aggregate 'customers.spend_weighted_avg_weight_customers_regions_bad_pop' reads an input across an unproven join hop to region_events from customers; declare join cardinality or a covering unique key on the target."
+    "message": "Cross-model aggregate 'customers.spend_weighted_avg_weight_customers_regions_bad_pop' ranks/reads by bad_pop, which is not attributable from customers (crosses a fanning or unproven join hop to region_events); declare join cardinality or a covering unique key on the target."
   },
   "fanning/cross_model_kwarg::postgres": {
     "error": "ValueError",
-    "message": "Cross-model aggregate 'customers.spend_weighted_avg_weight_customers_regions_bad_pop' reads an input across an unproven join hop to region_events from customers; declare join cardinality or a covering unique key on the target."
+    "message": "Cross-model aggregate 'customers.spend_weighted_avg_weight_customers_regions_bad_pop' ranks/reads by bad_pop, which is not attributable from customers (crosses a fanning or unproven join hop to region_events); declare join cardinality or a covering unique key on the target."
   },
   "fanning/cross_model_kwarg::snowflake": {
     "error": "ValueError",
-    "message": "Cross-model aggregate 'customers.spend_weighted_avg_weight_customers_regions_bad_pop' reads an input across an unproven join hop to region_events from customers; declare join cardinality or a covering unique key on the target."
+    "message": "Cross-model aggregate 'customers.spend_weighted_avg_weight_customers_regions_bad_pop' ranks/reads by bad_pop, which is not attributable from customers (crosses a fanning or unproven join hop to region_events); declare join cardinality or a covering unique key on the target."
   },
   "fanning/cross_model_kwarg::sqlite": {
     "error": "ValueError",
-    "message": "Cross-model aggregate 'customers.spend_weighted_avg_weight_customers_regions_bad_pop' reads an input across an unproven join hop to region_events from customers; declare join cardinality or a covering unique key on the target."
+    "message": "Cross-model aggregate 'customers.spend_weighted_avg_weight_customers_regions_bad_pop' ranks/reads by bad_pop, which is not attributable from customers (crosses a fanning or unproven join hop to region_events); declare join cardinality or a covering unique key on the target."
   },
   "fanning/cross_model_kwarg::tsql": {
     "error": "ValueError",
-    "message": "Cross-model aggregate 'customers.spend_weighted_avg_weight_customers_regions_bad_pop' reads an input across an unproven join hop to region_events from customers; declare join cardinality or a covering unique key on the target."
+    "message": "Cross-model aggregate 'customers.spend_weighted_avg_weight_customers_regions_bad_pop' ranks/reads by bad_pop, which is not attributable from customers (crosses a fanning or unproven join hop to region_events); declare join cardinality or a covering unique key on the target."
   },
   "fanning/definition_default::bigquery": {
     "error": "ValueError",
@@ -111,34 +111,13 @@
     "error": "ValueError",
     "message": "Aggregate 'amount_weighted_avg_weight_customers_regions_bad_pop' reads an input across an unproven join hop to region_events from orders; declare join cardinality or a covering unique key on the target."
   },
-  "fanning/pop_filter_derived::bigquery": {
-    "error": "ValueError",
-    "message": "Filter 'customers.regions.bad_pop > 0' reaches the population root only across a fanning join hop to 'region_events'; with an aggregate computed inline over the population, this would multiply its rows. Aggregate the filtered relation to the population grain, or select it only through a producer."
-  },
-  "fanning/pop_filter_derived::duckdb": {
-    "error": "ValueError",
-    "message": "Filter 'customers.regions.bad_pop > 0' reaches the population root only across a fanning join hop to 'region_events'; with an aggregate computed inline over the population, this would multiply its rows. Aggregate the filtered relation to the population grain, or select it only through a producer."
-  },
-  "fanning/pop_filter_derived::mysql": {
-    "error": "ValueError",
-    "message": "Filter 'customers.regions.bad_pop > 0' reaches the population root only across a fanning join hop to 'region_events'; with an aggregate computed inline over the population, this would multiply its rows. Aggregate the filtered relation to the population grain, or select it only through a producer."
-  },
-  "fanning/pop_filter_derived::postgres": {
-    "error": "ValueError",
-    "message": "Filter 'customers.regions.bad_pop > 0' reaches the population root only across a fanning join hop to 'region_events'; with an aggregate computed inline over the population, this would multiply its rows. Aggregate the filtered relation to the population grain, or select it only through a producer."
-  },
-  "fanning/pop_filter_derived::snowflake": {
-    "error": "ValueError",
-    "message": "Filter 'customers.regions.bad_pop > 0' reaches the population root only across a fanning join hop to 'region_events'; with an aggregate computed inline over the population, this would multiply its rows. Aggregate the filtered relation to the population grain, or select it only through a producer."
-  },
-  "fanning/pop_filter_derived::sqlite": {
-    "error": "ValueError",
-    "message": "Filter 'customers.regions.bad_pop > 0' reaches the population root only across a fanning join hop to 'region_events'; with an aggregate computed inline over the population, this would multiply its rows. Aggregate the filtered relation to the population grain, or select it only through a producer."
-  },
-  "fanning/pop_filter_derived::tsql": {
-    "error": "ValueError",
-    "message": "Filter 'customers.regions.bad_pop > 0' reaches the population root only across a fanning join hop to 'region_events'; with an aggregate computed inline over the population, this would multiply its rows. Aggregate the filtered relation to the population grain, or select it only through a producer."
-  },
+  "fanning/pop_filter_derived::bigquery": "SELECT\n  CAST(SUM(orders.amount) AS FLOAT64) AS `orders___amt`\nFROM orders AS orders\nWHERE\n  EXISTS(\n    SELECT\n      1\n    FROM customers AS customers\n    INNER JOIN regions AS customers__regions\n      ON customers.region_id = customers__regions.id\n    INNER JOIN region_events AS customers__regions__region_events\n      ON customers__regions.id = customers__regions__region_events.region_id\n    WHERE\n      orders.customer_id = customers.id\n      AND CAST(customers__regions.pop + customers__regions__region_events.value AS FLOAT64) > 0\n  )",
+  "fanning/pop_filter_derived::duckdb": "SELECT\n  CAST(SUM(orders.amount) AS DOUBLE) AS \"orders.amt\"\nFROM orders AS orders\nWHERE\n  EXISTS(\n    SELECT\n      1\n    FROM customers AS customers\n    INNER JOIN regions AS customers__regions\n      ON customers.region_id = customers__regions.id\n    INNER JOIN region_events AS customers__regions__region_events\n      ON customers__regions.id = customers__regions__region_events.region_id\n    WHERE\n      orders.customer_id = customers.id\n      AND CAST(customers__regions.pop + customers__regions__region_events.value AS DOUBLE) > 0\n  )",
+  "fanning/pop_filter_derived::mysql": "SELECT\n  CAST(SUM(orders.amount) AS DOUBLE) AS `orders.amt`\nFROM orders AS orders\nWHERE\n  EXISTS(\n    SELECT\n      1\n    FROM customers AS customers\n    INNER JOIN regions AS customers__regions\n      ON customers.region_id = customers__regions.id\n    INNER JOIN region_events AS customers__regions__region_events\n      ON customers__regions.id = customers__regions__region_events.region_id\n    WHERE\n      orders.customer_id = customers.id\n      AND CAST(customers__regions.pop + customers__regions__region_events.value AS DOUBLE) > 0\n  )",
+  "fanning/pop_filter_derived::postgres": "SELECT\n  CAST(SUM(orders.amount) AS DOUBLE PRECISION) AS \"orders.amt\"\nFROM orders AS orders\nWHERE\n  EXISTS(\n    SELECT\n      1\n    FROM customers AS customers\n    INNER JOIN regions AS customers__regions\n      ON customers.region_id = customers__regions.id\n    INNER JOIN region_events AS customers__regions__region_events\n      ON customers__regions.id = customers__regions__region_events.region_id\n    WHERE\n      orders.customer_id = customers.id\n      AND CAST(customers__regions.pop + customers__regions__region_events.value AS DOUBLE PRECISION) > 0\n  )",
+  "fanning/pop_filter_derived::snowflake": "SELECT\n  CAST(SUM(orders.amount) AS DOUBLE) AS \"orders.amt\"\nFROM orders AS orders\nWHERE\n  EXISTS(\n    SELECT\n      1\n    FROM customers AS customers\n    INNER JOIN regions AS customers__regions\n      ON customers.region_id = customers__regions.id\n    INNER JOIN region_events AS customers__regions__region_events\n      ON customers__regions.id = customers__regions__region_events.region_id\n    WHERE\n      orders.customer_id = customers.id\n      AND CAST(customers__regions.pop + customers__regions__region_events.value AS DOUBLE) > 0\n  )",
+  "fanning/pop_filter_derived::sqlite": "SELECT\n  CAST(SUM(orders.amount) AS REAL) AS \"orders.amt\"\nFROM orders AS orders\nWHERE\n  EXISTS(\n    SELECT\n      1\n    FROM customers AS customers\n    INNER JOIN regions AS customers__regions\n      ON customers.region_id = customers__regions.id\n    INNER JOIN region_events AS customers__regions__region_events\n      ON customers__regions.id = customers__regions__region_events.region_id\n    WHERE\n      orders.customer_id = customers.id\n      AND CAST(customers__regions.pop + customers__regions__region_events.value AS REAL) > 0\n  )",
+  "fanning/pop_filter_derived::tsql": "SELECT\n  CAST(SUM(orders.amount) AS FLOAT) AS [orders___amt]\nFROM orders AS orders\nWHERE\n  EXISTS(\n    SELECT\n      1\n    FROM customers AS customers\n    INNER JOIN regions AS customers__regions\n      ON customers.region_id = customers__regions.id\n    INNER JOIN region_events AS customers__regions__region_events\n      ON customers__regions.id = customers__regions__region_events.region_id\n    WHERE\n      orders.customer_id = customers.id\n      AND CAST(customers__regions.pop + customers__regions__region_events.value AS FLOAT) > 0\n  )",
   "fanning/reagg_param::bigquery": {
     "error": "SlayerError",
     "message": "Aggregation 'w' parameter 'weight' is not determined by the operand grain (customers__regions__id); the aggregation reads one value per cell of that grain. Aggregate the parameter to that grain, or add its determining keys to the operand's partition_by=."

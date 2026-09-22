@@ -170,7 +170,7 @@ Emits roughly `SELECT orders.status, orders.amount FROM orders WHERE orders.amou
 
 ## TimeDimension
 
-A time dimension with a required granularity and an optional date range. Supports an optional `label` for human-readable output. To use a time column without truncation, add it as a regular dimension instead.
+A time dimension with a required granularity and an optional date range. Supports an optional `label` for human-readable output. To use a time column without truncation, add it as a regular dimension instead. The column may also be given under the key `column` as an alias of `dimension`; the object always serializes with `dimension`.
 
 ```json
 {
@@ -182,6 +182,10 @@ A time dimension with a required granularity and an optional date range. Support
 ```
 
 **Granularities**: `second`, `minute`, `hour`, `day`, `week`, `week_sunday`, `month`, `quarter`, `year`
+
+A `dimensions` or `time_dimensions` entry may also be written functionally as the string `gran(col)` (e.g. `"month(created_at)"`) — equivalent to a `TimeDimension` with that dimension and granularity (use the dict form above to add `date_range` or `label`), and usable as an `order` key too.
+
+A downstream stage of a multi-stage query may declare a time dimension on any DATE/TIMESTAMP column of its upstream stage — re-bucketing a column the upstream already truncated only at the same or a nesting-coarser granularity (e.g. `month` → `year`). The same rule applies to a model column that carries a `granularity` (a query-backed model's bucketed cache column, or a hand-set one): a finer or non-nesting time dimension over it is the same typed error.
 
 `week` is Monday-anchored (ISO-8601); `week_sunday` is Sunday-anchored (weeks start Sunday, end Saturday) for tools that use Sunday weeks. Both are model granularities you set on a `TimeDimension` — `week_sunday` is the SLayer value, not a wire keyword sent by a BI tool.
 
@@ -247,7 +251,7 @@ SLayer. Write `{"column": "sum(revenue) / sum(cnt)"}` instead.
 A windowed measure inside a **declared** composite measure
 (`{"formula": "sum(revenue, window='90d') / sum(cnt)"}`), and any combination of a
 windowed measure with a transform, are still rejected — see
-[formulas](formulas.md#windowed-sum-and-average).
+[formulas](formulas.md#windowed-aggregations).
 
 ## Response
 
@@ -260,7 +264,7 @@ Query results are returned as a `SlayerResponse`:
 | `row_count` | int | Number of rows |
 | `sql` | string | The generated SQL (useful for debugging) |
 | `attributes` | ResponseAttributes | Field metadata split by type: `attributes.dimensions` and `attributes.measures`, each a dict of column alias → FieldMetadata (label, format) |
-| `warnings` | list[SlayerWarning] | Advisories, discriminated by `kind`: input normalizations (`"normalization"`), a [cross-model measure broadcast](#cross-model-measures) (`"broadcast"` — `measure`, `location`, and per-dimension `dimensions[].reason`), a distinct-entity attribution over an unattributable dimension (`"associated"` — `measure`, `location`, `dimensions`; cells overlap and are not additive), a filter dropped from a cross-model producer (`"unreachable_filter_dropped"` — `filter_text`, `location`, `reason`), and a semi-join-pushed filter (`"semi_join_pushed"` — `measure`, `location`, `filter_text`) |
+| `warnings` | list[SlayerWarning] | Advisories, discriminated by `kind`: input normalizations (`"normalization"`), a [cross-model measure broadcast](#cross-model-measures) (`"broadcast"` — `measure`, `location`, and per-dimension `dimensions[].reason`), a distinct-entity attribution over an unattributable dimension (`"associated"` — `measure`, `location`, `dimensions`; cells overlap and are not additive), and a semi-join-pushed filter (`"semi_join_pushed"` — `measure` (`null` for a population-level push), `location`, `filter_text`) |
 
 `columns` — and the key order of each row in `data` — follows the order you
 declared fields in the query: dimensions, then time dimensions, then measures,
@@ -417,9 +421,9 @@ Filters can reference columns from joined models, and the planner adds the impli
 - Multi-hop dotted refs: `"customers.regions.name = 'US'"` — every prefix on the path is added.
 - Bare-named local derived columns whose own SQL crosses a join: e.g. a query column with `Column(name="is_eu", sql="CASE WHEN customers.region = 'EU' THEN 1 ELSE 0 END")` referenced as `"filters": ["is_eu = 1"]`. The planner walks the column's `sql` (recursively, through any local derived-column chain) to find the cross-table aliases and adds the corresponding joins.
 
-The same auto-join logic applies to model-level `filters` (always-applied WHERE) and to column-level `filter=` attributes (CASE-WHEN at aggregation time).
+The same auto-join logic applies to model-level `filters` (always-applied WHERE) and to column-level `filter=` attributes (a `CASE WHEN` value mask that fires in every position).
 
-A query filter that reaches the population root only across a fanning (not provably to-one) hop cannot be combined with an aggregate computed inline over that population — the query fails closed with a typed error rather than multiplying the aggregate's rows through the join.
+A query filter that reaches the population root only across a fanning (not provably to-one) hop restricts the population *by association* — a correlated `EXISTS` that counts each population row once, surfaced as a `semi_join_pushed` warning rather than multiplying rows through the join.
 
 ### Window functions in filters
 
@@ -715,12 +719,14 @@ in any mode). The correlation path resolves through the same
 [bidirectional traversal](models.md#bidirectional-traversal) as every other hop
 — no declared reverse join is needed, and a hop spanned by two or more edges
 fails the whole query with the ambiguous-hop error (in every mode) rather than
-guessing. Only a filter with no resolvable path from the
-sub-query's root (or one mixing local and joined references under `OR`/`NOT`)
-is excluded: it still applies to the local measures and is reported as
-`kind: "unreachable_filter_dropped"`. On ClickHouse the semi-join needs server
-≥ 25.4 (the required setting is attached automatically); older servers fail
-with a clear error.
+guessing. Pushdown is total over the conjunct's boolean shape: a row survives
+when the predicate holds on at least one row of its join product over the
+referenced branches, each hop joined as declared (LEFT by default), so
+`tier = 'gold' or orders.status = 'ok'` keeps a gold customer with no orders and
+`orders.id is null` reads as "no orders"; a reference with no resolvable join path
+is refused with a typed error in every mode. On ClickHouse the semi-join needs
+server ≥ 25.4 (the required setting is attached automatically); older servers
+fail with a clear error.
 
 `to_many_handling` chooses how a broadcast dimension resolves — `broadcast` (the
 default above), `associate` (each cell aggregates over the distinct entities
@@ -730,7 +736,7 @@ are not additive), or `error` (refuse) — where a stored query's retired
 and a semi-join-pushed filter is applied, never erroring, in every mode.
 Example: `{"source_model": "orders", "dimensions": ["status"], "measures": [{"formula": "sum(customers.spend)"}], "to_many_handling": "associate"}`.
 
-`associate` resolves only *eligible* aggregates — a plain scalar aggregate whose root declares a unique key; an unsupported combination (`window=`/`first`/`last`, a root without a unique key, or an input crossing an unproven hop) returns a typed error rather than a value, so `associate` does not turn every broadcast case exact. An attached (aggregate-valued) parameter the entity grain determines (`weighted_avg(customers.spend, weight=sum(amount, partition_by=customers.regions.name))`) is lifted under `associate`; under `broadcast` an attached input must read only columns attributable from the aggregate's root, otherwise a typed error names the `associate` remedy.
+`associate` resolves only *eligible* aggregates — a plain scalar aggregate whose root declares a unique key; an unsupported combination (`window=`/`first`/`last`, a root without a unique key, or an input crossing an unproven hop) returns a typed error rather than a value, so `associate` does not turn every broadcast case exact. Each cell aggregates over the metric's own home rows by the home's join path, so an entity with no population row still counts in the cells its path reaches (a dimension reached only back through the population root needs a population row), and a pushed filter binds to the same related row as a dimension it shares a hop with. An attached (aggregate- or transform-valued) parameter or source constituent is computed at its own home and attached per home row in every mode, so `weighted_avg(customers.spend, weight=sum(amount, partition_by=customers.regions.name))` weights each customer by its region's order total under `broadcast`, `associate` and `error` alike.
 
 Every input of an aggregate — its source, arguments (`weight=`), definition defaults, and its column-level `filter=` — is traced recursively through derived-column definitions, and an input whose expansion crosses a fanning (not provably to-one) hop fails closed with a typed error instead of silently multiplying rows.
 
@@ -743,6 +749,8 @@ Cross-model aggregates also support `window=`, `partition_by=`, and `first` /
 association cannot use `window=` or `first` / `last`), inside
 [dimension expressions](#expression-dimensions), and as hidden
 [order-only fields](#ordering-by-something-you-dont-project).
+
+An [aggregated expression](formulas.md#expression-aggregation) may mix host and joined-model columns (`sum(amount - customers.discount)`); it is homed at the deepest dataset that determines every operand, so the join hop's cardinality decides exact-grain vs broadcast exactly as for a single cross-model measure.
 
 A cross-model **parametric** aggregate keeps its kwarg signature in the result key, so two variants on the same target column do not collide:
 
@@ -850,7 +858,7 @@ Extend a model inline with extra columns, measures, or joins — without modifyi
 }
 ```
 
-`ModelExtension` fields: `source_name` (required — model to extend), `columns`, `measures`, `joins` (all optional — merged with the source model's).
+`ModelExtension` fields: `source_name` (required — model to extend), `columns`, `measures`, `joins` (all optional — merged with the source model's). Any other key is rejected when the query is constructed.
 
 ### Multi-hop dimensions
 

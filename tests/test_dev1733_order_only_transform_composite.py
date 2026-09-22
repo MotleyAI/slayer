@@ -9,7 +9,6 @@ computing cumsum(a)+cumsum(a). Uniqueness now lives in the plan, not renderers.
 from __future__ import annotations
 
 import re
-import sqlite3
 
 import pydantic
 import pytest
@@ -29,6 +28,7 @@ from slayer.ir.planned import OrderEntry, PlannedQuery, Stage, StageKind, ValueS
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.generator import SQLGenerator
 from slayer.sql.scope_check import assert_scope_closed
+from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 
 _MONTH = [TimeDimension(dimension="created_at", granularity="month")]
@@ -204,10 +204,8 @@ async def engine(tmp_path):
 async def exec_engine(tmp_path):
     """On-disk SQLite seeded for execution / ordering / value assertions."""
     db_path = tmp_path / "t.db"
-    conn = sqlite3.connect(str(db_path))
-    conn.executescript(_SEED)
-    conn.commit()
-    conn.close()
+    with transaction(str(db_path)) as conn:
+        conn.executescript(_SEED)
     storage = YAMLStorage(base_dir=str(tmp_path / "store"))
     await storage.save_datasource(
         DatasourceConfig(name="test", type="sqlite", database=str(db_path)),
@@ -876,19 +874,21 @@ class TestWindowedStillGuarded:
             await _sql(engine, query)
         # Cross-model windowed stays guarded — the host TD is not attributable
         # from the target root, so the producer refuses the window.
-        assert "Windowed cross-model aggregate" in str(ei.value), ei.value
+        assert "Windowed aggregate" in str(ei.value), ei.value
         assert "attributable from" in str(ei.value), ei.value
 
     async def test_non_sum_avg_windowed_order_target_still_raises(self, engine) -> None:
+        # DEV-1915 lift: a local non-sum/avg windowed order target now renders
+        # (cross-model windowed stays guarded above).
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=_MONTH,
             measures=[ModelMeasure(formula="id:count")],
             order=[OrderItem(column="amount:max(window='90d')", direction="desc")],
         )
-        with pytest.raises(ValueError) as ei:
-            await _sql(engine, query)
-        assert "sum and avg" in str(ei.value), ei.value
+        sql = await _sql(engine, query)
+        assert_scope_closed(sql, dialect="sqlite")
+        assert "__regroup__" not in sql
 
 
 # Group 8 — widening the hidden-order branch must not cross its boundaries: some

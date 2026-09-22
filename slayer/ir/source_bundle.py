@@ -4,26 +4,23 @@ The orchestrator builds this once at execute start; the binder reads it purely.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from slayer.core.enums import DataType
 from slayer.core.models import (
     Column,
-    ModelJoin,
-    ModelMeasure,
     SlayerModel,
     _check_column_measure_namespace,
 )
-from slayer.core.query import ModelExtension, SlayerQuery
+from slayer.core.query import ModelExtension, SlayerQuery, SourceSpec
 
 from slayer.core.scope import ModelScope, StageSchema
 
 __all__ = [
     "resolve_scope",
     "ResolvedSourceBundle",
-    "SourceSpec",
     "apply_extension_overlay",
     "as_extension_over_nonsibling",
     "follow_sibling_chain",
@@ -88,36 +85,20 @@ class ResolvedSourceBundle(BaseModel):
         return out
 
 
-# Anything accepted as ``SlayerQuery.source_model``.
-SourceSpec = Union[str, SlayerModel, ModelExtension, Dict[str, Any]]
-
-
 def apply_extension_overlay(
     base: SlayerModel, ext: ModelExtension
 ) -> SlayerModel:
     """Extend ``base`` with the extra columns / measures / joins of ``ext``."""
-    extra_cols = [
-        Column.model_validate(c) if isinstance(c, dict) else c
-        for c in (ext.columns or [])
-    ]
-    extra_measures = [
-        ModelMeasure.model_validate(m) if isinstance(m, dict) else m
-        for m in (ext.measures or [])
-    ]
-    extra_joins = [
-        ModelJoin.model_validate(j) if isinstance(j, dict) else j
-        for j in (ext.joins or [])
-    ]
     # Query-backed base defers its measure overlay to post-expansion; overlaying
     # now would build the source_queries+measures combo the validator rejects.
     overlay_measures = list(base.measures) if base.source_queries else (
-        list(base.measures) + extra_measures
+        list(base.measures) + list(ext.measures or [])
     )
     merged = base.model_copy(
         update={
-            "columns": list(base.columns) + extra_cols,
+            "columns": list(base.columns) + list(ext.columns or []),
             "measures": overlay_measures,
-            "joins": list(base.joins) + extra_joins,
+            "joins": list(base.joins) + list(ext.joins or []),
         }
     )
     # model_copy runs no validators; re-run the namespace check so an overlay
@@ -132,35 +113,24 @@ def apply_extension_overlay(
 
 
 def source_name_if_sibling(
-    spec: SourceSpec, sibling_names: "set[str] | Dict[str, Any]"
+    spec: SourceSpec | None, sibling_names: "set[str] | Dict[str, Any]"
 ) -> Optional[str]:
-    """Return the sibling stage name a ``source_model`` spec reads from, if any.
-
-    Covers the bare-string, ``ModelExtension``, and dict-with-``source_name``
-    forms; returns ``None`` when the name is not in ``sibling_names``.
-    """
+    """The sibling stage a bare-name or extension spec reads from, else ``None``."""
     if isinstance(spec, str):
         return spec if spec in sibling_names else None
     if isinstance(spec, ModelExtension):
         return spec.source_name if spec.source_name in sibling_names else None
-    if isinstance(spec, dict) and isinstance(spec.get("source_name"), str):
-        nm = spec["source_name"]
-        return nm if nm in sibling_names else None
     return None
 
 
-def spec_adds_measures(spec: SourceSpec) -> bool:
+def spec_adds_measures(spec: SourceSpec | None) -> bool:
     """True when a ``source_model`` spec is a ``ModelExtension`` carrying measures."""
-    if isinstance(spec, ModelExtension):
-        return bool(spec.measures)
-    if isinstance(spec, dict) and isinstance(spec.get("source_name"), str):
-        return bool(spec.get("measures"))
-    return False
+    return isinstance(spec, ModelExtension) and bool(spec.measures)
 
 
 def follow_sibling_chain(
-    spec: SourceSpec, named_queries: Dict[str, SlayerQuery]
-) -> SourceSpec:
+    spec: SourceSpec | None, named_queries: Dict[str, SlayerQuery]
+) -> SourceSpec | None:
     """Resolve a sibling-pointing ``source_model`` to the real base spec (cycle raises ``ValueError``)."""
     seen: List[str] = []
     while True:
@@ -177,21 +147,12 @@ def follow_sibling_chain(
 
 
 def as_extension_over_nonsibling(
-    spec: SourceSpec, sibling_names: "set[str]"
+    spec: SourceSpec | None, sibling_names: "set[str]"
 ) -> Optional[ModelExtension]:
-    """Return the ``ModelExtension`` if ``spec`` overlays a NON-sibling base.
-
-    ``None`` for plain strings, inline models, and overlays over a sibling.
-    """
-    if isinstance(spec, ModelExtension):
-        ext = spec
-    elif isinstance(spec, dict) and isinstance(spec.get("source_name"), str):
-        ext = ModelExtension.model_validate(spec)
-    else:
-        return None
-    if ext.source_name in sibling_names:
-        return None
-    return ext
+    """``spec`` itself when it is an extension over a NON-sibling base, else ``None``."""
+    if isinstance(spec, ModelExtension) and spec.source_name not in sibling_names:
+        return spec
+    return None
 
 
 def synthetic_model_from_stage_schema(
@@ -209,7 +170,9 @@ def synthetic_model_from_stage_schema(
         data_source=data_source or "_stage",
         sql_table=name,
         columns=[
-            Column(name=c.name, type=c.type or DataType.DOUBLE)
+            # DEV-1929: carry the bucket so the re-bucketing rule fires on a sibling
+            # reached through this stand-in (ModelExtension-over-sibling, stage join).
+            Column(name=c.name, type=c.type or DataType.DOUBLE, granularity=c.granularity)
             for c in schema.columns
         ],
     )

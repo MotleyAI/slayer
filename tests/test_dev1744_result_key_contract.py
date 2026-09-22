@@ -36,7 +36,6 @@ share a database.
 from __future__ import annotations
 
 import os
-import sqlite3
 from typing import List
 
 import pytest
@@ -52,6 +51,7 @@ from slayer.core.models import (
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
+from slayer.storage.sqlite_conn import transaction
 
 
 # ===========================================================================
@@ -63,42 +63,40 @@ from slayer.storage.yaml_storage import YAMLStorage
 async def engine(tmp_path) -> SlayerQueryEngine:
     d = str(tmp_path)
     db_path = os.path.join(d, "contract.db")
-    con = sqlite3.connect(db_path)
-    cur = con.cursor()
-    cur.execute(
-        "CREATE TABLE regions (id INTEGER PRIMARY KEY, name TEXT)"
-    )
-    cur.executemany(
-        "INSERT INTO regions VALUES (?,?)", [(1, "North"), (2, "South")],
-    )
-    cur.execute(
-        "CREATE TABLE customers (id INTEGER PRIMARY KEY, region_id INTEGER, "
-        "revenue REAL, signup_at TEXT)"
-    )
-    cur.executemany(
-        "INSERT INTO customers VALUES (?,?,?,?)",
-        [
-            (1, 1, 100.0, "2024-01-05"),
-            (2, 1, 50.0, "2024-02-10"),
-            (3, 2, 70.0, "2024-01-20"),
-        ],
-    )
-    cur.execute(
-        "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, "
-        "status TEXT, amount REAL, created_at TEXT)"
-    )
-    cur.executemany(
-        "INSERT INTO orders VALUES (?,?,?,?,?)",
-        [
-            (1, 1, "new", 10.0, "2024-01-06"),
-            (2, 1, "old", 5.0, "2024-02-11"),
-            (3, 2, "new", 7.0, "2024-01-21"),
-            (4, 3, "new", 3.0, "2024-01-22"),
-            (5, 3, "old", 9.0, "2024-02-01"),
-        ],
-    )
-    con.commit()
-    con.close()
+    with transaction(db_path) as con:
+        cur = con.cursor()
+        cur.execute(
+            "CREATE TABLE regions (id INTEGER PRIMARY KEY, name TEXT)"
+        )
+        cur.executemany(
+            "INSERT INTO regions VALUES (?,?)", [(1, "North"), (2, "South")],
+        )
+        cur.execute(
+            "CREATE TABLE customers (id INTEGER PRIMARY KEY, region_id INTEGER, "
+            "revenue REAL, signup_at TEXT)"
+        )
+        cur.executemany(
+            "INSERT INTO customers VALUES (?,?,?,?)",
+            [
+                (1, 1, 100.0, "2024-01-05"),
+                (2, 1, 50.0, "2024-02-10"),
+                (3, 2, 70.0, "2024-01-20"),
+            ],
+        )
+        cur.execute(
+            "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, "
+            "status TEXT, amount REAL, created_at TEXT)"
+        )
+        cur.executemany(
+            "INSERT INTO orders VALUES (?,?,?,?,?)",
+            [
+                (1, 1, "new", 10.0, "2024-01-06"),
+                (2, 1, "old", 5.0, "2024-02-11"),
+                (3, 2, "new", 7.0, "2024-01-21"),
+                (4, 3, "new", 3.0, "2024-01-22"),
+                (5, 3, "old", 9.0, "2024-02-01"),
+            ],
+        )
 
     storage = YAMLStorage(base_dir=os.path.join(d, "store"))
     await storage.save_datasource(

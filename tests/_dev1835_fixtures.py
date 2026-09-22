@@ -24,9 +24,11 @@ WM_X / RK_X    the bare-windowed / bare-last oracle per matrix dimension
 OK_W90         ``ok_amount:sum(window='90d')`` at (region, month) — row 6
                (hold) drops, so (S,Mar)=25 (vs 50 unfiltered): (N,Jan)=30
                (N,Feb)=100 (S,Jan)=25 (S,Mar)=25 (NULL,Mar)=60.
-OK_LAST        ``ok_amount:last`` by region — the latest OK row per region:
-               N=30 S=25 (row 5) NULL=60 (numerically equal to REGION_LAST;
-               the all-NULL ``nomatch:last`` is the discriminating twin).
+OK_LAST        ``ok_amount:last`` by region — the MASKED value at the newest row
+               (DEV-1832: Column.filter masks, it does not restrict the ranking):
+               N=30 (newest N row is ok), S=NULL (S's newest row #6 is 'hold' →
+               masked to NULL), NULL-region=60. The all-NULL ``nomatch:last`` is
+               the discriminating twin.
 CUMSUM_OVER_W90  cumsum of TRAILING_90D_REGION months within region:
                N: 30, 130 · S: 25, 75 · NULL: 60.
 W90_RATIO      TRAILING_90D_REGION / REGION_MONTH_TOTAL per bucket:
@@ -54,9 +56,6 @@ LAST/FIRST_BY_SHIPPED  on the shipped-at variant (dates below): North's latest
 
 from __future__ import annotations
 
-import os
-import sqlite3
-import tempfile
 from typing import AsyncIterator, List
 
 import pytest
@@ -64,9 +63,10 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
+from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.storage.yaml_storage import YAMLStorage
+from slayer.storage.sqlite_conn import transaction
+from tests._engine_helpers import seeded_exec_engine
 
 from tests._dev1824_fixtures import (  # noqa: F401 — re-exported fixture surface
     REGION_FIRST,
@@ -183,7 +183,7 @@ OK_W90 = {
     ("South", "2024-01"): 25.0, ("South", "2024-03"): 25.0,
     (None, "2024-03"): 60.0,
 }
-OK_LAST = {"North": 30.0, "South": 25.0, None: 60.0}
+OK_LAST = {"North": 30.0, "South": None, None: 60.0}
 CUMSUM_OVER_W90 = {
     ("North", "2024-01"): 30.0, ("North", "2024-02"): 130.0,
     ("South", "2024-01"): 25.0, ("South", "2024-03"): 75.0,
@@ -282,15 +282,13 @@ def shipped_orders_model() -> SlayerModel:
 
 
 def _seed_shipped_sqlite(db_path: str) -> None:
-    con = sqlite3.connect(db_path)
-    con.execute(
-        "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, "
-        "region TEXT, city TEXT, channel TEXT, amount REAL, status TEXT, "
-        "ordered_at TEXT, shipped_at TEXT)"
-    )
-    con.executemany("INSERT INTO orders VALUES (?,?,?,?,?,?,?,?,?)", _SHIPPED_ROWS)
-    con.commit()
-    con.close()
+    with transaction(db_path) as con:
+        con.execute(
+            "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, "
+            "region TEXT, city TEXT, channel TEXT, amount REAL, status TEXT, "
+            "ordered_at TEXT, shipped_at TEXT)"
+        )
+        con.executemany("INSERT INTO orders VALUES (?,?,?,?,?,?,?,?,?)", _SHIPPED_ROWS)
 
 
 def _seed_shipped_duckdb(db_path: str) -> None:
@@ -311,18 +309,11 @@ async def make_shipped_exec_engine(request) -> AsyncIterator[SlayerQueryEngine]:
     dialect = request.param
     if dialect == "duckdb":
         pytest.importorskip("duckdb")
-    with tempfile.TemporaryDirectory() as d:
-        db_path = os.path.join(d, f"data.{dialect}")
-        if dialect == "sqlite":
-            _seed_shipped_sqlite(db_path)
-        else:
-            _seed_shipped_duckdb(db_path)
-        storage = YAMLStorage(base_dir=os.path.join(d, "store"))
-        await storage.save_datasource(
-            DatasourceConfig(name="test", type=dialect, database=db_path)
-        )
-        await storage.save_model(shipped_orders_model(), _validate=False)
-        yield SlayerQueryEngine(storage=storage)
+    seed = _seed_shipped_duckdb if dialect == "duckdb" else _seed_shipped_sqlite
+    async with seeded_exec_engine(
+        dialect=dialect, seed=seed, models=[shipped_orders_model()],
+    ) as (engine, _db):
+        yield engine
 
 
 # Shared executed-value response reducers (the per-dialect exec_backend /

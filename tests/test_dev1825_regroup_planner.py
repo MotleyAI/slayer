@@ -11,9 +11,9 @@ import re
 
 import pytest
 
-from slayer.core.keys import AggregateKey, ColumnKey, SqlExprKey
+from slayer.core.keys import AggregateKey, ColumnKey
 from slayer.core.keys import Grain
-from slayer.core.query import ModelMeasure, SlayerQuery
+from slayer.core.query import ModelExtension, ModelMeasure, SlayerQuery
 from slayer.engine.compile.regroup import (
     REGROUP_LEAF_PREFIX,
     RegroupPlaceholderRegistry,
@@ -41,42 +41,27 @@ def _consumer_body(sql: str) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# Placeholder registry — injective by STRUCTURAL identity (Codex F2): the
-# canonical alias omits column_filter_key, so two distinct keys can share it.
+# Placeholder registry — injective by STRUCTURAL identity (Codex F2): two
+# distinct keys always mint distinct leaves.
 # --------------------------------------------------------------------------- #
 class TestPlaceholderRegistry:
     def _keys(self):
-        base = dict(
-            source=ColumnKey(path=(), leaf="amount"),
-            agg="sum",
+        source = ColumnKey(path=(), leaf="amount")
+        plain = AggregateKey(
+            source=source, agg="sum",
             partition_keys=Grain.of({ColumnKey(path=(), leaf="city")}),
         )
-        plain = AggregateKey(**base)
-        filtered = AggregateKey(
-            **base,
-            column_filter_key=SqlExprKey(
-                canonical_sql="status = 'ok'", referenced_join_paths=(),
-            ),
+        other = AggregateKey(
+            source=source, agg="sum",
+            partition_keys=Grain.of({ColumnKey(path=(), leaf="region")}),
         )
-        return plain, filtered
-
-    def test_distinct_keys_sharing_a_canonical_alias_get_distinct_leaves(self) -> None:
-        plain, filtered = self._keys()
-        reg = RegroupPlaceholderRegistry()
-        a, b = reg.placeholder_for(plain), reg.placeholder_for(filtered)
-        assert a != b
-        assert a.leaf != b.leaf
-        for p in (a, b):
-            assert isinstance(p, ColumnKey)
-            assert p.path == ()
-            # Codex F2 exact format: deterministic index + readable seed.
-            assert re.fullmatch(re.escape(REGROUP_LEAF_PREFIX) + r"\d+__.+", p.leaf)
+        return plain, other
 
     def test_indices_are_sequential_by_first_mint(self) -> None:
-        plain, filtered = self._keys()
+        plain, other = self._keys()
         reg = RegroupPlaceholderRegistry()
         first = reg.placeholder_for(plain)
-        second = reg.placeholder_for(filtered)
+        second = reg.placeholder_for(other)
         idx = re.compile(re.escape(REGROUP_LEAF_PREFIX) + r"(\d+)__")
         assert idx.match(first.leaf).group(1) == "0"
         assert idx.match(second.leaf).group(1) == "1"
@@ -89,11 +74,11 @@ class TestPlaceholderRegistry:
         assert first == second
 
     def test_minting_is_deterministic_across_registries(self) -> None:
-        plain, filtered = self._keys()
+        plain, other = self._keys()
         one = RegroupPlaceholderRegistry()
         two = RegroupPlaceholderRegistry()
-        assert [one.placeholder_for(plain), one.placeholder_for(filtered)] == [
-            two.placeholder_for(plain), two.placeholder_for(filtered),
+        assert [one.placeholder_for(plain), one.placeholder_for(other)] == [
+            two.placeholder_for(plain), two.placeholder_for(other),
         ]
 
 
@@ -215,11 +200,11 @@ class TestDiscoveryGuards:
 
     async def test_reserved_prefix_column_rejected_when_regroup_active(self) -> None:
         q = SlayerQuery(
-            source_model={
+            source_model=ModelExtension.model_validate({
                 "source_name": "orders",
                 "columns": [{"name": "__regroup__x", "sql": "amount",
                              "type": "DOUBLE"}],
-            },
+            }),
             dimensions=["region", {"expression": BAND, "name": "band"}],
             measures=[ModelMeasure(formula="amount:sum", name="s")],
         )
@@ -228,11 +213,11 @@ class TestDiscoveryGuards:
 
     async def test_reserved_prefix_column_fine_without_regroup(self) -> None:
         q = SlayerQuery(
-            source_model={
+            source_model=ModelExtension.model_validate({
                 "source_name": "orders",
                 "columns": [{"name": "__regroup__x", "sql": "amount",
                              "type": "DOUBLE"}],
-            },
+            }),
             dimensions=["region"],
             measures=[ModelMeasure(formula="amount:sum", name="s")],
         )

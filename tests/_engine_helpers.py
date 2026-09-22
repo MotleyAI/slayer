@@ -19,17 +19,93 @@ Helpers:
 
 from __future__ import annotations
 
+import os
 import re
 import tempfile
+from collections.abc import AsyncGenerator, Callable, Generator
+from contextlib import asynccontextmanager, contextmanager
 from typing import Optional
 
+import sqlalchemy as sa
 import sqlglot
 from sqlglot import exp
 
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.sql import engine_factory
 from slayer.storage.yaml_storage import YAMLStorage
+
+# Dialect → file extension for a seeded on-disk database (cosmetic; the
+# datasource ``type`` is what selects the SQL dialect).
+_DIALECT_DB_EXT = {"sqlite": ".db", "duckdb": ".duckdb"}
+
+
+@contextmanager
+def disposable_engine(url: str, **kwargs) -> Generator[sa.Engine]:
+    """A ``create_engine`` that always disposes (the one test-side engine door).
+
+    The resource-ownership ratchet allows bare ``create_engine`` only here, in
+    the factory, and in the dialects' build hooks — so test fixtures that need a
+    raw engine go through this and never leak a pool.
+    """
+    engine = sa.create_engine(url, **kwargs)
+    try:
+        yield engine
+    finally:
+        engine.dispose()
+
+
+async def build_exec_engine(
+    db_path: str,
+    *,
+    dialect: str,
+    models: list[SlayerModel],
+    datasource: str = "test",
+    validate: bool = False,
+) -> SlayerQueryEngine:
+    """Storage + query engine over an ALREADY-seeded ``db_path`` (the caller owns
+    the file). The single builder the per-DEV fixture roots used to each copy;
+    ``seeded_exec_engine`` is the disposing full-lifecycle wrapper around it. Use
+    this directly only when you manage the tempdir / db yourself."""
+    storage = YAMLStorage(base_dir=os.path.join(os.path.dirname(db_path), "store"))
+    await storage.save_datasource(
+        DatasourceConfig(name=datasource, type=dialect, database=db_path),
+    )
+    for model in models:
+        await storage.save_model(model, _validate=validate)
+    return SlayerQueryEngine(storage=storage)
+
+
+@asynccontextmanager
+async def seeded_exec_engine(
+    *,
+    dialect: str,
+    seed: Callable[[str], None],
+    models: list[SlayerModel],
+    datasource: str = "test",
+    validate: bool = False,
+) -> AsyncGenerator[tuple[SlayerQueryEngine, str]]:
+    """The one seeded executing-engine context (DEV-1943 §5).
+
+    Seeds a temp db (``seed(db_path)``), registers ``models`` against a
+    ``dialect``-typed datasource, and yields ``(engine, db_path)``. On exit it
+    closes the query engine and invalidates the datasource's factory engine — in
+    ``finally``, before the temp dir is removed — so no engine outlives its file.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = os.path.join(tmp, f"seed{_DIALECT_DB_EXT.get(dialect, '.db')}")
+        seed(db_path)
+        ds_config = DatasourceConfig(name=datasource, type=dialect, database=db_path)
+        engine = await build_exec_engine(
+            db_path, dialect=dialect, models=models,
+            datasource=datasource, validate=validate,
+        )
+        try:
+            yield engine, db_path
+        finally:
+            engine.close()
+            engine_factory.invalidate_engine(ds_config)
 
 
 async def make_seeded_sqlite_engine(

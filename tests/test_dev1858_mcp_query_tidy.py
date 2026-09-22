@@ -7,7 +7,6 @@ engine's accepted union, plus only the execution-wrapper arguments; the
 """
 
 import json
-import sqlite3
 from typing import Any
 
 import pytest
@@ -17,8 +16,10 @@ from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.mcp.server import create_mcp_server
+from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 from tests import _dev1836_fixtures as fx
+from tests._engine_helpers import build_exec_engine
 
 RETIRED_ARGS = {
     "source_model", "measures", "dimensions", "filters", "time_dimensions",
@@ -41,24 +42,22 @@ def _is_object_shaped(schema: dict) -> bool:
 def _seed_orders_db(db_path: str) -> None:
     """6-row ``orders`` table: 3 distinct statuses (completed x3, pending x2,
     cancelled x1) so dim-only dedup is observable in the row count."""
-    conn = sqlite3.connect(db_path)
-    conn.execute(
-        "CREATE TABLE orders (id INTEGER PRIMARY KEY, status TEXT NOT NULL, "
-        "amount REAL NOT NULL, created_at TEXT NOT NULL)"
-    )
-    conn.executemany(
-        "INSERT INTO orders VALUES (?, ?, ?, ?)",
-        [
-            (1, "completed", 100.0, "2025-01-15"),
-            (2, "completed", 200.0, "2025-01-20"),
-            (3, "pending", 50.0, "2025-02-10"),
-            (4, "cancelled", 75.0, "2025-02-15"),
-            (5, "completed", 300.0, "2025-03-05"),
-            (6, "pending", 25.0, "2025-03-20"),
-        ],
-    )
-    conn.commit()
-    conn.close()
+    with transaction(db_path) as conn:
+        conn.execute(
+            "CREATE TABLE orders (id INTEGER PRIMARY KEY, status TEXT NOT NULL, "
+            "amount REAL NOT NULL, created_at TEXT NOT NULL)"
+        )
+        conn.executemany(
+            "INSERT INTO orders VALUES (?, ?, ?, ?)",
+            [
+                (1, "completed", 100.0, "2025-01-15"),
+                (2, "completed", 200.0, "2025-01-20"),
+                (3, "pending", 50.0, "2025-02-10"),
+                (4, "cancelled", 75.0, "2025-02-15"),
+                (5, "completed", 300.0, "2025-03-05"),
+                (6, "pending", 25.0, "2025-03-20"),
+            ],
+        )
 
 
 @pytest.fixture
@@ -259,7 +258,8 @@ async def broadcast_server(tmp_path):
     ``to_many_handling='error'``."""
     db_path = str(tmp_path / "data.sqlite")
     fx._seed_sqlite(db_path)
-    engine = await fx._engine_for(dialect="sqlite", db_path=db_path)
+    engine = await build_exec_engine(
+        db_path, dialect="sqlite", models=fx.dev1836_models())
     return create_mcp_server(storage=engine.storage)
 
 

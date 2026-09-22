@@ -53,9 +53,6 @@ customers (id, region_id, tier, spend) → regions (id, name):
 
 from __future__ import annotations
 
-import os
-import sqlite3
-import tempfile
 from typing import AsyncIterator, List
 
 import pytest
@@ -63,13 +60,13 @@ import pytest
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import (
     Column,
-    DatasourceConfig,
     ModelJoin,
     SlayerModel,
 )
-from slayer.core.query import ColumnRef, ModelMeasure, SlayerQuery, TimeDimension
+from slayer.core.query import ColumnRef, ModelExtension, ModelMeasure, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.storage.yaml_storage import YAMLStorage
+from slayer.storage.sqlite_conn import transaction
+from tests._engine_helpers import seeded_exec_engine
 
 from tests._engine_helpers import _engine_generate
 # The customer/region models and the generic result helpers are byte-identical
@@ -169,23 +166,21 @@ GRAND_TOTAL = 25000.0
 
 
 def _seed_sqlite(db_path: str) -> None:
-    con = sqlite3.connect(db_path)
-    cur = con.cursor()
-    cur.execute("CREATE TABLE regions (id INTEGER PRIMARY KEY, name TEXT)")
-    cur.executemany("INSERT INTO regions VALUES (?,?)", _REGIONS_ROWS)
-    cur.execute(
-        "CREATE TABLE customers (id INTEGER PRIMARY KEY, region_id INTEGER, "
-        "tier TEXT, spend REAL)"
-    )
-    cur.executemany("INSERT INTO customers VALUES (?,?,?,?)", _CUSTOMERS_ROWS)
-    cur.execute(
-        "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, "
-        "region TEXT, city TEXT, channel TEXT, amount REAL, status TEXT, "
-        "ordered_at TEXT)"
-    )
-    cur.executemany("INSERT INTO orders VALUES (?,?,?,?,?,?,?,?)", _ORDERS_ROWS)
-    con.commit()
-    con.close()
+    with transaction(db_path) as con:
+        cur = con.cursor()
+        cur.execute("CREATE TABLE regions (id INTEGER PRIMARY KEY, name TEXT)")
+        cur.executemany("INSERT INTO regions VALUES (?,?)", _REGIONS_ROWS)
+        cur.execute(
+            "CREATE TABLE customers (id INTEGER PRIMARY KEY, region_id INTEGER, "
+            "tier TEXT, spend REAL)"
+        )
+        cur.executemany("INSERT INTO customers VALUES (?,?,?,?)", _CUSTOMERS_ROWS)
+        cur.execute(
+            "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, "
+            "region TEXT, city TEXT, channel TEXT, amount REAL, status TEXT, "
+            "ordered_at TEXT)"
+        )
+        cur.executemany("INSERT INTO orders VALUES (?,?,?,?,?,?,?,?)", _ORDERS_ROWS)
 
 
 def _seed_duckdb(db_path: str) -> None:
@@ -207,29 +202,14 @@ def _seed_duckdb(db_path: str) -> None:
     con.close()
 
 
-async def _engine_for(*, dialect: str, db_path: str) -> SlayerQueryEngine:
-    storage = YAMLStorage(base_dir=os.path.join(os.path.dirname(db_path), "store"))
-    await storage.save_datasource(
-        DatasourceConfig(name="test", type=dialect, database=db_path)
-    )
-    for model in dev1740_models():
-        await storage.save_model(model, _validate=False)
-    return SlayerQueryEngine(storage=storage)
-
-
 async def make_exec_engine(request) -> AsyncIterator[SlayerQueryEngine]:
     """Body for a ``params=["sqlite", "duckdb"]`` fixture (the issue's required
     execution backends). A test module wraps this in ``@pytest.fixture``."""
     dialect = request.param
     if dialect == "duckdb":
         pytest.importorskip("duckdb")
-    with tempfile.TemporaryDirectory() as d:
-        db_path = os.path.join(d, f"data.{dialect}")
-        if dialect == "sqlite":
-            _seed_sqlite(db_path)
-        else:
-            _seed_duckdb(db_path)
-        engine = await _engine_for(dialect=dialect, db_path=db_path)
+    seed = _seed_duckdb if dialect == "duckdb" else _seed_sqlite
+    async with seeded_exec_engine(dialect=dialect, seed=seed, models=dev1740_models()) as (engine, _db):
         yield engine
 
 
@@ -246,14 +226,14 @@ def two_stage_banding() -> list:
         measures=[ModelMeasure(formula="amount:sum", name="city_total")],
     )
     stage2 = SlayerQuery(
-        source_model={
+        source_model=ModelExtension.model_validate({
             "source_name": "per_city",
             "columns": [{
                 "name": "band",
                 "sql": "CASE WHEN city_total > 5000 THEN 1 ELSE 0 END",
                 "type": "INT",
             }],
-        },
+        }),
         dimensions=["region", "band"],
         measures=[ModelMeasure(formula="city_total:sum", name="band_total")],
     )

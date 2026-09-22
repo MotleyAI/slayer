@@ -82,11 +82,14 @@ A column is the unit of structure on the model. The same column entry can serve 
 | `hidden` | bool | No | `false` | Hide from listings |
 | `format` | dict | No | — | `NumberFormat` used by response metadata |
 | `allowed_aggregations` | list[str] | No | — | Whitelist (must be a subset of the type-default eligibility set, or a custom aggregation defined on this model) |
-| `filter` | string | No | — | SQL condition applied inside `CASE WHEN` at aggregation time. See [Filtered columns](#filtered-columns) |
+| `filter` | string | No | — | SQL condition wrapping the column value in `CASE WHEN` — a value mask that fires in every position. See [Filtered columns](#filtered-columns) |
+| `granularity` | string | No | — | Time bucket a temporal column is already truncated to (`month`, `year`, …); a finer or non-nesting time dimension over it is a typed error. Query-backed models stamp it automatically; set it by hand only when the values are truly bucketed at that grain |
 | `meta` | dict | No | — | Arbitrary JSON metadata |
 | `sampled` | string | No | — | Cached sample-value text snapshot (top-20 by frequency joined, or `top20 ... (50+ distinct)` on overflow, or `min .. max` for numeric/temporal); populated lazily on the first `inspect` of the column (or via `slayer search refresh-samples`), not at ingest time |
 | `sampled_values` | list[str] | No | — | Structured top-50-by-frequency list (categorical only); the unambiguous counterpart to `sampled` for consumers that need to compare predicate literals against stored values. `None` for numeric/temporal columns |
 | `distinct_count` | int | No | — | Exact distinct count when ≤ 50 (categorical only). `None` on overflow (> 50 distinct — one scan only, no secondary `count_distinct` query) and for numeric/temporal columns |
+
+A column's `sql` is rendered into the executed statement, which reaches the database verbatim — `:name` is never read as a bind parameter, nor `%` as a format directive — so regex literals (`(?:…)`) and date formats (`%Y-%m`) pass through unchanged.
 
 ### Data types
 
@@ -113,7 +116,7 @@ A column with no explicit `allowed_aggregations` whitelist gets a default set ba
 
 ### Filtered columns
 
-A column can carry a `filter` — a SQL condition wrapped around the column inside an aggregation via `CASE WHEN`. This is how you express business metrics that apply to a row subset without a separate model:
+A column can carry a `filter` — a SQL condition applied as a `CASE WHEN` value mask wherever the column is read (NULL on non-matching rows, so an aggregation over it covers just the matching rows). This is how you express business metrics that apply to a row subset without a separate model:
 
 ```yaml
 columns:
@@ -127,7 +130,7 @@ columns:
     filter: "status = 'completed'"
 ```
 
-`sum(active_revenue)` then generates `SUM(CASE WHEN status = 'active' THEN amount END)`. The filter does nothing when the column is used as a group-by dimension — it fires only inside aggregations.
+`sum(active_revenue)` then generates `SUM(CASE WHEN status = 'active' THEN amount END)`. The filter is pure syntactic sugar for `CASE WHEN <filter> THEN <value> END`, a **value mask** that fires in *every* position: as a group-by dimension, rows where the filter is false fall into the `NULL` group; a `first`/`last` picks the masked value at the chosen row (`NULL` if it does not match). It never removes rows or changes which row is picked — a genuine row restriction belongs in a query `filter`.
 
 Filters can reference joined columns via dot syntax (`categories.type = 'electronics'`). Filtered and unfiltered columns coexist freely in the same query and combine cleanly in arithmetic formulas (e.g. `{"formula": "sum(active_revenue) / sum(total_revenue)"}`).
 
@@ -159,7 +162,7 @@ joins:
 
 At query time, `aoi_ratio` expands to `telescopes.aperture / (stations.foo_raw / 100.0)`. The same applies to local-model chains (a column on the source model referencing another derived column on the same model) and to multi-hop join paths (use the dotted form, e.g., `B.C.x_derived`, when crossing more than one join).
 
-A derived column whose definition (recursively) crosses a fanning (not provably to-one) hop fails closed with a typed error when used as an aggregate input, a population filter, or an `error`-mode dimension — declare the [join cardinality](#join-cardinality) or primary key to prove the hop, or query it under `broadcast`/`associate` handling.
+A derived column whose definition (recursively) crosses a fanning (not provably to-one) hop fails closed with a typed error when used as an aggregate input, a population filter, or an `error`-mode dimension — declare the [join cardinality](#join-cardinality) or primary key to prove the hop, or query it under `broadcast`/`associate` handling. A derived column whose definition reaches a to-many (or undeclared) target cannot be aggregated as a column of its model — aggregate the target column directly (`line_items.qty:sum`). Where the hop is *provably* fanning (declared `one_to_many`/`many_to_many`), the model is rejected at **save time**; an unproven hop saves with a warning and relies on the query-time check above.
 
 Same-model references may be written **bare** (just the column name) or qualified with the host alias — both forms expand the same way. So given `bucket.sql = "raw_a / 10"`, a sibling `rn.sql = "ROW_NUMBER() OVER (PARTITION BY bucket ORDER BY id)"` correctly expands `bucket` to the inlined body. Bare references inside a nested scope (sub-query, `UNION` branch, CTE, `VALUES`) are NOT inlined — those identifiers belong to the inner rowset, not the host model — so `Column.sql = "(SELECT MAX(score) FROM other) + score"` inlines the outer `score` but leaves the inner one alone.
 
@@ -285,7 +288,7 @@ columns:
   - {name: balance, sql: balance, type: number}
 ```
 
-`last(balance, updated_at)` gives the most recent balance per group; `first(balance, updated_at)` the earliest. When grouped by month, each month returns the latest (or earliest) record's balance in that month. If no time column is specified, ordering resolves via: query's `main_time_dimension` → first time/date dimension in the query → first time dimension in filters → model's `default_time_dimension`.
+`last(balance, updated_at)` gives the most recent balance per group; `first(balance, updated_at)` the earliest. When grouped by month, each month returns the latest (or earliest) record's balance in that month. If no time column is specified, ordering resolves via: query's `main_time_dimension` → first time/date dimension in the query → first time dimension in filters → model's `default_time_dimension`. Whichever column wins is an input of the aggregation: if it, or a derived definition it names, crosses a join hop that is not provably to-one from the aggregation's root, the query fails with the input-safety error exactly as an explicit ranking argument would.
 
 Not to be confused with the [`last()` formula function](formulas.md#last-function) — a window-function transform that broadcasts a value across all rows. Same name, different layer.
 
@@ -302,6 +305,8 @@ aggregations:
 ```
 
 Use at query time: `weighted_avg(price, weight=quantity)`, `trimmed_mean(revenue, low=10, high=1000)`. An aggregation entry can also override a built-in's default parameters without redefining the SQL. Like columns and measures, aggregations accept an optional `meta` dict for caller bookkeeping.
+
+A parameter default resolves from the model that declares the aggregation, and a qualifier naming a model already on the query's path to it reads that row rather than re-joining (`weight: customers.spend` on a `regions` aggregation queried as `customers.regions.pop:…` weights by that customer's own spend), while any other qualifier the declaring model cannot reach resolves from the query root.
 
 ## Joins
 
@@ -500,7 +505,7 @@ Unresolved placeholders raise a clear error at execute time, naming the model an
 
 ### What gets cached
 
-For a query-backed model the engine caches `model.columns` (final-stage output columns — a discoverability snapshot) and `model.backing_query_sql` (the rendered backing query). The cache is populated **only** on save through `engine.save_model` (REST `POST`/`PUT /models`, MCP `create_model`/`edit_model`). **Read operations never write storage** — `engine.execute`, `inspect_model`, `get_column_types`, MCP `query`, and REST `/query` will never modify the persisted cache. Writing a query-backed model directly to storage outside the engine leaves the cache stale until the next engine save.
+For a query-backed model the engine caches `model.columns` (final-stage output columns — a discoverability snapshot) and `model.backing_query_sql` (the rendered backing query); each cached column produced by a time dimension records its `granularity`, so a finer time dimension over the model is the same typed error as over a stage column. The cache is populated **only** on save through `engine.save_model` (REST `POST`/`PUT /models`, MCP `create_model`/`edit_model`). **Read operations never write storage** — `engine.execute`, `inspect_model`, `get_column_types`, MCP `query`, and REST `/query` will never modify the persisted cache. Writing a query-backed model directly to storage outside the engine leaves the cache stale until the next engine save.
 
 You **cannot** supply `columns` or `backing_query_sql` yourself when creating a query-backed model — both are engine-managed, and any user-supplied value is rejected with a clear error.
 

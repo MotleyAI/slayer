@@ -6,6 +6,7 @@ metrics->measures) on top.
 """
 
 from pathlib import Path
+from collections.abc import Iterator
 
 import pytest
 import sqlalchemy as sa
@@ -24,6 +25,7 @@ from slayer.osi.models import (
     OSISemanticModel,
 )
 from slayer.osi.parser import parse_osi_path
+from tests._engine_helpers import disposable_engine
 
 FIXTURES = Path(__file__).parent / "fixtures" / "osi"
 
@@ -40,13 +42,13 @@ _SCHEMA = [
 
 
 @pytest.fixture
-def shop_engine(tmp_path: Path) -> sa.Engine:
-    engine = sa.create_engine(f"sqlite:///{tmp_path}/shop.db")
-    with engine.connect() as conn:
-        for ddl in _SCHEMA:
-            conn.execute(sa.text(ddl))
-        conn.commit()
-    return engine
+def shop_engine(tmp_path: Path) -> Iterator[sa.Engine]:
+    with disposable_engine(f"sqlite:///{tmp_path}/shop.db") as engine:
+        with engine.connect() as conn:
+            for ddl in _SCHEMA:
+                conn.execute(sa.text(ddl))
+            conn.commit()
+        yield engine
 
 
 def _convert(engine: sa.Engine, doc: OSIDocument, **kw):
@@ -104,7 +106,8 @@ def test_field_ai_context_into_description_and_meta(shop_engine):
     assert amount.label == "Order amount"
     # instructions AND synonyms both go into description.
     assert "Gross order value in USD." in amount.description
-    assert "revenue" in amount.description and "gross" in amount.description
+    assert "revenue" in amount.description
+    assert "gross" in amount.description  # type: ignore[operator]
     # full blob preserved in meta.
     assert amount.meta["osi_ai_context"]["instructions"] == "Gross order value in USD."
     assert amount.meta["osi_ai_context"]["synonyms"] == ["revenue", "gross"]
@@ -247,7 +250,8 @@ def test_illegal_dataset_name_clean_fails(shop_engine):
     )
     result = _convert(shop_engine, doc)
     names = {m.name for m in result.models}
-    assert "orders" in names and "orders.bad" not in names
+    assert "orders" in names
+    assert "orders.bad" not in names
     assert _reported(result)  # a report entry exists
 
 
@@ -264,7 +268,8 @@ def test_dataset_name_with_path_separator_clean_fails(shop_engine):
     )
     result = _convert(shop_engine, doc)
     names = {m.name for m in result.models}
-    assert "orders" in names and "evil/name" not in names
+    assert "orders" in names
+    assert "evil/name" not in names
     assert _reported(result)
 
 
@@ -281,7 +286,8 @@ def test_illegal_field_name_clean_fails_field_not_model(shop_engine):
     result = _convert(shop_engine, doc)
     orders = {m.name: m for m in result.models}["orders"]
     colnames = {c.name for c in orders.columns}
-    assert "amount" in colnames and "bad:name" not in colnames
+    assert "amount" in colnames
+    assert "bad:name" not in colnames
     assert _reported(result)
 
 
@@ -350,7 +356,8 @@ def test_aliased_field_expression_pointing_at_real_column(shop_engine):
     result = _convert(shop_engine, doc)
     orders = {m.name: m for m in result.models}["orders"]
     amt = {c.name: c for c in orders.columns}.get("amt")
-    assert amt is not None and amt.sql == "amount"
+    assert amt is not None
+    assert amt.sql == "amount"
 
 
 def test_non_sql_dialect_metric_clean_fails(shop_engine):
@@ -378,7 +385,8 @@ def test_per_dataset_failure_isolation(shop_engine):
     )
     result = _convert(shop_engine, doc)
     names = {m.name for m in result.models}
-    assert "orders" in names and "phantom" not in names
+    assert "orders" in names
+    assert "phantom" not in names
     assert _reported(result)
 
 
@@ -960,7 +968,8 @@ def test_bare_alias_field_shadowing_physical_column_replaces(shop_engine):
     result = _convert(shop_engine, doc)
     orders = {m.name: m for m in result.models}["orders"]
     status_cols = [c for c in orders.columns if c.name == "status"]
-    assert len(status_cols) == 1 and status_cols[0].sql == "order_id"
+    assert len(status_cols) == 1
+    assert status_cols[0].sql == "order_id"
 
 
 def test_materialized_name_avoids_existing_measure(shop_engine):

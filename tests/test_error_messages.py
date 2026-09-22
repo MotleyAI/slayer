@@ -30,7 +30,6 @@ from slayer.core.errors import (
     SlayerError,
     UnknownFunctionError,
     UnknownReferenceError,
-    UnreachableFilterDroppedWarning,
 )
 from slayer.core.warnings import NormalizationWarning, SlayerNormalizationWarning
 
@@ -53,7 +52,6 @@ class TestInheritance:
         assert issubclass(cls, SlayerError)
 
     def test_warning_subclasses_user_warning(self):
-        assert issubclass(UnreachableFilterDroppedWarning, UserWarning)
         assert issubclass(SlayerNormalizationWarning, UserWarning)
 
 
@@ -300,21 +298,6 @@ class TestCanonicalAliasShadowsColumnError:
 
 
 # ---------------------------------------------------------------------------
-# Warning classes
-# ---------------------------------------------------------------------------
-
-
-class TestUnreachableFilterDroppedWarning:
-    def test_basic(self):
-        w = UnreachableFilterDroppedWarning(
-            filter_text="customers.score > 5",
-            reason="filter refs slots unreachable from the cross-model CTE root",
-        )
-        assert "customers.score > 5" in str(w)
-        assert "unreachable" in str(w)
-
-
-# ---------------------------------------------------------------------------
 # NormalizationWarning (Pydantic) + SlayerNormalizationWarning (carrier)
 # ---------------------------------------------------------------------------
 
@@ -376,7 +359,10 @@ class TestSlayerNormalizationWarning:
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             warnings.warn(SlayerNormalizationWarning(nw))
-        assert len(caught) == 1
-        assert issubclass(caught[0].category, SlayerNormalizationWarning)
-        assert isinstance(caught[0].message, SlayerNormalizationWarning)
-        assert caught[0].message.payload.rule_id == "FUNC_STYLE_AGG"
+        # Count our category only — a stray ResourceWarning (a GC-finalized sqlite
+        # connection on 3.14) can also land in the record window.
+        mine = [w for w in caught
+                if issubclass(w.category, SlayerNormalizationWarning)]
+        assert len(mine) == 1
+        assert isinstance(mine[0].message, SlayerNormalizationWarning)
+        assert mine[0].message.payload.rule_id == "FUNC_STYLE_AGG"

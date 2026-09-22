@@ -38,7 +38,6 @@ from tests._dev1840_fixtures import (
     SPEND_WEB_AND_BASIC,
     SPEND_WEB_BY_TIER,
     dev1840_models,
-    dropped_filter_warnings,
     make_exec_engine,
     month_key,
     q,
@@ -107,7 +106,6 @@ class TestReverseHopPushdown:
         assert set(control_by) == set(by)
         for key, row in by.items():
             assert row["orders.m"] == control_by[key]["orders.m"], key
-        assert dropped_filter_warnings(resp) == []
         await _dry_has_exists_and_closes(engine, query, dialect)
 
     async def test_zero_passing_customers_leave_a_null_group_value(
@@ -139,7 +137,6 @@ class TestReverseHopPushdown:
         assert float(by[("new",)]["orders.m"]) == pytest.approx(45.0)
         for row in resp.data:
             assert float(row["orders.cm"]) == pytest.approx(SPEND_APP_TOTAL)
-        assert dropped_filter_warnings(resp) == []
 
     async def test_negated_cross_path_conjunct_pushes(self, exec_backend):
         _, engine = exec_backend
@@ -151,7 +148,6 @@ class TestReverseHopPushdown:
         # NOT app ≡ web on this dataset — the population matches the web pin.
         for tier, spend in SPEND_WEB_BY_TIER.items():
             assert float(by[(tier,)]["orders.cm"]) == pytest.approx(spend), tier
-        assert dropped_filter_warnings(resp) == []
 
 
 class TestSameRowGrouping:
@@ -170,7 +166,6 @@ class TestSameRowGrouping:
             assert float(by[(tier,)]["orders.cm"]) != pytest.approx(
                 SPEND_OK_APP_SPLIT_DEFECT[tier],
             ), tier
-        assert dropped_filter_warnings(resp) == []
 
     async def test_multi_hop_union_tree_same_row(self, exec_backend):
         """One store qualifies only through a single order that is both app
@@ -186,7 +181,6 @@ class TestSameRowGrouping:
             assert float(row["orders.rm"]) != pytest.approx(
                 RENT_APP_GOLD_SPLIT_DEFECT,
             )
-        assert dropped_filter_warnings(resp) == []
         await _dry_has_exists_and_closes(engine, query, dialect)
 
 
@@ -204,7 +198,6 @@ class TestCompositeCorrelation:
             assert float(row["orders.rm"]) != pytest.approx(
                 RENT_SINGLE_PAIR_DEFECT,
             )
-        assert dropped_filter_warnings(resp) == []
 
 
 class TestInlineEquivalence:
@@ -222,7 +215,6 @@ class TestInlineEquivalence:
         assert set(by) == {("gold",), ("silver",)}
         for tier, spend in SPEND_BASIC_BY_TIER.items():
             assert float(by[(tier,)]["orders.cm"]) == pytest.approx(spend), tier
-        assert dropped_filter_warnings(resp) == []
         await _dry_has_exists_and_closes(engine, query, dialect)
 
     async def test_declared_reverse_matches_the_inverted_edge(
@@ -236,12 +228,9 @@ class TestInlineEquivalence:
         by = rows_by(resp, "orders.customers.tier")
         for tier, spend in SPEND_APP_BY_TIER.items():
             assert float(by[(tier,)]["orders.cm"]) == pytest.approx(spend), tier
-        assert dropped_filter_warnings(resp) == []
 
 
 class TestBranchIndependence:
-    @pytest.mark.xfail(strict=True, reason=(
-        "DEV-1909: a fanning population filter with an aggregate inline over the population now fails closed (DEV-1900 interim guard); DEV-1909 restores it via association pushdown."))
     async def test_two_branches_satisfied_independently(self, exec_backend_weak):
         _, engine = exec_backend_weak
         resp = await engine.execute(q(
@@ -256,7 +245,6 @@ class TestBranchIndependence:
         # Neither branch may be lost: web-only 130, basic-only 160, none 245.
         assert float(by[("gold",)]["orders.cm"]) not in (130.0, 160.0, 245.0)
         assert float(by[("gold",)]["orders.m"]) == pytest.approx(13.0)
-        assert dropped_filter_warnings(resp) == []
 
 
 class TestCorrelatedOuterReference:
@@ -274,7 +262,6 @@ class TestCorrelatedOuterReference:
             assert float(by[(tier,)]["orders.cm"]) == pytest.approx(spend), tier
         assert float(by[("gold",)]["orders.m"]) == pytest.approx(50.0)
         assert float(by[("silver",)]["orders.m"]) == pytest.approx(70.0)
-        assert dropped_filter_warnings(resp) == []
 
 
 class TestExpandedDependencies:
@@ -295,7 +282,6 @@ class TestExpandedDependencies:
         assert float(by[("new",)]["orders.m"]) == pytest.approx(20.0)
         for row in resp.data:
             assert float(row["orders.cm"]) == pytest.approx(SPEND_CUST_TIER_GOLD)
-        assert dropped_filter_warnings(resp) == []
 
     async def test_target_declared_column_never_fans_the_producer(
         self, exec_backend_rev,
@@ -312,7 +298,6 @@ class TestExpandedDependencies:
         assert float(by[("gold",)]["orders.cm"]) != pytest.approx(
             SPEND_LAST_STATUS_OK_INLINE_FAN_GOLD,
         )
-        assert dropped_filter_warnings(resp) == []
         await _dry_has_exists_and_closes(engine, query, dialect)
 
 
@@ -408,5 +393,4 @@ class TestProducerKinds:
         assert set(by) == {("hi",), ("lo",)}
         assert float(by[("lo",)]["orders.m"]) == pytest.approx(25.0)
         assert float(by[("hi",)]["orders.m"]) == pytest.approx(40.0)
-        assert dropped_filter_warnings(resp) == []
         await _dry_has_exists_and_closes(engine, query, dialect)

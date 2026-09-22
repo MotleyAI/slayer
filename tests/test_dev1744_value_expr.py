@@ -27,7 +27,6 @@ only form correct for both ``ifnull`` and ``log10``.
 from __future__ import annotations
 
 import os
-import sqlite3
 from datetime import datetime
 from decimal import Decimal
 from typing import Optional
@@ -52,7 +51,6 @@ from slayer.core.keys import (
     InKey,
     LiteralKey,
     ScalarCallKey,
-    SqlExprKey,
     StarKey,
     TimeTruncKey,
     TransformKey,
@@ -75,7 +73,6 @@ from slayer.sql.naming import AliasAllocator
 from slayer.sql.render.aggregates import (
     AGG_REGISTRY,
     resolve_agg_entry,
-    window_agg_class,
 )
 from slayer.sql.render.value_expr import (
     AliasFacilities,
@@ -91,6 +88,7 @@ from slayer.sql.render.value_expr import (
 )
 from slayer.sql.scope import ScopeFrame
 from slayer.storage.yaml_storage import YAMLStorage
+from slayer.storage.sqlite_conn import transaction
 
 
 # ===========================================================================
@@ -375,23 +373,6 @@ class TestRenderContextApi:
         with pytest.raises(RenderContextMissingFacilityError) as excinfo:
             render_value_key(key=key, ctx=bare)
         assert "composite" in str(excinfo.value).lower(), str(excinfo.value)
-
-    def test_filtered_aggregate_without_a_builder_fails_closed(self) -> None:
-        """A column filter must not vanish.
-
-        The generator wraps a filtered aggregate as
-        ``SUM(CASE WHEN <filter> THEN col END)``. Rendering it from ``agg`` and
-        ``source`` alone drops the filter and covers rows it must exclude —
-        a wrong number rather than an error, so the no-builder path refuses it.
-        """
-        key = AggregateKey(
-            source=ColumnKey(leaf="amount"),
-            agg="sum",
-            column_filter_key=SqlExprKey(canonical_sql="status = 'new'"),
-        )
-        ctx = _composite_ctx()
-        with pytest.raises(RenderContextMissingFacilityError):
-            render_value_key(key=key, ctx=ctx)
 
     def test_parametric_aggregate_without_a_builder_fails_closed(self) -> None:
         """Same rule for args/kwargs, which need the generator's parameter
@@ -741,8 +722,9 @@ class TestRendersEveryKeyKind:
         somewhere else inside the renderer satisfy this test.
         """
         ctx = _filter_ctx()
+        key = object()
         with pytest.raises(NotImplementedError) as excinfo:
-            render_value_key(key=object(), ctx=ctx)  # type: ignore[arg-type]
+            render_value_key(key=key, ctx=ctx)  # type: ignore[arg-type]
         assert "object" in str(excinfo.value)
 
 
@@ -1004,20 +986,6 @@ class TestAggregationRegistry:
         with pytest.raises(ValueError):
             resolve_agg_entry("definitely_not_an_aggregation")
 
-    def test_windowable_flags_are_exact(self) -> None:
-        """Only ``sum`` and ``avg`` are windowable today — that is precisely
-        what ``stage_planner`` gates on, and the registry must agree with it
-        rather than restating it."""
-        assert resolve_agg_entry("sum").windowable is True
-        assert resolve_agg_entry("avg").windowable is True
-        for name in ("count", "min", "max", "median", "percentile", "first"):
-            assert resolve_agg_entry(name).windowable is False, name
-
-    def test_window_agg_class_replaces_the_hardcode(self) -> None:
-
-        assert window_agg_class("sum") is exp.Sum
-        assert window_agg_class("avg") is exp.Avg
-
     def test_registry_and_builtins_agree_both_ways(self) -> None:
         """The import-time invariant, asserted in both directions.
 
@@ -1028,18 +996,6 @@ class TestAggregationRegistry:
         """
         assert set(AGG_REGISTRY) == set(BUILTIN_AGGREGATIONS)
 
-    def test_non_windowable_aggregation_fails_closed(self) -> None:
-        """The generator's windowed path currently reads
-        ``exp.Sum if plan.agg == "sum" else exp.Avg`` — a silent catch-all that
-        renders ANY other aggregation as AVG. It is unreachable through the
-        planner today, which is exactly why it would stay silently wrong.
-
-        Approved divergence: it raises instead.
-        """
-        for name in ("median", "count", "min", "max", "percentile"):
-            with pytest.raises(ValueError):
-                window_agg_class(name)
-
 
 # ===========================================================================
 # End-to-end: the migrated call-site families keep working.
@@ -1049,22 +1005,20 @@ class TestAggregationRegistry:
 async def _e2e_engine(*, base_dir: str, dialect: str = "sqlite") -> SlayerQueryEngine:
     d = base_dir
     db_path = os.path.join(d, "ve.db")
-    con = sqlite3.connect(db_path)
-    cur = con.cursor()
-    cur.execute(
-        "CREATE TABLE orders (id INTEGER PRIMARY KEY, status TEXT, "
-        "amount REAL, disc REAL, qty REAL, created_at TEXT)"
-    )
-    cur.executemany(
-        "INSERT INTO orders VALUES (?,?,?,?,?,?)",
-        [
-            (1, "new", 10.0, None, 2.0, "2024-01-01"),
-            (2, "new", 20.0, 5.0, 4.0, "2024-02-01"),
-            (3, "old", 30.0, None, 1.0, "2024-01-15"),
-        ],
-    )
-    con.commit()
-    con.close()
+    with transaction(db_path) as con:
+        cur = con.cursor()
+        cur.execute(
+            "CREATE TABLE orders (id INTEGER PRIMARY KEY, status TEXT, "
+            "amount REAL, disc REAL, qty REAL, created_at TEXT)"
+        )
+        cur.executemany(
+            "INSERT INTO orders VALUES (?,?,?,?,?,?)",
+            [
+                (1, "new", 10.0, None, 2.0, "2024-01-01"),
+                (2, "new", 20.0, 5.0, 4.0, "2024-02-01"),
+                (3, "old", 30.0, None, 1.0, "2024-01-15"),
+            ],
+        )
 
     storage = YAMLStorage(base_dir=os.path.join(d, "store"))
     await storage.save_datasource(
@@ -1219,29 +1173,27 @@ class TestOuterWrapperAndShiftedCteFamilies:
     async def _engine(self, tmp_path, *, dialect: str = "sqlite") -> SlayerQueryEngine:
         d = str(tmp_path)
         db_path = os.path.join(d, "routes.db")
-        con = sqlite3.connect(db_path)
-        cur = con.cursor()
-        cur.execute(
-            "CREATE TABLE regions (id INTEGER PRIMARY KEY, tier TEXT)"
-        )
-        cur.executemany(
-            "INSERT INTO regions VALUES (?,?)", [(1, "gold"), (2, "silver")],
-        )
-        cur.execute(
-            "CREATE TABLE orders (id INTEGER PRIMARY KEY, region_id INTEGER, "
-            "status TEXT, amount REAL, disc REAL, created_at TEXT)"
-        )
-        cur.executemany(
-            "INSERT INTO orders VALUES (?,?,?,?,?,?)",
-            [
-                (1, 1, "new", 100.0, None, "2024-01-15"),
-                (2, 1, "new", 200.0, 5.0, "2024-02-15"),
-                (3, 2, "old", 300.0, None, "2024-01-20"),
-                (4, 2, "old", 400.0, 7.0, "2024-02-20"),
-            ],
-        )
-        con.commit()
-        con.close()
+        with transaction(db_path) as con:
+            cur = con.cursor()
+            cur.execute(
+                "CREATE TABLE regions (id INTEGER PRIMARY KEY, tier TEXT)"
+            )
+            cur.executemany(
+                "INSERT INTO regions VALUES (?,?)", [(1, "gold"), (2, "silver")],
+            )
+            cur.execute(
+                "CREATE TABLE orders (id INTEGER PRIMARY KEY, region_id INTEGER, "
+                "status TEXT, amount REAL, disc REAL, created_at TEXT)"
+            )
+            cur.executemany(
+                "INSERT INTO orders VALUES (?,?,?,?,?,?)",
+                [
+                    (1, 1, "new", 100.0, None, "2024-01-15"),
+                    (2, 1, "new", 200.0, 5.0, "2024-02-15"),
+                    (3, 2, "old", 300.0, None, "2024-01-20"),
+                    (4, 2, "old", 400.0, 7.0, "2024-02-20"),
+                ],
+            )
 
         storage = YAMLStorage(base_dir=os.path.join(d, "store"))
         await storage.save_datasource(
@@ -1501,14 +1453,6 @@ def _mutation_cases():
             "AggregateKey.source",
             AggregateKey(source=col, agg="sum"),
             AggregateKey(source=other, agg="sum"),
-        ),
-        (
-            "AggregateKey.column_filter_key",
-            AggregateKey(source=col, agg="sum"),
-            AggregateKey(
-                source=col, agg="sum",
-                column_filter_key=SqlExprKey(canonical_sql="status = 'new'"),
-            ),
         ),
         (
             "AggregateKey.kwargs",

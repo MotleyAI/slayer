@@ -7,8 +7,6 @@ it does not list.
 Run with: poetry run pytest tests/integration/test_integration_rls.py -m integration
 """
 
-import sqlite3
-
 import pytest
 
 import slayer.engine.query_engine as qe
@@ -30,6 +28,7 @@ from slayer.core.policy import (
 from slayer.core.query import ColumnRef, SlayerQuery
 from slayer.engine.profiling import profile_column
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 
 pytestmark = pytest.mark.integration
@@ -43,58 +42,56 @@ async def rls_storage(tmp_path):
     """Two-tenant SQLite DB with org-scoped orders/customers and a tenant-less
     exchange_rates table."""
     db_path = tmp_path / "rls.db"
-    conn = sqlite3.connect(str(db_path))
-    cur = conn.cursor()
-    cur.execute(
-        """
-        CREATE TABLE customers (
-            id INTEGER PRIMARY KEY,
-            organization_uuid TEXT NOT NULL,
-            name TEXT NOT NULL,
-            region TEXT NOT NULL
+    with transaction(str(db_path)) as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE customers (
+                id INTEGER PRIMARY KEY,
+                organization_uuid TEXT NOT NULL,
+                name TEXT NOT NULL,
+                region TEXT NOT NULL
+            )
+            """
         )
-        """
-    )
-    cur.execute(
-        """
-        CREATE TABLE orders (
-            id INTEGER PRIMARY KEY,
-            organization_uuid TEXT NOT NULL,
-            amount REAL NOT NULL,
-            customer_id INTEGER NOT NULL
+        cur.execute(
+            """
+            CREATE TABLE orders (
+                id INTEGER PRIMARY KEY,
+                organization_uuid TEXT NOT NULL,
+                amount REAL NOT NULL,
+                customer_id INTEGER NOT NULL
+            )
+            """
         )
-        """
-    )
-    cur.execute(
-        """
-        CREATE TABLE exchange_rates (
-            day TEXT NOT NULL,
-            rate REAL NOT NULL
+        cur.execute(
+            """
+            CREATE TABLE exchange_rates (
+                day TEXT NOT NULL,
+                rate REAL NOT NULL
+            )
+            """
         )
-        """
-    )
-    cur.executemany(
-        "INSERT INTO customers VALUES (?, ?, ?, ?)",
-        [
-            (1, ORG_A, "Alice", "US"),
-            (2, ORG_A, "Bob", "EU"),
-            (3, ORG_B, "Charlie", "APAC"),
-        ],
-    )
-    cur.executemany(
-        "INSERT INTO orders VALUES (?, ?, ?, ?)",
-        [
-            (1, ORG_A, 100.0, 1),
-            (2, ORG_A, 200.0, 2),
-            (3, ORG_B, 999.0, 3),
-        ],
-    )
-    cur.executemany(
-        "INSERT INTO exchange_rates VALUES (?, ?)",
-        [("2025-01-01", 1.1), ("2025-02-01", 1.2)],
-    )
-    conn.commit()
-    conn.close()
+        cur.executemany(
+            "INSERT INTO customers VALUES (?, ?, ?, ?)",
+            [
+                (1, ORG_A, "Alice", "US"),
+                (2, ORG_A, "Bob", "EU"),
+                (3, ORG_B, "Charlie", "APAC"),
+            ],
+        )
+        cur.executemany(
+            "INSERT INTO orders VALUES (?, ?, ?, ?)",
+            [
+                (1, ORG_A, 100.0, 1),
+                (2, ORG_A, 200.0, 2),
+                (3, ORG_B, 999.0, 3),
+            ],
+        )
+        cur.executemany(
+            "INSERT INTO exchange_rates VALUES (?, ?)",
+            [("2025-01-01", 1.1), ("2025-02-01", 1.2)],
+        )
 
     storage_dir = tmp_path / "storage"
     storage_dir.mkdir()
@@ -200,13 +197,12 @@ async def test_join_scoped_both_sides(rls_storage):
 
 async def test_block_fails_on_columnless_table(rls_storage):
     engine = SlayerQueryEngine(storage=rls_storage, policy=_org_policy(ORG_A))
+    q = SlayerQuery(
+        source_model="exchange_rates",
+        measures=[ModelMeasure(formula="*:count")],
+    )
     with pytest.raises(ForcedFilterError) as exc:
-        await engine.execute(
-            SlayerQuery(
-                source_model="exchange_rates",
-                measures=[ModelMeasure(formula="*:count")],
-            )
-        )
+        await engine.execute(q)
     assert exc.value.table == "exchange_rates"
     assert exc.value.column == "organization_uuid"
 
@@ -346,56 +342,54 @@ async def rls_join_storage(tmp_path):
     """The tenant column lives only on ``customers``, so ``orders`` and ``line_items``
     must reach it through explicit joins; ``exchange_rates`` is tenant-less."""
     db_path = tmp_path / "rls_join.db"
-    conn = sqlite3.connect(str(db_path))
-    cur = conn.cursor()
-    cur.execute(
-        """
-        CREATE TABLE customers (
-            id INTEGER PRIMARY KEY,
-            organization_uuid TEXT NOT NULL,
-            name TEXT NOT NULL
+    with transaction(str(db_path)) as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE customers (
+                id INTEGER PRIMARY KEY,
+                organization_uuid TEXT NOT NULL,
+                name TEXT NOT NULL
+            )
+            """
         )
-        """
-    )
-    cur.execute(
-        """
-        CREATE TABLE orders (
-            id INTEGER PRIMARY KEY,
-            customer_id INTEGER NOT NULL,
-            amount REAL NOT NULL
+        cur.execute(
+            """
+            CREATE TABLE orders (
+                id INTEGER PRIMARY KEY,
+                customer_id INTEGER NOT NULL,
+                amount REAL NOT NULL
+            )
+            """
         )
-        """
-    )
-    cur.execute(
-        """
-        CREATE TABLE line_items (
-            id INTEGER PRIMARY KEY,
-            order_id INTEGER NOT NULL,
-            qty INTEGER NOT NULL
+        cur.execute(
+            """
+            CREATE TABLE line_items (
+                id INTEGER PRIMARY KEY,
+                order_id INTEGER NOT NULL,
+                qty INTEGER NOT NULL
+            )
+            """
         )
-        """
-    )
-    cur.execute(
-        "CREATE TABLE exchange_rates (day TEXT NOT NULL, rate REAL NOT NULL)"
-    )
-    cur.executemany(
-        "INSERT INTO customers VALUES (?, ?, ?)",
-        [(1, ORG_A, "Alice"), (2, ORG_B, "Charlie")],
-    )
-    cur.executemany(
-        "INSERT INTO orders VALUES (?, ?, ?)",
-        [(10, 1, 100.0), (11, 2, 999.0)],  # order 10 -> orgA, 11 -> orgB
-    )
-    cur.executemany(
-        "INSERT INTO line_items VALUES (?, ?, ?)",
-        [(100, 10, 5), (101, 11, 7)],  # item 100 -> orgA, 101 -> orgB
-    )
-    cur.executemany(
-        "INSERT INTO exchange_rates VALUES (?, ?)",
-        [("2025-01-01", 1.1), ("2025-02-01", 1.2)],
-    )
-    conn.commit()
-    conn.close()
+        cur.execute(
+            "CREATE TABLE exchange_rates (day TEXT NOT NULL, rate REAL NOT NULL)"
+        )
+        cur.executemany(
+            "INSERT INTO customers VALUES (?, ?, ?)",
+            [(1, ORG_A, "Alice"), (2, ORG_B, "Charlie")],
+        )
+        cur.executemany(
+            "INSERT INTO orders VALUES (?, ?, ?)",
+            [(10, 1, 100.0), (11, 2, 999.0)],  # order 10 -> orgA, 11 -> orgB
+        )
+        cur.executemany(
+            "INSERT INTO line_items VALUES (?, ?, ?)",
+            [(100, 10, 5), (101, 11, 7)],  # item 100 -> orgA, 101 -> orgB
+        )
+        cur.executemany(
+            "INSERT INTO exchange_rates VALUES (?, ?)",
+            [("2025-01-01", 1.1), ("2025-02-01", 1.2)],
+        )
 
     storage_dir = tmp_path / "storage"
     storage_dir.mkdir()

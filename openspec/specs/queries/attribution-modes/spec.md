@@ -60,13 +60,21 @@ value SHALL fail with a clear validation error.
 ### Requirement: Distinct-entity association semantics
 Under `to_many_handling: "associate"`, an aggregate with at least one unattributable
 grain dimension SHALL return, for each result cell, the aggregate over the distinct
-root entities associated with that cell's population rows — each entity counted exactly
-once per cell, deduplicated by the root model's unique key. The result grain, row
-count, sibling metrics, and other columns' values MUST be unchanged relative to the
+home entities associated with that cell — each entity counted exactly once per cell,
+deduplicated by the home model's unique key. Association is defined by the join path
+from the aggregate's home dataset to the dimension (Axiom 3, Association): an entity
+belongs to a cell iff its own path reaches the cell's dimension values, so a home entity
+with no population row still counts in every cell its path reaches, and the origin of the
+population's rows never restricts the association. A dimension the home reaches only back
+through the population root associates an entity only when at least one population row
+carries it: an entity with no population row is in no such cell, never in a manufactured
+NULL cell. A population rooted at the home itself keeps its own row set: an entity with no
+related row sits in the NULL cell exactly as its population row does. The result grain,
+row count, sibling metrics, and other columns' values MUST be unchanged relative to the
 same query without the aggregate. Entity populations of different cells may overlap;
-cells are therefore not additive across the unattributable dimensions, and the
-response warns accordingly. Attributable grain dimensions retain exact partition
-values identical to broadcast mode.
+cells are therefore not additive across the unattributable dimensions, and the response
+warns accordingly. Attributable grain dimensions retain exact partition values identical
+to broadcast mode.
 
 #### Scenario: Cross-model metric attributes per cell by executed values
 - **WHEN** a query rooted at `orders` with `to_many_handling: "associate"` selects
@@ -91,6 +99,32 @@ values identical to broadcast mode.
 - **THEN** each cell aggregates over the distinct entities of the metric's root
   associated with the cell, by executed values
 
+#### Scenario: Home entity absent from the population counts in its home-determined cell
+- **WHEN** a query rooted at `orders` under `associate` selects `customers.spend:sum`
+  and the local `amount:sum` by a regions-level dimension the customer's own path
+  determines, and one South customer has no orders
+- **THEN** the South cell of `customers.spend:sum` includes that customer's spend (every
+  South customer once, on SQLite and DuckDB) while the local `amount:sum` cell is
+  unchanged, and the response carries the associated-cells warning
+
+#### Scenario: Dimension through the population root never manufactures a NULL cell
+- **WHEN** a query rooted at `orders` under `associate` selects `customers.spend:sum` by
+  `status`, one order carries a NULL status, and one customer has no orders
+- **THEN** the NULL-status cell aggregates exactly the customers owning a NULL-status
+  order, and the orderless customer appears in no cell, by executed values
+
+#### Scenario: A population rooted at the home keeps its own NULL cell
+- **WHEN** a query rooted at `customers` under `associate` selects `spend:sum` by
+  `orders.status`, one order carries a NULL status, and one customer has no orders
+- **THEN** the NULL-status cell holds both the orderless customer and the owner of the
+  NULL-status order, exactly the customers whose population rows carry a NULL status
+
+#### Scenario: Mixed home-side and population-root dimensions
+- **WHEN** a query rooted at `orders` under `associate` selects `customers.spend:sum` by
+  both a regions-level dimension and `status`, and one South customer has no orders
+- **THEN** every customer with orders is counted once in each of its (region, status)
+  cells and the orderless customer is in no cell, by executed values
+
 ### Requirement: Association eligibility and input handling
 Associate-mode resolution SHALL support the full plain scalar aggregation family
 (including count, count_distinct, avg, min, max, median, percentile, and stddev-class
@@ -105,11 +139,15 @@ determines it (per `queries/semantics` › Aggregation parameters are typed by t
 dataset's grain) and is then picked once per associated entity alongside the aggregate's
 own value; `*:count` counts the distinct associated entities per cell. An
 aggregation's own column filter restricts the associated entities before per-cell
-aggregation. Combining associate-mode resolution with `window=` or `first`/`last` on
-the same aggregate SHALL fail with a clear typed error naming the combination and the
-remedy. An aggregate root model without a declared unique key SHALL fail associate-mode
-resolution with a clear typed error naming the model and the remedy (declare a primary
-or unique key).
+aggregation. Association is needed only when at least one grain dimension is
+unattributable from the aggregate's home: an aggregate whose grain dimensions the home
+all determines takes the plain path under `associate` exactly as under `broadcast`,
+its attached inputs compiled at their own homes, so the eligibility rules below apply
+only when association is needed. Combining associate-mode resolution with `window=` or
+`first`/`last` on the same aggregate SHALL fail with a clear typed error naming the
+combination and the remedy. An aggregate root model without a declared unique key SHALL
+fail associate-mode resolution with a clear typed error naming the model and the remedy
+(declare a primary or unique key).
 
 #### Scenario: Percentile attributes over the association
 - **WHEN** an associate-mode query slices a cross-model percentile aggregate by an
@@ -150,6 +188,15 @@ or unique key).
   declares no primary or unique key
 - **THEN** the query fails with a clear typed error naming the model and the remedy
 
+#### Scenario: Attributable dimensions need no association
+- **WHEN** an associate-mode query rooted at `orders` selects
+  `customers.spend:weighted_avg(weight=sum(amount, partition_by=customers.regions.name))`
+  by `customers.tier` against a `customers` model declaring no primary or unique key,
+  the `orders → customers` hop declared many-to-one
+- **THEN** the query executes with the same values as under `broadcast` and no
+  association warning — the home determines every dimension, so no entity
+  deduplication is needed and the unique-key rule does not apply
+
 ### Requirement: Error mode refuses silent semantics
 Under `to_many_handling: "error"`, every event the retired strict flag rejected SHALL
 fail with a clear typed error: an implicit-grain broadcast (cross-model or local) and a
@@ -158,8 +205,11 @@ scope). The error names the metric, the dimension or filter, and the remedy. A f
 applied by semi-join pushdown is correctly applied and MUST NOT error; explicit
 `partition_by=` broadcasting of an attributable declared grain MUST NOT error, while
 an unattributable explicit `partition_by=` key is a hard error under `broadcast`/`error`
-(it associates only under `associate`); an ambiguous correlation hop errors in
-every mode and is not an error-mode concern.
+and associates only under `associate` — unless the key's own dependency closure crosses
+a fanning hop from its host, which is an input-safety error that fails closed in every
+mode, `associate` included (see "Partition key fanning from its host fails closed in
+every mode"); an ambiguous correlation hop errors in every mode and is not an error-mode
+concern.
 
 #### Scenario: Broadcast-would-happen errors
 - **WHEN** an error-mode query would broadcast a metric — cross-model or local — over
@@ -198,3 +248,54 @@ queries are migrated on load: `strict: true` becomes `to_many_handling: "error"`
 - **WHEN** a query sets `to_many_handling` through the REST API or the MCP query tool
 - **THEN** the mode reaches the engine and governs resolution exactly as a direct
   `SlayerQuery` field does
+
+### Requirement: Partition key fanning from its host fails closed in every mode
+
+An explicit `partition_by=` key whose dependency closure — its own join path plus every
+path the definition of a derived column it names crosses, recursively — crosses a
+fanning or unproven hop **from the aggregate's host** SHALL fail with a clear typed error
+in **every** `to_many_handling` mode, `associate` included. Such a key is not
+single-valued at the host grain, so it can never be counted without multiplying rows;
+this is an input-safety failure (mode-invariant), distinct from a dimension merely
+unattributable from a further root (which resolves per the mode axis). The error names
+the fanning hop and the remedy (declare join cardinality or a covering unique key on the
+target). The rule applies uniformly wherever the key appears — a partitioned measure,
+filter, ORDER BY target, computed-dimension aggregate, transform partition set,
+re-aggregation inner, or windowed aggregate — and to both the path-less spelling
+(`partition_by=<derived host column>`) and the path-bearing spelling
+(`partition_by=<dotted reference across the hop>`). A partition key that is safe from the
+host but unattributable only from a further (cross-model) root is unaffected: it keeps
+its mode-aware resolution.
+
+#### Scenario: Path-less derived fanning partition key fails closed in every mode
+- **WHEN** a query rooted at `regions` selects `pop:sum(partition_by=bad_pop)`, where
+  `bad_pop` is the host-local derived column `pop + region_events.value` over the
+  one-to-many `regions → region_events` hop, under `broadcast`, `error`, or `associate`
+- **THEN** the query fails with a typed error naming `region_events` and the remedy, in
+  all three modes — never the join-multiplied value
+
+#### Scenario: Chained derived fanning partition key fails closed
+- **WHEN** the partition key is a derived column defined over another derived column that
+  crosses the fanning hop (e.g. `bad_pop2 = bad_pop * 2`), in any mode
+- **THEN** the query fails closed naming the fanning hop, exactly as for the direct
+  derived key
+
+#### Scenario: Fanning partition key fails closed in every position
+- **WHEN** the fanning derived partition key appears as a filter target, an ORDER BY
+  target, a computed-dimension aggregate, a transform's partition set, a re-aggregation
+  inner aggregate, or a windowed aggregate, in any mode
+- **THEN** the query fails closed naming the fanning hop in each position — never a
+  silently multiplied value
+
+#### Scenario: Unanalysable derived partition key fails closed without naming a hop
+- **WHEN** the partition key names a derived column whose definition no supported dialect
+  can analyse for join dependencies, in any mode
+- **THEN** the query fails closed with a typed error that does not falsely attribute a
+  specific fanning hop it could not prove
+
+#### Scenario: Host-safe partition key keeps its mode-aware resolution
+- **WHEN** a `customers`-rooted aggregate declares `partition_by=status`, where `status`
+  is a plain column on the query's host model (safe from the host but unattributable from
+  the cross-model root)
+- **THEN** the key is not treated as a fanning-from-host safety error: it errors under
+  `broadcast`/`error` and associates under `associate`, unchanged

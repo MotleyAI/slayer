@@ -1,32 +1,12 @@
-"""Tests for DEV-1449: nested-DAG multi-hop dotted dim referenced from a
-downstream stage.
+"""Nested-DAG multi-hop dotted dim referenced from a downstream stage.
 
-Bug: when an inner stage projects a multi-hop dotted dim (e.g.
-``customers.regions.name``) and an outer stage references the same dotted
-path, SLayer emits broken SQL referencing a hybrid ``__`` + ``.`` table
-alias that doesn't exist in scope.
-
-Fix (typed pipeline / DEV-1450): downstream stages see a FLAT schema —
-an inner stage's ``customers.regions.name`` dim is projected as the flat
-column ``customers__regions__name`` on the wrapping stage, and downstream
-stages reference it by that flat name. The dotted form is rejected
-downstream (``IllegalScopeReferenceError``).
-
-Cross-stage resolution is exercised end-to-end here via ``engine.execute``
-(flat downstream refs). The legacy stage-origin resolver's direct-unit
-tests — which pinned the OLD ancestor-strip resolution of the *dotted*
-downstream form (e.g. ``orders.customers.regions.name`` vs
-``customers.regions.name``) — were dropped in DEV-1484 Stage C: that
-behaviour is intentionally replaced by the flat-only contract, pinned by
-``tests/test_binding.py::TestStageSchemaScope`` (flat resolves; dotted
-rejected), and the helper itself dies with the legacy enrichment stack in
-Stage D.
-
-See ``.spec/DEV-1449.md`` for the full design.
+An inner stage projects a multi-hop dotted dim (``customers.regions.name``) as the
+flat column ``customers__regions__name``; downstream stages reference it by that
+flat name (the dotted form is rejected). Exercised end-to-end via ``engine.execute``.
 """
 
 import re
-import sqlite3
+from slayer.storage.sqlite_conn import transaction
 import tempfile
 
 import pytest
@@ -135,38 +115,36 @@ async def _engine_with_real_sqlite(
     tests that need to verify execution semantics, not just SQL shape.
     """
     db_path = tmp_path / "test.db"
-    conn = sqlite3.connect(str(db_path))
-    conn.executescript(
-        """
-        CREATE TABLE countries (id INTEGER PRIMARY KEY, name TEXT);
-        CREATE TABLE regions (
-            id INTEGER PRIMARY KEY, name TEXT, country_id INTEGER,
-            last_activity_at TEXT
-        );
-        CREATE TABLE customers (
-            id INTEGER PRIMARY KEY, region_id INTEGER, revenue REAL
-        );
-        CREATE TABLE orders (
-            id INTEGER PRIMARY KEY, customer_id INTEGER, amount REAL,
-            created_at TEXT
-        );
-        INSERT INTO countries VALUES (1, 'US'), (2, 'EU');
-        INSERT INTO regions VALUES
-            (10, 'West',  1, '2025-01-01'),
-            (11, 'East',  1, '2025-02-01'),
-            (12, 'North', 2, '2025-03-01');
-        INSERT INTO customers VALUES
-            (100, 10, 500.0),
-            (101, 11, 700.0),
-            (102, 12, 300.0);
-        INSERT INTO orders VALUES
-            (1000, 100, 10.0, '2025-01-01'),
-            (1001, 101, 20.0, '2025-02-01'),
-            (1002, 102, 30.0, '2025-03-01');
-        """
-    )
-    conn.commit()
-    conn.close()
+    with transaction(str(db_path)) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE countries (id INTEGER PRIMARY KEY, name TEXT);
+            CREATE TABLE regions (
+                id INTEGER PRIMARY KEY, name TEXT, country_id INTEGER,
+                last_activity_at TEXT
+            );
+            CREATE TABLE customers (
+                id INTEGER PRIMARY KEY, region_id INTEGER, revenue REAL
+            );
+            CREATE TABLE orders (
+                id INTEGER PRIMARY KEY, customer_id INTEGER, amount REAL,
+                created_at TEXT
+            );
+            INSERT INTO countries VALUES (1, 'US'), (2, 'EU');
+            INSERT INTO regions VALUES
+                (10, 'West',  1, '2025-01-01'),
+                (11, 'East',  1, '2025-02-01'),
+                (12, 'North', 2, '2025-03-01');
+            INSERT INTO customers VALUES
+                (100, 10, 500.0),
+                (101, 11, 700.0),
+                (102, 12, 300.0);
+            INSERT INTO orders VALUES
+                (1000, 100, 10.0, '2025-01-01'),
+                (1001, 101, 20.0, '2025-02-01'),
+                (1002, 102, 30.0, '2025-03-01');
+            """
+        )
     storage = YAMLStorage(base_dir=str(tmp_path / "store"))
     await storage.save_datasource(
         DatasourceConfig(name="test_ds", type="sqlite", database=str(db_path))
@@ -350,11 +328,6 @@ class TestThreeHopDimension:
 # Test #3 — cross-stage time dimension.
 # ===========================================================================
 class TestCrossStageTimeDimension:
-    @pytest.mark.skip(
-        reason="DEV-1471: cross-stage time_dim re-binding not yet supported in "
-        "the typed pipeline. Inner stage truncates the column; downstream sees "
-        "it as a flat name and the binder rejects re-binding as a TimeDimension."
-    )
     async def test_multi_hop_dotted_time_dim_cross_stage(self) -> None:
         """Inner stage projects a multi-hop dotted time dim
         `customers.regions.last_activity_at`. Outer references the same
@@ -747,11 +720,6 @@ class TestRenamedInnerMeasureCrossStage:
 # Test #16 — cross-stage time_shift with dotted time dim.
 # ===========================================================================
 class TestCrossStageTimeShift:
-    @pytest.mark.skip(
-        reason="DEV-1471: time_shift on the outer stage requires a downstream "
-        "TimeDimension binding, which the typed pipeline currently rejects "
-        "(inner stage's truncated column surfaces as a flat StageSchema name)."
-    )
     async def test_time_shift_over_multi_hop_dotted_time_dim(self) -> None:
         """Outer-stage `time_shift` applied to a multi-hop dotted time
         dim (`customers.regions.last_activity_at`) projected by the

@@ -22,7 +22,7 @@ guard in ``plan_query``.
 """
 
 import json
-import sqlite3
+from slayer.storage.sqlite_conn import transaction
 import tempfile
 
 import pytest
@@ -140,11 +140,13 @@ class TestConstructionRejects:
         ``DistinctDimensionValuesError`` is) raised in
         ``model_validator(mode="after")`` into a ``ValidationError``.
         The error message bubbles up unchanged either way."""
+        status_dim = ColumnRef(name="status")
+        count_measure = ModelMeasure(formula="*:count")
         with pytest.raises(ValueError) as exc:
             SlayerQuery(
                 source_model="orders",
-                dimensions=[ColumnRef(name="status")],
-                measures=[ModelMeasure(formula="*:count")],
+                dimensions=[status_dim],
+                measures=[count_measure],
                 distinct_dimension_values=False,
             )
         msg = str(exc.value)
@@ -513,11 +515,13 @@ class TestErrorMessage:
     def test_construction_message_names_offending_field(self) -> None:
         """Construction-time message points at ``measures`` or
         ``dimensions/time_dimensions``."""
+        status_dim = ColumnRef(name="status")
+        count_measure = ModelMeasure(formula="*:count")
         with pytest.raises(ValueError) as exc:
             SlayerQuery(
                 source_model="orders",
-                dimensions=[ColumnRef(name="status")],
-                measures=[ModelMeasure(formula="*:count")],
+                dimensions=[status_dim],
+                measures=[count_measure],
                 distinct_dimension_values=False,
             )
         assert "measures" in str(exc.value).lower()
@@ -689,30 +693,28 @@ def _seed_orders_db_at(db_path) -> None:
     every end-to-end / surface test. Shape: 3 unique ``status`` values
     (``completed`` x3, ``pending`` x2, ``cancelled`` x1) so dim-only
     dedup is observable in the response row count."""
-    conn = sqlite3.connect(str(db_path))
-    cur = conn.cursor()
-    cur.execute(
-        """
-        CREATE TABLE orders (
-            id INTEGER PRIMARY KEY,
-            status TEXT NOT NULL,
-            amount REAL NOT NULL,
-            customer_id INTEGER NOT NULL,
-            created_at TEXT NOT NULL
+    with transaction(str(db_path)) as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE orders (
+                id INTEGER PRIMARY KEY,
+                status TEXT NOT NULL,
+                amount REAL NOT NULL,
+                customer_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
         )
-        """
-    )
-    rows = [
-        (1, "completed", 100.0, 1, "2025-01-15"),
-        (2, "completed", 200.0, 2, "2025-01-20"),
-        (3, "pending", 50.0, 1, "2025-02-10"),
-        (4, "cancelled", 75.0, 3, "2025-02-15"),
-        (5, "completed", 300.0, 2, "2025-03-05"),
-        (6, "pending", 25.0, 3, "2025-03-20"),
-    ]
-    cur.executemany("INSERT INTO orders VALUES (?, ?, ?, ?, ?)", rows)
-    conn.commit()
-    conn.close()
+        rows = [
+            (1, "completed", 100.0, 1, "2025-01-15"),
+            (2, "completed", 200.0, 2, "2025-01-20"),
+            (3, "pending", 50.0, 1, "2025-02-10"),
+            (4, "cancelled", 75.0, 3, "2025-02-15"),
+            (5, "completed", 300.0, 2, "2025-03-05"),
+            (6, "pending", 25.0, 3, "2025-03-20"),
+        ]
+        cur.executemany("INSERT INTO orders VALUES (?, ?, ?, ?, ?)", rows)
 
 
 def _orders_slayer_model_for(data_source: str) -> SlayerModel:

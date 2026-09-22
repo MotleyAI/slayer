@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import pytest
 
+from slayer.core.query import ModelExtension
 from tests._dev1824_fixtures import (
     BAND35,
     ModelMeasure,
@@ -35,7 +36,7 @@ def _stages(**stage2_kwargs) -> list:
         dimensions=["region", {"expression": BAND35, "name": "band"}],
         measures=[ModelMeasure(formula="amount:sum", name="bt")],
     )
-    stage2 = SlayerQuery(source_model={"source_name": "banded"}, **stage2_kwargs)
+    stage2 = SlayerQuery(source_model=ModelExtension(source_name="banded"), **stage2_kwargs)
     return [stage1, stage2]
 
 

@@ -39,7 +39,6 @@ from slayer.core.keys import (
     InKey,
     LiteralKey,
     ScalarCallKey,
-    SqlExprKey,
 )
 from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.core.query import SlayerQuery
@@ -52,6 +51,7 @@ from slayer.engine.filter_reachability import (
 from slayer.ir.bound import bound_filter_from_key
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.compile.stages import (
+    _PushBlocked,
     _cross_model_inherited_filters,
 )
 from slayer.engine.plan import plan_query
@@ -249,38 +249,6 @@ class TestCompositeKeyKindsAreTotal:
         )
         assert ("customers",) in _paths_for(key)
 
-    def test_sql_expr_key_contributes_its_referenced_paths(self) -> None:
-        """``SqlExprKey`` carries its own precomputed crossed paths (a
-        ``Column.filter`` interned onto an aggregate). It has an arm in the
-        scan; this pins it."""
-        key = SqlExprKey(
-            canonical_sql="customers__regions.population > 1",
-            referenced_join_paths=(("customers", "regions"),),
-        )
-        paths = _paths_for(key)
-        assert ("customers",) in paths, paths
-        assert ("customers", "regions") in paths, paths
-
-    def test_aggregate_column_filter_key_is_owner_relative(self) -> None:
-        """DEV-1783 item 1. ``AggregateKey.column_filter_key`` paths are
-        OWNER-relative (anchored at the aggregated column's owner, reached via
-        ``source.path``), so the scan must re-anchor them by prefixing
-        ``source.path``. ``customers.balance:sum`` with a filter on
-        ``regions.name`` must contribute ``("customers","regions")`` — never
-        bare ``("regions",)``, which ``classify_host_filter`` would mis-route."""
-        key = AggregateKey(
-            agg="sum",
-            source=ColumnKey(path=("customers",), leaf="balance"),
-            column_filter_key=SqlExprKey(
-                canonical_sql="regions.name = 'Alpha'",
-                referenced_join_paths=(("regions",),),
-            ),
-        )
-        paths = _paths_for(key)
-        assert ("customers",) in paths, paths
-        assert ("customers", "regions") in paths, paths
-        assert ("regions",) not in paths, paths
-
     def test_in_key_column_crossing_is_walked(self) -> None:
         """An ``InKey`` is walked by the crossing scan: a crossing COLUMN
         contributes its hop. ``values`` is ``Tuple[LiteralKey, ...]`` — literals
@@ -317,15 +285,10 @@ class TestCompositeKeyKindsAreTotal:
 # Routing outcomes
 # --------------------------------------------------------------------------- #
 class TestProducerInheritanceRouting:
-    """DEV-1838 (2.5) — the ``classify_host_filter`` routing table died with the
-    cross-model planner; producer filter inheritance
-    (``_cross_model_inherited_filters``) is the one seam that now decides which
-    host ROW conjuncts a target-rooted producer inherits. Since DEV-1840 the
-    disposition is three-way: attributable conjuncts inherit inline,
-    path-resolvable ones push as a correlated EXISTS semi-join, and only
-    genuinely unresolvable ones drop with a warning (pinned behaviorally in
-    ``test_dev1840_disposition``).
-    """
+    """Producer filter inheritance (``_cross_model_inherited_filters``) is the
+    one seam deciding which host ROW conjuncts a target-rooted producer
+    inherits: attributable conjuncts inline, the rest push as a correlated
+    EXISTS semi-join; an unresolvable hop fails closed."""
 
     def _split(self, key, *, target_path):
         models = {
@@ -350,38 +313,33 @@ class TestProducerInheritanceRouting:
         membership test would count a warehouses->regions reference as
         reachable for target ('customers',); structurally it is not — it now
         pushes as a semi-join along the reverse path instead of inlining."""
-        inherited, pushed, dropped = self._split(
+        inherited, pushed = self._split(
             ColumnKey(path=("warehouses", "regions"), leaf="population"),
             target_path=("customers",),
         )
         assert not inherited
-        assert not dropped
         (sj,) = pushed
         assert [h.target_model for h in sj.hops] == [
             "orders", "warehouses", "regions",
         ]
 
-    def test_path_deeper_than_target_is_not_inherited(self) -> None:
+    def test_path_deeper_than_target_fails_closed(self) -> None:
         """A dependency BELOW the target strips to a remainder the root's own
-        graph must prove; a hop the root has no edge for drops."""
-        inherited, pushed, dropped = self._split(
-            ColumnKey(
-                path=("customers", "regions", "subregions"), leaf="population",
-            ),
-            target_path=("customers", "regions"),
+        graph must prove; a hop the root has no edge for is an invariant
+        violation (binding refuses it first) and raises, never drops."""
+        key = ColumnKey(
+            path=("customers", "regions", "subregions"), leaf="population",
         )
-        assert not inherited
-        assert not pushed
-        assert dropped
+        with pytest.raises(_PushBlocked):
+            self._split(key, target_path=("customers", "regions"))
 
     def test_exact_path_match_is_inherited(self) -> None:
-        inherited, pushed, dropped = self._split(
+        inherited, pushed = self._split(
             ColumnKey(path=("customers", "regions"), leaf="population"),
             target_path=("customers", "regions"),
         )
         assert inherited
         assert not pushed
-        assert not dropped
 
     def test_mixed_reachable_and_unreachable_pushes(self) -> None:
         """A conjunct mixing a root-local ref with a cross-path ref under pure
@@ -393,29 +351,25 @@ class TestProducerInheritanceRouting:
                 ColumnKey(path=("warehouses",), leaf="id"),
             ),
         )
-        inherited, pushed, dropped = self._split(key, target_path=("customers",))
+        inherited, pushed = self._split(key, target_path=("customers",))
         assert not inherited
-        assert not dropped
         (sj,) = pushed
         assert [h.target_model for h in sj.hops] == ["orders", "warehouses"]
 
     def test_host_local_is_not_inherited(self) -> None:
-        inherited, pushed, dropped = self._split(
+        inherited, pushed = self._split(
             ColumnKey(path=(), leaf="amount"), target_path=("customers",),
         )
         assert not inherited
-        assert not dropped
         (sj,) = pushed
         assert [h.target_model for h in sj.hops] == ["orders"]
 
-    def test_dropped_conjunct_carries_the_filter_text(self) -> None:
-        _inherited, _pushed, dropped = self._split(
-            ColumnKey(
-                path=("customers", "regions", "subregions"), leaf="population",
-            ),
-            target_path=("customers", "regions"),
+    def test_push_block_names_the_missing_edge(self) -> None:
+        key = ColumnKey(
+            path=("customers", "regions", "subregions"), leaf="population",
         )
-        assert dropped[0].filter_text == "f"
+        with pytest.raises(_PushBlocked, match="regions to subregions"):
+            self._split(key, target_path=("customers", "regions"))
 
 
 class TestInlineScalarsAreNotReferences:

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import logging
-import sqlite3
 import tempfile
 from pathlib import Path
 
@@ -11,11 +10,15 @@ import sqlalchemy as sa
 
 from slayer.core.models import DatasourceConfig, SlayerModel, sanitize_model_name
 from slayer.sql import engine_factory
+from slayer.engine import ingestion as ingestion_module
 from slayer.engine.ingestion import (
     IngestionScanReport,
+    _dispose_quietly,
+    _introspect_query_columns_via_inspector,
     ingest_datasource,
     ingest_datasource_report,
 )
+from slayer.storage.sqlite_conn import transaction
 
 
 @pytest.fixture
@@ -29,10 +32,8 @@ def workspace():
 
 def _sqlite_ds(workspace: Path, script: str) -> DatasourceConfig:
     db_path = str(workspace / "live.db")
-    conn = sqlite3.connect(db_path)
-    conn.executescript(script)
-    conn.commit()
-    conn.close()
+    with transaction(db_path) as conn:
+        conn.executescript(script)
     return DatasourceConfig(name="ds", type="sqlite", database=db_path)
 
 
@@ -197,8 +198,6 @@ class TestCollisionPolicy:
         self, workspace: Path, monkeypatch
     ) -> None:
         """Reversing the scan order must not change the (distinct) result."""
-        from slayer.engine import ingestion as ingestion_module
-
         ds = _sqlite_ds(workspace, self._SCRIPT)
         real = ingestion_module.list_ingestable_objects
 
@@ -241,8 +240,6 @@ class TestCollisionPolicy:
         self, workspace: Path, monkeypatch
     ) -> None:
         """Both distinct models appear regardless of scan order."""
-        from slayer.engine import ingestion as ingestion_module
-
         ds = _sqlite_ds(workspace, self._TWO_DUNDER)
         real = ingestion_module.list_ingestable_objects
 
@@ -270,8 +267,6 @@ class TestSkipBackstop:
         self, workspace: Path, monkeypatch
     ) -> None:
         """Anything that fails per-object construction is skipped, run intact."""
-        from slayer.engine import ingestion as ingestion_module
-
         ds = _sqlite_ds(
             workspace,
             """
@@ -341,8 +336,6 @@ class TestEngineDisposal:
         self, workspace: Path, monkeypatch
     ) -> None:
         """A raising dispose in the finally must not mask the in-flight error."""
-        from slayer.engine import ingestion as ingestion_module
-
         ds = _sqlite_ds(
             workspace, "CREATE TABLE orders (id INTEGER PRIMARY KEY, x TEXT);"
         )
@@ -410,8 +403,6 @@ class TestEngineDisposal:
         self, workspace: Path, caplog
     ) -> None:
         """A dispose failure must be visible above DEBUG."""
-        from slayer.engine.ingestion import _dispose_quietly
-
         class _ExplodingEngine:
             def dispose(self):
                 raise RuntimeError("dispose blew up")
@@ -456,7 +447,8 @@ class TestWrapperContract:
     def test_empty_schema_reports_no_objects(self, workspace: Path) -> None:
         """Empty schema vs everything-skipped drives the CLI's exit-1 hint path."""
         db_path = str(workspace / "empty.db")
-        sqlite3.connect(db_path).close()
+        with transaction(db_path):
+            pass
         ds = DatasourceConfig(name="ds", type="sqlite", database=db_path)
         report = ingest_datasource_report(datasource=ds)
         assert report.models == []
@@ -547,8 +539,6 @@ class TestEmptyJoinListIsNotNoJoinList:
         return sa_engine, sa.inspect(sa_engine)
 
     def _introspect(self, workspace: Path, joins):
-        from slayer.engine.ingestion import _introspect_query_columns_via_inspector
-
         sa_engine, inspector = self._fixture(workspace)
         return [
             c.name

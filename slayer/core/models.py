@@ -16,6 +16,7 @@ from slayer.core.enums import (
     JoinType,
     ObjectKind,
     PRIMARY_KEY_AGGREGATIONS,
+    TimeGranularity,
     _coerce_legacy_datatype,
 )
 from slayer.core.format import NumberFormat
@@ -27,6 +28,7 @@ from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
 from slayer.storage.migrations import migrate as _migrate_schema
 
 _NAME_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+_GRANULARITY_NAMES = frozenset(g.value for g in TimeGranularity)
 
 logger = logging.getLogger(__name__)
 
@@ -153,8 +155,18 @@ class Column(BaseModel):
     label: str | None = None
     hidden: bool = False
     format: NumberFormat | None = None
+    granularity: TimeGranularity | None = Field(
+        default=None,
+        description=(
+            "Time bucket the column's values are already truncated to. "
+            "Query-backed models stamp it from the final stage; on a table-backed "
+            "column set it by hand only when you are sure the values are bucketed "
+            "at that granularity. A finer or non-nesting time dimension over the "
+            "column is then a typed error."
+        ),
+    )
     allowed_aggregations: list[str] | None = None
-    filter: str | None = None  # Applied inside CASE WHEN at aggregation time only
+    filter: str | None = None  # Desugars to CASE WHEN (filter) THEN (value) END in every position
     meta: dict[str, Any] | None = None
     sampled: str | None = None  # DEV-1375: cached sample-value snapshot
     sampled_values: list[str] | None = None  # DEV-1480: structured top-N
@@ -184,6 +196,29 @@ class Column(BaseModel):
             # SQL-mode: validate at construction so DSL constructs raise early.
             parse_sql_predicate(v)
         return v
+
+    @model_validator(mode="after")
+    def _validate_granularity_temporal(self) -> "Column":
+        # A bucket only makes sense on a temporal column (like filter/aggregations, fail at construction).
+        if self.granularity is not None and self.type not in (DataType.DATE, DataType.TIMESTAMP):
+            raise ValueError(
+                f"Column {self.name!r} declares granularity "
+                f"'{self.granularity.value}' but its type is {self.type.value}; "
+                f"a granularity is only valid on a temporal (DATE / TIMESTAMP) column."
+            )
+        return self
+
+    @property
+    def _sql_is_nontrivial(self) -> bool:
+        """The value SQL is not the bare self-name; a QUOTED self-name counts, since
+        only the expansion door re-qualifies it with its quoting intact."""
+        return self.sql is not None and self.sql.strip() != self.name
+
+    @property
+    def needs_expansion(self) -> bool:
+        """The reference resolves to more than a bare physical column — a derived
+        ``sql`` or an attached ``filter`` — so its uses expand to that definition."""
+        return self._sql_is_nontrivial or self.filter is not None
 
 
 class ModelMeasure(BaseModel):
@@ -298,6 +333,14 @@ class Aggregation(BaseModel):
                 f"Aggregation name '{self.name}' conflicts with a scalar "
                 f"function. Scalar-allowlist names are reserved: "
                 f"{', '.join(sorted(SCALAR_FUNCTIONS))}"
+            )
+        # A granularity-named aggregation would shadow the functional ``gran(col)``
+        # time-bucket form in a query dimension (DEV-1883).
+        if self.name.lower() in _GRANULARITY_NAMES:
+            raise ValueError(
+                f"Aggregation name '{self.name}' conflicts with a time "
+                f"granularity. Reserved granularity names: "
+                f"{', '.join(sorted(_GRANULARITY_NAMES))}"
             )
         return self
 

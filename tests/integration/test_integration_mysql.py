@@ -22,6 +22,7 @@ import uuid
 import pytest
 
 import sqlalchemy as sa
+from tests._engine_helpers import disposable_engine
 
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType, TimeGranularity
@@ -244,6 +245,26 @@ class TestMySQLQueries:
         result = await mysql_env.execute(query=query)
         assert result.row_count == 1
         assert result.data[0]["orders._count"] == 6
+
+    async def test_dev1933_regex_literal_extension_column(self, mysql_env: SlayerQueryEngine) -> None:
+        """DEV-1933: an ad-hoc column holding a ``(?:...)`` regex literal and a ``%``
+        LIKE pattern executes verbatim; text() misread ``:too`` as a bind parameter."""
+        query = SlayerQuery(
+            source_model=ModelExtension(
+                source_name="orders",
+                columns=[Column(
+                    name="rx",
+                    sql="CASE WHEN status LIKE '%pend%' "
+                        "OR status = '(?i)(?:too complicated|too complex)' THEN 1 ELSE 0 END",
+                    type=DataType.DOUBLE,
+                )],
+            ),
+            dimensions=[ColumnRef(name="rx")],
+            measures=[ModelMeasure(formula="*:count")],
+        )
+        result = await mysql_env.execute(query=query)
+        by_rx = {int(r["orders.rx"]): r["orders._count"] for r in result.data}
+        assert by_rx == {1: 2, 0: 4}
 
     async def test_sum_measure(self, mysql_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(source_model="orders", measures=[{"formula": "total:sum"}])
@@ -594,10 +615,10 @@ class TestCrossModelAndMultistageMySQL:
 
     async def test_sql_dimension(self, mysql_cross_model_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
-            source_model=ModelExtension(
-                source_name="orders",
-                columns=[{"name": "tier", "sql": "CASE WHEN amount > 100 THEN 'high' ELSE 'low' END"}],
-            ),
+            source_model=ModelExtension.model_validate({
+                "source_name": "orders",
+                "columns": [{"name": "tier", "sql": "CASE WHEN amount > 100 THEN 'high' ELSE 'low' END"}],
+            }),
             dimensions=[ColumnRef(name="tier")],
             measures=[ModelMeasure(formula="*:count")],
         )
@@ -663,10 +684,9 @@ def mysql_ingest_env(mysql_container):
         # Validate FK introspection before ingest — if MySQL's Inspector
         # doesn't surface the FK metadata we declared, the rest of the
         # rollup tests are meaningless. Fail loudly with the actual count.
-        sa_engine = sa.create_engine(ds.get_connection_string())
-        inspector = sa.inspect(sa_engine)
-        fks_on_orders = inspector.get_foreign_keys("orders")
-        sa_engine.dispose()
+        with disposable_engine(ds.get_connection_string()) as sa_engine:
+            inspector = sa.inspect(sa_engine)
+            fks_on_orders = inspector.get_foreign_keys("orders")
         assert len(fks_on_orders) >= 1, (
             f"MySQL InnoDB FK introspection returned 0 FKs on 'orders' — "
             f"rollup tests cannot validate. Inspector output: {fks_on_orders!r}"

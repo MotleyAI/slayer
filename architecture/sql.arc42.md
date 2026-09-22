@@ -67,7 +67,7 @@ flowchart TD
 5. **One ValueKey renderer**: `render_value_key` / `render_scalar_call` /
    `render_arithmetic` are the sole render paths for typed keys. [review]
 6. **CTE dependencies are declared**, never rediscovered by scanning rendered
-   SQL. [review]
+   SQL. [enforced: test:tests/test_dev1942_cte_dependencies.py]
 7. **Grain join-backs are null-safe**, built by the one builder in
    `render/joins.py`; an empty grain is an explicit CROSS JOIN, never `TRUE`.
    [review]
@@ -89,6 +89,18 @@ flowchart TD
 12. **Attach is cardinality-neutral**: attaching a producer never changes the
     host row count or any other column's value.
     [enforced: test:tests/test_dev1837_dimension_measure_matrix.py]
+13. **Rendered SQL executes verbatim**: `client.py` hands every statement to the
+    DBAPI unchanged through one door (`exec_driver_sql`, no parameters);
+    SQLAlchemy `text()` never touches rendered SQL — `:name` is never a bind
+    parameter, `%` never a format directive.
+    [enforced: test:tests/test_dev1933_verbatim_execution.py]
+14. **One engine owner**: every SQLAlchemy engine is disposed by exactly one
+    owner — `engine_factory` for the engines it caches (eviction and
+    `reset_cache` always dispose; `:memory:` is built by its single StaticPool
+    builder, keyed per datasource), `SlayerSQLClient` for its private in-memory
+    engine (via `close()`, with a finalizer backstop). `create_engine` runs only
+    in the factory and the dialects' build hooks; `create_async_engine` only in
+    the client's async builder. [enforced: test:tests/test_law_resource_ownership.py]
 
 ## 4. Rationale
 

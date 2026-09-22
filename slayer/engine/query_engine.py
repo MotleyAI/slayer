@@ -10,7 +10,7 @@ import logging
 import re
 import warnings as _warnings_module
 from collections.abc import Callable
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import sqlalchemy as sa
 import sqlglot
@@ -32,7 +32,6 @@ from slayer.core.errors import (
     ModelSqlValidationError,
     SchemaDriftError,
     SlayerError,
-    UnreachableFilterDroppedWarning,
 )
 from slayer.engine.cardinality import (
     CardinalityVerdict,
@@ -53,9 +52,9 @@ from slayer.core.models import (
     SlayerModel,
 )
 from slayer.core.query import (
+    ModelExtension,
     SlayerQuery,
     _contains_block_delimiter,
-    _get_source_model_name,
     coerce_declared_list_variables,
     declares_variables,
     extract_variable_refs,
@@ -73,7 +72,6 @@ from slayer.core.warnings import (
     DegenerateReaggregationWarningPayload,
     BroadcastDimension,
     BroadcastGrainWarningPayload,
-    DroppedFilterWarning,
     NormalizationWarning,
     SemiJoinPushedWarningPayload,
 )
@@ -380,30 +378,6 @@ def _semi_join_filter_texts(planned_list) -> List[str]:
     return texts
 
 
-def _collect_dropped_filter_warnings(
-    *, planned_list, stages,
-) -> List[DroppedFilterWarning]:
-    """Dropped-filter payloads, one per user filter; identity ``(location, filter text)``, reasons merged."""
-    reasons_by_identity: "dict[tuple[str, str], list[str]]" = {}
-
-    def _record(w, location: str) -> None:
-        reasons = reasons_by_identity.setdefault((location, w.filter_text), [])
-        if w.reason not in reasons:
-            reasons.append(w.reason)
-
-    for index, planned in enumerate(planned_list):
-        location = _stage_location(stages=stages, index=index)
-        for attach in _walk_regroup_attaches(planned):
-            for w in attach.dropped_filter_warnings or ():
-                _record(w, location)
-    return [
-        DroppedFilterWarning(
-            filter_text=text, location=location, reason="; ".join(reasons),
-        )
-        for (location, text), reasons in reasons_by_identity.items()
-    ]
-
-
 def _collect_broadcast_warnings(
     *, planned_list, stages,
 ) -> List[BroadcastGrainWarningPayload]:
@@ -476,72 +450,85 @@ def _collect_degenerate_warnings(
 
 
 def _attach_semi_join_texts(attach) -> Iterator[str]:
-    """Non-empty semi-join-pushed filter texts on an attach's producer plan."""
+    """Non-empty semi-join-pushed filter texts on an attach's producer plan, plus
+    an association producer's inlined reachable-but-unsafe conjunct texts — both
+    surface the same informational entry (DEV-1910)."""
     for group in getattr(attach.producer_plan, "semi_join_filters", None) or ():
         yield from (text for text in group.filter_texts if text)
+    yield from (
+        text
+        for text in getattr(attach, "association_restricted_filter_texts", None) or ()
+        if text
+    )
+
+
+def _population_pushed_entries(planned) -> Iterator[Tuple[Optional[str], str]]:
+    """The population's own restriction: a top-level plan's semi-join groups name
+    no aggregate (measure=None)."""
+    for group in getattr(planned, "semi_join_filters", None) or ():
+        for text in group.filter_texts:
+            if text:
+                yield None, text
+
+
+def _attach_pushed_entries(planned) -> Iterator[Tuple[str, str]]:
+    """Semi-join-pushed entries for each regroup attach, one per (public measure,
+    filter text) — a producer may carry several public measures under one push."""
+    for attach in _walk_regroup_attaches(planned):
+        measures = attach.population_semi_join_measures or [
+            attach.semi_join_measure or attach.broadcast_measure
+            or attach.associated_measure or attach.alias_hint or "<aggregate>"
+        ]
+        for text in _attach_semi_join_texts(attach):
+            for measure in measures:
+                yield measure, text
 
 
 def _collect_semi_join_pushed_warnings(
     *, planned_list, stages,
 ) -> List[SemiJoinPushedWarningPayload]:
-    """Response-only informational entries for semi-join-pushed conjuncts (DEV-1841 amends DEV-1840's silence); one per ``(location, aggregate, filter text)``."""
+    """Response-only informational entries for semi-join-pushed conjuncts; one per
+    ``(location, aggregate, filter text)``."""
     seen: set = set()
     out: List[SemiJoinPushedWarningPayload] = []
     for index, planned in enumerate(planned_list):
         location = _stage_location(stages=stages, index=index, member=None)
-        for attach in _walk_regroup_attaches(planned):
-            measure = (
-                attach.broadcast_measure or attach.associated_measure
-                or attach.alias_hint or "<aggregate>"
-            )
-            for text in _attach_semi_join_texts(attach):
-                identity = (location, measure, text)
-                if identity in seen:
-                    continue
-                seen.add(identity)
-                out.append(SemiJoinPushedWarningPayload(
-                    measure=measure, location=location, filter_text=text,
-                ))
+        entries = (
+            *_population_pushed_entries(planned),
+            *_attach_pushed_entries(planned),
+        )
+        for measure, text in entries:
+            identity = (location, measure, text)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            out.append(SemiJoinPushedWarningPayload(
+                measure=measure, location=location, filter_text=text,
+            ))
     return out
 
 
 def _raise_on_error_events(
     *, broadcasts: List[BroadcastGrainWarningPayload],
-    dropped: List[DroppedFilterWarning],
 ) -> None:
-    """``to_many_handling: "error"``: turn any silent-semantics event into an error naming metric/filter + remedy."""
-    remedy = (
-        "declare join cardinality, a covering unique key, switch to "
-        "to_many_handling='associate', or remove the "
-    )
+    """``to_many_handling: "error"``: a broadcast is an error naming the metric + remedy."""
     if broadcasts:
         w = broadcasts[0]
         dims = ", ".join(d.dimension for d in w.dimensions)
         reason = w.dimensions[0].reason if w.dimensions else ""
         raise SlayerError(
             f"error mode: metric {w.measure!r} would broadcast across "
-            f"unattributable dimension(s) {dims} ({reason}); {remedy}dimension."
-        )
-    if dropped:
-        d = dropped[0]
-        raise SlayerError(
-            f"error mode: filter {d.filter_text!r} would be dropped from a "
-            f"producer ({d.reason}); {remedy}filter."
+            f"unattributable dimension(s) {dims} ({reason}); declare join "
+            f"cardinality, a covering unique key, switch to "
+            f"to_many_handling='associate', or remove the dimension."
         )
 
 
-def _emit_dropped_filter_warnings(response) -> None:
-    """Emit one Python ``UserWarning`` per dropped filter / broadcast metric."""
+def _emit_python_warnings(response) -> None:
+    """Emit one Python ``UserWarning`` per broadcast / associated metric."""
 
     for w in response.warnings or ():
-        if isinstance(w, DroppedFilterWarning):
-            _warnings_module.warn(
-                UnreachableFilterDroppedWarning(
-                    filter_text=w.filter_text, reason=w.reason,
-                ),
-                stacklevel=3,
-            )
-        elif isinstance(w, BroadcastGrainWarningPayload):
+        if isinstance(w, BroadcastGrainWarningPayload):
             reason = w.dimensions[0].reason if w.dimensions else ""
             _warnings_module.warn(
                 BroadcastGrainWarning(measure=w.measure, reason=reason),
@@ -563,8 +550,7 @@ class SlayerResponse(BaseModel):
     columns: List[str] = PydanticField(default_factory=list)
     sql: Optional[str] = None
     attributes: ResponseAttributes = PydanticField(default_factory=ResponseAttributes)
-    # Query advisories, discriminated on ``kind`` (normalization rewrites,
-    # dropped cross-model filters); empty for a clean query.
+    # Query advisories, discriminated on ``kind``; empty for a clean query.
     warnings: List[AnySlayerWarning] = PydanticField(default_factory=list)
     # DEV-1866: the effective population model and whether it was inferred.
     population: Optional[str] = None
@@ -841,6 +827,26 @@ class SlayerQueryEngine:
         for client in self._sql_clients.values():
             await client.aclose()
 
+    def close(self) -> None:
+        """Close every cached client (disposing private in-memory engines) and clear the cache.
+
+        Idempotent; continues past a client that fails to close; leaves the
+        engine reusable — a later query rebuilds its clients (D4). This is the
+        synchronous teardown; loop-bound async engines (async datasources) are
+        disposed by ``aclose()`` on their event loop, not here.
+        """
+        try:
+            for client in self._sql_clients.values():
+                try:
+                    client.close()
+                except Exception:
+                    logger.warning(
+                        "Failed to close a SQL client during engine close.",
+                        exc_info=True,
+                    )
+        finally:
+            self._sql_clients.clear()
+
     async def execute(
         self,
         query: "SlayerQuery | dict | list[SlayerQuery | dict] | str",
@@ -868,7 +874,7 @@ class SlayerQueryEngine:
         )
         # The one Python-warnings emission: after the response is built (under
         # ``-W error`` this raises) and path-independent (dry_run/explain/execute).
-        _emit_dropped_filter_warnings(response)
+        _emit_python_warnings(response)
         return response
 
     async def _normalize_input(  # NOSONAR S3776 — public dispatch over str/dict/list/SlayerQuery; splitting hides the input-shape contract
@@ -1098,13 +1104,10 @@ class SlayerQueryEngine:
         planned_list = plan_stages(queries=stages, bundle=bundle)
         root_planned = planned_list[-1]
 
-        # Collect + dedup dropped-filter payloads across every plan (nested
-        # subplans included). ``plan_stages`` returns plans topo-ordered — align
-        # the stage list the same way so each warning names its own stage.
+        # Collect + dedup payloads across every plan (nested subplans included).
+        # ``plan_stages`` returns plans topo-ordered — align the stage list the
+        # same way so each warning names its own stage.
         ordered_stages = _topo_sort(stages) if len(stages) > 1 else stages
-        dropped_warnings = _collect_dropped_filter_warnings(
-            planned_list=planned_list, stages=ordered_stages,
-        )
         broadcast_warnings = _collect_broadcast_warnings(
             planned_list=planned_list, stages=ordered_stages,
         )
@@ -1118,10 +1121,7 @@ class SlayerQueryEngine:
             planned_list=planned_list, stages=ordered_stages,
         )
         if getattr(query, "to_many_handling", "broadcast") == "error":
-            _raise_on_error_events(
-                broadcasts=broadcast_warnings, dropped=dropped_warnings,
-            )
-        slack_warnings.extend(dropped_warnings)
+            _raise_on_error_events(broadcasts=broadcast_warnings)
         slack_warnings.extend(broadcast_warnings)
         slack_warnings.extend(associated_warnings)
         slack_warnings.extend(semi_join_infos)
@@ -1222,7 +1222,7 @@ class SlayerQueryEngine:
             rewritten[name] = stage
 
         return (
-            query, rewritten, _get_source_model_name(query.source_model),
+            query, rewritten, query.source_model_name,
             inferred, inferred_data_source,
         )
 
@@ -1674,22 +1674,19 @@ class SlayerQueryEngine:
         out: set[str] = set()
         if not model.source_queries:
             return out
-        stages = list(model.source_queries)
-        stage_names = {
-            getattr(s, "name", None) for s in stages if getattr(s, "name", None)
-        }
+        stages: list[SlayerQuery] = list(model.source_queries)
+        stage_names = {s.name for s in stages if s.name}
         for stage in stages:
-            sm = getattr(stage, "source_model", None)
+            sm = stage.source_model
+            joins: list = []
             if isinstance(sm, str) and sm not in stage_names:
                 out.add(sm)
             elif isinstance(sm, SlayerModel):
                 out.add(sm.name)
-            # Joins live on the stage's source_model (a ModelExtension); getattr
-            # makes plain str / SlayerModel source_models no-ops.
-            for j in (getattr(sm, "joins", None) or []):
-                target = getattr(j, "target_model", None)
-                if target is not None:
-                    out.add(target)
+                joins = sm.joins
+            elif isinstance(sm, ModelExtension):
+                joins = sm.joins or []
+            out.update(j.target_model for j in joins)
         return out
 
     async def _load_join_graph_models(
@@ -2809,6 +2806,9 @@ class SlayerQueryEngine:
                 label=sc.label,
                 description=sc.description,
                 format=sc.format,
+                # DEV-1929: carry the final stage's time-bucket granularity so a finer
+                # time dimension over the cached column is the same typed error.
+                granularity=sc.granularity,
                 primary_key=(
                     stamp_grain and sc.public_alias in grain_public_names
                 ),

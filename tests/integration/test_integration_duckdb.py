@@ -9,7 +9,7 @@ import pytest
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
-from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
+from slayer.core.query import ColumnRef, ModelExtension, OrderItem, SlayerQuery, TimeDimension
 from slayer.engine.ingestion import ingest_datasource
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
@@ -116,6 +116,26 @@ class TestDuckDBQueries:
         result = await duckdb_env.execute(query=query)
         assert result.row_count == 1
         assert result.data[0]["orders._count"] == 6
+
+    async def test_dev1933_regex_literal_extension_column(self, duckdb_env: SlayerQueryEngine) -> None:
+        """DEV-1933: an ad-hoc column holding a ``(?:...)`` regex literal and a ``%``
+        LIKE pattern executes verbatim; text() misread ``:too`` as a bind parameter."""
+        query = SlayerQuery(
+            source_model=ModelExtension(
+                source_name="orders",
+                columns=[Column(
+                    name="rx",
+                    sql="CASE WHEN status LIKE '%pend%' "
+                        "OR status = '(?i)(?:too complicated|too complex)' THEN 1 ELSE 0 END",
+                    type=DataType.DOUBLE,
+                )],
+            ),
+            dimensions=[ColumnRef(name="rx")],
+            measures=[ModelMeasure(formula="*:count")],
+        )
+        result = await duckdb_env.execute(query=query)
+        by_rx = {int(r["orders.rx"]): r["orders._count"] for r in result.data}
+        assert by_rx == {1: 2, 0: 4}
 
     async def test_sum_measure(self, duckdb_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(source_model="orders", measures=[{"formula": "total:sum"}])
@@ -951,10 +971,9 @@ class TestDev1531CrossJoinFirstLast:
 
 
 # --------------------------------------------------------------------------- #
-# DEV-1709 (Stage 5) headline: SIBLING PROTECTION. A crossing-input aggregate
-# isolates into a host-rooted CTE, so its 1:N join can no longer multiply the
-# host rows seen by SIBLING measures. The crossing measure itself keeps
-# multiply-per-match semantics (F1 — unchanged, only the scope moved).
+# SIBLING PROTECTION: a host column defined across the unproven 1:N hop is
+# refused when aggregated; the crossing sum is spelled on line_items and
+# isolates into its own producer, so it never multiplies sibling measures.
 # --------------------------------------------------------------------------- #
 @pytest.fixture(scope="module")
 def _dev1709_duckdb_storage(tmp_path_factory):
@@ -1025,14 +1044,14 @@ class TestDev1709SiblingProtection:
     async def test_local_sibling_not_multiplied_by_crossing_measure(
         self, dev1709_env: SlayerQueryEngine,
     ) -> None:
-        # amount:sum must be 40.0 (10 + 30) — NOT 50.0, which is what a
-        # base-pulled line_items join would produce (order 1 counted once
-        # per line item). li_qty:sum keeps multiply-per-match: 2+3+5 = 10.
+        # amount:sum must be 40.0 (10 + 30) — NOT 50.0, which a base-pulled
+        # line_items join would produce (order 1 counted once per line item).
+        # The crossing sum is spelled on its own model: 2+3+5 = 10.
         query = SlayerQuery(
             source_model="orders",
             measures=[
                 ModelMeasure(formula="amount:sum"),
-                ModelMeasure(formula="li_qty:sum"),
+                ModelMeasure(formula="line_items.qty:sum", name="li_qty_sum"),
             ],
         )
         result = await dev1709_env.execute(query=query)
@@ -1040,16 +1059,35 @@ class TestDev1709SiblingProtection:
         assert float(row["orders.amount_sum"]) == pytest.approx(40.0)
         assert float(row["orders.li_qty_sum"]) == pytest.approx(10.0)
 
+    async def test_derived_column_across_unproven_hop_refused(
+        self, dev1709_env: SlayerQueryEngine,
+    ) -> None:
+        # A host column defined across the unproven 1:N hop (li_qty =
+        # line_items.qty) is not a function of an order row: aggregating it as
+        # host-local fails closed and names the cross-model spelling.
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[
+                ModelMeasure(formula="amount:sum"),
+                ModelMeasure(formula="li_qty:sum"),
+            ],
+        )
+        with pytest.raises(ValueError) as ei:
+            await dev1709_env.execute(query=query)
+        message = str(ei.value)
+        assert "line_items" in message
+        assert "aggregate the target column directly" in message
+
     async def test_local_first_last_sibling_protected(
         self, dev1709_env: SlayerQueryEngine,
     ) -> None:
         # The ranked host scope must not be fanned out by the crossing
-        # sibling's join: last-by-created_at is order 2 → amount 30.0.
+        # sibling's producer: last-by-created_at is order 2 → amount 30.0.
         query = SlayerQuery(
             source_model="orders",
             measures=[
                 ModelMeasure(formula="amount:last(orders.created_at)"),
-                ModelMeasure(formula="li_qty:sum"),
+                ModelMeasure(formula="line_items.qty:sum", name="li_qty_sum"),
             ],
         )
         result = await dev1709_env.execute(query=query)
@@ -1060,9 +1098,8 @@ class TestDev1709SiblingProtection:
     async def test_crossing_kwarg_multiply_per_match_value(
         self, dev1709_env: SlayerQueryEngine,
     ) -> None:
-        # DEV-1838 D5 (class-(d) crossed-argument ledger row): a kwarg
-        # crossing the unproven 1:N fanned the host operand silently — now a
-        # hard error naming the hop and the remedy.
+        # A kwarg crossing the unproven 1:N would fan the host operand
+        # silently — a hard error naming the hop and the remedy.
         query = SlayerQuery(
             source_model="orders",
             measures=[ModelMeasure(formula="amount:weighted_avg(weight=li_qty)")],
@@ -1076,13 +1113,13 @@ class TestDev1709SiblingProtection:
     async def test_host_row_filter_inherited_into_isolated_scope(
         self, dev1709_env: SlayerQueryEngine,
     ) -> None:
-        # F4: the host ROW filter constrains the host-rooted CTE too —
-        # only order 1 ('paid') contributes: li_qty:sum = 2+3 = 5.0.
+        # F4: the host ROW filter reaches the line_items producer over the
+        # proven back-hop — only order 1 ('paid') contributes: 2+3 = 5.0.
         query = SlayerQuery(
             source_model="orders",
             measures=[
                 ModelMeasure(formula="amount:sum"),
-                ModelMeasure(formula="li_qty:sum"),
+                ModelMeasure(formula="line_items.qty:sum", name="li_qty_sum"),
             ],
             filters=["status = 'paid'"],
         )

@@ -12,6 +12,7 @@ nodes:
   sql:
     package: slayer.sql
     children: [render, dialects, sql_predicate, window_detect]
+    specs: [sql]
     arc42: architecture/sql.arc42.md
   engine:
     package: slayer.engine
@@ -23,6 +24,7 @@ nodes:
   storage:
     package: slayer.storage
     children: [migrations]
+    arc42: architecture/storage.arc42.md
   importers:
     virtual: true
     packages: [slayer.dbt, slayer.cube, slayer.osi, slayer.ingest_report]

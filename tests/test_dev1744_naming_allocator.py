@@ -12,7 +12,7 @@ import inspect
 import os
 import pathlib
 import re
-import sqlite3
+from slayer.storage.sqlite_conn import transaction
 from collections import Counter
 from decimal import Decimal
 from typing import List
@@ -27,7 +27,6 @@ from slayer.core.keys import (
     AggregateKey,
     ColumnKey,
     ColumnSqlKey,
-    SqlExprKey,
     StarKey,
     TimeTruncKey,
 )
@@ -64,34 +63,32 @@ async def _build_engine(*, base_dir: str, dialect: str = "sqlite") -> SlayerQuer
     isolated aggregate colliding with the cross-model ``customers.revenue_sum``)."""
     d = base_dir
     db_path = os.path.join(d, "b4.db")
-    con = sqlite3.connect(db_path)
-    cur = con.cursor()
-    cur.execute(
-        "CREATE TABLE customers (id INTEGER PRIMARY KEY, region_id INTEGER, "
-        "revenue REAL, revx REAL, revy REAL)"
-    )
-    cur.executemany(
-        "INSERT INTO customers VALUES (?,?,?,?,?)",
-        [
-            (1, 1, 100.0, 7.0, 70.0),
-            (2, 2, 200.0, 8.0, 80.0),
-            (3, 1, 300.0, 9.0, 90.0),
-        ],
-    )
-    cur.execute(
-        "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, "
-        "status TEXT, amount REAL, created_at TEXT)"
-    )
-    cur.executemany(
-        "INSERT INTO orders VALUES (?,?,?,?,?)",
-        [
-            (1, 1, "a", 10.0, "2024-01-01"),
-            (2, 2, "a", 20.0, "2024-02-01"),
-            (3, 3, "a", 30.0, "2024-03-01"),
-        ],
-    )
-    con.commit()
-    con.close()
+    with transaction(db_path) as con:
+        cur = con.cursor()
+        cur.execute(
+            "CREATE TABLE customers (id INTEGER PRIMARY KEY, region_id INTEGER, "
+            "revenue REAL, revx REAL, revy REAL)"
+        )
+        cur.executemany(
+            "INSERT INTO customers VALUES (?,?,?,?,?)",
+            [
+                (1, 1, 100.0, 7.0, 70.0),
+                (2, 2, 200.0, 8.0, 80.0),
+                (3, 1, 300.0, 9.0, 90.0),
+            ],
+        )
+        cur.execute(
+            "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, "
+            "status TEXT, amount REAL, created_at TEXT)"
+        )
+        cur.executemany(
+            "INSERT INTO orders VALUES (?,?,?,?,?)",
+            [
+                (1, 1, "a", 10.0, "2024-01-01"),
+                (2, 2, "a", 20.0, "2024-02-01"),
+                (3, 3, "a", 30.0, "2024-03-01"),
+            ],
+        )
 
     storage = YAMLStorage(base_dir=os.path.join(d, "store"))
     await storage.save_datasource(
@@ -367,32 +364,8 @@ class TestCrossModelCteNameAllocation:
 
 
 class TestDedupIdentityIsStructural:
-    """Dedup keys on the full typed ``AggregateKey``, not the canonical alias
-    (which omits ``column_filter_key``, so a filtered and unfiltered aggregate
-    would wrongly merge). Structural: a ``Column.filter`` lives on the definition."""
-    def _filtered_and_plain(self):
-
-        source = ColumnKey(leaf="revenue")
-        plain = AggregateKey(source=source, agg="sum")
-        filtered = AggregateKey(
-            source=source, agg="sum",
-            column_filter_key=SqlExprKey(canonical_sql="region_id = 1"),
-        )
-        return plain, filtered
-
-    def test_the_two_keys_are_distinct_identities(self) -> None:
-        plain, filtered = self._filtered_and_plain()
-        assert plain != filtered
-        assert hash(plain) != hash(filtered)
-        assert len({plain, filtered}) == 2
-
-    def test_but_they_share_one_canonical_alias(self) -> None:
-        plain, filtered = self._filtered_and_plain()
-        assert naming.canonical_aggregate_alias(
-            plain, profile="cross_model_cte", source_relation="orders",
-        ) == naming.canonical_aggregate_alias(
-            filtered, profile="cross_model_cte", source_relation="orders",
-        )
+    """The allocator hands out a fresh CTE name each call; collapsing two distinct
+    identities that happen to share a canonical alias is the caller's decision."""
 
     def test_one_alias_two_identities_get_two_cte_names(self) -> None:
         """The allocator hands out a fresh name each call; dedup is the caller's decision."""
@@ -518,22 +491,20 @@ async def _hostile_engine(*, column: str, base_dir: str) -> SlayerQueryEngine:
     """A store whose ``orders`` model carries a user column named like an internal alias."""
     d = base_dir
     db_path = os.path.join(d, "hostile.db")
-    con = sqlite3.connect(db_path)
-    cur = con.cursor()
-    cur.execute(
-        'CREATE TABLE orders (id INTEGER PRIMARY KEY, status TEXT, '
-        'amount REAL, created_at TEXT, "hostile" REAL)'
-    )
-    cur.executemany(
-        "INSERT INTO orders VALUES (?,?,?,?,?)",
-        [
-            (1, "a", 10.0, "2024-01-01", 1.0),
-            (2, "a", 20.0, "2024-02-01", 2.0),
-            (3, "b", 30.0, "2024-01-15", 3.0),
-        ],
-    )
-    con.commit()
-    con.close()
+    with transaction(db_path) as con:
+        cur = con.cursor()
+        cur.execute(
+            'CREATE TABLE orders (id INTEGER PRIMARY KEY, status TEXT, '
+            'amount REAL, created_at TEXT, "hostile" REAL)'
+        )
+        cur.executemany(
+            "INSERT INTO orders VALUES (?,?,?,?,?)",
+            [
+                (1, "a", 10.0, "2024-01-01", 1.0),
+                (2, "a", 20.0, "2024-02-01", 2.0),
+                (3, "b", 30.0, "2024-01-15", 3.0),
+            ],
+        )
 
     storage = YAMLStorage(base_dir=os.path.join(d, "store"))
     await storage.save_datasource(

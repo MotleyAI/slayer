@@ -7,13 +7,73 @@ yet supported (cross-model expressions, filtered columns, nesting).
 
 ## Requirements
 
-### Requirement: Same-model scalar expressions can be aggregated
-The system SHALL accept `agg(<expression>, [args])` where the expression is
-built from bare host-model column references, scalar-allowlist functions,
-arithmetic operators, and literals — in every position that accepts functional
-aggregations, composing with reserved kwargs (`window`, `partition_by`),
-parametric aggregations, custom aggregations, rename, filter-form measures,
-post-aggregation filters, and order.
+### Requirement: Expression result keys are deterministic
+The result-column key for an expression aggregation SHALL be derived by the
+same auto-naming rule used for computed dimensions (non-word characters
+collapsed to underscores, digit-leading names prefixed, long names capped with
+a stable hash), followed by the aggregation name and any existing parametric or
+partition suffixes — insensitive to whitespace and formatting variants, a dotted
+leaf spelling with its dots collapsed like any other non-word character. An
+explicit rename overrides the derived key. Two distinct expressions whose
+derived keys collide SHALL fail with a clear duplicate-key error advising a
+rename — never silently share a column.
+
+#### Scenario: Derived key
+- **WHEN** a measure on model `orders` is written `sum(amount - cost)`
+- **THEN** its result key is `orders.amount_cost_sum` (same sanitizer as a computed dimension named from `amount - cost`)
+
+#### Scenario: Dotted leaf in the derived key
+- **WHEN** a measure on model `orders` is written `sum(amount - customers.discount)`
+- **THEN** its result key is `orders.amount_customers_discount_sum`, and `name`
+  overrides it as for any measure
+
+#### Scenario: Colliding derived keys fail loudly
+- **WHEN** one query contains both `sum(amount - cost)` and `sum(amount + cost)` without renames
+- **THEN** it fails with a duplicate-key error naming both expressions and advising a rename
+
+#### Scenario: Formatting-insensitive identity
+- **WHEN** the same expression is written `sum(amount-cost)` and `sum( amount - cost )`
+- **THEN** both produce the identical result key
+
+#### Scenario: Long expression capped
+- **WHEN** the sanitized expression segment exceeds the length cap
+- **THEN** the key uses a truncated prefix plus a short stable hash, deterministic across runs
+
+#### Scenario: Rename override
+- **WHEN** a measure is declared `{"formula": "sum(amount - cost)", "name": "profit"}`
+- **THEN** the result key uses `profit`
+
+### Requirement: Gate and type semantics for expressions
+Per-column eligibility gates (allowed-aggregations whitelists, primary-key and
+type-default gates) SHALL NOT apply to multi-token expression operands — the
+expression is a new derived quantity owned by the query author — while global
+validation still applies: the aggregation name must be known, and numeric-only
+aggregations SHALL be rejected when the expression is confidently non-numeric;
+display classification derives from the inferred value class, defaulting to
+plain numeric.
+
+#### Scenario: Whitelist does not block expressions
+- **WHEN** column `quantity` whitelists only `min` and `max`, and a measure is written `sum(price * quantity)`
+- **THEN** the query succeeds
+
+#### Scenario: Confidently non-numeric rejected
+- **WHEN** a measure is written `sum(lower(name))`
+- **THEN** binding fails with a type error rather than failing in the database
+
+### Requirement: Row-level expressions can be aggregated
+The system SHALL accept `agg(<expression>, [args])` where the expression is built
+from row-level column references — bare host-model columns and dotted joined-model
+paths alike — scalar-allowlist functions, arithmetic operators, and literals, in
+every position that accepts functional aggregations, composing with reserved kwargs
+(`window`, `partition_by`), parametric aggregations, custom aggregations, rename,
+filter-form measures, post-aggregation filters, and order. The aggregation SHALL run
+over the rows of the expression's home dataset (per `queries/semantics` › Home
+dataset of a row-level aggregation source) and SHALL otherwise follow every rule a
+single-column source rooted at that dataset follows: attribution and
+`to_many_handling` modes, explicit partition keys, `window=`, filter routing, and
+the filter, order and computed-dimension positions. Custom aggregation names SHALL
+resolve on the model at the expression's anchor — the longest common prefix of its
+leaves' join paths (the host for a literal-only or host-mixed expression).
 
 #### Scenario: Arithmetic expression
 - **WHEN** a query measure is written `sum(amount - cost)`
@@ -33,7 +93,7 @@ post-aggregation filters, and order.
 
 #### Scenario: Constant-only expression
 - **WHEN** a measure is written `count(1)`
-- **THEN** it succeeds (a constant is a valid same-model expression)
+- **THEN** it succeeds (a constant is a valid expression, homed at the host)
 
 #### Scenario: Derived SQL columns as operands
 - **WHEN** the expression references columns that are themselves defined by model SQL expressions
@@ -47,70 +107,119 @@ post-aggregation filters, and order.
 - **WHEN** a computed dimension's expression contains `sum(amount - cost, partition_by=region)`
 - **THEN** it behaves like any partitioned aggregate inside a dimension expression, subject to the same grain guards
 
-### Requirement: Expression result keys are deterministic
-The result-column key for an expression aggregation SHALL be derived by the
-same auto-naming rule used for computed dimensions (non-word characters
-collapsed to underscores, digit-leading names prefixed, long names capped with
-a stable hash), followed by the aggregation name and any existing parametric or
-partition suffixes — insensitive to whitespace and formatting variants. An
-explicit rename overrides the derived key. Two distinct expressions whose
-derived keys collide SHALL fail with a clear duplicate-key error advising a
-rename — never silently share a column.
+#### Scenario: Host-homed cross-model expression
+- **WHEN** a query rooted at `orders` selects `sum(amount - customers.discount)` by an
+  orders-level dimension, `orders → customers` being provably to-one
+- **THEN** it executes over the `orders` rows, each order paired with its own
+  customer's discount, correct by hand-computed values on SQLite and DuckDB — never
+  the former cross-model rejection
 
-#### Scenario: Derived key
-- **WHEN** a measure on model `orders` is written `sum(amount - cost)`
-- **THEN** its result key is `orders.amount_cost_sum` (same sanitizer as a computed dimension named from `amount - cost`)
+#### Scenario: Target-homed cross-model expression
+- **WHEN** a query rooted at `orders` selects `sum(customers.spend - customers.regions.pop)`
+- **THEN** it runs over the `customers` rows, each customer counted exactly once
+  however many orders it has, by executed values, and `sum(customers.spend)` and
+  `sum(customers.spend + 0)` return identical values
 
-#### Scenario: Colliding derived keys fail loudly
-- **WHEN** one query contains both `sum(amount - cost)` and `sum(amount + cost)` without renames
-- **THEN** it fails with a duplicate-key error naming both expressions and advising a rename
+#### Scenario: Two-branch expression homes at the common ancestor
+- **WHEN** a query rooted at `orders` selects `sum(customers.spend - stores.rent)`
+  with both hops provably to-one
+- **THEN** it runs over the `orders` rows with no warning, by executed values
 
-#### Scenario: Formatting-insensitive identity
-- **WHEN** the same expression is written `sum(amount-cost)` and `sum( amount - cost )`
-- **THEN** both produce the identical result key
+#### Scenario: Cross-model expression with explicit grain and window
+- **WHEN** a query selects `sum(amount - customers.discount, partition_by=region)` and,
+  over a month time dimension, `sum(amount - customers.discount, window='90d')`
+- **THEN** each behaves exactly as the same modifier over a single-column source at
+  the same home, by executed values, with unchanged cardinality
 
-#### Scenario: Long expression capped
-- **WHEN** the sanitized expression segment exceeds the length cap
-- **THEN** the key uses a truncated prefix plus a short stable hash, deterministic across runs
+#### Scenario: Cross-model expression in filter, order and dimension positions
+- **WHEN** the expression aggregate appears only in a filter, only as an ORDER BY
+  target, or grain-self-contained inside a computed dimension
+- **THEN** each position yields the value the measure form returns, and the filter
+  prunes result rows without altering surviving values
 
-#### Scenario: Rename override
-- **WHEN** a measure is declared `{"formula": "sum(amount - cost)", "name": "profit"}`
-- **THEN** the result key uses `profit`
+#### Scenario: Custom aggregation resolves on the anchor model
+- **WHEN** `wsum(customers.spend - customers.regions.pop)` names a custom aggregation
+  defined on `customers`
+- **THEN** it resolves and executes; the same name defined only on `orders` is an
+  unknown aggregation for that expression
 
-### Requirement: Unsupported expression shapes fail with clear errors
-The system SHALL reject, with errors naming the limitation: expressions
-referencing joined-model columns (cross-model) at row level, expressions
-referencing columns that carry a column-level filter, and transforms nested
-inside the aggregated expression. An aggregation source consisting entirely of
-attached values is a re-aggregation and SHALL be accepted (per
-`queries/partitioned-aggregates` › Re-aggregation consumes attached operands as
-datasets). An aggregation source mixing row-level references with attached
-values is a row-grain aggregation and SHALL be accepted (per
-`queries/semantics` › Row-grain aggregation sources). An attached
-(aggregate-valued) parameter on an aggregation whose source is row-level SHALL
-be accepted when the aggregation's operating grain determines it (per
-`queries/partitioned-aggregates` › Attached parameters on row-level sources).
-Under `broadcast`/`error` a cross-model aggregation's attached input SHALL read
-only columns attributable from the aggregation's root — a typed error names the
-root, the leaf and the `associate` remedy otherwise (per
-`queries/partitioned-aggregates` › Default-mode twin of the associate shape).
-Whether an aggregation runs over rows or over an operand dataset's cells is
-decided by its source alone; every attached input, in the source or in a
-parameter, is then attached by one mechanism — into the input relation for a
-row-level source, as a constituent of the operand dataset for an attached one.
+### Requirement: Expression source typing
+The system SHALL type an aggregation's expression source by its leaves and
+constituents alone, never by its spelling. A `first`/`last` aggregation over an
+expression source SHALL be rejected with the existing not-supported-over-an-expression
+error. A numeric-only aggregation over a confidently non-numeric expression SHALL be
+rejected at binding. An expression whose leaves no candidate home determines over
+provably to-one hops SHALL fail with the existing input-safety error naming the leaf
+and the fanning or unproven hop, and a leaf whose derived definition cannot be
+analysed SHALL fail with the existing analyzability error naming the column — never
+a multiplied or silently wrong value. A column carrying a column-level filter SHALL be
+an ordinary derived operand (per `models/column-filters`). A transform nested in the
+source SHALL be an attached constituent (per `queries/partitioned-aggregates` ›
+Re-aggregation consumes attached operands as datasets); a row-level leaf inside it
+that is not a projected grain key SHALL be rejected per `queries/transforms` ›
+Non-shift transforms reject grain-refining row-level leaves. An aggregation source
+consisting entirely of attached values is a re-aggregation and SHALL be accepted; a
+source mixing row-level references with attached values is a row-grain aggregation
+and SHALL be accepted (per `queries/semantics` › Row-grain aggregation sources), except
+that a collapsing (`first`/`last`) transform constituent mixed with a row-level
+reference SHALL be rejected with a typed error naming the shape (its broadcast onto
+row-level operands is deferred to DEV-1928); an
+attached (aggregate-valued) parameter on a row-level source SHALL be accepted when the
+aggregation's operating grain determines it (per `queries/partitioned-aggregates` ›
+Attached parameters on row-level sources). An attached input — a source constituent
+or a parameter — is opaque to the enclosing aggregation: it is compiled at its own
+home in every `to_many_handling` mode and attached onto the aggregation's home rows
+by its grain — well-defined only when the home determines every member of that
+grain, else the typed determination error in every mode; the enclosing aggregation
+never inspects the input's interior, and the input's own producer applies its own
+rules (including the mode-aware explicit-partition-key rule) as any producer does;
+the mode governs only the aggregation's own unattributable dimensions. Whether an aggregation
+runs over rows or over an operand dataset's cells is decided by its source alone;
+every attached input, in the source or in a parameter, is then attached by one
+mechanism — into the input relation for a row-level source, as a constituent of the
+operand dataset for an attached one.
 
-#### Scenario: Cross-model expression rejected
-- **WHEN** a measure is written `sum(amount - customers.discount)`
-- **THEN** it fails with an error stating cross-model expression aggregation is not supported
+#### Scenario: Filtered-column operand accepted
+- **WHEN** a measure is written `sum(q_amount - 1)` where `q_amount` is `amount`
+  carrying the column filter `product = 'Q'`
+- **THEN** it executes as the sum over Q rows of `amount - 1` — the operand is
+  `CASE WHEN product = 'Q' THEN amount END` — by executed values, never the former
+  filtered-operand rejection
 
-#### Scenario: Filtered-column operand rejected
-- **WHEN** the expression references a column that has a column-level filter
-- **THEN** it fails with an error naming the column and suggesting the colon form on a derived model column
+#### Scenario: Grained transform in the source accepted
+- **WHEN** a query over a month time dimension selects
+  `sum(cumsum(amount:sum(partition_by=[region, ordered_at])) - 1)`
+- **THEN** each month carries the sum over regions of that region's running total
+  minus one per cell, by hand-computed values on SQLite and DuckDB, distinguishable
+  from the ungrained identity — never the former nested-transform rejection
 
-#### Scenario: Nested aggregation rejected
-- **WHEN** a measure is written `sum(cumsum(x) - 1)`
-- **THEN** it fails with a typed error stating transforms cannot nest inside an
-  aggregated expression
+#### Scenario: Row leaf under a nested transform rejected
+- **WHEN** a measure is written `sum(cumsum(weight) - 1)` with `weight` not a query
+  dimension
+- **THEN** it fails at plan time with the typed row-leaf error naming the transform
+  and the aggregate-the-leaf remedy, citing no tracking issue
+
+#### Scenario: Fanning leaf fails closed
+- **WHEN** an expression leaf is reachable from every candidate home only across a
+  fanning or unproven join hop
+- **THEN** the query fails with the input-safety error naming the leaf and the hop,
+  never a multiplied value
+
+#### Scenario: Collapsing constituent mixed with a row leaf fails closed
+- **WHEN** a query over a month time dimension selects
+  `sum(amount * last(amount:sum(partition_by=[region, ordered_at])))`
+- **THEN** it fails with a typed error naming the collapsing transform and the
+  row-level column, never a broadcast or multiplied value
+
+#### Scenario: Unanalysable derived leaf fails closed
+- **WHEN** an expression leaf names a derived column whose definition no dialect can
+  parse
+- **THEN** the query fails with the analyzability error naming the column
+
+#### Scenario: Ranked aggregation over an expression keeps its error
+- **WHEN** a measure is written `first(amount - customers.discount)`
+- **THEN** it fails with the existing error that `first` is not supported over an
+  expression — never a cross-model error and never wrong values
 
 #### Scenario: Fully attached source accepted
 - **WHEN** a measure is written `avg(sum(amount, partition_by=[city, region]))`
@@ -131,28 +240,44 @@ row-level source, as a constituent of the operand dataset for an attached one.
   the aggregation's input relation — never the attached-parameter rejection —
   and the same aggregation with a row-level parameter is unaffected
 
-#### Scenario: Attached parameter on a row-level source rejected
+#### Scenario: Attached parameter on a row-level source executes under broadcast
 - **WHEN** a measure is written
   `customers.spend:weighted_avg(weight=sum(amount, partition_by=customers.regions.name))`
   rooted at `orders` under the default `broadcast` `to_many_handling`
-- **THEN** it fails at plan time with a typed error naming the producer's root
-  `customers`, the unreachable leaf `amount` and the `associate` remedy,
-  containing no issue reference; the same aggregation with a parameter reading
-  only `customers`-side columns executes
+- **THEN** it executes — the parameter's producer rooted at `orders`, attached per
+  customer row inside the `customers`-rooted producer — with values identical to
+  `associate` and `error` on every dimension the home determines, never the former
+  typed rejection naming the `associate` remedy
 
-### Requirement: Gate and type semantics for expressions
-Per-column eligibility gates (allowed-aggregations whitelists, primary-key and
-type-default gates) SHALL NOT apply to multi-token expression operands — the
-expression is a new derived quantity owned by the query author — while global
-validation still applies: the aggregation name must be known, and numeric-only
-aggregations SHALL be rejected when the expression is confidently non-numeric;
-display classification derives from the inferred value class, defaulting to
-plain numeric.
+#### Scenario: Attached parameter on a row-level source rejected
+- **WHEN** a measure is written
+  `customers.spend:weighted_avg(weight=sum(customers.spend, partition_by=status))`
+  rooted at `orders`, in any `to_many_handling` mode, by an attributable
+  (`customers.tier`) or an unattributable (`status`) dimension — the aggregation's
+  home `customers` does not determine the parameter's grain member `status`
+- **THEN** it fails with the typed parameter-determination error naming `weight`
+  (per `queries/partitioned-aggregates` › Undetermined attached parameter stays
+  rejected); what is rejected is the parameter's grain against the home, never the
+  mode or the columns the parameter reads
 
-#### Scenario: Whitelist does not block expressions
-- **WHEN** column `quantity` whitelists only `min` and `max`, and a measure is written `sum(price * quantity)`
-- **THEN** the query succeeds
+#### Scenario: Windowed aggregation with an attached constituent
+- **WHEN** a query rooted at `orders` over a month time dimension on
+  `customers.signup_at` selects
+  `sum(customers.spend * sum(amount, partition_by=customers.regions.name), window='1y')`
+- **THEN** each signup-month bucket carries the trailing-window total, over the
+  customers signed up in the window, of spend times the region's order total —
+  the constituent rooted at `orders` and attached per customer row — identical
+  under every mode with no warning (10000, 25000, 28080, 33780 on the reference
+  dataset; the orphan order's NULL bucket NULL): the bucket is attributable, so
+  `associate` needs no association and the windowed combination is not refused
 
-#### Scenario: Confidently non-numeric rejected
-- **WHEN** a measure is written `sum(lower(name))`
-- **THEN** binding fails with a type error rather than failing in the database
+#### Scenario: Mixed-source constituent homed toward the host executes in every mode
+- **WHEN** a query rooted at `orders` selects
+  `sum(customers.spend * sum(amount, partition_by=customers.regions.name))` — a
+  row-grain source homed at `customers` whose constituent is homed at `orders`
+- **THEN** the constituent's producer is rooted at `orders` and attached per
+  customer row; by `status` under the default mode the customers-rooted total
+  (33780 on the reference dataset) is broadcast to both cells with the usual
+  warning, and by `customers.tier` every mode returns identical hand-computed
+  values (gold 15300, silver 16600, bronze 1880) — never the input-safety error the
+  constituent's interior would raise from `customers`

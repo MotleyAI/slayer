@@ -27,12 +27,13 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.errors import IllegalScopeReferenceError, UnknownReferenceError
+from slayer.core.errors import TimeDimensionColumnError, UnknownReferenceError
 from slayer.core.keys import AggregateKey, ColumnKey, Phase, TimeTruncKey
 from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
-from slayer.core.scope import ModelScope, StageColumn, StageSchema
+from slayer.core.scope import ModelScope
 from slayer.engine.binding import bind_time_dimension
+from slayer.engine.elaborate_env import check_time_dimension_column
 from slayer.engine.compile.projection import (
     ProjectionPlanner,
     ValueRegistry,
@@ -194,10 +195,10 @@ class TestBindTimeDimension:
         bound = bind_time_dimension(
             td, scope=ModelScope(source_model=model), bundle=_bundle_local(),
         )
-        assert isinstance(bound.value_key, TimeTruncKey)
-        assert bound.value_key.column == ColumnKey(path=(), leaf="created_at")
-        assert bound.value_key.granularity == "month"
-        assert bound.phase == Phase.ROW
+        assert isinstance(bound.bound.value_key, TimeTruncKey)
+        assert bound.bound.value_key.column == ColumnKey(path=(), leaf="created_at")
+        assert bound.bound.value_key.granularity == "month"
+        assert bound.bound.phase == Phase.ROW
 
     def test_joined_td_path_is_populated(self) -> None:
         host = _orders_with_customers_join()
@@ -208,23 +209,18 @@ class TestBindTimeDimension:
         bound = bind_time_dimension(
             td, scope=ModelScope(source_model=host), bundle=_bundle_joined(),
         )
-        assert isinstance(bound.value_key, TimeTruncKey)
-        assert bound.value_key.column == ColumnKey(
+        assert isinstance(bound.bound.value_key, TimeTruncKey)
+        assert bound.bound.value_key.column == ColumnKey(
             path=("customers",), leaf="signed_up_at",
         )
-        assert bound.value_key.granularity == "day"
+        assert bound.bound.value_key.granularity == "day"
 
     def test_non_temporal_column_rejected(self) -> None:
-        model = _orders_model()
-        td = TimeDimension(
-            dimension=ColumnRef(name="status"),
-            granularity=TimeGranularity.MONTH,
-        )
-        with pytest.raises(ValueError, match="temporal"):
-            bind_time_dimension(
-                td,
-                scope=ModelScope(source_model=model),
-                bundle=_bundle_local(),
+        # The temporal-column rule moved from the binder to the checker (P9).
+        with pytest.raises(TimeDimensionColumnError, match="temporal"):
+            check_time_dimension_column(
+                name="status", column_type=DataType.TEXT,
+                upstream_granularity=None, requested_granularity=TimeGranularity.MONTH,
             )
 
     def test_unknown_column_raises_unknown_reference(self) -> None:
@@ -233,40 +229,23 @@ class TestBindTimeDimension:
             dimension=ColumnRef(name="not_a_column"),
             granularity=TimeGranularity.MONTH,
         )
+        scope = ModelScope(source_model=model)
+        bundle = _bundle_local()
         with pytest.raises(UnknownReferenceError):
-            bind_time_dimension(
-                td,
-                scope=ModelScope(source_model=model),
-                bundle=_bundle_local(),
-            )
+            bind_time_dimension(td, scope=scope, bundle=bundle)
 
-    def test_stage_schema_scope_rejected(self) -> None:
-        # TimeDimensions only bind against ModelScope — downstream stages
-        # don't introduce new TDs through a flat stage schema (the upstream
-        # stage already truncated; the downstream stage just refers to
-        # the resulting column by flat name).
-        td = TimeDimension(
-            dimension=ColumnRef(name="created_at"),
-            granularity=TimeGranularity.MONTH,
-        )
-        stage = StageSchema(
-            relation_name="prev",
-            columns=[StageColumn(name="created_at", sql_alias="created_at")],
-        )
-        with pytest.raises(IllegalScopeReferenceError):
-            bind_time_dimension(td, scope=stage, bundle=_bundle_local())
+    # (DEV-1471) test_stage_schema_scope_rejected retired: downstream-stage
+    # time dimensions now bind — covered by tests/test_dev1471_stage_time_dimensions.py.
 
     def test_model_scope_without_source_model_rejected(self) -> None:
         td = TimeDimension(
             dimension=ColumnRef(name="created_at"),
             granularity=TimeGranularity.MONTH,
         )
+        scope = ModelScope(source_model=None)
+        bundle = _bundle_local()
         with pytest.raises(UnknownReferenceError):
-            bind_time_dimension(
-                td,
-                scope=ModelScope(source_model=None),
-                bundle=_bundle_local(),
-            )
+            bind_time_dimension(td, scope=scope, bundle=bundle)
 
     def test_date_column_accepted(self) -> None:
         # DATE is in the same temporal bucket as TIMESTAMP — should bind.
@@ -280,9 +259,11 @@ class TestBindTimeDimension:
             scope=ModelScope(source_model=model),
             bundle=_bundle_local(),
         )
-        assert isinstance(bound.value_key, TimeTruncKey)
-        assert bound.value_key.column.leaf == "reviewed_at"
-        assert bound.value_key.granularity == "week"
+        assert isinstance(bound.bound.value_key, TimeTruncKey)
+        col_key = bound.bound.value_key.column
+        assert isinstance(col_key, ColumnKey)
+        assert col_key.leaf == "reviewed_at"
+        assert bound.bound.value_key.granularity == "week"
 
     def test_multi_hop_joined_td(self) -> None:
         # orders → customers → regions. TD on regions.opened_at via the
@@ -297,11 +278,11 @@ class TestBindTimeDimension:
             scope=ModelScope(source_model=host),
             bundle=_bundle_multi_hop(),
         )
-        assert isinstance(bound.value_key, TimeTruncKey)
-        assert bound.value_key.column == ColumnKey(
+        assert isinstance(bound.bound.value_key, TimeTruncKey)
+        assert bound.bound.value_key.column == ColumnKey(
             path=("customers", "regions"), leaf="opened_at",
         )
-        assert bound.value_key.granularity == "month"
+        assert bound.bound.value_key.granularity == "month"
 
     def test_derived_column_sql_td_binds(self) -> None:
         # DEV-1450 follow-up #4a: a derived (Column.sql) temporal column now
@@ -318,12 +299,12 @@ class TestBindTimeDimension:
             scope=ModelScope(source_model=host),
             bundle=_bundle_derived(),
         )
-        assert isinstance(bound.value_key, TimeTruncKey)
-        assert bound.value_key.column == ColumnSqlKey(
+        assert isinstance(bound.bound.value_key, TimeTruncKey)
+        assert bound.bound.value_key.column == ColumnSqlKey(
             path=(), model="orders", column_name="created_day",
         )
-        assert bound.value_key.granularity == "day"
-        assert bound.phase == Phase.ROW
+        assert bound.bound.value_key.granularity == "day"
+        assert bound.bound.phase == Phase.ROW
 
 
 # ---------------------------------------------------------------------------
@@ -452,7 +433,7 @@ class TestProjectionPlannerTimeDimensions:
             bundle=_bundle_local(),
         )
         dm = DeclaredMeasure(
-            bound=bound,
+            bound=bound.bound,
             declared_name="created_at",
             public_name="created_at",
             label=None,

@@ -22,7 +22,7 @@ from pydantic import BaseModel, ConfigDict
 from sqlglot import exp
 from sqlglot.dialects.dialect import Dialect as _SqlglotDialect
 
-from slayer.core.enums import TimeGranularity
+from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.errors import IdentifierCollisionError, IdentifierLengthError
 from slayer.sql._identifier_fit import (
     SqlLexis,
@@ -274,6 +274,10 @@ class SqlDialect(BaseModel):
     # Null-safe equality (DEV-1708 / Codex F2)
     # ------------------------------------------------------------------
 
+    def declared_cast_type(self, dt: Optional[DataType]) -> Optional[DataType]:
+        """The declared/inferred CAST target for a value of type ``dt`` on this dialect (``None`` skips the cast). Default: unchanged; a dialect without native temporal storage overrides to drop DATE / TIMESTAMP casts (P2)."""
+        return dt
+
     def build_null_safe_eq(
         self, left: exp.Expression, right: exp.Expression,
     ) -> exp.Expression:
@@ -477,6 +481,12 @@ class SqlDialect(BaseModel):
         for iv in intervals:
             result = op_cls(this=result, expression=iv)
         return result
+
+    def frame_time_operand(self, expr: exp.Expression) -> exp.Expression:
+        """The source time column as it must appear in a trailing-window frame
+        comparison. Default: unchanged — the frame bounds (``add_intervals_expr``)
+        carry the same time type, so ``expr < bucket_end`` is already exact."""
+        return expr
 
     # ------------------------------------------------------------------
     # Median / percentile / stat aggregates

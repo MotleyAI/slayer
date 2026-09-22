@@ -47,7 +47,7 @@ from tests._dev1748_fixtures import (
     CUSTOMER_SPEND_LAST,
     FAN_FIRST,
     FAN_LAST,
-    FAN_RUSH_MULTIPLIED_SUM,
+    FAN_RUSH_ASSOC_SUM,
     FILT_MATCHING,
     FILT_NEWER_NONMATCHING,
     NULL_STATUS_FIRST,
@@ -291,22 +291,23 @@ class TestTiesAreNondeterministic:
 
 
 class TestFilteredFirstLast:
-    async def test_a_filter_selects_the_newest_MATCHING_row(
+    async def test_last_over_a_filtered_column_masks_the_newest_row(
         self, engine: SlayerQueryEngine,
     ) -> None:
-        """``filt``'s newest row (5.0) is below the threshold and the older one
-        (61.0) is above it, so a filtered ``last`` must return 61.0.
-
-        Two wrong implementations this rules out: ranking before filtering
-        returns NULL (the winner is excluded), and filtering without ranking
-        returns whichever matching row the engine happens to reach."""
+        """``Column.filter`` is a value mask, not a row restriction (DEV-1832): a
+        filtered ``last`` picks the MASKED value at the newest row by time, never
+        the newest MATCHING row. ``filt``'s newest row (5.0) is below the
+        ``big_amount`` threshold, so ``big_amount`` is NULL there and
+        ``big_amount:last`` is NULL — the older matching 61.0 is not reached
+        (ranking never sees the filter; a row-restricting WHERE belongs in the
+        query, not the column)."""
         rows = await _rows(
             engine, dimensions=["status"],
             measures=[{"formula": "big_amount:last", "name": "l"}],
         )
         assert by_group(
             rows, key="orders.status", value="orders.l",
-        )["filt"] == FILT_MATCHING
+        )["filt"] is None
 
     async def test_a_group_with_no_matching_row_survives_carrying_null(
         self, engine: SlayerQueryEngine,
@@ -362,13 +363,14 @@ class TestFilteredFirstLast:
         assert by_status["filt"] is None               # customer 102
         assert by_status["fan"] is None                # customer 102
 
-    async def test_a_filter_over_a_derived_expression_ranks_the_matching_rows(
+    async def test_a_filter_over_a_derived_expression_masks_the_newest_row(
         self, engine: SlayerQueryEngine,
     ) -> None:
-        """``doubled_big`` filters on ``amount * 2``, an expression rather than
-        a bare column. It selects exactly the same rows as ``big_amount``, so
-        the two must agree group for group — a derived predicate that silently
-        failed to bind would not."""
+        """``doubled_big`` masks on ``amount * 2``, an expression rather than a
+        bare column. It masks exactly the same rows as ``big_amount``, so the two
+        must agree group for group — a derived predicate that silently failed to
+        bind would not. Both mask ``filt``'s newest row (5.0 → 10 ≤ 40) to NULL
+        (DEV-1832: the filter never restricts the ranking)."""
         derived = await _rows(
             engine, dimensions=["status"],
             measures=[{"formula": "doubled_big:last", "name": "l"}],
@@ -383,8 +385,9 @@ class TestFilteredFirstLast:
             == by_group(plain, key="orders.status", value="orders.l")
         )
         # A direct oracle as well as the comparison, so the two paths cannot
-        # agree by being wrong together.
-        assert derived_by_status["filt"] == FILT_MATCHING
+        # agree by being wrong together — the masked value at ``filt``'s newest
+        # (non-matching) row is NULL.
+        assert derived_by_status["filt"] is None
         assert derived_by_status["nomatch"] is None
 
     async def test_an_ungrouped_filter_matching_nothing_still_returns_one_row(
@@ -672,19 +675,14 @@ class TestCrossingInputsAndFanout:
         # Every seeded group holds exactly two rows, so the oracle is uniform.
         assert set(counts.values()) == {2}
 
-    @pytest.mark.xfail(strict=True, reason=(
-        "DEV-1909: a fanning population filter with an aggregate inline over the population now fails closed (DEV-1900 interim guard); DEV-1909 restores it via association pushdown."))
-    async def test_a_1n_join_multiplies_a_sum_but_not_the_ranked_pick(
+    async def test_a_1n_join_restricts_the_sum_and_not_the_ranked_pick(
         self, engine: SlayerQueryEngine,
     ) -> None:
-        """Order 15 is tagged ``rush`` TWICE, so filtering to ``rush`` matches
-        it twice.
-
-        ``amount:sum`` doubles its contribution — the ratified multiply-per-match
-        semantics (DEV-1688 keep-list item 6), deliberately NOT changed here.
-        ``amount:last`` does not move, because duplicating a row cannot change
-        which row is newest. Pinning both together is what proves a later
-        cardinality change would be visible."""
+        """Order 15 is tagged ``rush`` TWICE. The fanning ``rush`` population
+        filter restricts by association (DEV-1909), so ``amount:sum`` counts each
+        matching order once — order 15 and order 16 — never doubling order 15.
+        ``amount:last`` does not move either, because duplicating a row cannot
+        change which row is newest."""
         rows = await _rows(
             engine, dimensions=["status"],
             filters=["order_tags.name == 'rush'"],
@@ -696,7 +694,7 @@ class TestCrossingInputsAndFanout:
         last = by_group(rows, key="orders.status", value="orders.l")
         summed = by_group(rows, key="orders.status", value="orders.s")
 
-        assert summed["fan"] == FAN_RUSH_MULTIPLIED_SUM
+        assert summed["fan"] == FAN_RUSH_ASSOC_SUM
         assert last["fan"] == FAN_LAST
 
     async def test_grouping_by_a_1n_dimension_ranks_within_each_match(

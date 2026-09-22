@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.core.query import ModelMeasure, SlayerQuery
+from slayer.core.query import ModelExtension, ModelMeasure, SlayerQuery
 
 from tests._dev1740_fixtures import (
     BAND_AVG,
@@ -147,10 +147,10 @@ class TestExtensionColumnPartition:
         # stage must resolve it. Doubling preserves the >5000 banding.
         band = "CASE WHEN amount2:sum(partition_by=city) > 10000 THEN 1 ELSE 0 END"
         resp = await exec_engine.execute(SlayerQuery(
-            source_model={
+            source_model=ModelExtension.model_validate({
                 "source_name": "orders",
                 "columns": [{"name": "amount2", "sql": "amount * 2", "type": "DOUBLE"}],
-            },
+            }),
             dimensions=["region", {"expression": band, "name": "band"}],
             measures=[ModelMeasure(formula="amount:sum", name="s")],
         ))

@@ -485,12 +485,17 @@ To connect a new database: create_datasource → describe_datasource (verify + l
 
         - Aggregations are function calls over a column or a same-model scalar expression:
           ``count(*)``, ``sum(total)``, ``sum(amount - cost)``, ``percentile(price, p=0.95)``.
-          Available: sum, avg (both take window='90d' for trailing time windows), min, max, count,
+          Available: sum, avg, min, max, count,
           count_distinct, count_distinct_approx, median, percentile(x, p=),
           weighted_avg(x, weight=col), stddev_samp, stddev_pop, var_samp, var_pop,
           corr(x, other=col), covar_samp(x, other=col), covar_pop(x, other=col),
           first(x[, time_col]) / last(x[, time_col]) (earliest/latest record's value per group),
           plus model-defined custom aggregations. Write count_distinct(x), never count(distinct x).
+        - Every aggregation also takes ``window='90d'`` (compact duration) for a trailing time
+          window over the source rows ending at each output bucket, when the query has a time
+          dimension; first/last pick within the interval, an empty interval is 0 for counts else NULL.
+          A window adds no dialect support — an aggregation a dialect cannot emit (e.g. median or
+          percentile on MySQL / SQL Server) stays unavailable windowed too.
         - All aggregations support ``partition_by=`` (bare names: ``partition_by=region``,
           ``partition_by=[region, city]``, ``partition_by=[]`` for the grand total), computing the
           aggregate at that coarser grain; the result is broadcast over the missing dimensions.
@@ -548,6 +553,16 @@ To connect a new database: create_datasource → describe_datasource (verify + l
         scope right; NULL behavior intended; string values carry the expected casing. On a wrong
         result, change ONE variable at a time — two changes per attempt make the outcome
         uninterpretable.
+
+        Query-object fields taking the functional time-granularity form
+        ``gran(col)`` — ``gran`` one of second, minute, hour, day, week,
+        week_sunday, month, quarter, year:
+            dimensions: group-by columns; a granularity call such as
+                ``month(created_at)`` buckets that timestamp, equivalent to a
+                ``time_dimensions`` entry (and orderable as ``month(created_at)``).
+            time_dimensions: time-bucketed group-bys — ``{"dimension": ...,
+                "granularity": ...}`` dicts, or the string form ``month(created_at)``.
+            main_time_dimension: which time dimension time-ordered transforms key off.
 
         Top-level arguments (siblings of ``query``, NOT fields inside it):
             variables: Values for {placeholder} substitutions in filters / model SQL. Also
@@ -872,8 +887,9 @@ To connect a new database: create_datasource → describe_datasource (verify + l
                 Types: string, number, time, date, boolean. Optional fields: ``primary_key``,
                 ``unique`` (single-column uniqueness that is not the PK; ``primary_key``
                 already implies it), ``allowed_aggregations`` (whitelist), ``filter``
-                (CASE WHEN inside aggregation), ``label``, ``description``, ``hidden``,
-                ``meta``.
+                (CASE WHEN inside aggregation), ``granularity`` (a temporal column's
+                declared time bucket, e.g. ``"month"`` — only when it is truly bucketed
+                at that grain), ``label``, ``description``, ``hidden``, ``meta``.
             measures: List of named formula definitions on the model. Each:
                 {"name": "aov", "formula": "sum(revenue) / count(*)", "label": "...",
                  "description": "...", "meta": {...}}.
@@ -1047,7 +1063,9 @@ To connect a new database: create_datasource → describe_datasource (verify + l
                 {"name": "col", "type": "string", "sql": "col", "description": "...",
                  "primary_key": false, "unique": false, "hidden": false,
                  "allowed_aggregations": ["sum", "avg"],
-                 "filter": "status = 'active'", "label": "..."}.
+                 "filter": "status = 'active'", "label": "...", "granularity": "month"}.
+                ``granularity`` is a temporal column's declared time bucket (set it only
+                when the values are truly bucketed at that grain; ``null`` clears it).
                 If a column with this name exists, only the provided fields are updated.
                 Types: string, number, time, date, boolean.
                 ``unique`` marks single-column uniqueness that is not the primary key

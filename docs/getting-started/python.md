@@ -65,6 +65,8 @@ for row in result.data:
 # {"orders.status": "completed", "orders._count": 42, "orders.revenue_sum": 12345.67}
 ```
 
+Call `engine.close()` when you are done with an engine over an in-memory SQLite datasource (`":memory:"`) to dispose its private connection.
+
 The response object:
 
 ```python

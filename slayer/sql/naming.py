@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, PrivateAttr
 from sqlglot import exp
 
 from slayer.core.errors import IdentifierCollisionError
-from slayer.core.keys import StarKey
+from slayer.core.keys import StarKey, source_anchor_path
 from slayer.core.refs import (
     EXPRESSION_SOURCE_KINDS,
     agg_kwarg_canonical_str,
@@ -139,6 +139,22 @@ def result_key_from_alias(*, source_relation: str, alias: str) -> str:
     return f"{source_relation}.{alias}"
 
 
+def time_trunc_result_key(
+    *,
+    source_relation: str,
+    path: Tuple[str, ...],
+    leaf: str,
+    granularity: str,
+    declared_name: str,
+) -> str:
+    """Dotted result key for a joined time-trunc slot, appending ``.<granularity>``
+    when a same-column collision suffixed its declared name (DEV-1883). Shared by
+    the response-metadata and SQL-alias paths so the two never diverge."""
+    base = result_key(source_relation=source_relation, path=path, leaf=leaf)
+    suffix = f".{granularity}"
+    return f"{base}{suffix}" if declared_name.endswith(suffix) else base
+
+
 def flat_name(dotted: str, *, strip_relation: Optional[str] = None) -> str:
     """Flatten a dotted name to its ``__``-joined bind name; ``strip_relation`` removes an exact ``f"{strip_relation}."`` prefix first."""
     remainder = dotted
@@ -265,8 +281,8 @@ def canonical_aggregate_alias(  # NOSONAR(S3776) — sequential dispatch over th
     if profile in ("cte_schema", "declared_name"):
         return canonical
 
-    # Every source kind carries its join path, so ``count(customers.*)`` keeps the hop.
-    path: Tuple[str, ...] = tuple(getattr(key.source, "path", ()))
+    # A source's anchor carries its join path, so ``count(customers.*)`` keeps the hop.
+    path: Tuple[str, ...] = source_anchor_path(key.source)
 
     if profile == "stage_formula":
         return (".".join(path) + "." if path else "") + canonical
