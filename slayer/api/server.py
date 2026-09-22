@@ -40,8 +40,8 @@ class QueryRequest(BaseModel):
     name: str | None = None  # Run-by-name: backing query for a query-backed model
     source_model: SourceSpec | None = None
     # ``measures`` and ``dimensions`` accept bare strings as a shorthand,
-    # mirroring the Python API: ``"*:count"`` is lifted to
-    # ``{"formula": "*:count"}``, ``"status"`` to ``{"name": "status"}``.
+    # mirroring the Python API: ``"count(*)"`` is lifted to
+    # ``{"formula": "count(*)"}``, ``"status"`` to ``{"name": "status"}``.
     # ``SlayerQuery``'s before-validators (``_coerce_measures`` /
     # ``_coerce_dimensions``) do the actual lifting downstream.
     measures: list[str | dict[str, Any]] | None = None

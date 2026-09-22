@@ -3,13 +3,13 @@
 Maps every input form valid inside a ``SlayerQuery`` to the canonical
 ``<datasource>.<model>[.<leaf>]`` string described in the spec, §3-4. The
 canonical form is what the storage layer indexes against, so two callers
-referencing the same entity in different shapes (``revenue:sum`` and
+referencing the same entity in different shapes (``sum(revenue)`` and
 ``customers.revenue``) end up keyed by the same string.
 
 The leaf rule (§3.2):
 
 * Strip aggregation suffix; the aggregation itself is never an entity.
-* ``*:count`` collapses to the source model.
+* ``count(*)`` collapses to the source model.
 * For dotted paths through joins, only the leaf segment is tagged; the
   intermediates are discarded.
 * The named-entity SQL (``Column.sql`` or ``ModelMeasure.formula``) is
@@ -280,20 +280,20 @@ async def resolve_entity(  # NOSONAR(S3776) — single linear dispatch matching 
         raise EntityResolutionError(str(exc)) from exc
     agg = suffix.split("(", 1)[0] if suffix is not None else None
 
-    # ``*:count`` special case (§3.1): collapses to the source model.
-    # Only ``count`` is valid for the wildcard; ``*:sum`` etc. would
+    # ``count(*)`` special case (§3.1): collapses to the source model.
+    # Only ``count`` is valid for the wildcard; ``sum(*)`` etc. would
     # silently get tagged as the model and corrupt the canonical-entity
     # index, so reject them explicitly.
     if prefix == "*":
         if agg != "count":
             raise EntityResolutionError(
-                f"'{raw}' is not a valid entity reference; use '*:count' "
+                f"'{raw}' is not a valid entity reference; use 'count(*)' "
                 "to refer to a model's row count."
             )
         if source_model is None:
             raise EntityResolutionError(
-                "'*:count' requires a model context: write "
-                "'<model>.*:count' or invoke from a query that has "
+                "'count(*)' requires a model context: write "
+                "'count(<model>.*)' or invoke from a query that has "
                 "a source_model."
             )
         return EntityResolution(
@@ -302,13 +302,13 @@ async def resolve_entity(  # NOSONAR(S3776) — single linear dispatch matching 
             ]
         )
 
-    # Detect ``<model>.*:count`` shape — collapse to the model.
+    # Detect ``count(<model>.*)`` shape — collapse to the model.
     # Same wildcard rule as above: only ``count`` is valid here.
     if prefix.endswith(".*"):
         if agg != "count":
             raise EntityResolutionError(
                 f"'{raw}' is not a valid entity reference; use the "
-                f"'<model>.*:count' form."
+                f"'count(<model>.*)' form."
             )
         model_part = prefix[:-2]
         return await resolve_entity(

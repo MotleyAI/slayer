@@ -56,7 +56,7 @@ engine = SlayerQueryEngine(storage=storage)
 
 result = engine.execute_sync(query=SlayerQuery(
     source_model="orders",
-    measures=["*:count", "revenue:sum"],
+    measures=["count(*)", "sum(revenue)"],
     dimensions=["status"],
 ))
 
@@ -107,7 +107,7 @@ client = SlayerClient(url="http://localhost:5143")
 # Query — returns SlayerResponse (same as embedded mode)
 result = client.query(SlayerQuery(
     source_model="orders",
-    measures=["*:count"],
+    measures=["count(*)"],
     dimensions=["status"],
 ))
 print(result.data)
@@ -119,7 +119,7 @@ print(result.data)
 # With pandas (requires motley-slayer[client] extra)
 df = client.query_df(SlayerQuery(
     source_model="orders",
-    measures=["*:count", "revenue:sum"],
+    measures=["count(*)", "sum(revenue)"],
     dimensions=["status"],
 ))
 print(df)
@@ -158,7 +158,7 @@ engine = SlayerQueryEngine(storage=storage)
 print(storage.list_models())
 
 # Should return data
-result = engine.execute_sync(query={"source_model": "orders", "measures": ["*:count"]})
+result = engine.execute_sync(query={"source_model": "orders", "measures": ["count(*)"]})
 print(f"{result.row_count} row(s), columns: {result.columns}")
 ```
 

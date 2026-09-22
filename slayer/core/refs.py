@@ -351,7 +351,7 @@ def canonical_agg_name(
     agg_args: list[str] | None = None,
     agg_kwargs: dict | None = None,
 ) -> str:
-    """Canonical hidden-column name for an aggregated measure ref (``revenue:sum`` → ``revenue_sum``, ``*:count`` → ``_count``)."""
+    """Canonical hidden-column name for an aggregated measure ref (``sum(revenue)`` → ``revenue_sum``, ``count(*)`` → ``_count``)."""
     suffix = agg_signature_suffix(agg_args, agg_kwargs)
     if measure_name == "*":
         return f"_{aggregation_name}{suffix}"

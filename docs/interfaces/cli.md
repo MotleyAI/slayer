@@ -54,7 +54,7 @@ Execute a query from the terminal.
 
 ```bash
 # Inline JSON
-slayer query '{"source_model": "orders", "measures": ["*:count"], "dimensions": ["status"]}'
+slayer query '{"source_model": "orders", "measures": ["count(*)"], "dimensions": ["status"]}'
 
 # From a file
 slayer query @query.json
@@ -67,10 +67,10 @@ slayer query monthly_revenue --variables region=US --variables threshold=100
 slayer query @query.json --variables-json '{"region": "US"}'
 
 # JSON output
-slayer query '{"source_model": "orders", "measures": ["*:count"]}' --format json
+slayer query '{"source_model": "orders", "measures": ["count(*)"]}' --format json
 
 # Preview SQL without executing
-slayer query '{"source_model": "orders", "measures": ["*:count"]}' --dry-run
+slayer query '{"source_model": "orders", "measures": ["count(*)"]}' --dry-run
 
 # Show execution plan
 slayer query @query.json --explain
@@ -211,7 +211,7 @@ slayer search --entity jaffle_shop.orders.order_total
 slayer search --question "What stores are in jaffle_shop?"
 
 # Inline query / from a file (auto-extracts canonical entities)
-slayer search --query '{"source_model": "orders", "measures": ["order_total:sum"]}'
+slayer search --query '{"source_model": "orders", "measures": ["sum(order_total)"]}'
 slayer search --query @draft_query.json
 
 # Narrow to one datasource

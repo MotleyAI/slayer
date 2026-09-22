@@ -390,7 +390,7 @@ class TestHostModelFiltersInteractions:
             join_pairs=[["id", "claim_amount_id"]],
             join_type=JoinType.INNER,
         )]
-        with pytest.raises(ValueError, match=r"(?i)aggregation colon syntax|measure"):
+        with pytest.raises(ValueError, match=r"(?i)aggregation reference|measure"):
             SlayerModel(
                 name="claim_amount", data_source="test", sql_table="Claim_Amount",
                 columns=columns,

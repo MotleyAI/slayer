@@ -63,7 +63,7 @@ Each OSI **dataset** becomes a SLayer model, with real column *types* from live 
 
 | Question | SLayer query | OSI feature shown |
 |----------|--------------|-------------------|
-| Total order value | `total_amount` | simple metric (`SUM(amount)` → `amount:sum`) |
+| Total order value | `total_amount` | simple metric (`SUM(amount)` → `sum(amount)`) |
 | Total by region | `total_amount` by `customers.regions.name` | multi-hop join inferred from relationships |
 | Average order value | `aov` | derived metric (`SUM(amount) / COUNT(*)`) |
 | Amount per distinct customer | `cust_reach` | cross-dataset metric through a join |

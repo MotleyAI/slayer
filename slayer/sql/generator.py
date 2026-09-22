@@ -2428,8 +2428,8 @@ class SQLGenerator:
                     bare = _first_bare_column_name(key) or full_alias
                     raise ValueError(
                         f"'{bare}' needs an aggregation inside an expression. "
-                        f"Use colon syntax (e.g., '{bare}:sum', '{bare}:avg'). "
-                        f"For COUNT(*), use '*:count'."
+                        f"Wrap it in an aggregation (e.g., 'sum({bare})', 'avg({bare})'). "
+                        f"For COUNT(*), use 'count(*)'."
                     )
                 else:
                     raise NotImplementedError(
@@ -2651,7 +2651,7 @@ class SQLGenerator:
         # A Column.filter on the source is baked into its ColumnSqlKey (CASE WHEN),
         # so a first/last picked value is masked while ranking spans all rows
         # (DEV-1832): the latest row's value may be NULL if it fails the filter.
-        # ``*:count`` projects a literal so the outer COUNT(_w_value) counts interval
+        # ``count(*)`` projects a literal so the outer COUNT(_w_value) counts interval
         # rows (0, not 1, on an empty interval) — the star never enters resolve.
         if isinstance(key.source, StarKey):
             # ``*`` is only legal with count (as in the plain path); any other
@@ -2659,14 +2659,14 @@ class SQLGenerator:
             if key.agg != "count":
                 raise ValueError(
                     f"Aggregation {key.agg!r} not allowed with measure "
-                    f"'*' — use '*:count' for COUNT(*)."
+                    f"'*' — use 'count(*)' for COUNT(*)."
                 )
-            # ``*:count`` takes no inputs but its own ``window=`` (plain-path guard);
+            # ``count(*)`` takes no inputs but its own ``window=`` (plain-path guard);
             # a stray arg/kwarg would otherwise be projected and silently ignored.
             extra_kwargs = [(k, v) for k, v in key.kwargs if k != "window"]
             if key.args or extra_kwargs:
                 raise ValueError(
-                    f"'*:count' takes no args or kwargs other than window; got "
+                    f"'count(*)' takes no args or kwargs other than window; got "
                     f"args={key.args!r}, kwargs={extra_kwargs!r}."
                 )
             src_cols.append(exp.Literal.number("1").as_("_w_value"))
@@ -2940,7 +2940,7 @@ class SQLGenerator:
         if isinstance(source, StarKey):
             raise ValueError(
                 f"Aggregation {key.agg!r} not allowed with measure "
-                f"'*' — use '*:count' for COUNT(*)."
+                f"'*' — use 'count(*)' for COUNT(*)."
             )
         if not isinstance(source, (ColumnKey, ColumnSqlKey)):
             raise NotImplementedError(
@@ -3301,7 +3301,7 @@ class SQLGenerator:
         ]
 
         # Level 1 picks each input once per entity (MAX is arbitrary-but-correct:
-        # the input is root-determined, constant per entity); ``*:count`` keeps no
+        # the input is root-determined, constant per entity); ``count(*)`` keeps no
         # value column — level 2 counts the entity rows.
         is_star = isinstance(agg_slot.key.source, StarKey)
         picked_alias = "_v"
@@ -3409,7 +3409,7 @@ class SQLGenerator:
         if where is not None:
             inner = inner.where(where)
         # A host row with no associated entity (a NULL key from the LEFT JOIN) is
-        # not a distinct entity — exclude it so ``*:count`` never counts it. A
+        # not a distinct entity — exclude it so ``count(*)`` never counts it. A
         # null-safe re-aggregation (DEV-1847) keeps a NULL grain cell as its own
         # cell instead.
         if not getattr(kernel, "null_safe", False):
@@ -3441,7 +3441,7 @@ class SQLGenerator:
                 table=exp.to_identifier("_base"),
             )
 
-        # Level 2 aggregates over the picked rows per grain; ``*:count`` counts
+        # Level 2 aggregates over the picked rows per grain; ``count(*)`` counts
         # the entity rows (COUNT(*)), every other family runs over ``_v``.
         if is_star:
             level2_spec = AggRenderSpec(
@@ -6236,16 +6236,16 @@ class SQLGenerator:
         slot_type = slot.type if slot is not None else None
         source = key.source
         if isinstance(source, StarKey):
-            # Reject any non-count aggregation on * (*:sum would render as SUM(*)); enforce here so invalid SQL can't be
+            # Reject any non-count aggregation on * (sum(*) would render as SUM(*)); enforce here so invalid SQL can't be
             # emitted.
             if key.agg != "count":
                 raise ValueError(
                     f"Aggregation {key.agg!r} not allowed with measure "
-                    f"'*' — use '*:count' for COUNT(*)."
+                    f"'*' — use 'count(*)' for COUNT(*)."
                 )
             if key.args or key.kwargs:
                 raise ValueError(
-                    f"'*:count' takes no args or kwargs; got "
+                    f"'count(*)' takes no args or kwargs; got "
                     f"args={key.args!r}, kwargs={key.kwargs!r}."
                 )
             return AggRenderSpec(

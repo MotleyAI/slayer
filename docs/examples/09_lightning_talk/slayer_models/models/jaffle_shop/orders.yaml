@@ -1,6 +1,7 @@
 version: 10
 name: orders
 sql_table: orders
+source_kind: table
 query_variables: {}
 data_source: jaffle_shop
 columns:
@@ -72,42 +73,42 @@ columns:
     precision: 2
     symbol: $
 measures:
-- formula: order_total:sum
+- formula: sum(order_total)
   name: total_revenue
   label: Total Revenue
   description: Gross sales including tax, in dollars.
   type: DOUBLE
-- formula: subtotal:sum
+- formula: sum(subtotal)
   name: net_sales
   label: Net Sales (pre-tax)
   description: Sales before tax, in dollars.
   type: DOUBLE
-- formula: tax_paid:sum
+- formula: sum(tax_paid)
   name: tax_collected
   label: Tax Collected
   description: Total tax collected, in dollars.
   type: DOUBLE
-- formula: id:count
+- formula: count(id)
   name: order_count
   label: Orders
   description: Number of orders.
   type: INT
-- formula: customer_id:count_distinct
+- formula: count_distinct(customer_id)
   name: unique_customers
   label: Unique Customers
   description: Distinct customers who ordered.
   type: INT
-- formula: order_total:sum / nullif(id:count, 0)
+- formula: sum(order_total) / nullif(count(id), 0)
   name: avg_order_value
   label: Average Order Value
   description: Revenue per order, in dollars.
   type: DOUBLE
-- formula: tax_paid:sum / nullif(subtotal:sum, 0)
+- formula: sum(tax_paid) / nullif(sum(subtotal), 0)
   name: effective_tax_rate
   label: Effective Tax Rate
   description: Tax collected as a share of net sales.
   type: DOUBLE
-- formula: order_total:weighted_avg
+- formula: weighted_avg(order_total)
   name: sales_weighted_aov
   label: Sales-Weighted Avg Order
   description: Average order total weighted by subtotal (larger orders weigh more),
@@ -125,11 +126,13 @@ joins:
   - - customer_id
     - id
   join_type: left
+  cardinality: many_to_one
 - target_model: stores
   join_pairs:
   - - store_id
     - id
   join_type: left
+  cardinality: many_to_one
 filters: []
 default_time_dimension: ordered_at
 description: "Customer orders \u2014 one row per order. Monetary amounts are in dollars.\

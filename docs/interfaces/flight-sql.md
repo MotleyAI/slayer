@@ -80,7 +80,7 @@ table carries two fan-outs:
 
 * **Metrics** — derived from each model's `columns` × eligible aggregations, plus saved
   `ModelMeasure` formulas, plus custom aggregations on the model, plus a synthetic
-  `row_count` metric (`*:count`).
+  `row_count` metric (`count(*)`).
 * **Dimensions** — every non-hidden column of the model, plus reachable join targets
   walked up to depth 3.
 
@@ -89,7 +89,7 @@ multi-hop dimension on `orders` when `orders → customers → regions`. The sam
 form is used in `INFORMATION_SCHEMA.*`, in the BI-tool projection list, in `WHERE`, and
 in the SLayer DSL.
 
-`*:count` is exposed as a column literally named `row_count`. If a user-defined column
+`count(*)` is exposed as a column literally named `row_count`. If a user-defined column
 is also named `row_count`, SLayer renames the synthetic to `_row_count` and logs a
 warning at catalog-build time.
 

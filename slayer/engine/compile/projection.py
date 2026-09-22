@@ -465,7 +465,7 @@ class ProjectionPlanner:
 
 
 def _canonical_name(key: ValueKey) -> str:  # NOSONAR(S3776) — sequential isinstance dispatch over the closed ValueKey union; each branch is the per-type canonical-name contract. Extracting per-type helpers would scatter the contract.
-    """Best-effort canonical name for a hidden slot (``revenue:sum`` → ``revenue_sum``, ``customers.regions.name`` → ``customers__regions__name``)."""
+    """Best-effort canonical name for a hidden slot (``sum(revenue)`` → ``revenue_sum``, ``customers.regions.name`` → ``customers__regions__name``)."""
     if isinstance(key, ColumnKey):
         return "__".join(key.path + (key.leaf,))
     if isinstance(key, ColumnSqlKey):
@@ -476,7 +476,7 @@ def _canonical_name(key: ValueKey) -> str:  # NOSONAR(S3776) — sequential isin
         return _canonical_name(key.column)
     if isinstance(key, AggregateKey):
         # Include args/kwargs so parametric aggregates over one column
-        # (``revenue:percentile(p=0.5)`` vs ``p=0.95``) get distinct names.
+        # (``percentile(revenue, p=0.5)`` vs ``p=0.95``) get distinct names.
         alias = canonical_aggregate_alias(key, profile="declared_name")
         # declared_name profile always yields a name.
         assert alias is not None

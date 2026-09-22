@@ -1168,7 +1168,7 @@ class SlayerQuery(BaseModel):
                 return None
 
     def strip_source_model_prefix(self) -> "SlayerQuery":
-        """Strip a redundant source-model-name prefix from all dotted references (agents write ``orders.revenue:sum``)."""
+        """Strip a redundant source-model-name prefix from all dotted references (agents write ``sum(orders.revenue)``)."""
         model_name = self.source_model_name
         if model_name is None:
             return self

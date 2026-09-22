@@ -43,7 +43,7 @@ curl -X POST http://localhost:5143/query \
   -H "Content-Type: application/json" \
   -d '{
     "source_model": "orders",
-    "measures": ["*:count"],
+    "measures": ["count(*)"],
     "dimensions": ["status"],
     "filters": ["region = '\''{r}'\''"],
     "variables": {"r": "US"},
@@ -111,7 +111,7 @@ curl -X POST http://localhost:5143/models \
     "data_source": "mydb",
     "source_queries": [{
       "source_model": "orders",
-      "measures": [{"formula": "amount:sum"}],
+      "measures": [{"formula": "sum(amount)"}],
       "time_dimensions": [{"dimension": "ordered_at", "granularity": "month"}]
     }],
     "query_variables": {"region": "US"}
@@ -199,7 +199,7 @@ DELETE /memories/{id}         # Delete a memory (cascade-strips memory:<id> refs
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `entities` | array[str] | Canonical entity strings (`mydb.orders.amount`, `memory:42`, …). Aggregation suffixes are stripped (`revenue:sum` → `mydb.orders.revenue`). Drives the BM25 channel. Unresolved tokens emit warnings rather than errors. |
+| `entities` | array[str] | Canonical entity strings (`mydb.orders.amount`, `memory:42`, …). Aggregation suffixes are stripped (`sum(revenue)` → `mydb.orders.revenue`). Drives the BM25 channel. Unresolved tokens emit warnings rather than errors. |
 | `query` | object | Inline SLayer query; its `source_model` / dimensions / measures / time dims / filters are walked for canonical entities. |
 | `question` | str | Free-text question. Drives the Tantivy channel and (when available) the embedding channel. |
 | `datasource` | str | Pre-narrows every channel to ids rooted at the named datasource. Unknown name → HTTP 400. |

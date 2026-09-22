@@ -1086,7 +1086,7 @@ def _bind_agg(
         and parsed.source.parts
         and parsed.source.parts[-1] == "*"
     ):
-        # Cross-model star: ``customers.*:count`` → a StarKey carrying the join
+        # Cross-model star: ``count(customers.*)`` → a StarKey carrying the join
         # path so the planner routes COUNT(*) through the join graph.
         source = _resolve_dotted_star(
             parsed.source.parts, scope=scope, bundle=bundle,

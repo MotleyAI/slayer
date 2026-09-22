@@ -408,14 +408,14 @@ class TestMdCodeSpan:
         # Without types, label falls back to avg (no dim to trigger the heuristic).
         args_no_types = _build_sample_query_args(model=model, num_rows=3)
         formulas = [f["formula"] for f in args_no_types["measures"]]
-        assert "label:avg" in formulas
+        assert "avg(label)" in formulas
 
         args_with_types = _build_sample_query_args(
             model=model, num_rows=3, measure_types={"amount": "number", "label": "string"},
         )
         formulas = [f["formula"] for f in args_with_types["measures"]]
-        assert "amount:avg" in formulas
-        assert "label:count_distinct" in formulas
+        assert "avg(amount)" in formulas
+        assert "count_distinct(label)" in formulas
 
 
 class TestInspectModelQueryBacked:
@@ -1221,7 +1221,7 @@ class TestBuildSampleQueryArgs:
             ],
         )
         args = _build_sample_query_args(model=model, num_rows=7)
-        assert [f["formula"] for f in args["measures"]] == ["*:count", "rev:avg", "qty:avg"]
+        assert [f["formula"] for f in args["measures"]] == ["count(*)", "avg(rev)", "avg(qty)"]
         assert [d["name"] for d in args["dimensions"]] == ["status", "region"]
         assert args["limit"] == 7
         assert args["source_model"] == "t"
@@ -1232,7 +1232,7 @@ class TestBuildSampleQueryArgs:
             columns=[Column(name="rev", sql="amt", allowed_aggregations=["sum", "max"], type=DataType.DOUBLE)],
         )
         args = _build_sample_query_args(model=model, num_rows=3)
-        assert [f["formula"] for f in args["measures"]] == ["*:count", "rev:sum"]
+        assert [f["formula"] for f in args["measures"]] == ["count(*)", "sum(rev)"]
 
     def test_prefers_safe_agg_over_first_allowed(self) -> None:
         """A non-safe first aggregation is skipped for the first safe zero-arg one."""
@@ -1241,7 +1241,7 @@ class TestBuildSampleQueryArgs:
             columns=[Column(name="rev", sql="amt", allowed_aggregations=["last", "first", "min", "max"], type=DataType.DOUBLE)],
         )
         args = _build_sample_query_args(model=model, num_rows=3)
-        assert [f["formula"] for f in args["measures"]] == ["*:count", "rev:min"]
+        assert [f["formula"] for f in args["measures"]] == ["count(*)", "min(rev)"]
 
     def test_falls_back_to_first_allowed_when_no_safe_agg(self) -> None:
         """No safe aggregation ⇒ fall back to the first allowed entry."""
@@ -1250,7 +1250,7 @@ class TestBuildSampleQueryArgs:
             columns=[Column(name="rev", sql="amt", allowed_aggregations=["last", "first"], type=DataType.DOUBLE)],
         )
         args = _build_sample_query_args(model=model, num_rows=3)
-        assert [f["formula"] for f in args["measures"]] == ["*:count", "rev:last"]
+        assert [f["formula"] for f in args["measures"]] == ["count(*)", "last(rev)"]
 
     def test_skip_when_allowed_is_empty(self) -> None:
         model = SlayerModel(
@@ -1258,7 +1258,7 @@ class TestBuildSampleQueryArgs:
             columns=[Column(name="rev", sql="amt", allowed_aggregations=[], type=DataType.DOUBLE)],
         )
         args = _build_sample_query_args(model=model, num_rows=3)
-        assert [f["formula"] for f in args["measures"]] == ["*:count"]
+        assert [f["formula"] for f in args["measures"]] == ["count(*)"]
 
     def test_dims_cap_at_two_and_exclude_pk_and_hidden(self) -> None:
         model = SlayerModel(
@@ -1283,10 +1283,10 @@ class TestBuildSampleQueryArgs:
             ],
         )
         args = _build_sample_query_args(model=model, num_rows=3)
-        assert [f["formula"] for f in args["measures"]] == ["*:count", "qty:avg"]
+        assert [f["formula"] for f in args["measures"]] == ["count(*)", "avg(qty)"]
 
     def test_count_distinct_fallback_for_non_numeric_columns(self) -> None:
-        """Non-numeric columns not used as dims get :count_distinct; numeric get :avg."""
+        """Non-numeric columns not used as dims get count_distinct; numeric get avg."""
         model = SlayerModel(
             name="order_items", sql_table="order_items", data_source="ds",
             columns=[
@@ -1300,7 +1300,7 @@ class TestBuildSampleQueryArgs:
         args = _build_sample_query_args(model=model, num_rows=3)
         assert [d["name"] for d in args["dimensions"]] == ["sku", "is_flagged"]
         assert [f["formula"] for f in args["measures"]] == [
-            "*:count", "extra_string:count_distinct", "quantity:avg",
+            "count(*)", "count_distinct(extra_string)", "avg(quantity)",
         ]
 
     def test_opaque_column_excluded_from_data_profile(self) -> None:
@@ -1321,7 +1321,7 @@ class TestBuildSampleQueryArgs:
             ],
         )
         args = _build_sample_query_args(model=model, num_rows=3)
-        assert [f["formula"] for f in args["measures"]] == ["*:count", "area:avg"]
+        assert [f["formula"] for f in args["measures"]] == ["count(*)", "avg(area)"]
         assert [d["name"] for d in args["dimensions"]] == ["city"]
 
 

@@ -125,7 +125,7 @@ def _key_display(k: ValueKey) -> str:
     if isinstance(k, AggregateKey):
         leaf = getattr(k.source, "leaf", None) or getattr(k.source, "column_name", None) or "*"
         path = source_anchor_path(k.source)
-        name = f"{'.'.join((*path, leaf))}:{k.agg}"
+        name = f"{k.agg}({'.'.join((*path, leaf))})"
         return f"{name} (partition_by)" if k.partition_keys is not None else name
     if isinstance(k, TransformKey):
         return f"{k.op}(...)"
@@ -477,13 +477,13 @@ def check_computed_dimension(*, name, bound, distinct_dimension_values) -> None:
             raise ValueError(
                 f"The transform '{tk.op}' inside computed dimension {name!r} "
                 f"must take an aggregate input — a transform acts on "
-                f"aggregates, e.g. {tk.op}(amount:sum(partition_by=city))."
+                f"aggregates, e.g. {tk.op}(sum(amount, partition_by=city))."
             )
         ungrained = [a for a in inner_aggs if a.partition_keys is None]
         if ungrained:
             raise ValueError(
-                f"The aggregate '{dotted_key_display(ungrained[0].source)}"
-                f":{ungrained[0].agg}' inside the transform in computed "
+                f"The aggregate '{ungrained[0].agg}"
+                f"({dotted_key_display(ungrained[0].source)})' inside the transform in computed "
                 f"dimension {name!r} must declare partition_by= explicitly: "
                 f"the ungrained default (the query's own dimensions) would "
                 f"include the dimension being defined."
@@ -503,7 +503,7 @@ def check_computed_dimension(*, name, bound, distinct_dimension_values) -> None:
             raise ValueError(
                 f"The aggregate inside computed dimension {name!r} must declare "
                 f"the grain it aggregates over with partition_by=, e.g. "
-                f"'CASE WHEN amount:sum(partition_by=city) > 5000 THEN 1 ELSE 0 END'. "
+                f"'CASE WHEN sum(amount, partition_by=city) > 5000 THEN 1 ELSE 0 END'. "
                 f"Without partition_by the group key is a function of the query's "
                 f"own dimensions and adds no grouping."
             )

@@ -1,6 +1,7 @@
 version: 10
 name: customers
 sql_table: customers
+source_kind: table
 query_variables: {}
 data_source: jaffle_shop
 columns:
@@ -20,7 +21,7 @@ columns:
   label: Customer
   hidden: false
 measures:
-- formula: id:count_distinct
+- formula: count_distinct(id)
   name: customer_count
   label: Customers
   description: Number of distinct customers.

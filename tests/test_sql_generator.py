@@ -8833,7 +8833,7 @@ class TestGetColumnTypesSql:
         engine = SlayerQueryEngine(storage=storage)
         probe = engine._build_type_probe_query(model)
         formulas = [m.formula for m in probe.measures]
-        assert any(f and f.startswith("revenue:") for f in formulas), (
+        assert any(f and f.endswith("(revenue)") for f in formulas), (
             f"Expected 'revenue' to be probed, got {formulas}"
         )
         assert not any(f and f.startswith("opaque:") for f in formulas), (

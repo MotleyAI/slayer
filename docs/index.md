@@ -24,10 +24,10 @@ Given an `orders` [model](concepts/models.md) with a `revenue` measure and joins
 {
   "source_model": "orders",
   "measures": [
-    "revenue:sum",
-    {"formula": "change_pct(revenue:sum)", "name": "mom_growth"},
-    {"formula": "revenue:sum / time_shift(revenue:sum, -1, 'year') - 1", "name": "yoy_growth"},
-    "customers.score:last(changed_at)"
+    "sum(revenue)",
+    {"formula": "change_pct(sum(revenue))", "name": "mom_growth"},
+    {"formula": "sum(revenue) / time_shift(sum(revenue), -1, 'year') - 1", "name": "yoy_growth"},
+    "last(customers.score, changed_at)"
   ],
   "dimensions": ["customers.regions.name"],
   "time_dimensions": [{
@@ -35,26 +35,26 @@ Given an `orders` [model](concepts/models.md) with a `revenue` measure and joins
     "granularity": "month",
     "date_range": ["2025-01-01", "2025-12-31"]
   }],
-  "filters": ["status = 'completed'", "change(revenue:sum) > 0"],
+  "filters": ["status = 'completed'", "change(sum(revenue)) > 0"],
   "order": [{"column": "revenue_sum", "direction": "desc"}]
 }
 ```
 
 One query, and SLayer handles:
 
-- **`revenue:sum`** — aggregation is chosen at query time, not baked into the measure definition. The same `revenue` measure works with `sum`, `avg`, `median`, `weighted_avg`, or [any custom aggregation](examples/07_aggregations/aggregations.md). Add `partition_by=` for a coarser grain repeated across rows — `revenue:sum / revenue:sum(partition_by=region)` is share-of-parent.
-- **`change_pct(revenue:sum)`** — month-over-month growth as a [transform](examples/04_time/time.md). SLayer generates the necessary window query. Other built-in transforms: `cumsum`, `change`, `time_shift`, `rank` / `percent_rank` / `dense_rank` / `ntile`, `lag`, `lead` — all nestable (`"change(cumsum(revenue:sum))"` works).
-- **`revenue:sum / time_shift(revenue:sum, -1, 'year') - 1`** — arithmetic on aggregated measures. `time_shift` runs a separate time-shifted sub-query and joins it back by all dimensions; dividing by it gives year-over-year growth. Standard operator precedence applies.
-- **`customers.score:last(changed_at)`** — a measure from a [joined model](examples/05_joined_measures/joined_measures.md), resolved by walking the [join graph](examples/05_joins/joins.md). `last` is an aggregation that picks the latest record's value — `changed_at` tells it which column defines "latest."
+- **`sum(revenue)`** — aggregation is chosen at query time, not baked into the measure definition. The same `revenue` measure works with `sum`, `avg`, `median`, `weighted_avg`, or [any custom aggregation](examples/07_aggregations/aggregations.md). Add `partition_by=` for a coarser grain repeated across rows — `sum(revenue) / sum(revenue, partition_by=region)` is share-of-parent.
+- **`change_pct(sum(revenue))`** — month-over-month growth as a [transform](examples/04_time/time.md). SLayer generates the necessary window query. Other built-in transforms: `cumsum`, `change`, `time_shift`, `rank` / `percent_rank` / `dense_rank` / `ntile`, `lag`, `lead` — all nestable (`"change(cumsum(sum(revenue)))"` works).
+- **`sum(revenue) / time_shift(sum(revenue), -1, 'year') - 1`** — arithmetic on aggregated measures. `time_shift` runs a separate time-shifted sub-query and joins it back by all dimensions; dividing by it gives year-over-year growth. Standard operator precedence applies.
+- **`last(customers.score, changed_at)`** — a measure from a [joined model](examples/05_joined_measures/joined_measures.md), resolved by walking the [join graph](examples/05_joins/joins.md). `last` is an aggregation that picks the latest record's value — `changed_at` tells it which column defines "latest."
 - **`customers.regions.name`** — a multi-hop dimension: SLayer traces `orders → customers → regions` and builds the joins automatically.
-- **`change(revenue:sum) > 0`** — filtering on a computed transform. SLayer computes the transform first as a hidden field, then applies the filter on the outer query.
+- **`change(sum(revenue)) > 0`** — filtering on a computed transform. SLayer computes the transform first as a hidden field, then applies the filter on the outer query.
 
 ## What SLayer does
 
 - **[Auto-ingestion](concepts/ingestion.md)** — Point it at a database, it introspects the schema, detects foreign keys, and generates models with joins. No manual YAML needed to get started ([tutorial](examples/03_auto_ingest/auto_ingest.md)). Re-run the same idempotent pass on every server boot with `slayer serve --ingest-on-startup` / `slayer mcp --ingest-on-startup`.
-- **Aggregation at query time** — Measures are expressions, not pre-baked aggregates. `"revenue:sum"`, `"revenue:median"`, `"price:weighted_avg(weight=quantity)"`. Built-in and [custom aggregations](examples/07_aggregations/aggregations.md) with parameters.
-- **Composable transforms** — `cumsum`, `change`, `change_pct`, `time_shift`, `rank` / `percent_rank` / `dense_rank` / `ntile`, `lag`, `lead` — all nestable: `"change(cumsum(revenue:sum))"` just works ([tutorial](examples/04_time/time.md)).
-- **Cross-model measures** — Query measures from [joined models](examples/05_joined_measures/joined_measures.md) with dot syntax: `"customers.score:avg"`. Joins are auto-resolved by walking the model graph ([tutorial](examples/05_joins/joins.md)).
+- **Aggregation at query time** — Measures are expressions, not pre-baked aggregates. `"sum(revenue)"`, `"median(revenue)"`, `"weighted_avg(price, weight=quantity)"`. Built-in and [custom aggregations](examples/07_aggregations/aggregations.md) with parameters.
+- **Composable transforms** — `cumsum`, `change`, `change_pct`, `time_shift`, `rank` / `percent_rank` / `dense_rank` / `ntile`, `lag`, `lead` — all nestable: `"change(cumsum(sum(revenue)))"` just works ([tutorial](examples/04_time/time.md)).
+- **Cross-model measures** — Query measures from [joined models](examples/05_joined_measures/joined_measures.md) with dot syntax: `"avg(customers.score)"`. Joins are auto-resolved by walking the model graph ([tutorial](examples/05_joins/joins.md)).
 - **[Multistage queries](examples/06_multistage_queries/multistage_queries.md)** — Use one query as the source for another, or save any query as a permanent model.
 - **Runtime model editing** — Add measures, dimensions, and joins through any interface. No rebuild, no restart.
 - **[Memories + semantic search](concepts/search.md)** — Persist free-form learnings tagged with canonical entities (`<datasource>.<model>.<column>`) and retrieve them alongside model / column discovery hits via a single `search` call. Three retrieval channels (BM25 over memory tags + Tantivy full-text + optional dense embeddings) are RRF-fused into one flat ranked list. Optional graph pre-filter via `cypher_filter` ([memories concept](concepts/memories.md)).

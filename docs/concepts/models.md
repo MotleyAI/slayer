@@ -13,10 +13,10 @@ columns:
   - {name: status, type: string}
   - {name: revenue, sql: amount, type: number}
 measures:
-  - {name: aov, formula: "revenue:sum / *:count"}
+  - {name: aov, formula: "sum(revenue) / count(*)"}
 ```
 
-A query then asks for `revenue:sum` (aggregate the `revenue` column), `aov` (the saved formula), or `status` (group by it). Same model, different roles per query.
+A query then asks for `sum(revenue)` (aggregate the `revenue` column), `aov` (the saved formula), or `status` (group by it). Same model, different roles per query.
 
 ## Fields at a glance
 
@@ -30,7 +30,7 @@ A query then asks for `revenue:sum` (aggregate the `revenue` column), `aov` (the
 | `data_source` | string | Yes | Datasource name |
 | `columns` | list[Column] | No | Column definitions. For query-backed models this is an engine-managed cache |
 | `measures` | list[ModelMeasure] | No | Named formula library — referenced by bare name in queries |
-| `aggregations` | list[Aggregation] | No | Custom aggregation operators usable via colon syntax |
+| `aggregations` | list[Aggregation] | No | Custom aggregation operators |
 | `joins` | list[ModelJoin] | No | LEFT JOIN relationships to other models |
 | `filters` | list[str] | No | Model-level WHERE filters (always applied) |
 | `default_time_dimension` | string | No | Default time dim for time-dependent formulas |
@@ -130,9 +130,9 @@ columns:
     filter: "status = 'completed'"
 ```
 
-`active_revenue:sum` then generates `SUM(CASE WHEN status = 'active' THEN amount END)`. The filter is pure syntactic sugar for `CASE WHEN <filter> THEN <value> END`, a **value mask** that fires in *every* position: as a group-by dimension, rows where the filter is false fall into the `NULL` group; a `first`/`last` picks the masked value at the chosen row (`NULL` if it does not match). It never removes rows or changes which row is picked — a genuine row restriction belongs in a query `filter`.
+`sum(active_revenue)` then generates `SUM(CASE WHEN status = 'active' THEN amount END)`. The filter is pure syntactic sugar for `CASE WHEN <filter> THEN <value> END`, a **value mask** that fires in *every* position: as a group-by dimension, rows where the filter is false fall into the `NULL` group; a `first`/`last` picks the masked value at the chosen row (`NULL` if it does not match). It never removes rows or changes which row is picked — a genuine row restriction belongs in a query `filter`.
 
-Filters can reference joined columns via dot syntax (`categories.type = 'electronics'`). Filtered and unfiltered columns coexist freely in the same query and combine cleanly in arithmetic formulas (e.g. `{"formula": "active_revenue:sum / total_revenue:sum"}`).
+Filters can reference joined columns via dot syntax (`categories.type = 'electronics'`). Filtered and unfiltered columns coexist freely in the same query and combine cleanly in arithmetic formulas (e.g. `{"formula": "sum(active_revenue) / sum(total_revenue)"}`).
 
 ### Derived Columns Referencing Other Derived Columns
 
@@ -162,11 +162,11 @@ joins:
 
 At query time, `aoi_ratio` expands to `telescopes.aperture / (stations.foo_raw / 100.0)`. The same applies to local-model chains (a column on the source model referencing another derived column on the same model) and to multi-hop join paths (use the dotted form, e.g., `B.C.x_derived`, when crossing more than one join).
 
-A derived column whose definition (recursively) crosses a fanning (not provably to-one) hop fails closed with a typed error when used as an aggregate input, a population filter, or an `error`-mode dimension — declare the [join cardinality](#join-cardinality) or primary key to prove the hop, or query it under `broadcast`/`associate` handling. A derived column whose definition reaches a to-many (or undeclared) target cannot be aggregated as a column of its model — aggregate the target column directly (`line_items.qty:sum`). Where the hop is *provably* fanning (declared `one_to_many`/`many_to_many`), the model is rejected at **save time**; an unproven hop saves with a warning and relies on the query-time check above. A definition whose join path **revisits** a model already on it (a cycle, e.g. `regions.customers.spend` declared on `customers`) is rejected at **save time** as a circular definition — reference the column on the revisited model directly, or aggregate on the model the hop leaves.
+A derived column whose definition (recursively) crosses a fanning (not provably to-one) hop fails closed with a typed error when used as an aggregate input, a population filter, or an `error`-mode dimension — declare the [join cardinality](#join-cardinality) or primary key to prove the hop, or query it under `broadcast`/`associate` handling. A derived column whose definition reaches a to-many (or undeclared) target cannot be aggregated as a column of its model — aggregate the target column directly (`sum(line_items.qty)`). Where the hop is *provably* fanning (declared `one_to_many`/`many_to_many`), the model is rejected at **save time**; an unproven hop saves with a warning and relies on the query-time check above. A definition whose join path **revisits** a model already on it (a cycle, e.g. `regions.customers.spend` declared on `customers`) is rejected at **save time** as a circular definition — reference the column on the revisited model directly, or aggregate on the model the hop leaves.
 
 Same-model references may be written **bare** (just the column name) or qualified with the host alias — both forms expand the same way. So given `bucket.sql = "raw_a / 10"`, a sibling `rn.sql = "ROW_NUMBER() OVER (PARTITION BY bucket ORDER BY id)"` correctly expands `bucket` to the inlined body. Bare references inside a nested scope (sub-query, `UNION` branch, CTE, `VALUES`) are NOT inlined — those identifiers belong to the inner rowset, not the host model — so `Column.sql = "(SELECT MAX(score) FROM other) + score"` inlines the outer `score` but leaves the inner one alone.
 
-Cycles in the reference graph (e.g., `c1.sql = "c2 + 1"` and `c2.sql = "c1 - 1"`) are rejected at `save_model` time and raise `ColumnCycleError` (which subclasses both `SlayerError` and `ValueError`) with the cycle path in the message — so a broken chain never reaches a query. The compile-time guard remains as defence in depth. Save-time validation stays within the model's `data_source`; unresolved cross-datasource refs are silently skipped. The same expansion is applied to filters and to colon-aggregated measures, so `"B.foo_normalized:sum"` produces `SUM(B.foo_raw / 100.0)`.
+Cycles in the reference graph (e.g., `c1.sql = "c2 + 1"` and `c2.sql = "c1 - 1"`) are rejected at `save_model` time and raise `ColumnCycleError` (which subclasses both `SlayerError` and `ValueError`) with the cycle path in the message — so a broken chain never reaches a query. The compile-time guard remains as defence in depth. Save-time validation stays within the model's `data_source`; unresolved cross-datasource refs are silently skipped. The same expansion is applied to filters and to aggregated measures, so `"sum(B.foo_normalized)"` produces `SUM(B.foo_raw / 100.0)`.
 
 ### Window functions in `Column.sql`
 
@@ -198,8 +198,8 @@ If you specifically want SQLite's JSON-scalar operator, write `->>` (`exp.JSONEx
 
 SLayer has two list fields on a model that both relate to metrics, and the names don't make the difference obvious. The split is real and load-bearing:
 
-- **`measures`** is a library of named **formulas** — saved expressions like `aov = revenue:sum / *:count`. Queries reference them by bare name and the formula expands inline. Think *what to compute*, at the metric level.
-- **`aggregations`** is a registry of custom **operators** — definitions like `trimmed_mean(p)` or `weighted_avg(weight=…)`. Once defined, they become usable as colon suffixes inside any formula: `revenue:trimmed_mean(p=0.1)`. Think *how to aggregate*, at the operator level.
+- **`measures`** is a library of named **formulas** — saved expressions like `aov = sum(revenue) / count(*)`. Queries reference them by bare name and the formula expands inline. Think *what to compute*, at the metric level.
+- **`aggregations`** is a registry of custom **operators** — definitions like `trimmed_mean(p)` or `weighted_avg(weight=…)`. Once defined, they become usable inside any formula: `trimmed_mean(revenue, p=0.1)`. Think *how to aggregate*, at the operator level.
 
 A typical model uses zero or a few entries in each. They compose:
 
@@ -210,7 +210,7 @@ aggregations:
 
 measures:
   - name: clean_aov
-    formula: "revenue:trimmed_mean(low=0, high=1e6) / *:count"
+    formula: "trimmed_mean(revenue, low=0, high=1e6) / count(*)"
 ```
 
 ## Measures (named formulas)
@@ -219,7 +219,7 @@ A measure is a saved formula. Its shape is identical to an inline `SlayerQuery.m
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `formula` | string | Yes | e.g. `"revenue:sum / *:count"`, `"cumsum(revenue:sum)"` |
+| `formula` | string | Yes | e.g. `"sum(revenue) / count(*)"`, `"cumsum(sum(revenue))"` |
 | `name` | string | No | Queries reference this by bare name (auto-derived if omitted) |
 | `label` | string | No | Display name |
 | `description` | string | No | Explanatory text |
@@ -227,7 +227,7 @@ A measure is a saved formula. Its shape is identical to an inline `SlayerQuery.m
 | `meta` | dict | No | Arbitrary JSON metadata |
 
 An inferred integer measure type describes the result without narrowing the
-database's native integer range. For example, `"amount:sum"` can return a total
+database's native integer range. For example, `"sum(amount)"` can return a total
 larger than a 32-bit integer even when each source value fits in one. An explicit
 measure `"type": "INT"` still requests the database's INT cast and can reject
 out-of-range results. Auto-ingested NUMERIC/DECIMAL columns likewise retain the
@@ -256,28 +256,28 @@ See [formulas.md](formulas.md) for the full formula grammar — operators, trans
 
 ## Aggregations
 
-Aggregations are the operators that turn a column expression into a value: `:sum`, `:avg`, `:percentile(p=…)`, and so on. They're applied at query time via colon syntax — `measure:aggregation` — and the same operator works on any compatible column.
+Aggregations are the operators that turn a column expression into a value: `sum`, `avg`, `percentile(p=…)`, and so on. They're applied at query time as a function call — `aggregation(measure)` — and the same operator works on any compatible column.
 
 ### Built-in aggregations
 
-| Aggregation | Colon syntax | SQL |
+| Aggregation | Syntax | SQL |
 |-------------|--------------|-----|
-| `count` | `*:count` | `COUNT(*)` — counts all rows |
-| `count` | `col:count` | `COUNT(col)` — counts non-null values |
-| `count_distinct` | `col:count_distinct` | `COUNT(DISTINCT col)` |
-| `sum` | `revenue:sum` | `SUM(revenue)` |
-| `avg` | `revenue:avg` | `AVG(revenue)` |
-| `min` / `max` | `revenue:min` | `MIN(revenue)` / `MAX(revenue)` |
-| `first` / `last` | `col:first(time_col)` | Earliest / latest record's value, time-ordered |
-| `weighted_avg` | `price:weighted_avg(weight=quantity)` | `SUM(price * quantity) / SUM(quantity)` |
-| `median` | `revenue:median` | Median value |
-| `percentile` | `revenue:percentile(p=0.95)` | 95th percentile |
-| `stddev_samp` / `stddev_pop` | `latency:stddev_samp` | Sample / population standard deviation |
-| `var_samp` / `var_pop` | `latency:var_samp` | Sample / population variance |
-| `corr` | `price:corr(other=quantity)` | Pearson correlation between two columns |
-| `covar_samp` / `covar_pop` | `price:covar_samp(other=quantity)` | Sample / population covariance |
+| `count` | `count(*)` | `COUNT(*)` — counts all rows |
+| `count` | `count(col)` | `COUNT(col)` — counts non-null values |
+| `count_distinct` | `count_distinct(col)` | `COUNT(DISTINCT col)` |
+| `sum` | `sum(revenue)` | `SUM(revenue)` |
+| `avg` | `avg(revenue)` | `AVG(revenue)` |
+| `min` / `max` | `min(revenue)` | `MIN(revenue)` / `MAX(revenue)` |
+| `first` / `last` | `first(col, time_col)` | Earliest / latest record's value, time-ordered |
+| `weighted_avg` | `weighted_avg(price, weight=quantity)` | `SUM(price * quantity) / SUM(quantity)` |
+| `median` | `median(revenue)` | Median value |
+| `percentile` | `percentile(revenue, p=0.95)` | 95th percentile |
+| `stddev_samp` / `stddev_pop` | `stddev_samp(latency)` | Sample / population standard deviation |
+| `var_samp` / `var_pop` | `var_samp(latency)` | Sample / population variance |
+| `corr` | `corr(price, other=quantity)` | Pearson correlation between two columns |
+| `covar_samp` / `covar_pop` | `covar_samp(price, other=quantity)` | Sample / population covariance |
 
-`*:count` is always available with no measure definition. `*` means "all rows" and is **only** valid with `count` — `*:sum` and friends are rejected. Detailed NULL / N=1 semantics for the statistical aggregations are documented in [database-support.md](../database-support.md).
+`count(*)` is always available with no measure definition. `*` means "all rows" and is **only** valid with `count` — `sum(*)` and friends are rejected. Detailed NULL / N=1 semantics for the statistical aggregations are documented in [database-support.md](../database-support.md).
 
 ### The `first` and `last` aggregations
 
@@ -288,7 +288,7 @@ columns:
   - {name: balance, sql: balance, type: number}
 ```
 
-`balance:last(updated_at)` gives the most recent balance per group; `balance:first(updated_at)` the earliest. When grouped by month, each month returns the latest (or earliest) record's balance in that month. If no time column is specified, ordering resolves via: query's `main_time_dimension` → first time/date dimension in the query → first time dimension in filters → model's `default_time_dimension`. Whichever column wins is an input of the aggregation: if it, or a derived definition it names, crosses a join hop that is not provably to-one from the aggregation's root, the query fails with the input-safety error exactly as an explicit ranking argument would.
+`last(balance, updated_at)` gives the most recent balance per group; `first(balance, updated_at)` the earliest. When grouped by month, each month returns the latest (or earliest) record's balance in that month. If no time column is specified, ordering resolves via: query's `main_time_dimension` → first time/date dimension in the query → first time dimension in filters → model's `default_time_dimension`. Whichever column wins is an input of the aggregation: if it, or a derived definition it names, crosses a join hop that is not provably to-one from the aggregation's root, the query fails with the input-safety error exactly as an explicit ranking argument would.
 
 Not to be confused with the [`last()` formula function](formulas.md#last-function) — a window-function transform that broadcasts a value across all rows. Same name, different layer.
 
@@ -304,9 +304,9 @@ aggregations:
     formula: "avg(CASE WHEN {expr} BETWEEN {low} AND {high} THEN {expr} END)"
 ```
 
-Use at query time: `price:weighted_avg(weight=quantity)`, `revenue:trimmed_mean(low=10, high=1000)`. An aggregation entry can also override a built-in's default parameters without redefining the SQL. Like columns and measures, aggregations accept an optional `meta` dict for caller bookkeeping.
+Use at query time: `weighted_avg(price, weight=quantity)`, `trimmed_mean(revenue, low=10, high=1000)`. An aggregation entry can also override a built-in's default parameters without redefining the SQL. Like columns and measures, aggregations accept an optional `meta` dict for caller bookkeeping.
 
-A parameter default resolves from the model that declares the aggregation, and a qualifier naming a model already on the query's path to it reads that row rather than re-joining (`weight: customers.spend` on a `regions` aggregation queried as `customers.regions.pop:…` weights by that customer's own spend), while any other qualifier the declaring model cannot reach resolves from the query root.
+A parameter default resolves from the model that declares the aggregation, and a qualifier naming a model already on the query's path to it reads that row rather than re-joining (`weight: customers.spend` on a `regions` aggregation queried as `weighted_avg(customers.regions.pop)` weights by that customer's own spend), while any other qualifier the declaring model cannot reach resolves from the query root.
 
 ## Joins
 
@@ -342,7 +342,7 @@ joins:
     name: shipping_customer
 ```
 
-Now `billing_customer.name` selects the billing customer's name (result key `orders.billing_customer.name`), and from a `customers`-rooted query `billing_customer.amount:sum` traverses the same edge in reverse. Validation rejects an edge name that collides with a model name or another edge name on either endpoint, and warns when unnamed parallel edges are left undisambiguatable.
+Now `billing_customer.name` selects the billing customer's name (result key `orders.billing_customer.name`), and from a `customers`-rooted query `sum(billing_customer.amount)` traverses the same edge in reverse. Validation rejects an edge name that collides with a model name or another edge name on either endpoint, and warns when unnamed parallel edges are left undisambiguatable.
 
 ### Join cardinality
 
@@ -391,7 +391,7 @@ filters:
   - "status <> 'test'"
 ```
 
-These are SQL-mode expressions (Mode A): any valid SQL the underlying dialect accepts — function calls (`json_extract`, `coalesce`, …), `CASE WHEN`, joined-column references via dotted join paths (`customers.regions.name`). Aggregation colon syntax and SLayer transforms are rejected here — those are DSL constructs (Mode B) and belong in query-level filters or `ModelMeasure.formula`. See [references.md](references.md) for the full Mode A / Mode B table. Dotted paths stay dotted (no auto-conversion); the legacy `__`-delimited split-alias form (`customers__regions.name`) is a hard error.
+These are SQL-mode expressions (Mode A): any valid SQL the underlying dialect accepts — function calls (`json_extract`, `coalesce`, …), `CASE WHEN`, joined-column references via dotted join paths (`customers.regions.name`). Aggregations and SLayer transforms are rejected here — those are DSL constructs (Mode B) and belong in query-level filters or `ModelMeasure.formula`. See [references.md](references.md) for the full Mode A / Mode B table. Dotted paths stay dotted (no auto-conversion); the legacy `__`-delimited split-alias form (`customers__regions.name`) is a hard error.
 
 ## Query-backed models
 
@@ -403,7 +403,7 @@ A query-backed model is a queryable relation whose rows are the final-stage resu
 await engine.create_model_from_query(
     query={
         "source_model": "orders",
-        "measures": [{"formula": "amount:sum"}],
+        "measures": [{"formula": "sum(amount)"}],
         "dimensions": ["region"],
         "time_dimensions": [{"dimension": "ordered_at", "granularity": "month"}],
     },
@@ -430,7 +430,7 @@ Or use the saved result as a model in another query:
 ```json
 {
   "source_model": "monthly_revenue",
-  "measures": [{"formula": "amount_sum:avg"}],
+  "measures": [{"formula": "avg(amount_sum)"}],
   "dimensions": ["region"]
 }
 ```
@@ -518,9 +518,9 @@ A query result is a self-contained table — it no longer has the joins the sour
 | `stores.name` | `stores__name` |
 | `customers.regions.name` | `customers__regions__name` |
 | `customer_id` | `customer_id` |
-| `*:count` (measure) | `count` |
-| `revenue:sum` (measure) | `revenue_sum` |
-| `{"formula": "revenue:sum", "name": "rev"}` | `rev` |
+| `count(*)` (measure) | `count` |
+| `sum(revenue)` (measure) | `revenue_sum` |
+| `{"formula": "sum(revenue)", "name": "rev"}` | `rev` |
 
 This uses the same `__` convention as SQL-level join path aliases. When referencing these columns in an outer query, use the `__` name directly (e.g., `{"name": "stores__name"}`), not dot syntax — dots would imply a join to a model that doesn't exist on the virtual table.
 
@@ -533,11 +533,11 @@ An explicit `name` on a measure spec **overrides** the canonical naming above, f
       "name": "raw",
       "source_model": "orders",
       "dimensions": ["region"],
-      "measures": [{"formula": "amount:sum", "name": "rev"}]
+      "measures": [{"formula": "sum(amount)", "name": "rev"}]
     },
     {
       "source_model": "raw",
-      "measures": [{"formula": "rev:sum"}]
+      "measures": [{"formula": "sum(rev)"}]
     }
   ]
 }
@@ -547,7 +547,7 @@ The inner stage emits a column named `rev` (not `amount_sum`), and the outer sta
 
 ## Result column format
 
-Query results use `model_name.column_name` keys. Colon syntax is converted: `revenue:sum` becomes `orders.revenue_sum`; `*:count` becomes `orders._count` (leading underscore so the alias never collides with a user column literally named `count`). Multi-hop joined dimensions keep their full path:
+Query results use `model_name.column_name` keys. Aggregations map to keys: `sum(revenue)` becomes `orders.revenue_sum`; `count(*)` becomes `orders._count` (leading underscore so the alias never collides with a user column literally named `count`). Multi-hop joined dimensions keep their full path:
 
 ```json
 {"orders.status": "completed", "orders._count": 42, "orders.revenue_sum": 1500}

@@ -10,15 +10,15 @@ Key terms used throughout SLayer documentation and code.
 
 **Dimension** — How a column is *used* in a query when it's a GROUP BY key. The column itself isn't a dimension or measure intrinsically — that role is decided per query. In SLayer's query DSL, the `dimensions` list names the columns to group/filter by.
 
-**Measure (in a query)** — A formula entry in `SlayerQuery.measures`. Examples: `"revenue:sum"`, `"*:count"`, `{"formula": "revenue:sum / *:count", "name": "aov"}`, `"cumsum(revenue:sum)"`. Each entry compiles to one output column.
+**Measure (in a query)** — A formula entry in `SlayerQuery.measures`. Examples: `"sum(revenue)"`, `"count(*)"`, `{"formula": "sum(revenue) / count(*)", "name": "aov"}`, `"cumsum(sum(revenue))"`. Each entry compiles to one output column.
 
 **Measure (named formula)** — A saved formula stored on a model (`SlayerModel.measures: List[ModelMeasure]`). Shape `{formula, name, label, description}` — same as a query's inline `measures` entry. Queries reference saved measures by bare name in any formula context (`{"formula": "aov"}`).
 
-**Aggregation** — How a column is rolled up. Built-in aggregations: `sum`, `avg`, `min`, `max`, `count`, `count_distinct`, `count_distinct_approx`, `first`, `last`, `weighted_avg`, `median`, `percentile`, `stddev_samp`, `stddev_pop`, `var_samp`, `var_pop`, `corr`, `covar_samp`, `covar_pop`. Custom aggregations can be defined at model level. Applied at query time via colon syntax: `revenue:sum`, `*:count`, `price:weighted_avg(weight=quantity)`, `price:corr(other=quantity)`.
+**Aggregation** — How a column is rolled up. Built-in aggregations: `sum`, `avg`, `min`, `max`, `count`, `count_distinct`, `count_distinct_approx`, `first`, `last`, `weighted_avg`, `median`, `percentile`, `stddev_samp`, `stddev_pop`, `var_samp`, `var_pop`, `corr`, `covar_samp`, `covar_pop`. Custom aggregations can be defined at model level. Applied at query time as a function call: `sum(revenue)`, `count(*)`, `weighted_avg(price, weight=quantity)`, `corr(price, other=quantity)`.
 
 **Join** — A LEFT JOIN relationship between two models. Defined by a target model name and join key pairs (from the model's own foreign keys). Each model only stores direct joins — multi-hop paths like `customers.regions.name` are resolved at query time by walking each intermediate model's own joins.
 
-**Cross-model measure** — An aggregation over a joined model's column, referenced with dotted syntax and colon aggregation (`customers.score:avg`, or multi-hop: `customers.regions.population:sum`). Computed as a sub-query to avoid row multiplication. Transforms work on cross-model measures: `cumsum(customers.score:avg)`.
+**Cross-model measure** — An aggregation over a joined model's column, referenced with a dotted path inside the aggregation (`avg(customers.score)`, or multi-hop: `sum(customers.regions.population)`). Computed as a sub-query to avoid row multiplication. Transforms work on cross-model measures: `cumsum(avg(customers.score))`.
 
 **ModelExtension** — Extends a model inline on a query with extra `columns`, `measures` (named formulas), `joins`, or `filters` — without modifying the stored model. Used for ad-hoc expression columns, derived buckets, or one-off joins.
 
@@ -30,9 +30,9 @@ Key terms used throughout SLayer documentation and code.
 
 ## Queries
 
-**Measure entry** — A formula entry in `SlayerQuery.measures` (called *Field* in v1, before the v2 schema rename). Defined by a formula string. Examples: aggregated column reference (`"revenue:sum"`), `*`-count (`"*:count"`), arithmetic on aggregated measures (`"revenue:sum / *:count"`), transform function (`"cumsum(revenue:sum)"`), or bare named-formula reference (`{"formula": "aov"}`). Supports an optional `label` for human-readable display. See [Formulas](formulas.md).
+**Measure entry** — A formula entry in `SlayerQuery.measures` (called *Field* in v1, before the v2 schema rename). Defined by a formula string. Examples: aggregated column reference (`"sum(revenue)"`), `*`-count (`"count(*)"`), arithmetic on aggregated measures (`"sum(revenue) / count(*)"`), transform function (`"cumsum(sum(revenue))"`), or bare named-formula reference (`{"formula": "aov"}`). Supports an optional `label` for human-readable display. See [Formulas](formulas.md).
 
-**Label** — An optional human-readable display name for a measure entry, dimension, or time dimension. Separate from the technical `name`, which is used as the result column key. Example: `{"formula": "revenue:sum / *:count", "name": "aov", "label": "Average Order Value"}`.
+**Label** — An optional human-readable display name for a measure entry, dimension, or time dimension. Separate from the technical `name`, which is used as the result column key. Example: `{"formula": "sum(revenue) / count(*)", "name": "aov", "label": "Average Order Value"}`.
 
 **Filter** — A condition that restricts which rows are included. Defined as a formula string: `"status = 'completed'"`, `"amount > 100"`. See [Filter Formulas](formulas.md#filter-formulas).
 

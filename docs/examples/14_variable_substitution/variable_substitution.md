@@ -39,7 +39,7 @@ SQL — not as a filter on the result.
     "data_source": "jaffle_shop",
     "filters": ["order_total >= {floor}"]
   },
-  "measures": ["*:count"],
+  "measures": ["count(*)"],
   "variables": {"floor": 50}
 }
 ```
@@ -70,7 +70,7 @@ collapse leaves valid SQL.
     "data_source": "jaffle_shop",
     "sql": "SELECT o.id, s.name AS store_name FROM orders o LEFT JOIN stores s ON o.store_id = s.id WHERE 1=1 AND {? s.name IN ({stores}) ?}"
   },
-  "measures": ["*:count"],
+  "measures": ["count(*)"],
   "variables": {"stores": ["Brooklyn", "Philadelphia"]}
 }
 ```

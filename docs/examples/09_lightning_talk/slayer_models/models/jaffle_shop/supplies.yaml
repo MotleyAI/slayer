@@ -1,6 +1,7 @@
 version: 10
 name: supplies
 sql_table: supplies
+source_kind: table
 query_variables: {}
 data_source: jaffle_shop
 columns:
@@ -48,12 +49,12 @@ columns:
   label: Product
   hidden: false
 measures:
-- formula: cost:sum
+- formula: sum(cost)
   name: total_supply_cost
   label: Total Supply Cost
   description: Total supply cost, in dollars.
   type: DOUBLE
-- formula: cost:avg
+- formula: avg(cost)
   name: avg_unit_cost
   label: Avg Unit Cost
   description: Average supply unit cost, in dollars.
@@ -65,6 +66,7 @@ joins:
   - - sku
     - sku
   join_type: left
+  cardinality: many_to_one
 filters: []
 description: Supplies (ingredients and packaging) used per product, with unit costs
   in dollars.

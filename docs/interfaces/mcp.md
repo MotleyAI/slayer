@@ -104,12 +104,12 @@ claude mcp list
 | Field | Type | Description |
 |-------|------|-------------|
 | `source_model` | string \| ModelExtension \| SlayerModel | Model name (string), inline `ModelExtension` dict (`{"source_name": "orders", "columns": [...], "joins": [...], "measures": [...]}` — extend a saved model with extras for this query), or inline `SlayerModel` dict (`{"name": "ad_hoc", "sql_table": "...", "data_source": "...", "columns": [...]}` — define a model ad-hoc). Required. |
-| `measures` | list | Aggregated values: column-aggregations, arithmetic, transforms. E.g. `["*:count", {"formula": "revenue:sum / *:count", "name": "aov", "label": "Average Order Value"}, "cumsum(revenue:sum)"]`. Each entry has an optional `label` for human-readable display. Supports nesting: `"change(cumsum(revenue:sum))"`. Bare names resolve to saved `ModelMeasure` formulas on the model. |
+| `measures` | list | Aggregated values: column-aggregations, arithmetic, transforms. E.g. `["count(*)", {"formula": "sum(revenue) / count(*)", "name": "aov", "label": "Average Order Value"}, "cumsum(sum(revenue))"]`. Each entry has an optional `label` for human-readable display. Supports nesting: `"change(cumsum(sum(revenue)))"`. Bare names resolve to saved `ModelMeasure` formulas on the model. |
 | `dimensions` | list | Dimension names, e.g. `["status"]`. When using the engine directly, dimensions accept an optional `label` via `{"name": "status", "label": "Order Status"}`. |
-| `filters` | list[str] | Filter formula strings, e.g. `["status = 'active'", "amount > 100"]`. Supports operators (`=`, `<>`, `>`, `>=`, `<`, `<=`, `IN`, `IS NULL`, `IS NOT NULL`, `LIKE`, `NOT LIKE`), boolean logic (`AND`, `OR`, `NOT`), and inline transform expressions (`"change(revenue:sum) > 0"`). Filters on measures are automatically routed to HAVING. |
+| `filters` | list[str] | Filter formula strings, e.g. `["status = 'active'", "amount > 100"]`. Supports operators (`=`, `<>`, `>`, `>=`, `<`, `<=`, `IN`, `IS NULL`, `IS NOT NULL`, `LIKE`, `NOT LIKE`), boolean logic (`AND`, `OR`, `NOT`), and inline transform expressions (`"change(sum(revenue)) > 0"`). Filters on measures are automatically routed to HAVING. |
 | `time_dimensions` | list[dict] | Time grouping. Each entry supports an optional `label` for display. |
 | `main_time_dimension` | string | Name of the time dimension transforms (`change` / `lag` / …) key off, overriding auto-detection when a query has multiple time dimensions. |
-| `order` | list[dict] | Sorting, e.g. `[{"column": "*:count", "direction": "desc"}]` |
+| `order` | list[dict] | Sorting, e.g. `[{"column": "count(*)", "direction": "desc"}]` |
 | `limit` | int | Max rows |
 | `offset` | int | Skip rows |
 | `whole_periods_only` | bool | Snap date filters to time bucket boundaries, exclude the current incomplete time bucket |
@@ -138,7 +138,7 @@ Memories are free-form notes the agent saves against canonical entity strings (`
 
 | Param | Type | Description |
 |-------|------|-------------|
-| `entities` | list[str] | Canonical entity strings (`mydb.orders.amount`, `memory:42`, …) or aggregated colon forms (`revenue:sum` — the suffix is stripped). Drives the BM25 channel. Unresolved tokens emit warnings, not errors. |
+| `entities` | list[str] | Canonical entity strings (`mydb.orders.amount`, `memory:42`, …) or aggregated forms (`sum(revenue)` — the aggregation is stripped to the column). Drives the BM25 channel. Unresolved tokens emit warnings, not errors. |
 | `query` | dict \| SlayerQuery | Inline query; its `source_model`, dimensions, measures, time dims, and filters are walked for canonical entities. |
 | `question` | str | Free-text question. Drives the Tantivy full-text channel and (when available) the dense-embedding channel. |
 | `datasource` | str | When set, every channel pre-filters to canonical ids rooted at that datasource. Unknown name → error. |
@@ -194,7 +194,7 @@ To explore first without auto-ingesting:
 1. list_datasources()                              # pick a datasource
 2. models_summary(datasource_name="mydb")      # discover its models
 3. inspect_model(model_name="orders")          # see schema + sample data
-4. query(query={"source_model": "orders", "measures": ["*:count"], "dimensions": ["status"], "limit": 10})
+4. query(query={"source_model": "orders", "measures": ["count(*)"], "dimensions": ["status"], "limit": 10})
 ```
 
 ### Customize a model

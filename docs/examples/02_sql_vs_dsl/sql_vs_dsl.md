@@ -22,7 +22,7 @@ What if you want to add to a query a filter that directly references the underly
       {"name": "is_weekend", "sql": "CASE WHEN EXTRACT(dow FROM ordered_at) IN (0, 6) THEN 1 ELSE 0 END", "type": "INT"}
     ]
   },
-  "measures": ["*:count", "order_total:sum"],
+  "measures": ["count(*)", "sum(order_total)"],
   "dimensions": ["stores.name"],
   "filters": ["is_weekend = 1"]
 }

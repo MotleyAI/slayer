@@ -484,7 +484,7 @@ def _extract_column_refs_from_sql(sql: str) -> list[tuple[str | None, str]]:
 
 
 def _parsed_ref_name(node: Union[Ref, DottedRef, AggCall]) -> Optional[str]:
-    """Textual name of a reference-bearing parse node; AggCall collapses to its source name, ``*:count`` (StarSource) yields None."""
+    """Textual name of a reference-bearing parse node; AggCall collapses to its source name, ``count(*)`` (StarSource) yields None."""
     if isinstance(node, AggCall):
         source = node.source
         if not isinstance(source, (Ref, DottedRef)):

@@ -1,23 +1,23 @@
 {
   "guard/dim_bare_aggregate::bigquery": {
     "error": "ValueError",
-    "message": "The aggregate inside computed dimension 'b' must declare the grain it aggregates over with partition_by=, e.g. 'CASE WHEN amount:sum(partition_by=city) > 5000 THEN 1 ELSE 0 END'. Without partition_by the group key is a function of the query's own dimensions and adds no grouping."
+    "message": "The aggregate inside computed dimension 'b' must declare the grain it aggregates over with partition_by=, e.g. 'CASE WHEN sum(amount, partition_by=city) > 5000 THEN 1 ELSE 0 END'. Without partition_by the group key is a function of the query's own dimensions and adds no grouping."
   },
   "guard/dim_bare_aggregate::duckdb": {
     "error": "ValueError",
-    "message": "The aggregate inside computed dimension 'b' must declare the grain it aggregates over with partition_by=, e.g. 'CASE WHEN amount:sum(partition_by=city) > 5000 THEN 1 ELSE 0 END'. Without partition_by the group key is a function of the query's own dimensions and adds no grouping."
+    "message": "The aggregate inside computed dimension 'b' must declare the grain it aggregates over with partition_by=, e.g. 'CASE WHEN sum(amount, partition_by=city) > 5000 THEN 1 ELSE 0 END'. Without partition_by the group key is a function of the query's own dimensions and adds no grouping."
   },
   "guard/dim_bare_aggregate::postgres": {
     "error": "ValueError",
-    "message": "The aggregate inside computed dimension 'b' must declare the grain it aggregates over with partition_by=, e.g. 'CASE WHEN amount:sum(partition_by=city) > 5000 THEN 1 ELSE 0 END'. Without partition_by the group key is a function of the query's own dimensions and adds no grouping."
+    "message": "The aggregate inside computed dimension 'b' must declare the grain it aggregates over with partition_by=, e.g. 'CASE WHEN sum(amount, partition_by=city) > 5000 THEN 1 ELSE 0 END'. Without partition_by the group key is a function of the query's own dimensions and adds no grouping."
   },
   "guard/dim_bare_aggregate::sqlite": {
     "error": "ValueError",
-    "message": "The aggregate inside computed dimension 'b' must declare the grain it aggregates over with partition_by=, e.g. 'CASE WHEN amount:sum(partition_by=city) > 5000 THEN 1 ELSE 0 END'. Without partition_by the group key is a function of the query's own dimensions and adds no grouping."
+    "message": "The aggregate inside computed dimension 'b' must declare the grain it aggregates over with partition_by=, e.g. 'CASE WHEN sum(amount, partition_by=city) > 5000 THEN 1 ELSE 0 END'. Without partition_by the group key is a function of the query's own dimensions and adds no grouping."
   },
   "guard/dim_bare_aggregate::tsql": {
     "error": "ValueError",
-    "message": "The aggregate inside computed dimension 'b' must declare the grain it aggregates over with partition_by=, e.g. 'CASE WHEN amount:sum(partition_by=city) > 5000 THEN 1 ELSE 0 END'. Without partition_by the group key is a function of the query's own dimensions and adds no grouping."
+    "message": "The aggregate inside computed dimension 'b' must declare the grain it aggregates over with partition_by=, e.g. 'CASE WHEN sum(amount, partition_by=city) > 5000 THEN 1 ELSE 0 END'. Without partition_by the group key is a function of the query's own dimensions and adds no grouping."
   },
   "guard/dim_cross_model_source::bigquery": {
     "error": "ValueError",
@@ -41,23 +41,23 @@
   },
   "guard/filter_no_common_scope::bigquery": {
     "error": "PositionTypingError",
-    "message": "This filter expression is valid as neither a field nor a measure. Field typing failed: it references amount:sum (partition_by), available only after aggregation. Measure typing failed: it references row-level status, not available at the query grain (not among the query dimensions). Split the top-level AND conjuncts so each resolves in one typing, or add the row-level reference to the query dimensions."
+    "message": "This filter expression is valid as neither a field nor a measure. Field typing failed: it references sum(amount) (partition_by), available only after aggregation. Measure typing failed: it references row-level status, not available at the query grain (not among the query dimensions). Split the top-level AND conjuncts so each resolves in one typing, or add the row-level reference to the query dimensions."
   },
   "guard/filter_no_common_scope::duckdb": {
     "error": "PositionTypingError",
-    "message": "This filter expression is valid as neither a field nor a measure. Field typing failed: it references amount:sum (partition_by), available only after aggregation. Measure typing failed: it references row-level status, not available at the query grain (not among the query dimensions). Split the top-level AND conjuncts so each resolves in one typing, or add the row-level reference to the query dimensions."
+    "message": "This filter expression is valid as neither a field nor a measure. Field typing failed: it references sum(amount) (partition_by), available only after aggregation. Measure typing failed: it references row-level status, not available at the query grain (not among the query dimensions). Split the top-level AND conjuncts so each resolves in one typing, or add the row-level reference to the query dimensions."
   },
   "guard/filter_no_common_scope::postgres": {
     "error": "PositionTypingError",
-    "message": "This filter expression is valid as neither a field nor a measure. Field typing failed: it references amount:sum (partition_by), available only after aggregation. Measure typing failed: it references row-level status, not available at the query grain (not among the query dimensions). Split the top-level AND conjuncts so each resolves in one typing, or add the row-level reference to the query dimensions."
+    "message": "This filter expression is valid as neither a field nor a measure. Field typing failed: it references sum(amount) (partition_by), available only after aggregation. Measure typing failed: it references row-level status, not available at the query grain (not among the query dimensions). Split the top-level AND conjuncts so each resolves in one typing, or add the row-level reference to the query dimensions."
   },
   "guard/filter_no_common_scope::sqlite": {
     "error": "PositionTypingError",
-    "message": "This filter expression is valid as neither a field nor a measure. Field typing failed: it references amount:sum (partition_by), available only after aggregation. Measure typing failed: it references row-level status, not available at the query grain (not among the query dimensions). Split the top-level AND conjuncts so each resolves in one typing, or add the row-level reference to the query dimensions."
+    "message": "This filter expression is valid as neither a field nor a measure. Field typing failed: it references sum(amount) (partition_by), available only after aggregation. Measure typing failed: it references row-level status, not available at the query grain (not among the query dimensions). Split the top-level AND conjuncts so each resolves in one typing, or add the row-level reference to the query dimensions."
   },
   "guard/filter_no_common_scope::tsql": {
     "error": "PositionTypingError",
-    "message": "This filter expression is valid as neither a field nor a measure. Field typing failed: it references amount:sum (partition_by), available only after aggregation. Measure typing failed: it references row-level status, not available at the query grain (not among the query dimensions). Split the top-level AND conjuncts so each resolves in one typing, or add the row-level reference to the query dimensions."
+    "message": "This filter expression is valid as neither a field nor a measure. Field typing failed: it references sum(amount) (partition_by), available only after aggregation. Measure typing failed: it references row-level status, not available at the query grain (not among the query dimensions). Split the top-level AND conjuncts so each resolves in one typing, or add the row-level reference to the query dimensions."
   },
   "lift/coexist_cross_model::bigquery": "WITH _base AS (\n  SELECT\n    orders.region AS `orders___region`,\n    orders.city AS `orders___city`\n  FROM orders AS orders\n  GROUP BY\n    orders.region,\n    orders.city\n), _cm_orders__amount_sum_partition_by_region AS (\n  SELECT\n    orders.region AS `orders___region`,\n    CAST(SUM(orders.amount) AS FLOAT64) AS `orders___rt`\n  FROM orders AS orders\n  GROUP BY\n    orders.region\n), _cm_orders__customers__spend_sum AS (\n  SELECT\n    CAST(SUM(customers.spend) AS FLOAT64) AS `customers___spend_sum`\n  FROM customers AS customers\n)\nSELECT\n  _base.`orders___region`,\n  _base.`orders___city`,\n  _cm_orders__amount_sum_partition_by_region.`orders___rt`,\n  _cm_orders__customers__spend_sum.`customers___spend_sum` AS `orders___cm`\nFROM _base\nLEFT JOIN _cm_orders__amount_sum_partition_by_region\n  ON _base.`orders___region` IS NOT DISTINCT FROM _cm_orders__amount_sum_partition_by_region.`orders___region`\nCROSS JOIN _cm_orders__customers__spend_sum",
   "lift/coexist_cross_model::duckdb": "WITH _base AS (\n  SELECT\n    orders.region AS \"orders.region\",\n    orders.city AS \"orders.city\"\n  FROM orders AS orders\n  GROUP BY\n    orders.region,\n    orders.city\n), _cm_orders__amount_sum_partition_by_region AS (\n  SELECT\n    orders.region AS \"orders.region\",\n    CAST(SUM(orders.amount) AS DOUBLE) AS \"orders.rt\"\n  FROM orders AS orders\n  GROUP BY\n    orders.region\n), _cm_orders__customers__spend_sum AS (\n  SELECT\n    CAST(SUM(customers.spend) AS DOUBLE) AS \"customers.spend_sum\"\n  FROM customers AS customers\n)\nSELECT\n  _base.\"orders.region\",\n  _base.\"orders.city\",\n  _cm_orders__amount_sum_partition_by_region.\"orders.rt\",\n  _cm_orders__customers__spend_sum.\"customers.spend_sum\" AS \"orders.cm\"\nFROM _base\nLEFT JOIN _cm_orders__amount_sum_partition_by_region\n  ON _base.\"orders.region\" IS NOT DISTINCT FROM _cm_orders__amount_sum_partition_by_region.\"orders.region\"\nCROSS JOIN _cm_orders__customers__spend_sum",

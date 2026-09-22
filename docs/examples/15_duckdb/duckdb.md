@@ -14,9 +14,9 @@ Each notebook shows, from scratch, how to define a view over a remote file in Du
 
 - a **dimension computed from an aggregate** — group each month *warm* or
   *cool* by its average high temperature, a
-  `CASE WHEN temp_max:avg(partition_by=date) …` band used as a grouping
+  `CASE WHEN avg(temp_max, partition_by=date) …` band used as a grouping
   dimension; and
-- a **ranking transform in a measure** — `rank(precipitation:sum)` to order the
+- a **ranking transform in a measure** — `rank(sum(precipitation))` to order the
   months by rainfall, one of SLayer's query-time
   [transforms](../../concepts/formulas.md).
 

@@ -281,7 +281,7 @@ def canonical_aggregate_alias(  # NOSONAR(S3776) — sequential dispatch over th
     if profile in ("cte_schema", "declared_name"):
         return canonical
 
-    # A source's anchor carries its join path, so ``customers.*:count`` keeps the hop.
+    # A source's anchor carries its join path, so ``count(customers.*)`` keeps the hop.
     path: Tuple[str, ...] = source_anchor_path(key.source)
 
     if profile == "stage_formula":

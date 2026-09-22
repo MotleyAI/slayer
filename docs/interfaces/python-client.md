@@ -19,7 +19,7 @@ client = SlayerClient(url="http://localhost:5143")
 
 query = {
     "source_model": "orders",
-    "measures": ["*:count", "revenue:sum"],
+    "measures": ["count(*)", "sum(revenue)"],
     "dimensions": ["status"],
     "limit": 10,
 }
@@ -60,8 +60,8 @@ df = client.query_df(query)
 ```python
 # Multi-stage DAG
 client.query_sync([
-    {"name": "by_customer", "source_model": "orders", "measures": [{"formula": "amount:sum"}], "dimensions": [{"name": "customer_id"}]},
-    {"source_model": "by_customer", "measures": [{"formula": "amount_sum:avg"}]},
+    {"name": "by_customer", "source_model": "orders", "measures": [{"formula": "sum(amount)"}], "dimensions": [{"name": "customer_id"}]},
+    {"source_model": "by_customer", "measures": [{"formula": "avg(amount_sum)"}]},
 ])
 
 # Run-by-name (query-backed model)

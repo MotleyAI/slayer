@@ -16,7 +16,7 @@ At the semantic level this is the natural framing: *aggregation is a property of
 
 In contrast, most semantic layers force you to pre-declare one measure per (expression × aggregation) pair, which multiplies the model surface area fast.
 
-SLayer's answer is **colon syntax**: `revenue:sum`, `revenue:avg`, `revenue:percentile(p=0.25)`. 
+SLayer's answer is to pick the aggregation at query time: `sum(revenue)`, `avg(revenue)`, `percentile(revenue, p=0.25)`. 
 [Custom aggregations](../07_aggregations/aggregations.md) defined with SQL templates and parameters (weighted averages, percentiles, trimmed means) plug in the same way.
 
 Contrast this with pre-definition-heavy semantic layers. In something like Cube.js, every new shape of question requires a pre-declared measure or dimension in the cube: time-shifted revenue is one measure, its change over period another, the same pair repeated for every granularity and time column you care about, plus every bucket dimension you might plausibly want. The model definition explodes combinatorially — and the resulting thing has to fit into an agent's context window. 
@@ -59,18 +59,18 @@ Here is the nested-aggregation example, written out in full. The inner query com
   {
     "name": "monthly_store_revenue",
     "source_model": "orders",
-    "measures": ["order_total:sum"],
+    "measures": ["sum(order_total)"],
     "dimensions": ["stores.name"],
     "time_dimensions": [{"dimension": "ordered_at", "granularity": "month"}]
   },
   {
     "source_model": "monthly_store_revenue",
-    "measures": ["order_total_sum:avg"],
+    "measures": ["avg(order_total_sum)"],
     "dimensions": ["stores.name"]
   }
 ]
 ```
 
-Two queries, one list. `order_total:sum` from the inner query becomes the field `order_total_sum` in the outer (colon → underscore), aggregable again via the same colon syntax as any other measure. See the [multistage queries post](../06_multistage_queries/multistage_queries.md) for the calculated-bucket pattern and further examples.
+Two queries, one list. `sum(order_total)` from the inner query becomes the field `order_total_sum` in the outer, aggregable again the same way as any other measure. See the [multistage queries post](../06_multistage_queries/multistage_queries.md) for the calculated-bucket pattern and further examples.
 
 What would it take to ask this question in the semantic layer you're currently using?

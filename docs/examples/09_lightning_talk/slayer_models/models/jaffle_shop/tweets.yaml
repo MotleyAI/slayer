@@ -1,6 +1,7 @@
 version: 10
 name: tweets
 sql_table: tweets
+source_kind: table
 query_variables: {}
 data_source: jaffle_shop
 columns:
@@ -36,7 +37,7 @@ columns:
   label: Tweet
   hidden: false
 measures:
-- formula: id:count
+- formula: count(id)
   name: tweet_count
   label: Tweets
   description: Number of tweets.
@@ -48,6 +49,7 @@ joins:
   - - user_id
     - id
   join_type: left
+  cardinality: many_to_one
 filters: []
 default_time_dimension: tweeted_at
 description: Synthetic customer tweets mentioning the Jaffle Shop.

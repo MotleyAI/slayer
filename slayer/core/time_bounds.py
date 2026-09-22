@@ -2,7 +2,7 @@
 
 Some CTEs must read rows from OUTSIDE the query's visible time frame:
 
-* a duration-windowed measure's ``_src`` subquery (``revenue:sum(window='90d')``)
+* a duration-windowed measure's ``_src`` subquery (``sum(revenue, window='90d')``)
   — the trailing window reaches back before the earliest visible bucket, or that
   bucket under-counts;
 * a ``time_shift`` shifted CTE — the shifted value for the earliest visible
