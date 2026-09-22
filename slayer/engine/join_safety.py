@@ -12,7 +12,7 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple, TypeVar, Uni
 from pydantic import BaseModel
 
 from slayer.core.enums import JoinCardinality, RANKED_AGGREGATIONS, invert_cardinality
-from slayer.core.errors import AmbiguousJoinPathError
+from slayer.core.errors import AmbiguousJoinPathError, CircularJoinPathError
 from slayer.core.join_walker import OrientedJoin, resolve_hop, walk
 from slayer.core.keys import (
     AggregateKey,
@@ -121,7 +121,10 @@ def safe_reachable(
     """Is ``path`` a reachable chain of provably many-to-one hops from ``root``?
     Any declared edge traverses in either orientation (DEV-1853); an unresolvable
     or revisiting hop fails the walk. Empty path is safe. An ambiguous hop raises."""
-    chain = walk(root=root, path=path, models_by_name=models_by_name)
+    try:
+        chain = walk(root=root, path=path, models_by_name=models_by_name)
+    except CircularJoinPathError:
+        return False
     if chain is None:
         return False
     for edge in chain:
@@ -262,7 +265,10 @@ def _back_path(
     host_model = models_by_name.get(host_name)
     if host_model is None or not target_path:
         return (host_name,)
-    chain = walk(root=host_model, path=target_path, models_by_name=models_by_name)
+    try:
+        chain = walk(root=host_model, path=target_path, models_by_name=models_by_name)
+    except CircularJoinPathError:
+        return (host_name,)
     if chain is None:
         return (host_name,)
     return tuple(reversed([edge.name or edge.source_model for edge in chain]))
@@ -286,11 +292,15 @@ def _route_via_common_prefix(
     longest common prefix — the reversed per-hop tokens of ``target_path`` past
     it — then forward along ``host_path``'s own suffix. When they share nothing
     this is ``_back_path`` + ``host_path`` (byte-identical to the old round trip);
-    an ambiguous reverse hop propagates from ``walk``."""
+    an ambiguous reverse hop propagates from ``walk``, a revisiting one keeps the
+    round trip."""
     host_model = models_by_name.get(host_name)
     if host_model is None or not target_path:
         return (host_name, *host_path)
-    chain = walk(root=host_model, path=target_path, models_by_name=models_by_name)
+    try:
+        chain = walk(root=host_model, path=target_path, models_by_name=models_by_name)
+    except CircularJoinPathError:
+        return (host_name, *host_path)
     if chain is None:
         return (host_name, *host_path)
     cp = _common_prefix_len(target_path, host_path)
@@ -460,7 +470,7 @@ def _hop_walk_reason(
     many-to-one, else ``None`` (an unresolvable/ambiguous path is unreachable)."""
     try:
         chain = walk(root=root_model, path=path, models_by_name=models_by_name)
-    except AmbiguousJoinPathError:
+    except (AmbiguousJoinPathError, CircularJoinPathError):
         return None
     if chain is None:
         return None
@@ -690,7 +700,7 @@ def _path_grain_determined(
     to-one hops, each hop reseeded by an entity or FK key in the grain."""
     try:
         chain = walk(root=host_model, path=path, models_by_name=models_by_name)
-    except AmbiguousJoinPathError:
+    except (AmbiguousJoinPathError, CircularJoinPathError):
         return False
     if path and chain is None:
         return False
