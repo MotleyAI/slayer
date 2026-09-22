@@ -538,51 +538,62 @@ def _walk_join_chain(
     defaulting to ``parts``) spells the circular error's reference in full."""
     models_by_name = bundle.models_by_name
     models_by_name.setdefault(host.name, host)
+    spelled = parts if original_parts is None else original_parts
     current = host
     visited_models = {host.name}
     for hop in hop_path:
         edge = resolve_hop(current=current, token=hop, models_by_name=models_by_name)
         if edge is None:
-            if current is host and len(hop_path) == 1:
-                route = dimension_routing.route_dotted_target(
-                    root=host, target_model=hop, leaf=leaf,
-                    models_by_name=models_by_name,
-                )
-                terminal = models_by_name.get(hop)
-                if terminal is None:
-                    raise UnknownReferenceError(
-                        name=".".join(parts),
-                        scope_kind="ModelScope",
-                        scope_summary=f"target {hop!r} not in source bundle",
-                        suggestion=None,
-                    )
-                return terminal, tuple(route)
-            raise _broken_chain_error(
-                host=host, hop_path=hop_path, leaf=leaf, parts=parts,
+            return _route_edgeless_hop(
+                host=host, hop=hop, hop_path=hop_path, leaf=leaf, parts=parts,
                 models_by_name=models_by_name,
             )
         nxt = models_by_name.get(edge.target_model)
         if nxt is None:
-            raise UnknownReferenceError(
-                name=".".join(parts),
-                scope_kind="ModelScope",
-                scope_summary=f"target {edge.target_model!r} not in source bundle",
-                suggestion=None,
-            )
+            raise _target_not_in_bundle(parts=parts, target=edge.target_model)
         # Revisiting a model is a circular join (``a -> b -> a``): reject here
         # rather than fail confusingly on the leaf. Same class as the derived
         # save-time refusal (DEV-1952); still a ValueError, wording preserved.
         if nxt.name in visited_models:
             raise CircularJoinPathError(
-                reference=".".join(parts if original_parts is None else original_parts),
-                root_model=host.name,
-                revisited=nxt.name,
-                hop=hop,
-                via=current.name,
+                reference=".".join(spelled), root_model=host.name,
+                revisited=nxt.name, hop=hop, via=current.name,
             )
         visited_models.add(nxt.name)
         current = nxt
     return current, tuple(hop_path)
+
+
+def _route_edgeless_hop(
+    *,
+    host: SlayerModel,
+    hop: str,
+    hop_path: Tuple[str, ...],
+    leaf: str,
+    parts: Tuple[str, ...],
+    models_by_name: Dict[str, SlayerModel],
+) -> Tuple[SlayerModel, Tuple[str, ...]]:
+    """A hop with no incident edge: a bare ``Target`` short form auto-routes to
+    its datasource-scoped path (DEV-1856); a longer chain is broken."""
+    if len(hop_path) != 1:
+        raise _broken_chain_error(
+            host=host, hop_path=hop_path, leaf=leaf, parts=parts,
+            models_by_name=models_by_name,
+        )
+    route = dimension_routing.route_dotted_target(
+        root=host, target_model=hop, leaf=leaf, models_by_name=models_by_name,
+    )
+    terminal = models_by_name.get(hop)
+    if terminal is None:
+        raise _target_not_in_bundle(parts=parts, target=hop)
+    return terminal, tuple(route)
+
+
+def _target_not_in_bundle(*, parts: Tuple[str, ...], target: str) -> UnknownReferenceError:
+    return UnknownReferenceError(
+        name=".".join(parts), scope_kind="ModelScope",
+        scope_summary=f"target {target!r} not in source bundle", suggestion=None,
+    )
 
 
 def _broken_chain_error(
