@@ -488,7 +488,7 @@ class DbtToSlayerConverter:
                         f"(semi-additive aggregation), which is not exactly expressible."
                     ),
                     suggestion=(
-                        "Express as balance:last(<time_col>) / first(...) "
+                        "Express as last(balance, <time_col>) / first(...) "
                         "or a multi-stage query."
                     ),
                     raw={"non_additive_dimension": m.non_additive_dimension.model_dump()},
@@ -1470,7 +1470,7 @@ class DbtToSlayerConverter:
                     f"exactly expressible as a filtered aggregate."
                 ),
                 suggestion=(
-                    "Express as balance:last(<time_col>) / first(...) or a "
+                    "Express as last(balance, <time_col>) / first(...) or a "
                     "multi-stage query."
                 ),
                 raw={"non_additive_dimension": dbt_measure.non_additive_dimension.model_dump()},

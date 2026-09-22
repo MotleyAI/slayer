@@ -1,6 +1,7 @@
 version: 10
 name: products
 sql_table: products
+source_kind: table
 query_variables: {}
 data_source: jaffle_shop
 columns:
@@ -49,12 +50,12 @@ columns:
   label: Description
   hidden: false
 measures:
-- formula: sku:count_distinct
+- formula: count_distinct(sku)
   name: product_count
   label: Products
   description: Number of distinct products.
   type: INT
-- formula: price:avg
+- formula: avg(price)
   name: avg_price
   label: Average Price
   description: Average list price, in dollars.

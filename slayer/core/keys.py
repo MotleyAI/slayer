@@ -295,10 +295,10 @@ def column_path(col: Union["ColumnKey", "ColumnSqlKey"]) -> Tuple[str, ...]:
 
 
 class StarKey(_LeafKey, frozen=True):
-    """Sentinel source for ``*:count`` aggregations.
+    """Sentinel source for ``count(*)`` aggregations.
 
     ``path`` is empty for the local star and non-empty for a cross-model star
-    (``customers.*:count`` → ``path=("customers",)``), mirroring ``ColumnKey.path``.
+    (``count(customers.*)`` → ``path=("customers",)``), mirroring ``ColumnKey.path``.
     """
 
     path: Tuple[str, ...] = ()

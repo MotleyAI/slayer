@@ -25,7 +25,7 @@ BASE_URL = os.environ.get("SLAYER_URL", "http://localhost:5143")
 # Repeated literals (hoisted per SonarCloud python:S1192) — these strings
 # would otherwise show up nine and eight times respectively.
 QUERY_PATH = "/query"
-COUNT_MEASURE = "*:count"
+COUNT_MEASURE = "count(*)"
 
 _passed = 0
 _failed = 0
@@ -189,10 +189,10 @@ def main():
         body={
             "source_model": "order_items",
             "measures": [
-                "sale_price:sum",
-                "sale_price:avg",
-                "sale_price:min",
-                "sale_price:max",
+                "sum(sale_price)",
+                "avg(sale_price)",
+                "min(sale_price)",
+                "max(sale_price)",
             ],
         },
     )["data"][0]

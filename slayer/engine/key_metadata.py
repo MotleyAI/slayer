@@ -55,7 +55,7 @@ def aggregated_type(
     ``classify_aggregation`` (DEV-1788), so it cannot drift from
     ``_infer_aggregated_format``:
 
-    * ``COUNT`` (``*:count`` / count-family) → ``INT``
+    * ``COUNT`` (``count(*)`` / count-family) → ``INT``
     * ``FLOAT_SOURCE_UNITS`` / ``FLOAT_PLAIN`` (avg-family, stat, parametric) →
       ``DOUBLE``
     * ``PRESERVING`` (sum / min / max / first / last, and custom aggs) → inherit
@@ -175,7 +175,7 @@ def measure_key_format_description(
 ) -> Tuple[Optional[NumberFormat], Optional[str]]:
     """``format`` / ``description`` for a measure slot, from its bound key.
 
-    ``*:count`` has an inferred INTEGER format but no description — there is
+    ``count(*)`` has an inferred INTEGER format but no description — there is
     no source column to document it.
     """
     name = _local_aggregate_source_name(key)

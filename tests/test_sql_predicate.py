@@ -1,7 +1,7 @@
 """Unit tests for slayer.sql.sql_predicate.parse_sql_predicate.
 
 Mode A SQL-mode filter validator (DEV-1369 round 2). Pre-rejects DSL
-constructs (aggregation colon syntax, transform calls, raw OVER) and
+constructs (aggregation references, transform calls, raw OVER) and
 extracts column-shaped identifier tokens. Does not invoke sqlglot —
 dialect-aware parsing happens at SQL generation time.
 """
@@ -87,11 +87,11 @@ class TestSqlPredicateRejects:
     """DSL constructs are pre-rejected at construction time."""
 
     def test_aggregation_colon_syntax_rejected(self) -> None:
-        with pytest.raises(ValueError, match="aggregation colon syntax"):
+        with pytest.raises(ValueError, match="aggregation reference"):
             parse_sql_predicate("revenue:sum > 100")
 
     def test_star_count_colon_rejected(self) -> None:
-        with pytest.raises(ValueError, match="aggregation colon syntax"):
+        with pytest.raises(ValueError, match="aggregation reference"):
             parse_sql_predicate("*:count > 10")
 
     def test_slayer_transform_call_rejected(self) -> None:

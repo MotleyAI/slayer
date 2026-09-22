@@ -20,7 +20,7 @@ for o in ORDERS:
     STATUS_COUNTS[o[4]] = STATUS_COUNTS.get(o[4], 0) + 1
 
 # Repeated string literal hoisted to a constant (Sonar python:S1192).
-COUNT_MEASURE = "*:count"
+COUNT_MEASURE = "count(*)"
 
 BASE_URL = "http://localhost:5143"
 

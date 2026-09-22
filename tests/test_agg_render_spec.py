@@ -292,7 +292,7 @@ class TestBuilderStarKey:
         key = AggregateKey(source=StarKey(), agg="count", args=(Decimal("1"),))
         slot = _slot(key, declared_name="_count", public_name="_count")
         source_model = _orders_model()
-        with pytest.raises(ValueError, match=r"\*:count.* no args"):
+        with pytest.raises(ValueError, match=r"count\(\*\).* no args"):
             _invoke(
                 slot=slot,
                 key=key,
@@ -309,7 +309,7 @@ class TestBuilderStarKey:
         )
         slot = _slot(key, declared_name="_count", public_name="_count")
         source_model = _orders_model()
-        with pytest.raises(ValueError, match=r"\*:count.* no args or kwargs"):
+        with pytest.raises(ValueError, match=r"count\(\*\).* no args or kwargs"):
             _invoke(
                 slot=slot,
                 key=key,

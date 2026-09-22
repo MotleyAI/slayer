@@ -465,7 +465,7 @@ class TestResolveEntityStarCount:
     ) -> None:
         with pytest.raises(EntityResolutionError) as exc_info:
             await resolve_entity("*:count", storage=storage)
-        assert "*:count" in str(exc_info.value)
+        assert "count(*)" in str(exc_info.value)
 
     async def test_star_count_with_source_model_uses_it(
         self, storage: StorageBackend

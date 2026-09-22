@@ -34,7 +34,7 @@ An OSI metric holds a raw SQL aggregation expression. SLayer parses it into aggr
 
 - `SUM(amount)` → `sum(amount)`, `COUNT(*)` → `count(*)`, `COUNT(DISTINCT id)` → `count_distinct(id)`
 - arithmetic + constants + scalar functions pass through: `SUM(a) / NULLIF(COUNT(*), 0)` → `sum(a) / nullif(count(*), 0)`
-- a non-bare aggregate operand is materialized as a hidden derived column: `SUM(quantity * amount)` → a hidden column `quantity * amount` plus `<col>:sum`
+- a non-bare aggregate operand is materialized as a hidden derived column: `SUM(quantity * amount)` → a hidden column `quantity * amount` plus `sum(<col>)`
 - `PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY x)` → `percentile(x, p=0.9)` (`0.5` → `median(x)`)
 
 A metric that references columns from more than one dataset is attached to an **anchor** model — the model that reaches every referenced dataset over the relationship-derived joins (chosen via the same logic as [`recommend_root_model`](../concepts/queries.md#choosing-a-root-model)). Cross-dataset columns are emitted as join-qualified dotted refs (`sum(customers.regions.population)`).

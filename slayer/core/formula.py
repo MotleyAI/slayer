@@ -617,8 +617,8 @@ def _bare_name_message(*, name: str, known_measures: frozenset[str]) -> str:
     hint = f" Did you mean '{suggestion[0]}'?" if suggestion else ""
     return (
         f"'{name}' is not a saved measure.{hint} Reference a saved measure by its "
-        f"bare name, or aggregate a column with colon syntax (e.g., '{name}:sum'). "
-        f"For COUNT(*), use '*:count'."
+        f"bare name, or aggregate a column (e.g., 'sum({name})'). "
+        f"For COUNT(*), use 'count(*)'."
     )
 
 

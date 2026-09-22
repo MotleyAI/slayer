@@ -1009,7 +1009,7 @@ def _columns_to_model(
         if "." in col.name:
             continue
 
-        # Avoid name collision with the magic "*:count" / "_count" alias used
+        # Avoid name collision with the magic "count(*)" / "_count" alias used
         # for COUNT(*) by renaming a literal "_count" column.
         column_name = "count_col" if col.name == "_count" else col.name
 

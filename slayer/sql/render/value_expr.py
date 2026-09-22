@@ -271,7 +271,7 @@ def _render_builtin_aggregate(  # NOSONAR(S3776) — sequential fail-closed guar
     if isinstance(key.source, StarKey):
         star_path = source_anchor_path(key.source)
         if star_path:
-            # ``customers.*:count`` counts the JOINED relation's rows (needs the join graph); a bare ``*`` would count host rows.
+            # ``count(customers.*)`` counts the JOINED relation's rows (needs the join graph); a bare ``*`` would count host rows.
             raise RenderContextMissingFacilityError(
                 key_kind=type(key).__name__,
                 facility=_AGG_BUILDER,

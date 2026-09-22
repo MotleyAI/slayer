@@ -178,7 +178,7 @@ async def _profile_categorical_column(
         q = SlayerQuery.model_validate({
             "source_model": model.name,
             "dimensions": [{"name": column.name}],
-            "measures": [{"formula": "*:count"}],
+            "measures": [{"formula": "count(*)"}],
             "order": [
                 {"column": "_count", "direction": "desc"},
                 {"column": column.name, "direction": "asc"},
@@ -236,8 +236,8 @@ async def _profile_numeric_temporal_columns(
     ]
     measures_payload: list[dict[str, str]] = []
     for c in columns:
-        measures_payload.append({"formula": f"_slayer_range_{c.name}:min"})
-        measures_payload.append({"formula": f"_slayer_range_{c.name}:max"})
+        measures_payload.append({"formula": f"min(_slayer_range_{c.name})"})
+        measures_payload.append({"formula": f"max(_slayer_range_{c.name})"})
     row: dict[str, Any] = {}
     try:
         q = SlayerQuery.model_validate({
@@ -389,7 +389,7 @@ async def _profile_categorical_with_total(
         q = SlayerQuery.model_validate({
             "source_model": model.name,
             "dimensions": [{"name": column.name}],
-            "measures": [{"formula": "*:count"}],
+            "measures": [{"formula": "count(*)"}],
             "order": [
                 {"column": "_count", "direction": "desc"},
                 {"column": column.name, "direction": "asc"},

@@ -1250,8 +1250,8 @@ def _convert_call(  # NOSONAR(S3776) — the one call-dispatch ladder (colon pla
         suggestion=(
             f"Mode-B accepts the closed scalar allowlist "
             f"({sorted(SCALAR_FUNCTIONS)}), transforms "
-            f"({sorted(ALL_TRANSFORMS)}), and aggregations in colon or "
-            f"functional form (`revenue:sum` / `sum(revenue)`); custom "
+            f"({sorted(ALL_TRANSFORMS)}), and aggregations "
+            f"(`sum(revenue)`); custom "
             f"aggregation names must be defined on the model."
         ),
     )

@@ -340,20 +340,20 @@ def _build_sample_query_args(
 ) -> dict[str, Any]:
     """Build the ``SlayerQuery`` payload for ``inspect_model``'s sample data.
 
-    First measure is always ``*:count``; then one aggregation per non-hidden,
+    First measure is always ``count(*)``; then one aggregation per non-hidden,
     non-primary-key, non-grouped column (see :func:`_choose_sample_agg`).
     """
     measure_types = measure_types or {}
     dims, dim_names = _choose_sample_dims(model)
 
-    measures: list[dict[str, str]] = [{"formula": "*:count"}]
+    measures: list[dict[str, str]] = [{"formula": "count(*)"}]
     for c in model.columns:
         if c.hidden or c.primary_key or c.name in dim_names:
             continue
         agg = _choose_sample_agg(c, measure_types=measure_types)
         if agg is None:
             continue
-        measures.append({"formula": f"{c.name}:{agg}"})
+        measures.append({"formula": f"{agg}({c.name})"})
 
     return {
         "source_model": model.name,
@@ -387,7 +387,7 @@ async def _get_row_count(
     model: SlayerModel, engine: SlayerQueryEngine,
 ) -> int | None:
     """Return the total row count of ``model``'s underlying table, or ``None``
-    on any failure. Uses a bare ``*:count`` query — the same aggregation a user
+    on any failure. Uses a bare ``count(*)`` query — the same aggregation a user
     would run to ask for the count.
 
     The result column is read positionally (the query has exactly one field)
@@ -398,7 +398,7 @@ async def _get_row_count(
     try:
         q = SlayerQuery.model_validate({
             "source_model": model.name,
-            "measures": [{"formula": "*:count"}],
+            "measures": [{"formula": "count(*)"}],
         })
         r = await engine.execute(query=q, data_source=model.data_source or None)
     except Exception:
@@ -453,8 +453,8 @@ async def _collect_measure_profile(
     ]
     measures_payload: list[dict[str, str]] = []
     for c in columns:
-        measures_payload.append({"formula": f"_slayer_probe_{c.name}:min"})
-        measures_payload.append({"formula": f"_slayer_probe_{c.name}:max"})
+        measures_payload.append({"formula": f"min(_slayer_probe_{c.name})"})
+        measures_payload.append({"formula": f"max(_slayer_probe_{c.name})"})
 
     try:
         q = SlayerQuery.model_validate({
@@ -742,7 +742,7 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
     if truncated_model_desc:
         out_sections.append(truncated_model_desc)
 
-    # Metadata bullets (incl. row_count from a cheap *:count query)
+    # Metadata bullets (incl. row_count from a cheap count(*) query)
     meta: list[str] = []
     if model.data_source:
         meta.append(f"- **data_source:** `{model.data_source}`")
@@ -1107,7 +1107,7 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
                 if not _is_unsupported_grouping_error(exc):
                     raise
                 minimal_args = dict(query_args)
-                minimal_args["measures"] = [{"formula": "*:count"}]
+                minimal_args["measures"] = [{"formula": "count(*)"}]
                 minimal_args["dimensions"] = []
                 sample_query = SlayerQuery.model_validate(minimal_args)
                 try:

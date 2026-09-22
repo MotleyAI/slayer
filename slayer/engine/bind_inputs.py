@@ -517,7 +517,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
             # A joined dim/td is declared flattened; a dotted ORDER BY entry interns onto that slot.
             bo = declared_alias_to_bound[_flatten_dotted(full_name)]
         elif _order_host_local and f"_{col_name}" in declared_alias_to_bound:
-            # ``*:count`` surfaces as ``_count``; users order by the bare ``count``.
+            # ``count(*)`` surfaces as ``_count``; users order by the bare ``count``.
             bo = declared_alias_to_bound[f"_{col_name}"]
         elif o.raw_formula:
             bo = bind_expr(
@@ -1129,7 +1129,7 @@ def _canonical_alias_for_formula(
     when given (DEV-1826), so ``cumsum(sum(revenue))`` and
     ``cumsum(revenue:sum)`` derive one alias."""
     if bound is not None and isinstance(bound.value_key, AggregateKey):
-        # stage_formula profile prefixes the join path relative to the stage (``customers.*:count`` → ``customers._count``).
+        # stage_formula profile prefixes the join path relative to the stage (``count(customers.*)`` → ``customers._count``).
         alias = canonical_aggregate_alias(
             bound.value_key, profile="stage_formula",
         )

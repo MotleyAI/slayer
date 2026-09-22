@@ -1,43 +1,43 @@
 {
   "res/transform_no_aggregate::bigquery": {
     "error": "ValueError",
-    "message": "The transform 'cumsum' inside computed dimension 'b' must take an aggregate input \u2014 a transform acts on aggregates, e.g. cumsum(amount:sum(partition_by=city))."
+    "message": "The transform 'cumsum' inside computed dimension 'b' must take an aggregate input \u2014 a transform acts on aggregates, e.g. cumsum(sum(amount, partition_by=city))."
   },
   "res/transform_no_aggregate::duckdb": {
     "error": "ValueError",
-    "message": "The transform 'cumsum' inside computed dimension 'b' must take an aggregate input \u2014 a transform acts on aggregates, e.g. cumsum(amount:sum(partition_by=city))."
+    "message": "The transform 'cumsum' inside computed dimension 'b' must take an aggregate input \u2014 a transform acts on aggregates, e.g. cumsum(sum(amount, partition_by=city))."
   },
   "res/transform_no_aggregate::postgres": {
     "error": "ValueError",
-    "message": "The transform 'cumsum' inside computed dimension 'b' must take an aggregate input \u2014 a transform acts on aggregates, e.g. cumsum(amount:sum(partition_by=city))."
+    "message": "The transform 'cumsum' inside computed dimension 'b' must take an aggregate input \u2014 a transform acts on aggregates, e.g. cumsum(sum(amount, partition_by=city))."
   },
   "res/transform_no_aggregate::sqlite": {
     "error": "ValueError",
-    "message": "The transform 'cumsum' inside computed dimension 'b' must take an aggregate input \u2014 a transform acts on aggregates, e.g. cumsum(amount:sum(partition_by=city))."
+    "message": "The transform 'cumsum' inside computed dimension 'b' must take an aggregate input \u2014 a transform acts on aggregates, e.g. cumsum(sum(amount, partition_by=city))."
   },
   "res/transform_no_aggregate::tsql": {
     "error": "ValueError",
-    "message": "The transform 'cumsum' inside computed dimension 'b' must take an aggregate input \u2014 a transform acts on aggregates, e.g. cumsum(amount:sum(partition_by=city))."
+    "message": "The transform 'cumsum' inside computed dimension 'b' must take an aggregate input \u2014 a transform acts on aggregates, e.g. cumsum(sum(amount, partition_by=city))."
   },
   "res/transform_ungrained::bigquery": {
     "error": "ValueError",
-    "message": "The aggregate 'amount:sum' inside the transform in computed dimension 'b' must declare partition_by= explicitly: the ungrained default (the query's own dimensions) would include the dimension being defined."
+    "message": "The aggregate 'sum(amount)' inside the transform in computed dimension 'b' must declare partition_by= explicitly: the ungrained default (the query's own dimensions) would include the dimension being defined."
   },
   "res/transform_ungrained::duckdb": {
     "error": "ValueError",
-    "message": "The aggregate 'amount:sum' inside the transform in computed dimension 'b' must declare partition_by= explicitly: the ungrained default (the query's own dimensions) would include the dimension being defined."
+    "message": "The aggregate 'sum(amount)' inside the transform in computed dimension 'b' must declare partition_by= explicitly: the ungrained default (the query's own dimensions) would include the dimension being defined."
   },
   "res/transform_ungrained::postgres": {
     "error": "ValueError",
-    "message": "The aggregate 'amount:sum' inside the transform in computed dimension 'b' must declare partition_by= explicitly: the ungrained default (the query's own dimensions) would include the dimension being defined."
+    "message": "The aggregate 'sum(amount)' inside the transform in computed dimension 'b' must declare partition_by= explicitly: the ungrained default (the query's own dimensions) would include the dimension being defined."
   },
   "res/transform_ungrained::sqlite": {
     "error": "ValueError",
-    "message": "The aggregate 'amount:sum' inside the transform in computed dimension 'b' must declare partition_by= explicitly: the ungrained default (the query's own dimensions) would include the dimension being defined."
+    "message": "The aggregate 'sum(amount)' inside the transform in computed dimension 'b' must declare partition_by= explicitly: the ungrained default (the query's own dimensions) would include the dimension being defined."
   },
   "res/transform_ungrained::tsql": {
     "error": "ValueError",
-    "message": "The aggregate 'amount:sum' inside the transform in computed dimension 'b' must declare partition_by= explicitly: the ungrained default (the query's own dimensions) would include the dimension being defined."
+    "message": "The aggregate 'sum(amount)' inside the transform in computed dimension 'b' must declare partition_by= explicitly: the ungrained default (the query's own dimensions) would include the dimension being defined."
   },
   "ts/series_cm_leaf::bigquery": "SELECT\n    `sales___ordered_at`,\n    `sales___t`\nFROM (\nWITH _base AS (\n  SELECT\n    DATE_TRUNC(sales.ordered_at, MONTH) AS `sales___ordered_at`,\n    SUM(sales.revenue) AS `sales___revenue_sum`\n  FROM sales AS sales\n  GROUP BY\n    DATE_TRUNC(sales.ordered_at, MONTH)\n), _cm_sales__regions__factor_sum AS (\n  SELECT\n    CAST(SUM(regions.factor) AS FLOAT64) AS `regions___factor_sum`\n  FROM regions AS regions\n), base AS (\n  SELECT\n    _base.`sales___ordered_at`,\n    _base.`sales___revenue_sum`,\n    _cm_sales__regions__factor_sum.`regions___factor_sum` AS `regions___factor_sum`\n  FROM _base\n  CROSS JOIN _cm_sales__regions__factor_sum\n), shifted_t AS (\n  SELECT\n    `sales___ordered_at` AS `sales___ordered_at`,\n    `sales___revenue_sum` + `regions___factor_sum` AS `t__ts`\n  FROM base\n), sjoin_t AS (\n  SELECT\n    base.`sales___ordered_at`,\n    base.`sales___revenue_sum`,\n    base.`regions___factor_sum`,\n    shifted_t.`t__ts` AS `sales___t`\n  FROM base\n  LEFT JOIN shifted_t\n    ON base.`sales___ordered_at` - INTERVAL 1 MONTH IS NOT DISTINCT FROM shifted_t.`sales___ordered_at`\n)\nSELECT\n  `sales___ordered_at`,\n  `sales___revenue_sum`,\n  `regions___factor_sum`,\n  `sales___t`\nFROM sjoin_t\n) AS _outer",
   "ts/series_cm_leaf::duckdb": "SELECT\n    \"sales.ordered_at\",\n    \"sales.t\"\nFROM (\nWITH _base AS (\n  SELECT\n    DATE_TRUNC('MONTH', sales.ordered_at) AS \"sales.ordered_at\",\n    SUM(sales.revenue) AS \"sales.revenue_sum\"\n  FROM sales AS sales\n  GROUP BY\n    DATE_TRUNC('MONTH', sales.ordered_at)\n), _cm_sales__regions__factor_sum AS (\n  SELECT\n    CAST(SUM(regions.factor) AS DOUBLE) AS \"regions.factor_sum\"\n  FROM regions AS regions\n), base AS (\n  SELECT\n    _base.\"sales.ordered_at\",\n    _base.\"sales.revenue_sum\",\n    _cm_sales__regions__factor_sum.\"regions.factor_sum\" AS \"regions.factor_sum\"\n  FROM _base\n  CROSS JOIN _cm_sales__regions__factor_sum\n), shifted_t AS (\n  SELECT\n    \"sales.ordered_at\" AS \"sales.ordered_at\",\n    \"sales.revenue_sum\" + \"regions.factor_sum\" AS \"t__ts\"\n  FROM base\n), sjoin_t AS (\n  SELECT\n    base.\"sales.ordered_at\",\n    base.\"sales.revenue_sum\",\n    base.\"regions.factor_sum\",\n    shifted_t.\"t__ts\" AS \"sales.t\"\n  FROM base\n  LEFT JOIN shifted_t\n    ON base.\"sales.ordered_at\" - INTERVAL 1 MONTH IS NOT DISTINCT FROM shifted_t.\"sales.ordered_at\"\n)\nSELECT\n  \"sales.ordered_at\",\n  \"sales.revenue_sum\",\n  \"regions.factor_sum\",\n  \"sales.t\"\nFROM sjoin_t\n) AS _outer",

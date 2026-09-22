@@ -14,7 +14,7 @@ on every non-empty grain and disagree on the empty one: over a source with no
 rows the aggregate form returns ONE row holding NULL and the filter form returns
 none. An empty grain is joined back with a CROSS JOIN, so a zero-row CTE erases
 the entire result rather than yielding a NULL measure — and returning one NULL
-row is what ``amount:sum`` does over the same empty source.
+row is what ``sum(amount)`` does over the same empty source.
 
 **The inner SELECT projects a NAMED list, never ``source.*``.** Re-exporting the
 source's columns is what made the superseded ranked wrap need a bolted-on

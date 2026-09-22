@@ -26,8 +26,8 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
 
 # Repeated string literals hoisted to constants (Sonar python:S1192).
-COUNT_MEASURE = "*:count"
-QUANTITY_SUM_MEASURE = "quantity:sum"
+COUNT_MEASURE = "count(*)"
+QUANTITY_SUM_MEASURE = "sum(quantity)"
 
 
 def main():
@@ -115,7 +115,7 @@ def main():
         measures=[
             COUNT_MEASURE,
             QUANTITY_SUM_MEASURE,
-            {"formula": "quantity:sum / *:count", "name": "avg_qty"},
+            {"formula": "sum(quantity) / count(*)", "name": "avg_qty"},
         ],
         order=[{"column": "created_at", "direction": "asc"}],
     ))
@@ -129,7 +129,7 @@ def main():
         time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
         measures=[
             COUNT_MEASURE,
-            {"formula": "cumsum(*:count)", "name": "cumulative"},
+            {"formula": "cumsum(count(*))", "name": "cumulative"},
         ],
         order=[{"column": "created_at", "direction": "asc"}],
     ))
@@ -143,8 +143,8 @@ def main():
         time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
         measures=[
             COUNT_MEASURE,
-            {"formula": "time_shift(*:count, -1)", "name": "prev_month"},
-            {"formula": "change(*:count)", "name": "mom_change"},
+            {"formula": "time_shift(count(*), -1)", "name": "prev_month"},
+            {"formula": "change(count(*))", "name": "mom_change"},
         ],
         order=[{"column": "created_at", "direction": "asc"}],
     ))
@@ -158,7 +158,7 @@ def main():
     result = engine.execute_sync(query=SlayerQuery(
         source_model="orders",
         dimensions=["customers.name"],
-        measures=[COUNT_MEASURE, {"formula": "rank(*:count)", "name": "rk"}],
+        measures=[COUNT_MEASURE, {"formula": "rank(count(*))", "name": "rk"}],
         order=[{"column": "count", "direction": "desc"}],
     ))
     for row in result.data:
@@ -171,7 +171,7 @@ def main():
         measures=[
             COUNT_MEASURE,
             QUANTITY_SUM_MEASURE,
-            {"formula": "quantity:sum / *:count", "name": "avg_qty"},
+            {"formula": "sum(quantity) / count(*)", "name": "avg_qty"},
         ],
         order=[{"column": "count", "direction": "desc"}],
     ))
@@ -184,8 +184,8 @@ def main():
         time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
         measures=[
             COUNT_MEASURE,
-            {"formula": "cumsum(*:count)", "name": "running_total"},
-            {"formula": "change(*:count)", "name": "mom_change"},
+            {"formula": "cumsum(count(*))", "name": "running_total"},
+            {"formula": "change(count(*))", "name": "mom_change"},
         ],
         order=[{"column": "created_at", "direction": "asc"}],
     ))
@@ -200,7 +200,7 @@ def main():
         time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
         measures=[
             COUNT_MEASURE,
-            {"formula": "last(*:count)", "name": "latest_month"},
+            {"formula": "last(count(*))", "name": "latest_month"},
         ],
         order=[{"column": "created_at", "direction": "asc"}],
     ))

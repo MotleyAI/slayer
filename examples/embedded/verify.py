@@ -22,7 +22,7 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
 
 # Repeated string literals hoisted to constants (Sonar python:S1192).
-COUNT_MEASURE = "*:count"
+COUNT_MEASURE = "count(*)"
 COUNT_KEY = "orders._count"
 CUMSUM_CHANGE_KEY = "orders.cumsum_change"
 CHG_KEY = "orders.chg"
@@ -152,8 +152,8 @@ def main():
             time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
             measures=[
                 COUNT_MEASURE,
-                "quantity:sum",
-                {"formula": "quantity:sum / *:count", "name": "avg_qty"},
+                "sum(quantity)",
+                {"formula": "sum(quantity) / count(*)", "name": "avg_qty"},
             ],
             order=[{"column": "created_at", "direction": "asc"}],
         )
@@ -170,7 +170,7 @@ def main():
         query=SlayerQuery(
             source_model="orders",
             time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
-            measures=[COUNT_MEASURE, {"formula": "cumsum(*:count)", "name": "cumulative"}],
+            measures=[COUNT_MEASURE, {"formula": "cumsum(count(*))", "name": "cumulative"}],
             order=[{"column": "created_at", "direction": "asc"}],
         )
     )
@@ -185,7 +185,7 @@ def main():
         query=SlayerQuery(
             source_model="orders",
             time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
-            measures=[COUNT_MEASURE, {"formula": "time_shift(*:count, -1)", "name": "prev"}],
+            measures=[COUNT_MEASURE, {"formula": "time_shift(count(*), -1)", "name": "prev"}],
             order=[{"column": "created_at", "direction": "asc"}],
         )
     )
@@ -197,7 +197,7 @@ def main():
         query=SlayerQuery(
             source_model="orders",
             time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
-            measures=[COUNT_MEASURE, {"formula": "change(*:count)", "name": "chg"}],
+            measures=[COUNT_MEASURE, {"formula": "change(count(*))", "name": "chg"}],
             order=[{"column": "created_at", "direction": "asc"}],
         )
     )
@@ -210,7 +210,7 @@ def main():
         query=SlayerQuery(
             source_model="orders",
             dimensions=["customers.name"],
-            measures=[COUNT_MEASURE, {"formula": "rank(*:count)", "name": "rnk"}],
+            measures=[COUNT_MEASURE, {"formula": "rank(count(*))", "name": "rnk"}],
             order=[{"column": "count", "direction": "desc"}],
         )
     )
@@ -226,8 +226,8 @@ def main():
             dimensions=["products.category"],
             measures=[
                 COUNT_MEASURE,
-                "quantity:sum",
-                {"formula": "quantity:sum / *:count", "name": "avg_qty"},
+                "sum(quantity)",
+                {"formula": "sum(quantity) / count(*)", "name": "avg_qty"},
             ],
         )
     )
@@ -242,8 +242,8 @@ def main():
             time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
             measures=[
                 COUNT_MEASURE,
-                {"formula": "cumsum(*:count)", "name": "running"},
-                {"formula": "change(*:count)", "name": "chg"},
+                {"formula": "cumsum(count(*))", "name": "running"},
+                {"formula": "change(count(*))", "name": "chg"},
             ],
             order=[{"column": "created_at", "direction": "asc"}],
         )
@@ -258,7 +258,7 @@ def main():
         query=SlayerQuery(
             source_model="orders",
             time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
-            measures=[COUNT_MEASURE, {"formula": "last(*:count)", "name": "latest"}],
+            measures=[COUNT_MEASURE, {"formula": "last(count(*))", "name": "latest"}],
             order=[{"column": "created_at", "direction": "asc"}],
         )
     )
@@ -278,7 +278,7 @@ def main():
             time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
             measures=[
                 COUNT_MEASURE,
-                {"formula": "cumsum(change(*:count))", "name": "cumsum_change"},
+                {"formula": "cumsum(change(count(*)))", "name": "cumsum_change"},
             ],
             order=[{"column": "created_at", "direction": "asc"}],
         )

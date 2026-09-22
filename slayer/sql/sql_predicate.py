@@ -4,7 +4,7 @@
 expressions: arbitrary SQL function calls and operators are accepted
 (``json_extract``, ``coalesce``, ``CASE WHEN``, dialect-specific operators
 like Postgres ``@>`` / ``ILIKE ANY``, MySQL ``<=>``); SLayer DSL
-constructs (aggregation colon syntax, transform calls, raw ``OVER (...)``)
+constructs (aggregation references, transform calls, raw ``OVER (...)``)
 are rejected with a clear actionable error.
 
 DEV-1369 round 2: this validator does **not** invoke sqlglot. It only
@@ -53,7 +53,7 @@ def _reject_dsl_constructs(formula: str) -> None:
     agg_match = AGG_REF_RE.search(stripped)
     if agg_match is not None:
         raise ValueError(
-            f"SQL-mode filter cannot contain SLayer aggregation colon syntax "
+            f"SQL-mode filter cannot contain a SLayer aggregation reference "
             f"({agg_match.group(0)!r}). Aggregations are a DSL construct — "
             f"put them in a query filter (`SlayerQuery.filters`) or in a "
             f"`ModelMeasure.formula`. The filter was: {formula!r}"
@@ -103,7 +103,7 @@ _SQL_KEYWORDS = frozenset({
 def parse_sql_predicate(formula: str) -> ParsedFilter:
     """Validate a SQL-mode predicate string and return a :class:`ParsedFilter`.
 
-    Pre-rejects DSL constructs (aggregation colon, transform calls) and
+    Pre-rejects DSL constructs (aggregation references, transform calls) and
     raw ``OVER (...)`` window-function syntax. Does NOT invoke sqlglot —
     full dialect-aware SQL parsing happens at generation time.
 
