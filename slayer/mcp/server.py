@@ -1681,7 +1681,7 @@ To connect a new database: create_datasource → describe_datasource (verify + l
         paths are ready to drop into a query whose ``source_model`` is the
         recommended root — e.g. a joined column comes back as
         ``customers.regions.name`` and a root-owned one as ``status``;
-        aggregation spellings (``sum(revenue)`` / ``revenue:sum``) are preserved.
+        aggregations (``sum(revenue)``) are preserved.
 
         When no single model reaches everything, ``root_model`` is null and
         ``coverage`` lists the best partial roots so you can split the
@@ -1692,7 +1692,7 @@ To connect a new database: create_datasource → describe_datasource (verify + l
 
         Args:
             items: entity references (``orders.revenue``, ``customers.name``,
-                ``orders.revenue:sum`` / ``sum(orders.revenue)``, bare ``aov`` for a saved metric...).
+                ``sum(orders.revenue)``, bare ``aov`` for a saved metric...).
             data_source: optional datasource scope; when omitted, names
                 resolve via the datasource-priority list. All items must
                 resolve to a single datasource.

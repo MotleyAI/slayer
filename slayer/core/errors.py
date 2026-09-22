@@ -351,7 +351,7 @@ class MeasureNameCollidesWithColumnError(SlayerError, ValueError):
 
 
 class CanonicalAliasShadowsColumnError(SlayerError, ValueError):
-    """A formula's canonical alias (``amount_sum`` for ``amount:sum``) shadows a source column on the same model."""
+    """A formula's canonical alias (``amount_sum`` for ``sum(amount)``) shadows a source column on the same model."""
 
     def __init__(self, formula: str, canonical: str, model: str) -> None:
         self.formula = formula

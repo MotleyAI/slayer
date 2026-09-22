@@ -30,14 +30,14 @@ Spec versions `1.0`, `0.1.0`, `0.1.1`, and `0.2.0.dev0` are all accepted (they a
 
 ### Metrics
 
-An OSI metric holds a raw SQL aggregation expression. SLayer parses it into colon-syntax formulas:
+An OSI metric holds a raw SQL aggregation expression. SLayer parses it into aggregation formulas:
 
-- `SUM(amount)` → `amount:sum`, `COUNT(*)` → `*:count`, `COUNT(DISTINCT id)` → `id:count_distinct`
-- arithmetic + constants + scalar functions pass through: `SUM(a) / NULLIF(COUNT(*), 0)` → `a:sum / nullif(*:count, 0)`
+- `SUM(amount)` → `sum(amount)`, `COUNT(*)` → `count(*)`, `COUNT(DISTINCT id)` → `count_distinct(id)`
+- arithmetic + constants + scalar functions pass through: `SUM(a) / NULLIF(COUNT(*), 0)` → `sum(a) / nullif(count(*), 0)`
 - a non-bare aggregate operand is materialized as a hidden derived column: `SUM(quantity * amount)` → a hidden column `quantity * amount` plus `<col>:sum`
-- `PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY x)` → `x:percentile(p=0.9)` (`0.5` → `x:median`)
+- `PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY x)` → `percentile(x, p=0.9)` (`0.5` → `median(x)`)
 
-A metric that references columns from more than one dataset is attached to an **anchor** model — the model that reaches every referenced dataset over the relationship-derived joins (chosen via the same logic as [`recommend_root_model`](../concepts/queries.md#choosing-a-root-model)). Cross-dataset columns are emitted as join-qualified dotted refs (`customers.regions.population:sum`).
+A metric that references columns from more than one dataset is attached to an **anchor** model — the model that reaches every referenced dataset over the relationship-derived joins (chosen via the same logic as [`recommend_root_model`](../concepts/queries.md#choosing-a-root-model)). Cross-dataset columns are emitted as join-qualified dotted refs (`sum(customers.regions.population)`).
 
 ## Dialect Selection
 

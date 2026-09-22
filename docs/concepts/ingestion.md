@@ -1,6 +1,6 @@
 # Auto-Ingestion
 
-SLayer can introspect a database schema and automatically generate models with a unified `columns` list and **direct FK-based joins**. Aggregations are picked at query time with colon syntax (`amount:sum`, `*:count`); the model itself doesn't carry pre-baked aggregates.
+SLayer can introspect a database schema and automatically generate models with a unified `columns` list and **direct FK-based joins**. Aggregations are picked at query time (`sum(amount)`, `count(*)`); the model itself doesn't carry pre-baked aggregates.
 
 SLayer has three ingestion paths:
 

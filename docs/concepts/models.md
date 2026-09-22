@@ -30,7 +30,7 @@ A query then asks for `sum(revenue)` (aggregate the `revenue` column), `aov` (th
 | `data_source` | string | Yes | Datasource name |
 | `columns` | list[Column] | No | Column definitions. For query-backed models this is an engine-managed cache |
 | `measures` | list[ModelMeasure] | No | Named formula library — referenced by bare name in queries |
-| `aggregations` | list[Aggregation] | No | Custom aggregation operators usable via colon syntax |
+| `aggregations` | list[Aggregation] | No | Custom aggregation operators |
 | `joins` | list[ModelJoin] | No | LEFT JOIN relationships to other models |
 | `filters` | list[str] | No | Model-level WHERE filters (always applied) |
 | `default_time_dimension` | string | No | Default time dim for time-dependent formulas |
@@ -163,7 +163,7 @@ A derived column whose definition (recursively) crosses a fanning (not provably 
 
 Same-model references may be written **bare** (just the column name) or qualified with the host alias — both forms expand the same way. So given `bucket.sql = "raw_a / 10"`, a sibling `rn.sql = "ROW_NUMBER() OVER (PARTITION BY bucket ORDER BY id)"` correctly expands `bucket` to the inlined body. Bare references inside a nested scope (sub-query, `UNION` branch, CTE, `VALUES`) are NOT inlined — those identifiers belong to the inner rowset, not the host model — so `Column.sql = "(SELECT MAX(score) FROM other) + score"` inlines the outer `score` but leaves the inner one alone.
 
-Cycles in the reference graph (e.g., `c1.sql = "c2 + 1"` and `c2.sql = "c1 - 1"`) are rejected at `save_model` time and raise `ColumnCycleError` (which subclasses both `SlayerError` and `ValueError`) with the cycle path in the message — so a broken chain never reaches a query. The compile-time guard remains as defence in depth. Save-time validation stays within the model's `data_source`; unresolved cross-datasource refs are silently skipped. The same expansion is applied to filters and to colon-aggregated measures, so `"B.foo_normalized:sum"` produces `SUM(B.foo_raw / 100.0)`.
+Cycles in the reference graph (e.g., `c1.sql = "c2 + 1"` and `c2.sql = "c1 - 1"`) are rejected at `save_model` time and raise `ColumnCycleError` (which subclasses both `SlayerError` and `ValueError`) with the cycle path in the message — so a broken chain never reaches a query. The compile-time guard remains as defence in depth. Save-time validation stays within the model's `data_source`; unresolved cross-datasource refs are silently skipped. The same expansion is applied to filters and to aggregated measures, so `"sum(B.foo_normalized)"` produces `SUM(B.foo_raw / 100.0)`.
 
 ### Window functions in `Column.sql`
 
@@ -196,7 +196,7 @@ If you specifically want SQLite's JSON-scalar operator, write `->>` (`exp.JSONEx
 SLayer has two list fields on a model that both relate to metrics, and the names don't make the difference obvious. The split is real and load-bearing:
 
 - **`measures`** is a library of named **formulas** — saved expressions like `aov = sum(revenue) / count(*)`. Queries reference them by bare name and the formula expands inline. Think *what to compute*, at the metric level.
-- **`aggregations`** is a registry of custom **operators** — definitions like `trimmed_mean(p)` or `weighted_avg(weight=…)`. Once defined, they become usable as colon suffixes inside any formula: `revenue:trimmed_mean(p=0.1)`. Think *how to aggregate*, at the operator level.
+- **`aggregations`** is a registry of custom **operators** — definitions like `trimmed_mean(p)` or `weighted_avg(weight=…)`. Once defined, they become usable inside any formula: `trimmed_mean(revenue, p=0.1)`. Think *how to aggregate*, at the operator level.
 
 A typical model uses zero or a few entries in each. They compose:
 
@@ -253,11 +253,11 @@ See [formulas.md](formulas.md) for the full formula grammar — operators, trans
 
 ## Aggregations
 
-Aggregations are the operators that turn a column expression into a value: `:sum`, `:avg`, `:percentile(p=…)`, and so on. They're applied at query time via colon syntax — `measure:aggregation` — and the same operator works on any compatible column.
+Aggregations are the operators that turn a column expression into a value: `sum`, `avg`, `percentile(p=…)`, and so on. They're applied at query time as a function call — `aggregation(measure)` — and the same operator works on any compatible column.
 
 ### Built-in aggregations
 
-| Aggregation | Colon syntax | SQL |
+| Aggregation | Syntax | SQL |
 |-------------|--------------|-----|
 | `count` | `count(*)` | `COUNT(*)` — counts all rows |
 | `count` | `count(col)` | `COUNT(col)` — counts non-null values |
@@ -337,7 +337,7 @@ joins:
     name: shipping_customer
 ```
 
-Now `billing_customer.name` selects the billing customer's name (result key `orders.billing_customer.name`), and from a `customers`-rooted query `billing_customer.amount:sum` traverses the same edge in reverse. Validation rejects an edge name that collides with a model name or another edge name on either endpoint, and warns when unnamed parallel edges are left undisambiguatable.
+Now `billing_customer.name` selects the billing customer's name (result key `orders.billing_customer.name`), and from a `customers`-rooted query `sum(billing_customer.amount)` traverses the same edge in reverse. Validation rejects an edge name that collides with a model name or another edge name on either endpoint, and warns when unnamed parallel edges are left undisambiguatable.
 
 ### Join cardinality
 
@@ -386,7 +386,7 @@ filters:
   - "status <> 'test'"
 ```
 
-These are SQL-mode expressions (Mode A): any valid SQL the underlying dialect accepts — function calls (`json_extract`, `coalesce`, …), `CASE WHEN`, joined-column references via dotted join paths (`customers.regions.name`). Aggregation colon syntax and SLayer transforms are rejected here — those are DSL constructs (Mode B) and belong in query-level filters or `ModelMeasure.formula`. See [references.md](references.md) for the full Mode A / Mode B table. Dotted paths stay dotted (no auto-conversion); the legacy `__`-delimited split-alias form (`customers__regions.name`) is a hard error.
+These are SQL-mode expressions (Mode A): any valid SQL the underlying dialect accepts — function calls (`json_extract`, `coalesce`, …), `CASE WHEN`, joined-column references via dotted join paths (`customers.regions.name`). Aggregations and SLayer transforms are rejected here — those are DSL constructs (Mode B) and belong in query-level filters or `ModelMeasure.formula`. See [references.md](references.md) for the full Mode A / Mode B table. Dotted paths stay dotted (no auto-conversion); the legacy `__`-delimited split-alias form (`customers__regions.name`) is a hard error.
 
 ## Query-backed models
 
@@ -542,7 +542,7 @@ The inner stage emits a column named `rev` (not `amount_sum`), and the outer sta
 
 ## Result column format
 
-Query results use `model_name.column_name` keys. Colon syntax is converted: `revenue:sum` becomes `orders.revenue_sum`; `*:count` becomes `orders._count` (leading underscore so the alias never collides with a user column literally named `count`). Multi-hop joined dimensions keep their full path:
+Query results use `model_name.column_name` keys. Aggregations map to keys: `sum(revenue)` becomes `orders.revenue_sum`; `count(*)` becomes `orders._count` (leading underscore so the alias never collides with a user column literally named `count`). Multi-hop joined dimensions keep their full path:
 
 ```json
 {"orders.status": "completed", "orders._count": 42, "orders.revenue_sum": 1500}

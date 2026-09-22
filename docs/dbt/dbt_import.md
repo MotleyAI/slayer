@@ -57,7 +57,7 @@ Each generated join carries a [`cardinality`](../concepts/models.md#join-cardina
 
 dbt bakes aggregation into each measure (`agg: sum`). SLayer separates them — a row-level expression lives on a `Column`, and the aggregation is named on a `ModelMeasure` formula.
 
-Each unique SQL expression among the dbt measures of a semantic model becomes one SLayer `Column`; each dbt measure becomes one `ModelMeasure` whose formula references that column with the colon aggregation:
+Each unique SQL expression among the dbt measures of a semantic model becomes one SLayer `Column`; each dbt measure becomes one `ModelMeasure` whose formula references that column with its aggregation:
 
 ```yaml
 # dbt: {name: revenue, agg: sum, expr: amount}
@@ -68,7 +68,7 @@ columns:
     format: {type: float}
 measures:
   - name: revenue
-    formula: amount:sum
+    formula: sum(amount)
 ```
 
 When the dbt expression is a SQL fragment rather than a bare identifier (e.g. `amount * quantity`), the Column is named `<first_dbt_measure_name>_col`:
@@ -82,7 +82,7 @@ columns:
     format: {type: float}
 measures:
   - name: line_total
-    formula: line_total_col:sum
+    formula: sum(line_total_col)
 ```
 
 If the natural Column name would collide with a `ModelMeasure` name on the same model, the Column is suffixed with `_col`. The dbt measure's `label` and `description` are written verbatim onto the `ModelMeasure` only — never onto the underlying `Column`.
@@ -99,9 +99,9 @@ columns:
     format: {type: float}
 measures:
   - name: revenue_sum
-    formula: amount:sum
+    formula: sum(amount)
   - name: revenue_avg
-    formula: amount:avg
+    formula: avg(amount)
 ```
 
 ### Metrics
@@ -122,7 +122,7 @@ columns:
     filter: "has_loss_payment = 1"
 measures:
   - name: loss_payment_amount
-    formula: loss_payment_amount_col:sum
+    formula: sum(loss_payment_amount_col)
 ```
 
 At query time, `loss_payment_amount` generates:
@@ -150,9 +150,9 @@ Every legal dbt construct that reaches the importer is either represented exactl
 | dbt construct | SLayer representation |
 | --- | --- |
 | Measure `agg: sum/avg/min/max/count/count_distinct/median` | `ModelMeasure` `col:<agg>` |
-| Measure `agg: percentile` (continuous) | `col:percentile(p=<value>)` |
-| Measure `agg: count_distinct_approx` | `col:count_distinct_approx` (dialect-aware) |
-| Measure `agg: sum_boolean` | `Column.sql = "CASE WHEN (<expr>) THEN 1 ELSE 0 END"`, type `INT`, `col:sum` |
+| Measure `agg: percentile` (continuous) | `percentile(col, p=<value>)` |
+| Measure `agg: count_distinct_approx` | `count_distinct_approx(col)` (dialect-aware) |
+| Measure `agg: sum_boolean` | `Column.sql = "CASE WHEN (<expr>) THEN 1 ELSE 0 END"`, type `INT`, `sum(col)` |
 | Metric-level / per-input `filter` | pushed down into a leaf `Column.filter` (CASE-inside-aggregate) |
 | Filter as string **or** list (`WhereFilterIntersection`) | AND-joined into one filter |
 | Ratio metric | `num / nullif(den, 0)` |

@@ -50,14 +50,14 @@ measures:
 columns:
   - { name: amount, type: DOUBLE }
 measures:
-  - { name: total_revenue, formula: "amount:sum" }
+  - { name: total_revenue, formula: "sum(amount)" }
 ```
 
-- `count` with no `sql` → `*:count`; `count_distinct_approx` → `count_distinct`.
+- `count` with no `sql` → `count(*)`; `count_distinct_approx` → `count_distinct`.
 - Conditional `filters:` become a `CASE WHEN` on the column's `filter`. Two
   measures over the same expression but different filters get distinct columns.
 - A finite trailing `rolling_window` becomes a windowed aggregation
-  (`amount:sum(window='30d')`).
+  (`sum(amount, window='30d')`).
 - Calculated measures (`type: number/string/time/boolean`) referencing other
   measures become a `ModelMeasure` formula (`{revenue} / {count}` → `revenue / count`).
 - `format` maps to `NumberFormat` (`percent`, `currency`, `number`).
@@ -90,8 +90,8 @@ A Cube view (which owns no table) becomes a thin model anchored on its
 `join_path` root cube: included dimensions become derived columns
 (`sql: "customers.name"`), and included measures become local or cross-model
 `ModelMeasure`s that reference the measure's **underlying column** — a joined
-measure `revenue` with `sql: {CUBE}.amount` becomes `customers.amount:sum`, not
-`customers.revenue:sum`. `prefix: true` prepends the cube name, and
+measure `revenue` with `sql: {CUBE}.amount` becomes `sum(customers.amount)`, not
+`sum(customers.revenue)`. `prefix: true` prepends the cube name, and
 `default_filters` become model filters.
 
 ### `extends`

@@ -168,7 +168,7 @@ def _build_demo_enrichment() -> dict[str, _TableEnrichment]:
                 "customers and stores, and is referenced by items."
             ),
             # Default the weighted_avg weight to subtotal, so a bare
-            # ``order_total:weighted_avg`` is a sales-weighted average.
+            # ``weighted_avg(order_total)`` is a sales-weighted average.
             aggregations=[
                 Aggregation(
                     name="weighted_avg",
@@ -206,56 +206,56 @@ def _build_demo_enrichment() -> dict[str, _TableEnrichment]:
             measures=[
                 ModelMeasure(
                     name="total_revenue",
-                    formula="order_total:sum",
+                    formula="sum(order_total)",
                     label="Total Revenue",
                     description="Gross sales including tax, in dollars.",
                     type=DataType.DOUBLE,
                 ),
                 ModelMeasure(
                     name="net_sales",
-                    formula="subtotal:sum",
+                    formula="sum(subtotal)",
                     label="Net Sales (pre-tax)",
                     description="Sales before tax, in dollars.",
                     type=DataType.DOUBLE,
                 ),
                 ModelMeasure(
                     name="tax_collected",
-                    formula="tax_paid:sum",
+                    formula="sum(tax_paid)",
                     label="Tax Collected",
                     description="Total tax collected, in dollars.",
                     type=DataType.DOUBLE,
                 ),
                 ModelMeasure(
                     name="order_count",
-                    formula="id:count",
+                    formula="count(id)",
                     label="Orders",
                     description="Number of orders.",
                     type=DataType.INT,
                 ),
                 ModelMeasure(
                     name="unique_customers",
-                    formula="customer_id:count_distinct",
+                    formula="count_distinct(customer_id)",
                     label="Unique Customers",
                     description="Distinct customers who ordered.",
                     type=DataType.INT,
                 ),
                 ModelMeasure(
                     name="avg_order_value",
-                    formula="order_total:sum / nullif(id:count, 0)",
+                    formula="sum(order_total) / nullif(count(id), 0)",
                     label="Average Order Value",
                     description="Revenue per order, in dollars.",
                     type=DataType.DOUBLE,
                 ),
                 ModelMeasure(
                     name="effective_tax_rate",
-                    formula="tax_paid:sum / nullif(subtotal:sum, 0)",
+                    formula="sum(tax_paid) / nullif(sum(subtotal), 0)",
                     label="Effective Tax Rate",
                     description="Tax collected as a share of net sales.",
                     type=DataType.DOUBLE,
                 ),
                 ModelMeasure(
                     name="sales_weighted_aov",
-                    formula="order_total:weighted_avg",
+                    formula="weighted_avg(order_total)",
                     label="Sales-Weighted Avg Order",
                     description=(
                         "Average order total weighted by subtotal (larger orders "
@@ -274,7 +274,7 @@ def _build_demo_enrichment() -> dict[str, _TableEnrichment]:
             measures=[
                 ModelMeasure(
                     name="customer_count",
-                    formula="id:count_distinct",
+                    formula="count_distinct(id)",
                     label="Customers",
                     description="Number of distinct customers.",
                     type=DataType.INT,
@@ -298,7 +298,7 @@ def _build_demo_enrichment() -> dict[str, _TableEnrichment]:
             measures=[
                 ModelMeasure(
                     name="store_count",
-                    formula="id:count_distinct",
+                    formula="count_distinct(id)",
                     label="Stores",
                     description="Number of stores.",
                     type=DataType.INT,
@@ -325,14 +325,14 @@ def _build_demo_enrichment() -> dict[str, _TableEnrichment]:
             measures=[
                 ModelMeasure(
                     name="product_count",
-                    formula="sku:count_distinct",
+                    formula="count_distinct(sku)",
                     label="Products",
                     description="Number of distinct products.",
                     type=DataType.INT,
                 ),
                 ModelMeasure(
                     name="avg_price",
-                    formula="price:avg",
+                    formula="avg(price)",
                     label="Average Price",
                     description="Average list price, in dollars.",
                     type=DataType.DOUBLE,
@@ -353,7 +353,7 @@ def _build_demo_enrichment() -> dict[str, _TableEnrichment]:
             measures=[
                 ModelMeasure(
                     name="units_sold",
-                    formula="id:count",
+                    formula="count(id)",
                     label="Units Sold",
                     description="Number of item units sold.",
                     type=DataType.INT,
@@ -383,14 +383,14 @@ def _build_demo_enrichment() -> dict[str, _TableEnrichment]:
             measures=[
                 ModelMeasure(
                     name="total_supply_cost",
-                    formula="cost:sum",
+                    formula="sum(cost)",
                     label="Total Supply Cost",
                     description="Total supply cost, in dollars.",
                     type=DataType.DOUBLE,
                 ),
                 ModelMeasure(
                     name="avg_unit_cost",
-                    formula="cost:avg",
+                    formula="avg(cost)",
                     label="Avg Unit Cost",
                     description="Average supply unit cost, in dollars.",
                     type=DataType.DOUBLE,
@@ -412,7 +412,7 @@ def _build_demo_enrichment() -> dict[str, _TableEnrichment]:
             measures=[
                 ModelMeasure(
                     name="tweet_count",
-                    formula="id:count",
+                    formula="count(id)",
                     label="Tweets",
                     description="Number of tweets.",
                     type=DataType.INT,

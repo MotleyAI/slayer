@@ -129,7 +129,7 @@ common workflows:
   slayer serve
 
   # 2. Query from the command line
-  slayer query '{"source_model": "orders", "measures": [{"formula": "*:count"}]}'
+  slayer query '{"source_model": "orders", "measures": [{"formula": "count(*)"}]}'
 
   # 3. Start the MCP server for AI agents
   slayer mcp
@@ -228,13 +228,13 @@ examples:
         epilog="""\
 examples:
   # Inline JSON
-  slayer query '{"source_model": "orders", "measures": [{"formula": "*:count"}]}'
+  slayer query '{"source_model": "orders", "measures": [{"formula": "count(*)"}]}'
 
   # From a file
   slayer query @query.json
 
   # Preview SQL without executing
-  slayer query '{"source_model": "orders", "measures": [{"formula": "*:count"}]}' --dry-run
+  slayer query '{"source_model": "orders", "measures": [{"formula": "count(*)"}]}' --dry-run
 
   # Show execution plan
   slayer query @query.json --explain
@@ -403,7 +403,7 @@ examples:
 examples:
   slayer recommend-root-model orders.revenue customers.name
   slayer recommend-root-model customers.name products.category --data-source my_pg
-  slayer recommend-root-model orders.revenue:sum regions.name --format json
+  slayer recommend-root-model sum(orders.revenue) regions.name --format json
   slayer recommend-root-model customers.name products.category --root-hint orders
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,

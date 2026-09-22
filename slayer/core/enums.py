@@ -223,7 +223,7 @@ def classify_aggregation(
 ) -> AggregationValueClass:
     """Bucket an aggregation for slot-type / display-format inference.
 
-    ``measure_name == "*"`` (``*:count``) is COUNT; custom/unknown aggregations
+    ``measure_name == "*"`` (``count(*)``) is COUNT; custom/unknown aggregations
     fall through to PRESERVING (inherit source type & format).
     """
     if measure_name == "*":
