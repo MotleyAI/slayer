@@ -12,12 +12,14 @@ from unittest.mock import patch
 import pytest
 
 from slayer.sql.generator import SQLGenerator
+from slayer.sql.scope_check import assert_scope_closed
 
 from tests._dev1750_fixtures import (
     ModelMeasure,
     SlayerQuery,
     gen,
     month_td,
+    shifted_cte_body,
 )
 
 pytestmark = pytest.mark.asyncio
@@ -42,12 +44,13 @@ class TestLiftedShapesRender:
 
     async def test_b_host_rooted_crossing_fragment_inner(self) -> None:
         """(b) ``time_shift`` over the crossing-fragment aggregate — the issue's
-        named repro. Renders; the shifted CTE pulls the fragment's join (pinned
-        in the fragment-join module)."""
+        named repro. Renders scope-closed; the shift reads the producer that pulls
+        the fragment's join (pinned in the fragment-join module)."""
         sql = await gen(_q(measures=[
             ModelMeasure(formula="time_shift(amount:wscaled_sum, -1)", name="prev"),
         ]))
-        assert "shifted_" in sql, sql
+        assert_scope_closed(sql, dialect="duckdb")
+        assert "customers__regions" in shifted_cte_body(sql), sql
 
     async def test_consecutive_periods_with_cross_model_sibling(self) -> None:
         sql = await gen(_q(measures=[

@@ -21,6 +21,8 @@ The three time_shift inner-aggregate shapes DEV-1750 distinguishes:
 
 from __future__ import annotations
 
+import re
+
 from slayer.storage.sqlite_conn import transaction
 from typing import AsyncIterator, List
 
@@ -143,14 +145,19 @@ def month_td(column: str = "ordered_at") -> List[TimeDimension]:
     )]
 
 
+def shifted_relation(sql: str) -> str:
+    """Name of the relation the sole ``sjoin_*`` CTE looks the shifted value up in —
+    a ``shifted_*`` producer, or a base ``_cm_*`` producer it interns with."""
+    [name] = re.findall(r"LEFT JOIN (\w+)", _extract_cte_body(sql, r"sjoin_\w+"))
+    return name
+
+
 def shifted_cte_body(sql: str) -> str:
-    """Rendered body of the sole ``shifted_*`` CTE — scope join-registration
-    assertions belong here, not to whole-SQL substring checks a valid alias
-    elsewhere could satisfy. Balanced-paren extraction (like DEV-1474) so it
-    finds the CTE even when the whole ``WITH`` is nested inside the transform
-    chain's outer ``FROM ( … ) AS _outer`` wrap (sqlglot's top-level CTE walk
-    does not descend into it)."""
-    return _extract_cte_body(sql, r"shifted_\w+")
+    """Rendered body of the shifted relation (see :func:`shifted_relation`) — scope
+    join-registration assertions belong here, not to whole-SQL substring checks a
+    valid alias elsewhere could satisfy. Balanced-paren extraction so it finds the
+    CTE even inside the transform chain's outer ``FROM ( … ) AS _outer`` wrap."""
+    return _extract_cte_body(sql, re.escape(shifted_relation(sql)))
 
 
 def base_cte_body(sql: str) -> str:
@@ -284,7 +291,7 @@ def rows_by(resp, *keys) -> dict:
 
 __all__ = [
     "orders_model", "customers_model", "regions_model", "dev1750_models",
-    "gen", "month_td", "shifted_cte_body", "base_cte_body", "cte_names",
+    "gen", "month_td", "shifted_cte_body", "shifted_relation", "base_cte_body", "cte_names",
     "make_exec_engine", "month_key", "rows_by", "SlayerQuery", "ModelMeasure",
     "ColumnRef", "TimeDimension", "TimeGranularity",
 ]

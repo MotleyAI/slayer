@@ -347,28 +347,39 @@ def _stage_location(*, stages, index: int, member: Optional[str] = "filters") ->
 
 
 def _walk_regroup_attaches(planned):
-    """Every ``RegroupAttachPlan`` on ``planned``, recursively (a producer is a nested plan)."""
-    for attach in getattr(planned, "regroup_attach_plans", ()) or ():
-        yield attach
-        yield from _walk_regroup_attaches(attach.producer_plan)
+    """Every ``RegroupAttachPlan`` reachable from ``planned`` (a producer is a nested
+    plan), each object once — a carried or interned one is reachable twice."""
+    seen: set = set()
+
+    def walk(plan):
+        if id(plan) in seen:
+            return
+        seen.add(id(plan))
+        for attach in getattr(plan, "regroup_attach_plans", ()) or ():
+            if id(attach) not in seen:
+                seen.add(id(attach))
+                yield attach
+            yield from walk(attach.producer_plan)
+
+    yield from walk(planned)
 
 
 def plan_has_semi_join_filters(planned) -> bool:
     """Whether any (nested) plan carries a pushed semi-join filter (DEV-1840)."""
-    if getattr(planned, "semi_join_filters", None):
-        return True
     return any(
-        plan_has_semi_join_filters(attach.producer_plan)
-        for attach in _walk_regroup_attaches(planned)
+        getattr(plan, "semi_join_filters", None)
+        for plan in _iter_plans_with_producers([planned])
     )
 
 
 def _iter_plans_with_producers(planned_list):
-    """Each planned query followed by every nested producer plan."""
+    """Each planned query followed by every nested producer plan, each object once."""
+    seen: set = set()
     for planned in planned_list:
-        yield planned
-        for attach in _walk_regroup_attaches(planned):
-            yield attach.producer_plan
+        for plan in (planned, *(a.producer_plan for a in _walk_regroup_attaches(planned))):
+            if id(plan) not in seen:
+                seen.add(id(plan))
+                yield plan
 
 
 def _semi_join_filter_texts(planned_list) -> List[str]:

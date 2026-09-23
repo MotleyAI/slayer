@@ -286,7 +286,8 @@ def _vehicle_model() -> SlayerModel:
 
 def _vehicle_query() -> SlayerQuery:
     """Two measures whose names differ ONLY in case, both driving time_shift
-    CTE generation — the DEV-1726 repro."""
+    CTE generation — the DEV-1726 repro. Distinct inputs, so each owns its
+    shifted relation (one input's offsets share one)."""
     return SlayerQuery(
         source_model="orders",
         time_dimensions=[
@@ -297,7 +298,7 @@ def _vehicle_query() -> SlayerQuery:
         ],
         measures=[
             ModelMeasure(formula="time_shift(revenue:sum, -1, 'month')", name="Foo"),
-            ModelMeasure(formula="time_shift(revenue:sum, -2, 'month')", name="foo"),
+            ModelMeasure(formula="time_shift(revenue:max, -2, 'month')", name="foo"),
         ],
     )
 

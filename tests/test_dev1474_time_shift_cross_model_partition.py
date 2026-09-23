@@ -165,6 +165,7 @@ _Q = r"[\"`]"
 
 def _assert_grain_pair(
     on_pred: str, col_regex: str, *, marker: str = "IS NOT DISTINCT FROM",
+    lookup: bool = False,
 ) -> None:
     """Assert the sjoin ON contains a genuine null-safe grain pair for the column
     matched by ``col_regex``: ``base."<…col…>" <marker> shifted_x."<same alias>"``.
@@ -174,15 +175,21 @@ def _assert_grain_pair(
     — so an implementation that drops one side, omits the pair, or leaves a plain
     ``=`` cannot pass. Hop separators tolerate either the dotted (``stores.name``)
     or flattened (``stores__name``) alias form via ``[._]+`` inside ``col_regex``.
+    ``lookup`` marks the shift axis, whose base side carries the offset.
     """
     m = re.escape(marker.strip())
     pat = re.compile(
         r"base\." + _Q + r"([^\"`]*(?:" + col_regex + r")[^\"`]*)" + _Q
-        + r"\s*" + m + r"\s*shifted_\w+\." + _Q + r"\1" + _Q
+        + (r"([^\n]*?)" if lookup else r"()\s*")
+        + m + r"\s*shifted_\w+\." + _Q + r"\1" + _Q
     )
-    assert pat.search(on_pred), (
+    found = pat.search(on_pred)
+    assert found, (
         f"no null-safe grain pair for /{col_regex}/ [{marker}] in ON:\n{on_pred}"
     )
+    if lookup:
+        line = on_pred[on_pred.rfind("\n", 0, found.start()) + 1:found.end()]
+        assert re.search(r"INTERVAL|DATEADD|months", line), line
 
 
 def _grain_pair_count(on_pred: str, *, marker: str = "IS NOT DISTINCT FROM") -> int:
@@ -230,7 +237,7 @@ class TestShiftedCtePartitionShape:
         # time axis and the store partition (same alias both sides — not a loose
         # substring).
         on = _sjoin_on(sql)
-        _assert_grain_pair(on, r"ordered_at")
+        _assert_grain_pair(on, r"ordered_at", lookup=True)
         _assert_grain_pair(on, r"stores[._]+name")
         assert _grain_pair_count(on) == 2, on
         assert_scope_closed(sql)
@@ -258,7 +265,7 @@ class TestShiftedCtePartitionShape:
         assert "LEFT JOIN stores AS stores" in shifted, shifted
         assert "LEFT JOIN regions AS stores__regions" in shifted, shifted
         on = _sjoin_on(sql)
-        _assert_grain_pair(on, r"ordered_at")
+        _assert_grain_pair(on, r"ordered_at", lookup=True)
         _assert_grain_pair(on, r"stores[._]+regions[._]+name")
         assert _grain_pair_count(on) == 2, on
         assert_scope_closed(sql)
@@ -287,7 +294,7 @@ class TestShiftedCtePartitionShape:
         assert shifted.count("UPPER(orders.status)") >= 2, shifted  # SELECT + GROUP BY
         assert re.search(r"GROUP BY[\s\S]*UPPER\(orders\.status\)", shifted), shifted
         on = _sjoin_on(sql)
-        _assert_grain_pair(on, r"ordered_at")
+        _assert_grain_pair(on, r"ordered_at", lookup=True)
         _assert_grain_pair(on, r"status_up")
         assert _grain_pair_count(on) == 2, on
         assert_scope_closed(sql)
@@ -319,7 +326,7 @@ class TestShiftedCtePartitionShape:
         assert shifted.count("UPPER(stores.name)") >= 2, shifted  # SELECT + GROUP BY
         assert re.search(r"GROUP BY[\s\S]*UPPER\(stores\.name\)", shifted), shifted
         on = _sjoin_on(sql)
-        _assert_grain_pair(on, r"ordered_at")
+        _assert_grain_pair(on, r"ordered_at", lookup=True)
         _assert_grain_pair(on, r"stores[._]+tier")
         assert _grain_pair_count(on) == 2, on
         assert_scope_closed(sql)
@@ -350,7 +357,7 @@ class TestShiftedCtePartitionShape:
         # BOTH the shift axis and the secondary time dim form null-safe grain
         # pairs — exactly two.
         on = _sjoin_on(sql)
-        _assert_grain_pair(on, r"ordered_at")
+        _assert_grain_pair(on, r"ordered_at", lookup=True)
         _assert_grain_pair(on, r"delivery_at")
         assert _grain_pair_count(on) == 2, on
         assert_scope_closed(sql)
@@ -398,13 +405,12 @@ class TestShiftedCtePartitionShape:
         sql = await _gen(query, _orders(), extra_models=[_stores(), _regions()])
         shifted = _shifted_body(sql)
         assert "LEFT JOIN stores AS stores" in shifted, shifted
-        # The shift-axis time expression IS the joined column, shifted — not some
-        # unrelated join that happens to be present.
+        # The shift-axis time expression IS the joined column — not some unrelated
+        # join that happens to be present; the offset lives in the join-back.
         assert "stores.opened_at" in shifted, shifted
-        assert re.search(r"INTERVAL[\s\S]*stores\.opened_at|stores\.opened_at[\s\S]*INTERVAL", shifted), shifted
         # The sole grain pair is the (joined) shifted time axis.
         on = _sjoin_on(sql)
-        _assert_grain_pair(on, r"opened_at")
+        _assert_grain_pair(on, r"opened_at", lookup=True)
         assert _grain_pair_count(on) == 1, on
         assert_scope_closed(sql)
 
@@ -512,7 +518,7 @@ class TestShiftedCteNullSafeJoinBack:
         # BOTH grain columns (time axis + the local dim) form a null-safe pair
         # (same alias both sides, dialect operator) — not just "the marker appears
         # somewhere".
-        _assert_grain_pair(on_pred, r"ordered_at", marker=marker)
+        _assert_grain_pair(on_pred, r"ordered_at", marker=marker, lookup=True)
         _assert_grain_pair(on_pred, r"[._]status", marker=marker)
         assert _grain_pair_count(on_pred, marker=marker) == 2, on_pred
         # No bare ``=`` equality survives on the grain pairs (a plain ``x = y``
@@ -549,7 +555,7 @@ class TestLocalOnlyTimeShiftUnchanged:
         # and is joined back null-safely like every other grain column.
         assert "orders.status" in shifted, shifted
         on = _sjoin_on(sql)
-        _assert_grain_pair(on, r"ordered_at")
+        _assert_grain_pair(on, r"ordered_at", lookup=True)
         _assert_grain_pair(on, r"[._]status")
         assert _grain_pair_count(on) == 2, on
         assert_scope_closed(sql)
@@ -584,7 +590,7 @@ class TestJoinedSecondaryTimeDimension:
         assert "LEFT JOIN stores AS stores" in shifted, shifted
         assert re.search(r"GROUP BY[\s\S]*QUARTER['\"][\s\S]*stores\.opened_at", shifted), shifted
         on = _sjoin_on(sql)
-        _assert_grain_pair(on, r"ordered_at")
+        _assert_grain_pair(on, r"ordered_at", lookup=True)
         _assert_grain_pair(on, r"stores[._]+opened_at")
         assert _grain_pair_count(on) == 2, on
         assert_scope_closed(sql)

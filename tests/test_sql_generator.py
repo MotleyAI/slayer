@@ -1573,7 +1573,8 @@ class TestFields:
     async def test_multiple_time_shifts_in_arithmetic_unique_ctes(
         self, generator: SQLGenerator, orders_model: SlayerModel
     ) -> None:
-        """DEV-1692: two arithmetic-wrapped time_shifts must not share a CTE name."""
+        """DEV-1692: two arithmetic-wrapped time_shifts must not share a CTE name;
+        their shared input's shifted relation is computed once."""
         orders_model.default_time_dimension = "created_at"
         query = SlayerQuery(
             source_model="orders",
@@ -1589,7 +1590,8 @@ class TestFields:
 
         ctes = _re.findall(r'(?:WITH|,)\s*"?(\w+)"?\s+AS\s*\(', sql)
         assert len(ctes) == len(set(ctes)), f"duplicate CTE names: {ctes}"
-        assert len([c for c in ctes if c.startswith("shifted_")]) == 2
+        assert len([c for c in ctes if c.startswith("shifted_")]) == 1
+        assert len([c for c in ctes if c.startswith("sjoin_")]) == 2
 
     async def test_multiple_time_shifts_resolve_to_distinct_aliases(
         self, generator: SQLGenerator, orders_model: SlayerModel
@@ -1615,14 +1617,15 @@ class TestFields:
             f"{sorted(shift_aliases)} in:\n{sql}"
         )
 
-        # Each shift keeps its own offset; backwards shifts emit + 1 / + 2 month intervals (sign captured), applied to the truncated period start (DEV-1811).
+        # Each shift keeps its own offset; each join-back looks its base bucket up
+        # 1 / 2 months back (sign captured).
         offsets = set(
             _re.findall(
-                r"DATE_TRUNC\('MONTH', orders\.created_at\) ([+-]) INTERVAL '(\d+) MONTH'",
+                r"\w+\.\"orders\.created_at\" ([+-]) INTERVAL '(\d+) MONTH'",
                 sql,
             )
         )
-        assert offsets == {("+", "1"), ("+", "2")}, (
+        assert offsets == {("-", "1"), ("-", "2")}, (
             f"expected -1 and -2 month shifts, got {sorted(offsets)} in:\n{sql}"
         )
 

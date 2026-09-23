@@ -136,7 +136,6 @@ class TestRowLeafRejectionAtPlanTime:
 
     def test_row_predicate_rejected_by_plan_query(self) -> None:
         query = _q46(
-            dimensions=["store"],
             measures=[ModelMeasure(formula="time_shift(store in ('A', 'B'), -1)",
                                    name="t")])
         bundle = _bundle46()
