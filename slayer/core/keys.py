@@ -953,14 +953,22 @@ def constituent_grain(
 def transform_operand_grain(
     input: ValueKey, *, query_grain: Grain, active_bucket: Optional[ValueKey],
 ) -> Grain:
-    """A transform input's operand grain (Axioms 11.1, 11.3b, 11.5), recursive."""
-    if not any(isinstance(k, (AggregateKey, TransformKey)) for k in walk_value_keys(input)):
-        return query_grain
-    return _operand_grain(input, query_grain=query_grain, active_bucket=active_bucket)
+    """A transform input's operand grain (Axioms 11.1, 11.3b, 11.5), recursive.
+    Without an aggregate, row leaves sit at the query grain."""
+    if any(isinstance(k, AggregateKey) for k in walk_value_keys(input)):
+        return _operand_grain(
+            input, query_grain=query_grain, active_bucket=active_bucket, leaf_grain=None,
+        )
+    grain = _operand_grain(
+        input, query_grain=query_grain, active_bucket=active_bucket, leaf_grain=query_grain,
+    )
+    # Literal-only: nothing grained, so the query-grain identity (Axiom 11.1).
+    return query_grain if grain.is_empty else grain
 
 
 def _operand_grain(
     k: ValueKey, *, query_grain: Grain, active_bucket: Optional[ValueKey],
+    leaf_grain: Optional[Grain],
 ) -> Grain:
     if isinstance(k, AggregateKey):
         grain = query_grain if k.partition_keys is None else k.partition_keys
@@ -975,10 +983,12 @@ def _operand_grain(
             return grain - {k.time_key}
         return grain
     if isinstance(k, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
-        return Grain.of([k])
+        return Grain.of([k]) if leaf_grain is None else leaf_grain
     grain = Grain.EMPTY
     for c in k.children():
-        grain = grain | _operand_grain(c, query_grain=query_grain, active_bucket=active_bucket)
+        grain = grain | _operand_grain(
+            c, query_grain=query_grain, active_bucket=active_bucket, leaf_grain=leaf_grain,
+        )
     return grain
 
 
