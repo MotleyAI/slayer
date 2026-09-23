@@ -69,6 +69,7 @@ from slayer.engine.elaborate_env import (
     check_time_dimension_column,
     check_time_dimension_date_range,
     check_time_shift_input,
+    check_transform_partition_keys_in_operand_grain,
     check_time_transforms_resolved,
 )
 from slayer.engine.join_safety import assert_partition_key_attributable
@@ -390,7 +391,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
     for dm in declared_measures:
         if dm.is_dimension and dm.public_name is not None:
             filter_alias_map.setdefault(dm.public_name, dm.bound.value_key)
-    # ...and resolvable inside a filter/order ``partition_by=`` (DEV-1847 shape B).
+    # ...and resolvable inside a filter/order ``partition_by=``.
     _computed_names = frozenset(
         d.name for d in (query.dimensions or []) if isinstance(d, ComputedDimension)
     )
@@ -415,7 +416,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
             full_name=td.dimension.full_name, date_range=td.date_range,
         )
         # A stage date_range filters the stage's rows on its bare column, exactly
-        # as a model-scope range filters a model's rows (DEV-1471).
+        # as a model-scope range filters a model's rows.
         bf = _build_date_range_filter(td=td, scope=scope, bundle=bundle)
         bound_filters.append(bf)
         bound_filter_texts.append(None)
@@ -447,7 +448,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         col_name = o.column.name
         full_name = o.column.full_name
         # A functional ``gran(col)`` order key sorts by the projected time
-        # dimension's bucket — resolved to its column binding (DEV-1883).
+        # dimension's bucket — resolved to its column binding.
         gran_parts = granularity_call_parts(o.raw_formula) if o.raw_formula else None
         if gran_parts is not None:
             _col, _gran = gran_parts
@@ -536,7 +537,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         order_specs.append(OrderSpec(bound=bo, direction=o.direction))
 
     # Attach the active TD as time_key on every time-needing TransformKey the binder
-    # left at None — the stage's own bucket is the axis on a StageSchema (DEV-1471).
+    # left at None — the stage's own bucket is the axis on a StageSchema.
     active_td_key: Optional[TimeTruncKey] = None
     _active_model = scope.source_model if isinstance(scope, ModelScope) else None
     active_td = _resolve_main_time_dimension(query=query, model=_active_model)
@@ -637,8 +638,8 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
     _combined_consumer_keys = frozenset(
         [*_consumers.local_partitioned, *_consumers.cross_model_partitioned]
     )
-    # An attached operand — a re-aggregation constituent (DEV-1847) or a
-    # row-attached input / parameter (DEV-1859) — declares an internal producer
+    # An attached operand — a re-aggregation constituent or a
+    # row-attached input / parameter — declares an internal producer
     # grain, so its partition keys need not be query dimensions; the enclosing
     # root is the combined consumer and carries the rule.
     _reagg_operand_keys = attached_operand_keys([
@@ -669,7 +670,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
                 maps_to_bucket=bucket is not None, lenient=lenient,
                 available_dims=_available_dims,
             )
-            # td source col -> bucket; else the key itself (query dim / td bucket, or lenient finer-grain producer key, DEV-1825)
+            # td source col -> bucket; else the key itself (query dim / td bucket, or lenient finer-grain producer key)
             new_pks.append(bucket if not is_query_dim and bucket is not None else pk)
         return Grain.of(new_pks)
 
@@ -681,6 +682,14 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         declared_measures=declared_measures,
         bound_filters=bound_filters,
         order_specs=order_specs,
+    )
+    check_transform_partition_keys_in_operand_grain(
+        roots=[
+            *(dm.bound.value_key for dm in declared_measures),
+            *(bf.value_key for bf in bound_filters),
+            *(spec.bound.value_key for spec in order_specs),
+        ],
+        query_grain=_query_grain, active_bucket=active_td_key,
     )
 
     check_dimension_temporal_axis(
@@ -810,9 +819,9 @@ def _route_short_form_saved_measure(
     *, host: SlayerModel, hops: list[str], leaf: str, bundle: ResolvedSourceBundle
 ) -> Optional[Tuple[SlayerModel, str]]:
     """``(terminal_model, canonical_ref)`` when a ``len==1`` unresolvable prefix
-    short-form routes to its full datasource-scoped path (DEV-1856), else None.
+    short-form routes to its full datasource-scoped path, else None.
     Routing triggers only when the first hop resolves to no edge; an adjacent
-    parallel pair is a fail-closed ambiguous hop (DEV-1853), not a route. This
+    parallel pair is a fail-closed ambiguous hop, not a route. This
     resolver also runs in pre-bind raw-rows validation, so it must not route an
     ambiguous hop there — it returns None and lets binding raise the ambiguity."""
     if len(hops) != 1:
@@ -931,7 +940,7 @@ def _declared_computed_dimension(
         parsed=parsed, scope=scope, bundle=bundle, allow_measures=True,
         dimension_alias_map=dim_alias_map,
     )
-    # Grain rules live in the checker (DEV-1871 G9); invoked here to preserve the bind-time firing point / precedence.
+    # Grain rules live in the checker; invoked here to preserve the bind-time firing point / precedence.
     check_computed_dimension(
         name=name, bound=bound,
         distinct_dimension_values=query.distinct_dimension_values,
@@ -964,8 +973,8 @@ def _declared_measures_from_query(  # NOSONAR(S3776) — three sequential projec
         )
         seen_flat[flat_name] = origin
 
-    # Computed-dimension names resolve inside later ``partition_by=`` values
-    # (DEV-1847 shape B); built in declaration order.
+    # Computed-dimension names resolve inside later ``partition_by=`` values;
+    # built in declaration order.
     dim_alias_map: Dict[str, ValueKey] = {}
     for d in (query.dimensions or []):
         if isinstance(d, ComputedDimension):
@@ -983,14 +992,14 @@ def _declared_measures_from_query(  # NOSONAR(S3776) — three sequential projec
         full = d.full_name
         # Bind first: a short-form dotted dim auto-routes, and its full routed
         # path (``bound.routed_dotted``) — not the short form typed — drives the
-        # result key, type, opaque guard, and description (DEV-1856).
+        # result key, type, opaque guard, and description.
         bound = bind_expr(
             parsed=parse_expr(full),
             scope=scope,
             bundle=bundle,
         )
         canonical = bound.routed_dotted or full
-        # Opaque-grouping rule lives in the checker (DEV-1871 G9); invoked here to preserve the per-dimension firing point.
+        # Opaque-grouping rule lives in the checker; invoked here to preserve the per-dimension firing point.
         check_opaque_grouping_dim(
             full_name=canonical,
             dim_type=_opaque_dim_type(scope=scope, full_name=canonical, bundle=bundle),
@@ -1015,8 +1024,8 @@ def _declared_measures_from_query(  # NOSONAR(S3776) — three sequential projec
         ))
     # Time dimensions follow dimensions in the public projection. Same-column
     # time dimensions (distinct granularities) get granularity-suffixed public
-    # names so their result keys disambiguate (DEV-1883); a lone one keeps the
-    # DEV-1744 granularity-free key.
+    # names so their result keys disambiguate; a lone one keeps the
+    # granularity-free key.
     bound_tds: List[Tuple[TimeDimension, BoundExpr, str]] = []
     for td in (query.time_dimensions or []):
         btd = bind_time_dimension(td=td, scope=scope, bundle=bundle)
@@ -1056,7 +1065,7 @@ def _declared_measures_from_query(  # NOSONAR(S3776) — three sequential projec
             dimension_alias_map=dim_alias_map,
         )
         # The parsed tree drives text-shape alias derivation, so both spellings
-        # of one formula share an alias (DEV-1826).
+        # of one formula share an alias.
         canonical = _canonical_alias_for_formula(
             formula, bound=bound, parsed=parsed,
         )
@@ -1069,7 +1078,7 @@ def _declared_measures_from_query(  # NOSONAR(S3776) — three sequential projec
         public_name = alias_name or canonical
         # Two DIFFERENT values whose DERIVED keys collide would silently share
         # a column (e.g. ``sum(amount - cost)`` vs ``sum(amount + cost)`` both
-        # sanitize to ``amount_cost_sum``, DEV-1826) — fail loudly; the SAME
+        # sanitize to ``amount_cost_sum``) — fail loudly; the SAME
         # value merges into one column. Scoped to unnamed entries:
         # explicit-name collisions keep their dedicated declared-more-than-once
         # errors downstream.
@@ -1126,7 +1135,7 @@ def _canonical_alias_for_formula(
     for an AggregateKey root, ``canonical_agg_name`` for a plain ``col:agg``
     text shape, else the text sanitised via ``auto_name_from_expression``. The
     text shape runs over the CANONICAL colon-spelling rendering of ``parsed``
-    when given (DEV-1826), so ``cumsum(sum(revenue))`` and
+    when given, so ``cumsum(sum(revenue))`` and
     ``cumsum(revenue:sum)`` derive one alias."""
     if bound is not None and isinstance(bound.value_key, AggregateKey):
         # stage_formula profile prefixes the join path relative to the stage (``count(customers.*)`` → ``customers._count``).
@@ -1206,7 +1215,7 @@ def _named_td_matches(
     *, tds: List[TimeDimension], target: str,
 ) -> Tuple[List[TimeDimension], List[TimeDimension]]:
     """(full-name matches, leaf matches) for ``target`` among ``tds``. Two same-column
-    buckets share a full_name, so full matches is a list, not a single TD (DEV-1883)."""
+    buckets share a full_name, so full matches is a list, not a single TD."""
     full = [td for td in tds if td.dimension.full_name == target]
     if full:
         return full, []
