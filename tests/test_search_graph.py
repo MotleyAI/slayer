@@ -76,6 +76,7 @@ async def rich_storage() -> AsyncIterator[YAMLStorage]:
                         description="Net order value in USD",
                     ),
                     Column(name="status", sql="status", type=DataType.TEXT),
+                    Column(name="customer_id", type=DataType.INT, hidden=True),
                 ],
                 measures=[
                     ModelMeasure(

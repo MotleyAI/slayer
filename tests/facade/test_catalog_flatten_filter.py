@@ -320,6 +320,7 @@ def test_pg_description_attnum_within_local_range() -> None:
                 name="id", type=DataType.INT, primary_key=True,
                 description="order pk",
             ),
+            Column(name="customer_id", type=DataType.INT, description="fk"),
             Column(name="total", type=DataType.DOUBLE, description="ord total"),
         ],
         joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
@@ -333,10 +334,6 @@ def test_pg_description_attnum_within_local_range() -> None:
             ),
             Column(name="name", type=DataType.TEXT, description="cust name"),
         ],
-    )
-    # Add customer_id on orders so the join is satisfied.
-    orders.columns.insert(
-        1, Column(name="customer_id", type=DataType.INT, description="fk"),
     )
     cat = build_catalog(models_by_datasource={"jaffle": [orders, customers]})
 

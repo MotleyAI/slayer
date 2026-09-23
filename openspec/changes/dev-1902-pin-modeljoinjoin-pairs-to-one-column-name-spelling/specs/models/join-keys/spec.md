@@ -134,17 +134,17 @@ Schema drift and type refinement SHALL treat a column whose `sql` is a double-qu
 
 ### Requirement: Importers emit logical key names
 
-Every importer SHALL emit `join_pairs` in column-`name` spelling naming declared base columns on both sides. The Cube importer SHALL keep join keys as member names and SHALL drop a join, with a conversion-report warning, when an ON operand names a member whose `sql` is not a base column or names no member of its cube. The dbt importer SHALL synthesise a hidden base column for a foreign entity that no dimension of the model covers, and SHALL skip, with a warning, a join whose entity `expr` is not a single identifier. The OSI importer SHALL check both sides of a relationship against the contract before adding it and SHALL skip a violating relationship with its existing warning. Auto-ingestion SHALL apply its column renaming to join keys so a generated join always names the generated column.
+Every importer SHALL emit `join_pairs` in column-`name` spelling naming declared base columns on both sides. The Cube importer SHALL keep join keys as member names, SHALL synthesise a hidden base column for an ON operand that names no member of its cube (on the cube's model and on any view facade carrying the join), and SHALL drop a join, with a conversion-report warning, when an ON operand names a member whose `sql` is not a base column. The dbt importer SHALL synthesise a hidden base column for a foreign entity that no dimension of the model covers, and SHALL skip, with a warning, a join whose entity `expr` is not a single identifier. The OSI importer SHALL check both sides of a relationship against the contract before adding it and SHALL skip a violating relationship with its existing warning. Auto-ingestion SHALL apply its column renaming to join keys so a generated join always names the generated column.
 
 #### Scenario: Cube join keys are member names
 
 - **WHEN** a Cube join's ON is `{CUBE}.customer_id = {customers.id}` and the `id` member's `sql` is `{CUBE}.cust_pk`
 - **THEN** the imported join carries `[["customer_id", "id"]]` and the imported `id` column carries `sql: cust_pk`
 
-#### Scenario: A Cube ON operand naming no member drops the join
+#### Scenario: A Cube ON operand naming no member synthesises a hidden key column
 
 - **WHEN** a Cube join's ON references a target column that is not a declared member of the target cube
-- **THEN** the join is dropped and the conversion report warns naming the operand
+- **THEN** the joined model carries a hidden base column named by the operand and the join keys name it
 
 #### Scenario: dbt synthesises a hidden foreign-key column
 

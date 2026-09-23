@@ -78,6 +78,9 @@ async def storage() -> AsyncIterator[StorageBackend]:
                 _col("revenue", DataType.DOUBLE),
                 _col("amount", DataType.DOUBLE),
                 _col("qty", DataType.INT),
+                Column(name="customer_id", type=DataType.INT, hidden=True),
+                Column(name="product_id", type=DataType.INT, hidden=True),
+                Column(name="warehouse_id", type=DataType.INT, hidden=True),
             ],
             measures=[ModelMeasure(formula="revenue:sum / *:count", name="aov")],
             aggregations=[Aggregation(

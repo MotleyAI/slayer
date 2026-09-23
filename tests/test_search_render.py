@@ -68,6 +68,7 @@ def _make_orders_model() -> SlayerModel:
                 description="paid|refunded|cancelled.",
                 sampled="paid, refunded, cancelled",
             ),
+            Column(name="customer_id", type=DataType.INT, hidden=True),
         ],
         measures=[
             ModelMeasure(

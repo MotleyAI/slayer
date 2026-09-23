@@ -5359,6 +5359,7 @@ class TestDimensionAggregation:
             data_source="test",
             columns=[
                 Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="policy_id", type=DataType.DOUBLE),
 
                 Column(name="total", sql="amount", type=DataType.DOUBLE),
             ],
@@ -5408,6 +5409,7 @@ class TestCrossModelCustomAggFuncStyle:
             data_source="test",
             columns=[
                 Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="customer_id", type=DataType.DOUBLE),
                 Column(name="status", sql="status", type=DataType.TEXT),
 Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
             joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
@@ -5450,6 +5452,7 @@ class TestReachableAggDiscoveryUnbounded:
         a = SlayerModel(
             name="a", sql_table="a", data_source="test",
             columns=[Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="b_id", type=DataType.DOUBLE),
 
             ],
             joins=[ModelJoin(target_model="b", join_pairs=[["b_id", "id"]])],
@@ -5457,6 +5460,7 @@ class TestReachableAggDiscoveryUnbounded:
         b = SlayerModel(
             name="b", sql_table="b", data_source="test",
             columns=[Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="c_id", type=DataType.DOUBLE),
 
             ],
             joins=[ModelJoin(target_model="c", join_pairs=[["c_id", "id"]])],
@@ -5464,6 +5468,7 @@ class TestReachableAggDiscoveryUnbounded:
         c = SlayerModel(
             name="c", sql_table="c", data_source="test",
             columns=[Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="d_id", type=DataType.DOUBLE),
 
             ],
             joins=[ModelJoin(target_model="d", join_pairs=[["d_id", "id"]])],
@@ -5471,6 +5476,7 @@ class TestReachableAggDiscoveryUnbounded:
         d = SlayerModel(
             name="d", sql_table="d", data_source="test",
             columns=[Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="e_id", type=DataType.DOUBLE),
 
             ],
             joins=[ModelJoin(target_model="e", join_pairs=[["e_id", "id"]])],
@@ -5505,6 +5511,7 @@ Column(name="score", sql="score", type=DataType.DOUBLE)],
         a = SlayerModel(
             name="a", sql_table="a", data_source="test",
             columns=[Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="b_id", type=DataType.DOUBLE),
 Column(name="amount", sql="amount", type=DataType.DOUBLE)],
             aggregations=[Aggregation(name="rolling_a", formula="AVG({value})")],
             joins=[ModelJoin(target_model="b", join_pairs=[["b_id", "id"]])],
@@ -5512,6 +5519,7 @@ Column(name="amount", sql="amount", type=DataType.DOUBLE)],
         b = SlayerModel(
             name="b", sql_table="b", data_source="test",
             columns=[Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="a_id", type=DataType.DOUBLE),
 
             ],
             joins=[ModelJoin(target_model="a", join_pairs=[["a_id", "id"]])],
@@ -6708,6 +6716,7 @@ class TestMultiHopCrossModelMeasure:
             data_source="test",
             columns=[
                 Column(name="pcd_id", sql="pcd_id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="claim_id", type=DataType.DOUBLE),
 
             ],
             joins=[ModelJoin(target_model="claim_amount", join_pairs=[["claim_id", "claim_id"]])],
@@ -6746,6 +6755,7 @@ Column(name="total_claim_amount", sql="amount", type=DataType.DOUBLE)],
         model_a = SlayerModel(
             name="a", sql_table="a_table", data_source="test",
             columns=[Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="b_id", type=DataType.DOUBLE),
                         Column(name="status", sql="status", type=DataType.TEXT),
 
             ], joins=[ModelJoin(target_model="b", join_pairs=[["b_id", "id"]])],
@@ -6753,12 +6763,14 @@ Column(name="total_claim_amount", sql="amount", type=DataType.DOUBLE)],
         model_b = SlayerModel(
             name="b", sql_table="b_table", data_source="test",
             columns=[Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="c_id", type=DataType.DOUBLE),
 
             ], joins=[ModelJoin(target_model="c", join_pairs=[["c_id", "id"]])],
         )
         model_c = SlayerModel(
             name="c", sql_table="c_table", data_source="test",
             columns=[Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="d_id", type=DataType.DOUBLE),
 
             ], joins=[ModelJoin(target_model="d", join_pairs=[["d_id", "id"]])],
         )
@@ -6791,6 +6803,7 @@ Column(name="value", sql="val", type=DataType.DOUBLE)],
         orders = SlayerModel(
             name="orders", sql_table="orders", data_source="test",
             columns=[Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="customer_id", type=DataType.DOUBLE),
                         Column(name="status", sql="status", type=DataType.TEXT),
 Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
             joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
@@ -6841,6 +6854,7 @@ class TestCrossModelRerootedSubquery:
             name="policy_amount", sql_table="policy_amount", data_source="test",
             columns=[
                 Column(name="policy_amount_identifier", type=DataType.DOUBLE, primary_key=True),
+                Column(name="policy_identifier", type=DataType.DOUBLE),
                 Column(name="effective_date", type=DataType.TIMESTAMP),
 Column(name="total_policy_amount", sql="policy_amount", type=DataType.DOUBLE)],
             joins=[
@@ -6931,6 +6945,8 @@ Column(name="total_policy_amount", sql="policy_amount", type=DataType.DOUBLE)],
             name="orders", sql_table="orders", data_source="test",
             columns=[
                 Column(name="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="customer_id", type=DataType.DOUBLE),
+                Column(name="warehouse_id", type=DataType.DOUBLE),
                 Column(name="status", type=DataType.TEXT),
 
             ],
@@ -7048,6 +7064,7 @@ Column(name="score", sql="score", type=DataType.DOUBLE)],
             name="orders", sql_table="orders", data_source="test",
             columns=[
                 Column(name="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="customer_id", type=DataType.DOUBLE),
                 Column(name="status", type=DataType.TEXT),
 Column(name="amount", sql="amount", type=DataType.DOUBLE)],
             aggregations=[Aggregation(name="custom_sum", formula="SUM({value})")],
@@ -7217,6 +7234,7 @@ Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
             data_source="test",
             columns=[
                 Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="customer_id", type=DataType.DOUBLE),
                 Column(name="status", sql="status", type=DataType.TEXT),
 Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
             joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
@@ -7259,6 +7277,7 @@ Column(name="score", sql="score", type=DataType.DOUBLE)],
             data_source="test",
             columns=[
                 Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="customer_id", type=DataType.DOUBLE),
                 Column(name="status", sql="status", type=DataType.TEXT),
 Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
             joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
@@ -7269,6 +7288,7 @@ Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
             data_source="test",
             columns=[
                 Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="region_id", type=DataType.DOUBLE),
                 Column(name="name", sql="name", type=DataType.TEXT),
 Column(name="score", sql="score", type=DataType.DOUBLE)],
             joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
@@ -7418,7 +7438,7 @@ class TestMeasureFilterCrossModelJoin:
 
                 Column(name="loss_amt", sql="amount", filter="loss_payment.has_flag = 1", type=DataType.DOUBLE),
             ],
-            joins=[ModelJoin(target_model="loss_payment", join_pairs=[["id", "Claim_Amount_Identifier"]])],
+            joins=[ModelJoin(target_model="loss_payment", join_pairs=[["id", "id"]])],
         )
 
         query = SlayerQuery(
@@ -7482,14 +7502,15 @@ class TestIsolatedFilteredMeasureCTEs:
             data_source="test",
             columns=[
                 Column(name="claim_amount_id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="claim_id", type=DataType.DOUBLE),
 
                 Column(name="loss_payment_amt", sql="amount", filter="loss_payment.has_flag = 1", type=DataType.DOUBLE),
                 Column(name="loss_reserve_amt", sql="amount", filter="loss_reserve.has_flag = 1", type=DataType.DOUBLE),
                 Column(name="total_amount", sql="amount", type=DataType.DOUBLE),
             ],
             joins=[
-                ModelJoin(target_model="loss_payment", join_pairs=[["id", "claim_amount_id"]], join_type="inner"),
-                ModelJoin(target_model="loss_reserve", join_pairs=[["id", "claim_amount_id"]], join_type="inner"),
+                ModelJoin(target_model="loss_payment", join_pairs=[["claim_amount_id", "claim_amount_id"]], join_type="inner"),
+                ModelJoin(target_model="loss_reserve", join_pairs=[["claim_amount_id", "claim_amount_id"]], join_type="inner"),
                 ModelJoin(target_model="claim", join_pairs=[["claim_id", "id"]]),
             ],
         )
@@ -8784,6 +8805,7 @@ class TestGetColumnTypesSql:
             data_source="test",
             columns=[
                 Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="customer_id", type=DataType.DOUBLE),
                 Column(name="revenue", sql="amount", type=DataType.DOUBLE),
                 Column(name="customer_score", sql="customers.score", type=DataType.DOUBLE),
             ],

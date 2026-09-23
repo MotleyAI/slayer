@@ -273,31 +273,19 @@ class TestVerdicts:
         assert f.detected is JoinCardinality.MANY_TO_ONE
         assert f.verdict is CardinalityVerdict.REFINES
 
-    async def test_skipped_unsupported_for_expression_join_key(
-        self, workspace: Path
-    ) -> None:
-        engine, storage, _ = await _build_engine(workspace)
-        # A join key backed by a non-bare SQL expression is out of scope for
-        # v1 profiling (can't DISTINCT a physical column).
-        expr = SlayerModel(
-            name="orders_expr",
-            sql_table="orders",
-            data_source="ds",
-            columns=[
-                _col("id", pk=True),
-                Column(name="ck", sql="customer_id + 0", type=DataType.INT),
-            ],
-            joins=[ModelJoin(target_model="customers", join_pairs=[["ck", "id"]])],
-        )
-        await storage.save_model(expr)
-
-        report = await engine.detect_join_cardinality(
-            data_source="ds", model="orders_expr"
-        )
-        f = _find(report, "orders_expr", "customers")
-        assert f.verdict is CardinalityVerdict.SKIPPED_UNSUPPORTED
-        assert f.detected is None
-        assert f.note
+    def test_expression_join_key_rejected_at_construction(self) -> None:
+        # An expression-backed join key is not a base column: the model never builds.
+        with pytest.raises(ValueError, match=r"orders_expr.*customers.*'ck'"):
+            SlayerModel(
+                name="orders_expr",
+                sql_table="orders",
+                data_source="ds",
+                columns=[
+                    _col("id", pk=True),
+                    Column(name="ck", sql="customer_id + 0", type=DataType.INT),
+                ],
+                joins=[ModelJoin(target_model="customers", join_pairs=[["ck", "id"]])],
+            )
 
     async def test_skipped_unsupported_for_sql_mode_model(
         self, workspace: Path

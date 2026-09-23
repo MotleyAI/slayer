@@ -294,3 +294,15 @@ def test_view_dropped_when_root_cube_not_emitted():
     assert "ov" not in models
     assert any(i.category == CubeIssueCategory.AMBIGUOUS_VIEW_ROOT
                for i in report.issues)
+
+
+def test_view_facade_declares_the_join_key():
+    project = CubeProject(cubes=_orders_customers_cubes(), views=[_view()])
+    models, _ = _convert(project)
+    view = models["orders_overview"]
+    (join,) = [j for j in view.joins if j.target_model == "customers"]
+    assert join.join_pairs == [["customer_id", "id"]]
+    col = view.get_column("customer_id")
+    assert col is not None
+    assert col.is_base
+    assert col.hidden is True

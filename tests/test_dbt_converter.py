@@ -1594,3 +1594,42 @@ def test_entity_metadata_merged_into_reused_pk_column() -> None:
     assert id_col.meta is not None
     assert id_col.meta.get("role") == "order_key"
     assert id_col.meta.get("source") == "crm"
+
+
+class TestJoinKeyColumns:
+    """Join keys name declared base columns: an uncovered foreign entity gets a
+    hidden column; a non-bare entity ``expr`` cannot key a join."""
+
+    def test_uncovered_foreign_entity_synthesises_hidden_column(self) -> None:
+        result = DbtToSlayerConverter(
+            project=_make_simple_project(), data_source="test_db").convert()
+        orders = next(m for m in result.models if m.name == "orders")
+        fk = orders.get_column("customer_id")
+        assert fk is not None
+        assert fk.hidden is True
+        assert fk.is_base
+        assert orders.joins[0].join_pairs == [["customer_id", "id"]]
+
+    def test_foreign_entity_covered_by_a_dimension_reuses_it(self) -> None:
+        project = _make_simple_project()
+        orders_sm = next(sm for sm in project.semantic_models if sm.name == "orders")
+        orders_sm.dimensions.append(DbtDimension(name="customer_id", type="categorical"))
+        result = DbtToSlayerConverter(project=project, data_source="test_db").convert()
+        orders = next(m for m in result.models if m.name == "orders")
+        fks = [c for c in orders.columns if c.name == "customer_id"]
+        assert len(fks) == 1
+        assert fks[0].hidden is False
+
+    def test_non_bare_foreign_expr_skips_the_join(self) -> None:
+        project = _make_simple_project()
+        orders_sm = next(sm for sm in project.semantic_models if sm.name == "orders")
+        orders_sm.entities = [
+            DbtEntity(name="order_id", type="primary", expr="id"),
+            DbtEntity(name="customer_id", type="foreign", expr="CAST(cust AS INT)"),
+        ]
+        result = DbtToSlayerConverter(project=project, data_source="test_db").convert()
+        orders = next(m for m in result.models if m.name == "orders")
+        assert orders.joins == []
+        assert any(
+            w.model_name == "orders" and "CAST(cust AS INT)" in w.message
+            for w in result.warnings)
