@@ -27,7 +27,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from slayer.core.enums import DataType, JoinType, RANKED_AGGREGATIONS, TimeGranularity
 from slayer.core.errors import AmbiguousJoinPathError, CircularJoinPathError
-from slayer.core.keys import AggregateKey, Grain, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, PREDICATE_COMPARISON_OPS, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, regroup_root_grain, effective_root_grain, constituent_grain, attached_parameter_grain, substitute_value_keys, substitute_consumer_keys, walk_value_keys, walk_consumer_keys, REGROUP_LEAF_PREFIX, is_cross_model_agg, is_local_partitioned_agg, split_top_level_and, window_kwarg_of, is_reaggregation_key, is_row_attach_root, attached_inputs, operand_aggregates, operand_constituents, source_anchor_path
+from slayer.core.keys import AggregateKey, Grain, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, PREDICATE_COMPARISON_OPS, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, regroup_root_grain, effective_root_grain, constituent_grain, attached_parameter_grain, substitute_value_keys, substitute_consumer_keys, walk_value_keys, walk_consumer_keys, REGROUP_LEAF_PREFIX, is_cross_model_agg, is_local_partitioned_agg, split_top_level_and, window_kwarg_of, is_reaggregation_key, is_row_attach_root, attached_inputs, operand_aggregates, operand_constituents, source_anchor_path, source_row_leaves
 from slayer.core.models import Column, SlayerModel
 from slayer.engine.reference_closure import (
     ParamSpec,
@@ -1124,10 +1124,10 @@ def _plan_shifted_attaches(
     )
     producer_model = scope.source_model if isinstance(scope, ModelScope) else None
     # A bare answer is named like its combined producer: the measure's public name.
-    public_alias: Dict[ValueKey, str] = {}
-    for dm in prebound.declared_measures[n_grain:]:
-        if dm.public_name is not None:
-            public_alias.setdefault(dm.bound.value_key, dm.public_name)
+    public_alias = {
+        dm.bound.value_key: dm.public_name
+        for dm in reversed(prebound.declared_measures[n_grain:]) if dm.public_name is not None
+    }
     out: List[RegroupAttachPlan] = []
     for slot in shift_slots:
         key = slot.key
@@ -1139,35 +1139,20 @@ def _plan_shifted_attaches(
         answer = substitute_value_keys(key.input, {
             ph: orig for ph, orig in to_original.items() if ph not in carried
         })
-        carried_attaches: List[RegroupAttachPlan] = []
-        for a in attaches:
-            if any(sub.placeholder in carried for sub in a.substitutions) \
-                    and not any(a is c for c in carried_attaches):
-                carried_attaches.append(a)
-        # A bare aggregate keyed by the axis is built exactly like its combined
-        # producer, so a frame-free one interns with the base's; anything else sits
-        # at the query grain, so an absent shifted bucket reads NULL.
-        pks, window_td = Grain.of(grain), key.time_key
-        own_grain = False
-        if isinstance(answer, AggregateKey):
-            leaf_grain, windowed = effective_root_grain(
-                agg=answer, projected_dim_keys=dim_keys, projected_td_keys=td_keys,
-                active_bucket=prebound.main_time_key,
-            )
-            if windowed or key.time_key in leaf_grain:
-                own_grain = True
-                pks = _prune_functionally_determined_grain(leaf_grain)
-                window_td = prebound.main_time_key if windowed else None
+        carried_attaches = _attaches_carrying(attaches=attaches, carried=carried)
+        pks, window_td, own_grain = _shifted_producer_grain(
+            answer=answer, resolved=substitute_value_keys(key.input, to_original),
+            axis=key.time_key, grain=grain, dim_keys=dim_keys,
+            td_keys=td_keys, active_bucket=prebound.main_time_key,
+        )
+        aliases, alias_hint = _shifted_answer_aliases(answer=answer, public_alias=public_alias)
         producer_prebound, ordered_pks = _regroup_producer_prebound(
             pks=pks, aggs=[answer], model=producer_model, bundle=bundle,
             inherited=inherited, n_date_range=0,
             partition_order=lambda pks: sorted(
                 pks, key=lambda k: consumer_order.get(k, len(consumer_order)),
             ),
-            public_alias_by_agg=(
-                public_alias if isinstance(answer, AggregateKey)
-                else {answer: _SHIFTED_ANSWER}
-            ),
+            public_alias_by_agg=aliases,
             grain_name_by_key=grain_name_by_key,
             window_td_key=window_td,
             to_many_handling=prebound.to_many_handling,
@@ -1188,42 +1173,17 @@ def _plan_shifted_attaches(
                          *producer_plan.combined_expression_slots],
             key=answer, fallback=answer_ids[0] if answer_ids else None,
         )
-        grain_ids = list(producer_plan.projection)[:len(ordered_pks)]
-        host_of = dict(zip(grain, host_grain))
-        join_pairs: List[Tuple[ValueKey, SlotId]] = [
-            (host_of.get(pk, pk), next(
-                (s.id for s in producer_plan.row_slots if s.key == pk), grain_ids[i],
-            ))
-            for i, pk in enumerate(ordered_pks)
-        ]
-        joined = {sid for _, sid in join_pairs}
-        # A bare row-valued answer (a carried placeholder) is a row slot, not grain.
-        _assert_attach_covers_producer_grain(
-            joined_slot_ids=joined,
-            producer_grain_slot_ids=_producer_grain_slot_ids(producer_plan)
-            - ({answer_slot} - joined),
+        join_pairs = _shifted_join_pairs(
+            producer_plan=producer_plan, ordered_pks=ordered_pks,
+            host_of=dict(zip(grain, host_grain)), answer_slot=answer_slot,
         )
-        kernel_kwargs: Dict[str, Any] = {}
-        kernel_root = producer_plan.render_source_model or bundle.source_model
-        if own_grain and isinstance(answer, AggregateKey) and kernel_root is not None \
-                and not is_cross_model_agg(answer) \
-                and _windowed_or_ranked_identity(answer) is not None:
-            make_kernel = (
-                _trailing_window_kernel if window_kwarg_of(answer) is not None
-                else _ranked_kernel
-            )
-            kernel_kwargs["kernel"] = make_kernel(
-                producer_plan=producer_plan, agg_key=answer,
-                root_model=kernel_root,
-                bundle=bundle,
-                alias=canonical_aggregate_alias(answer, profile="stage_formula"),
-                target_rooted=False,
-            )
+        kernel_kwargs = _shifted_kernel_kwargs(
+            answer=answer, own_grain=own_grain, producer_plan=producer_plan,
+            bundle=bundle,
+        )
         out.append(_intern_producer(RegroupAttachPlan(
             producer_plan=producer_plan,
-            alias_hint=(canonical_aggregate_alias(answer, profile="stage_formula")
-                        if isinstance(answer, AggregateKey) else None)
-            or _SHIFTED_ANSWER,
+            alias_hint=alias_hint,
             attach_phase="shifted",
             shift_of=slot.id,
             answer_slot_id=answer_slot,
@@ -1232,6 +1192,100 @@ def _plan_shifted_attaches(
             **kernel_kwargs,
         ), producer_registry))
     return out
+
+
+def _shifted_answer_aliases(
+    *, answer: ValueKey, public_alias: Dict[ValueKey, str],
+) -> Tuple[Dict[ValueKey, str], str]:
+    """(producer public aliases, attach alias hint) of a shifted answer."""
+    if isinstance(answer, AggregateKey):
+        return public_alias, canonical_aggregate_alias(answer, profile="stage_formula") \
+            or _SHIFTED_ANSWER
+    return {answer: _SHIFTED_ANSWER}, _SHIFTED_ANSWER
+
+
+def _attaches_carrying(
+    *, attaches: Sequence[RegroupAttachPlan], carried: Sequence[ValueKey],
+) -> List[RegroupAttachPlan]:
+    """The attaches (identity-deduplicated) producing a carried placeholder."""
+    out: List[RegroupAttachPlan] = []
+    for a in attaches:
+        if any(sub.placeholder in carried for sub in a.substitutions) \
+                and not any(a is c for c in out):
+            out.append(a)
+    return out
+
+
+def _shifted_producer_grain(
+    *, answer: ValueKey, resolved: ValueKey, axis: ValueKey, grain: List[ValueKey],
+    dim_keys: List[ValueKey], td_keys: List[ValueKey],
+    active_bucket: Optional[ValueKey],
+) -> Tuple[Grain, Optional[ValueKey], bool]:
+    """(grain, window time key, own-grain?) of a shifted producer: the operand grain
+    (Axiom 11.1) when it holds the axis, else the query grain."""
+    # A bare aggregate keyed by the axis is built exactly like its combined
+    # producer, so a frame-free one interns with the base's.
+    if isinstance(answer, AggregateKey):
+        leaf_grain, windowed = effective_root_grain(
+            agg=answer, projected_dim_keys=dim_keys, projected_td_keys=td_keys,
+            active_bucket=active_bucket,
+        )
+        if windowed or axis in leaf_grain:
+            return (_prune_functionally_determined_grain(leaf_grain),
+                    active_bucket if windowed else None, True)
+    elif not source_row_leaves(resolved):
+        union: Grain = Grain.of(())
+        for agg in operand_aggregates(resolved):
+            union = union | constituent_grain(
+                c=agg, projected_dim_keys=dim_keys, projected_td_keys=td_keys,
+                active_bucket=active_bucket,
+            )
+        if axis in union:
+            return _prune_functionally_determined_grain(union), axis, False
+    return Grain.of(grain), axis, False
+
+
+def _shifted_join_pairs(
+    *, producer_plan: PlannedQuery, ordered_pks: Sequence[ValueKey],
+    host_of: Dict[ValueKey, ValueKey], answer_slot: SlotId,
+) -> List[Tuple[ValueKey, SlotId]]:
+    """Consumer-key → producer-slot pairs covering the shifted producer's grain."""
+    grain_ids = list(producer_plan.projection)[:len(ordered_pks)]
+    join_pairs: List[Tuple[ValueKey, SlotId]] = [
+        (host_of.get(pk, pk), next(
+            (s.id for s in producer_plan.row_slots if s.key == pk), grain_ids[i],
+        ))
+        for i, pk in enumerate(ordered_pks)
+    ]
+    joined = {sid for _, sid in join_pairs}
+    # A bare row-valued answer (a carried placeholder) is a row slot, not grain.
+    _assert_attach_covers_producer_grain(
+        joined_slot_ids=joined,
+        producer_grain_slot_ids=_producer_grain_slot_ids(producer_plan)
+        - ({answer_slot} - joined),
+    )
+    return join_pairs
+
+
+def _shifted_kernel_kwargs(
+    *, answer: ValueKey, own_grain: bool, producer_plan: PlannedQuery,
+    bundle: ResolvedSourceBundle,
+) -> Dict[str, Any]:
+    """The windowed / ranked kernel of a bare own-grain shifted leaf, if any."""
+    kernel_root = producer_plan.render_source_model or bundle.source_model
+    if not (own_grain and isinstance(answer, AggregateKey) and kernel_root is not None
+            and not is_cross_model_agg(answer)
+            and _windowed_or_ranked_identity(answer) is not None):
+        return {}
+    make_kernel = (
+        _trailing_window_kernel if window_kwarg_of(answer) is not None
+        else _ranked_kernel
+    )
+    return {"kernel": make_kernel(
+        producer_plan=producer_plan, agg_key=answer, root_model=kernel_root,
+        bundle=bundle, alias=canonical_aggregate_alias(answer, profile="stage_formula"),
+        target_rooted=False,
+    )}
 
 
 class _PushBlocked(Exception):

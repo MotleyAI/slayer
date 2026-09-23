@@ -47,8 +47,10 @@ population restriction the query resolves by association restricts the shifted
 evaluation the same way.
 
 **Join-back.** In both regimes a row reads the shifted relation at the bucket
-containing its own bucket offset by the shift, matched on every projected
-dimension and secondary time dimension. For a shift whose granularity is a
+containing its own bucket offset by the shift, matched on every other member of
+the shifted relation's grain — every projected dimension and secondary time
+dimension, except those an operand whose leaves are all coarser does not carry
+(Axiom 11.1). For a shift whose granularity is a
 multiple of the bucket this is the bucket `N` periods away; for a shift not
 aligned to the bucket it is the bucket containing the offset instant.
 
@@ -143,8 +145,9 @@ aligned to the bucket it is the bucket containing the offset instant.
 - **WHEN** the same query requests
   `time_shift(amount:sum(partition_by=[ordered_at]) / 2, -1)`
 - **THEN** each row carries half the prior month's cross-region total — Feb
-  North 7.5, Feb South 7.5, Mar North 17.5, Jan rows and West Feb NULL — by
-  executed values
+  North 7.5, Feb South 7.5, Mar North 17.5, West Feb 7.5 (the operand grain is
+  the month alone, so a region absent from January still reads it), Jan rows
+  NULL — by executed values
 
 #### Scenario: Partitioned leaf at a non-time grain is constant along the axis
 

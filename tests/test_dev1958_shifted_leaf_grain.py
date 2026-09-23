@@ -32,7 +32,8 @@ DR_CELLS = {(N, FEB), (N, MAR), (S, FEB), (W, FEB)}
 SHIFTED_SHARE = {(N, FEB): 10 / 15, (S, FEB): 5 / 15, (N, MAR): 20 / 35}
 CHANGE_SHARE = {(N, FEB): -2 / 21, (S, FEB): 2 / 21, (N, MAR): 3 / 7}
 CHANGE_PCT_SHARE = {(N, FEB): -1 / 7, (S, FEB): 2 / 7, (N, MAR): 0.75}
-HALF_MONTH_TOTAL = {(N, FEB): 7.5, (S, FEB): 7.5, (N, MAR): 17.5}
+HALF_MONTH_TOTAL = {(N, FEB): 7.5, (S, FEB): 7.5, (N, MAR): 17.5, (W, FEB): 7.5}
+DOUBLE_MONTH_TOTAL = {(N, FEB): 30.0, (S, FEB): 30.0, (N, MAR): 70.0, (W, FEB): 30.0}
 REGION_TOTAL_SHARE = {(N, FEB): 10 / 60, (N, MAR): 20 / 60, (S, FEB): 5 / 20}
 REAGG_BY_MONTH = {JAN: None, FEB: 0.5, MAR: 20 / 35}
 DR_MONTH_TOTAL = {(N, FEB): 15.0, (S, FEB): 15.0, (N, MAR): 35.0}
@@ -113,6 +114,11 @@ class TestPartitionedLeafKeepsItsGrain:
         resp = await exec_engine.execute(
             _q("time_shift(amount:sum(partition_by=[ordered_at]) / 2, -1)"))
         _assert_cells(_cells(resp), cells=ALL_CELLS, expected=HALF_MONTH_TOTAL)
+
+    async def test_all_time_grained_leaves_shift_at_the_operand_grain(self, exec_engine) -> None:
+        p = "amount:sum(partition_by=[ordered_at])"
+        resp = await exec_engine.execute(_q(f"time_shift({p} + {p}, -1)"))
+        _assert_cells(_cells(resp), cells=ALL_CELLS, expected=DOUBLE_MONTH_TOTAL)
 
     async def test_non_time_partition_is_constant_along_the_axis(self, exec_engine) -> None:
         resp = await exec_engine.execute(

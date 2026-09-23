@@ -508,29 +508,8 @@ class PlannedQuery(BaseModel):
         by_id = {s.id: s for s in _own_slots(self)}
         seen: set = set()
         for attach in self.regroup_attach_plans:
-            if attach.attach_phase != "shifted":
-                continue
-            slot = by_id.get(attach.shift_of) if attach.shift_of is not None else None
-            if slot is None or not (
-                isinstance(slot.key, TransformKey) and slot.key.op == "time_shift"
-            ):
-                raise ValueError(
-                    f"shifted attach targets {attach.shift_of!r}, not a time_shift slot",
-                )
-            if slot.series:
-                raise ValueError(
-                    f"shifted attach targets the series-regime slot {slot.id!r}",
-                )
-            if slot.id in seen:
-                raise ValueError(f"duplicate shifted attach for slot {slot.id!r}")
-            seen.add(slot.id)
-            if attach.substitutions:
-                raise ValueError("a shifted attach substitutes nothing")
-            if attach.answer_slot_id not in {s.id for s in _own_slots(attach.producer_plan)}:
-                raise ValueError(
-                    f"shifted attach answer slot {attach.answer_slot_id!r} "
-                    f"is not a producer slot",
-                )
+            if attach.attach_phase == "shifted":
+                seen.add(_check_shifted_attach(attach=attach, by_id=by_id, seen=seen))
         orphans = sorted(
             s.id for s in by_id.values()
             if isinstance(s.key, TransformKey) and s.key.op == "time_shift"
@@ -551,6 +530,30 @@ class PlannedQuery(BaseModel):
 
 def _own_slots(pq: "PlannedQuery") -> List[ValueSlot]:
     return [*pq.row_slots, *pq.aggregate_slots, *pq.combined_expression_slots]
+
+
+def _check_shifted_attach(
+    *, attach: RegroupAttachPlan, by_id: Dict[SlotId, ValueSlot], seen: set,
+) -> SlotId:
+    """Validate one shifted attach; return the time_shift slot it targets."""
+    slot = by_id.get(attach.shift_of) if attach.shift_of is not None else None
+    if slot is None or not (
+        isinstance(slot.key, TransformKey) and slot.key.op == "time_shift"
+    ):
+        raise ValueError(
+            f"shifted attach targets {attach.shift_of!r}, not a time_shift slot",
+        )
+    if slot.series:
+        raise ValueError(f"shifted attach targets the series-regime slot {slot.id!r}")
+    if slot.id in seen:
+        raise ValueError(f"duplicate shifted attach for slot {slot.id!r}")
+    if attach.substitutions:
+        raise ValueError("a shifted attach substitutes nothing")
+    if attach.answer_slot_id not in {s.id for s in _own_slots(attach.producer_plan)}:
+        raise ValueError(
+            f"shifted attach answer slot {attach.answer_slot_id!r} is not a producer slot",
+        )
+    return slot.id
 
 
 def _transforms_read(key: ValueKey):

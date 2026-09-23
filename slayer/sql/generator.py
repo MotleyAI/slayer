@@ -4076,7 +4076,7 @@ class SQLGenerator:
         deps for :meth:`_split_statement_ctes`."""
         self._gen_dep_stack.append({})
         try:
-            return self._split_ast_ctes(cast("exp.Select", self.generate_from_planned(
+            return self._split_ast_ctes(cast(exp.Select, self.generate_from_planned(
                 planned_query=producer, bundle=bundle, as_cte_body=True,
                 reuse_allocator=True, producer_kernel=kernel, as_ast=True,
             )))
@@ -4088,7 +4088,7 @@ class SQLGenerator:
     ) -> Tuple[List[CteEntry], str]:
         """Text form of :meth:`_split_ast_ctes` (a multi-stage statement arrives as SQL)."""
         entries, body = self._split_ast_ctes(
-            cast("exp.Select", sqlglot.parse_one(sql, dialect=self.dialect)),
+            cast(exp.Select, sqlglot.parse_one(sql, dialect=self.dialect)),
         )
         return entries, body.sql(dialect=self.dialect, pretty=True) if entries else sql
 
@@ -4136,7 +4136,7 @@ class SQLGenerator:
         """Split the multi-stage ROOT statement into (its own CTE entries, de-WITHed
         body). The root is the outermost consumer, so its base CTE is NOT renamed;
         each entry takes its declared deps from the top registry (identity re-key)."""
-        parsed = cast("exp.Select", sqlglot.parse_one(sql, dialect=self.dialect))
+        parsed = cast(exp.Select, sqlglot.parse_one(sql, dialect=self.dialect))
         with_node = parsed.args.get("with_")
         if with_node is None:
             return [], parsed
