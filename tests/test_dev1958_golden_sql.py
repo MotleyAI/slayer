@@ -12,6 +12,7 @@ import re
 from pathlib import Path
 
 import pytest
+import sqlglot
 
 from slayer.core.query import SlayerQuery
 from slayer.sql.scope_check import assert_dependency_ordered_ctes, assert_scope_closed
@@ -165,4 +166,7 @@ async def test_shifted_relation_keyed_by_unshifted_bucket(case_id: str) -> None:
     sql = await _generate_one(_cases()[case_id], "duckdb")
     assert isinstance(sql, str), sql
     for name in set(re.findall(r"\b(shifted_\w+) AS \(", sql)):
-        assert "INTERVAL" not in _extract_cte_body(sql, re.escape(name)), (name, sql)
+        # Only the projected columns: a window kernel's frame has its own INTERVAL.
+        body = sqlglot.parse_one(_extract_cte_body(sql, re.escape(name)), read="duckdb")
+        for column in body.expressions:
+            assert "INTERVAL" not in column.sql(dialect="duckdb"), (name, sql)

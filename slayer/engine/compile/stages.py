@@ -1068,12 +1068,11 @@ def _frame_free_filters(
     *, prebound: PreboundQuery, filter_typings: Sequence[ConjunctTyping],
     time_columns: AbstractSet[ValueKey],
 ) -> List[BoundFilter]:
-    """The population's stratum-0 field masks minus every frame bound."""
-    inherited, n_date = _regroup_inherited_filters(
-        prebound=prebound, filter_typings=filter_typings,
-    )
+    """Every field mask of the population (any stratum) minus every frame bound."""
     out: List[BoundFilter] = []
-    for bf in inherited[n_date:]:
+    for idx, (bf, ct) in enumerate(zip(prebound.bound_filters, filter_typings)):
+        if ct.typing != MaskTyping.FIELD or idx < prebound.n_date_range:
+            continue
         residual = strip_frame_bounds(key=bf.value_key, time_columns=time_columns)
         if residual is None:
             continue

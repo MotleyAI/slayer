@@ -18,11 +18,11 @@
 
 - [x] 3.1 `RegroupAttachPlan.attach_phase` accepts `"shifted"`; add `shift_of: Optional[SlotId]` and `answer_slot_id: Optional[SlotId]`; docstring updated
 - [x] 3.2 `PlannedQuery` validators per design D4 (shift_of names a non-series time_shift slot, answer slot belongs to the producer, substitutions empty, no duplicate / orphan / series-targeting shifted attach); verified by task 1.5's malformed-plan tests
-- [ ] 3.3 `_validate_stage_order` and `regroup_producer_identity` cover the new phase without change — confirm with a test that a shifted producer's nested stage-order violation is caught
+- [x] 3.3 `_validate_stage_order` and `regroup_producer_identity` cover the new phase without change — confirm with a test that a shifted producer's nested stage-order violation is caught
 
 ## 4. Planner (`slayer/engine/compile/`)
 
-- [ ] 4.1 `compile/shift.py::plan_shifted_producers(...)`: discover non-series `time_shift` keys from measures / order / filters (dedup by key); classify constituents per design D2 (bare aggregate → re-evaluate; placeholder → original → grain contains axis or ranked / windowed → re-evaluate, else carry); build the producer prebound via `_regroup_producer_prebound` (grain = projected dims + tds, consumer order / names, `main_time_key` = axis; measure = input with re-evaluated originals restored; inherited = stratum-0 masks minus date-range masks through `strip_frame_bounds` over the query's time-dimension raw columns); `compile_synthesized(..., population_filters=<parent>, carried_attaches=[...])`; return the shifted attaches — gotcha: check that `substitute_value_keys` descends `AggregateKey.partition_keys` when restoring originals
+- [x] 4.1 `compile/shift.py::plan_shifted_producers(...)`: discover non-series `time_shift` keys from measures / order / filters (dedup by key); classify constituents per design D2 (bare aggregate → re-evaluate; placeholder → original → grain contains axis or ranked / windowed → re-evaluate, else carry); build the producer prebound via `_regroup_producer_prebound` (grain = projected dims + tds, consumer order / names, `main_time_key` = axis; measure = input with re-evaluated originals restored; inherited = stratum-0 masks minus date-range masks through `strip_frame_bounds` over the query's time-dimension raw columns); `compile_synthesized(..., population_filters=<parent>, carried_attaches=[...])`; return the shifted attaches — gotcha: check that `substitute_value_keys` descends `AggregateKey.partition_keys` when restoring originals
 - [x] 4.2 `compile_synthesized` / `compile_prebound`: new `carried_attaches` keyword appended to the sub-plan's `regroup_attach_plans` (same objects); `compile_prebound` calls `plan_shifted_producers` after `_plan_regroups` and before `stage_slots`; verified by task 1.5
 - [x] 4.3 Design D6 nesting rule in `_plan_regroups`'s `in_producer` filter (strict constituent of a composite answer, never the answer itself); regression tests over ordinary regroup and re-aggregation producers (`tests/test_dev1847_reaggregation_exec.py`, `tests/test_dev1928_*` stay green) plus the ranked-leaf composite scenario
 - [x] 4.4 Design D5 answer naming so a bare-aggregate shift without a frame mask interns with the base producer; verified by the two-offsets scenario and a bare partitioned leaf without `date_range` reading the base `_cm_` (one producer CTE in the SQL)
@@ -39,10 +39,10 @@
 
 ## 7. Existing tests and goldens (consent per file before editing any existing test)
 
-- [ ] 7.1 `tests/test_dev1859_transform_row_leaf.py::TestShiftFamilyRegimeUnchanged` → rejection tests (the user's ban decision); ask before editing
-- [ ] 7.2 `tests/test_time_shift_period_boundary.py` — the two STRFTIME-count shape assertions re-pinned to the lookup form; the four value tests must pass unchanged; ask before editing
-- [ ] 7.3 Shape tests asserting the shifted bucket expression inside the shifted CTE (`tests/test_dev1474_time_shift_cross_model_partition.py`, `tests/test_dev1750_shifted_fragment_joins.py`, `tests/test_dev1750_guard_lift.py`, `tests/test_dev1837_filter_placement.py`, `tests/test_sql_generator.py`, dialect tests) — re-pin only those that fail, each with consent; the five DEV-1732 shift tests must pass unchanged
-- [ ] 7.4 Re-bless every moved time_shift golden (`dev1750`, `dev1800`, `dev1837`, `dev1846`, `dev1868`, `dev1747` baselines) with values re-verified by the executed suites; enumerate each movement class in `divergences.md`
+- [x] 7.1 `tests/test_dev1859_transform_row_leaf.py::TestShiftFamilyRegimeUnchanged` → rejection tests (the user's ban decision); ask before editing
+- [x] 7.2 `tests/test_time_shift_period_boundary.py` — the two STRFTIME-count shape assertions re-pinned to the lookup form; the four value tests must pass unchanged; ask before editing
+- [x] 7.3 Shape tests asserting the shifted bucket expression inside the shifted CTE (`tests/test_dev1474_time_shift_cross_model_partition.py`, `tests/test_dev1750_shifted_fragment_joins.py`, `tests/test_dev1750_guard_lift.py`, `tests/test_dev1837_filter_placement.py`, `tests/test_sql_generator.py`, dialect tests) — re-pin only those that fail, each with consent; the five DEV-1732 shift tests must pass unchanged
+- [x] 7.4 Re-bless every moved time_shift golden (`dev1750`, `dev1800`, `dev1837`, `dev1846`, `dev1868`, `dev1747` baselines) with values re-verified by the executed suites; enumerate each movement class in `divergences.md`
 
 ## 8. Docs, lint, full suite
 

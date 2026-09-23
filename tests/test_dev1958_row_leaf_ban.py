@@ -42,7 +42,9 @@ def _bundle() -> ResolvedSourceBundle:
 
 
 def _call(op: str, inner: str) -> str:
-    return f"ntile({inner}, n=4)" if op == "ntile" else f"{op}({inner})"
+    if op == "ntile":
+        return f"ntile({inner}, n=4)"
+    return f"time_shift({inner}, -1)" if op == "time_shift" else f"{op}({inner})"
 
 
 def _assert_unified_message(msg: str, *, op: str, leaf: str) -> None:
@@ -68,16 +70,17 @@ class TestShiftFamilyCovered:
     def test_rejected_at_plan_time(self, op, formula, leaf) -> None:
         query = _q(time_dimensions=month_td(),
                    measures=[ModelMeasure(formula=formula, name="t")])
+        bundle = _bundle()
         with pytest.raises(ValueError) as ei:
-            plan_query(query=query, bundle=_bundle())
+            plan_query(query=query, bundle=bundle)
         _assert_unified_message(str(ei.value), op=op, leaf=leaf)
 
     @pytest.mark.parametrize("op, formula, leaf", SHIFT_CASES)
     async def test_rejected_via_engine(self, exec_engine, op, formula, leaf) -> None:
+        query = _q(time_dimensions=month_td(),
+                   measures=[ModelMeasure(formula=formula, name="t")])
         with pytest.raises(ValueError) as ei:
-            await exec_engine.execute(_q(
-                time_dimensions=month_td(),
-                measures=[ModelMeasure(formula=formula, name="t")]))
+            await exec_engine.execute(query)
         _assert_unified_message(str(ei.value), op=op, leaf=leaf)
 
 
@@ -86,8 +89,9 @@ class TestOneMessageForEveryOp:
     def test_bare_row_leaf_message(self, op) -> None:
         query = _q(time_dimensions=month_td(),
                    measures=[ModelMeasure(formula=_call(op, "weight"), name="t")])
+        bundle = _bundle()
         with pytest.raises(ValueError) as ei:
-            plan_query(query=query, bundle=_bundle())
+            plan_query(query=query, bundle=bundle)
         _assert_unified_message(str(ei.value), op=op, leaf="weight")
 
 
@@ -102,4 +106,16 @@ class TestProjectedGrainKeyUnderShift:
         assert len(cells) == len(resp.data) == len(plain.data)
         for r in resp.data:
             assert r["sales.t"] in (None, r["sales.store"]), r
+        assert any(r["sales.t"] is not None for r in resp.data)
+
+    async def test_predicate_over_projected_dimension(self, exec_engine) -> None:
+        kw = {"dimensions": ["store"], "time_dimensions": month_td()}
+        resp = await exec_engine.execute(_q(
+            measures=[ModelMeasure(formula="time_shift(store in ('A', 'B'), -1)",
+                                   name="t")], **kw))
+        plain = await exec_engine.execute(_q(
+            measures=[ModelMeasure(formula="revenue:sum", name="r")], **kw))
+        assert len(resp.data) == len(plain.data)
+        for r in resp.data:
+            assert r["sales.t"] in (None, r["sales.store"] in ("A", "B")), r
         assert any(r["sales.t"] is not None for r in resp.data)

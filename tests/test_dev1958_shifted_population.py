@@ -96,12 +96,13 @@ class TestCrossModelPartitionKey:
 
     async def test_fanning_hop_key_is_typed_error(self, exec_engine) -> None:
         """Regression guard: the input-safety error, never a value."""
+        query = orders_q(
+            dimensions=["status"], time_dimensions=month_td(),
+            measures=[ModelMeasure(
+                formula=f"time_shift(amount:sum / amount:sum(partition_by=[{EVENT_VALUE}]), -1)",
+                name="t")])
         with pytest.raises(ValueError) as ei:
-            await exec_engine.execute(orders_q(
-                dimensions=["status"], time_dimensions=month_td(),
-                measures=[ModelMeasure(
-                    formula=f"time_shift(amount:sum / amount:sum(partition_by=[{EVENT_VALUE}]), -1)",
-                    name="t")]))
+            await exec_engine.execute(query)
         msg = str(ei.value)
         assert "region_events" in msg, msg
         assert "every partition key must be attributable" in msg, msg

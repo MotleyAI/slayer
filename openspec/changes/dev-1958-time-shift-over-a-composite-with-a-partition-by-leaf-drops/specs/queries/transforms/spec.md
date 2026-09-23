@@ -304,7 +304,7 @@ SQL is generated.
 #### Scenario: Row-level predicate input rejected
 
 - **WHEN** a query requests `time_shift(store in ('A', 'B'), -1)` where `store`
-  is a plain column
+  is a plain column that is not a query dimension
 - **THEN** the query fails with the row-level-leaf `ValueError` naming the shape
   and the remedy, rather than leaking an internal `RuntimeError`
 

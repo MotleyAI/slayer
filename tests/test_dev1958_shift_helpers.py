@@ -28,12 +28,14 @@ class TestShiftOffsetOf:
 
     @pytest.mark.parametrize("bad", [True, Decimal("1.5"), "x"])
     def test_non_integer_periods_rejected(self, bad) -> None:
+        key = _key(periods=bad)
         with pytest.raises(ValueError, match="periods"):
-            shift_offset_of(_key(periods=bad))
+            shift_offset_of(key)
 
     def test_missing_periods_rejected(self) -> None:
+        key = _key()
         with pytest.raises(ValueError, match="periods"):
-            shift_offset_of(_key())
+            shift_offset_of(key)
 
 
 def test_series_mode_has_one_definition() -> None:

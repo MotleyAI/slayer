@@ -6,6 +6,7 @@ validators over malformed shifted attaches."""
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from slayer.core.errors import MaterialisationStageError
 from slayer.core.keys import AggregateKey, TransformKey, walk_value_keys
@@ -166,38 +167,42 @@ class TestValidatorsRejectMalformedShiftedAttaches:
 
     def test_orphan_shift_of_rejected(self) -> None:
         pq, attach, others = self._valid()
+        plans = [*others, _attach(attach, shift_of="no_such_slot")]
         with pytest.raises(ValueError):
-            _rebuild(pq, regroup_attach_plans=[*others, _attach(attach, shift_of="no_such_slot")])
+            _rebuild(pq, regroup_attach_plans=plans)
 
     def test_shift_of_non_transform_slot_rejected(self) -> None:
         pq, attach, others = self._valid()
         dim = next(s for s in pq.row_slots if not s.hidden)
+        plans = [*others, _attach(attach, shift_of=dim.id)]
         with pytest.raises(ValueError):
-            _rebuild(pq, regroup_attach_plans=[*others, _attach(attach, shift_of=dim.id)])
+            _rebuild(pq, regroup_attach_plans=plans)
 
     def test_series_targeting_shifted_attach_rejected(self) -> None:
         pq, attach, others = self._valid()
         [series] = _shift_slots(pq, series=True)
+        plans = [*others, _attach(attach, shift_of=series.id)]
         with pytest.raises(ValueError):
-            _rebuild(pq, regroup_attach_plans=[*others, _attach(attach, shift_of=series.id)])
+            _rebuild(pq, regroup_attach_plans=plans)
 
     def test_duplicate_shifted_attach_rejected(self) -> None:
         pq, attach, others = self._valid()
+        plans = [*others, _attach(attach), _attach(attach)]
         with pytest.raises(ValueError):
-            _rebuild(pq, regroup_attach_plans=[*others, _attach(attach), _attach(attach)])
+            _rebuild(pq, regroup_attach_plans=plans)
 
     def test_foreign_answer_slot_rejected(self) -> None:
         pq, attach, others = self._valid()
+        plans = [*others, _attach(attach, answer_slot_id="no_such_slot")]
         with pytest.raises(ValueError):
-            _rebuild(pq, regroup_attach_plans=[
-                *others, _attach(attach, answer_slot_id="no_such_slot")])
+            _rebuild(pq, regroup_attach_plans=plans)
 
     def test_non_empty_substitutions_rejected(self) -> None:
         pq, attach, others = self._valid()
         borrowed = next(a for a in others if a.substitutions).substitutions
+        plans = [*others, _attach(attach, substitutions=list(borrowed))]
         with pytest.raises(ValueError):
-            _rebuild(pq, regroup_attach_plans=[
-                *others, _attach(attach, substitutions=list(borrowed))])
+            _rebuild(pq, regroup_attach_plans=plans)
 
     def test_stage_order_recurses_into_shifted_producer(self) -> None:
         pq, attach, others = self._valid()
@@ -205,6 +210,7 @@ class TestValidatorsRejectMalformedShiftedAttaches:
         [first, *rest] = producer.aggregate_slots
         broken = producer.model_copy(update={
             "aggregate_slots": [first.model_copy(update={"stage": None}), *rest]})
-        with pytest.raises(MaterialisationStageError):
-            _rebuild(pq, regroup_attach_plans=[
-                *others, attach.model_copy(update={"producer_plan": broken})])
+        plans = [*others, attach.model_copy(update={"producer_plan": broken})]
+        # Pydantic wraps a validator's ValueError subclass in ValidationError.
+        with pytest.raises((MaterialisationStageError, ValidationError)):
+            _rebuild(pq, regroup_attach_plans=plans)

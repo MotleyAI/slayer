@@ -429,18 +429,10 @@ class RegroupAttachPlan(BaseModel):
     degenerate_outer_grain: List[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
-    def _shifted_attach_well_formed(self) -> "RegroupAttachPlan":
+    def _shift_fields_only_on_shifted(self) -> "RegroupAttachPlan":
         shifted = self.attach_phase == "shifted"
         if shifted != (self.shift_of is not None) or shifted != (self.answer_slot_id is not None):
             raise ValueError("shift_of / answer_slot_id are set exactly on a shifted attach")
-        if not shifted:
-            return self
-        if self.substitutions:
-            raise ValueError("a shifted attach substitutes nothing")
-        if self.answer_slot_id not in {s.id for s in _own_slots(self.producer_plan)}:
-            raise ValueError(
-                f"shifted attach answer slot {self.answer_slot_id!r} is not a producer slot",
-            )
         return self
 
 
@@ -532,6 +524,13 @@ class PlannedQuery(BaseModel):
             if slot.id in seen:
                 raise ValueError(f"duplicate shifted attach for slot {slot.id!r}")
             seen.add(slot.id)
+            if attach.substitutions:
+                raise ValueError("a shifted attach substitutes nothing")
+            if attach.answer_slot_id not in {s.id for s in _own_slots(attach.producer_plan)}:
+                raise ValueError(
+                    f"shifted attach answer slot {attach.answer_slot_id!r} "
+                    f"is not a producer slot",
+                )
         return self
 
     @model_validator(mode="after")
