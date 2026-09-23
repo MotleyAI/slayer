@@ -233,12 +233,13 @@ aligned to the bucket it is the bucket containing the offset instant.
 - **THEN** each row carries half the prior month's last value — Feb North 5,
   Mar North 10, Feb South 2.5 — by executed values, never an internal error
 
-#### Scenario: Windowed leaf inside a shifted composite fails loudly
+#### Scenario: Windowed leaf inside a shifted composite keeps its window
 
 - **WHEN** the `monthly` query requests
   `time_shift(amount:sum(window='90d') / 2, -1)`
-- **THEN** the query fails with the existing windowed-composite
-  not-implemented error, never a value with the window silently dropped
+- **THEN** each row carries half the prior month's trailing-window sum — Feb
+  North 5, Mar North 15, Feb South 2.5, Jan rows and West Feb NULL — by
+  executed values, never a value with the window silently dropped
 
 #### Scenario: Bare windowed leaf reaches outside the date range
 

@@ -22,8 +22,8 @@ regimes; the defect class (a leaf's own structure ignored by the shifted evaluat
 impossible by construction; net-negative generator code.
 
 **Non-Goals:** the series regime's semantics (untouched); moving cross-model composite
-leaves out of the series regime (the classifier stays as is); lifting DEV-1504's
-windowed-in-composite guard; any change to how frame bounds are classified.
+leaves out of the series regime (the classifier stays as is); any change to how
+frame bounds are classified.
 
 ## Decisions
 
@@ -82,7 +82,7 @@ frame mask or a differing population disposition yields a distinct producer by f
 windowed root at exactly the producer's own grain nests when — and only when — it is a
 strict constituent of the producer's composite answer, never when it is the answer itself
 (the kernel renders that). Fixes the internal error today's `time_shift(amount:last / 2, -1)`
-hits; `time_shift(w90 / 2, -1)` then meets DEV-1504's windowed-in-composite guard loudly.
+hits; `time_shift(w90 / 2, -1)` then renders its windowed leaf through the nested producer.
 
 **D7 — CTE dependencies (sql P6).** The emitter renders the shifted producer with
 `shifted_<alias>` pushed as the active split consumer, exactly as the combined-attach door
