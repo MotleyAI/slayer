@@ -19,7 +19,7 @@
 - [x] 2.2 `slayer/core/join_walker.py`: `physical_join_pairs`; verify the seam cases of 1.2 green
 - [x] 2.3 `slayer/sql/generator.py` `_build_from_and_joins` through the seam; `slayer/engine/compile/stages.py` `_forward_hops` / `_reverse_hops` register physical pairs; `slayer/ir/planned.py` `SemiJoinHop` doc PHYSICAL; verify the base-join, spine and pushdown cases of 1.4 green on both engines
 - [x] 2.4 `slayer/engine/join_safety.py`: logical `_unique_key_sets`, direct comparisons in `provably_to_one` / `_entity_seeded` / `_hop_pins`, delete `_physical_name` / `_physical_grain_leaves` / `_BARE_IDENT_RE`, audit finding for a non-base key; `slayer/engine/query_engine.py`: `_validate_join_keys` at save, `_detect_one_join` through `Column.physical_name`, `_detection_skip_reason` via `Column.is_base`; verify 1.2, 1.5 and the association / detection cases of 1.4 green
-- [ ] 2.5 Run `poetry run pytest tests/test_dev1892_review_fixes.py tests/test_dev1836_safety_predicate.py tests/test_dev1853_oriented_safety.py tests/test_dev1910_association_plan.py` to confirm the seed and kernel tests stay green with no map
+- [x] 2.5 Run `poetry run pytest tests/test_dev1892_review_fixes.py tests/test_dev1836_safety_predicate.py tests/test_dev1853_oriented_safety.py tests/test_dev1910_association_plan.py` to confirm the seed and kernel tests stay green with no map
 - [x] 2.6 `slayer/engine/schema_drift.py` and `slayer/storage/type_refinement.py`: `_column_is_base` delegates; the four raw `sql` lookups go through `physical_column_sql`; verify 1.3 green and `tests/test_schema_drift_error.py`, `tests/test_validate_models.py`, `tests/test_storage_type_refinement.py` green
 - [x] 2.7 `slayer/storage/migrations.py`: v11 + no-op converter; `slayer/storage/base.py`: `canonical_join_pairs`, `_canonicalize_join_key_spellings` before `_dedup_exact_inverse_joins`, `_stored_counterpart` canonicalises the peer's joins; verify 1.7 green on both backends and `tests/test_migrations.py` green
 - [x] 2.8 `slayer/cube/converter.py` (+ `slayer/cube/refs.py` docstring), `slayer/dbt/entities.py` / `slayer/dbt/converter.py`, `slayer/osi/converter.py`, `slayer/engine/ingestion.py` (`_logical_column_name`, dotted branch deleted); verify 1.8 green
@@ -33,6 +33,6 @@
 
 ## 4. Verification
 
-- [ ] 4.1 Full non-integration suite green: `poetry run pytest -m "not integration" -n auto`; existing golden modules byte-identical (no `ALLOWED_DELTAS` entries needed)
-- [ ] 4.2 `poetry run ruff check slayer/ tests/`, `poetry run python tools/arch_check.py`, `poetry run basedpyright` (no new errors vs baseline; shrink in touched files), conventions gate clear; `legacy_arrows` / `guards` baselines unchanged
-- [ ] 4.3 Codex read-only pass over the working tree before the push; PR vs `main` opened with Egor's go-ahead
+- [x] 4.1 Full non-integration suite green: `poetry run pytest -m "not integration" -n auto`; existing golden modules byte-identical (no `ALLOWED_DELTAS` entries needed)
+- [x] 4.2 `poetry run ruff check slayer/ tests/`, `poetry run python tools/arch_check.py`, `poetry run basedpyright` (no new errors vs baseline; shrink in touched files), conventions gate clear; `legacy_arrows` / `guards` baselines unchanged
+- [x] 4.3 Codex read-only pass over the working tree before the push; PR vs `main` opened with Egor's go-ahead
