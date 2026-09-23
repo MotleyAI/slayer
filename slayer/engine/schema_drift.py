@@ -252,7 +252,7 @@ def _diff_sql_table_columns(
         # Base columns only; derived handled by cascade.
         if not _column_is_base(col.sql):
             continue
-        bare_name = physical_column_sql(col.sql, col.name)
+        bare_name = physical_column_sql(sql=col.sql, name=col.name)
         if bare_name not in live_table.columns:
             dropped.append(col.name)
             reasons.append(
@@ -291,7 +291,7 @@ def _diff_sql_table_joins(
         missing_locals = [
             lc for lc in local_cols
             if (col := model.get_column(lc)) is None
-            or physical_column_sql(col.sql, col.name) not in live_table.columns
+            or physical_column_sql(sql=col.sql, name=col.name) not in live_table.columns
         ]
         if missing_locals:
             dropped.append(join.target_model)

@@ -2485,12 +2485,12 @@ class SlayerQueryEngine:
 
         src_side = await self._side_stats(
             client=client, table=model.sql_table,
-            key_cols=_physical_keys(model, src_cols), sqlglot_name=sqlglot_name,
+            key_cols=_physical_keys(model=model, keys=src_cols), sqlglot_name=sqlglot_name,
             datasource=datasource_cfg,
         )
         tgt_side = await self._side_stats(
             client=client, table=target.sql_table,
-            key_cols=_physical_keys(target, tgt_cols), sqlglot_name=sqlglot_name,
+            key_cols=_physical_keys(model=target, keys=tgt_cols), sqlglot_name=sqlglot_name,
             datasource=datasource_cfg,
         )
         # 0 == 0 reads as observed_unique, so an empty side would falsely detect
@@ -3174,7 +3174,7 @@ def _detection_skip_reason(*, model, target, src_cols, tgt_cols) -> str | None:
     return None
 
 
-def _physical_keys(model: SlayerModel, keys: List[str]) -> List[str]:
+def _physical_keys(*, model: SlayerModel, keys: List[str]) -> List[str]:
     by_name = {c.name: c for c in model.columns}
     return [by_name[k].physical_name for k in keys]
 

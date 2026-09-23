@@ -14,6 +14,7 @@ from slayer.core.enums import DataType
 from slayer.core.format import NumberFormatType
 from slayer.core.join_walker import edges_between
 from slayer.core.models import Column, SlayerModel
+from slayer.core.query import SlayerQuery
 from slayer.dbt import converter as converter_module
 from slayer.dbt.converter import DbtConversionError, DbtToSlayerConverter
 from slayer.dbt.models import (
@@ -32,6 +33,7 @@ from slayer.dbt.models import (
 )
 from slayer.dbt.parser import parse_dbt_project
 from slayer.storage.yaml_storage import YAMLStorage
+from tests._dev1902_fixtures import AMOUNT_BY_CUSTOMER, cells, make_exec_engine
 
 
 @pytest.fixture
@@ -1634,3 +1636,103 @@ class TestJoinKeyColumns:
         assert any(
             w.model_name == "orders" and "CAST(cust AS INT)" in w.message
             for w in result.warnings)
+
+    def test_dimension_named_like_the_fk_but_reading_another_column_is_not_the_key(self) -> None:
+        project = _make_simple_project()
+        orders_sm = next(sm for sm in project.semantic_models if sm.name == "orders")
+        orders_sm.dimensions.append(DbtDimension(
+            name="customer_id", type="categorical", expr="billing_customer_id"))
+        result = DbtToSlayerConverter(project=project, data_source="test_db").convert()
+        orders = next(m for m in result.models if m.name == "orders")
+        dim = orders.get_column("customer_id")
+        assert orders.joins == []
+        assert dim is not None
+        assert dim.sql == "billing_customer_id"
+        assert any(
+            w.model_name == "orders" and "customer_id" in w.message
+            for w in result.warnings)
+
+    def test_target_key_named_by_a_derived_column_drops_the_join(self) -> None:
+        project = _make_simple_project()
+        customers_sm = next(sm for sm in project.semantic_models if sm.name == "customers")
+        customers_sm.dimensions.append(DbtDimension(
+            name="id", type="categorical", expr="LOWER(id)"))
+        result = DbtToSlayerConverter(project=project, data_source="test_db").convert()
+        orders = next(m for m in result.models if m.name == "orders")
+        customers = next(m for m in result.models if m.name == "customers")
+        dim = customers.get_column("id")
+        assert orders.joins == []
+        assert dim is not None
+        assert dim.primary_key is False
+        assert any("customers" in w.message and "id" in w.message for w in result.warnings)
+
+
+def test_non_bare_primary_entity_expr_declares_no_key_column() -> None:
+    project = _make_simple_project()
+    customers_sm = next(sm for sm in project.semantic_models if sm.name == "customers")
+    customers_sm.entities = [DbtEntity(name="customer_id", type="primary", expr="LOWER(id)")]
+    result = DbtToSlayerConverter(project=project, data_source="test_db").convert()
+    orders = next(m for m in result.models if m.name == "orders")
+    customers = next(m for m in result.models if m.name == "customers")
+    assert customers.get_column("LOWER(id)") is None
+    assert orders.joins == []
+    assert any("LOWER(id)" in w.message for w in result.warnings)
+
+
+def _renamed_keys_project() -> DbtProject:
+    """dbt over the ``tests._dev1902_fixtures`` tables, keys covered by renamed dimensions."""
+    return DbtProject(
+        semantic_models=[
+            DbtSemanticModel(
+                name="orders", model="orders",
+                entities=[
+                    DbtEntity(name="order", type="primary", expr="order_pk"),
+                    DbtEntity(name="customer", type="foreign", expr="cust_fk"),
+                ],
+                dimensions=[
+                    DbtDimension(name="customer_id", type="categorical", expr="cust_fk"),
+                    DbtDimension(name="status", type="categorical"),
+                ],
+                measures=[DbtMeasure(name="total_amount", agg="sum", expr="amount")],
+            ),
+            DbtSemanticModel(
+                name="customers", model="customers",
+                entities=[DbtEntity(name="customer", type="primary", expr="customer_pk")],
+                dimensions=[
+                    DbtDimension(name="customer_key", type="categorical", expr="customer_pk"),
+                    DbtDimension(name="name", type="categorical"),
+                ],
+            ),
+        ],
+        metrics=[],
+    )
+
+
+def _renamed_keys_models() -> list[SlayerModel]:
+    return DbtToSlayerConverter(project=_renamed_keys_project(), data_source="test").convert().models
+
+
+@pytest.fixture(params=["sqlite", "duckdb"])
+async def renamed_keys_engine(request):
+    async for engine in make_exec_engine(request, models=_renamed_keys_models()):
+        yield engine
+
+
+class TestEntityExprResolvesPhysically:
+    """An entity ``expr`` is a physical column: it keys the join through the column reading it."""
+
+    def test_keys_resolve_to_the_renamed_dimensions(self) -> None:
+        models = {m.name: m for m in _renamed_keys_models()}
+        assert models["orders"].joins[0].join_pairs == [["customer_id", "customer_key"]]
+        assert models["orders"].get_column("cust_fk") is None
+        assert models["customers"].get_column("customer_pk") is None
+        key = models["customers"].get_column("customer_key")
+        assert key is not None
+        assert key.primary_key is True
+
+    async def test_join_executes_over_the_renamed_keys(self, renamed_keys_engine) -> None:
+        resp = await renamed_keys_engine.execute(SlayerQuery.model_validate({
+            "source_model": "orders", "dimensions": ["customers.name"],
+            "measures": [{"formula": "sum(amount)", "name": "amt"}],
+        }))
+        assert cells(resp, dim_suffix="customers.name", measure="amt") == AMOUNT_BY_CUSTOMER

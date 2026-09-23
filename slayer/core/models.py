@@ -150,7 +150,7 @@ def is_base_column_sql(sql: str | None) -> bool:
     return sql is None or _bare_identifier(sql) is not None
 
 
-def physical_column_sql(sql: str | None, name: str) -> str:
+def physical_column_sql(*, sql: str | None, name: str) -> str:
     """The unquoted physical identifier of a base column, else ``name``."""
     return (_bare_identifier(sql) if sql is not None else None) or name
 
@@ -246,7 +246,7 @@ class Column(BaseModel):
                 summary=f"column {self.name!r} is not a base column (sql={self.sql!r}) "
                         f"and has no physical spelling",
             )
-        return physical_column_sql(self.sql, self.name)
+        return physical_column_sql(sql=self.sql, name=self.name)
 
     @property
     def needs_expansion(self) -> bool:

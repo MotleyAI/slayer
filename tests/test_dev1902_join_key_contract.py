@@ -67,7 +67,7 @@ class TestBaseColumnSeam:
         ("id + 0", "ck", "ck"),
     ])
     def test_physical_column_sql(self, sql, name, expected):
-        assert physical_column_sql(sql, name) == expected
+        assert physical_column_sql(sql=sql, name=name) == expected
 
     def test_column_is_base_and_physical_name(self):
         renamed = Column(name="customer_id", sql="cust_fk")

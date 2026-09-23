@@ -48,7 +48,7 @@ def _physical(col: dict) -> str | None:
     name, sql = col.get("name"), col.get("sql")
     if not isinstance(name, str) or not _column_is_base(sql):
         return None
-    return physical_column_sql(sql, name)
+    return physical_column_sql(sql=sql, name=name)
 
 
 def _is_sqlite_datasource(datasource: DatasourceConfig) -> bool:

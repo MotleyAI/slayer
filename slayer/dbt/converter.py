@@ -110,6 +110,12 @@ def _is_simple_identifier(s: str) -> bool:
     return bool(_IDENTIFIER_RE.match(s))
 
 
+def _key_column(*, expr: str, cols: list[Column]) -> Column | None:
+    """The unfiltered base column reading physical column ``expr`` (a same-named one first)."""
+    owners = [c for c in cols if c.is_base and c.filter is None and c.physical_name == expr]
+    return next((c for c in owners if c.name == expr), owners[0] if owners else None)
+
+
 def _meta_of(config: DbtConfig | None) -> dict[str, Any] | None:
     """Extract ``config.meta`` (or ``None``)."""
     if config is not None and config.meta:
@@ -183,6 +189,7 @@ class DbtToSlayerConverter:
             model = self._convert_semantic_model(sm)
             models.append(model)
             self._models_by_name[model.name] = model
+        self._resolve_target_keys()
 
         for metric in self.project.metrics:
             self._convert_metric(metric)
@@ -365,51 +372,18 @@ class DbtToSlayerConverter:
 
         cols: list[Column] = [_convert_dimension(d) for d in sm.dimensions]
 
-        # Add primary key column for primary/unique entities.
-        entity_col_names = {c.name for c in cols}
         for entity in sm.entities:
             if entity.type in ("primary", "unique"):
-                col_name = entity.expr or entity.name
-                if col_name not in entity_col_names:
-                    cols.append(Column(
-                        name=col_name,
-                        type=DataType.DOUBLE,
-                        primary_key=True,
-                        description=entity.description,
-                        label=entity.label,
-                        meta=self._entity_meta(entity),
-                    ))
-                    entity_col_names.add(col_name)
-                else:
-                    entity_meta = self._entity_meta(entity)
-                    for c in cols:
-                        if c.name == col_name:
-                            c.primary_key = True
-                            # Carry the entity's metadata onto the reused column
-                            # without clobbering anything the column already has
-                            # (parity with the synthetic-column branch above).
-                            if c.description is None:
-                                c.description = entity.description
-                            if c.label is None:
-                                c.label = entity.label
-                            if entity_meta:
-                                c.meta = {**entity_meta, **(c.meta or {})}
-                            break
+                self._declare_primary_key(sm_name=sm.name, entity=entity, cols=cols)
 
         if sm.primary_entity:
-            pe_name = sm.primary_entity
-            pe_expr = pe_name
-            for e in sm.entities:
-                if e.name == pe_name:
-                    pe_expr = e.expr or e.name
-                    break
-            if pe_expr not in entity_col_names:
-                cols.append(Column(
-                    name=pe_expr,
-                    type=DataType.DOUBLE,
-                    primary_key=True,
-                ))
-                entity_col_names.add(pe_expr)
+            pe_expr = next(
+                (e.expr or e.name for e in sm.entities if e.name == sm.primary_entity),
+                sm.primary_entity,
+            )
+            if (_key_column(expr=pe_expr, cols=cols) is None and _is_simple_identifier(pe_expr)
+                    and all(c.name != pe_expr for c in cols)):
+                cols.append(Column(name=pe_expr, type=DataType.DOUBLE, primary_key=True))
 
         measure_cols, measures = self._convert_measures(
             dbt_measures=sm.measures,
@@ -454,27 +428,73 @@ class DbtToSlayerConverter:
             ))
         kept: list[ModelJoin] = []
         for join in joins:
-            bad = next((src for src, _ in join.join_pairs if not self._declare_key(
-                key=src, cols=cols, measure_names=measure_names)), None)
+            srcs = [self._declare_key(key=src, cols=cols, measure_names=measure_names)
+                    for src, _ in join.join_pairs]
+            bad = next((src for (src, _), name in zip(join.join_pairs, srcs) if name is None), None)
             if bad is None:
-                kept.append(join)
+                kept.append(join.model_copy(update={"join_pairs": [
+                    [name, tgt] for name, (_, tgt) in zip(srcs, join.join_pairs)]}))
                 continue
-            self._warnings.append(ConversionWarning(
-                model_name=sm_name, category="join", severity="dropped",
-                message=(f"Join to '{join.target_model}' skipped: key {bad!r} is not a "
-                         f"base column."),
-            ))
+            self._warn_dropped_join(model_name=sm_name, target=join.target_model, key=bad)
         return kept
 
+    def _resolve_target_keys(self) -> None:
+        """Rewrite each join's physical target key to the target column's name, dropping unresolvable joins."""
+        for model in self._models_by_name.values():
+            kept: list[ModelJoin] = []
+            for join in model.joins:
+                target = self._models_by_name[join.target_model]
+                tgts = [col.name if (col := _key_column(expr=tgt, cols=target.columns)) else None
+                        for _, tgt in join.join_pairs]
+                bad = next((tgt for (_, tgt), name in zip(join.join_pairs, tgts) if name is None), None)
+                if bad is None:
+                    kept.append(join.model_copy(update={"join_pairs": [
+                        [src, name] for (src, _), name in zip(join.join_pairs, tgts)]}))
+                    continue
+                self._warn_dropped_join(model_name=model.name, target=target.name, key=bad)
+            model.joins = kept
+
+    def _warn_dropped_join(self, *, model_name: str, target: str, key: str) -> None:
+        self._warnings.append(ConversionWarning(
+            model_name=model_name, category="join", severity="dropped",
+            message=(f"Join to '{target}' skipped: key {key!r} is not read by a base "
+                     f"column of its model."),
+        ))
+
+    def _declare_primary_key(self, *, sm_name: str, entity, cols: list[Column]) -> None:
+        """Mark the column reading the entity's physical column as PK, adding one when the name is free."""
+        expr = entity.expr or entity.name
+        col = _key_column(expr=expr, cols=cols)
+        if col is None:
+            if any(c.name == expr for c in cols) or not _is_simple_identifier(expr):
+                self._warnings.append(ConversionWarning(
+                    model_name=sm_name, category="join", severity="dropped",
+                    message=(f"Entity '{entity.name}' expr {expr!r} is not a free column "
+                             f"identifier; no primary key declared."),
+                ))
+                return
+            col = Column(name=expr, type=DataType.DOUBLE)
+            cols.append(col)
+        col.primary_key = True
+        # Keep what the column already has.
+        if col.description is None:
+            col.description = entity.description
+        if col.label is None:
+            col.label = entity.label
+        entity_meta = self._entity_meta(entity)
+        if entity_meta:
+            col.meta = {**entity_meta, **(col.meta or {})}
+
     @staticmethod
-    def _declare_key(*, key: str, cols: list[Column], measure_names: set) -> bool:
-        col = next((c for c in cols if c.name == key), None)
+    def _declare_key(*, key: str, cols: list[Column], measure_names: set) -> str | None:
+        """The name of the column reading physical ``key``, adding a hidden one when the name is free."""
+        col = _key_column(expr=key, cols=cols)
         if col is not None:
-            return col.is_base and col.filter is None
-        if key in measure_names or not _is_simple_identifier(key):
-            return False
+            return col.name
+        if key in measure_names or any(c.name == key for c in cols) or not _is_simple_identifier(key):
+            return None
         cols.append(Column(name=key, type=DataType.DOUBLE, hidden=True))
-        return True
+        return key
 
     @staticmethod
     def _entity_meta(entity) -> dict[str, Any] | None:

@@ -84,7 +84,7 @@ def _inverse_survivor(
     return min((model_a, model_b), (model_b, model_a))[0]
 
 
-def _canonical_key(key: Any, columns: Any) -> Any:
+def _canonical_key(*, key: Any, columns: Any) -> Any:
     """``key`` unless it names no declared column but is exactly one base column's physical rename."""
     if not isinstance(key, str) or not isinstance(columns, list):
         return key
@@ -94,7 +94,7 @@ def _canonical_key(key: Any, columns: Any) -> Any:
     renames = [
         c["name"] for c in cols
         if isinstance(c.get("sql"), str) and is_base_column_sql(c["sql"])
-        and physical_column_sql(c["sql"], c["name"]) == key
+        and physical_column_sql(sql=c["sql"], name=c["name"]) == key
     ]
     return renames[0] if len(renames) == 1 else key
 
@@ -104,7 +104,7 @@ def canonical_join_pairs(pairs: Any, *, source_columns: Any, target_columns: Any
     if not isinstance(pairs, list):
         return pairs
     return [
-        [_canonical_key(p[0], source_columns), _canonical_key(p[1], target_columns)]
+        [_canonical_key(key=p[0], columns=source_columns), _canonical_key(key=p[1], columns=target_columns)]
         if isinstance(p, list) and len(p) == 2 else p
         for p in pairs
     ]
