@@ -911,15 +911,14 @@ def _resolve_dotted_star(
     return StarKey(path=tuple(effective_hop_path))
 
 
-def _bind_agg_partition_keys(
+def _bind_partition_keys(
     value, *,
     scope: Union[ModelScope, StageSchema],
     bundle: ResolvedSourceBundle,
-    dim_alias_map: Optional[Dict[str, "ValueKey"]] = None,
+    dim_alias_map: Optional[Dict[str, "ValueKey"]],
+    label: str,
 ) -> Grain:
-    """Bind an aggregation ``partition_by`` value to the partition ``Grain``;
-    a name in ``dim_alias_map`` resolves to that computed dimension's bound key
-    (DEV-1847 shape B)."""
+    """Bind a ``partition_by`` value (aggregation or rank-family transform) to its ``Grain``."""
     elements = value if isinstance(value, tuple) else (value,)
     pks: List = []
     for elem in elements:
@@ -929,7 +928,7 @@ def _bind_agg_partition_keys(
         bound = _bind(parsed=elem, scope=scope, bundle=bundle, in_filter=False)
         if not isinstance(bound, (ColumnKey, ColumnSqlKey)):
             raise ValueError(
-                f"aggregation partition_by must resolve to a column reference; "
+                f"{label} partition_by must resolve to a column reference; "
                 f"got {type(bound).__name__}."
             )
         pks.append(bound)
@@ -1117,8 +1116,9 @@ def _bind_agg(
     kwargs_list: List = []
     for k, v in parsed.kwargs:
         if k == "partition_by":
-            partition_keys = _bind_agg_partition_keys(
+            partition_keys = _bind_partition_keys(
                 value=v, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map,
+                label="aggregation",
             )
             continue
         kwargs_list.append((
@@ -1434,7 +1434,7 @@ def _bind_transform(
     dim_alias_map: Optional[Dict[str, "ValueKey"]] = None,
 ) -> TransformKey:
     # ``measure_ctx`` rides the transform INPUT only — partition_by / scalar
-    # kwargs drop it (and a transform's partition_by binds without alias maps).
+    # kwargs drop it.
     inp = _bind(
         parsed.input, scope=scope, bundle=bundle, in_filter=False,
         alias_map=alias_map, measure_ctx=measure_ctx, dim_alias_map=dim_alias_map,
@@ -1460,7 +1460,7 @@ def _bind_transform(
         positional_pairs = list(zip(pos_names, parsed.args))
     args: List = []
     kwargs: List = []
-    partition_keys: List = []
+    partition_keys: Grain = Grain.EMPTY
     allowed_kwargs = _TRANSFORM_KWARG_RULES.get(parsed.op, frozenset())
     seen_kwargs: set = set()
     # A name supplied both positionally and as a kwarg is ambiguous → error.
@@ -1474,20 +1474,10 @@ def _bind_transform(
     rank_partition_ok = parsed.op in RANK_FAMILY_TRANSFORMS
     for k, v in [*positional_pairs, *parsed.kwargs]:
         if k == "partition_by" and rank_partition_ok:
-            # A single ref, or a tuple/list (``rank(x, partition_by=[a, b])``).
-            elements = v if isinstance(v, tuple) else (v,)
-            for elem in elements:
-                bound_elem = _bind(
-                    elem, scope=scope, bundle=bundle, in_filter=False,
-                )
-                if isinstance(bound_elem, (ColumnKey, ColumnSqlKey)):
-                    partition_keys.append(bound_elem)
-                else:
-                    raise ValueError(
-                        f"transform {parsed.op!r} partition_by must resolve "
-                        f"to a column reference; got "
-                        f"{type(bound_elem).__name__}."
-                    )
+            partition_keys = _bind_partition_keys(
+                value=v, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map,
+                label=f"transform {parsed.op!r}",
+            )
             continue
         if k not in allowed_kwargs:
             advertised = allowed_kwargs | ({"partition_by"} if rank_partition_ok else set())
@@ -1512,7 +1502,7 @@ def _bind_transform(
         input=inp,
         args=tuple(args),
         kwargs=tuple(kwargs),
-        partition_keys=Grain.of(partition_keys),
+        partition_keys=partition_keys,
     )
 
 

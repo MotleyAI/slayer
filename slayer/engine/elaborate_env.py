@@ -11,7 +11,7 @@ from typing import (
     Sequence, Tuple, Union,
 )
 
-from slayer.core.enums import DataType, TimeGranularity
+from slayer.core.enums import RANK_FAMILY_TRANSFORMS, DataType, TimeGranularity
 from slayer.core.errors import (
     CanonicalAliasShadowsColumnError,
     DistinctDimensionValuesError,
@@ -43,6 +43,7 @@ from slayer.core.keys import (
     ValueKey,
     regroup_root_grain,
     source_anchor_path,
+    transform_operand_grain,
     walk_value_keys,
 )
 from slayer.core.models import SlayerModel
@@ -797,6 +798,30 @@ def check_partition_key_resolves(
         f"Add it to dimensions/time_dimensions, or choose one of: "
         f"{', '.join(available_dims) or '(none)'}."
     )
+
+
+def check_transform_partition_keys_in_operand_grain(
+    *, roots, query_grain: Grain, active_bucket: Optional[ValueKey],
+) -> None:
+    """A rank-family transform's own partition keys name operand-grain members (Axiom 11.2)."""
+    for root in roots:
+        for k in walk_value_keys(root):
+            if not (isinstance(k, TransformKey) and k.op in RANK_FAMILY_TRANSFORMS):
+                continue
+            operand = transform_operand_grain(
+                k.input, query_grain=query_grain, active_bucket=active_bucket,
+            )
+            for pk in k.partition_keys:
+                if pk in operand:
+                    continue
+                members = ", ".join(sorted(dotted_key_display(m) for m in operand))
+                raise ValueError(
+                    f"Transform '{k.op}': partition_by column "
+                    f"'{dotted_key_display(pk)}' is not a member of the transform's "
+                    f"operand grain ({members}); a rank-family transform partitions "
+                    f"its operand's cells. Add it to the inner aggregate's "
+                    f"partition_by=, or partition by one of: {members or '(none)'}."
+                )
 
 
 def check_partition_key_attributable(

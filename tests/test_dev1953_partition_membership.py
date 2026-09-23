@@ -107,44 +107,49 @@ class TestOracleSelfCheck:
 
 class TestNonMemberRejected:
     async def test_measure(self, engine):
+        query = sales_q(dimensions=CRP, measures=[_measure(NONMEMBER)])
         with pytest.raises(ValueError) as ei:
-            await engine.execute(sales_q(dimensions=CRP, measures=[_measure(NONMEMBER)]))
+            await engine.execute(query)
         _assert_membership_error(str(ei.value), key="'product'", grain="city, region")
 
     async def test_filter(self, engine):
+        query = sales_q(
+            dimensions=CRP, measures=[AMOUNT], filters=[f"{NONMEMBER} <= 2"])
         with pytest.raises(ValueError) as ei:
-            await engine.execute(sales_q(
-                dimensions=CRP, measures=[AMOUNT], filters=[f"{NONMEMBER} <= 2"]))
+            await engine.execute(query)
         _assert_membership_error(str(ei.value), key="'product'", grain="city, region")
 
     async def test_dimension_position_plain_column(self, engine):
         dim = {"expression": "rank(sum(amount, partition_by=[city, product]), "
                              "partition_by=region)", "name": "r"}
+        query = sales_q(dimensions=["region", dim], measures=[AMOUNT])
         with pytest.raises(ValueError) as ei:
-            await engine.execute(sales_q(dimensions=["region", dim], measures=[AMOUNT]))
+            await engine.execute(query)
         _assert_membership_error(str(ei.value), key="'region'", grain="city, product")
 
     async def test_dimension_position_computed_dimension(self, engine):
         dim = {"expression": "rank(sum(amount, partition_by=[city, region]), "
                              "partition_by=ureg)", "name": "r"}
+        query = sales_q(dimensions=[UREG, dim], measures=[AMOUNT])
         with pytest.raises(ValueError) as ei:
-            await engine.execute(sales_q(dimensions=[UREG, dim], measures=[AMOUNT]))
+            await engine.execute(query)
         msg = str(ei.value)
         _assert_membership_error(msg, key="upper" if "upper" in msg else "ureg",
                                  grain="city, region")
 
-
     async def test_aggregation_parameter(self, engine):
+        query = sales_q(dimensions=CRP, measures=[
+            ModelMeasure(formula=f"weighted_avg(amount, weight={NONMEMBER})", name="w")])
         with pytest.raises(ValueError) as ei:
-            await engine.execute(sales_q(dimensions=CRP, measures=[
-                ModelMeasure(formula=f"weighted_avg(amount, weight={NONMEMBER})", name="w")]))
+            await engine.execute(query)
         _assert_membership_error(str(ei.value), key="'product'", grain="city, region")
 
     async def test_order(self, engine):
+        query = sales_q(
+            dimensions=CRP, measures=[AMOUNT],
+            order=[{"column": NONMEMBER, "direction": "asc"}])
         with pytest.raises(ValueError) as ei:
-            await engine.execute(sales_q(
-                dimensions=CRP, measures=[AMOUNT],
-                order=[{"column": NONMEMBER, "direction": "asc"}]))
+            await engine.execute(query)
         _assert_membership_error(str(ei.value), key="'product'", grain="city, region")
 
     @pytest.mark.parametrize("op,extra", [
@@ -152,15 +157,17 @@ class TestNonMemberRejected:
     ])
     async def test_every_rank_family_op(self, engine, op, extra):
         formula = f"{op}(sum(amount, partition_by=[city, region]){extra}, partition_by=product)"
+        query = sales_q(dimensions=CRP, measures=[_measure(formula)])
         with pytest.raises(ValueError) as ei:
-            await engine.execute(sales_q(dimensions=CRP, measures=[_measure(formula)]))
+            await engine.execute(query)
         _assert_membership_error(str(ei.value), key="'product'", grain="city, region", op=op)
 
     async def test_composite_union_without_key(self, engine):
         formula = ("rank(sum(amount, partition_by=[city, region]) "
                    "+ sum(amount, partition_by=city), partition_by=product)")
+        query = sales_q(dimensions=CRP, measures=[_measure(formula)])
         with pytest.raises(ValueError) as ei:
-            await engine.execute(sales_q(dimensions=CRP, measures=[_measure(formula)]))
+            await engine.execute(query)
         _assert_membership_error(str(ei.value), key="'product'", grain="city, region")
 
 
@@ -205,8 +212,9 @@ class TestAggregateFreeInput:
 
 class TestPrecedence:
     async def test_ungrained_inner_keeps_query_dimension_error(self, engine):
+        query = sales_q(dimensions=[BAND], measures=[_measure(UNGRAINED)])
         with pytest.raises(ValueError) as ei:
-            await engine.execute(sales_q(dimensions=[BAND], measures=[_measure(UNGRAINED)]))
+            await engine.execute(query)
         msg = str(ei.value)
         assert "partition_by column 'region' is not a query dimension" in msg, msg
         assert "spend_band" in msg, msg
@@ -214,8 +222,9 @@ class TestPrecedence:
 
     async def test_residue_error_precedes_membership(self, engine):
         dim = {"expression": UNGRAINED, "name": "r"}
+        query = sales_q(dimensions=["region", dim], measures=[AMOUNT])
         with pytest.raises(ValueError) as ei:
-            await engine.execute(sales_q(dimensions=["region", dim], measures=[AMOUNT]))
+            await engine.execute(query)
         msg = str(ei.value)
         assert "must declare partition_by= explicitly" in msg, msg
         assert "operand grain" not in msg, msg

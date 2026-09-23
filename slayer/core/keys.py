@@ -950,6 +950,36 @@ def constituent_grain(
     return grain
 
 
+def transform_operand_grain(
+    input: ValueKey, *, query_grain: Grain, active_bucket: Optional[ValueKey],
+) -> Grain:
+    """A transform input's operand grain (Axioms 11.1, 11.3b, 11.5), recursive."""
+    if not any(isinstance(k, AggregateKey) for k in walk_value_keys(input)):
+        return query_grain
+
+    def _grain(k: ValueKey) -> Grain:
+        if isinstance(k, AggregateKey):
+            grain = query_grain if k.partition_keys is None else k.partition_keys
+            if window_kwarg_of(k) is not None and active_bucket is not None:
+                return grain | {active_bucket}
+            return grain
+        if isinstance(k, TransformKey):
+            grain = transform_operand_grain(
+                k.input, query_grain=query_grain, active_bucket=active_bucket,
+            )
+            if k.op in AXIS_COLLAPSING_TRANSFORMS and k.time_key is not None:
+                return grain - {k.time_key}
+            return grain
+        if isinstance(k, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
+            return Grain.of([k])
+        grain = Grain.EMPTY
+        for c in k.children():
+            grain = grain | _grain(c)
+        return grain
+
+    return _grain(input)
+
+
 def attached_parameter_grain(
     key: ValueKey, *,
     projected_dim_keys: List[ValueKey],

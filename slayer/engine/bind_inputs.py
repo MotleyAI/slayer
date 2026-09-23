@@ -69,6 +69,7 @@ from slayer.engine.elaborate_env import (
     check_time_dimension_column,
     check_time_dimension_date_range,
     check_time_shift_input,
+    check_transform_partition_keys_in_operand_grain,
     check_time_transforms_resolved,
 )
 from slayer.engine.join_safety import assert_partition_key_attributable
@@ -681,6 +682,14 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         declared_measures=declared_measures,
         bound_filters=bound_filters,
         order_specs=order_specs,
+    )
+    check_transform_partition_keys_in_operand_grain(
+        roots=[
+            *(dm.bound.value_key for dm in declared_measures),
+            *(bf.value_key for bf in bound_filters),
+            *(spec.bound.value_key for spec in order_specs),
+        ],
+        query_grain=_query_grain, active_bucket=active_td_key,
     )
 
     check_dimension_temporal_axis(

@@ -12,7 +12,7 @@ from typing import Dict, Optional, Tuple
 import pytest
 
 from slayer.core.errors import UnknownReferenceError
-from slayer.core.keys import ColumnKey, Grain, TransformKey
+from slayer.core.keys import AggregateKey, ColumnKey, Grain, TransformKey
 from slayer.core.scope import ModelScope
 from slayer.engine.binding import bind_expr
 from slayer.engine.syntax import parse_expr
@@ -138,6 +138,7 @@ class TestBindingSymmetry:
         agg = _bind("sum(amount, partition_by=ureg)", amap)
         rank = _bind(RANK_UREG, amap)
         assert isinstance(rank, TransformKey)
+        assert isinstance(agg, AggregateKey)
         assert rank.partition_keys == agg.partition_keys == Grain.of([amap["ureg"]])
 
     def test_mixed_list(self):
@@ -145,11 +146,15 @@ class TestBindingSymmetry:
         agg = _bind("sum(amount, partition_by=[ureg, product])", amap)
         rank = _bind("rank(sum(amount), partition_by=[ureg, product])", amap)
         want = Grain.of([amap["ureg"], ColumnKey(path=(), leaf="product")])
+        assert isinstance(rank, TransformKey)
+        assert isinstance(agg, AggregateKey)
         assert rank.partition_keys == agg.partition_keys == want
 
     def test_attach_carrying_alias_binds_to_dimension_value(self):
         amap = _alias("spend_band", SPEND_BAND_EXPR)
-        assert _bind(RANK_BAND, amap).partition_keys == Grain.of([amap["spend_band"]])
+        rank = _bind(RANK_BAND, amap)
+        assert isinstance(rank, TransformKey)
+        assert rank.partition_keys == Grain.of([amap["spend_band"]])
 
     @pytest.mark.parametrize("formula,message", [
         ("rank(sum(amount), partition_by=sum(amount))",
@@ -158,8 +163,9 @@ class TestBindingSymmetry:
          "aggregation partition_by must resolve to a column reference; got AggregateKey."),
     ])
     def test_non_column_element_names_construct(self, formula, message):
+        amap = _alias("ureg", "upper(region)")
         with pytest.raises(ValueError, match=re.escape(message)):
-            _bind(formula, _alias("ureg", "upper(region)"))
+            _bind(formula, amap)
 
 
 # --------------------------------------------------------------------------- #
@@ -199,9 +205,10 @@ class TestExecutedPositions:
         approx_map(got, DIM_CELLS)
 
     async def test_undeclared_name_stays_unknown(self, engine):
+        query = sales_q(
+            dimensions=["city"], measures=[ModelMeasure(formula=RANK_UREG, name="r")])
         with pytest.raises(UnknownReferenceError, match="ureg"):
-            await engine.execute(sales_q(
-                dimensions=["city"], measures=[ModelMeasure(formula=RANK_UREG, name="r")]))
+            await engine.execute(query)
 
 
 # --------------------------------------------------------------------------- #
@@ -223,14 +230,16 @@ class TestAttachCarryingKey:
 
     # Pins the current planner failure; DEV-1960 flips both to executed values.
     async def test_measure_fails_closed_in_planner(self, engine):
+        query = sales_q(
+            dimensions=[BAND, "city"], measures=[ModelMeasure(formula=RANK_BAND, name="r")])
         with pytest.raises(ValueError, match="no routing disposition") as ei:
-            await engine.execute(sales_q(
-                dimensions=[BAND, "city"], measures=[ModelMeasure(formula=RANK_BAND, name="r")]))
+            await engine.execute(query)
         assert not isinstance(ei.value, UnknownReferenceError)
 
     async def test_parameter_fails_closed_in_planner(self, engine):
+        query = sales_q(
+            dimensions=[BAND],
+            measures=[ModelMeasure(
+                formula=f"weighted_avg(amount, weight={RANK_BAND})", name="w")])
         with pytest.raises(RuntimeError, match="missing a host / producer grain slot"):
-            await engine.execute(sales_q(
-                dimensions=[BAND],
-                measures=[ModelMeasure(
-                    formula=f"weighted_avg(amount, weight={RANK_BAND})", name="w")]))
+            await engine.execute(query)

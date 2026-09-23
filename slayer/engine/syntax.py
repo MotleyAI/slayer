@@ -1149,6 +1149,17 @@ def _reject_bare_star_args(
         )
 
 
+def _reject_repeated_keywords(node: ast.Call, *, call: str, original: str) -> None:
+    seen: set = set()
+    for kw in node.keywords:
+        if kw.arg in seen:
+            raise ValueError(
+                f"Invalid Mode-B expression {original!r}: {call}() got keyword "
+                f"argument {kw.arg!r} more than once."
+            )
+        seen.add(kw.arg)
+
+
 def _convert_call(  # NOSONAR(S3776) — the one call-dispatch ladder (colon placeholder → builtin functional aggregation → transform → scalar → unknown-name AggCall deferral); each rung IS the documented dispatch order and splitting them hides it.
     node: ast.Call, *, agg_map: Dict, original: str,
 ) -> ParsedExpr:
@@ -1170,6 +1181,10 @@ def _convert_call(  # NOSONAR(S3776) — the one call-dispatch ladder (colon pla
             f"Invalid Mode-B expression {original!r}: dictionary unpacking "
             f"(**kwargs) is not supported in calls."
         )
+    m = _PLACEHOLDER_RE.match(func_name)
+    _reject_repeated_keywords(
+        node, call=agg_map[int(m.group(1))][1] if m else func_name, original=original,
+    )
     kwargs = tuple(
         (kw.arg, _convert_kwarg_value(kw.value, agg_map=agg_map, original=original))
         for kw in node.keywords
@@ -1177,7 +1192,6 @@ def _convert_call(  # NOSONAR(S3776) — the one call-dispatch ladder (colon pla
     )
 
     # Colon-aggregation placeholder?
-    m = _PLACEHOLDER_RE.match(func_name)
     if m:
         idx = int(m.group(1))
         source, agg = agg_map[idx]
