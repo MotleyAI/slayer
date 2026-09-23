@@ -1195,9 +1195,9 @@ def _o2c_doc(*, key_expression: str):
             OSIDataset(name="customers", source="customers",
                        fields=[OSIField(name="customer_id", expression=_expr("customer_id"))]),
         ],
-        relationships=[OSIRelationship(
-            name="o2c", **{"from": "orders"}, to="customers",
-            from_columns=["cust_key"], to_columns=["customer_id"])],
+        relationships=[OSIRelationship.model_validate({
+            "name": "o2c", "from": "orders", "to": "customers",
+            "from_columns": ["cust_key"], "to_columns": ["customer_id"]})],
     )
 
 
@@ -1216,9 +1216,9 @@ def test_relationship_onto_expression_target_field_skipped(shop_engine):
             OSIDataset(name="customers", source="customers",
                        fields=[OSIField(name="cust_key", expression=_expr("customer_id + 0"))]),
         ],
-        relationships=[OSIRelationship(
-            name="o2c", **{"from": "orders"}, to="customers",
-            from_columns=["customer_id"], to_columns=["cust_key"])],
+        relationships=[OSIRelationship.model_validate({
+            "name": "o2c", "from": "orders", "to": "customers",
+            "from_columns": ["customer_id"], "to_columns": ["cust_key"]})],
     )
     result = _convert(shop_engine, doc)
     assert _by_name(result)["orders"].joins == []
@@ -1229,4 +1229,6 @@ def test_relationship_keyed_on_renamed_field_names_the_field(shop_engine):
     result = _convert(shop_engine, _o2c_doc(key_expression="customer_id"))
     orders = _by_name(result)["orders"]
     assert [j.join_pairs for j in orders.joins] == [[["cust_key", "customer_id"]]]
-    assert orders.get_column("cust_key").physical_name == "customer_id"
+    key = orders.get_column("cust_key")
+    assert key is not None
+    assert key.physical_name == "customer_id"

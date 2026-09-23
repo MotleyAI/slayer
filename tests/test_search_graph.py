@@ -816,8 +816,10 @@ async def test_two_storage_paths_use_independent_caches() -> None:
         ids2 = await get_filtered_ids(
             "MATCH (d:Datasource) RETURN d.id AS id", s2
         )
-        assert "ds1" in ids1 and "ds2" not in ids1
-        assert "ds2" in ids2 and "ds1" not in ids2
+        assert "ds1" in ids1
+        assert "ds2" not in ids1
+        assert "ds2" in ids2
+        assert "ds1" not in ids2
 
 
 @pytest.mark.skipif(not is_available(), reason="ladybug not installed")

@@ -10,7 +10,7 @@ import sqlglot
 import sqlglot.errors
 from pydantic import ValidationError as PydanticValidationError
 
-from slayer.core.enums import DataType, TimeGranularity
+from slayer.core.enums import DataType, JoinType, TimeGranularity
 from slayer.core.models import Aggregation, AggregationParam, Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine, _sql_client_cache_key
@@ -7509,8 +7509,8 @@ class TestIsolatedFilteredMeasureCTEs:
                 Column(name="total_amount", sql="amount", type=DataType.DOUBLE),
             ],
             joins=[
-                ModelJoin(target_model="loss_payment", join_pairs=[["claim_amount_id", "claim_amount_id"]], join_type="inner"),
-                ModelJoin(target_model="loss_reserve", join_pairs=[["claim_amount_id", "claim_amount_id"]], join_type="inner"),
+                ModelJoin(target_model="loss_payment", join_pairs=[["claim_amount_id", "claim_amount_id"]], join_type=JoinType.INNER),
+                ModelJoin(target_model="loss_reserve", join_pairs=[["claim_amount_id", "claim_amount_id"]], join_type=JoinType.INNER),
                 ModelJoin(target_model="claim", join_pairs=[["claim_id", "id"]]),
             ],
         )

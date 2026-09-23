@@ -444,7 +444,8 @@ class TestDataSourceAndDedup:
             rec_other = await eng.recommend_root_model(["orders.status"], data_source="otherdb")
             assert rec_my.data_source == "mydb"
             assert rec_other.data_source == "otherdb"
-            assert rec_my.root_model == "orders" and rec_other.root_model == "orders"
+            assert rec_my.root_model == "orders"
+            assert rec_other.root_model == "orders"
         finally:
             await eng.aclose()
 
@@ -529,8 +530,10 @@ class TestDataSourceAndDedup:
         try:
             rec_my = await eng.recommend_root_model(["status"], data_source="mydb")
             rec_other = await eng.recommend_root_model(["status"], data_source="otherdb")
-            assert rec_my.data_source == "mydb" and rec_my.root_model == "orders"
-            assert rec_other.data_source == "otherdb" and rec_other.root_model == "orders"
+            assert rec_my.data_source == "mydb"
+            assert rec_my.root_model == "orders"
+            assert rec_other.data_source == "otherdb"
+            assert rec_other.root_model == "orders"
             assert _paths(rec_my) == {"status": "status"}
         finally:
             await eng.aclose()

@@ -37,6 +37,10 @@ from tests._dev1902_fixtures import (
 AMT = ModelMeasure(formula="sum(amount)", name="amt")
 
 
+def _query(**kw) -> SlayerQuery:
+    return SlayerQuery.model_validate(kw)
+
+
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def fk_renamed(request):
     """Renamed source FK only; the target PK keeps its physical name."""
@@ -69,32 +73,32 @@ async def none_renamed(request):
 
 class TestExecutedRenamedKeys:
     async def test_control_physical_spelling_executes(self, none_renamed):
-        resp = await none_renamed.execute(SlayerQuery(
+        resp = await none_renamed.execute(_query(
             source_model="orders", dimensions=["customers.name"], measures=[AMT]))
         assert cells(resp, dim_suffix="customers.name", measure="amt") == AMOUNT_BY_CUSTOMER
 
     async def test_renamed_source_fk(self, fk_renamed):
-        resp = await fk_renamed.execute(SlayerQuery(
+        resp = await fk_renamed.execute(_query(
             source_model="orders", dimensions=["customers.name"], measures=[AMT]))
         assert cells(resp, dim_suffix="customers.name", measure="amt") == AMOUNT_BY_CUSTOMER
         assert "cust_fk" in resp.sql
 
     async def test_renamed_target_pk_proves_the_hop(self, pk_renamed):
-        resp = await pk_renamed.execute(SlayerQuery(
+        resp = await pk_renamed.execute(_query(
             source_model="orders", dimensions=["customers.tier"], measures=[AMT]))
         assert cells(resp, dim_suffix="customers.tier", measure="amt") == AMOUNT_BY_TIER
         assert warnings_of(resp, "broadcast") == []
         assert "customer_pk" in resp.sql
 
     async def test_renamed_both_sides_two_hops(self, all_renamed):
-        resp = await all_renamed.execute(SlayerQuery(
+        resp = await all_renamed.execute(_query(
             source_model="orders", dimensions=["customers.regions.name"],
             measures=[AMT]))
         assert cells(resp, dim_suffix="regions.name", measure="amt") == AMOUNT_BY_REGION
         assert warnings_of(resp, "broadcast") == []
 
     async def test_association_over_renamed_pk_root(self, all_renamed):
-        resp = await all_renamed.execute(SlayerQuery(
+        resp = await all_renamed.execute(_query(
             source_model="orders", dimensions=["status"],
             measures=[ModelMeasure(formula="sum(customers.credit)", name="cr")],
             to_many_handling="associate"))
@@ -110,7 +114,7 @@ class TestExecutedRenamedKeys:
         assert warnings_of(resp, "broadcast") == []
 
     async def test_population_pushdown_over_renamed_keys(self, all_renamed):
-        resp = await all_renamed.execute(SlayerQuery(
+        resp = await all_renamed.execute(_query(
             source_model="customers",
             measures=[ModelMeasure(formula="sum(credit)", name="cr")],
             filters=["orders.status = 'new'"]))

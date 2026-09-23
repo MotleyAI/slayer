@@ -322,8 +322,7 @@ def refine_dict_with_live_schema(d: dict, datasource: DatasourceConfig) -> bool:
     if not refinable:
         return False
 
-    # Local import to avoid circular import at module load time.
-    from slayer.engine.schema_drift import (
+    from slayer.engine.schema_drift import (  # ALLOW(import-not-top): circular storage↔engine.schema_drift
         IntrospectionUnavailable,
         _live_schema_for_datasource,
     )

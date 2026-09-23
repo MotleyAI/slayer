@@ -275,16 +275,15 @@ class TestVerdicts:
 
     def test_expression_join_key_rejected_at_construction(self) -> None:
         # An expression-backed join key is not a base column: the model never builds.
+        columns = [
+            _col("id", pk=True),
+            Column(name="ck", sql="customer_id + 0", type=DataType.INT),
+        ]
+        joins = [ModelJoin(target_model="customers", join_pairs=[["ck", "id"]])]
         with pytest.raises(ValueError, match=r"orders_expr.*customers.*'ck'"):
             SlayerModel(
-                name="orders_expr",
-                sql_table="orders",
-                data_source="ds",
-                columns=[
-                    _col("id", pk=True),
-                    Column(name="ck", sql="customer_id + 0", type=DataType.INT),
-                ],
-                joins=[ModelJoin(target_model="customers", join_pairs=[["ck", "id"]])],
+                name="orders_expr", sql_table="orders", data_source="ds",
+                columns=columns, joins=joins,
             )
 
     async def test_skipped_unsupported_for_sql_mode_model(

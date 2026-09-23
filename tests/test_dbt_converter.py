@@ -1475,8 +1475,9 @@ class TestDbtConversionErrorOnDimMeasureCollision:
                 measures=[DbtMeasure(name="amount", agg="sum", expr="amount")],
             ),
         ])
+        converter = DbtToSlayerConverter(project=project, data_source="test")
         with pytest.raises(DbtConversionError) as exc_info:
-            DbtToSlayerConverter(project=project, data_source="test").convert()
+            converter.convert()
         msg = str(exc_info.value)
         assert "orders" in msg
         assert "amount" in msg

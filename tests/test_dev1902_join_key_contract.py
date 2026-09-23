@@ -16,7 +16,6 @@ from slayer.core.models import (
     Column,
     DatasourceConfig,
     ModelJoin,
-    ModelMeasure,
     SlayerModel,
     is_base_column_sql,
     physical_column_sql,
@@ -24,7 +23,7 @@ from slayer.core.models import (
 from slayer.core.query import ModelExtension, SlayerQuery
 from slayer.engine.join_safety import audit_join_safety
 from slayer.engine.query_engine import SlayerQueryEngine, _detection_skip_reason
-from slayer.engine.schema_drift import LiveTable, diff_sql_table_model
+from slayer.engine.schema_drift import EditModelDelete, LiveTable, diff_sql_table_model
 from slayer.ir.source_bundle import apply_extension_overlay
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.sqlite_storage import SQLiteStorage
@@ -74,7 +73,9 @@ class TestBaseColumnSeam:
         renamed = Column(name="customer_id", sql="cust_fk")
         quoted = Column(name="id", sql='"CustPK"')
         plain = Column(name="status")
-        assert renamed.is_base and quoted.is_base and plain.is_base
+        assert renamed.is_base
+        assert quoted.is_base
+        assert plain.is_base
         assert renamed.physical_name == "cust_fk"
         assert quoted.physical_name == "CustPK"
         assert plain.physical_name == "status"
@@ -104,20 +105,22 @@ class TestSourceSideAtConstruction:
         assert "suggestion:" in msg
 
     def test_physical_spelling_of_a_renamed_source_key_rejected(self):
+        fk = Column(name="customer_id", sql="cust_fk")
         with pytest.raises(ValueError, match="join orders → customers key 'cust_fk'"):
-            _orders(Column(name="customer_id", sql="cust_fk"), pairs=[["cust_fk", "id"]])
+            _orders(fk, pairs=[["cust_fk", "id"]])
 
     def test_expression_source_key_rejected(self):
+        ck = Column(name="ck", sql="CAST(id AS INT)")
         with pytest.raises(ValueError) as exc:
-            _orders(Column(name="ck", sql="CAST(id AS INT)"), pairs=[["ck", "id"]])
+            _orders(ck, pairs=[["ck", "id"]])
         msg = str(exc.value)
         assert "join orders → customers key 'ck'" in msg
         assert "base column" in msg
 
     def test_filtered_source_key_rejected(self):
+        fk = Column(name="customer_id", sql="cust_fk", filter="status = 'ok'")
         with pytest.raises(ValueError, match="join orders → customers key 'customer_id'"):
-            _orders(Column(name="customer_id", sql="cust_fk", filter="status = 'ok'"),
-                    pairs=[["customer_id", "id"]])
+            _orders(fk, pairs=[["customer_id", "id"]])
 
     def test_dotted_key_entry_rejected(self):
         with pytest.raises(ValueError, match=r"must not contain '\.'"):
@@ -149,8 +152,9 @@ class TestExtensionOverlay:
     def test_extension_join_with_undeclared_key_rejected(self):
         ext = ModelExtension(source_name="orders", joins=[
             ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])])
+        base = orders_model()
         with pytest.raises(ValueError, match="join orders → regions key 'region_id'"):
-            apply_extension_overlay(orders_model(), ext)
+            apply_extension_overlay(base, ext)
 
     def test_extension_declaring_the_key_is_accepted(self):
         ext = ModelExtension(
@@ -167,11 +171,11 @@ class TestExtensionOverlay:
             for m in (orders_model(), customers_model(), regions_model()):
                 await storage.save_model(m)
             engine = SlayerQueryEngine(storage=storage)
-            query = SlayerQuery(
-                source_model=ModelExtension(source_name="orders", joins=[
+            query = SlayerQuery.model_validate({
+                "source_model": ModelExtension(source_name="orders", joins=[
                     ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])]),
-                measures=[ModelMeasure(formula="sum(amount)", name="amt")],
-                dimensions=["regions.name"])
+                "measures": [{"formula": "sum(amount)", "name": "amt"}],
+                "dimensions": ["regions.name"]})
             with pytest.raises(ValueError, match="key 'region_id'"):
                 await engine.execute(query, dry_run=True)
 
@@ -257,11 +261,11 @@ class TestPhysicalJoinPairs:
                 Column(name="customer_id"), Column(name="amount", type=DataType.DOUBLE),
                 pairs=[["customer_id", "cust_key"]]), _validate=False)
             engine = SlayerQueryEngine(storage=storage)
+            query = SlayerQuery.model_validate({
+                "source_model": "orders", "dimensions": ["customers.name"],
+                "measures": [{"formula": "sum(amount)", "name": "amt"}]})
             with pytest.raises(JoinKeyError, match="'cust_key'"):
-                await engine.execute(SlayerQuery(
-                    source_model="orders", dimensions=["customers.name"],
-                    measures=[ModelMeasure(formula="sum(amount)", name="amt")]),
-                    dry_run=True)
+                await engine.execute(query, dry_run=True)
 
 
 def _parties(*key: Column) -> SlayerModel:
@@ -293,7 +297,7 @@ class TestDriftAndRefinement:
         model = _parties(Column(name="entity_type", sql='"entityKind"'))
         entry, dropped = diff_sql_table_model(
             model=model, live_table=_LIVE, available_models_in_ds={"parties", "entities"})
-        assert entry is not None
+        assert isinstance(entry, EditModelDelete)
         assert entry.remove.columns == ["entity_type"]
         assert dropped == {"entity_type"}
 

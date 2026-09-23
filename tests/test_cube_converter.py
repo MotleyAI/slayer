@@ -464,7 +464,9 @@ def test_join_member_resolves_to_physical_column():
     ])
     models, _ = _convert(project)
     assert models["orders"].joins[0].join_pairs == [["customer_id", "id"]]
-    assert models["customers"].get_column("id").sql == "cust_pk"
+    pk = models["customers"].get_column("id")
+    assert pk is not None
+    assert pk.sql == "cust_pk"
 
 
 def test_join_with_nontrivial_member_sql_is_unsupported():

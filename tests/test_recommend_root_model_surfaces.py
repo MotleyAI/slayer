@@ -128,7 +128,8 @@ class TestMcpTool:
             # Routed through the shared MCP ambiguity hint (mentions data_source /
             # multiple datasources), not a bare "failed" string.
             text = blocks[0].text.lower()
-            assert "multiple datasources" in text and "data_source" in text
+            assert "multiple datasources" in text
+            assert "data_source" in text
 
 
 class TestRestEndpoint:

@@ -129,7 +129,9 @@ def test_model_text_includes_self_metadata() -> None:
 def test_model_text_mentions_named_children_by_name_and_kind() -> None:
     text = render_model_text(model=_make_orders_model()).lower()
     # Columns mentioned by name; their descriptions stay in their own doc.
-    assert "id" in text and "amount" in text and "status" in text
+    assert "id" in text
+    assert "amount" in text
+    assert "status" in text
     assert "primary key" not in text or text.count("primary key") <= 1
     assert "net amount in usd" not in text  # column description excluded
     # Measure mentioned by name, formula & description excluded.
