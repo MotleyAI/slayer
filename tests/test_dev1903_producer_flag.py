@@ -15,9 +15,11 @@ from slayer.engine.compile import compile_query
 from slayer.engine.compile import stages
 from slayer.engine.compile.stages import compile_synthesized
 from slayer.engine.elaborate import elaborate_query
-from slayer.engine.plan import plan_query
+from slayer.engine.plan import plan_query, plan_stages
 from slayer.core.query import SlayerQuery
+from slayer.ir import elaborated as elaborated_mod
 from slayer.ir.planned import PlannedQuery
+from slayer.ir.prebound import StrictQueryCarrier
 from slayer.ir.source_bundle import ResolvedSourceBundle, resolve_scope
 
 from tests._dev1836_fixtures import dev1836_models
@@ -136,6 +138,101 @@ class TestTwoEntryPoints:
     def test_core_is_private(self):
         assert not hasattr(stages, "compile_prebound")
 
+    def test_producer_context_grain_is_required(self):
+        field = stages.ProducerContext.model_fields["enclosing_grain"]
+        assert field.is_required()
+        assert "None" not in str(field.annotation)
+        assert "Optional" not in str(field.annotation)
+
+
+def _producer_env():
+    bundle = _dev1836_bundle()
+    query = dev1836_q(dimensions=["status"],
+                      measures=[ModelMeasure(formula="amount:sum", name="s")])
+    scope = resolve_scope(query=query, bundle=bundle, stage_schemas={})
+    prebound = bind_query_inputs(query=query, bundle=bundle, scope=scope, stage_schemas={})
+    return query, prebound, elaborate_mod.elaborate_synthesized(
+        prebound, bundle=bundle, scope=scope, stage_schemas={})
+
+
+class TestTwoEnvironmentTypes:
+    def test_entries_return_their_own_type(self):
+        query, _, producer = _producer_env()
+        top = elaborate_query(query=query, bundle=_dev1836_bundle())
+        assert isinstance(top, elaborated_mod.ElaboratedStage)
+        assert isinstance(producer, elaborated_mod.ElaboratedProducer)
+        assert not isinstance(producer, elaborated_mod.ElaboratedStage)
+
+    def test_compile_query_rejects_a_producer_environment(self):
+        _, _, producer = _producer_env()
+        with pytest.raises((TypeError, ValueError)):
+            compile_query(elaborated=producer)  # pyright: ignore[reportArgumentType]
+
+    def test_each_environment_rejects_the_other_carrier(self):
+        query, prebound, _ = _producer_env()
+        carrier = StrictQueryCarrier(source_model="orders", prebound=prebound)
+        with pytest.raises(ValueError):
+            elaborated_mod.ElaboratedStage(query=carrier)
+        with pytest.raises(ValueError):
+            elaborated_mod.ElaboratedProducer(query=query)
+
+
+def _count_top_only(monkeypatch) -> dict:
+    calls = {"dispose": 0, "total_routing": 0}
+    dispose, total = stages.dispose_population_filters, stages._assert_total_routing
+
+    def counted_dispose(*a, **k):
+        calls["dispose"] += 1
+        return dispose(*a, **k)
+
+    def counted_total(*a, **k):
+        calls["total_routing"] += 1
+        return total(*a, **k)
+
+    monkeypatch.setattr(stages, "dispose_population_filters", counted_dispose)
+    monkeypatch.setattr(stages, "_assert_total_routing", counted_total)
+    return calls
+
+
+class TestEverySiteStatesItsPopulation:
+    """The cross-model producer re-roots its own filters; every other site inherits."""
+
+    @pytest.fixture
+    def populations(self, monkeypatch) -> list:
+        seen: list = []
+        real = stages.compile_synthesized
+
+        def recording(*a, **k):
+            seen.append(type(k["population"]).__name__)
+            return real(*a, **k)
+
+        monkeypatch.setattr(stages, "compile_synthesized", recording)
+        return seen
+
+    @pytest.mark.parametrize(("plan", "expected"), [
+        pytest.param(lambda: plan_query(query=dev1836_q(
+            dimensions=["status"],
+            measures=[ModelMeasure(formula="customers.spend:sum", name="cm")]),
+            bundle=_dev1836_bundle()), {"NoInheritedPopulation"}, id="cross-model"),
+        pytest.param(lambda: plan_query(query=dev1836_q(
+            dimensions=["status", "channel"],
+            measures=[ModelMeasure(formula="amount:sum(partition_by=channel)", name="pt")]),
+            bundle=_dev1836_bundle()), {"InheritedPopulation"}, id="local-regroup"),
+        pytest.param(lambda: plan_query(query=cust_q(
+            dimensions=["tier"], measures=[ModelMeasure(formula="spend:sum", name="sp")],
+            order=[{"column": "orders.amount", "direction": "asc"}]),
+            bundle=_customers_bundle()), {"InheritedPopulation"}, id="wrap"),
+        pytest.param(lambda: _monthly_plan("time_shift(amount:sum, -1)"),
+                     {"InheritedPopulation"}, id="shifted"),
+        pytest.param(lambda: plan_query(query=sales_q(
+            dimensions=["region"], measures=[reagg("avg", INNER_CR, name="a")]),
+            bundle=_sales_bundle()), {"InheritedPopulation"},
+            id="reaggregation-outer-and-carrier"),
+    ])
+    def test_population_kind_per_site(self, populations, plan, expected):
+        plan()
+        assert populations and set(populations) == expected, populations
+
 
 class TestTopOnlySteps:
     """The once-per-query steps run at the top and never through the producer entry."""
@@ -182,6 +279,36 @@ class TestTopOnlySteps:
         assert outer_partition(plan_query(query=query, bundle=_sales_bundle())) is None
         assert outer_partition(plan_as_producer(query=query, bundle=_sales_bundle())) \
             is not None
+
+    def test_non_root_authored_stage_is_top_level(self, monkeypatch):
+        """Every authored DAG stage disposes and checks routing exactly once; its own
+        producer does neither."""
+        calls = _count_top_only(monkeypatch)
+        s1 = cust_q(name="s1", dimensions=["tier"], measures=[
+            ModelMeasure(formula="spend:sum", name="sp"),
+            ModelMeasure(formula="spend:sum(partition_by=tier)", name="pt")],
+            filters=["orders.status = 'ok'"])
+        root = SlayerQuery.model_validate({
+            "source_model": "s1", "dimensions": ["tier"],
+            "measures": [{"formula": "sp:sum", "name": "t"}]})
+        stage_plans = plan_stages(queries=[s1, root], bundle=_customers_bundle())
+        assert calls == {"dispose": 2, "total_routing": 2}
+        assert [len(p.semi_join_filters) for p in stage_plans] == [1, 0]
+        assert len(stage_plans[0].regroup_attach_plans) == 1
+
+    @pytest.mark.parametrize("plan", [
+        pytest.param(lambda: plan_query(query=cust_q(
+            dimensions=["tier"], measures=[ModelMeasure(formula="spend:sum", name="sp")],
+            filters=["orders.status = 'ok'"],
+            order=[{"column": "orders.amount", "direction": "asc"}]),
+            bundle=_customers_bundle()), id="late-wrap"),
+        pytest.param(lambda: _monthly_plan("time_shift(amount:sum, -1)"), id="shifted"),
+    ])
+    def test_late_producers_never_run_top_only_steps(self, monkeypatch, plan):
+        calls = _count_top_only(monkeypatch)
+        pq = plan()
+        assert pq.regroup_attach_plans
+        assert calls == {"dispose": 1, "total_routing": 1}
 
     def test_total_routing(self, monkeypatch):
         """Blinded discovery raises at the top; a producer holds the root inline."""

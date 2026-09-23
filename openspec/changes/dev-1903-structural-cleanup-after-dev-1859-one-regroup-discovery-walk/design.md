@@ -83,32 +83,45 @@ riding `ColumnSqlKey`, and the DEV-1910 `locus="host"` wrap (no second producer,
 safety check still runs). Alternative rejected: reproduce today's descent inside the walk
 (keeps the category error as a special case).
 
-**D3 — No producer flag: two entry points over one core; one nesting rule.**
+**D3 — No producer flag: two typed entry points over one core; one nesting rule.**
 `disable_host_rooted_isolation` and `enable_producer_regroups` are deleted from every
-signature and no boolean replaces them. The user's query enters through `plan_query` →
-`elaborate_query` → `compile_query`; a synthesized producer through `compile_synthesized`
-→ new `elaborate_synthesized` (prebound-only, never splits). Both run one private
-two-phase core in `stages.py` (`compile_prebound` retired as a public name):
-`_route_prebound(…, enclosing_grain: Optional[Grain])` (discovery → grouping → synthesis,
-returning the placeholder-rewritten prebound + attaches) and `_emit_planned(…)`. The
-once-per-query steps live only in the top-level entry: the host-rooted filter split (in
-`elaborate_query`), population-filter disposal and the redundant query-grain
-`partition_by` strip (before routing), and `_assert_total_routing` (between routing and
-emission). A producer cannot reach them and the top level cannot skip them.
-`compile_synthesized` takes `population_filters` as a required keyword (the parent's
-disposition, or `None` stated explicitly), plus `carried_attaches` /
-`reserved_placeholders` / `producer_registry` as today. The six caller-side predicates and
+signature, and no boolean or nullable discriminator replaces them. "Top level" means one
+user-authored query stage: `plan_stages` sends every authored DAG stage (non-root stages
+included) through `plan_query`; only compiler-synthesized producers use
+`compile_synthesized`. Entry points and environment types: `elaborate_query` returns
+`ElaboratedStage` (`query: SlayerQuery`); new `elaborate_synthesized(prebound, …)` returns
+a distinct `ElaboratedProducer` (`query: StrictQueryCarrier`) and never splits filters;
+`compile_query` accepts only `ElaboratedStage`, so a producer environment is rejected
+statically and at Pydantic validation; `compile_synthesized` owns producer elaboration and
+never exposes an `ElaboratedProducer`. The private core in `stages.py` (`compile_prebound`
+retired as a public name): two routing wrappers, `_route_top_level(…)` and
+`_route_producer(…, context: ProducerContext)`, share one discovery → grouping →
+substitution implementation. `ProducerContext` (frozen Pydantic) carries
+`enclosing_grain: Grain` (required; derived by `compile_synthesized` from the producer's
+projected grain, never supplied by a caller), `population: InheritedPopulation |
+NoInheritedPopulation` (the latter carrying a reason, e.g. target-rooted: the cross-model
+producer re-roots and disposes the inherited filters itself), `carried_attaches` and
+`reserved_placeholders`. `compile_synthesized` requires `population` as a keyword with no
+default; each of the six sites states it explicitly (wrap, shifted, local regroup,
+re-aggregation outer and carrier inherit the parent's disposition; the cross-model producer
+passes `NoInheritedPopulation`). `_emit_planned` does projection and final plan assembly; it
+may invoke `compile_synthesized` for the existing late wrap and shifted-producer paths once
+their projection / slot facts exist, and never re-runs a top-only step. The once-per-stage
+steps live only in the top-level path: the host-rooted filter split (in `elaborate_query`),
+population-filter disposal and the redundant query-grain `partition_by` strip (before
+routing), and `_assert_total_routing` (after routing). The six caller-side predicates and
 `_answers_need_nested_regroups` are deleted; nested discovery always runs. The one nesting
-decision, in routing: with `enclosing_grain` set (the producer's own projected grain,
-computed by `compile_synthesized`, never passed by a caller), a root nests iff its grain is
-a STRICT SUBSET of it, plus DEV-1958 D6 (a ranked / windowed strict constituent of a
+decision, in `_route_producer`: a root nests iff its grain is a STRICT SUBSET of
+`context.enclosing_grain`, plus DEV-1958 D6 (a ranked / windowed strict constituent of a
 composite answer nests at own grain) and the windowed-transform-input clause; a root at
 exactly the producer grain, or with a grain member outside it, compiles inline;
-`enclosing_grain=None` (top level) nests every discovered root. This closes the probe hole
-without rewriting any key (the outer answer's `[product]` is not a subset → inline,
-today's SQL), and keeps carrier constituents (strict subsets) nesting. Alternatives
-rejected: one `in_producer: bool` (a mode flag any caller can set wrongly; each top-only
-step a branch on it); normalising every producer answer's `partition_keys` to the
+`_route_top_level` nests every discovered root. This closes the probe hole without
+rewriting any key (the outer answer's `[product]` is not a subset → inline, today's SQL),
+and keeps carrier constituents (strict subsets) nesting. Alternatives rejected: one
+`in_producer: bool` (a mode flag any caller can set wrongly); `enclosing_grain:
+Optional[Grain]` (the same flag as nullable data); one shared environment type (lets a
+producer environment reach `compile_query`); bare `population_filters=None` (hides why
+there is no population); normalising every producer answer's `partition_keys` to the
 producer grain (Codex) — erases carrier constituent grains and risks alias / type / slot
 lookups keyed by the original key.
 
