@@ -28,6 +28,7 @@ from slayer.engine.plan import plan_query
 from slayer.sql.generator import _lower_positions
 from slayer.sql.render.order_terms import OrderScope, ScopedOrder
 from tests._dev1747_fixtures import dev1747_bundle
+from tests._engine_helpers import plan_as_producer
 from slayer.core.keys import AggregateKey
 from slayer.core.keys import ColumnKey
 from slayer.core.keys import Phase
@@ -408,7 +409,7 @@ class TestLaw3TriggerMatrix:
     ) -> None:
         plan = _plan(query)
         if expect_host_rooted:
-            # DEV-1838 D5: a host-grain wrap / crossing-input wrap is a
+            # A host-grain wrap / crossing-input wrap is a
             # HOST-rooted regroup producer (producer_root_model None = rooted
             # at the consumer, which IS the host).
             attach = next(
@@ -432,8 +433,8 @@ class TestLaw3TriggerMatrix:
     def test_the_wrap_producer_holds_its_key_inline(self) -> None:
         """The recursion guard. The wrap's own producer plan contains the SAME
         crossing key as a plain measure, so if the desugar fired again inside
-        it the planner would recurse without bound — which is why producer
-        sub-plans run with local discovery off (DEV-1838 2.5).
+        it the planner would recurse without bound — which is why a root at
+        exactly the producer's grain compiles inline there.
 
         Inside its own producer the key renders INLINE (base-pull), which is
         legal there because the producer is the aggregate's own scope.
@@ -451,20 +452,17 @@ class TestLaw3TriggerMatrix:
             "would recurse"
         )
 
-    def test_the_disabled_flag_does_not_suppress_target_rooted_plans(self) -> None:
-        """The flag is scoped to HOST-rooted isolation. Suppressing genuine
-        cross-model aggregates too would silently inline a joined SUM into the
+    def test_producer_mode_does_not_suppress_target_rooted_plans(self) -> None:
+        """Producer mode keeps target-rooted discovery. Suppressing genuine
+        cross-model aggregates would silently inline a joined SUM into the
         host base and multiply it by the join's fan-out."""
-        plan = plan_query(
-            query=_TARGET_GRAIN_WITH_PATH,
-            bundle=dev1747_bundle(),
-            disable_host_rooted_isolation=True,
+        plan = plan_as_producer(
+            query=_TARGET_GRAIN_WITH_PATH, bundle=dev1747_bundle(),
         )
-        # DEV-1838 (2.5): the target-rooted isolation is a producer attach.
+        # The target-rooted isolation is a producer attach.
         assert any(
             a.producer_root_model is not None
             for a in plan.regroup_attach_plans
         ), (
-            "disable_host_rooted_isolation wrongly suppressed a target-rooted "
-            "producer"
+            "the producer entry wrongly suppressed a target-rooted producer"
         )

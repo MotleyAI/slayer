@@ -17,7 +17,6 @@ import re
 import pytest
 
 from slayer.core.formula import ALL_TRANSFORMS
-from slayer.engine.elaborate_env import _SHIFT_FAMILY_OPS
 from slayer.engine.plan import plan_query
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
@@ -32,7 +31,8 @@ from tests._dev1846_fixtures import (
 )
 from tests.test_law_guard_ratchet import DEFERRAL_CLASSIFIER
 
-NON_SHIFT_OPS = sorted(ALL_TRANSFORMS - _SHIFT_FAMILY_OPS - {"first", "last"})
+SHIFT_OPS = frozenset({"time_shift", "change", "change_pct"})
+NON_SHIFT_OPS = sorted(ALL_TRANSFORMS - SHIFT_OPS - {"first", "last"})
 
 #: input-shape id -> the formula body around the unprojected row leaf.
 SHAPES = {
@@ -78,10 +78,10 @@ async def exec_engine(request):
 class TestDerivedSet:
     def test_shift_family_exemption_is_exactly_three_ops(self):
         """A new transform op must default into the rejected set."""
-        assert _SHIFT_FAMILY_OPS == {"time_shift", "change", "change_pct"}
+        assert SHIFT_OPS <= ALL_TRANSFORMS
         assert {"first", "last"} <= ALL_TRANSFORMS
         assert set(NON_SHIFT_OPS) <= ALL_TRANSFORMS
-        assert not set(NON_SHIFT_OPS) & _SHIFT_FAMILY_OPS
+        assert not set(NON_SHIFT_OPS) & SHIFT_OPS
 
 
 class TestGrainRefiningLeafRejected:

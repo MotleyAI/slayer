@@ -39,7 +39,7 @@ behaviour change beyond the saved-measure `first`/`last` operand.
 ## Decisions
 
 **D1 — One discovery walk, in `engine/compile`.** New `slayer/engine/compile/discovery.py`
-with `discover_roots(prebound, *, filter_typings, scope, bundle, in_producer, …) ->
+with `discover_roots(prebound, *, filter_typings, scope, bundle, …) ->
 List[RootDisposition]`. `RootDisposition` (frozen Pydantic): `root: ValueKey`,
 `phase: Literal["row", "combined"]`, `routing: Literal["inline", "local_producer",
 "target_rooted", "reaggregation", "reaggregation_constituent", "shifted"]`,
@@ -83,21 +83,34 @@ riding `ColumnSqlKey`, and the DEV-1910 `locus="host"` wrap (no second producer,
 safety check still runs). Alternative rejected: reproduce today's descent inside the walk
 (keeps the category error as a special case).
 
-**D3 — One producer flag; one nesting rule.** `in_producer: bool` replaces both flags on
-`elaborate_query`, `compile_prebound`, `compile_synthesized`, `compile_query`,
-`plan_query`. `in_producer=True`: type without the host-rooted filter split, local
-discovery on, no population-filter disposal, no redundant query-grain `partition_by`
-strip, no `_assert_total_routing`. The six caller-side predicates and
-`_answers_need_nested_regroups` are deleted; `carried_attaches` stays. The sub-plan's one
-nesting decision, in `_plan_regroups`: a root nests iff its grain is a STRICT SUBSET of the
-producer grain, plus DEV-1958 D6 (a ranked / windowed strict constituent of a composite
-answer nests at own grain) and the windowed-transform-input clause; a root at exactly the
-producer grain, or with a grain member outside it, compiles inline. This closes the
-probe hole without rewriting any key (the outer answer's `[product]` is not a subset →
-inline, today's SQL), and keeps carrier constituents (strict subsets) nesting.
-Alternative rejected (Codex): normalising every producer answer's `partition_keys` to the
-producer grain — erases carrier constituent grains and risks alias / type / slot lookups
-keyed by the original key.
+**D3 — No producer flag: two entry points over one core; one nesting rule.**
+`disable_host_rooted_isolation` and `enable_producer_regroups` are deleted from every
+signature and no boolean replaces them. The user's query enters through `plan_query` →
+`elaborate_query` → `compile_query`; a synthesized producer through `compile_synthesized`
+→ new `elaborate_synthesized` (prebound-only, never splits). Both run one private
+two-phase core in `stages.py` (`compile_prebound` retired as a public name):
+`_route_prebound(…, enclosing_grain: Optional[Grain])` (discovery → grouping → synthesis,
+returning the placeholder-rewritten prebound + attaches) and `_emit_planned(…)`. The
+once-per-query steps live only in the top-level entry: the host-rooted filter split (in
+`elaborate_query`), population-filter disposal and the redundant query-grain
+`partition_by` strip (before routing), and `_assert_total_routing` (between routing and
+emission). A producer cannot reach them and the top level cannot skip them.
+`compile_synthesized` takes `population_filters` as a required keyword (the parent's
+disposition, or `None` stated explicitly), plus `carried_attaches` /
+`reserved_placeholders` / `producer_registry` as today. The six caller-side predicates and
+`_answers_need_nested_regroups` are deleted; nested discovery always runs. The one nesting
+decision, in routing: with `enclosing_grain` set (the producer's own projected grain,
+computed by `compile_synthesized`, never passed by a caller), a root nests iff its grain is
+a STRICT SUBSET of it, plus DEV-1958 D6 (a ranked / windowed strict constituent of a
+composite answer nests at own grain) and the windowed-transform-input clause; a root at
+exactly the producer grain, or with a grain member outside it, compiles inline;
+`enclosing_grain=None` (top level) nests every discovered root. This closes the probe hole
+without rewriting any key (the outer answer's `[product]` is not a subset → inline,
+today's SQL), and keeps carrier constituents (strict subsets) nesting. Alternatives
+rejected: one `in_producer: bool` (a mode flag any caller can set wrongly; each top-only
+step a branch on it); normalising every producer answer's `partition_keys` to the
+producer grain (Codex) — erases carrier constituent grains and risks alias / type / slot
+lookups keyed by the original key.
 
 **D4 — One transform-input checker, per node.** `check_transform_inputs(*, roots,
 projected_grain_keys)` in `elaborate_env` replaces `check_transform_row_leaf` and
@@ -141,7 +154,7 @@ transform (spec delta). Shapes checked unchanged: `last(balance, updated_at)`,
 **D6 — DEV-1958 alignment.** `plan_shifted_producers` consumes the walk's non-series shift
 candidates instead of walking; synthesis (after `_plan_regroups`, carried attaches, slot
 ids, staging's per-slot `series`) stays as landed. The shifted producer is the sixth
-`in_producer=True` site.
+`compile_synthesized` site.
 
 **D7 — Architecture.** Node principles applied: engine P1, P2, P3, P6, P9, P10; ir P1, P2;
 core P3; sql P10; semantics Axioms 2.3, 9, 11.3b, 11.4. Two arc42 edits, each presented as
@@ -167,4 +180,4 @@ inside the declared `compile` child; no `index.yaml` or `.c4` change.
 ## Migration Plan
 
 Pure planner / checker / binder change behind the existing query surface; rollback =
-revert the PR. Internal flag rename only (`in_producer`); no storage or API migration.
+revert the PR. Internal entry-point split only; no storage or API migration.

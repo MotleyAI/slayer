@@ -247,11 +247,13 @@ class TestManyToOneCalendarShift:
 
 
 class TestRowLeafStaysFailClosed:
-    async def _assert_row_leaf_rejected(self, exec_engine, query) -> None:
+    async def _assert_row_leaf_rejected(
+        self, exec_engine, query, *, op: str = "time_shift",
+    ) -> None:
         with pytest.raises(ValueError) as ei:
             await exec_engine.execute(query)
         message = str(ei.value)
-        assert "time_shift" in message
+        assert op in message
         assert re.search(r"(?i)row", message)
         assert "source_queries" in message
 
@@ -274,7 +276,7 @@ class TestRowLeafStaysFailClosed:
             time_dimensions=month_td(),
             measures=[ModelMeasure(formula="time_shift(cumsum(weight), -1)",
                                    name="t")],
-        ))
+        ), op="cumsum")
 
     async def test_composite_hiding_transform_over_row_leaf(
         self, exec_engine,
@@ -284,4 +286,4 @@ class TestRowLeafStaysFailClosed:
             measures=[ModelMeasure(
                 formula="time_shift(revenue:sum + cumsum(weight), -1)",
                 name="t")],
-        ))
+        ), op="cumsum")
