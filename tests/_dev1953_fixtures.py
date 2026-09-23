@@ -1,5 +1,5 @@
-"""Shared fixtures for DEV-1953 — transform ``partition_by=`` binding and
-operand-grain membership over the DEV-1847 sales graph."""
+"""Shared fixtures for transform ``partition_by=`` binding and operand-grain
+membership over the sales graph."""
 
 from __future__ import annotations
 

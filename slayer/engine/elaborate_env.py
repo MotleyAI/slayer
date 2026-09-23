@@ -257,7 +257,7 @@ def type_order_positions(prebound: "PreboundQuery") -> None:
 def check_computed_dim_name_collision(
     *, name: str, model_name: Optional[str], query_measure_collision: bool,
 ) -> None:
-    """A computed dimension's name must not shadow a model column/measure or a query measure (DEV-1871 G16, was ``_reject_computed_dim_name_collision``)."""
+    """A computed dimension's name must not shadow a model column/measure or a query measure."""
     if model_name is not None:
         raise ValueError(
             f"Computed dimension name {name!r} collides with an existing "
@@ -272,7 +272,7 @@ def check_computed_dim_name_collision(
 
 
 def check_stage_flatten_collision(*, flat_name: str, collides: bool) -> None:
-    """Two projected columns must not flatten to one downstream name (DEV-1871 G16; both the declaration-time and stage-schema firing points)."""
+    """Two projected columns must not flatten to one downstream name (both the declaration-time and stage-schema firing points)."""
     if collides:
         raise ValueError(flatten_collision_message(flat_name))
 
@@ -281,7 +281,7 @@ def check_measure_dedupe_collision(
     *, prior_formula: str, formula: str, public_name: str,
     same_key: bool, same_meta: bool,
 ) -> None:
-    """Unnamed measures sharing a derived result key must be the same value with the same metadata (DEV-1871 G16, was inline in ``_declared_measures_from_query``)."""
+    """Unnamed measures sharing a derived result key must be the same value with the same metadata."""
     if not same_key:
         raise ValueError(
             f"Measures {prior_formula!r} and {formula!r} both derive "
@@ -298,7 +298,7 @@ def check_measure_dedupe_collision(
 
 
 def check_measure_name_collision(*, name: Optional[str], model: str) -> None:
-    """A public measure name shadowing a source column raises (DEV-1871 G16, was in ``_validate_alias_collisions``)."""
+    """A public measure name shadowing a source column raises."""
     if name is not None:
         raise MeasureNameCollidesWithColumnError(name=name, model=model)
 
@@ -306,7 +306,7 @@ def check_measure_name_collision(*, name: Optional[str], model: str) -> None:
 def check_canonical_alias_shadows_column(
     *, formula: str, canonical: Optional[str], model: str,
 ) -> None:
-    """A renamed measure's canonical alias shadowing a source column raises (DEV-1871 G16, was in ``_validate_alias_collisions``)."""
+    """A renamed measure's canonical alias shadowing a source column raises."""
     if canonical is not None:
         raise CanonicalAliasShadowsColumnError(
             formula=formula, canonical=canonical, model=model,
@@ -314,12 +314,12 @@ def check_canonical_alias_shadows_column(
 
 
 def check_duplicate_measure_name(*, name: str, occurrences: List[str]) -> NoReturn:
-    """Two different expressions may not claim one public name (DEV-1871 G16; both registry firing points)."""
+    """Two different expressions may not claim one public name (both registry firing points)."""
     raise DuplicateMeasureNameError(name=name, occurrences=occurrences)
 
 
 def check_reserved_regroup_prefix(columns: List[str]) -> None:
-    """A real column may not carry the reserved regroup placeholder prefix while a regroup is active (DEV-1871 G16, was in ``_plan_regroups``)."""
+    """A real column may not carry the reserved regroup placeholder prefix while a regroup is active."""
     if columns:
         raise ValueError(
             f"Column(s) {columns!r} use the reserved '__regroup__' prefix, which "
@@ -466,7 +466,7 @@ def flatten_collision_message(flat_name: str) -> str:
 
 
 def check_computed_dimension(*, name, bound, distinct_dimension_values) -> None:  # NOSONAR(S3776) — sequential fail-closed guard checks over one shared walk (all_keys / transforms / inner_aggs); each arm raises its own contract error, and extracting them scatters the shared state and the ordered narrative.
-    """Grain rules for one computed dimension (DEV-1871 G9, was ``_guard_computed_dimension``)."""
+    """Grain rules for one computed dimension."""
     all_keys = list(walk_value_keys(bound.value_key))
     transforms = [k for k in all_keys if isinstance(k, TransformKey)]
     for tk in transforms:
@@ -513,7 +513,7 @@ def check_computed_dimension(*, name, bound, distinct_dimension_values) -> None:
 def check_opaque_grouping_dim(
     *, full_name: str, dim_type: Optional[DataType], will_group_by: bool,
 ) -> None:
-    """Reject an opaque dimension the query will GROUP BY (DEV-1871 G9, was ``_reject_opaque_grouping_dim``)."""
+    """Reject an opaque dimension the query will GROUP BY."""
     if not will_group_by:
         return
     if dim_type is not None and dim_type.is_opaque:
@@ -550,8 +550,7 @@ def check_dimension_temporal_axis(
 ) -> None:
     """Fail closed if a time-ordered transform — in a dimension, or aggregated as
     a source constituent in a measure / filter / order expression — evaluates at a
-    grain not containing its time axis (DEV-1871 G10 / DEV-1832 D4, was
-    ``_guard_dimension_temporal_axis``)."""
+    grain not containing its time axis."""
     roots = [
         (dm.bound.value_key, dm.is_dimension) for dm in declared_measures
     ]
@@ -574,7 +573,7 @@ def check_dimension_temporal_axis(
 
 
 def check_windowed_time_dimension(*, resolved: bool) -> None:
-    """A windowed measure needs a resolvable query time dimension (DEV-1871 G10, both windowed guard sites)."""
+    """A windowed measure needs a resolvable query time dimension (both windowed guard sites)."""
     if resolved:
         return
     raise ValueError(
@@ -585,7 +584,7 @@ def check_windowed_time_dimension(*, resolved: bool) -> None:
 
 
 def check_time_dimension_date_range(*, full_name: str, date_range) -> None:
-    """A null date_range bound is inexpressible as a range — fail loudly rather than emit ``BETWEEN x AND NULL`` (DEV-1871 G10)."""
+    """A null date_range bound is inexpressible as a range — fail loudly rather than emit ``BETWEEN x AND NULL``."""
     if any(bound is None for bound in date_range):
         raise ValueError(
             f"TimeDimension {full_name!r} has a date_range with a "
@@ -601,7 +600,7 @@ def check_time_dimension_column(
     upstream_granularity: Optional[TimeGranularity],
     requested_granularity: TimeGranularity,
 ) -> None:
-    """A time dimension's column must be temporal (DATE / TIMESTAMP); a bucketed column — stage, query-backed cache, or hand-set ``Column.granularity`` — re-buckets only to the same or a nesting-coarser granularity (DEV-1471 / DEV-1929, closure Axiom 9). One message for all three origins."""
+    """A time dimension's column must be temporal (DATE / TIMESTAMP); a bucketed column — stage, query-backed cache, or hand-set ``Column.granularity`` — re-buckets only to the same or a nesting-coarser granularity (closure Axiom 9). One message for all three origins."""
     if column_type not in (DataType.DATE, DataType.TIMESTAMP):
         raise TimeDimensionColumnError(
             f"TimeDimension {name!r} must reference a temporal column "
@@ -665,7 +664,7 @@ def _find_unresolved_time_needing_op(key: ValueKey) -> Optional[str]:
 
 
 def check_time_transforms_resolved(*, roots) -> None:
-    """A time-needing transform still at ``time_key=None`` after attachment means no resolvable TD (DEV-1871 G10)."""
+    """A time-needing transform still at ``time_key=None`` after attachment means no resolvable TD."""
     for vk in roots:
         op = _find_unresolved_time_needing_op(vk)
         if op is not None:
@@ -678,8 +677,8 @@ def check_time_transforms_resolved(*, roots) -> None:
 
 
 def check_window_duration(*, window_val) -> None:
-    """The ``window=`` duration is a well-formed compact string (DEV-1871 G11);
-    every aggregation accepts it — no aggregation allowlist (DEV-1915)."""
+    """The ``window=`` duration is a well-formed compact string;
+    every aggregation accepts it — no aggregation allowlist."""
     if not isinstance(window_val, str):
         raise ValueError(
             f"Window duration must be a compact duration string like '90d', got "
@@ -691,7 +690,7 @@ def check_window_duration(*, window_val) -> None:
 def _first_row_leaf(key: ValueKey, *, exempt: frozenset) -> Optional[ValueKey]:
     """First row-level (non-aggregate) leaf in ``key`` not in ``exempt``, or None.
     Aggregates are opaque; a transform is descended through its input ONLY (its
-    time / partition keys are series parameters, not leaves) — DEV-1859 D16.
+    time / partition keys are series parameters, not leaves).
     The shift family passes an empty exempt set; the non-shift checker the
     projected grain keys."""
     if key in exempt:
@@ -756,7 +755,7 @@ def check_non_shift_transform_row_leaf(
     time, any row-level leaf in its input that refines the consumer grain — a
     leaf that is not a projected query dimension. Aggregating the leaf collapses
     it to the outer grain; a projected grain key evaluates at the query grain
-    and stays legal (DEV-1859 leg B)."""
+    and stays legal."""
     for root in roots:
         for k in walk_value_keys(root):
             if not isinstance(k, TransformKey):
@@ -780,7 +779,7 @@ def check_partition_key_resolves(
     *, label: str, pk: ValueKey, is_query_dim: bool, ambiguous: bool,
     maps_to_bucket: bool, lenient: bool, available_dims: Sequence[str],
 ) -> None:
-    """Every rank-family partition_by column resolves to a query dim/td (DEV-1871 G11, was inline in ``_validate_partition_keys``); a lenient key declares a finer producer grain (DEV-1825)."""
+    """Every rank-family partition_by column resolves to a query dim/td; a lenient key declares a finer producer grain."""
     if is_query_dim:
         return
     if ambiguous:
@@ -827,7 +826,7 @@ def check_transform_partition_keys_in_operand_grain(
 def check_partition_key_attributable(
     *, label: str, pk: ValueKey, attributable: bool, reason: Optional[str],
 ) -> None:
-    """A partition key reached over a join must be attributable from the aggregate's root (DEV-1871 G11, was ``_assert_partition_key_attributable``); the compiler resolves ``attributable``/``reason``."""
+    """A partition key reached over a join must be attributable from the aggregate's root; the compiler resolves ``attributable``/``reason``."""
     if attributable:
         return
     raise ValueError(
@@ -843,7 +842,7 @@ def check_local_producer_inputs_safe(
     gated_crossings: Sequence[str],
     source_crossings: Sequence[str] = (),
 ) -> None:
-    """Per-role crossing-input safety for a HOST-rooted producer answer (DEV-1871 G11, was ``_assert_local_producer_inputs_safe``); crossings are the compiler-resolved unproven hops."""
+    """Per-role crossing-input safety for a HOST-rooted producer answer; crossings are the compiler-resolved unproven hops."""
     remedy = "declare join cardinality or a covering unique key on the target"
     if ranked_crossings:
         leaf, hop = ranked_crossings[0]
@@ -868,7 +867,7 @@ def check_local_producer_inputs_safe(
 
 
 def check_cross_model_source_resolves(*, target_path, host_name: str) -> NoReturn:
-    """An unresolvable cross-model source path (DEV-1871 G12, was inline in ``_synthesize_cross_model_producer``); bind resolves the path first, so the compiler calls this only on that invariant's breach."""
+    """An unresolvable cross-model source path; bind resolves the path first, so the compiler calls this only on that invariant's breach."""
     raise ValueError(  # pragma: no cover — bind resolved the path already
         f"Cross-model aggregate source path {target_path!r} does not resolve "
         f"to a model from {host_name}."
@@ -879,7 +878,7 @@ def check_cross_model_partition_keys_attributable(
     *, alias: Optional[str], root_name: str, explicit: bool,
     unattributable: Sequence[Tuple[str, str]],
 ) -> None:
-    """An unattributable EXPLICIT partition key on a cross-model aggregate is a hard error (DEV-1871 G12); an implicit grain broadcasts instead. ``unattributable`` = compiler-resolved (name, reason) pairs."""
+    """An unattributable EXPLICIT partition key on a cross-model aggregate is a hard error; an implicit grain broadcasts instead. ``unattributable`` = compiler-resolved (name, reason) pairs."""
     if not explicit or not unattributable:
         return
     name, reason = unattributable[0]
@@ -895,7 +894,7 @@ def check_windowed_time_axis_attributable(
     *, alias: Optional[str], root_name: str, active_td_name: Optional[str],
     attributable: bool,
 ) -> None:
-    """A windowed aggregate needs the query's active time dimension, attributable from its root (DEV-1871 G12)."""
+    """A windowed aggregate needs the query's active time dimension, attributable from its root."""
     if active_td_name is None:
         raise ValueError(
             f"Windowed aggregate {alias!r} has no active time "
@@ -979,7 +978,7 @@ def check_filter_dependencies_analyzable(
 
 
 def check_association_windowed_ranked(*, alias: str, windowed_or_ranked: bool) -> None:
-    """window=/first/last cannot associate — the pick per entity is undefined (DEV-1871 G13)."""
+    """window=/first/last cannot associate — the pick per entity is undefined."""
     if windowed_or_ranked:
         raise SlayerError(
             f"Aggregate {alias!r} needs distinct-entity association over an "
@@ -992,7 +991,7 @@ def check_association_windowed_ranked(*, alias: str, windowed_or_ranked: bool) -
 def check_association_root_unique_key(
     *, alias: str, root_name: str, has_unique_key: bool,
 ) -> None:
-    """The association root must declare a unique key to dedup its entities (DEV-1871 G13)."""
+    """The association root must declare a unique key to dedup its entities."""
     if not has_unique_key:
         raise SlayerError(
             f"Aggregate {alias!r} needs distinct-entity association, but its root "
@@ -1022,7 +1021,7 @@ def check_parameter_determined(
 
 
 def check_reaggregation_no_window(*, alias: str, window_val) -> None:
-    """window= on the outer aggregation has no defined cell-time semantics (DEV-1871 G14)."""
+    """window= on the outer aggregation has no defined cell-time semantics."""
     if window_val is not None:
         raise SlayerError(
             f"Re-aggregation {alias!r} cannot carry window= on its outer "
@@ -1034,7 +1033,7 @@ def check_reaggregation_no_window(*, alias: str, window_val) -> None:
 def check_reaggregation_partition_key_is_query_dim(
     *, alias: str, offending: Optional[str],
 ) -> None:
-    """Every explicit outer partition key must be a query dimension (DEV-1871 G14); ``offending`` = the key's display name when it is not."""
+    """Every explicit outer partition key must be a query dimension; ``offending`` = the key's display name when it is not."""
     if offending is not None:
         raise ValueError(
             f"Re-aggregation {alias!r} declares partition_by="
@@ -1047,7 +1046,7 @@ def check_reaggregation_partition_key_is_query_dim(
 def check_reaggregation_dims_attributable(
     *, alias: str, mode: str, unattributable_names: Sequence[str],
 ) -> None:
-    """Unattributable outer dims are a hard error under to_many_handling='error' (DEV-1871 G14); associate/broadcast resolution stays compiler-side."""
+    """Unattributable outer dims are a hard error under to_many_handling='error'; associate/broadcast resolution stays compiler-side."""
     if mode != "error" or not unattributable_names:
         return
     names = ", ".join(unattributable_names)
@@ -1067,7 +1066,7 @@ _RAW_ROW_FIX_HINT = (
 
 
 def check_raw_rows_filter_measure_ref(*, offending: Optional[str]) -> None:
-    """Raw-rows mode (distinct_dimension_values=False) rejects measure references in filters (DEV-1871 G15); ``offending`` = the raw filter string when one does."""
+    """Raw-rows mode (distinct_dimension_values=False) rejects measure references in filters; ``offending`` = the raw filter string when one does."""
     if offending is not None:
         raise DistinctDimensionValuesError(
             f"distinct_dimension_values=False rejects measure references, "
@@ -1079,7 +1078,7 @@ def check_raw_rows_order_measure_ref(
     *, contains: Optional[str] = None, saved_name: Optional[str] = None,
     source_name: Optional[str] = None, saved_dotted: Optional[str] = None,
 ) -> None:
-    """Raw-rows mode rejects measure references in ORDER BY (DEV-1871 G15); at most one offense per call, resolution stays compiler-side."""
+    """Raw-rows mode rejects measure references in ORDER BY; at most one offense per call, resolution stays compiler-side."""
     if contains is not None:
         raise DistinctDimensionValuesError(
             f"distinct_dimension_values=False rejects measure "
@@ -1102,7 +1101,7 @@ def check_raw_rows_order_measure_ref(
 
 
 def check_raw_rows_no_aggregate_slots(*, offender: str) -> NoReturn:
-    """An aggregate-phase slot under raw-rows mode came from a filter or order item (DEV-1871 G15; measures were rejected upstream)."""
+    """An aggregate-phase slot under raw-rows mode came from a filter or order item (measures were rejected upstream)."""
     raise DistinctDimensionValuesError(
         f"distinct_dimension_values=False rejects measure references, but "
         f"this query references the aggregation {offender!r} in its "
@@ -1113,7 +1112,7 @@ def check_raw_rows_no_aggregate_slots(*, offender: str) -> NoReturn:
 
 
 def check_order_target_has_slot(*, type_name: str) -> NoReturn:
-    """An order target with no materialisable slot would be silently dropped (DEV-1871 G15)."""
+    """An order target with no materialisable slot would be silently dropped."""
     raise PositionTypingError(
         f"ORDER BY expression is not supported: "
         f"{type_name} has no materialisable "

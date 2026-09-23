@@ -1,4 +1,4 @@
-"""Stage 7b.4 (DEV-1450) — planner-side transform support.
+"""Planner-side transform support.
 
 Three slots:
 
@@ -93,41 +93,36 @@ def _scope() -> ModelScope:
 class TestBindTransformValidation:
     def test_ntile_without_n_raises(self) -> None:
         # `ntile(amount:sum)` — missing `n=` kwarg.
+        parsed = parse_expr("ntile(amount:sum)")
+        scope, bundle = _scope(), _bundle()
         with pytest.raises(ValueError, match="ntile.*n"):
-            bind_expr(
-                parse_expr("ntile(amount:sum)"),
-                scope=_scope(), bundle=_bundle(),
-            )
+            bind_expr(parsed, scope=scope, bundle=bundle)
 
     def test_ntile_with_n_zero_raises(self) -> None:
+        parsed = parse_expr("ntile(amount:sum, n=0)")
+        scope, bundle = _scope(), _bundle()
         with pytest.raises(ValueError, match="ntile.*positive"):
-            bind_expr(
-                parse_expr("ntile(amount:sum, n=0)"),
-                scope=_scope(), bundle=_bundle(),
-            )
+            bind_expr(parsed, scope=scope, bundle=bundle)
 
     def test_ntile_with_n_negative_raises(self) -> None:
+        parsed = parse_expr("ntile(amount:sum, n=-3)")
+        scope, bundle = _scope(), _bundle()
         with pytest.raises(ValueError, match="ntile.*positive"):
-            bind_expr(
-                parse_expr("ntile(amount:sum, n=-3)"),
-                scope=_scope(), bundle=_bundle(),
-            )
+            bind_expr(parsed, scope=scope, bundle=bundle)
 
     def test_ntile_with_n_string_raises(self) -> None:
+        parsed = parse_expr("ntile(amount:sum, n='four')")
+        scope, bundle = _scope(), _bundle()
         with pytest.raises(ValueError, match="ntile.*integer"):
-            bind_expr(
-                parse_expr("ntile(amount:sum, n='four')"),
-                scope=_scope(), bundle=_bundle(),
-            )
+            bind_expr(parsed, scope=scope, bundle=bundle)
 
     def test_ntile_with_n_bool_raises(self) -> None:
         # bool is an int subclass in Python — explicit rejection so
         # ``n=True`` doesn't silently become n=1.
+        parsed = parse_expr("ntile(amount:sum, n=True)")
+        scope, bundle = _scope(), _bundle()
         with pytest.raises(ValueError, match="ntile.*integer"):
-            bind_expr(
-                parse_expr("ntile(amount:sum, n=True)"),
-                scope=_scope(), bundle=_bundle(),
-            )
+            bind_expr(parsed, scope=scope, bundle=bundle)
 
     def test_ntile_with_valid_n_binds(self) -> None:
         bound = bind_expr(
@@ -141,11 +136,10 @@ class TestBindTransformValidation:
         assert kw_dict["n"] == 4
 
     def test_time_shift_without_periods_raises(self) -> None:
+        parsed = parse_expr("time_shift(amount:sum)")
+        scope, bundle = _scope(), _bundle()
         with pytest.raises(ValueError, match="time_shift.*periods"):
-            bind_expr(
-                parse_expr("time_shift(amount:sum)"),
-                scope=_scope(), bundle=_bundle(),
-            )
+            bind_expr(parsed, scope=scope, bundle=bundle)
 
     def test_time_shift_with_periods_binds(self) -> None:
         bound = bind_expr(
@@ -183,34 +177,30 @@ class TestBindTransformValidation:
 
     def test_unknown_kwarg_on_rank_raises(self) -> None:
         # rank's allowed kwargs: {partition_by}. Anything else → error.
+        parsed = parse_expr("rank(amount:sum, foo='bar')")
+        scope, bundle = _scope(), _bundle()
         with pytest.raises(ValueError, match="rank.*not.*accept"):
-            bind_expr(
-                parse_expr("rank(amount:sum, foo='bar')"),
-                scope=_scope(), bundle=_bundle(),
-            )
+            bind_expr(parsed, scope=scope, bundle=bundle)
 
     def test_unknown_kwarg_on_percent_rank_raises(self) -> None:
+        parsed = parse_expr("percent_rank(amount:sum, foo='bar')")
+        scope, bundle = _scope(), _bundle()
         with pytest.raises(ValueError, match="percent_rank.*not.*accept"):
-            bind_expr(
-                parse_expr("percent_rank(amount:sum, foo='bar')"),
-                scope=_scope(), bundle=_bundle(),
-            )
+            bind_expr(parsed, scope=scope, bundle=bundle)
 
     def test_unknown_kwarg_on_dense_rank_raises(self) -> None:
+        parsed = parse_expr("dense_rank(amount:sum, foo='bar')")
+        scope, bundle = _scope(), _bundle()
         with pytest.raises(ValueError, match="dense_rank.*not.*accept"):
-            bind_expr(
-                parse_expr("dense_rank(amount:sum, foo='bar')"),
-                scope=_scope(), bundle=_bundle(),
-            )
+            bind_expr(parsed, scope=scope, bundle=bundle)
 
     def test_unknown_kwarg_on_consecutive_periods_raises(self) -> None:
+        parsed = parse_expr("consecutive_periods(amount:sum, foo='bar')")
+        scope, bundle = _scope(), _bundle()
         with pytest.raises(ValueError, match="consecutive_periods.*not.*accept"):
-            bind_expr(
-                parse_expr("consecutive_periods(amount:sum, foo='bar')"),
-                scope=_scope(), bundle=_bundle(),
-            )
+            bind_expr(parsed, scope=scope, bundle=bundle)
 
-    # -- DEV-1484 backfills from the deleted test_formula.py -----------------
+    # -- Backfills from the deleted test_formula.py ---------------------------
     # ``TestFormulaParser`` asserted these rejections against the legacy
     # free-function parser (which validated transform args at parse time).
     # The typed pipeline validates them at bind time, so the equivalent
@@ -259,6 +249,39 @@ class TestBindTransformValidation:
         kw_dict = dict(bound.value_key.kwargs)
         assert kw_dict["periods"] == -1
         assert kw_dict["granularity"] == "year"
+
+    def test_ntile_fractional_n_raises(self) -> None:
+        parsed = parse_expr("ntile(amount:sum, n=2.5)")
+        scope, bundle = _scope(), _bundle()
+        with pytest.raises(ValueError, match="ntile.*positive"):
+            bind_expr(parsed, scope=scope, bundle=bundle)
+
+    def test_ntile_integral_decimal_n_binds(self) -> None:
+        bound = bind_expr(
+            parse_expr("ntile(amount:sum, n=4.0)"),
+            scope=_scope(), bundle=_bundle(),
+        )
+        assert isinstance(bound.value_key, TransformKey)
+
+    def test_time_shift_too_many_positionals_raises(self) -> None:
+        parsed = parse_expr("time_shift(amount:sum, -1, 'year', 3)")
+        scope, bundle = _scope(), _bundle()
+        with pytest.raises(ValueError, match="at most 2 positional"):
+            bind_expr(parsed, scope=scope, bundle=bundle)
+
+    def test_time_shift_periods_positional_and_keyword_raises(self) -> None:
+        parsed = parse_expr("time_shift(amount:sum, -1, periods=2)")
+        scope, bundle = _scope(), _bundle()
+        with pytest.raises(ValueError, match="'periods' both positionally"):
+            bind_expr(parsed, scope=scope, bundle=bundle)
+
+    def test_time_shift_unused_positional_name_as_keyword_binds(self) -> None:
+        bound = bind_expr(
+            parse_expr("time_shift(amount:sum, -1, granularity='year')"),
+            scope=_scope(), bundle=_bundle(),
+        )
+        assert isinstance(bound.value_key, TransformKey)
+        assert dict(bound.value_key.kwargs)["granularity"] == "year"
 
     def test_rank_with_partition_by_binds(self) -> None:
         bound = bind_expr(
@@ -330,7 +353,7 @@ class TestIterSlotDepsTransformAux:
         assert customer in deps
 
     def test_partition_by_rejected_on_non_rank_transform(self) -> None:
-        # DEV-1739 D6: explicit partition_by on a time-ordered transform is
+        # Explicit partition_by on a time-ordered transform is
         # rejected at bind time (a coarse ROWS-frame partition is nondeterministic).
         q = SlayerQuery(
             source_model="orders",
@@ -474,7 +497,7 @@ class TestTransformLayersPopulation:
 
 
 # ---------------------------------------------------------------------------
-# Identity preservation (DEV-1446 territory): nested transforms reuse the
+# Identity preservation: nested transforms reuse the
 # inner aggregate slot.
 # ---------------------------------------------------------------------------
 
@@ -482,8 +505,7 @@ class TestTransformLayersPopulation:
 class TestTransformInnerIdentity:
     def test_change_preserves_inner_aggregate_identity(self) -> None:
         # change(amount:sum) lowers to ``amount - time_shift(amount)``;
-        # both occurrences of amount:sum must intern to the SAME slot
-        # (DEV-1446).
+        # both occurrences of amount:sum must intern to the SAME slot.
         q = SlayerQuery(
             source_model="orders",
             measures=[{"formula": "change(amount:sum)"}],
