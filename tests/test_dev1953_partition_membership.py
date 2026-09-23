@@ -38,6 +38,7 @@ NONMEMBER = "rank(sum(amount, partition_by=[city, region]), partition_by=product
 MEMBER = "rank(sum(amount, partition_by=[city, region]), partition_by=region)"
 UNGRAINED = "rank(sum(amount), partition_by=region)"
 LAST_INNER = "last(sum(amount, partition_by=[customers.regions.name, ordered_at]))"
+LAST_SHIFT = "last(time_shift(customers.regions.name, -1))"
 
 MEMBER_RANKS = {
     ("East", "Zeta"): 1, ("East", "Delta"): 2, ("East", "Epsilon"): 2,
@@ -249,6 +250,18 @@ class TestOperandGrainTimeAxis:
 
     def test_nested_last_keeps_remaining_keys(self):
         _bind_monthly(f"rank({LAST_INNER}, partition_by=customers.regions.name)")
+
+    def test_aggregate_free_nested_last_drops_its_axis(self):
+        with pytest.raises(ValueError) as ei:
+            _bind_monthly(f"rank({LAST_SHIFT}, partition_by=ordered_at)")
+        _assert_membership_error(str(ei.value), key="ordered_at",
+                                 grain="customers.regions.name")
+
+    def test_aggregate_free_nested_last_keeps_remaining_keys(self):
+        _bind_monthly(f"rank({LAST_SHIFT}, partition_by=customers.regions.name)")
+
+    def test_aggregate_free_shift_keeps_the_query_grain(self):
+        _bind_monthly("rank(time_shift(customers.regions.name, -1), partition_by=ordered_at)")
 
 
 class TestRepeatedKeyword:

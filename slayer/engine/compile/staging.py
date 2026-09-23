@@ -23,16 +23,14 @@ from slayer.core.keys import (
     ColumnSqlKey,
     AggregateKey,
     InKey,
-    REGROUP_LEAF_PREFIX,
     ScalarCallKey,
     TimeTruncKey,
     TransformKey,
     ValueKey,
-    is_boolean_shaped,
-    source_anchor_path,
     window_kwarg_of,
 )
 from slayer.engine.compile.projection import _iter_slot_deps
+from slayer.engine.compile.shift import _series_mode, is_placeholder
 from slayer.ir.planned import (
     MaskEntry,
     MaskTyping,
@@ -48,10 +46,6 @@ __all__ = ["stage_slots"]
 
 #: Composite / predicate kinds staged by their operands' stages.
 _COMPOSITE_KINDS = (ArithmeticKey, ScalarCallKey, BetweenKey, InKey)
-
-
-def _is_placeholder(key: ValueKey) -> bool:
-    return isinstance(key, ColumnKey) and key.leaf.startswith(REGROUP_LEAF_PREFIX)
 
 
 def _placeholder_phases(
@@ -78,42 +72,6 @@ def _placeholder_to_original(
         for attach in attach_plans
         for sub in attach.substitutions
     }
-
-
-def _series_flags(node: ValueKey, *, to_original: Dict[ValueKey, ValueKey]) -> Tuple[bool, bool]:
-    """(has_transform, has_cross_model_agg) over a composite; a placeholder
-    resolves to its original aggregate (D6, the retired ``_classify_walk``)."""
-    has_transform = False
-    has_cross_model = False
-    if isinstance(node, TransformKey):
-        has_transform = True
-    elif isinstance(node, AggregateKey):
-        if source_anchor_path(node.source):
-            has_cross_model = True
-    elif _is_placeholder(node):
-        original = to_original.get(node)
-        if original is None:
-            has_cross_model = True  # unknown placeholder — fail closed
-        else:
-            return _series_flags(original, to_original=to_original)
-    elif not isinstance(node, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
-        for child in node.children():
-            t, x = _series_flags(child, to_original=to_original)
-            has_transform = has_transform or t
-            has_cross_model = has_cross_model or x
-    return has_transform, has_cross_model
-
-
-def _series_mode(inner: ValueKey, *, to_original: Dict[ValueKey, ValueKey]) -> bool:
-    """Whether a transform shifts its materialised series (True) or re-aggregates
-    (False) — a nested transform, a predicate root, or a composite carrying a
-    transform or cross-model aggregate leaf (D6)."""
-    if isinstance(inner, TransformKey) or is_boolean_shaped(inner):
-        return True
-    if isinstance(inner, (ArithmeticKey, ScalarCallKey)):
-        has_transform, has_cross_model = _series_flags(inner, to_original=to_original)
-        return has_transform or has_cross_model
-    return False
 
 
 class _SlotStager:
@@ -179,7 +137,7 @@ class _SlotStager:
         key = slot.key
         if isinstance(key, AggregateKey):
             return self._aggregate_stage(key)
-        if _is_placeholder(key):
+        if is_placeholder(key):
             return self._placeholder_stage(key)
         if isinstance(key, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
             return Stage(kind=StageKind.BASE)

@@ -954,7 +954,7 @@ def transform_operand_grain(
     input: ValueKey, *, query_grain: Grain, active_bucket: Optional[ValueKey],
 ) -> Grain:
     """A transform input's operand grain (Axioms 11.1, 11.3b, 11.5), recursive."""
-    if not any(isinstance(k, AggregateKey) for k in walk_value_keys(input)):
+    if not any(isinstance(k, (AggregateKey, TransformKey)) for k in walk_value_keys(input)):
         return query_grain
     return _operand_grain(input, query_grain=query_grain, active_bucket=active_bucket)
 
@@ -1235,6 +1235,18 @@ def desugar_change_pct(key: TransformKey) -> ArithmeticKey:
         name="nullif", args=(shifted, normalize_scalar(0)),
     )
     return ArithmeticKey(op="/", operands=(numerator, guarded_divisor))
+
+
+def shift_offset_of(key: TransformKey) -> Tuple[int, Optional[str]]:
+    """A ``time_shift`` key's ``(periods, granularity)``; ``periods`` must be an integer."""
+    kwargs = dict(key.kwargs)
+    periods = kwargs.get("periods")
+    if isinstance(periods, Decimal) and periods == periods.to_integral_value():
+        periods = int(periods)
+    if isinstance(periods, bool) or not isinstance(periods, int):
+        raise ValueError(f"time_shift periods must be an integer; got {periods!r}")
+    granularity = kwargs.get("granularity")
+    return periods, None if granularity is None else str(granularity)
 
 
 def lower_sugar_transforms(key: ValueKey) -> ValueKey:

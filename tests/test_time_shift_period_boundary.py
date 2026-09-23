@@ -107,7 +107,7 @@ def test_change_uses_full_previous_month():
 
 def test_aligned_shift_truncates_once():
     # month-shift on month buckets: bucket-start + N months IS a bucket start,
-    # so the emitted shifted expression must not pay a second per-row trunc
+    # so the join-back lookup offsets the bucket without re-truncating it
     engine = _make_engine([(1, 1.0, "2024-01-10 12:00:00")])
     resp = engine.execute_sync(query={
         "source_model": "orders",
@@ -117,11 +117,11 @@ def test_aligned_shift_truncates_once():
     }, dry_run=True)
     shifted = [ln for ln in resp.sql.splitlines() if "months" in ln.lower()]
     assert shifted, resp.sql
-    assert all(ln.count("STRFTIME") == 1 for ln in shifted), resp.sql
+    assert all(ln.count("STRFTIME") == 0 for ln in shifted), resp.sql
 
 
 def test_unaligned_shift_still_rebuckets():
-    # a day-offset on month buckets lands mid-month: the outer trunc must stay
+    # a day-offset on month buckets lands mid-month: the lookup re-truncates it
     engine = _make_engine([
         (1, 100.0, "2024-01-31 12:00:00"),
         (2, 70.0, "2024-02-10 09:00:00"),
@@ -134,4 +134,4 @@ def test_unaligned_shift_still_rebuckets():
     }, dry_run=True)
     shifted = [ln for ln in resp.sql.splitlines() if "days" in ln.lower()]
     assert shifted, resp.sql
-    assert any(ln.count("STRFTIME") == 2 for ln in shifted), resp.sql
+    assert any(ln.count("STRFTIME") == 1 for ln in shifted), resp.sql

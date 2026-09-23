@@ -5,7 +5,7 @@ checker, ``elaborate_env``); orchestration lives in ``compile/stages``."""
 
 from __future__ import annotations
 
-from typing import Callable, Dict, Mapping
+from typing import AbstractSet, Callable, Dict, Mapping
 
 from slayer.core.keys import REGROUP_LEAF_PREFIX, AggregateKey, ColumnKey, ValueKey, substitute_value_keys, walk_value_keys
 from slayer.sql.naming import canonical_aggregate_alias
@@ -30,16 +30,18 @@ def reserved_prefix_columns(model) -> list:
 class RegroupPlaceholderRegistry:
     """Mints a distinct reserved-leaf ``ColumnKey`` per structural aggregate, keyed
     by ``AggregateKey`` identity NOT canonical alias (which two distinct aggregates
-    can share); a monotonic index guarantees distinct leaves."""
+    can share); a monotonic index guarantees distinct leaves, skipping ``reserved``
+    (an enclosing plan's placeholders a sub-plan may read)."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, reserved: AbstractSet[ValueKey] = frozenset()) -> None:
         self._by_key: Dict[ValueKey, ColumnKey] = {}
+        self._reserved = reserved
+        self._next = 0
 
     def placeholder_for(self, key: ValueKey) -> ColumnKey:
         existing = self._by_key.get(key)
         if existing is not None:
             return existing
-        idx = len(self._by_key)
         seed = (
             (canonical_aggregate_alias(key, profile="stage_formula")
              if isinstance(key, AggregateKey) else None)
@@ -47,9 +49,15 @@ class RegroupPlaceholderRegistry:
             or getattr(key, "op", None)
             or "regroup"
         )
-        placeholder = ColumnKey(path=(), leaf=f"{REGROUP_LEAF_PREFIX}{idx}__{seed}")
+        placeholder = self._mint(seed)
+        while placeholder in self._reserved:
+            placeholder = self._mint(seed)
         self._by_key[key] = placeholder
         return placeholder
+
+    def _mint(self, seed: str) -> ColumnKey:
+        self._next += 1
+        return ColumnKey(path=(), leaf=f"{REGROUP_LEAF_PREFIX}{self._next - 1}__{seed}")
 
 
 def substitute_in_bound_filter(

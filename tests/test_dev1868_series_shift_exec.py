@@ -264,7 +264,7 @@ class TestRowLeafStaysFailClosed:
 
     async def test_row_level_predicate_input(self, exec_engine) -> None:
         await self._assert_row_leaf_rejected(exec_engine, _q(
-            dimensions=["store"], time_dimensions=month_td(),
+            time_dimensions=month_td(),
             measures=[ModelMeasure(formula="time_shift(store in ('A', 'B'), -1)",
                                    name="t")],
         ))

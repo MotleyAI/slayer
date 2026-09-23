@@ -690,9 +690,7 @@ def check_window_duration(*, window_val) -> None:
 def _first_row_leaf(key: ValueKey, *, exempt: frozenset) -> Optional[ValueKey]:
     """First row-level (non-aggregate) leaf in ``key`` not in ``exempt``, or None.
     Aggregates are opaque; a transform is descended through its input ONLY (its
-    time / partition keys are series parameters, not leaves).
-    The shift family passes an empty exempt set; the non-shift checker the
-    projected grain keys."""
+    time / partition keys are series parameters, not leaves)."""
     if key in exempt:
         return None
     if isinstance(key, AggregateKey):
@@ -712,8 +710,7 @@ _SHIFT_FAMILY_OPS = frozenset({"time_shift", "change", "change_pct"})
 
 
 def _check_shift_family_key(k: TransformKey) -> None:
-    inner = k.input
-    if k.op != "time_shift" and is_boolean_shaped(inner):
+    if k.op != "time_shift" and is_boolean_shaped(k.input):
         raise ValueError(
             f"'{k.op}' cannot consume a boolean-shaped predicate: its "
             f"desugared arithmetic subtracts the shifted series, and "
@@ -721,23 +718,11 @@ def _check_shift_family_key(k: TransformKey) -> None:
             f"predicate itself with time_shift, or compare the shifted "
             f"values instead."
         )
-    if isinstance(inner, (AggregateKey, ColumnKey, ColumnSqlKey)):
-        return  # bare-leaf regimes
-    if _first_row_leaf(key=inner, exempt=frozenset()) is not None:
-        raise ValueError(
-            f"'{k.op}' does not support a row-level (non-aggregate) "
-            f"leaf inside a composite or nested-transform input; every "
-            f"leaf must be an aggregate. Compute the row-level value "
-            f"in an earlier stage of a multi-stage `source_queries` "
-            f"model and reference its aggregate here."
-        )
 
 
 def check_time_shift_input(*, roots) -> None:
-    """time_shift-family input typing (engine P9, was the generator's
-    validation gate), on the pre-lowering trees: no row-level leaf inside a
-    composite/predicate input, and ``change``/``change_pct`` consume no boolean
-    series (their desugared arithmetic has no defined truth-value operands)."""
+    """``change`` / ``change_pct`` consume no boolean series (their desugared
+    arithmetic has no defined truth-value operands); runs pre-lowering."""
     for root in roots:
         for k in walk_value_keys(root):
             if isinstance(k, TransformKey) and k.op in _SHIFT_FAMILY_OPS:
@@ -747,20 +732,15 @@ def check_time_shift_input(*, roots) -> None:
 _FIRST_LAST_OPS = frozenset({"first", "last"})
 
 
-def check_non_shift_transform_row_leaf(
+def check_transform_row_leaf(
     *, roots, projected_grain_keys: frozenset,
 ) -> None:
-    """A non-shift transform (every op but the shift family; first/last are
-    aggregation-dispatched) in measure/filter/order position rejects, at plan
-    time, any row-level leaf in its input that refines the consumer grain — a
-    leaf that is not a projected query dimension. Aggregating the leaf collapses
-    it to the outer grain; a projected grain key evaluates at the query grain
-    and stays legal."""
+    """A transform (first/last are aggregation-dispatched) in measure/filter/order
+    position rejects, at plan time, any row-level leaf in its input that refines the
+    consumer grain — a leaf that is not a projected query dimension."""
     for root in roots:
         for k in walk_value_keys(root):
-            if not isinstance(k, TransformKey):
-                continue
-            if k.op in _SHIFT_FAMILY_OPS or k.op in _FIRST_LAST_OPS:
+            if not isinstance(k, TransformKey) or k.op in _FIRST_LAST_OPS:
                 continue
             leaf = _first_row_leaf(key=k.input, exempt=projected_grain_keys)
             if leaf is None:
@@ -771,7 +751,9 @@ def check_non_shift_transform_row_leaf(
                 f"(non-aggregate) leaf '{disp}', which refines the query "
                 f"grain: it would inflate the base grain to one row per "
                 f"(bucket, {disp}-value). Aggregate the leaf — e.g. "
-                f"{k.op}({disp}:sum) — or project '{disp}' as a query dimension."
+                f"{k.op}({disp}:sum) — project '{disp}' as a query dimension, "
+                f"or compute it in an earlier stage of a multi-stage "
+                f"`source_queries` model."
             )
 
 
