@@ -1205,6 +1205,18 @@ def desugar_change_pct(key: TransformKey) -> ArithmeticKey:
     return ArithmeticKey(op="/", operands=(numerator, guarded_divisor))
 
 
+def shift_offset_of(key: TransformKey) -> Tuple[int, Optional[str]]:
+    """A ``time_shift`` key's ``(periods, granularity)``; ``periods`` must be an integer."""
+    kwargs = dict(key.kwargs)
+    periods = kwargs.get("periods")
+    if isinstance(periods, Decimal) and periods == periods.to_integral_value():
+        periods = int(periods)
+    if isinstance(periods, bool) or not isinstance(periods, int):
+        raise ValueError(f"time_shift periods must be an integer; got {periods!r}")
+    granularity = kwargs.get("granularity")
+    return periods, None if granularity is None else str(granularity)
+
+
 def lower_sugar_transforms(key: ValueKey) -> ValueKey:
     """Recursively lower ``change``/``change_pct`` TransformKeys to desugared arithmetic, preserving the inner aggregate's identity. Post-order over ``map_children``."""
     lowered = key.map_children(lower_sugar_transforms)

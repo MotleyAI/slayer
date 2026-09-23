@@ -383,13 +383,17 @@ ProducerKernel = Union[
 class RegroupAttachPlan(BaseModel):
     """A planner-synthesized producer (isolated ``_cm_*`` CTE) attached on its partition
     grain via the null-safe grain join, without changing consumer cardinality.
-    ``attach_phase`` is ``"row"`` (base FROM, before aggregation) or ``"combined"`` (after)."""
+    ``attach_phase`` is ``"row"`` (base FROM, before aggregation), ``"combined"`` (after),
+    or ``"shifted"`` (the frame-free relation a ``time_shift`` slot ``shift_of`` looks up,
+    reading ``answer_slot_id``; no substitutions)."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     producer_plan: "PlannedQuery"
     alias_hint: str
-    attach_phase: Literal["row", "combined"] = "row"
+    attach_phase: Literal["row", "combined", "shifted"] = "row"
+    shift_of: Optional[SlotId] = None
+    answer_slot_id: Optional[SlotId] = None
     kernel: ProducerKernel = Field(
         default_factory=PlainProducerKernel, discriminator="kind",
     )
@@ -423,6 +427,21 @@ class RegroupAttachPlan(BaseModel):
     degenerate_measure: Optional[str] = None
     degenerate_operand_grain: List[str] = Field(default_factory=list)
     degenerate_outer_grain: List[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _shifted_attach_well_formed(self) -> "RegroupAttachPlan":
+        shifted = self.attach_phase == "shifted"
+        if shifted != (self.shift_of is not None) or shifted != (self.answer_slot_id is not None):
+            raise ValueError("shift_of / answer_slot_id are set exactly on a shifted attach")
+        if not shifted:
+            return self
+        if self.substitutions:
+            raise ValueError("a shifted attach substitutes nothing")
+        if self.answer_slot_id not in {s.id for s in _own_slots(self.producer_plan)}:
+            raise ValueError(
+                f"shifted attach answer slot {self.answer_slot_id!r} is not a producer slot",
+            )
+        return self
 
 
 class PlannedQuery(BaseModel):
@@ -489,6 +508,30 @@ class PlannedQuery(BaseModel):
                     f"{list(slot.public_aliases) or [slot.public_name]!r} — "
                     f"the extra occurrence would emit a duplicate column",
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _shifted_attaches_target_shift_slots(self) -> "PlannedQuery":
+        """Each shifted attach answers one non-series ``time_shift`` slot of this plan."""
+        by_id = {s.id: s for s in _own_slots(self)}
+        seen: set = set()
+        for attach in self.regroup_attach_plans:
+            if attach.attach_phase != "shifted":
+                continue
+            slot = by_id.get(attach.shift_of) if attach.shift_of is not None else None
+            if slot is None or not (
+                isinstance(slot.key, TransformKey) and slot.key.op == "time_shift"
+            ):
+                raise ValueError(
+                    f"shifted attach targets {attach.shift_of!r}, not a time_shift slot",
+                )
+            if slot.series:
+                raise ValueError(
+                    f"shifted attach targets the series-regime slot {slot.id!r}",
+                )
+            if slot.id in seen:
+                raise ValueError(f"duplicate shifted attach for slot {slot.id!r}")
+            seen.add(slot.id)
         return self
 
     @model_validator(mode="after")
