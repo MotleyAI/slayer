@@ -744,6 +744,15 @@ class MaterialisationStageError(SlayerError, ValueError):
         ))
 
 
+class JoinKeyError(SlayerError, ValueError):
+    """A join key that does not name a declared base column on its side."""
+
+    def __init__(self, *, summary: str, suggestion: str | None = None) -> None:
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__, summary=summary, suggestion=suggestion,
+        ))
+
+
 class LegacyDunderAliasError(SlayerError, ValueError):
     """A ``__``-delimited Mode-A join qualifier that is no longer accepted (``.`` is now the only chain separator) — the legacy split-alias spelling."""
 

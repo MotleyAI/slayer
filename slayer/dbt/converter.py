@@ -25,7 +25,7 @@ import sqlalchemy as sa
 from slayer.core.enums import DataType
 from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.formula import parse_formula
-from slayer.core.models import Column, ModelMeasure, SlayerModel
+from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.refs import IDENTIFIER_RE as _IDENTIFIER_RE
 from slayer.dbt.entities import EntityRegistry
 from slayer.dbt.filters import _DIMENSION_RE, convert_dbt_filter
@@ -419,7 +419,14 @@ class DbtToSlayerConverter:
         )
         cols.extend(measure_cols)
 
-        joins = self.entity_registry.resolve_joins_for_model(sm)
+        joins = self._declare_join_keys(
+            sm_name=sm.name, cols=cols, measure_names={m.name for m in measures},
+            joins=self.entity_registry.resolve_joins_for_model(sm),
+            unkeyable=[
+                e.expr for e in sm.entities
+                if e.type == "foreign" and e.expr and not _is_simple_identifier(e.expr)
+            ],
+        )
 
         return SlayerModel(
             name=sm.name,
@@ -433,6 +440,41 @@ class DbtToSlayerConverter:
             joins=joins,
             meta=model_meta or None,
         )
+
+    def _declare_join_keys(
+        self, *, sm_name: str, cols: list[Column], measure_names: set,
+        joins: list[ModelJoin], unkeyable: list[str],
+    ) -> list[ModelJoin]:
+        """Keep joins whose source keys are base columns, synthesising a hidden one for an uncovered foreign entity."""
+        for expr in unkeyable:
+            self._warnings.append(ConversionWarning(
+                model_name=sm_name, category="join", severity="dropped",
+                message=f"Foreign entity expr {expr!r} is not a single column identifier; its join is skipped.",
+                suggestion="Expose the key as a column and name that column in the entity expr.",
+            ))
+        kept: list[ModelJoin] = []
+        for join in joins:
+            bad = next((src for src, _ in join.join_pairs if not self._declare_key(
+                key=src, cols=cols, measure_names=measure_names)), None)
+            if bad is None:
+                kept.append(join)
+                continue
+            self._warnings.append(ConversionWarning(
+                model_name=sm_name, category="join", severity="dropped",
+                message=(f"Join to '{join.target_model}' skipped: key {bad!r} is not a "
+                         f"base column."),
+            ))
+        return kept
+
+    @staticmethod
+    def _declare_key(*, key: str, cols: list[Column], measure_names: set) -> bool:
+        col = next((c for c in cols if c.name == key), None)
+        if col is not None:
+            return col.is_base and col.filter is None
+        if key in measure_names or not _is_simple_identifier(key):
+            return False
+        cols.append(Column(name=key, type=DataType.DOUBLE, hidden=True))
+        return True
 
     @staticmethod
     def _entity_meta(entity) -> dict[str, Any] | None:

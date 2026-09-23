@@ -29,25 +29,26 @@ import logging
 
 
 from slayer.core.enums import DataType
-from slayer.core.models import DatasourceConfig
+from slayer.core.models import DatasourceConfig, is_base_column_sql, physical_column_sql
 from slayer.engine.schema_scope import split_sql_table
+from slayer.sql import engine_factory
+from slayer.sql import sqlite_introspect
 
 
 logger = logging.getLogger(__name__)
 
 
-def _column_is_base(sql: str | None) -> bool:
-    """A column whose ``sql`` is ``None`` or a single bare identifier is a
-    "base" column — it claims a live database column. Derived expressions
-    (``amount * 2``, ``length(name)``, ``customers.region``, etc.) are not.
-    Mirrors the predicate used by ``slayer.engine.schema_drift``.
-    """
-    if sql is None:
-        return True
-    s = sql.strip()
-    if not s or s[0].isdigit():
-        return False
-    return all(c.isalnum() or c == "_" for c in s)
+def _column_is_base(sql: object) -> bool:
+    """A column dict's ``sql`` claims a live column (see ``is_base_column_sql``)."""
+    return (sql is None or isinstance(sql, str)) and is_base_column_sql(sql)
+
+
+def _physical(col: dict) -> str | None:
+    """The live column a base column dict names, else ``None``."""
+    name, sql = col.get("name"), col.get("sql")
+    if not isinstance(name, str) or not _column_is_base(sql):
+        return None
+    return physical_column_sql(sql, name)
 
 
 def _is_sqlite_datasource(datasource: DatasourceConfig) -> bool:
@@ -157,9 +158,8 @@ def _safe_probe(
 ) -> DataType | None:
     """Run the probe with a defence-in-depth try/except so the refinement
     loop never aborts on an unexpected exception."""
-    from slayer.sql.sqlite_introspect import probe_sqlite_integer_column
     try:
-        return probe_sqlite_integer_column(
+        return sqlite_introspect.probe_sqlite_integer_column(
             conn=conn, table=table, column=column, schema=schema,
         )
     except Exception as exc:
@@ -215,8 +215,8 @@ def _refine_one_column(
 ) -> bool:
     """Run the probe for one column and apply the verdict. Returns True if
     the column dict was mutated."""
-    col_name = col.get("sql") or col.get("name")
-    if not isinstance(col_name, str):
+    col_name = _physical(col)
+    if col_name is None:
         return False
     persisted_type = col.get("type")
     verdict = _safe_probe(
@@ -267,7 +267,6 @@ def _refine_dict_sqlite_probe(d: dict, datasource: DatasourceConfig) -> bool:
         return False
 
     schema_name, table_name = _parse_sql_table_with_default_schema(sql_table, datasource)
-    from slayer.sql import engine_factory
     sa_engine = engine_factory.get_engine(datasource.resolve_env_vars())
     changed = False
     with sa_engine.connect() as conn:
@@ -341,8 +340,8 @@ def refine_dict_with_live_schema(d: dict, datasource: DatasourceConfig) -> bool:
 
     changed = False
     for col in refinable:
-        bare = col.get("sql") or col.get("name")
-        if not isinstance(bare, str):
+        bare = _physical(col)
+        if bare is None:
             continue
         live_type = live_columns.get(bare)
         if live_type is DataType.INT:

@@ -18,7 +18,12 @@ from slayer.core.errors import (
 )
 from slayer.engine.column_dependency import validate_derived_columns
 from slayer.core.join_walker import edges_between
-from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.core.models import (
+    DatasourceConfig,
+    SlayerModel,
+    is_base_column_sql,
+    physical_column_sql,
+)
 from slayer.core.query import SlayerQuery
 from slayer.embeddings.models import Embedding
 from slayer.memories.models import (
@@ -79,16 +84,45 @@ def _inverse_survivor(
     return min((model_a, model_b), (model_b, model_a))[0]
 
 
-def _stored_counterpart(*, join: dict, name: str, peer: dict | None):
-    """The exact-inverse of ``join`` in ``peer``'s raw joins, or ``None``."""
+def _canonical_key(key: Any, columns: Any) -> Any:
+    """``key`` unless it names no declared column but is exactly one base column's physical rename."""
+    if not isinstance(key, str) or not isinstance(columns, list):
+        return key
+    cols = [c for c in columns if isinstance(c, dict) and isinstance(c.get("name"), str)]
+    if any(c["name"] == key for c in cols):
+        return key
+    renames = [
+        c["name"] for c in cols
+        if isinstance(c.get("sql"), str) and is_base_column_sql(c["sql"])
+        and physical_column_sql(c["sql"], c["name"]) == key
+    ]
+    return renames[0] if len(renames) == 1 else key
+
+
+def canonical_join_pairs(pairs: Any, *, source_columns: Any, target_columns: Any) -> Any:
+    """Raw ``join_pairs`` with stored physical spellings rewritten to ``Column.name``."""
+    if not isinstance(pairs, list):
+        return pairs
+    return [
+        [_canonical_key(p[0], source_columns), _canonical_key(p[1], target_columns)]
+        if isinstance(p, list) and len(p) == 2 else p
+        for p in pairs
+    ]
+
+
+def _stored_counterpart(*, join: dict, name: str, peer: dict | None, columns: Any):
+    """The exact-inverse of ``join`` in ``peer``'s raw joins (canonicalised against ``columns``, this document's), or ``None``."""
     peer_joins = peer.get("joins") if isinstance(peer, dict) else None
-    if not isinstance(peer_joins, list):
+    if not isinstance(peer, dict) or not isinstance(peer_joins, list):
         return None
     return next(
         (
             j for j in peer_joins
             if isinstance(j, dict) and j.get("target_model") == name
-            and _is_exact_inverse_join(join, j)
+            and _is_exact_inverse_join(join, {**j, "join_pairs": canonical_join_pairs(
+                j.get("join_pairs"), source_columns=peer.get("columns"),
+                target_columns=columns,
+            )})
         ),
         None,
     )
@@ -550,6 +584,7 @@ class StorageBackend(ABC):
             data = await self._rewrite_legacy_join_aliases(
                 name=name, data=data, data_source=data_source,
             )
+            await self._canonicalize_join_key_spellings(data=data, data_source=data_source)
             # Collapse stored exact-inverse mirror pairs.
             data = await self._dedup_exact_inverse_joins(
                 name=name, data=data, data_source=data_source,
@@ -565,6 +600,22 @@ class StorageBackend(ABC):
             await self.save_model(model, _validate=False)
         return model
 
+    async def _canonicalize_join_key_spellings(self, *, data: dict, data_source: str) -> None:
+        """Rewrite stored physical join-key spellings in ``data`` to ``Column.name``, both sides."""
+        joins = data.get("joins")
+        if not isinstance(joins, list):
+            return
+        for join in joins:
+            if not isinstance(join, dict) or not isinstance(join.get("target_model"), str):
+                continue
+            peer = await self._load_raw_model_dict(
+                name=join["target_model"], data_source=data_source,
+            )
+            join["join_pairs"] = canonical_join_pairs(
+                join.get("join_pairs"), source_columns=data.get("columns"),
+                target_columns=peer.get("columns") if isinstance(peer, dict) else None,
+            )
+
     async def _dedup_exact_inverse_joins(
         self, *, name: str, data: dict, data_source: str,
     ) -> dict:
@@ -577,6 +628,7 @@ class StorageBackend(ABC):
             join for join in joins
             if await self._survives_stored_inverse(
                 join=join, name=name, data_source=data_source, cache=cache,
+                columns=data.get("columns"),
             )
         ]
         if len(kept) != len(joins):
@@ -585,7 +637,7 @@ class StorageBackend(ABC):
 
     async def _survives_stored_inverse(
         self, *, join, name: str, data_source: str,
-        cache: dict[str, dict | None],
+        cache: dict[str, dict | None], columns: Any,
     ) -> bool:
         """True when ``join`` has no stored exact-inverse counterpart, or wins
         against it."""
@@ -597,7 +649,7 @@ class StorageBackend(ABC):
                 name=peer_name, data_source=data_source,
             )
         counterpart = _stored_counterpart(
-            join=join, name=name, peer=cache[peer_name],
+            join=join, name=name, peer=cache[peer_name], columns=columns,
         )
         return counterpart is None or _inverse_survivor(
             model_a=name, join_a=join,

@@ -52,6 +52,7 @@ from slayer.core.models import (
     DatasourceConfig,
     ModelMeasure,
     SlayerModel,
+    join_key_error,
 )
 from slayer.core.query import (
     ModelExtension,
@@ -2483,12 +2484,12 @@ class SlayerQueryEngine:
 
         src_side = await self._side_stats(
             client=client, table=model.sql_table,
-            key_cols=src_cols, sqlglot_name=sqlglot_name,
+            key_cols=_physical_keys(model, src_cols), sqlglot_name=sqlglot_name,
             datasource=datasource_cfg,
         )
         tgt_side = await self._side_stats(
             client=client, table=target.sql_table,
-            key_cols=tgt_cols, sqlglot_name=sqlglot_name,
+            key_cols=_physical_keys(target, tgt_cols), sqlglot_name=sqlglot_name,
             datasource=datasource_cfg,
         )
         # 0 == 0 reads as observed_unique, so an empty side would falsely detect
@@ -2942,7 +2943,9 @@ class SlayerQueryEngine:
                     f"is auto-managed and must not be supplied."
                 )
             model = await self._validate_and_populate_cache(model)
-        await self._validate_mode_a_join_paths(model)
+        loaded = await self._preload_join_targets(model)
+        _validate_join_keys(model=model, loaded=loaded)
+        await self._validate_mode_a_join_paths(model, loaded=loaded)
         await self.validate_sql_model_source(model)
         await self.storage.save_model(model)
         # Clean up the stale entry if the model moved datasource.
@@ -3025,12 +3028,13 @@ class SlayerQueryEngine:
                 reason=str(getattr(exc, "orig", exc)),
             ) from exc
 
-    async def _validate_mode_a_join_paths(self, model: SlayerModel) -> None:
+    async def _validate_mode_a_join_paths(
+        self, model: SlayerModel, *, loaded: Dict[str, Optional[SlayerModel]],
+    ) -> None:
         """Reject a broken dotted chain / legacy ``__`` split-alias at save time via
         the generator's resolver; a revisiting column surface becomes the same
         ``DerivedColumnCircularError`` the storage door raises, while a model-level
         filter propagates the base ``CircularJoinPathError`` (it is not a column)."""
-        loaded = await self._preload_join_targets(model)
 
         # Parse with the datasource's own dialect (matching generation), else
         # valid non-Postgres Mode-A SQL could be mis-rejected. Missing → postgres.
@@ -3159,13 +3163,34 @@ def _detection_skip_reason(*, model, target, src_cols, tgt_cols) -> str | None:
         return f"join target {tn!r} is not a table-backed model; skipped"
     for mdl, cols in ((model, src_cols), (target, tgt_cols)):
         for c in cols:
-            col = next((x for x in mdl.columns if x.name == c), None)
-            if col is not None and col.sql is not None and col.sql.strip() != c:
+            err = join_key_error(model=model.name, target=target.name, key=c,
+                                 side=mdl.name, columns=mdl.columns)
+            if err is not None:
                 return (
-                    f"join key {mdl.name}.{c!r} is a SQL expression; "
-                    f"cardinality profiling supports bare-column keys only"
+                    f"{str(err).splitlines()[0]}; cardinality profiling "
+                    f"supports declared base-column keys only"
                 )
     return None
+
+
+def _physical_keys(model: SlayerModel, keys: List[str]) -> List[str]:
+    by_name = {c.name: c for c in model.columns}
+    return [by_name[k].physical_name for k in keys]
+
+
+def _validate_join_keys(
+    *, model: SlayerModel, loaded: Dict[str, Optional[SlayerModel]],
+) -> None:
+    """Every join's target-side key names a declared base column of its loaded target."""
+    for join in model.joins:
+        target = loaded.get(join.target_model)
+        if target is None:
+            continue
+        for _, key in join.join_pairs:
+            err = join_key_error(model=model.name, target=join.target_model, key=key,
+                                 side=target.name, columns=target.columns)
+            if err is not None:
+                raise err
 
 
 def _unique_contradictions(

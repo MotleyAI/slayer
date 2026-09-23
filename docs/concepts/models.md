@@ -39,7 +39,7 @@ A query then asks for `sum(revenue)` (aggregate the `revenue` column), `aov` (th
 | `description` | string | No | Helps agents and users understand the model |
 | `hidden` | bool | No | Hide from listings (still queryable by name and joinable). Set automatically at ingest for recognised ELT/migration internals — see [Recognised internals](../reference/cli.md#recognised-internals) |
 | `meta` | dict | No | Arbitrary JSON metadata for caller bookkeeping. Ingestion writes `internal_table: <tool>` on auto-hidden internals |
-| `version` | int | No | Schema version stamp (currently `9`) |
+| `version` | int | No | Schema version stamp (currently `11`) |
 
 ## Source modes
 
@@ -322,6 +322,8 @@ joins:
     join_pairs: [["product_id", "id"]]
 ```
 
+Each `join_pairs` entry names a base column (`sql` unset or a single column, no `filter`) declared on its side by the column's `name`, and the column's `sql` rename is applied when the join is emitted.
+
 Joins enable **cross-model measures** — querying a measure from a joined model alongside the main model's data. See [Cross-Model Measures](queries.md#cross-model-measures). During [auto-ingestion](ingestion.md), joins are generated automatically from foreign-key relationships; multi-hop paths are resolved at query time by walking each intermediate model's own joins. A join targeting the model itself is rejected at validation — joins are addressed by model name, so define the second role as a separate model over the same table (or a view) and join to that.
 
 ### Bidirectional traversal
@@ -556,7 +558,7 @@ Query results use `model_name.column_name` keys. Aggregations map to keys: `sum(
 
 ## Schema versioning
 
-Every persisted SLayer entity (`SlayerModel`, `SlayerQuery`, `DatasourceConfig`) carries a `version: int` field — currently `9` for `SlayerModel`, `3` for `SlayerQuery`, `1` for `DatasourceConfig`. Behaviour:
+Every persisted SLayer entity (`SlayerModel`, `SlayerQuery`, `DatasourceConfig`) carries a `version: int` field — currently `11` for `SlayerModel`, `3` for `SlayerQuery`, `1` for `DatasourceConfig`. Behaviour:
 
 - **On save**, SLayer always writes the current schema version.
 - **On load**, an older `version` triggers a chain of pure dict→dict converters before Pydantic validation. Hand-edited and older files keep working as the schema evolves.

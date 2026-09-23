@@ -9,6 +9,7 @@ import logging
 
 from slayer.core.enums import JoinCardinality, JoinType
 from slayer.core.models import ModelJoin
+from slayer.core.refs import IDENTIFIER_RE
 from slayer.dbt.models import DbtSemanticModel
 
 logger = logging.getLogger(__name__)
@@ -97,6 +98,8 @@ class EntityRegistry:
                 continue
 
             foreign_expr = entity.expr or entity.name
+            if not IDENTIFIER_RE.match(foreign_expr):
+                continue  # not a column; the converter reports it
             for target_model_name, primary_expr in primaries:
                 if target_model_name == model.name:
                     continue  # Skip self-joins

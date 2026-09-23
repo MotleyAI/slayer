@@ -100,6 +100,15 @@ class TestExecutedRenamedKeys:
             to_many_handling="associate"))
         assert cells(resp, dim_suffix="status", measure="cr") == ASSOC_CREDIT_BY_STATUS
 
+    async def test_renamed_fk_dimension_slices_target_measure(self, all_renamed):
+        # The FK dimension reroots onto the target key, so it slices, not broadcasts.
+        resp = await all_renamed.execute(SlayerQuery.model_validate({
+            "source_model": "orders", "dimensions": ["customer_id"],
+            "measures": [{"formula": "sum(customers.credit)", "name": "cr"}]}))
+        assert cells(resp, dim_suffix="customer_id", measure="cr") == {
+            1: 100.0, 2: 200.0, 3: 300.0}
+        assert warnings_of(resp, "broadcast") == []
+
     async def test_population_pushdown_over_renamed_keys(self, all_renamed):
         resp = await all_renamed.execute(SlayerQuery(
             source_model="customers",

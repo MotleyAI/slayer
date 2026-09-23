@@ -32,6 +32,7 @@ from slayer.core.models import Column, SlayerModel
 from slayer.engine.reference_closure import (
     ParamSpec,
     aggregate_input_closure,
+    column_default_key,
     first_unanalyzable_filter_column,
     first_unanalyzable_input_column,
     first_unanalyzable_source_row_leaf,
@@ -42,7 +43,7 @@ from slayer.engine.reference_closure import (
     resolve_aggregation_params,
     source_row_leaf_closure,
 )
-from slayer.core.join_walker import resolve_hop, walk
+from slayer.core.join_walker import physical_join_pairs, resolve_hop, walk
 from slayer.engine.join_safety import (
     UNREACHABLE_NO_PATH,
     _back_path,
@@ -1180,7 +1181,7 @@ def _forward_hops(
         node_path = (*node_path, edge.name or edge.target_model)
         _register_hop(
             nodes, node_path=node_path, target_model=edge.target_model,
-            pairs=[(s, t) for s, t in edge.join_pairs],
+            pairs=physical_join_pairs(edge=edge, source=current, target=target),
             declared_left=edge.join_type == JoinType.LEFT,
         )
         current = target
@@ -1208,13 +1209,17 @@ def _reverse_hops(
             f"{host_model.name})"
         )
     node_path: Tuple[str, ...] = ()
+    by_name = {**models_by_name, host_model.name: host_model}
     for edge in reversed(fwd):
         node_path = (*node_path, edge.name or edge.source_model)
+        physical = physical_join_pairs(
+            edge=edge, source=by_name[edge.source_model], target=by_name[edge.target_model],
+        )
         # A reverse hop is the population correlation, not a declared join:
         # never null-extended.
         _register_hop(
             nodes, node_path=node_path, target_model=edge.source_model,
-            pairs=[(tgt, src) for src, tgt in edge.join_pairs],
+            pairs=[(tgt, src) for src, tgt in physical],
             declared_left=False,
         )
     return node_path
@@ -2116,7 +2121,8 @@ def _check_attached_params_determined(
     result grain first, so this predicate needs no transform arm."""
     key_sets = _unique_key_sets(root_model)
     grain_display = _grain_display(Grain.of(
-        ColumnKey(path=target_path, leaf=col) for col in key_sets[0]
+        column_default_key(path=target_path, leaf=col, base=root_model)
+        for col in key_sets[0]
     )) if key_sets else f"{root_model.name} rows"
     for name, value in agg.kwargs:
         if not isinstance(value, (AggregateKey, TransformKey)):
@@ -2200,10 +2206,11 @@ def _association_arm(
     # rerooted into the home so the level-1 pick reads it there; the kernel dedups
     # by the entity key in ROOT coordinates.
     host_entity_keys: List[ValueKey] = [
-        ColumnKey(path=target_path, leaf=col) for col in key_sets[0]
+        column_default_key(path=target_path, leaf=col, base=root_model)
+        for col in key_sets[0]
     ]
     entity_keys_root: List[ValueKey] = [
-        ColumnKey(path=(), leaf=col) for col in key_sets[0]
+        column_default_key(path=(), leaf=col, base=root_model) for col in key_sets[0]
     ]
     # An expression source has no ``.path``; ``key_host_path`` would silently answer
     # the root, so the source anchor names where the definition is resolved (D1).
@@ -2348,7 +2355,8 @@ def _association_present_keys(
 
     if not any(_reaches_back(u) for u in unattributable):
         return []
-    return [ColumnKey(path=back, leaf=src) for src, _ in first_hop.join_pairs]
+    return [column_default_key(path=back, leaf=src, base=host_model)
+            for src, _ in first_hop.join_pairs]
 
 
 def _substitute_prebound(

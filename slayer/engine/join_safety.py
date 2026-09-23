@@ -6,7 +6,6 @@ Both orientations of every declared edge participate; proof is per orientation
 
 from __future__ import annotations
 
-import re
 from typing import Callable, Dict, List, Optional, Sequence, Tuple, TypeVar, Union
 
 from pydantic import BaseModel
@@ -28,9 +27,13 @@ from slayer.core.keys import (
     walk_value_keys,
     window_kwarg_of,
 )
-from slayer.core.models import ModelJoin, SlayerModel
+from slayer.core.models import ModelJoin, SlayerModel, join_key_error
 from slayer.core.scope import ModelScope, StageSchema
-from slayer.engine.reference_closure import aggregate_input_closure, key_closure
+from slayer.engine.reference_closure import (
+    aggregate_input_closure,
+    column_default_key,
+    key_closure,
+)
 from slayer.engine.elaborate_env import check_partition_key_attributable
 from slayer.ir.prebound import walk_key_path
 from slayer.ir.source_bundle import ResolvedSourceBundle
@@ -61,41 +64,27 @@ def may_inline_crossing_inputs(crossed_paths: Sequence[tuple]) -> bool:  # NOSON
     return False
 
 
-#: A bare-identifier ``Column.sql`` rename carries the column's uniqueness.
-_BARE_IDENT_RE = re.compile(r"[A-Za-z_]\w*")
-
-
-def _physical_name(column) -> str:
-    """Physical spelling: a bare-identifier ``sql`` rename, else the model name."""
-    sql = (column.sql or "").strip()
-    return sql if sql and _BARE_IDENT_RE.fullmatch(sql) else column.name
-
-
 def _unique_key_sets(model: SlayerModel) -> list[list[str]]:
-    # PHYSICAL spelling: composite PK as one set, then each solo-unique singleton.
+    # Column names: composite PK as one set, then each solo-unique singleton.
     sets: list[list[str]] = []
-    pk = [_physical_name(c) for c in model.columns if c.primary_key]
+    pk = [c.name for c in model.columns if c.primary_key]
     if pk:
         sets.append(pk)
     for c in model.columns:
         if c.unique:
-            sets.append([_physical_name(c)])
+            sets.append([c.name])
     return sets
 
 
 def provably_to_one(*, edge: OrientedLike, target_model: SlayerModel) -> bool:
     """Is ``edge`` provably many-to-one onto ``target_model`` in its orientation?
     True iff the oriented cardinality is m:1/1:1, or the traversal-target columns
-    fully cover a unique key-set of ``target_model`` (PHYSICAL spelling)."""
+    fully cover a unique key-set of ``target_model``."""
     if edge.cardinality in (JoinCardinality.MANY_TO_ONE, JoinCardinality.ONE_TO_ONE):
         return True
-    by_name = {c.name: c for c in target_model.columns}
-    target_cols = [
-        _physical_name(by_name[pair[1]]) if pair[1] in by_name else pair[1]
-        for pair in edge.join_pairs
-    ]
     return is_key_set_unique(
-        key_columns=target_cols, unique_key_sets=_unique_key_sets(target_model)
+        key_columns=[pair[1] for pair in edge.join_pairs],
+        unique_key_sets=_unique_key_sets(target_model),
     )
 
 
@@ -172,6 +161,7 @@ def audit_join_safety(
         for join in model.joins:
             target = models_by_key.get((model.data_source, join.target_model))
             if target is not None:
+                findings.extend(_key_findings(model=model, join=join, target=target))
                 findings.append(_edge_finding(model=model, join=join, target=target))
     if detection is not None:
         findings.extend(
@@ -180,6 +170,25 @@ def audit_join_safety(
             if finding.verdict is CardinalityVerdict.CONTRADICTS_HARD
         )
     return findings
+
+
+def _key_findings(
+    *, model: SlayerModel, join: ModelJoin, target: SlayerModel,
+) -> list[JoinSafetyFinding]:
+    """An error finding per key that is not a declared base column on its side."""
+    errors = [
+        join_key_error(model=model.name, target=join.target_model, key=key,
+                       side=side.name, columns=side.columns)
+        for pair in join.join_pairs
+        for key, side in zip(pair, (model, target))
+    ]
+    return [
+        JoinSafetyFinding(
+            data_source=model.data_source, model=model.name,
+            target_model=join.target_model, message=str(err), severity="error",
+        )
+        for err in errors if err is not None
+    ]
 
 
 def _edge_finding(
@@ -549,8 +558,9 @@ def shared_join_key_reroot(
     *, key: ValueKey, target_path: Tuple[str, ...], host_model: SlayerModel,
     models_by_name: Dict[str, SlayerModel],
 ) -> Optional[ValueKey]:
-    """A host-local dimension that IS a source-side join column of the single hop to the root: return the root's target-side ColumnKey, else ``None``."""
-    if not isinstance(key, ColumnKey) or key_host_path(key) or len(target_path) != 1:
+    """A host-local dimension that IS a source-side join column of the single hop to the root: return the root's target-side key, else ``None``."""
+    leaf = _grain_leaf_name(key)
+    if leaf is None or key_host_path(key) or len(target_path) != 1:
         return None
     try:
         edge = resolve_hop(
@@ -559,11 +569,12 @@ def shared_join_key_reroot(
         )
     except AmbiguousJoinPathError:
         return None
-    if edge is None:
+    root_model = models_by_name.get(edge.target_model) if edge is not None else None
+    if edge is None or root_model is None:
         return None
     for src, tgt in edge.join_pairs:
-        if src == key.leaf:
-            return key.model_copy(update={"leaf": tgt, "path": ()})
+        if src == leaf:
+            return column_default_key(path=(), leaf=tgt, base=root_model)
     return None
 
 
@@ -596,7 +607,7 @@ def grain_member_attributable(
 
 
 def _grain_leaf_name(key: ValueKey) -> Optional[str]:
-    """The physical leaf a column-ish grain member / dimension names, else None."""
+    """The column name a column-ish grain member / dimension names, else None."""
     if isinstance(key, ColumnKey):
         return key.leaf
     if isinstance(key, ColumnSqlKey):
@@ -650,39 +661,28 @@ def grain_determines(
     )
 
 
-def _physical_grain_leaves(*, grain: Grain, at: Tuple[str, ...], model: SlayerModel) -> set:
-    """The grain's leaves at path ``at``, spelled physically for ``model`` — so a
-    logical ``ColumnKey.leaf`` matches a ``_unique_key_sets`` entry carrying a
-    bare-identifier ``Column.sql`` rename."""
-    by_name = {c.name: _physical_name(c) for c in model.columns}
+def _grain_leaves(*, grain: Grain, at: Tuple[str, ...]) -> set:
     return {
-        by_name.get(leaf, leaf)
-        for g in grain
+        leaf for g in grain
         if key_host_path(g) == at and (leaf := _grain_leaf_name(g)) is not None
     }
 
 
 def _entity_seeded(*, grain: Grain, model: SlayerModel, at: Tuple[str, ...]) -> bool:
-    """The grain pins ``model`` at ``at`` iff its leaves there cover a unique key
-    set (both physical spelling)."""
-    here = _physical_grain_leaves(grain=grain, at=at, model=model)
+    """The grain pins ``model`` at ``at`` iff its leaves there cover a unique key set."""
+    here = _grain_leaves(grain=grain, at=at)
     return any(ks and set(ks) <= here for ks in _unique_key_sets(model))
 
 
 def _hop_pins(
-    *, edge, src_model: Optional[SlayerModel], tgt: SlayerModel, grain: Grain,
+    *, edge, tgt: SlayerModel, grain: Grain,
     path: Tuple[str, ...], i: int, pinned_before: bool,
 ) -> bool:
     """The to-one target of ``edge`` stays pinned iff its own entity key is seeded,
     its host-side FK columns are grain members, or the source was pinned and the hop
-    is provably to-one. ``join_pairs`` source columns are PHYSICAL names, matched
-    against the grain's physical leaves at the source (same normalization the
-    entity-key seed uses, so a renamed FK still seeds)."""
+    is provably to-one."""
     to_one = provably_to_one(edge=edge, target_model=tgt)
-    src_leaves = (
-        _physical_grain_leaves(grain=grain, at=path[:i], model=src_model)
-        if src_model is not None else set()
-    )
+    src_leaves = _grain_leaves(grain=grain, at=path[:i])
     fk_seed = to_one and bool(edge.join_pairs) and all(
         src in src_leaves for src, _ in edge.join_pairs)
     return (
@@ -709,9 +709,8 @@ def _path_grain_determined(
         tgt = models_by_name.get(e.target_model)
         if tgt is None:
             return False
-        src_model = host_model if i == 0 else models_by_name.get(e.source_model)
         pinned = _hop_pins(
-            edge=e, src_model=src_model, tgt=tgt, grain=grain,
+            edge=e, tgt=tgt, grain=grain,
             path=path, i=i, pinned_before=pinned,
         )
     return pinned

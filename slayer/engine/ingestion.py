@@ -679,6 +679,11 @@ def _get_single_column_unique_names(
     return names - set(pk_cols)
 
 
+def _logical_column_name(live_name: str) -> str:
+    """A live column's model name: ``_count`` would shadow the COUNT(*) alias."""
+    return "count_col" if live_name == "_count" else live_name
+
+
 def _generate_joins(
     inspector: sa.engine.Inspector,
     source_table: str,
@@ -743,7 +748,8 @@ def _generate_joins(
         joins.append(
             ModelJoin(
                 target_model=target_name,
-                join_pairs=[[s, t] for s, t in pairs],
+                join_pairs=[[_logical_column_name(s), _logical_column_name(t)]
+                            for s, t in pairs],
                 cardinality=cardinality,
             )
         )
@@ -923,15 +929,10 @@ def _introspect_query_columns_via_inspector(
     if joins is not None:
         lookup = live_name_by_model or {}
         for mj in joins:
-            if mj.join_pairs and "." in mj.join_pairs[0][0]:
-                prefix = mj.join_pairs[0][0].split(".")[0]
-                path = f"{prefix}.{mj.target_model}"
-            else:
-                path = mj.target_model
             # The path alias is the MODEL name; introspection needs the live
             # object name, and sanitization can make the two differ.
             table_path_pairs.append(
-                (lookup.get(mj.target_model, mj.target_model), path)
+                (lookup.get(mj.target_model, mj.target_model), mj.target_model)
             )
     else:
         # Fallback: one entry per referenced table
@@ -1009,9 +1010,7 @@ def _columns_to_model(
         if "." in col.name:
             continue
 
-        # Avoid name collision with the magic "count(*)" / "_count" alias used
-        # for COUNT(*) by renaming a literal "_count" column.
-        column_name = "count_col" if col.name == "_count" else col.name
+        column_name = _logical_column_name(col.name)
 
         if col.is_float:
             fmt = _FLOAT_FORMAT

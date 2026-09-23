@@ -25,12 +25,13 @@ from pydantic import BaseModel, ConfigDict
 
 from slayer.core.enums import JoinCardinality, JoinType, invert_cardinality
 from slayer.core.errors import AmbiguousJoinPathError, CircularJoinPathError
-from slayer.core.models import ModelJoin, SlayerModel
+from slayer.core.models import ModelJoin, SlayerModel, join_key_error
 
 __all__ = [
     "OrientedJoin",
     "edges_between",
     "neighbors",
+    "physical_join_pairs",
     "resolve_hop",
     "terminal_model",
     "walk",
@@ -94,6 +95,25 @@ def edges_between(*, source: SlayerModel, target: SlayerModel) -> list[OrientedJ
         if j.target_model == source.name:
             out.append(_orient(join=j, declaring=target.name, from_model=source.name))
     return out
+
+
+def physical_join_pairs(
+    *, edge: OrientedJoin, source: SlayerModel, target: SlayerModel,
+) -> list[tuple[str, str]]:
+    """``edge``'s key pairs in physical spelling; raises ``JoinKeyError`` on a non-base key."""
+    declared_target = (edge.target_model if edge.declaring_model == edge.source_model
+                       else edge.source_model)
+
+    def physical(key: str, model: SlayerModel) -> str:
+        err = join_key_error(model=edge.declaring_model, target=declared_target, key=key,
+                             side=model.name, columns=model.columns)
+        if err is not None:
+            raise err
+        col = model.get_column(key)
+        assert col is not None
+        return col.physical_name
+
+    return [(physical(src, source), physical(tgt, target)) for src, tgt in edge.join_pairs]
 
 
 def neighbors(
