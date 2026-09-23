@@ -96,25 +96,25 @@ class TestBindTransformValidation:
         parsed = parse_expr("ntile(amount:sum)")
         scope, bundle = _scope(), _bundle()
         with pytest.raises(ValueError, match="ntile.*n"):
-            bind_expr(parsed, scope=scope, bundle=bundle)
+            bind_expr(parsed=parsed, scope=scope, bundle=bundle)
 
     def test_ntile_with_n_zero_raises(self) -> None:
         parsed = parse_expr("ntile(amount:sum, n=0)")
         scope, bundle = _scope(), _bundle()
         with pytest.raises(ValueError, match="ntile.*positive"):
-            bind_expr(parsed, scope=scope, bundle=bundle)
+            bind_expr(parsed=parsed, scope=scope, bundle=bundle)
 
     def test_ntile_with_n_negative_raises(self) -> None:
         parsed = parse_expr("ntile(amount:sum, n=-3)")
         scope, bundle = _scope(), _bundle()
         with pytest.raises(ValueError, match="ntile.*positive"):
-            bind_expr(parsed, scope=scope, bundle=bundle)
+            bind_expr(parsed=parsed, scope=scope, bundle=bundle)
 
     def test_ntile_with_n_string_raises(self) -> None:
         parsed = parse_expr("ntile(amount:sum, n='four')")
         scope, bundle = _scope(), _bundle()
         with pytest.raises(ValueError, match="ntile.*integer"):
-            bind_expr(parsed, scope=scope, bundle=bundle)
+            bind_expr(parsed=parsed, scope=scope, bundle=bundle)
 
     def test_ntile_with_n_bool_raises(self) -> None:
         # bool is an int subclass in Python — explicit rejection so
@@ -122,11 +122,11 @@ class TestBindTransformValidation:
         parsed = parse_expr("ntile(amount:sum, n=True)")
         scope, bundle = _scope(), _bundle()
         with pytest.raises(ValueError, match="ntile.*integer"):
-            bind_expr(parsed, scope=scope, bundle=bundle)
+            bind_expr(parsed=parsed, scope=scope, bundle=bundle)
 
     def test_ntile_with_valid_n_binds(self) -> None:
         bound = bind_expr(
-            parse_expr("ntile(amount:sum, n=4)"),
+            parsed=parse_expr("ntile(amount:sum, n=4)"),
             scope=_scope(), bundle=_bundle(),
         )
         assert isinstance(bound.value_key, TransformKey)
@@ -139,11 +139,11 @@ class TestBindTransformValidation:
         parsed = parse_expr("time_shift(amount:sum)")
         scope, bundle = _scope(), _bundle()
         with pytest.raises(ValueError, match="time_shift.*periods"):
-            bind_expr(parsed, scope=scope, bundle=bundle)
+            bind_expr(parsed=parsed, scope=scope, bundle=bundle)
 
     def test_time_shift_with_periods_binds(self) -> None:
         bound = bind_expr(
-            parse_expr("time_shift(amount:sum, periods=-1)"),
+            parsed=parse_expr("time_shift(amount:sum, periods=-1)"),
             scope=_scope(), bundle=_bundle(),
         )
         assert isinstance(bound.value_key, TransformKey)
@@ -158,7 +158,7 @@ class TestBindTransformValidation:
         # need its own default logic; pinning here keeps one source of
         # truth.
         bound = bind_expr(
-            parse_expr("lag(amount:sum)"),
+            parsed=parse_expr("lag(amount:sum)"),
             scope=_scope(), bundle=_bundle(),
         )
         assert isinstance(bound.value_key, TransformKey)
@@ -168,7 +168,7 @@ class TestBindTransformValidation:
 
     def test_lead_with_explicit_periods(self) -> None:
         bound = bind_expr(
-            parse_expr("lead(amount:sum, periods=2)"),
+            parsed=parse_expr("lead(amount:sum, periods=2)"),
             scope=_scope(), bundle=_bundle(),
         )
         assert isinstance(bound.value_key, TransformKey)
@@ -180,25 +180,25 @@ class TestBindTransformValidation:
         parsed = parse_expr("rank(amount:sum, foo='bar')")
         scope, bundle = _scope(), _bundle()
         with pytest.raises(ValueError, match="rank.*not.*accept"):
-            bind_expr(parsed, scope=scope, bundle=bundle)
+            bind_expr(parsed=parsed, scope=scope, bundle=bundle)
 
     def test_unknown_kwarg_on_percent_rank_raises(self) -> None:
         parsed = parse_expr("percent_rank(amount:sum, foo='bar')")
         scope, bundle = _scope(), _bundle()
         with pytest.raises(ValueError, match="percent_rank.*not.*accept"):
-            bind_expr(parsed, scope=scope, bundle=bundle)
+            bind_expr(parsed=parsed, scope=scope, bundle=bundle)
 
     def test_unknown_kwarg_on_dense_rank_raises(self) -> None:
         parsed = parse_expr("dense_rank(amount:sum, foo='bar')")
         scope, bundle = _scope(), _bundle()
         with pytest.raises(ValueError, match="dense_rank.*not.*accept"):
-            bind_expr(parsed, scope=scope, bundle=bundle)
+            bind_expr(parsed=parsed, scope=scope, bundle=bundle)
 
     def test_unknown_kwarg_on_consecutive_periods_raises(self) -> None:
         parsed = parse_expr("consecutive_periods(amount:sum, foo='bar')")
         scope, bundle = _scope(), _bundle()
         with pytest.raises(ValueError, match="consecutive_periods.*not.*accept"):
-            bind_expr(parsed, scope=scope, bundle=bundle)
+            bind_expr(parsed=parsed, scope=scope, bundle=bundle)
 
     # -- Backfills from the deleted test_formula.py ---------------------------
     # ``TestFormulaParser`` asserted these rejections against the legacy
@@ -212,27 +212,27 @@ class TestBindTransformValidation:
         parsed = parse_expr("rank(amount:sum, 2)")
         scope, bundle = _scope(), _bundle()
         with pytest.raises(ValueError, match="exactly one positional"):
-            bind_expr(parsed, scope=scope, bundle=bundle)
+            bind_expr(parsed=parsed, scope=scope, bundle=bundle)
 
     def test_ntile_rejects_positional_n(self) -> None:
         # ``ntile(x, 4)`` is rejected — n must be passed by keyword (n=4).
         parsed = parse_expr("ntile(amount:sum, 4)")
         scope, bundle = _scope(), _bundle()
         with pytest.raises(ValueError, match="exactly one positional"):
-            bind_expr(parsed, scope=scope, bundle=bundle)
+            bind_expr(parsed=parsed, scope=scope, bundle=bundle)
 
     def test_rank_rejects_n_kwarg(self) -> None:
         # ``n`` is ntile-only; rank must not silently accept it.
         parsed = parse_expr("rank(amount:sum, n=4)")
         scope, bundle = _scope(), _bundle()
         with pytest.raises(ValueError, match="rank.*not.*accept.*'n'"):
-            bind_expr(parsed, scope=scope, bundle=bundle)
+            bind_expr(parsed=parsed, scope=scope, bundle=bundle)
 
     def test_time_shift_positional_periods_binds(self) -> None:
         # ``time_shift(x, -1)`` — the row-based positional form maps onto the
         # ``periods`` kwarg (parse shape pinned in test_syntax.py).
         bound = bind_expr(
-            parse_expr("time_shift(amount:sum, -1)"),
+            parsed=parse_expr("time_shift(amount:sum, -1)"),
             scope=_scope(), bundle=_bundle(),
         )
         assert isinstance(bound.value_key, TransformKey)
@@ -242,7 +242,7 @@ class TestBindTransformValidation:
         # ``time_shift(x, -1, 'year')`` — the calendar-based form maps the
         # second positional onto ``granularity``.
         bound = bind_expr(
-            parse_expr("time_shift(amount:sum, -1, 'year')"),
+            parsed=parse_expr("time_shift(amount:sum, -1, 'year')"),
             scope=_scope(), bundle=_bundle(),
         )
         assert isinstance(bound.value_key, TransformKey)
@@ -254,11 +254,11 @@ class TestBindTransformValidation:
         parsed = parse_expr("ntile(amount:sum, n=2.5)")
         scope, bundle = _scope(), _bundle()
         with pytest.raises(ValueError, match="ntile.*positive"):
-            bind_expr(parsed, scope=scope, bundle=bundle)
+            bind_expr(parsed=parsed, scope=scope, bundle=bundle)
 
     def test_ntile_integral_decimal_n_binds(self) -> None:
         bound = bind_expr(
-            parse_expr("ntile(amount:sum, n=4.0)"),
+            parsed=parse_expr("ntile(amount:sum, n=4.0)"),
             scope=_scope(), bundle=_bundle(),
         )
         assert isinstance(bound.value_key, TransformKey)
@@ -267,17 +267,17 @@ class TestBindTransformValidation:
         parsed = parse_expr("time_shift(amount:sum, -1, 'year', 3)")
         scope, bundle = _scope(), _bundle()
         with pytest.raises(ValueError, match="at most 2 positional"):
-            bind_expr(parsed, scope=scope, bundle=bundle)
+            bind_expr(parsed=parsed, scope=scope, bundle=bundle)
 
     def test_time_shift_periods_positional_and_keyword_raises(self) -> None:
         parsed = parse_expr("time_shift(amount:sum, -1, periods=2)")
         scope, bundle = _scope(), _bundle()
         with pytest.raises(ValueError, match="'periods' both positionally"):
-            bind_expr(parsed, scope=scope, bundle=bundle)
+            bind_expr(parsed=parsed, scope=scope, bundle=bundle)
 
     def test_time_shift_unused_positional_name_as_keyword_binds(self) -> None:
         bound = bind_expr(
-            parse_expr("time_shift(amount:sum, -1, granularity='year')"),
+            parsed=parse_expr("time_shift(amount:sum, -1, granularity='year')"),
             scope=_scope(), bundle=_bundle(),
         )
         assert isinstance(bound.value_key, TransformKey)
@@ -285,7 +285,7 @@ class TestBindTransformValidation:
 
     def test_rank_with_partition_by_binds(self) -> None:
         bound = bind_expr(
-            parse_expr("rank(amount:sum, partition_by=region)"),
+            parsed=parse_expr("rank(amount:sum, partition_by=region)"),
             scope=_scope(), bundle=_bundle(),
         )
         assert isinstance(bound.value_key, TransformKey)
