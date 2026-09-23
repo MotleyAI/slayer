@@ -17,19 +17,19 @@
 
 ## 2. Baseline
 
-- [ ] 2.1 Re-merge `origin/main` at the start of spec-implement (merge commit, never rebase); verify the full non-integration suite and every DEV-1958 test green before touching planner code
+- [x] 2.1 Re-merge `origin/main` at the start of spec-implement (merge commit, never rebase); verify the full non-integration suite and every DEV-1958 test green before touching planner code
 - [ ] 2.2 Confirm the post-1958 regressions in `tests/test_dev1903_producer_flag.py` (written in 1.2 against the merged baseline): a shifted producer with an own-grain ranked answer, a strict-constituent ranked answer, a windowed constituent, and carried attaches — only strict constituents nest, the answer itself does not, `attach_phase="shifted"` / `shift_of` / `answer_slot_id` unchanged; verify RED where the always-on flag changes today's nesting, else document as pins
 
 ## 3. Item 4 — first/last dispatch by type (design D5)
 
-- [ ] 3.1 `slayer/core/keys.py`: `is_attached_source(source)`; `is_reaggregation_key` reuses it; unit tests in `tests/test_keys.py`
-- [ ] 3.2 `slayer/engine/syntax.py`: `_convert_call` emits `AggCall` for `first` / `last` always; delete `_FIRST_LAST`, `_is_mixed_agg_source`; keep `_contains_agg_or_transform` for the unknown-name rung; update the NOSONAR rationale
+- [x] 3.1 `slayer/core/keys.py`: `is_attached_source(source)`; `is_reaggregation_key` reuses it; unit tests in `tests/test_keys.py`
+- [x] 3.2 `slayer/engine/syntax.py`: `_convert_call` emits `AggCall` for `first` / `last` always; delete `_FIRST_LAST`, `_is_mixed_agg_source`; keep `_contains_agg_or_transform` for the unknown-name rung; update the NOSONAR rationale
 - [ ] 3.3 `slayer/engine/binding.py`: split `_bind_transform` into input binding + parameter binding; `_bind_agg` routes a ranked aggregation through the dedicated operand path (transform-input contexts) and dispatches on `is_attached_source` of the bound operand; row-grain arm unchanged; verify 1.5, 1.6, `tests/test_dev1859_plan_structure.py::TestFirstOverMixedKeepsExpressionError`, `tests/test_dev1748_*` and the "First and last keep transform dispatch" scenario green
-- [ ] 3.4 Grep `docs/` for "argument shape" / first-last dispatch wording; one sentence if any page states the parse-time rule
+- [x] 3.4 Grep `docs/` for "argument shape" / first-last dispatch wording; one sentence if any page states the parse-time rule
 
 ## 4. Item 3 — one transform-input checker (design D4)
 
-- [ ] 4.1 `slayer/engine/elaborate_env.py`: `check_transform_inputs` + `_TRANSFORM_INPUT_RULES`; `_first_row_leaf` opaque at a nested transform; delete `check_transform_row_leaf`, `check_time_shift_input`, `_check_shift_family_key`, `_SHIFT_FAMILY_OPS`, `_FIRST_LAST_OPS`; `slayer/engine/bind_inputs.py` makes one call; verify 1.4, 1.7, 1.8, 1.11 and raise parity green
+- [x] 4.1 `slayer/engine/elaborate_env.py`: `check_transform_inputs` + `_TRANSFORM_INPUT_RULES`; `_first_row_leaf` opaque at a nested transform; delete `check_transform_row_leaf`, `check_time_shift_input`, `_check_shift_family_key`, `_SHIFT_FAMILY_OPS`, `_FIRST_LAST_OPS`; `slayer/engine/bind_inputs.py` makes one call; verify 1.4, 1.7, 1.8, 1.11 and raise parity green
 
 ## 5. Item 2 — one producer flag (design D3)
 

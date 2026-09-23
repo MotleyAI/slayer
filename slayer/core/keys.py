@@ -1483,14 +1483,15 @@ def attached_inputs(k: ValueKey) -> List[ValueKey]:
     return out
 
 
+def is_attached_source(source: ValueKey) -> bool:
+    """Attached values only: at least one constituent and no row leaf."""
+    return bool(operand_constituents(source)) and not source_row_leaves(source)
+
+
 def is_reaggregation_key(k: ValueKey) -> TypeGuard[AggregateKey]:
-    """Aggregate over an attached source (attached values, no row leaf) — axiom 6.
-    A source mixing a row leaf with an attached value is row grain."""
-    return (
-        isinstance(k, AggregateKey)
-        and bool(operand_constituents(k.source))
-        and not source_row_leaves(k.source)
-    )
+    """Aggregate over an attached source — axiom 6. A source mixing a row leaf
+    with an attached value is row grain."""
+    return isinstance(k, AggregateKey) and is_attached_source(k.source)
 
 
 def is_row_attach_root(k: ValueKey) -> TypeGuard[AggregateKey]:

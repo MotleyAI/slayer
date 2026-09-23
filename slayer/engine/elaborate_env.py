@@ -688,61 +688,46 @@ def check_window_duration(*, window_val) -> None:
 
 
 def _first_row_leaf(key: ValueKey, *, exempt: frozenset) -> Optional[ValueKey]:
-    """First row-level (non-aggregate) leaf in ``key`` not in ``exempt``, or None.
-    Aggregates are opaque; a transform is descended through its input ONLY (its
-    time / partition keys are series parameters, not leaves)."""
-    if key in exempt:
-        return None
-    if isinstance(key, AggregateKey):
+    """First row-level leaf of ``key`` (a transform: of its input) not in
+    ``exempt``, or None. Aggregates and nested transforms are opaque."""
+    if isinstance(key, TransformKey):
+        return _first_opaque_row_leaf(key.input, exempt=exempt)
+    return _first_opaque_row_leaf(key, exempt=exempt)
+
+
+def _first_opaque_row_leaf(key: ValueKey, *, exempt: frozenset) -> Optional[ValueKey]:
+    if key in exempt or isinstance(key, (AggregateKey, TransformKey)):
         return None
     if isinstance(key, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
         return key
-    if isinstance(key, TransformKey):
-        return _first_row_leaf(key=key.input, exempt=exempt)
     for c in key.children():
-        found = _first_row_leaf(key=c, exempt=exempt)
+        found = _first_opaque_row_leaf(c, exempt=exempt)
         if found is not None:
             return found
     return None
 
 
-_SHIFT_FAMILY_OPS = frozenset({"time_shift", "change", "change_pct"})
+#: Per-op input rules beyond the total row-leaf rule: ops rejecting a boolean input.
+_TRANSFORM_INPUT_RULES = {"reject_boolean": frozenset({"change", "change_pct"})}
 
 
-def _check_shift_family_key(k: TransformKey) -> None:
-    if k.op != "time_shift" and is_boolean_shaped(k.input):
-        raise ValueError(
-            f"'{k.op}' cannot consume a boolean-shaped predicate: its "
-            f"desugared arithmetic subtracts the shifted series, and "
-            f"subtraction over truth values is undefined. Shift the "
-            f"predicate itself with time_shift, or compare the shifted "
-            f"values instead."
-        )
-
-
-def check_time_shift_input(*, roots) -> None:
-    """``change`` / ``change_pct`` consume no boolean series (their desugared
-    arithmetic has no defined truth-value operands); runs pre-lowering."""
-    for root in roots:
-        for k in walk_value_keys(root):
-            if isinstance(k, TransformKey) and k.op in _SHIFT_FAMILY_OPS:
-                _check_shift_family_key(k)
-
-
-_FIRST_LAST_OPS = frozenset({"first", "last"})
-
-
-def check_transform_row_leaf(
-    *, roots, projected_grain_keys: frozenset,
-) -> None:
-    """A transform (first/last are aggregation-dispatched) in measure/filter/order
-    position rejects, at plan time, any row-level leaf in its input that refines the
+def check_transform_inputs(*, roots, projected_grain_keys: frozenset) -> None:
+    """Judge every transform node's own input (pre-lowering): no boolean-shaped
+    input for ``change`` / ``change_pct``, and no row-level leaf refining the
     consumer grain — a leaf that is not a projected query dimension."""
     for root in roots:
         for k in walk_value_keys(root):
-            if not isinstance(k, TransformKey) or k.op in _FIRST_LAST_OPS:
+            if not isinstance(k, TransformKey):
                 continue
-            leaf = _first_row_leaf(key=k.input, exempt=projected_grain_keys)
+            if k.op in _TRANSFORM_INPUT_RULES["reject_boolean"] and is_boolean_shaped(k.input):
+                raise ValueError(
+                    f"'{k.op}' cannot consume a boolean-shaped predicate: its "
+                    f"desugared arithmetic subtracts the shifted series, and "
+                    f"subtraction over truth values is undefined. Shift the "
+                    f"predicate itself with time_shift, or compare the shifted "
+                    f"values instead."
+                )
+            leaf = _first_row_leaf(k, exempt=projected_grain_keys)
             if leaf is None:
                 continue
             disp = dotted_key_display(leaf)
