@@ -28,11 +28,11 @@ Values below are on the sales graph with `ureg` declared as the computed dimensi
 
 #### Scenario: Filter position
 - **WHEN** a query over `[ureg, city]` filters `rank(sum(amount), partition_by=ureg) <= 1`
-- **THEN** exactly the rank-1 rows survive: EAST/Zeta, NORTH/Beta, SOUTH/Gamma, GAP/NULL
+- **THEN** exactly the rank-1 rows survive: EAST/Zeta, NORTH/Beta, SOUTH/Gamma, GAP/NULL, VOID/Xi
 
 #### Scenario: Order position
 - **WHEN** a query over `[ureg, city]` orders by `rank(sum(amount), partition_by=ureg)` ascending
-- **THEN** the four rank-1 rows precede every rank-2 row
+- **THEN** the five rank-1 rows precede every rank-2 row
 
 #### Scenario: Computed-dimension position with a member key
 - **WHEN** a query declares `ureg` and a second computed dimension `rank(sum(amount, partition_by=[city, ureg]), partition_by=ureg)` named `r`, selecting `sum(amount)`

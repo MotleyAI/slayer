@@ -75,7 +75,9 @@ the rewritten inner keys cannot live inside `_validate_partition_keys`.
   minus `{time_key}` when `op in AXIS_COLLAPSING_TRANSFORMS` and the axis is set (11.3b,
   11.5); `ColumnKey` / `ColumnSqlKey` / `TimeTruncKey` leaf → `{leaf}` (a projected free
   axis, per DEV-1835); `LiteralKey` / `StarKey` → nothing; composites → union of children;
-  an empty union → `query_grain` (11.1 degenerate identity). Alternative rejected:
+  an input with no `AggregateKey` below it → `query_grain` (11.1 degenerate identity: a
+  leaf- or literal-only operand is evaluated once per query-grain cell, so
+  `rank(city, partition_by=region)` keeps executing). Alternative rejected:
   `constituent_grain` — flat union over every grained inner, blind to a nested collapsing
   transform's axis drop (Codex finding 2).
 - **D4 Membership is a post-rewrite checker pass.** `check_transform_partition_keys_in_

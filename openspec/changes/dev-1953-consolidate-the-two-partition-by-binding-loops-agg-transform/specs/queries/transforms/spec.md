@@ -8,8 +8,9 @@ transform's input: an aggregate contributes its explicit `partition_by=` keys, e
 query grain (its dimensions and time buckets), plus the query's active time bucket when
 it is windowed; a nested transform contributes its own operand grain, minus its time
 axis when it is `first` or `last`; a composite contributes the union of its operands,
-with a projected row-level leaf contributing itself; an input with neither aggregate nor
-leaf is the query grain. A non-member key SHALL fail at plan time with an error naming
+with a projected row-level leaf contributing itself; an input with no aggregate (only
+row-level leaves or literals) is the query grain, since it is evaluated once per
+query-grain cell. A non-member key SHALL fail at plan time with an error naming
 the transform, the key, the operand grain and the remedy (add the key to the inner
 aggregate's `partition_by=`, or partition by a member). A key that is no query dimension
 at all keeps the existing "not a query dimension" error, and an ungrained inner aggregate
@@ -47,6 +48,10 @@ precedence over the membership error.
 #### Scenario: Nested collapsing transform drops its axis
 - **WHEN** a monthly query selects `rank(last(sum(amount, partition_by=[customers.regions.name, ordered_at])), partition_by=ordered_at)`
 - **THEN** planning fails with the operand-grain error naming `ordered_at` and the grain `customers.regions.name`; with `partition_by=customers.regions.name` the key passes the rule
+
+#### Scenario: Aggregate-free input takes the query grain
+- **WHEN** a query over `[city, region, product]` selects `rank(city, partition_by=region)`
+- **THEN** it executes, ranking each row's city value descending within its region: East Zeta 1, Epsilon 2, Delta 3; North Beta 1, Alpha 2; South Gamma 1, Alpha 2; Gap Kappa 1, the NULL city 2; Void Xi 1
 
 #### Scenario: Residue error precedes the membership rule
 - **WHEN** a query over `[region]` declares the dimension `rank(sum(amount), partition_by=region)`
