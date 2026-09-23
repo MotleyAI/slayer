@@ -47,5 +47,5 @@
 ## 8. Docs, lint, full suite
 
 - [x] 8.1 `docs/concepts/formulas.md`: the composite-input paragraph states that a partitioned leaf keeps its own grain when shifted and that a row column is rejected like under any other transform; "bare-leaf or all-local composite" loses "bare-leaf"; grep docs for "read-and-rebucket" / "bare-leaf regime" leaves nothing stale
-- [ ] 8.2 `poetry run ruff check slayer/ tests/` clean; `poetry run basedpyright` no new errors vs baseline; `poetry run python tools/arch_check.py` green (no arc42 edits needed)
-- [ ] 8.3 `poetry run pytest -m "not integration" -n auto` fully green; then the CI integration invocation from `.github/workflows/ci.yml`
+- [x] 8.2 `poetry run ruff check slayer/ tests/` clean; `poetry run basedpyright` no new errors vs baseline; `poetry run python tools/arch_check.py` green (no arc42 edits needed)
+- [x] 8.3 `poetry run pytest -m "not integration" -n auto` fully green; then the CI integration invocation from `.github/workflows/ci.yml`
