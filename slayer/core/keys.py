@@ -336,11 +336,11 @@ class LiteralKey(_LeafKey, frozen=True):
 # ---------------------------------------------------------------------------
 
 
-# DEV-1826: beyond column / star sources, an aggregate may take a row-level
+# Beyond column / star sources, an aggregate may take a row-level
 # same-model EXPRESSION source (``sum(amount - cost)``) — the bound tree reuses
 # the existing row-level composites, so hash/equality/serialization come from
 # the canonical tree and formatting variants intern to one key.
-# DEV-1847: a re-aggregation's source resolves entirely to attached values, so
+# A re-aggregation's source resolves entirely to attached values, so
 # the source may itself be an ``AggregateKey`` (or a composite of them — carried
 # by the Arithmetic/ScalarCall operands, which already admit any ValueKey).
 _AggregateSource = Union[
@@ -351,7 +351,7 @@ _AggregateSource = Union[
 # identifier column, `weighted_avg(weight=qty)` a column,
 # `weighted_avg(weight=count(id, partition_by=…))` an aggregate, and
 # `weighted_avg(weight=rank(sum(amount, partition_by=…)))` a grained transform —
-# all via `_bind_agg_arg` (DEV-1946).
+# all via `_bind_agg_arg`.
 _AggregateArgValue = Union[
     ColumnKey, ColumnSqlKey, "AggregateKey", "TransformKey", Decimal, str, bool, None,
 ]
@@ -372,13 +372,13 @@ class AggregateKey(_FrozenKey, frozen=True):
     local, non-empty for joined. ``args``/``kwargs`` carry parameters (numeric
     scalars pre-normalized to Decimal; identifier kwargs arrive as
     ``ColumnKey``/``ColumnSqlKey``; kwargs canonicalized to sorted order). A
-    ``Column.filter`` rides its source ``ColumnSqlKey`` (DEV-1832), not the
+    ``Column.filter`` rides its source ``ColumnSqlKey``, not the
     aggregate.
 
-    ``locus`` (DEV-1747 D2) names where a cross-model aggregate is evaluated:
+    ``locus`` names where a cross-model aggregate is evaluated:
     ``"target"`` (default) rooted at the target, one value per target row-group;
     ``"host"`` rooted at the host, one value per host group (needed by the
-    DEV-1735 order wrap). It participates in identity — the two are different
+    order wrap). It participates in identity — the two are different
     values (global vs per-group).
     """
 
@@ -811,7 +811,7 @@ ScalarCallKey.model_rebuild()
 BetweenKey.model_rebuild()
 InKey.model_rebuild()
 TimeTruncKey.model_rebuild()
-# AggregateKey.source forward-references the expression composites (DEV-1826).
+# AggregateKey.source forward-references the expression composites.
 AggregateKey.model_rebuild()
 Grain.model_rebuild()
 Grain.EMPTY = Grain(keys=frozenset())
@@ -950,6 +950,48 @@ def constituent_grain(
     return grain
 
 
+def transform_operand_grain(
+    input: ValueKey, *, query_grain: Grain, active_bucket: Optional[ValueKey],
+) -> Grain:
+    """A transform input's operand grain (Axioms 11.1, 11.3b, 11.5), recursive.
+    Without an aggregate, row leaves sit at the query grain."""
+    if any(isinstance(k, AggregateKey) for k in walk_value_keys(input)):
+        return _operand_grain(
+            input, query_grain=query_grain, active_bucket=active_bucket, leaf_grain=None,
+        )
+    grain = _operand_grain(
+        input, query_grain=query_grain, active_bucket=active_bucket, leaf_grain=query_grain,
+    )
+    # Literal-only: nothing grained, so the query-grain identity (Axiom 11.1).
+    return query_grain if grain.is_empty else grain
+
+
+def _operand_grain(
+    k: ValueKey, *, query_grain: Grain, active_bucket: Optional[ValueKey],
+    leaf_grain: Optional[Grain],
+) -> Grain:
+    if isinstance(k, AggregateKey):
+        grain = query_grain if k.partition_keys is None else k.partition_keys
+        if window_kwarg_of(k) is not None and active_bucket is not None:
+            return grain | {active_bucket}
+        return grain
+    if isinstance(k, TransformKey):
+        grain = transform_operand_grain(
+            k.input, query_grain=query_grain, active_bucket=active_bucket,
+        )
+        if k.op in AXIS_COLLAPSING_TRANSFORMS and k.time_key is not None:
+            return grain - {k.time_key}
+        return grain
+    if isinstance(k, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
+        return Grain.of([k]) if leaf_grain is None else leaf_grain
+    grain = Grain.EMPTY
+    for c in k.children():
+        grain = grain | _operand_grain(
+            c, query_grain=query_grain, active_bucket=active_bucket, leaf_grain=leaf_grain,
+        )
+    return grain
+
+
 def attached_parameter_grain(
     key: ValueKey, *,
     projected_dim_keys: List[ValueKey],
@@ -959,7 +1001,7 @@ def attached_parameter_grain(
     """The grain at which an attached aggregation parameter is typed (Axiom 11.4 /
     2.3) — ``None`` when it is determined by construction. An ``AggregateKey`` types
     at its ``partition_keys`` (``None`` = ungrained, at the enclosing grain and
-    determined — DEV-1859 decision 12; a lowered collapsing transform always carries
+    determined — a lowered collapsing transform always carries
     explicit keys). A ``TransformKey`` types at its result grain. Both home- and
     operand-determination checks resolve the parameter to this grain first, so
     neither predicate needs a transform arm (D5)."""
@@ -1041,7 +1083,7 @@ def substitute_value_keys(
     )
 
 
-# Conditional branch typing (DEV-1740) — Postgres CASE semantics.
+# Conditional branch typing — Postgres CASE semantics.
 _NUMERIC_TYPES = frozenset({DataType.INT, DataType.DOUBLE})
 
 
@@ -1443,7 +1485,7 @@ def attached_inputs(k: ValueKey) -> List[ValueKey]:
 
 def is_reaggregation_key(k: ValueKey) -> TypeGuard[AggregateKey]:
     """Aggregate over an attached source (attached values, no row leaf) — axiom 6.
-    A source mixing a row leaf with an attached value is row grain (DEV-1859)."""
+    A source mixing a row leaf with an attached value is row grain."""
     return (
         isinstance(k, AggregateKey)
         and bool(operand_constituents(k.source))
@@ -1453,8 +1495,8 @@ def is_reaggregation_key(k: ValueKey) -> TypeGuard[AggregateKey]:
 
 def is_row_attach_root(k: ValueKey) -> TypeGuard[AggregateKey]:
     """Row-grain aggregate carrying attached inputs to broadcast per row: a mixed
-    / literal / plain-row source with an attached constituent or parameter
-    (DEV-1859). Not a re-aggregation, so it never reaches the carrier."""
+    / literal / plain-row source with an attached constituent or parameter.
+    Not a re-aggregation, so it never reaches the carrier."""
     return (
         isinstance(k, AggregateKey)
         and not is_reaggregation_key(k)
@@ -1488,7 +1530,7 @@ def walk_consumer_keys(key: ValueKey):
     """Reachable keys for root discovery: opaque below a root's inputs (they
     belong to the root's own attach), still walking its partition keys — an
     attach-carrying computed dimension in ``partition_by=`` needs the outer attach
-    the grain join is built on (DEV-1859 decision 9)."""
+    the grain join is built on."""
     yield key
     if isinstance(key, AggregateKey) and attached_inputs(key):
         for pk in (key.partition_keys or ()):

@@ -479,6 +479,8 @@ To rank within groups instead of across the whole result set, pass `partition_by
 
 Multiple partition columns: `partition_by=[region, channel]`. Cross-model dotted paths work too: `partition_by=customers.region`.
 
+The rank family's `partition_by=` may name a computed dimension, as an aggregation's can (one that itself wraps an aggregation is for now accepted only in filters and order). Each key must be a member of the transform's operand grain — the union of its inner aggregates' grains (an ungrained inner contributes the query's dimensions) — so `rank(sum(revenue, partition_by=[city, region]), partition_by=product)` is an error naming the remedy.
+
 > **Note:** SLayer's formula parser is Python-AST-based and rejects raw `OVER (...)` SQL in `ModelMeasure.formula` and filter strings. Use the rank-family transforms (`rank`, `percent_rank`, `dense_rank`, `ntile`) for ranking instead of `row_number() over (...) <= N`. If you need a non-standard window expression, define it on a `Column.sql` (e.g., `{"name": "rn", "sql": "row_number() over (order by mass desc)", "type": "NUMBER"}`) and filter on the column — SLayer auto-promotes the predicate to a post-aggregation outer `WHERE`.
 
 ### First and Last Functions

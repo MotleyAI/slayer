@@ -1,10 +1,10 @@
-"""Mode-B Python-AST parser (DEV-1450).
+"""Mode-B Python-AST parser.
 
 ``parse_expr(text) -> ParsedExpr`` lowers a Mode-B DSL string
 (``ModelMeasure.formula``, ``SlayerQuery.measures`` / ``.filters``) to a typed
 tree — pure syntax, no scope resolution or named-measure expansion (binder's
 job). Grammar: bare/dotted refs; colon or functional aggregations, which
-collapse to one ``AggCall`` (DEV-1826); transform calls; a closed scalar
+collapse to one ``AggCall``; transform calls; a closed scalar
 allowlist; arithmetic / comparison / boolean / unary; grouping. Rejects
 non-allowlisted calls, raw ``OVER(...)``, and chained comparisons.
 """
@@ -51,7 +51,7 @@ class Literal(_BaseNode):
 
 
 class TupleLit(_BaseNode):
-    """Literal-only tuple/list RHS for ``IN`` / ``NOT IN`` (DEV-1475); non-literal
+    """Literal-only tuple/list RHS for ``IN`` / ``NOT IN``; non-literal
     elements and empty tuples are rejected at parse time."""
 
     elements: Tuple[Literal, ...]
@@ -59,7 +59,7 @@ class TupleLit(_BaseNode):
 
 class AggCall(_BaseNode):
     # source may also be an aggregation-free scalar expression (``sum(a - b)``),
-    # or — for a re-aggregation (DEV-1847/DEV-1832) — a nested AggCall or a grained
+    # or — for a re-aggregation — a nested AggCall or a grained
     # TransformCall, alone or composed.
     source: Union[
         Ref, DottedRef, StarSource, Literal, "ScalarCall", "Arith", "UnaryOp",
@@ -134,7 +134,7 @@ _OVER_RE = re.compile(r"\b[oO][vV][eE][rR]\s*\(")
 # Escape-aware Python-string matcher — blanks literals before keyword scans so
 # an ``OVER(`` / ``:sum`` inside a quoted value isn't mistaken for syntax.
 _PY_STRING_LITERAL_RE = re.compile(r"'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"")
-# SQL ``[NOT] LIKE`` → the ``like(col, pattern)`` scalar (DEV-1704). LHS bare/
+# SQL ``[NOT] LIKE`` → the ``like(col, pattern)`` scalar. LHS bare/
 # dotted ident or one scalar call; RHS a single-quoted (escape-aware) pattern.
 # Keyword as ASCII classes, not ``re.IGNORECASE`` — IGNORECASE folds spoofs like
 # ``lıke`` (dotless ı) into ``like``.
@@ -389,7 +389,7 @@ _CMP_OP_MAP: Dict[type, str] = {
     # SQL ``IS [NOT] NULL`` lowers to ``is [not] None``; rendered back as
     # ``IS [NOT] NULL`` by the SQL generator.
     ast.Is: "is", ast.IsNot: "is not",
-    # DEV-1475: ``IN`` / ``NOT IN`` with a literal-tuple RHS (shape enforced in
+    # ``IN`` / ``NOT IN`` with a literal-tuple RHS (shape enforced in
     # the ``ast.Compare`` branch).
     ast.In: "in", ast.NotIn: "not in",
 }
@@ -403,7 +403,7 @@ _CMP_OP_MAP: Dict[type, str] = {
 def parse_expr(text: str) -> ParsedExpr:
     """Parse a Mode-B expression string into a ``ParsedExpr``.
 
-    ``__`` in identifiers is legal (DEV-1743); only the ``__slayer_`` prefix is
+    ``__`` in identifiers is legal; only the ``__slayer_`` prefix is
     reserved. Raises ``ValueError`` (empty/syntax/unsupported node/chained
     comparison/reserved prefix), ``UnknownFunctionError``, or
     ``IllegalWindowInFilterError`` (raw ``OVER(...)``).
@@ -495,7 +495,7 @@ def _normalize_sql_filter_operators(text: str) -> str:
         if i < len(literals):
             result.append(literals[i])
     # ``=`` → ``==`` runs last, on the rejoined string, via a paren-aware scanner
-    # that leaves kwarg ``=`` inside non-scalar calls alone (DEV-1492).
+    # that leaves kwarg ``=`` inside non-scalar calls alone.
     return _rewrite_comparison_equals("".join(result))
 
 
@@ -522,7 +522,7 @@ def _is_kwarg_equals(
     stack: List[Tuple[bool, Optional[str]]],
     hist: List[Tuple[str, str]],
 ) -> bool:
-    """Whether a lone ``=`` is a Python keyword-argument separator (DEV-1492).
+    """Whether a lone ``=`` is a Python keyword-argument separator.
 
     Scalars never take kwargs. Transforms take the value first, so a kwarg only
     follows a ``,`` (keeping ``consecutive_periods(status = 'paid')`` a
@@ -704,7 +704,6 @@ def walk_parsed_refs(
     if isinstance(parsed, BoolOp):
         for op in parsed.operands:
             yield from walk_parsed_refs(op)
-        return
     # Literal / StarSource / TupleLit → no references (TupleLit holds only
     # Literals by construction).
 
@@ -915,7 +914,7 @@ def _convert(node: ast.AST, *, agg_map: Dict, original: str) -> ParsedExpr:  # N
                 f"Invalid Mode-B expression {original!r}: unsupported "
                 f"comparison operator {op_type.__name__}."
             )
-        # DEV-1475: ``IN`` / ``NOT IN`` carry a literal-only tuple RHS; scalar,
+        # ``IN`` / ``NOT IN`` carry a literal-only tuple RHS; scalar,
         # empty, and non-literal RHS are rejected (signed numerics admitted).
         if op_type in (ast.In, ast.NotIn):
             rhs_node = node.comparators[0]
@@ -1103,8 +1102,7 @@ def _source_leaves(node: Any):
 
 def _is_mixed_agg_source(node: Any) -> bool:
     """A source whose composition leaves mix an attached value — an AggCall or a
-    grained transform — with a row-level reference (the row-grain shape,
-    DEV-1859)."""
+    grained transform — with a row-level reference (the row-grain shape)."""
     leaves = list(_source_leaves(node))
     return any(isinstance(leaf, (AggCall, TransformCall)) for leaf in leaves) and any(
         isinstance(leaf, (Ref, DottedRef, StarSource)) for leaf in leaves
@@ -1116,8 +1114,8 @@ def _validated_agg_source(source: Any, *, func_name: str, original: str) -> Any:
 
     A source resolving to attached values — nested AggCalls and/or grained
     transforms, alone or composed through arithmetic / scalar calls — is a
-    (second-order) re-aggregation (DEV-1847/DEV-1832); a source mixing row-level
-    references with attached values is a row-grain aggregation (DEV-1859); both
+    (second-order) re-aggregation; a source mixing row-level
+    references with attached values is a row-grain aggregation; both
     are accepted."""
     leaves = list(_source_leaves(source))
     if any(isinstance(leaf, (AggCall, TransformCall)) for leaf in leaves):
@@ -1149,6 +1147,17 @@ def _reject_bare_star_args(
         )
 
 
+def _reject_repeated_keywords(node: ast.Call, *, call: str, original: str) -> None:
+    seen: set = set()
+    for kw in node.keywords:
+        if kw.arg in seen:
+            raise ValueError(
+                f"Invalid Mode-B expression {original!r}: {call}() got keyword "
+                f"argument {kw.arg!r} more than once."
+            )
+        seen.add(kw.arg)
+
+
 def _convert_call(  # NOSONAR(S3776) — the one call-dispatch ladder (colon placeholder → builtin functional aggregation → transform → scalar → unknown-name AggCall deferral); each rung IS the documented dispatch order and splitting them hides it.
     node: ast.Call, *, agg_map: Dict, original: str,
 ) -> ParsedExpr:
@@ -1170,6 +1179,10 @@ def _convert_call(  # NOSONAR(S3776) — the one call-dispatch ladder (colon pla
             f"Invalid Mode-B expression {original!r}: dictionary unpacking "
             f"(**kwargs) is not supported in calls."
         )
+    m = _PLACEHOLDER_RE.match(func_name)
+    _reject_repeated_keywords(
+        node, call=agg_map[int(m.group(1))][1] if m else func_name, original=original,
+    )
     kwargs = tuple(
         (kw.arg, _convert_kwarg_value(kw.value, agg_map=agg_map, original=original))
         for kw in node.keywords
@@ -1177,7 +1190,6 @@ def _convert_call(  # NOSONAR(S3776) — the one call-dispatch ladder (colon pla
     )
 
     # Colon-aggregation placeholder?
-    m = _PLACEHOLDER_RE.match(func_name)
     if m:
         idx = int(m.group(1))
         source, agg = agg_map[idx]
@@ -1190,7 +1202,7 @@ def _convert_call(  # NOSONAR(S3776) — the one call-dispatch ladder (colon pla
     healed = normalize_aggregation_name(func_name)
     # first/last over an aggregated input dispatch to the transform branch — but
     # a MIXED composite (row leaf + attached value) routes to the aggregation so
-    # the not-supported-over-an-expression rule fires (DEV-1859), not the
+    # the not-supported-over-an-expression rule fires, not the
     # transform's time-dimension error.
     if healed in BUILTIN_AGGREGATIONS and not (
         healed in _FIRST_LAST and args and _contains_agg_or_transform(args[0])
@@ -1237,7 +1249,7 @@ def _convert_call(  # NOSONAR(S3776) — the one call-dispatch ladder (colon pla
 
     # Unknown name with an aggregatable first arg → AggCall candidate (parity
     # with ``x:whatever``), validated at binding. A custom aggregation over an
-    # attached source is a re-aggregation (DEV-1847), validated like any other.
+    # attached source is a re-aggregation, validated like any other.
     if args and isinstance(args[0], _AGG_SOURCE_KINDS) and not _contains_agg_or_transform(args[0]):
         return AggCall(source=args[0], agg=func_name, args=args[1:], kwargs=kwargs)
     if args and any(isinstance(leaf, AggCall) for leaf in _source_leaves(args[0])):
@@ -1258,7 +1270,7 @@ def _convert_call(  # NOSONAR(S3776) — the one call-dispatch ladder (colon pla
 
 
 # ---------------------------------------------------------------------------
-# Canonical text rendering + entity-ref splitting (DEV-1826)
+# Canonical text rendering + entity-ref splitting
 # ---------------------------------------------------------------------------
 
 
@@ -1280,7 +1292,7 @@ def canonical_measure_text(parsed: Any) -> str:  # NOSONAR(S3776) — flat per-n
     """Render a ``ParsedExpr`` back to canonical colon-spelling text.
 
     Used for alias derivation so the functional and colon spellings of one
-    formula sanitize to the SAME public name (DEV-1826). Deterministic, not a
+    formula sanitize to the SAME public name. Deterministic, not a
     verbatim round-trip: grouping parens are dropped and spacing normalised.
     """
     if isinstance(parsed, Ref):
@@ -1355,7 +1367,7 @@ def _functional_suffix_text(raw: str, *, agg: str) -> str:
 def split_entity_agg_ref(raw: str) -> Tuple[str, Optional[str]]:
     """``(prefix, agg_suffix)`` of a single aggregated-column entity
     reference, accepting BOTH spellings: ``orders.amount:sum`` and
-    ``sum(orders.amount)`` split identically (DEV-1826).
+    ``sum(orders.amount)`` split identically.
 
     Colon and call-free text splits exactly like
     :func:`slayer.core.refs.split_agg_suffix`. Functional text must parse to
