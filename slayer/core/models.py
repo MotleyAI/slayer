@@ -606,7 +606,9 @@ class SlayerModel(BaseModel):
 
     @model_validator(mode="after")
     def _validate_join_keys(self) -> "SlayerModel":
-        _check_join_keys(model_name=self.name, columns=self.columns, joins=self.joins)
+        # An unexpanded query-backed model has no columns yet; checked once populated.
+        if not self.awaits_columns:
+            _check_join_keys(model_name=self.name, columns=self.columns, joins=self.joins)
         return self
 
     @model_validator(mode="after")
@@ -742,6 +744,11 @@ class SlayerModel(BaseModel):
                 f"it with a ModelExtension at query time."
             )
         return self
+
+    @property
+    def awaits_columns(self) -> bool:
+        """Query-backed with its output columns not yet populated."""
+        return bool(self.source_queries) and not self.columns
 
     def get_column(self, name: str) -> Column | None:
         for c in self.columns:

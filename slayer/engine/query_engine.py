@@ -52,6 +52,7 @@ from slayer.core.models import (
     DatasourceConfig,
     ModelMeasure,
     SlayerModel,
+    _check_join_keys,
     join_key_error,
 )
 from slayer.core.query import (
@@ -3181,7 +3182,8 @@ def _physical_keys(model: SlayerModel, keys: List[str]) -> List[str]:
 def _validate_join_keys(
     *, model: SlayerModel, loaded: Dict[str, Optional[SlayerModel]],
 ) -> None:
-    """Every join's target-side key names a declared base column of its loaded target."""
+    """Every join's keys name declared base columns on both sides (source re-checked for a populated query-backed model)."""
+    _check_join_keys(model_name=model.name, columns=model.columns, joins=model.joins)
     for join in model.joins:
         target = loaded.get(join.target_model)
         if target is None:

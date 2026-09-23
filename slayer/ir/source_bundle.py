@@ -102,8 +102,10 @@ def apply_extension_overlay(
             "joins": list(base.joins) + list(ext.joins or []),
         }
     )
-    # model_copy runs no validators; re-run the namespace and join-key checks.
-    _check_join_keys(model_name=merged.name, columns=merged.columns, joins=merged.joins)
+    # model_copy runs no validators; re-run the namespace and join-key checks
+    # (the latter deferred, like measures, until a query-backed base expands).
+    if not base.awaits_columns:
+        _check_join_keys(model_name=merged.name, columns=merged.columns, joins=merged.joins)
     if not merged.source_queries:
         _check_column_measure_namespace(
             model_name=merged.name,

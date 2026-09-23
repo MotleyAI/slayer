@@ -7,6 +7,7 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.enums import DataType, JoinCardinality
+from slayer.core.errors import JoinKeyError
 from slayer.core.join_walker import edges_between
 from slayer.core.keys import ColumnKey, Grain
 from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
@@ -185,3 +186,39 @@ class TestJoinSafetyLogicalSpace:
             key=ColumnKey(path=("regions",), leaf="name"),
             grain=Grain.of([ColumnKey(leaf="region_fk")]),
             host_model=hub, models_by_name={"hub": hub, "regions": regions})
+
+
+def _customer_totals(*, key: str = "customer_id") -> SlayerModel:
+    """Query-backed: its columns come from the backing query, so the join key is checked once populated."""
+    return SlayerModel.model_validate({
+        "name": "customer_totals", "data_source": "test",
+        "source_queries": [{"source_model": "orders", "dimensions": ["customer_id"],
+                            "measures": [{"formula": "sum(amount)", "name": "amt"}]}],
+        "joins": [{"target_model": "customers", "join_pairs": [[key, "id"]]}],
+    })
+
+
+class TestQueryBackedJoinKeys:
+    @pytest.mark.xfail(strict=True, reason="DEV-1918: joins on a query-backed model are not traversable")
+    async def test_join_on_backing_output_column_executes(self, all_renamed):
+        await all_renamed.save_model(_customer_totals())
+        resp = await all_renamed.execute(_query(
+            source_model="customer_totals", dimensions=["customers.name"],
+            measures=[{"formula": "sum(amt)", "name": "total"}]))
+        assert cells(resp, dim_suffix="customers.name", measure="total") == AMOUNT_BY_CUSTOMER
+
+    async def test_extension_join_over_query_backed_base_executes(self, all_renamed):
+        base = SlayerModel.model_validate({
+            **_customer_totals().model_dump(exclude={"joins"}), "joins": []})
+        await all_renamed.save_model(base)
+        resp = await all_renamed.execute(_query(
+            source_model={"source_name": "customer_totals", "joins": [
+                {"target_model": "customers", "join_pairs": [["customer_id", "id"]]}]},
+            dimensions=["customers.name"],
+            measures=[{"formula": "sum(amt)", "name": "total"}]))
+        assert cells(resp, dim_suffix="customers.name", measure="total") == AMOUNT_BY_CUSTOMER
+
+    async def test_join_on_undeclared_output_rejected_at_save(self, all_renamed):
+        model = _customer_totals(key="nope")
+        with pytest.raises(JoinKeyError, match="key 'nope'"):
+            await all_renamed.save_model(model)
