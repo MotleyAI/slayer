@@ -504,7 +504,7 @@ class PlannedQuery(BaseModel):
 
     @model_validator(mode="after")
     def _shifted_attaches_target_shift_slots(self) -> "PlannedQuery":
-        """Each shifted attach answers one non-series ``time_shift`` slot of this plan."""
+        """Each non-series ``time_shift`` slot of this plan has exactly one shifted attach."""
         by_id = {s.id: s for s in _own_slots(self)}
         seen: set = set()
         for attach in self.regroup_attach_plans:
@@ -531,6 +531,13 @@ class PlannedQuery(BaseModel):
                     f"shifted attach answer slot {attach.answer_slot_id!r} "
                     f"is not a producer slot",
                 )
+        orphans = sorted(
+            s.id for s in by_id.values()
+            if isinstance(s.key, TransformKey) and s.key.op == "time_shift"
+            and s.series is False and s.id not in seen
+        )
+        if orphans:
+            raise ValueError(f"time_shift slot(s) {orphans} have no shifted attach")
         return self
 
     @model_validator(mode="after")

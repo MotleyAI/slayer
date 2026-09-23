@@ -214,3 +214,8 @@ class TestValidatorsRejectMalformedShiftedAttaches:
         # Pydantic wraps a validator's ValueError subclass in ValidationError.
         with pytest.raises((MaterialisationStageError, ValidationError)):
             _rebuild(pq, regroup_attach_plans=plans)
+
+    def test_missing_shifted_attach_rejected(self) -> None:
+        pq, _attach_, others = self._valid()
+        with pytest.raises(ValueError):
+            _rebuild(pq, regroup_attach_plans=others)

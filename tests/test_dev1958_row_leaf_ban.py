@@ -119,3 +119,15 @@ class TestProjectedGrainKeyUnderShift:
         for r in resp.data:
             assert r["sales.t"] in (None, r["sales.store"] in ("A", "B")), r
         assert any(r["sales.t"] is not None for r in resp.data)
+
+    async def test_time_shift_in_filter_position(self, exec_engine) -> None:
+        kw = {"dimensions": ["store"], "time_dimensions": month_td()}
+        resp = await exec_engine.execute(_q(
+            filters=["time_shift(store, -1) = 'A'"],
+            measures=[ModelMeasure(formula="revenue:sum", name="r")], **kw))
+        plain = await exec_engine.execute(_q(
+            measures=[ModelMeasure(formula="revenue:sum", name="r")], **kw))
+        store_a = sorted(month_key(r["sales.ordered_at"]) for r in plain.data
+                         if r["sales.store"] == "A")
+        got = sorted((r["sales.store"], month_key(r["sales.ordered_at"])) for r in resp.data)
+        assert got == [("A", m) for m in store_a[1:]], got
