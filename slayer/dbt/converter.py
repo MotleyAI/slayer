@@ -25,7 +25,14 @@ import sqlalchemy as sa
 from slayer.core.enums import DataType
 from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.formula import parse_formula
-from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
+from slayer.core.models import (
+    Column,
+    ModelJoin,
+    ModelMeasure,
+    SlayerModel,
+    is_base_column_sql,
+    physical_column_sql,
+)
 from slayer.core.refs import IDENTIFIER_RE as _IDENTIFIER_RE
 from slayer.dbt.entities import EntityRegistry
 from slayer.dbt.filters import _DIMENSION_RE, convert_dbt_filter
@@ -110,10 +117,22 @@ def _is_simple_identifier(s: str) -> bool:
     return bool(_IDENTIFIER_RE.match(s))
 
 
+def _entity_column(expr: str) -> str | None:
+    """The physical column a bare or double-quoted entity ``expr`` names, else ``None``."""
+    return physical_column_sql(sql=expr, name=expr) if is_base_column_sql(expr) else None
+
+
 def _key_column(*, expr: str, cols: list[Column]) -> Column | None:
-    """The unfiltered base column reading physical column ``expr`` (a same-named one first)."""
-    owners = [c for c in cols if c.is_base and c.filter is None and c.physical_name == expr]
-    return next((c for c in owners if c.name == expr), owners[0] if owners else None)
+    """The unfiltered base column reading the column entity ``expr`` names (a same-named one first)."""
+    phys = _entity_column(expr)
+    owners = [c for c in cols if c.is_base and c.filter is None and c.physical_name == phys]
+    return next((c for c in owners if c.name == phys), owners[0] if owners else None)
+
+
+def _free_key_name(*, expr: str, cols: list[Column], taken: set) -> str | None:
+    """The name for a new column reading entity ``expr``, unless non-bare or already taken."""
+    phys = _entity_column(expr)
+    return phys if phys and phys not in taken and all(c.name != phys for c in cols) else None
 
 
 def _meta_of(config: DbtConfig | None) -> dict[str, Any] | None:
@@ -381,9 +400,12 @@ class DbtToSlayerConverter:
                 (e.expr or e.name for e in sm.entities if e.name == sm.primary_entity),
                 sm.primary_entity,
             )
-            if (_key_column(expr=pe_expr, cols=cols) is None and _is_simple_identifier(pe_expr)
-                    and all(c.name != pe_expr for c in cols)):
-                cols.append(Column(name=pe_expr, type=DataType.DOUBLE, primary_key=True))
+            pk = _key_column(expr=pe_expr, cols=cols)
+            if pk is None and (name := _free_key_name(expr=pe_expr, cols=cols, taken=set())):
+                pk = Column(name=name, type=DataType.DOUBLE)
+                cols.append(pk)
+            if pk is not None:
+                pk.primary_key = True
 
         measure_cols, measures = self._convert_measures(
             dbt_measures=sm.measures,
@@ -398,7 +420,7 @@ class DbtToSlayerConverter:
             joins=self.entity_registry.resolve_joins_for_model(sm),
             unkeyable=[
                 e.expr for e in sm.entities
-                if e.type == "foreign" and e.expr and not _is_simple_identifier(e.expr)
+                if e.type == "foreign" and e.expr and not is_base_column_sql(e.expr)
             ],
         )
 
@@ -466,14 +488,15 @@ class DbtToSlayerConverter:
         expr = entity.expr or entity.name
         col = _key_column(expr=expr, cols=cols)
         if col is None:
-            if any(c.name == expr for c in cols) or not _is_simple_identifier(expr):
+            name = _free_key_name(expr=expr, cols=cols, taken=set())
+            if name is None:
                 self._warnings.append(ConversionWarning(
                     model_name=sm_name, category="join", severity="dropped",
                     message=(f"Entity '{entity.name}' expr {expr!r} is not a free column "
                              f"identifier; no primary key declared."),
                 ))
                 return
-            col = Column(name=expr, type=DataType.DOUBLE)
+            col = Column(name=name, type=DataType.DOUBLE)
             cols.append(col)
         col.primary_key = True
         # Keep what the column already has.
@@ -491,10 +514,10 @@ class DbtToSlayerConverter:
         col = _key_column(expr=key, cols=cols)
         if col is not None:
             return col.name
-        if key in measure_names or any(c.name == key for c in cols) or not _is_simple_identifier(key):
-            return None
-        cols.append(Column(name=key, type=DataType.DOUBLE, hidden=True))
-        return key
+        name = _free_key_name(expr=key, cols=cols, taken=measure_names)
+        if name is not None:
+            cols.append(Column(name=name, type=DataType.DOUBLE, hidden=True))
+        return name
 
     @staticmethod
     def _entity_meta(entity) -> dict[str, Any] | None:

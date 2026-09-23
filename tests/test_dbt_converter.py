@@ -1679,6 +1679,34 @@ def test_non_bare_primary_entity_expr_declares_no_key_column() -> None:
     assert any("LOWER(id)" in w.message for w in result.warnings)
 
 
+def test_primary_entity_shorthand_marks_the_dimension_reading_it() -> None:
+    project = _make_simple_project()
+    customers_sm = next(sm for sm in project.semantic_models if sm.name == "customers")
+    customers_sm.entities = []
+    customers_sm.primary_entity = "customer_id"
+    customers_sm.dimensions.append(DbtDimension(name="customer_id", type="categorical"))
+    result = DbtToSlayerConverter(project=project, data_source="test_db").convert()
+    customers = next(m for m in result.models if m.name == "customers")
+    key = customers.get_column("customer_id")
+    assert key is not None
+    assert key.primary_key is True
+
+
+def test_quoted_foreign_entity_expr_keys_the_join() -> None:
+    project = _make_simple_project()
+    orders_sm = next(sm for sm in project.semantic_models if sm.name == "orders")
+    orders_sm.entities = [
+        DbtEntity(name="order_id", type="primary", expr="id"),
+        DbtEntity(name="customer_id", type="foreign", expr='"CustomerID"'),
+    ]
+    result = DbtToSlayerConverter(project=project, data_source="test_db").convert()
+    orders = next(m for m in result.models if m.name == "orders")
+    fk = orders.get_column("CustomerID")
+    assert orders.joins[0].join_pairs == [["CustomerID", "id"]]
+    assert fk is not None
+    assert fk.physical_name == "CustomerID"
+
+
 def _renamed_keys_project() -> DbtProject:
     """dbt over the ``tests._dev1902_fixtures`` tables, keys covered by renamed dimensions."""
     return DbtProject(
