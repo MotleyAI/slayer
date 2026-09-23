@@ -70,6 +70,7 @@ __all__ = [
 
 _DEFAULT_MEASURE_DEPTH = 32
 _MEASURE_DEPTH_ENV_VAR = "SLAYER_MEASURE_EXPANSION_DEPTH"
+_NO_ANCHOR_SCOPE_SUMMARY = "(no source_model anchor; anchor-less mode not implemented)"
 
 
 def _measure_depth_limit() -> int:
@@ -116,7 +117,7 @@ def bind_expr(
     the eligible positions — measure formulas and computed-dimension
     expressions; off everywhere else, so a saved-measure name there errors.
     ``dimension_alias_map`` resolves ``partition_by=<computed dim name>`` to
-    the dimension's bound key (DEV-1847 shape B); it applies ONLY there."""
+    the dimension's bound key; it applies ONLY there."""
     measure_ctx = (
         MeasureResolutionCtx(depth_limit=_measure_depth_limit())
         if allow_measures else None
@@ -167,7 +168,7 @@ def _time_dimension_column_facts(
     scope: Union[ModelScope, StageSchema],
     bundle: ResolvedSourceBundle,
 ) -> Tuple[Union[ColumnKey, ColumnSqlKey], Optional[DataType], Optional[TimeGranularity]]:
-    """Resolve a time dimension's column against ``scope`` and read its facts — (bound column key, column type, recorded bucket granularity). Stage arm reads the flat ``StageColumn`` (dotted → illegal-scope, unknown → unknown-reference); model arm walks joins to the terminal ``Column`` and returns its ``granularity`` (DEV-1929), so a bucketed model column re-buckets under the same rule as a stage column."""
+    """Resolve a time dimension's column against ``scope`` and read its facts — (bound column key, column type, recorded bucket granularity). Stage arm reads the flat ``StageColumn`` (dotted → illegal-scope, unknown → unknown-reference); model arm walks joins to the terminal ``Column`` and returns its ``granularity``, so a bucketed model column re-buckets under the same rule as a stage column."""
     if isinstance(scope, StageSchema):
         if "." in full:
             bound_col = _resolve_dotted(tuple(full.split(".")), scope=scope, bundle=bundle)
@@ -183,7 +184,7 @@ def _time_dimension_column_facts(
         raise UnknownReferenceError(
             name=full,
             scope_kind="ModelScope",
-            scope_summary="(no source_model anchor; anchor-less mode not implemented)",
+            scope_summary=_NO_ANCHOR_SCOPE_SUMMARY,
             suggestion=None,
         )
     if "." in full:
@@ -224,7 +225,7 @@ def _canonical_if_routed(
     scope: Union[ModelScope, StageSchema],
 ) -> Optional[str]:
     """Full routed dotted path when the whole field is a short-form ``DottedRef``
-    that auto-routed to a longer path (DEV-1856), else ``None``. Excludes
+    that auto-routed to a longer path, else ``None``. Excludes
     self-prefix and direct joins (bound path == typed hop path) so every
     non-routed ref keeps a byte-identical result key."""
     if not isinstance(parsed, DottedRef):
@@ -251,7 +252,7 @@ def _terminal_model_for_path(
     """Walk ``path`` from ``scope.source_model`` to the terminal model (host if
     empty) through the shared bidirectional walker — reverse hops and edge-name
     tokens resolve, so the terminal model comes from the resolved edge, never
-    from reading the token as a model name (DEV-1853 D5)."""
+    from reading the token as a model name."""
     current = scope.source_model
     if current is None:
         return None
@@ -311,7 +312,7 @@ def _bind(
     # ``measure_ctx`` rides eligible operand edges, dropped at the aggregation
     # boundary — a measure is legal at value level but not inside an aggregation.
     # ``dim_alias_map`` rides every edge but resolves ONLY inside an
-    # aggregation's ``partition_by`` (DEV-1847 shape B).
+    # aggregation's ``partition_by``.
     if isinstance(parsed, Literal):
         return LiteralKey(value=normalize_scalar(parsed.value))
 
@@ -484,7 +485,7 @@ def _resolve_ref(
         raise UnknownReferenceError(
             name=name,
             scope_kind="ModelScope",
-            scope_summary="(no source_model anchor; anchor-less mode not implemented)",
+            scope_summary=_NO_ANCHOR_SCOPE_SUMMARY,
             suggestion=None,
         )
     model = scope.source_model
@@ -529,7 +530,7 @@ def _walk_join_chain(
 
     When a token resolves to no incident edge, a bare ``Target`` short form
     (``len(hop_path) == 1``) auto-routes to its full datasource-scoped path
-    (DEV-1856) — the effective path is the routed one; a ``len >= 2`` chain is a
+    — the effective path is the routed one; a ``len >= 2`` chain is a
     broken chain, rejected (never silently repaired) with a short-form suggestion
     when the target is uniquely routable. ``AmbiguousJoinPathError`` from a
     parallel-pair hop propagates untouched; an edge that resolves onto a target
@@ -553,7 +554,7 @@ def _walk_join_chain(
             raise _target_not_in_bundle(parts=parts, target=edge.target_model)
         # Revisiting a model is a circular join (``a -> b -> a``): reject here
         # rather than fail confusingly on the leaf. Same class as the derived
-        # save-time refusal (DEV-1952); still a ValueError, wording preserved.
+        # save-time refusal; still a ValueError, wording preserved.
         if nxt.name in visited_models:
             raise CircularJoinPathError(
                 reference=".".join(spelled), root_model=host.name,
@@ -574,7 +575,7 @@ def _route_edgeless_hop(
     models_by_name: Dict[str, SlayerModel],
 ) -> Tuple[SlayerModel, Tuple[str, ...]]:
     """A hop with no incident edge: a bare ``Target`` short form auto-routes to
-    its datasource-scoped path (DEV-1856); a longer chain is broken."""
+    its datasource-scoped path; a longer chain is broken."""
     if len(hop_path) != 1:
         raise _broken_chain_error(
             host=host, hop_path=hop_path, leaf=leaf, parts=parts,
@@ -666,7 +667,7 @@ def _resolve_dotted(
         raise UnknownReferenceError(
             name=".".join(parts),
             scope_kind="ModelScope",
-            scope_summary="(no source_model anchor; anchor-less mode not implemented)",
+            scope_summary=_NO_ANCHOR_SCOPE_SUMMARY,
             suggestion=None,
         )
 
@@ -896,7 +897,7 @@ def _resolve_dotted_star(
         raise UnknownReferenceError(
             name=".".join(parts),
             scope_kind="ModelScope",
-            scope_summary="(no source_model anchor; anchor-less mode not implemented)",
+            scope_summary=_NO_ANCHOR_SCOPE_SUMMARY,
             suggestion=None,
         )
     hop_path = parts[:-1]
@@ -911,15 +912,14 @@ def _resolve_dotted_star(
     return StarKey(path=tuple(effective_hop_path))
 
 
-def _bind_agg_partition_keys(
+def _bind_partition_keys(
     value, *,
     scope: Union[ModelScope, StageSchema],
     bundle: ResolvedSourceBundle,
-    dim_alias_map: Optional[Dict[str, "ValueKey"]] = None,
+    dim_alias_map: Optional[Dict[str, "ValueKey"]],
+    label: str,
 ) -> Grain:
-    """Bind an aggregation ``partition_by`` value to the partition ``Grain``;
-    a name in ``dim_alias_map`` resolves to that computed dimension's bound key
-    (DEV-1847 shape B)."""
+    """Bind a ``partition_by`` value (aggregation or rank-family transform) to its ``Grain``."""
     elements = value if isinstance(value, tuple) else (value,)
     pks: List = []
     for elem in elements:
@@ -929,7 +929,7 @@ def _bind_agg_partition_keys(
         bound = _bind(parsed=elem, scope=scope, bundle=bundle, in_filter=False)
         if not isinstance(bound, (ColumnKey, ColumnSqlKey)):
             raise ValueError(
-                f"aggregation partition_by must resolve to a column reference; "
+                f"{label} partition_by must resolve to a column reference; "
                 f"got {type(bound).__name__}."
             )
         pks.append(bound)
@@ -944,7 +944,7 @@ def _bind_expression_agg_source(
     """Bind a scalar-expression aggregate source.
 
     Dotted joined-model leaves and operands carrying ``Column.filter`` are both
-    admitted (DEV-1832): the home rule roots the aggregation and the filter
+    admitted: the home rule roots the aggregation and the filter
     desugars to ``CASE WHEN``. The source must still resolve to a row-level
     expression (a column, star, or arithmetic/scalar composite of them)."""
     bound = _bind(parsed_source, scope=scope, bundle=bundle, in_filter=False)
@@ -957,7 +957,7 @@ def _bind_expression_agg_source(
 
 
 # Scalar functions whose result is certainly text, for the best-effort
-# expression type inference (DEV-1826).
+# expression type inference.
 _TEXT_RESULT_SCALARS = frozenset({
     "lower", "upper", "trim", "ltrim", "rtrim", "replace", "substr",
     "substring", "concat",
@@ -966,7 +966,7 @@ _TEXT_RESULT_SCALARS = frozenset({
 _ARG_CLASS_SCALARS = frozenset({
     "coalesce", "ifnull", "nullif", "greatest", "least",
 })
-# Comparison-family scalars whose result is certainly boolean (DEV-1826).
+# Comparison-family scalars whose result is certainly boolean.
 _BOOL_RESULT_SCALARS = frozenset({"like"})
 
 
@@ -1051,7 +1051,7 @@ def _source_is_reaggregation(node) -> bool:
     """Whether a parsed aggregation source carries an attached value — a nested
     AggCall or a grained transform, alone or composed. Such a source is bound
     structurally (its inner AggCalls / TransformCalls become nested keys) whether
-    it is a pure re-aggregation (DEV-1847) or a row-grain mix (DEV-1859)."""
+    it is a pure re-aggregation or a row-grain mix."""
     if isinstance(node, (AggCall, TransformCall)):
         return True
     if isinstance(node, (Arith, Cmp)):
@@ -1072,7 +1072,7 @@ def _bind_agg(
     dim_alias_map: Optional[Dict[str, "ValueKey"]] = None,
 ) -> AggregateKey:
     if _source_is_reaggregation(parsed.source):
-        # Re-aggregation (DEV-1847): bind the operand subtree — inner AggCalls
+        # Re-aggregation: bind the operand subtree — inner AggCalls
         # become AggregateKeys — so the outer key carries a nested-aggregate
         # source (axiom 6). Discovery/planning lift it to a producer-over-producer.
         source = _bind(
@@ -1102,7 +1102,7 @@ def _bind_agg(
             )
         source = bound_source
     else:
-        # DEV-1826: same-model scalar EXPRESSION source (``sum(amount - cost)``).
+        # Same-model scalar EXPRESSION source (``sum(amount - cost)``).
         source = _bind_expression_agg_source(
             parsed.source, scope=scope, bundle=bundle,
         )
@@ -1117,8 +1117,9 @@ def _bind_agg(
     kwargs_list: List = []
     for k, v in parsed.kwargs:
         if k == "partition_by":
-            partition_keys = _bind_agg_partition_keys(
+            partition_keys = _bind_partition_keys(
                 value=v, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map,
+                label="aggregation",
             )
             continue
         kwargs_list.append((
@@ -1133,7 +1134,7 @@ def _bind_agg(
     args, kwargs = _fold_positional_agg_args(
         agg=effective_agg, source=source, bundle=bundle, args=args, kwargs=kwargs,
     )
-    # DEV-1826 expression sources: order-sensitive first/last need a plain
+    # Expression sources: order-sensitive first/last need a plain
     # column (the ranked kernel can't rank an expression), and numeric-only
     # aggregations are rejected when the expression is confidently non-numeric
     # (per-column gates don't apply).
@@ -1255,7 +1256,7 @@ def _fold_positional_agg_args(
 
 def _unknown_aggregation_message(name: str, known) -> str:
     """The standard unknown-aggregation error, plus a scalar-allowlist hint
-    when the name is a near-miss for a scalar function (typo UX, DEV-1826)."""
+    when the name is a near-miss for a scalar function (typo UX)."""
     msg = format_unknown_aggregation(name, known)
     scalar_match = difflib.get_close_matches(
         word=name.lower(), possibilities=sorted(SCALAR_FUNCTIONS), n=1,
@@ -1277,8 +1278,8 @@ def _validate_agg_eligibility(
 
     Healing is skipped when the raw token exactly matches a custom aggregation
     on the owning model (a custom ``countd`` wins over the alias). Gate order:
-    0. unknown-name-first, for EVERY source shape (column, star, expression —
-    DEV-1826), so ``*:bogus`` / ``bogus(*)`` never escape to SQL generation;
+    0. unknown-name-first, for EVERY source shape (column, star, expression),
+    so ``*:bogus`` / ``bogus(*)`` never escape to SQL generation;
     1. PK columns restricted to count / count_distinct; 2. explicit
     ``Column.allowed_aggregations`` whitelist; 3. else
     ``DEFAULT_AGGREGATIONS_BY_TYPE`` (custom aggregations exempt).
@@ -1290,7 +1291,7 @@ def _validate_agg_eligibility(
     owner_model, leaf = _resolve_agg_owner(source, bundle)
     if owner_model is None:
         return normalize_aggregation_name(agg)
-    # DEV-1576 alias healing — custom aggregation named like an alias wins.
+    # Alias healing — custom aggregation named like an alias wins.
     custom_names = {a.name for a in (owner_model.aggregations or [])}
     effective = agg if agg in custom_names else normalize_aggregation_name(agg)
     # Gate 0: unknown-name-first (precedence over PK / whitelist / type).
@@ -1349,7 +1350,7 @@ def _bind_agg_arg(
 ):
     """Bind one aggregation arg: identifiers → ``ColumnKey`` / ``ColumnSqlKey``,
     a nested aggregate → ``AggregateKey`` (aggregate-valued parameter), a grained
-    transform → ``TransformKey`` at its result grain (DEV-1946), literals → inline
+    transform → ``TransformKey`` at its result grain, literals → inline
     scalar via ``normalize_scalar`` (stored inline, not as LiteralKey).
     ``dim_alias_map`` rides into a nested aggregate / transform so its
     ``partition_by=`` can name a computed dimension (as the outer aggregate's can)."""
@@ -1425,6 +1426,35 @@ _TRANSFORM_POSITIONAL_KWARGS: dict = {
 }
 
 
+def _transform_positional_pairs(parsed: TransformCall) -> List:
+    """Map a transform's extra positional params onto kwarg names; most transforms
+    are keyword-only after the value."""
+    if not parsed.args:
+        return []
+    pos_names = _TRANSFORM_POSITIONAL_KWARGS.get(parsed.op)
+    if pos_names is None:
+        raise ValueError(
+            f"Transform {parsed.op!r} accepts exactly one positional "
+            f"argument (the value to transform); pass any offset, "
+            f"partition, or other settings as keyword arguments "
+            f"(e.g. ``{parsed.op}(value, partition_by=...)``)."
+        )
+    if len(parsed.args) > len(pos_names):
+        raise ValueError(
+            f"Transform {parsed.op!r} accepts at most {len(pos_names)} "
+            f"positional argument(s) after the value "
+            f"({', '.join(pos_names)}); got {len(parsed.args)}."
+        )
+    explicit_kw_names = {k for k, _ in parsed.kwargs}
+    for k in pos_names[:len(parsed.args)]:
+        if k in explicit_kw_names:
+            raise ValueError(
+                f"Transform {parsed.op!r} got {k!r} both positionally and "
+                f"as a keyword argument."
+            )
+    return list(zip(pos_names, parsed.args))
+
+
 def _bind_transform(
     parsed: TransformCall, *,
     scope: Union[ModelScope, StageSchema],
@@ -1434,60 +1464,24 @@ def _bind_transform(
     dim_alias_map: Optional[Dict[str, "ValueKey"]] = None,
 ) -> TransformKey:
     # ``measure_ctx`` rides the transform INPUT only — partition_by / scalar
-    # kwargs drop it (and a transform's partition_by binds without alias maps).
+    # kwargs drop it.
     inp = _bind(
         parsed.input, scope=scope, bundle=bundle, in_filter=False,
         alias_map=alias_map, measure_ctx=measure_ctx, dim_alias_map=dim_alias_map,
     )
-    # A few transforms accept further positional params (mapped onto kwargs);
-    # every other transform is keyword-only after the value.
-    positional_pairs: List = []
-    pos_names = _TRANSFORM_POSITIONAL_KWARGS.get(parsed.op)
-    if parsed.args:
-        if pos_names is None:
-            raise ValueError(
-                f"Transform {parsed.op!r} accepts exactly one positional "
-                f"argument (the value to transform); pass any offset, "
-                f"partition, or other settings as keyword arguments "
-                f"(e.g. ``{parsed.op}(value, partition_by=...)``)."
-            )
-        if len(parsed.args) > len(pos_names):
-            raise ValueError(
-                f"Transform {parsed.op!r} accepts at most {len(pos_names)} "
-                f"positional argument(s) after the value "
-                f"({', '.join(pos_names)}); got {len(parsed.args)}."
-            )
-        positional_pairs = list(zip(pos_names, parsed.args))
+    positional_pairs = _transform_positional_pairs(parsed)
     args: List = []
     kwargs: List = []
-    partition_keys: List = []
+    partition_keys: Grain = Grain.EMPTY
     allowed_kwargs = _TRANSFORM_KWARG_RULES.get(parsed.op, frozenset())
     seen_kwargs: set = set()
-    # A name supplied both positionally and as a kwarg is ambiguous → error.
-    _explicit_kw_names = {k for k, _ in parsed.kwargs}
-    for k, _ in positional_pairs:
-        if k in _explicit_kw_names:
-            raise ValueError(
-                f"Transform {parsed.op!r} got {k!r} both positionally and "
-                f"as a keyword argument."
-            )
     rank_partition_ok = parsed.op in RANK_FAMILY_TRANSFORMS
     for k, v in [*positional_pairs, *parsed.kwargs]:
         if k == "partition_by" and rank_partition_ok:
-            # A single ref, or a tuple/list (``rank(x, partition_by=[a, b])``).
-            elements = v if isinstance(v, tuple) else (v,)
-            for elem in elements:
-                bound_elem = _bind(
-                    elem, scope=scope, bundle=bundle, in_filter=False,
-                )
-                if isinstance(bound_elem, (ColumnKey, ColumnSqlKey)):
-                    partition_keys.append(bound_elem)
-                else:
-                    raise ValueError(
-                        f"transform {parsed.op!r} partition_by must resolve "
-                        f"to a column reference; got "
-                        f"{type(bound_elem).__name__}."
-                    )
+            partition_keys = _bind_partition_keys(
+                value=v, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map,
+                label=f"transform {parsed.op!r}",
+            )
             continue
         if k not in allowed_kwargs:
             advertised = allowed_kwargs | ({"partition_by"} if rank_partition_ok else set())
@@ -1512,8 +1506,16 @@ def _bind_transform(
         input=inp,
         args=tuple(args),
         kwargs=tuple(kwargs),
-        partition_keys=Grain.of(partition_keys),
+        partition_keys=partition_keys,
     )
+
+
+def _is_positive_integer(value: object) -> bool:
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, Decimal):
+        return value.is_finite() and value == value.to_integral_value() and value > 0
+    return isinstance(value, int) and value > 0
 
 
 def _apply_transform_kwarg_defaults(
@@ -1524,32 +1526,6 @@ def _apply_transform_kwarg_defaults(
     ``ntile`` requires positive-integer ``n``; ``time_shift`` requires integer
     ``periods`` (may be negative); ``lag`` / ``lead`` default ``periods=1``.
     Integer checks accept integral ``Decimal`` (``normalize_scalar`` wraps numbers)."""
-    def _ensure_positive_integer(value: object, *, kw: str) -> None:
-        if isinstance(value, bool):
-            raise ValueError(
-                f"Transform {op!r} keyword {kw} must be a positive "
-                f"integer; got {value!r}."
-            )
-        if isinstance(value, int):
-            ival = value
-        elif isinstance(value, Decimal):
-            if value != value.to_integral_value():
-                raise ValueError(
-                    f"Transform {op!r} keyword {kw} must be a positive "
-                    f"integer; got {value!r}."
-                )
-            ival = int(value)
-        else:
-            raise ValueError(
-                f"Transform {op!r} keyword {kw} must be a positive "
-                f"integer; got {value!r}."
-            )
-        if ival <= 0:
-            raise ValueError(
-                f"Transform {op!r} keyword {kw} must be a positive "
-                f"integer; got {value!r}."
-            )
-
     if op == "ntile":
         if "n" not in seen:
             raise ValueError(
@@ -1557,7 +1533,11 @@ def _apply_transform_kwarg_defaults(
                 "number of buckets, a positive integer)."
             )
         n_value = next(v for k, v in kwargs if k == "n")
-        _ensure_positive_integer(n_value, kw="n")
+        if not _is_positive_integer(n_value):
+            raise ValueError(
+                f"Transform {op!r} keyword n must be a positive "
+                f"integer; got {n_value!r}."
+            )
     if op == "time_shift" and "periods" not in seen:
         raise ValueError(
             "Transform 'time_shift' requires keyword argument periods "

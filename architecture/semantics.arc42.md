@@ -179,6 +179,7 @@ is the coercion from coarser to finer.
     [enforced: test:tests/test_dev1871_terms.py]
     [enforced: test:tests/test_dev1832_transform_source.py]
     [enforced: test:tests/test_dev1946_transform_parameter.py]
+    [enforced: test:tests/test_dev1953_partition_membership.py]
 12. **Population**: the population is the query's quantifier — exactly one
     result row per combination of dimension values among its row-filtered rows
     (raw-row mode is the one documented exception; spec: `queries/semantics` ›
