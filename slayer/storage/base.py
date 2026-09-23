@@ -99,7 +99,7 @@ def _canonical_key(*, key: Any, columns: Any) -> Any:
     return renames[0] if len(renames) == 1 else key
 
 
-def canonical_join_pairs(pairs: Any, *, source_columns: Any, target_columns: Any) -> Any:
+def canonical_join_pairs(*, pairs: Any, source_columns: Any, target_columns: Any) -> Any:
     """Raw ``join_pairs`` with stored physical spellings rewritten to ``Column.name``."""
     if not isinstance(pairs, list):
         return pairs
@@ -120,7 +120,7 @@ def _stored_counterpart(*, join: dict, name: str, peer: dict | None, columns: An
             j for j in peer_joins
             if isinstance(j, dict) and j.get("target_model") == name
             and _is_exact_inverse_join(join, {**j, "join_pairs": canonical_join_pairs(
-                j.get("join_pairs"), source_columns=peer.get("columns"),
+                pairs=j.get("join_pairs"), source_columns=peer.get("columns"),
                 target_columns=columns,
             )})
         ),
@@ -612,7 +612,7 @@ class StorageBackend(ABC):
                 name=join["target_model"], data_source=data_source,
             )
             join["join_pairs"] = canonical_join_pairs(
-                join.get("join_pairs"), source_columns=data.get("columns"),
+                pairs=join.get("join_pairs"), source_columns=data.get("columns"),
                 target_columns=peer.get("columns") if isinstance(peer, dict) else None,
             )
 

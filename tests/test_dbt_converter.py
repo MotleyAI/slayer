@@ -1679,6 +1679,22 @@ def test_non_bare_primary_entity_expr_declares_no_key_column() -> None:
     assert any("LOWER(id)" in w.message for w in result.warnings)
 
 
+@pytest.mark.parametrize("pk_expr", ["customer.id", "LOWER(id)"])
+def test_non_column_primary_expr_skips_foreign_and_peer_joins(pk_expr) -> None:
+    project = _make_simple_project()
+    customers_sm = next(sm for sm in project.semantic_models if sm.name == "customers")
+    customers_sm.entities = [DbtEntity(name="customer_id", type="primary", expr=pk_expr)]
+    project.semantic_models.append(DbtSemanticModel(
+        name="customers_ext", model="customers_ext",
+        entities=[DbtEntity(name="customer_id", type="primary", expr="id")],
+    ))
+    result = DbtToSlayerConverter(project=project, data_source="test_db").convert()
+    models = {m.name: m for m in result.models}
+    assert [j.target_model for j in models["orders"].joins] == ["customers_ext"]
+    assert models["customers"].joins == []  # peer → customers_ext
+    assert any(pk_expr in w.message for w in result.warnings)
+
+
 def test_primary_entity_shorthand_marks_the_dimension_reading_it() -> None:
     project = _make_simple_project()
     customers_sm = next(sm for sm in project.semantic_models if sm.name == "customers")

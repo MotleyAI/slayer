@@ -1265,9 +1265,10 @@ def _cascade_joins(*, model: SlayerModel, state: _CascadeState) -> bool:
     for join in model.joins:
         if join.target_model in state.dropped_joins.get(model.name, set()):
             continue
+        # Raw dropped_cols: a dropped local PK key invalidates the join too.
         local_missing = [
             pair[0] for pair in join.join_pairs
-            if pair[0] in state.cascadable(model.name)
+            if pair[0] in state.dropped_cols.get(model.name, set())
         ]
         if local_missing:
             changed = _add_dropped_join(

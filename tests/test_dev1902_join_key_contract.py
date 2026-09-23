@@ -23,7 +23,12 @@ from slayer.core.models import (
 from slayer.core.query import ModelExtension, SlayerQuery
 from slayer.engine.join_safety import audit_join_safety
 from slayer.engine.query_engine import SlayerQueryEngine, _detection_skip_reason
-from slayer.engine.schema_drift import EditModelDelete, LiveTable, diff_sql_table_model
+from slayer.engine.schema_drift import (
+    EditModelDelete,
+    LiveTable,
+    compute_datasource_drops,
+    diff_sql_table_model,
+)
 from slayer.ir.source_bundle import apply_extension_overlay
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.sqlite_storage import SQLiteStorage
@@ -300,6 +305,30 @@ class TestDriftAndRefinement:
         assert isinstance(entry, EditModelDelete)
         assert entry.remove.columns == ["entity_type"]
         assert dropped == {"entity_type"}
+
+    @pytest.mark.parametrize("key", ["id", "cust_id"])
+    def test_dropped_local_key_drops_its_join(self, key):
+        """A local key dropped for a type drift (PK or not) takes its join with it."""
+        orders = SlayerModel(
+            name="orders", data_source="test", sql_table="orders",
+            columns=[Column(name="id", type=DataType.INT, primary_key=True),
+                     Column(name="cust_id", type=DataType.INT)],
+            joins=[ModelJoin(target_model="customers", join_pairs=[[key, "id"]])],
+        )
+        customers = SlayerModel(
+            name="customers", data_source="test", sql_table="customers",
+            columns=[Column(name="id", type=DataType.INT, primary_key=True)],
+        )
+        live = LiveTable(columns={"id": DataType.INT, "cust_id": DataType.INT, key: DataType.TEXT})
+        diffs = {m.name: diff_sql_table_model(
+            model=m, live_table=live if m is orders else LiveTable(columns={"id": DataType.INT}),
+            available_models_in_ds={"orders", "customers"}) for m in (orders, customers)}
+        entries = compute_datasource_drops(
+            models=[orders, customers], sql_table_diffs=diffs, sql_diffs={})
+        entry = next(e for e in entries if e.model_name == "orders")
+        assert isinstance(entry, EditModelDelete)
+        assert key in entry.remove.columns
+        assert entry.remove.joins == ["customers"]
 
     def test_quoted_double_column_is_refined(self):
         with tempfile.TemporaryDirectory() as d:
