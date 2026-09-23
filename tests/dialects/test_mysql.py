@@ -310,7 +310,7 @@ async def test_mysql_time_shift_inner_cte_uses_backticks_not_ansi_quotes() -> No
     )
     # The self-join CTE's ON clause must use backticks on both sides.
     assert (
-        "base.`orders.created_at` <=> "
+        "base.`orders.created_at` - INTERVAL 1 MONTH <=> "
         "shifted__time_shift_inner.`orders.created_at`"
     ) in sql, (
         f"Self-join ON clause must use backticked identifiers:\n{sql}"

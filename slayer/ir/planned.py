@@ -383,13 +383,17 @@ ProducerKernel = Union[
 class RegroupAttachPlan(BaseModel):
     """A planner-synthesized producer (isolated ``_cm_*`` CTE) attached on its partition
     grain via the null-safe grain join, without changing consumer cardinality.
-    ``attach_phase`` is ``"row"`` (base FROM, before aggregation) or ``"combined"`` (after)."""
+    ``attach_phase`` is ``"row"`` (base FROM, before aggregation), ``"combined"`` (after),
+    or ``"shifted"`` (the frame-free relation a ``time_shift`` slot ``shift_of`` looks up,
+    reading ``answer_slot_id``; no substitutions)."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     producer_plan: "PlannedQuery"
     alias_hint: str
-    attach_phase: Literal["row", "combined"] = "row"
+    attach_phase: Literal["row", "combined", "shifted"] = "row"
+    shift_of: Optional[SlotId] = None
+    answer_slot_id: Optional[SlotId] = None
     kernel: ProducerKernel = Field(
         default_factory=PlainProducerKernel, discriminator="kind",
     )
@@ -423,6 +427,13 @@ class RegroupAttachPlan(BaseModel):
     degenerate_measure: Optional[str] = None
     degenerate_operand_grain: List[str] = Field(default_factory=list)
     degenerate_outer_grain: List[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _shift_fields_only_on_shifted(self) -> "RegroupAttachPlan":
+        shifted = self.attach_phase == "shifted"
+        if shifted != (self.shift_of is not None) or shifted != (self.answer_slot_id is not None):
+            raise ValueError("shift_of / answer_slot_id are set exactly on a shifted attach")
+        return self
 
 
 class PlannedQuery(BaseModel):
@@ -492,6 +503,23 @@ class PlannedQuery(BaseModel):
         return self
 
     @model_validator(mode="after")
+    def _shifted_attaches_target_shift_slots(self) -> "PlannedQuery":
+        """Each non-series ``time_shift`` slot of this plan has exactly one shifted attach."""
+        by_id = {s.id: s for s in _own_slots(self)}
+        seen: set = set()
+        for attach in self.regroup_attach_plans:
+            if attach.attach_phase == "shifted":
+                seen.add(_check_shifted_attach(attach=attach, by_id=by_id, seen=seen))
+        orphans = sorted(
+            s.id for s in by_id.values()
+            if isinstance(s.key, TransformKey) and s.key.op == "time_shift"
+            and s.series is False and s.id not in seen
+        )
+        if orphans:
+            raise ValueError(f"time_shift slot(s) {orphans} have no shifted attach")
+        return self
+
+    @model_validator(mode="after")
     def _materialisation_stage_invariant(self) -> "PlannedQuery":
         """Every value carries one stage, and no value references a value staged
         later than itself (it would render before its inputs). Recurses into
@@ -502,6 +530,30 @@ class PlannedQuery(BaseModel):
 
 def _own_slots(pq: "PlannedQuery") -> List[ValueSlot]:
     return [*pq.row_slots, *pq.aggregate_slots, *pq.combined_expression_slots]
+
+
+def _check_shifted_attach(
+    *, attach: RegroupAttachPlan, by_id: Dict[SlotId, ValueSlot], seen: set,
+) -> SlotId:
+    """Validate one shifted attach; return the time_shift slot it targets."""
+    slot = by_id.get(attach.shift_of) if attach.shift_of is not None else None
+    if slot is None or not (
+        isinstance(slot.key, TransformKey) and slot.key.op == "time_shift"
+    ):
+        raise ValueError(
+            f"shifted attach targets {attach.shift_of!r}, not a time_shift slot",
+        )
+    if slot.series:
+        raise ValueError(f"shifted attach targets the series-regime slot {slot.id!r}")
+    if slot.id in seen:
+        raise ValueError(f"duplicate shifted attach for slot {slot.id!r}")
+    if attach.substitutions:
+        raise ValueError("a shifted attach substitutes nothing")
+    if attach.answer_slot_id not in {s.id for s in _own_slots(attach.producer_plan)}:
+        raise ValueError(
+            f"shifted attach answer slot {attach.answer_slot_id!r} is not a producer slot",
+        )
+    return slot.id
 
 
 def _transforms_read(key: ValueKey):

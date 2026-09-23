@@ -33,7 +33,7 @@ from pydantic import BaseModel, ConfigDict, field_validator
 
 from slayer.core.errors import AggregationNotAllowedError, MaterialisationStageError
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
-from slayer.core.keys import BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, Phase, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, column_leaf, column_path, is_boolean_shaped, source_anchor_path, substitute_value_keys, walk_value_keys
+from slayer.core.keys import BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, Phase, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, column_leaf, column_path, is_boolean_shaped, shift_offset_of, source_anchor_path, substitute_value_keys, walk_value_keys
 from slayer.core.join_walker import resolve_hop, terminal_model
 from slayer.core.models import Aggregation
 from slayer.core.refs import (
@@ -41,7 +41,6 @@ from slayer.core.refs import (
     agg_kwarg_canonical_str,
     expression_source_leaf,
 )
-from slayer.core.time_bounds import strip_frame_bounds
 from slayer.core.window_duration import parse_window_duration as _parse_window_duration
 from slayer.sql.column_expansion import (
     is_trivial_base,
@@ -641,31 +640,6 @@ _COMPOUND_VALUE_KEYS = (
     ColumnKey, ColumnSqlKey, TimeTruncKey, StarKey,
     AggregateKey, TransformKey, ArithmeticKey, ScalarCallKey, BetweenKey, InKey,
 )
-
-
-def _regroup_placeholder_map(planned_query):
-    """Recover the aggregate leaves the planner isolated into ``_cm_*`` producer
-    CTEs. Returns ``(placeholder_key -> original aggregate key, original key ->
-    producer slot)`` — a join-crossing fragment aggregation is regrouped this way
-    and must re-aggregate in the shifted CTE rather than read its current value."""
-    to_original: Dict[Any, Any] = {}
-    to_slot: Dict[Any, Any] = {}
-    for plan in planned_query.regroup_attach_plans:
-        prod = plan.producer_plan
-        prod_slots = {
-            s.id: s
-            for s in (
-                list(prod.row_slots)
-                + list(prod.aggregate_slots)
-                + list(prod.combined_expression_slots)
-            )
-        }
-        for sub in plan.substitutions:
-            to_original[sub.placeholder] = sub.original_key
-            slot = prod_slots.get(sub.producer_slot_id)
-            if slot is not None:
-                to_slot[sub.original_key] = slot
-    return to_original, to_slot
 
 
 def _validate_consecutive_periods_input(*, op: str, inner) -> None:
@@ -1719,21 +1693,6 @@ class SQLGenerator:
         """The one driver for the transform-step phase: level-ascending batches,
         then the fused trailing derived-composite step (D8)."""
         planned_query = render.planned_query
-        if any(
-            layer.op == "time_shift" for layer in planned_query.transform_layers
-        ):
-            shifted_where_parts, shifted_where_join_paths = (
-                self._build_shifted_cte_where_parts(
-                    planned_query=planned_query,
-                    source_relation=chain.source_relation,
-                    source_model=chain.source_model,
-                    bundle=render.bundle,
-                    regroup_env=render.regroup_env,
-                )
-            )
-        else:
-            shifted_where_parts, shifted_where_join_paths = [], []
-
         # Batches by planner-assigned derived level, ascending (D8): within a
         # level, window batch, then time_shift, then cp, in transform_layers
         # order — the exact sequence the retired Kahn readiness rounds produced.
@@ -1765,8 +1724,6 @@ class SQLGenerator:
                 ready_time_shift=ready_time_shift,
                 chain=chain,
                 render=render,
-                shifted_where_parts=shifted_where_parts,
-                shifted_where_join_paths=shifted_where_join_paths,
                 chain_tail=chain_tail,
             )
             chain_tail = self._emit_cp_layers(
@@ -1975,8 +1932,6 @@ class SQLGenerator:
         ready_time_shift,
         chain: ChainState,
         render: RenderState,
-        shifted_where_parts,
-        shifted_where_join_paths,
         chain_tail,
     ):
         """Emit the ``shifted_`` + ``sjoin_`` CTE pair for each ready"""
@@ -1987,8 +1942,6 @@ class SQLGenerator:
                     slot=slot,
                     chain=chain,
                     render=render,
-                    shifted_where_parts=shifted_where_parts,
-                    shifted_where_join_paths=shifted_where_join_paths,
                     chain_tail=chain_tail,
                 )
         return chain_tail
@@ -4117,34 +4070,41 @@ class SQLGenerator:
 
     def _render_producer_split(
         self, *, producer, bundle, kernel=None,
-    ) -> Tuple[List[CteEntry], str]:
-        """Render a regroup producer, split into (hoisted CTEs, body SQL) — D2.
+    ) -> Tuple[List[CteEntry], exp.Expression]:  # pyright: ignore[reportPrivateImportUsage] — sqlglot ships no __all__
+        """Render a regroup producer as AST, split into (hoisted CTEs, body) — D2.
         A pushed registry scope captures the producer statement's declared CTE
         deps for :meth:`_split_statement_ctes`."""
         self._gen_dep_stack.append({})
         try:
-            producer_sql = cast(str, self.generate_from_planned(
+            return self._split_ast_ctes(cast(exp.Select, self.generate_from_planned(
                 planned_query=producer, bundle=bundle, as_cte_body=True,
-                reuse_allocator=True, producer_kernel=kernel,
-            ))
-            return self._split_statement_ctes(producer_sql)
+                reuse_allocator=True, producer_kernel=kernel, as_ast=True,
+            )))
         finally:
             self._gen_dep_stack.pop()
 
     def _split_statement_ctes(
         self, sql: str,
     ) -> Tuple[List[CteEntry], str]:
+        """Text form of :meth:`_split_ast_ctes` (a multi-stage statement arrives as SQL)."""
+        entries, body = self._split_ast_ctes(
+            cast(exp.Select, sqlglot.parse_one(sql, dialect=self.dialect)),
+        )
+        return entries, body.sql(dialect=self.dialect, pretty=True) if entries else sql
+
+    def _split_ast_ctes(
+        self, parsed: exp.Expression,  # pyright: ignore[reportPrivateImportUsage] — sqlglot ships no __all__
+    ) -> Tuple[List[CteEntry], exp.Expression]:  # pyright: ignore[reportPrivateImportUsage] — sqlglot ships no __all__
         """Split a rendered statement into (hoisted CTE entries, de-WITHed body).
 
         Each entry's ``depends_on`` comes from the top statement-scoped registry
         (declared at assembly time), re-keyed through the ``_base`` rename map so
         an edge onto a renamed base still resolves. Fails closed if one CTE name
         appears in two ``WITH`` nodes of the statement."""
-        parsed = sqlglot.parse_one(sql, dialect=self.dialect)
         self._unmangle_dotted_table_refs(parsed)
         with_nodes = list(parsed.find_all(exp.With))
         if not with_nodes:
-            return [], sql
+            return [], parsed
         allocator = self._gen_allocator or self._new_allocator()
         captured = self._gen_dep_stack[-1] if self._gen_dep_stack else {}
         entries: List[CteEntry] = []
@@ -4168,7 +4128,7 @@ class SQLGenerator:
                     name=name, query=cte.this.copy(), depends_on=deps,
                 ))
             with_node.pop()
-        return entries, parsed.sql(dialect=self.dialect, pretty=True)
+        return entries, parsed
 
     def _split_root_ctes(
         self, sql: str,
@@ -4176,7 +4136,7 @@ class SQLGenerator:
         """Split the multi-stage ROOT statement into (its own CTE entries, de-WITHed
         body). The root is the outermost consumer, so its base CTE is NOT renamed;
         each entry takes its declared deps from the top registry (identity re-key)."""
-        parsed = cast("exp.Select", sqlglot.parse_one(sql, dialect=self.dialect))
+        parsed = cast(exp.Select, sqlglot.parse_one(sql, dialect=self.dialect))
         with_node = parsed.args.get("with_")
         if with_node is None:
             return [], parsed
@@ -4260,15 +4220,6 @@ class SQLGenerator:
         for attach in planned_query.regroup_attach_plans:
             if attach.attach_phase != "combined":
                 continue
-            producer = attach.producer_plan
-            sub_slots = {
-                s.id: s
-                for s in (
-                    list(producer.row_slots)
-                    + list(producer.aggregate_slots)
-                    + list(producer.combined_expression_slots)
-                )
-            }
             # A producer already rendered in any scope of this generation reuses its CTE; checked before minting so no
             # _cm_ suffix is burned.
             rendered_map = self._gen_rendered_producers
@@ -4291,46 +4242,10 @@ class SQLGenerator:
                     allocator=allocator, dialect=self.dialect,
                     limit=self._dialect.max_identifier_bytes,
                 )
-                self._gen_split_consumers.append(cte_name)
-                try:
-                    producer_hoisted, producer_body_sql = (
-                        self._render_producer_split(
-                            producer=producer,
-                            bundle=self._producer_render_bundle(
-                                attach=attach, bundle=bundle,
-                            ),
-                            kernel=attach.kernel,
-                        )
-                    )
-                finally:
-                    self._gen_split_consumers.pop()
-                # Declared edges through the hoist (sql P6): the consumer reads
-                # its hoisted nested producers, each of which keeps its own deps —
-                # so a doubly-attached carrier is ordered before every consumer.
-                # Reuse edges are per node (its OWN name): giving a hoisted producer
-                # the consumer's reuse deps would make it depend on itself when the
-                # consumer reuses it.
-                for h in producer_hoisted:
-                    ctes.append(Node(
-                        name=h.name, phase="producer", query=h.query,
-                        depends_on=[*h.depends_on, *self._reuse_deps_of(h.name)],
-                    ))
-                ctes.append(Node(
-                    name=cte_name, phase="producer",
-                    query=self._parse_cte_body(producer_body_sql),
-                    depends_on=[
-                        *[h.name for h in producer_hoisted],
-                        *self._reuse_deps_of(cte_name),
-                    ],
-                ))
-                producer_relation = producer.source_relation
-                col_by_sid = {
-                    sid: self._full_alias_for_slot(
-                        slot=slot, source_relation=producer_relation,
-                        alias_index={},
-                    )
-                    for sid, slot in sub_slots.items()
-                }
+                entries, col_by_sid = self._producer_ctes(
+                    attach=attach, bundle=bundle, cte_name=cte_name,
+                )
+                ctes.extend(entries)
                 if rendered_map is not None:
                     rendered_map[ident] = (cte_name, col_by_sid)
             for sub in attach.substitutions:
@@ -4470,7 +4385,7 @@ class SQLGenerator:
 
             self._gen_split_consumers.append(cte_name)
             try:
-                producer_hoisted, producer_body_sql = self._render_producer_split(
+                producer_hoisted, producer_body = self._render_producer_split(
                     producer=producer,
                     bundle=self._producer_render_bundle(
                         attach=attach, bundle=bundle,
@@ -4484,7 +4399,8 @@ class SQLGenerator:
                 if sid in sub_slots
             ]
             wrapped = build_flat_rename_wrapper(
-                source_relation=relation, stage_sql=producer_body_sql,
+                source_relation=relation,
+                stage_sql=producer_body.sql(dialect=self.dialect, pretty=True),
                 expected_columns=expected, dialect=self.dialect,
             )
             for h in producer_hoisted:
@@ -5047,531 +4963,227 @@ class SQLGenerator:
             for entry in _lower_positions(planned_query).order
         ]
 
-    def _build_shifted_cte_where_parts(
-        self,
-        *,
-        planned_query,
-        source_relation: str,
-        source_model,
-        bundle,
-        regroup_env: Optional[Dict[Any, exp.Expression]] = None,
-    ) -> Tuple[List[str], List[Tuple[str, ...]]]:
-        """Build the WHERE clauses for the shifted CTE that re-aggregates"""
-
-        out: List[str] = []
-        crossed_paths: List[Tuple[str, ...]] = []
-        time_cols = frozenset(planned_query.frame_bound_columns)
-        for fp in _lower_positions(planned_query).filters:
-            if fp.phase != Phase.ROW:
+    def _series_shift_cte(
+        self, *, slot, chain: ChainState, render: RenderState, chain_tail: str,
+        time_alias: str, cte_name_alias: str,
+    ) -> Tuple[str, str, List[Tuple[str, str]]]:
+        """The series regime's shifted relation: the input's materialised series read
+        off the chain tail, keyed by the unshifted bucket and projected grain."""
+        planned_query = render.planned_query
+        slots_by_id = chain.slots_by_id
+        available = chain.available_alias_by_slot_id
+        grain_sids = set(self._transform_grain_slot_ids(
+            planned_query=planned_query, slots_by_id=slots_by_id,
+        ))
+        pk_aliases: List[str] = []
+        for sid in planned_query.projection:
+            dim_slot = slots_by_id.get(sid)
+            if dim_slot is None or dim_slot.phase != Phase.ROW:
                 continue
-            rendered = self._shifted_where_part(
-                fp=fp, source_relation=source_relation,
-                source_model=source_model, bundle=bundle,
-                time_columns=time_cols, regroup_env=regroup_env,
-            )
-            if rendered is None:
+            if sid not in grain_sids and not isinstance(dim_slot.key, TimeTruncKey):
                 continue
-            part, paths = rendered
-            out.append(part)
-            for p in paths:
-                if p not in crossed_paths:
-                    crossed_paths.append(p)
-        return out, crossed_paths
+            alias = available.get(sid)
+            if alias is None:
+                raise RuntimeError(
+                    f"time_shift query dimension not materialised: slot id={slot.id!r}.",
+                )
+            if alias != time_alias and alias not in pk_aliases:
+                pk_aliases.append(alias)
+        input_sid = chain.slot_id_by_key.get(slot.key.input)
+        value_alias = (
+            available.get(input_sid) if input_sid is not None else None
+        ) or chain.cte_allocator.allocate_cte(f"{slot.declared_name}__ts")
+        value_expr = render_value_key(
+            key=slot.key.input,
+            ctx=self._alias_render_ctx(
+                slot_id_by_key=chain.slot_id_by_key,
+                available_alias_by_slot_id=available,
+            ),
+        )
+        select = exp.Select().select(
+            exp.column(time_alias, quoted=True).as_(time_alias, quoted=True),
+            *[exp.column(a, quoted=True).as_(a, quoted=True) for a in pk_aliases],
+            value_expr.as_(value_alias, quoted=True),
+        ).from_(chain_tail)
+        cte_name = cte_name_from_alias(
+            prefix="shifted_", alias=cte_name_alias, allocator=chain.cte_allocator,
+            dialect=self.dialect, limit=self._dialect.max_identifier_bytes,
+        )
+        chain.ctes.append(CteEntry(name=cte_name, query=select, depends_on=[chain_tail]))
+        return cte_name, value_alias, [(a, a) for a in [time_alias, *pk_aliases]]
 
-    def _shifted_where_part(
-        self, *, fp, source_relation: str, source_model, bundle,
-        time_columns: "AbstractSet[Any]",
-        regroup_env: Optional[Dict[Any, exp.Expression]] = None,
-    ) -> "Optional[Tuple[str, List[Tuple[str, ...]]]]":
-        """Render one ROW-phase filter for the shifted CTE, returning its SQL"""
-        if fp.expression is not None:
-            residual = strip_frame_bounds(
-                key=fp.expression.value_key, time_columns=time_columns,
+    def _shifted_producer_cte(
+        self, *, slot, chain: ChainState, render: RenderState, cte_name_alias: str,
+    ) -> Tuple[str, str, List[Tuple[str, str]]]:
+        """The re-aggregation regime's shifted relation: the slot's shifted producer,
+        rendered once per identity (a base producer it interns with is read as is)."""
+        planned_query = render.planned_query
+        attach = next(
+            (a for a in planned_query.regroup_attach_plans
+             if a.attach_phase == "shifted" and a.shift_of == slot.id),
+            None,
+        )
+        if attach is None:
+            raise RuntimeError(
+                f"time_shift slot {slot.id!r} has no shifted producer attach.",
             )
-            if residual is None:
-                return None  # wholly a frame bound — omit from the shifted CTE.
-            rendered = render_value_key(
-                key=residual,
-                ctx=self._filter_render_context(
-                    source_model=source_model,
-                    source_relation=source_relation,
-                    bundle=bundle,
-                    regroup_env=regroup_env,
-                ),
+        rendered_map = self._gen_rendered_producers
+        ident = regroup_producer_identity(attach)
+        rec = rendered_map.get(ident) if rendered_map is not None else None
+        if rec is not None:
+            cte_name, col_by_sid = rec
+            self._record_reuse_edges(cte_name)
+        else:
+            cte_name = cte_name_from_alias(
+                prefix="shifted_", alias=cte_name_alias,
+                allocator=chain.cte_allocator, dialect=self.dialect,
+                limit=self._dialect.max_identifier_bytes,
             )
-            if isinstance(rendered, (exp.And, exp.Or)):
-                rendered = exp.Paren(this=rendered)
-            paths = self._joined_paths_in_sql(
-                sql_expr=rendered, source_relation=source_relation,
-                source_model=source_model, bundle=bundle,
+            entries, col_by_sid = self._producer_ctes(
+                attach=attach, bundle=render.bundle, cte_name=cte_name,
             )
-            return rendered.sql(dialect=self.dialect), paths
-        if fp.text is not None:
-            frame = self._mode_a_scope(
-                source_model=source_model,
-                source_relation=source_relation,
-                bundle=bundle,
+            chain.ctes.extend(entries)
+            if rendered_map is not None:
+                rendered_map[ident] = (cte_name, col_by_sid)
+        pairs: List[Tuple[str, str]] = []
+        for host_key, producer_sid in attach.join_pairs:
+            host_sid = chain.slot_id_by_key.get(host_key)
+            host_alias = (
+                chain.available_alias_by_slot_id.get(host_sid)
+                if host_sid is not None else None
             )
-            rendered = frame.enter_predicate(
-                fp.text,
-                location=f"SlayerModel.filters on model {source_model.name!r}",
-            )
-            return rendered.sql(dialect=self.dialect), frame.join_paths.as_list()
-        return None
+            if host_alias is None or producer_sid not in col_by_sid:
+                raise RuntimeError(
+                    f"time_shift slot {slot.id!r}: shifted join-back grain member "
+                    f"{host_key!r} is not materialised.",
+                )
+            pairs.append((host_alias, col_by_sid[producer_sid]))
+        return cte_name, col_by_sid[attach.answer_slot_id], pairs
 
-    def _emit_time_shift_ctes_for_planned(  # NOSONAR(S3776) — single conceptual unit for one time_shift slot: partition/time resolution through the shifted ScopeFrame + shifted-CTE body assembly + collision-safe CTE naming (cte_allocator) + sjoin grain join-back, all sharing tightly-coupled per-slot state (time_alias / input_alias / partition_specs / shifted_cte_name / carry aliases). Splitting forces that cross-cutting state through many-argument helpers without simplifying anything — same shape as the sibling producer-CTE renderers' suppression.
+    def _producer_ctes(
+        self, *, attach, bundle, cte_name: str,
+    ) -> Tuple[List[Node], Dict[str, str]]:
+        """Render ``attach``'s producer as ``cte_name`` after its hoisted CTEs, and map
+        each producer slot id to its output column (sql P6: declared edges only)."""
+        producer = attach.producer_plan
+        self._gen_split_consumers.append(cte_name)
+        try:
+            hoisted, body = self._render_producer_split(
+                producer=producer,
+                bundle=self._producer_render_bundle(attach=attach, bundle=bundle),
+                kernel=attach.kernel,
+            )
+        finally:
+            self._gen_split_consumers.pop()
+        entries: List[Node] = [
+            Node(name=h.name, phase="producer", query=h.query,
+                 depends_on=[*h.depends_on, *self._reuse_deps_of(h.name)])
+            for h in hoisted
+        ]
+        entries.append(Node(
+            name=cte_name, phase="producer", query=body,
+            depends_on=[*[h.name for h in hoisted], *self._reuse_deps_of(cte_name)],
+        ))
+        col_by_sid = {
+            s.id: self._full_alias_for_slot(
+                slot=s, source_relation=producer.source_relation, alias_index={},
+            )
+            for s in (*producer.row_slots, *producer.aggregate_slots,
+                      *producer.combined_expression_slots)
+        }
+        return entries, col_by_sid
+
+    def _emit_time_shift_ctes_for_planned(
         self,
         *,
         slot,
         chain: ChainState,
         render: RenderState,
-        shifted_where_parts: List[str],
-        shifted_where_join_paths: List[Tuple[str, ...]],
         chain_tail: str,
     ) -> str:
-        """Emit a ``shifted_<alias>`` + ``sjoin_<alias>`` CTE pair for"""
-        ctes = chain.ctes
-        cte_allocator = chain.cte_allocator
-        slots_by_id = chain.slots_by_id
-        slot_id_by_key = chain.slot_id_by_key
-        available_alias_by_slot_id = chain.available_alias_by_slot_id
-        aliases_by_slot_id = chain.aliases_by_slot_id
-        source_model = chain.source_model
-        source_relation = chain.source_relation
-        planned_query = render.planned_query
-        bundle = render.bundle
-
+        """Emit the shifted relation + ``sjoin_<alias>`` for one ``time_shift`` slot:
+        each row reads the relation at the bucket containing ``bucket + offset``."""
         key = slot.key
         if not isinstance(key, TransformKey) or key.op != "time_shift":
             raise ValueError(
                 f"expected time_shift TransformKey, got "
                 f"{type(key).__name__} (op={getattr(key, 'op', None)!r})",
             )
-        inner_key = key.input
         time_key = key.time_key
-        # Two regimes (D4). RE-AGGREGATION: a composite re-aggregates each
-        # aggregate leaf in the shifted CTE (regroup-isolated leaves substituted
-        # back to their originals); a BARE leaf keeps its DEV-1750 path
-        # (aggregate → re-aggregate; column / regroup-placeholder → read-and-
-        # rebucket), leaving single-leaf SQL byte-identical. SERIES: the input's
-        # materialised series (its chain aliases) is read shifted — no join
-        # discovery, no re-applied WHERE — and joined back on the series grain.
-        placeholder_to_original, regroup_slot_by_key = _regroup_placeholder_map(
-            planned_query,
-        )
-        # The regime is a planner fact (D6), computed at staging.
-        series_mode = bool(slot.series)
-        is_composite = not series_mode and isinstance(
-            inner_key, (ArithmeticKey, ScalarCallKey),
-        )
-        shifted_input_key = (
-            substitute_value_keys(key=inner_key, mapping=placeholder_to_original)
-            if is_composite else inner_key
-        )
         if not isinstance(time_key, TimeTruncKey):
             raise ValueError(
                 f"time_shift requires a TimeTruncKey time_key; got "
                 f"{type(time_key).__name__} (slot id={slot.id!r}).",
             )
-
-        periods_raw = next(
-            (v for k, v in key.kwargs if k == "periods"), None,
+        periods, shift_gran = shift_offset_of(key)
+        # Explicit granularity else the bucket's: a year shift over month buckets is YoY.
+        shift_granularity = shift_gran or time_key.granularity
+        time_sid = chain.slot_id_by_key.get(time_key)
+        time_alias = (
+            chain.available_alias_by_slot_id.get(time_sid)
+            if time_sid is not None else None
         )
-        if periods_raw is None:
-            raise ValueError(
-                f"time_shift requires 'periods' kwarg; planner gap "
-                f"(slot id={slot.id!r}).",
-            )
-        if isinstance(periods_raw, bool):
-            raise ValueError(
-                f"time_shift periods must be an integer; got bool {periods_raw!r}",
-            )
-        if isinstance(periods_raw, Decimal):
-            if periods_raw != periods_raw.to_integral_value():
-                raise ValueError(
-                    f"time_shift periods must be an integer; got {periods_raw!r}",
-                )
-            periods = int(periods_raw)
-        elif isinstance(periods_raw, int):
-            periods = int(periods_raw)
-        else:
-            raise ValueError(
-                f"time_shift periods must be an integer; got "
-                f"{type(periods_raw).__name__} {periods_raw!r}",
-            )
-
-        time_sid = slot_id_by_key.get(time_key)
-        if time_sid is None or time_sid not in available_alias_by_slot_id:
+        if time_alias is None:
             raise RuntimeError(
                 f"time_shift time_key not materialised in base CTE: "
                 f"slot id={slot.id!r}, time_key={time_key!r}.",
             )
-        time_alias = available_alias_by_slot_id[time_sid]
-
-        # A bare leaf has its own base slot (alias reused, keeping N=1 SQL
-        # byte-identical); a composite has none, so its value gets an allocated
-        # internal alias below.
-        input_sid = slot_id_by_key.get(inner_key)
-        input_alias = (
-            available_alias_by_slot_id.get(input_sid)
-            if input_sid is not None else None
+        # A hidden inner slot's declared_name repeats across offsets; allocate a unique alias.
+        slot_aliases: List[str] = (
+            list(slot.public_aliases) if slot.public_aliases
+            else [chain.cte_allocator.allocate_cte(slot.declared_name)]
         )
-        if not is_composite and not series_mode and input_alias is None:
-            raise RuntimeError(
-                f"time_shift input not materialised in base CTE: "
-                f"slot id={slot.id!r}, input={inner_key!r}.",
+        if slot.series:
+            shifted_cte_name, value_alias, pairs = self._series_shift_cte(
+                slot=slot, chain=chain, render=render, chain_tail=chain_tail,
+                time_alias=time_alias, cte_name_alias=slot_aliases[0],
+            )
+        else:
+            shifted_cte_name, value_alias, pairs = self._shifted_producer_cte(
+                slot=slot, chain=chain, render=render, cte_name_alias=slot_aliases[0],
             )
 
-        shifted_allocator = self._gen_allocator or self._new_allocator()
-        shifted_scope = self._scope_frame(
-            model=source_model, relation=source_relation,
-            bundle=bundle, allocator=shifted_allocator,
-            attached_columns=render.regroup_env,
-        )
-
-        # Auto-include every projected dimension in the sjoin grain, else a prior-period total broadcasts across every
-        # value of an ungrouped dimension.
-        partition_specs: list[tuple[str, str, exp.Expression]] = []
-        seen_partition_sids: set = set()
-
-        def _resolve_partition_expr(pk_obj) -> exp.Expression:
-            if isinstance(pk_obj, TimeTruncKey):
-                raw = shifted_scope.resolve(pk_obj.column)
-                return self._build_date_trunc(
-                    col_expr=raw,
-                    granularity=TimeGranularity(pk_obj.granularity),
-                )
-            if isinstance(pk_obj, (ColumnKey, ColumnSqlKey)):
-                return shifted_scope.resolve(pk_obj)
-            if isinstance(pk_obj, (ScalarCallKey, ArithmeticKey)):
-                return render_value_key(
-                    key=pk_obj,
-                    ctx=RenderContext(scope=shifted_scope, dialect=self._dialect),
-                )
-            # Unreachable: auto-partitions are query-dimension slots, always one
-            # of the five kinds above. A RuntimeError invariant, not a user error.
-            raise RuntimeError(
-                f"time_shift partition on {type(pk_obj).__name__} reached the "
-                f"shifted CTE (slot id={slot.id!r}); only query-dimension "
-                f"partition kinds are expected here.",
-            )
-
-        def _add_partition(pk_obj, *, where: str) -> None:
-            pk_sid = slot_id_by_key.get(pk_obj)
-            if pk_sid is None or pk_sid not in available_alias_by_slot_id:
-                raise RuntimeError(
-                    f"time_shift {where} not materialised: "
-                    f"slot id={slot.id!r}, key={pk_obj!r}.",
-                )
-            if pk_sid == time_sid or pk_sid in seen_partition_sids:
-                return
-            pk_alias = available_alias_by_slot_id[pk_sid]
-            pk_expr = (
-                exp.column(pk_alias, quoted=True) if series_mode
-                else _resolve_partition_expr(pk_obj)
-            )
-            partition_specs.append((pk_sid, pk_alias, pk_expr))
-            seen_partition_sids.add(pk_sid)
-
-        grain_sids = set(self._transform_grain_slot_ids(
-            planned_query=planned_query, slots_by_id=slots_by_id,
-        ))
-        for sid in planned_query.projection:
-            dim_slot = slots_by_id.get(sid)
-            if dim_slot is None or dim_slot.phase != Phase.ROW:
-                continue
-            if sid in grain_sids or isinstance(dim_slot.key, TimeTruncKey):
-                _add_partition(dim_slot.key, where="query dimension")
-
-        # partition_by is binder-rejected on non-rank transforms (DEV-1739) and
-        # rank never routes here, so explicit partition_keys are always empty.
-        if key.partition_keys:
-            raise RuntimeError(
-                f"time_shift unexpectedly carries partition_keys "
-                f"{key.partition_keys!r} (slot id={slot.id!r}).",
-            )
-
-        def _build_shifted_leaf_agg(leaf_key) -> exp.Expression:
-            """Re-aggregate one aggregate leaf over the shifted bucket: register
-            its joins / fragment kwargs / column filter into ``shifted_scope``,
-            build the aggregate, and cast per the leaf's own base slot. The
-            composite renderer recomposes the arithmetic on top."""
-            leaf_sid = slot_id_by_key.get(leaf_key)
-            leaf_slot = (
-                slots_by_id.get(leaf_sid) if leaf_sid is not None
-                else regroup_slot_by_key.get(leaf_key)
-            )
-            if leaf_slot is None:
-                raise RuntimeError(
-                    f"time_shift composite leaf not materialised: "
-                    f"slot id={slot.id!r}, leaf={leaf_key!r}.",
-                )
-            leaf_frag_kwargs: "Dict[str, ResolvedAggKwarg]" = {}
-            if isinstance(leaf_key.source, ColumnSqlKey):
-                shifted_scope.resolve(leaf_key.source)
-            for _arg in leaf_key.args:
-                if isinstance(_arg, ColumnSqlKey) and _arg.path:
-                    continue
-                if isinstance(_arg, (ColumnKey, ColumnSqlKey)):
-                    shifted_scope.resolve(_arg)
-            for _kname, _kval in leaf_key.kwargs:
-                if isinstance(_kval, (ColumnKey, ColumnSqlKey)):
-                    shifted_scope.resolve(_kval)
-            for _fname, _fast in self._register_fragment_kwarg_joins(
-                key=leaf_key, scope=shifted_scope, model=source_model,
-            ).items():
-                leaf_frag_kwargs.setdefault(
-                    _fname, ResolvedAggKwarg(kind="expr", value=_fast),
-                )
-            synth = self._build_agg_render_spec_from_planned(
-                slot=leaf_slot, key=leaf_key, source_model=source_model,
-                source_relation=source_relation,
-                full_alias=input_alias or "__op__", bundle=bundle,
-                resolved_agg_kwargs=leaf_frag_kwargs or None,
-                scope=shifted_scope,
-            )
-            agg_expr, _ = self._build_agg(synth)
-            return _wrap_cast_for_type(expr=agg_expr, dt=self._slot_cast_type(leaf_slot))
-
-        # Shift granularity is the explicit 3rd arg else the TD granularity, so a year-shift over a month bucket yields
-        # 'same month, previous year' (YoY).
-        shift_gran_raw = next(
-            (v for k, v in key.kwargs if k == "granularity"), None,
-        )
-        shift_granularity = (
-            str(shift_gran_raw) if shift_gran_raw is not None
-            else time_key.granularity
-        )
-        # Truncate BEFORE shifting: offsetting a raw timestamp overflows on non-clamping dialects (SQLite: Jan 31 + 1
-        # month = Mar 2), dropping period-tail rows; the outer re-trunc is skipped only for bucket-aligned offsets.
-        # A series CTE keeps its buckets UNSHIFTED: the consumer side of the
-        # join-back looks up its own shifted bucket instead, so a many-to-one
-        # calendar shift (day buckets, month offset — Jan 28..31 clamp to
-        # Feb 28) can never fan out the join.
+        # Consumer-side lookup: total even when the calendar shift is many-to-one.
         bucket_granularity = TimeGranularity(time_key.granularity)
-        if series_mode:
-            shifted_trunc_expr = exp.column(time_alias, quoted=True)
-        else:
-            shifted_raw_expr = self._build_time_offset_expr(
-                col_expr=self._build_date_trunc(
-                    col_expr=shifted_scope.resolve(time_key.column),
-                    granularity=bucket_granularity,
-                ),
-                offset=-periods,
-                granularity=shift_granularity,
-            )
-            if _shift_preserves_bucket_starts(
-                bucket=bucket_granularity, shift=shift_granularity,
-            ):
-                shifted_trunc_expr = shifted_raw_expr
-            else:
-                shifted_trunc_expr = self._build_date_trunc(
-                    col_expr=shifted_raw_expr,
-                    granularity=bucket_granularity,
-                )
-
-        shifted_select_parts: List[exp.Expression] = []
-        shifted_group_by: List[exp.Expression] = []
-
-        shifted_select_parts.append(
-            shifted_trunc_expr.as_(time_alias, quoted=True),
+        lookup_expr = self._build_time_offset_expr(
+            col_expr=grain_alias_column(alias=time_alias, table=chain_tail),
+            offset=periods, granularity=shift_granularity,
         )
-        if not series_mode:
-            shifted_group_by.append(shifted_trunc_expr.copy())
-
-        for _, pk_alias, pk_expr in partition_specs:
-            shifted_select_parts.append(pk_expr.as_(pk_alias, quoted=True))
-            if not series_mode:
-                shifted_group_by.append(pk_expr.copy())
-
-        if series_mode:
-            # D4: the series value re-renders over the chain's aliases — the
-            # inner transform / combined composite / predicate is computed once
-            # upstream; this CTE only relabels it onto the shifted bucket.
-            shifted_value_expr = render_value_key(
-                key=inner_key,
-                ctx=self._alias_render_ctx(
-                    slot_id_by_key=slot_id_by_key,
-                    available_alias_by_slot_id=available_alias_by_slot_id,
-                ),
+        if not _shift_preserves_bucket_starts(
+            bucket=bucket_granularity, shift=shift_granularity,
+        ):
+            lookup_expr = self._build_date_trunc(
+                col_expr=lookup_expr, granularity=bucket_granularity,
             )
-            shifted_value_alias = input_alias or cte_allocator.allocate_cte(
-                f"{slot.declared_name}__ts",
-            )
-        elif not is_composite and isinstance(inner_key, (ColumnKey, ColumnSqlKey)):
-            # Bare column or regroup placeholder: grouped and projected directly
-            # (read-and-rebucket of its base-slot value — DEV-1750, unchanged).
-            shifted_value_expr = shifted_scope.resolve(inner_key)
-            shifted_group_by.append(shifted_value_expr.copy())
-            shifted_value_alias = input_alias
-        else:
-            # Bare aggregate (N=1) or aggregate-only composite (N>1): the same
-            # door — each aggregate leaf re-aggregates in the shifted bucket and
-            # the composite recomposes on top. No whole-composite cast (leaves
-            # cast). A bare aggregate reuses its base-slot alias (byte-identical).
-            shifted_value_expr = render_value_key(
-                key=shifted_input_key,
-                ctx=RenderContext(
-                    scope=shifted_scope, dialect=self._dialect,
-                    composites=CompositeFacilities(
-                        agg_builder=_build_shifted_leaf_agg,
-                    ),
-                ),
-            )
-            shifted_value_alias = input_alias or cte_allocator.allocate_cte(
-                f"{slot.declared_name}__ts",
-            )
-        shifted_select_parts.append(
-            shifted_value_expr.as_(shifted_value_alias, quoted=True),
-        )
-
-        if series_mode:
-            # The series CTE reads only the chain tail: filters, joins, and
-            # producer attaches already shaped the series exactly once.
-            regroup_attach_conditions = []
-            shifted_select = exp.Select().select(*shifted_select_parts).from_(
-                chain_tail,
-            )
-        else:
-            # A composite re-aggregates every leaf from source, so it reads no
-            # _cm_* value — omit the regroup attaches (a bare read-and-rebucket
-            # still needs them to resolve its placeholder column).
-            regroup_attach_conditions = (
-                []
-                if is_composite
-                else self._resolve_regroup_attach_conditions(
-                    regroup_join_specs=render.regroup_join_specs,
-                    scope=shifted_scope,
-                )
-            )
-            for _p in shifted_where_join_paths:
-                shifted_scope.join_paths.add(_p)
-            shifted_join_paths = shifted_scope.join_paths.as_list()
-            if shifted_join_paths:
-                from_clause, shifted_joins = self._build_from_and_joins(
-                    source_model=source_model,
-                    source_relation=source_relation,
-                    joined_paths=shifted_join_paths,
-                    bundle=bundle,
-                )
-            else:
-                from_clause = self._build_from_clause_from_planned(
-                    source_model=source_model, source_relation=source_relation,
-                )
-                shifted_joins = []
-
-            shifted_select = exp.Select().select(*shifted_select_parts).from_(
-                from_clause,
-            )
-            shifted_select = _apply_joins(
-                select=shifted_select, joins=shifted_joins,
-            )
-            for _cte_name, _condition in regroup_attach_conditions:
-                if _condition is None:
-                    shifted_select = shifted_select.join(
-                        exp.to_identifier(_cte_name), join_type="CROSS",
-                    )
-                else:
-                    shifted_select = shifted_select.join(
-                        exp.to_identifier(_cte_name), on=_condition,
-                        join_type="LEFT",
-                    )
-            for _where_part in shifted_where_parts:
-                shifted_select = shifted_select.where(
-                    self._parse_predicate(_where_part),
-                )
-            for _gb in shifted_group_by:
-                shifted_select = shifted_select.group_by(_gb)
-
-        # A hidden inner time_shift slot's declared_name isn't unique across sibling shifts with different offsets;
-        # allocate a unique internal alias so growth_2m doesn't collapse onto growth_1m.
-        if slot.public_aliases:
-            slot_aliases: List[str] = list(slot.public_aliases)
-        else:
-            slot_aliases = [cte_allocator.allocate_cte(slot.declared_name)]
-        cte_name_alias = slot_aliases[0]
-        # Length-fit the shifted_/sjoin_ CTE names so a long transform name can't exceed the dialect's identifier limit
-        # and silently truncate.
-        _fit_kw = {
-            "allocator": cte_allocator, "dialect": self.dialect,
-            "limit": self._dialect.max_identifier_bytes,
-        }
-        shifted_cte_name = cte_name_from_alias(
-            prefix="shifted_", alias=cte_name_alias, **_fit_kw,
-        )
-        sjoin_cte_name = cte_name_from_alias(
-            prefix="sjoin_", alias=cte_name_alias, **_fit_kw,
-        )
-
-        ctes.append(CteEntry(
-            name=shifted_cte_name, query=shifted_select,
-            depends_on=(
-                [chain_tail] if series_mode
-                else [name for name, _ in regroup_attach_conditions]
-            ),
-        ))
-
-        prev_cte = chain_tail  # the chain tail this pair extends
-        carry_aliases = self._carry_aliases_in_plan_order(
-            aliases_by_slot_id,
-        )
-        sjoin_select_parts: List[exp.Expression] = [
-            grain_alias_column(alias=a, table=prev_cte) for a in carry_aliases
-        ]
-        slot_full_aliases: List[str] = []
-        for slot_alias in slot_aliases:
-            full_slot_alias = f"{source_relation}.{slot_alias}"
-            slot_full_aliases.append(full_slot_alias)
-            sjoin_select_parts.append(
-                grain_alias_column(
-                    alias=shifted_value_alias, table=shifted_cte_name,
-                ).as_(full_slot_alias, quoted=True),
-            )
-
-        if series_mode:
-            # Consumer-side lookup: each row reads the series at ITS shifted
-            # bucket — total and deterministic even when the calendar shift is
-            # many-to-one.
-            lookup_expr = self._build_time_offset_expr(
-                col_expr=grain_alias_column(alias=time_alias, table=prev_cte),
-                offset=periods,
-                granularity=shift_granularity,
-            )
-            if not _shift_preserves_bucket_starts(
-                bucket=bucket_granularity, shift=shift_granularity,
-            ):
-                lookup_expr = self._build_date_trunc(
-                    col_expr=lookup_expr, granularity=bucket_granularity,
-                )
-            prev_time_side = lookup_expr
-        else:
-            prev_time_side = grain_alias_column(alias=time_alias, table=prev_cte)
-        grain_pairs = [
-            (prev_time_side, grain_alias_column(alias=time_alias, table=shifted_cte_name)),
-        ]
-        grain_pairs.extend(
-            (
-                grain_alias_column(alias=pk_alias, table=prev_cte),
-                grain_alias_column(alias=pk_alias, table=shifted_cte_name),
-            )
-            for _, pk_alias, _ in partition_specs
-        )
         sjoin_on = build_grain_joinback_condition(
-            pairs=grain_pairs,
+            pairs=[
+                (
+                    lookup_expr if host == time_alias
+                    else grain_alias_column(alias=host, table=chain_tail),
+                    grain_alias_column(alias=shifted, table=shifted_cte_name),
+                )
+                for host, shifted in pairs
+            ],
             dialect=self._dialect,
         )
-        sjoin_select = exp.Select().select(*sjoin_select_parts).from_(
-            prev_cte,
-        ).join(shifted_cte_name, on=sjoin_on, join_type="LEFT")
-        ctes.append(CteEntry(
-            name=sjoin_cte_name,
-            query=sjoin_select,
-            depends_on=[prev_cte, shifted_cte_name],
+        source_relation = chain.source_relation
+        slot_full_aliases = [f"{source_relation}.{a}" for a in slot_aliases]
+        sjoin_select = exp.Select().select(
+            *[grain_alias_column(alias=a, table=chain_tail)
+              for a in self._carry_aliases_in_plan_order(chain.aliases_by_slot_id)],
+            *[grain_alias_column(alias=value_alias, table=shifted_cte_name).as_(
+                full, quoted=True) for full in slot_full_aliases],
+        ).from_(chain_tail).join(shifted_cte_name, on=sjoin_on, join_type="LEFT")
+        sjoin_cte_name = cte_name_from_alias(
+            prefix="sjoin_", alias=slot_aliases[0], allocator=chain.cte_allocator,
+            dialect=self.dialect, limit=self._dialect.max_identifier_bytes,
+        )
+        chain.ctes.append(CteEntry(
+            name=sjoin_cte_name, query=sjoin_select,
+            depends_on=[chain_tail, shifted_cte_name],
         ))
-
-        for full_slot_alias in slot_full_aliases:
-            aliases_by_slot_id.setdefault(slot.id, []).append(full_slot_alias)
-        available_alias_by_slot_id.setdefault(slot.id, slot_full_aliases[0])
+        chain.aliases_by_slot_id.setdefault(slot.id, []).extend(slot_full_aliases)
+        chain.available_alias_by_slot_id.setdefault(slot.id, slot_full_aliases[0])
         return sjoin_cte_name
 
     def _emit_consecutive_periods_ctes_for_planned(  # NOSONAR(S3776) — one cohesive per-slot consecutive_periods emission: predicate-shape decision, unique hidden alias plus collision-safe reset and value CTE names, the reset-group window layer, then the count-within-group window layer. Each block shares the slot registry and alias maps and cte_allocator; extracting helpers would scatter that contract without simplifying it.

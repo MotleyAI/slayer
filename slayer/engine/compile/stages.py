@@ -27,7 +27,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from slayer.core.enums import DataType, JoinType, RANKED_AGGREGATIONS, TimeGranularity
 from slayer.core.errors import AmbiguousJoinPathError, CircularJoinPathError
-from slayer.core.keys import AggregateKey, Grain, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, PREDICATE_COMPARISON_OPS, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, regroup_root_grain, effective_root_grain, constituent_grain, attached_parameter_grain, substitute_value_keys, substitute_consumer_keys, walk_value_keys, walk_consumer_keys, REGROUP_LEAF_PREFIX, is_cross_model_agg, is_local_partitioned_agg, split_top_level_and, window_kwarg_of, is_reaggregation_key, is_row_attach_root, attached_inputs, operand_aggregates, operand_constituents, source_anchor_path
+from slayer.core.keys import AggregateKey, Grain, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, PREDICATE_COMPARISON_OPS, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, regroup_root_grain, effective_root_grain, constituent_grain, attached_parameter_grain, substitute_value_keys, substitute_consumer_keys, walk_value_keys, walk_consumer_keys, REGROUP_LEAF_PREFIX, is_cross_model_agg, is_local_partitioned_agg, split_top_level_and, window_kwarg_of, is_reaggregation_key, is_row_attach_root, attached_inputs, operand_aggregates, operand_constituents, source_anchor_path, source_row_leaves
 from slayer.core.models import Column, SlayerModel
 from slayer.engine.reference_closure import (
     ParamSpec,
@@ -129,6 +129,7 @@ from slayer.engine.compile.projection import (
     _canonical_name,
     _iter_slot_deps,
 )
+from slayer.engine.compile.shift import _series_mode, carried_placeholders
 from slayer.engine.compile.staging import stage_slots
 from slayer.engine.key_metadata import (
     dimension_key_metadata,
@@ -253,7 +254,7 @@ def _regroup_producer_prebound(  # NOSONAR(S3776) — one producer-prebound asse
     partition_order: Callable[
         [Grain], List[ValueKey],
     ] = _regroup_partition_order,
-    public_alias_by_agg: Optional[Mapping[AggregateKey, str]] = None,
+    public_alias_by_agg: Optional[Mapping[ValueKey, str]] = None,
     explicit_types: Optional[Mapping[ValueKey, DataType]] = None,
     grain_name_by_key: Optional[Mapping[ValueKey, str]] = None,
     window_td_key: Optional[ValueKey] = None,
@@ -306,7 +307,7 @@ def _regroup_producer_prebound(  # NOSONAR(S3776) — one producer-prebound asse
     agg_dms: List[DeclaredMeasure] = []
     for agg in aggs:
         canonical = _unique(
-            (public_alias_by_agg.get(agg) if isinstance(agg, AggregateKey) else None)
+            public_alias_by_agg.get(agg)
             or (canonical_aggregate_alias(agg, profile="stage_formula")
                 if isinstance(agg, AggregateKey) else None)
             or getattr(agg, "agg", None)
@@ -1057,6 +1058,234 @@ def _synthesize_wrap_attach(
         )],
         partition_display=[_regroup_grain_name(pk) for pk in ordered_pks],
     )
+
+
+#: Answer name of a composite shifted producer — offset-free, so offsets intern.
+_SHIFTED_ANSWER = "shifted"
+
+
+def _frame_free_filters(
+    *, prebound: PreboundQuery, filter_typings: Sequence[ConjunctTyping],
+    time_columns: AbstractSet[ValueKey],
+) -> List[BoundFilter]:
+    """Every field mask of the population (any stratum) minus every frame bound."""
+    out: List[BoundFilter] = []
+    for idx, (bf, ct) in enumerate(zip(prebound.bound_filters, filter_typings)):
+        if ct.typing != MaskTyping.FIELD or idx < prebound.n_date_range:
+            continue
+        residual = strip_frame_bounds(key=bf.value_key, time_columns=time_columns)
+        if residual is None:
+            continue
+        out.append(bf if residual is bf.value_key else substitute_in_bound_filter(
+            bf, {bf.value_key: residual},
+        ))
+    return out
+
+
+def _plan_shifted_attaches(
+    *,
+    slots: Sequence[ValueSlot],
+    attaches: Sequence[RegroupAttachPlan],
+    prebound: PreboundQuery,
+    rewritten: PreboundQuery,
+    filter_typings: Sequence[ConjunctTyping],
+    scope: Union[ModelScope, StageSchema],
+    bundle: ResolvedSourceBundle,
+    stage_schemas: Dict[str, StageSchema],
+    producer_source_model: Optional[str],
+    producer_registry: Optional[Dict[Hashable, PlannedQuery]],
+    population_filters: Optional["PopulationFilters"],
+) -> List[RegroupAttachPlan]:
+    """One frame-free producer per non-series ``time_shift`` slot, each leaf at its own
+    grain (carried or re-evaluated), looked up by the slot on the shifted bucket."""
+    to_original = {
+        sub.placeholder: sub.original_key for a in attaches for sub in a.substitutions
+    }
+    shift_slots = [
+        s for s in slots
+        if isinstance(s.key, TransformKey) and s.key.op == "time_shift"
+        and not _series_mode(s.key.input, to_original=to_original)
+    ]
+    if not shift_slots:
+        return []
+    n_grain = prebound.n_dims + prebound.n_time_dimensions
+    grain = [dm.bound.value_key for dm in prebound.declared_measures[:n_grain]]
+    host_grain = [dm.bound.value_key for dm in rewritten.declared_measures[:n_grain]]
+    dim_keys = grain[:prebound.n_dims]
+    td_keys = grain[prebound.n_dims:]
+    consumer_order = {k: i for i, k in enumerate(grain)}
+    grain_name_by_key = {
+        dm.bound.value_key: dm.declared_name
+        for dm in prebound.declared_measures[:n_grain] if dm.declared_name is not None
+    }
+    inherited = _frame_free_filters(
+        prebound=prebound, filter_typings=filter_typings,
+        time_columns=frozenset(k.column for k in td_keys if isinstance(k, TimeTruncKey)),
+    )
+    producer_model = scope.source_model if isinstance(scope, ModelScope) else None
+    # A bare answer is named like its combined producer: the measure's public name.
+    public_alias = {
+        dm.bound.value_key: dm.public_name
+        for dm in reversed(prebound.declared_measures[n_grain:]) if dm.public_name is not None
+    }
+    out: List[RegroupAttachPlan] = []
+    for slot in shift_slots:
+        key = slot.key
+        assert isinstance(key, TransformKey) and key.time_key is not None
+        carried = carried_placeholders(
+            key.input, axis=key.time_key, to_original=to_original,
+            dim_keys=dim_keys, td_keys=td_keys, active_bucket=prebound.main_time_key,
+        )
+        answer = substitute_value_keys(key.input, {
+            ph: orig for ph, orig in to_original.items() if ph not in carried
+        })
+        carried_attaches = _attaches_carrying(attaches=attaches, carried=carried)
+        pks, window_td, own_grain = _shifted_producer_grain(
+            answer=answer, resolved=substitute_value_keys(key.input, to_original),
+            axis=key.time_key, grain=grain, dim_keys=dim_keys,
+            td_keys=td_keys, active_bucket=prebound.main_time_key,
+        )
+        aliases, alias_hint = _shifted_answer_aliases(answer=answer, public_alias=public_alias)
+        producer_prebound, ordered_pks = _regroup_producer_prebound(
+            pks=pks, aggs=[answer], model=producer_model, bundle=bundle,
+            inherited=inherited, n_date_range=0,
+            partition_order=lambda pks: sorted(
+                pks, key=lambda k: consumer_order.get(k, len(consumer_order)),
+            ),
+            public_alias_by_agg=aliases,
+            grain_name_by_key=grain_name_by_key,
+            window_td_key=window_td,
+            to_many_handling=prebound.to_many_handling,
+        )
+        producer_plan = compile_synthesized(
+            prebound=producer_prebound,
+            source_model=producer_source_model,
+            bundle=bundle, scope=scope, stage_schemas=stage_schemas,
+            enable_producer_regroups=True,
+            producer_registry=producer_registry,
+            population_filters=population_filters,
+            carried_attaches=carried_attaches,
+            reserved_placeholders=frozenset(to_original),
+        )
+        answer_ids = list(producer_plan.projection)[len(ordered_pks):]
+        answer_slot = _regroup_answer_slot_id(
+            value_slots=[*producer_plan.aggregate_slots,
+                         *producer_plan.combined_expression_slots],
+            key=answer, fallback=answer_ids[0] if answer_ids else None,
+        )
+        join_pairs = _shifted_join_pairs(
+            producer_plan=producer_plan, ordered_pks=ordered_pks,
+            host_of=dict(zip(grain, host_grain)), answer_slot=answer_slot,
+        )
+        kernel_kwargs = _shifted_kernel_kwargs(
+            answer=answer, own_grain=own_grain, producer_plan=producer_plan,
+            bundle=bundle,
+        )
+        out.append(_intern_producer(RegroupAttachPlan(
+            producer_plan=producer_plan,
+            alias_hint=alias_hint,
+            attach_phase="shifted",
+            shift_of=slot.id,
+            answer_slot_id=answer_slot,
+            join_pairs=join_pairs,
+            partition_display=[_regroup_grain_name(pk) for pk in ordered_pks],
+            **kernel_kwargs,
+        ), producer_registry))
+    return out
+
+
+def _shifted_answer_aliases(
+    *, answer: ValueKey, public_alias: Dict[ValueKey, str],
+) -> Tuple[Dict[ValueKey, str], str]:
+    """(producer public aliases, attach alias hint) of a shifted answer."""
+    if isinstance(answer, AggregateKey):
+        return public_alias, canonical_aggregate_alias(answer, profile="stage_formula") \
+            or _SHIFTED_ANSWER
+    return {answer: _SHIFTED_ANSWER}, _SHIFTED_ANSWER
+
+
+def _attaches_carrying(
+    *, attaches: Sequence[RegroupAttachPlan], carried: Sequence[ValueKey],
+) -> List[RegroupAttachPlan]:
+    """The attaches (identity-deduplicated) producing a carried placeholder."""
+    out: List[RegroupAttachPlan] = []
+    for a in attaches:
+        if any(sub.placeholder in carried for sub in a.substitutions) \
+                and not any(a is c for c in out):
+            out.append(a)
+    return out
+
+
+def _shifted_producer_grain(
+    *, answer: ValueKey, resolved: ValueKey, axis: ValueKey, grain: List[ValueKey],
+    dim_keys: List[ValueKey], td_keys: List[ValueKey],
+    active_bucket: Optional[ValueKey],
+) -> Tuple[Grain, Optional[ValueKey], bool]:
+    """(grain, window time key, own-grain?) of a shifted producer: the operand grain
+    (Axiom 11.1) when it holds the axis, else the query grain."""
+    # A bare aggregate keyed by the axis is built exactly like its combined
+    # producer, so a frame-free one interns with the base's.
+    if isinstance(answer, AggregateKey):
+        leaf_grain, windowed = effective_root_grain(
+            agg=answer, projected_dim_keys=dim_keys, projected_td_keys=td_keys,
+            active_bucket=active_bucket,
+        )
+        if windowed or axis in leaf_grain:
+            return (_prune_functionally_determined_grain(leaf_grain),
+                    active_bucket if windowed else None, True)
+    elif not source_row_leaves(resolved):
+        union: Grain = Grain.of(())
+        for agg in operand_aggregates(resolved):
+            union = union | constituent_grain(
+                c=agg, projected_dim_keys=dim_keys, projected_td_keys=td_keys,
+                active_bucket=active_bucket,
+            )
+        if axis in union:
+            return _prune_functionally_determined_grain(union), axis, False
+    return Grain.of(grain), axis, False
+
+
+def _shifted_join_pairs(
+    *, producer_plan: PlannedQuery, ordered_pks: Sequence[ValueKey],
+    host_of: Dict[ValueKey, ValueKey], answer_slot: SlotId,
+) -> List[Tuple[ValueKey, SlotId]]:
+    """Consumer-key → producer-slot pairs covering the shifted producer's grain."""
+    grain_ids = list(producer_plan.projection)[:len(ordered_pks)]
+    join_pairs: List[Tuple[ValueKey, SlotId]] = [
+        (host_of.get(pk, pk), next(
+            (s.id for s in producer_plan.row_slots if s.key == pk), grain_ids[i],
+        ))
+        for i, pk in enumerate(ordered_pks)
+    ]
+    joined = {sid for _, sid in join_pairs}
+    # A bare row-valued answer (a carried placeholder) is a row slot, not grain.
+    _assert_attach_covers_producer_grain(
+        joined_slot_ids=joined,
+        producer_grain_slot_ids=_producer_grain_slot_ids(producer_plan)
+        - ({answer_slot} - joined),
+    )
+    return join_pairs
+
+
+def _shifted_kernel_kwargs(
+    *, answer: ValueKey, own_grain: bool, producer_plan: PlannedQuery,
+    bundle: ResolvedSourceBundle,
+) -> Dict[str, Any]:
+    """The windowed / ranked kernel of a bare own-grain shifted leaf, if any."""
+    kernel_root = producer_plan.render_source_model or bundle.source_model
+    if not (own_grain and isinstance(answer, AggregateKey) and kernel_root is not None
+            and not is_cross_model_agg(answer)
+            and _windowed_or_ranked_identity(answer) is not None):
+        return {}
+    make_kernel = (
+        _trailing_window_kernel if window_kwarg_of(answer) is not None
+        else _ranked_kernel
+    )
+    return {"kernel": make_kernel(
+        producer_plan=producer_plan, agg_key=answer, root_model=kernel_root,
+        bundle=bundle, alias=canonical_aggregate_alias(answer, profile="stage_formula"),
+        target_rooted=False,
+    )}
 
 
 class _PushBlocked(Exception):
@@ -2999,13 +3228,14 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
     local_discovery: bool = True,
     home_paths: Optional[Dict[ValueKey, Tuple[str, ...]]] = None,
     population_filters: Optional["PopulationFilters"] = None,
+    reserved_placeholders: AbstractSet[ValueKey] = frozenset(),
 ) -> Optional[Tuple[PreboundQuery, List[RegroupAttachPlan]]]:
     """Discover partitioned aggregates and desugar into producer stages + reserved-leaf placeholders (row attach at base FROM, combined at the combined SELECT)."""
     # DEV-1847: re-aggregation roots — an aggregate whose operand resolves to
     # attached values. Pre-substitute each with a placeholder so the normal
     # discovery below treats it opaquely (its constituents belong to the carrier,
     # not a main-query attach); the producer-over-producer is synthesized later.
-    registry = RegroupPlaceholderRegistry()
+    registry = RegroupPlaceholderRegistry(reserved=reserved_placeholders)
     # A LOCAL row-attach root whose partition_by is exactly the query grain is a
     # redundant partition (== the GROUP BY): strip it so the root aggregates
     # INLINE with its inputs row-attached, not through a redundant combined
@@ -3084,7 +3314,7 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
         dim_keys=position_typing_context(prebound)[0],
     )
     combined_aggs = list(consumers.local_partitioned) if local_discovery else []
-    public_alias_by_agg: Dict[AggregateKey, str] = dict(consumers.public_alias)
+    public_alias_by_agg: Dict[ValueKey, str] = {**consumers.public_alias}
     # Bare windowed / first-last measures join the COMBINED roots at the full projected grain.
     dim_dms, td_dms, _ = partition_declared_measures(
         declared_measures=prebound.declared_measures,
@@ -3126,9 +3356,19 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
             for k in walk_value_keys(tk.input)
             if window_kwarg_of(k) is not None
         }
+        # A ranked / windowed root nests when it is a strict constituent of a
+        # composite answer; as the answer itself the kernel renders it.
+        composite_constituents = {
+            k
+            for dm in prebound.declared_measures
+            if not dm.is_dimension
+            and isinstance(dm.bound.value_key, (ArithmeticKey, ScalarCallKey))
+            for k in walk_consumer_keys(dm.bound.value_key)
+        }
         combined_aggs = [
             k for k in combined_aggs
             if _root_grain(k) != own_grain or k in windowed_transform_inputs
+            or (k in composite_constituents and _windowed_or_ranked_identity(k) is not None)
         ]
         row_aggs = [k for k in row_aggs if regroup_root_grain(k) != own_grain]
     # Cross-model aggregates become target-rooted producers; a cross-model root inside a computed dimension is a ROW-phase producer.
@@ -3630,12 +3870,16 @@ def compile_synthesized(
     enable_producer_regroups: bool = False,
     producer_registry: Optional[Dict[Hashable, PlannedQuery]] = None,
     population_filters: Optional[PopulationFilters] = None,
+    carried_attaches: Sequence[RegroupAttachPlan] = (),
+    reserved_placeholders: AbstractSet[ValueKey] = frozenset(),
 ) -> PlannedQuery:
     """Elaborate a compiler-synthesized sub-plan — resolving its aggregates' homes
     relative to its OWN root (D3) — then compile it. The recursion guard disables
     host-rooted isolation, so the sub-plan types without splitting.
     ``population_filters`` threads the host's disposition into a nested host-rooted
-    producer so it inherits the population restriction during its own compilation (D3)."""
+    producer so it inherits the population restriction during its own compilation (D3).
+    ``carried_attaches`` are outer attaches whose placeholders the sub-plan reads as is;
+    ``reserved_placeholders`` are the enclosing plan's, never minted again."""
     carrier = StrictQueryCarrier(source_model=source_model, prebound=prebound)
     env = elaborate_query(
         query=carrier, prebound=prebound, bundle=bundle, scope=scope,
@@ -3649,6 +3893,8 @@ def compile_synthesized(
         enable_producer_regroups=enable_producer_regroups,
         producer_registry=producer_registry,
         population_filters=population_filters,
+        carried_attaches=carried_attaches,
+        reserved_placeholders=reserved_placeholders,
     )
 
 
@@ -3665,6 +3911,8 @@ def compile_prebound(  # NOSONAR(S3776) — compiler entry-point dispatcher. The
     enable_producer_regroups: bool = False,
     producer_registry: Optional[Dict[Hashable, PlannedQuery]] = None,
     population_filters: Optional["PopulationFilters"] = None,
+    carried_attaches: Sequence[RegroupAttachPlan] = (),
+    reserved_placeholders: AbstractSet[ValueKey] = frozenset(),
 ) -> PlannedQuery:
     """Compile one typed prebound into a ``PlannedQuery``; ``disable_host_rooted_isolation`` suppresses the LOCAL half of the regroup desugar (recursion guard).
 
@@ -3672,6 +3920,7 @@ def compile_prebound(  # NOSONAR(S3776) — compiler entry-point dispatcher. The
     ``compile_query``, a synthesized sub-plan via ``compile_synthesized`` (D3), so
     the aggregate homes always come from ``env.terms`` — there is no local typing."""
     stage_schemas = stage_schemas or {}
+    typed_prebound = prebound
     # One interning registry per top-level plan; nested producer calls thread it down.
     if producer_registry is None:
         producer_registry = {}
@@ -3727,6 +3976,7 @@ def compile_prebound(  # NOSONAR(S3776) — compiler entry-point dispatcher. The
         ),
         home_paths=home_paths,
         population_filters=population_filters,
+        reserved_placeholders=reserved_placeholders,
     )
     if regroup_result is not None:
         prebound, regroup_attach_plans = regroup_result
@@ -3738,6 +3988,7 @@ def compile_prebound(  # NOSONAR(S3776) — compiler entry-point dispatcher. The
         n_dims = prebound.n_dims
         n_tds = prebound.n_time_dimensions
         distinct_dimension_values = prebound.distinct_dimension_values
+    regroup_attach_plans = [*regroup_attach_plans, *carried_attaches]
     # At the top consumer level every cross-model / partitioned leaf must now be a placeholder; sub-plans are exempt.
     if not disable_host_rooted_isolation and not enable_producer_regroups:
         _assert_total_routing(prebound)
@@ -4028,6 +4279,13 @@ def compile_prebound(  # NOSONAR(S3776) — compiler entry-point dispatcher. The
         host_gated=host_population_gated,
     )
 
+    regroup_attach_plans = [*regroup_attach_plans, *_plan_shifted_attaches(
+        slots=projection.registry.slots, attaches=regroup_attach_plans,
+        prebound=typed_prebound, rewritten=prebound, filter_typings=filter_typings,
+        scope=scope, bundle=bundle, stage_schemas=stage_schemas,
+        producer_source_model=_producer_source_model,
+        producer_registry=producer_registry, population_filters=population_filters,
+    )]
     # Assign every slot its materialisation stage / needs-column / series fact
     # (DEV-1800 D3); producer bodies were staged by their own compile_prebound.
     row_slots, agg_slots, combined_slots = stage_slots(

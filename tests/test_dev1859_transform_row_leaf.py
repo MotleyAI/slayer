@@ -13,7 +13,6 @@ grain-refining row-level leaves".
 from __future__ import annotations
 
 import re
-from collections import Counter
 
 import pytest
 
@@ -211,40 +210,23 @@ class TestWalkerBehaviourUnchanged:
         assert resp.data
 
 
-class TestShiftFamilyRegimeUnchanged:
-    """Scenario: Shift family keeps its bare-leaf regime — the established
-    read-and-rebucket output, pinned as an exact row multiset."""
+class TestShiftFamilyRejectsRowLeaf:
+    """The shift family obeys the one grain-refining row-leaf rule: a bare
+    unprojected row column is rejected, never a multiplied result."""
 
-    async def _pairs(self, exec_engine, formula) -> Counter:
-        resp = await exec_engine.execute(_q(
-            time_dimensions=month_td(),
-            measures=[ModelMeasure(formula=formula, name="t")]))
-        return Counter((month_key(r["sales.ordered_at"]), r["sales.t"])
-                       for r in resp.data)
-
-    async def test_time_shift_bare_leaf(self, exec_engine):
-        got = await self._pairs(exec_engine, "time_shift(weight, -1)")
-        assert got == Counter({
-            ("2024-01", None): 2,
-            ("2024-02", 1.0): 2, ("2024-02", 2.0): 2,
-            ("2024-03", 1.0): 1, ("2024-03", 2.0): 1,
-        })
-
-    async def test_change_bare_leaf(self, exec_engine):
-        got = await self._pairs(exec_engine, "change(weight)")
-        assert got == Counter({
-            ("2024-01", None): 2,
-            ("2024-02", -1.0): 1, ("2024-02", 0.0): 2, ("2024-02", 1.0): 1,
-            ("2024-03", -1.0): 1, ("2024-03", 0.0): 1,
-        })
-
-    async def test_change_pct_bare_leaf(self, exec_engine):
-        got = await self._pairs(exec_engine, "change_pct(weight)")
-        assert got == Counter({
-            ("2024-01", None): 2,
-            ("2024-02", -0.5): 1, ("2024-02", 0.0): 2, ("2024-02", 1.0): 1,
-            ("2024-03", -0.5): 1, ("2024-03", 0.0): 1,
-        })
+    @pytest.mark.parametrize("formula, op", [
+        ("time_shift(weight, -1)", "time_shift"),
+        ("change(weight)", "change"),
+        ("change_pct(weight)", "change_pct"),
+    ])
+    async def test_bare_row_leaf_rejected(self, exec_engine, formula, op):
+        query = _q(time_dimensions=month_td(),
+                   measures=[ModelMeasure(formula=formula, name="t")])
+        with pytest.raises(ValueError) as ei:
+            await exec_engine.execute(query)
+        msg = str(ei.value)
+        for part in (f"'{op}'", "'weight'", "weight:sum", "source_queries"):
+            assert part in msg, msg
 
 
 class TestLastOverShiftComposition:

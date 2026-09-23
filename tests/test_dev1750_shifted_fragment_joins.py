@@ -30,6 +30,7 @@ from tests._dev1750_fixtures import (
     month_td,
     orders_model,
     shifted_cte_body,
+    shifted_relation,
 )
 from tests._engine_helpers import _extract_cte_body
 
@@ -49,12 +50,10 @@ class TestShiftedCteFragmentDefaultParam:
         sql = await gen(_q(measures=[
             ModelMeasure(formula="time_shift(amount:wscaled_sum, -1)", name="prev"),
         ]))
-        shifted = shifted_cte_body(sql)
-        # The shifted CTE LEFT JOINs the producer (DEV-1835 D7 join-back).
-        assert "JOIN _cm_" in shifted, shifted
-        # The fragment's two hops + the qualified weight fragment + the host
-        # ``amount`` operand all live in the producer's own CTE body.
-        producer = _extract_cte_body(sql, r"_cm_\w+")
+        # The shift reads the crossing producer; the fragment's two hops + the
+        # qualified weight fragment + the host ``amount`` operand all live there.
+        assert shifted_relation(sql).startswith("_cm_"), sql
+        producer = shifted_cte_body(sql)
         assert "JOIN customers" in producer, producer
         assert "regions AS customers__regions" in producer, producer
         assert "customers__regions.weight" in producer, producer
@@ -86,9 +85,8 @@ class TestShiftedCteFragmentUserKwarg:
                 name="prev",
             ),
         ]))
-        shifted = shifted_cte_body(sql)
-        assert "JOIN _cm_" in shifted, shifted
-        producer = _extract_cte_body(sql, r"_cm_\w+")
+        assert shifted_relation(sql).startswith("_cm_"), sql
+        producer = shifted_cte_body(sql)
         assert "JOIN customers" in producer, producer
         assert "regions AS customers__regions" in producer, producer
         assert "customers__regions.weight" in producer, producer
@@ -154,13 +152,12 @@ class TestShiftedCtePositionalArgRegistration:
         sql = await gen(q)  # DEV-1835 lift: renders via the desugared producer
         assert_scope_closed(sql, dialect="duckdb")
         assert "__regroup__" not in sql, sql
-        # The crossing does not leak bare into the shifted CTE; the shifted CTE
-        # references the producer's already-computed column instead.
-        shifted = shifted_cte_body(sql)
-        assert "_cm_" in shifted, shifted
-        assert "customers.signup_at" not in shifted, shifted
-        # The ranking arg's crossing join + ORDER BY key live INSIDE the producer.
-        producer = _extract_cte_body(sql, rf"_cm_orders__amount_{agg}\w+")
+        # The crossing does not leak bare into the join-back; the shift reads the
+        # ranked producer, whose crossing join + ORDER BY key live inside it.
+        sjoin = _extract_cte_body(sql, r"sjoin_\w+")
+        assert "customers.signup_at" not in sjoin, sjoin
+        assert shifted_relation(sql).startswith(f"_cm_orders__amount_{agg}"), sql
+        producer = shifted_cte_body(sql)
         assert "JOIN customers" in producer, producer
         assert "customers.signup_at" in producer, producer
 

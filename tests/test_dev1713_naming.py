@@ -602,7 +602,7 @@ class TestBareNamedMeasureResultKey:
 class TestTimeShiftCteDecollision:
     async def test_three_arithmetic_time_shifts_unique_ctes(self) -> None:
         """Three arithmetic-wrapped ``time_shift`` measures in one query must
-        each get a distinct CTE name (no ``shifted__t0`` reuse). Proven with a
+        each get a distinct join-back CTE name over their one shared relation. Proven with a
         regex over the emitted SQL — independent of ``assert_unique_cte_names``
         (which has its own unit coverage) so this pins the DEV-1692 REGRESSION
         even if the helper is absent."""
@@ -646,8 +646,13 @@ class TestTimeShiftCteDecollision:
         assert len(all_ctes) == len(set(all_ctes)), (
             f"duplicate CTE names: {all_ctes}\n{sql}"
         )
+        # One input: its shifted relation is shared, each offset joins it back.
         shifted = [c for c in all_ctes if c.startswith("shifted_")]
-        assert len(shifted) == 3, f"expected 3 shifted CTEs, got {shifted}\n{sql}"
+        assert len(shifted) == 1, f"expected 1 shifted CTE, got {shifted}\n{sql}"
+        sjoins = [c for c in all_ctes if c.startswith("sjoin_")]
+        assert len(sjoins) == 3, f"expected 3 sjoin CTEs, got {sjoins}\n{sql}"
+        offsets = set(re.findall(r"- INTERVAL '(\d) MONTH'", sql))
+        assert offsets == {"1", "2", "3"}, sql
 
     async def test_hidden_time_shift_alias_avoids_user_column(self) -> None:
         """Codex (PR #269): the hidden time_shift alias placeholder
