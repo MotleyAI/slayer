@@ -78,7 +78,7 @@ def _region_band_ranks() -> Dict[Tuple, int]:
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def engine(request):
-    async for e in make_exec_engine(request):
+    async for e in make_exec_engine(request=request):
         yield e
 
 
@@ -111,14 +111,14 @@ class TestNonMemberRejected:
         query = sales_q(dimensions=CRP, measures=[_measure(NONMEMBER)])
         with pytest.raises(ValueError) as ei:
             await engine.execute(query)
-        _assert_membership_error(str(ei.value), key="'product'", grain="city, region")
+        _assert_membership_error(msg=str(ei.value), key="'product'", grain="city, region")
 
     async def test_filter(self, engine):
         query = sales_q(
             dimensions=CRP, measures=[AMOUNT], filters=[f"{NONMEMBER} <= 2"])
         with pytest.raises(ValueError) as ei:
             await engine.execute(query)
-        _assert_membership_error(str(ei.value), key="'product'", grain="city, region")
+        _assert_membership_error(msg=str(ei.value), key="'product'", grain="city, region")
 
     async def test_dimension_position_plain_column(self, engine):
         dim = {"expression": "rank(sum(amount, partition_by=[city, product]), "
@@ -126,7 +126,7 @@ class TestNonMemberRejected:
         query = sales_q(dimensions=["region", dim], measures=[AMOUNT])
         with pytest.raises(ValueError) as ei:
             await engine.execute(query)
-        _assert_membership_error(str(ei.value), key="'region'", grain="city, product")
+        _assert_membership_error(msg=str(ei.value), key="'region'", grain="city, product")
 
     async def test_dimension_position_computed_dimension(self, engine):
         dim = {"expression": "rank(sum(amount, partition_by=[city, region]), "
@@ -135,7 +135,7 @@ class TestNonMemberRejected:
         with pytest.raises(ValueError) as ei:
             await engine.execute(query)
         msg = str(ei.value)
-        _assert_membership_error(msg, key="upper" if "upper" in msg else "ureg",
+        _assert_membership_error(msg=msg, key="upper" if "upper" in msg else "ureg",
                                  grain="city, region")
 
     async def test_aggregation_parameter(self, engine):
@@ -143,7 +143,7 @@ class TestNonMemberRejected:
             ModelMeasure(formula=f"weighted_avg(amount, weight={NONMEMBER})", name="w")])
         with pytest.raises(ValueError) as ei:
             await engine.execute(query)
-        _assert_membership_error(str(ei.value), key="'product'", grain="city, region")
+        _assert_membership_error(msg=str(ei.value), key="'product'", grain="city, region")
 
     async def test_order(self, engine):
         query = sales_q(
@@ -151,9 +151,9 @@ class TestNonMemberRejected:
             order=[{"column": NONMEMBER, "direction": "asc"}])
         with pytest.raises(ValueError) as ei:
             await engine.execute(query)
-        _assert_membership_error(str(ei.value), key="'product'", grain="city, region")
+        _assert_membership_error(msg=str(ei.value), key="'product'", grain="city, region")
 
-    @pytest.mark.parametrize("op,extra", [
+    @pytest.mark.parametrize(argnames="op,extra", argvalues=[
         ("dense_rank", ""), ("percent_rank", ""), ("ntile", ", n=2"),
     ])
     async def test_every_rank_family_op(self, engine, op, extra):
@@ -161,7 +161,7 @@ class TestNonMemberRejected:
         query = sales_q(dimensions=CRP, measures=[_measure(formula)])
         with pytest.raises(ValueError) as ei:
             await engine.execute(query)
-        _assert_membership_error(str(ei.value), key="'product'", grain="city, region", op=op)
+        _assert_membership_error(msg=str(ei.value), key="'product'", grain="city, region", op=op)
 
     async def test_composite_union_without_key(self, engine):
         formula = ("rank(sum(amount, partition_by=[city, region]) "
@@ -169,7 +169,7 @@ class TestNonMemberRejected:
         query = sales_q(dimensions=CRP, measures=[_measure(formula)])
         with pytest.raises(ValueError) as ei:
             await engine.execute(query)
-        _assert_membership_error(str(ei.value), key="'product'", grain="city, region")
+        _assert_membership_error(msg=str(ei.value), key="'product'", grain="city, region")
 
 
 class TestMemberAccepted:
@@ -245,7 +245,7 @@ class TestOperandGrainTimeAxis:
     def test_nested_last_drops_its_axis(self):
         with pytest.raises(ValueError) as ei:
             _bind_monthly(f"rank({LAST_INNER}, partition_by=ordered_at)")
-        _assert_membership_error(str(ei.value), key="ordered_at",
+        _assert_membership_error(msg=str(ei.value), key="ordered_at",
                                  grain="customers.regions.name")
 
     def test_nested_last_keeps_remaining_keys(self):
@@ -254,7 +254,7 @@ class TestOperandGrainTimeAxis:
     def test_aggregate_free_nested_last_drops_its_axis(self):
         with pytest.raises(ValueError) as ei:
             _bind_monthly(f"rank({LAST_SHIFT}, partition_by=ordered_at)")
-        _assert_membership_error(str(ei.value), key="ordered_at",
+        _assert_membership_error(msg=str(ei.value), key="ordered_at",
                                  grain="customers.regions.name")
 
     def test_aggregate_free_nested_last_keeps_remaining_keys(self):
@@ -265,25 +265,24 @@ class TestOperandGrainTimeAxis:
 
 
 class TestRepeatedKeyword:
-    @pytest.mark.parametrize("formula,call", [
+    @pytest.mark.parametrize(argnames="formula,call", argvalues=[
         ("rank(sum(amount), partition_by=region, partition_by=city)", "rank"),
         ("sum(amount, partition_by=region, partition_by=city)", "sum"),
         ("amount:sum(partition_by=region, partition_by=city)", "sum"),
     ])
     def test_rejected_at_parse(self, formula, call):
-        self._assert_rejected(formula, call=call, kwarg="partition_by")
+        self._assert_rejected(formula=formula, call=call, kwarg="partition_by")
 
-    @pytest.mark.parametrize("formula,call,kwarg", [
+    @pytest.mark.parametrize(argnames="formula,call,kwarg", argvalues=[
         ("sum(amount, window='1y', window='2y')", "sum", "window"),
         ("ntile(sum(amount), n=2, n=3)", "ntile", "n"),
     ])
     def test_any_keyword(self, formula, call, kwarg):
-        self._assert_rejected(formula, call=call, kwarg=kwarg)
+        self._assert_rejected(formula=formula, call=call, kwarg=kwarg)
 
     @staticmethod
     def _assert_rejected(formula: str, *, call: str, kwarg: str) -> None:
         with pytest.raises(ValueError) as ei:
             parse_expr(formula)
         msg = str(ei.value)
-        assert call in msg, msg
-        assert f"'{kwarg}'" in msg or f"{kwarg}=" in msg, msg
+        assert f"{call}() got keyword argument '{kwarg}' more than once." in msg, msg
