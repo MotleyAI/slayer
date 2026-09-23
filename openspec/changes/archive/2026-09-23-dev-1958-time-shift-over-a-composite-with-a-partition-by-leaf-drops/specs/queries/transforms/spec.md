@@ -1,12 +1,4 @@
-# queries/transforms Specification
-
-## Purpose
-Composition rules for window and self-join transforms: which input shapes
-`time_shift` and `consecutive_periods` accept, the values composite inputs
-produce, the predicate typing contract, and the uniform fail-closed errors for
-the remaining unsupported shapes.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Composite-input time_shift
 
@@ -292,153 +284,6 @@ aligned to the bucket it is the bucket containing the offset instant.
   the shifted relation and every producer it reads are scope-closed, and the
   generated SQL matches recorded golden baselines
 
-### Requirement: Composite-input consecutive_periods
-
-`consecutive_periods` SHALL accept any Mode-B value-key input tree — arithmetic
-of any operator, scalar calls, `BETWEEN`, `IN` / negated `IN`, null tests
-(`is None` / `is not None`), boolean connectives, and nested transforms in any
-position. A boolean-shaped input is used as the predicate directly with NULL
-treated as false; a value-shaped input is true where its value is non-NULL and
-non-zero. Streak semantics are unchanged: false or NULL breaks the run and
-returns 0. Emitted SQL SHALL use a boolean-shaped predicate only in condition
-positions — never wrapped as a scalar value — so generation is valid on
-strictly-typed dialects (Postgres, T-SQL, BigQuery).
-
-#### Scenario: Numeric delta truthiness
-
-- **WHEN** a query requests `consecutive_periods(revenue:sum - cost:sum)` over
-  a month series
-- **THEN** the streak counts consecutive months where the delta is non-NULL and
-  non-zero, matching hand-computed values on SQLite and DuckDB
-
-#### Scenario: Growth streak over a nested transform
-
-- **WHEN** a query requests `consecutive_periods(change(revenue:sum) > 0)`
-- **THEN** the streak counts consecutive months of positive month-over-month
-  growth
-
-#### Scenario: Bare nested transform input
-
-- **WHEN** a query requests `consecutive_periods(cumsum(revenue:sum))`
-- **THEN** the streak counts consecutive months where the running total is
-  non-NULL and non-zero
-
-#### Scenario: Scalar call inside a comparison
-
-- **WHEN** a query requests `consecutive_periods(round(revenue:sum) >= 10)`
-- **THEN** the streak counts consecutive months where the rounded total reaches
-  the threshold
-
-#### Scenario: Newly lifted predicate families execute
-
-- **WHEN** `consecutive_periods` receives a top-level `BETWEEN`, `IN`, negated
-  `IN`, `and`, `or`, or `not` predicate, including groups whose predicate
-  evaluates to NULL
-- **THEN** each executes on SQLite and DuckDB with NULL treated as false
-
-#### Scenario: Nested IN materialises its column
-
-- **WHEN** an `IN` predicate over a dimension column appears nested inside a
-  boolean connective (for example `status in ('a','b') and revenue:sum > 0`)
-- **THEN** the referenced column materialises and the streak executes correctly
-
-#### Scenario: Top-level null test drives the streak
-
-- **WHEN** a query requests `consecutive_periods(hi_rev:sum is not None)`
-  grouped by store, where one store's aggregate is NULL in the last month
-- **THEN** the streak counts consecutive non-NULL months and the NULL month
-  breaks the run (and the `is None` form counts the complementary months)
-
-#### Scenario: Null test under a boolean connective
-
-- **WHEN** a query requests
-  `consecutive_periods(hi_rev:sum is not None and cost:sum > 0)`
-- **THEN** the query executes with both conjuncts applied, rather than failing
-  with a boolean-shaped-operands `ValueError`
-
-#### Scenario: Null test over a dimension column
-
-- **WHEN** a query requests `consecutive_periods(store is not None)` grouped by
-  store
-- **THEN** the referenced column materialises and the streak executes correctly
-
-#### Scenario: Predicates emit as bare conditions on strict dialects
-
-- **WHEN** SQL is generated for any boolean-shaped `consecutive_periods`
-  predicate (a null test included) on Postgres, T-SQL, or BigQuery
-- **THEN** the predicate appears directly as the `CASE WHEN` condition, with no
-  `COALESCE(..., FALSE)` scalar wrapper and no `... IS NOT NULL AND ... <> 0`
-  truthiness wrapper around a boolean
-
-### Requirement: consecutive_periods predicate typing contract
-
-Boolean-shaped SHALL be defined recursively as: a comparison; a null test
-(`is None` / `is not None`); `BETWEEN`; `IN`; or `and` / `or` / `not` whose
-operands are themselves boolean-shaped. A boolean-shaped node SHALL be accepted
-at the predicate top level and in a conditional's condition position (`iif`
-first argument), and SHALL be rejected with a `ValueError` naming the shape when
-it appears in any value position — an arithmetic operand, an argument of any
-other scalar call, or an operand of an `IN` / `BETWEEN` predicate. `and` / `or`
-/ `not` SHALL reject non-boolean-shaped operands the same way. A top-level
-string-family scalar call SHALL be rejected as a predicate (its truthiness is
-undefined).
-
-#### Scenario: iif condition position accepts a predicate
-
-- **WHEN** a query requests `consecutive_periods(iif(revenue:sum > 0, 1, 0))`
-- **THEN** the query executes, with the streak driven by the iif value's
-  truthiness
-
-#### Scenario: Boolean in arithmetic context rejected
-
-- **WHEN** a query requests
-  `consecutive_periods((revenue:sum > 0) + (cost:sum > 0))`
-- **THEN** the query fails with a `ValueError` naming the boolean-in-numeric
-  shape
-
-#### Scenario: Boolean as scalar-call argument rejected
-
-- **WHEN** a query requests `consecutive_periods(coalesce(revenue:sum > 0, 0))`
-- **THEN** the query fails with a `ValueError` naming the shape
-
-#### Scenario: Boolean in an IN operand rejected
-
-- **WHEN** a query requests `consecutive_periods((revenue:sum > 0) in (1, 0))`
-- **THEN** the query fails with a `ValueError` naming the boolean shape, rather
-  than passing the predicate through into the emitted `IN` list
-
-#### Scenario: String-family scalar call rejected as predicate
-
-- **WHEN** a query requests `consecutive_periods(lower(name:max))`
-- **THEN** the query fails with a `ValueError` explaining that a string-valued
-  predicate has no truthiness
-
-#### Scenario: Null test in a value position rejected
-
-- **WHEN** a query requests `consecutive_periods((hi_rev:sum is None) + 1)`
-- **THEN** the query fails with a `ValueError` naming the boolean-in-numeric
-  shape, rather than rendering the null test as an arithmetic operand
-
-### Requirement: Uniform fail-closed transform errors
-
-Every render path SHALL raise the identical user-facing `ValueError` for an
-unsupported transform-input shape, naming the transform, the shape, and the
-remedy, with no internal stage markers in the message. The presence of a
-cross-model measure elsewhere in the query SHALL NOT change which error a given
-unsupported shape produces.
-
-#### Scenario: Same error with and without a cross-model sibling
-
-- **WHEN** an unsupported transform-input shape is queried once as a purely
-  local query and once alongside a cross-model measure
-- **THEN** both fail with the same error message
-
-#### Scenario: SQL generation is pinned across dialects
-
-- **WHEN** the lifted composite shapes are rendered for the golden dialect set
-  (postgres, sqlite, duckdb, tsql, bigquery)
-- **THEN** the generated SQL matches recorded golden baselines
-
 ### Requirement: time_shift row-level-leaf rejection stays fail-closed
 
 `time_shift` (and `change` / `change_pct`) SHALL reject, with a `ValueError`
@@ -473,114 +318,21 @@ SQL is generated.
 - **THEN** the query fails with the row-level-leaf `ValueError` — a nested
   transform does not launder its row-level input into a series
 
-### Requirement: Composites over transforms
+## REMOVED Requirements
 
-A composite (arithmetic or scalar-call expression) whose operands include a transform
-SHALL be legal in measure, filter and ORDER BY positions whatever its other operands are:
-a local aggregate, a cross-model aggregate, another transform, or a literal, in any
-nesting. Every operand the composite needs SHALL be materialised for it, including a local
-aggregate that appears nowhere else in the query, and the composite SHALL evaluate to the
-same value whether or not any operand is also selected on its own. The transform's own
-regime (re-aggregation or series) SHALL be unchanged by the composite around it. No such
-composite SHALL fail with an internal render error.
+### Requirement: Non-shift transforms reject grain-refining row-level leaves
 
-#### Scenario: Transform over a cross-model inner plus a hidden local aggregate
+**Reason**: The shift-family exemption it carved out let `time_shift(weight, -1)`
+over an unprojected row column multiply result rows (one row per distinct
+prior-bucket value), violating the invariant that adding a measure never
+changes result cardinality. The rule is now total over every transform op.
 
-- **WHEN** a query rooted at `orders` with a month time dimension selects
-  `change(customers.spend:sum) + amount:sum` and nothing else
-- **THEN** each row carries the month-over-month change of the cross-model aggregate
-  plus that month's local sum, by hand-computed executed values on SQLite and DuckDB,
-  with NULL in the first month
+**Migration**: Aggregate the leaf (`time_shift(weight:sum, -1)`), project it
+as a query dimension, or compute it in an earlier `source_queries` stage. The
+requirement's other scenarios are re-homed unchanged under "Transforms reject
+grain-refining row-level leaves".
 
-#### Scenario: Hidden local operand of another aggregation kind
-
-- **WHEN** the composite's hidden local operand is `*:count` or `amount:max` (for example
-  `change(customers.spend:sum) + *:count`)
-- **THEN** the query executes with the operand materialised, by executed values
-
-#### Scenario: Transform over a crossing-fragment inner plus a hidden local aggregate
-
-- **WHEN** a query selects `change(amount:wscaled_sum) + amount:sum`, where `wscaled_sum`
-  is an aggregation whose default parameter crosses a join
-- **THEN** each row carries the weighted-scaled delta plus the local sum, by executed
-  values on SQLite and DuckDB
-
-#### Scenario: Other transform families compose the same way
-
-- **WHEN** the transform is `time_shift(customers.spend:sum, -1)` or
-  `cumsum(customers.spend:sum)` combined with a hidden local aggregate
-- **THEN** the composite executes with the transform's own semantics unchanged, by
-  executed values
-
-#### Scenario: Conditional over a transform and mixed aggregates
-
-- **WHEN** a query selects
-  `iif(change(customers.spend:sum) > 0, customers.spend:sum, amount:sum)`
-- **THEN** each row carries the cross-model total where the change is positive and the
-  local sum otherwise, by executed values
-
-#### Scenario: Selecting an operand on its own changes nothing
-
-- **WHEN** the same query additionally selects `amount:sum` as its own measure
-- **THEN** the composite's values, the row count and every other column are identical to
-  the query without it
-
-#### Scenario: Composite in filter and order positions
-
-- **WHEN** `change(customers.spend:sum) + amount:sum` appears only in a filter or only as
-  an ORDER BY key, with a dimension present
-- **THEN** rows are masked or sorted by the composite's value exactly as when it is
-  selected, by executed values
-
-#### Scenario: Inner varying along the time axis
-
-- **WHEN** the cross-model inner is attributable to the query's time axis (for example
-  `change(orders.amount:sum)` by customer signup month from `customers`, or
-  `change(customers.spend:sum)` by `customers.signup_at` from `orders`)
-- **THEN** the delta and `change_pct` percentages are correct per period by hand-computed
-  executed values on SQLite and DuckDB, and adding the measure changes no row and no
-  other column
-
-#### Scenario: The issue's named shapes execute directly
-
-- **WHEN** a query selects `change(amount:wscaled_sum)`, `change_pct(amount:wscaled_sum)`,
-  `change(customers.spend:sum)` or `change_pct(customers.spend:sum)` alone
-- **THEN** each executes with hand-computed values on SQLite and DuckDB, the broadcast
-  cross-model inner yielding a zero delta and zero percentage after the first period
-
-### Requirement: Time axis on stage datasets
-
-A downstream stage's own time dimension SHALL be the time axis for every time-ordered transform in that stage (`time_shift`, `change`, `change_pct`, `cumsum`, `lag`, `lead`, `first`, `last`, `consecutive_periods`) and for its windowed aggregates, with values identical to the same shapes evaluated over a model-backed dataset holding the same rows. With two stage time dimensions and no `main_time_dimension`, a time-ordered transform SHALL fail with the existing unambiguous-time-dimension remedy; `main_time_dimension` SHALL select the axis. A stage has no model-level default time dimension, so no default is applied.
-
-#### Scenario: time_shift over a stage time dimension
-
-- **WHEN** an outer stage declares a time dimension on `created_at` at `month` over an inner monthly stage and selects `time_shift(rev:sum, -1, 'month')`
-- **THEN** each row carries the previous month's inner sum, NULL for the first month, by executed values on SQLite and DuckDB
-
-#### Scenario: change and cumsum over a stage time dimension
-
-- **WHEN** the same outer stage selects `change(rev:sum)` and `cumsum(rev:sum)`
-- **THEN** each row carries the month-over-month delta (NULL first) and the running total, by executed values
-
-#### Scenario: last over a stage time dimension
-
-- **WHEN** the same outer stage selects `last(rev:sum)`
-- **THEN** every row carries the value of the latest month, by executed values
-
-#### Scenario: Windowed aggregate over a stage time dimension
-
-- **WHEN** the outer stage selects `rev:sum(window='60d')` over the stage time dimension
-- **THEN** each row carries the trailing-window sum keyed on the stage bucket, by executed values
-
-#### Scenario: time_shift over a multi-hop flat time dimension
-
-- **WHEN** an inner stage projects `customers.regions.last_activity_at` at `month` with `*:count` named `n`, and the outer stage declares a time dimension on `customers__regions__last_activity_at` at `month` with `time_shift(n:sum, -1, 'month')`
-- **THEN** the shifted relation references the inner stage's flat alias and the query executes with correct values
-
-#### Scenario: Two stage time dimensions need main_time_dimension
-
-- **WHEN** the outer stage declares time dimensions on two distinct temporal columns, `created_at` and `shipped_at`, each at `month`, and selects `change(rev:sum)` without `main_time_dimension`
-- **THEN** planning fails with the existing error naming the `main_time_dimension` remedy, and setting `main_time_dimension` to `created_at` makes the query execute with that column's bucket as the axis
+## ADDED Requirements
 
 ### Requirement: Transforms reject grain-refining row-level leaves
 

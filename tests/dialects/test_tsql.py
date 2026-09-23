@@ -287,7 +287,10 @@ def test_tsql_emit_outer_wrap_hoists_inner_ctes() -> None:
         f"Expected hoisted statement to start with WITH; got: {out}"
     )
     # No nested WITH inside parens.
-    assert "(WITH " not in normalised and "( WITH " not in normalised, (
+    assert "(WITH " not in normalised, (
+        f"Hoisted output still has nested WITH inside parens: {out}"
+    )
+    assert "( WITH " not in normalised, (
         f"Hoisted output still has nested WITH inside parens: {out}"
     )
     assert "base AS" in normalised
@@ -881,11 +884,11 @@ async def test_tsql_time_shift_inner_cte_uses_mangled_brackets() -> None:
     # Self-join CTE references the mangled form on both sides. (The typed
     # pipeline names the shifted CTE ``shifted__time_shift_inner``; the
     # legacy stack spelled it ``shifted__ts_pct``. Same CTE, same assertion.)
-    assert (
-        "base.[orders___created_at] = "
-        "shifted__time_shift_inner.[orders___created_at]"
-        in sql
-    ), f"Self-join ON clause must use mangled bracketed identifiers:\n{sql}"
+    lookup = "DATEADD(MONTH, -1, base.[orders___created_at])"
+    assert f"{lookup} = shifted__time_shift_inner.[orders___created_at]" in sql, (
+        f"Self-join ON clause must use mangled bracketed identifiers:\n{sql}"
+    )
+    assert f"{lookup} IS NULL" in sql, sql
     # Outer ORDER BY references the mangled alias.
     assert "[orders___created_at]" in sql
     # Computed expression's column references in step2 use mangled brackets.
