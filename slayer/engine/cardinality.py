@@ -9,6 +9,7 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 from slayer.core.enums import JoinCardinality, StrEnum
+from slayer.core.models import is_identifier
 
 
 # ---------------------------------------------------------------------------
@@ -32,14 +33,8 @@ def is_key_set_unique(
 
 
 def declares_solo_unique(*, columns, column) -> bool:
-    """Does ``column`` ALONE carry a declared uniqueness among ``columns``?
-
-    ``primary_key`` is stamped on every member of a composite PK, so it
-    implies solo uniqueness only when the column IS the whole primary key.
-    """
-    if column.unique:
-        return True
-    return column.primary_key and sum(1 for c in columns if c.primary_key) == 1
+    """Does ``column`` ALONE carry a declared uniqueness among ``columns``?"""
+    return column.unique or is_identifier(column=column, columns=columns)
 
 
 def classify_cardinality(

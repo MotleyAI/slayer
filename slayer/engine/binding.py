@@ -37,7 +37,7 @@ from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS
 from slayer.core.keys import SCALAR_FUNCTIONS, check_scalar_arity, AggregateKey, ArithmeticKey, ColumnKey, ColumnSqlKey, Grain, InKey, LiteralKey, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, column_path, is_attached_source, normalize_scalar, prepend_value_key, source_anchor_path, walk_value_keys
 from slayer.core.join_walker import resolve_hop, terminal_model
-from slayer.core.models import SlayerModel
+from slayer.core.models import SlayerModel, is_identifier
 from slayer.engine import dimension_routing
 from slayer.core.query import TimeDimension
 from slayer.core.scope import ModelScope, StageSchema
@@ -1305,7 +1305,8 @@ def _validate_agg_eligibility(
     on the owning model (a custom ``countd`` wins over the alias). Gate order:
     0. unknown-name-first, for EVERY source shape (column, star, expression),
     so ``*:bogus`` / ``bogus(*)`` never escape to SQL generation;
-    1. PK columns restricted to count / count_distinct; 2. explicit
+    1. a sole primary key (an identifier) restricted to
+    ``PRIMARY_KEY_AGGREGATIONS`` — composite-key members fall through; 2. explicit
     ``Column.allowed_aggregations`` whitelist; 3. else
     ``DEFAULT_AGGREGATIONS_BY_TYPE`` (custom aggregations exempt).
 
@@ -1328,7 +1329,7 @@ def _validate_agg_eligibility(
     col = next((c for c in owner_model.columns if c.name == leaf), None)
     if col is None:
         return effective
-    if col.primary_key:
+    if is_identifier(column=col, columns=owner_model.columns):
         if effective not in PRIMARY_KEY_AGGREGATIONS:
             raise AggregationNotAllowedError(
                 column=leaf,

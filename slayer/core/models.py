@@ -170,7 +170,7 @@ class Column(BaseModel):
         ),
     )
     primary_key: bool = False
-    unique: bool = False  # single-column uniqueness (non-PK); primary_key implies it
+    unique: bool = False  # single-column uniqueness; a sole primary key implies it, a composite member does not
     description: str | None = None
     label: str | None = None
     hidden: bool = False
@@ -253,6 +253,11 @@ class Column(BaseModel):
         """The reference resolves to more than a bare physical column — a derived
         ``sql`` or an attached ``filter`` — so its uses expand to that definition."""
         return self._sql_is_nontrivial or self.filter is not None
+
+
+def is_identifier(*, column: Column, columns: list[Column]) -> bool:
+    """``column`` is its model's sole primary key (composite-key members are not identifiers)."""
+    return column.primary_key and sum(1 for c in columns if c.primary_key) == 1
 
 
 class ModelMeasure(BaseModel):
@@ -649,7 +654,7 @@ class SlayerModel(BaseModel):
                         f"or defined in this model's aggregations. "
                         f"Valid: {sorted(valid_names)}"
                     )
-                if c.primary_key:
+                if is_identifier(column=c, columns=self.columns):
                     if agg_name not in PRIMARY_KEY_AGGREGATIONS:
                         raise ValueError(
                             f"Column '{c.name}': '{agg_name}' is not allowed "

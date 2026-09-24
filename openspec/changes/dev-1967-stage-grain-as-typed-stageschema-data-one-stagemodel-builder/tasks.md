@@ -9,21 +9,21 @@
 
 ## 2. Typed grain
 
-- [ ] 2.1 Add `StageSchema.grain: Optional[List[str]]` with the member-names-a-column validator (`slayer/core/scope.py`). Verify: 1.1 validator case passes.
-- [ ] 2.2 Pass the declared dimension / time-dimension occurrences and `distinct_dimension_values` into `_emit_stage_schema` and record the grain from those occurrences' emitted aliases (never from phase / key shape / regroup prefix / `needs_column`). Verify: 1.1 passes.
+- [x] 2.1 Add `StageSchema.grain: Optional[List[str]]` with the member-names-a-column validator (`slayer/core/scope.py`). Verify: 1.1 validator case passes.
+- [x] 2.2 Pass the declared dimension / time-dimension occurrences and `distinct_dimension_values` into `_emit_stage_schema` and record the grain from those occurrences' emitted aliases (never from phase / key shape / regroup prefix / `needs_column`). Verify: 1.1 passes.
 
 ## 3. One builder
 
-- [ ] 3.1 Implement `model_from_stage_schema` in `slayer/ir/source_bundle.py` (D2 inputs, D3 stamping) and delete `synthetic_model_from_stage_schema`. Verify: 1.2 passes.
-- [ ] 3.2 Switch `engine/plan.py`, `stage_bundle_with_siblings`, `sql/generator.py::_bundle_for_stage` to the builder. Verify: 1.3 passes.
-- [ ] 3.3 Rebuild the query-backed tail of `_expand_query_backed_model` on the builder (wrapped SQL, fit map, `default_time_dimension` as inputs) and delete the `stamp_grain` / `grain_public_names` / `REGROUP_LEAF_PREFIX` block. Verify: 1.4 and `tests/test_dev1836_query_model_stamping.py` pass.
+- [x] 3.1 Implement `model_from_stage_schema` in `slayer/ir/source_bundle.py` (D2 inputs, D3 stamping) and delete `synthetic_model_from_stage_schema`. Verify: 1.2 passes.
+- [x] 3.2 Switch `engine/plan.py`, `stage_bundle_with_siblings`, `sql/generator.py::_bundle_for_stage` to the builder. Verify: 1.3 passes.
+- [x] 3.3 Rebuild the query-backed tail of `_expand_query_backed_model` on the builder (wrapped SQL, fit map, `default_time_dimension` as inputs) and delete the `stamp_grain` / `grain_public_names` / `REGROUP_LEAF_PREFIX` block. Verify: 1.4 and `tests/test_dev1836_query_model_stamping.py` pass.
 
 ## 4. Identifier rule
 
-- [ ] 4.1 Add the sole-primary-key identifier predicate in `slayer/core/models.py`; add `min` / `max` to `PRIMARY_KEY_AGGREGATIONS`; route every identifier-treatment site through it (binding PK gate, `allowed_aggregations` validator, `facade/catalog.py`, `inspect/model_render.py` ×4, `query_engine.py` type probe ×2, `profiling.py` `_collect_dim_profile` + ×3) and reuse it in `declares_solo_unique`; leave flag-rendering sites alone. Verify: 1.5 passes; grep shows no identifier-treatment `c.primary_key` check left.
-- [ ] 4.2 Correct source docs: `Column.unique` field comment and the binding PK-gate docstring (only a sole primary key is an identifier; a composite key is unique only as a whole). Verify: diff review.
+- [x] 4.1 Add the sole-primary-key identifier predicate in `slayer/core/models.py`; add `min` / `max` to `PRIMARY_KEY_AGGREGATIONS`; route every identifier-treatment site through it (binding PK gate, `allowed_aggregations` validator, `facade/catalog.py`, `inspect/model_render.py` ×4, `query_engine.py` type probe ×2, `profiling.py` `_collect_dim_profile` + ×3) and reuse it in `declares_solo_unique`; leave flag-rendering sites alone. Verify: 1.5 passes; grep shows no identifier-treatment `c.primary_key` check left.
+- [x] 4.2 Correct source docs: `Column.unique` field comment and the binding PK-gate docstring (only a sole primary key is an identifier; a composite key is unique only as a whole). Verify: diff review.
 
 ## 5. Docs and gates
 
-- [ ] 5.1 `docs/concepts/models.md`: `primary_key` table row, the primary-key aggregation paragraph, and the `unique` row's "primary_key implies unique" (sole primary key only) — one sentence each; `docs/concepts/queries.md`: one sentence that a join onto a sibling stage covering its grain is proven. Verify: grep docs for the old claims.
+- [x] 5.1 `docs/concepts/models.md`: `primary_key` table row, the primary-key aggregation paragraph, and the `unique` row's "primary_key implies unique" (sole primary key only) — one sentence each; `docs/concepts/queries.md`: one sentence that a join onto a sibling stage covering its grain is proven. Verify: grep docs for the old claims.
 - [ ] 5.2 Full unit suite, `ruff check slayer/ tests/`, `tools/arch_check.py`, basedpyright (no new errors vs baseline); golden / notebook drift → stop and ask. Verify: all green.

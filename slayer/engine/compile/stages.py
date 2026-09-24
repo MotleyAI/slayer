@@ -4236,6 +4236,8 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
     transform_layers = _emit_transform_layers(slots=projection.registry.slots)
     stage_schema = _emit_stage_schema(
         stage_name=query.name, projection=projection,
+        n_grain_positions=n_dims + n_tds,
+        distinct_dimension_values=distinct_dimension_values,
     )
 
     # Frame-bound column set: raw columns of this stage's non-hidden time dimensions.
@@ -4456,10 +4458,15 @@ def _emit_stage_schema(
     *,
     stage_name: Optional[str],
     projection,
+    n_grain_positions: int,
+    distinct_dimension_values: bool,
 ) -> StageSchema:
+    """``public_projection[:n_grain_positions]`` are the declared dimension / time-dimension occurrences."""
     columns: List[StageColumn] = []
     alias_idx: Dict[str, int] = {}
-    for sid in projection.public_projection:
+    grain: List[str] = []
+    grain_sids: set = set()
+    for pos, sid in enumerate(projection.public_projection):
         slot = projection.registry.get(sid)
         if slot.hidden:
             continue
@@ -4492,8 +4499,12 @@ def _emit_stage_schema(
             format=slot.format,
             description=slot.description,
         ))
+        if pos < n_grain_positions and sid not in grain_sids:
+            grain_sids.add(sid)
+            grain.append(flat)
     return StageSchema(
         relation_name=stage_name or "(unnamed_stage)", columns=columns,
+        grain=grain if distinct_dimension_values else None,
     )
 
 

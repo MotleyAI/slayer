@@ -112,12 +112,9 @@ class TestSiblingStageGrain:
 
 class TestGrainValidator:
     def test_grain_member_must_name_a_column(self) -> None:
+        columns = [StageColumn(name="a", sql_alias="a", type=DataType.TEXT)]
         with pytest.raises(ValidationError):
-            StageSchema(
-                relation_name="s",
-                columns=[StageColumn(name="a", sql_alias="a", type=DataType.TEXT)],
-                grain=["b"],
-            )
+            StageSchema(relation_name="s", columns=columns, grain=["b"])
 
     def test_grain_members_naming_columns_validate(self) -> None:
         schema = StageSchema(

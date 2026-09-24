@@ -75,8 +75,9 @@ class TestAggregationGate:
         _plan(orders_model(), formula)
 
     def test_sole_primary_key_refuses_sum(self) -> None:
+        model = orders_model()
         with pytest.raises(AggregationNotAllowedError):
-            _plan(orders_model(), "sum(id)")
+            _plan(model, "sum(id)")
 
     @pytest.mark.parametrize("formula", ["max(line_no)", "sum(line_no)"])
     def test_composite_member_aggregates_by_type(self, formula) -> None:
@@ -95,11 +96,9 @@ class TestAllowedAggregationsValidator:
         assert _col(model, "id").allowed_aggregations == ["max"]
 
     def test_sole_primary_key_still_refuses_sum(self) -> None:
+        columns = [Column(name="id", type=DataType.INT, primary_key=True, allowed_aggregations=["sum"])]
         with pytest.raises(ValidationError):
-            SlayerModel(
-                name="t", data_source="test", sql_table="t",
-                columns=[Column(name="id", type=DataType.INT, primary_key=True, allowed_aggregations=["sum"])],
-            )
+            SlayerModel(name="t", data_source="test", sql_table="t", columns=columns)
 
 
 class TestCatalogEligibility:
@@ -133,10 +132,12 @@ class TestInspectSampling:
         assert not any("(id)" in f for f in formulas)
 
     def test_composite_member_sample_cache_is_checked(self) -> None:
-        assert not _is_sample_cached(_col(order_lines(), "status"))
+        model = order_lines()
+        assert not _is_sample_cached(_col(model, "status"), model=model)
 
     def test_sole_primary_key_counts_as_cached(self) -> None:
-        assert _is_sample_cached(_col(codes(), "code"))
+        model = codes()
+        assert _is_sample_cached(_col(model, "code"), model=model)
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])

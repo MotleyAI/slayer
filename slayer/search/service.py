@@ -75,7 +75,7 @@ from pydantic import BaseModel, Field
 from slayer.core.errors import AmbiguousModelError, EntityResolutionError
 from slayer.core.models import SlayerModel
 from slayer.core.query import SlayerQuery
-from slayer.engine.profiling import ensure_column_sample_fresh
+from slayer.engine.profiling import ensure_column_sample_fresh, refresh_table_backed_model_sampled
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.memories.models import MEMORY_CANONICAL_PREFIX as _MEMORY_PREFIX
 from slayer.memories.models import Memory
@@ -1427,6 +1427,33 @@ class SearchService:
         return models, datasources, descriptions
 
 
+async def handle_edit_refresh(
+    *,
+    engine: SlayerQueryEngine,
+    storage: StorageBackend,
+    data_source: str,
+    model_name: str,
+    changed_columns: set[str],
+    model_level_change: bool,
+) -> list[str]:
+    """``edit_model`` refresh: re-sample the changed columns (every column on a
+    model-level change), then re-embed the model's subtree. Best-effort — failures
+    come back as warnings."""
+    model = await storage.get_model(model_name, data_source=data_source)
+    if model is None:
+        return [f"model {model_name!r} not found in datasource {data_source!r}"]
+    only = None if model_level_change else changed_columns
+    warnings = await refresh_table_backed_model_sampled(
+        model=model, engine=engine, storage=storage, only_columns=only,
+    )
+    # Reload: the sample refresh patched the stored model, and the embedding
+    # text must match its new content_hash.
+    reloaded = await storage.get_model(model_name, data_source=data_source)
+    if reloaded is not None:
+        warnings.extend(await SearchService(storage=storage).refresh_model_subtree(reloaded))
+    return warnings
+
+
 __all__ = [
     "LookupFound",
     "LookupHidden",
@@ -1434,4 +1461,5 @@ __all__ = [
     "SearchHit",
     "SearchResponse",
     "SearchService",
+    "handle_edit_refresh",
 ]

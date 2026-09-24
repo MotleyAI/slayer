@@ -41,7 +41,7 @@ from slayer.engine.ingestion import (
 )
 from slayer.engine.schema_scope import schema_ref_from_token, validate_scope_args
 from slayer.sql import engine_factory
-from slayer.engine.profiling import handle_edit_refresh
+from slayer.search.service import handle_edit_refresh
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.memories.help_seed import seed_help_memories
 from slayer.inspect.model_render import (  # noqa: F401 — re-exported for backward-compat (tests + other modules import these names from slayer.mcp.server)

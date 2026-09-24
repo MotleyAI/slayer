@@ -25,10 +25,10 @@ __all__ = [
     "apply_extension_overlay",
     "as_extension_over_nonsibling",
     "follow_sibling_chain",
+    "model_from_stage_schema",
     "source_name_if_sibling",
     "spec_adds_measures",
     "stage_bundle_with_siblings",
-    "synthetic_model_from_stage_schema",
 ]
 
 
@@ -158,24 +158,40 @@ def as_extension_over_nonsibling(
     return None
 
 
-def synthetic_model_from_stage_schema(
-    *, name: str, schema: "StageSchema", data_source: str
+def model_from_stage_schema(
+    *,
+    name: str,
+    schema: "StageSchema",
+    data_source: str,
+    sql: Optional[str] = None,
+    column_sql: Optional[Dict[str, str]] = None,
+    default_time_dimension: Optional[str] = None,
 ) -> SlayerModel:
-    """Stand-in ``SlayerModel`` whose ``sql_table`` is a stage's CTE name and
-    whose columns are that stage's flat output columns.
+    """The model a stage's output is read as: over its CTE (``sql=None``) or over ``sql``.
 
-    Lets the planner resolve a join / cross-model ref targeting a sibling stage
-    (materialised as a CTE elsewhere). ``StageColumn.name`` is already the
-    ``__``-flattened bind name, so synthetic column names match downstream refs.
+    A single-column grain is stamped ``unique``; a composite grain ``primary_key`` on each member.
     """
+    grain = schema.grain or []
+    composite = len(grain) > 1
+    column_sql = column_sql or {}
     return SlayerModel(
         name=name,
-        data_source=data_source or "_stage",
-        sql_table=name,
+        data_source=data_source,
+        sql_table=name if sql is None else None,
+        sql=sql,
+        default_time_dimension=default_time_dimension,
         columns=[
-            # DEV-1929: carry the bucket so the re-bucketing rule fires on a sibling
-            # reached through this stand-in (ModelExtension-over-sibling, stage join).
-            Column(name=c.name, type=c.type or DataType.DOUBLE, granularity=c.granularity)
+            Column(
+                name=c.name,
+                sql=column_sql.get(c.name),
+                type=c.type or DataType.DOUBLE,
+                granularity=c.granularity,
+                label=c.label,
+                format=c.format,
+                description=c.description,
+                primary_key=composite and c.name in grain,
+                unique=not composite and c.name in grain,
+            )
             for c in schema.columns
         ],
     )
@@ -196,7 +212,7 @@ def stage_bundle_with_siblings(
     referenced models minus any shadowed by the host or a synthetic sibling.
     """
     synths = [
-        synthetic_model_from_stage_schema(
+        model_from_stage_schema(
             name=n, schema=s, data_source=data_source
         )
         for n, s in sibling_schemas.items()
