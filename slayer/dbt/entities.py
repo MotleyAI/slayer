@@ -8,7 +8,7 @@ then generates SLayer ModelJoin objects for foreign entity references.
 import logging
 
 from slayer.core.enums import JoinCardinality, JoinType
-from slayer.core.models import ModelJoin
+from slayer.core.models import ModelJoin, is_base_column_sql
 from slayer.dbt.models import DbtSemanticModel
 
 logger = logging.getLogger(__name__)
@@ -97,9 +97,11 @@ class EntityRegistry:
                 continue
 
             foreign_expr = entity.expr or entity.name
+            if not is_base_column_sql(foreign_expr):
+                continue  # not a column; the converter reports it
             for target_model_name, primary_expr in primaries:
-                if target_model_name == model.name:
-                    continue  # Skip self-joins
+                if target_model_name == model.name or not is_base_column_sql(primary_expr):
+                    continue  # self-join, or a non-column key the converter reports
 
                 signature = (target_model_name, foreign_expr, primary_expr)
                 if signature in seen_signatures:
@@ -125,7 +127,8 @@ class EntityRegistry:
             peers = self._primaries.get(entity.name, [])
             local_expr = entity.expr or entity.name
             for peer_model_name, peer_expr in peers:
-                if peer_model_name <= model.name:
+                if (peer_model_name <= model.name or not is_base_column_sql(local_expr)
+                        or not is_base_column_sql(peer_expr)):
                     continue
                 peer_signature = (peer_model_name, local_expr, peer_expr)
                 if peer_signature in seen_peer_signatures:

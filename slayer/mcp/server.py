@@ -1084,6 +1084,7 @@ To connect a new database: create_datasource → describe_datasource (verify + l
             joins: Joins to create or update (upsert by target_model). Each dict:
                 {"target_model": "customers", "join_pairs": [["customer_id", "id"]],
                  "cardinality": "many_to_one", "description": "...", "meta": {...}}.
+                Keys name declared base columns by column name (not their ``sql``).
                 A composite key is one join with several ``join_pairs`` entries, not
                 one join per column. ``cardinality`` is the join's arity read
                 source->target, one of ``one_to_one`` / ``one_to_many`` /

@@ -1387,6 +1387,7 @@ async def test_cross_model_measure_with_target_join_filters(cross_model_env):
         name="policy_amount", sql_table="policy_amount", data_source="db",
         columns=[
             Column(name="policy_amount_identifier", type=DataType.DOUBLE, primary_key=True),
+            Column(name="policy_identifier", type=DataType.DOUBLE),
 Column(name="total_policy_amount", sql="policy_amount", type=DataType.DOUBLE)
         ],
         joins=[

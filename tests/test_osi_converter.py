@@ -1185,3 +1185,50 @@ def test_target_dialect_percentile_caveat(shop_engine):
     # measure still created, but an info caveat is reported.
     assert "p90" in {meas.name for meas in orders.measures}
     assert _reported(result)
+
+
+def _o2c_doc(*, key_expression: str):
+    return _mini_doc(
+        datasets=[
+            OSIDataset(name="orders", source="orders",
+                       fields=[OSIField(name="cust_key", expression=_expr(key_expression))]),
+            OSIDataset(name="customers", source="customers",
+                       fields=[OSIField(name="customer_id", expression=_expr("customer_id"))]),
+        ],
+        relationships=[OSIRelationship.model_validate({
+            "name": "o2c", "from": "orders", "to": "customers",
+            "from_columns": ["cust_key"], "to_columns": ["customer_id"]})],
+    )
+
+
+def test_relationship_keyed_on_expression_field_skipped(shop_engine):
+    result = _convert(shop_engine, _o2c_doc(key_expression="customer_id + 0"))
+    orders = _by_name(result)["orders"]
+    assert orders.joins == []
+    assert any("o2c" in w.message for w in result.warnings)
+
+
+def test_relationship_onto_expression_target_field_skipped(shop_engine):
+    doc = _mini_doc(
+        datasets=[
+            OSIDataset(name="orders", source="orders",
+                       fields=[OSIField(name="customer_id", expression=_expr("customer_id"))]),
+            OSIDataset(name="customers", source="customers",
+                       fields=[OSIField(name="cust_key", expression=_expr("customer_id + 0"))]),
+        ],
+        relationships=[OSIRelationship.model_validate({
+            "name": "o2c", "from": "orders", "to": "customers",
+            "from_columns": ["customer_id"], "to_columns": ["cust_key"]})],
+    )
+    result = _convert(shop_engine, doc)
+    assert _by_name(result)["orders"].joins == []
+    assert any("o2c" in w.message for w in result.warnings)
+
+
+def test_relationship_keyed_on_renamed_field_names_the_field(shop_engine):
+    result = _convert(shop_engine, _o2c_doc(key_expression="customer_id"))
+    orders = _by_name(result)["orders"]
+    assert [j.join_pairs for j in orders.joins] == [[["cust_key", "customer_id"]]]
+    key = orders.get_column("cust_key")
+    assert key is not None
+    assert key.physical_name == "customer_id"

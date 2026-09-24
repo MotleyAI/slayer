@@ -73,6 +73,7 @@ async def _seed_two_ds(storage: YAMLStorage) -> None:
             Column(name="id", type=DataType.INT, primary_key=True),
             Column(name="status", type=DataType.TEXT, description="Order state."),
             Column(name="amount", type=DataType.DOUBLE, description="USD amount."),
+            Column(name="customer_id", type=DataType.INT, hidden=True),
         ],
         measures=[
             ModelMeasure(name="revenue", formula="amount:sum"),
@@ -111,6 +112,7 @@ async def _seed_single_ds(storage: YAMLStorage) -> None:
             Column(name="id", type=DataType.INT, primary_key=True),
             Column(name="status", type=DataType.TEXT, description="Order state."),
             Column(name="amount", type=DataType.DOUBLE, description="USD amount."),
+            Column(name="customer_id", type=DataType.INT, hidden=True),
         ],
         measures=[ModelMeasure(name="revenue", formula="amount:sum")],
         joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
@@ -881,7 +883,11 @@ class TestSortedJoins:
             )
             await st.save_model(SlayerModel(
                 name="hub", sql_table="h", data_source="ds",
-                columns=[Column(name="id", type=DataType.INT, primary_key=True)],
+                columns=[
+                    Column(name="id", type=DataType.INT, primary_key=True),
+                    Column(name="z_id", type=DataType.INT, hidden=True),
+                    Column(name="a_id", type=DataType.INT, hidden=True),
+                ],
                 joins=[
                     ModelJoin(target_model="zebra", join_pairs=[["z_id", "id"]]),
                     ModelJoin(target_model="alpha", join_pairs=[["a_id", "id"]]),

@@ -55,9 +55,8 @@ class TestStructuralProof:
         join = _join("codes", [["c", "code"]])
         assert provably_to_one(edge=join, target_model=target)
 
-    def test_physical_spelling_of_a_renamed_pk_proves(self) -> None:
-        # DEV-1838: the join pair names the RAW column while the PK is declared
-        # on its bare-rename model column — same physical column, same proof.
+    def test_logical_spelling_of_a_renamed_pk_proves(self) -> None:
+        # A renamed PK proves the hop when the join names it by column name.
         target = SlayerModel(
             name="loss_payment", data_source="test", sql_table="Loss_Payment",
             columns=[
@@ -66,7 +65,7 @@ class TestStructuralProof:
                 Column(name="amount", type=DataType.DOUBLE),
             ],
         )
-        join = _join("loss_payment", [["id", "Claim_Amount_Identifier"]])
+        join = _join("loss_payment", [["id", "id"]])
         assert provably_to_one(edge=join, target_model=target)
 
     def test_a_derived_pk_sql_does_not_prove_the_raw_spelling(self) -> None:

@@ -6,9 +6,9 @@ import functools
 from enum import Enum, IntEnum
 from typing import Dict, List, Literal, Optional, Tuple, Union, Hashable
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from slayer.core.enums import DataType, JoinType
+from slayer.core.enums import DataType
 from slayer.core.errors import MaterialisationStageError
 from slayer.core.format import NumberFormat
 from slayer.core.keys import (
@@ -30,7 +30,6 @@ __all__ = [
     "BoundFilterId",
     "EmptyBaseGrainPlan",
     "FilterReachability",
-    "JoinRequirement",
     "MaskEntry",
     "MaskTyping",
     "ModeAFilter",
@@ -147,28 +146,6 @@ class ValueSlot(BaseModel):
         return self
 
 
-class JoinRequirement(BaseModel):
-    """One hop in a cross-model join chain (typed-plan mirror of ``ModelJoin``)."""
-
-    source_model: str
-    target_model: str
-    join_pairs: List[List[str]]
-    join_type: JoinType = JoinType.LEFT
-
-    @field_validator("join_pairs")
-    @classmethod
-    def _non_empty(cls, v: List[List[str]]) -> List[List[str]]:
-        if not v:
-            raise ValueError("join_pairs must be non-empty")
-        for i, pair in enumerate(v):
-            if len(pair) != 2 or not all(isinstance(s, str) and s for s in pair):
-                raise ValueError(
-                    f"join_pairs[{i}] must be [source_dim, target_dim] "
-                    f"with non-empty strings, got {pair!r}"
-                )
-        return v
-
-
 class SrcFilterRewrite(BaseModel):
     """A ROW filter whose CTE-local form keeps only its population half (frame bounds dropped)."""
 
@@ -252,7 +229,7 @@ class EmptyBaseGrainPlan(BaseModel):
 
 class SemiJoinHop(BaseModel):
     """One node of a semi-join correlation tree, joined from its parent node (the
-    producer root for a first hop) on oriented ``join_pairs`` (parent_col, hop_col).
+    producer root for a first hop) on oriented PHYSICAL ``join_pairs`` (parent_col, hop_col).
     ``node_path`` is the node's identity — repeated models bind distinct aliases."""
 
     model_config = ConfigDict(frozen=True)
@@ -442,7 +419,6 @@ class PlannedQuery(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     source_relation: str
-    join_plan: List[JoinRequirement] = Field(default_factory=list)
     row_slots: List[ValueSlot] = Field(default_factory=list)
     aggregate_slots: List[ValueSlot] = Field(default_factory=list)
     regroup_attach_plans: List["RegroupAttachPlan"] = Field(default_factory=list)

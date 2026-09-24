@@ -93,8 +93,8 @@ def parse_join_on(on_sql: str, *, source_cube: str, target_cube: str) -> list[li
 
     Returns ``[[src_col, tgt_col], ...]`` for an equality (or AND-conjunction of
     equalities); ``None`` for any non-equality / non-column ON. The column names
-    are the *member* names as written — the converter resolves them to physical
-    columns (and drops the join if a member's sql is non-trivial).
+    are the *member* names as written, which the converter keeps as join keys
+    (and drops the join if a member's sql is not a base column).
     """
     pairs: list[list[str]] = []
     for part in _AND_SPLIT.split(on_sql.strip()):

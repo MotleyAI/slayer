@@ -16,7 +16,7 @@ from collections.abc import Callable
 
 # Per-entity current version. Bump independently when an entity's schema changes.
 CURRENT_VERSIONS: dict[str, int] = {
-    "SlayerModel": 10,
+    "SlayerModel": 11,
     "SlayerQuery": 4,
     "DatasourceConfig": 2,
     "Memory": 2,
@@ -56,6 +56,13 @@ def register_migration(
 def _model_v9_to_v10(data: dict) -> dict:
     """v10: per-doc no-op; the cross-document exact-inverse join dedup runs in
     the storage load path (``_migrate_and_refine_on_load``)."""
+    return data
+
+
+@register_migration("SlayerModel", 10)
+def _model_v10_to_v11(data: dict) -> dict:
+    """v11: per-doc no-op; join-key canonicalisation needs the peer, so it runs
+    in the storage load path (``_migrate_and_refine_on_load``)."""
     return data
 
 

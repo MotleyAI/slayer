@@ -13,6 +13,7 @@ from slayer.core.models import (
     Column,
     SlayerModel,
     _check_column_measure_namespace,
+    _check_join_keys,
 )
 from slayer.core.query import ModelExtension, SlayerQuery, SourceSpec
 
@@ -101,8 +102,10 @@ def apply_extension_overlay(
             "joins": list(base.joins) + list(ext.joins or []),
         }
     )
-    # model_copy runs no validators; re-run the namespace check so an overlay
-    # name reusing an existing one is a loud error, not a silent shadow.
+    # model_copy runs no validators; re-run the namespace and join-key checks
+    # (the latter deferred, like measures, until a query-backed base expands).
+    if not base.awaits_columns:
+        _check_join_keys(model_name=merged.name, columns=merged.columns, joins=merged.joins)
     if not merged.source_queries:
         _check_column_measure_namespace(
             model_name=merged.name,

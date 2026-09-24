@@ -22,7 +22,7 @@ from slayer.core.enums import DataType, JoinCardinality
 from slayer.core.errors import AmbiguousJoinPathError
 from slayer.core.formula import parse_formula
 from slayer.core.join_walker import resolve_hop
-from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
+from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel, join_key_error
 from slayer.core.refs import IDENTIFIER_RE as _IDENTIFIER_RE
 from slayer.sql.column_expansion import root_scope_column_ids, resolve_ref_target
 from slayer.engine.ingestion import introspect_table_to_model
@@ -506,8 +506,8 @@ class OsiToSlayerConverter:
         missing = self._missing_join_columns(rel)
         if missing:
             self._warn(
-                f"Relationship {rel.name!r} references join columns not present "
-                f"on their models: {missing}; skipping.",
+                f"Relationship {rel.name!r} references join columns that are not "
+                f"base columns of their models: {missing}; skipping.",
                 model_name=src, category="relationship",
             )
             return
@@ -728,13 +728,15 @@ class OsiToSlayerConverter:
                 or any(m.name == name for m in model.measures))
 
     def _missing_join_columns(self, rel: OSIRelationship) -> list[str]:
-        """Qualified names of relationship join columns absent from their
-        model, so a typo clean-fails instead of emitting a broken join."""
-        missing = [f"{rel.from_dataset}.{c}" for c in rel.from_columns
-                   if not self._model_has_column(model_name=rel.from_dataset, column=c)]
-        missing += [f"{rel.to}.{c}" for c in rel.to_columns
-                    if not self._model_has_column(model_name=rel.to, column=c)]
-        return missing
+        """Qualified names of relationship join columns that are not declared
+        base columns of their model, so a typo clean-fails instead of emitting a
+        broken join."""
+        sides = ((rel.from_dataset, rel.from_columns), (rel.to, rel.to_columns))
+        return [
+            f"{name}.{c}" for name, cols in sides for c in cols
+            if join_key_error(model=rel.from_dataset, target=rel.to, key=c, side=name,
+                              columns=self._models[name].columns) is not None
+        ]
 
     # ---- metrics -> measures ----
 

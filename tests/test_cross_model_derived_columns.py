@@ -1267,10 +1267,10 @@ async def test_dev1334_column_level_filter_attribute_with_cross_table_ref_adds_j
 # ---------------------------------------------------------------------------
 
 _CLAIM_LP_JOIN = ModelJoin(
-    target_model="loss_payment", join_pairs=[["id", "Claim_Amount_Identifier"]],
+    target_model="loss_payment", join_pairs=[["id", "id"]],
 )
 _CLAIM_LP_JOIN_INNER = ModelJoin(
-    target_model="loss_payment", join_pairs=[["id", "Claim_Amount_Identifier"]],
+    target_model="loss_payment", join_pairs=[["id", "id"]],
     join_type="inner",
 )
 

@@ -34,7 +34,11 @@ async def _seed(s: YAMLStorage) -> None:
 
     await s.save_model(SlayerModel(
         name="orders", data_source="mydb", sql_table="orders",
-        columns=[col("id", DataType.INT, pk=True), col("status")],
+        columns=[
+            col("id", DataType.INT, pk=True), col("status"),
+            Column(name="customer_id", type=DataType.INT, hidden=True),
+            Column(name="product_id", type=DataType.INT, hidden=True),
+        ],
         joins=[
             ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]], join_type=JoinType.LEFT),
             ModelJoin(target_model="products", join_pairs=[["product_id", "id"]], join_type=JoinType.LEFT),
@@ -124,7 +128,8 @@ class TestMcpTool:
             # Routed through the shared MCP ambiguity hint (mentions data_source /
             # multiple datasources), not a bare "failed" string.
             text = blocks[0].text.lower()
-            assert "multiple datasources" in text and "data_source" in text
+            assert "multiple datasources" in text
+            assert "data_source" in text
 
 
 class TestRestEndpoint:

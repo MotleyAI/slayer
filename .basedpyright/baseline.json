@@ -43432,22 +43432,6 @@
                 }
             },
             {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 105,
-                    "endColumn": 112,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 105,
-                    "endColumn": 112,
-                    "lineCount": 1
-                }
-            },
-            {
                 "code": "reportPrivateImportUsage",
                 "range": {
                     "startColumn": 61,
