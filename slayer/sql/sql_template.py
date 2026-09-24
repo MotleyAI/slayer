@@ -14,8 +14,8 @@ from sqlglot.dialects.dialect import Dialect
 from sqlglot.errors import SqlglotError
 from sqlglot.tokenizer_core import Token, TokenType
 
-from slayer.core.enums import BUILTIN_AGGREGATION_PARAM_ORDER
-from slayer.core.errors import SlayerError
+from slayer.core.enums import BUILTIN_AGGREGATION_PARAM_ORDER, RANKED_AGGREGATIONS
+from slayer.core.errors import AggregationArgumentError, SlayerError
 from slayer.core.models import Aggregation, rendered_formula
 from slayer.sql.dialects import get_dialect
 from slayer.sql.dialects.base import SqlDialect, is_operator
@@ -153,3 +153,21 @@ def aggregation_reads(*, agg: str, definition: Aggregation | None, dialect: str)
 def sql_template(text: str, dialect: str) -> SqlTemplate:
     """Cached :class:`SqlTemplate` (rendering never mutates it)."""
     return SqlTemplate(text=text, dialect=dialect)
+
+
+def check_aggregation_definition(*, where: str, agg: Aggregation, dialect: str) -> None:
+    """Reject a formula that does not parse in ``dialect``, or a declared param it never reads."""
+    if agg.formula and agg.name in RANKED_AGGREGATIONS:
+        raise AggregationArgumentError(f"{where}: a ranked aggregation cannot take a formula.")
+    try:
+        if agg.formula:
+            sql_template(text=agg.formula, dialect=dialect)
+        reads = aggregation_reads(agg=agg.name, definition=agg, dialect=dialect)
+    except SqlTemplateError as e:
+        raise SqlTemplateError(f"{where}: {e}") from e
+    unread = [p.name for p in agg.params if p.name not in reads]
+    if unread:
+        reader = "its formula" if rendered_formula(agg=agg.name, definition=agg) else "the built-in"
+        raise AggregationArgumentError(
+            f"{where}: parameter '{unread[0]}' is never referenced by {reader}; remove it.",
+        )

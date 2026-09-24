@@ -162,6 +162,28 @@ class TestEngineCheck:
             await engine.save_model(model)
         assert expanded == []
 
+    async def test_query_backed_check_uses_the_expanded_datasource_dialect(
+        self, seeded, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        engine, store = seeded
+        await store.save_datasource(DatasourceConfig(name="my", type="mysql", host="h", database="d"))
+
+        async def _expand_to_mysql(self, model):  # noqa: ANN001
+            return model.model_copy(update={"data_source": "my"})
+
+        monkeypatch.setattr(SlayerQueryEngine, "_validate_and_populate_cache", _expand_to_mysql)
+        # `#` is a comment in MySQL, so `{mask}` is never read there (it is on SQLite).
+        model = SlayerModel(
+            name="obs", data_source=_DS,
+            source_queries=[SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="amount:sum")])],
+            aggregations=[Aggregation.model_validate({
+                "name": "masked", "formula": "SUM({value}) # {mask}",
+                "params": [{"name": "mask", "sql": "1"}],
+            })],
+        )
+        with pytest.raises(AggregationArgumentError, match="'mask' is never referenced"):
+            await engine.save_model(model)
+
 
 def _with(agg: Aggregation, *, data_source: str = _DS) -> SlayerModel:
     return _model("SUM({value})", data_source=data_source).model_copy(update={"aggregations": [agg]})
@@ -291,7 +313,7 @@ def mcp(seeded) -> tuple[Any, SlayerQueryEngine, YAMLStorage]:
     return create_mcp_server(storage=store), engine, store
 
 
-async def _call(server: Any, name: str, arguments: dict[str, Any]) -> str:
+async def _call(*, server: Any, name: str, arguments: dict[str, Any]) -> str:
     blocks, _ = await server.call_tool(name=name, arguments=arguments)
     return blocks[0].text
 
@@ -305,7 +327,7 @@ _COLUMNS = [
 class TestMcp:
     async def test_create_model_rejects_broken_formula(self, mcp) -> None:
         server, _engine, store = mcp
-        out = await _call(server, "create_model", {
+        out = await _call(server=server, name="create_model", arguments={
             "name": "orders", "sql_table": "orders", "data_source": _DS, "columns": _COLUMNS,
             "aggregations": [{"name": "custom_agg", "formula": _BROKEN}],
         })
@@ -316,7 +338,7 @@ class TestMcp:
 
     async def test_create_model_with_aggregation_is_queryable(self, mcp) -> None:
         server, engine, store = mcp
-        out = await _call(server, "create_model", {
+        out = await _call(server=server, name="create_model", arguments={
             "name": "orders", "sql_table": "orders", "data_source": _DS, "columns": _COLUMNS,
             "aggregations": [{"name": "sum_sq", "formula": "SUM({value} * {value})"}],
         })
@@ -330,7 +352,7 @@ class TestMcp:
 
     async def test_create_model_aggregations_with_query_rejected(self, mcp) -> None:
         server, _engine, _store = mcp
-        out = await _call(server, "create_model", {
+        out = await _call(server=server, name="create_model", arguments={
             "name": "qb", "query": {"source_model": "orders", "measures": ["*:count"]},
             "aggregations": [{"name": "sum_sq", "formula": "SUM({value} * {value})"}],
         })
@@ -340,7 +362,7 @@ class TestMcp:
     async def test_edit_model_broken_formula_leaves_original(self, mcp) -> None:
         server, engine, store = mcp
         await engine.save_model(_model("SUM({value})"))
-        out = await _call(server, "edit_model", {
+        out = await _call(server=server, name="edit_model", arguments={
             "model_name": "orders", "data_source": _DS,
             "aggregations": [{"name": "custom_agg", "formula": _BROKEN}],
         })
@@ -384,3 +406,36 @@ def test_v11_param_named_value_is_dropped_on_load() -> None:
     }])
     (agg,) = SlayerModel.model_validate(raw).aggregations
     assert [p.name for p in agg.params] == ["k"]
+
+
+async def test_direct_storage_save_checks_aggregations(seeded) -> None:
+    # CLI importers (dbt, Cube, OSI) persist through storage.save_model directly.
+    _engine, store = seeded
+    model = _model("SUM({value}) * {k}").model_copy(update={"aggregations": [Aggregation.model_validate({
+        "name": "custom_agg", "formula": "SUM({value}) * {k}",
+        "params": [{"name": "k", "sql": "2"}, {"name": "unused", "sql": "1"}],
+    })]})
+    with pytest.raises(AggregationArgumentError, match="'unused' is never referenced"):
+        await store.save_model(model)
+    assert await store.get_model("orders", data_source=_DS) is None
+
+
+async def test_ranked_formula_rejected_before_backing_query_expansion(
+    seeded, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine, _store = seeded
+    expanded: list[str] = []
+
+    async def _spy_expand(self, model):  # noqa: ANN001
+        expanded.append(model.name)
+        return model
+
+    monkeypatch.setattr(SlayerQueryEngine, "_validate_and_populate_cache", _spy_expand)
+    model = SlayerModel(
+        name="obs", data_source=_DS,
+        source_queries=[SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="amount:sum")])],
+        aggregations=[Aggregation(name="last", formula="MAX({value})")],
+    )
+    with pytest.raises(AggregationArgumentError, match="ranked aggregation cannot take a formula"):
+        await engine.save_model(model)
+    assert expanded == []

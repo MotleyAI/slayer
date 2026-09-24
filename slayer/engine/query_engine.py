@@ -50,14 +50,12 @@ from slayer.core.join_walker import neighbors
 from slayer.core.policy import JoinFilterRuleset, SessionPolicy
 from slayer.core.format import format_number
 from slayer.core.models import (
-    Aggregation,
     DatasourceConfig,
     ModelMeasure,
     SlayerModel,
     is_identifier,
     _check_join_keys,
     join_key_error,
-    rendered_formula,
 )
 from slayer.core.query import (
     ModelExtension,
@@ -134,8 +132,8 @@ from slayer.sql.client import (
     build_sql_model_trial_query,
     classify_model_sql,
 )
-from slayer.sql.dialects import SqlDialect, dialect_for_ds_type, get_dialect
-from slayer.sql.sql_template import SqlTemplateError, aggregation_reads, sql_template
+from slayer.sql.dialects import SQLGLOT_NAMES, SqlDialect, dialect_for_ds_type, get_dialect
+from slayer.sql.sql_template import SqlTemplateError, sql_template
 from slayer.sql import engine_factory
 from slayer.sql.engine_factory import EngineCacheKey, _sql_client_cache_key
 from slayer.sql.generator import generate_planned_stages
@@ -626,21 +624,23 @@ class _Prepared(BaseModel):
     population_inferred: bool = False
 
 
-def _check_aggregation(*, where: str, agg: Aggregation, dialect: str) -> None:
-    if agg.formula and agg.name in RANKED_AGGREGATIONS:
-        raise AggregationArgumentError(f"{where}: a ranked aggregation cannot take a formula.")
-    try:
-        if agg.formula:
-            sql_template(text=agg.formula, dialect=dialect)
-        reads = aggregation_reads(agg=agg.name, definition=agg, dialect=dialect)
-    except SqlTemplateError as e:
-        raise SqlTemplateError(f"{where}: {e}") from e
-    unread = [p.name for p in agg.params if p.name not in reads]
-    if unread:
-        reader = "its formula" if rendered_formula(agg=agg.name, definition=agg) else "the built-in"
-        raise AggregationArgumentError(
-            f"{where}: parameter '{unread[0]}' is never referenced by {reader}; remove it.",
-        )
+def _reject_formulas_unparseable_everywhere(model: SlayerModel) -> None:
+    for agg in model.aggregations:
+        if not agg.formula:
+            continue
+        if agg.name in RANKED_AGGREGATIONS:
+            raise AggregationArgumentError(
+                f"Model '{model.name}', aggregation '{agg.name}': a ranked aggregation cannot take a formula."
+            )
+        errors: list[SqlTemplateError] = []
+        for dialect in SQLGLOT_NAMES:
+            try:
+                sql_template(text=agg.formula, dialect=dialect)
+                break
+            except SqlTemplateError as e:
+                errors.append(e)
+        else:
+            raise SqlTemplateError(f"Model '{model.name}', aggregation '{agg.name}': {errors[0]}")
 
 
 class SlayerQueryEngine:
@@ -2944,7 +2944,8 @@ class SlayerQueryEngine:
             except AmbiguousModelError:
                 # Multiple entries for this name — don't silently mass-delete.
                 prior_data_source = None
-        await self._check_aggregation_formulas(model)
+        # Fail fast before any trial run / expansion; storage re-checks in the saved dialect.
+        _reject_formulas_unparseable_everywhere(model)
         if model.source_queries:
             if model.columns:
                 raise ValueError(
@@ -2972,15 +2973,6 @@ class SlayerQueryEngine:
                 model.name, data_source=prior_data_source
             )
         return model
-
-    async def _check_aggregation_formulas(self, model: SlayerModel) -> None:
-        """Reject an aggregation whose formula does not parse, or that declares a parameter it never reads."""
-        if not model.aggregations:
-            return
-        ds = await self.storage.get_datasource(model.data_source) if model.data_source else None
-        dialect = dialect_for_ds_type(ds.type).sqlglot_name if ds else ""
-        for agg in model.aggregations:
-            _check_aggregation(where=f"Model '{model.name}', aggregation '{agg.name}'", agg=agg, dialect=dialect)
 
     async def validate_sql_model_source(self, model: SlayerModel) -> None:
         """Statically classify a raw-``sql`` source, then trial-execute it: a

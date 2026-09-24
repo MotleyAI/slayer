@@ -75,11 +75,14 @@ def _q(formula: str) -> SlayerQuery:
     return SlayerQuery(source_model="orders", measures=[ModelMeasure(formula=formula, name="m")])
 
 
-async def _sql(formula: str, *, dialect: str = "postgres", aggs: tuple[Aggregation, ...] = ()) -> str:
-    return await _engine_generate(query=_q(formula), model=_orders(aggs), dialect=dialect)
+async def _sql(
+    formula: str, *, dialect: str = "postgres", aggs: tuple[Aggregation, ...] = (), validate: bool = True,
+) -> str:
+    # validate=False: a model stored before its save-time rule existed (still loads, still queried).
+    return await _engine_generate(query=_q(formula), model=_orders(aggs), dialect=dialect, validate=validate)
 
 
-async def _joined_sql(agg: Aggregation, formula: str) -> str:
+async def _joined_sql(*, agg: Aggregation, formula: str, validate: bool = True) -> str:
     customers = SlayerModel(
         name="customers", sql_table="customers", data_source="test",
         columns=[
@@ -90,7 +93,7 @@ async def _joined_sql(agg: Aggregation, formula: str) -> str:
     host = _orders((agg,)).model_copy(
         update={"joins": [ModelJoin(target_model="customers", join_pairs=[["id", "id"]])]},
     )
-    return await _engine_generate(query=_q(formula), model=host, extra_models=[customers])
+    return await _engine_generate(query=_q(formula), model=host, extra_models=[customers], validate=validate)
 
 
 _SUMSQ = Aggregation(name="sumsq", formula="SUM({value} * {value})")
@@ -205,9 +208,11 @@ class TestPlaceholderRecognition:
 
     async def test_whitespace_placeholder_kwarg_registers_its_join(self) -> None:
         query = "price:scaled(scale='customers.weight')"
-        spaced = await _joined_sql(Aggregation(name="scaled", formula="SUM({value}) / MAX({ scale })"), query)
+        spaced = await _joined_sql(
+            agg=Aggregation(name="scaled", formula="SUM({value}) / MAX({ scale })"), formula=query,
+        )
         assert spaced == await _joined_sql(
-            Aggregation(name="scaled", formula="SUM({value}) / MAX({scale})"), query,
+            agg=Aggregation(name="scaled", formula="SUM({value}) / MAX({scale})"), formula=query,
         )
         assert "JOIN customers" in spaced
 
@@ -216,13 +221,13 @@ class TestPlaceholderRecognition:
             name="plain", formula="SUM({value})",
             params=[AggregationParam(name="w", sql="customers.weight")],
         )
-        assert "customers" not in await _joined_sql(unused, "price:plain")
+        assert "customers" not in await _joined_sql(agg=unused, formula="price:plain", validate=False)
 
     @pytest.mark.parametrize("declared", [Aggregation(name="corr"), _SUMSQ])
     async def test_formula_less_builtin_string_kwarg_registers_its_join(
         self, declared: Aggregation,
     ) -> None:
-        sql = await _joined_sql(declared, "price:corr(other='customers.weight')")
+        sql = await _joined_sql(agg=declared, formula="price:corr(other='customers.weight')")
         assert "CORR(orders.price, customers.weight)" in sql
         assert "JOIN customers" in sql
 
@@ -469,7 +474,7 @@ class TestKwargNamesFollowTheRenderDialect:
     async def test_untokenizable_formula_fails_before_arguments_bind(self) -> None:
         bad = Aggregation(name="bad", formula="SUM({value}) + 'x")
         with pytest.raises(SqlTemplateError, match="Aggregation 'bad': cannot tokenize"):
-            await _sql("price:bad(foo=missing.path)", aggs=(bad,))
+            await _sql("price:bad(foo=missing.path)", aggs=(bad,), validate=False)
 
 
 class TestOverrideFormulaRenders:
@@ -502,11 +507,11 @@ class TestOverrideFormulaRenders:
 class TestArgumentNamesCheckedFirst:
     async def test_positional_onto_unreferenced_param_is_rejected(self) -> None:
         with pytest.raises(AggregationArgumentError, match="'kx' does not accept argument 'unused'; accepted: k, window"):
-            await _sql("kx(price, 5)", aggs=(_K_UNUSED,))
+            await _sql("kx(price, 5)", aggs=(_K_UNUSED,), validate=False)
 
     async def test_positional_name_rejected_before_its_value_binds(self) -> None:
         with pytest.raises(AggregationArgumentError, match="'kx' does not accept argument 'unused'"):
-            await _sql("kx(price, missing.path)", aggs=(_K_UNUSED,))
+            await _sql("kx(price, missing.path)", aggs=(_K_UNUSED,), validate=False)
 
     async def test_keyword_name_rejected_before_its_value_binds(self) -> None:
         with pytest.raises(AggregationArgumentError, match="'scaled' does not accept argument 'bogus'"):
