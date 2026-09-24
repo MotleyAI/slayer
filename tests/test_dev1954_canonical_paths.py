@@ -11,14 +11,15 @@ from typing import AsyncIterator, Dict
 
 import pytest
 import sqlglot
+from sqlglot import exp
 
 from slayer.core import join_walker
 from slayer.core.enums import TimeGranularity
 from slayer.core.errors import UnknownReferenceError
 from slayer.core.join_walker import walk, walk_cancelling
-from slayer.core.keys import ColumnKey, ColumnSqlKey, StarKey
+from slayer.core.keys import AggregateKey, ColumnKey, ColumnSqlKey, StarKey, TimeTruncKey
 from slayer.core.models import ModelJoin, SlayerModel
-from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
+from slayer.core.query import ColumnRef, TimeDimension
 from slayer.core.scope import ModelScope
 from slayer.engine import bind_inputs, schema_drift
 from slayer.engine.binding import bind_expr, bind_time_dimension
@@ -41,6 +42,7 @@ from tests._dev1954_fixtures import (
     execution_spy,
     make_exec_engine,
     orders_q,
+    slayer_query,
     table_count,
 )
 
@@ -148,6 +150,7 @@ class TestBoundKeysAreCanonical:
 
     def test_star_key(self) -> None:
         key = _bind("customers.regions.*:count").value_key
+        assert isinstance(key, AggregateKey)
         assert key.source == StarKey(path=("customers", "hr"))
 
     def test_time_trunc_key(self) -> None:
@@ -155,6 +158,7 @@ class TestBoundKeysAreCanonical:
             TimeDimension(dimension=ColumnRef(name="customers.regions.founded_at"),
                           granularity=TimeGranularity.YEAR),
             scope=_scope(), bundle=_bundle())
+        assert isinstance(bound.bound.value_key, TimeTruncKey)
         assert bound.bound.value_key.column == \
             ColumnKey(path=("customers", "hr"), leaf="founded_at")
         assert bound.bound.routed_dotted == "customers.hr.founded_at"
@@ -224,6 +228,7 @@ class TestModeAQualifiersAreCanonical:
     def test_default_reference_paths(self) -> None:
         M = _mbn()
         parsed = sqlglot.parse_one("customers.regions.pop * 1")
+        assert isinstance(parsed, exp.Expression)  # pyright: ignore[reportPrivateImportUsage] — sqlglot ships no __all__
         assert column_expansion.resolve_default_reference_paths(
             parsed=parsed, owner_path=(), root_model=M["orders"], root_path=(),
             bundle=_bundle(),
@@ -426,7 +431,7 @@ class TestSavedMeasures:
         assert not broadcast_warnings(resp)
 
     async def test_reverse_hop(self, engine) -> None:
-        resp = await engine.execute(SlayerQuery(
+        resp = await engine.execute(slayer_query(
             source_model="regions", dimensions=["rname"],
             measures=["customers.tot_spend"]))
         assert resp.columns == ["regions.rname", "regions.hr.tot_spend"]
@@ -458,8 +463,9 @@ class TestCanonicalSpellingsUnchanged:
         assert resp.columns == [RNAME, "orders.customers.tier"]
 
     async def test_error_quotes_the_typed_spelling(self, engine) -> None:
+        query = orders_q(dimensions=["customers.regions.nope"])
         with pytest.raises(UnknownReferenceError, match="customers.regions.nope"):
-            await engine.execute(orders_q(dimensions=["customers.regions.nope"]))
+            await engine.execute(query)
 
 
 class TestSchemaDriftAttribution:

@@ -36,11 +36,17 @@ from slayer.core.enums import (
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS
 from slayer.core.keys import SCALAR_FUNCTIONS, check_scalar_arity, AggregateKey, ArithmeticKey, ColumnKey, ColumnSqlKey, Grain, InKey, LiteralKey, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, column_path, normalize_scalar, prepend_value_key, source_anchor_path, walk_value_keys
-from slayer.core.join_walker import resolve_hop, terminal_model
+from slayer.core.join_walker import (
+    OrientedJoin,
+    canonical_path,
+    resolve_hop,
+    terminal_model,
+    walk,
+)
 from slayer.core.models import SlayerModel
 from slayer.engine import dimension_routing
 from slayer.core.query import TimeDimension
-from slayer.core.scope import ModelScope, StageSchema
+from slayer.core.scope import ModelScope, StageSchema, resolve_generated_column
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.syntax import (
     AggCall,
@@ -148,12 +154,9 @@ def bind_time_dimension(
     time_key = TimeTruncKey(
         column=bound_col, granularity=str(td.granularity.value),
     )
-    routed = (
-        _canonical_if_routed(
-            parsed=DottedRef(parts=tuple(full.split("."))),
-            value_key=bound_col, scope=scope,
-        )
-        if "." in full else None
+    routed = _canonical_if_routed(
+        parsed=DottedRef(parts=tuple(full.split("."))) if "." in full else Ref(name=full),
+        value_key=bound_col, scope=scope,
     )
     return BoundTimeDimension(
         bound=BoundExpr(value_key=time_key, routed_dotted=routed),
@@ -175,7 +178,7 @@ def _time_dimension_column_facts(
         else:
             bound_col = _resolve_ref(full, scope=scope, bundle=bundle)
         assert isinstance(bound_col, ColumnKey)  # a stage ref is always a flat ColumnKey
-        stage_col = scope.get(full)
+        stage_col = scope.get(bound_col.leaf)
         assert stage_col is not None  # _resolve_ref already validated existence
         return bound_col, stage_col.type, stage_col.granularity
 
@@ -224,17 +227,20 @@ def _canonical_if_routed(
     value_key: ValueKey,
     scope: Union[ModelScope, StageSchema],
 ) -> Optional[str]:
-    """Full routed dotted path when the whole field is a short-form ``DottedRef``
-    that auto-routed to a longer path, else ``None``. Excludes
-    self-prefix and direct joins (bound path == typed hop path) so every
-    non-routed ref keeps a byte-identical result key."""
+    """Full canonical dotted path when a ``DottedRef``'s bound path differs from
+    its typed hop path (auto-routed or respelled) — or the canonical name of a
+    stale flat ``Ref`` — else ``None``, so every already-canonical ref keeps a
+    byte-identical result key."""
+    key = value_key.column if isinstance(value_key, TimeTruncKey) else value_key
+    if not isinstance(key, (ColumnKey, ColumnSqlKey)):
+        return None  # saved measures canonicalize in bind_inputs._resolve_saved_measure_ref
+    if isinstance(parsed, Ref):
+        leaf = column_leaf(key)
+        return leaf if not column_path(key) and leaf != parsed.name else None
     if not isinstance(parsed, DottedRef):
         return None
     if not isinstance(scope, ModelScope) or scope.source_model is None:
         return None
-    key = value_key.column if isinstance(value_key, TimeTruncKey) else value_key
-    if not isinstance(key, (ColumnKey, ColumnSqlKey)):
-        return None  # saved measures canonicalize in stage_planner._resolve_saved_measure_ref
     typed = parsed.parts
     if typed and typed[0] == scope.source_model.name:
         typed = typed[1:]
@@ -467,7 +473,7 @@ def _resolve_ref(
         return alias_map[name]
 
     if isinstance(scope, StageSchema):
-        col = scope.get(name)
+        col = scope.resolve_flat_name(name)
         if col is None:
             raise UnknownReferenceError(
                 name=name,
@@ -478,7 +484,7 @@ def _resolve_ref(
                 ),
                 suggestion=None,
             )
-        return ColumnKey(path=(), leaf=name)
+        return ColumnKey(path=(), leaf=col.name)
 
     assert isinstance(scope, ModelScope)
     if scope.source_model is None:
@@ -491,7 +497,7 @@ def _resolve_ref(
     model = scope.source_model
 
     # A ``__``-bearing name is not special: it resolves by ordinary exact-match.
-    col = next((c for c in model.columns if c.name == name), None)
+    col = resolve_generated_column(model, name)
     if col is not None:
         if col.needs_expansion:
             return ColumnSqlKey(path=(), model=model.name, column_name=col.name)
@@ -525,8 +531,8 @@ def _walk_join_chain(
     original_parts: Optional[Tuple[str, ...]] = None,
 ):
     """Walk ``hop_path`` join hops from ``host`` through the shared bidirectional
-    walker; returns ``(terminal_model, effective_hop_path)``. Each token resolves
-    as an edge name then a neighbour model, in either orientation.
+    walker; returns ``(terminal_model, canonical effective_hop_path)``. Each token
+    resolves as an edge name then a neighbour model, in either orientation.
 
     When a token resolves to no incident edge, a bare ``Target`` short form
     (``len(hop_path) == 1``) auto-routes to its full datasource-scoped path
@@ -542,6 +548,7 @@ def _walk_join_chain(
     spelled = parts if original_parts is None else original_parts
     current = host
     visited_models = {host.name}
+    chain: List[OrientedJoin] = []
     for hop in hop_path:
         edge = resolve_hop(current=current, token=hop, models_by_name=models_by_name)
         if edge is None:
@@ -561,8 +568,9 @@ def _walk_join_chain(
                 revisited=nxt.name, hop=hop, via=current.name,
             )
         visited_models.add(nxt.name)
+        chain.append(edge)
         current = nxt
-    return current, tuple(hop_path)
+    return current, canonical_path(chain)
 
 
 def _route_edgeless_hop(
@@ -587,7 +595,9 @@ def _route_edgeless_hop(
     terminal = models_by_name.get(hop)
     if terminal is None:
         raise _target_not_in_bundle(parts=parts, target=hop)
-    return terminal, tuple(route)
+    chain = walk(root=host, path=tuple(route), models_by_name=models_by_name)
+    assert chain is not None  # a safe route walks by construction
+    return terminal, canonical_path(chain)
 
 
 def _target_not_in_bundle(*, parts: Tuple[str, ...], target: str) -> UnknownReferenceError:
@@ -710,15 +720,15 @@ def _resolve_terminal_leaf(
 ) -> ValueKey:
     """Resolve ``leaf`` on terminal model ``current``: column (plain or derived)
     → saved measure (re-anchored into host coords) → unresolved error."""
-    col = next((c for c in current.columns if c.name == leaf), None)
+    col = resolve_generated_column(current, leaf)
     if col is not None:
         if col.needs_expansion:
             # Derived / filtered column on a joined model — path is part of the
             # key so the cross-model planner can route via the join graph.
             return ColumnSqlKey(
-                path=tuple(hop_path), model=current.name, column_name=leaf,
+                path=tuple(hop_path), model=current.name, column_name=col.name,
             )
-        return ColumnKey(path=tuple(hop_path), leaf=leaf)
+        return ColumnKey(path=tuple(hop_path), leaf=col.name)
     mm = current.get_measure(leaf)
     if mm is not None:
         return _resolve_saved_measure(

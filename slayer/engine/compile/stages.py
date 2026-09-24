@@ -3,6 +3,7 @@ Binding lives in ``bind_inputs``; typing and the checker in ``elaborate_env``.""
 
 from __future__ import annotations
 
+import itertools
 from decimal import Decimal
 from typing import (
     AbstractSet,
@@ -4262,6 +4263,9 @@ def compile_prebound(  # NOSONAR(S3776) — compiler entry-point dispatcher. The
     transform_layers = _emit_transform_layers(slots=projection.registry.slots)
     stage_schema = _emit_stage_schema(
         stage_name=query.name, projection=projection,
+        root=render_source_model, models_by_name=bundle.models_by_name,
+        originals={sub.placeholder: sub.original_key
+                   for attach in regroup_attach_plans for sub in attach.substitutions},
     )
 
     # Frame-bound column set: raw columns of this stage's non-hidden time dimensions.
@@ -4477,10 +4481,51 @@ def _bucket_slots(slots: List[ValueSlot]):
     return row, agg, combined
 
 
+def _value_anchor_path(key: ValueKey) -> Tuple[str, ...]:
+    """The join path a path-derived output's auto-name is prefixed with."""
+    if isinstance(key, TimeTruncKey):
+        key = key.column
+    if isinstance(key, (ColumnKey, ColumnSqlKey, StarKey)):
+        return tuple(key.path)
+    if isinstance(key, AggregateKey):
+        return source_anchor_path(key.source)
+    return ()
+
+
+def _respellings(
+    *, flat: str, key: ValueKey, root: Optional[SlayerModel],
+    models_by_name: Dict[str, SlayerModel],
+) -> Tuple[str, ...]:
+    """``flat`` with every non-empty subset of its path's named hops spelled by
+    their target model (auto-names are path-prefixed, so re-deriving substitutes
+    the prefix)."""
+    path = _value_anchor_path(key)
+    prefix = "__".join(path) + "__"
+    if root is None or not path or not flat.startswith(prefix):
+        return ()
+    try:
+        chain = walk(root=root, path=path, models_by_name=models_by_name)
+    except (AmbiguousJoinPathError, CircularJoinPathError):
+        return ()
+    if not chain:
+        return ()
+    named = [i for i, e in enumerate(chain) if e.name is not None]
+    rest = flat[len(prefix):]
+    return tuple(
+        "__".join(chain[i].target_model if i in subset else tok
+                  for i, tok in enumerate(path)) + "__" + rest
+        for r in range(1, len(named) + 1)
+        for subset in itertools.combinations(named, r)
+    )
+
+
 def _emit_stage_schema(
     *,
     stage_name: Optional[str],
     projection,
+    root: Optional[SlayerModel] = None,
+    models_by_name: Optional[Dict[str, SlayerModel]] = None,
+    originals: Optional[Mapping[ValueKey, ValueKey]] = None,
 ) -> StageSchema:
     columns: List[StageColumn] = []
     alias_idx: Dict[str, int] = {}
@@ -4516,6 +4561,10 @@ def _emit_stage_schema(
             hidden=False,
             format=slot.format,
             description=slot.description,
+            respellings=_respellings(
+                flat=flat, key=(originals or {}).get(slot.key, slot.key), root=root,
+                models_by_name=models_by_name or {},
+            ),
         ))
     return StageSchema(
         relation_name=stage_name or "(unnamed_stage)", columns=columns,

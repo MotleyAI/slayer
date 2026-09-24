@@ -22,13 +22,17 @@ use sites — the type-level optionality is the extension point.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from contextlib import contextmanager
+from contextvars import ContextVar
+from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple, TypeVar
 
 from pydantic import BaseModel, ConfigDict
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.format import NumberFormat
-from slayer.core.models import SlayerModel
+from slayer.core.models import Column, SlayerModel
+
+_T = TypeVar("_T")
 
 
 class StageColumn(BaseModel):
@@ -64,6 +68,8 @@ class StageColumn(BaseModel):
     meta: Optional[Dict[str, Any]] = None
     sampled: Optional[str] = None
     provenance: Optional[str] = None
+    #: ``name`` under each non-canonical spelling of its path (stale-spelling slack).
+    respellings: Tuple[str, ...] = ()
 
 
 class StageSchema(BaseModel):
@@ -102,6 +108,12 @@ class StageSchema(BaseModel):
     def __contains__(self, name: object) -> bool:
         return isinstance(name, str) and self.get(name) is not None
 
+    def resolve_flat_name(self, name: str) -> Optional[StageColumn]:
+        """Stage-boundary lookup: exact name, else a unique stale respelling (recorded)."""
+        return resolve_flat_name(
+            name, [(c.name, c.respellings, c) for c in self.columns],
+        )
+
 
 class ModelScope(BaseModel):
     """Scope for binding Mode-B refs against a model with joins (P5).
@@ -127,3 +139,97 @@ def host_model_name(scope) -> str:
     if isinstance(scope, StageSchema):
         return scope.relation_name
     return "(stage)"
+
+
+def resolve_generated_column(
+    model: SlayerModel, name: str, *, location: Optional[str] = None,
+) -> Optional[Column]:
+    """``resolve_flat_name`` over ``model``'s columns; only generated query-backed
+    columns carry respellings, so authored columns stay exact."""
+    return resolve_flat_name(
+        name, [(c.name, c.respellings, c) for c in model.columns], location=location,
+    )
+
+
+def resolve_flat_name(
+    name: str, entries: Sequence[Tuple[str, Tuple[str, ...], _T]],
+    *, location: Optional[str] = None,
+) -> Optional[_T]:
+    """The entry named ``name``, else the one entry whose respellings contain it
+    (recorded as a stale spelling); several or none → ``None``."""
+    for entry_name, _, entry in entries:
+        if entry_name == name:
+            return entry
+    matches = [(n, e) for n, respellings, e in entries if name in respellings]
+    if len(matches) != 1:
+        return None
+    canonical, entry = matches[0]
+    record_stale_spelling(original=name, normalized=canonical, location=location)
+    return entry
+
+
+class StaleSpelling(BaseModel):
+    """One stale flat name bound to its canonical column at ``location``."""
+
+    model_config = ConfigDict(frozen=True)
+
+    location: str
+    original: str
+    normalized: str
+
+
+_stale_sink: ContextVar[Optional[Dict[StaleSpelling, None]]] = ContextVar(
+    "slayer_stale_spellings", default=None,
+)
+_stale_stage: ContextVar[Optional[str]] = ContextVar("slayer_stale_stage", default=None)
+_stale_position: ContextVar[Optional[str]] = ContextVar(
+    "slayer_stale_position", default=None,
+)
+
+
+@contextmanager
+def collect_stale_spellings() -> Iterator[List[StaleSpelling]]:
+    """Collect stale spellings recorded in the block, deduplicated, into the yielded list."""
+    sink: Dict[StaleSpelling, None] = {}
+    out: List[StaleSpelling] = []
+    token = _stale_sink.set(sink)
+    try:
+        yield out
+    finally:
+        _stale_sink.reset(token)
+        out.extend(sink)
+
+
+@contextmanager
+def stale_spelling_stage(stage: Optional[str]) -> Iterator[None]:
+    token = _stale_stage.set(stage)
+    try:
+        yield
+    finally:
+        _stale_stage.reset(token)
+
+
+@contextmanager
+def stale_spelling_position(position: Optional[str]) -> Iterator[None]:
+    """Referencing position for records in the block; ``None`` suppresses recording."""
+    token = _stale_position.set(position)
+    try:
+        yield
+    finally:
+        _stale_position.reset(token)
+
+
+def record_stale_spelling(
+    *, original: str, normalized: str, location: Optional[str] = None,
+) -> None:
+    """Record at ``location``, else the active position (no position → dropped)."""
+    sink = _stale_sink.get()
+    if sink is None:
+        return
+    if location is None:
+        position = _stale_position.get()
+        if position is None:
+            return
+        stage = _stale_stage.get()
+        location = f"{stage}.{position}" if stage else position
+    sink[StaleSpelling(location=location, original=original, normalized=normalized)] = None

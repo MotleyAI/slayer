@@ -118,9 +118,13 @@ async def make_exec_engine(
         yield engine
 
 
+def slayer_query(**kw) -> SlayerQuery:
+    return SlayerQuery.model_validate(kw)
+
+
 def orders_q(**kw) -> SlayerQuery:
     kw.setdefault("source_model", "orders")
-    return SlayerQuery(**kw)
+    return slayer_query(**kw)
 
 
 def table_count(sql: str, table: str, *, dialect: str = "duckdb") -> int:

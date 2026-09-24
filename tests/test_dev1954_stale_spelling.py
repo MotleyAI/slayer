@@ -24,6 +24,7 @@ from tests._dev1954_fixtures import (
     dev1954_models,
     make_exec_engine,
     orders_q,
+    slayer_query,
     stale_warnings,
 )
 
@@ -78,11 +79,11 @@ async def parallel_engine(request) -> AsyncIterator[SlayerQueryEngine]:
 def _stage1(**kw) -> SlayerQuery:
     kw.setdefault("dimensions", ["customers.regions.rname"])
     kw.setdefault("measures", ["amount:sum"])
-    return SlayerQuery(name="s1", source_model="orders", **kw)
+    return slayer_query(name="s1", source_model="orders", **kw)
 
 
 def _stage2(dim: str, **kw) -> SlayerQuery:
-    return SlayerQuery(source_model="s1", dimensions=[dim],
+    return slayer_query(source_model="s1", dimensions=[dim],
                        measures=["amount_sum:sum"], **kw)
 
 
@@ -104,7 +105,7 @@ class TestStageColumnRespellings:
         bundle = ResolvedSourceBundle(source_model=models[0],
                                       referenced_models=models[1:])
         planned = plan_stages(
-            queries=[stage, SlayerQuery(source_model=stage.name, measures=["*:count"])],
+            queries=[stage, slayer_query(source_model=stage.name, measures=["*:count"])],
             bundle=bundle)
         schema = planned[0].stage_schema
         assert schema is not None
@@ -171,12 +172,13 @@ class TestDownstreamStageStaleReference:
 
     async def test_ambiguous_respelling_fails_closed(self, parallel_engine) -> None:
         stage1 = _stage1(dimensions=["customers.hr.rname", "customers.hr2.rname"])
+        stages = [stage1, _stage2(STALE)]
         with pytest.raises(UnknownReferenceError, match=STALE):
-            await parallel_engine.execute([stage1, _stage2(STALE)])
+            await parallel_engine.execute(stages)
 
     async def test_exact_name_wins(self, engine) -> None:
         stage1 = _stage1(measures=[{"formula": "amount:sum", "name": STALE}])
-        resp = await engine.execute([stage1, SlayerQuery(
+        resp = await engine.execute([stage1, slayer_query(
             source_model="s1", measures=[{"formula": f"{STALE}:sum", "name": "t"}])])
         assert resp.data[0]["s1.t"] == pytest.approx(167.0)
         assert stale_warnings(resp) == []
@@ -197,26 +199,27 @@ class TestDownstreamStageStaleReference:
 # --------------------------------------------------------------------------- #
 class TestQueryBackedConsumer:
     async def test_query_on_the_query_backed_model(self, engine) -> None:
-        stale = await engine.execute(SlayerQuery(
+        stale = await engine.execute(slayer_query(
             source_model="region_amounts", dimensions=[STALE], measures=["amt:sum"]))
-        canon = await engine.execute(SlayerQuery(
+        canon = await engine.execute(slayer_query(
             source_model="region_amounts", dimensions=[CANON], measures=["amt:sum"]))
         assert stale.columns == canon.columns
         assert sorted(map(repr, stale.data)) == sorted(map(repr, canon.data))
         _assert_one_stale(stale)
 
     async def test_other_models_column_sql(self, engine) -> None:
-        resp = await engine.execute(SlayerQuery(
+        resp = await engine.execute(slayer_query(
             source_model="regions", dimensions=["qb_label"]))
         assert {r["regions.qb_label"] for r in resp.data} == {"North", "South"}
         _assert_one_stale(resp)
 
 
     async def test_stored_query_keeps_its_spelling(self, engine) -> None:
-        await engine.execute(SlayerQuery(
+        await engine.execute(slayer_query(
             source_model="region_amounts", dimensions=[STALE], measures=["amt:sum"]))
         model = await engine.storage.get_model("region_amounts", data_source="test")
-        assert model is not None and model.source_queries
+        assert model is not None
+        assert model.source_queries
         dims = [d.full_name for d in model.source_queries[0].dimensions]
         assert dims == ["customers.region_id", "customers.regions.rname"]
 
@@ -225,13 +228,14 @@ class TestQueryBackedConsumer:
         assert orders is not None
         orders.columns = [*orders.columns, Column(name=CANON, sql="status")]
         await engine.storage.save_model(orders)
+        query = orders_q(dimensions=[STALE])
         with pytest.raises(UnknownReferenceError, match=STALE):
-            await engine.execute(orders_q(dimensions=[STALE]))
+            await engine.execute(query)
 
 
 class TestEdgeNamedLater:
     async def test_existing_reference_keeps_resolving(self, unnamed_engine) -> None:
-        query = SlayerQuery(source_model="region_amounts", dimensions=[STALE],
+        query = slayer_query(source_model="region_amounts", dimensions=[STALE],
                             measures=["amt:sum"])
         before = await unnamed_engine.execute(query)
         assert stale_warnings(before) == []

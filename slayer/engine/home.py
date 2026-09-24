@@ -33,6 +33,7 @@ Path = Tuple[str, ...]
 
 
 def _longest_common_prefix(paths: List[Path]) -> Path:
+    """Token-wise LCP of canonical paths."""
     if not paths:
         return ()
     common = paths[0]

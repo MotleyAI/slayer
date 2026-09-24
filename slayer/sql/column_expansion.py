@@ -31,8 +31,15 @@ from slayer.core.errors import (
     LegacyDunderAliasError,
     UnresolvableDimensionJoinError,
 )
-from slayer.core.join_walker import resolve_hop, terminal_model, walk, walk_cancelling
+from slayer.core.join_walker import (
+    canonical_path,
+    resolve_hop,
+    terminal_model,
+    walk,
+    walk_cancelling,
+)
 from slayer.core.models import Column, SlayerModel
+from slayer.core.scope import resolve_generated_column
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.reserved_keywords import prequote_reserved_identifiers
 
@@ -216,9 +223,9 @@ def _walk_exact(
     hops: Tuple[str, ...],
     source_model: SlayerModel,
     models_by_name: ModelsByName,
-) -> Optional[SlayerModel]:
-    """Walk ``hops`` as a chain of EXACT join hops from ``source_model`` via
-    the shared walker — each token matches an incident edge's ``name`` or the
+) -> Optional[Tuple[SlayerModel, Tuple[str, ...]]]:
+    """``(terminal model, canonical path)`` of ``hops`` walked as a chain of EXACT
+    join hops from ``source_model`` via the shared walker — each token matches an incident edge's ``name`` or the
     opposite-endpoint model name (which MAY contain ``__``), in either
     direction (DEV-1853). ``None`` when a hop is not a join / not resolvable;
     propagates :class:`AmbiguousJoinPathError` and :class:`CircularJoinPathError`
@@ -229,7 +236,8 @@ def _walk_exact(
     chain = walk(root=source_model, path=hops, models_by_name=models)
     if chain is None:
         return None
-    return models.get(chain[-1].target_model) if chain else source_model
+    terminal = models.get(chain[-1].target_model) if chain else source_model
+    return (terminal, canonical_path(chain)) if terminal is not None else None
 
 
 def resolve_ref_target(
@@ -254,9 +262,10 @@ def resolve_ref_target(
     if not quals:
         return source_model
     try:
-        return _walk_exact(tuple(quals), source_model, models_by_name)
+        walked = _walk_exact(tuple(quals), source_model, models_by_name)
     except (AmbiguousJoinPathError, CircularJoinPathError):
         return None
+    return walked[0] if walked is not None else None
 
 
 def _resolve_qualifiers(
@@ -272,7 +281,7 @@ def _resolve_qualifiers(
 
     Returns:
       * ``()`` — the reference is anchored on the host / owner model;
-      * a non-empty path tuple — a resolved join path (each hop exact);
+      * a non-empty path tuple — the resolved canonical join path;
       * ``None`` — an opaque qualifier (CTE / subquery / physical
         ``schema.table.column``), left untouched.
 
@@ -293,8 +302,9 @@ def _resolve_qualifiers(
     # ``a__b`` split-alias probe; re-raise both with the complete pre-strip
     # reference and the column being expanded.
     try:
-        if _walk_exact(path, source_model, models_by_name) is not None:
-            return path
+        walked = _walk_exact(path, source_model, models_by_name)
+        if walked is not None:
+            return walked[1]
         if len(path) == 1:
             _raise_if_legacy_split_alias(
                 qualifier=path[0], leaf=leaf,
@@ -452,12 +462,11 @@ def _lenient_path(
     if not quals:
         return ()
     try:
-        if _walk_exact(tuple(quals), source_model, models_by_name) is not None:
-            return tuple(quals)
-        if len(quals) == 1 and "__" in quals[0]:
-            naive = tuple(quals[0].split("__"))
-            if _walk_exact(naive, source_model, models_by_name) is not None:
-                return naive
+        walked = _walk_exact(tuple(quals), source_model, models_by_name)
+        if walked is None and len(quals) == 1 and "__" in quals[0]:
+            walked = _walk_exact(tuple(quals[0].split("__")), source_model, models_by_name)
+        if walked is not None:
+            return walked[1]
     except (AmbiguousJoinPathError, CircularJoinPathError):
         return None
     return None
@@ -626,10 +635,13 @@ def _requalify(node: exp.Expression, *, alias: str, leaf: str) -> exp.Expression
         node.set("table", exp.to_identifier(alias))
         node.set("db", None)
         node.set("catalog", None)
+        if node.name != leaf:  # a respelled stale leaf
+            node.set("this", exp.to_identifier(leaf))
         return node
     tail = (
         node.expression.copy()
         if isinstance(node, exp.Dot) and isinstance(node.expression, exp.Identifier)
+        and node.expression.name == leaf
         else exp.to_identifier(leaf)
     )
     replacement = exp.column(tail, table=alias)
@@ -651,6 +663,7 @@ def _process_reference_site(
     alias_resolver: Optional[AliasResolver],
     crossed_paths: Optional[_PathSink],
     physical_read_exempt: FrozenSet[Tuple[str, str]] = frozenset(),
+    site: Optional[Tuple[str, str]] = None,
 ) -> Optional[exp.Expression]:
     """Resolve one reference site: qualify a base column in place, inline a
     derived one, or leave an opaque reference untouched.
@@ -673,16 +686,22 @@ def _process_reference_site(
         target_model: Optional[SlayerModel] = model
         canonical_alias = alias_path
     else:
-        target_model = _walk_exact(path, model, models_by_name)
-        if target_model is None:
+        walked = _walk_exact(path, model, models_by_name)
+        if walked is None:
             return None
+        target_model = walked[0]
         canonical_alias = _alias_for_path(
             full_path, alias_resolver=alias_resolver,
         )
         if crossed_paths is not None:
             for i in range(1, len(full_path) + 1):
                 crossed_paths.add(full_path[:i])
-    target_col = target_model.get_column(leaf)
+    owner = visited[-1] if visited else site
+    target_col = resolve_generated_column(
+        target_model, leaf, location=".".join(owner) if owner else None,
+    )
+    if target_col is not None:
+        leaf = target_col.name
     # An exempt column reads physically (its filter's self-reference reads the
     # bare column, never the masked value — matching the save-time cycle rule).
     if (
@@ -771,6 +790,7 @@ def expand_derived_refs_sync(
     alias_resolver: Optional[AliasResolver] = None,
     crossed_paths: Optional[_PathSink] = None,
     physical_read_exempt: FrozenSet[Tuple[str, str]] = frozenset(),
+    site: Optional[Tuple[str, str]] = None,
 ) -> Optional[str]:
     """Inline every derived-column reference in ``sql`` to its definition and
     qualify every base reference to its internal alias.
@@ -788,7 +808,8 @@ def expand_derived_refs_sync(
     the emitted JOIN aliases; ``None`` falls back to the legacy ``"__".join``
     spelling. When ``crossed_paths`` is supplied, every join-path prefix the
     fragment (recursively) crosses is added to it — the structural alternative
-    to re-scanning the internal-alias output.
+    to re-scanning the internal-alias output. ``site`` ``(model, column)`` names
+    the definition being expanded, for stale-spelling warnings.
     """
     if not sql:
         return sql
@@ -814,6 +835,7 @@ def expand_derived_refs_sync(
             alias_resolver=alias_resolver,
             crossed_paths=crossed_paths,
             physical_read_exempt=physical_read_exempt,
+            site=site,
         )
         # ``node.replace`` mutates the node's PARENT. When the whole fragment is
         # a single reference — ``Column.sql = "other_derived_col"``, an alias of
@@ -882,7 +904,7 @@ def expand_column_definition_parts_sync(
             sql=sql, model=model, alias_path=alias_path,
             models_by_name=models_by_name, dialect=dialect, owner_path=owner_path,
             visited=visited, alias_resolver=alias_resolver, crossed_paths=crossed_paths,
-            physical_read_exempt=exempt,
+            physical_read_exempt=exempt, site=(model.name, column.name),
         )
         return out if out is not None else sql
 
