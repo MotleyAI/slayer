@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Dict, Hashable, List, Optional, Tuple, Union
 
 from slayer.core.query import ModelExtension, SlayerQuery
-from slayer.core.scope import ModelScope, StageSchema
+from slayer.core.scope import ModelScope, StageSchema, stale_spelling_stage
 from slayer.engine.compile import compile_query
 from slayer.engine.compile.stages import _topo_sort
 from slayer.engine.elaborate import elaborate_query
@@ -122,7 +122,7 @@ def plan_stages(
     )
     stage_schemas: Dict[str, StageSchema] = {}
     results: List[PlannedQuery] = []
-    for q in ordered:
+    for index, q in enumerate(ordered):
         scope, stage_bundle = _stage_scope_and_bundle(
             query=q,
             bundle=bundle,
@@ -130,12 +130,13 @@ def plan_stages(
             data_source=data_source,
             is_root=q is root,
         )
-        planned = plan_query(
-            query=q,
-            bundle=stage_bundle,
-            scope=scope,
-            stage_schemas=stage_schemas,
-        )
+        with stale_spelling_stage(f"stage {q.name!r}" if q.name else f"stages[{index}]"):
+            planned = plan_query(
+                query=q,
+                bundle=stage_bundle,
+                scope=scope,
+                stage_schemas=stage_schemas,
+            )
         results.append(planned)
         if q.name and planned.stage_schema is not None:
             stage_schemas[q.name] = planned.stage_schema
