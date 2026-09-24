@@ -143,7 +143,8 @@ elaborate→compile and `query_engine.py` orchestrates.
    typing, never from text or key shape at render time.
    [enforced: test:tests/test_dev1800_materialisation_stage.py]
 7. **One slack pass, typed warnings**: slack-but-unambiguous query shapes are
-   rewritten once at the pipeline entry; every rewrite surfaces as a structured
+   rewritten once at the pipeline entry — a flat name that needs an upstream
+   schema, once at that stage boundary; every rewrite surfaces as a structured
    warning on the response; a slack rule retires by promotion to first-class
    grammar, never by accumulating rewrites. [review]
 8. **Models persist verbatim**: `save_model` stores the author's spelling
