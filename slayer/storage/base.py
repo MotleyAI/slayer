@@ -46,6 +46,8 @@ from slayer.storage.type_refinement import (
 
 
 _TO_ONE_CARDINALITIES = {"many_to_one", "one_to_one"}
+# Live type refinement repairs pre-v11 schemas only; later bumps are dict-only.
+_LIVE_REFINEMENT_BELOW_VERSION = 11
 
 
 def _is_exact_inverse_join(a: dict, b: dict) -> bool:
@@ -590,9 +592,10 @@ class StorageBackend(ABC):
                 name=name, data=data, data_source=data_source,
             )
             write_back = True
-            await self._apply_refinement_or_raise(
-                name=name, data=data, data_source=data_source,
-            )
+            if pre_version < _LIVE_REFINEMENT_BELOW_VERSION:
+                await self._apply_refinement_or_raise(
+                    name=name, data=data, data_source=data_source,
+                )
         model = SlayerModel.model_validate(data)
         if write_back:
             # Write-back must not re-validate: legacy models may hold cycles or

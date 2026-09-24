@@ -36,6 +36,9 @@ from slayer.storage.type_refinement import (
 )
 from slayer.storage.yaml_storage import YAMLStorage
 
+# Newest on-disk schema still live-refined on load.
+_NEWEST_REFINED_VERSION = 10
+
 
 # ---------------------------------------------------------------------------
 # Test fixtures
@@ -687,7 +690,7 @@ class TestHasRefineableColumnsSqliteIntBranch:
         # "INT" type token. (Pre-DEV-1361 v4 dicts only know the legacy
         # "number" / "string" tokens — pinning "version": 4 with "type":
         # "INT" wouldn't represent any real on-disk model shape.)
-        legacy_version = mig.CURRENT_VERSIONS["SlayerModel"] - 1
+        legacy_version = _NEWEST_REFINED_VERSION
         with open(os.path.join(models_dir, "items.yaml"), "w") as f:  # NOSONAR(S7493) — test fixture: sync I/O is fine
             yaml.dump(
                 {
@@ -723,7 +726,7 @@ class TestHasRefineableColumnsSqliteIntBranch:
         base = str(tmp_path)
         models_dir = os.path.join(base, "models", "live")
         os.makedirs(models_dir, exist_ok=True)
-        legacy_version = mig.CURRENT_VERSIONS["SlayerModel"] - 1
+        legacy_version = _NEWEST_REFINED_VERSION
         with open(os.path.join(models_dir, "items.yaml"), "w") as f:  # NOSONAR(S7493) — test fixture: sync I/O is fine
             yaml.dump(
                 {
@@ -741,6 +744,29 @@ class TestHasRefineableColumnsSqliteIntBranch:
         storage = YAMLStorage(base_dir=base)
         with pytest.raises(ValueError, match="datasource 'live' is unavailable"):
             await storage.get_model("items", data_source="live")
+
+    async def test_post_refinement_schema_migrates_without_datasource(
+        self, tmp_path: Path
+    ) -> None:
+        """A dict-only bump never needs the live datasource."""
+        base = str(tmp_path)
+        models_dir = os.path.join(base, "models", "live")
+        os.makedirs(models_dir, exist_ok=True)
+        with open(os.path.join(models_dir, "items.yaml"), "w") as f:  # NOSONAR(S7493) — test fixture: sync I/O is fine
+            yaml.dump(
+                {
+                    "version": _NEWEST_REFINED_VERSION + 1,
+                    "name": "items",
+                    "sql_table": "items",
+                    "data_source": "live",
+                    "columns": [{"name": "amount", "sql": "amount", "type": "DOUBLE"}],
+                },
+                f,
+            )
+        loaded = await YAMLStorage(base_dir=base).get_model("items", data_source="live")
+        assert loaded is not None
+        assert loaded.version == mig.CURRENT_VERSIONS["SlayerModel"]
+        assert loaded.columns[0].type is DataType.DOUBLE
 
 
 class TestV7SqliteModelNotAutoRepairedOnLoad:
@@ -922,7 +948,7 @@ class TestCliMigrateTypes:
             )
         models_dir = os.path.join(base, "models", "live")
         os.makedirs(models_dir, exist_ok=True)
-        legacy_version = mig.CURRENT_VERSIONS["SlayerModel"] - 1
+        legacy_version = _NEWEST_REFINED_VERSION
         with open(os.path.join(models_dir, "items.yaml"), "w") as f:  # NOSONAR(S7493) — test fixture: sync I/O is fine
             yaml.dump(
                 {
@@ -954,7 +980,7 @@ class TestCliMigrateTypes:
         base = str(tmp_path)
         models_dir = os.path.join(base, "models", "live")
         os.makedirs(models_dir, exist_ok=True)
-        legacy_version = mig.CURRENT_VERSIONS["SlayerModel"] - 1
+        legacy_version = _NEWEST_REFINED_VERSION
         with open(os.path.join(models_dir, "items.yaml"), "w") as f:  # NOSONAR(S7493) — test fixture: sync I/O is fine
             yaml.dump(
                 {
