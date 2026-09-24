@@ -32,6 +32,7 @@ from slayer.core.models import (
     Column,
     ModelJoin,
     SlayerModel,
+    is_identifier,
 )
 from slayer.facade.datatypes import SUPPORTED_DATATYPES
 
@@ -471,16 +472,14 @@ def _model_has_resolvable_time_dimension(model: SlayerModel) -> bool:
     return bool(model.default_time_dimension)
 
 
-def _eligible_aggregations(
-    *, column: Column, model: SlayerModel | None = None,
-) -> set[str]:
-    """Per §5.1.3: default-by-type ∩ explicit whitelist, with PK clamp.
+def _eligible_aggregations(*, column: Column, model: SlayerModel) -> set[str]:
+    """Per §5.1.3: default-by-type ∩ explicit whitelist, with the identifier clamp.
 
-    When ``model`` is given AND it has no time dimension, time-dependent
-    aggregations (``first``, ``last``) are dropped — they would expose
-    pseudo-columns the engine then refuses to execute against.
+    Without a model time dimension, time-dependent aggregations (``first``,
+    ``last``) are dropped — they would expose pseudo-columns the engine then
+    refuses to execute against.
     """
-    if column.primary_key:
+    if is_identifier(column=column, columns=model.columns):
         base = set(PRIMARY_KEY_AGGREGATIONS)
     else:
         base = set(DEFAULT_AGGREGATIONS_BY_TYPE.get(column.type, frozenset()))
@@ -488,7 +487,7 @@ def _eligible_aggregations(
         base &= set(column.allowed_aggregations)
     # Strip parametric built-ins — they need named args (§5.1.3).
     base -= _PARAMETRIC_BUILTIN_AGGS
-    if model is not None and not _model_has_resolvable_time_dimension(model):
+    if not _model_has_resolvable_time_dimension(model):
         base -= _TIME_DEPENDENT_AGGREGATIONS
     return base
 

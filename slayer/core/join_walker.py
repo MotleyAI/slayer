@@ -29,6 +29,8 @@ from slayer.core.models import ModelJoin, SlayerModel, join_key_error
 
 __all__ = [
     "OrientedJoin",
+    "canonical_path",
+    "canonical_token",
     "edges_between",
     "neighbors",
     "physical_join_pairs",
@@ -57,6 +59,16 @@ class OrientedJoin(BaseModel):
     cardinality: JoinCardinality | None
     name: str | None
     declaring_model: str
+
+
+def canonical_token(edge: OrientedJoin) -> str:
+    """A hop's canonical spelling: the edge name, else the traversal-target model."""
+    return edge.name if edge.name is not None else edge.target_model
+
+
+def canonical_path(chain: Sequence[OrientedJoin]) -> tuple[str, ...]:
+    """The canonical spelling of a resolved chain."""
+    return tuple(canonical_token(e) for e in chain)
 
 
 def _orient(*, join: ModelJoin, declaring: str, from_model: str) -> OrientedJoin:
@@ -251,13 +263,13 @@ def walk_cancelling(
 ) -> tuple[str, ...] | None:
     """Resolve a definition default's qualifier ``tokens`` in the owner's frame
     (the owner is ``root`` walked along ``owner_path``), with reverse-hop
-    cancellation (DEV-1908 D1/D2).
+    cancellation.
 
     Per token, precedence is incident edge name → a model name on the path
     (cancel) → a model-name hop: an incident edge-name token always hops and
     never cancels; a token equal to a dataset already on ``root + owner_path``
     truncates the absolute path back to it — keeping ``owner_path``'s spelling —
-    then resolution continues forward from there. Returns the absolute token
+    then resolution continues forward from there. Returns the absolute canonical
     path from ``root`` (``()`` = the root itself), ``None`` on a miss or a hop
     onto an already-visited model; ambiguity raises."""
     models = dict(models_by_name)
@@ -273,7 +285,7 @@ def walk_cancelling(
             if nxt is None or any(m.name == edge.target_model for m in stack):
                 return None
             stack.append(nxt)
-            path_tokens.append(token)
+            path_tokens.append(canonical_token(edge))
             continue
         cancel_at = next((i for i, m in enumerate(stack) if m.name == token), None)
         if cancel_at is not None:
@@ -287,7 +299,7 @@ def walk_cancelling(
         if nxt is None:
             return None
         stack.append(nxt)
-        path_tokens.append(token)
+        path_tokens.append(canonical_token(edge))
     return tuple(path_tokens)
 
 

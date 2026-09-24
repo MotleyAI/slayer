@@ -8,10 +8,14 @@ import re
 import pytest
 
 from slayer.core.errors import SlayerError
-from slayer.engine.binding import _source_is_reaggregation
-from slayer.engine.syntax import AggCall, TransformCall, parse_expr
+from slayer.core.keys import AggregateKey, TransformKey
+from slayer.core.scope import ModelScope
+from slayer.engine.binding import _source_is_reaggregation, bind_expr
+from slayer.engine.syntax import AggCall, parse_expr
+from slayer.ir.source_bundle import ResolvedSourceBundle
 
 from tests._dev1847_fixtures import (
+    dev1847_models,
     INNER_CR,
     ColumnRef,
     ModelMeasure,
@@ -148,18 +152,27 @@ class TestCrossModelAndFilteredOperandNowAccepted:
         assert "CASE WHEN" in (await gen(query)).upper()
 
 
+def _bound(formula: str):
+    models = dev1847_models()
+    bundle = ResolvedSourceBundle(source_model=models[0], referenced_models=models[1:])
+    return bind_expr(
+        parse_expr(formula), scope=ModelScope(source_model=models[0]), bundle=bundle,
+    ).value_key
+
+
 class TestFirstLastDispatchUnchanged:
     @pytest.mark.parametrize("fn", ["first", "last"])
-    def test_first_last_over_aggregate_parses_as_transform(self, fn):
+    def test_first_last_over_aggregate_binds_as_transform(self, fn):
         """first/last over an aggregated first arg is the transform."""
-        parsed = parse_expr(f"{fn}({INNER_CR})")
-        assert isinstance(parsed, TransformCall)
-        assert parsed.op == fn
+        key = _bound(f"{fn}({INNER_CR})")
+        assert isinstance(key, TransformKey)
+        assert key.op == fn
 
     def test_last_over_plain_column_is_aggregation(self):
         """The non-aggregated first argument still routes to the aggregation."""
-        parsed = parse_expr("last(amount)")
-        assert isinstance(parsed, AggCall)
+        key = _bound("last(amount)")
+        assert isinstance(key, AggregateKey)
+        assert key.agg == "last"
 
 
 class TestUnknownOuterAggregationRejectedAtBinding:

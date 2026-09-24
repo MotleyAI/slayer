@@ -48,16 +48,9 @@ _SP = "compile/stages.py"
 _PL = "compile/projection.py"
 _EE = "elaborate_env.py"  # the checker: guards relocate here from the compilers
 _BI = "bind_inputs.py"  # the query-level bind pass: the bind block left the compiler
-_EL = "elaborate.py"  # the one elaboration pass (entry API)
 _CI = "compile/__init__.py"  # the compile entry API
 
 ROWS: Tuple[LedgerRow, ...] = (
-    _row(module=_EL, function="elaborate_query", exc="ValueError",
-         message="elaborate_query needs query= or an explicit scope=.",
-         category="internal", family="internal", user=False, owner="checker"),
-    _row(module=_EL, function="elaborate_query", exc="ValueError",
-         message="elaborate_query needs query= or prebound=.",
-         category="internal", family="internal", user=False, owner="checker"),
     _row(module=_CI, function="compile_query", exc="ValueError",
          message="compile_query needs an environment produced by elaborate_query (its compile inputs are unset).",
          category="internal", family="internal", user=False, owner="compiler"),
@@ -70,10 +63,10 @@ ROWS: Tuple[LedgerRow, ...] = (
     _row(module=_EE, function="check_windowed_time_dimension", exc="ValueError",
          message="Windowed measure could not resolve its time dimension. Add a single time_dimensions entry, or set main_time_dimension to select among multiple time dimensions.",
          category="checker", family="time-axis", user=True, owner="checker"),
-    _row(module=_EE, function="_check_shift_family_key", exc="ValueError",
+    _row(module=_EE, function="check_transform_inputs", exc="ValueError",
          message="'…' cannot consume a boolean-shaped predicate: its desugared arithmetic subtracts the shifted series, and subtraction over truth values is undefined. Shift the predicate itself with time_shift, or compare the shifted values instead.",
          category="checker", family="positions", user=True, owner="checker"),
-    _row(module=_EE, function="check_transform_row_leaf", exc="ValueError",
+    _row(module=_EE, function="check_transform_inputs", exc="ValueError",
          message="Transform '…' cannot consume the row-level (non-aggregate) leaf '…', which refines the query grain: it would inflate the base grain to one row per (bucket, …-value). Aggregate the leaf — e.g. …(…:sum) — project '…' as a query dimension, or compute it in an earlier stage of a multi-stage `source_queries` model.",
          category="checker", family="positions", user=True, owner="checker"),
     _row(module=_EE, function="check_raw_rows_filter_measure_ref", exc="DistinctDimensionValuesError",

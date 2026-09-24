@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Dict, Hashable, List, Optional, Tuple, Union
 
 from slayer.core.query import ModelExtension, SlayerQuery
-from slayer.core.scope import ModelScope, StageSchema
+from slayer.core.scope import ModelScope, StageSchema, stale_spelling_stage
 from slayer.engine.compile import compile_query
 from slayer.engine.elaborate import elaborate_query
 from slayer.engine.stage_ordering import (
@@ -18,13 +18,13 @@ from slayer.engine.stage_ordering import (
     topologically_order_stages,
 )
 from slayer.ir.planned import PlannedQuery
-from slayer.ir.prebound import PreboundQuery, StrictQueryCarrier
+from slayer.ir.prebound import PreboundQuery
 from slayer.ir.source_bundle import (
     ResolvedSourceBundle,
     apply_extension_overlay,
+    model_from_stage_schema,
     source_name_if_sibling,
     stage_bundle_with_siblings,
-    synthetic_model_from_stage_schema,
 )
 
 __all__ = [
@@ -35,32 +35,25 @@ __all__ = [
 
 def plan_query(
     *,
-    query: Union[SlayerQuery, StrictQueryCarrier],
+    query: SlayerQuery,
     bundle: ResolvedSourceBundle,
     scope: Optional[Union[ModelScope, StageSchema]] = None,
     stage_schemas: Optional[Dict[str, StageSchema]] = None,
-    disable_host_rooted_isolation: bool = False,
-    enable_producer_regroups: bool = False,
     prebound: Optional[PreboundQuery] = None,
     producer_registry: Optional[Dict[Hashable, PlannedQuery]] = None,
 ) -> PlannedQuery:
-    """Plan one query into a typed ``PlannedQuery``: elaborate, then compile."""
+    """Plan one user-authored query stage: elaborate, then compile."""
     elaborated = elaborate_query(
         query=query,
         bundle=bundle,
         scope=scope,
         stage_schemas=stage_schemas,
         prebound=prebound,
-        disable_host_rooted_isolation=disable_host_rooted_isolation,
     )
     return compile_query(
         elaborated=elaborated,
-        disable_host_rooted_isolation=disable_host_rooted_isolation,
-        enable_producer_regroups=enable_producer_regroups,
         producer_registry=producer_registry,
     )
-
-
 
 
 def _stage_scope_and_bundle(
@@ -78,7 +71,7 @@ def _stage_scope_and_bundle(
 
     # 1. ModelExtension OVER a sibling: overlay the extra columns onto a synthetic sibling model.
     if sib is not None and isinstance(src, ModelExtension):
-        base = synthetic_model_from_stage_schema(
+        base = model_from_stage_schema(
             name=sib, schema=stage_schemas[sib], data_source=data_source,
         )
         overlaid = apply_extension_overlay(base, src)
@@ -91,7 +84,7 @@ def _stage_scope_and_bundle(
 
     # 2. Bare-string sibling source (chain): bind against the upstream flat StageSchema.
     if isinstance(src, str) and src in stage_schemas:
-        synth = synthetic_model_from_stage_schema(
+        synth = model_from_stage_schema(
             name=src, schema=stage_schemas[src], data_source=data_source,
         )
         others = {n: s for n, s in stage_schemas.items() if n != src}
@@ -134,7 +127,7 @@ def plan_stages(
     )
     stage_schemas: Dict[str, StageSchema] = {}
     results: List[PlannedQuery] = []
-    for q in ordered:
+    for index, q in enumerate(ordered):
         scope, stage_bundle = _stage_scope_and_bundle(
             query=q,
             bundle=bundle,
@@ -142,12 +135,13 @@ def plan_stages(
             data_source=data_source,
             is_root=q is root,
         )
-        planned = plan_query(
-            query=q,
-            bundle=stage_bundle,
-            scope=scope,
-            stage_schemas=stage_schemas,
-        )
+        with stale_spelling_stage(f"stage {q.name!r}" if q.name else f"stages[{index}]"):
+            planned = plan_query(
+                query=q,
+                bundle=stage_bundle,
+                scope=scope,
+                stage_schemas=stage_schemas,
+            )
         reads = stage_sibling_reads(query=q, siblings=siblings)
         planned = planned.model_copy(
             update={"stage_reads": sorted(reads, key=position.__getitem__)},

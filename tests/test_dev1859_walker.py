@@ -1,8 +1,6 @@
-"""DEV-1859 task 4.7 — the shared row-leaf walker (design decision 16). One
-``_first_row_leaf(key, *, exempt)`` serves both transform checkers: aggregates
-opaque, a transform descended through its input ONLY (never its partition / time
-keys), exempt keys legal at any node. References the §5.5 symbol, so the module
-is red until the shared walker lands.
+"""The row-leaf walker ``_first_row_leaf(key, *, exempt)`` of the one
+transform-input checker: aggregates and nested transforms opaque (a nested
+transform is judged on its own visit), exempt keys legal at any node.
 
 Spec: openspec …/specs/queries/transforms — "Non-shift transforms reject
 grain-refining row-level leaves".
@@ -40,6 +38,12 @@ class TestSharedRowLeafWalker:
 
     def test_aggregate_input_is_opaque(self):
         assert _walk(TransformKey(op="rank", input=AGG)) is None
+
+    def test_nested_transform_is_opaque(self):
+        inner = TransformKey(op="cumsum", input=WEIGHT)
+        assert _walk(TransformKey(op="rank", input=inner)) is None
+        assert _walk(TransformKey(
+            op="rank", input=ArithmeticKey(op="+", operands=(AGG, inner)))) is None
 
     def test_partition_keys_are_not_row_leaves(self):
         key = TransformKey(op="rank", input=AGG, partition_keys=Grain.of([STORE]))

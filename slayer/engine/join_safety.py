@@ -284,6 +284,7 @@ def _back_path(
 
 
 def _common_prefix_len(a: Tuple[str, ...], b: Tuple[str, ...]) -> int:
+    """Shared prefix length; token equality is edge identity on canonical paths."""
     n = 0
     for x, y in zip(a, b):
         if x != y:
@@ -297,7 +298,7 @@ def _route_via_common_prefix(
     models_by_name: Dict[str, SlayerModel],
 ) -> Tuple[str, ...]:
     """The route from the aggregate's root (at ``target_path``) to a
-    host-coordinate ``host_path`` (DEV-1908 D9): step back only to the two paths'
+    host-coordinate ``host_path`` (both canonical): step back only to the two paths'
     longest common prefix — the reversed per-hop tokens of ``target_path`` past
     it — then forward along ``host_path``'s own suffix. When they share nothing
     this is ``_back_path`` + ``host_path`` (byte-identical to the old round trip);
@@ -716,20 +717,6 @@ def _path_grain_determined(
     return pinned
 
 
-def local_crossing_input_paths(
-    *, key: AggregateKey, bundle: ResolvedSourceBundle,
-    host_model: SlayerModel, include_source: bool = True,
-) -> Optional[List[Tuple[str, ...]]]:
-    """The dependency closure of a local aggregate's inputs (discovery mode:
-    nested aggregates descend). ``None`` when a dependency cannot be analysed —
-    the caller routes it to a producer so input safety fails it closed."""
-    closure = aggregate_input_closure(
-        key=key, anchor_model=host_model, anchor_relation=host_model.name,
-        bundle=bundle, include_source=include_source, descend_aggregates=True,
-    )
-    return None if closure is None else list(closure)
-
-
 def crossing_local_root_predicate(
     *, scope: Union[ModelScope, StageSchema], bundle: ResolvedSourceBundle,
 ) -> Callable[[ValueKey], bool]:
@@ -752,8 +739,8 @@ def crossing_local_root_predicate(
         )
 
     def _crosses(k: AggregateKey, *, host: SlayerModel) -> bool:
-        crossed = local_crossing_input_paths(
-            key=k, bundle=bundle, host_model=host,
+        crossed = aggregate_input_closure(
+            key=k, anchor_model=host, anchor_relation=host.name, bundle=bundle,
         )
         if crossed is None:
             return True  # unanalysable input → own producer (fail closed downstream)

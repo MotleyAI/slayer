@@ -11,12 +11,13 @@ from slayer.core.enums import DataType
 from slayer.core.errors import (
     AmbiguousJoinPathError,
     AmbiguousReferenceError,
+    CircularJoinPathError,
     GranularityCallError,
     UnknownReferenceError,
 )
 from slayer.core.format import NumberFormat
 from slayer.core.formula import TIME_TRANSFORMS
-from slayer.core.join_walker import resolve_hop, terminal_model
+from slayer.core.join_walker import canonical_path, resolve_hop, terminal_model, walk
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
@@ -52,7 +53,12 @@ from slayer.core.refs import (
     auto_name_from_expression,
     canonical_agg_name,
 )
-from slayer.core.scope import ModelScope, StageSchema, host_model_name
+from slayer.core.scope import (
+    ModelScope,
+    StageSchema,
+    host_model_name,
+    stale_spelling_position,
+)
 from slayer.engine import dimension_routing
 from slayer.engine.binding import bind_expr, bind_filter, bind_time_dimension
 from slayer.engine.elaborate_env import (
@@ -62,15 +68,16 @@ from slayer.engine.elaborate_env import (
     check_stage_flatten_collision,
     check_dimension_temporal_axis,
     check_opaque_grouping_dim,
-    check_transform_row_leaf,
     check_partition_key_resolves,
     check_raw_rows_filter_measure_ref,
     check_raw_rows_order_measure_ref,
     check_time_dimension_column,
     check_time_dimension_date_range,
-    check_time_shift_input,
+    check_transform_inputs,
     check_transform_partition_keys_in_operand_grain,
     check_time_transforms_resolved,
+    combined_partitioned_consumers,
+    position_classes,
 )
 from slayer.engine.join_safety import assert_partition_key_attributable
 from slayer.engine.key_metadata import (
@@ -93,8 +100,6 @@ from slayer.ir.bound import (
     BoundFilter,
     DeclaredMeasure,
     OrderSpec,
-    combined_consumer_aggregates,
-    dimension_partitioned_aggregates,
 )
 from slayer.ir.prebound import PreboundQuery, partition_declared_measures
 from slayer.ir.source_bundle import ResolvedSourceBundle, resolve_scope
@@ -304,25 +309,13 @@ def _map_bound_keys(
     skip_dimensions: bool = False,
 ) -> Tuple[List[DeclaredMeasure], List[BoundFilter], List[OrderSpec]]:
     new_measures = [
-        DeclaredMeasure(
-            bound=BoundExpr(
-                value_key=(
-                    dm.bound.value_key if (skip_dimensions and dm.is_dimension)
-                    else key_fn(dm.bound.value_key)
-                ),
-                routed_dotted=dm.bound.routed_dotted,
+        dm.model_copy(update={"bound": BoundExpr(
+            value_key=(
+                dm.bound.value_key if (skip_dimensions and dm.is_dimension)
+                else key_fn(dm.bound.value_key)
             ),
-            declared_name=dm.declared_name,
-            public_name=dm.public_name,
-            label=dm.label,
-            canonical_alias=dm.canonical_alias,
-            type=dm.type,
-            type_is_explicit=dm.type_is_explicit,
-            preserve_native_type=dm.preserve_native_type,
-            format=dm.format,
-            description=dm.description,
-            is_dimension=dm.is_dimension,
-        )
+            routed_dotted=dm.bound.routed_dotted,
+        )})
         for dm in declared_measures
     ]
     new_filters = []
@@ -409,132 +402,135 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
     bound_filter_texts: List[Optional[str]] = []
 
     # 1. date_range filters (one per TD with a 2-element date_range)
-    for td in (query.time_dimensions or []):
-        if not td.date_range or len(td.date_range) != 2:
-            continue
-        check_time_dimension_date_range(
-            full_name=td.dimension.full_name, date_range=td.date_range,
-        )
-        # A stage date_range filters the stage's rows on its bare column, exactly
-        # as a model-scope range filters a model's rows.
-        bf = _build_date_range_filter(td=td, scope=scope, bundle=bundle)
-        bound_filters.append(bf)
-        bound_filter_texts.append(None)
+    for i, td in enumerate(query.time_dimensions or []):
+        with stale_spelling_position(f"time_dimensions[{i}]"):
+            if not td.date_range or len(td.date_range) != 2:
+                continue
+            check_time_dimension_date_range(
+                full_name=td.dimension.full_name, date_range=td.date_range,
+            )
+            # A stage date_range filters the stage's rows on its bare column, exactly
+            # as a model-scope range filters a model's rows.
+            bf = _build_date_range_filter(td=td, scope=scope, bundle=bundle)
+            bound_filters.append(bf)
+            bound_filter_texts.append(None)
     n_date_range = len(bound_filters)
 
     # 2. SlayerModel.filters — lifted from scope in plan_query, not here.
 
     # 3. user query filters (Mode-B DSL). Dedupe by bound key (first wins) so the
     #    alias and dotted/colon forms of a ref don't duplicate the HAVING clause.
-    for f in (query.filters or []):
-        if not isinstance(f, str):
-            continue
-        bf = bind_filter(
-            parsed=parse_filter_expr(f),
-            scope=scope,
-            bundle=bundle,
-            alias_map=filter_alias_map,
-            dimension_alias_map=dim_alias_map,
-        )
-        if any(existing.value_key == bf.value_key for existing in bound_filters):
-            continue
-        bound_filters.append(bf)
-        bound_filter_texts.append(f)
+    for i, f in enumerate(query.filters or []):
+        with stale_spelling_position(f"filters[{i}]"):
+            if not isinstance(f, str):
+                continue
+            bf = bind_filter(
+                parsed=parse_filter_expr(f),
+                scope=scope,
+                bundle=bundle,
+                alias_map=filter_alias_map,
+                dimension_alias_map=dim_alias_map,
+            )
+            if any(existing.value_key == bf.value_key for existing in bound_filters):
+                continue
+            bound_filters.append(bf)
+            bound_filter_texts.append(f)
 
     order_specs = []
     # Host identity for the qualifier check below (StageSchema uses its relation name).
     _order_host_name = host_model_name(scope)
-    for o in (query.order or []):
-        col_name = o.column.name
-        full_name = o.column.full_name
-        # A functional ``gran(col)`` order key sorts by the projected time
-        # dimension's bucket — resolved to its column binding.
-        gran_parts = granularity_call_parts(o.raw_formula) if o.raw_formula else None
-        if gran_parts is not None:
-            _col, _gran = gran_parts
-            matching_td = next(
-                (
-                    td for td in (query.time_dimensions or [])
-                    if td.dimension.full_name == _col and td.granularity.value == _gran
-                ),
-                None,
-            )
-            if matching_td is None:
-                raise GranularityCallError(
-                    f"Order key {_gran}({_col}) has no matching projected time "
-                    f"dimension. Project a time_dimension on {_col!r} at {_gran} "
-                    f"granularity (e.g. {_gran}({_col}) in dimensions) to order by "
-                    f"its bucket."
+    for i, o in enumerate(query.order or []):
+        with stale_spelling_position(f"order[{i}]"):
+            col_name = o.column.name
+            full_name = o.column.full_name
+            # A functional ``gran(col)`` order key sorts by the projected time
+            # dimension's bucket — resolved to its column binding.
+            gran_parts = granularity_call_parts(o.raw_formula) if o.raw_formula else None
+            if gran_parts is not None:
+                _col, _gran = gran_parts
+                matching_td = next(
+                    (
+                        td for td in (query.time_dimensions or [])
+                        if td.dimension.full_name == _col and td.granularity.value == _gran
+                    ),
+                    None,
                 )
-            order_specs.append(OrderSpec(
-                bound=bind_time_dimension(
-                    td=matching_td, scope=scope, bundle=bundle,
-                ).bound,
-                direction=o.direction,
-            ))
-            continue
-        # A placeholder ColumnRef means the item is an EXPRESSION: bind raw_formula, skip alias lookups.
-        if col_name in ORDER_PLACEHOLDER_NAMES and o.raw_formula:
-            order_specs.append(OrderSpec(
-                bound=bind_expr(
+                if matching_td is None:
+                    raise GranularityCallError(
+                        f"Order key {_gran}({_col}) has no matching projected time "
+                        f"dimension. Project a time_dimension on {_col!r} at {_gran} "
+                        f"granularity (e.g. {_gran}({_col}) in dimensions) to order by "
+                        f"its bucket."
+                    )
+                order_specs.append(OrderSpec(
+                    bound=bind_time_dimension(
+                        td=matching_td, scope=scope, bundle=bundle,
+                    ).bound,
+                    direction=o.direction,
+                ))
+                continue
+            # A placeholder ColumnRef means the item is an EXPRESSION: bind raw_formula, skip alias lookups.
+            if col_name in ORDER_PLACEHOLDER_NAMES and o.raw_formula:
+                order_specs.append(OrderSpec(
+                    bound=bind_expr(
+                        parsed=parse_expr(o.raw_formula),
+                        scope=scope,
+                        bundle=bundle,
+                        dimension_alias_map=dim_alias_map,
+                    ),
+                    direction=o.direction,
+                ))
+                continue
+            # An ORDER BY over a partition_by / window= aggregate must bind raw_formula (the alias shortcut would drop the partition/window).
+            if o.raw_formula and (
+                "partition_by" in o.raw_formula or "window" in o.raw_formula
+            ):
+                _part_bound = bind_expr(
+                    parsed=parse_expr(o.raw_formula),
+                    scope=scope, bundle=bundle,
+                    dimension_alias_map=dim_alias_map,
+                )
+                if any(
+                    isinstance(k, AggregateKey) and (
+                        k.partition_keys is not None or window_kwarg_of(k) is not None
+                    )
+                    for k in walk_value_keys(_part_bound.value_key)
+                ):
+                    order_specs.append(OrderSpec(
+                        bound=_part_bound, direction=o.direction,
+                    ))
+                    continue
+            # A FOREIGN-qualified order ref must not resolve to a same-named local column via the bare-leaf shortcut.
+            _order_qualifier = getattr(o.column, "model", None)
+            _order_host_local = (
+                _order_qualifier is None or _order_qualifier == _order_host_name
+            )
+            # Prefer alias resolution over model-scope binding; try dotted then flattened forms, falling back to raw.
+            if _order_host_local and col_name in declared_alias_to_bound:
+                bo = declared_alias_to_bound[col_name]
+            elif full_name in declared_alias_to_bound:
+                bo = declared_alias_to_bound[full_name]
+            elif _flatten_dotted(full_name) in declared_alias_to_bound:
+                # A joined dim/td is declared flattened; a dotted ORDER BY entry interns onto that slot.
+                bo = declared_alias_to_bound[_flatten_dotted(full_name)]
+            elif _order_host_local and f"_{col_name}" in declared_alias_to_bound:
+                # ``count(*)`` surfaces as ``_count``; users order by the bare ``count``.
+                bo = declared_alias_to_bound[f"_{col_name}"]
+            elif o.raw_formula:
+                bo = bind_expr(
                     parsed=parse_expr(o.raw_formula),
                     scope=scope,
                     bundle=bundle,
                     dimension_alias_map=dim_alias_map,
-                ),
-                direction=o.direction,
-            ))
-            continue
-        # An ORDER BY over a partition_by / window= aggregate must bind raw_formula (the alias shortcut would drop the partition/window).
-        if o.raw_formula and (
-            "partition_by" in o.raw_formula or "window" in o.raw_formula
-        ):
-            _part_bound = bind_expr(
-                parsed=parse_expr(o.raw_formula),
-                scope=scope, bundle=bundle,
-                dimension_alias_map=dim_alias_map,
-            )
-            if any(
-                isinstance(k, AggregateKey) and (
-                    k.partition_keys is not None or window_kwarg_of(k) is not None
                 )
-                for k in walk_value_keys(_part_bound.value_key)
-            ):
-                order_specs.append(OrderSpec(
-                    bound=_part_bound, direction=o.direction,
-                ))
-                continue
-        # A FOREIGN-qualified order ref must not resolve to a same-named local column via the bare-leaf shortcut.
-        _order_qualifier = getattr(o.column, "model", None)
-        _order_host_local = (
-            _order_qualifier is None or _order_qualifier == _order_host_name
-        )
-        # Prefer alias resolution over model-scope binding; try dotted then flattened forms, falling back to raw.
-        if _order_host_local and col_name in declared_alias_to_bound:
-            bo = declared_alias_to_bound[col_name]
-        elif full_name in declared_alias_to_bound:
-            bo = declared_alias_to_bound[full_name]
-        elif _flatten_dotted(full_name) in declared_alias_to_bound:
-            # A joined dim/td is declared flattened; a dotted ORDER BY entry interns onto that slot.
-            bo = declared_alias_to_bound[_flatten_dotted(full_name)]
-        elif _order_host_local and f"_{col_name}" in declared_alias_to_bound:
-            # ``count(*)`` surfaces as ``_count``; users order by the bare ``count``.
-            bo = declared_alias_to_bound[f"_{col_name}"]
-        elif o.raw_formula:
-            bo = bind_expr(
-                parsed=parse_expr(o.raw_formula),
-                scope=scope,
-                bundle=bundle,
-                dimension_alias_map=dim_alias_map,
-            )
-        else:
-            # Bind the FULL reference — a dotted ORDER ColumnRef would otherwise rebind as the wrong host column.
-            bo = bind_expr(
-                parsed=parse_expr(full_name),
-                scope=scope,
-                bundle=bundle,
-            )
-        order_specs.append(OrderSpec(bound=bo, direction=o.direction))
+            else:
+                # Bind the FULL reference — a dotted ORDER ColumnRef would otherwise rebind as the wrong host column.
+                bo = bind_expr(
+                    parsed=parse_expr(full_name),
+                    scope=scope,
+                    bundle=bundle,
+                )
+            order_specs.append(OrderSpec(bound=bo, direction=o.direction))
 
     # Attach the active TD as time_key on every time-needing TransformKey the binder
     # left at None — the stage's own bucket is the axis on a StageSchema.
@@ -563,22 +559,17 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         *(spec.bound.value_key for spec in order_specs),
     ])
 
-    # time_shift-family input typing runs pre-lowering, where change/change_pct
-    # are still single nodes (their desugar duplicates the offending input).
-    _roots_for_transform_checks = [
-        *(dm.bound.value_key for dm in declared_measures),
-        *(bf.value_key for bf in bound_filters),
-        *(spec.bound.value_key for spec in order_specs),
-    ]
-    check_time_shift_input(roots=_roots_for_transform_checks)
-
-    # A transform over a row-level leaf that refines the query grain inflates
-    # the base GROUP BY; reject unless the leaf is a projected grain key.
+    # Transform-input typing runs pre-lowering, where change/change_pct are still
+    # single nodes (their desugar duplicates the offending input).
     _proj_dim_dms, _proj_td_dms, _ = partition_declared_measures(
         declared_measures=declared_measures, n_dims=n_dims, n_time_dimensions=n_tds,
     )
-    check_transform_row_leaf(
-        roots=_roots_for_transform_checks,
+    check_transform_inputs(
+        roots=[
+            *(dm.bound.value_key for dm in declared_measures),
+            *(bf.value_key for bf in bound_filters),
+            *(spec.bound.value_key for spec in order_specs),
+        ],
         projected_grain_keys=frozenset(
             dm.bound.value_key for dm in (*_proj_dim_dms, *_proj_td_dms)
         ),
@@ -627,16 +618,13 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         skip_dimensions=True,
     )
 
-    # A partitioned aggregate inside a computed dimension declares a producer grain (partition_by may be finer than the query).
-    _dim_agg_keys = frozenset(dimension_partitioned_aggregates(declared_measures))
-    # A COMBINED-position partitioned aggregate needs query-dimension partition keys
-    # for the join-back; local and cross-model partitioned consumers alike.
-    _consumers = combined_consumer_aggregates(
-        declared_measures=declared_measures, order_specs=order_specs,
-        row_agg_set=_dim_agg_keys, bound_filters=bound_filters,
-    )
-    _combined_consumer_keys = frozenset(
-        [*_consumers.local_partitioned, *_consumers.cross_model_partitioned]
+    # A computed dimension's partitioned aggregate declares a producer grain; a
+    # combined consumer needs query-dimension partition keys for the join-back.
+    _classes = position_classes(declared_measures, n_grain=n_dims + n_tds)
+    _dim_agg_keys = _classes.row_aggregates
+    _combined_consumer_keys = combined_partitioned_consumers(
+        _classes, declared_measures=declared_measures, order_specs=order_specs,
+        bound_filters=bound_filters,
     )
     # An attached operand — a re-aggregation constituent or a
     # row-attached input / parameter — declares an internal producer
@@ -804,15 +792,21 @@ def _opaque_dim_type(
     return _type_for_dimension(scope=scope, full_name=full_name, bundle=bundle)
 
 
-def _terminal_model_for_dotted(
+def _walk_dotted(
     *, source_model: SlayerModel, hops: List[str], bundle: ResolvedSourceBundle,
-) -> Optional[SlayerModel]:
-    """Walk ``hops`` from ``source_model`` via the shared walker (None on a
-    missing/circular/ambiguous hop), mirroring the binder's join walk."""
-    return terminal_model(
-        root=source_model, path=tuple(hops),
-        models_by_name=bundle.models_by_name,
-    )
+) -> Optional[Tuple[SlayerModel, Tuple[str, ...]]]:
+    """``(terminal_model, canonical hops)`` of ``hops`` from ``source_model`` via the
+    shared walker (None on a missing/circular/ambiguous hop), mirroring the binder."""
+    models = bundle.models_by_name
+    models.setdefault(source_model.name, source_model)
+    try:
+        chain = walk(root=source_model, path=tuple(hops), models_by_name=models)
+    except (AmbiguousJoinPathError, CircularJoinPathError):
+        return None
+    if chain is None:
+        return None
+    terminal = models.get(chain[-1].target_model) if chain else source_model
+    return (terminal, canonical_path(chain)) if terminal is not None else None
 
 
 def _route_short_form_saved_measure(
@@ -838,10 +832,14 @@ def _route_short_form_saved_measure(
     route = dimension_routing.short_form_route_or_none(
         root=host, target_model=hops[0], models_by_name=models_by_name,
     )
-    if route is None:
+    walked = (
+        _walk_dotted(source_model=host, hops=list(route), bundle=bundle)
+        if route is not None else None
+    )
+    if walked is None:
         return None
-    terminal = models_by_name.get(hops[0])
-    return (terminal, ".".join([*route, leaf])) if terminal is not None else None
+    terminal, canonical = walked
+    return terminal, ".".join([*canonical, leaf])
 
 
 def _resolve_saved_measure_ref(
@@ -852,37 +850,49 @@ def _resolve_saved_measure_ref(
 ) -> Optional[Tuple[SlayerModel, "ModelMeasure", str]]:
     """Return ``(terminal_model, measure, canonical_ref)`` if ``formula`` is a
     bare/dotted saved-measure reference (binder resolution order, short-form
-    auto-routing included), else None. ``canonical_ref`` is the full routed
-    dotted text a short form resolves to, else the formula text unchanged."""
+    auto-routing included), else None. ``canonical_ref`` is the canonical dotted
+    path when routed or respelled, else the formula text unchanged."""
     if not isinstance(scope, ModelScope) or scope.source_model is None:
         return None
     host = scope.source_model
     text = formula.strip()
-    if text.isidentifier():
-        mm = host.get_measure(text)
-        return (host, mm, text) if mm is not None else None
     parts = text.split(".")
-    if len(parts) < 2 or not all(p.isidentifier() for p in parts):
+    if not all(p.isidentifier() for p in parts):
         return None
-    if parts[0] == host.name:  # C14 self-prefix strip
+    if len(parts) > 1 and parts[0] == host.name:  # C14 self-prefix strip
         parts = parts[1:]
-    if len(parts) == 1:
-        mm = host.get_measure(parts[0])
-        return (host, mm, text) if mm is not None else None
     *hops, leaf = parts
-    terminal = _terminal_model_for_dotted(
-        source_model=host, hops=hops, bundle=bundle,
-    )
-    canonical_ref = text
-    if terminal is None:
-        routed = _route_short_form_saved_measure(
-            host=host, hops=hops, leaf=leaf, bundle=bundle,
+    located = (
+        _locate_dotted_saved_measure(
+            host=host, hops=hops, leaf=leaf, text=text, bundle=bundle,
         )
-        if routed is None:
-            return None
-        terminal, canonical_ref = routed
+        if hops else (host, text)
+    )
+    if located is None:
+        return None
+    terminal, canonical_ref = located
     mm = terminal.get_measure(leaf)
     return (terminal, mm, canonical_ref) if mm is not None else None
+
+
+def _locate_dotted_saved_measure(
+    *,
+    host: SlayerModel,
+    hops: List[str],
+    leaf: str,
+    text: str,
+    bundle: ResolvedSourceBundle,
+) -> Optional[Tuple[SlayerModel, str]]:
+    """``(terminal_model, canonical_ref)`` for a hop-qualified saved measure."""
+    walked = _walk_dotted(source_model=host, hops=hops, bundle=bundle)
+    if walked is None:
+        return _route_short_form_saved_measure(
+            host=host, hops=hops, leaf=leaf, bundle=bundle,
+        )
+    terminal, canonical = walked
+    return terminal, (
+        text if canonical == tuple(hops) else ".".join((*canonical, leaf))
+    )
 
 
 def _saved_model_measure_type(
@@ -950,6 +960,7 @@ def _declared_computed_dimension(
         bound=bound,
         declared_name=name,
         public_name=name,
+        name_is_explicit=name != auto_name_from_expression(d.expression),
         type=dim_type,
         is_dimension=True,
     )
@@ -976,69 +987,71 @@ def _declared_measures_from_query(  # NOSONAR(S3776) — three sequential projec
     # Computed-dimension names resolve inside later ``partition_by=`` values;
     # built in declaration order.
     dim_alias_map: Dict[str, ValueKey] = {}
-    for d in (query.dimensions or []):
-        if isinstance(d, ComputedDimension):
-            dm = _declared_computed_dimension(
-                d, query=query, scope=scope, bundle=bundle,
-                dim_alias_map=dim_alias_map,
+    for i, d in enumerate(query.dimensions or []):
+        with stale_spelling_position(f"dimensions[{i}]"):
+            if isinstance(d, ComputedDimension):
+                dm = _declared_computed_dimension(
+                    d, query=query, scope=scope, bundle=bundle,
+                    dim_alias_map=dim_alias_map,
+                )
+                _guard_flatten(
+                    flat_name=_flatten_dotted(dm.declared_name),
+                    origin=dm.declared_name,
+                )
+                declared.append(dm)
+                dim_alias_map[dm.declared_name] = dm.bound.value_key
+                continue
+            full = d.full_name
+            # Bind first: a short-form dotted dim auto-routes, and its full routed
+            # path (``bound.routed_dotted``) — not the short form typed — drives the
+            # result key, type, opaque guard, and description.
+            bound = bind_expr(
+                parsed=parse_expr(full),
+                scope=scope,
+                bundle=bundle,
             )
-            _guard_flatten(
-                flat_name=_flatten_dotted(dm.declared_name),
-                origin=dm.declared_name,
+            canonical = bound.routed_dotted or full
+            # Opaque-grouping rule lives in the checker; invoked here to preserve the per-dimension firing point.
+            check_opaque_grouping_dim(
+                full_name=canonical,
+                dim_type=_opaque_dim_type(scope=scope, full_name=canonical, bundle=bundle),
+                will_group_by=bool(query.measures) or query.distinct_dimension_values,
             )
-            declared.append(dm)
-            dim_alias_map[dm.declared_name] = dm.bound.value_key
-            continue
-        full = d.full_name
-        # Bind first: a short-form dotted dim auto-routes, and its full routed
-        # path (``bound.routed_dotted``) — not the short form typed — drives the
-        # result key, type, opaque guard, and description.
-        bound = bind_expr(
-            parsed=parse_expr(full),
-            scope=scope,
-            bundle=bundle,
-        )
-        canonical = bound.routed_dotted or full
-        # Opaque-grouping rule lives in the checker; invoked here to preserve the per-dimension firing point.
-        check_opaque_grouping_dim(
-            full_name=canonical,
-            dim_type=_opaque_dim_type(scope=scope, full_name=canonical, bundle=bundle),
-            will_group_by=bool(query.measures) or query.distinct_dimension_values,
-        )
-        flat_name = _flatten_dotted(canonical)
-        _guard_flatten(flat_name=flat_name, origin=canonical)
-        fmt, desc = _format_description_for_dimension(
-            scope=scope, full_name=canonical,
-        )
-        dim_type = _type_for_dimension(
-            scope=scope, full_name=canonical, bundle=bundle,
-        )
-        declared.append(DeclaredMeasure(
-            bound=bound,
-            declared_name=flat_name,
-            public_name=flat_name,
-            label=d.label,
-            type=dim_type,
-            format=fmt,
-            description=desc,
-        ))
+            flat_name = _flatten_dotted(canonical)
+            _guard_flatten(flat_name=flat_name, origin=canonical)
+            fmt, desc = _format_description_for_dimension(
+                scope=scope, full_name=canonical,
+            )
+            dim_type = _type_for_dimension(
+                scope=scope, full_name=canonical, bundle=bundle,
+            )
+            declared.append(DeclaredMeasure(
+                bound=bound,
+                declared_name=flat_name,
+                public_name=flat_name,
+                label=d.label,
+                type=dim_type,
+                format=fmt,
+                description=desc,
+            ))
     # Time dimensions follow dimensions in the public projection. Same-column
     # time dimensions (distinct granularities) get granularity-suffixed public
     # names so their result keys disambiguate; a lone one keeps the
     # granularity-free key.
     bound_tds: List[Tuple[TimeDimension, BoundExpr, str]] = []
-    for td in (query.time_dimensions or []):
-        btd = bind_time_dimension(td=td, scope=scope, bundle=bundle)
-        # The temporal / re-bucketing type rules are the checker's (P9).
-        check_time_dimension_column(
-            name=td.dimension.full_name,
-            column_type=btd.column_type,
-            upstream_granularity=btd.upstream_granularity,
-            requested_granularity=td.granularity,
-        )
-        bound_tds.append(
-            (td, btd.bound, btd.bound.routed_dotted or td.dimension.full_name)
-        )
+    for i, td in enumerate(query.time_dimensions or []):
+        with stale_spelling_position(f"time_dimensions[{i}]"):
+            btd = bind_time_dimension(td=td, scope=scope, bundle=bundle)
+            # The temporal / re-bucketing type rules are the checker's (P9).
+            check_time_dimension_column(
+                name=td.dimension.full_name,
+                column_type=btd.column_type,
+                upstream_granularity=btd.upstream_granularity,
+                requested_granularity=td.granularity,
+            )
+            bound_tds.append(
+                (td, btd.bound, btd.bound.routed_dotted or td.dimension.full_name)
+            )
     _assert_equivalent_tds_agree(bound_tds)
     _td_flat_counts = Counter(_flatten_dotted(canon) for _, _, canon in bound_tds)
     for td, bound, canonical in bound_tds:
@@ -1056,72 +1069,74 @@ def _declared_measures_from_query(  # NOSONAR(S3776) — three sequential projec
             type=DataType.TIMESTAMP,
         ))
     seen_measure_keys: Dict[str, Tuple[str, ValueKey, ModelMeasure]] = {}
-    for m in (query.measures or []):
-        formula = m.formula
-        explicit_name = m.name
-        parsed = parse_expr(formula)
-        bound = bind_expr(
-            parsed=parsed, scope=scope, bundle=bundle, allow_measures=True,
-            dimension_alias_map=dim_alias_map,
-        )
-        # The parsed tree drives text-shape alias derivation, so both spellings
-        # of one formula share an alias.
-        canonical = _canonical_alias_for_formula(
-            formula, bound=bound, parsed=parsed,
-        )
-        # A bare/dotted saved-ModelMeasure reference surfaces under the formula text (explicit query name still wins).
-        saved_name = _saved_measure_public_name(
-            scope=scope, bundle=bundle, formula=formula,
-        )
-        alias_name = explicit_name or saved_name
-        declared_name = alias_name or canonical
-        public_name = alias_name or canonical
-        # Two DIFFERENT values whose DERIVED keys collide would silently share
-        # a column (e.g. ``sum(amount - cost)`` vs ``sum(amount + cost)`` both
-        # sanitize to ``amount_cost_sum``) — fail loudly; the SAME
-        # value merges into one column. Scoped to unnamed entries:
-        # explicit-name collisions keep their dedicated declared-more-than-once
-        # errors downstream.
-        if alias_name is None:
-            prior = seen_measure_keys.get(public_name)
-            if prior is not None:
-                check_measure_dedupe_collision(
-                    prior_formula=prior[0], formula=formula,
-                    public_name=public_name,
-                    same_key=prior[1] == bound.value_key,
-                    same_meta=(m.label, m.type) == (prior[2].label, prior[2].type),
-                )
-                continue
-            seen_measure_keys[public_name] = (formula, bound.value_key, m)
-        fmt, desc = _format_description_for_measure_formula(
-            scope=scope, bound=bound,
-        )
-        # Type-priority (highest wins): query m.type, saved ModelMeasure.type,
-        # then aggregation-aware inference.
-        explicit_type = m.type or _saved_model_measure_type(
-            scope=scope, bundle=bundle, formula=formula,
-        )
-        m_type = explicit_type or _type_for_measure_formula(scope=scope, bound=bound)
-        declared.append(DeclaredMeasure(
-            bound=bound,
-            declared_name=declared_name,
-            public_name=public_name,
-            label=m.label,
-            # Keep the canonical alias when the surfaced name differs, so a colon-form filter / ORDER BY resolves.
-            canonical_alias=canonical if alias_name else None,
-            type=m_type,
-            type_is_explicit=explicit_type is not None,
-            preserve_native_type=(
-                explicit_type is None
-                and isinstance(scope, ModelScope)
-                and scope.source_model is not None
-                and measure_key_preserves_native_type(
-                    model=scope.source_model, key=bound.value_key,
-                )
-            ),
-            format=fmt,
-            description=desc,
-        ))
+    for i, m in enumerate(query.measures or []):
+        with stale_spelling_position(f"measures[{i}]"):
+            formula = m.formula
+            explicit_name = m.name
+            parsed = parse_expr(formula)
+            bound = bind_expr(
+                parsed=parsed, scope=scope, bundle=bundle, allow_measures=True,
+                dimension_alias_map=dim_alias_map,
+            )
+            # The parsed tree drives text-shape alias derivation, so both spellings
+            # of one formula share an alias.
+            canonical = _canonical_alias_for_formula(
+                formula, bound=bound, parsed=parsed,
+            )
+            # A bare/dotted saved-ModelMeasure reference surfaces under the formula text (explicit query name still wins).
+            saved_name = _saved_measure_public_name(
+                scope=scope, bundle=bundle, formula=formula,
+            )
+            alias_name = explicit_name or saved_name
+            declared_name = alias_name or canonical
+            public_name = alias_name or canonical
+            # Two DIFFERENT values whose DERIVED keys collide would silently share
+            # a column (e.g. ``sum(amount - cost)`` vs ``sum(amount + cost)`` both
+            # sanitize to ``amount_cost_sum``) — fail loudly; the SAME
+            # value merges into one column. Scoped to unnamed entries:
+            # explicit-name collisions keep their dedicated declared-more-than-once
+            # errors downstream.
+            if alias_name is None:
+                prior = seen_measure_keys.get(public_name)
+                if prior is not None:
+                    check_measure_dedupe_collision(
+                        prior_formula=prior[0], formula=formula,
+                        public_name=public_name,
+                        same_key=prior[1] == bound.value_key,
+                        same_meta=(m.label, m.type) == (prior[2].label, prior[2].type),
+                    )
+                    continue
+                seen_measure_keys[public_name] = (formula, bound.value_key, m)
+            fmt, desc = _format_description_for_measure_formula(
+                scope=scope, bound=bound,
+            )
+            # Type-priority (highest wins): query m.type, saved ModelMeasure.type,
+            # then aggregation-aware inference.
+            explicit_type = m.type or _saved_model_measure_type(
+                scope=scope, bundle=bundle, formula=formula,
+            )
+            m_type = explicit_type or _type_for_measure_formula(scope=scope, bound=bound)
+            declared.append(DeclaredMeasure(
+                bound=bound,
+                declared_name=declared_name,
+                public_name=public_name,
+                label=m.label,
+                # Keep the canonical alias when the surfaced name differs, so a colon-form filter / ORDER BY resolves.
+                canonical_alias=canonical if alias_name else None,
+                name_is_explicit=explicit_name is not None,
+                type=m_type,
+                type_is_explicit=explicit_type is not None,
+                preserve_native_type=(
+                    explicit_type is None
+                    and isinstance(scope, ModelScope)
+                    and scope.source_model is not None
+                    and measure_key_preserves_native_type(
+                        model=scope.source_model, key=bound.value_key,
+                    )
+                ),
+                format=fmt,
+                description=desc,
+            ))
     return declared
 
 

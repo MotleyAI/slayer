@@ -15,31 +15,37 @@ declaring model's row. When such a reference's join path from the declaring
 model provably crosses a fanning hop — a hop that is not provably many-to-one
 and whose declared cardinality in its traversal orientation is `one_to_many` or
 `many_to_many` — the model save SHALL be rejected with an error naming the
-column, the hop, and the remedy (aggregate the target column as `<hop>.<column>:<aggregation>`,
-or filter by it; declare a to-one cardinality or a covering unique key if the
-hop is really to-one). A hop that is provably many-to-one — its declared
-cardinality is `many_to_one`/`one_to_one`, or its target-side join columns cover
-a unique key of the target — SHALL be accepted with no error and no warning,
-even if its declared cardinality is contradictorily `one_to_many` (the proof
-takes precedence over the declaration).
+column, its declaring model, the complete reference as spelled, the hop, and the
+remedy (aggregate the reference as `<reference>:<aggregation>`, or filter by it;
+declare a to-one cardinality or a covering unique key if the hop is really
+to-one). A hop that is provably many-to-one — its declared cardinality is
+`many_to_one`/`one_to_one`, or its target-side join columns cover a unique key of
+the target — SHALL be accepted with no error and no warning, even if its declared
+cardinality is contradictorily `one_to_many` (the proof takes precedence over the
+declaration).
 
 Such a reference SHALL never revisit a model already on its join path from the
 declaring model — the declaring model itself included. A revisiting path is circular: the model save SHALL be
-rejected with a circular-definition error naming the column, the kind (`sql` or
-`filter`), the complete reference as spelled, the revisited model, the hop that
-revisits it and the model that hop leaves, plus the remedy (reference the column
-on the revisited model directly if this row's value is meant, or declare the
-aggregate on the model the hop leaves, which reaches the revisited model
-forward). The circular rejection takes precedence over a fanning verdict on an
-earlier hop of the same path, and applies identically whether the model is saved
-through the storage backend or through the engine. A revisit is judged once
-every model on the path up to it is loaded: a known-but-unloaded intermediate
-model leaves the reference skipped at save time, as for any unloaded target,
-with the query-time door refusing it as unresolvable.
+rejected with a circular-definition error naming the column, its declaring model,
+the complete reference as spelled, the revisited model, the hop that revisits it
+and the model that hop leaves, plus the remedy (reference the column on the
+revisited model directly if this row's value is meant, or declare the aggregate
+on the model the hop leaves, which reaches the revisited model forward). The
+circular rejection takes precedence over a fanning verdict on an earlier hop of
+the same path, and applies identically whether the model is saved through the
+storage backend or through the engine. Neither error labels whether the
+reference sits in the column's `sql` or its `filter` — a filter is a value mask,
+so the two are not distinguished. When the engine's save door reaches a revisit
+by expanding another derived column the saved column references, the error
+SHALL name that inner column and its own declaring model, never the referring
+column or the model being saved. A revisit is judged once every model on the path
+up to it is loaded: a known-but-unloaded intermediate model leaves the reference
+skipped at save time, as for any unloaded target, with the query-time door
+refusing it as unresolvable.
 
 #### Scenario: sql reference across a declared one-to-many hop is rejected
 - **WHEN** a model with a join declared `one_to_many` to a loaded target is saved with a derived column whose `sql` references a column on that target
-- **THEN** the save is rejected with an error naming the column, the hop, and the aggregate-or-filter remedy
+- **THEN** the save is rejected with an error naming the column, the reference, the hop, and the aggregate-or-filter remedy
 
 #### Scenario: filter reference across a declared one-to-many hop is rejected
 - **WHEN** a model with a join declared `one_to_many` to a loaded target is saved with a column whose `filter` references a column on that target
@@ -53,13 +59,17 @@ with the query-time door refusing it as unresolvable.
 - **WHEN** a hop is declared `one_to_many` but its target-side join columns cover a unique key of the target
 - **THEN** the hop is treated as provably to-one and a derived column crossing it is accepted with no error
 
+#### Scenario: a fanning reference keeps the declaring-model qualifier as spelled
+- **WHEN** `orders` (joined `one_to_many` to `line_items`) is saved with a derived column whose `sql` is `orders.line_items.qty`
+- **THEN** the save is rejected with the fanning error whose reference is the complete spelling `orders.line_items.qty` and whose remedy is `orders.line_items.qty:<aggregation>`
+
 #### Scenario: sql reference that revisits a model on its path is rejected
 - **WHEN** `customers` (joined to-one to `regions`) is saved with a derived column whose `sql` is `regions.customers.spend`
-- **THEN** the save is rejected with the circular-definition error naming the column, kind `sql`, reference `regions.customers.spend`, revisited model `customers`, hop `customers` leaving `regions`, and the remedy
+- **THEN** the save is rejected with the circular-definition error naming the column, model `customers`, reference `regions.customers.spend`, revisited model `customers`, hop `customers` leaving `regions`, and the remedy
 
 #### Scenario: filter reference that revisits a model on its path is rejected
 - **WHEN** `customers` is saved with a column whose `filter` is `regions.customers.spend > 0`
-- **THEN** the save is rejected with the same error naming kind `filter`
+- **THEN** the save is rejected with the same error naming the column and reference `regions.customers.spend`, with no `sql`/`filter` label
 
 #### Scenario: a revisit declared on the querying model is rejected
 - **WHEN** `orders` (joined to-one to `customers`, itself joined to-one to `regions`) is saved with a derived column whose `sql` is `customers.regions.customers.spend`
@@ -79,7 +89,11 @@ with the query-time door refusing it as unresolvable.
 
 #### Scenario: the engine's save door rejects the same definition identically
 - **WHEN** the `regions.customers.spend` definition is saved through the engine's `save_model`
-- **THEN** the save is rejected with the same circular-definition error, naming the same column, kind, reference, revisited model, hop and remedy
+- **THEN** the save is rejected with the same circular-definition error, naming the same column, model, reference, revisited model, hop and remedy
+
+#### Scenario: the engine's save door attributes a revisit inside a referenced column on another model to that column
+- **WHEN** `customers.bad` (stored without save-time validation, `sql` `spend`, `filter` `regions.customers.spend > 0`) exists and `orders` is saved through the engine with a derived column whose `sql` is `customers.bad * 2`
+- **THEN** the save is rejected with the circular-definition error naming column `bad` on model `customers` and reference `regions.customers.spend`, and its message says the reference is not a column of `customers` (never of `orders`)
 
 #### Scenario: a known-but-unloaded intermediate model is skipped at save time
 - **WHEN** `customers` is saved with a derived column whose `sql` is `regions.customers.spend` while `regions` is known to the datasource but cannot be loaded
@@ -91,7 +105,8 @@ When a derived `Column.sql` / `Column.filter` reference's path crosses a hop
 that is neither provably many-to-one nor provably fanning — an undeclared hop,
 or a hop whose only proof is that its reverse orientation covers the source's
 unique key — the model save SHALL succeed and SHALL emit a warning naming the
-column and the hop. Such a column is refused at query time by the input-safety
+column and the hop, once per column and hop however many of the column's
+references cross it (a `sql` and a `filter` crossing the same hop warn once). Such a column is refused at query time by the input-safety
 gate when it is aggregated as a column of its declaring model, and equally when
 it ranks a `first`/`last` as the model's `default_time_dimension` (the permanent
 backstop). A reference whose target model is not loaded, does not resolve, or is
@@ -105,6 +120,10 @@ query-time gate as the sole check.
 #### Scenario: fully undeclared hop warns and saves
 - **WHEN** a model with an undeclared join, provable in neither orientation, is saved with a derived column referencing the target
 - **THEN** the save succeeds and a warning names the column and the hop
+
+#### Scenario: sql and filter across the same unproven hop warn once
+- **WHEN** a model with an undeclared join is saved with a column whose `sql` and `filter` both reference the join's target
+- **THEN** the save succeeds and exactly one warning names the column and the hop, with no `sql`/`filter` label
 
 #### Scenario: aggregating an unproven-hop column is still refused at query time
 - **WHEN** a saved derived column across an unproven hop is aggregated as a column of its declaring model
@@ -124,12 +143,12 @@ A derived column whose definition revisits a model on its path and was stored
 without save-time validation SHALL be refused whenever a query references it —
 as an aggregate input from the declaring model or from a model reaching it over
 a to-one hop, as a dimension, in a query filter, in raw-row mode, through
-another derived column whose definition names it, and for a `filter`-kind
-definition — with the circular error naming the reference and the revisited
-model, raised before any SQL executes and never with a value. The query-typed
-spelling of the same path SHALL fail with the same error class. A stored
-definition whose path reaches a model absent from the query's resolved models
-SHALL be refused as unresolvable, never emitted verbatim.
+another derived column whose definition names it, and for a definition carried
+in the column's `filter` — with the circular error naming the reference and the
+revisited model, raised before any SQL executes and never with a value. The
+query-typed spelling of the same path SHALL fail with the same error class. A
+stored definition whose path reaches a model absent from the query's resolved
+models SHALL be refused as unresolvable, never emitted verbatim.
 
 #### Scenario: aggregated across a to-one hop
 - **WHEN** `customers.revisit_spend` (stored with `sql` `regions.customers.spend`) is queried from `orders` as `customers.revisit_spend:sum`

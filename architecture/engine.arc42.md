@@ -123,6 +123,7 @@ elaborate→compile and `query_engine.py` orchestrates.
    in the parser; both aggregation spellings (colon and functional) collapse to
    one node, so everything downstream is spelling-insensitive by construction.
    [review]
+   [enforced: test:tests/test_dev1903_first_last_dispatch.py]
 3. **Resolution is pure; storage is consulted once**: everything binding needs
    is resolved eagerly into the source bundle at the top of execution, making
    the binder a deterministic function of (parsed, scope, bundle) — no
@@ -143,7 +144,8 @@ elaborate→compile and `query_engine.py` orchestrates.
    typing, never from text or key shape at render time.
    [enforced: test:tests/test_dev1800_materialisation_stage.py]
 7. **One slack pass, typed warnings**: slack-but-unambiguous query shapes are
-   rewritten once at the pipeline entry; every rewrite surfaces as a structured
+   rewritten once at the pipeline entry — a flat name that needs an upstream
+   schema, once at that stage boundary; every rewrite surfaces as a structured
    warning on the response; a slack rule retires by promotion to first-class
    grammar, never by accumulating rewrites. [review]
 8. **Models persist verbatim**: `save_model` stores the author's spelling

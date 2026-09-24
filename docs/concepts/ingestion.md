@@ -43,11 +43,11 @@ SLayer introspects each table's column types and generates a model:
 
 - **One `Column`** per non-joined column on the source table — name, `type` inferred from the database (`string` / `number` / `boolean` / `time` / `date`), `primary_key=True` for PKs. Whether each column is used as a group-by dimension or as an aggregation source is decided per query.
 - **Column and table comments** stored in the database become `Column.description` and `SlayerModel.description` (see [Comments and descriptions](#comments-and-descriptions) below).
-- **`unique=True`** for columns that alone form a `UNIQUE` constraint or unique index. PK columns are not stamped redundantly — `primary_key` already implies uniqueness. Composite uniqueness is evaluated per key-set during join-cardinality inference rather than being flattened onto individual columns.
+- **`unique=True`** for columns that alone form a `UNIQUE` constraint or unique index. PK columns are not stamped redundantly — a sole `primary_key` already implies uniqueness. Composite uniqueness is evaluated per key-set during join-cardinality inference rather than being flattened onto individual columns.
 - **A column literally named `count`** is renamed to `count_col` to avoid clashing with the always-available `count(*)`.
 - **No auto-generated `measures`** — `SlayerModel.measures` is the named-formula library and stays empty after ingestion. You can add named formulas later via the API/MCP if you want bare-name shortcuts (`{"formula": "aov"}`).
 - **`count(*)`** is always available without any model definition.
-- The `allowed_aggregations` whitelist is left at the default for the column's data type. PK columns are restricted to `count`/`count_distinct` automatically.
+- The `allowed_aggregations` whitelist is left at the default for the column's data type. A sole PK column is restricted to `count`/`count_distinct`/`count_distinct_approx`/`min`/`max` automatically.
 
 FK columns from referenced tables are excluded from the source model to avoid redundancy — they're reachable via the join graph as `customers.id` etc.
 

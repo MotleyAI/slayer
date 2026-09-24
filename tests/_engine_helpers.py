@@ -32,7 +32,10 @@ from sqlglot import exp
 
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
+from slayer.engine.bind_inputs import bind_query_inputs
+from slayer.engine.compile import stages
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.ir.source_bundle import resolve_scope
 from slayer.sql import engine_factory
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -293,4 +296,16 @@ def _extract_cte_body(sql: str, cte_name_pattern: str) -> str:
         i += 1
     raise AssertionError(
         f"Unbalanced parens — no closing ) for CTE {name_match.group(1)!r}:\n{sql}"
+    )
+
+
+def plan_as_producer(*, query: SlayerQuery, bundle):
+    """Compile ``query`` through the producer entry (``compile_synthesized``), with no
+    inherited population."""
+    scope = resolve_scope(query=query, bundle=bundle, stage_schemas={})
+    prebound = bind_query_inputs(query=query, bundle=bundle, scope=scope, stage_schemas={})
+    return stages.compile_synthesized(
+        prebound, source_model=query.source_model if isinstance(query.source_model, str) else None,
+        bundle=bundle, scope=scope, stage_schemas={},
+        population=stages.NoInheritedPopulation(reason="compiled as a producer by a test"),
     )

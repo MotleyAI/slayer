@@ -15,6 +15,10 @@ Active rules:
 - ``MALFORMED_DATE_RANGE`` (report-only): a ``date_range`` the planner
   would silently ignore gets a structured warning naming the drop.
 
+- ``STALE_PATH_SPELLING`` (stage boundary): a flat name written against a
+  non-canonical path spelling binds to its canonical upstream column; recorded
+  at binding, surfaced via :func:`stale_spelling_warnings`.
+
 Retired rules: ``FUNC_STYLE_AGG`` (DEV-1826 — the parser accepts the
 functional aggregation spelling natively as a first-class equivalent of
 colon syntax, so there is nothing to rewrite or warn about) and
@@ -29,12 +33,13 @@ so REST / MCP / CLI consumers see the rewrite alongside the response and
 from __future__ import annotations
 
 import warnings as _warnings_module
-from typing import List, Optional
+from typing import List, Optional, Sequence
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from slayer.core.models import SlayerModel
 from slayer.core.query import ColumnRef, SlayerQuery
+from slayer.core.scope import StaleSpelling
 from slayer.core.warnings import NormalizationWarning, SlayerNormalizationWarning
 
 
@@ -197,3 +202,20 @@ def _apply_malformed_date_range(
     return emitted
 
 
+
+
+STALE_PATH_SPELLING = "STALE_PATH_SPELLING"
+
+
+def stale_spelling_warnings(records: Sequence[StaleSpelling]) -> List[NormalizationWarning]:
+    """One ``STALE_PATH_SPELLING`` warning per recorded stale spelling."""
+    emitted = [
+        NormalizationWarning(
+            rule_id=STALE_PATH_SPELLING, original=r.original,
+            normalized=r.normalized, location=r.location,
+        )
+        for r in records
+    ]
+    for payload in emitted:
+        _warnings_module.warn(SlayerNormalizationWarning(payload), stacklevel=2)
+    return emitted

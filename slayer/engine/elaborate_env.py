@@ -7,9 +7,11 @@ algebra type error raises here, each invoked at its family's original checkpoint
 from __future__ import annotations
 
 from typing import (
-    Callable, Dict, List, NoReturn, Optional,
+    Callable, Dict, Iterator, List, Literal, NamedTuple, NoReturn, Optional,
     Sequence, Tuple, Union,
 )
+
+from pydantic import BaseModel, ConfigDict
 
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS, DataType, TimeGranularity
 from slayer.core.errors import (
@@ -25,11 +27,14 @@ from slayer.core.formula import TIME_TRANSFORMS
 from slayer.core.window_duration import parse_window_duration
 from slayer.core.keys import (
     AggregateKey,
+    ConsumerNode,
+    walk_consumer_positions,
     attached_inputs,
     is_boolean_shaped,
     is_cross_model_agg,
     is_local_combined_regroup_ref,
     is_local_partitioned_agg,
+    is_reaggregation_key,
     split_top_level_and,
     ArithmeticKey,
     BetweenKey,
@@ -55,8 +60,8 @@ from slayer.ir.planned import MaskTyping, ModeAFilter
 from slayer.ir.elaborated import (
     ConjunctTyping, ElaboratedQuery, ExpressionEntry, PositionVerdict, Term,
 )
-from slayer.ir.bound import BoundFilter, bound_filter_from_key
-from slayer.ir.prebound import PreboundQuery, position_typing_context
+from slayer.ir.bound import BoundFilter, DeclaredMeasure, OrderSpec, bound_filter_from_key
+from slayer.ir.prebound import PreboundQuery
 from slayer.ir.terms import (
     Aggregate,
     Broadcast,
@@ -174,6 +179,142 @@ def type_position_conjunct(
     )
 
 
+
+
+ConsumerPosition = Literal["dimension", "measure", "order", "field_filter", "measure_filter"]
+
+
+def opaque_keys(key: ValueKey) -> Iterator[ValueKey]:
+    """``walk_value_keys`` not descending a re-aggregation root."""
+    yield key
+    if is_reaggregation_key(key):
+        return
+    for c in key.children():
+        yield from opaque_keys(c)
+
+
+def is_grained_aggregate(k: ValueKey) -> bool:
+    return isinstance(k, AggregateKey) and k.partition_keys is not None \
+        and not is_reaggregation_key(k)
+
+
+def combined_kind(k: ValueKey) -> Optional[str]:
+    """``local`` / ``cross_partitioned`` / ``cross_bare`` for a combined consumer."""
+    if not isinstance(k, AggregateKey) or is_reaggregation_key(k):
+        return None
+    partitioned = k.partition_keys is not None
+    if not source_anchor_path(k.source):
+        return "local" if partitioned else None
+    if k.locus == "host":
+        return None
+    return "cross_partitioned" if partitioned else "cross_bare"
+
+
+def is_partitioned_consumer(k: ValueKey) -> bool:
+    """A partitioned aggregate needing query-dimension keys when consumed combined."""
+    return isinstance(k, AggregateKey) and k.partition_keys is not None and not (
+        source_anchor_path(k.source) and k.locus == "host"
+    )
+
+
+def dimension_transform_roots(nodes: Sequence[ValueKey]) -> List[TransformKey]:
+    """Transforms over a grained aggregate among a computed dimension's nodes."""
+    return [
+        k for k in nodes
+        if isinstance(k, TransformKey) and any(is_grained_aggregate(g) for g in opaque_keys(k.input))
+    ]
+
+
+class ConsumerRoot(NamedTuple):
+    key: ValueKey
+    position: ConsumerPosition
+    measure: Optional[DeclaredMeasure]
+
+
+def consumer_roots(
+    *, declared_measures: Sequence[DeclaredMeasure], order_specs: Sequence[OrderSpec],
+    bound_filters: Sequence[BoundFilter], measure_typed: frozenset = frozenset(),
+) -> Iterator[ConsumerRoot]:
+    """Every consumer root with its position; untyped filters are field-typed."""
+    for dm in declared_measures:
+        yield ConsumerRoot(dm.bound.value_key, "dimension" if dm.is_dimension else "measure", dm)
+    for sp in order_specs:
+        yield ConsumerRoot(sp.bound.value_key, "order", None)
+    for i, bf in enumerate(bound_filters):
+        yield ConsumerRoot(
+            bf.value_key, "measure_filter" if i in measure_typed else "field_filter", None,
+        )
+
+
+class PositionClasses(BaseModel):
+    """Row-role keys of the computed dimensions and the combined-position rule."""
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
+    dim_keys: frozenset
+    #: Partitioned aggregates inside a computed dimension (re-aggregations included).
+    row_aggregates: frozenset
+    #: Transforms over a grained aggregate inside a computed dimension.
+    row_transform_roots: frozenset
+
+    @property
+    def row_attached(self) -> frozenset:
+        return self.row_aggregates | self.row_transform_roots
+
+    def combined_admits(self, node: ConsumerNode, *, position: ConsumerPosition, root: ValueKey) -> bool:
+        """A measure skips partition-key subtrees; a measure-typed filter skips a
+        dimension's grouped value; an order target that is itself a partitioned
+        aggregate is its only consumer; order-by-name and field-typed filter
+        references to a dimension's own aggregate are row-scope."""
+        if position == "measure":
+            return not (node.own_pk or node.attach_pk)
+        if position == "measure_filter":
+            return not node.dim_key
+        if position == "order" and is_partitioned_consumer(root):
+            return node.key is root
+        return not (is_partitioned_consumer(node.key) and node.key in self.row_aggregates)
+
+
+def position_classes(declared_measures: Sequence[DeclaredMeasure], *, n_grain: int) -> PositionClasses:
+    """The computed dimensions' row-role keys."""
+    aggs: set = set()
+    troots: set = set()
+    for dm in declared_measures:
+        if not dm.is_dimension:
+            continue
+        nodes = [n.key for n in walk_consumer_positions(dm.bound.value_key)]
+        aggs.update(k for k in nodes if isinstance(k, AggregateKey) and k.partition_keys is not None)
+        troots.update(dimension_transform_roots(nodes))
+    return PositionClasses(
+        dim_keys=frozenset(dm.bound.value_key for dm in declared_measures[:n_grain]),
+        row_aggregates=frozenset(aggs), row_transform_roots=frozenset(troots),
+    )
+
+
+def position_typing_context(prebound: PreboundQuery) -> Tuple[frozenset, frozenset]:
+    """(dim_keys, row-attached set) for position typing."""
+    pc = position_classes(
+        prebound.declared_measures, n_grain=prebound.n_dims + prebound.n_time_dimensions,
+    )
+    return pc.dim_keys, pc.row_attached
+
+
+def combined_partitioned_consumers(
+    classes: PositionClasses, *, declared_measures: Sequence[DeclaredMeasure],
+    order_specs: Sequence[OrderSpec], bound_filters: Sequence[BoundFilter],
+    measure_typed: frozenset = frozenset(),
+) -> frozenset:
+    """Partitioned aggregates with a combined-position consumer."""
+    out: set = set()
+    for r in consumer_roots(declared_measures=declared_measures, order_specs=order_specs,
+                            bound_filters=bound_filters, measure_typed=measure_typed):
+        if r.position == "dimension":
+            continue
+        for n in walk_consumer_positions(r.key, dim_keys=classes.dim_keys):
+            if is_partitioned_consumer(n.key) and \
+                    classes.combined_admits(n, position=r.position, root=r.key):
+                out.add(n.key)
+    return frozenset(out)
 
 
 def type_and_split_filters(
@@ -688,61 +829,46 @@ def check_window_duration(*, window_val) -> None:
 
 
 def _first_row_leaf(key: ValueKey, *, exempt: frozenset) -> Optional[ValueKey]:
-    """First row-level (non-aggregate) leaf in ``key`` not in ``exempt``, or None.
-    Aggregates are opaque; a transform is descended through its input ONLY (its
-    time / partition keys are series parameters, not leaves)."""
-    if key in exempt:
-        return None
-    if isinstance(key, AggregateKey):
+    """First row-level leaf of ``key`` (a transform: of its input) not in
+    ``exempt``, or None. Aggregates and nested transforms are opaque."""
+    if isinstance(key, TransformKey):
+        return _first_opaque_row_leaf(key.input, exempt=exempt)
+    return _first_opaque_row_leaf(key, exempt=exempt)
+
+
+def _first_opaque_row_leaf(key: ValueKey, *, exempt: frozenset) -> Optional[ValueKey]:
+    if key in exempt or isinstance(key, (AggregateKey, TransformKey)):
         return None
     if isinstance(key, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
         return key
-    if isinstance(key, TransformKey):
-        return _first_row_leaf(key=key.input, exempt=exempt)
     for c in key.children():
-        found = _first_row_leaf(key=c, exempt=exempt)
+        found = _first_opaque_row_leaf(c, exempt=exempt)
         if found is not None:
             return found
     return None
 
 
-_SHIFT_FAMILY_OPS = frozenset({"time_shift", "change", "change_pct"})
+#: Per-op input rules beyond the total row-leaf rule: ops rejecting a boolean input.
+_TRANSFORM_INPUT_RULES = {"reject_boolean": frozenset({"change", "change_pct"})}
 
 
-def _check_shift_family_key(k: TransformKey) -> None:
-    if k.op != "time_shift" and is_boolean_shaped(k.input):
-        raise ValueError(
-            f"'{k.op}' cannot consume a boolean-shaped predicate: its "
-            f"desugared arithmetic subtracts the shifted series, and "
-            f"subtraction over truth values is undefined. Shift the "
-            f"predicate itself with time_shift, or compare the shifted "
-            f"values instead."
-        )
-
-
-def check_time_shift_input(*, roots) -> None:
-    """``change`` / ``change_pct`` consume no boolean series (their desugared
-    arithmetic has no defined truth-value operands); runs pre-lowering."""
-    for root in roots:
-        for k in walk_value_keys(root):
-            if isinstance(k, TransformKey) and k.op in _SHIFT_FAMILY_OPS:
-                _check_shift_family_key(k)
-
-
-_FIRST_LAST_OPS = frozenset({"first", "last"})
-
-
-def check_transform_row_leaf(
-    *, roots, projected_grain_keys: frozenset,
-) -> None:
-    """A transform (first/last are aggregation-dispatched) in measure/filter/order
-    position rejects, at plan time, any row-level leaf in its input that refines the
+def check_transform_inputs(*, roots, projected_grain_keys: frozenset) -> None:
+    """Judge every transform node's own input (pre-lowering): no boolean-shaped
+    input for ``change`` / ``change_pct``, and no row-level leaf refining the
     consumer grain — a leaf that is not a projected query dimension."""
     for root in roots:
         for k in walk_value_keys(root):
-            if not isinstance(k, TransformKey) or k.op in _FIRST_LAST_OPS:
+            if not isinstance(k, TransformKey):
                 continue
-            leaf = _first_row_leaf(key=k.input, exempt=projected_grain_keys)
+            if k.op in _TRANSFORM_INPUT_RULES["reject_boolean"] and is_boolean_shaped(k.input):
+                raise ValueError(
+                    f"'{k.op}' cannot consume a boolean-shaped predicate: its "
+                    f"desugared arithmetic subtracts the shifted series, and "
+                    f"subtraction over truth values is undefined. Shift the "
+                    f"predicate itself with time_shift, or compare the shifted "
+                    f"values instead."
+                )
+            leaf = _first_row_leaf(k, exempt=projected_grain_keys)
             if leaf is None:
                 continue
             disp = dotted_key_display(leaf)

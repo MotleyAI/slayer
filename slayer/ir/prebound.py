@@ -28,21 +28,14 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from slayer.core.errors import AmbiguousJoinPathError
 from slayer.core.join_walker import resolve_hop
-from slayer.core.keys import TimeTruncKey, TransformKey
+from slayer.core.keys import TimeTruncKey
 from slayer.core.models import SlayerModel
-from slayer.ir.bound import (
-    BoundFilter,
-    DeclaredMeasure,
-    OrderSpec,
-    dimension_partitioned_aggregates,
-    dimension_regroup_roots,
-)
+from slayer.ir.bound import BoundFilter, DeclaredMeasure, OrderSpec
 
 __all__ = [
     "PreboundQuery",
     "StrictQueryCarrier",
     "partition_declared_measures",
-    "position_typing_context",
     "walk_key_path",
 ]
 
@@ -170,26 +163,6 @@ class StrictQueryCarrier(BaseModel):
             f"populate it at every construction site) rather than letting the "
             f"planner read a default."
         )
-
-
-def position_typing_context(
-    prebound: PreboundQuery,
-) -> Tuple[frozenset, frozenset]:
-    """(dim_keys, row_agg_set) for position typing: the attached set is the computed
-    dimensions' partitioned aggregates plus their transform roots."""
-    dim_keys = frozenset(
-        dm.bound.value_key
-        for dm in prebound.declared_measures[
-            : prebound.n_dims + prebound.n_time_dimensions
-        ]
-    )
-    row_agg_set = frozenset(
-        dimension_partitioned_aggregates(prebound.declared_measures),
-    ) | frozenset(
-        k for k in dimension_regroup_roots(prebound.declared_measures)
-        if isinstance(k, TransformKey)
-    )
-    return dim_keys, row_agg_set
 
 
 def walk_key_path(

@@ -104,6 +104,8 @@ class ValueSlot(BaseModel):
     declared_name: str
     public_name: Optional[str] = None
     public_aliases: List[str] = Field(default_factory=list)
+    #: The public aliases the user named explicitly (they carry no stale respellings).
+    explicit_aliases: List[str] = Field(default_factory=list)
     hidden: bool = False
     phase: Phase
     #: Planner-assigned materialisation stage (P6); None only on a plan the

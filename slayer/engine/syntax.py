@@ -1059,9 +1059,6 @@ def _convert_kwarg_value(node: ast.AST, *, agg_map: Dict, original: str):
 # aggregation-free scalar expression). Cmp / BoolOp / TupleLit are excluded —
 # a predicate is not an aggregatable value.
 _AGG_SOURCE_KINDS = (Ref, DottedRef, StarSource, Literal, ScalarCall, Arith, UnaryOp)
-# Names that are BOTH a builtin aggregation and a transform; dispatched by
-# first-arg shape (aggregated input → transform, else aggregation).
-_FIRST_LAST = frozenset({"first", "last"})
 
 
 def _contains_agg_or_transform(node: Any) -> bool:
@@ -1098,15 +1095,6 @@ def _source_leaves(node: Any):
             yield from _source_leaves(o)
     else:
         yield node
-
-
-def _is_mixed_agg_source(node: Any) -> bool:
-    """A source whose composition leaves mix an attached value — an AggCall or a
-    grained transform — with a row-level reference (the row-grain shape)."""
-    leaves = list(_source_leaves(node))
-    return any(isinstance(leaf, (AggCall, TransformCall)) for leaf in leaves) and any(
-        isinstance(leaf, (Ref, DottedRef, StarSource)) for leaf in leaves
-    )
 
 
 def _validated_agg_source(source: Any, *, func_name: str, original: str) -> Any:
@@ -1158,7 +1146,7 @@ def _reject_repeated_keywords(node: ast.Call, *, call: str, original: str) -> No
         seen.add(kw.arg)
 
 
-def _convert_call(  # NOSONAR(S3776) — the one call-dispatch ladder (colon placeholder → builtin functional aggregation → transform → scalar → unknown-name AggCall deferral); each rung IS the documented dispatch order and splitting them hides it.
+def _convert_call(  # NOSONAR(S3776) — the one call-dispatch ladder (colon placeholder → builtin functional aggregation → transform → scalar → unknown-name AggCall deferral); each rung IS the documented dispatch order and splitting them hides it. first/last carry no grain decision here — they dispatch at bind.
     node: ast.Call, *, agg_map: Dict, original: str,
 ) -> ParsedExpr:
     if not isinstance(node.func, ast.Name):
@@ -1197,17 +1185,9 @@ def _convert_call(  # NOSONAR(S3776) — the one call-dispatch ladder (colon pla
 
     # Functional builtin aggregation? Matched via alias/case healing, exactly
     # like colon names heal at binding; ``agg`` stores the RAW token so both
-    # spellings collapse to the identical AggCall. ``first``/``last`` over an
-    # aggregated input fall through to the transform branch.
-    healed = normalize_aggregation_name(func_name)
-    # first/last over an aggregated input dispatch to the transform branch — but
-    # a MIXED composite (row leaf + attached value) routes to the aggregation so
-    # the not-supported-over-an-expression rule fires, not the
-    # transform's time-dimension error.
-    if healed in BUILTIN_AGGREGATIONS and not (
-        healed in _FIRST_LAST and args and _contains_agg_or_transform(args[0])
-        and not _is_mixed_agg_source(args[0])
-    ):
+    # spellings collapse to the identical AggCall. ``first``/``last`` dispatch at
+    # bind by the operand's type.
+    if normalize_aggregation_name(func_name) in BUILTIN_AGGREGATIONS:
         if not args:
             raise ValueError(
                 f"Invalid Mode-B expression {original!r}: aggregation "

@@ -21,7 +21,8 @@ from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.engine import profiling
 from slayer.engine.ingestion import ingest_datasource_idempotent
-from slayer.engine.profiling import handle_edit_refresh, refresh_all_table_backed_sampled
+from slayer.engine.profiling import refresh_all_table_backed_sampled
+from slayer.search.service import handle_edit_refresh
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.mcp.server import create_mcp_server
 from slayer.storage.base import resolve_storage
