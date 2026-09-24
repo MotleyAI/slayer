@@ -17,6 +17,7 @@ from slayer.core.models import (
     Aggregation,
     AggregationParam,
     Column,
+    ModelMeasure,
     ModelJoin,
     SlayerModel,
 )
@@ -24,6 +25,8 @@ from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.ir.planned import MaskTyping
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.plan import plan_query
+
+from tests._engine_helpers import plan_as_producer
 
 
 # Fixtures
@@ -144,19 +147,6 @@ def _orders_with_derived_eu_filter(*, eu_amount_filter: str):
         source_model=host, referenced_models=[customers],
     )
     return host, bundle
-
-
-def _agg_slot_for(planned, name: str):
-    """Find the aggregate slot whose alias contains ``name``, recursing into producer plans."""
-    for attach in planned.regroup_attach_plans:
-        nested = _agg_slot_for(attach.producer_plan, name)
-        if nested is not None:
-            return nested
-    for slot in planned.aggregate_slots:
-        if name in (slot.declared_name or "") or name in (slot.public_name or ""):
-            return slot
-    return None
-
 
 
 # Trigger predicate: cross-model planner invocation
@@ -284,30 +274,11 @@ class TestCrossModelPlannerTriggerPredicate:
         assert planned.regroup_attach_plans[0].producer_root_model == "customers"
 
 
-# Recursion suppression
+# Producer mode
 
 
-class TestRecursionSuppression:
-    """The host-rooted sub-plan is compiled recursively; without suppression its own
-    filtered-local aggregate would re-trigger isolation → infinite recursion."""
-
-    def test_disable_kwarg_suppresses_trigger(self):
-        host = _claim_amount()
-        q = SlayerQuery(
-            source_model="claim_amount",
-            measures=[{"formula": "loss_payment_amt:sum"}],
-            dimensions=["claim.claim_number"],
-        )
-        planned = plan_query(
-            query=q, bundle=_bundle(host), disable_host_rooted_isolation=True,
-        )
-        # Suppressed: the filtered measure stays a plain local aggregate.
-        assert planned.regroup_attach_plans == [], (
-            f"disable_host_rooted_isolation=True must suppress the desugar; "
-            f"got attaches: {planned.regroup_attach_plans}"
-        )
-        slot = _agg_slot_for(planned, "loss_payment_amt")
-        assert slot is not None
+class TestProducerMode:
+    """A host-rooted producer holds its own answer inline; it never re-isolates."""
 
     def test_isolated_sub_plan_has_no_nested_cma_plans(self):
         """The host-rooted sub-plan must contain zero nested attaches, else the filtered measure re-isolates."""
@@ -662,21 +633,12 @@ class TestWidenedLaw3TriggerCrossingInputs:
         assert len(planned.regroup_attach_plans) == 1
         assert planned.regroup_attach_plans[0].producer_root_model == "customers"
 
-    def test_disable_flag_suppresses_widened_trigger(self):
-        _, plans = _s5_plans(
-            "region_pay:sum", disable_host_rooted_isolation=True,
-        )
-        assert plans == [], (
-            "disable_host_rooted_isolation=True must suppress the widened "
-            "crossing-input trigger exactly like the DEV-1503 filter trigger"
-        )
-
-    def test_disable_flag_keeps_target_rooted(self):
-        # The flag suppresses ONLY host-rooted isolation; a cross-model aggregate
-        # still plans target-rooted under it.
-        planned, _ = _s5_plans(
-            "customers.weight:sum", disable_host_rooted_isolation=True,
-        )
+    def test_producer_mode_keeps_target_rooted(self):
+        # Producer mode still plans a cross-model aggregate target-rooted.
+        planned = plan_as_producer(query=SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="customers.weight:sum", name="m0")],
+        ), bundle=_s5_bundle())
         (attach,) = [
             a for a in planned.regroup_attach_plans
             if a.attach_phase == "combined"

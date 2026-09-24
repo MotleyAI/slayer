@@ -5,7 +5,7 @@
 `slayer/ir` is the shared intermediate representation between the planner
 (`engine`) and the renderer (`sql`): typed plan shapes (`planned.py`, incl.
 producer interning identity), bound expressions (`bound.py`, incl. declared
-measures/orders and their discovery walks), the pre-bound query seam
+measures/orders), the pre-bound query seam
 (`prebound.py`), the typed term language (`terms.py`), the elaborated typing
 environment (`elaborated.py`), the resolved source bundle (`source_bundle.py`;
 the storage-backed builders live in `engine/bundle_builder.py`), and

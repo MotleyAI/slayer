@@ -21,8 +21,11 @@ from slayer.core.keys import (
     Phase,
     ScalarCallKey,
     StarKey,
+    LiteralKey,
     TransformKey,
     ValueKey,
+    is_attached_source,
+    is_reaggregation_key,
     normalize_scalar,
 )
 from slayer.core.keys import Grain
@@ -548,3 +551,25 @@ class TestValueKeyUnion:
     def test_value_key_alias_resolves(self):
         # The Union alias should be importable and usable at runtime.
         assert ValueKey is not None
+
+
+class TestIsAttachedSource:
+    _AMOUNT = ColumnKey(path=(), leaf="amount")
+    _SUM = AggregateKey(source=_AMOUNT, agg="sum")
+
+    @pytest.mark.parametrize("source, attached", [
+        (_SUM, True),
+        (TransformKey(op="cumsum", input=_SUM), True),
+        (ArithmeticKey(op="*", operands=(_SUM, LiteralKey(value=Decimal(2)))), True),
+        (ArithmeticKey(op="*", operands=(_SUM, _AMOUNT)), False),
+        (_AMOUNT, False),
+        (LiteralKey(value=Decimal(1)), False),
+        (StarKey(), False),
+    ])
+    def test_classification(self, source, attached):
+        assert is_attached_source(source) is attached
+
+    @pytest.mark.parametrize("source", [_SUM, ArithmeticKey(op="*", operands=(_SUM, _AMOUNT))])
+    def test_reaggregation_agrees(self, source):
+        key = AggregateKey(source=source, agg="avg")
+        assert is_reaggregation_key(key) is is_attached_source(source)

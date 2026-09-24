@@ -15,7 +15,7 @@ from slayer.engine.compile import compile_query
 from slayer.engine.compile.stages import _topo_sort
 from slayer.engine.elaborate import elaborate_query
 from slayer.ir.planned import PlannedQuery
-from slayer.ir.prebound import PreboundQuery, StrictQueryCarrier
+from slayer.ir.prebound import PreboundQuery
 from slayer.ir.source_bundle import (
     ResolvedSourceBundle,
     apply_extension_overlay,
@@ -32,32 +32,25 @@ __all__ = [
 
 def plan_query(
     *,
-    query: Union[SlayerQuery, StrictQueryCarrier],
+    query: SlayerQuery,
     bundle: ResolvedSourceBundle,
     scope: Optional[Union[ModelScope, StageSchema]] = None,
     stage_schemas: Optional[Dict[str, StageSchema]] = None,
-    disable_host_rooted_isolation: bool = False,
-    enable_producer_regroups: bool = False,
     prebound: Optional[PreboundQuery] = None,
     producer_registry: Optional[Dict[Hashable, PlannedQuery]] = None,
 ) -> PlannedQuery:
-    """Plan one query into a typed ``PlannedQuery``: elaborate, then compile."""
+    """Plan one user-authored query stage: elaborate, then compile."""
     elaborated = elaborate_query(
         query=query,
         bundle=bundle,
         scope=scope,
         stage_schemas=stage_schemas,
         prebound=prebound,
-        disable_host_rooted_isolation=disable_host_rooted_isolation,
     )
     return compile_query(
         elaborated=elaborated,
-        disable_host_rooted_isolation=disable_host_rooted_isolation,
-        enable_producer_regroups=enable_producer_regroups,
         producer_registry=producer_registry,
     )
-
-
 
 
 def _stage_scope_and_bundle(

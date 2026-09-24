@@ -311,14 +311,21 @@ def key_closure(
     definition of a derived column it names crosses. Insertion-ordered,
     de-duplicated; ``()`` = local; ``None`` = a dependency could not be analysed
     (fail closed). A cyclic derived definition raises ``ColumnCycleError``."""
+    return _closure(
+        key, anchor_model=anchor_model, anchor_relation=anchor_relation,
+        bundle=bundle, cache=cache, opaque=(),
+    )
+
+
+def _closure(
+    key, *, anchor_model: SlayerModel, anchor_relation: str,
+    bundle: ResolvedSourceBundle, cache: "Optional[dict]", opaque: Tuple[type, ...],
+) -> Optional[Tuple[Path, ...]]:
+    """``key_closure`` with nodes of the ``opaque`` kinds contributing nothing."""
     seen: "dict[Path, None]" = {}
 
-    def _add(path: Path) -> None:
-        if path:
-            seen.setdefault(tuple(path), None)
-
     def _walk(node) -> bool:
-        if node is None:
+        if node is None or isinstance(node, opaque):
             return True
         leafs = _leaf_closure(node, anchor_model=anchor_model,
                               anchor_relation=anchor_relation, bundle=bundle,
@@ -326,11 +333,9 @@ def key_closure(
         if leafs is None:
             return False
         for path in leafs:
-            _add(path)
-        for child in _child_keys(node):
-            if not _walk(child):
-                return False
-        return True
+            if path:
+                seen.setdefault(tuple(path), None)
+        return all(_walk(child) for child in _child_keys(node))
 
     if not _walk(key):
         return None
@@ -605,20 +610,19 @@ def _default_param_specs(
 
 
 def _refs_closure(
-    *, refs: List[object], descend_aggregates: bool, anchor_model: SlayerModel,
+    *, refs: List[object], anchor_model: SlayerModel,
     anchor_relation: str, bundle: ResolvedSourceBundle,
 ) -> Optional[List[Path]]:
-    """The combined closure of a list of input refs. ``None`` when any non-string
-    ref is unanalysable. A raw, unparseable template-fragment STRING contributes
-    nothing (the pre-existing defensive fallback; a malformed SQL fragment is the
-    renderer's gate) — only a named DERIVED COLUMN fails closed."""
+    """The combined closure of a list of input refs, attached constituents opaque
+    (their inputs belong to their own producer, Axiom 2.3). ``None`` when any
+    non-string ref is unanalysable. A raw, unparseable template-fragment STRING
+    contributes nothing (the pre-existing defensive fallback; a malformed SQL
+    fragment is the renderer's gate) — only a named DERIVED COLUMN fails closed."""
     out: List[Path] = []
     for ref in refs:
-        if isinstance(ref, AggregateKey) and not descend_aggregates:
-            continue  # opaque: its inputs belong to its own producer
-        c = key_closure(
-            key=ref, anchor_model=anchor_model, anchor_relation=anchor_relation,
-            bundle=bundle,
+        c = _closure(
+            ref, anchor_model=anchor_model, anchor_relation=anchor_relation,
+            bundle=bundle, cache=None, opaque=(AggregateKey, TransformKey),
         )
         if c is None:
             if isinstance(ref, str):
@@ -661,7 +665,7 @@ def _merge_paths(*, seen: "dict[Path, None]", part: Optional[List[Path]]) -> boo
 def aggregate_input_closure(
     *, key: AggregateKey, anchor_model: Optional[SlayerModel],
     anchor_relation: str, bundle: ResolvedSourceBundle,
-    include_source: bool = True, descend_aggregates: bool = False,
+    include_source: bool = True,
 ) -> Optional[Tuple[Path, ...]]:
     """The dependency closure of an aggregate's inputs — its source (when
     ``include_source``), positional/keyword arguments, and non-overridden
@@ -669,15 +673,14 @@ def aggregate_input_closure(
     column's ``Column.filter`` rides its ``ColumnSqlKey`` source (DEV-1832), so
     the source closure covers it. ``None`` when any dependency cannot be analysed
     (fail closed, short-circuiting on the first unanalysable component); ``()``
-    when purely local. Safety mode (``descend_aggregates=False``) treats an
-    ``AggregateKey``-valued input as opaque — its inputs belong to its own
-    producer; discovery mode descends into it."""
+    when purely local. Attached constituents (aggregates, transforms) are opaque:
+    their inputs belong to their own producer."""
     if anchor_model is None:
         return ()
     seen: "dict[Path, None]" = {}
     if not _merge_paths(seen=seen, part=_refs_closure(
         refs=_explicit_input_refs(key=key, include_source=include_source),
-        descend_aggregates=descend_aggregates, anchor_model=anchor_model,
+        anchor_model=anchor_model,
         anchor_relation=anchor_relation, bundle=bundle,
     )):
         return None
