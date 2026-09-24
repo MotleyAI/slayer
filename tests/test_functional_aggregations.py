@@ -36,7 +36,6 @@ from slayer.engine.syntax import (
     Ref,
     ScalarCall,
     StarSource,
-    TransformCall,
     parse_expr,
 )
 from slayer.memories.resolver import extract_entities_from_query, resolve_entity
@@ -199,9 +198,9 @@ class TestFirstLastArbitration:
         assert isinstance(node, AggCall)
         assert node.agg == "last"
 
-    def test_last_over_colon_agg_is_transform(self) -> None:
-        assert parse_expr("last(revenue:sum)") == TransformCall(
-            op="last", input=AggCall(source=Ref(name="revenue"), agg="sum")
+    def test_last_over_colon_agg_parses_to_one_aggcall(self) -> None:
+        assert parse_expr("last(revenue:sum)") == AggCall(
+            source=AggCall(source=Ref(name="revenue"), agg="sum"), agg="last"
         )
 
     def test_last_over_functional_agg_is_transform(self) -> None:
@@ -210,10 +209,10 @@ class TestFirstLastArbitration:
     def test_first_over_functional_agg_is_transform(self) -> None:
         assert parse_expr("first(sum(revenue))") == parse_expr("first(revenue:sum)")
 
-    def test_last_over_aggregated_arithmetic_is_transform(self) -> None:
+    def test_last_over_aggregated_arithmetic_parses_to_one_aggcall(self) -> None:
         node = parse_expr("last(sum(revenue) / count(*))")
-        assert isinstance(node, TransformCall)
-        assert node.op == "last"
+        assert isinstance(node, AggCall)
+        assert node.agg == "last"
 
 
 class TestDispatchUnchanged:

@@ -72,6 +72,16 @@ def _node(k, *, fn: str) -> str:
     return type(k).__name__
 
 
+def _root_nodes(root, *, fn: str) -> list:
+    """Pre-order nodes of ``root``; only the first ``fn`` transform becomes ``<op>``."""
+    out, pending = [], fn
+    for k in walk_value_keys(root):
+        out.append(_node(k, fn=pending))
+        if isinstance(k, TransformKey) and k.op == pending:
+            pending = ""
+    return out
+
+
 def _outcome(query: SlayerQuery, *, fn: str):
     """``("ok", every bound node, "")`` over measure / filter / order roots with
     ``fn`` normalised to ``<op>``, or ``("err", type, message)``."""
@@ -86,7 +96,7 @@ def _outcome(query: SlayerQuery, *, fn: str):
         *(bf.value_key for bf in env.prebound.bound_filters),
         *(sp.bound.value_key for sp in env.prebound.order_specs),
     ]
-    return ("ok", ",".join(_node(k, fn=fn) for r in roots for k in walk_value_keys(r)), "")
+    return ("ok", ",".join(n for r in roots for n in _root_nodes(r, fn=fn)), "")
 
 
 class TestParseIsOneNode:

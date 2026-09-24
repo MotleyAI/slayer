@@ -173,20 +173,18 @@ class TestTransforms:
         assert result.kwargs == (("n", Literal(value=Decimal(4))),)
 
     def test_first_transform(self):
-        # DEV-1484 backfill from test_formula.py::TestFirstTransform —
-        # ``first(...)`` is the FIRST_VALUE window transform (distinct from
-        # the ``:first`` aggregation), parsed as a TransformCall.
+        # One AggCall; dispatches to the transform at bind.
         result = parse_expr("first(revenue:sum)")
-        assert isinstance(result, TransformCall)
-        assert result.op == "first"
-        assert result.input == AggCall(source=Ref(name="revenue"), agg="sum")
+        assert result == AggCall(
+            source=AggCall(source=Ref(name="revenue"), agg="sum"), agg="first",
+        )
 
     def test_last_transform(self):
-        # DEV-1484 backfill from test_formula.py::TestFirstTransform.
+        # One AggCall; dispatches to the transform at bind.
         result = parse_expr("last(revenue:sum)")
-        assert isinstance(result, TransformCall)
-        assert result.op == "last"
-        assert result.input == AggCall(source=Ref(name="revenue"), agg="sum")
+        assert result == AggCall(
+            source=AggCall(source=Ref(name="revenue"), agg="sum"), agg="last",
+        )
 
     # -- DEV-1484 backfills from the deleted TestFormulaParser --------------
     # The legacy free-function parser asserted these shapes on its own AST
@@ -246,13 +244,13 @@ class TestTransforms:
     def test_triple_nested_transforms(self):
         # last(change(cumsum(revenue:sum))) — three levels deep.
         result = parse_expr("last(change(cumsum(revenue:sum)))")
-        assert isinstance(result, TransformCall)
-        assert result.op == "last"
-        assert isinstance(result.input, TransformCall)
-        assert result.input.op == "change"
-        assert isinstance(result.input.input, TransformCall)
-        assert result.input.input.op == "cumsum"
-        assert result.input.input.input == AggCall(
+        assert isinstance(result, AggCall)
+        assert result.agg == "last"
+        assert isinstance(result.source, TransformCall)
+        assert result.source.op == "change"
+        assert isinstance(result.source.input, TransformCall)
+        assert result.source.input.op == "cumsum"
+        assert result.source.input.input == AggCall(
             source=Ref(name="revenue"), agg="sum",
         )
 

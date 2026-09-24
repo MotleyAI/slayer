@@ -24,7 +24,7 @@
 
 - [x] 3.1 `slayer/core/keys.py`: `is_attached_source(source)`; `is_reaggregation_key` reuses it; unit tests in `tests/test_keys.py`
 - [x] 3.2 `slayer/engine/syntax.py`: `_convert_call` emits `AggCall` for `first` / `last` always; delete `_FIRST_LAST`, `_is_mixed_agg_source`; keep `_contains_agg_or_transform` for the unknown-name rung; update the NOSONAR rationale
-- [ ] 3.3 `slayer/engine/binding.py`: split `_bind_transform` into input binding + parameter binding; `_bind_agg` routes a ranked aggregation through the dedicated operand path (transform-input contexts) and dispatches on `is_attached_source` of the bound operand; row-grain arm unchanged; verify 1.5, 1.6, `tests/test_dev1859_plan_structure.py::TestFirstOverMixedKeepsExpressionError`, `tests/test_dev1748_*` and the "First and last keep transform dispatch" scenario green
+- [x] 3.3 `slayer/engine/binding.py`: split `_bind_transform` into input binding + parameter binding; `_bind_agg` routes a ranked aggregation through the dedicated operand path (transform-input contexts) and dispatches on `is_attached_source` of the bound operand; row-grain arm unchanged; verify 1.5, 1.6, `tests/test_dev1859_plan_structure.py::TestFirstOverMixedKeepsExpressionError`, `tests/test_dev1748_*` and the "First and last keep transform dispatch" scenario green
 - [x] 3.4 Grep `docs/` for "argument shape" / first-last dispatch wording; one sentence if any page states the parse-time rule
 
 ## 4. Item 3 — one transform-input checker (design D4)
