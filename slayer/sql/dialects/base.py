@@ -1,4 +1,4 @@
-"""DEV-1542: SqlDialect strategy base class.
+"""SqlDialect strategy base class.
 
 Every dialect-specific SQL-generation quirk lives on a subclass of
 ``SqlDialect``. The base class itself is a fully concrete Postgres-shaped
@@ -15,7 +15,7 @@ from __future__ import annotations
 import hashlib
 import re
 from functools import lru_cache
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, Optional
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, Optional, TypeGuard, get_args
 from collections.abc import Callable, Sequence
 
 from pydantic import BaseModel, ConfigDict
@@ -80,7 +80,7 @@ def _granularity_to_unit(granularity: str) -> str:
         "day": "DAY",
         "quarter": "MONTH",  # caller multiplies by 3
         "week": "WEEK",
-        # DEV-1572: a one-period shift of a Sunday-week is just one week.
+        # A one-period shift of a Sunday-week is just one week.
         "week_sunday": "WEEK",
         "hour": "HOUR",
         "minute": "MINUTE",
@@ -94,46 +94,66 @@ def _granularity_to_unit(granularity: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+TimeUnit = Literal[
+    "second", "minute", "hour", "day", "week", "week_sunday", "month", "quarter", "year",
+]
+StatAgg1Name = Literal["stddev_samp", "stddev_pop", "var_samp", "var_pop"]
+StatAgg2Name = Literal["corr", "covar_samp", "covar_pop"]
+
+def is_stat_agg1(name: str) -> TypeGuard[StatAgg1Name]:
+    return name in get_args(StatAgg1Name)
+
+
+def is_stat_agg2(name: str) -> TypeGuard[StatAgg2Name]:
+    return name in get_args(StatAgg2Name)
+
+
+_OPERATOR_SHAPED = (exp.Binary, exp.Unary, exp.Between, exp.In)
+
+
+def is_operator(node: object) -> bool:
+    """Whether ``node`` is an operator expression (needs parens as an operand)."""
+    return isinstance(node, _OPERATOR_SHAPED) and not isinstance(node, exp.Paren)
+
+
+def operand_copy(value: exp.Expression) -> exp.Expression:
+    """A copy of ``value`` safe to place as an operator's operand."""
+    return exp.Paren(this=value.copy()) if is_operator(value) else value.copy()
+
+
 def _build_covar_decomposition(
     *,
-    col_sql: str,
-    other_sql: str,
-    agg: str,
+    col_expr: exp.Expression,
+    other_expr: exp.Expression,
+    agg: StatAgg2Name,
     var_fn_samp: str,
     var_fn_pop: str,
     stddev_fn: str,
-    parse: Callable[[str], exp.Expression],
 ) -> exp.Expression:
-    """Variance-decomposition formula for corr / covar_samp / covar_pop.
+    """corr / covar via ``cov(x, y) = (Var(x+y) - Var(x) - Var(y)) / 2`` for dialects without them.
 
-    ``cov(x, y) = (Var(x+y) - Var(x) - Var(y)) / 2``
-    ``corr(x, y) = cov_samp(x, y) / (Stddev(x) * Stddev(y))``
-
-    Used by MySQL and T-SQL where the native CORR / COVAR_SAMP / COVAR_POP
-    functions are absent. Both columns are NULL-guarded against each other
-    so rows where either leg is NULL are excluded from all variance calls.
-
-    Uses ``exp.Anonymous`` for aggregate calls to bypass sqlglot's MySQL
-    rewrite that aliases VAR_SAMP → VARIANCE = VAR_POP (silently wrong).
+    Each leg is NULL-guarded by the other; ``exp.Anonymous`` calls dodge sqlglot's
+    MySQL VAR_SAMP → VARIANCE (= VAR_POP) rewrite.
     """
     var_fn = var_fn_samp if agg in ("covar_samp", "corr") else var_fn_pop
 
-    x_guarded = parse(
-        f"CASE WHEN ({other_sql}) IS NOT NULL THEN ({col_sql}) END"
-    )
-    y_guarded = parse(
-        f"CASE WHEN ({col_sql}) IS NOT NULL THEN ({other_sql}) END"
-    )
-    xy_sum = exp.Add(this=x_guarded, expression=y_guarded)
+    def _guarded(value: exp.Expression, guard: exp.Expression) -> exp.Expression:
+        return exp.Case(ifs=[exp.If(
+            this=exp.Not(this=exp.Is(this=operand_copy(guard), expression=exp.Null())),
+            true=value.copy(),
+        )])
 
-    var_xy = exp.Anonymous(this=var_fn, expressions=[xy_sum])
-    var_x = exp.Anonymous(this=var_fn, expressions=[x_guarded])
-    var_y = exp.Anonymous(this=var_fn, expressions=[y_guarded])
+    x_guarded = _guarded(col_expr, other_expr)
+    y_guarded = _guarded(other_expr, col_expr)
 
+    def _call(fn: str, *args: exp.Expression) -> exp.Anonymous:
+        return exp.Anonymous(this=fn, expressions=[a.copy() for a in args])
+
+    xy_sum = exp.Add(this=x_guarded.copy(), expression=y_guarded.copy())
     covar = exp.Div(
         this=exp.Paren(this=exp.Sub(
-            this=exp.Sub(this=var_xy, expression=var_x),
-            expression=var_y,
+            this=exp.Sub(this=_call(var_fn, xy_sum), expression=_call(var_fn, x_guarded)),
+            expression=_call(var_fn, y_guarded),
         )),
         expression=exp.Literal.number(2),
     )
@@ -141,9 +161,9 @@ def _build_covar_decomposition(
     if agg != "corr":
         return covar
 
-    std_x = exp.Anonymous(this=stddev_fn, expressions=[x_guarded])
-    std_y = exp.Anonymous(this=stddev_fn, expressions=[y_guarded])
-    raw_denom = exp.Paren(this=exp.Mul(this=std_x, expression=std_y))
+    raw_denom = exp.Paren(this=exp.Mul(
+        this=_call(stddev_fn, x_guarded), expression=_call(stddev_fn, y_guarded),
+    ))
     denom = exp.Anonymous(
         this="NULLIF", expressions=[raw_denom, exp.Literal.number(0)]
     )
@@ -158,7 +178,7 @@ def _build_covar_decomposition(
 @lru_cache(maxsize=None)
 def _sqlglot_backslash_escapes(sqlglot_name: str) -> bool:
     """Whether ``sqlglot``'s tokenizer for ``sqlglot_name`` treats a backslash
-    as a string-literal escape character (DEV-1727).
+    as a string-literal escape character.
 
     This is the single source of truth for the Mode-A ``{var}`` escaping regime:
     deriving it from the same tokenizer that later PARSES the substituted SQL
@@ -173,7 +193,7 @@ def _sqlglot_backslash_escapes(sqlglot_name: str) -> bool:
             f"Cannot derive the backslash-escaping regime for sqlglot dialect "
             f"{sqlglot_name!r}: its tokenizer's STRING_ESCAPES is "
             f"{type(escapes).__name__}, expected a collection of strings. A "
-            f"sqlglot upgrade may have changed this internal API (DEV-1727)."
+            f"sqlglot upgrade may have changed this internal API."
         )
     return "\\" in escapes
 
@@ -238,10 +258,9 @@ class SqlDialect(BaseModel):
     # (Postgres), so a new dialect over-shortens rather than silently truncating.
     max_identifier_bytes: int | None = 63
 
-    # DEV-1595 approximate-distinct emission. Template dialects set the first
-    # ({col} substituted with the column SQL); Oracle/T-SQL set the second so
-    # sqlglot does not re-emit a parsed APPROX_COUNT_DISTINCT as APPROX_DISTINCT.
-    approx_count_distinct_template: str = "COUNT(DISTINCT {col})"
+    # Approximate distinct: exact COUNT(DISTINCT) unless native (sqlglot's
+    # ApproxDistinct); Oracle/T-SQL name the call, as sqlglot mis-spells theirs.
+    approx_count_distinct_native: bool = False
     approx_count_distinct_anonymous_name: str | None = None
 
     @property
@@ -251,7 +270,7 @@ class SqlDialect(BaseModel):
         rather than an ordinary char (SQLite/Postgres/DuckDB/T-SQL/Trino/Presto/
         Oracle).
 
-        Drives DEV-1727 dialect-aware Mode-A ``{var}`` escaping: pass this to
+        Drives dialect-aware Mode-A ``{var}`` escaping: pass this to
         ``substitute_variables(..., backslash_escapes=...)`` so a value like
         ``a\\'b`` stays inside its quoted literal on every backend. Derived from
         sqlglot's tokenizer (see :func:`_sqlglot_backslash_escapes`) so it can't
@@ -271,7 +290,7 @@ class SqlDialect(BaseModel):
         )
 
     # ------------------------------------------------------------------
-    # Null-safe equality (DEV-1708 / Codex F2)
+    # Null-safe equality
     # ------------------------------------------------------------------
 
     def declared_cast_type(self, dt: Optional[DataType]) -> Optional[DataType]:
@@ -295,7 +314,7 @@ class SqlDialect(BaseModel):
         return exp.NullSafeEQ(this=left, expression=right)
 
     # ------------------------------------------------------------------
-    # ORDER BY term construction (DEV-1747 D5 / P-H)
+    # ORDER BY term construction
     # ------------------------------------------------------------------
 
     def build_ordered(
@@ -385,8 +404,6 @@ class SqlDialect(BaseModel):
         self,
         col_expr: exp.Expression,
         granularity: TimeGranularity,
-        *,
-        parse: Callable[[str], exp.Expression],
     ) -> exp.Expression:
         """Default: ``DATE_TRUNC('unit', col)`` via sqlglot's ``exp.DateTrunc``.
 
@@ -396,20 +413,20 @@ class SqlDialect(BaseModel):
         ``generator.py:_build_date_trunc`` behaviour.
         """
         if granularity == TimeGranularity.WEEK_SUNDAY:
-            # DEV-1572: Sunday-anchored week = Monday-week of (col + 1 day),
+            # Sunday-anchored week = Monday-week of (col + 1 day),
             # shifted back 1 day. This is Metabase's own reference formula and
             # reuses each dialect's existing (Monday-based) WEEK truncation, so
             # WEEK_SUNDAY's correctness tracks WEEK's per dialect. BigQuery —
             # whose native WEEK is Sunday — overrides this to emit
             # ``DATE_TRUNC(col, WEEK(SUNDAY))`` directly.
             shifted = self.build_time_offset_expr(
-                col_expr=col_expr, offset=1, granularity="day",
+                col_expr=col_expr, offset=1, granularity=TimeGranularity.DAY,
             )
             monday = self.build_date_trunc(
-                col_expr=shifted, granularity=TimeGranularity.WEEK, parse=parse,
+                col_expr=shifted, granularity=TimeGranularity.WEEK,
             )
             return self.build_time_offset_expr(
-                col_expr=monday, offset=-1, granularity="day",
+                col_expr=monday, offset=-1, granularity=TimeGranularity.DAY,
             )
         gran_str = _GRANULARITY_TO_DATE_TRUNC.get(granularity, granularity.value)
         if not isinstance(col_expr, (exp.Column, exp.Cast)):
@@ -420,7 +437,7 @@ class SqlDialect(BaseModel):
         self,
         col_expr: exp.Expression,
         offset: int,
-        granularity: str,
+        granularity: TimeGranularity | TimeUnit,
     ) -> exp.Expression:
         """Default: ``col ± INTERVAL N UNIT`` via ``exp.Add`` / ``exp.Sub``.
 
@@ -429,8 +446,9 @@ class SqlDialect(BaseModel):
         normalises ``week`` to ``val * 7`` of ``days`` — that branch lives
         on ``SqliteDialect`` since other dialects accept ``WEEK`` natively.
         """
-        unit = _granularity_to_unit(granularity)
-        val = offset * 3 if granularity == "quarter" else offset
+        granularity = TimeGranularity(granularity)
+        unit = _granularity_to_unit(granularity.value)
+        val = offset * 3 if granularity == TimeGranularity.QUARTER else offset
         if val >= 0:
             return exp.Add(
                 this=col_expr,
@@ -492,74 +510,56 @@ class SqlDialect(BaseModel):
     # Median / percentile / stat aggregates
     # ------------------------------------------------------------------
 
-    def build_median(
-        self,
-        inner: exp.Expression,
-        *,
-        parse: Callable[[str], exp.Expression],
-    ) -> exp.Expression:
+    def build_median(self, inner: exp.Expression) -> exp.Expression:
         """Default: ``PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY inner)``."""
-        inner_sql = inner.sql(dialect=self.sqlglot_name)
-        return parse(f"PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY {inner_sql})")
+        return self.build_percentile(p=exp.Literal.number("0.5"), col_expr=inner)
 
     def build_percentile(
-        self,
-        p_str: str,
-        col_sql: str,
-        *,
-        parse: Callable[[str], exp.Expression],
+        self, p: exp.Expression, col_expr: exp.Expression,
     ) -> exp.Expression:
-        """Default: ``PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY col_sql)``.
-
-        ``p_str`` is the original pre-validated string the user provided —
-        not a float — so ``0.50`` / ``1`` / scientific notation are
-        preserved verbatim (Codex finding #3).
-        """
-        return parse(
-            f"PERCENTILE_CONT({p_str}) WITHIN GROUP (ORDER BY {col_sql})"
+        """Default: ``PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY col)``; ``p`` is a validated literal."""
+        return exp.WithinGroup(
+            this=exp.PercentileCont(this=p.copy()),
+            expression=exp.Order(expressions=[exp.Ordered(
+                this=col_expr.copy(),
+                nulls_first=self.native_nulls_first(descending=False),
+            )]),
         )
 
-    def build_approx_count_distinct(
-        self,
-        col_sql: str,
-        *,
-        parse: Callable[[str], exp.Expression],
-    ) -> exp.Expression:
-        """Approximate-distinct aggregate, driven by the two config fields.
-
-        Base default is the exact ``COUNT(DISTINCT col)`` fallback (Postgres /
-        SQLite / MySQL) — more accurate than an approximation, per the "no
-        approximate SQL" rule.
-        """
+    def build_approx_count_distinct(self, col_expr: exp.Expression) -> exp.Expression:
+        """Approximate distinct; the exact ``COUNT(DISTINCT col)`` unless the dialect has a native one."""
         if self.approx_count_distinct_anonymous_name is not None:
             return exp.Anonymous(
                 this=self.approx_count_distinct_anonymous_name,
-                expressions=[parse(col_sql)],
+                expressions=[col_expr.copy()],
             )
-        return parse(self.approx_count_distinct_template.replace("{col}", col_sql))
+        if self.approx_count_distinct_native:
+            return exp.ApproxDistinct(this=col_expr.copy())
+        return exp.Count(this=exp.Distinct(expressions=[col_expr.copy()]))
 
     def build_stat_agg_1arg(
-        self,
-        agg_name: str,
-        col_expr: str,
-        *,
-        parse: Callable[[str], exp.Expression],
+        self, agg_name: StatAgg1Name, col_expr: exp.Expression,
     ) -> exp.Expression:
-        """Default: emit canonical Postgres-style name and let sqlglot
-        transpile per dialect (e.g. var_samp → VARIANCE on SQLite/DuckDB)."""
-        return parse(f"{agg_name.upper()}({col_expr})")
+        """Default: emit the canonical name; sqlglot transpiles per dialect."""
+        return self._named_call(agg_name, col_expr)
 
     def build_covar_2arg(
         self,
-        agg_name: str,
-        col_sql: str,
-        other_sql: str,
-        *,
-        parse: Callable[[str], exp.Expression],
+        agg_name: StatAgg2Name,
+        col_expr: exp.Expression,
+        other_expr: exp.Expression,
     ) -> exp.Expression:
-        """Default: native ``CORR(x, y)`` / ``COVAR_SAMP(x, y)`` /
-        ``COVAR_POP(x, y)``."""
-        return parse(f"{agg_name.upper()}({col_sql}, {other_sql})")
+        """Default: native ``CORR(x, y)`` / ``COVAR_SAMP(x, y)`` / ``COVAR_POP(x, y)``."""
+        return self._named_call(agg_name, col_expr, other_expr)
+
+    def _named_call(
+        self, agg_name: StatAgg1Name | StatAgg2Name, *args: exp.Expression,
+    ) -> exp.Func:
+        """``AGG_NAME(args)`` as this dialect's parser would build it, spelling kept."""
+        name = agg_name.upper()
+        node = exp.func(name, *(a.copy() for a in args), dialect=self.sqlglot_name)
+        node.meta["name"] = name
+        return node
 
     # ------------------------------------------------------------------
     # Log-alias rewrite
@@ -586,11 +586,11 @@ class SqlDialect(BaseModel):
 
     def rewrite_parsed_ast(self, tree: exp.Expression) -> exp.Expression:
         """Default: identity. SQLite overrides to rewrite JSONExtract to
-        the function-call form (DEV-1331)."""
+        the function-call form."""
         return tree
 
     def rewrite_target_ast(self, tree: exp.Expression) -> exp.Expression:
-        """Default: identity. Target-keyed AST rewrite (DEV-1576).
+        """Default: identity. Target-keyed AST rewrite.
 
         Applied in ``SQLGenerator._parse`` using the generator's **target**
         dialect (``self._dialect``), independent of the parse dialect. This is
@@ -638,49 +638,17 @@ class SqlDialect(BaseModel):
         *,
         inner_sql: str,
         public: list[str],
+        projected: Sequence[str],
         order: exp.Expression | None,
         limit: exp.Expression | None,
         offset_arg: exp.Expression | None,
         parse: Callable[[str], exp.Expression] | None = None,
     ) -> str:
-        """Emit the DEV-1444 outer-projection wrap around ``inner_sql``.
+        """``SELECT <public> FROM (<inner_sql>) AS _outer`` plus the detached ORDER BY / LIMIT / OFFSET.
 
-        Contract: ``inner_sql`` is the inner SELECT with **trailing
-        pagination already detached** (the planned outer-wrap path,
-        ``SQLGenerator._emit_planned_outer_wrap``, owns it — pagination
-        arrives as detached AST from the plan). ``order`` / ``limit`` /
-        ``offset_arg`` are the detached sqlglot AST nodes the caller pulled
-        off the inner; the hook re-emits them on the outer statement.
-
-        ``parse`` is the generator's ``_parse`` callback when the
-        generator is the caller (``SQLGenerator._emit_planned_outer_wrap``).
-        T-SQL needs it to preserve SLayer-specific AST rewrites (LOG10/
-        LOG2 alias preservation, SQLite JSONExtract function-form) when
-        the override re-parses ``inner_sql`` to detach the WITH clause.
-        The base impl ignores it because it embeds ``inner_sql`` verbatim
-        (no re-parse, no rewrite drift).
-
-        Base impl (Postgres-shaped, used by every dialect except T-SQL)::
-
-            SELECT "alias1", "alias2"
-            FROM   (<inner_sql>) AS _outer
-            ORDER BY ... LIMIT N OFFSET M
-
-        Identifier quoting on the public-alias list is driven by sqlglot
-        via ``self.sqlglot_name`` — backticks on MySQL/BigQuery, brackets
-        on T-SQL (the override only changes the CTE-hoist shape, not the
-        quoting), ANSI double quotes on Postgres/SQLite/DuckDB/...
-        (DEV-1571 Bug 3).
-
-        T-SQL's ``WITH``-must-be-statement-prefix rule means
-        ``TsqlDialect`` overrides this method to lift the inner top-level
-        CTEs to the outer statement (DEV-1571 Bug 1).
-
-        ORDER BY may carry inner-CTE qualifiers like ``_base."col"`` from
-        ``_assemble_combined_sql``; those don't resolve at the outer-
-        wrapper scope (only ``_outer`` is in scope). The base impl strips
-        every Column's ``table`` qualifier so the outer scope can resolve
-        each column by its bare alias name (DEV-1444 behaviour preserved).
+        ``inner_sql`` arrives with pagination detached; ``projected`` is every alias it
+        projects. ORDER BY columns are re-resolved against the ``_outer`` scope. ``parse``
+        is for T-SQL's override, which re-parses ``inner_sql`` to hoist its CTEs.
         """
         del parse  # base impl embeds inner_sql verbatim; no re-parse needed.
         col_sep = ",\n    "
@@ -699,7 +667,7 @@ class SqlDialect(BaseModel):
             order = order.transform(
                 lambda node: (
                     self._outer_order_column(
-                        col=node, public=public, inner_sql=inner_sql,
+                        col=node, public=public, projected=projected,
                     )
                     if isinstance(node, exp.Column) and len(node.parts) > 1
                     else node
@@ -713,7 +681,7 @@ class SqlDialect(BaseModel):
         return out
 
     def _outer_order_column(
-        self, *, col: exp.Column, public: Sequence[str], inner_sql: str,
+        self, *, col: exp.Column, public: Sequence[str], projected: Sequence[str],
     ) -> exp.Column:
         """Re-resolve a qualified ORDER BY column against the ``_outer`` scope.
 
@@ -721,8 +689,8 @@ class SqlDialect(BaseModel):
         one part per segment, so clearing the ``table`` arg would both drop the
         model prefix and leave an empty qualifier; instead keep the longest
         part-suffix that names a column of the outer scope. ``public`` is the
-        authoritative half of that scope; the ``inner_sql`` scan is the fallback
-        for an ORDER BY over a hidden hoist, which is projected but not public.
+        authoritative half of that scope; ``projected`` (every inner alias) is
+        the fallback for an ORDER BY over a hidden hoist.
         """
         candidates = [
             ".".join(p.name for p in col.parts[i:]) for i in range(len(col.parts))
@@ -731,11 +699,11 @@ class SqlDialect(BaseModel):
             if candidate in public:
                 return exp.Column(this=exp.Identifier(this=candidate, quoted=True))
         for candidate in candidates:
-            if self.quote_identifier(candidate) in inner_sql:
+            if candidate in projected:
                 return exp.Column(this=exp.Identifier(this=candidate, quoted=True))
         return exp.Column(this=col.parts[-1].copy())
 
-    # DEV-1756 identifier-length fitting. Aliases stay canonical inside SLayer,
+    # Identifier-length fitting. Aliases stay canonical inside SLayer,
     # fitted only on emission and restored on the result keys.
 
     def quote_identifier(self, name: str) -> str:
@@ -1064,7 +1032,7 @@ class SqlDialect(BaseModel):
 
 
 class DottedAliasManglingMixin:
-    """DEV-1571: shared ``.``-to-``___`` alias mangling for BigQuery / T-SQL.
+    """Shared ``.``-to-``___`` alias mangling for BigQuery / T-SQL.
 
     ``fit_alias`` / ``emit_alias`` / ``decode_result_keys`` are identical on both;
     only ``rewrite_emitted_sql``'s identifier-quote anchor differs, supplied via

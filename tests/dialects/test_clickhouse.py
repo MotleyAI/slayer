@@ -1,9 +1,4 @@
-"""DEV-1542: tests for ClickhouseDialect.
-
-ClickHouse uses native ``median(x)`` (not PERCENTILE_CONT) and the
-parametric ``quantile(p)(x)`` form for percentile. CORR / COVAR_SAMP /
-COVAR_POP are native; log10 is native, log2 is also native.
-"""
+"""Tests for ClickhouseDialect."""
 
 from __future__ import annotations
 
@@ -28,15 +23,11 @@ def test_clickhouse_log_native_flags() -> None:
     assert d.should_use_native_log(2) is True
 
 
-# ---------------------------------------------------------------------------
 # Median / percentile — ClickHouse native forms
-# ---------------------------------------------------------------------------
 
 
 def test_clickhouse_build_median_emits_quantile_05_form() -> None:
-    """``build_median`` parses ``median(x)`` into ``exp.Median``; sqlglot's
-    ClickHouse generator transpiles that to ``quantile(0.5)(x)`` —
-    parametric aggregate syntax."""
+    """``median(x)`` transpiles to ClickHouse's parametric ``quantile(0.5)(x)``."""
     d = ClickhouseDialect()
     inner = sqlglot.parse_one("amount", dialect="clickhouse")
     out = d.build_median(inner)
@@ -63,9 +54,7 @@ def test_clickhouse_build_percentile_preserves_literal() -> None:
     assert "0.50" in out.sql(dialect="clickhouse")
 
 
-# ---------------------------------------------------------------------------
 # Stat aggs — native
-# ---------------------------------------------------------------------------
 
 
 def test_clickhouse_build_covar_2arg_corr_native() -> None:
@@ -89,9 +78,7 @@ def test_clickhouse_build_stat_agg_1arg_stddev_samp() -> None:
     assert "STDDEV" in sql
 
 
-# ---------------------------------------------------------------------------
 # Time arithmetic — INTERVAL-based (sqlglot transpiles to ClickHouse syntax)
-# ---------------------------------------------------------------------------
 
 
 def test_clickhouse_build_time_offset_expr_day() -> None:
@@ -113,8 +100,7 @@ def test_clickhouse_build_date_trunc_month() -> None:
 
 
 def test_clickhouse_build_date_trunc_week_sunday_shift() -> None:
-    """DEV-1572: WEEK_SUNDAY reuses ClickHouse's native (Monday) week
-    truncation with the +1d / -1d shift."""
+    """WEEK_SUNDAY reuses ClickHouse's native (Monday) week truncation with the +1d / -1d shift."""
     d = ClickhouseDialect()
     col = sqlglot.parse_one("ordered_at", dialect="clickhouse")
     out = d.build_date_trunc(col, TimeGranularity.WEEK_SUNDAY)

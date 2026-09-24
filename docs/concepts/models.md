@@ -206,7 +206,7 @@ A typical model uses zero or a few entries in each. They compose:
 ```yaml
 aggregations:
   - name: trimmed_mean
-    formula: "AVG(CASE WHEN {expr} BETWEEN {low} AND {high} THEN {expr} END)"
+    formula: "AVG(CASE WHEN {value} BETWEEN {low} AND {high} THEN {value} END)"
 
 measures:
   - name: clean_aov
@@ -294,17 +294,17 @@ Not to be confused with the [`last()` formula function](formulas.md#last-functio
 
 ## Custom aggregations
 
-Add your own operators via the `aggregations` list. Each entry has a name and a SQL formula template using `{expr}` for the measure expression and named placeholders for kwargs:
+Add your own operators via the `aggregations` list. Each entry has a name and a SQL formula template using `{value}` for the measure expression and named placeholders for kwargs:
 
 ```yaml
 aggregations:
   - name: weighted_avg
-    formula: "sum({expr} * {weight}) / sum({weight})"
+    formula: "sum({value} * {weight}) / sum({weight})"
   - name: trimmed_mean
-    formula: "avg(CASE WHEN {expr} BETWEEN {low} AND {high} THEN {expr} END)"
+    formula: "avg(CASE WHEN {value} BETWEEN {low} AND {high} THEN {value} END)"
 ```
 
-Use at query time: `weighted_avg(price, weight=quantity)`, `trimmed_mean(revenue, low=10, high=1000)`. An aggregation entry can also override a built-in's default parameters without redefining the SQL. Like columns and measures, aggregations accept an optional `meta` dict for caller bookkeeping.
+Use at query time: `weighted_avg(price, weight=quantity)`, `trimmed_mean(revenue, low=10, high=1000)`. An aggregation entry can also override a built-in's default parameters without redefining the SQL. Like columns and measures, aggregations accept an optional `meta` dict for caller bookkeeping. A formula that does not parse as SQL is rejected when the model is saved.
 
 A parameter default resolves from the model that declares the aggregation, and a qualifier naming a model already on the query's path to it reads that row rather than re-joining (`weight: customers.spend` on a `regions` aggregation queried as `weighted_avg(customers.regions.pop)` weights by that customer's own spend), while any other qualifier the declaring model cannot reach resolves from the query root.
 

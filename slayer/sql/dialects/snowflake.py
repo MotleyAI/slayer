@@ -1,4 +1,4 @@
-"""DEV-1551: SnowflakeDialect — Tier 1 promotion.
+"""SnowflakeDialect — Tier 1 promotion.
 
 Promoted from ``_tier2.py`` to its own file because Snowflake now carries
 runtime quirks beyond the data-shaped Tier-2 set:
@@ -192,7 +192,7 @@ class SnowflakeDialect(SqlDialect):
     # No native LOG2 — falls through to canonical ``LOG(2, x)`` form.
     log2_native: bool = False
     max_identifier_bytes: int | None = 255
-    approx_count_distinct_template: str = "APPROX_COUNT_DISTINCT({col})"
+    approx_count_distinct_native: bool = True
 
     # ------------------------------------------------------------------
     # Connection URL / engine

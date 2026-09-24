@@ -1,17 +1,4 @@
-"""DEV-1542: tests for TsqlDialect (SQL Server / Microsoft T-SQL).
-
-T-SQL has the most divergent shape of any Tier-1 dialect:
-* ``DATETRUNC(unit, col)`` instead of ``DATE_TRUNC('unit', col)``
-* Week uses ``iso_week`` for Monday-based truncation
-* ``DATEADD(unit, val, col)`` instead of ``col + INTERVAL N UNIT``
-* PERCENTILE_CONT is window-only — ``build_median`` / ``build_percentile``
-  raise ``NotImplementedError``
-* Statistical aggregate names: STDEV / STDEVP / VAR / VARP (not the
-  Postgres canonical names)
-* Variance-decomposition formula for CORR / COVAR_SAMP / COVAR_POP
-* EXPLAIN is a session-toggle pair: ``SET SHOWPLAN_ALL ON; ... ; SET SHOWPLAN_ALL OFF``
-* No native LOG2 (log2_native = False)
-"""
+"""Tests for TsqlDialect (SQL Server)."""
 
 from __future__ import annotations
 
@@ -55,9 +42,7 @@ def test_tsql_ds_type_aliases() -> None:
     assert TsqlDialect().ds_type_aliases == frozenset({"mssql", "sqlserver", "tsql"})
 
 
-# ---------------------------------------------------------------------------
 # build_date_trunc — DATETRUNC(unit, col), iso_week for week
-# ---------------------------------------------------------------------------
 
 
 def test_tsql_build_date_trunc_month() -> None:
@@ -80,8 +65,7 @@ def test_tsql_build_date_trunc_week_uses_iso_week() -> None:
 
 
 def test_tsql_build_date_trunc_week_sunday_shift() -> None:
-    """DEV-1572: WEEK_SUNDAY delegates to the generic shift, which composes
-    T-SQL's DATEADD day-offset around the iso_week (Monday) DATETRUNC."""
+    """WEEK_SUNDAY composes DATEADD day offsets around the iso_week DATETRUNC."""
     d = TsqlDialect()
     col = sqlglot.parse_one("ordered_at", dialect="tsql")
     out = d.build_date_trunc(col, TimeGranularity.WEEK_SUNDAY)
@@ -93,17 +77,14 @@ def test_tsql_build_date_trunc_week_sunday_shift() -> None:
 
 
 def test_tsql_build_date_trunc_casts_non_column_to_timestamp() -> None:
-    """``DATETRUNC`` requires a temporal type — non-column operands are
-    wrapped in ``CAST(... AS TIMESTAMP)``."""
+    """``DATETRUNC`` needs a temporal type, so non-column operands are CAST."""
     d = TsqlDialect()
     lit = sqlglot.parse_one("'2025-01-01'", dialect="tsql")
     out = d.build_date_trunc(lit, TimeGranularity.MONTH)
     assert "CAST" in out.sql(dialect="tsql").upper()
 
 
-# ---------------------------------------------------------------------------
 # build_time_offset_expr — DATEADD, no INTERVAL
-# ---------------------------------------------------------------------------
 
 
 def test_tsql_build_time_offset_expr_day() -> None:
@@ -118,8 +99,7 @@ def test_tsql_build_time_offset_expr_day() -> None:
 
 
 def test_tsql_build_time_offset_expr_negative() -> None:
-    """DATEADD takes a signed amount as its second arg — negative values
-    propagate directly into the call."""
+    """DATEADD takes a signed amount as its second arg — negative values propagate directly into the call."""
     d = TsqlDialect()
     col = sqlglot.parse_one("created_at", dialect="tsql")
     out = d.build_time_offset_expr(col, offset=-2, granularity="month")
@@ -138,9 +118,7 @@ def test_tsql_build_time_offset_expr_quarter_normalizes_to_3_month() -> None:
     assert "3" in sql
 
 
-# ---------------------------------------------------------------------------
 # add_intervals_expr — chains DATEADD calls (no INTERVAL)
-# ---------------------------------------------------------------------------
 
 
 def test_tsql_add_intervals_expr_uses_dateadd_chain() -> None:
@@ -158,9 +136,7 @@ def test_tsql_add_intervals_expr_uses_dateadd_chain() -> None:
     assert "INTERVAL" not in sql  # no INTERVAL keyword in T-SQL
 
 
-# ---------------------------------------------------------------------------
 # Median / percentile — not supported on T-SQL
-# ---------------------------------------------------------------------------
 
 
 def test_tsql_build_median_raises_not_implemented() -> None:
@@ -172,13 +148,13 @@ def test_tsql_build_median_raises_not_implemented() -> None:
 
 def test_tsql_build_percentile_raises_not_implemented() -> None:
     d = TsqlDialect()
+    p = exp.Literal.number("0.5")
+    col_expr = exp.column("amount")
     with pytest.raises(NotImplementedError, match="percentile.*T-SQL"):
-        d.build_percentile(p=exp.Literal.number("0.5"), col_expr=exp.column("amount"))
+        d.build_percentile(p=p, col_expr=col_expr)
 
 
-# ---------------------------------------------------------------------------
 # Stat aggs — T-SQL canonical names via exp.Anonymous
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -193,9 +169,7 @@ def test_tsql_build_percentile_raises_not_implemented() -> None:
 def test_tsql_build_stat_agg_1arg_uses_tsql_names(
     agg_name: str, tsql_fn: str
 ) -> None:
-    """sqlglot's tsql transpiler emits incorrect names (e.g. VAR_SAMP,
-    VARIANCE_POP). The override emits the canonical T-SQL names via
-    ``exp.Anonymous``."""
+    """sqlglot's tsql transpiler emits incorrect names (e.g. VAR_SAMP, VARIANCE_POP)."""
     d = TsqlDialect()
     out = d.build_stat_agg_1arg(agg_name=agg_name, col_expr=exp.column("amount"))
     sql = out.sql(dialect="tsql").upper()
@@ -204,9 +178,7 @@ def test_tsql_build_stat_agg_1arg_uses_tsql_names(
     assert agg_name.upper() not in sql
 
 
-# ---------------------------------------------------------------------------
 # Covar — variance-decomposition formula with T-SQL names
-# ---------------------------------------------------------------------------
 
 
 def test_tsql_build_covar_2arg_corr_uses_decomposition() -> None:
@@ -226,9 +198,7 @@ def test_tsql_build_covar_2arg_covar_pop_uses_varp() -> None:
     assert "VARP" in sql
 
 
-# ---------------------------------------------------------------------------
 # build_explain_sql — wraps in SHOWPLAN session toggle pair
-# ---------------------------------------------------------------------------
 
 
 def test_tsql_build_explain_sql_wraps_in_showplan_pair() -> None:
@@ -238,9 +208,7 @@ def test_tsql_build_explain_sql_wraps_in_showplan_pair() -> None:
     )
 
 
-# ---------------------------------------------------------------------------
-# DEV-1571 Bug 1 — emit_outer_wrap hoists inner CTEs to top
-# ---------------------------------------------------------------------------
+# emit_outer_wrap hoists inner CTEs to top
 
 
 _INNER_WITH_CTES = (
@@ -256,21 +224,7 @@ def _normalise(sql: str) -> str:
 
 
 def test_tsql_emit_outer_wrap_hoists_inner_ctes() -> None:
-    """T-SQL rejects ``WITH`` inside a derived-table subquery. The override
-    lifts the inner CTE list to the outermost statement so::
-
-        SELECT ... FROM (
-          WITH base AS (...), step2 AS (...)
-          SELECT ... FROM step2
-        ) AS _outer
-
-    becomes::
-
-        WITH base AS (...), step2 AS (...)
-        SELECT ... FROM (SELECT ... FROM step2) AS _outer
-
-    Bug 1 in DEV-1571.
-    """
+    """T-SQL rejects ``WITH`` inside a derived-table subquery."""
     out = TsqlDialect().emit_outer_wrap(
         inner_sql=_INNER_WITH_CTES,
         public=["orders.id", "orders.status"],
@@ -305,10 +259,7 @@ def test_tsql_emit_outer_wrap_hoists_inner_ctes() -> None:
 
 
 def test_tsql_emit_outer_wrap_no_ctes_passthrough_shape() -> None:
-    """When the inner SELECT has no CTEs, the hoist is a no-op and the
-    emitted shape matches the base impl: derived-table wrap with public
-    aliases on the outer projection.
-    """
+    """Without CTEs the hoist is a no-op and the shape matches the base impl."""
     inner = "SELECT id AS [orders.id], status AS [orders.status] FROM orders"
     out = TsqlDialect().emit_outer_wrap(
         inner_sql=inner,
@@ -327,9 +278,7 @@ def test_tsql_emit_outer_wrap_no_ctes_passthrough_shape() -> None:
 
 
 def test_tsql_emit_outer_wrap_uses_brackets_for_aliases() -> None:
-    """Bug 3 for T-SQL: outer projection identifiers use ``[...]``, not
-    ``"..."`` or `` ` ``. Generated via sqlglot's T-SQL dialect quoting.
-    """
+    """Outer projection identifiers use ``[...]`` brackets."""
     out = TsqlDialect().emit_outer_wrap(
         inner_sql="SELECT 1 AS [orders.x]",
         public=["orders.x"],
@@ -346,10 +295,7 @@ def test_tsql_emit_outer_wrap_uses_brackets_for_aliases() -> None:
 
 
 def test_tsql_emit_outer_wrap_with_limit() -> None:
-    """Outer wrap with ``LIMIT N`` re-emits as T-SQL ``TOP``/``FETCH NEXT``
-    via sqlglot. The exact spelling is sqlglot's responsibility — assert
-    that no naked ``LIMIT`` token survives.
-    """
+    """Outer wrap with ``LIMIT N`` re-emits as T-SQL ``TOP``/``FETCH NEXT`` via sqlglot."""
     limit = sqlglot.parse_one("SELECT 1 LIMIT 5", dialect="tsql").args.get("limit")
     out = TsqlDialect().emit_outer_wrap(
         inner_sql=_INNER_WITH_CTES,
@@ -369,16 +315,7 @@ def test_tsql_emit_outer_wrap_with_limit() -> None:
 
 
 def test_tsql_emit_outer_wrap_no_ctes_with_limit_transposes_pagination() -> None:
-    """Regression pin: the no-CTE branch must also transpose ``LIMIT``
-    into T-SQL's ``TOP`` / ``FETCH NEXT N ROWS ONLY`` syntax, not emit
-    literal ``LIMIT N`` (which T-SQL rejects).
-
-    Before the fix, ``TsqlDialect.emit_outer_wrap`` fell back to the base
-    impl's string concat whenever the inner SELECT had no top-level CTE,
-    re-introducing the bug for any T-SQL query that hit the outer-wrap
-    path (DEV-1444) without happening to have a CTE chain. Codex caught
-    this in the DEV-1571 PR review.
-    """
+    """The no-CTE branch also transposes ``LIMIT`` into ``TOP`` / ``FETCH NEXT``."""
     inner = "SELECT id AS [orders.id] FROM orders"  # no WITH
     limit = sqlglot.parse_one("SELECT 1 LIMIT 5", dialect="tsql").args.get("limit")
     out = TsqlDialect().emit_outer_wrap(
@@ -397,9 +334,7 @@ def test_tsql_emit_outer_wrap_no_ctes_with_limit_transposes_pagination() -> None
 
 
 def test_tsql_emit_outer_wrap_with_offset() -> None:
-    """Outer wrap with ``OFFSET N`` re-emits via sqlglot's T-SQL dialect.
-    Asserts the offset value survives without raising.
-    """
+    """Outer wrap with ``OFFSET N`` re-emits via sqlglot's T-SQL dialect."""
     offset_arg = sqlglot.parse_one(
         "SELECT 1 ORDER BY 1 OFFSET 10 ROWS", dialect="tsql"
     ).args.get("offset")
@@ -416,9 +351,7 @@ def test_tsql_emit_outer_wrap_with_offset() -> None:
 
 
 def test_tsql_emit_outer_wrap_with_order_and_offset() -> None:
-    """ORDER BY combined with OFFSET — both ride on the outer statement
-    (after hoisted CTE list and outer SELECT).
-    """
+    """ORDER BY and OFFSET both ride on the outer statement."""
     sql = "SELECT 1 ORDER BY 1 OFFSET 10 ROWS"
     parsed = sqlglot.parse_one(sql, dialect="tsql")
     order = parsed.args.get("order")
@@ -438,14 +371,7 @@ def test_tsql_emit_outer_wrap_with_order_and_offset() -> None:
 
 
 def test_tsql_emit_outer_wrap_strips_inner_qualifiers_in_order_by() -> None:
-    """The detached ORDER BY may carry inner-CTE qualifiers like
-    ``_base."col"`` from ``_assemble_combined_sql``. Those don't resolve
-    at the outer wrapper level (only ``_outer`` is in scope). The override
-    must strip table qualifiers — matching the base impl's existing
-    behaviour from DEV-1444.
-
-    Pin Codex MEDIUM #4.
-    """
+    """The detached ORDER BY may carry inner-CTE qualifiers like ``_base."col"`` from ``_assemble_combined_sql``."""
     order = sqlglot.parse_one(
         'SELECT 1 ORDER BY _base."orders.id" ASC', dialect="tsql"
     ).args.get("order")
@@ -464,17 +390,7 @@ def test_tsql_emit_outer_wrap_strips_inner_qualifiers_in_order_by() -> None:
 
 
 def test_tsql_emit_outer_wrap_hidden_alias_in_order_by() -> None:
-    """ORDER BY may reference an inner-projected HIDDEN alias not in
-    ``public`` (e.g. a sort key the user didn't ask for in the projection).
-    The outer wrapper must still resolve the bare alias against the
-    derived-table scope.
-
-    Mirrors the existing _build_outer_wrap behaviour where the derived-
-    table subquery exposes every alias (including hidden sort keys), so
-    ORDER BY a hidden alias works as long as the qualifier is stripped.
-
-    Pin Codex (Step 5) MEDIUM #2.
-    """
+    """ORDER BY may reference a hidden inner alias not in ``public``."""
     inner = (
         "WITH base AS (SELECT id, status, created_at FROM orders)\n"
         "SELECT id AS [orders.id], created_at AS [orders.created_at] "
@@ -505,9 +421,7 @@ def test_tsql_emit_outer_wrap_hidden_alias_in_order_by() -> None:
 
 
 def test_tsql_emit_outer_wrap_preserves_multiple_ctes_in_order() -> None:
-    """Multiple inner CTEs are hoisted in declared order (sqlglot's
-    ``With`` node preserves declaration order).
-    """
+    """Multiple inner CTEs are hoisted in declared order (sqlglot's ``With`` node preserves declaration order)."""
     inner = (
         "WITH alpha AS (SELECT 1 AS a),\n"
         "     beta AS (SELECT 2 AS b),\n"
@@ -531,15 +445,11 @@ def test_tsql_emit_outer_wrap_preserves_multiple_ctes_in_order() -> None:
     )
 
 
-# ---------------------------------------------------------------------------
-# DEV-1571 Bug 2 — bracketed dotted alias mangling on rewrite_emitted_sql
-# ---------------------------------------------------------------------------
+# Bracketed dotted alias mangling on rewrite_emitted_sql
 
 
 def test_tsql_rewrite_emitted_sql_mangles_single_dot_alias() -> None:
-    """``[a.b]`` becomes ``[a___b]`` so T-SQL's ORDER BY resolver sees a
-    single dotless identifier and can match the SELECT alias.
-    """
+    """``[a.b]`` becomes ``[a___b]``."""
     sql = "SELECT 1 AS [orders.id] FROM t ORDER BY [orders.id] ASC"
     out = TsqlDialect().rewrite_emitted_sql(sql)
     assert "[orders___id]" in out
@@ -554,32 +464,19 @@ def test_tsql_rewrite_emitted_sql_multi_hop_alias() -> None:
 
 
 def test_tsql_rewrite_emitted_sql_leaves_non_dotted_brackets_untouched() -> None:
-    """Single-segment bracketed identifiers (``[order]``, ``[my_col]``)
-    are unchanged — the regex requires at least one dot.
-    """
+    """Single-segment bracketed identifiers are unchanged."""
     sql = "SELECT [my_col], [order], [user] FROM [my_table]"
     assert TsqlDialect().rewrite_emitted_sql(sql) == sql
 
 
 def test_tsql_rewrite_emitted_sql_leaves_brackets_with_spaces_untouched() -> None:
-    """T-SQL allows arbitrary chars inside brackets (e.g. ``[my table]``,
-    ``[my.col with spaces]``). The regex uses ``\\w`` so any
-    non-word character breaks the match — these survive unchanged.
-    """
+    """T-SQL allows arbitrary chars inside brackets (e.g. ``[my table]``, ``[my.col with spaces]``)."""
     sql = "SELECT [my col] FROM [tbl with space]"
     assert TsqlDialect().rewrite_emitted_sql(sql) == sql
 
 
 def test_tsql_rewrite_emitted_sql_regex_is_ascii_only() -> None:
-    """The dotted-alias regex must be compiled with ``re.ASCII`` so
-    Unicode word characters (e.g. ``café``) do not widen the match.
-
-    Without ``re.ASCII``, ``\\w`` matches non-ASCII letters and an
-    identifier like ``[café.metric]`` would be silently mangled, surprising
-    users who legitimately put accented identifiers in their schema.
-
-    Pin Codex (Step 5) LOW #5 — characterisation rather than constraint.
-    """
+    """The dotted-alias regex is ASCII-only."""
     sql = "SELECT 1 AS [café.metric]"
     assert TsqlDialect().rewrite_emitted_sql(sql) == sql, (
         "Non-ASCII word characters must not match. The regex must use "
@@ -588,25 +485,13 @@ def test_tsql_rewrite_emitted_sql_regex_is_ascii_only() -> None:
 
 
 def test_tsql_rewrite_emitted_sql_idempotent_on_already_mangled() -> None:
-    """An already-mangled alias (no dot inside brackets) is left alone.
-
-    The regex requires at least one ``.`` inside the bracketed identifier,
-    so ``___``-form aliases never match it. Pins ``rewrite_emitted_sql``
-    being safe to invoke on its own output.
-    """
+    """An already-mangled alias (no dot inside brackets) is left alone."""
     sql = "SELECT 1 AS [orders___id]"
     assert TsqlDialect().rewrite_emitted_sql(sql) == sql
 
 
 def test_tsql_rewrite_emitted_sql_false_positive_on_user_bracketed_dotted_path() -> None:
-    """Characterisation: a user-authored ``[my_schema.my_table]`` inside
-    Column.sql DOES false-positive mangle, mirroring BigQuery's pre-DEV-1571
-    constraint.
-
-    T-SQL users writing such paths in ``Column.sql`` must bracket each
-    segment individually: ``[my_schema].[my_table]``. Pin so any future
-    context-aware narrowing is a deliberate change.
-    """
+    """Characterisation: a user-authored ``[my_schema.my_table]`` does get mangled."""
     sql = "SELECT col FROM [my_schema.my_table]"
     out = TsqlDialect().rewrite_emitted_sql(sql)
     # Documented constraint: word-only bracketed dotted paths get mangled.
@@ -615,14 +500,11 @@ def test_tsql_rewrite_emitted_sql_false_positive_on_user_bracketed_dotted_path()
     )
 
 
-# ---------------------------------------------------------------------------
-# DEV-1571 Bug 2 — decode_result_keys reverses the mangling
-# ---------------------------------------------------------------------------
+# decode_result_keys reverses the mangling
 
 
 def test_tsql_decode_result_keys_reverses_mangle() -> None:
-    """Mangled keys are decoded back to SLayer's dotted alias shape on
-    response."""
+    """Mangled keys are decoded back to SLayer's dotted alias shape on response."""
     d = TsqlDialect()
     rows = [
         {"orders___id": 1, "orders___products___category": "shoes"},
@@ -639,9 +521,7 @@ def test_tsql_decode_result_keys_empty_rows() -> None:
     assert TsqlDialect().decode_result_keys([]) == []
 
 
-# ---------------------------------------------------------------------------
-# DEV-1571 Bug 2 — round-trip bijection sanity via the dialect's regex
-# ---------------------------------------------------------------------------
+# Round-trip bijection sanity via the dialect's regex
 
 
 @pytest.mark.parametrize(
@@ -655,10 +535,7 @@ def test_tsql_decode_result_keys_empty_rows() -> None:
     ],
 )
 def test_tsql_round_trip_preserves_legitimate_underscores(original: str) -> None:
-    """The dialect-level round-trip preserves SLayer's realistic alias
-    space — every projection alias has at least one dot from the model
-    prefix, so encode is non-trivial AND decode reverses it exactly.
-    """
+    """The round-trip is a bijection on SLayer's dotted alias space."""
     d = TsqlDialect()
     sql = f"SELECT 1 AS [{original}]"
     mangled = d.rewrite_emitted_sql(sql)
@@ -668,7 +545,6 @@ def test_tsql_round_trip_preserves_legitimate_underscores(original: str) -> None
     assert decoded == [{original: 1}]
 
 
-# ---------------------------------------------------------------------------
 # Engine-level integration: SlayerResponse round-trip on T-SQL alias decoding
 #
 # Mirrors the BigQuery pattern (``tests/dialects/test_bigquery.py::
@@ -676,7 +552,6 @@ def test_tsql_round_trip_preserves_legitimate_underscores(original: str) -> None
 # ``engine.execute()``'s post-fetch decode hook end-to-end without a live
 # SQL Server instance. Pins Codex MEDIUM #7 — Bug 2 is an execution-path
 # issue, so the dialect-level decode round-trip is not enough.
-# ---------------------------------------------------------------------------
 
 
 class _FakeTsqlClient:
@@ -690,8 +565,7 @@ class _FakeTsqlClient:
 
 
 async def _build_tsql_engine(rows: list[dict]) -> tuple[SlayerQueryEngine, tempfile.TemporaryDirectory, DatasourceConfig]:
-    """Build a SlayerQueryEngine pointed at a fake T-SQL datasource whose
-    SQL client is pre-stubbed with ``rows``."""
+    """Build a SlayerQueryEngine pointed at a fake T-SQL datasource whose SQL client is pre-stubbed with ``rows``."""
     tmp = tempfile.TemporaryDirectory()
     storage = YAMLStorage(base_dir=tmp.name)
     ds = DatasourceConfig(
@@ -716,9 +590,7 @@ async def _build_tsql_engine(rows: list[dict]) -> tuple[SlayerQueryEngine, tempf
 
 
 class TestEngineTsqlDecodeIntegration:
-    """End-to-end: stub client returns mangled keys; engine decodes them
-    before packaging into ``SlayerResponse``. Pins Codex MEDIUM #7.
-    """
+    """End-to-end: stub client returns mangled keys; engine decodes them before packaging into ``SlayerResponse``."""
 
     async def test_non_empty_rows_decoded_in_response(self) -> None:
         # ``orders.status`` encodes to ``orders___status``.
@@ -753,11 +625,9 @@ class TestEngineTsqlDecodeIntegration:
             tmp.cleanup()
 
 
-# ---------------------------------------------------------------------------
-# DEV-1716 (Codex test-review High 2 / Med 3) — T-SQL also mangles+decodes,
+# T-SQL also mangles+decodes,
 # so the metadata reconciliation and data-path-only decode scoping apply here
 # too, not just BigQuery.
-# ---------------------------------------------------------------------------
 
 
 async def _build_labeled_tsql_engine(
@@ -783,9 +653,7 @@ async def _build_labeled_tsql_engine(
 
 
 async def test_tsql_attributes_survive_alias_mangling() -> None:
-    """T-SQL brackets+mangles dotted aliases; the SQL-derived expected_columns
-    must be decoded back so the dimension label survives in ``resp.attributes``
-    (Codex High 2)."""
+    """Mangled expected_columns are decoded so dimension labels survive."""
     engine, tmp, _ = await _build_labeled_tsql_engine([{"orders___status": "paid"}])
     try:
         query = SlayerQuery(source_model="orders", dimensions=[ColumnRef(name="status")])
@@ -800,12 +668,7 @@ async def test_tsql_attributes_survive_alias_mangling() -> None:
 
 
 async def test_tsql_explain_does_not_decode_data_rows() -> None:
-    """The DATA-path row decode must NOT run on the explain path (Codex Med 3):
-    the EXPLAIN plan rows are returned verbatim. T-SQL is the mangling dialect
-    that DOES support EXPLAIN (BigQuery raises), so it exercises the explain
-    branch. (The metadata reconciliation legitimately decodes the synthetic
-    expected-columns row through the same hook — assert only that no decode
-    call received the fetched EXPLAIN rows.)"""
+    """Row decode does not run on the explain path."""
     explain_rows = [{"plan": "..."}]
     engine, tmp, _ = await _build_labeled_tsql_engine(explain_rows)
     try:
@@ -823,8 +686,7 @@ async def test_tsql_explain_does_not_decode_data_rows() -> None:
         tmp.cleanup()
 
 
-# ---------------------------------------------------------------------------
-# DEV-1571 Bug 3 follow-up — T-SQL inner CTEs get dialect-aware bracket
+# T-SQL inner CTEs get dialect-aware bracket
 # quoting AND Bug 2 mangling fires on those identifiers.
 #
 # Pre-fix, the inner CTE assembly emitted hardcoded ANSI double quotes.
@@ -832,7 +694,6 @@ async def test_tsql_explain_does_not_decode_data_rows() -> None:
 # QUOTED_IDENTIFIER is ON, the default) but the dotted alias bypassed
 # Bug 2's bracket-anchored mangling regex, so the literal-dot form left
 # the ORDER BY resolver unable to match the SELECT alias.
-# ---------------------------------------------------------------------------
 
 
 async def _tsql_generate(query: SlayerQuery, model: SlayerModel) -> str:
@@ -854,14 +715,7 @@ def _orders_model_tsql() -> SlayerModel:
 
 
 async def test_tsql_time_shift_inner_cte_uses_mangled_brackets() -> None:
-    """``change_pct(total:sum)`` builds shifted/self-join/step CTEs.
-    After DEV-1571 Bug 3 follow-up, every identifier in those CTEs uses
-    T-SQL brackets AND Bug 2 mangling converts the dotted aliases to
-    underscore form so ORDER BY can match them.
-
-    Regression pin for the CI failure on
-    ``tests/integration/test_integration_sqlserver.py::TestSQLServerQueries::test_change_pct_with_date_range``.
-    """
+    """``change_pct(total:sum)`` builds shifted/self-join/step CTEs."""
     q = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
@@ -905,21 +759,7 @@ async def test_tsql_time_shift_inner_cte_uses_mangled_brackets() -> None:
 
 
 async def test_tsql_order_by_does_not_wrap_alias_in_case_when_nulls_emulation() -> None:
-    """T-SQL ORDER BY must reference the SELECT alias as a top-level
-    expression, not inside a CASE WHEN NULLS-emulation sub-expression.
-
-    sqlglot's default T-SQL ORDER BY emission wraps the alias in
-    ``CASE WHEN [alias] IS NULL THEN 1 ELSE 0 END, [alias]`` to emulate
-    NULLS LAST behaviour. T-SQL's parser treats the ``[alias]`` reference
-    INSIDE the CASE WHEN as a column-name lookup against the FROM scope
-    (NOT a SELECT alias), so the query fails with
-    ``Invalid column name 'alias'``. The fix sets ``nulls_first`` on the
-    Ordered node to match T-SQL's native default for the requested
-    direction so the emulation is suppressed.
-
-    Regression pin for the CI failure on
-    ``test_integration_sqlserver_cross_model_derived_columnsql``.
-    """
+    """ORDER BY references the SELECT alias at top level, not inside a CASE."""
     q = SlayerQuery(
         source_model="orders",
         dimensions=[ColumnRef(name="id"), ColumnRef(name="created_at")],

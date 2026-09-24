@@ -1,4 +1,4 @@
-"""DEV-1542: SqliteDialect + the SQLite-specific helpers it depends on.
+"""SqliteDialect + the SQLite-specific helpers it depends on.
 
 This module folds in the content previously in ``slayer/sql/sqlite_dialect.py``
 (the ``rewrite_sqlite_json_extract`` AST rewrite) and
@@ -15,18 +15,17 @@ delegates to them through the ``SqlDialect`` interface.
 from __future__ import annotations
 
 import math
-from collections.abc import Callable
 
 from sqlglot import exp
 
 from typing import Optional
 
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.sql.dialects.base import SqlDialect
+from slayer.sql.dialects.base import SqlDialect, TimeUnit
 
 
 # ===========================================================================
-# JSON-extract AST rewrite (DEV-1331; was slayer/sql/sqlite_dialect.py)
+# JSON-extract AST rewrite
 # ===========================================================================
 
 
@@ -62,6 +61,10 @@ def rewrite_sqlite_json_extract(node: exp.Expression) -> exp.Expression:
         je.replace(_to_anonymous(je))
 
 
+def _strftime(fmt: str, col_expr: exp.Expression) -> exp.Anonymous:
+    return exp.Anonymous(this="STRFTIME", expressions=[exp.Literal.string(fmt), col_expr.copy()])
+
+
 def _to_anonymous(je: exp.JSONExtract) -> exp.Anonymous:
     return exp.Anonymous(
         this="JSON_EXTRACT",
@@ -70,7 +73,7 @@ def _to_anonymous(je: exp.JSONExtract) -> exp.Anonymous:
 
 
 # ===========================================================================
-# Python aggregate / scalar UDFs (DEV-1317 / DEV-1337; was sqlite_udfs.py)
+# Python aggregate / scalar UDFs
 # ===========================================================================
 # SQLite has a much smaller built-in math/stat catalog than Postgres,
 # DuckDB, MySQL, or ClickHouse. To bring SQLite to per-row and
@@ -161,7 +164,7 @@ class _PercentileDiscAgg:
 
 
 # ---------------------------------------------------------------------------
-# Statistical aggregates (DEV-1317): Welford's online algorithm
+# Statistical aggregates: Welford's online algorithm
 # ---------------------------------------------------------------------------
 
 
@@ -287,7 +290,7 @@ class _CovarPopAgg(_PairAgg):
 
 
 # ---------------------------------------------------------------------------
-# Scalar wrappers (DEV-1317)
+# Scalar wrappers
 # ---------------------------------------------------------------------------
 
 
@@ -304,7 +307,7 @@ def _log10(x):
 
 
 def _log2(x):
-    # DEV-1337: overrides SQLite >=3.35's built-in to give strict
+    # Overrides SQLite >=3.35's built-in to give strict
     # "errors propagate" semantics matching Postgres.
     if x is None:
         return None
@@ -421,7 +424,7 @@ class SqliteDialect(SqlDialect):
     def build_null_safe_eq(
         self, left: exp.Expression, right: exp.Expression,
     ) -> exp.Expression:
-        """DEV-1708: SQLite's ``IS`` is null-safe on every supported version;
+        """SQLite's ``IS`` is null-safe on every supported version;
         ``IS NOT DISTINCT FROM`` (what sqlglot emits for ``NullSafeEQ``) needs
         SQLite ≥ 3.39, so anchor on bare ``IS`` instead."""
         return exp.Is(this=left, expression=right)
@@ -430,53 +433,50 @@ class SqliteDialect(SqlDialect):
         self,
         col_expr: exp.Expression,
         granularity: TimeGranularity,
-        *,
-        parse: Callable[[str], exp.Expression],
     ) -> exp.Expression:
         """SQLite has no DATE_TRUNC — use STRFTIME (with CASE WHEN for
         quarter, weekday-modifier for week)."""
         if granularity == TimeGranularity.WEEK_SUNDAY:
-            # DEV-1572: delegate to the base generic shift, which composes
+            # Delegate to the base generic shift, which composes
             # SQLite's own day-offset (DATE(col, 'N days')) around SQLite's
             # Monday-week truncation — yielding the Sunday-anchored bucket.
             return super().build_date_trunc(
-                col_expr=col_expr, granularity=granularity, parse=parse,
+                col_expr=col_expr, granularity=granularity,
             )
-        gran_str = granularity.value
+        if granularity == TimeGranularity.WEEK:
+            # weekday 0 = Sunday; back up to the preceding Monday.
+            return exp.Anonymous(this="DATE", expressions=[
+                col_expr.copy(), exp.Literal.string("weekday 0"), exp.Literal.string("-6 days"),
+            ])
+        if granularity == TimeGranularity.QUARTER:
+            return exp.DPipe(this=_strftime("%Y-", col_expr), expression=exp.Case(
+                ifs=[
+                    exp.If(
+                        this=exp.LTE(
+                            this=exp.Cast(this=_strftime("%m", col_expr), to=exp.DataType.build("INTEGER")),
+                            expression=exp.Literal.number(last_month),
+                        ),
+                        true=exp.Literal.string(start),
+                    )
+                    for last_month, start in ((3, "01-01"), (6, "04-01"), (9, "07-01"))
+                ],
+                default=exp.Literal.string("10-01"),
+            ))
         fmt_map = {
-            "year": "%Y-01-01",
-            "month": "%Y-%m-01",
-            "day": "%Y-%m-%d",
-            "hour": "%Y-%m-%d %H:00:00",
-            "minute": "%Y-%m-%d %H:%M:00",
-            "second": "%Y-%m-%d %H:%M:%S",
+            TimeGranularity.YEAR: "%Y-01-01",
+            TimeGranularity.MONTH: "%Y-%m-01",
+            TimeGranularity.DAY: "%Y-%m-%d",
+            TimeGranularity.HOUR: "%Y-%m-%d %H:00:00",
+            TimeGranularity.MINUTE: "%Y-%m-%d %H:%M:00",
+            TimeGranularity.SECOND: "%Y-%m-%d %H:%M:%S",
         }
-        if gran_str == "week":
-            # SQLite weekday 0=Sunday; use date() with weekday modifier
-            # to back up to the preceding Monday-equivalent start.
-            return parse(
-                f"DATE({col_expr.sql(dialect='sqlite')}, 'weekday 0', '-6 days')"
-            )
-        if gran_str == "quarter":
-            col_sql = col_expr.sql(dialect="sqlite")
-            return parse(
-                f"STRFTIME('%Y-', {col_sql}) || CASE "
-                f"WHEN CAST(STRFTIME('%m', {col_sql}) AS INTEGER) <= 3 THEN '01-01' "
-                f"WHEN CAST(STRFTIME('%m', {col_sql}) AS INTEGER) <= 6 THEN '04-01' "
-                f"WHEN CAST(STRFTIME('%m', {col_sql}) AS INTEGER) <= 9 THEN '07-01' "
-                f"ELSE '10-01' END"
-            )
-        fmt = fmt_map.get(gran_str, "%Y-%m-%d")
-        return exp.Anonymous(
-            this="STRFTIME",
-            expressions=[exp.Literal.string(fmt), col_expr],
-        )
+        return _strftime(fmt_map[granularity], col_expr)
 
     def build_time_offset_expr(
         self,
         col_expr: exp.Expression,
         offset: int,
-        granularity: str,
+        granularity: TimeGranularity | TimeUnit,
     ) -> exp.Expression:
         """SQLite uses ``DATE(col, 'N units')`` — no INTERVAL syntax.
 
@@ -488,9 +488,10 @@ class SqliteDialect(SqlDialect):
             "quarter": "months", "week": "days", "week_sunday": "days",
             "hour": "hours", "minute": "minutes", "second": "seconds",
         }
-        sqlite_unit = sqlite_units.get(granularity, granularity.lower() + "s")
-        val = offset * 3 if granularity == "quarter" else offset
-        sqlite_val = val * 7 if granularity in ("week", "week_sunday") else val
+        granularity = TimeGranularity(granularity)
+        sqlite_unit = sqlite_units[granularity.value]
+        val = offset * 3 if granularity == TimeGranularity.QUARTER else offset
+        sqlite_val = val * 7 if granularity in (TimeGranularity.WEEK, TimeGranularity.WEEK_SUNDAY) else val
         return exp.Anonymous(
             this="DATE",
             expressions=[
@@ -536,39 +537,20 @@ class SqliteDialect(SqlDialect):
         so both sides carry the time part and the half-open interval is exact."""
         return exp.Anonymous(this="DATETIME", expressions=[expr])
 
-    def build_median(
-        self,
-        inner: exp.Expression,
-        *,
-        parse: Callable[[str], exp.Expression],
-    ) -> exp.Expression:
-        """SQLite: parses ``median(inner)`` — registered UDF.
-
-        sqlglot's SQLite generator transpiles ``exp.Median`` to
-        ``PERCENTILE_CONT(x, 0.5)`` at emission, matching the pair-form
-        ``percentile_cont`` UDF signature.
-        """
-        inner_sql = inner.sql(dialect="sqlite")
-        return parse(f"median({inner_sql})")
+    def build_median(self, inner: exp.Expression) -> exp.Expression:
+        """SQLite: ``exp.Median``, emitted as the registered ``PERCENTILE_CONT(x, 0.5)`` UDF."""
+        return exp.Median(this=inner.copy())
 
     def build_percentile(
-        self,
-        p_str: str,
-        col_sql: str,
-        *,
-        parse: Callable[[str], exp.Expression],
+        self, p: exp.Expression, col_expr: exp.Expression,
     ) -> exp.Expression:
-        """SQLite: ``percentile_cont(value, p)`` — registered UDF.
-
-        ``p_str`` is the original user-supplied string, preserved verbatim
-        (no float normalization).
-        """
-        return parse(f"percentile_cont({col_sql}, {p_str})")
+        """SQLite: ``percentile_cont(value, p)`` — registered UDF."""
+        return exp.PercentileCont(this=col_expr.copy(), expression=p.copy())
 
     def rewrite_parsed_ast(self, tree: exp.Expression) -> exp.Expression:
         """SQLite override: rewrites every ``exp.JSONExtract`` to
         ``Anonymous(this='JSON_EXTRACT', ...)`` so the emission is the
-        function-call form (DEV-1331)."""
+        function-call form."""
         return rewrite_sqlite_json_extract(tree)
 
     def register_udfs(self, dbapi_connection) -> None:

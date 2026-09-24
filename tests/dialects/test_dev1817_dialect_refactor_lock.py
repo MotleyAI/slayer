@@ -1,4 +1,4 @@
-"""DEV-1817: byte-exact characterization locks for the dialect dedup refactor.
+"""Byte-exact characterization locks for the dialect dedup refactor.
 
 Pins the exact emitted SQL of ``build_approx_count_distinct`` per dialect
 (finding 4a: config attributes must not shift casing / function name / the

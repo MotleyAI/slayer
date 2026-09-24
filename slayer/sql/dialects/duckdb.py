@@ -1,4 +1,4 @@
-"""DEV-1542: DuckdbDialect.
+"""DuckdbDialect.
 
 DuckDB shape matches Postgres: native DATE_TRUNC, native PERCENTILE_CONT
 (emitted via sqlglot's QUANTILE_CONT translation), native CORR / COVAR /
@@ -18,4 +18,4 @@ class DuckdbDialect(SqlDialect):
     log10_native: bool = True
     log2_native: bool = True
     max_identifier_bytes: int | None = 256  # safe documented ceiling
-    approx_count_distinct_template: str = "approx_count_distinct({col})"
+    approx_count_distinct_native: bool = True

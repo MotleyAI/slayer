@@ -67,15 +67,18 @@ async def seeded(tmp_path: Path) -> AsyncIterator[tuple[SlayerQueryEngine, YAMLS
 class TestEngineCheck:
     async def test_unparseable_formula_rejected_naming_model_and_aggregation(self, seeded) -> None:
         engine, store = seeded
+        model = _model(_BROKEN)
         with pytest.raises(SlayerError) as ei:
-            await engine.save_model(_model(_BROKEN))
-        assert "orders" in str(ei.value) and "custom_agg" in str(ei.value)
+            await engine.save_model(model)
+        assert "orders" in str(ei.value)
+        assert "custom_agg" in str(ei.value)
         assert await store.get_model("orders", data_source=_DS) is None
 
     async def test_qualifier_position_placeholder_rejected(self, seeded) -> None:
         engine, store = seeded
+        model = _model("SUM({t}.amount)")
         with pytest.raises(SlayerError, match="custom_agg"):
-            await engine.save_model(_model("SUM({t}.amount)"))
+            await engine.save_model(model)
         assert await store.get_model("orders", data_source=_DS) is None
 
     async def test_query_time_only_placeholder_accepted(self, seeded) -> None:
@@ -90,8 +93,9 @@ class TestEngineCheck:
 
     async def test_unresolvable_datasource_uses_generic_dialect(self, seeded) -> None:
         engine, store = seeded
+        model = _model(_BROKEN, data_source="nowhere")
         with pytest.raises(SlayerError, match="custom_agg"):
-            await engine.save_model(_model(_BROKEN, data_source="nowhere"))
+            await engine.save_model(model)
         await engine.save_model(_model("SUM({value})", data_source="nowhere"))
         assert await store.get_model("orders", data_source="nowhere") is not None
 
@@ -128,8 +132,9 @@ class TestEngineCheck:
 
         monkeypatch.setattr(SlayerSQLClient, "get_column_types", _spy_exec)
         monkeypatch.setattr(YAMLStorage, "save_model", _spy_save)
+        model = _model(_BROKEN, sql="SELECT id, amount FROM orders")
         with pytest.raises(SlayerError):
-            await engine.save_model(_model(_BROKEN, sql="SELECT id, amount FROM orders"))
+            await engine.save_model(model)
         assert executed == []
         assert saved == []
 
@@ -145,7 +150,8 @@ class TestRest:
         client, store = rest
         resp = client.post("/models", json=_model(_BROKEN).model_dump(mode="json"))
         assert resp.status_code == 400
-        assert "orders" in resp.json()["detail"] and "custom_agg" in resp.json()["detail"]
+        assert "orders" in resp.json()["detail"]
+        assert "custom_agg" in resp.json()["detail"]
         assert await store.get_model("orders", data_source=_DS) is None
 
     async def test_update_rejected_leaves_original(self, rest) -> None:
@@ -172,7 +178,8 @@ class TestCli:
             sys.argv = argv
         assert ei.value.code == 1
         out = capsys.readouterr().out
-        assert "orders" in out and "custom_agg" in out
+        assert "orders" in out
+        assert "custom_agg" in out
         assert run_sync(store.get_model("orders", data_source=_DS)) is None
 
 
@@ -200,7 +207,9 @@ class TestMcp:
             "name": "orders", "sql_table": "orders", "data_source": _DS, "columns": _COLUMNS,
             "aggregations": [{"name": "custom_agg", "formula": _BROKEN}],
         })
-        assert "Error" in out and "orders" in out and "custom_agg" in out
+        assert "Error" in out
+        assert "orders" in out
+        assert "custom_agg" in out
         assert await store.get_model("orders", data_source=_DS) is None
 
     async def test_create_model_with_aggregation_is_queryable(self, mcp) -> None:
@@ -223,7 +232,8 @@ class TestMcp:
             "name": "qb", "query": {"source_model": "orders", "measures": ["*:count"]},
             "aggregations": [{"name": "sum_sq", "formula": "SUM({value} * {value})"}],
         })
-        assert "Error" in out and "aggregations" in out
+        assert "Error" in out
+        assert "aggregations" in out
 
     async def test_edit_model_broken_formula_leaves_original(self, mcp) -> None:
         server, engine, store = mcp

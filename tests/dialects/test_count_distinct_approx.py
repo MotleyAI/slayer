@@ -1,4 +1,4 @@
-"""DEV-1595: dialect-aware ``count_distinct_approx`` aggregation.
+"""Dialect-aware ``count_distinct_approx`` aggregation.
 
 Each dialect emits the database-native approximate-distinct function where the
 backend supports one, and falls back to an exact ``COUNT(DISTINCT col)`` where

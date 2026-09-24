@@ -1,4 +1,4 @@
-"""DEV-1542: MysqlDialect.
+"""MysqlDialect.
 
 MySQL has no native ``PERCENTILE_CONT`` (``build_median`` / ``build_percentile``
 raise ``NotImplementedError``) and no native ``CORR`` / ``COVAR_SAMP`` /
@@ -11,11 +11,14 @@ is actually ``VAR_POP`` — silently wrong sample variance).
 
 from __future__ import annotations
 
-from collections.abc import Callable
-
 from sqlglot import exp
 
-from slayer.sql.dialects.base import SqlDialect, _build_covar_decomposition
+from slayer.sql.dialects.base import (
+    SqlDialect,
+    StatAgg1Name,
+    StatAgg2Name,
+    _build_covar_decomposition,
+)
 
 
 class MysqlDialect(SqlDialect):
@@ -37,12 +40,7 @@ class MysqlDialect(SqlDialect):
             return node
         return tree.transform(_fix)
 
-    def build_median(
-        self,
-        inner: exp.Expression,
-        *,
-        parse: Callable[[str], exp.Expression],
-    ) -> exp.Expression:
+    def build_median(self, inner: exp.Expression) -> exp.Expression:
         # ``mariadb`` resolves to this same dialect via ``ds_type_aliases``,
         # so the error must NOT suggest "use MariaDB" — that would loop the
         # user back here. Point them at a datasource with native percentile
@@ -55,11 +53,7 @@ class MysqlDialect(SqlDialect):
         )
 
     def build_percentile(
-        self,
-        p_str: str,
-        col_sql: str,
-        *,
-        parse: Callable[[str], exp.Expression],
+        self, p: exp.Expression, col_expr: exp.Expression,
     ) -> exp.Expression:
         raise NotImplementedError(
             "Aggregation 'percentile' is not supported on MySQL: "
@@ -69,11 +63,7 @@ class MysqlDialect(SqlDialect):
         )
 
     def build_stat_agg_1arg(
-        self,
-        agg_name: str,
-        col_expr: str,
-        *,
-        parse: Callable[[str], exp.Expression],
+        self, agg_name: StatAgg1Name, col_expr: exp.Expression,
     ) -> exp.Expression:
         """MySQL override for ``var_samp`` / ``var_pop``.
 
@@ -84,27 +74,24 @@ class MysqlDialect(SqlDialect):
         if agg_name in {"var_samp", "var_pop"}:
             return exp.Anonymous(
                 this=agg_name.upper(),
-                expressions=[parse(col_expr)],
+                expressions=[col_expr.copy()],
             )
-        return super().build_stat_agg_1arg(agg_name, col_expr, parse=parse)
+        return super().build_stat_agg_1arg(agg_name=agg_name, col_expr=col_expr)
 
     def build_covar_2arg(
         self,
-        agg_name: str,
-        col_sql: str,
-        other_sql: str,
-        *,
-        parse: Callable[[str], exp.Expression],
+        agg_name: StatAgg2Name,
+        col_expr: exp.Expression,
+        other_expr: exp.Expression,
     ) -> exp.Expression:
         """MySQL has no native CORR / COVAR_* — use the
         variance-decomposition formula with MySQL-native VAR_SAMP /
         VAR_POP / STDDEV_SAMP names."""
         return _build_covar_decomposition(
-            col_sql=col_sql,
-            other_sql=other_sql,
+            col_expr=col_expr,
+            other_expr=other_expr,
             agg=agg_name,
             var_fn_samp="VAR_SAMP",
             var_fn_pop="VAR_POP",
             stddev_fn="STDDEV_SAMP",
-            parse=parse,
         )

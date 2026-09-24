@@ -13,12 +13,12 @@ used by ``_query_as_model`` to flatten cross-model leaves (e.g.
 ``stores__name``); using a distinct sentinel keeps the two encodings
 unambiguous.
 
-Per DEV-1542's "every dialect quirk lives behind a hook on
+Per the "every dialect quirk lives behind a hook on
 ``SqlDialect``" rule, this file is BigQuery's home. The plain
 ``rewrite_emitted_sql`` / ``decode_result_keys`` hooks on the base class
-have identity defaults; only ``BigqueryDialect`` (and ``TsqlDialect``,
-DEV-1571) override them today. The shared encode/decode bijection lives
-in :mod:`slayer.sql.naming` (DEV-1713) and is reused by both dialects —
+have identity defaults; only ``BigqueryDialect`` (and ``TsqlDialect``)
+override them today. The shared encode/decode bijection lives
+in :mod:`slayer.sql.naming` and is reused by both dialects —
 only the regex anchor (backticks here, brackets in T-SQL) differs.
 """
 
@@ -27,7 +27,6 @@ from __future__ import annotations
 import json
 import re
 from typing import TYPE_CHECKING, Any, ClassVar
-from collections.abc import Callable
 
 import sqlalchemy as sa
 from sqlglot import exp
@@ -143,8 +142,8 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
     log10_native: bool = True
     log2_native: bool = True
     max_identifier_bytes: int | None = 300  # column-name limit
-    approx_count_distinct_template: str = "APPROX_COUNT_DISTINCT({col})"
-    # DEV-1571 backtick-quoted dotted-alias mangling (DottedAliasManglingMixin).
+    approx_count_distinct_native: bool = True
+    # Backtick-quoted dotted-alias mangling (DottedAliasManglingMixin).
     dotted_alias_re: ClassVar[re.Pattern[str]] = _DOTTED_ALIAS_RE
     alias_quote_open: ClassVar[str] = "`"
     alias_quote_close: ClassVar[str] = "`"
@@ -153,10 +152,8 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
         self,
         col_expr: exp.Expression,
         granularity: TimeGranularity,
-        *,
-        parse: Callable[[str], exp.Expression],
     ) -> exp.Expression:
-        """BigQuery override for WEEK_SUNDAY (DEV-1572).
+        """BigQuery override for WEEK_SUNDAY.
 
         BigQuery's native ``DATE_TRUNC(x, WEEK)`` is already Sunday-based, so
         the base class's generic +1d/-1d shift (which reuses a Monday-based
@@ -172,7 +169,7 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
         """
         if granularity != TimeGranularity.WEEK_SUNDAY:
             return super().build_date_trunc(
-                col_expr=col_expr, granularity=granularity, parse=parse,
+                col_expr=col_expr, granularity=granularity,
             )
         if not isinstance(col_expr, (exp.Column, exp.Cast)):
             col_expr = exp.Cast(this=col_expr, to=exp.DataType.build("TIMESTAMP"))

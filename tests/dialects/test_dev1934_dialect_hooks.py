@@ -87,7 +87,8 @@ class TestAggregateHooks:
         col, other = _amount(), _quantity()
         out = get_dialect(name).build_covar_2arg(agg_name=agg, col_expr=col, other_expr=other)
         _assert_tree_consistent(out)
-        assert col.parent is None and other.parent is None
+        assert col.parent is None
+        assert other.parent is None
         assert all(c is not col and c is not other for c in out.find_all(exp.Column))
 
     @pytest.mark.parametrize("granularity", list(TimeGranularity))
@@ -131,7 +132,8 @@ class TestCovarDecomposition:
             var_fn_samp="VAR_SAMP", var_fn_pop="VAR_POP", stddev_fn="STDDEV_SAMP",
         )
         _assert_tree_consistent(out)
-        assert col.parent is None and other.parent is None
+        assert col.parent is None
+        assert other.parent is None
         for case in out.find_all(exp.Case):
             then = case.args["ifs"][0].args["true"]
             names = {c.name for c in then.find_all(exp.Column)}
@@ -157,4 +159,5 @@ class TestApproxDistinctConfig:
     @pytest.mark.parametrize("name", ["postgres", "sqlite", "mysql"])
     def test_exact_fallback_is_count_distinct_node(self, name: str) -> None:
         out = get_dialect(name).build_approx_count_distinct(col_expr=_amount())
-        assert isinstance(out, exp.Count) and isinstance(out.this, exp.Distinct)
+        assert isinstance(out, exp.Count)
+        assert isinstance(out.this, exp.Distinct)

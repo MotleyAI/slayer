@@ -12,25 +12,25 @@
 
 ## 2. Parse pipeline + SqlTemplate
 
-- [ ] 2.1 Extract `parse_expression(sql, *, dialect)` from `Generator._parse`; `_parse` delegates; full unit suite green.
-- [ ] 2.2 Implement `slayer/sql/sql_template.py` (design §2–3); 1.1 green.
+- [x] 2.1 Extract `parse_expression(sql, *, dialect)` from `Generator._parse`; `_parse` delegates; full unit suite green.
+- [x] 2.2 Implement `slayer/sql/sql_template.py` (design §2–3); 1.1 green.
 
 ## 3. Generator
 
-- [ ] 3.1 `_resolve_value_ast` / AST `_resolve_agg_param`; all callers incl. picked-value `MAX`; 1.5 green.
-- [ ] 3.2 `_build_formula_agg` via `SqlTemplate`; delete `_paren_fragment`; 1.2 green.
-- [ ] 3.3 Percentile `p` validation (design §5); 1.3 green.
+- [x] 3.1 `_resolve_value_ast` / AST `_resolve_agg_param`; all callers incl. picked-value `MAX`; 1.5 green.
+- [x] 3.2 `_build_formula_agg` via `SqlTemplate`; delete `_paren_fragment`; 1.2 green.
+- [x] 3.3 Percentile `p` validation (design §5); 1.3 green.
 
 ## 4. Dialect hooks
 
-- [ ] 4.1 Retype + convert every aggregate hook and `_build_covar_decomposition` (design §6); drop `parse`; add `StatAgg1Name` / `StatAgg2Name`.
-- [ ] 4.2 Replace `approx_count_distinct_template` with `approx_count_distinct_native` (design §7) across all dialects.
+- [x] 4.1 Retype + convert every aggregate hook and `_build_covar_decomposition` (design §6); drop `parse`; add `StatAgg1Name` / `StatAgg2Name`.
+- [x] 4.2 Replace `approx_count_distinct_template` with `approx_count_distinct_native` (design §7) across all dialects.
 - [ ] 4.3 `build_date_trunc` / `build_time_offset_expr` retyped; SQLite week/quarter as AST; 1.4 + 1.7 green.
 
 ## 5. Save-time check + MCP door
 
-- [ ] 5.1 `QueryEngine.save_model` formula parse check (design §8); 1.6 green.
-- [ ] 5.2 MCP `create_model` `aggregations` parameter + docstring (design §10); 1.6a green.
+- [x] 5.1 `QueryEngine.save_model` formula parse check (design §8); 1.6 green.
+- [x] 5.2 MCP `create_model` `aggregations` parameter + docstring (design §10); 1.6a green.
 
 ## 5b. Outer-wrap ORDER BY
 
@@ -38,5 +38,5 @@
 
 ## 6. Docs + gates
 
-- [ ] 6.1 One sentence in `docs/concepts/models.md` (aggregations section): custom formulas are parse-checked at save; one sentence wherever MCP `create_model` args are documented: it accepts `aggregations`.
+- [x] 6.1 One sentence in `docs/concepts/models.md` (aggregations section): custom formulas are parse-checked at save; one sentence wherever MCP `create_model` args are documented: it accepts `aggregations`.
 - [ ] 6.2 Full unit suite, CI-style integration suite, `ruff check slayer/ tests/`, basedpyright (baseline not grown), `tools/arch_check.py` — all green.

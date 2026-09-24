@@ -621,7 +621,7 @@ To connect a new database: create_datasource → describe_datasource (verify + l
     ) -> str:
         """Brief summary of all (non-hidden) models in a datasource.
 
-        DEV-1549: compact-by-default rendering. Under ``compact=True``
+        Compact-by-default rendering. Under ``compact=True``
         each model section emits its name, description, the column count
         (``Columns: N``), the comma-separated measure NAMES
         (``Measures: a, b, c``) and the ``Joins to:`` list — no
@@ -663,7 +663,7 @@ To connect a new database: create_datasource → describe_datasource (verify + l
                 matched.append(m)
         matched.sort(key=lambda m: m.name)
 
-        # DEV-1667: rendering delegates to the shared renderer (also used by
+        # Rendering delegates to the shared renderer (also used by
         # the ``inspect`` model collection view) — one code path, no drift.
         return render_models_summary(
             datasource_name=datasource_name,
@@ -784,7 +784,7 @@ To connect a new database: create_datasource → describe_datasource (verify + l
         from these, never a guessed spelling). Never pick a column from its
         name alone.
 
-        Collection (DEV-1667): omit ``reference`` (or pass ``None`` / ``[]``)
+        Collection: omit ``reference`` (or pass ``None`` / ``[]``)
         to list a whole kind. ``entity_type="model"`` lists all models grouped
         by datasource (compact=True: one terse line per model; compact=False:
         the full per-model tables). ``entity_type="datasource"`` lists all
@@ -792,7 +792,7 @@ To connect a new database: create_datasource → describe_datasource (verify + l
         view; other kinds raise. This subsumes ``models_summary`` /
         ``list_datasources``.
 
-        Batch (DEV-1612): pass a ``list`` of references that all share the one
+        Batch: pass a ``list`` of references that all share the one
         ``entity_type``. Returns one rendered block per id, in input order,
         each echoing its resolved canonical id (a ``## <canonical>`` header in
         markdown; a JSON array under ``format="json"``). Per-id resolution
@@ -853,6 +853,7 @@ To connect a new database: create_datasource → describe_datasource (verify + l
         description: str | None = None,
         columns: list[dict[str, Any]] | None = None,
         measures: list[dict[str, Any]] | None = None,
+        aggregations: list[dict[str, Any]] | None = None,
         query: Any | None = None,
         variables: dict[str, Any] | None = None,
     ) -> str:
@@ -896,10 +897,14 @@ To connect a new database: create_datasource → describe_datasource (verify + l
                 Queries can reference these by bare name (e.g. ``{"formula": "aov"}``).
                 ``meta`` is an optional opaque dict for caller bookkeeping
                 (e.g. linking the formula back to a source identifier).
+            aggregations: Custom aggregations on the model. Each:
+                {"name": "sum_sq", "formula": "SUM({value} * {value})",
+                 "params": [{"name": "weight", "sql": "quantity"}], "description": "..."}.
+                The formula must parse as SQL; queries use it as ``column:sum_sq``.
             query: A SLayer query dict (or list of stage dicts for a multi-stage backing
                 query). When provided, the query is saved as the model's ``source_queries``
                 and the model becomes query-backed. Mutually exclusive with sql_table, sql,
-                columns, and measures.
+                columns, measures, and aggregations.
             variables: Default values for ``{var}`` placeholders in the backing query.
                 Saved as ``query_variables`` on the model. Only meaningful when ``query``
                 is provided.
@@ -908,7 +913,7 @@ To connect a new database: create_datasource → describe_datasource (verify + l
             table_params = {
                 k: v for k, v in {
                     "sql_table": sql_table, "sql": sql, "data_source": data_source,
-                    "columns": columns, "measures": measures,
+                    "columns": columns, "measures": measures, "aggregations": aggregations,
                 }.items()
                 if v
             }
@@ -948,6 +953,7 @@ To connect a new database: create_datasource → describe_datasource (verify + l
             description=description,
             columns=columns,
             measures=measures,
+            aggregations=aggregations,
         )
         model = SlayerModel.model_validate(data)
         existed = (
@@ -1766,7 +1772,7 @@ To connect a new database: create_datasource → describe_datasource (verify + l
     ) -> str:
         """Auto-discover tables in a database and create / additively update semantic models from them.
 
-        Idempotent (DEV-1356): re-runs are additive only. New columns and joins
+        Idempotent: re-runs are additive only. New columns and joins
         are appended to existing models; existing column / join definitions
         are never overwritten. After the additive pass, returns the pending
         ``validate_models`` deletes alongside the additions.
@@ -1880,7 +1886,7 @@ To connect a new database: create_datasource → describe_datasource (verify + l
           ``example_queries`` list (vs the ``memories`` list for
           entity-list memories).
 
-        DEV-1428: ``id`` is an optional canonical memory id. Omit to
+        ``id`` is an optional canonical memory id. Omit to
         auto-allocate a monotonic int-shaped id (``"1"``, ``"2"``, ...);
         supply a string for a stable user-controlled id
         (``"kb.policy.42"``). Charset excludes ``:``, ``/``, ``?``,

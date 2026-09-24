@@ -1,15 +1,4 @@
-"""DEV-1542: tests for SqliteDialect.
-
-SQLite is the most-overridden dialect: STRFTIME date_trunc, DATETIME-modifier
-time arithmetic, Python UDF aggregates, JSON-extract AST rewrite.
-
-``rewrite_sqlite_json_extract``, ``register_sqlite_udfs``, and the UDF
-aggregate classes are module-level helpers defined in
-``slayer/sql/dialects/sqlite.py`` (not nested inside ``SqliteDialect``).
-The dialect class's ``rewrite_parsed_ast`` / ``register_udfs`` methods
-delegate to these helpers in one line. Tests import the helpers
-directly — this is where they live now, no shim layer.
-"""
+"""Tests for SqliteDialect."""
 
 from __future__ import annotations
 
@@ -29,9 +18,7 @@ from slayer.sql.dialects.sqlite import (
 from slayer.storage.sqlite_conn import transaction
 
 
-# ---------------------------------------------------------------------------
 # Fields
-# ---------------------------------------------------------------------------
 
 
 def test_sqlite_sqlglot_name() -> None:
@@ -49,9 +36,7 @@ def test_sqlite_log10_and_log2_native() -> None:
     assert d.should_use_native_log(2) is True
 
 
-# ---------------------------------------------------------------------------
 # build_date_trunc — STRFTIME forms
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -87,8 +72,7 @@ def test_sqlite_build_date_trunc_week_uses_weekday_modifier() -> None:
 
 
 def test_sqlite_build_date_trunc_week_sunday_emission() -> None:
-    """DEV-1572: WEEK_SUNDAY delegates to the generic shift, which composes
-    SQLite's day-offset (+1d / -1d) around SQLite's Monday-week truncation."""
+    """WEEK_SUNDAY composes SQLite's day offsets around its Monday-week truncation."""
     d = SqliteDialect()
     col = sqlglot.parse_one("ordered_at", dialect="sqlite")
     out = d.build_date_trunc(col, TimeGranularity.WEEK_SUNDAY)
@@ -114,11 +98,7 @@ def test_sqlite_build_date_trunc_week_sunday_emission() -> None:
 def test_sqlite_build_date_trunc_week_sunday_executes_to_sunday(
     input_date: str, expected_sunday: str
 ) -> None:
-    """Execute the emitted SQLite WEEK_SUNDAY expression against a real
-    in-memory SQLite connection and assert the bucket lands on the exact
-    Sunday (not merely 'a Sunday', and not a week early). Native DATE()
-    math — no UDFs required.
-    """
+    """The emitted WEEK_SUNDAY expression buckets to the exact Sunday on real SQLite."""
     d = SqliteDialect()
     col = sqlglot.parse_one("ts", dialect="sqlite")
     expr = d.build_date_trunc(
@@ -147,9 +127,7 @@ def test_sqlite_build_date_trunc_quarter_uses_case_when() -> None:
     assert "10-01" in sql
 
 
-# ---------------------------------------------------------------------------
 # build_time_offset_expr — DATE(col, 'N units')
-# ---------------------------------------------------------------------------
 
 
 def test_sqlite_build_time_offset_expr_positive_day() -> None:
@@ -179,14 +157,11 @@ def test_sqlite_build_time_offset_expr_quarter_normalizes_to_months() -> None:
     assert "'3 months'" in sql
 
 
-# ---------------------------------------------------------------------------
 # duration_interval_exprs / add_intervals_expr — SQLite uses DATETIME-modifier strings
-# ---------------------------------------------------------------------------
 
 
 def test_sqlite_duration_interval_exprs_emits_modifier_strings() -> None:
-    """SQLite has no INTERVAL syntax — duration parts become DATETIME-modifier
-    string literals like ``'+2 days'`` / ``'+3 hours'`` with the sign baked in."""
+    """Duration parts become DATETIME-modifier literals like ``'+2 days'``."""
     d = SqliteDialect()
     out = d.duration_interval_exprs([(2, "d"), (3, "h")], sign=1)
     assert len(out) == 2
@@ -211,9 +186,7 @@ def test_sqlite_duration_interval_exprs_week_normalizes_to_days() -> None:
 
 
 def test_sqlite_add_intervals_expr_wraps_in_datetime_call() -> None:
-    """SQLite wraps as ``DATETIME(expr, mod1, mod2, ...)`` — the sign is
-    already baked into each modifier by ``duration_interval_exprs``, so
-    the ``sign`` arg is intentionally ignored on SQLite."""
+    """SQLite wraps as ``DATETIME(expr, mod1, ...)`` and ignores ``sign``."""
     d = SqliteDialect()
     col = sqlglot.parse_one("created_at", dialect="sqlite")
     modifiers = d.duration_interval_exprs([(1, "d")], sign=-1)
@@ -223,29 +196,21 @@ def test_sqlite_add_intervals_expr_wraps_in_datetime_call() -> None:
     assert "'-1 days'" in sql
 
 
-# ---------------------------------------------------------------------------
 # build_percentile — scientific notation must survive (Codex finding #3)
-# ---------------------------------------------------------------------------
 
 
 def test_sqlite_build_percentile_preserves_scientific_notation() -> None:
-    """``5e-2`` must NOT be normalized to ``0.05`` — the original spelling
-    travels through the dialect intact."""
+    """``5e-2`` must NOT be normalized to ``0.05`` — the original spelling travels through the dialect intact."""
     d = SqliteDialect()
     out = d.build_percentile(p=exp.Literal.number("5e-2"), col_expr=exp.column("amount"))
     assert "5e-2" in out.sql(dialect="sqlite")
 
 
-# ---------------------------------------------------------------------------
 # build_median / build_percentile — SQLite UDF forms
-# ---------------------------------------------------------------------------
 
 
 def test_sqlite_build_median_emits_percentile_cont_pair_form() -> None:
-    """``build_median`` parses ``median(x)`` into ``exp.Median``; sqlglot's
-    SQLite generator then transpiles that to ``PERCENTILE_CONT(x, 0.5)``
-    (the pair form the registered UDF expects — value first, p second).
-    Crucially NOT the WITHIN GROUP form that Postgres/DuckDB use."""
+    """``median(x)`` transpiles to the UDF pair form ``PERCENTILE_CONT(x, 0.5)``."""
     d = SqliteDialect()
     inner = sqlglot.parse_one("amount", dialect="sqlite")
     out = d.build_median(inner)
@@ -271,30 +236,21 @@ def test_sqlite_build_percentile_preserves_literal_string() -> None:
     assert "0.50" in out.sql(dialect="sqlite")
 
 
-# ---------------------------------------------------------------------------
 # Module-level helpers (folded in from the deleted sqlite_dialect.py / sqlite_udfs.py)
-# ---------------------------------------------------------------------------
 
 
 def test_rewrite_sqlite_json_extract_is_module_level() -> None:
-    """The rewrite helper lives as a module-level function in
-    ``slayer.sql.dialects.sqlite`` — directly importable, used by
-    ``SqliteDialect.rewrite_parsed_ast`` AND by callers that need the
-    rewrite without going through the dialect class
-    (e.g. ``tests/test_sqlite_json_extract.py``)."""
+    """The JSON rewrite helper is a module-level function in the sqlite dialect module."""
     assert callable(rewrite_sqlite_json_extract)
 
 
 def test_register_sqlite_udfs_is_module_level() -> None:
-    """``register_sqlite_udfs`` is a module-level helper. ``SqliteDialect.register_udfs``
-    delegates to it; ``tests/test_sqlite_udfs.py`` imports it directly."""
+    """``register_sqlite_udfs`` is a module-level helper."""
     assert callable(register_sqlite_udfs)
 
 
 def test_sqlite_module_exposes_udf_aggregate_classes() -> None:
-    """The UDF aggregate classes are module-level in
-    ``slayer.sql.dialects.sqlite``. ``tests/test_sqlite_udfs.py``
-    imports them directly to drive step/finalize."""
+    """The UDF aggregate classes are module-level in ``slayer.sql.dialects.sqlite``."""
     expected = [
         "_CorrAgg",
         "_CovarPopAgg",

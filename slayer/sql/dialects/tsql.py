@@ -1,4 +1,4 @@
-"""DEV-1542: TsqlDialect (SQL Server / Microsoft T-SQL).
+"""TsqlDialect (SQL Server / Microsoft T-SQL).
 
 T-SQL is the most divergent Tier-1 dialect:
 
@@ -13,10 +13,10 @@ T-SQL is the most divergent Tier-1 dialect:
 * Variance-decomposition formula for CORR / COVAR_* with the T-SQL names
 * EXPLAIN is a session-toggle pair: ``SET SHOWPLAN_ALL ON; ... ; OFF``
 * No native LOG2
-* DEV-1571 Bug 1: T-SQL rejects ``WITH`` inside a derived-table subquery.
+* T-SQL rejects ``WITH`` inside a derived-table subquery.
   ``emit_outer_wrap`` overrides the base to hoist inner top-level CTEs
   to the outer statement.
-* DEV-1571 Bug 2: T-SQL's ``ORDER BY`` resolver does not treat
+* T-SQL's ``ORDER BY`` resolver does not treat
   ``[a.b]`` as a SELECT alias — it tries to resolve it as a column-name
   lookup against the FROM scope. ``rewrite_emitted_sql`` mangles dotted
   bracketed aliases to ``[a___b]``; ``decode_result_keys`` reverses on
@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import re
 from typing import ClassVar, Literal
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 
 import sqlglot
 from sqlglot import exp
@@ -38,6 +38,9 @@ from slayer.sql.naming import OUTER_WRAP_ALIAS
 from slayer.sql.dialects.base import (
     DottedAliasManglingMixin,
     SqlDialect,
+    StatAgg1Name,
+    StatAgg2Name,
+    TimeUnit,
     _build_covar_decomposition,
 )
 
@@ -52,7 +55,7 @@ _TSQL_STAT_NAMES: dict[str, str] = {
 }
 
 
-# DEV-1571 Bug 2: bracket-quoted dotted alias. Same shape as BigQuery's
+# Bracket-quoted dotted alias. Same shape as BigQuery's
 # backtick-anchored regex (``\w+(?:\.\w+)+``) with ``re.ASCII`` keeping
 # ``\w`` ASCII-only so accented identifiers like ``[café.metric]`` do
 # not mangle.
@@ -73,7 +76,7 @@ def _offset_ordering_fallback(
     """The ORDER BY an OFFSET-bearing outer wrap must carry: the caller's, or a
     synthesized ``ORDER BY (SELECT NULL)`` no-op when there is none (SQL Server
     rejects OFFSET without ORDER BY). Returns ``order`` unchanged otherwise, so
-    a user's ordering is never replaced (DEV-1783)."""
+    a user's ordering is never replaced."""
     if order is not None or offset_arg is None:
         return order
     return exp.Order(expressions=[
@@ -92,7 +95,7 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
     # Anonymous: sqlglot re-emits a parsed APPROX_COUNT_DISTINCT as its
     # Presto-family APPROX_DISTINCT canonical, which is not a T-SQL function.
     approx_count_distinct_anonymous_name: str | None = "APPROX_COUNT_DISTINCT"
-    # DEV-1571 Bug 2: bracketed dotted-alias mangling (DottedAliasManglingMixin).
+    # Bracketed dotted-alias mangling (DottedAliasManglingMixin).
     dotted_alias_re: ClassVar[re.Pattern[str]] = _TSQL_DOTTED_ALIAS_RE
     alias_quote_open: ClassVar[str] = "["
     alias_quote_close: ClassVar[str] = "]"
@@ -100,7 +103,7 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
     def build_null_safe_eq(
         self, left: exp.Expression, right: exp.Expression,
     ) -> exp.Expression:
-        """DEV-1708: T-SQL has no ``IS NOT DISTINCT FROM`` / ``<=>`` — emit the
+        """T-SQL has no ``IS NOT DISTINCT FROM`` / ``<=>`` — emit the
         portable expanded ``a = b OR (a IS NULL AND b IS NULL)``."""
         return self._expanded_null_safe_eq(left, right)
 
@@ -111,7 +114,7 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
         descending: bool,
         nulls: Literal["default", "first", "last"] = "default",
     ) -> exp.Ordered:
-        """DEV-1571 Bug 2 / DEV-1716 — pin ``nulls_first`` to T-SQL's native
+        """Pin ``nulls_first`` to T-SQL's native
         default for the direction (FIRST on ASC, LAST on DESC).
 
         Left unset, sqlglot emits ``CASE WHEN <alias> IS NULL THEN 1 ELSE 0
@@ -136,8 +139,6 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
         self,
         col_expr: exp.Expression,
         granularity: TimeGranularity,
-        *,
-        parse: Callable[[str], exp.Expression],
     ) -> exp.Expression:
         """T-SQL: ``DATETRUNC(unit, col)``. Week uses ``iso_week``
         (Monday-start) to be ``@@DATEFIRST``-independent. ``DATETRUNC``
@@ -152,10 +153,10 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
         if anyone needs it.
         """
         if granularity == TimeGranularity.WEEK_SUNDAY:
-            # DEV-1572: delegate to the base generic shift, which composes
+            # Delegate to the base generic shift, which composes
             # T-SQL's DATEADD day-offset around the iso_week (Monday) DATETRUNC.
             return super().build_date_trunc(
-                col_expr=col_expr, granularity=granularity, parse=parse,
+                col_expr=col_expr, granularity=granularity,
             )
         gran_str = granularity.value
         if not isinstance(col_expr, (exp.Column, exp.Cast)):
@@ -170,21 +171,22 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
         self,
         col_expr: exp.Expression,
         offset: int,
-        granularity: str,
+        granularity: TimeGranularity | TimeUnit,
     ) -> exp.Expression:
         """T-SQL: ``DATEADD(unit, val, col)``. INTERVAL is not valid T-SQL syntax.
         Quarter normalises to ``val * 3`` of MONTH."""
         unit_map = {
             "year": "YEAR", "month": "MONTH", "day": "DAY",
             "quarter": "MONTH", "week": "WEEK",
-            # DEV-1572: a one-period shift of a Sunday-week is one week — same
+            # A one-period shift of a Sunday-week is one week — same
             # normalization the base ``_granularity_to_unit`` applies (without
             # it, ``DATEADD(WEEK_SUNDAY, ...)`` is invalid T-SQL).
             "week_sunday": "WEEK",
             "hour": "HOUR", "minute": "MINUTE", "second": "SECOND",
         }
-        unit = unit_map.get(granularity, granularity.upper())
-        val = offset * 3 if granularity == "quarter" else offset
+        granularity = TimeGranularity(granularity)
+        unit = unit_map[granularity.value]
+        val = offset * 3 if granularity == TimeGranularity.QUARTER else offset
         return exp.Anonymous(
             this="DATEADD",
             expressions=[exp.Var(this=unit), exp.Literal.number(val), col_expr],
@@ -216,12 +218,7 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
             )
         return result
 
-    def build_median(
-        self,
-        inner: exp.Expression,
-        *,
-        parse: Callable[[str], exp.Expression],
-    ) -> exp.Expression:
+    def build_median(self, inner: exp.Expression) -> exp.Expression:
         raise NotImplementedError(
             "Aggregation 'median' is not supported on T-SQL (SQL Server): "
             "PERCENTILE_CONT in T-SQL is a window function (requires OVER clause) "
@@ -230,11 +227,7 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
         )
 
     def build_percentile(
-        self,
-        p_str: str,
-        col_sql: str,
-        *,
-        parse: Callable[[str], exp.Expression],
+        self, p: exp.Expression, col_expr: exp.Expression,
     ) -> exp.Expression:
         raise NotImplementedError(
             "Aggregation 'percentile' is not supported on T-SQL (SQL Server): "
@@ -244,43 +237,36 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
         )
 
     def build_stat_agg_1arg(
-        self,
-        agg_name: str,
-        col_expr: str,
-        *,
-        parse: Callable[[str], exp.Expression],
+        self, agg_name: StatAgg1Name, col_expr: exp.Expression,
     ) -> exp.Expression:
         """T-SQL: map ``stddev_samp``→``STDEV``, ``stddev_pop``→``STDEVP``,
         ``var_samp``→``VAR``, ``var_pop``→``VARP`` via ``exp.Anonymous``."""
         if agg_name in _TSQL_STAT_NAMES:
             return exp.Anonymous(
                 this=_TSQL_STAT_NAMES[agg_name],
-                expressions=[parse(col_expr)],
+                expressions=[col_expr.copy()],
             )
-        return super().build_stat_agg_1arg(agg_name, col_expr, parse=parse)
+        return super().build_stat_agg_1arg(agg_name=agg_name, col_expr=col_expr)
 
     def build_covar_2arg(
         self,
-        agg_name: str,
-        col_sql: str,
-        other_sql: str,
-        *,
-        parse: Callable[[str], exp.Expression],
+        agg_name: StatAgg2Name,
+        col_expr: exp.Expression,
+        other_expr: exp.Expression,
     ) -> exp.Expression:
         """T-SQL has no native CORR / COVAR_* — use the
         variance-decomposition formula with T-SQL names (VAR / VARP / STDEV)."""
         return _build_covar_decomposition(
-            col_sql=col_sql,
-            other_sql=other_sql,
+            col_expr=col_expr,
+            other_expr=other_expr,
             agg=agg_name,
             var_fn_samp="VAR",
             var_fn_pop="VARP",
             stddev_fn="STDEV",
-            parse=parse,
         )
 
     # ------------------------------------------------------------------
-    # DEV-1571 Bug 1: emit_outer_wrap hoists inner top-level CTEs
+    # emit_outer_wrap hoists inner top-level CTEs
     # ------------------------------------------------------------------
 
     def apply_pagination(
@@ -319,6 +305,7 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
         *,
         inner_sql: str,
         public: list[str],
+        projected: Sequence[str],
         order: exp.Expression | None,
         limit: exp.Expression | None,
         offset_arg: exp.Expression | None,
@@ -330,7 +317,7 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
 
         SQL Server allows ``WITH`` only as a statement prefix, not inside
         a derived-table subquery. Without this override, SLayer's
-        DEV-1444 outer-wrap emits ``SELECT ... FROM (WITH ctes SELECT ...
+        outer wrap emits ``SELECT ... FROM (WITH ctes SELECT ...
         FROM step2) AS _outer ORDER BY ...``, which T-SQL rejects with
         ``Incorrect syntax near the keyword 'WITH'``.
 
@@ -338,8 +325,8 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
 
         1. Parse ``inner_sql`` via the generator's ``_parse`` (when
            supplied) so SLayer-specific AST rewrites survive the
-           round-trip — LOG10/LOG2 alias preservation (DEV-1337) and
-           SQLite JSONExtract function-form (DEV-1331).
+           round-trip — LOG10/LOG2 alias preservation and
+           SQLite JSONExtract function-form.
         2. Detach the top-level ``With`` node (if any) from the inner
            ``Select`` so the inner main SELECT can be wrapped in the
            derived table without re-introducing nested WITH.
@@ -372,6 +359,7 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
             return super().emit_outer_wrap(
                 inner_sql=inner_sql,
                 public=public,
+                projected=projected,
                 order=order,
                 limit=limit,
                 offset_arg=offset_arg,
@@ -380,6 +368,7 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
             return super().emit_outer_wrap(
                 inner_sql=inner_sql,
                 public=public,
+                projected=projected,
                 order=order,
                 limit=limit,
                 offset_arg=offset_arg,
@@ -393,7 +382,7 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
             parsed.set("with_", None)
         # Strip inner-CTE qualifiers from detached ORDER BY columns so
         # they resolve at the outer-wrapper scope (only ``_outer`` is
-        # visible). DEV-1444 carry-over.
+        # visible).
         if order is not None:
             for col in order.find_all(exp.Column):
                 if col.args.get("table") is not None:

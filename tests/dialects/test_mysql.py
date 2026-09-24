@@ -1,11 +1,4 @@
-"""DEV-1542: tests for MysqlDialect.
-
-MySQL has no native PERCENTILE_CONT (raises ``NotImplementedError`` on
-both ``build_median`` and ``build_percentile``) and no native CORR /
-COVAR_SAMP / COVAR_POP (uses the variance-decomposition formula). It
-also needs the ``exp.Anonymous`` workaround for ``var_samp`` / ``var_pop``
-because sqlglot mis-renames those to ``VARIANCE``.
-"""
+"""Tests for MysqlDialect."""
 
 from __future__ import annotations
 
@@ -36,9 +29,7 @@ def test_mysql_log_native_flags() -> None:
     assert d.should_use_native_log(2) is True
 
 
-# ---------------------------------------------------------------------------
 # Median / percentile — not supported on MySQL
-# ---------------------------------------------------------------------------
 
 
 def test_mysql_build_median_raises_not_implemented() -> None:
@@ -50,20 +41,17 @@ def test_mysql_build_median_raises_not_implemented() -> None:
 
 def test_mysql_build_percentile_raises_not_implemented() -> None:
     d = MysqlDialect()
+    p = exp.Literal.number("0.5")
+    col_expr = exp.column("amount")
     with pytest.raises(NotImplementedError, match="percentile.*MySQL"):
-        d.build_percentile(p=exp.Literal.number("0.5"), col_expr=exp.column("amount"))
+        d.build_percentile(p=p, col_expr=col_expr)
 
 
-# ---------------------------------------------------------------------------
 # stat aggs: var_samp / var_pop via Anonymous (sqlglot mis-renames otherwise)
-# ---------------------------------------------------------------------------
 
 
 def test_mysql_build_stat_agg_1arg_var_samp_uses_anonymous() -> None:
-    """sqlglot's MySQL transpiler rewrites VAR_SAMP → VARIANCE (which on
-    MySQL is actually VAR_POP — silently wrong). The dialect override
-    emits the canonical MySQL name via ``exp.Anonymous`` to bypass
-    sqlglot's rewrite."""
+    """sqlglot rewrites VAR_SAMP to VARIANCE (VAR_POP on MySQL), so Anonymous is used."""
     d = MysqlDialect()
     out = d.build_stat_agg_1arg(agg_name="var_samp", col_expr=exp.column("amount"))
     sql = out.sql(dialect="mysql").upper()
@@ -87,9 +75,7 @@ def test_mysql_build_stat_agg_1arg_stddev_samp_native() -> None:
     assert "STDDEV_SAMP" in sql or "STDDEV(" in sql
 
 
-# ---------------------------------------------------------------------------
 # Covariance via variance-decomposition formula
-# ---------------------------------------------------------------------------
 
 
 def test_mysql_build_covar_2arg_corr_uses_decomposition_formula() -> None:
@@ -121,13 +107,7 @@ def test_mysql_build_covar_2arg_covar_pop_uses_pop_variance() -> None:
 
 
 def test_mysql_build_covar_2arg_excludes_null_pairs() -> None:
-    """The formula must NULL-guard each column against the other so rows
-    where either is NULL are excluded uniformly (matches today's
-    ``_build_covar_formula`` in ``generator.py``).
-
-    sqlglot's MySQL emit spells this as ``NOT (col) IS NULL`` rather than
-    ``col IS NOT NULL`` — both forms are semantically identical.
-    """
+    """The formula NULL-guards each column against the other."""
     d = MysqlDialect()
     out = d.build_covar_2arg(agg_name="corr", col_expr=exp.column("amount"), other_expr=exp.column("quantity"))
     sql = out.sql(dialect="mysql").upper()
@@ -136,9 +116,7 @@ def test_mysql_build_covar_2arg_excludes_null_pairs() -> None:
     assert "CASE" in sql
 
 
-# ---------------------------------------------------------------------------
 # Date / time — MySQL uses Postgres-shaped INTERVAL
-# ---------------------------------------------------------------------------
 
 
 def test_mysql_build_date_trunc_emits_date_trunc() -> None:
@@ -151,8 +129,7 @@ def test_mysql_build_date_trunc_emits_date_trunc() -> None:
 
 
 def test_mysql_build_date_trunc_week_sunday_shift() -> None:
-    """DEV-1572: WEEK_SUNDAY reuses MySQL's Monday-based week truncation
-    (sqlglot emits ``WEEK(x, 1)`` / ``%u``) with the +1d / -1d shift."""
+    """WEEK_SUNDAY shifts MySQL's Monday-week truncation by +1d / -1d."""
     d = MysqlDialect()
     col = sqlglot.parse_one("ordered_at", dialect="mysql")
     out = d.build_date_trunc(col, TimeGranularity.WEEK_SUNDAY)
@@ -173,25 +150,17 @@ def test_mysql_build_time_offset_expr_quarter_normalizes_to_3_month() -> None:
     assert "3" in sql
 
 
-# ---------------------------------------------------------------------------
-# DEV-1571 Bug 3 — outer-wrap quote style mismatch
+# Outer-wrap quote style mismatch
 #
 # Today's ``SQLGenerator._build_outer_wrap`` hardcodes ANSI double quotes
 # for the public projection list. MySQL parses ``"..."`` as a string
 # literal by default, so the outer wrap is invalid SQL on MySQL. The fix
 # emits each public alias via sqlglot's dialect-aware identifier quoting,
 # which yields backticks on MySQL.
-# ---------------------------------------------------------------------------
 
 
 def test_mysql_emit_outer_wrap_uses_backticks_for_aliases() -> None:
-    """Outer projection list emits backticked identifiers on MySQL, never
-    ANSI double quotes.
-
-    MySQL's default ``sql_mode`` does not include ``ANSI_QUOTES``; double
-    quotes get parsed as string literals and the outer wrap fails to
-    resolve the inner alias.
-    """
+    """Outer projection list emits backticked identifiers on MySQL, never ANSI double quotes."""
     out = MysqlDialect().emit_outer_wrap(
         inner_sql="SELECT 1 AS `orders.created_at`",
         public=["orders.created_at"],
@@ -209,12 +178,7 @@ def test_mysql_emit_outer_wrap_uses_backticks_for_aliases() -> None:
 
 
 def test_mysql_emit_outer_wrap_preserves_inner_cte_in_derived_table() -> None:
-    """MySQL 8+ tolerates ``WITH`` inside a derived-table subquery. The
-    base impl behaviour applies — no CTE hoisting, just wrap the inner SQL.
-
-    Pins that we did NOT accidentally pull the T-SQL Bug 1 hoist into the
-    base impl. Cross-dialect regression guard.
-    """
+    """MySQL 8+ tolerates ``WITH`` inside a derived-table subquery."""
     inner = (
         "WITH base AS (SELECT 1 AS x)\n"
         "SELECT x AS `orders.x` FROM base"
@@ -237,8 +201,7 @@ def test_mysql_emit_outer_wrap_preserves_inner_cte_in_derived_table() -> None:
     )
 
 
-# ---------------------------------------------------------------------------
-# DEV-1571 Bug 3 follow-up — inner CTE assembly emits dialect-aware quotes.
+# Inner CTE assembly emits dialect-aware quotes.
 #
 # The original Bug 3 description only mentioned the outer wrap. Reality:
 # `_assemble_combined_sql`, `_generate_with_computed`, and the time-shift
@@ -247,7 +210,6 @@ def test_mysql_emit_outer_wrap_preserves_inner_cte_in_derived_table() -> None:
 # sqlglot canonicalises the broken result. End-to-end regression coverage
 # lives in tests/integration/test_integration_mysql.py; these are the
 # fast unit-level pins.
-# ---------------------------------------------------------------------------
 
 
 async def _mysql_generate(query: SlayerQuery, model: SlayerModel) -> str:
@@ -269,15 +231,7 @@ def _orders_model() -> SlayerModel:
 
 
 async def test_mysql_time_shift_inner_cte_uses_backticks_not_ansi_quotes() -> None:
-    """``change_pct(total:sum)`` builds shifted/self-join/step CTEs that
-    used to embed hardcoded ANSI double-quoted identifier refs. On MySQL
-    those parsed as string literals and the query failed with
-    ``pymysql.err.ProgrammingError (1064)``. After DEV-1571 Bug 3
-    follow-up, every identifier in those CTEs uses backticks.
-
-    Regression pin for the CI failure on
-    ``tests/integration/test_integration_mysql.py::TestMySQLQueries::test_change_pct_with_date_range``.
-    """
+    """``change_pct(total:sum)`` CTEs must not embed ANSI double-quoted identifiers."""
     q = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(

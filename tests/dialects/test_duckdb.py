@@ -1,4 +1,4 @@
-"""DEV-1542: tests for DuckdbDialect.
+"""Tests for DuckdbDialect.
 
 DuckDB matches Postgres for every SQL-generation quirk we care about —
 native DATE_TRUNC, native PERCENTILE_CONT (via sqlglot's QUANTILE_CONT
@@ -38,7 +38,7 @@ def test_duckdb_build_date_trunc_month() -> None:
 
 
 def test_duckdb_build_date_trunc_week_sunday_shift() -> None:
-    """DEV-1572: WEEK_SUNDAY reuses DuckDB's native (Monday) DATE_TRUNC('week')
+    """WEEK_SUNDAY reuses DuckDB's native (Monday) DATE_TRUNC('week')
     with the +1d / -1d shift. DuckDB emits unquoted ``INTERVAL 1 DAY``."""
     d = DuckdbDialect()
     col = sqlglot.parse_one("ordered_at", dialect="duckdb")

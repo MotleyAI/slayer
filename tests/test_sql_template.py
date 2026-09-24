@@ -127,8 +127,9 @@ class TestIndependentCopies:
 class TestErrors:
     def test_unbound_placeholder_raises_naming_it(self) -> None:
         t = SqlTemplate(text="SUM({value}) / {scale}", dialect="postgres")
+        bindings = {"value": _col("a")}
         with pytest.raises(SqlTemplateError, match="scale"):
-            t.render({"value": _col("a")})
+            t.render(bindings)
 
     @pytest.mark.parametrize("text", ["SUM({value}", "SUM({value)", "SUM({value}) +"])
     def test_unparseable_template_raises_at_construction(self, text: str) -> None:

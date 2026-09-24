@@ -189,8 +189,10 @@ class TestInvalidTemplates:
     @pytest.mark.parametrize("formula", ["SUM({value}", "SUM({t}.amount)"])
     async def test_invalid_formula_fails_naming_the_aggregation(self, formula: str) -> None:
         bad = Aggregation(name="broken_agg", formula=formula)
+        query = _q("price:broken_agg")
+        model = _orders((bad,))
         with pytest.raises(SqlTemplateError, match="broken_agg"):
-            await _engine_generate(query=_q("price:broken_agg"), model=_orders((bad,)), validate=False)
+            await _engine_generate(query=query, model=model, validate=False)
 
     @pytest.mark.parametrize("dialect", TIER1)
     async def test_unbound_placeholder_fails_naming_aggregation_and_placeholder(
@@ -247,14 +249,18 @@ class TestPercentileP:
     @pytest.mark.parametrize("p", ["nan", "NaN", "1e999", "1.5", "-0.1", "'0.5'", "quantity",
                                    "0.1 + 0.2", "inf"])
     def test_rejected_query_time(self, p: str) -> None:
+        gen = SQLGenerator(dialect="postgres")
+        spec = _pct_spec(p)
         with pytest.raises(ValueError, match=r"numeric literal|\[0, 1\]|Unsafe value"):
-            SQLGenerator(dialect="postgres")._build_percentile(_pct_spec(p))
+            gen._build_percentile(spec)
 
     @pytest.mark.parametrize("p", ["nan", "1e999", "1.5", "'0.5'", "quantity", "0.1 + 0.2",
                                    "pg_sleep(10)"])
     def test_rejected_model_default(self, p: str) -> None:
+        gen = SQLGenerator(dialect="postgres")
+        spec = _pct_spec(default=p)
         with pytest.raises(ValueError, match=r"numeric literal|\[0, 1\]"):
-            SQLGenerator(dialect="postgres")._build_percentile(_pct_spec(default=p))
+            gen._build_percentile(spec)
 
     async def test_non_literal_p_rejected_at_query_level(self) -> None:
         with pytest.raises(ValueError, match=r"must be a numeric literal in \[0, 1\]"):

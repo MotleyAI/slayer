@@ -6,7 +6,6 @@ from __future__ import annotations
 
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
-import sqlglot
 from pydantic import BaseModel, ConfigDict, Field
 from sqlglot import exp
 
@@ -39,7 +38,7 @@ from slayer.sql.render.parse import (  # noqa: F401 — re-exported render surfa
     rewrite_log_aliases as rewrite_log_alias,
 )
 # The pure operator / scalar / literal composers live in the scope-free leaf
-# module ``row_expr`` (DEV-1826) so ``ScopeFrame`` can reuse them; re-imported
+# module ``row_expr`` so ``ScopeFrame`` can reuse them; re-imported
 # here so this module keeps its full render surface.
 from slayer.sql.render.row_expr import (  # noqa: F401 — re-exported render surface
     _literal,
@@ -126,7 +125,7 @@ class AliasFacilities(BaseModel):
     ALIAS-EXCLUSIVE resolution (rebuilding from source in an alias-only CTE is wrong SQL). An
     absent slot RAISES; ``table_by_slot_id`` carries the qualifier.
 
-    ``composite_alias_slot_ids`` (DEV-1865): composite-keyed slots (computed
+    ``composite_alias_slot_ids``: composite-keyed slots (computed
     dimensions) whose keys ALSO resolve by alias — re-rendering one inline at a
     post-aggregation scope would re-evaluate it at the wrong grain."""
 
@@ -258,7 +257,7 @@ def _render_builtin_aggregate(  # NOSONAR(S3776) — sequential fail-closed guar
             ),
         )
     # A Column.filter on the source rides its ColumnSqlKey (CASE WHEN baked into
-    # the source's scope resolution), so no separate guard is needed (DEV-1832).
+    # the source's scope resolution), so no separate guard is needed.
     if key.kwargs or key.args:
         raise RenderContextMissingFacilityError(
             key_kind=type(key).__name__,
@@ -318,7 +317,7 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
         return _render_via_alias(key, ctx)
     # A composite dimension slot (computed dim) resolves by its grouped alias:
     # re-rendering it inline at a post-aggregation scope re-evaluates the
-    # expression at the wrong grain (DEV-1865).
+    # expression at the wrong grain.
     if (
         ctx.aliases is not None
         and ctx.aliases.composite_alias_slot_ids
@@ -363,9 +362,6 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
         return ctx.dialect.build_date_trunc(
             col_expr=column,
             granularity=TimeGranularity(key.granularity),
-            parse=lambda sql: sqlglot.parse_one(
-                sql, dialect=ctx.dialect.sqlglot_name,
-            ),
         )
 
     if isinstance(key, ArithmeticKey):
