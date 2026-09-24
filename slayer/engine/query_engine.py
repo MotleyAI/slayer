@@ -1147,7 +1147,7 @@ class SlayerQueryEngine:
         dialect = self._dialect_for_type(datasource.type)
         with collect_stale_spellings() as render_stale_spellings:
             sql = generate_planned_stages(
-                planned_list, bundle=bundle, dialect=dialect,
+                planned_queries=planned_list, bundle=bundle, dialect=dialect,
                 # Plan-derived canonical projection keys drive the write-side length
                 # fit; the read side decodes against the same set.
                 projection_aliases=projection_result_keys(root_planned=planned_list[-1]),

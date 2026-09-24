@@ -4416,7 +4416,7 @@ def _topo_sort(queries: List[SlayerQuery]) -> List[SlayerQuery]:
             f"Duplicate stage names in source_queries DAG: {duplicates}"
         )
     by_name: Dict[str, SlayerQuery] = dict(named)
-    in_degree = {n: 0 for n in names}
+    in_degree = dict.fromkeys(names, 0)
     edges: Dict[str, List[str]] = {n: [] for n in names}
     for name, q in named:
         # A stage depends on a sibling its source_model reads from (bare-string OR ModelExtension/dict over the sibling).

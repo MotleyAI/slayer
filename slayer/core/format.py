@@ -95,6 +95,22 @@ def _format_with_notation(
     return formatted_value, suffix, precision
 
 
+def _is_non_finite(value: float | decimal.Decimal) -> bool:
+    if isinstance(value, decimal.Decimal):
+        return not value.is_finite()
+    return isinstance(value, float) and not math.isfinite(value)
+
+
+def _format_currency(*, value: float | decimal.Decimal, precision: int | None, symbol: str) -> str:
+    formatted_value, suffix, calc_precision = _format_with_notation(
+        value=abs(value), default_precision=3, explicit_precision=precision, max_precision=2
+    )
+    formatted_str = f"{formatted_value:.{calc_precision}f}{suffix}"
+    # Short symbols lead, long ones trail.
+    result = symbol + formatted_str if len(symbol) == 1 else formatted_str + " " + symbol
+    return "-" + result if value < 0 else result
+
+
 def format_number(value: float | decimal.Decimal, format_spec: NumberFormat) -> str:
     """Format number with type-specific rules (currency/percent/integer/float).
 
@@ -105,38 +121,15 @@ def format_number(value: float | decimal.Decimal, format_spec: NumberFormat) -> 
     Returns:
         Formatted string representation of the value
     """
-    # Check if value is numeric (includes numpy types via numbers.Real, and decimal.Decimal)
-    if not isinstance(value, (numbers.Real, decimal.Decimal)):
-        return str(value)
-
-    # Check for NaN after confirming it's numeric
-    if (isinstance(value, float) and math.isnan(value)) or (isinstance(value, decimal.Decimal) and value.is_nan()):
-        return str(value)
-
-    # Check for Infinity after NaN check
-    if (isinstance(value, float) and math.isinf(value)) or (isinstance(value, decimal.Decimal) and value.is_infinite()):
+    # numbers.Real covers numpy scalars; NaN / ±Infinity render verbatim.
+    if not isinstance(value, (numbers.Real, decimal.Decimal)) or _is_non_finite(value):
         return str(value)
 
     format_type = format_spec.type
     precision = format_spec.precision
-    symbol = format_spec.symbol
 
     if format_type == NumberFormatType.CURRENCY:
-        currency_symbol = symbol or "$"
-        is_negative = value < 0
-        abs_value = abs(value)
-        formatted_value, suffix, calc_precision = _format_with_notation(
-            value=abs_value, default_precision=3, explicit_precision=precision, max_precision=2
-        )
-        formatted_str = f"{formatted_value:.{calc_precision}f}{suffix}"
-
-        # Currency symbol positioning: short symbols before, long after
-        if len(currency_symbol) == 1:
-            result = currency_symbol + formatted_str
-        else:
-            result = formatted_str + " " + currency_symbol
-
-        return "-" + result if is_negative else result
+        return _format_currency(value=value, precision=precision, symbol=format_spec.symbol or "$")
 
     elif format_type == NumberFormatType.PERCENT:
         percent_value = value * 100
