@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pickle
+
 import pytest
 from mcp.types import TextContent
 from pydantic import ValidationError
@@ -86,6 +88,20 @@ class TestBaseConstructor:
     def test_location_without_suggestion(self) -> None:
         exc = PartitionKeyError(summary="S.", location="transform 'rank'")
         assert str(exc) == "PartitionKeyError: S.\n  at transform 'rank'"
+
+
+class TestPickle:
+    @pytest.mark.parametrize("exc", [
+        TimeAxisError(summary="S.", location="measure 'm'", suggestion="Fix."),
+        DuplicateMeasureNameError(name="total", occurrences=["sum(a)", "sum(b)"]),
+        MeasureNameCollidesWithColumnError(name="amount", model="orders"),
+        CanonicalAliasShadowsColumnError(formula="sum(amount)", canonical="amount_sum", model="orders"),
+    ], ids=lambda e: type(e).__name__)
+    def test_round_trip(self, exc) -> None:
+        back = pickle.loads(pickle.dumps(exc))
+        assert type(back) is type(exc)
+        assert str(back) == str(exc)
+        assert back.__dict__ == exc.__dict__
 
 
 class TestHierarchy:

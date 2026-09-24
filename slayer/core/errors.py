@@ -261,6 +261,17 @@ class QueryTypeError(SlayerError):
             scope=scope, suggestion=suggestion, extras=extras,
         ))
 
+    def __reduce__(self):
+        return _rebuild_query_type_error, (type(self), self.args, self.__dict__)
+
+
+def _rebuild_query_type_error(cls: "type[QueryTypeError]", args: tuple, state: dict) -> QueryTypeError:
+    """Unpickle without re-running the keyword-only constructor."""
+    exc = cls.__new__(cls)
+    Exception.__init__(exc, *args)
+    exc.__dict__.update(state)
+    return exc
+
 
 class TimeAxisError(QueryTypeError):
     """A time-ordered or windowed computation lacks a usable time axis."""
