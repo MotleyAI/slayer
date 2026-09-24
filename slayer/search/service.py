@@ -1439,7 +1439,7 @@ async def handle_edit_refresh(
     """``edit_model`` refresh: re-sample the changed columns (every column on a
     model-level change), then re-embed the model's subtree. Best-effort — failures
     come back as warnings."""
-    model = await storage.get_model(model_name, data_source=data_source)
+    model = await storage.get_model(name=model_name, data_source=data_source)
     if model is None:
         return [f"model {model_name!r} not found in datasource {data_source!r}"]
     only = None if model_level_change else changed_columns
@@ -1448,7 +1448,7 @@ async def handle_edit_refresh(
     )
     # Reload: the sample refresh patched the stored model, and the embedding
     # text must match its new content_hash.
-    reloaded = await storage.get_model(model_name, data_source=data_source)
+    reloaded = await storage.get_model(name=model_name, data_source=data_source)
     if reloaded is not None:
         warnings.extend(await SearchService(storage=storage).refresh_model_subtree(reloaded))
     return warnings

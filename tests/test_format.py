@@ -1,5 +1,7 @@
 """Tests for slayer.core.format — number formatting."""
 
+from decimal import Decimal
+
 import pytest
 
 from slayer.core.format import NumberFormat, NumberFormatType, format_number
@@ -145,33 +147,30 @@ class TestFormatNumber:
 
     # --- decimal.Decimal support ---
     def test_decimal_float(self):
-        from decimal import Decimal
-
         fmt = NumberFormat(type=NumberFormatType.FLOAT)
         assert format_number(value=Decimal("42.123"), format_spec=fmt) == "42.1"
 
     def test_decimal_currency(self):
-        from decimal import Decimal
-
         fmt = NumberFormat(type=NumberFormatType.CURRENCY)
         assert format_number(value=Decimal("1500.50"), format_spec=fmt) == "$1500"
 
-    def test_decimal_integer(self):
-        from decimal import Decimal
+    @pytest.mark.parametrize("fmt_type", list(NumberFormatType))
+    def test_decimal_m_notation_matches_float(self, fmt_type):
+        fmt = NumberFormat(type=fmt_type)
+        expected = format_number(value=2500000.0, format_spec=fmt)
+        assert expected.rstrip("%").endswith("M")
+        assert format_number(value=Decimal("2500000"), format_spec=fmt) == expected
 
+    def test_decimal_integer(self):
         fmt = NumberFormat(type=NumberFormatType.INTEGER)
         assert format_number(value=Decimal("42"), format_spec=fmt) == "42"
 
     def test_decimal_nan(self):
-        from decimal import Decimal
-
         fmt = NumberFormat(type=NumberFormatType.FLOAT)
         result = format_number(value=Decimal("NaN"), format_spec=fmt)
         assert result == "NaN"
 
     def test_decimal_infinity(self):
-        from decimal import Decimal
-
         fmt = NumberFormat(type=NumberFormatType.FLOAT)
         assert format_number(value=Decimal("Infinity"), format_spec=fmt) == "Infinity"
         assert format_number(value=Decimal("-Infinity"), format_spec=fmt) == "-Infinity"

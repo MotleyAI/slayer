@@ -15,6 +15,7 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple
 import sqlalchemy as sa
 import sqlglot
 from sqlglot import exp
+from sqlglot.expressions.core import Expression
 from pydantic import (
     BaseModel,
     ConfigDict as PydanticConfigDict,
@@ -1166,6 +1167,7 @@ class SlayerQueryEngine:
                 datasource=datasource, planned_list=planned_list,
             )
             ast = sqlglot.parse_one(sql, dialect=dialect)
+            assert isinstance(ast, Expression)
             _attach_ch_correlated_setting(ast)
             sql = ast.sql(dialect=dialect, pretty=True)
         # Forced-filter rewrite before dry-run / explain / execute so all three
@@ -1346,6 +1348,7 @@ class SlayerQueryEngine:
         )
 
         if use_cache:
+            assert key is not None
             entry = self._build_cache_entry(
                 prepared=prepared,
                 response=response,
@@ -1548,7 +1551,7 @@ class SlayerQueryEngine:
 
         # Collate {ds_key: {table: ordered exprs}}, keyed by SQL-client
         # fingerprint (not the bare name) so each entry scans its own identity.
-        collate: dict[tuple[str, str], dict[str, list[str]]] = {}
+        collate: dict[EngineCacheKey, dict[str, list[str]]] = {}
         for entry in snapshot.values():
             if not entry.applicable:
                 continue
@@ -1560,8 +1563,8 @@ class SlayerQueryEngine:
 
         # One batched scan per (ds_key, table), continue-on-error per table,
         # through the write-time client (no name re-resolution).
-        scanned: dict[tuple[tuple[str, str], str], dict[str, Any]] = {}
-        failed: set[tuple[tuple[str, str], str]] = set()
+        scanned: dict[tuple[EngineCacheKey, str], dict[str, Any]] = {}
+        failed: set[tuple[EngineCacheKey, str]] = set()
         for ds_key, tables in collate.items():
             client = self._sql_clients.get(ds_key)
             for table, exprs in tables.items():
@@ -2564,6 +2567,8 @@ class SlayerQueryEngine:
         for col in cols:
             term = exp.Not(this=exp.Is(this=col.copy(), expression=exp.null()))
             predicate = term if predicate is None else exp.and_(predicate, term)
+        # join_pairs is validated non-empty.
+        assert predicate is not None
 
         count_star = exp.func("COUNT", exp.Star()).as_("c")
         rows_q = exp.select(count_star).from_(tbl.copy()).where(predicate)
@@ -2816,7 +2821,7 @@ class SlayerQueryEngine:
     async def _resolve_model(
         self,
         model_name: str,
-        _resolving: set = None,
+        _resolving: Optional[set[str]] = None,
         outer_vars: Optional[Dict[str, Any]] = None,
         runtime_kwarg: Optional[Dict[str, Any]] = None,
         dry_run_placeholders: bool = False,
@@ -2847,7 +2852,7 @@ class SlayerQueryEngine:
     async def _resolve_model_inner(
         self,
         model_name: str,
-        _resolving: set = None,
+        _resolving: Optional[set[str]] = None,
         outer_vars: Optional[Dict[str, Any]] = None,
         runtime_kwarg: Optional[Dict[str, Any]] = None,
         dry_run_placeholders: bool = False,
@@ -2989,6 +2994,7 @@ class SlayerQueryEngine:
     async def _trial_execute_sql_source(self, model: SlayerModel, ds) -> None:
         """Trial-execute read-only ``model.sql`` against ``ds``: raise on a
         reachable rejection, warn-and-return on an inconclusive verdict."""
+        assert model.sql is not None
         try:
             await self._client_for(ds).get_column_types(
                 build_sql_model_trial_query(model.sql)

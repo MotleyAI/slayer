@@ -16,7 +16,7 @@ import json
 import logging
 from typing import Any
 
-import sqlalchemy as sa
+from sqlalchemy.exc import DatabaseError, OperationalError
 
 from slayer.core.enums import DataType
 from slayer.core.join_walker import OrientedJoin, neighbors
@@ -794,10 +794,10 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
         for c in model.columns:
             if c.hidden or is_identifier(column=c, columns=model.columns):
                 continue
-            # DEV-1480 cache validity: categorical needs
+            # Cache validity: categorical needs
             # ``sampled_values`` to be present (the structured field
             # is authoritative); numeric/temporal needs ``sampled``.
-            if _is_sample_cached(c, model=model):
+            if _is_sample_cached(column=c, model=model):
                 if c.sampled is not None:
                     profile_by_name[c.name] = c.sampled
                 profile_values_by_name[c.name] = c.sampled_values
@@ -1138,7 +1138,7 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
                 )
             out_sections.append(sample_section)
         except Exception as e:
-            if isinstance(e, (sa.exc.OperationalError, sa.exc.DatabaseError)):
+            if isinstance(e, (OperationalError, DatabaseError)):
                 err = _friendly_db_error(e)
             else:
                 err = str(e)

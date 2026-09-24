@@ -888,7 +888,7 @@ class DatasourceConfig(BaseModel):
             "mariadb": "mysql+pymysql",
             "clickhouse": "clickhouse+http",
         }
-        driver = driver_map.get(self.type, self.type)
+        driver = driver_map.get(self.type or "", self.type)
         # Use SQLAlchemy's structured builder so reserved chars in credentials
         # are percent-encoded rather than misparsed as URL delimiters.
         host, port = self.host or "localhost", self.port
@@ -911,6 +911,9 @@ class DatasourceConfig(BaseModel):
                     f"specify it in only one place."
                 )
             port = int(embedded_port)
+        if driver is None:
+            # Mirrors ``URL.create``'s own rejection of a non-string drivername.
+            raise TypeError("drivername must be a string")
         return _SA_URL.create(
             drivername=driver,
             username=self.username or None,
@@ -938,7 +941,7 @@ class DatasourceConfig(BaseModel):
 
 
 def _resolve_env_string(value: str) -> str:
-    def replacer(match: re.Match) -> str:
+    def replacer(match: re.Match[str]) -> str:
         var_name = match.group(1)
         return os.environ.get(var_name, match.group(0))
 

@@ -48,11 +48,11 @@ class NumberFormat(BaseModel):
 
 
 def _format_with_notation(
-    value: float,
+    value: float | decimal.Decimal,
     default_precision: int,
     explicit_precision: int | None = None,
     max_precision: int | None = None,
-) -> tuple[float, str, int]:
+) -> tuple[float | decimal.Decimal, str, int]:
     """Core formatting logic with K/M notation and dynamic precision calculation.
 
     Args:
@@ -65,8 +65,9 @@ def _format_with_notation(
         Tuple of (scaled_value, suffix, precision_to_use)
     """
     # Determine suffix and scale value
-    if abs(value) >= 1e6:
-        formatted_value = value / 1e6
+    # Integer divisors: ``Decimal / float`` raises.
+    if abs(value) >= 1_000_000:
+        formatted_value = value / 1_000_000
         suffix = "M"
     elif abs(value) >= 10000:
         formatted_value = value / 1000
@@ -94,7 +95,7 @@ def _format_with_notation(
     return formatted_value, suffix, precision
 
 
-def format_number(value: float, format_spec: NumberFormat) -> str:
+def format_number(value: float | decimal.Decimal, format_spec: NumberFormat) -> str:
     """Format number with type-specific rules (currency/percent/integer/float).
 
     Args:

@@ -17,7 +17,7 @@ per query. A column's `sql` is Mode-A SQL: any dialect expression, dotted join p
 allowed, but no aggregations or {{product}} transforms. A column `filter` becomes
 CASE WHEN inside aggregates — `sum(active_revenue)` counts only matching rows,
 without affecting sibling measures. `allowed_aggregations` whitelists what may
-aggregate the column; a sole `primary_key: true` column is restricted to count / count_distinct / min / max.
+aggregate the column; a sole `primary_key: true` column is restricted to count / count_distinct / count_distinct_approx / min / max.
 
 Advanced escape hatch: a `Column.sql` MAY be a raw window expression
 (`row_number() over (...)`); filtering on such a column auto-promotes to a

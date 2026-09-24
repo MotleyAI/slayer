@@ -47,7 +47,7 @@ SLayer introspects each table's column types and generates a model:
 - **A column literally named `count`** is renamed to `count_col` to avoid clashing with the always-available `count(*)`.
 - **No auto-generated `measures`** — `SlayerModel.measures` is the named-formula library and stays empty after ingestion. You can add named formulas later via the API/MCP if you want bare-name shortcuts (`{"formula": "aov"}`).
 - **`count(*)`** is always available without any model definition.
-- The `allowed_aggregations` whitelist is left at the default for the column's data type. PK columns are restricted to `count`/`count_distinct` automatically.
+- The `allowed_aggregations` whitelist is left at the default for the column's data type. A sole PK column is restricted to `count`/`count_distinct`/`count_distinct_approx`/`min`/`max` automatically.
 
 FK columns from referenced tables are excluded from the source model to avoid redundancy — they're reachable via the join graph as `customers.id` etc.
 

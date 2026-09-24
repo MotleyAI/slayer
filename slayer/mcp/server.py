@@ -885,8 +885,8 @@ To connect a new database: create_datasource → describe_datasource (verify + l
             description: What this model represents.
             columns: List of column definitions. Each: {"name": "col", "sql": "col", "type": "string"}.
                 Types: string, number, time, date, boolean. Optional fields: ``primary_key``,
-                ``unique`` (single-column uniqueness that is not the PK; ``primary_key``
-                already implies it), ``allowed_aggregations`` (whitelist), ``filter``
+                ``unique`` (single-column uniqueness that is not the PK; a sole
+                ``primary_key`` already implies it), ``allowed_aggregations`` (whitelist), ``filter``
                 (CASE WHEN inside aggregation), ``granularity`` (a temporal column's
                 declared time bucket, e.g. ``"month"`` — only when it is truly bucketed
                 at that grain), ``label``, ``description``, ``hidden``, ``meta``.
@@ -1069,7 +1069,7 @@ To connect a new database: create_datasource → describe_datasource (verify + l
                 If a column with this name exists, only the provided fields are updated.
                 Types: string, number, time, date, boolean.
                 ``unique`` marks single-column uniqueness that is not the primary key
-                (``primary_key`` already implies it); it is used to infer join
+                (a sole ``primary_key`` already implies it); it is used to infer join
                 cardinality.
             measures: Named formula measures to create or update (upsert by name). Each dict:
                 {"name": "aov", "formula": "sum(revenue) / count(*)", "label": "...",
