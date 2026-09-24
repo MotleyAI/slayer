@@ -724,7 +724,7 @@ class TestInlineNestedSourceQueriesIntegrated:
     """Decision E end-to-end — inline nested ``SlayerModel.source_queries``
     contributes to ordering when the outer model is saved / executed.
 
-    The recursive ``_extract_sibling_refs`` walk catches edges hidden
+    The recursive ``stage_sibling_reads`` walk catches edges hidden
     inside inline nested ``source_queries`` so cycles + forward refs are
     flagged at save time. End-to-end execution of inline-nested stages
     that reference outer siblings is a separate concern (the inline

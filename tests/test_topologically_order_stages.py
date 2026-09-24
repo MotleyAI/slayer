@@ -12,7 +12,7 @@ The helper is the SAME logic the engine-method shim delegates to (decision
 * Engine-method shim still works at
   ``SlayerQueryEngine._topologically_order_queries(queries)``.
 * Decision E: inline-nested ``SlayerModel.source_queries`` contribute to
-  the sibling dependency edges (recursive ``_extract_sibling_refs``
+  the sibling dependency edges (recursive ``stage_sibling_reads``
   extension).
 """
 from __future__ import annotations

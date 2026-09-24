@@ -434,6 +434,8 @@ class PlannedQuery(BaseModel):
     limit: Optional[int] = None
     offset: Optional[int] = None
     stage_schema: Optional[StageSchema] = None
+    # Sibling stage relations this stage's statement reads, in plan order.
+    stage_reads: List[str] = Field(default_factory=list)
     # Active-TD slot (None if none); time-needing transforms use it for the OVER ORDER BY.
     active_time_dimension_slot_id: Optional[SlotId] = None
     render_source_model: Optional[SlayerModel] = None

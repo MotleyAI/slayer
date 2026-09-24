@@ -8,19 +8,19 @@ through inline ``SlayerModel`` / ``ModelExtension`` specs (including nested
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Set
+from typing import AbstractSet, Any, Dict, List, Set
 
 from slayer.core.query import ModelExtension, SlayerQuery, SourceSpec
 
 
-def _extract_sibling_refs(query: SlayerQuery, against: Set[str]) -> Set[str]:
-    """Sibling names in ``against`` that ``query`` references; purely structural, never raises."""
+def stage_sibling_reads(*, query: SlayerQuery, siblings: AbstractSet[str]) -> Set[str]:
+    """Sibling names in ``siblings`` that ``query`` references; purely structural, never raises."""
     out: Set[str] = set()
-    _walk_spec(spec=query.source_model, against=against, out=out)
+    _walk_spec(spec=query.source_model, against=siblings, out=out)
     return out
 
 
-def _walk_spec(spec: SourceSpec | None, against: Set[str], out: Set[str]) -> None:
+def _walk_spec(spec: SourceSpec | None, against: AbstractSet[str], out: Set[str]) -> None:
     """Recursively collect sibling refs from a ``source_model`` spec."""
     if spec is None:
         return
@@ -76,14 +76,14 @@ def _validate_query_list_invariants(
     Root-as-sink: no non-final stage may reference the root by name.
     """
     for q in queries:
-        if q.name and q.name in _extract_sibling_refs(q, {q.name} | sibling_names):
+        if q.name and q.name in stage_sibling_reads(query=q, siblings={q.name} | sibling_names):
             raise ValueError(
                 f"Stage '{q.name}' references itself — self-references "
                 f"are not allowed."
             )
     if root.name:
         referrers = sorted(
-            q.name for q in rest if root.name in _extract_sibling_refs(q, {root.name})
+            q.name for q in rest if root.name in stage_sibling_reads(query=q, siblings={root.name})
         )
         if referrers:
             raise ValueError(
@@ -101,7 +101,7 @@ def _build_dependency_graph(
     in_degree: Dict[str, int] = dict.fromkeys(rest_by_name, 0)
     dependents: Dict[str, List[str]] = {name: [] for name in rest_by_name}
     for name, q in rest_by_name.items():
-        for prereq in _extract_sibling_refs(q, sibling_names):
+        for prereq in stage_sibling_reads(query=q, siblings=sibling_names):
             dependents[prereq].append(name)
             in_degree[name] += 1
     return in_degree, dependents
@@ -160,4 +160,4 @@ def topologically_order_stages(queries: List[Any]) -> List[Any]:
     return [rest_by_name[n] for n in sorted_names] + [root]
 
 
-__all__ = ["topologically_order_stages"]
+__all__ = ["stage_sibling_reads", "topologically_order_stages"]

@@ -12,8 +12,11 @@ from typing import Dict, Hashable, List, Optional, Tuple, Union
 from slayer.core.query import ModelExtension, SlayerQuery
 from slayer.core.scope import ModelScope, StageSchema
 from slayer.engine.compile import compile_query
-from slayer.engine.compile.stages import _topo_sort
 from slayer.engine.elaborate import elaborate_query
+from slayer.engine.stage_ordering import (
+    stage_sibling_reads,
+    topologically_order_stages,
+)
 from slayer.ir.planned import PlannedQuery
 from slayer.ir.prebound import PreboundQuery, StrictQueryCarrier
 from slayer.ir.source_bundle import (
@@ -115,14 +118,16 @@ def plan_stages(
     queries: List[SlayerQuery],
     bundle: ResolvedSourceBundle,
 ) -> List[PlannedQuery]:
-    """Plan a multi-stage DAG: topo sort, then plan each stage against its own resolved source + already-planned siblings' synthetic models."""
+    """Plan a multi-stage DAG: topo sort, then plan each stage against its own resolved source + already-planned siblings' synthetic models, recording its sibling reads."""
     if len(queries) == 1:
         return [plan_query(
             query=queries[0],
             bundle=bundle,
         )]
-    ordered = _topo_sort(queries)
+    ordered = topologically_order_stages(queries)
     root = ordered[-1]
+    position = {q.name: i for i, q in enumerate(ordered[:-1])}
+    siblings = frozenset(position)
     data_source = (
         (bundle.source_model.data_source if bundle.source_model else None)
         or "_stage"
@@ -142,6 +147,10 @@ def plan_stages(
             bundle=stage_bundle,
             scope=scope,
             stage_schemas=stage_schemas,
+        )
+        reads = stage_sibling_reads(query=q, siblings=siblings)
+        planned = planned.model_copy(
+            update={"stage_reads": sorted(reads, key=position.__getitem__)},
         )
         results.append(planned)
         if q.name and planned.stage_schema is not None:
