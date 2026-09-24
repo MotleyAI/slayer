@@ -213,7 +213,8 @@ class TestPlanStagesDirect:
     def test_independent_stages_take_the_canonical_order(self) -> None:
         queries = [_q("zeta", "orders"), _q("alpha", "orders"), _q(None, "zeta")]
         planned = plan_stages(queries=queries, bundle=_bundle())
-        assert [p.stage_schema.relation_name for p in planned[:-1]] == ["alpha", "zeta"]
+        schemas = [p.stage_schema for p in planned[:-1]]
+        assert [s.relation_name if s else None for s in schemas] == ["alpha", "zeta"]
         assert [list(p.stage_reads) for p in planned] == [[], [], ["zeta"]]
 
     def test_named_stage_with_unnamed_root_accepted(self) -> None:

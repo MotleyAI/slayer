@@ -3,12 +3,14 @@
 import logging
 import re
 from collections.abc import Sequence
+from contextlib import contextmanager
 from typing import (
     AbstractSet,
     Any,
     Callable,
     Dict,
     Iterable,
+    Iterator,
     List,
     Literal,
     Optional,
@@ -4083,6 +4085,19 @@ class SQLGenerator:
         finally:
             self._gen_dep_stack.pop()
 
+    @contextmanager
+    def _stage_scope(self, relation: Optional[str]) -> Iterator[None]:
+        """One multi-stage statement's dep-registry frame; a non-root stage is also a split consumer."""
+        self._gen_dep_stack.append({})
+        if relation is not None:
+            self._gen_split_consumers.append(relation)
+        try:
+            yield
+        finally:
+            if relation is not None:
+                self._gen_split_consumers.pop()
+            self._gen_dep_stack.pop()
+
     def _split_statement_ctes(
         self, sql: str,
     ) -> Tuple[List[CteEntry], str]:
@@ -6523,6 +6538,18 @@ def _user_authored_exemptions(
     return frozenset(tokens)
 
 
+def _stage_relation(planned, *, is_root: bool) -> Optional[str]:
+    """A stage's CTE name; ``None`` for the root."""
+    if is_root:
+        return None
+    if planned.stage_schema is None:
+        raise ValueError(
+            "non-root stage must carry a stage_schema for CTE chaining; "
+            f"source_relation={planned.source_relation!r}",
+        )
+    return planned.stage_schema.relation_name
+
+
 def generate_planned_stages(
     planned_queries,
     *,
@@ -6568,32 +6595,17 @@ def generate_planned_stages(
     root_entries: List[CteEntry] = []
     root_final: Optional[exp.Select] = None
     for planned in planned_queries:
-        is_root = planned is planned_queries[-1]
-        if not is_root and planned.stage_schema is None:
-            raise ValueError(
-                "non-root stage must carry a stage_schema for CTE chaining; "
-                f"source_relation={planned.source_relation!r}",
-            )
-        relation = None if is_root else planned.stage_schema.relation_name
+        relation = _stage_relation(planned, is_root=planned is planned_queries[-1])
         stage_bundle = _bundle_for_stage(planned, bundle, schema_by_name)
-        generator._gen_dep_stack.append({})
-        if relation is not None:
-            generator._gen_split_consumers.append(relation)
-        try:
+        with generator._stage_scope(relation):
             stage_sql = cast(str, generator.generate_from_planned(
                 planned, bundle=stage_bundle, reuse_allocator=True,
             ))
-            if is_root:
+            if relation is None:
                 root_entries, root_final = generator._split_root_ctes(stage_sql)
-            else:
-                hoisted, body_sql = generator._split_statement_ctes(stage_sql)
-        finally:
-            if relation is not None:
-                generator._gen_split_consumers.pop()
-            generator._gen_dep_stack.pop()
-        if is_root:
-            root_entries = _with_stage_reads(root_entries, planned.stage_reads)
-            continue
+                root_entries = _with_stage_reads(root_entries, planned.stage_reads)
+                continue
+            hoisted, body_sql = generator._split_statement_ctes(stage_sql)
         stage_entries.extend(_with_stage_reads(hoisted, planned.stage_reads))
         stage_entries.append(CteEntry(
             name=relation,
