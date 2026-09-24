@@ -498,7 +498,7 @@ def _resolve_ref(
     model = scope.source_model
 
     # A ``__``-bearing name is not special: it resolves by ordinary exact-match.
-    col = resolve_generated_column(model, name)
+    col = resolve_generated_column(model=model, name=name)
     if col is not None:
         if col.needs_expansion:
             return ColumnSqlKey(path=(), model=model.name, column_name=col.name)
@@ -721,7 +721,7 @@ def _resolve_terminal_leaf(
 ) -> ValueKey:
     """Resolve ``leaf`` on terminal model ``current``: column (plain or derived)
     → saved measure (re-anchored into host coords) → unresolved error."""
-    col = resolve_generated_column(current, leaf)
+    col = resolve_generated_column(model=current, name=leaf)
     if col is not None:
         if col.needs_expansion:
             # Derived / filtered column on a joined model — path is part of the

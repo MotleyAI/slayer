@@ -112,7 +112,7 @@ class StageSchema(BaseModel):
     def resolve_flat_name(self, name: str) -> Optional[StageColumn]:
         """Stage-boundary lookup: exact name, else a unique stale respelling (recorded)."""
         return resolve_flat_name(
-            name, [(c.name, c.respellings, c) for c in self.columns],
+            name=name, entries=[(c.name, c.respellings, c) for c in self.columns],
         )
 
 
@@ -143,13 +143,14 @@ def host_model_name(scope) -> str:
 
 
 def resolve_generated_column(
-    model: SlayerModel, name: str, *, location: Optional[str] = None,
+    *, model: SlayerModel, name: str, location: Optional[str] = None,
 ) -> Optional[Column]:
     """``resolve_flat_name`` over ``model``'s columns; only generated query-backed
     columns carry respellings, so authored columns stay exact. A stale name
     matching several columns fails closed (never read as a physical column)."""
     col = resolve_flat_name(
-        name, [(c.name, c.respellings, c) for c in model.columns], location=location,
+        name=name, entries=[(c.name, c.respellings, c) for c in model.columns],
+        location=location,
     )
     if col is None:
         matches = [c.name for c in model.columns if name in c.respellings]
@@ -162,8 +163,8 @@ def resolve_generated_column(
 
 
 def resolve_flat_name(
-    name: str, entries: Sequence[Tuple[str, Tuple[str, ...], _T]],
-    *, location: Optional[str] = None,
+    *, name: str, entries: Sequence[Tuple[str, Tuple[str, ...], _T]],
+    location: Optional[str] = None,
 ) -> Optional[_T]:
     """The entry named ``name``, else the one entry whose respellings contain it
     (recorded as a stale spelling); several or none → ``None``."""
