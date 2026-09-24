@@ -53,8 +53,8 @@ from slayer.sql.column_expansion import (
 from slayer.ir.planned import MaskTyping, RankedGrainMember, StageKind, ValueSlot, regroup_producer_identity
 from slayer.ir.source_bundle import (
     ResolvedSourceBundle,
+    model_from_stage_schema,
     stage_bundle_with_siblings,
-    synthetic_model_from_stage_schema,
 )
 from slayer.sql._identifier_fit import overlimit_tokens
 from slayer.sql import staged_plan
@@ -6455,7 +6455,7 @@ def _bundle_for_stage(planned_query, bundle, schema_by_name):
     if planned_query.render_source_model is not None:
         source = planned_query.render_source_model
     elif relation in schema_by_name:
-        source = synthetic_model_from_stage_schema(
+        source = model_from_stage_schema(
             name=relation, schema=schema_by_name[relation], data_source=ds,
         )
     else:

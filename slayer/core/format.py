@@ -48,11 +48,11 @@ class NumberFormat(BaseModel):
 
 
 def _format_with_notation(
-    value: float,
+    value: float | decimal.Decimal,
     default_precision: int,
     explicit_precision: int | None = None,
     max_precision: int | None = None,
-) -> tuple[float, str, int]:
+) -> tuple[float | decimal.Decimal, str, int]:
     """Core formatting logic with K/M notation and dynamic precision calculation.
 
     Args:
@@ -65,8 +65,9 @@ def _format_with_notation(
         Tuple of (scaled_value, suffix, precision_to_use)
     """
     # Determine suffix and scale value
-    if abs(value) >= 1e6:
-        formatted_value = value / 1e6
+    # Integer divisors: ``Decimal / float`` raises.
+    if abs(value) >= 1_000_000:
+        formatted_value = value / 1_000_000
         suffix = "M"
     elif abs(value) >= 10000:
         formatted_value = value / 1000
@@ -77,15 +78,7 @@ def _format_with_notation(
 
     # Calculate dynamic precision if not specified
     if explicit_precision is None:
-        abs_value = abs(formatted_value)
-        if abs_value == 0:
-            digits = 1
-        elif abs_value >= 1:
-            digits = math.floor(math.log10(abs_value)) + 1
-        else:
-            digits = 0
-
-        precision = max(0, default_precision - digits)
+        precision = max(0, default_precision - _integer_digits(abs(formatted_value)))
         if max_precision is not None:
             precision = min(precision, max_precision)
     else:
@@ -94,7 +87,50 @@ def _format_with_notation(
     return formatted_value, suffix, precision
 
 
-def format_number(value: float, format_spec: NumberFormat) -> str:
+def _integer_digits(abs_value: float | decimal.Decimal) -> int:
+    """Digits before the decimal point: 1 for zero, 0 below one; exact for Decimals beyond float range."""
+    if abs_value == 0:
+        return 1
+    if abs_value < 1:
+        return 0
+    if isinstance(abs_value, decimal.Decimal):
+        return abs_value.adjusted() + 1
+    # ``log10`` rounds near powers of ten; exact int comparisons correct it.
+    digits = math.floor(math.log10(abs_value)) + 1
+    if 10 ** (digits - 1) > abs_value:
+        return digits - 1
+    if 10 ** digits <= abs_value:
+        return digits + 1
+    return digits
+
+
+def _times_hundred(value: float | decimal.Decimal) -> float | decimal.Decimal:
+    """``value * 100``; a Decimal past the context's ``Emax`` becomes ±Infinity, as a float does."""
+    try:
+        return value * 100
+    except decimal.Overflow:
+        return decimal.Decimal("Infinity") if value > 0 else decimal.Decimal("-Infinity")
+
+
+def _is_non_finite(value: float | decimal.Decimal) -> bool:
+    if isinstance(value, decimal.Decimal):
+        return not value.is_finite()
+    if isinstance(value, numbers.Integral):
+        return False
+    return not math.isfinite(value)
+
+
+def _format_currency(*, value: float | decimal.Decimal, precision: int | None, symbol: str) -> str:
+    formatted_value, suffix, calc_precision = _format_with_notation(
+        value=abs(value), default_precision=3, explicit_precision=precision, max_precision=2
+    )
+    formatted_str = f"{formatted_value:.{calc_precision}f}{suffix}"
+    # Short symbols lead, long ones trail.
+    result = symbol + formatted_str if len(symbol) == 1 else formatted_str + " " + symbol
+    return "-" + result if value < 0 else result
+
+
+def format_number(value: float | decimal.Decimal, format_spec: NumberFormat) -> str:
     """Format number with type-specific rules (currency/percent/integer/float).
 
     Args:
@@ -104,41 +140,24 @@ def format_number(value: float, format_spec: NumberFormat) -> str:
     Returns:
         Formatted string representation of the value
     """
-    # Check if value is numeric (includes numpy types via numbers.Real, and decimal.Decimal)
-    if not isinstance(value, (numbers.Real, decimal.Decimal)):
+    # numbers.Real covers numpy scalars; NaN / ±Infinity render verbatim.
+    if not isinstance(value, (numbers.Real, decimal.Decimal)) or _is_non_finite(value):
         return str(value)
-
-    # Check for NaN after confirming it's numeric
-    if (isinstance(value, float) and math.isnan(value)) or (isinstance(value, decimal.Decimal) and value.is_nan()):
-        return str(value)
-
-    # Check for Infinity after NaN check
-    if (isinstance(value, float) and math.isinf(value)) or (isinstance(value, decimal.Decimal) and value.is_infinite()):
-        return str(value)
+    if isinstance(value, numbers.Integral):
+        value = int(value)  # fixed-width (numpy) ints wrap on abs()
+        if value.bit_length() > 1023:  # int / int overflows float
+            value = decimal.Decimal(value)
 
     format_type = format_spec.type
     precision = format_spec.precision
-    symbol = format_spec.symbol
 
     if format_type == NumberFormatType.CURRENCY:
-        currency_symbol = symbol or "$"
-        is_negative = value < 0
-        abs_value = abs(value)
-        formatted_value, suffix, calc_precision = _format_with_notation(
-            value=abs_value, default_precision=3, explicit_precision=precision, max_precision=2
-        )
-        formatted_str = f"{formatted_value:.{calc_precision}f}{suffix}"
-
-        # Currency symbol positioning: short symbols before, long after
-        if len(currency_symbol) == 1:
-            result = currency_symbol + formatted_str
-        else:
-            result = formatted_str + " " + currency_symbol
-
-        return "-" + result if is_negative else result
+        return _format_currency(value=value, precision=precision, symbol=format_spec.symbol or "$")
 
     elif format_type == NumberFormatType.PERCENT:
-        percent_value = value * 100
+        percent_value = _times_hundred(value)
+        if _is_non_finite(percent_value):  # overflow
+            return f"{percent_value}%"
         formatted_value, suffix, calc_precision = _format_with_notation(
             value=percent_value, default_precision=2, explicit_precision=precision
         )

@@ -46,7 +46,9 @@ class TestStamping:
         model = await engine.create_model_from_query(
             q(dimensions=["status"]), "vm_dims",
         )
-        assert _pk_names(model) == {"status"}
+        # A single-column grain is unique, not a primary key (not an identifier).
+        assert _pk_names(model) == set()
+        assert {c.name for c in model.columns if c.unique} == {"status"}
 
     async def test_duplicate_preserving_query_stamps_nothing(self, engine) -> None:
         """F2 negative — ``distinct_dimension_values=False`` preserves

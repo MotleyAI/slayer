@@ -15,6 +15,7 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple
 import sqlalchemy as sa
 import sqlglot
 from sqlglot import exp
+from sqlglot.expressions.core import Expression
 from pydantic import (
     BaseModel,
     ConfigDict as PydanticConfigDict,
@@ -23,7 +24,7 @@ from pydantic import (
 )
 
 from slayer.async_utils import run_sync
-from slayer.core.enums import DEFAULT_AGGREGATIONS_BY_TYPE, RANKED_AGGREGATIONS, DataType, JoinCardinality
+from slayer.core.enums import DEFAULT_AGGREGATIONS_BY_TYPE, RANKED_AGGREGATIONS, JoinCardinality
 from slayer.core.errors import (
     AggregationArgumentError,
     AmbiguousModelError,
@@ -49,10 +50,10 @@ from slayer.core.join_walker import neighbors
 from slayer.core.policy import JoinFilterRuleset, SessionPolicy
 from slayer.core.format import format_number
 from slayer.core.models import (
-    Column,
     DatasourceConfig,
     ModelMeasure,
     SlayerModel,
+    is_identifier,
     _check_join_keys,
     join_key_error,
     rendered_formula,
@@ -97,7 +98,6 @@ from slayer.engine.cache import (
     _CacheEntry,
 )
 from slayer.engine.normalization import normalize_query, stale_spelling_warnings
-from slayer.core.keys import REGROUP_LEAF_PREFIX
 from slayer.ir.planned import PlannedQuery
 from slayer.engine.schema_drift import (
     AppliedEntry,
@@ -113,7 +113,7 @@ from slayer.engine.response_meta import (
     projection_result_keys,
 )
 from slayer.sql.column_expansion import expand_derived_refs_sync
-from slayer.ir.source_bundle import ResolvedSourceBundle
+from slayer.ir.source_bundle import ResolvedSourceBundle, model_from_stage_schema
 from slayer.engine.stage_ordering import topologically_order_stages
 from slayer.engine.compile.stages import _topo_sort
 from slayer.engine.plan import plan_stages
@@ -1151,7 +1151,7 @@ class SlayerQueryEngine:
 
         with collect_stale_spellings() as render_stale_spellings:
             sql = generate_planned_stages(
-                planned_list, bundle=bundle, dialect=dialect,
+                planned_queries=planned_list, bundle=bundle, dialect=dialect,
                 # Plan-derived canonical projection keys drive the write-side length
                 # fit; the read side decodes against the same set.
                 projection_aliases=projection_result_keys(root_planned=planned_list[-1]),
@@ -1171,6 +1171,7 @@ class SlayerQueryEngine:
                 datasource=datasource, planned_list=planned_list,
             )
             ast = sqlglot.parse_one(sql, dialect=dialect)
+            assert isinstance(ast, Expression)
             _attach_ch_correlated_setting(ast)
             sql = ast.sql(dialect=dialect, pretty=True)
         # Forced-filter rewrite before dry-run / explain / execute so all three
@@ -1351,6 +1352,7 @@ class SlayerQueryEngine:
         )
 
         if use_cache:
+            assert key is not None
             entry = self._build_cache_entry(
                 prepared=prepared,
                 response=response,
@@ -1553,7 +1555,7 @@ class SlayerQueryEngine:
 
         # Collate {ds_key: {table: ordered exprs}}, keyed by SQL-client
         # fingerprint (not the bare name) so each entry scans its own identity.
-        collate: dict[tuple[str, str], dict[str, list[str]]] = {}
+        collate: dict[EngineCacheKey, dict[str, list[str]]] = {}
         for entry in snapshot.values():
             if not entry.applicable:
                 continue
@@ -1565,8 +1567,8 @@ class SlayerQueryEngine:
 
         # One batched scan per (ds_key, table), continue-on-error per table,
         # through the write-time client (no name re-resolution).
-        scanned: dict[tuple[tuple[str, str], str], dict[str, Any]] = {}
-        failed: set[tuple[tuple[str, str], str]] = set()
+        scanned: dict[tuple[EngineCacheKey, str], dict[str, Any]] = {}
+        failed: set[tuple[EngineCacheKey, str]] = set()
         for ds_key, tables in collate.items():
             client = self._sql_clients.get(ds_key)
             for table, exprs in tables.items():
@@ -1812,10 +1814,10 @@ class SlayerQueryEngine:
             )
 
     def _build_type_probe_query(self, model: SlayerModel) -> SlayerQuery:
-        """SlayerQuery type-probing a model's columns (prefers ``max``, skips primary keys)."""
+        """SlayerQuery type-probing a model's columns (prefers ``max``, skips identifiers)."""
         measures: List[ModelMeasure] = []
         for c in model.columns:
-            if c.hidden or c.primary_key:
+            if c.hidden or is_identifier(column=c, columns=model.columns):
                 continue
             if c.allowed_aggregations is not None:
                 allowed = list(c.allowed_aggregations)
@@ -1856,7 +1858,10 @@ class SlayerQueryEngine:
                 )
                 return {}
 
-        probeable = [c for c in model.columns if not c.hidden and not c.primary_key]
+        probeable = [
+            c for c in model.columns
+            if not c.hidden and not is_identifier(column=c, columns=model.columns)
+        ]
         if not probeable:
             return {}
 
@@ -2567,6 +2572,8 @@ class SlayerQueryEngine:
         for col in cols:
             term = exp.Not(this=exp.Is(this=col.copy(), expression=exp.null()))
             predicate = term if predicate is None else exp.and_(predicate, term)
+        # join_pairs is validated non-empty.
+        assert predicate is not None
 
         count_star = exp.func("COUNT", exp.Star()).as_("c")
         rows_q = exp.select(count_star).from_(tbl.copy()).where(predicate)
@@ -2793,16 +2800,10 @@ class SlayerQueryEngine:
             projection_aliases=aliases,
         )
 
-        # Wrap with a flat-renamed SELECT; public StageColumn entries only
-        # (hoisted hidden slots are internal intermediates, never columns).
-        public_cols = [
-            c for c in (
-                root_planned.stage_schema.columns
-                if root_planned.stage_schema is not None else []
-            )
-            if c.public_alias is not None
-        ]
-        expected = [c.name for c in public_cols]
+        # Wrap with a flat-renamed SELECT over the root stage's output columns.
+        schema = root_planned.stage_schema
+        assert schema is not None
+        expected = [c.name for c in schema.columns]
         wrapped_ast = build_flat_rename_wrapper(
             source_relation=root_planned.source_relation,
             stage_sql=rendered,
@@ -2812,52 +2813,21 @@ class SlayerQueryEngine:
         )
         wrapped_sql = wrapped_ast.sql(dialect=dialect, pretty=True)
 
-        # Build the virtual model. Slot types drive Column.type; ``Column.sql``
-        # carries the length-fitted alias while ``Column.name`` stays canonical.
+        # ``Column.sql`` carries the length-fitted alias; ``Column.name`` stays canonical.
         fit_map = get_dialect(dialect).alias_rewrite_map(expected)
-        # Stamp grain uniqueness only when the backing query provably dedups it
-        # (aggregates, or dimension-only with ``distinct_dimension_values``).
-        stamp_grain = bool(root_planned.aggregate_slots) or (
-            final_stage.distinct_dimension_values
-        )
-        # A combined regroup attach is a ROW-phase placeholder outside the grain
-        # — exclude it so its column is never stamped as a key.
-        grain_public_names = {
-            s.public_name for s in root_planned.row_slots
-            if s.public_name is not None
-            and not str(getattr(s.key, "leaf", "")).startswith(REGROUP_LEAF_PREFIX)
-        }
-        cols = [
-            Column(
-                name=sc.name,
-                sql=fit_map.get(sc.name, sc.name),
-                type=sc.type or DataType.DOUBLE,
-                label=sc.label,
-                description=sc.description,
-                format=sc.format,
-                # Carry the final stage's time-bucket granularity so a finer
-                # time dimension over the cached column is the same typed error.
-                granularity=sc.granularity,
-                primary_key=(
-                    stamp_grain and sc.public_alias in grain_public_names
-                ),
-            ).with_respellings(sc.respellings)
-            for sc in public_cols
-        ]
-        return SlayerModel(
+        return model_from_stage_schema(
             name=model.name,
-            sql=wrapped_sql,
+            schema=schema,
             data_source=inner_source_model.data_source,
-            columns=cols,
+            sql=wrapped_sql,
+            column_sql={n: fit_map.get(n, n) for n in expected},
             default_time_dimension=inner_source_model.default_time_dimension,
-            # source_model_origin intentionally unset: the typed pipeline uses
-            # the flat StageSchema namespace, not a lineage walk.
         )
 
     async def _resolve_model(
         self,
         model_name: str,
-        _resolving: set = None,
+        _resolving: Optional[set[str]] = None,
         outer_vars: Optional[Dict[str, Any]] = None,
         runtime_kwarg: Optional[Dict[str, Any]] = None,
         dry_run_placeholders: bool = False,
@@ -2888,7 +2858,7 @@ class SlayerQueryEngine:
     async def _resolve_model_inner(
         self,
         model_name: str,
-        _resolving: set = None,
+        _resolving: Optional[set[str]] = None,
         outer_vars: Optional[Dict[str, Any]] = None,
         runtime_kwarg: Optional[Dict[str, Any]] = None,
         dry_run_placeholders: bool = False,
@@ -3054,6 +3024,7 @@ class SlayerQueryEngine:
     async def _trial_execute_sql_source(self, model: SlayerModel, ds) -> None:
         """Trial-execute read-only ``model.sql`` against ``ds``: raise on a
         reachable rejection, warn-and-return on an inconclusive verdict."""
+        assert model.sql is not None
         try:
             await self._client_for(ds).get_column_types(
                 build_sql_model_trial_query(model.sql)
