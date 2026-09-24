@@ -16,6 +16,7 @@ from slayer.core.models import ModelMeasure
 from slayer.core.query import SlayerQuery
 from slayer.engine.compile.discovery import RootDisposition, discover_roots
 from slayer.engine.elaborate import elaborate_query
+from slayer.engine.plan import plan_query
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
 from tests._dev1832_fixtures import dev1832_models, monthly_q
@@ -309,6 +310,7 @@ class TestDeletedSymbols:
         ("slayer.engine.compile.stages", "_discover_roots"),
         ("slayer.engine.compile.stages", "_answers_need_nested_regroups"),
         ("slayer.engine.join_safety", "local_crossing_input_paths"),
+        ("slayer.ir.prebound", "position_typing_context"),
     ])
     def test_symbol_gone(self, module, name):
         assert not hasattr(importlib.import_module(module), name)
@@ -317,3 +319,47 @@ class TestDeletedSymbols:
         closure = importlib.import_module("slayer.engine.reference_closure")
         params = inspect.signature(closure.aggregate_input_closure).parameters
         assert "descend_aggregates" not in params
+
+
+_R = "avg(sum(amount, partition_by=[city, region]), partition_by=region)"
+_RLEVEL = {"expression": f"CASE WHEN {_R} > 50 THEN 'hi' ELSE 'lo' END", "name": "rlevel"}
+_NOT_A_DIM = "Aggregation 'avg': partition_by column 'region' is not a query dimension"
+_REAGG_DECLARES = "declares partition_by=region, which is not a query dimension"
+
+
+class TestReaggregationInComputedDimension:
+    """Row-role leniency keeps re-aggregations; a combined consumer of the same key
+    still needs query-dimension partition keys."""
+
+    @pytest.mark.parametrize(("kw", "message"), [
+        pytest.param({"measures": [ModelMeasure(formula="amount:sum", name="s")]},
+                     _REAGG_DECLARES, id="dimension-only"),
+        pytest.param({"measures": [ModelMeasure(formula=_R, name="r")]},
+                     _NOT_A_DIM, id="dual-role-measure"),
+        pytest.param({"measures": [ModelMeasure(formula="amount:sum", name="s")],
+                      "order": [{"column": _R, "direction": "asc"}]},
+                     _NOT_A_DIM, id="dual-role-order"),
+        pytest.param({"measures": [ModelMeasure(formula="amount:sum", name="s")],
+                      "filters": [f"{_R} > 50"]},
+                     _REAGG_DECLARES, id="filter-over-it"),
+    ])
+    def test_partition_key_error(self, kw, message):
+        with pytest.raises(ValueError, match=message):
+            plan_query(query=sales_q(dimensions=["product", _RLEVEL], **kw),
+                       bundle=_bundle(dev1847_models()))
+
+
+class TestUnderReaggregationPartitionKeys:
+    def test_computed_dimension_key_keeps_its_row_role(self):
+        """A computed dimension named in a re-aggregation's ``partition_by`` yields no
+        combined twin for its own partitioned aggregate."""
+        band = {"expression": "CASE WHEN sum(amount, partition_by=product) > 100 "
+                              "THEN 'big' ELSE 'small' END", "name": "pband"}
+        formula = "avg(sum(amount, partition_by=[city, region, pband]), partition_by=pband)"
+        ds = _discover(sales_q(dimensions=[band],
+                               measures=[ModelMeasure(formula=formula, name="r")]),
+                       _bundle(dev1847_models()))
+        assert [(d.phase, d.routing) for d in ds] == [
+            ("row", "local_producer"), ("combined", "reaggregation"),
+        ]
+        assert ds[1].consumer_public_names == ("r",)

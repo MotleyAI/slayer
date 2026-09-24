@@ -70,6 +70,8 @@ from slayer.engine.elaborate_env import (
     check_transform_inputs,
     check_transform_partition_keys_in_operand_grain,
     check_time_transforms_resolved,
+    combined_partitioned_consumers,
+    position_classes,
 )
 from slayer.engine.join_safety import assert_partition_key_attributable
 from slayer.engine.key_metadata import (
@@ -92,8 +94,6 @@ from slayer.ir.bound import (
     BoundFilter,
     DeclaredMeasure,
     OrderSpec,
-    combined_consumer_aggregates,
-    dimension_partitioned_aggregates,
 )
 from slayer.ir.prebound import PreboundQuery, partition_declared_measures
 from slayer.ir.source_bundle import ResolvedSourceBundle, resolve_scope
@@ -621,16 +621,13 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         skip_dimensions=True,
     )
 
-    # A partitioned aggregate inside a computed dimension declares a producer grain (partition_by may be finer than the query).
-    _dim_agg_keys = frozenset(dimension_partitioned_aggregates(declared_measures))
-    # A COMBINED-position partitioned aggregate needs query-dimension partition keys
-    # for the join-back; local and cross-model partitioned consumers alike.
-    _consumers = combined_consumer_aggregates(
-        declared_measures=declared_measures, order_specs=order_specs,
-        row_agg_set=_dim_agg_keys, bound_filters=bound_filters,
-    )
-    _combined_consumer_keys = frozenset(
-        [*_consumers.local_partitioned, *_consumers.cross_model_partitioned]
+    # A computed dimension's partitioned aggregate declares a producer grain; a
+    # combined consumer needs query-dimension partition keys for the join-back.
+    _classes = position_classes(declared_measures, n_grain=n_dims + n_tds)
+    _dim_agg_keys = _classes.row_aggregates
+    _combined_consumer_keys = combined_partitioned_consumers(
+        _classes, declared_measures=declared_measures, order_specs=order_specs,
+        bound_filters=bound_filters,
     )
     # An attached operand — a re-aggregation constituent or a
     # row-attached input / parameter — declares an internal producer

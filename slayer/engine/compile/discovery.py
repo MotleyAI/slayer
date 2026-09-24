@@ -3,7 +3,7 @@ its phase (from the consumer position) and routing (from the key itself)."""
 
 from __future__ import annotations
 
-from typing import Dict, Iterator, List, Literal, NamedTuple, Optional, Sequence, Tuple, Union
+from typing import Dict, List, Literal, Optional, Sequence, Tuple, Union
 
 from pydantic import BaseModel, ConfigDict
 
@@ -17,14 +17,24 @@ from slayer.core.keys import (
     is_reaggregation_key,
     is_row_attach_root,
     source_anchor_path,
+    walk_consumer_positions,
     window_kwarg_of,
 )
 from slayer.core.scope import ModelScope, StageSchema
 from slayer.engine.compile.shift import _series_mode
+from slayer.engine.elaborate_env import opaque_keys as _opaque
+from slayer.engine.elaborate_env import (
+    ConsumerPosition,
+    combined_kind,
+    consumer_roots,
+    dimension_transform_roots,
+    is_grained_aggregate,
+    position_classes,
+)
 from slayer.engine.join_safety import crossing_local_root_predicate, grain_member_attributable
 from slayer.ir.elaborated import ConjunctTyping
 from slayer.ir.planned import MaskTyping
-from slayer.ir.prebound import PreboundQuery, position_typing_context
+from slayer.ir.prebound import PreboundQuery
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
 RootPhase = Literal["row", "combined"]
@@ -50,66 +60,12 @@ class RootDisposition(BaseModel):
     series: Optional[bool] = None
 
 
-class _At(NamedTuple):
-    key: ValueKey
-    own_pk: bool  # inside an ancestor's partition keys
-    attach_pk: bool  # inside a row-attach root's partition keys
-    dim_key: bool  # inside a subtree equal to a query dimension
-
-
-def _consumer_walk(
-    key: ValueKey, *, dim_keys: frozenset,
-    own_pk: bool = False, attach_pk: bool = False, dim_key: bool = False,
-) -> Iterator[_At]:
-    """Pre-order; opaque below a re-aggregation root and below a row-attach root's
-    inputs (its partition keys stay visible)."""
-    dim_key = dim_key or key in dim_keys
-    yield _At(key, own_pk, attach_pk, dim_key)
-    if is_reaggregation_key(key):
-        return
-    if is_row_attach_root(key):
-        for pk in key.partition_keys or ():
-            yield from _consumer_walk(pk, dim_keys=dim_keys, own_pk=True,
-                                      attach_pk=True, dim_key=dim_key)
-        return
-    pks = frozenset(getattr(key, "partition_keys", None) or ())
-    for c in key.children():
-        yield from _consumer_walk(c, dim_keys=dim_keys, own_pk=own_pk or c in pks,
-                                  attach_pk=attach_pk, dim_key=dim_key)
-
-
-def _opaque_keys(key: ValueKey) -> Iterator[ValueKey]:
-    """``walk_value_keys`` not descending a re-aggregation root."""
-    yield key
-    if is_reaggregation_key(key):
-        return
-    for c in key.children():
-        yield from _opaque_keys(c)
-
-
-def _is_grained(k: ValueKey) -> bool:
-    return isinstance(k, AggregateKey) and k.partition_keys is not None \
-        and not is_reaggregation_key(k)
-
-
 def _is_bare_windowed_or_ranked(k: ValueKey) -> bool:
     return (
         isinstance(k, AggregateKey) and k.partition_keys is None
         and not source_anchor_path(k.source)
         and (window_kwarg_of(k) is not None or k.agg in RANKED_AGGREGATIONS)
     )
-
-
-def _combined_kind(k: ValueKey) -> Optional[str]:
-    """``local`` / ``cross_partitioned`` / ``cross_bare`` for a combined consumer."""
-    if not isinstance(k, AggregateKey) or is_reaggregation_key(k):
-        return None
-    partitioned = k.partition_keys is not None
-    if not source_anchor_path(k.source):
-        return "local" if partitioned else None
-    if k.locus == "host":
-        return None
-    return "cross_partitioned" if partitioned else "cross_bare"
 
 
 def _input_routing(a: ValueKey) -> Routing:
@@ -135,13 +91,12 @@ class _Walker:
         bundle: ResolvedSourceBundle,
     ) -> None:
         self.out: List[RootDisposition] = []
-        self.dim_keys = position_typing_context(prebound)[0]
-        self.row_agg_set: set = set()
+        n_grain = prebound.n_dims + prebound.n_time_dimensions
+        self.classes = position_classes(prebound.declared_measures, n_grain=n_grain)
         self.row_attach_names: Dict[ValueKey, List[str]] = {}
         self.crossing = crossing_local_root_predicate(scope=scope, bundle=bundle)
         self.host = scope.source_model if isinstance(scope, ModelScope) else None
         self.bundle = bundle
-        n_grain = prebound.n_dims + prebound.n_time_dimensions
         self.grain = [dm.bound.value_key for dm in prebound.declared_measures[:n_grain]]
 
     def emit(self, root: ValueKey, phase: RootPhase, routing: Routing, *,
@@ -173,21 +128,17 @@ class _Walker:
         )
 
     def dimension(self, vk: ValueKey, *, name: Optional[str], declared: Optional[DataType]) -> None:
-        nodes = [at.key for at in _consumer_walk(vk, dim_keys=frozenset())]
-        transform_roots = [
-            k for k in nodes
-            if isinstance(k, TransformKey) and any(_is_grained(g) for g in _opaque_keys(k.input))
-        ]
-        covered = {g for t in transform_roots for g in _opaque_keys(t.input)}
+        nodes = [n.key for n in walk_consumer_positions(vk)]
+        transform_roots = dimension_transform_roots(nodes)
+        covered = {g for t in transform_roots for g in _opaque(t.input)}
         for k in nodes:
             if is_reaggregation_key(k):
                 self.emit(k, "row", "reaggregation",
                           names=(name,) if name and k == vk else (),
                           declared_type=declared if k == vk else None)
                 continue
-            if _is_grained(k):
-                self.row_agg_set.add(k)
-            if k in transform_roots or (_is_grained(k) and k not in covered):
+            grained = is_grained_aggregate(k)
+            if k in transform_roots or (grained and k not in covered):
                 self.emit(k, "row", "target_rooted" if is_cross_model_agg(k) else "local_producer")
             self.row_attach(k, attach_pk=False)
 
@@ -196,15 +147,13 @@ class _Walker:
             bucket = self.row_attach_names.setdefault(k, [])
             bucket.extend(n for n in names if n not in bucket)
 
-    def consumer(  # NOSONAR(S3776) — the per-position classification table of the one walk; each arm is one routing rule.
-        self, vk: ValueKey, *, position: str, name: Optional[str] = None,
+    def consumer(
+        self, vk: ValueKey, *, position: ConsumerPosition, name: Optional[str] = None,
         declared: Optional[DataType] = None, containing: Sequence[str] = (),
     ) -> None:
-        """Classify a measure / order / filter root. ``position``: ``measure``,
-        ``order``, ``field_filter`` or ``measure_filter``."""
-        raw_top = position == "order" and _combined_kind(vk) in ("local", "cross_partitioned")
-        for at in _consumer_walk(vk, dim_keys=self.dim_keys):
-            k, top = at.key, at.key is vk
+        """Route every node of a measure / order / filter root."""
+        for n in walk_consumer_positions(vk, dim_keys=self.classes.dim_keys):
+            k, top = n.key, n.key is vk
             names = (name,) if name and top else ()
             if is_reaggregation_key(k):
                 self.emit(k, "combined", "reaggregation", names=names,
@@ -212,8 +161,8 @@ class _Walker:
                 continue
             if isinstance(k, TransformKey) and k.op == "time_shift":
                 self.emit(k, "combined", "shifted", series=_series_mode(k.input, to_original={}))
-            kind = _combined_kind(k)
-            if kind is not None and self._combined_ok(at, position=position, raw_top=raw_top, top=top, kind=kind):
+            kind = combined_kind(k)
+            if kind is not None and self.classes.combined_admits(n, position=position, root=vk):
                 routing: Routing = "local_producer" if kind == "local" else "target_rooted"
                 self.emit(k, "combined", routing, names=names,
                           declared_type=declared if top and kind != "local" else None)
@@ -221,20 +170,7 @@ class _Walker:
                 self.emit(k, "combined", "local_producer", names=names)
             elif self.local_broadcasts(k):
                 self.emit(k, "combined", "target_rooted", names=names)
-            self.row_attach(k, attach_pk=at.attach_pk, names=containing)
-
-    def _combined_ok(self, at: _At, *, position: str, raw_top: bool, top: bool, kind: str) -> bool:
-        """Consumer-context exclusions: a measure skips partition-key subtrees; a
-        measure-typed filter skips a dimension's grouped value; an order target that
-        is itself a partitioned aggregate is its only consumer; order-by-name and
-        field-typed filter references to a dimension's own aggregate are row-scope."""
-        if position == "measure":
-            return not (at.own_pk or at.attach_pk)
-        if position == "measure_filter":
-            return not at.dim_key
-        if raw_top:
-            return top
-        return not (kind != "cross_bare" and at.key in self.row_agg_set)
+            self.row_attach(k, attach_pk=n.attach_pk, names=containing)
 
     def inline_row_attach_roots(self) -> None:
         """Emit each row-attach root no producer disposition routes, with its inputs."""
@@ -254,20 +190,20 @@ def discover_roots(
 ) -> List[RootDisposition]:
     """Every producer root of ``prebound``, one disposition per consumer occurrence."""
     w = _Walker(prebound=prebound, scope=scope, bundle=bundle)
-    for dm in prebound.declared_measures:
-        vk = dm.bound.value_key
-        declared = dm.type if dm.type_is_explicit else None
-        if dm.is_dimension:
-            w.dimension(vk, name=dm.public_name, declared=declared)
+    measure_typed = frozenset(
+        i for i, ct in enumerate(filter_typings) if ct.typing == MaskTyping.MEASURE
+    )
+    for r in consumer_roots(
+        declared_measures=prebound.declared_measures, order_specs=prebound.order_specs,
+        bound_filters=prebound.bound_filters, measure_typed=measure_typed,
+    ):
+        dm = r.measure
+        declared = dm.type if dm is not None and dm.type_is_explicit else None
+        name = dm.public_name if dm is not None else None
+        if r.position == "dimension":
+            w.dimension(r.key, name=name, declared=declared)
         else:
-            containing = (dm.public_name,) if dm.public_name else ()
-            w.consumer(vk, position="measure", name=dm.public_name, declared=declared,
-                       containing=containing)
-    for sp in prebound.order_specs:
-        w.consumer(sp.bound.value_key, position="order")
-    measure_typed = {i for i, ct in enumerate(filter_typings) if ct.typing == MaskTyping.MEASURE}
-    for i, bf in enumerate(prebound.bound_filters):
-        w.consumer(bf.value_key, position="measure_filter" if i in measure_typed else "field_filter")
+            w.consumer(r.key, position=r.position, name=name, declared=declared,
+                       containing=(name,) if r.position == "measure" and name else ())
     w.inline_row_attach_roots()
     return w.out
-

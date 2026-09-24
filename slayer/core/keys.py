@@ -21,6 +21,7 @@ from typing import (
     List,
     Literal,
     Mapping,
+    NamedTuple,
     Optional,
     Tuple,
     TypeVar,
@@ -1527,18 +1528,42 @@ def attached_operand_keys(vks: Sequence[ValueKey]) -> FrozenSet[ValueKey]:
     return frozenset(out)
 
 
-def walk_consumer_keys(key: ValueKey):
-    """Reachable keys for root discovery: opaque below a root's inputs (they
-    belong to the root's own attach), still walking its partition keys — an
-    attach-carrying computed dimension in ``partition_by=`` needs the outer attach
-    the grain join is built on."""
-    yield key
+class ConsumerNode(NamedTuple):
+    """One node of a consumer walk with its position context."""
+
+    key: "ValueKey"
+    own_pk: bool  # inside an ancestor's partition keys
+    attach_pk: bool  # inside an attach-owning aggregate's partition keys
+    dim_key: bool  # inside a subtree equal to a query dimension
+
+
+def walk_consumer_positions(
+    key: ValueKey, *, dim_keys: AbstractSet["ValueKey"] = frozenset(),
+    own_pk: bool = False, attach_pk: bool = False, dim_key: bool = False,
+) -> Iterator[ConsumerNode]:
+    """Reachable keys for root discovery, pre-order: opaque below an attach-owning
+    aggregate's inputs (they belong to its own attach), still walking its partition
+    keys — an attach-carrying computed dimension in ``partition_by=`` needs the
+    outer attach the grain join is built on."""
+    dim_key = dim_key or key in dim_keys
+    yield ConsumerNode(key, own_pk, attach_pk, dim_key)
     if isinstance(key, AggregateKey) and attached_inputs(key):
-        for pk in (key.partition_keys or ()):
-            yield from walk_consumer_keys(pk)
+        for pk in key.partition_keys or ():
+            yield from walk_consumer_positions(
+                pk, dim_keys=dim_keys, own_pk=True, attach_pk=True, dim_key=dim_key,
+            )
         return
-    for child in key.children():
-        yield from walk_consumer_keys(child)
+    pks = frozenset(getattr(key, "partition_keys", None) or ())
+    for c in key.children():
+        yield from walk_consumer_positions(
+            c, dim_keys=dim_keys, own_pk=own_pk or c in pks, attach_pk=attach_pk,
+            dim_key=dim_key,
+        )
+
+
+def walk_consumer_keys(key: ValueKey) -> Iterator["ValueKey"]:
+    """The keys of :func:`walk_consumer_positions`."""
+    return (n.key for n in walk_consumer_positions(key))
 
 
 def substitute_consumer_keys(

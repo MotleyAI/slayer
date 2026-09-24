@@ -63,9 +63,7 @@ member (today's `_local_broadcasts`) → `target_rooted`; pure re-aggregation ro
 root → `reaggregation_constituent` (row); a `time_shift` occurrence → `shifted` with
 `series` judged by DEV-1958's one `_series_mode` on the original key (the walk runs
 pre-substitution). A row-attach root is `inline` with its attached inputs yielded, or
-producer-bound with its inputs left to its sub-plan. Lives in `engine/compile` because
-routing needs `bundle` / `scope` (crossing closure, attributability) — planning logic ir
-P1 keeps out of `ir`; `ir/bound.py` keeps data shapes only. `_plan_regroups` is split into
+producer-bound with its inputs left to its sub-plan. Routing lives in `engine/compile` because it needs `bundle` / `scope` (crossing closure, attributability) — planning logic ir P1 keeps out of `ir`; `ir/bound.py` keeps data shapes only. The position half is shared: the positioned consumer traversal is `core/keys.py::walk_consumer_positions` (`walk_consumer_keys` its projection, mirrored by `substitute_consumer_keys`); the classification over it — `consumer_roots`, `PositionClasses` (row-role aggregates incl. re-aggregations, row transform roots, `combined_admits`), `position_classes`, `combined_partitioned_consumers` and `position_typing_context` (moved from `ir/prebound.py`) — lives in `elaborate_env`, consumed by the walk, by `bind_inputs`' partition-key leniency (filters untyped at bind) and by position typing, over existing arrows only. `_plan_regroups` is split into
 discovery → grouping → synthesis; its `NOSONAR(S3776)` goes. Alternatives rejected: keep
 the walk in `ir/bound.py` with injected predicates (classification stays split in two
 places); a `(root, phase, routing)` set rather than an occurrence list (loses same-phase
@@ -166,8 +164,7 @@ ids, staging's per-slot `series`) stays as landed. The shifted producer is the s
 core P3; sql P10; semantics Axioms 2.3, 9, 11.3b, 11.4. Two arc42 edits, each presented as
 an exact diff for explicit approval before landing: `architecture/ir.arc42.md` §1 drops
 "and their discovery walks"; `architecture/engine.arc42.md` P2 gains
-`[enforced: test:tests/test_dev1903_first_last_dispatch.py]`. `compile/discovery.py` sits
-inside the declared `compile` child; no `index.yaml` or `.c4` change.
+`[enforced: test:tests/test_dev1903_first_last_dispatch.py]`. `compile/discovery.py` sits inside the declared `compile` child and the shared position classification in `elaborate_env`; no `index.yaml` or `.c4` change.
 
 ## Risks / Trade-offs
 

@@ -7,9 +7,11 @@ algebra type error raises here, each invoked at its family's original checkpoint
 from __future__ import annotations
 
 from typing import (
-    Callable, Dict, List, NoReturn, Optional,
+    Callable, Dict, Iterator, List, Literal, NamedTuple, NoReturn, Optional,
     Sequence, Tuple, Union,
 )
+
+from pydantic import BaseModel, ConfigDict
 
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS, DataType, TimeGranularity
 from slayer.core.errors import (
@@ -25,11 +27,15 @@ from slayer.core.formula import TIME_TRANSFORMS
 from slayer.core.window_duration import parse_window_duration
 from slayer.core.keys import (
     AggregateKey,
+    ConsumerNode,
+    walk_consumer_positions,
     attached_inputs,
     is_boolean_shaped,
     is_cross_model_agg,
     is_local_combined_regroup_ref,
     is_local_partitioned_agg,
+    grained_inner_aggregates,
+    is_reaggregation_key,
     split_top_level_and,
     ArithmeticKey,
     BetweenKey,
@@ -55,8 +61,8 @@ from slayer.ir.planned import MaskTyping, ModeAFilter
 from slayer.ir.elaborated import (
     ConjunctTyping, ElaboratedQuery, ExpressionEntry, PositionVerdict, Term,
 )
-from slayer.ir.bound import BoundFilter, bound_filter_from_key
-from slayer.ir.prebound import PreboundQuery, position_typing_context
+from slayer.ir.bound import BoundFilter, DeclaredMeasure, OrderSpec, bound_filter_from_key
+from slayer.ir.prebound import PreboundQuery
 from slayer.ir.terms import (
     Aggregate,
     Broadcast,
@@ -174,6 +180,142 @@ def type_position_conjunct(
     )
 
 
+
+
+ConsumerPosition = Literal["dimension", "measure", "order", "field_filter", "measure_filter"]
+
+
+def opaque_keys(key: ValueKey) -> Iterator[ValueKey]:
+    """``walk_value_keys`` not descending a re-aggregation root."""
+    yield key
+    if is_reaggregation_key(key):
+        return
+    for c in key.children():
+        yield from opaque_keys(c)
+
+
+def is_grained_aggregate(k: ValueKey) -> bool:
+    return isinstance(k, AggregateKey) and k.partition_keys is not None \
+        and not is_reaggregation_key(k)
+
+
+def combined_kind(k: ValueKey) -> Optional[str]:
+    """``local`` / ``cross_partitioned`` / ``cross_bare`` for a combined consumer."""
+    if not isinstance(k, AggregateKey) or is_reaggregation_key(k):
+        return None
+    partitioned = k.partition_keys is not None
+    if not source_anchor_path(k.source):
+        return "local" if partitioned else None
+    if k.locus == "host":
+        return None
+    return "cross_partitioned" if partitioned else "cross_bare"
+
+
+def is_partitioned_consumer(k: ValueKey) -> bool:
+    """A partitioned aggregate needing query-dimension keys when consumed combined."""
+    return isinstance(k, AggregateKey) and k.partition_keys is not None and not (
+        source_anchor_path(k.source) and k.locus == "host"
+    )
+
+
+def dimension_transform_roots(nodes: Sequence[ValueKey]) -> List[TransformKey]:
+    """Transforms over a grained aggregate among a computed dimension's nodes."""
+    return [
+        k for k in nodes
+        if isinstance(k, TransformKey) and any(is_grained_aggregate(g) for g in opaque_keys(k.input))
+    ]
+
+
+class ConsumerRoot(NamedTuple):
+    key: ValueKey
+    position: ConsumerPosition
+    measure: Optional[DeclaredMeasure]
+
+
+def consumer_roots(
+    *, declared_measures: Sequence[DeclaredMeasure], order_specs: Sequence[OrderSpec],
+    bound_filters: Sequence[BoundFilter], measure_typed: frozenset = frozenset(),
+) -> Iterator[ConsumerRoot]:
+    """Every consumer root with its position; untyped filters are field-typed."""
+    for dm in declared_measures:
+        yield ConsumerRoot(dm.bound.value_key, "dimension" if dm.is_dimension else "measure", dm)
+    for sp in order_specs:
+        yield ConsumerRoot(sp.bound.value_key, "order", None)
+    for i, bf in enumerate(bound_filters):
+        yield ConsumerRoot(
+            bf.value_key, "measure_filter" if i in measure_typed else "field_filter", None,
+        )
+
+
+class PositionClasses(BaseModel):
+    """Row-role keys of the computed dimensions and the combined-position rule."""
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
+    dim_keys: frozenset
+    #: Partitioned aggregates inside a computed dimension (re-aggregations included).
+    row_aggregates: frozenset
+    #: Transforms over a grained aggregate inside a computed dimension.
+    row_transform_roots: frozenset
+
+    @property
+    def row_attached(self) -> frozenset:
+        return self.row_aggregates | self.row_transform_roots
+
+    def combined_admits(self, node: ConsumerNode, *, position: ConsumerPosition, root: ValueKey) -> bool:
+        """A measure skips partition-key subtrees; a measure-typed filter skips a
+        dimension's grouped value; an order target that is itself a partitioned
+        aggregate is its only consumer; order-by-name and field-typed filter
+        references to a dimension's own aggregate are row-scope."""
+        if position == "measure":
+            return not (node.own_pk or node.attach_pk)
+        if position == "measure_filter":
+            return not node.dim_key
+        if position == "order" and is_partitioned_consumer(root):
+            return node.key is root
+        return not (is_partitioned_consumer(node.key) and node.key in self.row_aggregates)
+
+
+def position_classes(declared_measures: Sequence[DeclaredMeasure], *, n_grain: int) -> PositionClasses:
+    """The computed dimensions' row-role keys."""
+    aggs: set = set()
+    troots: set = set()
+    for dm in declared_measures:
+        if not dm.is_dimension:
+            continue
+        nodes = [n.key for n in walk_consumer_positions(dm.bound.value_key)]
+        aggs.update(k for k in nodes if isinstance(k, AggregateKey) and k.partition_keys is not None)
+        troots.update(k for k in nodes if isinstance(k, TransformKey) and grained_inner_aggregates(k.input))
+    return PositionClasses(
+        dim_keys=frozenset(dm.bound.value_key for dm in declared_measures[:n_grain]),
+        row_aggregates=frozenset(aggs), row_transform_roots=frozenset(troots),
+    )
+
+
+def position_typing_context(prebound: PreboundQuery) -> Tuple[frozenset, frozenset]:
+    """(dim_keys, row-attached set) for position typing."""
+    pc = position_classes(
+        prebound.declared_measures, n_grain=prebound.n_dims + prebound.n_time_dimensions,
+    )
+    return pc.dim_keys, pc.row_attached
+
+
+def combined_partitioned_consumers(
+    classes: PositionClasses, *, declared_measures: Sequence[DeclaredMeasure],
+    order_specs: Sequence[OrderSpec], bound_filters: Sequence[BoundFilter],
+    measure_typed: frozenset = frozenset(),
+) -> frozenset:
+    """Partitioned aggregates with a combined-position consumer."""
+    out: set = set()
+    for r in consumer_roots(declared_measures=declared_measures, order_specs=order_specs,
+                            bound_filters=bound_filters, measure_typed=measure_typed):
+        if r.position == "dimension":
+            continue
+        for n in walk_consumer_positions(r.key, dim_keys=classes.dim_keys):
+            if is_partitioned_consumer(n.key) and \
+                    classes.combined_admits(n, position=r.position, root=r.key):
+                out.add(n.key)
+    return frozenset(out)
 
 
 def type_and_split_filters(

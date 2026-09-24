@@ -170,12 +170,13 @@ class TestTwoEnvironmentTypes:
             compile_query(elaborated=producer)  # pyright: ignore[reportArgumentType]
 
     def test_each_environment_rejects_the_other_carrier(self):
-        query, prebound, _ = _producer_env()
+        query, prebound, producer = _producer_env()
         carrier = StrictQueryCarrier(source_model="orders", prebound=prebound)
+        inputs = dict(scope=producer.scope, bundle=producer.bundle, prebound=producer.prebound)
         with pytest.raises(ValueError):
-            elaborated_mod.ElaboratedStage(query=carrier)
+            elaborated_mod.ElaboratedStage(query=carrier, **inputs)  # pyright: ignore[reportArgumentType]
         with pytest.raises(ValueError):
-            elaborated_mod.ElaboratedProducer(query=query)
+            elaborated_mod.ElaboratedProducer(query=query, **inputs)  # pyright: ignore[reportArgumentType]
 
 
 def _count_top_only(monkeypatch) -> dict:

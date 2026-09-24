@@ -16,6 +16,7 @@ from slayer.engine.bind_inputs import bind_query_inputs
 from slayer.engine.elaborate_env import (
     build_environment,
     home_dataset,
+    position_typing_context,
     type_and_split_filters,
 )
 from slayer.engine.home import resolve_aggregate_homes
@@ -25,7 +26,6 @@ from slayer.ir.prebound import (
     PreboundQuery,
     StrictQueryCarrier,
     partition_declared_measures,
-    position_typing_context,
 )
 from slayer.ir.source_bundle import ResolvedSourceBundle, resolve_scope
 
