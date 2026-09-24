@@ -144,7 +144,7 @@ async def test_sql_across_declared_one_to_many_rejected(tmp_path) -> None:
     assert exc.column == "li_qty"
     assert exc.model == "orders"
     assert exc.hop == "line_items"
-    assert exc.kind == "sql"
+    assert exc.reference == "line_items.qty"
     msg = str(exc)
     assert "li_qty" in msg
     assert "line_items" in msg
@@ -175,7 +175,7 @@ async def test_filter_across_declared_one_to_many_rejected(tmp_path) -> None:
     exc = ei.value
     assert exc.column == "big_item"
     assert exc.hop == "line_items"
-    assert exc.kind == "filter"
+    assert exc.reference == "line_items.qty"
     msg = str(exc)
     assert "big_item" in msg
     assert "line_items" in msg
@@ -197,6 +197,7 @@ async def test_host_prefixed_reference_rejected(tmp_path) -> None:
     with pytest.raises(DerivedColumnFanningError) as ei:
         await storage.save_model(orders)
     assert ei.value.hop == "line_items"
+    assert ei.value.reference == "orders.line_items.qty"
 
 
 async def test_join_declared_on_peer_side_rejected(tmp_path) -> None:

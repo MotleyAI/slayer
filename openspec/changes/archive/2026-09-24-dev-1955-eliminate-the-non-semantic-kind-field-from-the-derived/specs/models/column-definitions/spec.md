@@ -1,12 +1,4 @@
-# models/column-definitions Specification
-
-## Purpose
-Defines when a derived column's definition — its `Column.sql` expression or its
-`Column.filter` value mask — is well-formed with respect to the join hops it
-crosses from its declaring model, and how a malformed definition is reported at
-model save time.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: A derived column may reference only provably to-one targets
 
