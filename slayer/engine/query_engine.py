@@ -50,6 +50,7 @@ from slayer.core.join_walker import neighbors
 from slayer.core.policy import JoinFilterRuleset, SessionPolicy
 from slayer.core.format import format_number
 from slayer.core.models import (
+    Aggregation,
     DatasourceConfig,
     ModelMeasure,
     SlayerModel,
@@ -623,6 +624,23 @@ class _Prepared(BaseModel):
     slack_warnings: List[Any] = PydanticField(default_factory=list)
     population: Optional[str] = None
     population_inferred: bool = False
+
+
+def _check_aggregation(*, where: str, agg: Aggregation, dialect: str) -> None:
+    if agg.formula and agg.name in RANKED_AGGREGATIONS:
+        raise AggregationArgumentError(f"{where}: a ranked aggregation cannot take a formula.")
+    try:
+        if agg.formula:
+            sql_template(text=agg.formula, dialect=dialect)
+        reads = aggregation_reads(agg=agg.name, definition=agg, dialect=dialect)
+    except SqlTemplateError as e:
+        raise SqlTemplateError(f"{where}: {e}") from e
+    unread = [p.name for p in agg.params if p.name not in reads]
+    if unread:
+        reader = "its formula" if rendered_formula(agg=agg.name, definition=agg) else "the built-in"
+        raise AggregationArgumentError(
+            f"{where}: parameter '{unread[0]}' is never referenced by {reader}; remove it.",
+        )
 
 
 class SlayerQueryEngine:
@@ -2962,21 +2980,7 @@ class SlayerQueryEngine:
         ds = await self.storage.get_datasource(model.data_source) if model.data_source else None
         dialect = dialect_for_ds_type(ds.type).sqlglot_name if ds else ""
         for agg in model.aggregations:
-            where = f"Model '{model.name}', aggregation '{agg.name}'"
-            if agg.formula and agg.name in RANKED_AGGREGATIONS:
-                raise AggregationArgumentError(f"{where}: a ranked aggregation cannot take a formula.")
-            try:
-                if agg.formula:
-                    sql_template(text=agg.formula, dialect=dialect)
-                reads = aggregation_reads(agg=agg.name, definition=agg, dialect=dialect)
-            except SqlTemplateError as e:
-                raise SqlTemplateError(f"{where}: {e}") from e
-            unread = [p.name for p in agg.params if p.name not in reads]
-            if unread:
-                reader = "its formula" if rendered_formula(agg=agg.name, definition=agg) else "the built-in"
-                raise AggregationArgumentError(
-                    f"{where}: parameter '{unread[0]}' is never referenced by {reader}; remove it.",
-                )
+            _check_aggregation(where=f"Model '{model.name}', aggregation '{agg.name}'", agg=agg, dialect=dialect)
 
     async def validate_sql_model_source(self, model: SlayerModel) -> None:
         """Statically classify a raw-``sql`` source, then trial-execute it: a

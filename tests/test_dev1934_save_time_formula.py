@@ -375,3 +375,12 @@ class TestBlankAggregationFieldsMigration:
         raw = _v11([{"name": "custom_agg", "formula": ""}])
         with pytest.raises(ValidationError, match="'custom_agg' is not a built-in"):
             SlayerModel.model_validate(raw)
+
+
+def test_v11_param_named_value_is_dropped_on_load() -> None:
+    raw = _v11([{
+        "name": "custom_agg", "formula": "SUM({value}) * {k}",
+        "params": [{"name": "value", "sql": "0"}, {"name": "k", "sql": "2"}],
+    }])
+    (agg,) = SlayerModel.model_validate(raw).aggregations
+    assert [p.name for p in agg.params] == ["k"]
