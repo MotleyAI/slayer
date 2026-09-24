@@ -24,7 +24,7 @@
  "bigquery|trunc|month": "DATE_TRUNC(orders.created_at, MONTH)",
  "bigquery|trunc|quarter": "DATE_TRUNC(orders.created_at, QUARTER)",
  "bigquery|trunc|second": "DATE_TRUNC(orders.created_at, SECOND)",
- "bigquery|trunc|week": "DATE_TRUNC(orders.created_at, WEEK)",
+ "bigquery|trunc|week": "DATE_TRUNC(orders.created_at, WEEK(MONDAY))",
  "bigquery|trunc|week_sunday": "DATE_TRUNC(orders.created_at, WEEK(SUNDAY))",
  "bigquery|trunc|year": "DATE_TRUNC(orders.created_at, YEAR)",
  "bigquery|var_pop": "VAR_POP(orders.amount)",

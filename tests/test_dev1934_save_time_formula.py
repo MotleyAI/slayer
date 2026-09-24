@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import sys
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
 import pytest
 import yaml
+from pydantic import ValidationError
 from fastapi.testclient import TestClient
 
 from slayer.api.server import create_app
@@ -21,6 +22,7 @@ from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.mcp.server import create_mcp_server
 from slayer.sql.client import SlayerSQLClient
+from slayer.sql.sql_template import SqlTemplateError
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -138,11 +140,31 @@ class TestEngineCheck:
         assert executed == []
         assert saved == []
 
+    async def test_check_runs_before_backing_query_expansion(
+        self, seeded, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        engine, _store = seeded
+        expanded: list[str] = []
+
+        async def _spy_expand(self, model):  # noqa: ANN001
+            expanded.append(model.name)
+            return model
+
+        monkeypatch.setattr(SlayerQueryEngine, "_validate_and_populate_cache", _spy_expand)
+        model = SlayerModel(
+            name="obs", data_source=_DS,
+            source_queries=[SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="amount:sum")])],
+            aggregations=[Aggregation(name="custom_agg", formula=_BROKEN)],
+        )
+        with pytest.raises(SqlTemplateError, match="custom_agg"):
+            await engine.save_model(model)
+        assert expanded == []
+
 
 @pytest.fixture
-def rest(seeded) -> Iterator[tuple[TestClient, YAMLStorage]]:
+def rest(seeded) -> tuple[TestClient, YAMLStorage]:
     _engine, store = seeded
-    yield TestClient(create_app(storage=store)), store
+    return TestClient(create_app(storage=store)), store
 
 
 class TestRest:
@@ -165,17 +187,18 @@ class TestRest:
 
 
 class TestCli:
-    def test_create_rejected(self, seeded, tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+    def test_create_rejected(
+        self, seeded, tmp_path: Path, capsys: pytest.CaptureFixture,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
         _engine, store = seeded
         path = tmp_path / "m.yaml"
         path.write_text(yaml.safe_dump(_model(_BROKEN).model_dump(mode="json", exclude_none=True)))
-        argv = sys.argv
-        sys.argv = ["slayer", "models", "--storage", store.base_dir, "create", str(path)]
-        try:
-            with pytest.raises(SystemExit) as ei:
-                cli_main()
-        finally:
-            sys.argv = argv
+        monkeypatch.setattr(
+            sys, "argv", ["slayer", "models", "--storage", store.base_dir, "create", str(path)],
+        )
+        with pytest.raises(SystemExit) as ei:
+            cli_main()
         assert ei.value.code == 1
         out = capsys.readouterr().out
         assert "orders" in out
@@ -245,3 +268,31 @@ class TestMcp:
         assert "Error" in out or "error" in out
         kept = await store.get_model("orders", data_source=_DS)
         assert kept.aggregations[0].formula == "SUM({value})"
+
+
+def _v11(aggregations: list[dict]) -> dict:
+    return {
+        "version": 11, "name": "orders", "sql_table": "orders", "data_source": _DS,
+        "columns": [{"name": "amount", "sql": "amount", "type": "DOUBLE"}],
+        "aggregations": aggregations,
+    }
+
+
+class TestBlankAggregationFieldsMigration:
+    def test_blank_builtin_formula_and_param_defaults_become_absent(self) -> None:
+        raw = _v11([{
+            "name": "weighted_avg", "formula": "  ",
+            "params": [{"name": "weight", "sql": ""}, {"name": "w2", "sql": "amount"}],
+        }])
+        model = SlayerModel.model_validate(raw)
+        (agg,) = model.aggregations
+        assert agg.formula is None
+        assert [p.name for p in agg.params] == ["w2"]
+        assert model.version == 12
+        assert raw["aggregations"][0]["formula"] == "  "
+        assert len(raw["aggregations"][0]["params"]) == 2
+
+    def test_blank_custom_formula_still_fails_to_load(self) -> None:
+        raw = _v11([{"name": "custom_agg", "formula": ""}])
+        with pytest.raises(ValidationError, match="'custom_agg' is not a built-in"):
+            SlayerModel.model_validate(raw)

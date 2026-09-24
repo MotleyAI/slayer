@@ -2943,6 +2943,7 @@ class SlayerQueryEngine:
             except AmbiguousModelError:
                 # Multiple entries for this name — don't silently mass-delete.
                 prior_data_source = None
+        await self._check_aggregation_formulas(model)
         if model.source_queries:
             if model.columns:
                 raise ValueError(
@@ -2956,7 +2957,6 @@ class SlayerQueryEngine:
                     f"is auto-managed and must not be supplied."
                 )
             model = await self._validate_and_populate_cache(model)
-        await self._check_aggregation_formulas(model)
         loaded = await self._preload_join_targets(model)
         _validate_join_keys(model=model, loaded=loaded)
         await self._validate_mode_a_join_paths(model, loaded=loaded)
@@ -2981,7 +2981,7 @@ class SlayerQueryEngine:
         dialect = dialect_for_ds_type(ds.type).sqlglot_name if ds else ""
         for agg in aggs:
             try:
-                sql_template(agg.formula, dialect)
+                sql_template(text=agg.formula, dialect=dialect)
             except SqlTemplateError as e:
                 raise SqlTemplateError(
                     f"Model '{model.name}', aggregation '{agg.name}': {e}",

@@ -95,6 +95,14 @@ def test_bigquery_build_date_trunc_week_sunday_native() -> None:
     assert "INTERVAL" not in sql.upper()
 
 
+def test_bigquery_build_date_trunc_week_is_monday_anchored() -> None:
+    """ISO ``week`` must not use BigQuery's Sunday-based bare ``WEEK``."""
+    out = BigqueryDialect().build_date_trunc(
+        col_expr=exp.column("ordered_at"), granularity=TimeGranularity.WEEK,
+    )
+    assert out.sql(dialect="bigquery") == "DATE_TRUNC(ordered_at, WEEK(MONDAY))"
+
+
 def test_bigquery_build_date_trunc_non_week_delegates_to_base() -> None:
     """Non-WEEK_SUNDAY granularities fall through to the base DATE_TRUNC."""
     d = BigqueryDialect()

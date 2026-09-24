@@ -71,6 +71,11 @@ ever reach the emitted SQL.
   parameter, and the query supplies no `scale` argument
 - **THEN** the query fails with a typed error naming the aggregation and `scale`
 
+#### Scenario: empty aggregation parameter default is rejected
+
+- **WHEN** a model declares an `AggregationParam` whose `sql` is empty
+- **THEN** model validation fails naming the parameter
+
 ### Requirement: Percentile p accepts a numeric literal in [0, 1]
 
 The `percentile` aggregation's `p` SHALL be a finite numeric literal — optionally signed or

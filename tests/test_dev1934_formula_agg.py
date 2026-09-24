@@ -9,10 +9,13 @@ import duckdb
 import pytest
 import sqlglot
 from sqlglot import exp
+from pydantic import ValidationError
 from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import DataType
-from slayer.core.models import Aggregation, AggregationParam, Column, ModelMeasure, SlayerModel
+from slayer.core.models import (
+    Aggregation, AggregationParam, Column, ModelJoin, ModelMeasure, SlayerModel,
+)
 from slayer.core.query import SlayerQuery
 from slayer.sql.generator import AggRenderSpec, SQLGenerator
 from slayer.sql.sql_template import SqlTemplateError
@@ -73,6 +76,20 @@ def _q(formula: str) -> SlayerQuery:
 
 async def _sql(formula: str, *, dialect: str = "postgres", aggs: tuple[Aggregation, ...] = ()) -> str:
     return await _engine_generate(query=_q(formula), model=_orders(aggs), dialect=dialect)
+
+
+async def _joined_sql(agg: Aggregation, formula: str) -> str:
+    customers = SlayerModel(
+        name="customers", sql_table="customers", data_source="test",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="weight", sql="weight", type=DataType.DOUBLE),
+        ],
+    )
+    host = _orders((agg,)).model_copy(
+        update={"joins": [ModelJoin(target_model="customers", join_pairs=[["id", "id"]])]},
+    )
+    return await _engine_generate(query=_q(formula), model=host, extra_models=[customers])
 
 
 _SUMSQ = Aggregation(name="sumsq", formula="SUM({value} * {value})")
@@ -185,6 +202,29 @@ class TestPlaceholderRecognition:
         tight = Aggregation(name="s1", formula="SUM({value})")
         assert await _sql("price:s1", aggs=(spaced,)) == await _sql("price:s1", aggs=(tight,))
 
+    async def test_whitespace_placeholder_kwarg_registers_its_join(self) -> None:
+        query = "price:scaled(scale='customers.weight')"
+        spaced = await _joined_sql(Aggregation(name="scaled", formula="SUM({value}) / MAX({ scale })"), query)
+        assert spaced == await _joined_sql(
+            Aggregation(name="scaled", formula="SUM({value}) / MAX({scale})"), query,
+        )
+        assert "JOIN customers" in spaced
+
+    async def test_unused_param_default_registers_no_join(self) -> None:
+        unused = Aggregation(
+            name="plain", formula="SUM({value})",
+            params=[AggregationParam(name="w", sql="customers.weight")],
+        )
+        assert "customers" not in await _joined_sql(unused, "price:plain")
+
+    @pytest.mark.parametrize("declared", [Aggregation(name="corr"), _SUMSQ])
+    async def test_formula_less_builtin_string_kwarg_registers_its_join(
+        self, declared: Aggregation,
+    ) -> None:
+        sql = await _joined_sql(declared, "price:corr(other='customers.weight')")
+        assert "CORR(orders.price, customers.weight)" in sql
+        assert "JOIN customers" in sql
+
 
 class TestInvalidTemplates:
     @pytest.mark.parametrize("formula", ["SUM({value}", "SUM({t}.amount)"])
@@ -202,6 +242,17 @@ class TestInvalidTemplates:
         missing = Aggregation(name="needs_scale", formula="SUM({value}) * {scale}")
         with pytest.raises(SqlTemplateError, match=r"needs_scale[\s\S]*scale|scale[\s\S]*needs_scale"):
             await _sql("price:needs_scale", dialect=dialect, aggs=(missing,))
+
+    @pytest.mark.parametrize("sql", ["", "  "])
+    def test_empty_param_default_is_rejected(self, sql: str) -> None:
+        with pytest.raises(ValidationError, match="'scale' has an empty sql default"):
+            AggregationParam(name="scale", sql=sql)
+
+    @pytest.mark.parametrize("name", ["custom_agg", "weighted_avg"])
+    @pytest.mark.parametrize("formula", ["", "  "])
+    def test_empty_formula_is_rejected(self, name: str, formula: str) -> None:
+        with pytest.raises(ValidationError, match=f"'{name}' has an empty formula"):
+            Aggregation(name=name, formula=formula)
 
 
 def _pct_spec(p: str | None = None, *, default: str | None = None) -> AggRenderSpec:
@@ -262,6 +313,12 @@ class TestPercentileP:
         gen = SQLGenerator(dialect="postgres")
         spec = _pct_spec(default=p)
         with pytest.raises(ValueError, match=r"numeric literal|\[0, 1\]"):
+            gen._build_percentile(spec)
+
+    def test_range_error_shows_the_signed_value(self) -> None:
+        gen = SQLGenerator(dialect="postgres")
+        spec = _pct_spec("-0.5")
+        with pytest.raises(ValueError, match=r"got -0\.5\.$"):
             gen._build_percentile(spec)
 
     async def test_non_literal_p_rejected_at_query_level(self) -> None:

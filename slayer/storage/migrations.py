@@ -16,7 +16,7 @@ from collections.abc import Callable
 
 # Per-entity current version. Bump independently when an entity's schema changes.
 CURRENT_VERSIONS: dict[str, int] = {
-    "SlayerModel": 11,
+    "SlayerModel": 12,
     "SlayerQuery": 4,
     "DatasourceConfig": 2,
     "Memory": 2,
@@ -64,6 +64,28 @@ def _model_v10_to_v11(data: dict) -> dict:
     """v11: per-doc no-op; join-key canonicalisation needs the peer, so it runs
     in the storage load path (``_migrate_and_refine_on_load``)."""
     return data
+
+
+def _blank(v: Any) -> bool:
+    return isinstance(v, str) and not v.strip()
+
+
+@register_migration(entity="SlayerModel", source_version=11)
+def _model_v11_to_v12(data: dict) -> dict:
+    """v12: blank aggregation formulas / param defaults are now invalid; drop them (they meant "absent")."""
+    aggs = data.get("aggregations")
+    if isinstance(aggs, list):
+        data["aggregations"] = [_drop_blank_agg_fields(a) if isinstance(a, dict) else a for a in aggs]
+    return data
+
+
+def _drop_blank_agg_fields(agg: dict) -> dict:
+    out = {k: v for k, v in agg.items() if not (k == "formula" and _blank(v))}
+    if isinstance(out.get("params"), list):
+        out["params"] = [
+            p for p in out["params"] if not (isinstance(p, dict) and _blank(p.get("sql")))
+        ]
+    return out
 
 
 # Legacy quoted ``strict`` tokens; blank/whitespace counts as false. Anything

@@ -66,6 +66,7 @@ if TYPE_CHECKING:
 #     ``tests/dialects/test_bigquery.py::test_rewrite_emitted_sql_false_positive_on_single_backticked_dotted_path``
 #     for the characterization pin.
 _DOTTED_ALIAS_RE = re.compile(r"`(\w+(?:\.\w+)+)`", re.ASCII)
+_WEEK_ANCHORS = {TimeGranularity.WEEK: "MONDAY", TimeGranularity.WEEK_SUNDAY: "SUNDAY"}
 
 
 # ---------------------------------------------------------------------------
@@ -153,30 +154,21 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
         col_expr: exp.Expression,
         granularity: TimeGranularity,
     ) -> exp.Expression:
-        """BigQuery override for WEEK_SUNDAY.
+        """Anchor both weeks explicitly: BigQuery's bare ``WEEK`` is Sunday-based.
 
-        BigQuery's native ``DATE_TRUNC(x, WEEK)`` is already Sunday-based, so
-        the base class's generic +1d/-1d shift (which reuses a Monday-based
-        WEEK) would double-shift. Emit the native Sunday form
-        ``DATE_TRUNC(col, WEEK(SUNDAY))`` instead.
-
-        Built as an ``exp.Anonymous`` because sqlglot (30.4.x) drops the
-        ``(SUNDAY)`` weekday modifier when re-emitting an ``exp.DateTrunc`` —
-        the anonymous call renders verbatim on the single final emission.
-        Non-column/non-cast operands are wrapped in ``CAST(... AS TIMESTAMP)``
-        to mirror the base class's operand handling. Every other granularity
-        delegates to the base implementation.
+        ``DATE_TRUNC(col, WEEK(MONDAY|SUNDAY))`` is an ``exp.Anonymous`` since
+        sqlglot drops the weekday modifier from ``exp.DateTrunc``. Non-column
+        operands are cast to TIMESTAMP like the base; other grains delegate.
         """
-        if granularity != TimeGranularity.WEEK_SUNDAY:
+        weekday = _WEEK_ANCHORS.get(granularity)
+        if weekday is None:
             return super().build_date_trunc(
                 col_expr=col_expr, granularity=granularity,
             )
         if not isinstance(col_expr, (exp.Column, exp.Cast)):
             col_expr = exp.Cast(this=col_expr, to=exp.DataType.build("TIMESTAMP"))
-        week_sunday = exp.Anonymous(this="WEEK", expressions=[exp.var("SUNDAY")])
-        return exp.Anonymous(
-            this="DATE_TRUNC", expressions=[col_expr, week_sunday],
-        )
+        week = exp.Anonymous(this="WEEK", expressions=[exp.var(weekday)])
+        return exp.Anonymous(this="DATE_TRUNC", expressions=[col_expr, week])
 
     def build_engine(
         self,

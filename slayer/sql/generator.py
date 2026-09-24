@@ -104,7 +104,7 @@ from slayer.sql.render.aggregates import (
     resolve_agg_entry,
 )
 from slayer.sql.render.parse import parse_expression, parse_predicate
-from slayer.sql.sql_template import SqlTemplateError, sql_template
+from slayer.sql.sql_template import SqlTemplate, SqlTemplateError, sql_template
 from slayer.sql.render.value_expr import (
     AliasFacilities,
     CompositeFacilities,
@@ -613,7 +613,7 @@ def _percentile_literal(p: Expression) -> Expression:
         value = -value
     if not value.is_finite() or not 0 <= value <= 1:
         raise ValueError(
-            f"Aggregation 'percentile' parameter 'p' must be in [0, 1]; got {node.this}."
+            f"Aggregation 'percentile' parameter 'p' must be in [0, 1]; got {p.sql()}."
         )
     return node.copy()
 
@@ -1377,15 +1377,21 @@ class SQLGenerator:
                     f"(e.g., 'measure:{agg_name}({req}=column)')."
                 )
 
+        template = self._formula_template(agg_name=agg_name, formula=formula)
+        # A source ``Column.filter`` is already baked into the value; parameters carry only their own.
+        bindings = {"value": self._resolve_value_ast(spec)}
+        bindings.update({
+            name: self._agg_param_ast(val, model_name=spec.model_name)
+            for name, val in params.items() if name in template.placeholder_names
+        })
         try:
-            template = sql_template(formula, self.dialect)
-            # A source ``Column.filter`` is already baked into the value; parameters carry only their own.
-            bindings = {"value": self._resolve_value_ast(spec)}
-            bindings.update({
-                name: self._agg_param_ast(val, model_name=spec.model_name)
-                for name, val in params.items() if name in template.placeholder_names
-            })
             return template.render(bindings)
+        except SqlTemplateError as e:
+            raise SqlTemplateError(f"Aggregation '{agg_name}': {e}") from e
+
+    def _formula_template(self, *, agg_name: str, formula: str) -> SqlTemplate:
+        try:
+            return sql_template(text=formula, dialect=self.dialect)
         except SqlTemplateError as e:
             raise SqlTemplateError(f"Aggregation '{agg_name}': {e}") from e
 
@@ -5391,19 +5397,22 @@ class SQLGenerator:
         agg_def = next(
             (a for a in (model.aggregations or []) if a.name == key.agg), None,
         )
-        if agg_def is None:
-            return {}
-        formula = agg_def.formula or ""
+        formula = (agg_def and agg_def.formula) or BUILTIN_AGGREGATION_FORMULAS.get(key.agg)
+        # None: no template (e.g. corr, percentile) — every string kwarg / default is a fragment.
+        placeholders = (
+            self._formula_template(agg_name=key.agg, formula=formula).placeholder_names
+            if formula else None
+        )
         overridden = {name for name, _ in key.kwargs}
         # (name, fragment, owner_path). Explicit string kwargs keep the caller's
         # owner_path; a definition default on a host-locus aggregate resolves at
         # the root or the source owner per its reference frame.
         named_fragments: List[Tuple[str, str, Tuple[str, ...]]] = [
             (name, v, tuple(owner_path)) for name, v in key.kwargs
-            if isinstance(v, str) and f"{{{name}}}" in formula
+            if isinstance(v, str) and (placeholders is None or name in placeholders)
         ]
-        for p in (agg_def.params or []):
-            if p.name in overridden or not p.sql:
+        for p in (agg_def.params if agg_def else []):
+            if p.name in overridden or (placeholders is not None and p.name not in placeholders):
                 continue
             if source_owner_path is not None:
                 frag_sql, frag_owner_path = self._default_frag_entry(

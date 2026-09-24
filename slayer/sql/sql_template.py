@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from functools import lru_cache
 from itertools import count
 
-from pydantic import BaseModel, ConfigDict, PrivateAttr
+from pydantic import BaseModel, ConfigDict
 from sqlglot import exp
 from sqlglot.expressions.core import Expression
 from sqlglot.dialects.dialect import Dialect
@@ -58,11 +58,12 @@ class SqlTemplate(BaseModel):
     text: str
     dialect: str
 
-    _root: Expression = PrivateAttr()
-    _names: dict[str, str] = PrivateAttr()
+    _root: Expression
+    _names: dict[str, str]
 
     def __init__(self, *, text: str, dialect: str) -> None:
-        super().__init__(text=text, dialect=dialect)
+        # Not model_post_init: pydantic would wrap SqlTemplateError in a ValidationError.
+        super().__init__(text=text, dialect=dialect)  # NOSONAR(S930) — BaseModel.__init__ takes **data
         try:
             tokens = Dialect.get_or_raise(self.dialect).tokenizer().tokenize(self.text)
         except SqlglotError as e:
