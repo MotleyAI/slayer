@@ -48,16 +48,9 @@ _SP = "compile/stages.py"
 _PL = "compile/projection.py"
 _EE = "elaborate_env.py"  # the checker: guards relocate here from the compilers
 _BI = "bind_inputs.py"  # the query-level bind pass: the bind block left the compiler
-_EL = "elaborate.py"  # the one elaboration pass (entry API)
 _CI = "compile/__init__.py"  # the compile entry API
 
 ROWS: Tuple[LedgerRow, ...] = (
-    _row(module=_EL, function="elaborate_query", exc="ValueError",
-         message="elaborate_query needs query= or an explicit scope=.",
-         category="internal", family="internal", user=False, owner="checker"),
-    _row(module=_EL, function="elaborate_query", exc="ValueError",
-         message="elaborate_query needs query= or prebound=.",
-         category="internal", family="internal", user=False, owner="checker"),
     _row(module=_CI, function="compile_query", exc="ValueError",
          message="compile_query needs an environment produced by elaborate_query (its compile inputs are unset).",
          category="internal", family="internal", user=False, owner="compiler"),

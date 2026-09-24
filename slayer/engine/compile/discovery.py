@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict
 from slayer.core.enums import RANKED_AGGREGATIONS, DataType
 from slayer.core.keys import (
     AggregateKey,
+    ConsumerNode,
     TransformKey,
     ValueKey,
     attached_inputs,
@@ -127,19 +128,23 @@ class _Walker:
             for g in self.grain
         )
 
+    def emit_named(self, k: ValueKey, phase: RootPhase, routing: Routing, *, top: bool,
+                   name: Optional[str], declared: Optional[DataType]) -> None:
+        """Emit ``k``; only the consumer root itself carries the public name and type."""
+        self.emit(k, phase, routing, names=(name,) if name and top else (),
+                  declared_type=declared if top else None)
+
     def dimension(self, vk: ValueKey, *, name: Optional[str], declared: Optional[DataType]) -> None:
         nodes = [n.key for n in walk_consumer_positions(vk)]
         transform_roots = dimension_transform_roots(nodes)
         covered = {g for t in transform_roots for g in _opaque(t.input)}
         for k in nodes:
             if is_reaggregation_key(k):
-                self.emit(k, "row", "reaggregation",
-                          names=(name,) if name and k == vk else (),
-                          declared_type=declared if k == vk else None)
+                self.emit_named(k, "row", "reaggregation", top=k == vk, name=name,
+                                declared=declared)
                 continue
-            grained = is_grained_aggregate(k)
-            if k in transform_roots or (grained and k not in covered):
-                self.emit(k, "row", "target_rooted" if is_cross_model_agg(k) else "local_producer")
+            if k in transform_roots or (is_grained_aggregate(k) and k not in covered):
+                self.emit(k, "row", _input_routing(k))
             self.row_attach(k, attach_pk=False)
 
     def row_attach(self, k: ValueKey, *, attach_pk: bool, names: Sequence[str] = ()) -> None:
@@ -153,24 +158,33 @@ class _Walker:
     ) -> None:
         """Route every node of a measure / order / filter root."""
         for n in walk_consumer_positions(vk, dim_keys=self.classes.dim_keys):
-            k, top = n.key, n.key is vk
-            names = (name,) if name and top else ()
-            if is_reaggregation_key(k):
-                self.emit(k, "combined", "reaggregation", names=names,
-                          declared_type=declared if top else None)
+            top = n.key is vk
+            if is_reaggregation_key(n.key):
+                self.emit_named(n.key, "combined", "reaggregation", top=top, name=name,
+                                declared=declared)
                 continue
-            if isinstance(k, TransformKey) and k.op == "time_shift":
-                self.emit(k, "combined", "shifted", series=_series_mode(k.input, to_original={}))
-            kind = combined_kind(k)
-            if kind is not None and self.classes.combined_admits(n, position=position, root=vk):
-                routing: Routing = "local_producer" if kind == "local" else "target_rooted"
-                self.emit(k, "combined", routing, names=names,
-                          declared_type=declared if top and kind != "local" else None)
-            if _is_bare_windowed_or_ranked(k) or self.crossing(k):
+            self.combined_node(n, root=vk, position=position,
+                               names=(name,) if name and top else (),
+                               declared=declared if top else None)
+            self.row_attach(n.key, attach_pk=n.attach_pk, names=containing)
+
+    def combined_node(
+        self, n: ConsumerNode, *, root: ValueKey, position: ConsumerPosition,
+        names: Tuple[str, ...], declared: Optional[DataType],
+    ) -> None:
+        k = n.key
+        if isinstance(k, TransformKey) and k.op == "time_shift":
+            self.emit(k, "combined", "shifted", series=_series_mode(k.input, to_original={}))
+        kind = combined_kind(k)
+        if kind is not None and self.classes.combined_admits(n, position=position, root=root):
+            if kind == "local":
                 self.emit(k, "combined", "local_producer", names=names)
-            elif self.local_broadcasts(k):
-                self.emit(k, "combined", "target_rooted", names=names)
-            self.row_attach(k, attach_pk=n.attach_pk, names=containing)
+            else:
+                self.emit(k, "combined", "target_rooted", names=names, declared_type=declared)
+        if _is_bare_windowed_or_ranked(k) or self.crossing(k):
+            self.emit(k, "combined", "local_producer", names=names)
+        elif self.local_broadcasts(k):
+            self.emit(k, "combined", "target_rooted", names=names)
 
     def inline_row_attach_roots(self) -> None:
         """Emit each row-attach root no producer disposition routes, with its inputs."""

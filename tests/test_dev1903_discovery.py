@@ -19,7 +19,7 @@ from slayer.engine.elaborate import elaborate_query
 from slayer.engine.plan import plan_query
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
-from tests._dev1832_fixtures import dev1832_models, monthly_q
+from tests._dev1832_fixtures import dev1832_models, make_exec_engine, month_key, monthly_q
 from tests._dev1832_fixtures import month_td as monthly_month_td
 from tests._dev1836_fixtures import SPEND_BAND, dev1836_models, month_td, q
 from tests._dev1847_fixtures import (
@@ -365,3 +365,23 @@ class TestUnderReaggregationPartitionKeys:
             ("row", "local_producer"), ("combined", "reaggregation"),
         ]
         assert ds[1].consumer_public_names == ("r",)
+
+
+@pytest.fixture(params=["sqlite", "duckdb"])
+async def exec_engine(request):
+    async for engine in make_exec_engine(request):
+        yield engine
+
+
+class TestTransformOverReaggregationDimension:
+    async def test_filter_on_it_executes(self, exec_engine):
+        """Typing and discovery share one computed-dimension transform-root definition,
+        so a filter on ``cumsum(<re-aggregation>)`` compiles and keeps its rows."""
+        resp = await exec_engine.execute(monthly_q(
+            dimensions=["region", {"expression": f"cumsum({REAGG_STANDALONE})", "name": "rr"}],
+            time_dimensions=monthly_month_td(),
+            measures=[ModelMeasure(formula="amount:sum", name="s")],
+            filters=["rr > 10"]))
+        mcol = next(c for c in resp.columns if "ordered_at" in c)
+        got = {(r["monthly.region"], month_key(r[mcol])): r["monthly.rr"] for r in resp.data}
+        assert got == {("North", "2024-02"): 20.0, ("North", "2024-03"): 30.0}

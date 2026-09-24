@@ -34,7 +34,6 @@ from slayer.core.keys import (
     is_cross_model_agg,
     is_local_combined_regroup_ref,
     is_local_partitioned_agg,
-    grained_inner_aggregates,
     is_reaggregation_key,
     split_top_level_and,
     ArithmeticKey,
@@ -285,7 +284,7 @@ def position_classes(declared_measures: Sequence[DeclaredMeasure], *, n_grain: i
             continue
         nodes = [n.key for n in walk_consumer_positions(dm.bound.value_key)]
         aggs.update(k for k in nodes if isinstance(k, AggregateKey) and k.partition_keys is not None)
-        troots.update(k for k in nodes if isinstance(k, TransformKey) and grained_inner_aggregates(k.input))
+        troots.update(dimension_transform_roots(nodes))
     return PositionClasses(
         dim_keys=frozenset(dm.bound.value_key for dm in declared_measures[:n_grain]),
         row_aggregates=frozenset(aggs), row_transform_roots=frozenset(troots),

@@ -20,7 +20,7 @@ def compile_query(
     producer_registry: Optional[Dict[Hashable, PlannedQuery]] = None,
 ) -> PlannedQuery:
     """Compile an elaborated stage to a ``PlannedQuery``."""
-    if not isinstance(elaborated, ElaboratedStage) or elaborated.query is None:
+    if not isinstance(elaborated, ElaboratedStage):
         raise ValueError(
             "compile_query needs an environment produced by elaborate_query "
             "(its compile inputs are unset).",

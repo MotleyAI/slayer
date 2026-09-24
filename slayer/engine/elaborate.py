@@ -32,7 +32,7 @@ from slayer.ir.source_bundle import ResolvedSourceBundle, resolve_scope
 
 def elaborate_query(
     *,
-    query: Optional[SlayerQuery] = None,
+    query: SlayerQuery,
     bundle: ResolvedSourceBundle,
     scope: Optional[Union[ModelScope, StageSchema]] = None,
     stage_schemas: Optional[Dict[str, StageSchema]] = None,
@@ -42,14 +42,10 @@ def elaborate_query(
     sub-phase. Splits host-rooted filter strings into per-conjunct masks."""
     stage_schemas = stage_schemas or {}
     if scope is None:
-        if query is None:
-            raise ValueError("elaborate_query needs query= or an explicit scope=.")
         scope = resolve_scope(
             query=query, bundle=bundle, stage_schemas=stage_schemas,
         )
     if prebound is None:
-        if not isinstance(query, SlayerQuery):
-            raise ValueError("elaborate_query needs query= or prebound=.")
         prebound = bind_query_inputs(
             query=query, bundle=bundle, scope=scope,
             stage_schemas=stage_schemas,

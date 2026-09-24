@@ -88,7 +88,7 @@ class _CompileInputs(ElaboratedQuery):
 class ElaboratedStage(_CompileInputs):
     """One user-authored query stage's environment."""
 
-    query: Optional[SlayerQuery] = PydanticField(default=None, repr=False)
+    query: SlayerQuery = PydanticField(repr=False)
 
 
 class ElaboratedProducer(_CompileInputs):

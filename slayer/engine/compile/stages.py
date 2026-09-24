@@ -2840,8 +2840,6 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
         bundle=bundle, scope=scope, stage_schemas=stage_schemas,
         inherited=inherited, n_date_range=n_date_range,
         producer_source_model=host_model.name, producer_registry=producer_registry,
-        projected_dim_keys=context.projected_dim_keys,
-        projected_td_keys=context.projected_td_keys,
         active_bucket=prebound.main_time_key,
         population=population,
         population_semi_join_measures=semi_join_names,
@@ -2974,8 +2972,6 @@ def _build_carrier_attach(
     n_date_range: int,
     producer_source_model: Optional[str],
     producer_registry: Optional[Dict[Hashable, PlannedQuery]],
-    projected_dim_keys: List[ValueKey],
-    projected_td_keys: List[ValueKey],
     active_bucket: Optional[ValueKey],
     population: "Population",
     population_semi_join_measures: Optional[List[str]] = None,
@@ -3284,10 +3280,10 @@ class _LocalRegroupContext(BaseModel):
     bundle: ResolvedSourceBundle
     scope: Union[ModelScope, StageSchema]
     stage_schemas: Dict[str, StageSchema]
-    producer_source_model: Optional[str]
+    producer_source_model: Optional[str]  # NOSONAR(S8396) — required-nullable: the one caller always decides
     producer_registry: Dict[Hashable, PlannedQuery]
     population: Population
-    producer_model: Optional[SlayerModel]
+    producer_model: Optional[SlayerModel]  # NOSONAR(S8396) — required-nullable: the one caller always decides
     mapping: Dict[ValueKey, ValueKey]
     inherited: List[Any]
     n_inherited_date: int
@@ -3828,7 +3824,6 @@ def _route_top_level(
         population=population,
     )
     _assert_total_routing(routed_prebound)
-    assert env.query is not None  # compile_query admits only a stage with its query
     return _Routed(
         query=env.query, env=env, typed_prebound=prebound, prebound=routed_prebound,
         attaches=attaches, population=population, producer_registry=producer_registry,
@@ -3864,7 +3859,7 @@ def _route_producer(
 
 
 def _producer_source_model(env: Union[ElaboratedStage, ElaboratedProducer]) -> Optional[str]:
-    if env.query is not None and isinstance(env.query.source_model, str):
+    if isinstance(env.query.source_model, str):
         return env.query.source_model
     if isinstance(env.scope, ModelScope) and env.scope.source_model is not None:
         return env.scope.source_model.name
