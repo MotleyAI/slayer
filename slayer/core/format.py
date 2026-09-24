@@ -78,15 +78,7 @@ def _format_with_notation(
 
     # Calculate dynamic precision if not specified
     if explicit_precision is None:
-        abs_value = abs(formatted_value)
-        if abs_value == 0:
-            digits = 1
-        elif abs_value >= 1:
-            digits = math.floor(math.log10(abs_value)) + 1
-        else:
-            digits = 0
-
-        precision = max(0, default_precision - digits)
+        precision = max(0, default_precision - _integer_digits(abs(formatted_value)))
         if max_precision is not None:
             precision = min(precision, max_precision)
     else:
@@ -95,10 +87,37 @@ def _format_with_notation(
     return formatted_value, suffix, precision
 
 
+def _integer_digits(abs_value: float | decimal.Decimal) -> int:
+    """Digits before the decimal point: 1 for zero, 0 below one; exact for Decimals beyond float range."""
+    if abs_value == 0:
+        return 1
+    if abs_value < 1:
+        return 0
+    if isinstance(abs_value, decimal.Decimal):
+        return abs_value.adjusted() + 1
+    # ``log10`` rounds near powers of ten; exact int comparisons correct it.
+    digits = math.floor(math.log10(abs_value)) + 1
+    if 10 ** (digits - 1) > abs_value:
+        return digits - 1
+    if 10 ** digits <= abs_value:
+        return digits + 1
+    return digits
+
+
+def _times_hundred(value: float | decimal.Decimal) -> float | decimal.Decimal:
+    """``value * 100``; a Decimal past the context's ``Emax`` becomes ±Infinity, as a float does."""
+    try:
+        return value * 100
+    except decimal.Overflow:
+        return decimal.Decimal("Infinity") if value > 0 else decimal.Decimal("-Infinity")
+
+
 def _is_non_finite(value: float | decimal.Decimal) -> bool:
     if isinstance(value, decimal.Decimal):
         return not value.is_finite()
-    return isinstance(value, float) and not math.isfinite(value)
+    if isinstance(value, numbers.Integral):
+        return False
+    return not math.isfinite(value)
 
 
 def _format_currency(*, value: float | decimal.Decimal, precision: int | None, symbol: str) -> str:
@@ -124,6 +143,10 @@ def format_number(value: float | decimal.Decimal, format_spec: NumberFormat) -> 
     # numbers.Real covers numpy scalars; NaN / ±Infinity render verbatim.
     if not isinstance(value, (numbers.Real, decimal.Decimal)) or _is_non_finite(value):
         return str(value)
+    if isinstance(value, numbers.Integral):
+        value = int(value)  # fixed-width (numpy) ints wrap on abs()
+        if value.bit_length() > 1023:  # int / int overflows float
+            value = decimal.Decimal(value)
 
     format_type = format_spec.type
     precision = format_spec.precision
@@ -132,7 +155,9 @@ def format_number(value: float | decimal.Decimal, format_spec: NumberFormat) -> 
         return _format_currency(value=value, precision=precision, symbol=format_spec.symbol or "$")
 
     elif format_type == NumberFormatType.PERCENT:
-        percent_value = value * 100
+        percent_value = _times_hundred(value)
+        if _is_non_finite(percent_value):  # overflow
+            return f"{percent_value}%"
         formatted_value, suffix, calc_precision = _format_with_notation(
             value=percent_value, default_precision=2, explicit_precision=precision
         )
