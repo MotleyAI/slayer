@@ -128,7 +128,7 @@ from slayer.engine.compile.projection import (
     _canonical_name,
     _iter_slot_deps,
 )
-from slayer.engine.compile.shift import _series_mode, carried_placeholders
+from slayer.engine.compile.shift import carried_placeholders
 from slayer.engine.compile.staging import stage_slots
 from slayer.engine.key_metadata import (
     dimension_key_metadata,
@@ -1038,6 +1038,7 @@ def _plan_shifted_attaches(
     producer_source_model: Optional[str],
     producer_registry: Optional[Dict[Hashable, PlannedQuery]],
     population: "Population",
+    candidates: AbstractSet[ValueKey],
 ) -> List[RegroupAttachPlan]:
     """One frame-free producer per non-series ``time_shift`` slot, each leaf at its own
     grain (carried or re-evaluated), looked up by the slot on the shifted bucket."""
@@ -1047,7 +1048,7 @@ def _plan_shifted_attaches(
     shift_slots = [
         s for s in slots
         if isinstance(s.key, TransformKey) and s.key.op == "time_shift"
-        and not _series_mode(s.key.input, to_original=to_original)
+        and _original_key(s.key, to_original=to_original) in candidates
     ]
     if not shift_slots:
         return []
@@ -1134,6 +1135,15 @@ def _plan_shifted_attaches(
             **kernel_kwargs,
         ), producer_registry))
     return out
+
+
+def _original_key(key: ValueKey, *, to_original: Mapping[ValueKey, ValueKey]) -> ValueKey:
+    """``key`` with every attach placeholder undone, nested ones included."""
+    while True:
+        undone = substitute_value_keys(key, to_original)
+        if undone == key:
+            return key
+        key = undone
 
 
 def _shifted_answer_aliases(
@@ -3242,6 +3252,7 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
     stage_schemas: Dict[str, StageSchema],
     producer_source_model: Optional[str],
     producer_registry: Dict[Hashable, PlannedQuery],
+    dispositions: Sequence[RootDisposition],
     nests: Callable[[ValueKey, str], bool],
     home_paths: Dict[ValueKey, Tuple[str, ...]],
     population: Population,
@@ -3249,9 +3260,6 @@ def _plan_regroups(  # NOSONAR(S3776) — one cohesive desugar: discover row (co
 ) -> Tuple[PreboundQuery, List[RegroupAttachPlan]]:
     """Discover partitioned aggregates and desugar into producer stages + reserved-leaf placeholders (row attach at base FROM, combined at the combined SELECT)."""
     registry = RegroupPlaceholderRegistry(reserved=reserved_placeholders)
-    dispositions = discover_roots(
-        prebound, filter_typings=filter_typings, scope=scope, bundle=bundle,
-    )
     reagg = _group_reaggregation_roots(dispositions)
     reagg_roots = list(reagg.phase)
     reagg_mapping: Dict[ValueKey, ValueKey] = {
@@ -3702,6 +3710,14 @@ class _Routed(BaseModel):
     attaches: List[RegroupAttachPlan]
     population: Population
     producer_registry: Dict[Hashable, PlannedQuery]
+    #: Non-series ``time_shift`` roots, each answered by a shifted producer.
+    shift_candidates: FrozenSet[ValueKey]
+
+
+def _shift_candidates(dispositions: Sequence[RootDisposition]) -> FrozenSet[ValueKey]:
+    return frozenset(
+        d.root for d in dispositions if d.routing == "shifted" and d.series is False
+    )
 
 
 def _route_top_level(
@@ -3713,11 +3729,16 @@ def _route_top_level(
     population = _population_of(dispose_population_filters(
         prebound=prebound, filter_typings=filter_typings, scope=scope, bundle=bundle,
     ))
+    stripped = _strip_redundant_partitions(env)
+    dispositions = discover_roots(
+        stripped, filter_typings=filter_typings, scope=scope, bundle=bundle,
+    )
     routed_prebound, attaches = _plan_regroups(
-        prebound=_strip_redundant_partitions(env), filter_typings=filter_typings,
+        prebound=stripped, filter_typings=filter_typings,
         scope=scope, bundle=bundle, stage_schemas=dict(env.stage_schemas),
         producer_source_model=_producer_source_model(env),
         producer_registry=producer_registry,
+        dispositions=dispositions,
         nests=lambda _root, _phase: True,
         home_paths=_home_paths(env),
         population=population,
@@ -3726,6 +3747,7 @@ def _route_top_level(
     return _Routed(
         query=env.query, env=env, typed_prebound=prebound, prebound=routed_prebound,
         attaches=attaches, population=population, producer_registry=producer_registry,
+        shift_candidates=_shift_candidates(dispositions),
     )
 
 
@@ -3735,11 +3757,15 @@ def _route_producer(
 ) -> _Routed:
     prebound, scope, bundle = env.prebound, env.scope, env.bundle
     assert prebound is not None and scope is not None and bundle is not None
+    dispositions = discover_roots(
+        prebound, filter_typings=env.filter_typings, scope=scope, bundle=bundle,
+    )
     routed_prebound, attaches = _plan_regroups(
         prebound=prebound, filter_typings=list(env.filter_typings),
         scope=scope, bundle=bundle, stage_schemas=dict(env.stage_schemas),
         producer_source_model=_producer_source_model(env),
         producer_registry=producer_registry,
+        dispositions=dispositions,
         nests=_producer_nesting_rule(prebound, context=context),
         home_paths=_home_paths(env),
         population=context.population,
@@ -3749,6 +3775,7 @@ def _route_producer(
         query=env.query, env=env, typed_prebound=prebound, prebound=routed_prebound,
         attaches=[*attaches, *context.carried_attaches], population=context.population,
         producer_registry=producer_registry,
+        shift_candidates=_shift_candidates(dispositions),
     )
 
 
@@ -4157,6 +4184,7 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
         scope=scope, bundle=bundle, stage_schemas=stage_schemas,
         producer_source_model=_producer_source_model_name,
         producer_registry=producer_registry, population=population,
+        candidates=routed.shift_candidates,
     )]
     # Assign every slot its materialisation stage / needs-column / series fact
     # (DEV-1800 D3); producer bodies were staged by their own compile_prebound.
