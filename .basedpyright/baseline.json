@@ -3028,16 +3028,6 @@
                 }
             }
         ],
-        "./slayer/ir/bound.py": [
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 29,
-                    "endColumn": 30,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./slayer/ir/prebound.py": [
             {
                 "code": "reportAttributeAccessIssue",
@@ -27312,22 +27302,6 @@
                 "range": {
                     "startColumn": 24,
                     "endColumn": 28,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 21,
-                    "endColumn": 58,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 24,
-                    "endColumn": 44,
                     "lineCount": 1
                 }
             },
