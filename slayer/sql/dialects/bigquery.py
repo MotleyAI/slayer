@@ -261,8 +261,8 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
                 f"the connection string as 'bigquery://<project>/<dataset>', or "
                 f"as 'quota_project_id' inside oauth_credentials_json."
             )
-        from google.cloud import bigquery  # noqa: PLC0415  (optional 'bigquery' extra)
-        from google.oauth2.credentials import Credentials  # noqa: PLC0415
+        from google.cloud import bigquery  # ALLOW(import-not-top): optional heavy driver, imported lazily
+        from google.oauth2.credentials import Credentials  # ALLOW(import-not-top): optional heavy driver, imported lazily
 
         try:
             credentials = Credentials.from_authorized_user_info(info)

@@ -25,7 +25,7 @@
 
 - [x] 4.1 Retype + convert every aggregate hook and `_build_covar_decomposition` (design §6); drop `parse`; add `StatAgg1Name` / `StatAgg2Name`.
 - [x] 4.2 Replace `approx_count_distinct_template` with `approx_count_distinct_native` (design §7) across all dialects.
-- [ ] 4.3 `build_date_trunc` / `build_time_offset_expr` retyped; SQLite week/quarter as AST; 1.4 + 1.7 green.
+- [x] 4.3 `build_date_trunc` / `build_time_offset_expr` retyped; SQLite week/quarter as AST; 1.4 + 1.7 green.
 
 ## 5. Save-time check + MCP door
 
@@ -34,9 +34,9 @@
 
 ## 5b. Outer-wrap ORDER BY
 
-- [ ] 5b.1 `emit_outer_wrap(projected=...)` + typed `_outer_order_column` (design §11); 1.6b + 1.7 green.
+- [x] 5b.1 `emit_outer_wrap(projected=...)` + typed `_outer_order_column` (design §11); 1.6b + 1.7 green.
 
 ## 6. Docs + gates
 
 - [x] 6.1 One sentence in `docs/concepts/models.md` (aggregations section): custom formulas are parse-checked at save; one sentence wherever MCP `create_model` args are documented: it accepts `aggregations`.
-- [ ] 6.2 Full unit suite, CI-style integration suite, `ruff check slayer/ tests/`, basedpyright (baseline not grown), `tools/arch_check.py` — all green.
+- [x] 6.2 Full unit suite, CI-style integration suite, `ruff check slayer/ tests/`, basedpyright (baseline not grown), `tools/arch_check.py` — all green.

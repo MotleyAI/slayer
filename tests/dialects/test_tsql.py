@@ -15,6 +15,7 @@ from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine, _sql_client_cache_key
+from slayer.sql.dialects.base import StatAgg1Name
 from slayer.sql.dialects.tsql import TsqlDialect
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -167,7 +168,7 @@ def test_tsql_build_percentile_raises_not_implemented() -> None:
     ],
 )
 def test_tsql_build_stat_agg_1arg_uses_tsql_names(
-    agg_name: str, tsql_fn: str
+    agg_name: StatAgg1Name, tsql_fn: str
 ) -> None:
     """sqlglot's tsql transpiler emits incorrect names (e.g. VAR_SAMP, VARIANCE_POP)."""
     d = TsqlDialect()

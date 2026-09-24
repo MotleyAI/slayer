@@ -91,15 +91,19 @@ class TestGeneratorSuppliesProjected:
         monkeypatch.setattr(cls, "emit_outer_wrap", _spy)
         query = SlayerQuery(
             source_model="orders",
-            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension.model_validate(
+                {"dimension": "created_at", "granularity": TimeGranularity.MONTH},
+            )],
             measures=[ModelMeasure(formula="cumsum(revenue:sum)", name="running")],
-            order=[OrderItem(column="revenue:max", direction="desc")], limit=3,
+            order=[OrderItem.model_validate({"column": "revenue:max", "direction": "desc"})], limit=3,
         )
         sql = await _engine_generate(query=query, model=_model(), dialect=dialect)
         assert seen, "outer wrap not reached"
         outer = sqlglot.parse_one(sql, dialect=dialect)
-        inner = outer.find(exp.Subquery).this
+        subquery = outer.find(exp.Subquery)
+        assert subquery is not None
+        inner = subquery.this
         inner_aliases = {p.alias_or_name for p in inner.expressions}
-        assert inner_aliases <= set(seen[-1])
+        assert inner_aliases <= {get_dialect(dialect).emit_alias(a) for a in seen[-1]}
         order_names = {o.this.name for o in outer.args["order"].expressions}
         assert order_names <= inner_aliases, sql

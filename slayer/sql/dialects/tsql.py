@@ -32,6 +32,7 @@ from collections.abc import Callable, Sequence
 
 import sqlglot
 from sqlglot import exp
+from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import TimeGranularity
 from slayer.sql.naming import OUTER_WRAP_ALIAS
@@ -71,8 +72,8 @@ _TSQL_DOTTED_ALIAS_RE = re.compile(r"\[(\w+(?:\.\w+)+)\]", re.ASCII)
 
 
 def _offset_ordering_fallback(
-    order: "exp.Expression | None", offset_arg: "exp.Expression | None",
-) -> "exp.Expression | None":
+    order: "Expression | None", offset_arg: "Expression | None",
+) -> "Expression | None":
     """The ORDER BY an OFFSET-bearing outer wrap must carry: the caller's, or a
     synthesized ``ORDER BY (SELECT NULL)`` no-op when there is none (SQL Server
     rejects OFFSET without ORDER BY). Returns ``order`` unchanged otherwise, so
@@ -101,15 +102,15 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
     alias_quote_close: ClassVar[str] = "]"
 
     def build_null_safe_eq(
-        self, left: exp.Expression, right: exp.Expression,
-    ) -> exp.Expression:
+        self, left: Expression, right: Expression,
+    ) -> Expression:
         """T-SQL has no ``IS NOT DISTINCT FROM`` / ``<=>`` — emit the
         portable expanded ``a = b OR (a IS NULL AND b IS NULL)``."""
         return self._expanded_null_safe_eq(left, right)
 
     def build_ordered(
         self,
-        order_col: exp.Expression,
+        order_col: Expression,
         *,
         descending: bool,
         nulls: Literal["default", "first", "last"] = "default",
@@ -137,9 +138,9 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
 
     def build_date_trunc(
         self,
-        col_expr: exp.Expression,
+        col_expr: Expression,
         granularity: TimeGranularity,
-    ) -> exp.Expression:
+    ) -> Expression:
         """T-SQL: ``DATETRUNC(unit, col)``. Week uses ``iso_week``
         (Monday-start) to be ``@@DATEFIRST``-independent. ``DATETRUNC``
         requires a temporal type — wrap non-column/cast operands.
@@ -169,10 +170,10 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
 
     def build_time_offset_expr(
         self,
-        col_expr: exp.Expression,
+        col_expr: Expression,
         offset: int,
         granularity: TimeGranularity | TimeUnit,
-    ) -> exp.Expression:
+    ) -> Expression:
         """T-SQL: ``DATEADD(unit, val, col)``. INTERVAL is not valid T-SQL syntax.
         Quarter normalises to ``val * 3`` of MONTH."""
         unit_map = {
@@ -194,10 +195,10 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
 
     def add_intervals_expr(
         self,
-        expr: exp.Expression,
-        intervals: list[exp.Expression],
+        expr: Expression,
+        intervals: list[Expression],
         sign: int = 1,
-    ) -> exp.Expression:
+    ) -> Expression:
         """T-SQL: chain ``DATEADD(unit, ±amount, col)`` calls.
 
         Each interval in the list is an ``exp.Interval`` from
@@ -218,7 +219,7 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
             )
         return result
 
-    def build_median(self, inner: exp.Expression) -> exp.Expression:
+    def build_median(self, inner: Expression) -> Expression:
         raise NotImplementedError(
             "Aggregation 'median' is not supported on T-SQL (SQL Server): "
             "PERCENTILE_CONT in T-SQL is a window function (requires OVER clause) "
@@ -227,8 +228,8 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
         )
 
     def build_percentile(
-        self, p: exp.Expression, col_expr: exp.Expression,
-    ) -> exp.Expression:
+        self, p: Expression, col_expr: Expression,
+    ) -> Expression:
         raise NotImplementedError(
             "Aggregation 'percentile' is not supported on T-SQL (SQL Server): "
             "PERCENTILE_CONT requires a window function OVER clause in T-SQL "
@@ -237,8 +238,8 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
         )
 
     def build_stat_agg_1arg(
-        self, agg_name: StatAgg1Name, col_expr: exp.Expression,
-    ) -> exp.Expression:
+        self, agg_name: StatAgg1Name, col_expr: Expression,
+    ) -> Expression:
         """T-SQL: map ``stddev_samp``→``STDEV``, ``stddev_pop``→``STDEVP``,
         ``var_samp``→``VAR``, ``var_pop``→``VARP`` via ``exp.Anonymous``."""
         if agg_name in _TSQL_STAT_NAMES:
@@ -251,9 +252,9 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
     def build_covar_2arg(
         self,
         agg_name: StatAgg2Name,
-        col_expr: exp.Expression,
-        other_expr: exp.Expression,
-    ) -> exp.Expression:
+        col_expr: Expression,
+        other_expr: Expression,
+    ) -> Expression:
         """T-SQL has no native CORR / COVAR_* — use the
         variance-decomposition formula with T-SQL names (VAR / VARP / STDEV)."""
         return _build_covar_decomposition(
@@ -306,10 +307,10 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
         inner_sql: str,
         public: list[str],
         projected: Sequence[str],
-        order: exp.Expression | None,
-        limit: exp.Expression | None,
-        offset_arg: exp.Expression | None,
-        parse: Callable[[str], exp.Expression] | None = None,
+        order: Expression | None,
+        limit: Expression | None,
+        offset_arg: Expression | None,
+        parse: Callable[[str], Expression] | None = None,
     ) -> str:
         """T-SQL: hoist inner top-level CTEs to the outer statement AND
         transpose detached pagination to ``TOP`` / ``FETCH NEXT N ROWS

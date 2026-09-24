@@ -67,7 +67,7 @@ _CONNECTION_NAME_PREFIX = "snowflake://?connection_name="
 def _import_snowflake_connector():
     """Lazy import with an actionable install hint."""
     try:
-        import snowflake.connector  # noqa: PLC0415
+        import snowflake.connector  # ALLOW(import-not-top): optional heavy driver, imported lazily
         return snowflake.connector
     except ImportError as exc:
         raise ImportError(
@@ -79,7 +79,7 @@ def _import_snowflake_connector():
 def _import_snowflake_sqlalchemy_url():
     """Lazy import for the inline-URL form. Same install hint."""
     try:
-        from snowflake.sqlalchemy import URL  # noqa: PLC0415
+        from snowflake.sqlalchemy import URL  # ALLOW(import-not-top): optional heavy driver, imported lazily
         return URL
     except ImportError as exc:
         raise ImportError(

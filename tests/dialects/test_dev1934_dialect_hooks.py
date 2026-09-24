@@ -8,10 +8,11 @@ from pathlib import Path
 import pytest
 import sqlglot
 from sqlglot import exp
+from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import TimeGranularity
 from slayer.sql.dialects import _ALL_DIALECTS, SqlDialect, get_dialect
-from slayer.sql.dialects.base import _build_covar_decomposition
+from slayer.sql.dialects.base import StatAgg1Name, StatAgg2Name, _build_covar_decomposition
 
 _GOLDEN = json.loads(
     (Path(__file__).parent.parent / "golden" / "dev1934_dialect_hooks.json").read_text(),
@@ -43,7 +44,7 @@ def _check(name: str, key: str, build) -> None:  # noqa: ANN001
     assert build().sql(dialect=name) == expected
 
 
-def _assert_tree_consistent(root: exp.Expression) -> None:
+def _assert_tree_consistent(root: Expression) -> None:
     seen: set[int] = set()
     for node in root.walk():
         assert id(node) not in seen, f"node shared within the tree: {node!r}"
@@ -69,12 +70,12 @@ class TestAggregateHooks:
         ))
 
     @pytest.mark.parametrize("agg", _STAT1)
-    def test_stat_1arg(self, name: str, agg: str) -> None:
+    def test_stat_1arg(self, name: str, agg: StatAgg1Name) -> None:
         d = get_dialect(name)
         _check(name, agg, lambda: d.build_stat_agg_1arg(agg_name=agg, col_expr=_amount()))
 
     @pytest.mark.parametrize("agg", _STAT2)
-    def test_covar_2arg(self, name: str, agg: str) -> None:
+    def test_covar_2arg(self, name: str, agg: StatAgg2Name) -> None:
         d = get_dialect(name)
         _check(name, agg, lambda: d.build_covar_2arg(
             agg_name=agg, col_expr=_amount(), other_expr=_quantity(),
@@ -82,7 +83,7 @@ class TestAggregateHooks:
 
     @pytest.mark.parametrize("agg", _STAT2)
     def test_covar_2arg_tree_is_consistent_and_does_not_adopt_inputs(
-        self, name: str, agg: str,
+        self, name: str, agg: StatAgg2Name,
     ) -> None:
         col, other = _amount(), _quantity()
         out = get_dialect(name).build_covar_2arg(agg_name=agg, col_expr=col, other_expr=other)
@@ -124,9 +125,11 @@ class TestAggregateHooks:
 
 class TestCovarDecomposition:
     @pytest.mark.parametrize("agg", _STAT2)
-    def test_compound_operands_keep_grouping_and_copies(self, agg: str) -> None:
+    def test_compound_operands_keep_grouping_and_copies(self, agg: StatAgg2Name) -> None:
         col = sqlglot.parse_one("orders.price - orders.discount")
         other = sqlglot.parse_one("orders.quantity + 1")
+        assert isinstance(col, Expression)
+        assert isinstance(other, Expression)
         out = _build_covar_decomposition(
             col_expr=col, other_expr=other, agg=agg,
             var_fn_samp="VAR_SAMP", var_fn_pop="VAR_POP", stddev_fn="STDDEV_SAMP",
@@ -138,8 +141,8 @@ class TestCovarDecomposition:
             then = case.args["ifs"][0].args["true"]
             names = {c.name for c in then.find_all(exp.Column)}
             assert names in ({"price", "discount"}, {"quantity"})
-        reparsed = sqlglot.parse_one(out.sql(dialect="mysql"), dialect="mysql")
-        assert reparsed.sql(dialect="mysql") == out.sql(dialect="mysql")
+        reparsed = sqlglot.parse_one(out.sql(dialect="postgres"), dialect="postgres")
+        assert reparsed.sql(dialect="postgres") == out.sql(dialect="postgres")
 
 
 class TestApproxDistinctConfig:

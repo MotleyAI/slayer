@@ -12,6 +12,7 @@ from typing import Literal, Optional, Union
 import pytest
 import sqlalchemy as sa
 from sqlglot import exp
+from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import TimeGranularity
 from slayer.core.models import DatasourceConfig
@@ -21,7 +22,7 @@ _LOCALNS = {"DatasourceConfig": DatasourceConfig, "sa": sa}
 
 
 def _returns_ast(hint: object) -> bool:
-    return isinstance(hint, type) and issubclass(hint, exp.Expression)
+    return isinstance(hint, type) and issubclass(hint, Expression)
 
 
 def _forbidden(hint: object) -> bool:
@@ -53,34 +54,38 @@ def _violations(cls: type) -> list[str]:
     return out
 
 
-@pytest.mark.parametrize("cls", sorted({SqlDialect, *(type(d) for d in _ALL_DIALECTS)},
-                                       key=lambda c: c.__name__))
+_DIALECT_CLASSES: list[type[SqlDialect]] = sorted(
+    {SqlDialect, *(type(d) for d in _ALL_DIALECTS)}, key=lambda c: c.__name__,
+)
+
+
+@pytest.mark.parametrize("cls", _DIALECT_CLASSES)
 def test_dialect_hooks_take_typed_ast_operands(cls: type) -> None:
     assert _violations(cls) == []
 
 
 class _Bad(SqlDialect):
-    def build_text(self, col: str) -> exp.Expression:
+    def build_text(self, col: str) -> Expression:
         return exp.column(col)
 
     def build_optional(self, col: Optional[str]) -> exp.Column:
         return exp.column(col or "x")
 
-    def build_pipe(self, col: "exp.Expression | str") -> exp.Expression:
+    def build_pipe(self, col: "Expression | str") -> Expression:
         return exp.column("x")
 
-    def build_callback(self, parse: Callable[[str], exp.Expression]) -> exp.Expression:
+    def build_callback(self, parse: Callable[[str], Expression]) -> Expression:
         return parse("x")
 
-    def build_untyped(self, col) -> exp.Expression:  # noqa: ANN001
+    def build_untyped(self, col) -> Expression:  # noqa: ANN001
         return col
 
 
 class _Good(SqlDialect):
-    def build_literal(self, agg: Literal["a", "b"], col: exp.Expression) -> exp.Expression:
+    def build_literal(self, agg: Literal["a", "b"], col: Expression) -> Expression:
         return col
 
-    def build_enum(self, g: TimeGranularity, n: int) -> exp.Expression:
+    def build_enum(self, g: TimeGranularity, n: int) -> Expression:
         return exp.Literal.number(n)
 
     def describe(self, name: str) -> str:

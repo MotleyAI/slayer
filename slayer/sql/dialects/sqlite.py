@@ -17,6 +17,7 @@ from __future__ import annotations
 import math
 
 from sqlglot import exp
+from sqlglot.expressions.core import Expression
 
 from typing import Optional
 
@@ -29,7 +30,7 @@ from slayer.sql.dialects.base import SqlDialect, TimeUnit
 # ===========================================================================
 
 
-def rewrite_sqlite_json_extract(node: exp.Expression) -> exp.Expression:
+def rewrite_sqlite_json_extract(node: Expression) -> Expression:
     """Rewrite every ``exp.JSONExtract`` in the tree rooted at ``node`` to the
     function-call form.
 
@@ -61,7 +62,7 @@ def rewrite_sqlite_json_extract(node: exp.Expression) -> exp.Expression:
         je.replace(_to_anonymous(je))
 
 
-def _strftime(fmt: str, col_expr: exp.Expression) -> exp.Anonymous:
+def _strftime(fmt: str, col_expr: Expression) -> exp.Anonymous:
     return exp.Anonymous(this="STRFTIME", expressions=[exp.Literal.string(fmt), col_expr.copy()])
 
 
@@ -422,8 +423,8 @@ class SqliteDialect(SqlDialect):
         return dt
 
     def build_null_safe_eq(
-        self, left: exp.Expression, right: exp.Expression,
-    ) -> exp.Expression:
+        self, left: Expression, right: Expression,
+    ) -> Expression:
         """SQLite's ``IS`` is null-safe on every supported version;
         ``IS NOT DISTINCT FROM`` (what sqlglot emits for ``NullSafeEQ``) needs
         SQLite ≥ 3.39, so anchor on bare ``IS`` instead."""
@@ -431,9 +432,9 @@ class SqliteDialect(SqlDialect):
 
     def build_date_trunc(
         self,
-        col_expr: exp.Expression,
+        col_expr: Expression,
         granularity: TimeGranularity,
-    ) -> exp.Expression:
+    ) -> Expression:
         """SQLite has no DATE_TRUNC — use STRFTIME (with CASE WHEN for
         quarter, weekday-modifier for week)."""
         if granularity == TimeGranularity.WEEK_SUNDAY:
@@ -474,10 +475,10 @@ class SqliteDialect(SqlDialect):
 
     def build_time_offset_expr(
         self,
-        col_expr: exp.Expression,
+        col_expr: Expression,
         offset: int,
         granularity: TimeGranularity | TimeUnit,
-    ) -> exp.Expression:
+    ) -> Expression:
         """SQLite uses ``DATE(col, 'N units')`` — no INTERVAL syntax.
 
         Granularity normalization: ``quarter`` → ``val * 3`` of ``months``;
@@ -504,7 +505,7 @@ class SqliteDialect(SqlDialect):
         self,
         parts: list[tuple[int, str]],
         sign: int = 1,
-    ) -> list[exp.Expression]:
+    ) -> list[Expression]:
         """SQLite uses DATETIME-modifier string literals with sign baked in.
         Week is converted to ``N*7 days`` (no native week unit)."""
         prefix = "+" if sign >= 0 else "-"
@@ -518,10 +519,10 @@ class SqliteDialect(SqlDialect):
 
     def add_intervals_expr(
         self,
-        expr: exp.Expression,
-        intervals: list[exp.Expression],
+        expr: Expression,
+        intervals: list[Expression],
         sign: int = 1,
-    ) -> exp.Expression:
+    ) -> Expression:
         """SQLite wraps as ``DATETIME(expr, mod1, mod2, ...)``.
 
         The sign is already baked into each modifier by
@@ -530,24 +531,24 @@ class SqliteDialect(SqlDialect):
         """
         return exp.Anonymous(this="DATETIME", expressions=[expr, *intervals])
 
-    def frame_time_operand(self, expr: exp.Expression) -> exp.Expression:
+    def frame_time_operand(self, expr: Expression) -> Expression:
         """Under numeric affinity a bare-date column (``'2025-02-01'``) string-sorts
         BEFORE a DATETIME frame bound (``'2025-02-01 00:00:00'``), leaking the
         exclusive ``bucket_end`` row into the previous bucket. Wrap it in DATETIME
         so both sides carry the time part and the half-open interval is exact."""
         return exp.Anonymous(this="DATETIME", expressions=[expr])
 
-    def build_median(self, inner: exp.Expression) -> exp.Expression:
+    def build_median(self, inner: Expression) -> Expression:
         """SQLite: ``exp.Median``, emitted as the registered ``PERCENTILE_CONT(x, 0.5)`` UDF."""
         return exp.Median(this=inner.copy())
 
     def build_percentile(
-        self, p: exp.Expression, col_expr: exp.Expression,
-    ) -> exp.Expression:
+        self, p: Expression, col_expr: Expression,
+    ) -> Expression:
         """SQLite: ``percentile_cont(value, p)`` — registered UDF."""
         return exp.PercentileCont(this=col_expr.copy(), expression=p.copy())
 
-    def rewrite_parsed_ast(self, tree: exp.Expression) -> exp.Expression:
+    def rewrite_parsed_ast(self, tree: Expression) -> Expression:
         """SQLite override: rewrites every ``exp.JSONExtract`` to
         ``Anonymous(this='JSON_EXTRACT', ...)`` so the emission is the
         function-call form."""

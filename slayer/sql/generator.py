@@ -21,6 +21,7 @@ from typing import (
 from decimal import Decimal
 import sqlglot
 from sqlglot import exp
+from sqlglot.expressions.core import Expr, Expression
 
 from slayer.core.enums import (
     BUILTIN_AGGREGATIONS,
@@ -133,7 +134,7 @@ class ResolvedAggKwarg(BaseModel):
     model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
     kind: Literal["expr", "str"]
-    value: Union[exp.Expression, str]
+    value: Union[Expression, str]
 
 
 class AggRenderSpec(BaseModel):
@@ -178,7 +179,7 @@ class AggRenderSpec(BaseModel):
     column_type: Optional[DataType] = None
 
 
-def _strip_declared_cast(expr: exp.Expression) -> exp.Expression:
+def _strip_declared_cast(expr: Expression) -> Expression:
     """Unwrap one declared-type ``CAST`` a derived-column expansion added."""
     return expr.this if isinstance(expr, exp.Cast) else expr
 
@@ -593,7 +594,7 @@ _BUCKET_ALIGNED_SHIFT_UNITS: dict[str, frozenset[str]] = {
 }
 
 
-def _percentile_literal(p: exp.Expression) -> exp.Expression:
+def _percentile_literal(p: Expression) -> Expression:
     """The numeric literal inside ``p`` (optionally signed / parenthesised), validated to [0, 1]."""
     node, negative = p, False
     while isinstance(node, (exp.Paren, exp.Neg)):
@@ -833,7 +834,7 @@ class _SemiJoinOps:
     def __init__(
         self, *, alias: Callable[[Tuple[str, ...]], str],
         col: Callable[[str, str], exp.Column],
-        table: Callable[[Any], exp.Expression],  # pyright: ignore[reportPrivateImportUsage] — sqlglot exports it
+        table: Callable[[Any], Expression],  # pyright: ignore[reportPrivateImportUsage] — sqlglot exports it
         attached: Set[Tuple[str, ...]],
     ) -> None:
         self.alias = alias
@@ -1074,12 +1075,12 @@ class SQLGenerator:
         allocator.reserve(*names)
 
     @staticmethod
-    def _maybe_quote_ident(ident: Optional[exp.Expression]) -> None:
+    def _maybe_quote_ident(ident: Optional[Expression]) -> None:
         """Thin delegator to :func:`slayer.sql.naming.maybe_quote_ident`"""
         maybe_quote_ident(ident)
 
     @staticmethod
-    def _quote_mixed_case_identifiers(node: exp.Expression) -> exp.Expression:
+    def _quote_mixed_case_identifiers(node: Expression) -> Expression:
         """Thin delegator to"""
         return quote_mixed_case_identifiers(node)
 
@@ -1089,20 +1090,20 @@ class SQLGenerator:
         self._maybe_quote_ident(ident)
         return ident
 
-    def _to_table(self, name: str, alias: Optional[str] = None) -> exp.Expression:
+    def _to_table(self, name: str, alias: Optional[str] = None) -> Expression:
         """Build a (possibly schema-qualified) table reference with mixed-case"""
         table = exp.to_table(name).transform(self._quote_mixed_case_identifiers)
         if alias is not None:
             table.set("alias", exp.TableAlias(this=exp.to_identifier(alias)))
         return table
 
-    def _parse(self, sql: str, *, dialect: Optional[str] = None) -> exp.Expression:
+    def _parse(self, sql: str, *, dialect: Optional[str] = None) -> Expression:
         """Parse ``sql`` via sqlglot, applying SLayer-specific AST rewrites."""
         return parse_expression(
             sql=sql, target_dialect=self._dialect, parse_dialect=self._parse_dialect(dialect),
         )
 
-    def _parse_predicate(self, sql: str, *, dialect: Optional[str] = None) -> exp.Expression:
+    def _parse_predicate(self, sql: str, *, dialect: Optional[str] = None) -> Expression:
         """Parse a bare WHERE/HAVING predicate expression."""
         return parse_predicate(
             sql=sql, target_dialect=self._dialect, parse_dialect=self._parse_dialect(dialect),
@@ -1118,7 +1119,7 @@ class SQLGenerator:
         """Render ``name`` as ONE dialect-quoted identifier string."""
         return exp.to_identifier(name, quoted=True).sql(dialect=self.dialect)
 
-    def _parse_cte_body(self, sql: str) -> exp.Expression:
+    def _parse_cte_body(self, sql: str) -> Expression:
         """Parse a rendered CTE body back into AST for the WITH assembler."""
         parsed = sqlglot.parse_one(sql, dialect=self.dialect)
         unmangle_dotted_table_refs(parsed)
@@ -1151,7 +1152,7 @@ class SQLGenerator:
         return out
 
     def _ordered(
-        self, order_col: exp.Expression, *, ascending: bool,
+        self, order_col: Expression, *, ascending: bool,
         nulls: str = "default",
     ) -> exp.Ordered:
         """Build an ``exp.Ordered`` node via the dialect strategy."""
@@ -1163,19 +1164,19 @@ class SQLGenerator:
 
 
 
-    def _build_time_offset_expr(self, col_expr: exp.Expression, offset: int,
-                                granularity: TimeGranularity | TimeUnit) -> exp.Expression:
+    def _build_time_offset_expr(self, col_expr: Expression, offset: int,
+                                granularity: TimeGranularity | TimeUnit) -> Expression:
         """Apply a time offset to a column expression (dialect-aware)."""
         return self._dialect.build_time_offset_expr(
             col_expr=col_expr, offset=offset, granularity=granularity,
         )
 
-    def _duration_interval_exprs(self, duration: str, sign: int = 1) -> list[exp.Expression]:
+    def _duration_interval_exprs(self, duration: str, sign: int = 1) -> list[Expression]:
         """Return per-unit AST nodes that `_add_intervals_expr` will chain."""
         parts = _parse_window_duration(duration)
         return self._dialect.duration_interval_exprs(parts=parts, sign=sign)
 
-    def _granularity_interval_expr(self, granularity: TimeGranularity, sign: int = 1) -> list[exp.Expression]:
+    def _granularity_interval_expr(self, granularity: TimeGranularity, sign: int = 1) -> list[Expression]:
         if granularity == TimeGranularity.QUARTER:
             duration = "3m"
         elif granularity in (TimeGranularity.WEEK, TimeGranularity.WEEK_SUNDAY):
@@ -1193,20 +1194,20 @@ class SQLGenerator:
             duration = unit_to_duration[granularity]
         return self._duration_interval_exprs(duration, sign=sign)
 
-    def _add_intervals_expr(self, expr: exp.Expression, intervals: list[exp.Expression],
-                            sign: int = 1) -> exp.Expression:
+    def _add_intervals_expr(self, expr: Expression, intervals: list[Expression],
+                            sign: int = 1) -> Expression:
         """Compose `expr ± interval [± interval ...]` as AST."""
         return self._dialect.add_intervals_expr(
             expr=expr, intervals=intervals, sign=sign,
         )
 
-    def _build_date_trunc(self, col_expr: exp.Expression, granularity: TimeGranularity) -> exp.Expression:
+    def _build_date_trunc(self, col_expr: Expression, granularity: TimeGranularity) -> Expression:
         """Build a DATE_TRUNC expression. Dispatches to the dialect strategy"""
         return self._dialect.build_date_trunc(
             col_expr=col_expr, granularity=granularity,
         )
 
-    def _rewrite_log_aliases(self, node: exp.Expression) -> exp.Expression:
+    def _rewrite_log_aliases(self, node: Expression) -> Expression:
         """Thin delegator to the shared log-alias policy in"""
         return rewrite_log_alias(node, dialect=self._dialect)
 
@@ -1216,7 +1217,7 @@ class SQLGenerator:
         name: str,
         model_name: str,
         type: Optional[DataType] = None,
-    ) -> exp.Expression:
+    ) -> Expression:
         """Resolve an enriched SQL expression to a sqlglot AST node."""
         if sql is None:
             return exp.Column(this=self._to_ident(name), table=exp.to_identifier(model_name))
@@ -1226,7 +1227,7 @@ class SQLGenerator:
             expr=self._parse(sql), dt=self._dialect.declared_cast_type(type),
         )
 
-    def _resolve_value_ast(self, spec: AggRenderSpec) -> exp.Expression:
+    def _resolve_value_ast(self, spec: AggRenderSpec) -> Expression:
         """Resolve ``spec.sql`` (or ``spec.name``) into a fully-qualified AST."""
         return self._resolve_sql(
             sql=spec.sql,
@@ -1237,13 +1238,13 @@ class SQLGenerator:
 
     def _agg_param_ast(
         self, value: "ResolvedAggKwarg | str", *, model_name: str,
-    ) -> exp.Expression:
+    ) -> Expression:
         """Resolve a parametric-agg param value to a sqlglot AST."""
         if isinstance(value, ResolvedAggKwarg):
             if value.kind == "expr":
                 # Return a copy: sqlglot re-parents a node on attach, so sharing one kwarg AST across trees corrupts the
                 # first.
-                return value.value.copy() if isinstance(value.value, exp.Expression) \
+                return value.value.copy() if isinstance(value.value, Expression) \
                     else self._parse(value.value)
             raw = value.value
         else:
@@ -1256,7 +1257,7 @@ class SQLGenerator:
         *,
         name: str,
         agg_name: str,
-    ) -> exp.Expression:
+    ) -> Expression:
         """Pull a named aggregation parameter, with query-time SQL-injection"""
         value: "ResolvedAggKwarg | str | None" = None
         if name in spec.agg_kwargs:
@@ -1284,7 +1285,7 @@ class SQLGenerator:
     def _build_agg(
         self,
         spec: "AggRenderSpec | None" = None,
-    ) -> tuple[exp.Expression, bool]:
+    ) -> tuple[Expression, bool]:
         """Build an aggregation expression from an ``AggRenderSpec``."""
         if spec is None:  # pragma: no cover — defensive
             raise ValueError("_build_agg requires a 'spec'.")
@@ -1344,7 +1345,7 @@ class SQLGenerator:
 
         return entry.node_class(this=inner), True
 
-    def _build_formula_agg(self, spec: AggRenderSpec, agg_name: str) -> exp.Expression:
+    def _build_formula_agg(self, spec: AggRenderSpec, agg_name: str) -> Expression:
         """Build SQL for formula-based aggregations (weighted_avg, custom)."""
         formula = None
         if spec.aggregation_def and spec.aggregation_def.formula:
@@ -1388,16 +1389,16 @@ class SQLGenerator:
         except SqlTemplateError as e:
             raise SqlTemplateError(f"Aggregation '{agg_name}': {e}") from e
 
-    def _build_median(self, inner: exp.Expression) -> exp.Expression:
+    def _build_median(self, inner: Expression) -> Expression:
         """Build a median aggregation expression. Dispatches to the dialect"""
         return self._dialect.build_median(inner=inner)
 
-    def _build_percentile(self, spec: AggRenderSpec) -> exp.Expression:
+    def _build_percentile(self, spec: AggRenderSpec) -> Expression:
         """Build a PERCENTILE_CONT(p) aggregation expression (dialect-dependent)."""
         p = _percentile_literal(self._resolve_agg_param(spec, name="p", agg_name="percentile"))
         return self._dialect.build_percentile(p=p, col_expr=self._resolve_value_ast(spec))
 
-    def _build_stat_agg(self, spec: AggRenderSpec) -> exp.Expression:
+    def _build_stat_agg(self, spec: AggRenderSpec) -> Expression:
         """Build SQL for the statistical aggregations."""
         agg_name = spec.aggregation
         if is_stat_agg2(agg_name):
@@ -1448,7 +1449,7 @@ class SQLGenerator:
                 self._gen_dep_stack = prev_dep_stack
         # Hoist consumes the producer AST, not re-parsed SQL text (a round-trip mis-binds a dotted result-key column on
         # BigQuery / T-SQL).
-        if as_ast and not isinstance(result, exp.Expression):
+        if as_ast and not isinstance(result, Expression):
             result = sqlglot.parse_one(result, dialect=self.dialect)
             unmangle_dotted_table_refs(result)
         return result
@@ -1722,7 +1723,7 @@ class SQLGenerator:
         source_model,
         source_relation: str,
         slots_by_id: Dict[str, Any],
-        regroup_env: Optional[Dict[Any, exp.Expression]] = None,
+        regroup_env: Optional[Dict[Any, Expression]] = None,
         regroup_join_specs: Optional[List[Tuple[str, List[Tuple[Any, str]]]]] = None,
         reserve_bare_aliases: bool = False,
         reused_names: Sequence[str] = (),
@@ -1799,7 +1800,7 @@ class SQLGenerator:
         available_alias_by_slot_id: Dict[str, str],
         source_relation: str,
         slot_entries: Iterable[Tuple[str, Any]],
-        render: Callable[[Any], exp.Expression],
+        render: Callable[[Any], Expression],
     ) -> Tuple[str, int]:
         """Emit one transform-chain step CTE and advance the chain."""
         step_num += 1
@@ -2146,10 +2147,10 @@ class SQLGenerator:
 
     def _render_computed_dims_via_scope(
         self, *, base_render_order, slots_by_id, scope,
-    ) -> Dict[str, exp.Expression]:
+    ) -> Dict[str, Expression]:
         """Render ROW-phase computed (expression) dimensions through the HOST"""
 
-        out: Dict[str, exp.Expression] = {}
+        out: Dict[str, Expression] = {}
         for sid in base_render_order:
             slot = slots_by_id[sid]
             if (
@@ -2165,9 +2166,9 @@ class SQLGenerator:
 
     def _resolve_regroup_attach_conditions(
         self, *, regroup_join_specs, scope,
-    ) -> List[Tuple[str, Optional[exp.Expression]]]:
+    ) -> List[Tuple[str, Optional[Expression]]]:
         """One ``(cte_name, condition)`` per regroup producer. Each host"""
-        out: List[Tuple[str, Optional[exp.Expression]]] = []
+        out: List[Tuple[str, Optional[Expression]]] = []
         for cte_name, pairs in (regroup_join_specs or []):
             operands = [
                 (
@@ -2210,7 +2211,7 @@ class SQLGenerator:
         slots_by_id: Dict[str, Any],
         skip_cross_model_aggs: bool = False,
         skip_filter_ids: Optional[Set[str]] = None,
-        regroup_env: Optional[Dict[Any, exp.Expression]] = None,
+        regroup_env: Optional[Dict[Any, Expression]] = None,
         regroup_join_specs: Optional[List[Tuple[str, List[Tuple[Any, str]]]]] = None,
     ):
         """Build the base SELECT (sqlglot ``Select``) for ``generate_from_planned``."""
@@ -2266,8 +2267,8 @@ class SQLGenerator:
             bundle=bundle,
         )
 
-        select_columns: list[exp.Expression] = []
-        group_by_keys: Dict[str, exp.Expression] = {}
+        select_columns: list[Expression] = []
+        group_by_keys: Dict[str, Expression] = {}
         has_aggregation = False
         alias_index: Dict[str, int] = {}
         aliases_by_slot_id: Dict[str, List[str]] = {}
@@ -2448,7 +2449,7 @@ class SQLGenerator:
     ):
         """The AGGREGATE-phase composite seam: render one"""
 
-        def build(agg_key) -> exp.Expression:
+        def build(agg_key) -> Expression:
             if source_anchor_path(agg_key.source):
                 # Internal invariant: cross-model operands desugar to regroup
                 # placeholders before phase classification, so none reaches
@@ -2482,8 +2483,8 @@ class SQLGenerator:
         slots_by_id: Dict[str, Any],
         aliases_by_slot_id: Dict[str, List[str]],
         full_agg_alias: str,
-        base_relation: Optional[exp.Expression] = None,
-        regroup_env: Optional[Dict[Any, exp.Expression]] = None,
+        base_relation: Optional[Expression] = None,
+        regroup_env: Optional[Dict[Any, Expression]] = None,
         regroup_join_specs: Optional[List[Tuple[str, List[Tuple[Any, str]]]]] = None,
     ) -> Tuple[exp.Select, List[str]]:
         """Render one duration-windowed-measure CTE."""
@@ -2513,8 +2514,8 @@ class SQLGenerator:
             al = aliases_by_slot_id.get(sid) or []
             return al[0] if al else sid
 
-        src_cols: List[exp.Expression] = []
-        grain_pairs: List[Tuple[exp.Expression, exp.Expression]] = []
+        src_cols: List[Expression] = []
+        grain_pairs: List[Tuple[Expression, Expression]] = []
         grain_aliases: List[str] = []
 
         for idx, sid in enumerate(plan.dimension_slot_ids):
@@ -2794,10 +2795,10 @@ class SQLGenerator:
         bundle,
         scope: ScopeFrame,
         cast_derived: bool = True,
-    ) -> exp.Expression:
+    ) -> Expression:
         """One value expression anchored in a ranked CTE's own scope."""
 
-        def _register(expr: exp.Expression, path: Tuple[str, ...]) -> None:
+        def _register(expr: Expression, path: Tuple[str, ...]) -> None:
             if path:
                 scope.join_paths.add(path)
             for p in self._joined_paths_in_sql(
@@ -2843,7 +2844,7 @@ class SQLGenerator:
 
     def _ranked_value_expr(
         self, *, key, root_model, root_relation: str, bundle, scope: ScopeFrame,
-    ) -> exp.Expression:
+    ) -> Expression:
         """The value a ranked aggregate picks, anchored in its own scope."""
 
         source = key.source
@@ -2895,7 +2896,7 @@ class SQLGenerator:
         host_source_model,
         host_source_relation: str,
         full_agg_alias: str,
-        regroup_env: Optional[Dict[Any, exp.Expression]] = None,
+        regroup_env: Optional[Dict[Any, Expression]] = None,
         regroup_join_specs: Optional[List[Tuple[str, List[Tuple[Any, str]]]]] = None,
     ) -> Tuple[exp.Select, List[str]]:
         """Render one ranked (``first`` / ``last``) CTE."""
@@ -2925,7 +2926,7 @@ class SQLGenerator:
         local_key = key
 
         grain: List[RankedGrainProjection] = []
-        partition_by: List[exp.Expression] = []
+        partition_by: List[Expression] = []
         for member in plan.grain:
             host_slot = slots_by_id.get(member.host_slot_id)
             if host_slot is None:
@@ -3037,13 +3038,13 @@ class SQLGenerator:
         root_model,
         root_relation: str,
         scope: ScopeFrame,
-    ) -> List[exp.Expression]:
+    ) -> List[Expression]:
         """Every predicate a ranked CTE applies to the rows it ranks.
 
         A ``Column.filter`` on the ranked column is NOT a WHERE here — it masks the
         picked value (baked into the source's ColumnSqlKey CASE), so ranking spans
         every row and the latest row's value may be NULL."""
-        parts: List[exp.Expression] = []
+        parts: List[Expression] = []
         skip_ids = {
             fp.id for fp in _lower_positions(planned_query).filters
         } - set(plan.where_filter_ids)
@@ -3147,7 +3148,7 @@ class SQLGenerator:
             )
         return body.sql(dialect=self.dialect, pretty=True)
 
-    def _render_picked_param_value(self, *, pp, ctx) -> exp.Expression:  # pyright: ignore[reportPrivateImportUsage]
+    def _render_picked_param_value(self, *, pp, ctx) -> Expression:  # pyright: ignore[reportPrivateImportUsage]
         """The level-1 SQL for a picked parameter: a canonical expression default
         entered at the producer root (the kernel already rerooted it
         into producer coordinates), else the parameter's value key rendered through
@@ -3190,13 +3191,13 @@ class SQLGenerator:
         )
         ctx = RenderContext(scope=scope, dialect=self._dialect)
 
-        inner_cols: List[exp.Expression] = []
-        group: List[exp.Expression] = []
+        inner_cols: List[Expression] = []
+        group: List[Expression] = []
         for slot, alias in zip(grain_slots, grain_aliases):
             expr = render_value_key(key=slot.key, ctx=ctx)
             inner_cols.append(expr.copy().as_(exp.to_identifier(alias, quoted=True)))
             group.append(expr.copy())
-        entity_exprs: List[exp.Expression] = []
+        entity_exprs: List[Expression] = []
         for idx, ekey in enumerate(kernel.entity_keys):
             eexpr = render_value_key(key=ekey, ctx=ctx)
             ek_alias = f"_ek{idx}"
@@ -3382,7 +3383,7 @@ class SQLGenerator:
             )
         agg_expr, _ = self._build_agg(level2_spec)
         agg_expr = _wrap_cast_for_type(expr=agg_expr, dt=self._slot_cast_type(agg_slot))
-        outer_cols: List[exp.Expression] = [
+        outer_cols: List[Expr] = [
             _base_col(alias).as_(exp.to_identifier(alias, quoted=True))
             for alias in grain_aliases
         ]
@@ -3403,10 +3404,10 @@ class SQLGenerator:
             model=source_model, relation=source_relation,
             bundle=bundle, allocator=allocator, attached_columns=regroup_env,
         )
-        cols: List[exp.Expression] = []
-        group: List[exp.Expression] = []
+        cols: List[Expression] = []
+        group: List[Expression] = []
 
-        def _emit(slot, expr: exp.Expression) -> None:
+        def _emit(slot, expr: Expression) -> None:
             alias = aliases_by_slot_id[slot.id][0]
             cols.append(expr.copy().as_(exp.to_identifier(alias, quoted=True)))
             group.append(expr.copy())
@@ -3619,7 +3620,7 @@ class SQLGenerator:
                 )
             aliases_by_slot_id: Dict[str, List[str]] = {}
             base_has_agg = False
-            base_group_by: Dict[str, exp.Expression] = {}
+            base_group_by: Dict[str, Expression] = {}
         else:
             # Skip only the host filters _base cannot apply: a _cm_ CTE is LEFT-joined on grain, so a predicate applied
             # only there blanks a row's measure instead of excluding the row; ROW-phase filters apply in both places.
@@ -3671,10 +3672,10 @@ class SQLGenerator:
 
 
 
-        proj_exprs: Dict[str, List[exp.Expression]] = {}
+        proj_exprs: Dict[str, List[Expression]] = {}
         combined_aliases_by_slot_id: Dict[str, List[str]] = {}
 
-        def _emit(sid: str, expr: exp.Expression) -> None:
+        def _emit(sid: str, expr: Expression) -> None:
             proj_exprs.setdefault(sid, []).append(expr)
         host_combined_ids = (
             base_render_order
@@ -3694,7 +3695,7 @@ class SQLGenerator:
             if aliases:
                 combined_aliases_by_slot_id[sid] = list(aliases)
         outer_composite_order_alias_by_sid: Dict[str, str] = {}
-        outer_composite_order_expressions: Dict[str, exp.Expression] = {}
+        outer_composite_order_expressions: Dict[str, Expression] = {}
         if outer_composite_slot_ids:
             outer_composite_cm_map: Dict[str, Tuple[str, str]] = {}
             for _ph_key, _cm in regroup_placeholder_to_cm.items():
@@ -3702,7 +3703,7 @@ class SQLGenerator:
                 if _ph_slot is not None:
                     outer_composite_cm_map[_ph_slot.id] = _cm
 
-            def _render_outer_composite(cslot) -> exp.Expression:
+            def _render_outer_composite(cslot) -> Expression:
                 rendered = render_value_key(
                     key=cslot.key,
                     ctx=self._outer_wrapper_render_ctx(
@@ -3793,7 +3794,7 @@ class SQLGenerator:
         # grain becomes a CROSS JOIN.
         # Every renderer consumes planned_query.projection verbatim; a slot appears once per declared name and each
         # occurrence consumes the next of its rendered columns.
-        combined_select_exprs: List[exp.Expression] = []
+        combined_select_exprs: List[Expression] = []
         consumed: Dict[str, int] = {}
         for sid in planned_query.projection:
             exprs = proj_exprs.get(sid)
@@ -4026,7 +4027,7 @@ class SQLGenerator:
 
     def _render_producer_split(
         self, *, producer, bundle, kernel=None,
-    ) -> Tuple[List[CteEntry], exp.Expression]:  # pyright: ignore[reportPrivateImportUsage] — sqlglot ships no __all__
+    ) -> Tuple[List[CteEntry], Expression]:  # pyright: ignore[reportPrivateImportUsage] — sqlglot ships no __all__
         """Render a regroup producer as AST, split into (hoisted CTEs, body) — D2.
         A pushed registry scope captures the producer statement's declared CTE
         deps for :meth:`_split_statement_ctes`."""
@@ -4049,8 +4050,8 @@ class SQLGenerator:
         return entries, body.sql(dialect=self.dialect, pretty=True) if entries else sql
 
     def _split_ast_ctes(
-        self, parsed: exp.Expression,  # pyright: ignore[reportPrivateImportUsage] — sqlglot ships no __all__
-    ) -> Tuple[List[CteEntry], exp.Expression]:  # pyright: ignore[reportPrivateImportUsage] — sqlglot ships no __all__
+        self, parsed: Expression,  # pyright: ignore[reportPrivateImportUsage] — sqlglot ships no __all__
+    ) -> Tuple[List[CteEntry], Expression]:  # pyright: ignore[reportPrivateImportUsage] — sqlglot ships no __all__
         """Split a rendered statement into (hoisted CTE entries, de-WITHed body).
 
         Each entry's ``depends_on`` comes from the top statement-scoped registry
@@ -4279,7 +4280,7 @@ class SQLGenerator:
         """Render each regroup producer as a ``_cm_*`` CTE."""
         dedup_producers = dedup_producers or {}
         ctes: List[CteEntry] = []
-        attached_env: Dict[Any, exp.Expression] = {}
+        attached_env: Dict[Any, Expression] = {}
         join_specs: List[Tuple[str, List[Tuple[Any, str]]]] = []
         reused_cte_names: List[str] = []
         allocator = self._gen_allocator or self._new_allocator()
@@ -4572,7 +4573,7 @@ class SQLGenerator:
         source_model,
         source_relation: str,
         bundle,
-    ) -> exp.Expression:
+    ) -> Expression:
         """Resolve a dimension column expression on either the host"""
         if not path:
             return self._dim_column_expr_from_planned(
@@ -4603,7 +4604,7 @@ class SQLGenerator:
             table=exp.to_identifier(current_alias),
         )
 
-    def _window_ordered(self, col: exp.Expression, *, descending: bool = False) -> exp.Ordered:
+    def _window_ordered(self, col: Expression, *, descending: bool = False) -> exp.Ordered:
         """One ``ORDER BY`` term INSIDE an ``OVER (…)`` clause."""
         args: Dict[str, Any] = {
             "this": col,
@@ -4644,7 +4645,7 @@ class SQLGenerator:
         slot_id_by_key: Dict[Any, str],
         available_alias_by_slot_id: Dict[str, str],
         planned_query,
-    ) -> exp.Expression:
+    ) -> Expression:
         """Render one window-transform slot as an ``OVER()`` expression."""
 
         key = slot.key
@@ -4681,7 +4682,7 @@ class SQLGenerator:
                 available_alias_by_slot_id[input_sid], quoted=True,
             )
 
-        time_col: Optional[exp.Expression] = None
+        time_col: Optional[Expression] = None
         if key.time_key is not None:
             tk_sid = slot_id_by_key.get(key.time_key)
             if tk_sid is None or tk_sid not in available_alias_by_slot_id:
@@ -4725,7 +4726,7 @@ class SQLGenerator:
         partition_by = [exp.column(a, quoted=True) for a in partition_aliases]
 
         def _over(
-            fn: exp.Expression,
+            fn: Expression,
             *,
             order: Optional[exp.Order] = None,
             spec: Optional[exp.WindowSpec] = None,
@@ -5331,7 +5332,7 @@ class SQLGenerator:
         bundle=None,
         location: Optional[str] = None,
         owner_path: Tuple[str, ...] = (),
-    ) -> exp.Expression:
+    ) -> Expression:
         """Enter a Mode-A PREDICATE through the door and hand back its AST."""
         frame = scope or self._mode_a_scope(
             source_model=source_model,
@@ -5347,7 +5348,7 @@ class SQLGenerator:
         scope: ScopeFrame,
         location: Optional[str] = None,
         owner_path: Tuple[str, ...] = (),
-    ) -> exp.Expression:
+    ) -> Expression:
         """Enter a Mode-A scalar EXPRESSION (a ``Column.sql`` / aggregation"""
         return scope.enter_expression(sql, location=location, owner_path=tuple(owner_path))
 
@@ -5385,7 +5386,7 @@ class SQLGenerator:
     def _register_fragment_kwarg_joins(
         self, *, key, scope: ScopeFrame, model, owner_path: Tuple[str, ...] = (),
         source_owner_path: Optional[Tuple[str, ...]] = None,
-    ) -> "Dict[str, exp.Expression]":
+    ) -> "Dict[str, Expression]":
         """Resolve an aggregation's template FRAGMENTS through the Mode-A door,"""
         agg_def = next(
             (a for a in (model.aggregations or []) if a.name == key.agg), None,
@@ -5412,7 +5413,7 @@ class SQLGenerator:
             else:
                 frag_sql, frag_owner_path = p.sql, tuple(owner_path)
             named_fragments.append((p.name, frag_sql, frag_owner_path))
-        resolved: "Dict[str, exp.Expression]" = {}
+        resolved: "Dict[str, Expression]" = {}
         for name, frag, frag_owner_path in named_fragments:
             resolved[name] = self._enter_mode_a_expression(
                 sql=frag, scope=scope, owner_path=frag_owner_path,
@@ -5427,14 +5428,14 @@ class SQLGenerator:
         self, *, base_render_order, slots_by_id, source_relation: str,
         source_model, bundle, scope: ScopeFrame,
         order_slot_ids: Optional[List[str]] = None,
-    ) -> Dict[str, exp.Expression]:
+    ) -> Dict[str, Expression]:
         """Pre-expand derived (``ColumnSqlKey``) ROW dimensions and derived TIME"""
 
         def _add(path: Tuple[str, ...]) -> None:
             if path:
                 scope.join_paths.add(path)
 
-        derived_expr_by_sid: Dict[str, exp.Expression] = {}
+        derived_expr_by_sid: Dict[str, Expression] = {}
         seen_sids: Set[str] = set()
         for sid in [*base_render_order, *(order_slot_ids or ())]:
             if sid in seen_sids:
@@ -5477,7 +5478,7 @@ class SQLGenerator:
     def _derived_column_expr(
         self, *, key, source_model, source_relation: str, bundle,
         crossed_paths: "Optional[Set[Tuple[str, ...]]]" = None,
-    ) -> "Optional[exp.Expression]":
+    ) -> "Optional[Expression]":
         """The rendered expression for a derived (``ColumnSqlKey``) column."""
         if key.path:
             owner_model = self._walk_join_path_model(
@@ -5509,7 +5510,7 @@ class SQLGenerator:
         *,
         source_model,
         source_relation: str,
-    ) -> exp.Expression:
+    ) -> Expression:
         if source_model.sql_table:
             return self._to_table(source_model.sql_table, alias=source_relation)
         if source_model.sql:
@@ -5525,7 +5526,7 @@ class SQLGenerator:
 
     def _dim_column_expr_from_planned(
         self, *, source_model, source_relation: str, leaf: str,
-    ) -> exp.Expression:
+    ) -> Expression:
         col = next(
             (c for c in source_model.columns if c.name == leaf), None,
         )
@@ -5541,7 +5542,7 @@ class SQLGenerator:
 
     def _raw_time_col_expr_for_planned(
         self, *, time_column, source_model, source_relation: str, bundle,
-    ) -> exp.Expression:
+    ) -> Expression:
         """Untruncated time expression for a ``TimeTruncKey.column``"""
 
         if isinstance(time_column, ColumnKey):
@@ -5629,7 +5630,7 @@ class SQLGenerator:
         return scope.resolve(source).sql(dialect=self.dialect)
 
     def _joined_paths_in_sql(
-        self, *, sql_expr: exp.Expression, source_relation: str, source_model,
+        self, *, sql_expr: Expression, source_relation: str, source_model,
         bundle,
     ) -> List[Tuple[str, ...]]:
         """Collect the join paths referenced by table qualifiers inside an"""
@@ -5949,7 +5950,7 @@ class SQLGenerator:
 
     def _semi_join_exists_conditions(
         self, *, planned_query, source_model, source_relation: str, bundle,
-    ) -> "List[exp.Expression]":
+    ) -> "List[Expression]":
         """One correlated ``EXISTS`` per semi-join group pushed into this
         producer plan; empty for plans without pushdown."""
         groups = getattr(planned_query, "semi_join_filters", None) or []
@@ -5977,7 +5978,7 @@ class SQLGenerator:
             )
         return model
 
-    def _hop_table_expr(self, *, hop_model, alias: str) -> exp.Expression:
+    def _hop_table_expr(self, *, hop_model, alias: str) -> Expression:
         if hop_model.sql and not hop_model.sql_table:
             return exp.Subquery(
                 this=self._parse(hop_model.sql),
@@ -6050,7 +6051,7 @@ class SQLGenerator:
         skip_filter_ids: Optional[Set[str]] = None,
         aliases_by_slot_id: Optional[Dict[str, List[str]]] = None,
         filters_override: "Optional[List[Any]]" = None,
-        regroup_env: Optional[Dict[Any, exp.Expression]] = None,
+        regroup_env: Optional[Dict[Any, Expression]] = None,
     ):
         """``filters_override`` replaces the plan's lowered entries as the"""
 
@@ -6152,7 +6153,7 @@ class SQLGenerator:
     ):
         """The WHERE/HAVING aggregate seam: render a local"""
 
-        def build(agg_key, slot, having_full_alias) -> exp.Expression:
+        def build(agg_key, slot, having_full_alias) -> Expression:
             anchor = source_anchor_path(agg_key.source)
             if anchor:
                 raise NotImplementedError(
@@ -6346,7 +6347,7 @@ class SQLGenerator:
         source_model,
         bundle,
         aliases_by_slot_id: Optional[Dict[str, List[str]]],
-    ) -> exp.Expression:
+    ) -> Expression:
         """How one slot's value is NAMED in the base SELECT."""
 
         if not slot.hidden:

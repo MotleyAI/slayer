@@ -9,6 +9,7 @@ from itertools import count
 
 from pydantic import BaseModel, ConfigDict, PrivateAttr
 from sqlglot import exp
+from sqlglot.expressions.core import Expression
 from sqlglot.dialects.dialect import Dialect
 from sqlglot.errors import SqlglotError
 from sqlglot.tokenizer_core import Token, TokenType
@@ -57,7 +58,7 @@ class SqlTemplate(BaseModel):
     text: str
     dialect: str
 
-    _root: exp.Expression = PrivateAttr()
+    _root: Expression = PrivateAttr()
     _names: dict[str, str] = PrivateAttr()
 
     def __init__(self, *, text: str, dialect: str) -> None:
@@ -82,7 +83,7 @@ class SqlTemplate(BaseModel):
         self._root = root
         self._names = names
 
-    def _check_positions(self, *, root: exp.Expression, names: dict[str, str]) -> None:
+    def _check_positions(self, *, root: Expression, names: dict[str, str]) -> None:
         seen: set[str] = set()
         for node in root.walk():
             if isinstance(node, exp.Anonymous) and str(node.this).lower() in names:
@@ -106,7 +107,7 @@ class SqlTemplate(BaseModel):
     def placeholder_names(self) -> frozenset[str]:
         return frozenset(self._names.values())
 
-    def render(self, bindings: Mapping[str, exp.Expression]) -> exp.Expression:
+    def render(self, bindings: Mapping[str, Expression]) -> Expression:
         """A fresh AST with each placeholder replaced by a copy of its binding."""
         root = self._root.copy()
         sites = [

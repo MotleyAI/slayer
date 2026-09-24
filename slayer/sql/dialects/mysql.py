@@ -12,6 +12,7 @@ is actually ``VAR_POP`` — silently wrong sample variance).
 from __future__ import annotations
 
 from sqlglot import exp
+from sqlglot.expressions.core import Expression
 
 from slayer.sql.dialects.base import (
     SqlDialect,
@@ -31,16 +32,16 @@ class MysqlDialect(SqlDialect):
     # Conservative: MySQL allows 256 for column aliases but errors (not truncates).
     max_identifier_bytes: int | None = 64
 
-    def rewrite_target_ast(self, tree: exp.Expression) -> exp.Expression:
+    def rewrite_target_ast(self, tree: Expression) -> Expression:
         """MySQL's ``TRUNCATE`` has no single-argument form — ``TRUNCATE(x)`` is
         a syntax error. A 1-arg ``trunc(x)`` becomes ``TRUNCATE(x, 0)``."""
-        def _fix(node: exp.Expression) -> exp.Expression:
+        def _fix(node: Expression) -> Expression:
             if isinstance(node, exp.Trunc) and node.args.get("decimals") is None:
                 node.set("decimals", exp.Literal.number(0))
             return node
         return tree.transform(_fix)
 
-    def build_median(self, inner: exp.Expression) -> exp.Expression:
+    def build_median(self, inner: Expression) -> Expression:
         # ``mariadb`` resolves to this same dialect via ``ds_type_aliases``,
         # so the error must NOT suggest "use MariaDB" — that would loop the
         # user back here. Point them at a datasource with native percentile
@@ -53,8 +54,8 @@ class MysqlDialect(SqlDialect):
         )
 
     def build_percentile(
-        self, p: exp.Expression, col_expr: exp.Expression,
-    ) -> exp.Expression:
+        self, p: Expression, col_expr: Expression,
+    ) -> Expression:
         raise NotImplementedError(
             "Aggregation 'percentile' is not supported on MySQL: "
             "MySQL has no native PERCENTILE_CONT. "
@@ -63,8 +64,8 @@ class MysqlDialect(SqlDialect):
         )
 
     def build_stat_agg_1arg(
-        self, agg_name: StatAgg1Name, col_expr: exp.Expression,
-    ) -> exp.Expression:
+        self, agg_name: StatAgg1Name, col_expr: Expression,
+    ) -> Expression:
         """MySQL override for ``var_samp`` / ``var_pop``.
 
         sqlglot's MySQL transpiler rewrites ``VAR_SAMP`` → ``VARIANCE``
@@ -81,9 +82,9 @@ class MysqlDialect(SqlDialect):
     def build_covar_2arg(
         self,
         agg_name: StatAgg2Name,
-        col_expr: exp.Expression,
-        other_expr: exp.Expression,
-    ) -> exp.Expression:
+        col_expr: Expression,
+        other_expr: Expression,
+    ) -> Expression:
         """MySQL has no native CORR / COVAR_* — use the
         variance-decomposition formula with MySQL-native VAR_SAMP /
         VAR_POP / STDDEV_SAMP names."""

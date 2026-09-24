@@ -9,6 +9,7 @@ import duckdb
 import pytest
 import sqlglot
 from sqlglot import exp
+from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import DataType
 from slayer.core.models import Aggregation, AggregationParam, Column, ModelMeasure, SlayerModel
@@ -208,16 +209,17 @@ def _pct_spec(p: str | None = None, *, default: str | None = None) -> AggRenderS
         Aggregation(name="percentile", params=[AggregationParam(name="p", sql=default)])
         if default is not None else None
     )
-    return AggRenderSpec(
-        name="amount", sql="amount", model_name="orders", alias="orders.amount_percentile",
-        aggregation="percentile", agg_kwargs={} if p is None else {"p": p},
-        aggregation_def=agg_def,
-    )
+    return AggRenderSpec.model_validate({
+        "name": "amount", "sql": "amount", "model_name": "orders", "alias": "orders.amount_percentile",
+        "aggregation": "percentile", "agg_kwargs": {} if p is None else {"p": p},
+        "aggregation_def": agg_def,
+    })
 
 
-def _emitted_p(sql: str) -> exp.Expression:
-    tree = sqlglot.parse_one(sql, dialect="postgres")
-    return tree.find(exp.PercentileCont).this
+def _emitted_p(sql: str) -> Expression:
+    node = sqlglot.parse_one(sql, dialect="postgres").find(exp.PercentileCont)
+    assert node is not None
+    return node.this
 
 
 class TestPercentileP:
@@ -278,7 +280,7 @@ class TestValueResolutionIsAst:
             aggregation="sum", agg_kwargs={}, column_type=DataType.DOUBLE,
         )
         out = SQLGenerator(dialect="postgres")._resolve_value_ast(spec)
-        assert isinstance(out, exp.Expression)
+        assert isinstance(out, Expression)
 
     @pytest.mark.parametrize("measure", [SPEND_WAVG_HOME, SPEND_WAVG_AMOUNT])
     async def test_picked_value_not_reparsed(
@@ -296,6 +298,7 @@ class TestValueResolutionIsAst:
             dialect="sqlite", seed=seed_1900_sqlite, models=dev1900_models(),
         ) as (engine, _db):
             resp = await engine.execute(_picked_q(measure), dry_run=True)
+        assert resp.sql is not None
         assert re.search(r"MAX\(\w+\.spend\)", _squash(resp.sql)), resp.sql
         round_trips = [s for s in seen if re.fullmatch(r'\s*\w+\."?spend"?\s*', s)]
         assert round_trips == [], round_trips

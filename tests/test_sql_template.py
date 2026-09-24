@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 import sqlglot
 from sqlglot import exp
+from sqlglot.expressions.core import Expression
 
 from slayer.sql.generator import SQLGenerator
 from slayer.sql.sql_template import SqlTemplate, SqlTemplateError
@@ -16,11 +17,13 @@ def _col(name: str, table: str = "t") -> exp.Column:
     return exp.column(name, table=table)
 
 
-def _expr(sql: str, dialect: str = "postgres") -> exp.Expression:
-    return sqlglot.parse_one(sql, dialect=dialect)
+def _expr(sql: str, dialect: str = "postgres") -> Expression:
+    tree = sqlglot.parse_one(sql, dialect=dialect)
+    assert isinstance(tree, Expression)
+    return tree
 
 
-def _render(text: str, dialect: str = "postgres", **bindings: exp.Expression) -> str:
+def _render(text: str, dialect: str = "postgres", **bindings: Expression) -> str:
     return SqlTemplate(text=text, dialect=dialect).render(bindings).sql(dialect=dialect)
 
 
@@ -153,7 +156,9 @@ class TestCachedRootIsPristine:
     def test_repeated_renders_do_not_leak(self) -> None:
         t = SqlTemplate(text="SUM({value} * {w})", dialect="postgres")
         first = t.render({"value": _col("a"), "w": _col("x")})
-        first.find(exp.Sum).set("this", exp.Literal.number(0))
+        summed = first.find(exp.Sum)
+        assert summed is not None
+        summed.set("this", exp.Literal.number(0))
         second = t.render({"value": _col("b"), "w": _col("y")})
         assert second.sql(dialect="postgres") == "SUM(t.b * t.y)"
         third = t.render({"value": _col("a"), "w": _col("x")})

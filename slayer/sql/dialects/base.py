@@ -20,6 +20,7 @@ from collections.abc import Callable, Sequence
 
 from pydantic import BaseModel, ConfigDict
 from sqlglot import exp
+from sqlglot.expressions.core import Expression
 from sqlglot.dialects.dialect import Dialect as _SqlglotDialect
 
 from slayer.core.enums import DataType, TimeGranularity
@@ -116,20 +117,20 @@ def is_operator(node: object) -> bool:
     return isinstance(node, _OPERATOR_SHAPED) and not isinstance(node, exp.Paren)
 
 
-def operand_copy(value: exp.Expression) -> exp.Expression:
+def operand_copy(value: Expression) -> Expression:
     """A copy of ``value`` safe to place as an operator's operand."""
     return exp.Paren(this=value.copy()) if is_operator(value) else value.copy()
 
 
 def _build_covar_decomposition(
     *,
-    col_expr: exp.Expression,
-    other_expr: exp.Expression,
+    col_expr: Expression,
+    other_expr: Expression,
     agg: StatAgg2Name,
     var_fn_samp: str,
     var_fn_pop: str,
     stddev_fn: str,
-) -> exp.Expression:
+) -> Expression:
     """corr / covar via ``cov(x, y) = (Var(x+y) - Var(x) - Var(y)) / 2`` for dialects without them.
 
     Each leg is NULL-guarded by the other; ``exp.Anonymous`` calls dodge sqlglot's
@@ -137,7 +138,7 @@ def _build_covar_decomposition(
     """
     var_fn = var_fn_samp if agg in ("covar_samp", "corr") else var_fn_pop
 
-    def _guarded(value: exp.Expression, guard: exp.Expression) -> exp.Expression:
+    def _guarded(value: Expression, guard: Expression) -> Expression:
         return exp.Case(ifs=[exp.If(
             this=exp.Not(this=exp.Is(this=operand_copy(guard), expression=exp.Null())),
             true=value.copy(),
@@ -146,7 +147,7 @@ def _build_covar_decomposition(
     x_guarded = _guarded(col_expr, other_expr)
     y_guarded = _guarded(other_expr, col_expr)
 
-    def _call(fn: str, *args: exp.Expression) -> exp.Anonymous:
+    def _call(fn: str, *args: Expression) -> exp.Anonymous:
         return exp.Anonymous(this=fn, expressions=[a.copy() for a in args])
 
     xy_sum = exp.Add(this=x_guarded.copy(), expression=y_guarded.copy())
@@ -298,8 +299,8 @@ class SqlDialect(BaseModel):
         return dt
 
     def build_null_safe_eq(
-        self, left: exp.Expression, right: exp.Expression,
-    ) -> exp.Expression:
+        self, left: Expression, right: Expression,
+    ) -> Expression:
         """A null-safe equality (``left`` and ``right`` compare equal, and two
         NULLs compare equal) for the cross-model grain join-back's ``ON`` clause.
 
@@ -319,7 +320,7 @@ class SqlDialect(BaseModel):
 
     def build_ordered(
         self,
-        order_col: exp.Expression,
+        order_col: Expression,
         *,
         descending: bool,
         nulls: Literal["default", "first", "last"] = "default",
@@ -385,8 +386,8 @@ class SqlDialect(BaseModel):
 
     @staticmethod
     def _expanded_null_safe_eq(
-        left: exp.Expression, right: exp.Expression,
-    ) -> exp.Expression:
+        left: Expression, right: Expression,
+    ) -> Expression:
         """``left = right OR (left IS NULL AND right IS NULL)`` — the portable
         expansion for dialects without a native null-safe equality operator."""
         eq = exp.EQ(this=left.copy(), expression=right.copy())
@@ -402,9 +403,9 @@ class SqlDialect(BaseModel):
 
     def build_date_trunc(
         self,
-        col_expr: exp.Expression,
+        col_expr: Expression,
         granularity: TimeGranularity,
-    ) -> exp.Expression:
+    ) -> Expression:
         """Default: ``DATE_TRUNC('unit', col)`` via sqlglot's ``exp.DateTrunc``.
 
         Non-bare-column / non-cast operands are wrapped in
@@ -435,10 +436,10 @@ class SqlDialect(BaseModel):
 
     def build_time_offset_expr(
         self,
-        col_expr: exp.Expression,
+        col_expr: Expression,
         offset: int,
         granularity: TimeGranularity | TimeUnit,
-    ) -> exp.Expression:
+    ) -> Expression:
         """Default: ``col ± INTERVAL N UNIT`` via ``exp.Add`` / ``exp.Sub``.
 
         Granularity normalization (preserved across every dialect):
@@ -469,7 +470,7 @@ class SqlDialect(BaseModel):
         self,
         parts: list[tuple[int, str]],
         sign: int = 1,
-    ) -> list[exp.Expression]:
+    ) -> list[Expression]:
         """Default: one ``exp.Interval`` per (amount, unit) pair.
 
         The Add-vs-Sub direction is decided by ``add_intervals_expr`` from
@@ -488,10 +489,10 @@ class SqlDialect(BaseModel):
 
     def add_intervals_expr(
         self,
-        expr: exp.Expression,
-        intervals: list[exp.Expression],
+        expr: Expression,
+        intervals: list[Expression],
         sign: int = 1,
-    ) -> exp.Expression:
+    ) -> Expression:
         """Default: fold ``exp.Add`` (sign>=0) or ``exp.Sub`` (sign<0) over
         the interval list."""
         op_cls = exp.Add if sign >= 0 else exp.Sub
@@ -500,7 +501,7 @@ class SqlDialect(BaseModel):
             result = op_cls(this=result, expression=iv)
         return result
 
-    def frame_time_operand(self, expr: exp.Expression) -> exp.Expression:
+    def frame_time_operand(self, expr: Expression) -> Expression:
         """The source time column as it must appear in a trailing-window frame
         comparison. Default: unchanged — the frame bounds (``add_intervals_expr``)
         carry the same time type, so ``expr < bucket_end`` is already exact."""
@@ -510,13 +511,13 @@ class SqlDialect(BaseModel):
     # Median / percentile / stat aggregates
     # ------------------------------------------------------------------
 
-    def build_median(self, inner: exp.Expression) -> exp.Expression:
+    def build_median(self, inner: Expression) -> Expression:
         """Default: ``PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY inner)``."""
         return self.build_percentile(p=exp.Literal.number("0.5"), col_expr=inner)
 
     def build_percentile(
-        self, p: exp.Expression, col_expr: exp.Expression,
-    ) -> exp.Expression:
+        self, p: Expression, col_expr: Expression,
+    ) -> Expression:
         """Default: ``PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY col)``; ``p`` is a validated literal."""
         return exp.WithinGroup(
             this=exp.PercentileCont(this=p.copy()),
@@ -526,7 +527,7 @@ class SqlDialect(BaseModel):
             )]),
         )
 
-    def build_approx_count_distinct(self, col_expr: exp.Expression) -> exp.Expression:
+    def build_approx_count_distinct(self, col_expr: Expression) -> Expression:
         """Approximate distinct; the exact ``COUNT(DISTINCT col)`` unless the dialect has a native one."""
         if self.approx_count_distinct_anonymous_name is not None:
             return exp.Anonymous(
@@ -538,26 +539,27 @@ class SqlDialect(BaseModel):
         return exp.Count(this=exp.Distinct(expressions=[col_expr.copy()]))
 
     def build_stat_agg_1arg(
-        self, agg_name: StatAgg1Name, col_expr: exp.Expression,
-    ) -> exp.Expression:
+        self, agg_name: StatAgg1Name, col_expr: Expression,
+    ) -> Expression:
         """Default: emit the canonical name; sqlglot transpiles per dialect."""
         return self._named_call(agg_name, col_expr)
 
     def build_covar_2arg(
         self,
         agg_name: StatAgg2Name,
-        col_expr: exp.Expression,
-        other_expr: exp.Expression,
-    ) -> exp.Expression:
+        col_expr: Expression,
+        other_expr: Expression,
+    ) -> Expression:
         """Default: native ``CORR(x, y)`` / ``COVAR_SAMP(x, y)`` / ``COVAR_POP(x, y)``."""
         return self._named_call(agg_name, col_expr, other_expr)
 
     def _named_call(
-        self, agg_name: StatAgg1Name | StatAgg2Name, *args: exp.Expression,
-    ) -> exp.Func:
+        self, agg_name: StatAgg1Name | StatAgg2Name, *args: Expression,
+    ) -> Expression:
         """``AGG_NAME(args)`` as this dialect's parser would build it, spelling kept."""
         name = agg_name.upper()
         node = exp.func(name, *(a.copy() for a in args), dialect=self.sqlglot_name)
+        assert isinstance(node, Expression)  # concrete Func classes and Anonymous all are
         node.meta["name"] = name
         return node
 
@@ -584,12 +586,12 @@ class SqlDialect(BaseModel):
     # AST rewrite hook + per-connection UDF registration
     # ------------------------------------------------------------------
 
-    def rewrite_parsed_ast(self, tree: exp.Expression) -> exp.Expression:
+    def rewrite_parsed_ast(self, tree: Expression) -> Expression:
         """Default: identity. SQLite overrides to rewrite JSONExtract to
         the function-call form."""
         return tree
 
-    def rewrite_target_ast(self, tree: exp.Expression) -> exp.Expression:
+    def rewrite_target_ast(self, tree: Expression) -> Expression:
         """Default: identity. Target-keyed AST rewrite.
 
         Applied in ``SQLGenerator._parse`` using the generator's **target**
@@ -639,10 +641,10 @@ class SqlDialect(BaseModel):
         inner_sql: str,
         public: list[str],
         projected: Sequence[str],
-        order: exp.Expression | None,
-        limit: exp.Expression | None,
-        offset_arg: exp.Expression | None,
-        parse: Callable[[str], exp.Expression] | None = None,
+        order: Expression | None,
+        limit: Expression | None,
+        offset_arg: Expression | None,
+        parse: Callable[[str], Expression] | None = None,
     ) -> str:
         """``SELECT <public> FROM (<inner_sql>) AS _outer`` plus the detached ORDER BY / LIMIT / OFFSET.
 
