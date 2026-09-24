@@ -62,15 +62,16 @@ from slayer.engine.elaborate_env import (
     check_stage_flatten_collision,
     check_dimension_temporal_axis,
     check_opaque_grouping_dim,
-    check_transform_row_leaf,
     check_partition_key_resolves,
     check_raw_rows_filter_measure_ref,
     check_raw_rows_order_measure_ref,
     check_time_dimension_column,
     check_time_dimension_date_range,
-    check_time_shift_input,
+    check_transform_inputs,
     check_transform_partition_keys_in_operand_grain,
     check_time_transforms_resolved,
+    combined_partitioned_consumers,
+    position_classes,
 )
 from slayer.engine.join_safety import assert_partition_key_attributable
 from slayer.engine.key_metadata import (
@@ -93,8 +94,6 @@ from slayer.ir.bound import (
     BoundFilter,
     DeclaredMeasure,
     OrderSpec,
-    combined_consumer_aggregates,
-    dimension_partitioned_aggregates,
 )
 from slayer.ir.prebound import PreboundQuery, partition_declared_measures
 from slayer.ir.source_bundle import ResolvedSourceBundle, resolve_scope
@@ -563,22 +562,17 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         *(spec.bound.value_key for spec in order_specs),
     ])
 
-    # time_shift-family input typing runs pre-lowering, where change/change_pct
-    # are still single nodes (their desugar duplicates the offending input).
-    _roots_for_transform_checks = [
-        *(dm.bound.value_key for dm in declared_measures),
-        *(bf.value_key for bf in bound_filters),
-        *(spec.bound.value_key for spec in order_specs),
-    ]
-    check_time_shift_input(roots=_roots_for_transform_checks)
-
-    # A transform over a row-level leaf that refines the query grain inflates
-    # the base GROUP BY; reject unless the leaf is a projected grain key.
+    # Transform-input typing runs pre-lowering, where change/change_pct are still
+    # single nodes (their desugar duplicates the offending input).
     _proj_dim_dms, _proj_td_dms, _ = partition_declared_measures(
         declared_measures=declared_measures, n_dims=n_dims, n_time_dimensions=n_tds,
     )
-    check_transform_row_leaf(
-        roots=_roots_for_transform_checks,
+    check_transform_inputs(
+        roots=[
+            *(dm.bound.value_key for dm in declared_measures),
+            *(bf.value_key for bf in bound_filters),
+            *(spec.bound.value_key for spec in order_specs),
+        ],
         projected_grain_keys=frozenset(
             dm.bound.value_key for dm in (*_proj_dim_dms, *_proj_td_dms)
         ),
@@ -627,16 +621,13 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         skip_dimensions=True,
     )
 
-    # A partitioned aggregate inside a computed dimension declares a producer grain (partition_by may be finer than the query).
-    _dim_agg_keys = frozenset(dimension_partitioned_aggregates(declared_measures))
-    # A COMBINED-position partitioned aggregate needs query-dimension partition keys
-    # for the join-back; local and cross-model partitioned consumers alike.
-    _consumers = combined_consumer_aggregates(
-        declared_measures=declared_measures, order_specs=order_specs,
-        row_agg_set=_dim_agg_keys, bound_filters=bound_filters,
-    )
-    _combined_consumer_keys = frozenset(
-        [*_consumers.local_partitioned, *_consumers.cross_model_partitioned]
+    # A computed dimension's partitioned aggregate declares a producer grain; a
+    # combined consumer needs query-dimension partition keys for the join-back.
+    _classes = position_classes(declared_measures, n_grain=n_dims + n_tds)
+    _dim_agg_keys = _classes.row_aggregates
+    _combined_consumer_keys = combined_partitioned_consumers(
+        _classes, declared_measures=declared_measures, order_specs=order_specs,
+        bound_filters=bound_filters,
     )
     # An attached operand — a re-aggregation constituent or a
     # row-attached input / parameter — declares an internal producer

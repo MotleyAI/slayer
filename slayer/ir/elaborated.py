@@ -45,9 +45,8 @@ class ExpressionEntry(BaseModel):
 
 
 class ElaboratedQuery(BaseModel):
-    """The typing environment for one bound query stage, over the typed bound
-    query it types (``query`` / ``scope`` / ``bundle`` / ``stage_schemas`` /
-    ``prebound`` / ``filter_typings`` are the compiler's explicit inputs).
+    """The typing environment for one bound query: an entry per top-level
+    expression and a term per aggregate / transform occurrence.
 
     Equality is semantic — only the typing surface participates.
     """
@@ -59,20 +58,6 @@ class ElaboratedQuery(BaseModel):
     filters: Tuple[ExpressionEntry, ...] = ()
     order: Tuple[ExpressionEntry, ...] = ()
     terms: Dict[ValueKey, Term] = PydanticField(default_factory=dict)
-    query: Optional[Union[SlayerQuery, StrictQueryCarrier]] = PydanticField(
-        default=None, repr=False,
-    )
-    scope: Optional[Union[ModelScope, StageSchema]] = PydanticField(
-        default=None, repr=False,
-    )
-    bundle: Optional[ResolvedSourceBundle] = PydanticField(default=None, repr=False)
-    stage_schemas: Dict[str, StageSchema] = PydanticField(
-        default_factory=dict, repr=False,
-    )
-    prebound: Optional[PreboundQuery] = PydanticField(default=None, repr=False)
-    filter_typings: Tuple[ConjunctTyping, ...] = PydanticField(
-        default=(), repr=False,
-    )
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, ElaboratedQuery):
@@ -86,3 +71,27 @@ class ElaboratedQuery(BaseModel):
         )
 
     __hash__ = None  # type: ignore[assignment] — dict-valued field
+
+
+class _CompileInputs(ElaboratedQuery):
+    """The typed bound query an environment types — the compiler's inputs."""
+
+    scope: Union[ModelScope, StageSchema] = PydanticField(repr=False)
+    bundle: ResolvedSourceBundle = PydanticField(repr=False)
+    stage_schemas: Dict[str, StageSchema] = PydanticField(
+        default_factory=dict, repr=False,
+    )
+    prebound: PreboundQuery = PydanticField(repr=False)
+    filter_typings: Tuple[ConjunctTyping, ...] = PydanticField(default=(), repr=False)
+
+
+class ElaboratedStage(_CompileInputs):
+    """One user-authored query stage's environment."""
+
+    query: SlayerQuery = PydanticField(repr=False)
+
+
+class ElaboratedProducer(_CompileInputs):
+    """A compiler-synthesized producer's environment."""
+
+    query: StrictQueryCarrier = PydanticField(repr=False)
