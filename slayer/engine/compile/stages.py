@@ -54,7 +54,6 @@ from slayer.engine.join_safety import (
     key_attributable_from_root,
     key_broadcast_reason,
     key_host_path,
-    local_crossing_input_paths,
     reroot_from_root,
     shared_join_key_reroot,
     _unique_key_sets,
@@ -777,8 +776,9 @@ def _assert_local_producer_inputs_safe(
     gated_crossings: List[str] = []
     source_crossings: List[str] = []
     if not ranked_crossings:
-        gated = local_crossing_input_paths(
-            key=agg, bundle=bundle, host_model=host_model, include_source=False,
+        gated = aggregate_input_closure(
+            key=agg, anchor_model=host_model, anchor_relation=host_model.name,
+            bundle=bundle, include_source=False,
         )
         if gated is None:
             check_input_dependencies_analyzable(
@@ -4081,9 +4081,9 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
             # A JOINED wrap, or a local wrap whose source crosses a join, is a HOST-rooted producer synthesized late.
             _wrap_crosses = path or (
                 host_model_for_wraps is not None
-                and local_crossing_input_paths(
-                    key=wrap_key, bundle=bundle,
-                    host_model=host_model_for_wraps,
+                and aggregate_input_closure(
+                    key=wrap_key, anchor_model=host_model_for_wraps,
+                    anchor_relation=host_model_for_wraps.name, bundle=bundle,
                 )
             )
             if _wrap_crosses and wrap_key not in late_wrap_keys:

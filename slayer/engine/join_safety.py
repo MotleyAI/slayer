@@ -717,20 +717,6 @@ def _path_grain_determined(
     return pinned
 
 
-def local_crossing_input_paths(
-    *, key: AggregateKey, bundle: ResolvedSourceBundle,
-    host_model: SlayerModel, include_source: bool = True,
-) -> Optional[List[Tuple[str, ...]]]:
-    """The dependency closure of a local aggregate's inputs (discovery mode:
-    nested aggregates descend). ``None`` when a dependency cannot be analysed —
-    the caller routes it to a producer so input safety fails it closed."""
-    closure = aggregate_input_closure(
-        key=key, anchor_model=host_model, anchor_relation=host_model.name,
-        bundle=bundle, include_source=include_source, descend_aggregates=True,
-    )
-    return None if closure is None else list(closure)
-
-
 def crossing_local_root_predicate(
     *, scope: Union[ModelScope, StageSchema], bundle: ResolvedSourceBundle,
 ) -> Callable[[ValueKey], bool]:
@@ -753,8 +739,8 @@ def crossing_local_root_predicate(
         )
 
     def _crosses(k: AggregateKey, *, host: SlayerModel) -> bool:
-        crossed = local_crossing_input_paths(
-            key=k, bundle=bundle, host_model=host,
+        crossed = aggregate_input_closure(
+            key=k, anchor_model=host, anchor_relation=host.name, bundle=bundle,
         )
         if crossed is None:
             return True  # unanalysable input → own producer (fail closed downstream)
