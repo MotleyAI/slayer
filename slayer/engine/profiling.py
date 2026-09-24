@@ -69,7 +69,7 @@ import logging
 from typing import Any, NamedTuple
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import Column, SlayerModel, is_identifier
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.base import StorageBackend
@@ -274,7 +274,7 @@ async def _collect_dim_profile(
     max_dims: int = 10,
     only_columns: set[str] | None = None,
 ) -> list[_DimProfileEntry]:
-    """Produce one profile entry per eligible column (non-hidden, non-pk).
+    """Produce one profile entry per eligible column (non-hidden, non-identifier).
 
     - string/boolean columns: distinct values (or overflow marker) via one
       query per column.
@@ -295,7 +295,7 @@ async def _collect_dim_profile(
     """
     eligible = [
         c for c in model.columns
-        if not c.hidden and not c.primary_key
+        if not c.hidden and not is_identifier(column=c, columns=model.columns)
         and (only_columns is None or c.name in only_columns)
     ][:max_dims]
     categorical = [c for c in eligible if c.type in (DataType.TEXT, DataType.BOOLEAN)]
@@ -327,11 +327,11 @@ async def _collect_dim_profile(
 _CATEGORICAL_TYPES = (DataType.TEXT, DataType.BOOLEAN)
 
 
-def _is_sample_cached(column: Column) -> bool:
+def _is_sample_cached(column: Column, *, model: SlayerModel) -> bool:
     """Return ``True`` when the column's persisted sample-value cache is
     valid (no re-profile needed), ``False`` when it's missing/stale.
 
-    Hidden/PK columns are never profiled — treat them as "cached" (the
+    Hidden/identifier columns are never profiled — treat them as "cached" (the
     caller still skips them).
 
     For categorical columns the structured ``sampled_values`` field is
@@ -343,7 +343,7 @@ def _is_sample_cached(column: Column) -> bool:
     For numeric/temporal columns ``sampled_values`` is always ``None`` —
     the legacy ``sampled`` text is the cache indicator.
     """
-    if column.hidden or column.primary_key:
+    if column.hidden or is_identifier(column=column, columns=model.columns):
         return True
     if column.type.is_opaque:
         # Opaque columns are never profiled (DISTINCT / min / max fail on the
@@ -440,7 +440,7 @@ async def profile_column(
 ) -> ColumnSample | None:
     """Return the :class:`ColumnSample` for ``column`` on ``model``.
 
-    Returns ``None`` for primary-key / hidden / opaque (``UNKNOWN``) columns
+    Returns ``None`` for identifier / hidden / opaque (``UNKNOWN``) columns
     and when the profile query fails or yields no data. Caller decides whether
     to persist the ``None`` (clearing any stale value) or skip it.
 
@@ -448,7 +448,7 @@ async def profile_column(
     ``Optional[ColumnSample]`` so the structured ``sampled_values`` and
     ``distinct_count`` are returned alongside the legacy text.
     """
-    if column.hidden or column.primary_key:
+    if column.hidden or is_identifier(column=column, columns=model.columns):
         return None
     if column.type.is_opaque:
         # No equality operator / no orderable comparison on the underlying DB
@@ -533,7 +533,7 @@ async def refresh_table_backed_model_sampled(
         return []
     errors: list[str] = []
     for column in model.columns:
-        if column.hidden or column.primary_key:
+        if column.hidden or is_identifier(column=column, columns=model.columns):
             continue
         if only_columns is not None and column.name not in only_columns:
             continue
@@ -567,55 +567,6 @@ async def refresh_all_table_backed_sampled(
     return errors
 
 
-async def handle_edit_refresh(
-    *,
-    engine: SlayerQueryEngine,
-    storage: StorageBackend,
-    data_source: str,
-    model_name: str,
-    changed_columns: set[str],
-    model_level_change: bool,
-) -> list[str]:
-    """Refresh entry point for ``edit_model``.
-
-    * ``model_level_change=True`` → refresh every non-hidden column on
-      the model (used when ``SlayerModel.filters`` / ``sql`` /
-      ``source_queries`` body changed and so every column's sample-value
-      could be affected).
-    * Otherwise refresh just the columns named in ``changed_columns``.
-
-    DEV-1386: after the sample-value refresh, runs the embedding refresh
-    over the model's subtree (model doc + visible columns + named
-    measures + custom aggregations). Best-effort: per-entity embed
-    failures are appended to the returned warning list, never aborting
-    ``edit_model``.
-    """
-    model = await storage.get_model(model_name, data_source=data_source)
-    if model is None:
-        return [f"model {model_name!r} not found in datasource {data_source!r}"]
-    only = None if model_level_change else changed_columns
-    warnings = await refresh_table_backed_model_sampled(
-        model=model, engine=engine, storage=storage, only_columns=only,
-    )
-    # Reload the model — the sample-value refresh just patched it on
-    # disk, and the embedding text rendering needs the updated dict to
-    # match the new content_hash.
-    reloaded = await storage.get_model(model_name, data_source=data_source)
-    if reloaded is not None:
-        # DEV-1514: fan out through SearchService so every registered
-        # retriever sees the refresh. SearchService isolates per-retriever
-        # exceptions as prefixed warnings.
-        # Local import: keep the search module off the cold-start path.
-        from slayer.search.service import SearchService
-
-        warnings.extend(
-            await SearchService(storage=storage).refresh_model_subtree(
-                reloaded,
-            )
-        )
-    return warnings
-
-
 # ---------------------------------------------------------------------------
 # DEV-1516: shared cache-aware refresh helper
 # ---------------------------------------------------------------------------
@@ -643,8 +594,8 @@ async def ensure_column_sample_fresh(
 
     Returns the **input column unchanged** when:
 
-    - ``_is_sample_cached(column)`` is True (cache hit; includes hidden /
-      primary-key / opaque ``UNKNOWN`` columns by convention),
+    - ``_is_sample_cached`` is True (cache hit; includes hidden /
+      identifier / opaque ``UNKNOWN`` columns by convention),
     - :func:`profile_column` returns ``None`` (e.g. transient query failure
       or no rows),
     - :func:`profile_column` raises (logged + swallowed),
@@ -660,7 +611,7 @@ async def ensure_column_sample_fresh(
     ``(data_source, model_name, column_name)`` context so observability
     matches the pre-DEV-1516 inline implementation in ``inspect_model``.
     """
-    if _is_sample_cached(column):
+    if _is_sample_cached(column, model=model):
         return column
     # DEV-1615: no categorical-only gate here. ``profile_column`` handles
     # BOTH categorical (top-50 + distinct_count) AND numeric/temporal

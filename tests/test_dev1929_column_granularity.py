@@ -24,7 +24,7 @@ from slayer.engine.ingestion import ingest_datasource_idempotent
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ir.source_bundle import (
     ResolvedSourceBundle,
-    synthetic_model_from_stage_schema,
+    model_from_stage_schema,
 )
 from slayer.mcp.server import create_mcp_server
 from slayer.storage.yaml_storage import YAMLStorage
@@ -404,7 +404,7 @@ class TestSiblingStandIns:
                         type=DataType.TIMESTAMP, granularity=TG.MONTH),
             StageColumn(name="rev", sql_alias="rev", public_alias="rev", type=DataType.DOUBLE),
         ])
-        synth = synthetic_model_from_stage_schema(name="s1", schema=schema, data_source="ds")
+        synth = model_from_stage_schema(name="s1", schema=schema, data_source="ds")
         assert _col(synth, "created_at").granularity == TG.MONTH
         assert _col(synth, "rev").granularity is None
 
@@ -415,7 +415,7 @@ class TestSiblingStandIns:
             StageColumn(name="created_at", sql_alias="created_at", public_alias="created_at",
                         type=DataType.TIMESTAMP, granularity=TG.MONTH),
         ])
-        sibling = synthetic_model_from_stage_schema(name="s1", schema=schema, data_source="ds")
+        sibling = model_from_stage_schema(name="s1", schema=schema, data_source="ds")
         host = SlayerModel(
             name="orders", sql_table="orders", data_source="ds",
             columns=[Column(name="id", type=DataType.DOUBLE, primary_key=True)],

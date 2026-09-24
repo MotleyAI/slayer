@@ -31,7 +31,8 @@ from slayer.core.query import (
     TimeDimension,
 )
 from slayer.engine.ingestion import ingest_datasource, ingest_datasource_idempotent
-from slayer.engine.profiling import handle_edit_refresh, refresh_all_table_backed_sampled
+from slayer.engine.profiling import refresh_all_table_backed_sampled
+from slayer.search.service import handle_edit_refresh
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.search.service import SearchService
 from slayer.sql import engine_factory

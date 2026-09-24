@@ -19,9 +19,9 @@ from slayer.ir.prebound import PreboundQuery
 from slayer.ir.source_bundle import (
     ResolvedSourceBundle,
     apply_extension_overlay,
+    model_from_stage_schema,
     source_name_if_sibling,
     stage_bundle_with_siblings,
-    synthetic_model_from_stage_schema,
 )
 
 __all__ = [
@@ -68,7 +68,7 @@ def _stage_scope_and_bundle(
 
     # 1. ModelExtension OVER a sibling: overlay the extra columns onto a synthetic sibling model.
     if sib is not None and isinstance(src, ModelExtension):
-        base = synthetic_model_from_stage_schema(
+        base = model_from_stage_schema(
             name=sib, schema=stage_schemas[sib], data_source=data_source,
         )
         overlaid = apply_extension_overlay(base, src)
@@ -81,7 +81,7 @@ def _stage_scope_and_bundle(
 
     # 2. Bare-string sibling source (chain): bind against the upstream flat StageSchema.
     if isinstance(src, str) and src in stage_schemas:
-        synth = synthetic_model_from_stage_schema(
+        synth = model_from_stage_schema(
             name=src, schema=stage_schemas[src], data_source=data_source,
         )
         others = {n: s for n, s in stage_schemas.items() if n != src}

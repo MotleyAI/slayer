@@ -26,7 +26,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple, TypeVar
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.errors import UnknownReferenceError
@@ -83,7 +83,8 @@ class StageSchema(BaseModel):
     ``relation_name`` is the SQL identifier used when this stage is
     referenced from a downstream stage (CTE name or subquery alias).
     ``sql`` is the emitted text of the stage's SELECT — populated by the
-    planner; left ``None`` until rendering.
+    planner; left ``None`` until rendering. ``grain`` names the columns the
+    stage is unique on (its dimension positions); ``None`` for a raw-rows stage.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -91,6 +92,17 @@ class StageSchema(BaseModel):
     relation_name: str
     sql: Optional[str] = None
     columns: List[StageColumn]
+    grain: Optional[List[str]] = None
+
+    @model_validator(mode="after")
+    def _grain_names_columns(self) -> "StageSchema":
+        names = {c.name for c in self.columns}
+        missing = [g for g in self.grain or [] if g not in names]
+        if missing:
+            raise ValueError(
+                f"Stage {self.relation_name!r} grain names unknown columns {missing}."
+            )
+        return self
 
     def __getitem__(self, name: str) -> StageColumn:
         for c in self.columns:

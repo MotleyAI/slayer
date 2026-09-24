@@ -77,8 +77,8 @@ A column is the unit of structure on the model. The same column entry can serve 
 | `label` | string | No | — | Display name; propagates into query result metadata |
 | `sql` | string | No | (bare column name) | SQL expression — defaults to the column's name |
 | `type` | string | No | `string` | `string`, `number`, `boolean`, `time`, `date` |
-| `primary_key` | bool | No | `false` | Restricts aggregation to `count` / `count_distinct` |
-| `unique` | bool | No | `false` | Single-column uniqueness (non-PK). `primary_key` implies unique. Auto-set from `UNIQUE` constraints / unique indexes; used to infer one-to-one joins |
+| `primary_key` | bool | No | `false` | A model's sole primary key is an identifier, restricted to counting and `min` / `max`; members of a composite key are ordinary columns |
+| `unique` | bool | No | `false` | Single-column uniqueness (non-PK). A sole `primary_key` implies unique; a composite-key member does not. Auto-set from `UNIQUE` constraints / unique indexes; used to infer one-to-one joins |
 | `hidden` | bool | No | `false` | Hide from listings |
 | `format` | dict | No | — | `NumberFormat` used by response metadata |
 | `allowed_aggregations` | list[str] | No | — | Whitelist (must be a subset of the type-default eligibility set, or a custom aggregation defined on this model) |
@@ -112,7 +112,7 @@ A column with no explicit `allowed_aggregations` whitelist gets a default set ba
 | `boolean` | count, count_distinct, count_distinct_approx, sum, min, max, first, last |
 | `date` / `time` | count, count_distinct, count_distinct_approx, first, last, min, max |
 
-`count_distinct_approx` is dialect-aware: it emits the database-native approximate-distinct function where one exists and falls back to an exact `COUNT(DISTINCT)` where it does not (Postgres / SQLite / MySQL). Primary-key columns are always restricted to `count` / `count_distinct` / `count_distinct_approx` regardless of type. When `allowed_aggregations` is set, every entry must already be eligible under the type-default map (or be a custom aggregation defined on this model); violations are caught at model construction time, so query-time validation is a single membership check.
+`count_distinct_approx` is dialect-aware: it emits the database-native approximate-distinct function where one exists and falls back to an exact `COUNT(DISTINCT)` where it does not (Postgres / SQLite / MySQL). A model's sole primary-key column is always restricted to `count` / `count_distinct` / `count_distinct_approx` / `min` / `max` regardless of type, and is skipped by sampling and profiling; composite primary-key members aggregate by their type. When `allowed_aggregations` is set, every entry must already be eligible under the type-default map (or be a custom aggregation defined on this model); violations are caught at model construction time, so query-time validation is a single membership check.
 
 ### Filtered columns
 

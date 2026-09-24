@@ -258,8 +258,8 @@ def _regroup_producer_prebound(  # NOSONAR(S3776) — one producer-prebound asse
     public_alias_by_agg: Optional[Mapping[ValueKey, str]] = None,
     explicit_types: Optional[Mapping[ValueKey, DataType]] = None,
     grain_name_by_key: Optional[Mapping[ValueKey, str]] = None,
-    window_td_key: Optional[ValueKey] = None,
-    to_many_handling: str = "broadcast",
+    window_td_key: Optional[TimeTruncKey] = None,
+    to_many_handling: Literal["broadcast", "associate", "error"] = "broadcast",
 ) -> Tuple[PreboundQuery, List[ValueKey]]:
     """The producer's bind product: grain from partition keys, one measure per consumed aggregate, inherited base-row filters; returns prebound + ordered grain keys."""
     public_alias_by_agg = public_alias_by_agg or {}
@@ -833,9 +833,12 @@ def _trailing_window_kernel(
     bucket_slot = next(
         (s for s in producer_plan.row_slots if s.id == bucket_sid), None,
     )
-    assert window_raw is not None and bucket_slot is not None, (
+    assert (
+        isinstance(window_raw, str) and bucket_sid is not None
+        and bucket_slot is not None and isinstance(bucket_slot.key, TimeTruncKey)
+    ), (
         "Windowed producer is missing its window duration or bucket slot; "
-        "synthesis and planning disagree (DEV-1838)."
+        "synthesis and planning disagree."
     )
     src_where_ids, src_rewrites = _plan_src_row_filters(
         producer_plan=producer_plan,
@@ -899,8 +902,10 @@ def _ranked_kernel(
     alias: Optional[str],
     target_rooted: bool,
 ) -> RankedProducerKernel:
+    agg = agg_key.agg
+    assert agg in ("first", "last")
     return RankedProducerKernel(
-        agg=agg_key.agg,
+        agg=agg,
         ranking_time_key=_checked_ranking_time_key(
             producer_plan=producer_plan, agg_key=agg_key, root_model=root_model,
             bundle=bundle, alias=alias, target_rooted=target_rooted,
@@ -992,9 +997,12 @@ def _synthesize_wrap_attach(
         joined_slot_ids={slot_id for _, slot_id in join_pairs},
         producer_grain_slot_ids=_producer_grain_slot_ids(producer_plan),
     )
+    # A wrap's source is a plain column, so the alias always resolves.
+    alias_hint = canonical_aggregate_alias(wrap_key, profile="stage_formula")
+    assert alias_hint is not None
     return RegroupAttachPlan(
         producer_plan=producer_plan,
-        alias_hint=canonical_aggregate_alias(wrap_key, profile="stage_formula"),
+        alias_hint=alias_hint,
         attach_phase="combined",
         join_pairs=join_pairs,
         substitutions=[RegroupSubstitution(
@@ -1077,7 +1085,7 @@ def _plan_shifted_attaches(
     out: List[RegroupAttachPlan] = []
     for slot in shift_slots:
         key = slot.key
-        assert isinstance(key, TransformKey) and key.time_key is not None
+        assert isinstance(key, TransformKey) and isinstance(key.time_key, TimeTruncKey)
         carried = carried_placeholders(
             key.input, axis=key.time_key, to_original=to_original,
             dim_keys=dim_keys, td_keys=td_keys, active_bucket=prebound.main_time_key,
@@ -1171,10 +1179,10 @@ def _attaches_carrying(
 
 
 def _shifted_producer_grain(
-    *, answer: ValueKey, resolved: ValueKey, axis: ValueKey, grain: List[ValueKey],
+    *, answer: ValueKey, resolved: ValueKey, axis: TimeTruncKey, grain: List[ValueKey],
     dim_keys: List[ValueKey], td_keys: List[ValueKey],
-    active_bucket: Optional[ValueKey],
-) -> Tuple[Grain, Optional[ValueKey], bool]:
+    active_bucket: Optional[TimeTruncKey],
+) -> Tuple[Grain, Optional[TimeTruncKey], bool]:
     """(grain, window time key, own-grain?) of a shifted producer: the operand grain
     (Axiom 11.1) when it holds the axis, else the query grain."""
     # A bare aggregate keyed by the axis is built exactly like its combined
@@ -1468,6 +1476,8 @@ def _register_dep_hops(
     )
     if not dep_rels:
         return []
+    # Non-empty deps imply a ColumnSqlKey with a resolved owner.
+    assert isinstance(col, ColumnSqlKey)
     value_rels = set(_ref_sql_dependency_paths(
         col, host_model=host_model, models_by_name=lookup, bundle=bundle,
         include_filter=False,
@@ -1475,6 +1485,7 @@ def _register_dep_hops(
     owner = _owning_model(
         col.model, host_model=host_model, models_by_name=lookup,
     )
+    assert owner is not None
     terminals: List[Tuple[str, ...]] = []
     for dep_rel in dep_rels:
         terminal = _forward_hops(
@@ -1964,7 +1975,7 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
     *,
     agg: AggregateKey,
     placeholder: ValueKey,
-    attach_phase: str,
+    attach_phase: Literal["row", "combined"],
     public_alias: Optional[str],
     context: _ProducerSynthesisContext,
     declared_type: Optional[DataType] = None,
@@ -2041,7 +2052,7 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
     )
     # Association only when a DIMENSION is unattributable; attached inputs never need it.
     associate = mode == "associate" and bool(unattributable)
-    window_td_key: Optional[ValueKey] = None
+    window_td_key: Optional[TimeTruncKey] = None
     semi_joins: List[SemiJoinFilter] = []
     broadcast: List[Tuple[str, str]] = []
     picked_params: List[PickedParam] = []
@@ -2136,6 +2147,7 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
     host_by_rerooted = {rr: hk for hk, rr in safe_pairs}
     if window_td_key is not None:
         # The bucket joins back on the consumer's own active TD.
+        assert prebound.main_time_key is not None
         host_by_rerooted.setdefault(window_td_key, prebound.main_time_key)
     grain_keys = Grain.of(rr for _, rr in safe_pairs)
     # The producer measure keeps the CANONICAL alias (root columns could shadow the public name).
@@ -2219,9 +2231,11 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
             alias=canonical_aggregate_alias(agg, profile="stage_formula"),
             target_rooted=True,
         )
+    alias_hint = canonical_aggregate_alias(agg, profile="stage_formula")
+    assert alias_hint is not None  # a cross-model source always has a leaf
     return RegroupAttachPlan(
         producer_plan=producer_plan,
-        alias_hint=canonical_aggregate_alias(agg, profile="stage_formula"),
+        alias_hint=alias_hint,
         attach_phase=attach_phase,
         join_pairs=join_pairs,
         substitutions=[RegroupSubstitution(
@@ -2973,7 +2987,7 @@ def _build_carrier_attach(
     n_date_range: int,
     producer_source_model: Optional[str],
     producer_registry: Optional[Dict[Hashable, PlannedQuery]],
-    active_bucket: Optional[ValueKey],
+    active_bucket: Optional[TimeTruncKey],
     population: "Population",
     population_semi_join_measures: Optional[List[str]] = None,
 ) -> RegroupAttachPlan:
@@ -3626,6 +3640,7 @@ def _plan_regroups(
     host_model_for_cm = (
         scope.source_model if isinstance(scope, ModelScope) else bundle.source_model
     )
+    assert host_model_for_cm is not None
     models_by_name_cm = bundle.models_by_name
     base_filters_with_text = list(zip(
         prebound.bound_filters,
@@ -3640,8 +3655,12 @@ def _plan_regroups(
         base_filters_with_text=base_filters_with_text, scope=scope,
         stage_schemas=stage_schemas, home_paths=home_paths,
     )
-    for phase, cm_aggs in (("combined", cm_combined), ("row", cm_row)):
+    cm_phases: List[Tuple[Literal["row", "combined"], List[ValueKey]]] = [
+        ("combined", cm_combined), ("row", cm_row),
+    ]
+    for phase, cm_aggs in cm_phases:
         for agg in cm_aggs:
+            assert isinstance(agg, AggregateKey)  # target-rooted roots are aggregates
             attaches.append(_synthesize_cross_model_producer(
                 agg=agg, placeholder=mapping[agg], attach_phase=phase,
                 public_alias=public_alias_by_agg.get(agg),
@@ -4216,15 +4235,19 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
                 type_name=type(spec.bound.value_key).__name__,
             )
         order_slot = projection.registry.get(sid)
+        direction = spec.direction
+        assert direction in ("asc", "desc")
         order_entries.append(OrderEntry(
             slot_id=sid,
-            direction=spec.direction,
+            direction=direction,
             phase=order_slot.key.phase,
         ))
 
     transform_layers = _emit_transform_layers(slots=projection.registry.slots)
     stage_schema = _emit_stage_schema(
         stage_name=query.name, projection=projection,
+        n_grain_positions=n_dims + n_tds,
+        distinct_dimension_values=distinct_dimension_values,
         root=render_source_model, models_by_name=bundle.models_by_name,
         originals={sub.placeholder: sub.original_key
                    for attach in regroup_attach_plans for sub in attach.substitutions},
@@ -4385,22 +4408,22 @@ def _topo_sort(queries: List[SlayerQuery]) -> List[SlayerQuery]:
     """Kahn's algorithm: order stages so each follows the siblings it references (unnamed stages appended last); raises on duplicate names or a cycle."""
     if len(queries) <= 1:
         return list(queries)
-    named = [q for q in queries if q.name]
-    names = [q.name for q in named]
+    named: List[Tuple[str, SlayerQuery]] = [(q.name, q) for q in queries if q.name]
+    names = [n for n, _ in named]
     duplicates = sorted({n for n in names if names.count(n) > 1})
     if duplicates:
         raise ValueError(
             f"Duplicate stage names in source_queries DAG: {duplicates}"
         )
-    by_name = {q.name: q for q in named}
-    in_degree = {q.name: 0 for q in named}
-    edges: Dict[str, List[str]] = {q.name: [] for q in named}
-    for q in named:
+    by_name: Dict[str, SlayerQuery] = dict(named)
+    in_degree = dict.fromkeys(names, 0)
+    edges: Dict[str, List[str]] = {n: [] for n in names}
+    for name, q in named:
         # A stage depends on a sibling its source_model reads from (bare-string OR ModelExtension/dict over the sibling).
         dep = source_name_if_sibling(q.source_model, by_name)
-        if dep is not None and dep != q.name:
-            in_degree[q.name] += 1
-            edges[dep].append(q.name)
+        if dep is not None and dep != name:
+            in_degree[name] += 1
+            edges[dep].append(name)
     sorted_names: List[str] = []
     queue = [n for n, d in in_degree.items() if d == 0]
     while queue:
@@ -4527,22 +4550,24 @@ def _emit_stage_schema(
     *,
     stage_name: Optional[str],
     projection,
-    root: Optional[SlayerModel] = None,
-    models_by_name: Optional[Dict[str, SlayerModel]] = None,
-    originals: Optional[Mapping[ValueKey, ValueKey]] = None,
-    upstream: Optional[Mapping[str, Tuple[str, ...]]] = None,
+    n_grain_positions: int,
+    distinct_dimension_values: bool,
+    root: Optional[SlayerModel],
+    models_by_name: Dict[str, SlayerModel],
+    originals: Mapping[ValueKey, ValueKey],
+    upstream: Mapping[str, Tuple[str, ...]],
 ) -> StageSchema:
+    """``public_projection[:n_grain_positions]`` are the declared dimension / time-dimension occurrences."""
     columns: List[StageColumn] = []
     alias_idx: Dict[str, int] = {}
-    for sid in projection.public_projection:
+    grain: List[str] = []
+    grain_sids: set = set()
+    for pos, sid in enumerate(projection.public_projection):
         slot = projection.registry.get(sid)
         if slot.hidden:
             continue
         idx = alias_idx.setdefault(sid, 0)
-        if idx < len(slot.public_aliases):
-            alias = slot.public_aliases[idx]
-        else:
-            alias = slot.declared_name
+        alias = slot.public_aliases[idx] if idx < len(slot.public_aliases) else slot.declared_name
         alias_idx[sid] = idx + 1
         # Downstream bind + CTE column name are the ``__``-flattened form; public_alias keeps the dotted result-key form.
         flat = flat_name(alias)
@@ -4550,29 +4575,41 @@ def _emit_stage_schema(
         check_stage_flatten_collision(
             flat_name=flat, collides=any(c.name == flat for c in columns),
         )
-        # A column an upstream stage bucketed carries its granularity downstream,
-        # so a re-binding TimeDimension can type-check the re-bucket (DEV-1471).
-        upstream_gran = (
-            TimeGranularity(slot.key.granularity)
-            if isinstance(slot.key, TimeTruncKey) else None
-        )
-        columns.append(StageColumn(
-            name=flat,
-            sql_alias=flat,
-            public_alias=alias,
-            type=slot.type,
-            granularity=upstream_gran,
-            label=slot.label,
-            hidden=False,
-            format=slot.format,
-            description=slot.description,
+        columns.append(_stage_column(
+            slot=slot, alias=alias, flat=flat,
             respellings=() if alias in slot.explicit_aliases else _respellings(
-                flat=flat, key=(originals or {}).get(slot.key, slot.key), root=root,
-                models_by_name=models_by_name or {}, upstream=upstream or {},
+                flat=flat, key=originals.get(slot.key, slot.key), root=root,
+                models_by_name=models_by_name, upstream=upstream,
             ),
         ))
+        if pos < n_grain_positions and sid not in grain_sids:
+            grain_sids.add(sid)
+            grain.append(flat)
     return StageSchema(
         relation_name=stage_name or "(unnamed_stage)", columns=columns,
+        grain=grain if distinct_dimension_values else None,
+    )
+
+
+def _stage_column(
+    *, slot: ValueSlot, alias: str, flat: str, respellings: Tuple[str, ...],
+) -> StageColumn:
+    # An upstream-bucketed column carries its granularity so a re-binding TimeDimension can type-check the re-bucket.
+    upstream_gran = (
+        TimeGranularity(slot.key.granularity)
+        if isinstance(slot.key, TimeTruncKey) else None
+    )
+    return StageColumn(
+        name=flat,
+        sql_alias=flat,
+        public_alias=alias,
+        type=slot.type,
+        granularity=upstream_gran,
+        label=slot.label,
+        hidden=False,
+        format=slot.format,
+        description=slot.description,
+        respellings=respellings,
     )
 
 
