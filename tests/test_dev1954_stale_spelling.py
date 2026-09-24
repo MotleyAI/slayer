@@ -150,6 +150,29 @@ class TestStageColumnRespellings:
             "customers__hr__pop_max", "buyer__regions__pop_max",
             "customers__regions__pop_max"}
 
+    def test_explicit_name_with_a_path_prefix_has_none(self) -> None:
+        cols = self._schema(dev1954_models(), _stage1(measures=[
+            {"formula": "customers.hr.pop:min", "name": "customers__hr__custom"}]))
+        assert cols["customers__hr__custom"].respellings == ()
+
+    def test_pass_through_inherits(self) -> None:
+        stage1 = _stage1(measures=["customers.regions.pop:max"])
+        stage2 = slayer_query(name="s2", source_model="s1", dimensions=[CANON],
+                              measures=["customers__hr__pop_max:max",
+                                        {"formula": "customers__hr__pop_max:min",
+                                         "name": "customers__hr__lo"}])
+        bundle = ResolvedSourceBundle(source_model=dev1954_models()[0],
+                                      referenced_models=dev1954_models()[1:])
+        planned = plan_stages(queries=[stage1, stage2, slayer_query(
+            source_model="s2", measures=["*:count"])], bundle=bundle)
+        schema = planned[1].stage_schema
+        assert schema is not None
+        cols = {c.name: c for c in schema.columns}
+        assert set(cols[CANON].respellings) == {STALE}
+        assert set(cols["customers__hr__pop_max_max"].respellings) == \
+            {"customers__regions__pop_max_max"}
+        assert cols["customers__hr__lo"].respellings == ()
+
     def test_unnamed_path_has_none(self) -> None:
         cols = self._schema(dev1954_models(named=False), _stage1())
         assert cols[STALE].respellings == ()
@@ -169,6 +192,28 @@ class TestDownstreamStageStaleReference:
         assert _amounts(stale, f"s1.{CANON}") == AMOUNT_BY_NAME
         _assert_one_stale(stale)
         assert stale_warnings(canon) == []
+
+    async def test_extension_over_the_sibling_stage(self, engine) -> None:
+        def ext(dim: str) -> SlayerQuery:
+            return slayer_query(source_model={"source_name": "s1"}, dimensions=[dim],
+                                measures=["amount_sum:sum"])
+
+        stale = await engine.execute([_stage1(), ext(STALE)])
+        canon = await engine.execute([_stage1(), ext(CANON)])
+        assert stale.columns == canon.columns
+        assert _amounts(stale, f"s1.{CANON}") == AMOUNT_BY_NAME
+        _assert_one_stale(stale)
+
+    async def test_survives_a_chain_of_stages(self, engine) -> None:
+        stage2 = slayer_query(name="s2", source_model="s1", dimensions=[STALE],
+                              measures=["amount_sum:sum"])
+        resp = await engine.execute([_stage1(), stage2, slayer_query(
+            source_model="s2", dimensions=[STALE], measures=["amount_sum_sum:sum"])])
+        assert {r[f"s2.{CANON}"]: r["s2.amount_sum_sum_sum"] for r in resp.data} \
+            == AMOUNT_BY_NAME
+        warnings = stale_warnings(resp)
+        assert len(warnings) == 2
+        assert all((w.original, w.normalized) == (STALE, CANON) for w in warnings)
 
     async def test_ambiguous_respelling_fails_closed(self, parallel_engine) -> None:
         stage1 = _stage1(dimensions=["customers.hr.rname", "customers.hr2.rname"])
@@ -213,6 +258,16 @@ class TestQueryBackedConsumer:
         assert {r["regions.qb_label"] for r in resp.data} == {"North", "South"}
         _assert_one_stale(resp)
 
+
+    async def test_query_backed_over_query_backed(self, engine) -> None:
+        await engine.storage.save_model(SlayerModel(
+            name="ra2", data_source="test", source_queries=[slayer_query(
+                source_model="region_amounts", dimensions=[CANON],
+                measures=[{"formula": "amt:sum", "name": "amt2"}])]))
+        resp = await engine.execute(slayer_query(
+            source_model="ra2", dimensions=[STALE], measures=["amt2:sum"]))
+        assert {r[f"ra2.{CANON}"] for r in resp.data} == {"North", "South", None}
+        _assert_one_stale(resp)
 
     async def test_stored_query_keeps_its_spelling(self, engine) -> None:
         await engine.execute(slayer_query(

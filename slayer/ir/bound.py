@@ -73,6 +73,7 @@ class DeclaredMeasure(BaseModel):
     public_name: Optional[str] = None
     label: Optional[str] = None
     canonical_alias: Optional[str] = None
+    name_is_explicit: bool = False
     type: Optional[DataType] = None
     type_is_explicit: bool = False
     preserve_native_type: bool = False

@@ -27,6 +27,11 @@ several columns' respellings SHALL fail as an unknown reference.
 - **THEN** the reference binds to `customers__hr__rname`, the results equal the canonical spelling's, and
   the response carries a `STALE_PATH_SPELLING` warning naming both names
 
+#### Scenario: A stale spelling survives a chain of stages
+- **WHEN** a three-stage query's first stage selects `customers.regions.rname` and the second and third
+  stages both reference `customers__regions__rname`
+- **THEN** both bind to `customers__hr__rname`, each with a `STALE_PATH_SPELLING` warning
+
 #### Scenario: A query-backed model's consumer written against the old spelling keeps working
 - **WHEN** a query-backed model's query selects `customers.regions.rname`, and both a query on that model
   and another model's `Column.sql` reference its column `customers__regions__rname`

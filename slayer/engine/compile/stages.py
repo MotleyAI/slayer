@@ -3480,24 +3480,12 @@ def _rewrite_regrouped_prebound(
     mapping, a measure only the combined one (its inners desugar COMBINED)."""
     return PreboundQuery(
         declared_measures=[
-            DeclaredMeasure(
-                bound=BoundExpr(
-                    value_key=substitute_value_keys(
-                        dm.bound.value_key,
-                        mapping if dm.is_dimension else combined_mapping,
-                    ),
+            dm.model_copy(update={"bound": BoundExpr(
+                value_key=substitute_value_keys(
+                    dm.bound.value_key,
+                    mapping if dm.is_dimension else combined_mapping,
                 ),
-                declared_name=dm.declared_name,
-                public_name=dm.public_name,
-                label=dm.label,
-                canonical_alias=dm.canonical_alias,
-                type=dm.type,
-                type_is_explicit=dm.type_is_explicit,
-                preserve_native_type=dm.preserve_native_type,
-                format=dm.format,
-                description=dm.description,
-                is_dimension=dm.is_dimension,
-            )
+            )})
             for dm in prebound.declared_measures
         ],
         bound_filters=[
@@ -4240,6 +4228,7 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
         root=render_source_model, models_by_name=bundle.models_by_name,
         originals={sub.placeholder: sub.original_key
                    for attach in regroup_attach_plans for sub in attach.substitutions},
+        upstream=_upstream_respellings(scope),
     )
 
     # Frame-bound column set: raw columns of this stage's non-hidden time dimensions.
@@ -4469,14 +4458,16 @@ def _value_anchor_path(key: ValueKey) -> Tuple[str, ...]:
 
 def _respellings(
     *, flat: str, key: ValueKey, root: Optional[SlayerModel],
-    models_by_name: Dict[str, SlayerModel],
+    models_by_name: Dict[str, SlayerModel], upstream: Mapping[str, Tuple[str, ...]],
 ) -> Tuple[str, ...]:
     """``flat`` with every non-empty subset of its path's named hops spelled by
     their target model (auto-names are path-prefixed, so re-deriving substitutes
     the prefix)."""
     path = _value_anchor_path(key)
+    if not path:
+        return _inherited_respellings(flat=flat, key=key, upstream=upstream)
     prefix = "__".join(path) + "__"
-    if root is None or not path or not flat.startswith(prefix):
+    if root is None or not flat.startswith(prefix):
         return ()
     try:
         chain = walk(root=root, path=path, models_by_name=models_by_name)
@@ -4494,6 +4485,35 @@ def _respellings(
     )
 
 
+def _upstream_respellings(
+    scope: Union[ModelScope, StageSchema],
+) -> Dict[str, Tuple[str, ...]]:
+    """Respellings of the columns a stage reads locally (upstream stage / query-backed)."""
+    if isinstance(scope, StageSchema):
+        return {c.name: c.respellings for c in scope.columns if c.respellings}
+    if scope.source_model is None:
+        return {}
+    return {c.name: c.respellings for c in scope.source_model.columns if c.respellings}
+
+
+def _inherited_respellings(
+    *, flat: str, key: ValueKey, upstream: Mapping[str, Tuple[str, ...]],
+) -> Tuple[str, ...]:
+    """``flat`` with the passed-through upstream column's name swapped for each
+    of that column's respellings."""
+    if isinstance(key, TimeTruncKey):
+        key = key.column
+    if isinstance(key, AggregateKey):
+        key = key.source
+    if not isinstance(key, (ColumnKey, ColumnSqlKey)) or key.path:
+        return ()
+    name = column_leaf(key)
+    if not flat.startswith(name):
+        return ()
+    rest = flat[len(name):]
+    return tuple(r + rest for r in upstream.get(name, ()))
+
+
 def _emit_stage_schema(
     *,
     stage_name: Optional[str],
@@ -4501,6 +4521,7 @@ def _emit_stage_schema(
     root: Optional[SlayerModel] = None,
     models_by_name: Optional[Dict[str, SlayerModel]] = None,
     originals: Optional[Mapping[ValueKey, ValueKey]] = None,
+    upstream: Optional[Mapping[str, Tuple[str, ...]]] = None,
 ) -> StageSchema:
     columns: List[StageColumn] = []
     alias_idx: Dict[str, int] = {}
@@ -4536,9 +4557,9 @@ def _emit_stage_schema(
             hidden=False,
             format=slot.format,
             description=slot.description,
-            respellings=_respellings(
+            respellings=() if alias in slot.explicit_aliases else _respellings(
                 flat=flat, key=(originals or {}).get(slot.key, slot.key), root=root,
-                models_by_name=models_by_name or {},
+                models_by_name=models_by_name or {}, upstream=upstream or {},
             ),
         ))
     return StageSchema(

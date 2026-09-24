@@ -309,25 +309,13 @@ def _map_bound_keys(
     skip_dimensions: bool = False,
 ) -> Tuple[List[DeclaredMeasure], List[BoundFilter], List[OrderSpec]]:
     new_measures = [
-        DeclaredMeasure(
-            bound=BoundExpr(
-                value_key=(
-                    dm.bound.value_key if (skip_dimensions and dm.is_dimension)
-                    else key_fn(dm.bound.value_key)
-                ),
-                routed_dotted=dm.bound.routed_dotted,
+        dm.model_copy(update={"bound": BoundExpr(
+            value_key=(
+                dm.bound.value_key if (skip_dimensions and dm.is_dimension)
+                else key_fn(dm.bound.value_key)
             ),
-            declared_name=dm.declared_name,
-            public_name=dm.public_name,
-            label=dm.label,
-            canonical_alias=dm.canonical_alias,
-            type=dm.type,
-            type_is_explicit=dm.type_is_explicit,
-            preserve_native_type=dm.preserve_native_type,
-            format=dm.format,
-            description=dm.description,
-            is_dimension=dm.is_dimension,
-        )
+            routed_dotted=dm.bound.routed_dotted,
+        )})
         for dm in declared_measures
     ]
     new_filters = []
@@ -972,6 +960,7 @@ def _declared_computed_dimension(
         bound=bound,
         declared_name=name,
         public_name=name,
+        name_is_explicit=name != auto_name_from_expression(d.expression),
         type=dim_type,
         is_dimension=True,
     )
@@ -1134,6 +1123,7 @@ def _declared_measures_from_query(  # NOSONAR(S3776) — three sequential projec
                 label=m.label,
                 # Keep the canonical alias when the surfaced name differs, so a colon-form filter / ORDER BY resolves.
                 canonical_alias=canonical if alias_name else None,
+                name_is_explicit=explicit_name is not None,
                 type=m_type,
                 type_is_explicit=explicit_type is not None,
                 preserve_native_type=(

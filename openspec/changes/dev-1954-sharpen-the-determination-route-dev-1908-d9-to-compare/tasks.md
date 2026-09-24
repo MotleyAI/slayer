@@ -18,6 +18,7 @@
 - [x] 3.2 Add the flat-name resolver (reverse index, exact-first, unique fallback) and call it at `binding._resolve_ref`, `binding._resolve_terminal_leaf` (query-backed), `column_expansion._process_reference_site`; build keys/expansions from the matched canonical column. Verify: 1.2 resolution tests pass.
 - [x] 3.3 Carry respellings onto the runtime query-backed virtual model's generated columns (not persisted; `build_flat_rename_wrapper` unchanged). Verify: query-backed consumer tests pass.
 - [x] 3.4 Plumb resolver warnings through binding → `plan_stages` → prepared slack warnings, deduplicated per position; recombine on cache hit. Verify: warning + cache tests pass.
+- [x] 3.5 Pass-through stage columns inherit upstream respellings (also: sibling synthetic models carry respellings; explicit aliases carry none). Verify: three-stage chain + extension-over-sibling + explicit-prefix tests.
 
 ## 4. Finish
 

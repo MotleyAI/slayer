@@ -53,6 +53,10 @@ semantics Axiom 2.7 (spelling-invariance).
      stars, saved measures; explicit names have none). Captured in `stages._emit_stage_schema` while the slot
      key and naming function are available, as an immutable tuple on `StageColumn`. 2^k−1 per column for k
      named hops — k is tiny in practice; no cap, no truncation.
+   - A stage column that passes an upstream stage column through (a flat reference, or an auto-named
+     aggregate over one) inherits that column's respellings, re-derived by substituting the upstream name in
+     its own auto-name, so a chain of stages (or a query-backed model over another) keeps every stale
+     spelling resolvable; explicit names have none.
    - Query-backed models are re-expanded from their stored query at execute time, so the runtime virtual
      model's generated columns carry the respellings from the fresh stage schema (current graph → covers an
      edge named later). Not persisted; `build_flat_rename_wrapper` stays canonical-only (`expected_columns`
