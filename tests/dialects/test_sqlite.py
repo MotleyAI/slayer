@@ -29,12 +29,6 @@ from slayer.sql.dialects.sqlite import (
 from slayer.storage.sqlite_conn import transaction
 
 
-def _parse_sqlite(sql: str) -> exp.Expression:
-    """SQLite-style parse: parses then runs the JSON-extract rewrite."""
-    tree = sqlglot.parse_one(sql, dialect="sqlite")
-    return rewrite_sqlite_json_extract(tree)
-
-
 # ---------------------------------------------------------------------------
 # Fields
 # ---------------------------------------------------------------------------
@@ -76,7 +70,7 @@ def test_sqlite_build_date_trunc_strftime_forms(
 ) -> None:
     d = SqliteDialect()
     col = sqlglot.parse_one("created_at", dialect="sqlite")
-    out = d.build_date_trunc(col, granularity, parse=_parse_sqlite)
+    out = d.build_date_trunc(col, granularity)
     sql = out.sql(dialect="sqlite")
     assert "STRFTIME" in sql.upper()
     assert expected_fmt in sql
@@ -86,7 +80,7 @@ def test_sqlite_build_date_trunc_week_uses_weekday_modifier() -> None:
     """Week truncation uses DATE(col, 'weekday 0', '-6 days')."""
     d = SqliteDialect()
     col = sqlglot.parse_one("created_at", dialect="sqlite")
-    out = d.build_date_trunc(col, TimeGranularity.WEEK, parse=_parse_sqlite)
+    out = d.build_date_trunc(col, TimeGranularity.WEEK)
     sql = out.sql(dialect="sqlite")
     assert "weekday 0" in sql
     assert "-6 days" in sql
@@ -97,7 +91,7 @@ def test_sqlite_build_date_trunc_week_sunday_emission() -> None:
     SQLite's day-offset (+1d / -1d) around SQLite's Monday-week truncation."""
     d = SqliteDialect()
     col = sqlglot.parse_one("ordered_at", dialect="sqlite")
-    out = d.build_date_trunc(col, TimeGranularity.WEEK_SUNDAY, parse=_parse_sqlite)
+    out = d.build_date_trunc(col, TimeGranularity.WEEK_SUNDAY)
     sql = out.sql(dialect="sqlite")
     assert sql == (
         "DATE(DATE(DATE(ordered_at, '1 days'), 'weekday 0', '-6 days'), '-1 days')"
@@ -128,7 +122,7 @@ def test_sqlite_build_date_trunc_week_sunday_executes_to_sunday(
     d = SqliteDialect()
     col = sqlglot.parse_one("ts", dialect="sqlite")
     expr = d.build_date_trunc(
-        col, TimeGranularity.WEEK_SUNDAY, parse=_parse_sqlite
+        col, TimeGranularity.WEEK_SUNDAY
     ).sql(dialect="sqlite")
 
     with transaction(":memory:") as con:
@@ -142,7 +136,7 @@ def test_sqlite_build_date_trunc_quarter_uses_case_when() -> None:
     """Quarter truncation uses STRFTIME + CASE WHEN to map month→quarter start."""
     d = SqliteDialect()
     col = sqlglot.parse_one("created_at", dialect="sqlite")
-    out = d.build_date_trunc(col, TimeGranularity.QUARTER, parse=_parse_sqlite)
+    out = d.build_date_trunc(col, TimeGranularity.QUARTER)
     sql = out.sql(dialect="sqlite").upper()
     assert "CASE" in sql
     assert "STRFTIME" in sql
@@ -238,7 +232,7 @@ def test_sqlite_build_percentile_preserves_scientific_notation() -> None:
     """``5e-2`` must NOT be normalized to ``0.05`` — the original spelling
     travels through the dialect intact."""
     d = SqliteDialect()
-    out = d.build_percentile("5e-2", "amount", parse=_parse_sqlite)
+    out = d.build_percentile(p=exp.Literal.number("5e-2"), col_expr=exp.column("amount"))
     assert "5e-2" in out.sql(dialect="sqlite")
 
 
@@ -254,7 +248,7 @@ def test_sqlite_build_median_emits_percentile_cont_pair_form() -> None:
     Crucially NOT the WITHIN GROUP form that Postgres/DuckDB use."""
     d = SqliteDialect()
     inner = sqlglot.parse_one("amount", dialect="sqlite")
-    out = d.build_median(inner, parse=_parse_sqlite)
+    out = d.build_median(inner)
     sql = out.sql(dialect="sqlite")
     assert "PERCENTILE_CONT(" in sql.upper()
     assert "0.5" in sql
@@ -265,7 +259,7 @@ def test_sqlite_build_median_emits_percentile_cont_pair_form() -> None:
 def test_sqlite_build_percentile_uses_percentile_cont_udf() -> None:
     """SQLite's UDF is ``percentile_cont(value, p)`` — args in that order."""
     d = SqliteDialect()
-    out = d.build_percentile("0.95", "amount", parse=_parse_sqlite)
+    out = d.build_percentile(p=exp.Literal.number("0.95"), col_expr=exp.column("amount"))
     sql = out.sql(dialect="sqlite")
     assert "percentile_cont(" in sql.lower()
     assert "0.95" in sql
@@ -273,7 +267,7 @@ def test_sqlite_build_percentile_uses_percentile_cont_udf() -> None:
 
 def test_sqlite_build_percentile_preserves_literal_string() -> None:
     d = SqliteDialect()
-    out = d.build_percentile("0.50", "amount", parse=_parse_sqlite)
+    out = d.build_percentile(p=exp.Literal.number("0.50"), col_expr=exp.column("amount"))
     assert "0.50" in out.sql(dialect="sqlite")
 
 

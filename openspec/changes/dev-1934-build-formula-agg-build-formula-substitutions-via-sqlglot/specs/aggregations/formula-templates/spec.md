@@ -78,11 +78,6 @@ parenthesised — whose value lies in [0, 1]; its spelling SHALL be emitted verb
 other `p` (a column, an arithmetic expression, a string, NaN, an out-of-range or
 non-finite number) SHALL be rejected with the existing typed error.
 
-#### Scenario: Literal spelling is preserved
-
-- **WHEN** a query aggregates `amount` with `percentile(p=0.50)`
-- **THEN** the generated SQL carries `0.50`, not `0.5`
-
 #### Scenario: Non-literal p is rejected
 
 - **WHEN** a query aggregates `amount` with `percentile(p=quantity)`

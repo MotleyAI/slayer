@@ -27,17 +27,13 @@ from slayer.core.models import DatasourceConfig
 from slayer.sql.dialects.snowflake import SnowflakeDialect
 
 
-def _parse_sf(sql: str):
-    return sqlglot.parse_one(sql, dialect="snowflake")
-
-
 def test_snowflake_build_date_trunc_week_sunday_shift() -> None:
     """DEV-1572: WEEK_SUNDAY uses the generic shift over Snowflake's native
     (default WEEK_START=0 -> Monday) ``DATE_TRUNC('week', ...)``. No session
     setting — same WEEK_START assumption as SLayer's existing Monday WEEK."""
     d = SnowflakeDialect()
     col = sqlglot.parse_one("ordered_at", dialect="snowflake")
-    out = d.build_date_trunc(col, TimeGranularity.WEEK_SUNDAY, parse=_parse_sf)
+    out = d.build_date_trunc(col, TimeGranularity.WEEK_SUNDAY)
     up = out.sql(dialect="snowflake").upper()
     assert "DATE_TRUNC('WEEK'" in up
     assert "+ INTERVAL '1 DAY'" in up

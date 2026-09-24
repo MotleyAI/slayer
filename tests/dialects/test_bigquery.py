@@ -378,6 +378,7 @@ def test_bigquery_emit_outer_wrap_uses_backticks_for_aliases() -> None:
     out = BigqueryDialect().emit_outer_wrap(
         inner_sql="SELECT 1 AS `orders.x`",
         public=["orders.x"],
+        projected=["orders.x"],
         order=None,
         limit=None,
         offset_arg=None,
@@ -1060,6 +1061,7 @@ def test_bigquery_outer_wrap_order_by_keeps_full_alias(order_sql: str) -> None:
     out = BigqueryDialect().emit_outer_wrap(
         inner_sql="SELECT `orders.created_at` AS `orders.created_at`, 1 AS x FROM t",
         public=["orders.created_at"],
+        projected=["orders.created_at"],
         order=order,
         limit=None,
         offset_arg=None,
@@ -1112,6 +1114,7 @@ def test_bigquery_outer_wrap_order_by_prefers_projected_alias() -> None:
     out = BigqueryDialect().emit_outer_wrap(
         inner_sql="SELECT `_base`.`orders.created_at` AS `created_at` FROM _base",
         public=["created_at"],
+        projected=["created_at"],
         order=order,
         limit=None,
         offset_arg=None,

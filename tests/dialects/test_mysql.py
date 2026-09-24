@@ -22,10 +22,6 @@ from slayer.sql.dialects.mysql import MysqlDialect
 from tests._engine_helpers import _engine_generate
 
 
-def _parse_mysql(sql: str) -> exp.Expression:
-    return sqlglot.parse_one(sql, dialect="mysql")
-
-
 def test_mysql_sqlglot_name() -> None:
     assert MysqlDialect().sqlglot_name == "mysql"
 
@@ -49,13 +45,13 @@ def test_mysql_build_median_raises_not_implemented() -> None:
     d = MysqlDialect()
     inner = sqlglot.parse_one("amount", dialect="mysql")
     with pytest.raises(NotImplementedError, match="median.*MySQL"):
-        d.build_median(inner, parse=_parse_mysql)
+        d.build_median(inner)
 
 
 def test_mysql_build_percentile_raises_not_implemented() -> None:
     d = MysqlDialect()
     with pytest.raises(NotImplementedError, match="percentile.*MySQL"):
-        d.build_percentile("0.5", "amount", parse=_parse_mysql)
+        d.build_percentile(p=exp.Literal.number("0.5"), col_expr=exp.column("amount"))
 
 
 # ---------------------------------------------------------------------------
@@ -69,7 +65,7 @@ def test_mysql_build_stat_agg_1arg_var_samp_uses_anonymous() -> None:
     emits the canonical MySQL name via ``exp.Anonymous`` to bypass
     sqlglot's rewrite."""
     d = MysqlDialect()
-    out = d.build_stat_agg_1arg("var_samp", "amount", parse=_parse_mysql)
+    out = d.build_stat_agg_1arg(agg_name="var_samp", col_expr=exp.column("amount"))
     sql = out.sql(dialect="mysql").upper()
     assert "VAR_SAMP" in sql
     assert "VARIANCE" not in sql
@@ -77,7 +73,7 @@ def test_mysql_build_stat_agg_1arg_var_samp_uses_anonymous() -> None:
 
 def test_mysql_build_stat_agg_1arg_var_pop_uses_anonymous() -> None:
     d = MysqlDialect()
-    out = d.build_stat_agg_1arg("var_pop", "amount", parse=_parse_mysql)
+    out = d.build_stat_agg_1arg(agg_name="var_pop", col_expr=exp.column("amount"))
     sql = out.sql(dialect="mysql").upper()
     assert "VAR_POP" in sql
     assert "VARIANCE" not in sql
@@ -86,7 +82,7 @@ def test_mysql_build_stat_agg_1arg_var_pop_uses_anonymous() -> None:
 def test_mysql_build_stat_agg_1arg_stddev_samp_native() -> None:
     """STDDEV_SAMP is native on MySQL — no Anonymous workaround needed."""
     d = MysqlDialect()
-    out = d.build_stat_agg_1arg("stddev_samp", "amount", parse=_parse_mysql)
+    out = d.build_stat_agg_1arg(agg_name="stddev_samp", col_expr=exp.column("amount"))
     sql = out.sql(dialect="mysql").upper()
     assert "STDDEV_SAMP" in sql or "STDDEV(" in sql
 
@@ -98,7 +94,7 @@ def test_mysql_build_stat_agg_1arg_stddev_samp_native() -> None:
 
 def test_mysql_build_covar_2arg_corr_uses_decomposition_formula() -> None:
     d = MysqlDialect()
-    out = d.build_covar_2arg("corr", "amount", "quantity", parse=_parse_mysql)
+    out = d.build_covar_2arg(agg_name="corr", col_expr=exp.column("amount"), other_expr=exp.column("quantity"))
     sql = out.sql(dialect="mysql").upper()
     # Variance-decomposition uses VAR_SAMP for corr/covar_samp
     assert "VAR_SAMP" in sql
@@ -110,7 +106,7 @@ def test_mysql_build_covar_2arg_corr_uses_decomposition_formula() -> None:
 
 def test_mysql_build_covar_2arg_covar_samp_uses_decomposition() -> None:
     d = MysqlDialect()
-    out = d.build_covar_2arg("covar_samp", "amount", "quantity", parse=_parse_mysql)
+    out = d.build_covar_2arg(agg_name="covar_samp", col_expr=exp.column("amount"), other_expr=exp.column("quantity"))
     sql = out.sql(dialect="mysql").upper()
     assert "VAR_SAMP" in sql
     # covariance doesn't divide by stddev product — no NULLIF needed
@@ -119,7 +115,7 @@ def test_mysql_build_covar_2arg_covar_samp_uses_decomposition() -> None:
 
 def test_mysql_build_covar_2arg_covar_pop_uses_pop_variance() -> None:
     d = MysqlDialect()
-    out = d.build_covar_2arg("covar_pop", "amount", "quantity", parse=_parse_mysql)
+    out = d.build_covar_2arg(agg_name="covar_pop", col_expr=exp.column("amount"), other_expr=exp.column("quantity"))
     sql = out.sql(dialect="mysql").upper()
     assert "VAR_POP" in sql
 
@@ -133,7 +129,7 @@ def test_mysql_build_covar_2arg_excludes_null_pairs() -> None:
     ``col IS NOT NULL`` — both forms are semantically identical.
     """
     d = MysqlDialect()
-    out = d.build_covar_2arg("corr", "amount", "quantity", parse=_parse_mysql)
+    out = d.build_covar_2arg(agg_name="corr", col_expr=exp.column("amount"), other_expr=exp.column("quantity"))
     sql = out.sql(dialect="mysql").upper()
     assert "IS NULL" in sql
     assert "NOT" in sql
@@ -148,7 +144,7 @@ def test_mysql_build_covar_2arg_excludes_null_pairs() -> None:
 def test_mysql_build_date_trunc_emits_date_trunc() -> None:
     d = MysqlDialect()
     col = sqlglot.parse_one("created_at", dialect="mysql")
-    out = d.build_date_trunc(col, TimeGranularity.MONTH, parse=_parse_mysql)
+    out = d.build_date_trunc(col, TimeGranularity.MONTH)
     # sqlglot translates DATE_TRUNC for MySQL; we just need to confirm
     # the AST builds via DateTrunc, not a hand-rolled STRFTIME path
     assert isinstance(out, (exp.DateTrunc, exp.Func))
@@ -159,7 +155,7 @@ def test_mysql_build_date_trunc_week_sunday_shift() -> None:
     (sqlglot emits ``WEEK(x, 1)`` / ``%u``) with the +1d / -1d shift."""
     d = MysqlDialect()
     col = sqlglot.parse_one("ordered_at", dialect="mysql")
-    out = d.build_date_trunc(col, TimeGranularity.WEEK_SUNDAY, parse=_parse_mysql)
+    out = d.build_date_trunc(col, TimeGranularity.WEEK_SUNDAY)
     up = out.sql(dialect="mysql").upper()
     assert "+ INTERVAL 1 DAY" in up
     assert "- INTERVAL 1 DAY" in up
@@ -199,6 +195,7 @@ def test_mysql_emit_outer_wrap_uses_backticks_for_aliases() -> None:
     out = MysqlDialect().emit_outer_wrap(
         inner_sql="SELECT 1 AS `orders.created_at`",
         public=["orders.created_at"],
+        projected=["orders.created_at"],
         order=None,
         limit=None,
         offset_arg=None,
@@ -225,6 +222,7 @@ def test_mysql_emit_outer_wrap_preserves_inner_cte_in_derived_table() -> None:
     out = MysqlDialect().emit_outer_wrap(
         inner_sql=inner,
         public=["orders.x"],
+        projected=["orders.x"],
         order=None,
         limit=None,
         offset_arg=None,

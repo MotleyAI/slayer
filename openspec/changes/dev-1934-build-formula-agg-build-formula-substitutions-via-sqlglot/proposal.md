@@ -27,8 +27,13 @@ precedence depend on hand-added parens.
   name.
 - Save-time: a model whose aggregation formula does not parse is rejected at every engine
   create/edit door.
+- MCP `create_model` gains an `aggregations` parameter (parity with `edit_model` / REST),
+  so a custom aggregation can be declared at creation.
+- `SqlDialect._outer_order_column` resolves a hidden-hoist ORDER BY column against the
+  inner statement's projected alias set (supplied by the generator through
+  `emit_outer_wrap`) instead of scanning `inner_sql` text.
 - Law test `tests/test_law_ast_dialect_hooks.py` + approved `sql.arc42.md` §3.1 edit.
-- Out of scope: statement assembly / `emit_outer_wrap` (DEV-1965).
+- Out of scope: the rest of statement assembly / `emit_outer_wrap`'s `inner_sql: str` (DEV-1965).
 
 ## Capabilities
 
@@ -37,14 +42,16 @@ precedence depend on hand-added parens.
   formula are recognised and substituted, and when a template is rejected.
 
 ### Modified Capabilities
-- `models/save-validation`: adds the save-time aggregation-formula parse check.
+- `models/save-validation`: adds the save-time aggregation-formula parse check and the
+  MCP `create_model` `aggregations` parameter.
 
 ## Impact
 
 - Code: `slayer/sql/generator.py`, new `slayer/sql/sql_template.py`, all
-  `slayer/sql/dialects/*.py` aggregate / date-trunc hooks, `slayer/engine/query_engine.py`
-  (`save_model`).
+  `slayer/sql/dialects/*.py` aggregate / date-trunc hooks and `_outer_order_column`,
+  `slayer/engine/query_engine.py` (`save_model`), `slayer/mcp/server.py` (`create_model`).
 - Goldens: re-blessed only where canonical AST emission changes parens / whitespace.
 - Architecture: `architecture/sql.arc42.md` §3.1 gains an `[enforced:]` tag (approved);
   no `.c4` / `index.yaml` change.
-- No public API change; internal dialect-hook signatures change.
+- MCP `create_model` gains an optional `aggregations` argument; internal dialect-hook
+  signatures change.

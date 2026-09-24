@@ -14,10 +14,6 @@ from slayer.core.enums import TimeGranularity
 from slayer.sql.dialects.postgres import PostgresDialect
 
 
-def _parse_pg(sql: str) -> exp.Expression:
-    return sqlglot.parse_one(sql, dialect="postgres")
-
-
 def test_postgres_sqlglot_name() -> None:
     assert PostgresDialect().sqlglot_name == "postgres"
 
@@ -40,7 +36,7 @@ def test_postgres_log_native_flags() -> None:
 def test_postgres_build_date_trunc_month() -> None:
     d = PostgresDialect()
     col = sqlglot.parse_one("created_at", dialect="postgres")
-    out = d.build_date_trunc(col, TimeGranularity.MONTH, parse=_parse_pg)
+    out = d.build_date_trunc(col, TimeGranularity.MONTH)
     sql = out.sql(dialect="postgres")
     assert "DATE_TRUNC" in sql.upper()
     assert "'month'" in sql.lower()
@@ -50,7 +46,7 @@ def test_postgres_build_date_trunc_quarter() -> None:
     """Postgres has a native QUARTER unit for DATE_TRUNC — emitted as-is."""
     d = PostgresDialect()
     col = sqlglot.parse_one("created_at", dialect="postgres")
-    out = d.build_date_trunc(col, TimeGranularity.QUARTER, parse=_parse_pg)
+    out = d.build_date_trunc(col, TimeGranularity.QUARTER)
     sql = out.sql(dialect="postgres").lower()
     assert "date_trunc" in sql
     assert "quarter" in sql
@@ -59,7 +55,7 @@ def test_postgres_build_date_trunc_quarter() -> None:
 def test_postgres_build_date_trunc_casts_literal_to_timestamp() -> None:
     d = PostgresDialect()
     lit = sqlglot.parse_one("'2025-01-01'", dialect="postgres")
-    out = d.build_date_trunc(lit, TimeGranularity.MONTH, parse=_parse_pg)
+    out = d.build_date_trunc(lit, TimeGranularity.MONTH)
     assert "CAST" in out.sql(dialect="postgres").upper()
 
 
@@ -71,7 +67,7 @@ def test_postgres_build_date_trunc_week_sunday_shift() -> None:
     """
     d = PostgresDialect()
     col = sqlglot.parse_one("ordered_at", dialect="postgres")
-    out = d.build_date_trunc(col, TimeGranularity.WEEK_SUNDAY, parse=_parse_pg)
+    out = d.build_date_trunc(col, TimeGranularity.WEEK_SUNDAY)
     sql = out.sql(dialect="postgres")
     up = sql.upper()
     assert "DATE_TRUNC('WEEK'" in up
@@ -113,7 +109,7 @@ def test_postgres_build_time_offset_expr_quarter_normalizes_to_3_month() -> None
 def test_postgres_build_median() -> None:
     d = PostgresDialect()
     inner = sqlglot.parse_one("amount", dialect="postgres")
-    out = d.build_median(inner, parse=_parse_pg)
+    out = d.build_median(inner)
     sql = out.sql(dialect="postgres").upper()
     assert "PERCENTILE_CONT" in sql
     assert "WITHIN GROUP" in sql
@@ -122,7 +118,7 @@ def test_postgres_build_median() -> None:
 
 def test_postgres_build_percentile_native() -> None:
     d = PostgresDialect()
-    out = d.build_percentile("0.9", "amount", parse=_parse_pg)
+    out = d.build_percentile(p=exp.Literal.number("0.9"), col_expr=exp.column("amount"))
     sql = out.sql(dialect="postgres").upper()
     assert "PERCENTILE_CONT" in sql
     assert "WITHIN GROUP" in sql
@@ -132,7 +128,7 @@ def test_postgres_build_percentile_native() -> None:
 def test_postgres_build_percentile_preserves_literal_50() -> None:
     """``0.50`` stays ``0.50``, not normalized to ``0.5``."""
     d = PostgresDialect()
-    out = d.build_percentile("0.50", "amount", parse=_parse_pg)
+    out = d.build_percentile(p=exp.Literal.number("0.50"), col_expr=exp.column("amount"))
     assert "0.50" in out.sql(dialect="postgres")
 
 
@@ -143,28 +139,28 @@ def test_postgres_build_percentile_preserves_literal_50() -> None:
 
 def test_postgres_build_stat_agg_1arg_stddev_samp() -> None:
     d = PostgresDialect()
-    out = d.build_stat_agg_1arg("stddev_samp", "amount", parse=_parse_pg)
+    out = d.build_stat_agg_1arg(agg_name="stddev_samp", col_expr=exp.column("amount"))
     sql = out.sql(dialect="postgres").upper()
     assert "STDDEV_SAMP" in sql or "STDDEV(" in sql
 
 
 def test_postgres_build_covar_2arg_corr_native() -> None:
     d = PostgresDialect()
-    out = d.build_covar_2arg("corr", "amount", "quantity", parse=_parse_pg)
+    out = d.build_covar_2arg(agg_name="corr", col_expr=exp.column("amount"), other_expr=exp.column("quantity"))
     sql = out.sql(dialect="postgres").upper()
     assert "CORR(" in sql
 
 
 def test_postgres_build_covar_2arg_covar_samp_native() -> None:
     d = PostgresDialect()
-    out = d.build_covar_2arg("covar_samp", "amount", "quantity", parse=_parse_pg)
+    out = d.build_covar_2arg(agg_name="covar_samp", col_expr=exp.column("amount"), other_expr=exp.column("quantity"))
     sql = out.sql(dialect="postgres").upper()
     assert "COVAR_SAMP" in sql
 
 
 def test_postgres_build_covar_2arg_covar_pop_native() -> None:
     d = PostgresDialect()
-    out = d.build_covar_2arg("covar_pop", "amount", "quantity", parse=_parse_pg)
+    out = d.build_covar_2arg(agg_name="covar_pop", col_expr=exp.column("amount"), other_expr=exp.column("quantity"))
     sql = out.sql(dialect="postgres").upper()
     assert "COVAR_POP" in sql
 

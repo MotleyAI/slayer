@@ -34,10 +34,6 @@ from slayer.storage.yaml_storage import YAMLStorage
 from tests._engine_helpers import _engine_generate
 
 
-def _parse_tsql(sql: str) -> exp.Expression:
-    return sqlglot.parse_one(sql, dialect="tsql")
-
-
 def test_tsql_sqlglot_name() -> None:
     assert TsqlDialect().sqlglot_name == "tsql"
 
@@ -67,7 +63,7 @@ def test_tsql_ds_type_aliases() -> None:
 def test_tsql_build_date_trunc_month() -> None:
     d = TsqlDialect()
     col = sqlglot.parse_one("created_at", dialect="tsql")
-    out = d.build_date_trunc(col, TimeGranularity.MONTH, parse=_parse_tsql)
+    out = d.build_date_trunc(col, TimeGranularity.MONTH)
     sql = out.sql(dialect="tsql").lower()
     assert "datetrunc" in sql
     assert "month" in sql
@@ -77,7 +73,7 @@ def test_tsql_build_date_trunc_week_uses_iso_week() -> None:
     """Week must use ISO_WEEK (Monday-start) to be @@DATEFIRST-independent."""
     d = TsqlDialect()
     col = sqlglot.parse_one("created_at", dialect="tsql")
-    out = d.build_date_trunc(col, TimeGranularity.WEEK, parse=_parse_tsql)
+    out = d.build_date_trunc(col, TimeGranularity.WEEK)
     sql = out.sql(dialect="tsql").lower()
     assert "datetrunc" in sql
     assert "iso_week" in sql
@@ -88,7 +84,7 @@ def test_tsql_build_date_trunc_week_sunday_shift() -> None:
     T-SQL's DATEADD day-offset around the iso_week (Monday) DATETRUNC."""
     d = TsqlDialect()
     col = sqlglot.parse_one("ordered_at", dialect="tsql")
-    out = d.build_date_trunc(col, TimeGranularity.WEEK_SUNDAY, parse=_parse_tsql)
+    out = d.build_date_trunc(col, TimeGranularity.WEEK_SUNDAY)
     sql = out.sql(dialect="tsql").lower()
     assert "datetrunc" in sql
     assert "iso_week" in sql          # inner Monday-week truncation
@@ -101,7 +97,7 @@ def test_tsql_build_date_trunc_casts_non_column_to_timestamp() -> None:
     wrapped in ``CAST(... AS TIMESTAMP)``."""
     d = TsqlDialect()
     lit = sqlglot.parse_one("'2025-01-01'", dialect="tsql")
-    out = d.build_date_trunc(lit, TimeGranularity.MONTH, parse=_parse_tsql)
+    out = d.build_date_trunc(lit, TimeGranularity.MONTH)
     assert "CAST" in out.sql(dialect="tsql").upper()
 
 
@@ -171,13 +167,13 @@ def test_tsql_build_median_raises_not_implemented() -> None:
     d = TsqlDialect()
     inner = sqlglot.parse_one("amount", dialect="tsql")
     with pytest.raises(NotImplementedError, match="median.*T-SQL"):
-        d.build_median(inner, parse=_parse_tsql)
+        d.build_median(inner)
 
 
 def test_tsql_build_percentile_raises_not_implemented() -> None:
     d = TsqlDialect()
     with pytest.raises(NotImplementedError, match="percentile.*T-SQL"):
-        d.build_percentile("0.5", "amount", parse=_parse_tsql)
+        d.build_percentile(p=exp.Literal.number("0.5"), col_expr=exp.column("amount"))
 
 
 # ---------------------------------------------------------------------------
@@ -201,7 +197,7 @@ def test_tsql_build_stat_agg_1arg_uses_tsql_names(
     VARIANCE_POP). The override emits the canonical T-SQL names via
     ``exp.Anonymous``."""
     d = TsqlDialect()
-    out = d.build_stat_agg_1arg(agg_name, "amount", parse=_parse_tsql)
+    out = d.build_stat_agg_1arg(agg_name=agg_name, col_expr=exp.column("amount"))
     sql = out.sql(dialect="tsql").upper()
     assert tsql_fn in sql
     # Sanity: NOT the Postgres-canonical name
@@ -215,7 +211,7 @@ def test_tsql_build_stat_agg_1arg_uses_tsql_names(
 
 def test_tsql_build_covar_2arg_corr_uses_decomposition() -> None:
     d = TsqlDialect()
-    out = d.build_covar_2arg("corr", "amount", "quantity", parse=_parse_tsql)
+    out = d.build_covar_2arg(agg_name="corr", col_expr=exp.column("amount"), other_expr=exp.column("quantity"))
     sql = out.sql(dialect="tsql").upper()
     # T-SQL covariance formula uses VAR / STDEV (sample form for corr/covar_samp)
     assert "VAR" in sql
@@ -225,7 +221,7 @@ def test_tsql_build_covar_2arg_corr_uses_decomposition() -> None:
 
 def test_tsql_build_covar_2arg_covar_pop_uses_varp() -> None:
     d = TsqlDialect()
-    out = d.build_covar_2arg("covar_pop", "amount", "quantity", parse=_parse_tsql)
+    out = d.build_covar_2arg(agg_name="covar_pop", col_expr=exp.column("amount"), other_expr=exp.column("quantity"))
     sql = out.sql(dialect="tsql").upper()
     assert "VARP" in sql
 
@@ -278,6 +274,7 @@ def test_tsql_emit_outer_wrap_hoists_inner_ctes() -> None:
     out = TsqlDialect().emit_outer_wrap(
         inner_sql=_INNER_WITH_CTES,
         public=["orders.id", "orders.status"],
+        projected=["orders.id", "orders.status"],
         order=None,
         limit=None,
         offset_arg=None,
@@ -316,6 +313,7 @@ def test_tsql_emit_outer_wrap_no_ctes_passthrough_shape() -> None:
     out = TsqlDialect().emit_outer_wrap(
         inner_sql=inner,
         public=["orders.id", "orders.status"],
+        projected=["orders.id", "orders.status"],
         order=None,
         limit=None,
         offset_arg=None,
@@ -335,6 +333,7 @@ def test_tsql_emit_outer_wrap_uses_brackets_for_aliases() -> None:
     out = TsqlDialect().emit_outer_wrap(
         inner_sql="SELECT 1 AS [orders.x]",
         public=["orders.x"],
+        projected=["orders.x"],
         order=None,
         limit=None,
         offset_arg=None,
@@ -355,6 +354,7 @@ def test_tsql_emit_outer_wrap_with_limit() -> None:
     out = TsqlDialect().emit_outer_wrap(
         inner_sql=_INNER_WITH_CTES,
         public=["orders.id"],
+        projected=["orders.id"],
         order=None,
         limit=limit,
         offset_arg=None,
@@ -384,6 +384,7 @@ def test_tsql_emit_outer_wrap_no_ctes_with_limit_transposes_pagination() -> None
     out = TsqlDialect().emit_outer_wrap(
         inner_sql=inner,
         public=["orders.id"],
+        projected=["orders.id"],
         order=None,
         limit=limit,
         offset_arg=None,
@@ -405,6 +406,7 @@ def test_tsql_emit_outer_wrap_with_offset() -> None:
     out = TsqlDialect().emit_outer_wrap(
         inner_sql=_INNER_WITH_CTES,
         public=["orders.id"],
+        projected=["orders.id"],
         order=None,
         limit=None,
         offset_arg=offset_arg,
@@ -424,6 +426,7 @@ def test_tsql_emit_outer_wrap_with_order_and_offset() -> None:
     out = TsqlDialect().emit_outer_wrap(
         inner_sql=_INNER_WITH_CTES,
         public=["orders.id"],
+        projected=["orders.id"],
         order=order,
         limit=None,
         offset_arg=offset_arg,
@@ -449,6 +452,7 @@ def test_tsql_emit_outer_wrap_strips_inner_qualifiers_in_order_by() -> None:
     out = TsqlDialect().emit_outer_wrap(
         inner_sql=_INNER_WITH_CTES,
         public=["orders.id"],
+        projected=["orders.id"],
         order=order,
         limit=None,
         offset_arg=None,
@@ -483,6 +487,7 @@ def test_tsql_emit_outer_wrap_hidden_alias_in_order_by() -> None:
     out = TsqlDialect().emit_outer_wrap(
         inner_sql=inner,
         public=["orders.id"],
+        projected=["orders.id"],
         order=order,
         limit=None,
         offset_arg=None,
@@ -512,6 +517,7 @@ def test_tsql_emit_outer_wrap_preserves_multiple_ctes_in_order() -> None:
     out = TsqlDialect().emit_outer_wrap(
         inner_sql=inner,
         public=["c"],
+        projected=["c"],
         order=None,
         limit=None,
         offset_arg=None,

@@ -351,7 +351,7 @@ class TestEmitOuterWrapInjectsOrderingForOffset:
 
     def test_ast_path_injects_ordering_for_a_bare_offset(self) -> None:
         out = get_dialect("tsql").emit_outer_wrap(
-            inner_sql="SELECT 1 AS a", public=["a"],
+            inner_sql="SELECT 1 AS a", public=["a"], projected=["a"],
             order=None, limit=None, offset_arg=self._offset(5),
         )
         self._assert_bare_offset_guarded(out)
@@ -361,7 +361,7 @@ class TestEmitOuterWrapInjectsOrderingForOffset:
         fallback, which also appends OFFSET with no ORDER BY. The guard runs
         before branching, so the fallback receives the synthesized ordering."""
         out = get_dialect("tsql").emit_outer_wrap(
-            inner_sql="SELECT 1 AS a UNION SELECT 2 AS a", public=["a"],
+            inner_sql="SELECT 1 AS a UNION SELECT 2 AS a", public=["a"], projected=["a"],
             order=None, limit=None, offset_arg=self._offset(5),
         )
         self._assert_bare_offset_guarded(out)
@@ -371,7 +371,7 @@ class TestEmitOuterWrapInjectsOrderingForOffset:
             exp.Ordered(this=exp.column("a", quoted=True)),
         ])
         out = get_dialect("tsql").emit_outer_wrap(
-            inner_sql="SELECT 1 AS a", public=["a"],
+            inner_sql="SELECT 1 AS a", public=["a"], projected=["a"],
             order=user_order, limit=None, offset_arg=self._offset(5),
         )
         assert "SELECT NULL" not in out.upper(), (

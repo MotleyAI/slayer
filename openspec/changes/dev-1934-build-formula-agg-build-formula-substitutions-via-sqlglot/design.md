@@ -18,8 +18,8 @@ Trino/Presto `APPROX_DISTINCT`, Spark/Databricks/BigQuery/Snowflake/DuckDB
 aggregation render path; one template implementation; the dialect-hook shape enforced by
 a type law.
 
-**Non-Goals:** statement assembly and `emit_outer_wrap` (`inner_sql: str`, T-SQL
-re-parse) — DEV-1965. Save-time placeholder-name checking (user decision: parseability
+**Non-Goals:** the rest of statement assembly — `emit_outer_wrap`'s `inner_sql: str` and
+the T-SQL re-parse — DEV-1965. Save-time placeholder-name checking (user decision: parseability
 only; `{value}` not required — `COUNT(*)` is a legitimate formula).
 
 ## Decisions
@@ -67,7 +67,9 @@ only; `{value}` not required — `COUNT(*)` is a legitimate formula).
    `exp.Expression` subtype: all params annotated; none `str` (incl. in an
    `Optional`/union) or `Callable`. Closed `Literal`s / enums are allowed by design.
    Hints resolved with `DatasourceConfig` supplied for `TYPE_CHECKING`-only refs.
-   Name-based scoping (Codex #8) rejected by the user. Approved arc42 edit (lands with the
+   Name-based scoping (Codex #8) rejected by the user. No exemptions: the one other
+   violator, `_outer_order_column(inner_sql: str)`, is fixed here (decision 11). Approved
+   arc42 edit (lands with the
    test):
 
    ```diff
@@ -75,8 +77,18 @@ only; `{value}` not required — `COUNT(*)` is a legitimate formula).
        round-trips of already-emitted SQL are forbidden (dotted aliases corrupt on
    -   re-parse). [review]
    +   re-parse). A dialect hook returning AST takes only typed, non-`str`,
-   +   non-callable operands. [review; enforced: test:tests/test_law_ast_dialect_hooks.py]
+   +   non-callable operands. [review] [enforced: test:tests/test_law_ast_dialect_hooks.py]
    ```
+
+10. **MCP `create_model` takes `aggregations`**: a list of aggregation dicts, validated
+    as `Aggregation` like `edit_model`'s upserts, passed into the `SlayerModel` so the
+    save-time check (decision 8) covers this door too. Rejected with `query` like the other
+    table params.
+11. **`_outer_order_column` without text**: `emit_outer_wrap` gains `projected:
+    Sequence[str]` — every alias the inner statement projects (public + hidden hoists),
+    supplied by the generator from its alias map; `_outer_order_column(col, public,
+    projected)` matches candidates against it instead of `quote_identifier(c) in
+    inner_sql`. `emit_outer_wrap`'s own `inner_sql: str` stays for DEV-1965.
 
 ## Risks / Trade-offs
 

@@ -24,16 +24,6 @@ from slayer.sql.dialects.bigquery import BigqueryDialect
 
 
 # ---------------------------------------------------------------------------
-# Shared parse helper — mirrors SQLGenerator._parse minus dialect-specific rewrites
-# ---------------------------------------------------------------------------
-
-
-def _parse_default(sql: str) -> exp.Expression:
-    """Lookalike of SQLGenerator._parse for the default (postgres) dialect."""
-    return sqlglot.parse_one(sql, dialect="postgres")
-
-
-# ---------------------------------------------------------------------------
 # build_date_trunc — default impl
 # ---------------------------------------------------------------------------
 
@@ -41,7 +31,7 @@ def _parse_default(sql: str) -> exp.Expression:
 def test_default_build_date_trunc_month() -> None:
     d = SqlDialect()
     col = sqlglot.parse_one("created_at", dialect="postgres")
-    out = d.build_date_trunc(col, TimeGranularity.MONTH, parse=_parse_default)
+    out = d.build_date_trunc(col, TimeGranularity.MONTH)
     sql = out.sql(dialect=d.sqlglot_name)
     assert "DATE_TRUNC" in sql.upper()
     assert "MONTH" in sql.upper()
@@ -53,7 +43,7 @@ def test_default_build_date_trunc_casts_non_column_to_timestamp() -> None:
     ``generator.py:_build_date_trunc`` behaviour)."""
     d = SqlDialect()
     literal_expr = sqlglot.parse_one("'2025-01-01'", dialect="postgres")
-    out = d.build_date_trunc(literal_expr, TimeGranularity.MONTH, parse=_parse_default)
+    out = d.build_date_trunc(literal_expr, TimeGranularity.MONTH)
     assert "CAST" in out.sql(dialect=d.sqlglot_name).upper()
 
 
@@ -64,7 +54,7 @@ def test_default_build_date_trunc_idempotent_on_already_cast() -> None:
         this=sqlglot.parse_one("'2025-01-01'", dialect="postgres"),
         to=exp.DataType.build("TIMESTAMP"),
     )
-    out = d.build_date_trunc(cast_expr, TimeGranularity.MONTH, parse=_parse_default)
+    out = d.build_date_trunc(cast_expr, TimeGranularity.MONTH)
     sql = out.sql(dialect=d.sqlglot_name)
     # one CAST inside the DATE_TRUNC, not two nested
     assert sql.upper().count("CAST") == 1
@@ -150,7 +140,7 @@ def test_default_add_intervals_expr_uses_exp_sub_for_negative_sign() -> None:
 def test_default_build_median_uses_percentile_cont() -> None:
     d = SqlDialect()
     inner = sqlglot.parse_one("amount", dialect="postgres")
-    out = d.build_median(inner, parse=_parse_default)
+    out = d.build_median(inner)
     sql = out.sql(dialect=d.sqlglot_name).upper()
     assert "PERCENTILE_CONT" in sql
     assert "WITHIN GROUP" in sql
@@ -159,7 +149,7 @@ def test_default_build_median_uses_percentile_cont() -> None:
 
 def test_default_build_percentile_uses_percentile_cont() -> None:
     d = SqlDialect()
-    out = d.build_percentile("0.9", "amount", parse=_parse_default)
+    out = d.build_percentile(p=exp.Literal.number("0.9"), col_expr=exp.column("amount"))
     sql = out.sql(dialect=d.sqlglot_name).upper()
     assert "PERCENTILE_CONT" in sql
     assert "WITHIN GROUP" in sql
@@ -170,7 +160,7 @@ def test_default_build_percentile_preserves_literal_string() -> None:
     """The original p_str spelling must be preserved verbatim — passing it
     as a float would normalize ``0.50`` to ``0.5``."""
     d = SqlDialect()
-    out = d.build_percentile("0.50", "amount", parse=_parse_default)
+    out = d.build_percentile(p=exp.Literal.number("0.50"), col_expr=exp.column("amount"))
     sql = out.sql(dialect=d.sqlglot_name)
     assert "0.50" in sql
 
@@ -178,7 +168,7 @@ def test_default_build_percentile_preserves_literal_string() -> None:
 def test_default_build_percentile_preserves_integer_p() -> None:
     """``p=1`` stays ``1``, not ``1.0``."""
     d = SqlDialect()
-    out = d.build_percentile("1", "amount", parse=_parse_default)
+    out = d.build_percentile(p=exp.Literal.number("1"), col_expr=exp.column("amount"))
     sql = out.sql(dialect=d.sqlglot_name)
     # Either "1" alone (parenthesised by sqlglot) or "1)" — but never "1.0"
     assert "1.0" not in sql
@@ -188,7 +178,7 @@ def test_default_build_percentile_preserves_scientific_notation() -> None:
     """``5e-2`` must remain ``5e-2`` end-to-end. Float conversion would
     flatten this to ``0.05``."""
     d = SqlDialect()
-    out = d.build_percentile("5e-2", "amount", parse=_parse_default)
+    out = d.build_percentile(p=exp.Literal.number("5e-2"), col_expr=exp.column("amount"))
     assert "5e-2" in out.sql(dialect=d.sqlglot_name)
 
 
@@ -199,21 +189,21 @@ def test_default_build_percentile_preserves_scientific_notation() -> None:
 
 def test_default_build_stat_agg_1arg_emits_canonical_name() -> None:
     d = SqlDialect()
-    out = d.build_stat_agg_1arg("stddev_samp", "amount", parse=_parse_default)
+    out = d.build_stat_agg_1arg(agg_name="stddev_samp", col_expr=exp.column("amount"))
     sql = out.sql(dialect=d.sqlglot_name).upper()
     assert "STDDEV_SAMP" in sql or "STDDEV(" in sql  # Postgres native form
 
 
 def test_default_build_covar_2arg_emits_native_corr() -> None:
     d = SqlDialect()
-    out = d.build_covar_2arg("corr", "amount", "quantity", parse=_parse_default)
+    out = d.build_covar_2arg(agg_name="corr", col_expr=exp.column("amount"), other_expr=exp.column("quantity"))
     sql = out.sql(dialect=d.sqlglot_name).upper()
     assert "CORR" in sql
 
 
 def test_default_build_covar_2arg_emits_native_covar_samp() -> None:
     d = SqlDialect()
-    out = d.build_covar_2arg("covar_samp", "amount", "quantity", parse=_parse_default)
+    out = d.build_covar_2arg(agg_name="covar_samp", col_expr=exp.column("amount"), other_expr=exp.column("quantity"))
     sql = out.sql(dialect=d.sqlglot_name).upper()
     assert "COVAR_SAMP" in sql
 
@@ -350,6 +340,7 @@ def test_default_emit_outer_wrap_basic_shape() -> None:
     out = SqlDialect().emit_outer_wrap(
         inner_sql="SELECT 1 AS x",
         public=["x"],
+        projected=["x"],
         order=None,
         limit=None,
         offset_arg=None,
@@ -374,6 +365,7 @@ def test_default_emit_outer_wrap_preserves_inner_cte_inside_derived_table() -> N
     out = SqlDialect().emit_outer_wrap(
         inner_sql=inner,
         public=["y"],
+        projected=["y"],
         order=None,
         limit=None,
         offset_arg=None,
@@ -392,6 +384,7 @@ def test_default_emit_outer_wrap_with_order() -> None:
     out = SqlDialect().emit_outer_wrap(
         inner_sql="SELECT 1 AS x",
         public=["x"],
+        projected=["x"],
         order=order,
         limit=None,
         offset_arg=None,
@@ -411,6 +404,7 @@ def test_default_emit_outer_wrap_strips_inner_qualifiers_in_order_by() -> None:
     out = SqlDialect().emit_outer_wrap(
         inner_sql="SELECT 1 AS x",
         public=["orders.id"],
+        projected=["orders.id"],
         order=order,
         limit=None,
         offset_arg=None,
@@ -431,6 +425,7 @@ def test_default_emit_outer_wrap_uses_sqlglot_name_not_dialect_attr() -> None:
     SqlDialect().emit_outer_wrap(
         inner_sql="SELECT 1 AS x",
         public=["x"],
+        projected=["x"],
         order=None,
         limit=None,
         offset_arg=None,
