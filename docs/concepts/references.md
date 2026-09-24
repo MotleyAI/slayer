@@ -56,9 +56,10 @@ Naming and matching read the parse tree, not the text: a measure declared
 
 Disambiguation rules:
 
-* `first` / `last` are both aggregations and transforms. A call whose first
-  argument contains **no** aggregation is the aggregation (`last(balance)`);
-  a call over an aggregated expression is the transform (`last(sum(revenue))`).
+* `first` / `last` are both aggregations and transforms: a call whose first
+  argument resolves to a row-level value is the aggregation (`last(balance)`),
+  one whose argument resolves to aggregated values — including a saved measure —
+  is the transform (`last(sum(revenue))`, `last(rev)`).
 * An unknown call name whose first argument is aggregatable defers to binding
   — custom aggregations resolve there, and genuinely unknown names get the
   standard unknown-aggregation error.

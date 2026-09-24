@@ -3,8 +3,8 @@
 Assigns every ``ValueSlot`` in a plan exactly one ``Stage`` (which relation in
 the emitted pipeline it materialises in), a ``needs_column`` flag (must it be
 projected as a column for a later stage / consumer), and — for a transform —
-its ``series`` regime. Producer bodies are staged by their own
-``compile_prebound`` call, so this pass never recurses into them; it reads the
+its ``series`` regime. Producer bodies are staged by their own compilation,
+so this pass never recurses into them; it reads the
 attach plans only to classify placeholders and join-back keys.
 
 The generator becomes a stage partitioner over these facts (D8): the classifiers
