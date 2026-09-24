@@ -89,6 +89,7 @@ class TestFusionParity:
     def _planned():
         models = dev1739_models()
         bundle = ResolvedSourceBundle(
+            dialect="postgres",
             source_model=models[0], referenced_models=list(models[1:]),
         )
         query = q(

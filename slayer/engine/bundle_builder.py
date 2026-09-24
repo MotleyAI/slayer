@@ -17,6 +17,7 @@ from slayer.ir.source_bundle import (
     spec_adds_measures,
 )
 from slayer.ir.variables import merge_query_variables
+from slayer.sql.dialects import dialect_for_ds_type
 
 if TYPE_CHECKING:
     from slayer.storage.base import StorageBackend
@@ -184,7 +185,9 @@ async def build_resolved_source_bundle(
         model_defaults=source_model.query_variables,
     )
 
+    ds = await storage.get_datasource(source_model.data_source) if source_model.data_source else None
     return ResolvedSourceBundle(
+        dialect=dialect_for_ds_type(ds.type if ds else None).sqlglot_name,
         source_model=source_model,
         referenced_models=referenced_models,
         inline_extensions=inline_extensions,

@@ -14,7 +14,9 @@ from sqlglot.dialects.dialect import Dialect
 from sqlglot.errors import SqlglotError
 from sqlglot.tokenizer_core import Token, TokenType
 
+from slayer.core.enums import BUILTIN_AGGREGATION_PARAM_ORDER
 from slayer.core.errors import SlayerError
+from slayer.core.models import Aggregation, rendered_formula
 from slayer.sql.dialects import get_dialect
 from slayer.sql.dialects.base import SqlDialect, is_operator
 from slayer.sql.render.parse import parse_expression
@@ -25,6 +27,13 @@ _NON_NAME_TOKENS = frozenset({TokenType.STRING, TokenType.IDENTIFIER, TokenType.
 
 class SqlTemplateError(SlayerError, ValueError):
     """A SQL template is malformed or rendered with a placeholder unbound."""
+
+
+def _tokenize(*, text: str, dialect: str) -> list[Token]:
+    try:
+        return Dialect.get_or_raise(dialect).tokenizer().tokenize(text)
+    except SqlglotError as e:
+        raise SqlTemplateError(f"cannot tokenize {text!r}: {e}") from e
 
 
 def _placeholders(tokens: list[Token]) -> list[tuple[int, int, str]]:
@@ -64,10 +73,7 @@ class SqlTemplate(BaseModel):
     def __init__(self, *, text: str, dialect: str) -> None:
         # Not model_post_init: pydantic would wrap SqlTemplateError in a ValidationError.
         super().__init__(text=text, dialect=dialect)  # NOSONAR(S930) — BaseModel.__init__ takes **data
-        try:
-            tokens = Dialect.get_or_raise(self.dialect).tokenizer().tokenize(self.text)
-        except SqlglotError as e:
-            raise SqlTemplateError(f"cannot tokenize {self.text!r}: {e}") from e
+        tokens = _tokenize(text=self.text, dialect=self.dialect)
         taken = {t.text.lower() for t in tokens}
         fresh = (f"__slayer_ph{i}__" for i in count())
         names: dict[str, str] = {}
@@ -127,6 +133,20 @@ class SqlTemplate(BaseModel):
             else:
                 site.replace(value)
         return root
+
+
+@lru_cache(maxsize=1024)
+def placeholder_names(text: str, dialect: str) -> frozenset[str]:
+    """``{name}`` placeholders ``dialect``'s tokenizer sees in ``text`` (no parse)."""
+    return frozenset(name for _s, _e, name in _placeholders(_tokenize(text=text, dialect=dialect)))
+
+
+def aggregation_reads(*, agg: str, definition: Aggregation | None, dialect: str) -> frozenset[str]:
+    """Names ``agg`` reads when rendered: its formula's placeholders, else a built-in's own parameters."""
+    formula = rendered_formula(agg=agg, definition=definition)
+    if formula is None:
+        return frozenset(BUILTIN_AGGREGATION_PARAM_ORDER.get(agg, ()))
+    return placeholder_names(formula, dialect)
 
 
 @lru_cache(maxsize=1024)

@@ -16,6 +16,7 @@ from pydantic import (
 from sqlalchemy.engine import URL as _SA_URL
 
 from slayer.core.enums import (
+    BUILTIN_AGGREGATION_FORMULAS,
     BUILTIN_AGGREGATIONS,
     DEFAULT_AGGREGATIONS_BY_TYPE,
     DataType,
@@ -23,6 +24,7 @@ from slayer.core.enums import (
     JoinType,
     ObjectKind,
     PRIMARY_KEY_AGGREGATIONS,
+    RANKED_AGGREGATIONS,
     TimeGranularity,
     _coerce_legacy_datatype,
 )
@@ -331,6 +333,17 @@ class ModelMeasure(BaseModel):
     # caught by strict resolution at binding time.
 
 
+VALUE_PLACEHOLDER = "value"
+
+
+def reserved_value_param_message(agg_name: str) -> str:
+    return (
+        f"Aggregation '{agg_name}': a parameter may not be named '{VALUE_PLACEHOLDER}'. "
+        f"'{{{VALUE_PLACEHOLDER}}}' in an aggregation formula always stands for the "
+        f"aggregated column, so such a parameter could never be used; rename it."
+    )
+
+
 class AggregationParam(BaseModel):
     """A named parameter for an aggregation formula."""
     name: str
@@ -372,6 +385,8 @@ class Aggregation(BaseModel):
             )
         if self.formula is not None and not self.formula.strip():
             raise ValueError(f"Aggregation '{self.name}' has an empty formula.")
+        if any(p.name == VALUE_PLACEHOLDER for p in self.params):
+            raise ValueError(reserved_value_param_message(self.name))
         return self
 
     @model_validator(mode="after")
@@ -403,6 +418,13 @@ class Aggregation(BaseModel):
                 f"{', '.join(sorted(_GRANULARITY_NAMES))}"
             )
         return self
+
+
+def rendered_formula(*, agg: str, definition: Aggregation | None) -> str | None:
+    """The template ``agg`` renders through (a definition's override wins); ``None``: a built-in builder."""
+    if agg in RANKED_AGGREGATIONS:
+        return None
+    return (definition.formula if definition else None) or BUILTIN_AGGREGATION_FORMULAS.get(agg)
 
 
 def _coerce_source_queries(v: Any) -> Any:

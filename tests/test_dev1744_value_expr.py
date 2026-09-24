@@ -144,6 +144,7 @@ def _scope(
     others = others or (_customers(), _regions())
     alloc = allocator or AliasAllocator()
     bundle = ResolvedSourceBundle(
+        dialect="postgres",
         source_model=host, referenced_models=[host, *others],
     )
     return ScopeFrame(
@@ -218,6 +219,7 @@ class TestB10UnknownModelRaises:
         host = _orders()
         alloc = AliasAllocator()
         bundle = ResolvedSourceBundle(
+            dialect="postgres",
             source_model=host, referenced_models=[_customers(), _regions()],
         )
         scope = ScopeFrame(

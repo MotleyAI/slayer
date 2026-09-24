@@ -23,8 +23,9 @@ from pydantic import (
 )
 
 from slayer.async_utils import run_sync
-from slayer.core.enums import DEFAULT_AGGREGATIONS_BY_TYPE, DataType, JoinCardinality
+from slayer.core.enums import DEFAULT_AGGREGATIONS_BY_TYPE, RANKED_AGGREGATIONS, DataType, JoinCardinality
 from slayer.core.errors import (
+    AggregationArgumentError,
     AmbiguousModelError,
     AssociatedGrainWarning,
     BroadcastGrainWarning,
@@ -54,6 +55,7 @@ from slayer.core.models import (
     SlayerModel,
     _check_join_keys,
     join_key_error,
+    rendered_formula,
 )
 from slayer.core.query import (
     ModelExtension,
@@ -132,7 +134,7 @@ from slayer.sql.client import (
     classify_model_sql,
 )
 from slayer.sql.dialects import SqlDialect, dialect_for_ds_type, get_dialect
-from slayer.sql.sql_template import SqlTemplateError, sql_template
+from slayer.sql.sql_template import SqlTemplateError, aggregation_reads, sql_template
 from slayer.sql import engine_factory
 from slayer.sql.engine_factory import EngineCacheKey, _sql_client_cache_key
 from slayer.sql.generator import generate_planned_stages
@@ -1048,6 +1050,8 @@ class SlayerQueryEngine:
         # substitution) because escaping is dialect-aware; safe since substitution
         # never touches ``model.data_source``.
         datasource = override_datasource or await self._resolve_datasource(model=model)
+        dialect = self._dialect_for_type(datasource.type)
+        bundle = bundle.model_copy(update={"dialect": dialect})
 
         # Substitute {var} into the direct source model's Mode-A surfaces before
         # anything parses them; the substituted copy replaces the model as both
@@ -1145,7 +1149,6 @@ class SlayerQueryEngine:
         slack_warnings.extend(semi_join_infos)
         slack_warnings.extend(degenerate_warnings)
 
-        dialect = self._dialect_for_type(datasource.type)
         with collect_stale_spellings() as render_stale_spellings:
             sql = generate_planned_stages(
                 planned_list, bundle=bundle, dialect=dialect,
@@ -1895,9 +1898,10 @@ class SlayerQueryEngine:
                 dry_run_placeholders=True,
                 expander=self._expand_query_backed_model,
             )
+            dialect = self._dialect_for_type(datasource.type)
+            bundle = bundle.model_copy(update={"dialect": dialect})
             planned = plan_stages(queries=[probe_query], bundle=bundle)
             root = planned[-1]
-            dialect = self._dialect_for_type(datasource.type)
             sql = generate_planned_stages(
                 planned, bundle=bundle, dialect=dialect,
                 projection_aliases=projection_result_keys(root_planned=root),
@@ -2730,6 +2734,11 @@ class SlayerQueryEngine:
             expander=self._expand_query_backed_model,
             _resolving=(_resolving or set()) | {model.name},
         )
+        inner_source_model = bundle.source_model
+        assert inner_source_model is not None
+        datasource = await self._resolve_datasource(model=inner_source_model)
+        dialect = self._dialect_for_type(datasource.type)
+        bundle = bundle.model_copy(update={"dialect": dialect})
 
         # Per-stage normalize + variable substitution.
         sibling_names = set(named_q)
@@ -2777,10 +2786,6 @@ class SlayerQueryEngine:
         plan_input = [*normed_named.values(), final_stage]
         planned_list = plan_stages(queries=plan_input, bundle=bundle)
         root_planned = planned_list[-1]
-        inner_source_model = bundle.source_model
-        assert inner_source_model is not None
-        datasource = await self._resolve_datasource(model=inner_source_model)
-        dialect = self._dialect_for_type(datasource.type)
         # Backing SQL is persisted on the virtual model, so length-fit here too.
         aliases = projection_result_keys(root_planned=root_planned)
         rendered = generate_planned_stages(
@@ -2981,19 +2986,27 @@ class SlayerQueryEngine:
         return model
 
     async def _check_aggregation_formulas(self, model: SlayerModel) -> None:
-        """Reject a model whose aggregation formula does not parse as a template."""
-        aggs = [a for a in model.aggregations if a.formula]
-        if not aggs:
+        """Reject an aggregation whose formula does not parse, or that declares a parameter it never reads."""
+        if not model.aggregations:
             return
         ds = await self.storage.get_datasource(model.data_source) if model.data_source else None
         dialect = dialect_for_ds_type(ds.type).sqlglot_name if ds else ""
-        for agg in aggs:
+        for agg in model.aggregations:
+            where = f"Model '{model.name}', aggregation '{agg.name}'"
+            if agg.formula and agg.name in RANKED_AGGREGATIONS:
+                raise AggregationArgumentError(f"{where}: a ranked aggregation cannot take a formula.")
             try:
-                sql_template(text=agg.formula, dialect=dialect)
+                if agg.formula:
+                    sql_template(text=agg.formula, dialect=dialect)
+                reads = aggregation_reads(agg=agg.name, definition=agg, dialect=dialect)
             except SqlTemplateError as e:
-                raise SqlTemplateError(
-                    f"Model '{model.name}', aggregation '{agg.name}': {e}",
-                ) from e
+                raise SqlTemplateError(f"{where}: {e}") from e
+            unread = [p.name for p in agg.params if p.name not in reads]
+            if unread:
+                reader = "its formula" if rendered_formula(agg=agg.name, definition=agg) else "the built-in"
+                raise AggregationArgumentError(
+                    f"{where}: parameter '{unread[0]}' is never referenced by {reader}; remove it.",
+                )
 
     async def validate_sql_model_source(self, model: SlayerModel) -> None:
         """Statically classify a raw-``sql`` source, then trial-execute it: a

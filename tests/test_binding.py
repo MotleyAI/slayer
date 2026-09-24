@@ -103,6 +103,7 @@ def _regions() -> SlayerModel:
 
 def _bundle() -> ResolvedSourceBundle:
     return ResolvedSourceBundle(
+        dialect="postgres",
         source_model=_orders(),
         referenced_models=[_customers(), _regions()],
     )
@@ -160,18 +161,14 @@ class TestRowRefs:
         )
 
     def test_unknown_ref_raises(self):
+        expr, scope, bundle = parse_expr("nonexistent"), _scope(), _bundle()
         with pytest.raises(UnknownReferenceError):
-            bind_expr(
-                parse_expr("nonexistent"),
-                scope=_scope(), bundle=_bundle(),
-            )
+            bind_expr(expr, scope=scope, bundle=bundle)
 
     def test_unknown_dotted_ref_raises(self):
+        expr, scope, bundle = parse_expr("customers.nonexistent"), _scope(), _bundle()
         with pytest.raises(UnknownReferenceError):
-            bind_expr(
-                parse_expr("customers.nonexistent"),
-                scope=_scope(), bundle=_bundle(),
-            )
+            bind_expr(expr, scope=scope, bundle=bundle)
 
     def test_unknown_join_target_raises(self):
         # DEV-1856: an unreachable short form is route-aware-rejected (was UnknownReferenceError).
@@ -419,11 +416,9 @@ class TestStageSchemaScope:
         # DEV-1449: downstream stages see a flat schema — dotted refs
         # are illegal in StageSchema scope.
         scope = _stage_schema_with_flat_names()
+        expr, bundle = parse_expr("robot_details.modelseriesval"), _bundle()
         with pytest.raises(IllegalScopeReferenceError):
-            bind_expr(
-                parse_expr("robot_details.modelseriesval"),
-                scope=scope, bundle=_bundle(),
-            )
+            bind_expr(expr, scope=scope, bundle=bundle)
 
     def test_flat_underscore_name_resolves(self):
         # The flat name `robot_details__modelseriesval` IS a column on
@@ -440,8 +435,9 @@ class TestStageSchemaScope:
 
     def test_unknown_flat_name_raises(self):
         scope = _stage_schema_with_flat_names()
+        expr, bundle = parse_expr("nope"), _bundle()
         with pytest.raises(UnknownReferenceError):
-            bind_expr(parse_expr("nope"), scope=scope, bundle=_bundle())
+            bind_expr(expr, scope=scope, bundle=bundle)
 
 
 # ---------------------------------------------------------------------------
@@ -528,14 +524,13 @@ class TestWindowInFilter:
         })
         scope = ModelScope(source_model=model)
         bundle = ResolvedSourceBundle(
+            dialect="postgres",
             source_model=model,
             referenced_models=[_customers(), _regions()],
         )
+        expr = parse_expr("rolling_rank > 1")
         with pytest.raises(IllegalWindowInFilterError):
-            bind_filter(
-                parse_expr("rolling_rank > 1"),
-                scope=scope, bundle=bundle,
-            )
+            bind_filter(expr, scope=scope, bundle=bundle)
 
 
 class TestNestedAggregateParamDimAliasMap:

@@ -10,7 +10,7 @@ from sqlglot import exp
 from sqlglot.expressions.core import Expression
 
 from slayer.sql.generator import SQLGenerator
-from slayer.sql.sql_template import SqlTemplate, SqlTemplateError
+from slayer.sql.sql_template import SqlTemplate, SqlTemplateError, placeholder_names
 
 
 def _col(name: str, table: str = "t") -> exp.Column:
@@ -186,3 +186,21 @@ class TestSharedParsePipeline:
             "LOG10(t.a) + SUM(myCol)",
         )
         assert rendered.sql(dialect=dialect) == expected.sql(dialect=dialect)
+
+
+class TestPlaceholderNames:
+    @pytest.mark.parametrize(("text", "dialect", "names"), [
+        ("SUM({value}) * { scale }", "postgres", {"value", "scale"}),
+        ("SUM({value}) * {scale} // 2", "duckdb", {"value", "scale"}),
+        ("MAX(CASE WHEN {value} > 0 THEN '{label}' END)", "postgres", {"value"}),
+        ("SUM(`{foo}`) + {value}", "mysql", {"value"}),
+        ("SUM(`{foo}`) + {value}", "postgres", {"foo", "value"}),
+        ("SUM([{bar}]) + {value}", "tsql", {"value"}),
+        ("SUM({value}) * ARRAY[{scale}][1]", "postgres", {"value", "scale"}),
+    ])
+    def test_names_the_given_dialect_sees(self, text: str, dialect: str, names: set[str]) -> None:
+        assert placeholder_names(text, dialect) == names
+
+    def test_untokenizable_text_raises(self) -> None:
+        with pytest.raises(SqlTemplateError, match="cannot tokenize"):
+            placeholder_names("SUM({value}) + 'x", "postgres")

@@ -122,7 +122,7 @@ def _assert_one_stale(resp) -> None:
 class TestStageColumnRespellings:
     @staticmethod
     def _schema(*, models, stage: SlayerQuery):
-        bundle = ResolvedSourceBundle(source_model=models[0],
+        bundle = ResolvedSourceBundle(dialect="postgres", source_model=models[0],
                                       referenced_models=models[1:])
         planned = plan_stages(
             queries=[stage, slayer_query(source_model=stage.name, measures=["*:count"])],
@@ -181,7 +181,7 @@ class TestStageColumnRespellings:
                               measures=["customers__hr__pop_max:max",
                                         {"formula": "customers__hr__pop_max:min",
                                          "name": "customers__hr__lo"}])
-        bundle = ResolvedSourceBundle(source_model=dev1954_models()[0],
+        bundle = ResolvedSourceBundle(dialect="postgres", source_model=dev1954_models()[0],
                                       referenced_models=dev1954_models()[1:])
         planned = plan_stages(queries=[stage1, stage2, slayer_query(
             source_model="s2", measures=["*:count"])], bundle=bundle)

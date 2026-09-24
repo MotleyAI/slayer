@@ -16,8 +16,10 @@ from slayer.api.server import create_app
 from slayer.async_utils import run_sync
 from slayer.cli import main as cli_main
 from slayer.core.enums import DataType
-from slayer.core.errors import SlayerError
-from slayer.core.models import Aggregation, Column, DatasourceConfig, ModelMeasure, SlayerModel
+from slayer.core.errors import AggregationArgumentError, SlayerError
+from slayer.core.models import (
+    Aggregation, AggregationParam, Column, DatasourceConfig, ModelMeasure, SlayerModel,
+)
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.mcp.server import create_mcp_server
@@ -161,6 +163,65 @@ class TestEngineCheck:
         assert expanded == []
 
 
+def _with(agg: Aggregation, *, data_source: str = _DS) -> SlayerModel:
+    return _model("SUM({value})", data_source=data_source).model_copy(update={"aggregations": [agg]})
+
+
+def _p(*names: str) -> list[AggregationParam]:
+    return [AggregationParam(name=n, sql="1") for n in names]
+
+
+class TestUnreferencedParams:
+    @pytest.mark.parametrize(("agg", "param"), [
+        (Aggregation(name="custom_agg", formula="SUM({value}) * {k}", params=_p("k", "unused")), "unused"),
+        (Aggregation(name="weighted_avg", formula="SUM({value}) * {k}", params=_p("weight", "k")), "weight"),
+        (Aggregation(name="sum", params=_p("scale")), "scale"),
+        (Aggregation(name="percentile", params=_p("p", "q")), "q"),
+    ])
+    async def test_unreferenced_param_blocks_the_save(self, seeded, agg: Aggregation, param: str) -> None:
+        engine, store = seeded
+        model = _with(agg)
+        with pytest.raises(
+            AggregationArgumentError,
+            match=rf"Model 'orders', aggregation '{agg.name}': parameter '{param}' is never referenced",
+        ):
+            await engine.save_model(model)
+        assert await store.get_model("orders", data_source=_DS) is None
+
+    @pytest.mark.parametrize("agg", [
+        Aggregation(name="custom_agg", formula="SUM({value}) * {k}", params=_p("k")),
+        Aggregation(name="sum", formula="SUM({value}) * {scale}", params=_p("scale")),
+        Aggregation(name="percentile", params=[AggregationParam(name="p", sql="0.5")]),
+        Aggregation(name="weighted_avg", params=_p("weight")),
+    ])
+    async def test_referenced_params_save(self, seeded, agg: Aggregation) -> None:
+        engine, store = seeded
+        await engine.save_model(_with(agg))
+        assert await store.get_model("orders", data_source=_DS) is not None
+
+    async def test_reference_is_judged_in_the_datasource_dialect(self, tmp_path: Path) -> None:
+        store = YAMLStorage(base_dir=str(tmp_path / "store"))
+        await store.save_datasource(DatasourceConfig(name="my", type="mysql"))
+        await store.save_datasource(DatasourceConfig(name="pg", type="postgres"))
+        engine = SlayerQueryEngine(storage=store)
+        masked = Aggregation(name="masked", formula="SUM({value}) # {mask}", params=_p("mask"))
+        on_mysql = _with(masked, data_source="my")
+        try:
+            await engine.save_model(_with(masked, data_source="pg"))
+            with pytest.raises(AggregationArgumentError, match="parameter 'mask'"):
+                await engine.save_model(on_mysql)
+        finally:
+            engine.close()
+        assert await store.get_model("orders", data_source="my") is None
+
+    @pytest.mark.parametrize("name", ["first", "last"])
+    async def test_ranked_formula_override_blocks_the_save(self, seeded, name: str) -> None:
+        engine, _store = seeded
+        model = _with(Aggregation(name=name, formula="MAX({value})"))
+        with pytest.raises(AggregationArgumentError, match=rf"aggregation '{name}': a ranked aggregation cannot take a formula"):
+            await engine.save_model(model)
+
+
 @pytest.fixture
 def rest(seeded) -> tuple[TestClient, YAMLStorage]:
     _engine, store = seeded
@@ -184,6 +245,24 @@ class TestRest:
         assert resp.status_code == 400
         kept = await store.get_model("orders", data_source=_DS)
         assert kept.aggregations[0].formula == "SUM({value})"
+
+
+    async def test_unreferenced_param_rejected(self, rest) -> None:
+        client, store = rest
+        agg = Aggregation(name="custom_agg", formula="SUM({value})", params=_p("unused"))
+        resp = client.post("/models", json=_with(agg).model_dump(mode="json"))
+        assert resp.status_code == 400
+        assert "parameter 'unused'" in resp.json()["detail"]
+        assert await store.get_model("orders", data_source=_DS) is None
+
+    async def test_unknown_query_argument_is_400(self, rest) -> None:
+        client, _store = rest
+        assert client.post("/models", json=_model("SUM({value})").model_dump(mode="json")).status_code == 200
+        resp = client.post("/query", json={
+            "source_model": "orders", "measures": [{"formula": "amount:custom_agg(bogus=1)", "name": "m"}],
+        })
+        assert resp.status_code == 400, resp.text
+        assert "'custom_agg' takes no args or kwargs other than window; got 'bogus'" in resp.json()["detail"]
 
 
 class TestCli:

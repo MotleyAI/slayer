@@ -138,6 +138,7 @@ def _orders() -> SlayerModel:
 def _bundle() -> ResolvedSourceBundle:
     host = _orders()
     return ResolvedSourceBundle(
+        dialect="postgres",
         source_model=host,
         referenced_models=[host, _customers(), _regions(), _warehouses()],
     )
@@ -304,6 +305,7 @@ class TestProducerInheritanceRouting:
             host_name=host.name,
             host_model=host,
             bundle=ResolvedSourceBundle(
+                dialect="postgres",
                 source_model=host, referenced_models=list(models.values()),
             ),
         )
@@ -459,6 +461,7 @@ class TestCoordinateSystemInvariant:
                    filter="customers.balance > 0", type=DataType.DOUBLE),
         )
         bundle = ResolvedSourceBundle(
+            dialect="postgres",
             source_model=host,
             referenced_models=[host, _customers(), _regions(), _warehouses()],
         )

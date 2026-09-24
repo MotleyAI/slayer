@@ -25,7 +25,6 @@ from sqlglot.expressions.core import Expr, Expression
 
 from slayer.core.enums import (
     BUILTIN_AGGREGATIONS,
-    BUILTIN_AGGREGATION_FORMULAS,
     BUILTIN_AGGREGATION_REQUIRED_PARAMS,
     DataType,
     TimeGranularity,
@@ -36,7 +35,7 @@ from slayer.core.errors import AggregationNotAllowedError, MaterialisationStageE
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.keys import BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, Phase, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, column_leaf, column_path, is_boolean_shaped, shift_offset_of, source_anchor_path, substitute_value_keys, walk_value_keys
 from slayer.core.join_walker import physical_join_pairs, resolve_hop, terminal_model
-from slayer.core.models import Aggregation
+from slayer.core.models import VALUE_PLACEHOLDER, Aggregation, rendered_formula, reserved_value_param_message
 from slayer.core.refs import (
     EXPRESSION_SOURCE_KINDS as _EXPRESSION_SOURCE_KINDS,
     agg_kwarg_canonical_str,
@@ -98,7 +97,6 @@ from slayer.sql.render.ranked import (
 )
 from slayer.sql.render.aggregates import (
     DISPATCH_DISTINCT,
-    DISPATCH_FORMULA,
     DISPATCH_STAT,
     is_builtin_agg,
     resolve_agg_entry,
@@ -1308,7 +1306,7 @@ class SQLGenerator:
                 table=exp.to_identifier(spec.model_name),
             ), False
 
-        if not is_builtin_agg(agg_name):
+        if not is_builtin_agg(agg_name) or rendered_formula(agg=agg_name, definition=spec.aggregation_def):
             return self._build_formula_agg(spec, agg_name), True
 
         entry = resolve_agg_entry(agg_name)
@@ -1318,8 +1316,6 @@ class SQLGenerator:
         # join-discovery side effect).
         if dispatch == DISPATCH_STAT:
             return self._build_stat_agg(spec), True
-        if dispatch == DISPATCH_FORMULA:
-            return self._build_formula_agg(spec, agg_name), True
         if agg_name == "percentile":
             return self._build_percentile(spec), True
         if agg_name == "count_distinct_approx":
@@ -1352,12 +1348,7 @@ class SQLGenerator:
 
     def _build_formula_agg(self, spec: AggRenderSpec, agg_name: str) -> Expression:
         """Build SQL for formula-based aggregations (weighted_avg, custom)."""
-        formula = None
-        if spec.aggregation_def and spec.aggregation_def.formula:
-            formula = spec.aggregation_def.formula
-        elif agg_name in BUILTIN_AGGREGATION_FORMULAS:
-            formula = BUILTIN_AGGREGATION_FORMULAS[agg_name]
-
+        formula = rendered_formula(agg=agg_name, definition=spec.aggregation_def)
         if formula is None:
             raise ValueError(
                 f"Aggregation '{agg_name}' has no formula. "
@@ -1374,21 +1365,25 @@ class SQLGenerator:
             if isinstance(pval, ResolvedAggKwarg) and pval.kind == "str":
                 _validate_agg_param_value(pval.value, pname, agg_name)
 
+        template = self._formula_template(agg_name=agg_name, formula=formula)
         for req in BUILTIN_AGGREGATION_REQUIRED_PARAMS.get(agg_name, []):
-            if req not in params:
+            if req in template.placeholder_names and req not in params:
                 raise ValueError(
                     f"Aggregation '{agg_name}' requires parameter '{req}'. "
                     f"Set it in the model's aggregation definition or at query time "
                     f"(e.g., 'measure:{agg_name}({req}=column)')."
                 )
 
-        template = self._formula_template(agg_name=agg_name, formula=formula)
-        # A source ``Column.filter`` is already baked into the value; parameters carry only their own.
-        bindings = {"value": self._resolve_value_ast(spec)}
-        bindings.update({
+        if VALUE_PLACEHOLDER in params:
+            raise SqlTemplateError(reserved_value_param_message(agg_name))
+        bindings = {
             name: self._agg_param_ast(val, model_name=spec.model_name)
             for name, val in params.items() if name in template.placeholder_names
-        })
+        }
+        # Bound last: the aggregated column always wins. A source ``Column.filter`` is already baked in.
+        bindings[VALUE_PLACEHOLDER] = (
+            exp.Star() if spec.sql is None and not spec.name else self._resolve_value_ast(spec)
+        )
         try:
             return template.render(bindings)
         except SqlTemplateError as e:
@@ -2757,18 +2752,15 @@ class SQLGenerator:
             # The custom-aggregation definition lives on the source's owning model,
             # which a parameter may widen the home above (D4) — resolve it there,
             # not on the producer root, mirroring _trailing_window_kernel.
-            aggregation_def=(
-                None if is_builtin_agg(plan.agg)
-                else self._resolve_aggregation_def(
-                    key=key,
-                    source_model=(
-                        self._walk_join_path_model(
-                            source_model=source_model,
-                            path=source_anchor_path(key.source), bundle=bundle,
-                        ) or source_model
-                    ),
-                    src_leaf="_w_value",
-                )
+            aggregation_def=self._resolve_aggregation_def(
+                key=key,
+                source_model=(
+                    self._walk_join_path_model(
+                        source_model=source_model,
+                        path=source_anchor_path(key.source), bundle=bundle,
+                    ) or source_model
+                ),
+                src_leaf="_w_value",
             ),
             agg_kwargs={
                 **{
@@ -3368,6 +3360,14 @@ class SQLGenerator:
             level2_spec = AggRenderSpec(
                 name="", sql=None, aggregation=agg_slot.key.agg,
                 alias=agg_alias, model_name="_base", type=agg_slot.type,
+                aggregation_def=self._resolve_aggregation_def(
+                    key=agg_slot.key, source_model=source_model, src_leaf="*",
+                ),
+                agg_kwargs={
+                    **{k: ResolvedAggKwarg(kind="str", value=agg_kwarg_canonical_str(v))
+                       for k, v in agg_slot.key.kwargs if k not in picked_names},
+                    **picked_kwarg_exprs,
+                },
             )
         else:
             assert spec is not None  # set in both non-star arms above
@@ -5396,7 +5396,7 @@ class SQLGenerator:
 
     def _fragment_placeholders(self, *, key, agg_def) -> Optional[frozenset[str]]:
         """Placeholder names of the rendered formula; None when it has none (e.g. corr, percentile)."""
-        formula = (agg_def and agg_def.formula) or BUILTIN_AGGREGATION_FORMULAS.get(key.agg)
+        formula = rendered_formula(agg=key.agg, definition=agg_def)
         if not formula:
             return None
         return self._formula_template(agg_name=key.agg, formula=formula).placeholder_names
@@ -5833,11 +5833,17 @@ class SQLGenerator:
                     f"Aggregation {key.agg!r} not allowed with measure "
                     f"'*' — use 'count(*)' for COUNT(*)."
                 )
-            if key.args or key.kwargs:
+            owner = (
+                self._walk_join_path_model(source_model=source_model, path=source_anchor_path(source), bundle=bundle)
+                if source_anchor_path(source) and bundle is not None else source_model
+            ) or source_model
+            agg_def = self._resolve_aggregation_def(key=key, source_model=owner, src_leaf="*")
+            if key.args or (key.kwargs and not rendered_formula(agg=key.agg, definition=agg_def)):
                 raise ValueError(
                     f"'count(*)' takes no args or kwargs; got "
                     f"args={key.args!r}, kwargs={key.kwargs!r}."
                 )
+            resolved_kw = resolved_agg_kwargs or {}
             return AggRenderSpec(
                 name="",
                 sql=None,
@@ -5845,6 +5851,14 @@ class SQLGenerator:
                 alias=full_alias,
                 model_name=source_relation,
                 type=slot_type,
+                aggregation_def=agg_def,
+                agg_kwargs={
+                    **resolved_kw,
+                    **{
+                        k: ResolvedAggKwarg(kind="str", value=agg_kwarg_canonical_str(v))
+                        for k, v in key.kwargs if k not in resolved_kw
+                    },
+                },
             )
         if isinstance(source, (ColumnKey, ColumnSqlKey)):
             host_grain_root: Optional[str] = None

@@ -76,6 +76,37 @@ ever reach the emitted SQL.
 - **WHEN** a model declares an `AggregationParam` whose `sql` is empty
 - **THEN** model validation fails naming the parameter
 
+#### Scenario: `value` is reserved for the aggregated source
+
+- **WHEN** a model declares an aggregation parameter named `value`
+- **THEN** it is rejected with a typed error naming the aggregation and explaining that
+  `{value}` always renders the aggregated column
+
+#### Scenario: unknown aggregation arguments are rejected
+
+- **WHEN** a query passes an argument, by keyword or positionally, that the aggregation does
+  not accept — accepted names are the parameters the rendered formula references in the
+  query's datasource dialect (or a formula-less built-in's own parameters), and generic
+  arguments such as `window` or `partition_by`
+- **THEN** it is rejected with a typed unknown-argument error naming the aggregation and the
+  argument, and listing the accepted names, before any argument value is resolved
+- **AND** for a `value=` argument to an aggregation whose formula uses `{value}`, the error
+  explains that `{value}` always renders the aggregated column
+
+### Requirement: A model formula overriding a built-in renders
+
+When a model's aggregation definition for a built-in name supplies a `formula`, that formula
+SHALL render wherever the aggregation renders, windowed included, and SHALL accept only the
+parameters it references; a definition without a `formula` SHALL keep the built-in's own
+rendering and only supply parameter defaults.
+
+#### Scenario: A model formula overriding a built-in is rendered
+
+- **WHEN** a model defines `sum` with formula `SUM({value}) * {scale}` and a `scale`
+  parameter defaulting to `2`, and a query aggregates `price:sum`
+- **THEN** the generated SQL is `SUM(price) * 2`
+- **AND** `price:sum(scale=3)` renders `SUM(price) * 3`
+
 ### Requirement: Percentile p accepts a numeric literal in [0, 1]
 
 The `percentile` aggregation's `p` SHALL be a finite numeric literal — optionally signed or

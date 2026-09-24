@@ -43,6 +43,7 @@ from tests._engine_helpers import (
 
 def _chain_bundle() -> ResolvedSourceBundle:
     return ResolvedSourceBundle(
+        dialect="postgres",
         source_model=_orders_x(),
         referenced_models=[_customers_v2(), _regions(), _countries()],
     )

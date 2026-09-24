@@ -8,7 +8,10 @@ datasource dialect (sqlglot's generic dialect when the datasource cannot be reso
 the check is never skipped). A formula that does not parse, or that places a placeholder
 in a non-expression position, SHALL fail the save with an error naming the model and the
 aggregation, before anything is persisted or trial-executed. Placeholder names SHALL NOT
-be checked at save time, since query-time arguments may legitimately supply them.
+be checked at save time, since query-time arguments may legitimately supply them; but a
+declared parameter the rendered formula never references (for a formula-less built-in, one
+that is not among its own parameters), or a formula on the ranked `first`/`last`, SHALL
+fail the save with a typed error naming the model, the aggregation and the parameter.
 Ingestion / YAML-load persistence SHALL remain out of scope.
 
 #### Scenario: Unparseable formula blocks the save
@@ -23,6 +26,13 @@ Ingestion / YAML-load persistence SHALL remain out of scope.
 - **WHEN** a model declaring an aggregation with formula `SUM({value} * {scale})` and no
   declared `scale` parameter is saved
 - **THEN** the save succeeds
+
+#### Scenario: A declared parameter the formula never references blocks the save
+
+- **WHEN** a model declaring an aggregation with formula `SUM({value}) * {k}` and parameters
+  `k` and `unused` is saved
+- **THEN** the save fails with a typed error naming the model, the aggregation and `unused`
+- **AND** the model is not persisted
 
 #### Scenario: Edit introducing a broken formula leaves the original intact
 

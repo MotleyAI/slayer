@@ -114,7 +114,7 @@ def dev1945_models(
 
 
 def dev1945_bundle(models: List[SlayerModel]) -> ResolvedSourceBundle:
-    return ResolvedSourceBundle(source_model=models[0], referenced_models=models)
+    return ResolvedSourceBundle(dialect="postgres", source_model=models[0], referenced_models=models)
 
 
 # --------------------------------------------------------------------------- #

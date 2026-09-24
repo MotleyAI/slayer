@@ -108,7 +108,7 @@ def test_partition_by_multi_column_parses_and_binds():
             Column(name="channel", type=DataType.TEXT),
         ],
     )
-    bundle = ResolvedSourceBundle(source_model=orders, referenced_models=[])
+    bundle = ResolvedSourceBundle(dialect="postgres", source_model=orders, referenced_models=[])
     scope = ModelScope(source_model=orders)
     parsed = _parse("rank(amount:sum, partition_by=[region, channel])")
     bound = bind_expr(parsed=parsed, scope=scope, bundle=bundle)
@@ -135,7 +135,7 @@ def test_aggregation_eligibility_primary_key_rejected():
             Column(name="amount", type=DataType.DOUBLE),
         ],
     )
-    bundle = ResolvedSourceBundle(source_model=orders, referenced_models=[])
+    bundle = ResolvedSourceBundle(dialect="postgres", source_model=orders, referenced_models=[])
     scope = ModelScope(source_model=orders)
     # count / count_distinct should pass.
     bind_expr(parsed=parse_expr("id:count"), scope=scope, bundle=bundle)
@@ -157,7 +157,7 @@ def test_aggregation_eligibility_type_default_rejected():
             Column(name="status", type=DataType.TEXT),
         ],
     )
-    bundle = ResolvedSourceBundle(source_model=orders, referenced_models=[])
+    bundle = ResolvedSourceBundle(dialect="postgres", source_model=orders, referenced_models=[])
     scope = ModelScope(source_model=orders)
     # count is fine on text.
     bind_expr(parsed=parse_expr("status:count"), scope=scope, bundle=bundle)
@@ -218,7 +218,7 @@ def test_aggregation_eligibility_allowed_aggregations_whitelist():
             ),
         ],
     )
-    bundle = ResolvedSourceBundle(source_model=orders, referenced_models=[])
+    bundle = ResolvedSourceBundle(dialect="postgres", source_model=orders, referenced_models=[])
     scope = ModelScope(source_model=orders)
     bind_expr(parsed=parse_expr("amount:sum"), scope=scope, bundle=bundle)
     bind_expr(parsed=parse_expr("amount:max"), scope=scope, bundle=bundle)
@@ -259,7 +259,7 @@ def _cyclic_bundle():
     )
     # ``a`` is also referenced so the walk back to it (over the inverted edge,
     # DEV-1853) resolves and the cycle guard — not a missing-target error — fires.
-    return ResolvedSourceBundle(source_model=a, referenced_models=[b, a])
+    return ResolvedSourceBundle(dialect="postgres", source_model=a, referenced_models=[b, a])
 
 
 def test_cyclic_dotted_star_rejected():

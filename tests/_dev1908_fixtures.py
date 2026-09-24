@@ -212,7 +212,7 @@ def orders_q(**kw) -> SlayerQuery:
 
 def bundle1908() -> ResolvedSourceBundle:
     models = dev1908_models()
-    return ResolvedSourceBundle(source_model=models[0], referenced_models=models[1:])
+    return ResolvedSourceBundle(dialect="postgres", source_model=models[0], referenced_models=models[1:])
 
 
 def signup_month_td() -> List[TimeDimension]:

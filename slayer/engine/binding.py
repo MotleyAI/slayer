@@ -11,6 +11,7 @@ from typing import Dict, List, Optional, Tuple, Union
 from pydantic import BaseModel, ConfigDict
 
 from slayer.core.errors import (
+    AggregationArgumentError,
     AggregationNotAllowedError,
     CircularJoinPathError,
     IllegalScopeReferenceError,
@@ -43,7 +44,7 @@ from slayer.core.join_walker import (
     terminal_model,
     walk,
 )
-from slayer.core.models import SlayerModel
+from slayer.core.models import VALUE_PLACEHOLDER, SlayerModel, reserved_value_param_message
 from slayer.engine import dimension_routing
 from slayer.core.query import TimeDimension
 from slayer.core.scope import ModelScope, StageSchema, resolve_generated_column
@@ -65,6 +66,7 @@ from slayer.engine.syntax import (
     parse_expr,
 )
 from slayer.sql.sql_expr import has_window_function
+from slayer.sql.sql_template import SqlTemplateError, aggregation_reads
 from slayer.ir.bound import BoundExpr, BoundFilter, BoundTimeDimension
 
 __all__ = [
@@ -1144,6 +1146,17 @@ def _bind_agg(
 
     # ``partition_by`` is lifted out of kwargs onto ``partition_keys``
     # (``None`` means no partition, ``[]`` means grand total).
+    # Gate per-column aggregation eligibility, then store the EFFECTIVE
+    # (alias-healed) name so the generator resolves the canonical aggregation.
+    effective_agg = _validate_agg_eligibility(
+        source=source, agg=parsed.agg, bundle=bundle,
+    )
+    # Names first: no argument value binds before its name is accepted.
+    folded = _declared_agg_param_names(agg=effective_agg, source=source, bundle=bundle)[:len(parsed.args)]
+    _check_agg_kwarg_names(
+        agg=effective_agg, source=source, bundle=bundle,
+        names=[*folded, *(k for k, _ in parsed.kwargs if k != "partition_by")],
+    )
     args = tuple(
         _bind_agg_arg(a, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map)
         for a in parsed.args
@@ -1161,11 +1174,6 @@ def _bind_agg(
             k, _bind_agg_arg(v, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map),
         ))
     kwargs = tuple(kwargs_list)
-    # Gate per-column aggregation eligibility, then store the EFFECTIVE
-    # (alias-healed) name so the generator resolves the canonical aggregation.
-    effective_agg = _validate_agg_eligibility(
-        source=source, agg=parsed.agg, bundle=bundle,
-    )
     args, kwargs = _fold_positional_agg_args(
         agg=effective_agg, source=source, bundle=bundle, args=args, kwargs=kwargs,
     )
@@ -1241,6 +1249,36 @@ def _declared_agg_param_names(
         if custom is not None:
             return [p.name for p in custom.params]
     return list(BUILTIN_AGGREGATION_PARAM_ORDER.get(agg, ()))
+
+
+def _check_agg_kwarg_names(
+    *, agg: str, source, bundle: ResolvedSourceBundle, names: List[str],
+) -> None:
+    """Reject an argument name the rendered ``agg`` never reads (only its placeholders or own parameters, plus ``window``)."""
+    if not names:
+        return
+    owner, _leaf = _resolve_agg_owner(source, bundle)
+    definition = next((a for a in (owner.aggregations or []) if a.name == agg), None) if owner else None
+    if definition is None and agg not in BUILTIN_AGGREGATIONS:
+        return  # unresolved custom aggregation: eligibility / render reports it
+    try:
+        reads = aggregation_reads(agg=agg, definition=definition, dialect=bundle.dialect)
+    except SqlTemplateError as e:
+        raise SqlTemplateError(f"Aggregation '{agg}': {e}") from e
+    accepted = (reads - {VALUE_PLACEHOLDER}) | {"window"}
+    for name in names:
+        if name == VALUE_PLACEHOLDER and VALUE_PLACEHOLDER in reads:
+            raise SqlTemplateError(reserved_value_param_message(agg))
+        if name in accepted:
+            continue
+        if accepted == {"window"}:
+            raise AggregationArgumentError(
+                f"Aggregation '{agg}' takes no args or kwargs other than window; got '{name}'."
+            )
+        raise AggregationArgumentError(
+            f"Aggregation '{agg}' does not accept argument '{name}'; "
+            f"accepted: {', '.join(sorted(accepted))}."
+        )
 
 
 def _fold_positional_agg_args(

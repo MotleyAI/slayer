@@ -168,6 +168,7 @@ def bundle(models: Optional[List[SlayerModel]] = None) -> ResolvedSourceBundle:
     the plan-structure root)."""
     models = models if models is not None else [sales_model(), *dev1832_models()]
     return ResolvedSourceBundle(
+        dialect="postgres",
         source_model=models[0], referenced_models=models[1:])
 
 

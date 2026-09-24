@@ -77,6 +77,7 @@ def _regions() -> SlayerModel:
 
 def _bundle() -> ResolvedSourceBundle:
     return ResolvedSourceBundle(
+        dialect="postgres",
         source_model=_orders(),
         referenced_models=[_customers(), _regions()],
     )
@@ -190,8 +191,9 @@ class TestDownstreamStageFlatRefs:
             measures=[{"formula": "robot_details.modelseriesval"}],
             dimensions=["status"],
         )
+        bundle = _bundle()
         with pytest.raises(IllegalScopeReferenceError):
-            plan_stages(queries=[stage1, stage2], bundle=_bundle())
+            plan_stages(queries=[stage1, stage2], bundle=bundle)
 
 
 # ---------------------------------------------------------------------------
@@ -244,8 +246,9 @@ class TestTopoSort:
             source_model="dup",
             dimensions=["status"],
         )
+        bundle = _bundle()
         with pytest.raises(ValueError, match="[Dd]uplicate stage"):
-            plan_stages(queries=[s1, s2, root], bundle=_bundle())
+            plan_stages(queries=[s1, s2, root], bundle=bundle)
 
     def test_cycle_in_stages_rejected(self):
         # stage_a depends on stage_b, stage_b depends on stage_a — cycle.
@@ -263,8 +266,9 @@ class TestTopoSort:
             source_model="stage_a",
             dimensions=["status"],
         )
+        bundle = _bundle()
         with pytest.raises(ValueError, match="[Cc]ycle"):
-            plan_stages(queries=[a, b, root], bundle=_bundle())
+            plan_stages(queries=[a, b, root], bundle=bundle)
 
 
 class TestStageSchemaMultiAlias:

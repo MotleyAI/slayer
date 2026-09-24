@@ -34,7 +34,7 @@ SERIES = "time_shift(cumsum(amount:sum), -1)"
 def _bundle(root_name: str = "monthly") -> ResolvedSourceBundle:
     models = dev1832_models()
     root = next(m for m in models if m.name == root_name)
-    return ResolvedSourceBundle(source_model=root,
+    return ResolvedSourceBundle(dialect="postgres", source_model=root,
                                 referenced_models=[m for m in models if m is not root])
 
 

@@ -88,6 +88,7 @@ def _sources_containing(fragment: str) -> list:
 def _bundle() -> ResolvedSourceBundle:
     models = dev1837_models()
     return ResolvedSourceBundle(
+        dialect="postgres",
         source_model=models[0], referenced_models=list(models[1:]),
     )
 
