@@ -87,6 +87,16 @@ async def _dry(engine: SlayerQueryEngine, query) -> str:
     return sql
 
 
+async def _respell_orders(engine: SlayerQueryEngine, *, column: str, field: str,
+                          value: str) -> None:
+    """Re-save ``orders`` with ``column.field`` set to ``value``."""
+    orders = await engine.storage.get_model("orders", data_source="test")
+    assert orders is not None
+    orders.columns = [c.model_copy(update={field: value}) if c.name == column else c
+                      for c in orders.columns]
+    await engine.storage.save_model(orders)
+
+
 async def _outcome(engine: SlayerQueryEngine, query):
     """``(columns, sorted rows)`` or ``(error type, message)``."""
     try:
@@ -372,10 +382,13 @@ class TestModelSqlSpelledByModelName:
         query = orders_q(dimensions=["customers.hr.rname"],
                          measures=["north_amount:sum"])
         sql = await _dry(engine, query)
-        assert table_count(sql, "regions") == 1
+        assert "customers__regions" not in sql
         resp = await engine.execute(query)
         assert by_key(resp, RNAME, "orders.north_amount_sum") == \
             {"North": 100.0, "South": None, None: None}
+        await _respell_orders(engine, column="north_amount", field="filter",
+                              value="customers.hr.rname = 'North'")
+        assert sql == await _dry(engine, query)
 
     async def test_persisted_model_keeps_its_spelling(self, engine) -> None:
         await engine.execute(orders_q(dimensions=["region_label"]))
@@ -394,7 +407,14 @@ class TestDefinitionDefaultSpelledByModelName:
         resp = await engine.execute(default)
         assert by_key(resp, RNAME, "orders.w") == WPOP_BY_RNAME
         assert not broadcast_warnings(resp)
-        assert await _dry(engine, default) == await _dry(engine, explicit)
+        assert by_key(await engine.execute(explicit), RNAME, "orders.w") == WPOP_BY_RNAME
+        sql = await _dry(engine, default)
+        orders = await engine.storage.get_model("orders", data_source="test")
+        assert orders is not None
+        wpop = next(a for a in orders.aggregations if a.name == "wpop")
+        wpop.params = [p.model_copy(update={"sql": "customers.hr.pop"}) for p in wpop.params]
+        await engine.storage.save_model(orders)
+        assert sql == await _dry(engine, default)
 
 
 class TestAutoRoutedShortForm:

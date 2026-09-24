@@ -22,5 +22,5 @@
 ## 4. Finish
 
 - [x] 4.1 One sentence in `docs/concepts/references.md` (path-segment bullet): a named edge's hop is canonically spelled by its edge name, so result keys use it whichever spelling is typed. Verify: docs build nav unchanged.
-- [ ] 4.2 Apply the user-approved existing-test / golden updates from 1.3. Verify: full `poetry run pytest -m "not integration"` green.
-- [ ] 4.3 `poetry run ruff check slayer/ tests/` clean; `openspec validate dev-1954-sharpen-the-determination-route-dev-1908-d9-to-compare --strict` green; `tools/arch_check.py` green.
+- [x] 4.2 Apply the user-approved existing-test / golden updates from 1.3. Verify: full `poetry run pytest -m "not integration"` green.
+- [x] 4.3 `poetry run ruff check slayer/ tests/` clean; `openspec validate dev-1954-sharpen-the-determination-route-dev-1908-d9-to-compare --strict` green; `tools/arch_check.py` green.

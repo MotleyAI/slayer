@@ -4,6 +4,7 @@ The DEV-1900 ``orders → customers → regions → region_events`` graph with t
 ``customers → regions`` edge named ``hr`` (so it may be spelled ``hr`` or
 ``regions``), plus:
 
+* ``regions.pop`` labelled ``Population`` (so measure metadata surfaces);
 * ``regions.rname`` (physical copy of ``name``) and ``regions.founded_at``
   (North 2020-01-15, South 2021-06-15);
 * ``regions.maxpop`` (saved ``pop:max``), ``customers.tot_spend`` (saved
@@ -63,6 +64,8 @@ def dev1954_models(*, named: bool = True) -> List[SlayerModel]:
     customers.measures.append(ModelMeasure(name="tot_spend", formula="spend:sum"))
 
     regions = _by_name(models, "regions")
+    regions.columns = [c.model_copy(update={"label": "Population"}) if c.name == "pop" else c
+                       for c in regions.columns]
     regions.columns.append(Column(name="rname", type=DataType.TEXT, label="Region name"))
     regions.columns.append(Column(name="founded_at", type=DataType.TIMESTAMP,
                                   label="Founded"))
