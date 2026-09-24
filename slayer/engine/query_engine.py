@@ -70,6 +70,7 @@ from slayer.engine.population import (
     infer_population,
     to_one_reachable,
 )
+from slayer.core.scope import collect_stale_spellings
 from slayer.core.warnings import (
     AnySlayerWarning,
     AssociatedWarningPayload,
@@ -93,7 +94,7 @@ from slayer.engine.cache import (
     RefreshResult,
     _CacheEntry,
 )
-from slayer.engine.normalization import normalize_query
+from slayer.engine.normalization import normalize_query, stale_spelling_warnings
 from slayer.ir.planned import PlannedQuery
 from slayer.engine.schema_drift import (
     AppliedEntry,
@@ -1115,7 +1116,8 @@ class SlayerQueryEngine:
 
         # Plan the DAG (root last) and render the whole chain to one SQL string.
         stages = [*normed_named.values(), query]
-        planned_list = plan_stages(queries=stages, bundle=bundle)
+        with collect_stale_spellings() as stale_spellings:
+            planned_list = plan_stages(queries=stages, bundle=bundle)
         root_planned = planned_list[-1]
 
         # Collect + dedup payloads across every plan (nested subplans included).
@@ -1142,12 +1144,16 @@ class SlayerQueryEngine:
         slack_warnings.extend(degenerate_warnings)
 
         dialect = self._dialect_for_type(datasource.type)
-        sql = generate_planned_stages(
-            planned_list, bundle=bundle, dialect=dialect,
-            # Plan-derived canonical projection keys drive the write-side length
-            # fit; the read side decodes against the same set.
-            projection_aliases=projection_result_keys(root_planned=planned_list[-1]),
-        )
+        with collect_stale_spellings() as render_stale_spellings:
+            sql = generate_planned_stages(
+                planned_list, bundle=bundle, dialect=dialect,
+                # Plan-derived canonical projection keys drive the write-side length
+                # fit; the read side decodes against the same set.
+                projection_aliases=projection_result_keys(root_planned=planned_list[-1]),
+            )
+        slack_warnings.extend(stale_spelling_warnings(
+            list(dict.fromkeys([*stale_spellings, *render_stale_spellings])),
+        ))
         # Semi-join pushdown emits correlated EXISTS, which ClickHouse supports
         # only from 25.4 behind a setting: probe the version, fail closed below
         # it, and attach the setting on every entry point (dry-run included).
@@ -1292,11 +1298,13 @@ class SlayerQueryEngine:
             entry = await cache_obj.get(key)
             if entry is not None:
                 # Deep copy so caller mutation can't poison the cached response.
-                # Population metadata is per-query, not per-SQL (an explicit and an
-                # inferred twin share a cache key), so report the current query's.
+                # Population metadata and warnings are per-query, not per-SQL (an
+                # explicit and an inferred twin, or two spellings, share a cache key),
+                # so report the current query's.
                 return entry.response.model_copy(deep=True, update={
                     "population": prepared.population,
                     "population_inferred": prepared.population_inferred,
+                    "warnings": list(prepared.slack_warnings),
                 })
 
         # Miss (or cache=False) → a SQL client is required.

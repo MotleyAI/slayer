@@ -191,7 +191,7 @@ def model_from_stage_schema(
                 description=c.description,
                 primary_key=composite and c.name in grain,
                 unique=not composite and c.name in grain,
-            )
+            ).with_respellings(c.respellings)
             for c in schema.columns
         ],
     )

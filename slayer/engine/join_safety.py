@@ -284,6 +284,7 @@ def _back_path(
 
 
 def _common_prefix_len(a: Tuple[str, ...], b: Tuple[str, ...]) -> int:
+    """Shared prefix length; token equality is edge identity on canonical paths."""
     n = 0
     for x, y in zip(a, b):
         if x != y:
@@ -297,7 +298,7 @@ def _route_via_common_prefix(
     models_by_name: Dict[str, SlayerModel],
 ) -> Tuple[str, ...]:
     """The route from the aggregate's root (at ``target_path``) to a
-    host-coordinate ``host_path`` (DEV-1908 D9): step back only to the two paths'
+    host-coordinate ``host_path`` (both canonical): step back only to the two paths'
     longest common prefix — the reversed per-hop tokens of ``target_path`` past
     it — then forward along ``host_path``'s own suffix. When they share nothing
     this is ``_back_path`` + ``host_path`` (byte-identical to the old round trip);

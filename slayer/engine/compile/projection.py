@@ -303,6 +303,14 @@ class ValueRegistry:
             self._slots[existing_sid] = new_slot
         return existing_sid
 
+    def mark_explicit(self, slot_id: SlotId, alias: str) -> None:
+        """Record ``alias`` as user-chosen (never respelled downstream)."""
+        slot = self._slots[slot_id]
+        if alias not in slot.explicit_aliases:
+            self._slots[slot_id] = slot.model_copy(
+                update={"explicit_aliases": [*slot.explicit_aliases, alias]},
+            )
+
     def get(self, slot_id: SlotId) -> ValueSlot:
         return self._slots[slot_id]
 
@@ -434,6 +442,8 @@ class ProjectionPlanner:
                 description=m.description,
                 is_dimension=m.is_dimension,
             )
+            if m.name_is_explicit and m.public_name is not None:
+                registry.mark_explicit(sid, m.public_name)
             public_projection.append(sid)
             # Materialise the measure's aux deps (inner aggregate, partition/time
             # columns) as hidden slots — rendered but not publicly projected.
