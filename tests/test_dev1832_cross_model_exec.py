@@ -298,7 +298,7 @@ class TestExpressionSourceTyping:
         assert not re.search(r"DEV-\d+", str(ei.value))
         # A source-leaf crossing names the cross-model spelling as the remedy.
         assert "region_events" in str(ei.value)
-        assert "aggregate the target column directly" in str(ei.value)
+        assert "Aggregate the target column directly" in str(ei.value)
 
     async def test_unanalysable_leaf_fails_closed(self):
         query = orders_q(measures=[

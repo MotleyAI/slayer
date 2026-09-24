@@ -8,6 +8,7 @@ from importlib.metadata import version as _pkg_version
 from typing import Any
 
 import sqlalchemy as sa
+from sqlalchemy.exc import DatabaseError, OperationalError
 
 from slayer import __version__
 
@@ -180,7 +181,7 @@ def _fetch_tables(
         )
         return sorted(objects, key=lambda o: o.name), None
     except Exception as e:
-        if isinstance(e, (sa.exc.OperationalError, sa.exc.DatabaseError)):
+        if isinstance(e, (OperationalError, DatabaseError)):
             return None, _friendly_db_error(e)
         return None, str(e)
 
@@ -607,7 +608,7 @@ To connect a new database: create_datasource → describe_datasource (verify + l
                 output = f"SQL:\n{result.sql}\n\n{output}"
             return output
         except Exception as e:
-            if isinstance(e, (sa.exc.OperationalError, sa.exc.DatabaseError)):
+            if isinstance(e, (OperationalError, DatabaseError)):
                 return _friendly_db_error(e)
             raise
 
@@ -930,7 +931,7 @@ To connect a new database: create_datasource → describe_datasource (verify + l
                     variables=variables,
                 )
             except Exception as e:
-                if isinstance(e, (sa.exc.OperationalError, sa.exc.DatabaseError)):
+                if isinstance(e, (OperationalError, DatabaseError)):
                     return _friendly_db_error(e)
                 return f"Error creating model from query: {e}"
             cols = [c.name for c in model.columns]
@@ -959,7 +960,7 @@ To connect a new database: create_datasource → describe_datasource (verify + l
         try:
             await engine.save_model(model)
         except Exception as e:
-            if isinstance(e, (sa.exc.OperationalError, sa.exc.DatabaseError)):
+            if isinstance(e, (OperationalError, DatabaseError)):
                 return _friendly_db_error(e)
             return f"Error creating model '{model.name}': {e}"
         verb = "replaced" if existed else "created"
@@ -1458,7 +1459,7 @@ To connect a new database: create_datasource → describe_datasource (verify + l
                 all_schemas=all_schemas,
             )
         except Exception as e:
-            if isinstance(e, (sa.exc.OperationalError, sa.exc.DatabaseError)):
+            if isinstance(e, (OperationalError, DatabaseError)):
                 lines.append(f"Auto-ingestion failed: {_friendly_db_error(e)}")
                 return "\n".join(lines)
             raise
@@ -1681,7 +1682,7 @@ To connect a new database: create_datasource → describe_datasource (verify + l
         # disposed at teardown.
         try:
             entries = await engine.validate_models(data_source=data_source)
-        except (sa.exc.OperationalError, sa.exc.DatabaseError) as exc:
+        except (OperationalError, DatabaseError) as exc:
             return _friendly_db_error(exc)
         return json.dumps([e.model_dump(mode="json") for e in entries], indent=2)
 
@@ -1804,7 +1805,7 @@ To connect a new database: create_datasource → describe_datasource (verify + l
                 all_schemas=all_schemas,
             )
         except Exception as e:
-            if isinstance(e, (sa.exc.OperationalError, sa.exc.DatabaseError)):
+            if isinstance(e, (OperationalError, DatabaseError)):
                 return _friendly_db_error(e)
             raise
 
@@ -1853,7 +1854,8 @@ To connect a new database: create_datasource → describe_datasource (verify + l
         never raising back to the agent)."""
         if isinstance(exc, AmbiguousModelError):
             return _ambiguous_with_mcp_hint(exc)
-        return f"Error: {type(exc).__name__}: {exc}"
+        prefix = f"{type(exc).__name__}: "
+        return f"Error: {exc}" if str(exc).startswith(prefix) else f"Error: {prefix}{exc}"
 
     @mcp.tool()
     async def save_memory(

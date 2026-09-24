@@ -229,6 +229,7 @@ async def test_structured_name_collisions(case: Case, cls: type, location: str) 
 async def test_partition_key_suggestion_names_remedy_and_dimensions() -> None:
     exc = await _raise_of(_rank_partition)
     assert isinstance(exc, PartitionKeyError)
+    assert exc.suggestion is not None
     assert "dimensions/time_dimensions" in exc.suggestion
     assert "region" in exc.suggestion
 
@@ -237,6 +238,7 @@ async def test_time_axis_violation_is_a_type_error_not_unimplemented() -> None:
     exc = await _raise_of(_time_axis)
     assert isinstance(exc, TimeAxisError)
     assert not isinstance(exc, NotImplementedError)
+    assert exc.suggestion is not None
     assert "partition_by=" in exc.suggestion
     assert "time key" in exc.suggestion
 
@@ -245,6 +247,7 @@ async def test_malformed_query_window_names_value_and_syntax() -> None:
     exc = await _raise_of(_bad_window)
     assert isinstance(exc, WindowDurationError)
     assert "90x" in exc.summary
+    assert exc.suggestion is not None
     assert "1y2m3w5d6h7min8s" in exc.suggestion
 
 

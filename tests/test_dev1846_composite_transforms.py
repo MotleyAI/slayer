@@ -396,7 +396,7 @@ class TestUniformFailClosed:
     @pytest.mark.parametrize("shape", list(SHAPES))
     async def test_plain_path_names_shape_and_remedy(self, shape) -> None:
         name, msg = await _error(measures=[ModelMeasure(formula=self.SHAPES[shape], name="prev")])
-        assert name == "ValueError", (shape, name, msg)
+        assert name == "TransformInputError", (shape, name, msg)
         low = msg.lower()
         for token in self.TOKENS[shape]:
             assert token in low, (shape, token, msg)

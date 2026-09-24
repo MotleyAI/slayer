@@ -356,7 +356,7 @@ def _contains_block_delimiter(text: str) -> bool:
 
 
 def _make_var_replacer(
-    filter_str: str, variables: dict, escape: str, backslash_escapes: bool
+    filter_str: str, variables: dict, escape: Literal["sql", "python"], backslash_escapes: bool
 ):
     """Build the ``re.sub`` replacement callable for ``{var}`` / ``{{`` / ``}}`` tokens."""
 
@@ -1122,18 +1122,18 @@ class SlayerQuery(BaseModel):
         if self.measures:
             n = len(self.measures)
             raise DistinctDimensionValuesError(
-                f"distinct_dimension_values=False requires an empty `measures` "
-                f"field, but {n} measure(s) were supplied. Either remove the "
-                f"measures (and any other measure references) or set "
-                f"distinct_dimension_values=True (the default) to keep the "
-                f"auto-aggregating behaviour."
+                summary=f"distinct_dimension_values=False requires an empty `measures` "
+                f"field, but {n} measure(s) were supplied.",
+                suggestion="Either remove the measures (and any other measure "
+                "references) or set distinct_dimension_values=True (the default) "
+                "to keep the auto-aggregating behaviour.",
             )
         if not self.dimensions and not self.time_dimensions:
             raise DistinctDimensionValuesError(
-                "distinct_dimension_values=False requires at least one of "
+                summary="distinct_dimension_values=False requires at least one of "
                 "`dimensions` or `time_dimensions` to be non-empty — there "
-                "are no columns to SELECT. Add the columns you want to "
-                "project."
+                "are no columns to SELECT.",
+                suggestion="Add the columns you want to project.",
             )
 
     def snap_to_whole_periods(self) -> "SlayerQuery":

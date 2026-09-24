@@ -53,11 +53,14 @@ DELETED_MESSAGE_FRAGMENTS = {
     ),
 }
 
-G8_MALFORMED = "Invalid window duration '90x'. Use syntax like '1y2m3w5d6h7min8s'."
+G8_MALFORMED = (
+    "WindowDurationError: Invalid window duration '90x'.\n"
+    "  suggestion: Use syntax like '1y2m3w5d6h7min8s'."
+)
 G2_MESSAGE = (
-    "Windowed measure could not resolve its time dimension. Add a single "
-    "time_dimensions entry, or set main_time_dimension to select among "
-    "multiple time dimensions."
+    "TimeAxisError: Windowed measure could not resolve its time dimension.\n"
+    "  suggestion: Add a single time_dimensions entry, or set main_time_dimension "
+    "to select among multiple time dimensions."
 )
 NO_RANKING_COLUMN = (
     "first/last aggregation requires a ranking time column "

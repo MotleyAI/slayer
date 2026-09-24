@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.core.errors import SlayerError
+from slayer.core.errors import SlayerError, TimeAxisError
 from slayer.core.keys import AggregateKey, ColumnKey, Grain, TimeTruncKey, TransformKey
 from slayer.core.refs import agg_kwarg_canonical_str
 from slayer.core.scope import ModelScope
@@ -220,7 +220,7 @@ class TestNoAxisCumsum:
     @pytest.mark.parametrize("mode", MODES)
     async def test_measure_position(self, orders_engine, mode):
         q = mode_q(mode, time_dimensions=ordered_month_td(), measures=[_m(NOAXIS_CUMSUM)])
-        with pytest.raises(NotImplementedError) as ei:
+        with pytest.raises(TimeAxisError) as ei:
             await orders_engine.execute(q)
         _assert_time_axis_error(ei.value)
 
@@ -229,7 +229,7 @@ class TestNoAxisCumsum:
         q = mode_q(mode, dimensions=["customers.tier"],
                    time_dimensions=ordered_month_td(), measures=[AMOUNT],
                    filters=[f"{NOAXIS_CUMSUM} > 50"])
-        with pytest.raises(NotImplementedError) as ei:
+        with pytest.raises(TimeAxisError) as ei:
             await orders_engine.execute(q)
         _assert_time_axis_error(ei.value)
 

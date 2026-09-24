@@ -70,32 +70,32 @@
   "cancel/windowed_expr::sqlite": "WITH _base AS (\n  SELECT\n    STRFTIME('%Y-%m-01', customers.signup_at) AS \"orders.customers.signup_at\"\n  FROM orders AS orders\n  LEFT JOIN customers AS customers\n    ON orders.customer_id = customers.id\n  GROUP BY\n    STRFTIME('%Y-%m-01', customers.signup_at)\n), _cm_orders__customers__regions__countries__gdp_wsum_cust_spend2_expr_window_1y AS (\n  SELECT\n    _base.\"customers.signup_at_month\",\n    SUM(_src._w_value * _src._w_p0) AS \"customers.regions.countries.gdp_wsum_cust_spend2_expr_window_1y_host\"\n  FROM (\n    SELECT\n      STRFTIME('%Y-%m-01', customers.signup_at) AS \"customers.signup_at_month\"\n    FROM customers AS customers\n    GROUP BY\n      STRFTIME('%Y-%m-01', customers.signup_at)\n  ) AS _base\n  LEFT JOIN (\n    SELECT\n      customers.signup_at AS _w_time,\n      regions__countries.gdp AS _w_value,\n      customers.spend * 1 AS _w_p0\n    FROM customers AS customers\n    LEFT JOIN regions AS regions\n      ON customers.region_id = regions.id\n    LEFT JOIN countries AS regions__countries\n      ON regions.country_id = regions__countries.id\n  ) AS _src\n    ON DATETIME(_src._w_time) >= DATETIME(DATETIME(_base.\"customers.signup_at_month\", '+1 months'), '-1 years')\n    AND DATETIME(_src._w_time) < DATETIME(_base.\"customers.signup_at_month\", '+1 months')\n  GROUP BY\n    _base.\"customers.signup_at_month\"\n)\nSELECT\n  _base.\"orders.customers.signup_at\",\n  _cm_orders__customers__regions__countries__gdp_wsum_cust_spend2_expr_window_1y.\"customers.regions.countries.gdp_wsum_cust_spend2_expr_window_1y_host\" AS \"orders.w\"\nFROM _base\nLEFT JOIN _cm_orders__customers__regions__countries__gdp_wsum_cust_spend2_expr_window_1y\n  ON _base.\"orders.customers.signup_at\" IS _cm_orders__customers__regions__countries__gdp_wsum_cust_spend2_expr_window_1y.\"customers.signup_at_month\"",
   "cancel/windowed_expr::tsql": "WITH _base AS (\n  SELECT\n    DATETRUNC(month, customers.signup_at) AS [orders___customers___signup_at]\n  FROM orders AS orders\n  LEFT JOIN customers AS customers\n    ON orders.customer_id = customers.id\n  GROUP BY\n    DATETRUNC(month, customers.signup_at)\n), _cm_orders__customers__regions__countries__gdp_wsum_cust_spend2_expr_window_1y AS (\n  SELECT\n    _base.[customers___signup_at_month] AS [customers___signup_at_month],\n    SUM(_src._w_value * _src._w_p0) AS [customers___regions___countries___gdp_wsum_cust_spend2_expr_window_1y_host]\n  FROM (\n    SELECT\n      DATETRUNC(MONTH, customers.signup_at) AS [customers___signup_at_month]\n    FROM customers AS customers\n    GROUP BY\n      DATETRUNC(MONTH, customers.signup_at)\n  ) AS _base\n  LEFT JOIN (\n    SELECT\n      customers.signup_at AS _w_time,\n      regions__countries.gdp AS _w_value,\n      customers.spend * 1 AS _w_p0\n    FROM customers AS customers\n    LEFT JOIN regions AS regions\n      ON customers.region_id = regions.id\n    LEFT JOIN countries AS regions__countries\n      ON regions.country_id = regions__countries.id\n  ) AS _src\n    ON _src._w_time >= DATEADD(YEAR, -1, DATEADD(MONTH, 1, _base.[customers___signup_at_month]))\n    AND _src._w_time < DATEADD(MONTH, 1, _base.[customers___signup_at_month])\n  GROUP BY\n    _base.[customers___signup_at_month]\n)\nSELECT\n  _base.[orders___customers___signup_at],\n  _cm_orders__customers__regions__countries__gdp_wsum_cust_spend2_expr_window_1y.[customers___regions___countries___gdp_wsum_cust_spend2_expr_window_1y_host] AS [orders___w]\nFROM _base\nLEFT JOIN _cm_orders__customers__regions__countries__gdp_wsum_cust_spend2_expr_window_1y\n  ON (\n    _base.[orders___customers___signup_at] = _cm_orders__customers__regions__countries__gdp_wsum_cust_spend2_expr_window_1y.[customers___signup_at_month]\n    OR (\n      _base.[orders___customers___signup_at] IS NULL\n      AND _cm_orders__customers__regions__countries__gdp_wsum_cust_spend2_expr_window_1y.[customers___signup_at_month] IS NULL\n    )\n  )",
   "closed/cancel_then_fanning::bigquery": {
-    "error": "ValueError",
-    "message": "Cross-model aggregate 'customers.regions.countries.gdp_wsum_fan' reads an input across an unproven join hop to region_events from regions; declare join cardinality or a covering unique key on the target."
+    "error": "UnsafeJoinInputError",
+    "message": "UnsafeJoinInputError: The cross-model aggregate reads an input across an unproven join hop to region_events from regions.\n  at measure 'customers.regions.countries.gdp_wsum_fan'\n  suggestion: Declare join cardinality or a covering unique key on the target."
   },
   "closed/cancel_then_fanning::duckdb": {
-    "error": "ValueError",
-    "message": "Cross-model aggregate 'customers.regions.countries.gdp_wsum_fan' reads an input across an unproven join hop to region_events from regions; declare join cardinality or a covering unique key on the target."
+    "error": "UnsafeJoinInputError",
+    "message": "UnsafeJoinInputError: The cross-model aggregate reads an input across an unproven join hop to region_events from regions.\n  at measure 'customers.regions.countries.gdp_wsum_fan'\n  suggestion: Declare join cardinality or a covering unique key on the target."
   },
   "closed/cancel_then_fanning::mysql": {
-    "error": "ValueError",
-    "message": "Cross-model aggregate 'customers.regions.countries.gdp_wsum_fan' reads an input across an unproven join hop to region_events from regions; declare join cardinality or a covering unique key on the target."
+    "error": "UnsafeJoinInputError",
+    "message": "UnsafeJoinInputError: The cross-model aggregate reads an input across an unproven join hop to region_events from regions.\n  at measure 'customers.regions.countries.gdp_wsum_fan'\n  suggestion: Declare join cardinality or a covering unique key on the target."
   },
   "closed/cancel_then_fanning::postgres": {
-    "error": "ValueError",
-    "message": "Cross-model aggregate 'customers.regions.countries.gdp_wsum_fan' reads an input across an unproven join hop to region_events from regions; declare join cardinality or a covering unique key on the target."
+    "error": "UnsafeJoinInputError",
+    "message": "UnsafeJoinInputError: The cross-model aggregate reads an input across an unproven join hop to region_events from regions.\n  at measure 'customers.regions.countries.gdp_wsum_fan'\n  suggestion: Declare join cardinality or a covering unique key on the target."
   },
   "closed/cancel_then_fanning::snowflake": {
-    "error": "ValueError",
-    "message": "Cross-model aggregate 'customers.regions.countries.gdp_wsum_fan' reads an input across an unproven join hop to region_events from regions; declare join cardinality or a covering unique key on the target."
+    "error": "UnsafeJoinInputError",
+    "message": "UnsafeJoinInputError: The cross-model aggregate reads an input across an unproven join hop to region_events from regions.\n  at measure 'customers.regions.countries.gdp_wsum_fan'\n  suggestion: Declare join cardinality or a covering unique key on the target."
   },
   "closed/cancel_then_fanning::sqlite": {
-    "error": "ValueError",
-    "message": "Cross-model aggregate 'customers.regions.countries.gdp_wsum_fan' reads an input across an unproven join hop to region_events from regions; declare join cardinality or a covering unique key on the target."
+    "error": "UnsafeJoinInputError",
+    "message": "UnsafeJoinInputError: The cross-model aggregate reads an input across an unproven join hop to region_events from regions.\n  at measure 'customers.regions.countries.gdp_wsum_fan'\n  suggestion: Declare join cardinality or a covering unique key on the target."
   },
   "closed/cancel_then_fanning::tsql": {
-    "error": "ValueError",
-    "message": "Cross-model aggregate 'customers.regions.countries.gdp_wsum_fan' reads an input across an unproven join hop to region_events from regions; declare join cardinality or a covering unique key on the target."
+    "error": "UnsafeJoinInputError",
+    "message": "UnsafeJoinInputError: The cross-model aggregate reads an input across an unproven join hop to region_events from regions.\n  at measure 'customers.regions.countries.gdp_wsum_fan'\n  suggestion: Declare join cardinality or a covering unique key on the target."
   },
   "closed/query_typed_revisit::bigquery": {
     "error": "CircularJoinPathError",

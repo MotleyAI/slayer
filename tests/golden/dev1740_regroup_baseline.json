@@ -1,63 +1,63 @@
 {
   "guard/ddv_false::bigquery": {
     "error": "DistinctDimensionValuesError",
-    "message": "Computed dimension 'band' references an aggregate, so it cannot be used with distinct_dimension_values=False (raw rows). Remove the flag (the default aggregates) or drop the aggregate from the dimension."
+    "message": "DistinctDimensionValuesError: The computed dimension references an aggregate, so it cannot be used with distinct_dimension_values=False (raw rows).\n  at dimension 'band'\n  suggestion: Remove the flag (the default aggregates) or drop the aggregate from the dimension."
   },
   "guard/ddv_false::duckdb": {
     "error": "DistinctDimensionValuesError",
-    "message": "Computed dimension 'band' references an aggregate, so it cannot be used with distinct_dimension_values=False (raw rows). Remove the flag (the default aggregates) or drop the aggregate from the dimension."
+    "message": "DistinctDimensionValuesError: The computed dimension references an aggregate, so it cannot be used with distinct_dimension_values=False (raw rows).\n  at dimension 'band'\n  suggestion: Remove the flag (the default aggregates) or drop the aggregate from the dimension."
   },
   "guard/ddv_false::postgres": {
     "error": "DistinctDimensionValuesError",
-    "message": "Computed dimension 'band' references an aggregate, so it cannot be used with distinct_dimension_values=False (raw rows). Remove the flag (the default aggregates) or drop the aggregate from the dimension."
+    "message": "DistinctDimensionValuesError: The computed dimension references an aggregate, so it cannot be used with distinct_dimension_values=False (raw rows).\n  at dimension 'band'\n  suggestion: Remove the flag (the default aggregates) or drop the aggregate from the dimension."
   },
   "guard/ddv_false::sqlite": {
     "error": "DistinctDimensionValuesError",
-    "message": "Computed dimension 'band' references an aggregate, so it cannot be used with distinct_dimension_values=False (raw rows). Remove the flag (the default aggregates) or drop the aggregate from the dimension."
+    "message": "DistinctDimensionValuesError: The computed dimension references an aggregate, so it cannot be used with distinct_dimension_values=False (raw rows).\n  at dimension 'band'\n  suggestion: Remove the flag (the default aggregates) or drop the aggregate from the dimension."
   },
   "guard/ddv_false::tsql": {
     "error": "DistinctDimensionValuesError",
-    "message": "Computed dimension 'band' references an aggregate, so it cannot be used with distinct_dimension_values=False (raw rows). Remove the flag (the default aggregates) or drop the aggregate from the dimension."
+    "message": "DistinctDimensionValuesError: The computed dimension references an aggregate, so it cannot be used with distinct_dimension_values=False (raw rows).\n  at dimension 'band'\n  suggestion: Remove the flag (the default aggregates) or drop the aggregate from the dimension."
   },
   "guard/missing_partition_by::bigquery": {
-    "error": "ValueError",
-    "message": "The aggregate inside computed dimension 'band' must declare the grain it aggregates over with partition_by=, e.g. 'CASE WHEN sum(amount, partition_by=city) > 5000 THEN 1 ELSE 0 END'. Without partition_by the group key is a function of the query's own dimensions and adds no grouping."
+    "error": "ComputedDimensionError",
+    "message": "ComputedDimensionError: The aggregate inside the computed dimension must declare the grain it aggregates over with partition_by=, e.g. 'CASE WHEN sum(amount, partition_by=city) > 5000 THEN 1 ELSE 0 END'. Without partition_by the group key is a function of the query's own dimensions and adds no grouping.\n  at dimension 'band'"
   },
   "guard/missing_partition_by::duckdb": {
-    "error": "ValueError",
-    "message": "The aggregate inside computed dimension 'band' must declare the grain it aggregates over with partition_by=, e.g. 'CASE WHEN sum(amount, partition_by=city) > 5000 THEN 1 ELSE 0 END'. Without partition_by the group key is a function of the query's own dimensions and adds no grouping."
+    "error": "ComputedDimensionError",
+    "message": "ComputedDimensionError: The aggregate inside the computed dimension must declare the grain it aggregates over with partition_by=, e.g. 'CASE WHEN sum(amount, partition_by=city) > 5000 THEN 1 ELSE 0 END'. Without partition_by the group key is a function of the query's own dimensions and adds no grouping.\n  at dimension 'band'"
   },
   "guard/missing_partition_by::postgres": {
-    "error": "ValueError",
-    "message": "The aggregate inside computed dimension 'band' must declare the grain it aggregates over with partition_by=, e.g. 'CASE WHEN sum(amount, partition_by=city) > 5000 THEN 1 ELSE 0 END'. Without partition_by the group key is a function of the query's own dimensions and adds no grouping."
+    "error": "ComputedDimensionError",
+    "message": "ComputedDimensionError: The aggregate inside the computed dimension must declare the grain it aggregates over with partition_by=, e.g. 'CASE WHEN sum(amount, partition_by=city) > 5000 THEN 1 ELSE 0 END'. Without partition_by the group key is a function of the query's own dimensions and adds no grouping.\n  at dimension 'band'"
   },
   "guard/missing_partition_by::sqlite": {
-    "error": "ValueError",
-    "message": "The aggregate inside computed dimension 'band' must declare the grain it aggregates over with partition_by=, e.g. 'CASE WHEN sum(amount, partition_by=city) > 5000 THEN 1 ELSE 0 END'. Without partition_by the group key is a function of the query's own dimensions and adds no grouping."
+    "error": "ComputedDimensionError",
+    "message": "ComputedDimensionError: The aggregate inside the computed dimension must declare the grain it aggregates over with partition_by=, e.g. 'CASE WHEN sum(amount, partition_by=city) > 5000 THEN 1 ELSE 0 END'. Without partition_by the group key is a function of the query's own dimensions and adds no grouping.\n  at dimension 'band'"
   },
   "guard/missing_partition_by::tsql": {
-    "error": "ValueError",
-    "message": "The aggregate inside computed dimension 'band' must declare the grain it aggregates over with partition_by=, e.g. 'CASE WHEN sum(amount, partition_by=city) > 5000 THEN 1 ELSE 0 END'. Without partition_by the group key is a function of the query's own dimensions and adds no grouping."
+    "error": "ComputedDimensionError",
+    "message": "ComputedDimensionError: The aggregate inside the computed dimension must declare the grain it aggregates over with partition_by=, e.g. 'CASE WHEN sum(amount, partition_by=city) > 5000 THEN 1 ELSE 0 END'. Without partition_by the group key is a function of the query's own dimensions and adds no grouping.\n  at dimension 'band'"
   },
   "guard/transform_in_dim::bigquery": {
-    "error": "ValueError",
-    "message": "The aggregate 'sum(amount)' inside the transform in computed dimension 'x' must declare partition_by= explicitly: the ungrained default (the query's own dimensions) would include the dimension being defined."
+    "error": "ComputedDimensionError",
+    "message": "ComputedDimensionError: The aggregate 'sum(amount)' inside the transform in the computed dimension must declare partition_by= explicitly: the ungrained default (the query's own dimensions) would include the dimension being defined.\n  at dimension 'x'"
   },
   "guard/transform_in_dim::duckdb": {
-    "error": "ValueError",
-    "message": "The aggregate 'sum(amount)' inside the transform in computed dimension 'x' must declare partition_by= explicitly: the ungrained default (the query's own dimensions) would include the dimension being defined."
+    "error": "ComputedDimensionError",
+    "message": "ComputedDimensionError: The aggregate 'sum(amount)' inside the transform in the computed dimension must declare partition_by= explicitly: the ungrained default (the query's own dimensions) would include the dimension being defined.\n  at dimension 'x'"
   },
   "guard/transform_in_dim::postgres": {
-    "error": "ValueError",
-    "message": "The aggregate 'sum(amount)' inside the transform in computed dimension 'x' must declare partition_by= explicitly: the ungrained default (the query's own dimensions) would include the dimension being defined."
+    "error": "ComputedDimensionError",
+    "message": "ComputedDimensionError: The aggregate 'sum(amount)' inside the transform in the computed dimension must declare partition_by= explicitly: the ungrained default (the query's own dimensions) would include the dimension being defined.\n  at dimension 'x'"
   },
   "guard/transform_in_dim::sqlite": {
-    "error": "ValueError",
-    "message": "The aggregate 'sum(amount)' inside the transform in computed dimension 'x' must declare partition_by= explicitly: the ungrained default (the query's own dimensions) would include the dimension being defined."
+    "error": "ComputedDimensionError",
+    "message": "ComputedDimensionError: The aggregate 'sum(amount)' inside the transform in the computed dimension must declare partition_by= explicitly: the ungrained default (the query's own dimensions) would include the dimension being defined.\n  at dimension 'x'"
   },
   "guard/transform_in_dim::tsql": {
-    "error": "ValueError",
-    "message": "The aggregate 'sum(amount)' inside the transform in computed dimension 'x' must declare partition_by= explicitly: the ungrained default (the query's own dimensions) would include the dimension being defined."
+    "error": "ComputedDimensionError",
+    "message": "ComputedDimensionError: The aggregate 'sum(amount)' inside the transform in the computed dimension must declare partition_by= explicitly: the ungrained default (the query's own dimensions) would include the dimension being defined.\n  at dimension 'x'"
   },
   "regroup/cross_model_partition::bigquery": "WITH _cm_amount_sum_partition_by_customers_region_id AS (\n  SELECT\n    _stage_inner.`orders___customers___region_id` AS `customers__region_id`,\n    _stage_inner.`orders___amount_sum_partition_by_customers_region_id` AS `amount_sum_partition_by_customers_region_id`\n  FROM (\n    SELECT\n      customers.region_id AS `orders___customers___region_id`,\n      CAST(SUM(orders.amount) AS FLOAT64) AS `orders___amount_sum_partition_by_customers_region_id`\n    FROM orders AS orders\n    LEFT JOIN customers AS customers\n      ON orders.customer_id = customers.id\n    GROUP BY\n      customers.region_id\n  ) AS _stage_inner\n)\nSELECT\n  orders.region AS `orders___region`,\n  CASE\n    WHEN _cm_amount_sum_partition_by_customers_region_id.`amount_sum_partition_by_customers_region_id` > 10000\n    THEN 1\n    ELSE 0\n  END AS `orders___band`,\n  CAST(SUM(orders.amount) AS FLOAT64) AS `orders___s`\nFROM orders AS orders\nLEFT JOIN customers AS customers\n  ON orders.customer_id = customers.id\nLEFT JOIN _cm_amount_sum_partition_by_customers_region_id\n  ON customers.region_id IS NOT DISTINCT FROM _cm_amount_sum_partition_by_customers_region_id.`customers__region_id`\nGROUP BY\n  orders.region,\n  CASE\n    WHEN _cm_amount_sum_partition_by_customers_region_id.`amount_sum_partition_by_customers_region_id` > 10000\n    THEN 1\n    ELSE 0\n  END",
   "regroup/cross_model_partition::duckdb": "WITH _cm_amount_sum_partition_by_customers_region_id AS (\n  SELECT\n    _stage_inner.\"orders.customers.region_id\" AS \"customers__region_id\",\n    _stage_inner.\"orders.amount_sum_partition_by_customers_region_id\" AS \"amount_sum_partition_by_customers_region_id\"\n  FROM (\n    SELECT\n      customers.region_id AS \"orders.customers.region_id\",\n      CAST(SUM(orders.amount) AS DOUBLE) AS \"orders.amount_sum_partition_by_customers_region_id\"\n    FROM orders AS orders\n    LEFT JOIN customers AS customers\n      ON orders.customer_id = customers.id\n    GROUP BY\n      customers.region_id\n  ) AS _stage_inner\n)\nSELECT\n  orders.region AS \"orders.region\",\n  CASE\n    WHEN _cm_amount_sum_partition_by_customers_region_id.\"amount_sum_partition_by_customers_region_id\" > 10000\n    THEN 1\n    ELSE 0\n  END AS \"orders.band\",\n  CAST(SUM(orders.amount) AS DOUBLE) AS \"orders.s\"\nFROM orders AS orders\nLEFT JOIN customers AS customers\n  ON orders.customer_id = customers.id\nLEFT JOIN _cm_amount_sum_partition_by_customers_region_id\n  ON customers.region_id IS NOT DISTINCT FROM _cm_amount_sum_partition_by_customers_region_id.\"customers__region_id\"\nGROUP BY\n  orders.region,\n  CASE\n    WHEN _cm_amount_sum_partition_by_customers_region_id.\"amount_sum_partition_by_customers_region_id\" > 10000\n    THEN 1\n    ELSE 0\n  END",

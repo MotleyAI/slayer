@@ -15,44 +15,44 @@
   "cross_model/rerooted_partition_key::sqlite": "WITH _base AS (\n  SELECT\n    customers__regions.name AS \"orders.customers.regions.name\",\n    customers.tier AS \"orders.customers.tier\"\n  FROM orders AS orders\n  LEFT JOIN customers AS customers\n    ON orders.customer_id = customers.id\n  LEFT JOIN regions AS customers__regions\n    ON customers.region_id = customers__regions.id\n  GROUP BY\n    customers__regions.name,\n    customers.tier\n), _cm_orders__customers__spend_sum_partition_by_customers_regions_name AS (\n  SELECT\n    regions.name AS \"customers.regions.name\",\n    CAST(SUM(customers.spend) AS REAL) AS \"customers.spend_sum_partition_by_regions_name\"\n  FROM customers AS customers\n  LEFT JOIN regions AS regions\n    ON customers.region_id = regions.id\n  GROUP BY\n    regions.name\n)\nSELECT\n  _base.\"orders.customers.regions.name\",\n  _base.\"orders.customers.tier\",\n  _cm_orders__customers__spend_sum_partition_by_customers_regions_name.\"customers.spend_sum_partition_by_regions_name\" AS \"orders.rt\"\nFROM _base\nLEFT JOIN _cm_orders__customers__spend_sum_partition_by_customers_regions_name\n  ON _base.\"orders.customers.regions.name\" IS _cm_orders__customers__spend_sum_partition_by_customers_regions_name.\"customers.regions.name\"",
   "cross_model/rerooted_partition_key::tsql": "WITH _base AS (\n  SELECT\n    customers__regions.name AS [orders___customers___regions___name],\n    customers.tier AS [orders___customers___tier]\n  FROM orders AS orders\n  LEFT JOIN customers AS customers\n    ON orders.customer_id = customers.id\n  LEFT JOIN regions AS customers__regions\n    ON customers.region_id = customers__regions.id\n  GROUP BY\n    customers__regions.name,\n    customers.tier\n), _cm_orders__customers__spend_sum_partition_by_customers_regions_name AS (\n  SELECT\n    regions.name AS [customers___regions___name],\n    CAST(SUM(customers.spend) AS FLOAT) AS [customers___spend_sum_partition_by_regions_name]\n  FROM customers AS customers\n  LEFT JOIN regions AS regions\n    ON customers.region_id = regions.id\n  GROUP BY\n    regions.name\n)\nSELECT\n  _base.[orders___customers___regions___name],\n  _base.[orders___customers___tier],\n  _cm_orders__customers__spend_sum_partition_by_customers_regions_name.[customers___spend_sum_partition_by_regions_name] AS [orders___rt]\nFROM _base\nLEFT JOIN _cm_orders__customers__spend_sum_partition_by_customers_regions_name\n  ON (\n    _base.[orders___customers___regions___name] = _cm_orders__customers__spend_sum_partition_by_customers_regions_name.[customers___regions___name]\n    OR (\n      _base.[orders___customers___regions___name] IS NULL\n      AND _cm_orders__customers__spend_sum_partition_by_customers_regions_name.[customers___regions___name] IS NULL\n    )\n  )",
   "guard/cross_model_outside_grain::bigquery": {
-    "error": "ValueError",
-    "message": "Cross-model aggregate 'x' declares partition_by=region, which crosses a fanning or unproven join hop to orders; every explicit partition key must be attributable from customers \u2014 declare join cardinality or a covering unique key on the target."
+    "error": "PartitionKeyError",
+    "message": "PartitionKeyError: The cross-model aggregate declares partition_by=region, which crosses a fanning or unproven join hop to orders; every explicit partition key must be attributable from customers.\n  at measure 'x'\n  suggestion: Declare join cardinality or a covering unique key on the target."
   },
   "guard/cross_model_outside_grain::duckdb": {
-    "error": "ValueError",
-    "message": "Cross-model aggregate 'x' declares partition_by=region, which crosses a fanning or unproven join hop to orders; every explicit partition key must be attributable from customers \u2014 declare join cardinality or a covering unique key on the target."
+    "error": "PartitionKeyError",
+    "message": "PartitionKeyError: The cross-model aggregate declares partition_by=region, which crosses a fanning or unproven join hop to orders; every explicit partition key must be attributable from customers.\n  at measure 'x'\n  suggestion: Declare join cardinality or a covering unique key on the target."
   },
   "guard/cross_model_outside_grain::postgres": {
-    "error": "ValueError",
-    "message": "Cross-model aggregate 'x' declares partition_by=region, which crosses a fanning or unproven join hop to orders; every explicit partition key must be attributable from customers \u2014 declare join cardinality or a covering unique key on the target."
+    "error": "PartitionKeyError",
+    "message": "PartitionKeyError: The cross-model aggregate declares partition_by=region, which crosses a fanning or unproven join hop to orders; every explicit partition key must be attributable from customers.\n  at measure 'x'\n  suggestion: Declare join cardinality or a covering unique key on the target."
   },
   "guard/cross_model_outside_grain::sqlite": {
-    "error": "ValueError",
-    "message": "Cross-model aggregate 'x' declares partition_by=region, which crosses a fanning or unproven join hop to orders; every explicit partition key must be attributable from customers \u2014 declare join cardinality or a covering unique key on the target."
+    "error": "PartitionKeyError",
+    "message": "PartitionKeyError: The cross-model aggregate declares partition_by=region, which crosses a fanning or unproven join hop to orders; every explicit partition key must be attributable from customers.\n  at measure 'x'\n  suggestion: Declare join cardinality or a covering unique key on the target."
   },
   "guard/cross_model_outside_grain::tsql": {
-    "error": "ValueError",
-    "message": "Cross-model aggregate 'x' declares partition_by=region, which crosses a fanning or unproven join hop to orders; every explicit partition key must be attributable from customers \u2014 declare join cardinality or a covering unique key on the target."
+    "error": "PartitionKeyError",
+    "message": "PartitionKeyError: The cross-model aggregate declares partition_by=region, which crosses a fanning or unproven join hop to orders; every explicit partition key must be attributable from customers.\n  at measure 'x'\n  suggestion: Declare join cardinality or a covering unique key on the target."
   },
   "guard/non_dimension::bigquery": {
-    "error": "ValueError",
-    "message": "Aggregation 'sum': partition_by column 'city' is not a query dimension. Add it to dimensions/time_dimensions, or choose one of: region."
+    "error": "PartitionKeyError",
+    "message": "PartitionKeyError: The partition_by column 'city' is not a query dimension.\n  at aggregation 'sum'\n  suggestion: Add it to dimensions/time_dimensions, or choose one of: region."
   },
   "guard/non_dimension::duckdb": {
-    "error": "ValueError",
-    "message": "Aggregation 'sum': partition_by column 'city' is not a query dimension. Add it to dimensions/time_dimensions, or choose one of: region."
+    "error": "PartitionKeyError",
+    "message": "PartitionKeyError: The partition_by column 'city' is not a query dimension.\n  at aggregation 'sum'\n  suggestion: Add it to dimensions/time_dimensions, or choose one of: region."
   },
   "guard/non_dimension::postgres": {
-    "error": "ValueError",
-    "message": "Aggregation 'sum': partition_by column 'city' is not a query dimension. Add it to dimensions/time_dimensions, or choose one of: region."
+    "error": "PartitionKeyError",
+    "message": "PartitionKeyError: The partition_by column 'city' is not a query dimension.\n  at aggregation 'sum'\n  suggestion: Add it to dimensions/time_dimensions, or choose one of: region."
   },
   "guard/non_dimension::sqlite": {
-    "error": "ValueError",
-    "message": "Aggregation 'sum': partition_by column 'city' is not a query dimension. Add it to dimensions/time_dimensions, or choose one of: region."
+    "error": "PartitionKeyError",
+    "message": "PartitionKeyError: The partition_by column 'city' is not a query dimension.\n  at aggregation 'sum'\n  suggestion: Add it to dimensions/time_dimensions, or choose one of: region."
   },
   "guard/non_dimension::tsql": {
-    "error": "ValueError",
-    "message": "Aggregation 'sum': partition_by column 'city' is not a query dimension. Add it to dimensions/time_dimensions, or choose one of: region."
+    "error": "PartitionKeyError",
+    "message": "PartitionKeyError: The partition_by column 'city' is not a query dimension.\n  at aggregation 'sum'\n  suggestion: Add it to dimensions/time_dimensions, or choose one of: region."
   },
   "local/filtered::bigquery": "WITH _base AS (\n  SELECT\n    orders.region AS `orders___region`,\n    orders.city AS `orders___city`\n  FROM orders AS orders\n  GROUP BY\n    orders.region,\n    orders.city\n), _cm_orders__ok_amount_sum_partition_by_region AS (\n  SELECT\n    orders.region AS `orders___region`,\n    CAST(SUM(CASE WHEN orders.status = 'ok' THEN orders.amount END) AS FLOAT64) AS `orders___o`\n  FROM orders AS orders\n  GROUP BY\n    orders.region\n)\nSELECT\n  _base.`orders___region`,\n  _base.`orders___city`,\n  _cm_orders__ok_amount_sum_partition_by_region.`orders___o`\nFROM _base\nLEFT JOIN _cm_orders__ok_amount_sum_partition_by_region\n  ON _base.`orders___region` IS NOT DISTINCT FROM _cm_orders__ok_amount_sum_partition_by_region.`orders___region`",
   "local/filtered::duckdb": "WITH _base AS (\n  SELECT\n    orders.region AS \"orders.region\",\n    orders.city AS \"orders.city\"\n  FROM orders AS orders\n  GROUP BY\n    orders.region,\n    orders.city\n), _cm_orders__ok_amount_sum_partition_by_region AS (\n  SELECT\n    orders.region AS \"orders.region\",\n    CAST(SUM(CASE WHEN orders.status = 'ok' THEN orders.amount END) AS DOUBLE) AS \"orders.o\"\n  FROM orders AS orders\n  GROUP BY\n    orders.region\n)\nSELECT\n  _base.\"orders.region\",\n  _base.\"orders.city\",\n  _cm_orders__ok_amount_sum_partition_by_region.\"orders.o\"\nFROM _base\nLEFT JOIN _cm_orders__ok_amount_sum_partition_by_region\n  ON _base.\"orders.region\" IS NOT DISTINCT FROM _cm_orders__ok_amount_sum_partition_by_region.\"orders.region\"",

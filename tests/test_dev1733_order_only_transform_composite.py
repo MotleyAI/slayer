@@ -874,7 +874,7 @@ class TestWindowedStillGuarded:
             await _sql(engine, query)
         # Cross-model windowed stays guarded — the host TD is not attributable
         # from the target root, so the producer refuses the window.
-        assert "Windowed aggregate" in str(ei.value), ei.value
+        assert "The windowed aggregate" in str(ei.value), ei.value
         assert "attributable from" in str(ei.value), ei.value
 
     async def test_non_sum_avg_windowed_order_target_still_raises(self, engine) -> None:

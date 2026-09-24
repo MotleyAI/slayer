@@ -178,7 +178,8 @@ class TestBindDispatch:
         with pytest.raises(ValueError) as ei:
             _measure_key("first(cumsum(weight))")
         msg = str(ei.value)
-        assert "Transform 'cumsum' cannot consume the row-level" in msg, msg
+        assert "The transform cannot consume the row-level" in msg, msg
+        assert "\n  at transform 'cumsum'\n" in msg, msg
         assert "not supported over an expression" not in msg
 
 

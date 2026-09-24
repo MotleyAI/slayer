@@ -148,8 +148,9 @@ async def test_combined_consumer_keyless_grain_rejected(
 
 
 _ERROR_TEMPLATE = (
-    "Aggregation 'sum': partition_by column '{key}' is not a query dimension. "
-    "Add it to dimensions/time_dimensions, or choose one of: {dims}."
+    "PartitionKeyError: The partition_by column '{key}' is not a query dimension.\n"
+    "  at aggregation 'sum'\n"
+    "  suggestion: Add it to dimensions/time_dimensions, or choose one of: {dims}."
 )
 
 
