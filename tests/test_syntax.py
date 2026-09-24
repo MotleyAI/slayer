@@ -789,9 +789,12 @@ class TestFilterOperatorNormalization:
         assert result.op == "or"
         assert len(result.operands) == 2
         left, right = result.operands
-        assert isinstance(left, Cmp) and left.op == "=="
-        assert left.left == Ref(name="status") and left.right == Literal(value="x")
-        assert isinstance(right, Cmp) and right.op == "=="
+        assert isinstance(left, Cmp)
+        assert left.op == "=="
+        assert left.left == Ref(name="status")
+        assert left.right == Literal(value="x")
+        assert isinstance(right, Cmp)
+        assert right.op == "=="
         assert right.left == Ref(name="amount")
         assert right.right == Literal(value=Decimal(5))
 
@@ -806,11 +809,13 @@ class TestFilterOperatorNormalization:
         assert result.op == "and"
         assert len(result.operands) == 2
         left, right = result.operands
-        assert isinstance(left, Cmp) and left.op == "<="
+        assert isinstance(left, Cmp)
+        assert left.op == "<="
         assert isinstance(left.left, TransformCall)
         assert left.left.op == "ntile"
         assert left.left.kwargs == (("n", Literal(value=Decimal(4))),)
-        assert isinstance(right, Cmp) and right.op == "=="
+        assert isinstance(right, Cmp)
+        assert right.op == "=="
         assert right.left == Ref(name="status")
         assert right.right == Literal(value="paid")
 
@@ -905,7 +910,8 @@ class TestFilterOperatorNormalization:
         assert inner.name == "coalesce"
         assert len(inner.args) == 2
         cmp_arg, zero = inner.args
-        assert isinstance(cmp_arg, Cmp) and cmp_arg.op == "=="
+        assert isinstance(cmp_arg, Cmp)
+        assert cmp_arg.op == "=="
         assert cmp_arg.left == Ref(name="status")
         assert cmp_arg.right == Literal(value="paid")
         assert zero == Literal(value=Decimal(0))
@@ -921,11 +927,13 @@ class TestFilterOperatorNormalization:
         assert isinstance(result, BoolOp)
         assert result.op == "and"
         left, right = result.operands
-        assert isinstance(left, Cmp) and left.op == "<="
+        assert isinstance(left, Cmp)
+        assert left.op == "<="
         assert isinstance(left.left, TransformCall)
         assert left.left.op == "ntile"
         assert left.left.kwargs == (("n", Literal(value=Decimal(4))),)
-        assert isinstance(right, Cmp) and right.op == "=="
+        assert isinstance(right, Cmp)
+        assert right.op == "=="
         assert right.left == Ref(name="status")
         assert right.right == Literal(value="),=")
 
@@ -979,7 +987,8 @@ class TestFilterOperatorNormalization:
         assert result.name == "ifnull"
         assert len(result.args) == 2
         first, second = result.args
-        assert isinstance(first, Cmp) and first.op == "=="
+        assert isinstance(first, Cmp)
+        assert first.op == "=="
         assert first.left == Ref(name="status")
         assert first.right == Literal(value="paid")
         assert second == Literal(value=False)

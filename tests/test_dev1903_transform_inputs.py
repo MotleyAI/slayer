@@ -89,8 +89,9 @@ class TestMessagesMatchTheLedger:
         _check(formula)
 
     def test_planner_raises_the_same_message(self):
+        measures = [ModelMeasure(formula="cumsum(weight)", name="m")]
         with pytest.raises(ValueError) as ei:
-            _plan(measures=[ModelMeasure(formula="cumsum(weight)", name="m")])
+            _plan(measures=measures)
         assert _row_leaf_op(str(ei.value)) == "cumsum"
 
 
@@ -100,13 +101,15 @@ class TestInnermostTransformNamed:
         "time_shift(cumsum(weight), -1)", "change(cumsum(weight))",
     ])
     def test_consuming_transform_is_named(self, formula):
+        measures = [ModelMeasure(formula=formula, name="m")]
         with pytest.raises(ValueError) as ei:
-            _plan(measures=[ModelMeasure(formula=formula, name="m")])
+            _plan(measures=measures)
         assert _row_leaf_op(str(ei.value)) == "cumsum"
 
     def test_first_over_row_leaf_transform_is_not_the_expression_error(self):
+        measures = [ModelMeasure(formula="first(cumsum(weight))", name="m")]
         with pytest.raises(ValueError) as ei:
-            _plan(measures=[ModelMeasure(formula="first(cumsum(weight))", name="m")])
+            _plan(measures=measures)
         assert "not supported over an expression" not in str(ei.value)
 
 
@@ -128,9 +131,9 @@ class TestTraversal:
         assert _row_leaf_op(str(ei.value)) == "cumsum"
 
     def test_filter_position(self):
+        measures = [ModelMeasure(formula="revenue:sum", name="r")]
         with pytest.raises(ValueError) as ei:
-            _plan(measures=[ModelMeasure(formula="revenue:sum", name="r")],
-                  filters=["cumsum(weight) > 0"])
+            _plan(measures=measures, filters=["cumsum(weight) > 0"])
         assert _row_leaf_op(str(ei.value)) == "cumsum"
 
     def test_projected_leaf_exempt(self):

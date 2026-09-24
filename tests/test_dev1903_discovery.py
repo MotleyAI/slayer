@@ -1,4 +1,4 @@
-"""DEV-1903 task 1.1 — the one discovery walk (design D1, D6): ``discover_roots``
+"""The one discovery walk (design D1, D6): ``discover_roots``
 yields one ``RootDisposition`` per consumer occurrence (root, phase, routing,
 consumer names, declared type, shift ``series``)."""
 
@@ -287,7 +287,8 @@ class TestShiftCandidates:
         ds = _discover(q(dimensions=["status"],
                          measures=[ModelMeasure(formula="customers.spend:sum", name="cm")]),
                        _bundle(dev1836_models()))
-        assert ds and all(d.series is None for d in ds)
+        assert ds
+        assert all(d.series is None for d in ds)
 
 
 class TestOccurrenceOrder:
@@ -344,9 +345,10 @@ class TestReaggregationInComputedDimension:
                      _REAGG_DECLARES, id="filter-over-it"),
     ])
     def test_partition_key_error(self, kw, message):
+        query = sales_q(dimensions=["product", _RLEVEL], **kw)
+        bundle = _bundle(dev1847_models())
         with pytest.raises(ValueError, match=message):
-            plan_query(query=sales_q(dimensions=["product", _RLEVEL], **kw),
-                       bundle=_bundle(dev1847_models()))
+            plan_query(query=query, bundle=bundle)
 
 
 class TestUnderReaggregationPartitionKeys:

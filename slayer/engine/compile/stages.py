@@ -3332,7 +3332,7 @@ def _local_regroup_join_pairs(
 ) -> List[Tuple[ValueKey, Any]]:
     """Each grain key joined to its producer slot — by structural identity, else by
     projection position; a host-side key embedding another attach's aggregate
-    renders via that attach's placeholder (DEV-1847 shape B)."""
+    renders via that attach's placeholder."""
     grain_ids = list(producer_plan.projection)[:len(ordered_pks)]
 
     def _slot(i: int, pk: ValueKey):
@@ -3413,7 +3413,7 @@ def _synthesize_local_regroup(
         population=ctx.population,
     )
     # A union-grain producer MAY carry nested attaches at any depth; the
-    # complete-grain assert is the admission rule (DEV-1847).
+    # complete-grain assert is the admission rule.
     # A bare aggregate root resolves to an aggregate slot; a transform root to a combined-expression slot.
     producer_value_slots = [
         *producer_plan.aggregate_slots,
@@ -3545,7 +3545,7 @@ def _plan_regroups(
     }
     if reagg_mapping:
         # Consumer-scoped, so a root nested in a row-attach root's inputs stays in
-        # place for that root's own attach (DEV-1942 D1).
+        # place for that root's own attach.
         prebound = _substitute_prebound(
             prebound, reagg_mapping, substitute=substitute_consumer_keys,
         )
@@ -3869,7 +3869,7 @@ def _home_paths(env: ElaboratedQuery) -> Dict[ValueKey, Tuple[str, ...]]:
 
 def _strip_redundant_partitions(env: ElaboratedStage) -> PreboundQuery:
     """A LOCAL row-attach root partitioned by exactly the query grain aggregates
-    INLINE with its inputs row-attached (DEV-1859 decision 10)."""
+    INLINE with its inputs row-attached."""
     prebound, scope, bundle = env.prebound, env.scope, env.bundle
     query_grain = Grain.of(dm.bound.value_key for dm in prebound.grain_declared_measures)
     roots = dict.fromkeys(d.root for d in discover_roots(
@@ -4266,8 +4266,8 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
         producer_registry=producer_registry, population=population,
         candidates=routed.shift_candidates,
     )]
-    # Assign every slot its materialisation stage / needs-column / series fact
-    # (DEV-1800 D3); producer bodies were staged by their own compilation.
+    # Assign every slot its materialisation stage / needs-column / series fact;
+    # producer bodies were staged by their own compilation.
     row_slots, agg_slots, combined_slots = stage_slots(
         row_slots=row_slots,
         aggregate_slots=agg_slots,

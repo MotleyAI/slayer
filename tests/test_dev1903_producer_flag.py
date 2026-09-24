@@ -233,7 +233,8 @@ class TestEverySiteStatesItsPopulation:
     ])
     def test_population_kind_per_site(self, populations, plan, expected):
         plan()
-        assert populations and set(populations) == expected, populations
+        assert populations, populations
+        assert set(populations) == expected, populations
 
 
 class TestTopOnlySteps:
@@ -246,13 +247,15 @@ class TestTopOnlySteps:
             measures=[ModelMeasure(formula="amount:sum", name="s")],
             filters=["status = 'ok' and amount:sum(partition_by=channel) > 0"])
         top = elaborate_query(query=query, bundle=bundle)
-        assert top.prebound is not None and len(top.prebound.bound_filters) == 2
+        assert top.prebound is not None
+        assert len(top.prebound.bound_filters) == 2
         scope = resolve_scope(query=query, bundle=bundle, stage_schemas={})
         prebound = bind_query_inputs(query=query, bundle=bundle, scope=scope,
                                      stage_schemas={})
         producer = elaborate_mod.elaborate_synthesized(
             prebound, bundle=bundle, scope=scope, stage_schemas={})
-        assert producer.prebound is not None and len(producer.prebound.bound_filters) == 1
+        assert producer.prebound is not None
+        assert len(producer.prebound.bound_filters) == 1
 
     def test_population_disposal(self):
         """A fanning row filter rides the host EXISTS at the top; a producer with no
@@ -317,10 +320,12 @@ class TestTopOnlySteps:
         monkeypatch.setattr(stages, "discover_roots", lambda *_a, **_k: [])
         query = dev1836_q(dimensions=["status", "channel"], measures=[
             ModelMeasure(formula="amount:sum(partition_by=channel)", name="pt")])
+        bundle = _dev1836_bundle()
         with pytest.raises(ValueError, match="no routing disposition"):
-            plan_query(query=query, bundle=_dev1836_bundle())
+            plan_query(query=query, bundle=bundle)
         [slot] = plan_as_producer(query=query, bundle=_dev1836_bundle()).aggregate_slots
-        assert isinstance(slot.key, AggregateKey) and slot.key.partition_keys is not None
+        assert isinstance(slot.key, AggregateKey)
+        assert slot.key.partition_keys is not None
 
 
 class TestStrictSubsetNesting:
@@ -330,7 +335,8 @@ class TestStrictSubsetNesting:
         [outer] = pq.regroup_attach_plans
         producer = outer.producer_plan
         [slot] = producer.aggregate_slots
-        assert isinstance(slot.key, AggregateKey) and slot.key.agg == "avg"
+        assert isinstance(slot.key, AggregateKey)
+        assert slot.key.agg == "avg"
         assert [a.attach_phase for a in producer.regroup_attach_plans] == ["row"]
 
     async def test_outer_reaggregation_values(self, exec_engine):
@@ -390,7 +396,8 @@ class TestShiftedProducerNesting:
         assert attach.kernel.kind == "ranked"
         assert attach.producer_plan.regroup_attach_plans == []
         [slot] = attach.producer_plan.aggregate_slots
-        assert isinstance(slot.key, AggregateKey) and slot.key.agg == "last"
+        assert isinstance(slot.key, AggregateKey)
+        assert slot.key.agg == "last"
         assert attach.answer_slot_id == slot.id
 
     @pytest.mark.parametrize(("formula", "kernel"), [

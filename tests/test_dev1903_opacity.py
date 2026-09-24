@@ -1,7 +1,7 @@
-"""DEV-1903 D2 — attached inputs are opaque to discovery: a local aggregate whose
+"""Design D2 — attached inputs are opaque to discovery: a local aggregate whose
 attached input's inner crosses a join compiles inline, the input row-attached
 through its own producer. Value-identical to the host-rooted plan it replaces.
-Executed on SQLite + DuckDB (DEV-1840 dataset)."""
+Executed on SQLite + DuckDB."""
 
 from __future__ import annotations
 
@@ -149,8 +149,9 @@ class TestOwnClosureStillJudged:
     async def test_unanalysable_filter_inside_input_fails_closed(
         self, unparse_engine, formula,
     ):
+        query = _q(formula)
         with pytest.raises(ValueError, match="no supported dialect can analyse"):
-            await unparse_engine.execute(_q(formula))
+            await unparse_engine.execute(query)
 
 
 class TestHostLocusWrap:
@@ -165,5 +166,6 @@ class TestHostLocusWrap:
         assert [a.attach_phase for a in sub.regroup_attach_plans] == ["row"]
 
     def test_association_wrap_safety_check_fires(self):
+        models = unparseable_derived_models()
         with pytest.raises(ValueError, match="no supported dialect can analyse"):
-            _plan(UNPARSE_PARAM, models=unparseable_derived_models(), mode="associate")
+            _plan(UNPARSE_PARAM, models=models, mode="associate")

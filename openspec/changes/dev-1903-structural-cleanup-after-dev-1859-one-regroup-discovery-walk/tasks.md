@@ -48,5 +48,5 @@
 ## 7. Architecture, docs, gates
 
 - [ ] 7.1 Present the two arc42 diffs (`ir.arc42.md` §1 wording; `engine.arc42.md` P2 enforced tag) for explicit approval; land only after the OK; `poetry run python tools/arch_check.py` and `npx -y likec4@1.47.0 validate architecture` green
-- [ ] 7.2 `poetry run ruff check slayer/ tests/` clean; `poetry run basedpyright` no new errors vs baseline; `guards.baseline` untouched
-- [ ] 7.3 `poetry run pytest -m "not integration" -n auto` fully green; then the CI integration invocation from `.github/workflows/ci.yml`
+- [x] 7.2 `poetry run ruff check slayer/ tests/` clean; `poetry run basedpyright` no new errors vs baseline; `guards.baseline` untouched
+- [x] 7.3 `poetry run pytest -m "not integration" -n auto` fully green; then the CI integration invocation from `.github/workflows/ci.yml`
