@@ -877,31 +877,43 @@ def _resolve_saved_measure_ref(
         return None
     host = scope.source_model
     text = formula.strip()
-    if text.isidentifier():
-        mm = host.get_measure(text)
-        return (host, mm, text) if mm is not None else None
     parts = text.split(".")
-    if len(parts) < 2 or not all(p.isidentifier() for p in parts):
+    if not all(p.isidentifier() for p in parts):
         return None
-    if parts[0] == host.name:  # C14 self-prefix strip
+    if len(parts) > 1 and parts[0] == host.name:  # C14 self-prefix strip
         parts = parts[1:]
-    if len(parts) == 1:
-        mm = host.get_measure(parts[0])
-        return (host, mm, text) if mm is not None else None
     *hops, leaf = parts
-    walked = _walk_dotted(source_model=host, hops=hops, bundle=bundle)
-    if walked is None:
-        routed = _route_short_form_saved_measure(
-            host=host, hops=hops, leaf=leaf, bundle=bundle,
+    located = (
+        _locate_dotted_saved_measure(
+            host=host, hops=hops, leaf=leaf, text=text, bundle=bundle,
         )
-        if routed is None:
-            return None
-        terminal, canonical_ref = routed
-    else:
-        terminal, canonical = walked
-        canonical_ref = text if canonical == tuple(hops) else ".".join((*canonical, leaf))
+        if hops else (host, text)
+    )
+    if located is None:
+        return None
+    terminal, canonical_ref = located
     mm = terminal.get_measure(leaf)
     return (terminal, mm, canonical_ref) if mm is not None else None
+
+
+def _locate_dotted_saved_measure(
+    *,
+    host: SlayerModel,
+    hops: List[str],
+    leaf: str,
+    text: str,
+    bundle: ResolvedSourceBundle,
+) -> Optional[Tuple[SlayerModel, str]]:
+    """``(terminal_model, canonical_ref)`` for a hop-qualified saved measure."""
+    walked = _walk_dotted(source_model=host, hops=hops, bundle=bundle)
+    if walked is None:
+        return _route_short_form_saved_measure(
+            host=host, hops=hops, leaf=leaf, bundle=bundle,
+        )
+    terminal, canonical = walked
+    return terminal, (
+        text if canonical == tuple(hops) else ".".join((*canonical, leaf))
+    )
 
 
 def _saved_model_measure_type(

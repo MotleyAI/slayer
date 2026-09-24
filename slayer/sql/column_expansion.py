@@ -649,6 +649,28 @@ def _requalify(node: exp.Expression, *, alias: str, leaf: str) -> exp.Expression
     return replacement
 
 
+def _locate_site_target(
+    *,
+    path: Tuple[str, ...],
+    full_path: Tuple[str, ...],
+    model: SlayerModel,
+    alias_path: str,
+    models_by_name: ModelsByName,
+    alias_resolver: Optional[AliasResolver],
+    crossed_paths: Optional[_PathSink],
+) -> Optional[Tuple[SlayerModel, str]]:
+    """``(target_model, canonical_alias)`` of a resolved site path, recording crossed joins."""
+    if not path:
+        return model, alias_path
+    walked = _walk_exact(path, model, models_by_name)
+    if walked is None:
+        return None
+    if crossed_paths is not None:
+        for i in range(1, len(full_path) + 1):
+            crossed_paths.add(full_path[:i])
+    return walked[0], _alias_for_path(full_path, alias_resolver=alias_resolver)
+
+
 def _process_reference_site(
     *,
     node: exp.Expression,
@@ -682,20 +704,14 @@ def _process_reference_site(
     if path is None:
         return None  # opaque — leave untouched
     full_path = owner_path + path
-    if not path:
-        target_model: Optional[SlayerModel] = model
-        canonical_alias = alias_path
-    else:
-        walked = _walk_exact(path, model, models_by_name)
-        if walked is None:
-            return None
-        target_model = walked[0]
-        canonical_alias = _alias_for_path(
-            full_path, alias_resolver=alias_resolver,
-        )
-        if crossed_paths is not None:
-            for i in range(1, len(full_path) + 1):
-                crossed_paths.add(full_path[:i])
+    located = _locate_site_target(
+        path=path, full_path=full_path, model=model, alias_path=alias_path,
+        models_by_name=models_by_name, alias_resolver=alias_resolver,
+        crossed_paths=crossed_paths,
+    )
+    if located is None:
+        return None
+    target_model, canonical_alias = located
     owner = visited[-1] if visited else site
     target_col = resolve_generated_column(
         target_model, leaf, location=".".join(owner) if owner else None,
