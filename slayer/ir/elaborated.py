@@ -45,9 +45,9 @@ class ExpressionEntry(BaseModel):
 
 
 class ElaboratedQuery(BaseModel):
-    """The typing environment for one bound query stage, over the typed bound
-    query it types (``query`` / ``scope`` / ``bundle`` / ``stage_schemas`` /
-    ``prebound`` / ``filter_typings`` are the compiler's explicit inputs).
+    """The typing environment for one bound query, over the typed bound query it
+    types (``scope`` / ``bundle`` / ``stage_schemas`` / ``prebound`` /
+    ``filter_typings`` and the subclass's ``query`` are the compiler's inputs).
 
     Equality is semantic — only the typing surface participates.
     """
@@ -59,9 +59,6 @@ class ElaboratedQuery(BaseModel):
     filters: Tuple[ExpressionEntry, ...] = ()
     order: Tuple[ExpressionEntry, ...] = ()
     terms: Dict[ValueKey, Term] = PydanticField(default_factory=dict)
-    query: Optional[Union[SlayerQuery, StrictQueryCarrier]] = PydanticField(
-        default=None, repr=False,
-    )
     scope: Optional[Union[ModelScope, StageSchema]] = PydanticField(
         default=None, repr=False,
     )
@@ -86,3 +83,15 @@ class ElaboratedQuery(BaseModel):
         )
 
     __hash__ = None  # type: ignore[assignment] — dict-valued field
+
+
+class ElaboratedStage(ElaboratedQuery):
+    """One user-authored query stage's environment."""
+
+    query: Optional[SlayerQuery] = PydanticField(default=None, repr=False)
+
+
+class ElaboratedProducer(ElaboratedQuery):
+    """A compiler-synthesized producer's environment."""
+
+    query: Optional[StrictQueryCarrier] = PydanticField(default=None, repr=False)
