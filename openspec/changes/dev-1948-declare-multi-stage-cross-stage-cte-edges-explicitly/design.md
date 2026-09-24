@@ -62,8 +62,6 @@
    precede S, and only later stages can reuse it. A permuted list would instead
    manufacture a false cycle (producer → sibling via over-approximation, sibling →
    producer via reuse), so it is rejected up front.
-6. **Stored joins never read siblings.** A reference through a stored model's own
-   join resolves to the physical model (probed), so the spec-level walk is complete.
 
 ## Risks / Trade-offs
 
