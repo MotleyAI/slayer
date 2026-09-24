@@ -313,36 +313,36 @@ def _classify_hop_path(
     return ("unproven", unproven) if unproven is not None else None
 
 
-def _arity_reference_sources(column: Column) -> list[tuple[str, str]]:
-    """The ``(kind, fragment)`` pairs carrying arity: a derived ``Column.sql`` and
-    a ``Column.filter`` (a trivial-base ``sql`` is host-local, so it is skipped)."""
-    out: list[tuple[str, str]] = []
+def _arity_reference_sources(column: Column) -> list[str]:
+    """The fragments carrying arity: a derived ``Column.sql`` and a ``Column.filter``
+    (a trivial-base ``sql`` is host-local, so it is skipped)."""
+    out: list[str] = []
     if column.sql is not None and not is_trivial_base(column=column):
-        out.append(("sql", column.sql))
+        out.append(column.sql)
     if column.filter:
-        out.append(("filter", column.filter))
+        out.append(column.filter)
     return out
 
 
-def _unproven_arity_message(*, column: str, model: str, hop: str, kind: str) -> str:
+def _unproven_arity_message(*, column: str, model: str, hop: str) -> str:
     return (
-        f"Derived column {column!r} on model {model!r} has a {kind} reference "
-        f"crossing an unproven join hop to {hop!r} (cardinality not declared "
-        f"to-one and no covering unique key): it broadcasts if aggregated as a "
-        f"column of {model!r}. Declare the hop's cardinality, or aggregate the "
-        f"target column ({hop}.<column>:<aggregation>) instead."
+        f"Derived column {column!r} on model {model!r} has a reference crossing "
+        f"an unproven join hop to {hop!r} (cardinality not declared to-one and no "
+        f"covering unique key): it broadcasts if aggregated as a column of "
+        f"{model!r}. Declare the hop's cardinality, or aggregate the target column "
+        f"({hop}.<column>:<aggregation>) instead."
     )
 
 
 def _iter_arity_refs(
     *, model: SlayerModel,
-) -> Iterator[tuple[Column, str, tuple[str, ...], str, tuple[str, ...]]]:
-    """Yield ``(column, kind, hop_path, leaf, quals)`` for every arity-bearing
-    reference — ``quals`` is the raw pre-strip spelling, for the circular error."""
+) -> Iterator[tuple[Column, tuple[str, ...], str, tuple[str, ...]]]:
+    """Yield ``(column, hop_path, leaf, quals)`` for every arity-bearing reference —
+    ``quals`` is the raw pre-strip spelling, for the error's ``reference``."""
     for column in model.columns:
-        for kind, fragment in _arity_reference_sources(column):
+        for fragment in _arity_reference_sources(column):
             for quals, leaf in _fragment_refs(fragment) or []:
-                yield column, kind, _hop_path(quals=quals, host=model), leaf, tuple(quals)
+                yield column, _hop_path(quals=quals, host=model), leaf, tuple(quals)
 
 
 def _check_reference_arity(
@@ -352,15 +352,15 @@ def _check_reference_arity(
     ``DerivedColumnCircularError`` (the walk aborts before arity is judged, so it
     precedes any fanning verdict); a fanning-crossing reference raises
     ``DerivedColumnFanningError``; an unproven hop warns once per
-    ``(column, kind, hop)``; to-one/unresolvable/unloaded/ambiguous skip."""
-    warned: set[tuple[str, str, str]] = set()
-    for column, kind, path, leaf, quals in _iter_arity_refs(model=model):
+    ``(column, hop)``; to-one/unresolvable/unloaded/ambiguous skip."""
+    warned: set[tuple[str, str]] = set()
+    for column, path, leaf, quals in _iter_arity_refs(model=model):
+        reference = ".".join((*quals, leaf))
         try:
             verdict = _classify_hop_path(host=model, path=path, reachable=reachable)
         except CircularJoinPathError as exc:
             raise DerivedColumnCircularError(
-                column=column.name, model=model.name, kind=kind,
-                reference=".".join((*quals, leaf)), root_model=model.name,
+                column=column.name, reference=reference, root_model=model.name,
                 revisited=exc.revisited, hop=exc.hop, via=exc.via,
             ) from exc
         if verdict is None:
@@ -368,17 +368,14 @@ def _check_reference_arity(
         status, hop = verdict
         if status == "fanning":
             raise DerivedColumnFanningError(
-                column=column.name, model=model.name, hop=hop, kind=kind,
-                reference=".".join((*path, leaf)),
+                column=column.name, model=model.name, hop=hop, reference=reference,
             )
-        key = (column.name, kind, hop)
+        key = (column.name, hop)
         if key in warned:
             continue
         warned.add(key)
         warnings.warn(
-            _unproven_arity_message(
-                column=column.name, model=model.name, hop=hop, kind=kind,
-            ),
+            _unproven_arity_message(column=column.name, model=model.name, hop=hop),
             UserWarning, stacklevel=2,
         )
 

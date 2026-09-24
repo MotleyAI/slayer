@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 
 class SlayerError(ValueError):
     """Base for SLayer-specific errors — catch to isolate intentional failures from
-    driver/IO errors. A ``ValueError`` subclass (DEV-1900) so every intentional
+    driver/IO errors. A ``ValueError`` subclass so every intentional
     slayer failure is caught by ``except ValueError`` / REST-400 call sites and by
     tests that pin a mode/typing refusal as a ``ValueError`` — the per-error
     ``(SlayerError, ValueError)`` classes remain valid (redundant but harmless)."""
@@ -113,23 +113,18 @@ class ColumnCycleError(SlayerError, ValueError):
 
 
 class DerivedColumnFanningError(SlayerError, ValueError):
-    """A derived ``Column.sql``/``Column.filter`` reference provably crosses a fanning hop from its declaring model — a set per row, not a column; carries ``column``/``model``/``hop``/``kind``."""
+    """A derived ``Column.sql``/``Column.filter`` reference provably crosses a fanning hop from its declaring model — a set per row, not a column; carries ``column``/``model``/``hop``/``reference``."""
 
-    def __init__(
-        self, *, column: str, model: str, hop: str, kind: str,
-        reference: str | None = None,
-    ) -> None:
+    def __init__(self, *, column: str, model: str, hop: str, reference: str) -> None:
         self.column = column
         self.model = model
         self.hop = hop
-        self.kind = kind
         self.reference = reference
-        remedy = f"{reference or f'{hop}.<column>'}:<aggregation>"
         super().__init__(
-            f"Derived column {column!r} on model {model!r} has a {kind} reference "
+            f"Derived column {column!r} on model {model!r} references {reference!r}, "
             f"crossing a fanning join hop to {hop!r}: it is a set per row, not a "
-            f"column of {model!r}. Aggregate the target column ({remedy}) or filter "
-            f"by it; if the hop is really to-one, declare its cardinality "
+            f"column of {model!r}. Aggregate the target column ({reference}:<aggregation>) "
+            f"or filter by it; if the hop is really to-one, declare its cardinality "
             f"(many_to_one/one_to_one) or a covering unique key."
         )
 
@@ -165,30 +160,29 @@ class CircularJoinPathError(SlayerError, ValueError):
 
 class DerivedColumnCircularError(CircularJoinPathError):
     """A derived ``Column.sql``/``Column.filter`` whose path revisits a model on it —
-    so it is not a function of its declaring model's row. Adds ``model``/``kind`` and
-    the remedy (reference the column on the revisited model, or aggregate on the model
-    the hop leaves, which reaches it forward)."""
+    not a function of its declaring model's row; ``model`` aliases ``root_model``."""
 
     def __init__(
-        self, *, column: str, model: str, kind: str, reference: str,
-        root_model: str, revisited: str, hop: str, via: str,
+        self, *, column: str, reference: str, root_model: str,
+        revisited: str, hop: str, via: str,
     ) -> None:
-        self.model = model
-        self.kind = kind
         super().__init__(
             reference=reference, root_model=root_model, revisited=revisited,
             hop=hop, via=via, column=column,
         )
 
+    @property
+    def model(self) -> str:
+        return self.root_model
+
     def _message(self) -> str:
         return (
-            f"Derived column {self.column!r} on model {self.model!r} has a "
-            f"{self.kind} reference {self.reference!r} that revisits model "
-            f"{self.revisited!r} (hop {self.hop!r} from {self.via!r}): a join path "
-            f"never revisits a model on it, so this is not a column of {self.model!r}. "
-            f"Reference the column on {self.revisited!r} directly if you mean this "
-            f"row's value, or declare the aggregate on {self.via!r}, which reaches "
-            f"{self.revisited!r} forward."
+            f"Derived column {self.column!r} on model {self.model!r} references "
+            f"{self.reference!r}, which revisits model {self.revisited!r} (hop "
+            f"{self.hop!r} from {self.via!r}): a join path never revisits a model on "
+            f"it, so this is not a column of {self.model!r}. Reference the column on "
+            f"{self.revisited!r} directly if you mean this row's value, or declare the "
+            f"aggregate on {self.via!r}, which reaches {self.revisited!r} forward."
         )
 
 
@@ -663,7 +657,7 @@ class UnresolvableDimensionJoinError(SlayerError, ValueError):
 
 
 class PopulationErrorReason(str, Enum):
-    """Why dimension-determined population inference (DEV-1866) failed closed."""
+    """Why dimension-determined population inference failed closed."""
 
     TIE = "tie"
     NO_VIABLE_CANDIDATE = "no_viable_candidate"
@@ -675,7 +669,7 @@ class PopulationErrorReason(str, Enum):
 
 
 class PopulationInferenceError(SlayerError, ValueError):
-    """A rootless query's population could not be uniquely inferred (DEV-1866).
+    """A rootless query's population could not be uniquely inferred.
 
     Carries the ``reason`` kind plus the ``candidates`` / ``datasources`` that
     left it under-determined; ``str()`` is stable-prefixed for snapshots."""

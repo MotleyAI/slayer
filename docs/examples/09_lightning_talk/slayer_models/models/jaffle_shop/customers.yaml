@@ -1,4 +1,4 @@
-version: 10
+version: 11
 name: customers
 sql_table: customers
 source_kind: table

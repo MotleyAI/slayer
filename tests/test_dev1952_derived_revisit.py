@@ -145,7 +145,7 @@ class TestErrorVocabulary:
 
     def test_derived_error_is_a_circular_error_with_remedy(self) -> None:
         exc = DerivedColumnCircularError(
-            column="revisit_spend", model="customers", kind="sql",
+            column="revisit_spend",
             reference="regions.customers.spend", root_model="customers",
             revisited="customers", hop="customers", via="regions",
         )
@@ -154,7 +154,6 @@ class TestErrorVocabulary:
         assert isinstance(exc, ValueError)
         assert exc.column == "revisit_spend"
         assert exc.model == "customers"
-        assert exc.kind == "sql"
         assert exc.reference == "regions.customers.spend"
         assert exc.root_model == "customers"
         assert exc.revisited == "customers"
@@ -162,7 +161,7 @@ class TestErrorVocabulary:
         assert exc.via == "regions"
         msg = str(exc)
         assert "Derived column 'revisit_spend' on model 'customers'" in msg
-        assert "sql reference 'regions.customers.spend'" in msg
+        assert "references 'regions.customers.spend'" in msg
         assert "revisits model 'customers'" in msg
         assert "not a column of 'customers'" in msg
         # Both remedy arms: reference the column directly, or aggregate on the via.
@@ -338,7 +337,6 @@ class TestSaveTimeStorageDoor:
         assert isinstance(exc, ValueError)
         assert exc.column == "revisit_spend"
         assert exc.model == "customers"
-        assert exc.kind == "sql"
         assert exc.reference == "regions.customers.spend"
         assert exc.revisited == "customers"
         assert exc.hop == "customers"
@@ -352,7 +350,6 @@ class TestSaveTimeStorageDoor:
             filter="regions.customers.spend > 0"),))
         with pytest.raises(DerivedColumnCircularError) as ei:
             await storage.save_model(model)
-        assert ei.value.kind == "filter"
         assert ei.value.reference == "regions.customers.spend"
         assert ei.value.revisited == "customers"
 
@@ -489,7 +486,6 @@ class TestSaveTimeEngineDoor:
         for exc in (storage_exc, engine_exc):
             assert exc.column == "revisit_spend"
             assert exc.model == "customers"
-            assert exc.kind == "sql"
             assert exc.reference == "regions.customers.spend"
             assert exc.revisited == "customers"
             assert exc.hop == "customers"
@@ -517,7 +513,6 @@ class TestSaveTimeEngineDoor:
         storage_exc, engine_exc = storage_ei.value, engine_ei.value
         for exc in (storage_exc, engine_exc):
             assert exc.column == "revisit_spend"
-            assert exc.kind == "sql"
             assert exc.reference == "regions.customers.spend"
             assert exc.revisited == "customers"
         assert str(storage_exc) == str(engine_exc)

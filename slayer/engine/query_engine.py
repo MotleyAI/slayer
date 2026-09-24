@@ -152,7 +152,7 @@ class _ResolvedItem(BaseModel):
     model: str
     leaf: str
     suffix: str | None = None
-    # DEV-1866: measures / aggregation-suffixed items attach (reachability-only)
+    # Measures / aggregation-suffixed items attach (reachability-only)
     # and never steer the recommendation; columns are determination items.
     attachment: bool = False
 
@@ -365,7 +365,7 @@ def _walk_regroup_attaches(planned):
 
 
 def plan_has_semi_join_filters(planned) -> bool:
-    """Whether any (nested) plan carries a pushed semi-join filter (DEV-1840)."""
+    """Whether any (nested) plan carries a pushed semi-join filter."""
     return any(
         getattr(plan, "semi_join_filters", None)
         for plan in _iter_plans_with_producers([planned])
@@ -443,7 +443,7 @@ def _collect_associated_warnings(
 def _collect_degenerate_warnings(
     *, planned_list, stages,
 ) -> List[DegenerateReaggregationWarningPayload]:
-    """One degenerate-re-aggregation payload per ``(location, measure)`` (DEV-1847)."""
+    """One degenerate-re-aggregation payload per ``(location, measure)``."""
     seen: set = set()
     out: List[DegenerateReaggregationWarningPayload] = []
     for index, planned in enumerate(planned_list):
@@ -467,7 +467,7 @@ def _collect_degenerate_warnings(
 def _attach_semi_join_texts(attach) -> Iterator[str]:
     """Non-empty semi-join-pushed filter texts on an attach's producer plan, plus
     an association producer's inlined reachable-but-unsafe conjunct texts — both
-    surface the same informational entry (DEV-1910)."""
+    surface the same informational entry."""
     for group in getattr(attach.producer_plan, "semi_join_filters", None) or ():
         yield from (text for text in group.filter_texts if text)
     yield from (
@@ -567,7 +567,7 @@ class SlayerResponse(BaseModel):
     attributes: ResponseAttributes = PydanticField(default_factory=ResponseAttributes)
     # Query advisories, discriminated on ``kind``; empty for a clean query.
     warnings: List[AnySlayerWarning] = PydanticField(default_factory=list)
-    # DEV-1866: the effective population model and whether it was inferred.
+    # The effective population model and whether it was inferred.
     population: Optional[str] = None
     population_inferred: bool = False
 
@@ -990,7 +990,7 @@ class SlayerQueryEngine:
         Produces the final executed SQL; no SQL client on the no-policy path (so
         ``evict()`` recomputes a key without connecting).
         """
-        # DEV-1866: infer the population of any rootless stage (main + each named
+        # Infer the population of any rootless stage (main + each named
         # stage independently) BEFORE prefix-strip, so the chosen model flows
         # through the untouched pipeline byte-identically to its explicit twin.
         query, named_queries, population, population_inferred, inferred_data_source = (
@@ -1727,7 +1727,7 @@ class SlayerQueryEngine:
         self, *, touched: "set[str]", data_source: Optional[str]
     ) -> None:
         """Add join-connected models to ``touched`` — either traversal
-        direction (DEV-1853)."""
+        direction."""
         models_by_name = await self._load_join_graph_models(
             names=set(touched), data_source=data_source
         )
@@ -2060,7 +2060,7 @@ class SlayerQueryEngine:
             raise ValueError(
                 f"'{raw}' does not name a column or metric on '{model_name}'."
             )
-        # DEV-1866: an aggregation suffix or a saved-measure leaf makes this an
+        # an aggregation suffix or a saved-measure leaf makes this an
         # attachment (reachability-only); a plain column is a determination item.
         attachment = suffix is not None or (
             owning.get_column(leaf) is None and owning.get_measure(leaf) is not None
@@ -2115,7 +2115,7 @@ class SlayerQueryEngine:
     ) -> RootModelRecommendation:
         """Recommend the query root for ``model.column`` / ``model.metric`` items, plus each item's path.
 
-        DEV-1866: selection uses the population rule — the root must *determine*
+        Selection uses the population rule — the root must *determine*
         every column item along provably to-one paths (fewest total hops); saved
         measures and aggregation-suffixed items are attachments, needing only
         (cardinality-blind) reachability, and never steer the choice. No common
@@ -2821,7 +2821,7 @@ class SlayerQueryEngine:
                 label=sc.label,
                 description=sc.description,
                 format=sc.format,
-                # DEV-1929: carry the final stage's time-bucket granularity so a finer
+                # Carry the final stage's time-bucket granularity so a finer
                 # time dimension over the cached column is the same typed error.
                 granularity=sc.granularity,
                 primary_key=(
@@ -2929,7 +2929,7 @@ class SlayerQueryEngine:
 
     async def save_model(self, model: SlayerModel) -> SlayerModel:
         """Persist a SlayerModel verbatim (author spelling preserved); query-backed models reject cache fields and validate via dry-run."""
-        # DEV-1826: save preserves the author's formula spelling — no slack
+        # Save preserves the author's formula spelling — no slack
         # rewriting; both aggregation spellings are first-class parser input.
         # Capture the previous data_source so a moved query-backed model's stale
         # storage entry can be cleaned up below.
@@ -3061,16 +3061,16 @@ class SlayerQueryEngine:
             )
 
         for col in model.columns:
-            for kind, fragment in (("sql", col.sql), ("filter", col.filter)):
+            for fragment in (col.sql, col.filter):
                 if not fragment:
                     continue
                 try:
                     _expand(fragment)
                 except CircularJoinPathError as exc:
-                    # A revisit inside a referenced derived column carries that
-                    # inner column, matching the storage door's per-column walk.
+                    # A revisit inside a referenced derived column names that inner
+                    # column and its declaring model.
                     raise DerivedColumnCircularError(
-                        column=exc.column or col.name, model=model.name, kind=kind,
+                        column=exc.column or col.name,
                         reference=exc.reference, root_model=exc.root_model,
                         revisited=exc.revisited, hop=exc.hop, via=exc.via,
                     ) from exc
@@ -3081,7 +3081,7 @@ class SlayerQueryEngine:
         self, model: SlayerModel,
     ) -> Dict[str, Optional[SlayerModel]]:
         """Load the datasource's models into a sync dict — the bidirectional
-        closure is the connected component (DEV-1853). Best-effort: an
+        closure is the connected component. Best-effort: an
         unlistable datasource or unloadable peer maps to ``None``/is skipped."""
         loaded: Dict[str, Optional[SlayerModel]] = {model.name: model}
         try:

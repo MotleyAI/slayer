@@ -22,7 +22,6 @@ from tests._dev1836_fixtures import (
     q,
 )
 from slayer.engine.compile import stages
-from slayer.ir import bound as ir_bound
 
 LOCAL_BAND = {
     "expression": "CASE WHEN amount:sum(partition_by=channel) > 30 THEN 1 ELSE 0 END",
@@ -30,10 +29,10 @@ LOCAL_BAND = {
 }
 
 
-def _blind_consumers(*_args, **_kwargs):
-    """Blind the unified combined-consumer discovery (local + cross-model buckets) so
-    an undisposed aggregate must be caught by ``_assert_total_routing``."""
-    return ir_bound.CombinedConsumers([], [], [], {}, {})
+def _blind_discovery(*_args, **_kwargs):
+    """Blind the one discovery walk so an undisposed aggregate must be caught by
+    ``_assert_total_routing``."""
+    return []
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -101,11 +100,7 @@ class TestTotalRoutingInvariant:
     def test_unrouted_aggregate_raises_explicit_planner_error(self, monkeypatch):
         """Blind the combined-producer discovery to every partitioned leaf: the
         post-discovery invariant must catch the now-undisposed aggregate."""
-        for mod in (ir_bound, stages):
-            if hasattr(mod, "combined_consumer_aggregates"):
-                monkeypatch.setattr(
-                    mod, "combined_consumer_aggregates", _blind_consumers,
-                )
+        monkeypatch.setattr(stages, "discover_roots", _blind_discovery)
         query = q(
             dimensions=["status"],
             measures=[ModelMeasure(formula="amount:sum(partition_by=channel)",
@@ -126,9 +121,7 @@ class TestTotalRoutingInvariant:
         Blind the CROSS-MODEL discovery: the un-desugared cross-model aggregate
         must be caught by ``_assert_total_routing`` with the explicit
         no-disposition error, not fall through to the legacy dispatch."""
-        monkeypatch.setattr(
-            stages, "combined_consumer_aggregates", _blind_consumers,
-        )
+        monkeypatch.setattr(stages, "discover_roots", _blind_discovery)
         query = q(
             dimensions=["status"],
             measures=[ModelMeasure(formula="customers.spend:sum", name="cm")],
@@ -151,9 +144,7 @@ class TestTotalRoutingInvariant:
     ):
         """The invariant walks filters and orders too — a hidden cross-model
         leaf in either role must not survive blinded discovery."""
-        monkeypatch.setattr(
-            stages, "combined_consumer_aggregates", _blind_consumers,
-        )
+        monkeypatch.setattr(stages, "discover_roots", _blind_discovery)
         query = q(
             dimensions=["status"],
             measures=[ModelMeasure(formula="amount:sum", name="m")],

@@ -251,4 +251,4 @@ class TestReverseClosure:
             with pytest.raises(DerivedColumnFanningError) as ei:
                 await storage.save_model(cust)
             assert ei.value.hop == "orders"
-            assert ei.value.kind == "sql"
+            assert ei.value.reference == "orders.status"
