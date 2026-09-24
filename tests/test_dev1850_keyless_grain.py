@@ -23,9 +23,6 @@ import pytest
 from slayer.ir.planned import MaskTyping
 from slayer.engine.join_safety import crossing_local_root_predicate
 from slayer.ir.source_bundle import ResolvedSourceBundle
-from slayer.engine.compile.stages import (
-    _plan_regroups,
-)
 from slayer.engine.bind_inputs import bind_query_inputs
 from slayer.engine.elaborate_env import type_and_split_filters
 from slayer.ir.source_bundle import resolve_scope
@@ -285,44 +282,3 @@ async def test_keyless_order_by_dimension_name_local_row_routes(
     ))
     rows = [(r["orders.cband"], r["orders.m"]) for r in resp.data]
     assert rows == [("hi", pytest.approx(107.0)), ("lo", pytest.approx(10.0))]
-
-
-# --------------------------------------------------------------------------- #
-# D4 — the producer-recursion contract of the unified seam: with
-# ``local_discovery=False`` the local combined bucket is suppressed (the recursion
-# guard) while both cross-model buckets (bare AND partitioned) still run. Pinned
-# directly on _plan_regroups.
-# --------------------------------------------------------------------------- #
-def test_local_discovery_false_suppresses_local_keeps_cross_model() -> None:
-    models = dev1838_models()
-    bundle = ResolvedSourceBundle(
-        source_model=models[0], referenced_models=list(models[1:]),
-    )
-    query = q(
-        dimensions=["status", "customers.tier"],
-        measures=[
-            ModelMeasure(formula="amount:sum(partition_by=status)", name="lt"),
-            ModelMeasure(formula="customers.spend:sum", name="cm"),
-            ModelMeasure(
-                formula="customers.spend:sum(partition_by=customers.tier)", name="cp",
-            ),
-        ],
-    )
-    scope = resolve_scope(query=query, bundle=bundle, stage_schemas={})
-    prebound = bind_query_inputs(query=query, bundle=bundle, scope=scope)
-
-    def _attaches(local_discovery: bool):
-        result = _plan_regroups(
-            prebound=prebound, filter_typings=[], scope=scope, bundle=bundle,
-            stage_schemas={},
-            producer_source_model="orders", local_discovery=local_discovery,
-        )
-        assert result is not None
-        return result[1]
-
-    # A LOCAL combined attach has no producer_root_model; cross-model ones (bare + partitioned) name their root.
-    on = _attaches(local_discovery=True)
-    assert [a.producer_root_model for a in on] == [None, "customers", "customers"]
-
-    off = _attaches(local_discovery=False)
-    assert [a.producer_root_model for a in off] == ["customers", "customers"]

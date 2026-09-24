@@ -28,6 +28,7 @@ from tests._dev1836_fixtures import q as dev1836_q
 from tests._dev1832_fixtures import ModelMeasure, dev1832_models, month_td, monthly_q
 from tests._dev1847_fixtures import (
     INNER_CR,
+    SPEND_BAND_EXPR,
     broadcast_warnings,
     dev1847_models,
     make_exec_engine,
@@ -126,7 +127,7 @@ class TestTwoEntryPoints:
         _assert_no_mode_flag(elaborate_mod.elaborate_synthesized)
 
     def test_producer_must_state_its_population(self):
-        param = inspect.signature(compile_synthesized).parameters["population_filters"]
+        param = inspect.signature(compile_synthesized).parameters["population"]
         assert param.default is inspect.Parameter.empty
         assert param.kind is inspect.Parameter.KEYWORD_ONLY
 
@@ -323,7 +324,7 @@ class TestTopOnlySteps:
 
 class TestStrictSubsetNesting:
     def test_outer_reaggregation_answer_compiles_inline(self):
-        """The outer answer's ``[product]`` is not a strict subset of its producer grain."""
+        """The outer answer is the producer's own, broadcast-dropped answer."""
         pq = plan_query(query=_probe_a_query(), bundle=_sales_bundle())
         [outer] = pq.regroup_attach_plans
         producer = outer.producer_plan
@@ -363,6 +364,21 @@ class TestStrictSubsetNesting:
         assert _host_plain_combined(pq) == []
         assert any(isinstance(s.key, AggregateKey) and s.key.agg == "sum"
                    for s in pq.aggregate_slots)
+
+
+BAND = {"expression": SPEND_BAND_EXPR, "name": "spend_band"}
+
+
+class TestOffGrainConstituentNests:
+    @pytest.mark.parametrize("dimensions", [[BAND], [BAND, "region"]], ids=["band", "band-region"])
+    async def test_never_aggregated_at_the_producer_grain(self, exec_engine, dimensions):
+        """The rank producer's grain prunes ``spend_band``; its ``[spend_band]`` inner nests
+        (fails closed until DEV-1960), never aggregates inline at ``[city, region]``."""
+        query = sales_q(dimensions=dimensions, measures=[ModelMeasure(
+            formula="weighted_avg(amount, weight=rank(sum(amount, partition_by=spend_band)))",
+            name="w")])
+        with pytest.raises(RuntimeError, match="missing a host / producer grain slot"):
+            await exec_engine.execute(query)
 
 
 class TestShiftedProducerNesting:

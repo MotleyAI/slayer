@@ -26,7 +26,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from slayer.core.enums import DataType, JoinType, RANKED_AGGREGATIONS, TimeGranularity
 from slayer.core.errors import AmbiguousJoinPathError, CircularJoinPathError
-from slayer.core.keys import AggregateKey, Grain, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, PREDICATE_COMPARISON_OPS, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, regroup_root_grain, effective_root_grain, constituent_grain, attached_parameter_grain, substitute_value_keys, substitute_consumer_keys, walk_value_keys, walk_consumer_keys, REGROUP_LEAF_PREFIX, is_cross_model_agg, split_top_level_and, window_kwarg_of, is_row_attach_root, attached_inputs, operand_aggregates, operand_constituents, source_anchor_path, source_row_leaves
+from slayer.core.keys import AggregateKey, Grain, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, PREDICATE_COMPARISON_OPS, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, effective_root_grain, constituent_grain, attached_parameter_grain, substitute_value_keys, substitute_consumer_keys, walk_value_keys, walk_consumer_keys, REGROUP_LEAF_PREFIX, is_cross_model_agg, split_top_level_and, window_kwarg_of, is_row_attach_root, attached_inputs, operand_aggregates, operand_constituents, source_anchor_path, source_row_leaves
 from slayer.core.models import Column, SlayerModel
 from slayer.engine.reference_closure import (
     ParamSpec,
@@ -3889,15 +3889,20 @@ def _strip_redundant_partitions(env: ElaboratedStage) -> PreboundQuery:
 def _producer_nesting_rule(
     prebound: PreboundQuery, *, context: ProducerContext,
 ) -> Callable[[ValueKey, str], bool]:
-    """A root nests iff its grain is a strict subset of the producer grain, plus a
-    windowed transform input and a ranked / windowed strict constituent of a
-    composite answer (DEV-1958 D6)."""
+    """A row root always nests. A combined root nests unless at exactly the
+    producer grain (bar a windowed transform input and a ranked / windowed strict
+    constituent of a composite answer); off the producer grain only the
+    producer's own answers stay inline (their dropped members are the
+    synthesizer's disposition)."""
     dim_dms, td_dms, _ = partition_declared_measures(
         declared_measures=prebound.declared_measures,
         n_dims=prebound.n_dims, n_time_dimensions=prebound.n_time_dimensions,
     )
     projected_dim_keys = [dm.bound.value_key for dm in dim_dms]
     projected_td_keys = [dm.bound.value_key for dm in td_dms]
+    answers = {
+        dm.bound.value_key for dm in prebound.declared_measures if not dm.is_dimension
+    }
     windowed_transform_inputs = {
         k
         for dm in prebound.declared_measures
@@ -3916,13 +3921,15 @@ def _producer_nesting_rule(
 
     def nests(root: ValueKey, phase: str) -> bool:
         if phase == "row":
-            return regroup_root_grain(root) != context.enclosing_grain
+            return True
         grain = constituent_grain(
             c=root, projected_dim_keys=projected_dim_keys,
             projected_td_keys=projected_td_keys, active_bucket=prebound.main_time_key,
         )
+        if not grain.is_subgrain_of(context.enclosing_grain):
+            return root not in answers
         return (
-            grain.is_strict_subgrain_of(context.enclosing_grain)
+            grain != context.enclosing_grain
             or root in windowed_transform_inputs
             or (root in composite_constituents
                 and _windowed_or_ranked_identity(root) is not None)

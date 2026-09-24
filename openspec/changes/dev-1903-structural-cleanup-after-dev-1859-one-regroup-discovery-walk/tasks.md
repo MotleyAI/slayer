@@ -34,7 +34,7 @@
 ## 5. Item 2 — one producer flag (design D3)
 
 - [x] 5.1 Delete both flags from every entry point (`slayer/engine/compile/__init__.py` included); add `elaborate_synthesized`, `ElaboratedStage` / `ElaboratedProducer`, `ProducerContext`, `InheritedPopulation` / `NoInheritedPopulation`; split `compile_prebound` into the private `_route_top_level` / `_route_producer` / `_emit_planned` core; the top-level path owns filter split, disposal, strip and the total-routing assert; `compile_synthesized` requires `population`; delete the six caller-side predicates + `_answers_need_nested_regroups`; verify 1.2 entry-point tests green
-- [ ] 5.2 `_route_producer` nesting rule under `ProducerContext.enclosing_grain`: strict subset of the producer grain (+ D6 clause + windowed-transform-input clause); verify the probe-A shape (1.2), `tests/test_dev1847_modes.py`, every golden byte-identical, full suite green
+- [x] 5.2 `_route_producer` nesting rule under `ProducerContext.enclosing_grain`: the D3 nesting rule (row always; combined off-grain unless the producer's own answer) (+ D6 clause + windowed-transform-input clause); verify the probe-A shape (1.2), `tests/test_dev1847_modes.py`, every golden byte-identical, full suite green
 - [x] 5.3 1.9 / 1.10 edits land with this item; verify the whole `tests/test_filtered_local_isolation.py`, `tests/test_dev1747_order_entry.py`, `tests/test_dev1836_total_routing.py` green
 
 ## 6. Item 1 — one discovery walk (design D1, D2, D6)

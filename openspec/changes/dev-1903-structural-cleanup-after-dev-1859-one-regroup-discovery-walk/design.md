@@ -110,14 +110,7 @@ their projection / slot facts exist, and never re-runs a top-only step. The once
 steps live only in the top-level path: the host-rooted filter split (in `elaborate_query`),
 population-filter disposal and the redundant query-grain `partition_by` strip (before
 routing), and `_assert_total_routing` (after routing). The six caller-side predicates and
-`_answers_need_nested_regroups` are deleted; nested discovery always runs. The one nesting
-decision, in `_route_producer`: a root nests iff its grain is a STRICT SUBSET of
-`context.enclosing_grain`, plus DEV-1958 D6 (a ranked / windowed strict constituent of a
-composite answer nests at own grain) and the windowed-transform-input clause; a root at
-exactly the producer grain, or with a grain member outside it, compiles inline;
-`_route_top_level` nests every discovered root. This closes the probe hole without
-rewriting any key (the outer answer's `[product]` is not a subset → inline, today's SQL),
-and keeps carrier constituents (strict subsets) nesting. Alternatives rejected: one
+`_answers_need_nested_regroups` are deleted; nested discovery always runs. The one nesting decision, in `_route_producer`: a row-phase root always nests (a row attach is never an inline aggregate); a combined root at exactly `context.enclosing_grain` compiles inline, except DEV-1958 D6 (a ranked / windowed strict constituent of a composite answer nests at own grain) and the windowed-transform-input clause; any other combined root nests — a strict subset broadcasts back (carrier constituents included), and a constituent with a grain member outside the producer grain nests at its own grain (its complete-grain join-back fails closed while the producer lacks that member) — except the producer's own answer, whose outside members are the synthesizer's disposition (broadcast-dropped or functionally pruned) and which compiles inline; `_route_top_level` nests every discovered root. This closes the probe hole without rewriting any key (the outer answer's `[product]` was broadcast-dropped → inline, today's SQL) and never aggregates a constituent at a grain other than its own. Alternatives rejected: one
 `in_producer: bool` (a mode flag any caller can set wrongly); `enclosing_grain:
 Optional[Grain]` (the same flag as nullable data); one shared environment type (lets a
 producer environment reach `compile_query`); bare `population_filters=None` (hides why
@@ -179,7 +172,7 @@ inside the declared `compile` child; no `index.yaml` or `.c4` change.
 ## Risks / Trade-offs
 
 - [Always-on nested discovery changes a producer's plan] → probe A (every golden) + the
-  strict-subset rule + the probe-hole test; any divergence follows the ledger protocol.
+  D3 nesting rule + the probe-hole test; any divergence follows the ledger protocol.
 - [Opacity re-routes an uncovered shape] → D2's coverage matrix; `divergences.md` if a
   golden moves.
 - [Bound-level dispatch admits contexts the aggregation path forbids] → the row-grain arm

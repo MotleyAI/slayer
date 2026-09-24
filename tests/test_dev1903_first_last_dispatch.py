@@ -8,9 +8,12 @@ names dispatch by argument shape".
 
 from __future__ import annotations
 
-import pytest
+import re
 
-from slayer.core.keys import AggregateKey, TransformKey, walk_value_keys
+import pytest
+from pydantic import BaseModel
+
+from slayer.core.keys import AggregateKey, ColumnKey, TransformKey
 from slayer.core.models import ModelMeasure
 from slayer.core.query import SlayerQuery
 from slayer.engine import syntax
@@ -64,39 +67,44 @@ def _measure_key(formula: str, **kw):
     return env.prebound.declared_measures[-1].bound.value_key
 
 
-def _node(k, *, fn: str) -> str:
-    if isinstance(k, TransformKey):
-        return f"TransformKey:{'<op>' if k.op == fn else k.op}"
-    if isinstance(k, AggregateKey):
-        return f"AggregateKey:{k.agg}"
-    return type(k).__name__
+_OP_TOKEN = re.compile(r"(?<=Transform ')(first|last|cumsum)(?=')")
 
 
-def _root_nodes(root, *, fn: str) -> list:
-    """Pre-order nodes of ``root``; only the first ``fn`` transform becomes ``<op>``."""
-    out, pending = [], fn
-    for k in walk_value_keys(root):
-        out.append(_node(k, fn=pending))
-        if isinstance(k, TransformKey) and k.op == pending:
-            pending = ""
-    return out
+def _aligned(a, b, *, fn: str) -> bool:
+    """``a == b`` except a ``fn`` transform may stand where ``b`` has ``cumsum``."""
+    if isinstance(a, BaseModel):
+        return type(a) is type(b) and all(
+            (isinstance(a, TransformKey) and f == "op" and (a.op, b.op) == (fn, "cumsum"))
+            or _aligned(getattr(a, f), getattr(b, f), fn=fn)
+            for f in type(a).model_fields
+        )
+    if isinstance(a, tuple):
+        return type(a) is type(b) and len(a) == len(b) and all(
+            _aligned(x, y, fn=fn) for x, y in zip(a, b))
+    return type(a) is type(b) and a == b
 
 
-def _outcome(query: SlayerQuery, *, fn: str):
-    """``("ok", every bound node, "")`` over measure / filter / order roots with
-    ``fn`` normalised to ``<op>``, or ``("err", type, message)``."""
+def _msg_aligned(a: str, b: str, *, fn: str) -> bool:
+    """``a == b`` except ``fn`` may stand in a ``Transform '…'`` label where ``b`` names ``cumsum``."""
+    sa, sb = _OP_TOKEN.split(a), _OP_TOKEN.split(b)
+    return len(sa) == len(sb) and all(
+        x == y or (i % 2 == 1 and (x, y) == (fn, "cumsum"))
+        for i, (x, y) in enumerate(zip(sa, sb)))
+
+
+def _outcome(query: SlayerQuery):
+    """``("ok", bound measure / filter / order roots)`` or ``("err", exception)``."""
     try:
         env = elaborate_query(query=query, bundle=_bundle())
         plan_query(query=query, bundle=_bundle())
     except Exception as e:  # noqa: BLE001 — the error itself is the observation
-        return ("err", type(e).__name__, str(e).replace(f"'{fn}'", "'<op>'"))
+        return ("err", e)
     assert env.prebound is not None
-    roots = [
+    return ("ok", (
         *(dm.bound.value_key for dm in env.prebound.declared_measures),
         *(bf.value_key for bf in env.prebound.bound_filters),
         *(sp.bound.value_key for sp in env.prebound.order_specs),
-    ]
-    return ("ok", ",".join(n for r in roots for n in _root_nodes(r, fn=fn)), "")
+    ))
 
 
 class TestParseIsOneNode:
@@ -246,6 +254,23 @@ PARITY = {
     "unselected_saved_in_order": lambda fn: {
         "measures": [ModelMeasure(formula="qty:sum", name="q")],
         "order": [{"column": f"{fn}(rev)", "direction": "desc"}]},
+    "sibling_wrappers": lambda fn: {
+        "measures": [ModelMeasure(formula="revenue:sum", name="r"),
+                     ModelMeasure(formula="qty:sum", name="s")],
+        "filters": [f"{fn}(r) + {fn}(s) > 0"]},
+    "wrapper_of_wrapper": lambda fn: {
+        "measures": [ModelMeasure(formula=f"{fn}({fn}(revenue:sum))", name="m")]},
+    "wrapper_beside_cumsum": lambda fn: {
+        "measures": [ModelMeasure(
+            formula=f"{fn}(revenue:sum) * 2 + {fn}(revenue:sum) + cumsum(qty:sum)",
+            name="m")]},
+    "partitioned_operand": lambda fn: {
+        "dimensions": ["store"],
+        "measures": [ModelMeasure(formula=f"{fn}(sum(revenue, partition_by=store))", name="m")]},
+    "cross_model_composite": lambda fn: {
+        "measures": [ModelMeasure(formula=f"{fn}(regions.tf * 2 + rev)", name="m")]},
+    "inner_cumsum_error": lambda fn: {
+        "measures": [ModelMeasure(formula=f"{fn}(cumsum(weight))", name="m")]},
 }
 
 
@@ -253,8 +278,27 @@ class TestCumsumParity:
     """``first(X)`` binds to the transform exactly when ``cumsum(X)`` binds, and
     raises the same error when it raises."""
 
+    @pytest.mark.parametrize("fn", ["first", "last"])
     @pytest.mark.parametrize("shape", list(PARITY))
-    def test_first_matches_cumsum(self, shape):
-        first = _outcome(_q(**PARITY[shape]("first")), fn="first")
-        cumsum = _outcome(_q(**PARITY[shape]("cumsum")), fn="cumsum")
-        assert first == cumsum
+    def test_matches_cumsum(self, shape, fn):
+        (kind, got), (want_kind, want) = (
+            _outcome(_q(**PARITY[shape](op))) for op in (fn, "cumsum"))
+        assert kind == want_kind, (got, want)
+        if kind == "err":
+            assert type(got) is type(want), (got, want)
+            assert _msg_aligned(str(got), str(want), fn=fn), (got, want)
+        else:
+            assert _aligned(got, want, fn=fn), (got, want)
+
+    def test_oracle_renames_only_aligned_wrappers(self):
+        x = AggregateKey(agg="sum", source=ColumnKey(leaf="revenue"))
+        cum = TransformKey(op="cumsum", input=x)
+        assert _aligned(TransformKey(op="first", input=cum),
+                        TransformKey(op="cumsum", input=cum), fn="first")
+        assert not _aligned(TransformKey(op="first", input=cum),
+                            TransformKey(op="first", input=cum.model_copy(update={"op": "first"})),
+                            fn="first")
+        assert not _aligned(TransformKey(op="last", input=x), cum, fn="first")
+        assert _msg_aligned("Transform 'first' vs 'cumsum'", "Transform 'cumsum' vs 'cumsum'", fn="first")
+        assert not _msg_aligned("in 'first(r)'", "in 'cumsum(r)'", fn="first")
+        assert not _msg_aligned("Transform 'cumsum'", "Transform 'first'", fn="first")
