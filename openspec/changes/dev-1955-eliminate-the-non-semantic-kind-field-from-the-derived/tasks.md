@@ -8,8 +8,8 @@
 
 ## 2. Implementation (spec-implement stage)
 
-- [ ] 2.1 `slayer/core/errors.py`: `DerivedColumnFanningError` drops `kind`, `reference: str` required, new message; `DerivedColumnCircularError` drops `kind`/`model` params, `model` read-only property → `root_model`, new message; concise docstrings — verify 1.1 passes
-- [ ] 2.2 `slayer/engine/column_dependency.py`: `_arity_reference_sources` → `list[str]`; `_iter_arity_refs` yields `(column, hop_path, leaf, quals)`; `_check_reference_arity` drops `kind`, fanning `reference` from `(*quals, leaf)`, warning dedup `(column, hop)`; `_unproven_arity_message(column, model, hop)` — verify 1.3/1.4 pass
-- [ ] 2.3 `slayer/engine/query_engine.py::_validate_mode_a_join_paths`: loop over `(col.sql, col.filter)`; raise with `root_model=exc.root_model`, no `kind`/`model` — verify 1.2 passes
-- [ ] 2.4 Grep `slayer/`, `docs/`, `tests/` for residual `kind=` on these errors and for `sql reference` / `filter reference` message text — verify none remain
-- [ ] 2.5 Full unit suite (`poetry run pytest -m "not integration"`), `poetry run ruff check slayer/ tests/`, basedpyright baseline not grown — all green
+- [x] 2.1 `slayer/core/errors.py`: `DerivedColumnFanningError` drops `kind`, `reference: str` required, new message; `DerivedColumnCircularError` drops `kind`/`model` params, `model` read-only property → `root_model`, new message; concise docstrings — verify 1.1 passes
+- [x] 2.2 `slayer/engine/column_dependency.py`: `_arity_reference_sources` → `list[str]`; `_iter_arity_refs` yields `(column, hop_path, leaf, quals)`; `_check_reference_arity` drops `kind`, fanning `reference` from `(*quals, leaf)`, warning dedup `(column, hop)`; `_unproven_arity_message(column, model, hop)` — verify 1.3/1.4 pass
+- [x] 2.3 `slayer/engine/query_engine.py::_validate_mode_a_join_paths`: loop over `(col.sql, col.filter)`; raise with `root_model=exc.root_model`, no `kind`/`model` — verify 1.2 passes
+- [x] 2.4 Grep `slayer/`, `docs/`, `tests/` for residual `kind=` on these errors and for `sql reference` / `filter reference` message text — verify none remain
+- [x] 2.5 Full unit suite (`poetry run pytest -m "not integration"`), `poetry run ruff check slayer/ tests/`, basedpyright baseline not grown — all green
