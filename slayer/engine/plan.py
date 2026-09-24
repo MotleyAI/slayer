@@ -1,4 +1,4 @@
-"""Planning orchestration (DEV-1871 G16): elaborate → compile.
+"""Planning orchestration: elaborate → compile.
 
 ``plan_query`` is the planning door — it elaborates (bind + type + typing
 environment) and compiles the result; ``plan_stages`` orders and threads a

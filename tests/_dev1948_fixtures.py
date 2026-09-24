@@ -123,9 +123,11 @@ def stage_x() -> SlayerQuery:
 
 
 def stage_c() -> SlayerQuery:
+    """Grain ``{id}`` so a join on ``id`` is provably to-one; ``tr`` carries the tier."""
     return SlayerQuery(
-        name="c", source_model="x", dimensions=["id", "tier"],
-        measures=[{"formula": "total_spend:sum", "name": "cspend"}],
+        name="c", source_model="x", dimensions=["id"],
+        measures=[{"formula": "total_spend:sum", "name": "cspend"},
+                  {"formula": "tier:max", "name": "tr"}],
     )
 
 
@@ -139,14 +141,14 @@ def orders_joined(*targets: str) -> ModelExtension:
 
 def stage_b() -> SlayerQuery:
     return SlayerQuery(
-        name="b", source_model=orders_joined("c"), dimensions=["c.tier"],
+        name="b", source_model=orders_joined("c"), dimensions=["c.tr"],
         measures=[{"formula": "amount:sum", "name": "amt"}],
     )
 
 
 def root_over_b() -> SlayerQuery:
     return SlayerQuery(
-        source_model="b", dimensions=["c__tier"],
+        source_model="b", dimensions=["c__tr"],
         measures=[{"formula": "amt:sum", "name": "total"}],
     )
 
@@ -175,7 +177,7 @@ def inline_join_list() -> List[SlayerQuery]:
         name="b",
         source_model=inline_orders(
             joins=[ModelJoin(target_model="c", join_pairs=[["customer_id", "id"]])]),
-        dimensions=["c.tier"],
+        dimensions=["c.tr"],
         measures=[{"formula": "amount:sum", "name": "amt"}],
     )
     return [stage_x(), stage_c(), b, root_over_b()]
@@ -226,11 +228,11 @@ def semi_join_list() -> List[SlayerQuery]:
 def producer_at_sibling_list() -> List[SlayerQuery]:
     """``s`` sources sibling ``c`` and carries a regroup producer over it."""
     s = SlayerQuery(
-        name="s", source_model="c", dimensions=["id", "tier"],
-        measures=[{"formula": "cspend:sum(partition_by=[tier])", "name": "tier_total"}],
+        name="s", source_model="c", dimensions=["id", "tr"],
+        measures=[{"formula": "cspend:sum(partition_by=[tr])", "name": "tier_total"}],
     )
     root = SlayerQuery(
-        source_model="s", dimensions=["tier"],
+        source_model="s", dimensions=["tr"],
         measures=[{"formula": "tier_total:max", "name": "total"}],
     )
     return [stage_x(), stage_c(), s, root]
@@ -239,8 +241,8 @@ def producer_at_sibling_list() -> List[SlayerQuery]:
 def root_producer_list() -> List[SlayerQuery]:
     """The root itself carries a regroup producer over sibling ``c``."""
     root = SlayerQuery(
-        source_model="c", dimensions=["id", "tier"],
-        measures=[{"formula": "cspend:sum(partition_by=[tier])", "name": "tier_total"}],
+        source_model="c", dimensions=["id", "tr"],
+        measures=[{"formula": "cspend:sum(partition_by=[tr])", "name": "tier_total"}],
     )
     return [stage_x(), stage_c(), root]
 
@@ -296,20 +298,20 @@ def stored_join_collision_list() -> List[SlayerQuery]:
 def nested_stage_n() -> SlayerQuery:
     """``n`` reads sibling ``c`` two ``source_queries`` levels down."""
     inner = SlayerModel(name="inner", source_queries=[SlayerQuery(
-        source_model="c", dimensions=["tier"],
+        source_model="c", dimensions=["tr"],
         measures=[{"formula": "cspend:sum", "name": "s"}])])
     outer = SlayerModel(name="outer", source_queries=[SlayerQuery(
-        source_model=inner, dimensions=["tier"],
+        source_model=inner, dimensions=["tr"],
         measures=[{"formula": "s:sum", "name": "s2"}])])
     return SlayerQuery(
-        name="n", source_model=outer, dimensions=["tier"],
+        name="n", source_model=outer, dimensions=["tr"],
         measures=[{"formula": "s2:sum", "name": "s3"}],
     )
 
 
 def nested_list() -> List[SlayerQuery]:
     root = SlayerQuery(
-        source_model="n", dimensions=["tier"],
+        source_model="n", dimensions=["tr"],
         measures=[{"formula": "s3:sum", "name": "total"}],
     )
     return [stage_x(), stage_c(), nested_stage_n(), root]

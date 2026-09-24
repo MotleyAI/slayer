@@ -134,11 +134,11 @@ class TestExecution:
     async def test_chain_in_every_supply_order(self, exec_engine, order) -> None:
         by_name = {"x": stage_x(), "c": stage_c(), "b": stage_b()}
         resp = await exec_engine.execute([*(by_name[n] for n in order), root_over_b()])
-        assert rows_by(resp.data, key="b.c__tier", value="b.total") == AMOUNT_BY_TIER
+        assert rows_by(resp.data, key="b.c__tr", value="b.total") == AMOUNT_BY_TIER
 
     async def test_inline_model_joins_a_sibling(self, exec_engine) -> None:
         resp = await exec_engine.execute(inline_join_list())
-        assert rows_by(resp.data, key="b.c__tier", value="b.total") == AMOUNT_BY_TIER
+        assert rows_by(resp.data, key="b.c__tr", value="b.total") == AMOUNT_BY_TIER
 
     async def test_one_stage_reads_three_siblings(self, exec_engine) -> None:
         resp = await exec_engine.execute(three_reads_list())
@@ -150,7 +150,7 @@ class TestExecution:
 
     async def test_producer_rooted_at_a_sibling(self, exec_engine) -> None:
         resp = await exec_engine.execute(producer_at_sibling_list())
-        assert rows_by(resp.data, key="s.tier", value="s.total") == SPEND_BY_TIER
+        assert rows_by(resp.data, key="s.tr", value="s.total") == SPEND_BY_TIER
 
     async def test_shared_producer_across_stages(self, exec_engine) -> None:
         resp = await exec_engine.execute(shared_producer_list())
@@ -164,7 +164,7 @@ class TestExecution:
     @pytest.mark.xfail(strict=True, reason="DEV-1966: nested inline source_queries cannot read a sibling")
     async def test_nested_source_queries_read_a_sibling(self, exec_engine) -> None:
         resp = await exec_engine.execute(nested_list())
-        assert rows_by(resp.data, key="n.tier", value="n.total") == SPEND_BY_TIER
+        assert rows_by(resp.data, key="n.tr", value="n.total") == SPEND_BY_TIER
 
 
 # --------------------------------------------------------------------------- #
@@ -225,26 +225,29 @@ class TestPlanStagesDirect:
         assert list(planned[0].stage_reads) == []
 
     def test_unnamed_non_root_rejected(self) -> None:
+        queries, bundle = [_q(None, "orders"), _q("a", "orders"), _q(None, "a")], _bundle()
         with pytest.raises(ValueError, match="must have a 'name'"):
-            plan_stages(queries=[_q(None, "orders"), _q("a", "orders"), _q(None, "a")],
-                        bundle=_bundle())
+            plan_stages(queries=queries, bundle=bundle)
 
     def test_self_reference_rejected(self) -> None:
+        queries, bundle = [_q("a", "a"), _q(None, "a")], _bundle()
         with pytest.raises(ValueError, match="Stage 'a' references itself"):
-            plan_stages(queries=[_q("a", "a"), _q(None, "a")], bundle=_bundle())
+            plan_stages(queries=queries, bundle=bundle)
 
     def test_root_referenced_rejected(self) -> None:
+        queries, bundle = [_q("a", "r"), _q("r", "orders")], _bundle()
         with pytest.raises(ValueError, match=r"final entry 'r'.*\['a'\]"):
-            plan_stages(queries=[_q("a", "r"), _q("r", "orders")], bundle=_bundle())
+            plan_stages(queries=queries, bundle=bundle)
 
     def test_cycle_rejected(self) -> None:
+        queries, bundle = [_q("a", "b"), _q("b", "a"), _q(None, "a")], _bundle()
         with pytest.raises(ValueError, match=r"Cycle.*\['a', 'b'\]"):
-            plan_stages(queries=[_q("a", "b"), _q("b", "a"), _q(None, "a")], bundle=_bundle())
+            plan_stages(queries=queries, bundle=bundle)
 
     def test_duplicate_rejected(self) -> None:
+        queries, bundle = [_q("a", "orders"), _q("a", "orders"), _q(None, "a")], _bundle()
         with pytest.raises(ValueError, match="Duplicate stage name 'a'"):
-            plan_stages(queries=[_q("a", "orders"), _q("a", "orders"), _q(None, "a")],
-                        bundle=_bundle())
+            plan_stages(queries=queries, bundle=bundle)
 
 
 class TestNestedSourceQueriesOrdering:
@@ -303,7 +306,8 @@ class TestDeclaredEdges:
         s1_hoisted = {e.name for e in segments["s1"][:-1]}
         s2_hoisted = {e.name for e in segments["s2"][:-1]}
         s3_deps = set(segments["s3"][-1].depends_on)
-        assert s1_hoisted & s3_deps and s2_hoisted & s3_deps, s3_deps
+        assert s1_hoisted & s3_deps, s3_deps
+        assert s2_hoisted & s3_deps, s3_deps
         assert not s1_hoisted & set(segments["s2"][-1].depends_on)
         assert not s2_hoisted & set(segments["s1"][-1].depends_on)
 
@@ -318,4 +322,5 @@ class TestOrderPrecondition:
         with pytest.raises(ValueError) as exc:
             generate_planned_stages([c, x, s, root], bundle=cap.bundle, dialect=cap.dialect)
         message = str(exc.value)
-        assert re.search(r"['\"]c['\"]", message) and re.search(r"['\"]x['\"]", message), message
+        assert re.search(r"['\"]c['\"]", message), message
+        assert re.search(r"['\"]x['\"]", message), message
