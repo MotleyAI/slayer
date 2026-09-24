@@ -82,12 +82,12 @@ def _stage1(**kw) -> SlayerQuery:
     return slayer_query(name="s1", source_model="orders", **kw)
 
 
-def _stage2(dim: str, **kw) -> SlayerQuery:
+def _stage2(*, dim: str, **kw) -> SlayerQuery:
     return slayer_query(source_model="s1", dimensions=[dim],
                        measures=["amount_sum:sum"], **kw)
 
 
-def _amounts(resp, key: str) -> dict:
+def _amounts(*, resp, key: str) -> dict:
     return {r[key]: r["s1.amount_sum_sum"] for r in resp.data}
 
 
@@ -101,7 +101,7 @@ def _assert_one_stale(resp) -> None:
 # --------------------------------------------------------------------------- #
 class TestStageColumnRespellings:
     @staticmethod
-    def _schema(models, stage: SlayerQuery):
+    def _schema(*, models, stage: SlayerQuery):
         bundle = ResolvedSourceBundle(source_model=models[0],
                                       referenced_models=models[1:])
         planned = plan_stages(
@@ -112,7 +112,7 @@ class TestStageColumnRespellings:
         return {c.name: c for c in schema.columns}
 
     def test_one_named_hop(self) -> None:
-        cols = self._schema(dev1954_models(), _stage1(
+        cols = self._schema(models=dev1954_models(), stage=_stage1(
             measures=["customers.regions.pop:max",
                       {"formula": "customers.hr.pop:min", "name": "explicit"}]))
         assert set(cols) == {CANON, "customers__hr__pop_max", "explicit"}
@@ -129,7 +129,7 @@ class TestStageColumnRespellings:
             {"dimension": "customers.regions.founded_at", "granularity": "year"}]),
     ], ids=["functional", "star", "saved", "time"])
     def test_every_path_derived_form(self, stage) -> None:
-        cols = self._schema(dev1954_models(), stage)
+        cols = self._schema(models=dev1954_models(), stage=stage)
         derived = [c for c in cols.values() if c.name.startswith("customers__hr__")]
         assert derived
         for col in derived:
@@ -143,7 +143,7 @@ class TestStageColumnRespellings:
             ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]],
                       name="buyer") if j.target_model == "customers" else j
             for j in orders.joins]
-        cols = self._schema(models, _stage1(measures=["customers.regions.pop:max"]))
+        cols = self._schema(models=models, stage=_stage1(measures=["customers.regions.pop:max"]))
         assert set(cols["buyer__hr__rname"].respellings) == {
             "customers__hr__rname", "buyer__regions__rname", STALE}
         assert set(cols["buyer__hr__pop_max"].respellings) == {
@@ -151,7 +151,7 @@ class TestStageColumnRespellings:
             "customers__regions__pop_max"}
 
     def test_explicit_name_with_a_path_prefix_has_none(self) -> None:
-        cols = self._schema(dev1954_models(), _stage1(measures=[
+        cols = self._schema(models=dev1954_models(), stage=_stage1(measures=[
             {"formula": "customers.hr.pop:min", "name": "customers__hr__custom"}]))
         assert cols["customers__hr__custom"].respellings == ()
 
@@ -174,7 +174,7 @@ class TestStageColumnRespellings:
         assert cols["customers__hr__lo"].respellings == ()
 
     def test_unnamed_path_has_none(self) -> None:
-        cols = self._schema(dev1954_models(named=False), _stage1())
+        cols = self._schema(models=dev1954_models(named=False), stage=_stage1())
         assert cols[STALE].respellings == ()
 
     def test_default_is_empty(self) -> None:
@@ -186,10 +186,10 @@ class TestStageColumnRespellings:
 # --------------------------------------------------------------------------- #
 class TestDownstreamStageStaleReference:
     async def test_binds_to_the_canonical_column(self, engine) -> None:
-        stale = await engine.execute([_stage1(), _stage2(STALE)])
-        canon = await engine.execute([_stage1(), _stage2(CANON)])
+        stale = await engine.execute([_stage1(), _stage2(dim=STALE)])
+        canon = await engine.execute([_stage1(), _stage2(dim=CANON)])
         assert stale.columns == canon.columns
-        assert _amounts(stale, f"s1.{CANON}") == AMOUNT_BY_NAME
+        assert _amounts(resp=stale, key=f"s1.{CANON}") == AMOUNT_BY_NAME
         _assert_one_stale(stale)
         assert stale_warnings(canon) == []
 
@@ -201,7 +201,7 @@ class TestDownstreamStageStaleReference:
         stale = await engine.execute([_stage1(), ext(STALE)])
         canon = await engine.execute([_stage1(), ext(CANON)])
         assert stale.columns == canon.columns
-        assert _amounts(stale, f"s1.{CANON}") == AMOUNT_BY_NAME
+        assert _amounts(resp=stale, key=f"s1.{CANON}") == AMOUNT_BY_NAME
         _assert_one_stale(stale)
 
     async def test_survives_a_chain_of_stages(self, engine) -> None:
@@ -217,7 +217,7 @@ class TestDownstreamStageStaleReference:
 
     async def test_ambiguous_respelling_fails_closed(self, parallel_engine) -> None:
         stage1 = _stage1(dimensions=["customers.hr.rname", "customers.hr2.rname"])
-        stages = [stage1, _stage2(STALE)]
+        stages = [stage1, _stage2(dim=STALE)]
         with pytest.raises(UnknownReferenceError, match=STALE):
             await parallel_engine.execute(stages)
 
@@ -229,10 +229,10 @@ class TestDownstreamStageStaleReference:
         assert stale_warnings(resp) == []
 
     async def test_one_warning_per_referencing_position(self, engine) -> None:
-        stage2 = _stage2(STALE, filters=[
+        stage2 = _stage2(dim=STALE, filters=[
             f"{STALE} = 'North' or {STALE} = 'South'"])
         resp = await engine.execute([_stage1(), stage2])
-        assert _amounts(resp, f"s1.{CANON}") == {"North": 100.0, "South": 20.0}
+        assert _amounts(resp=resp, key=f"s1.{CANON}") == {"North": 100.0, "South": 20.0}
         warnings = stale_warnings(resp)
         assert len(warnings) == 2
         assert len({w.location for w in warnings}) == 2
@@ -258,6 +258,12 @@ class TestQueryBackedConsumer:
         assert {r["regions.qb_label"] for r in resp.data} == {"North", "South"}
         _assert_one_stale(resp)
 
+
+    async def test_joined_stale_leaf_surfaces_the_canonical_key(self, engine) -> None:
+        resp = await engine.execute(slayer_query(
+            source_model="regions", dimensions=[f"region_amounts.{STALE}"]))
+        assert resp.columns == [f"regions.region_amounts.{CANON}"]
+        _assert_one_stale(resp)
 
     async def test_query_backed_over_query_backed(self, engine) -> None:
         await engine.storage.save_model(SlayerModel(
@@ -314,13 +320,13 @@ class TestEdgeNamedLater:
 # --------------------------------------------------------------------------- #
 class TestCacheHitCarriesTheRequestersWarnings:
     async def test_canonical_first_then_stale(self, engine) -> None:
-        await engine.execute([_stage1(), _stage2(CANON)], cache=True)
-        stale = await engine.execute([_stage1(), _stage2(STALE)], cache=True)
+        await engine.execute([_stage1(), _stage2(dim=CANON)], cache=True)
+        stale = await engine.execute([_stage1(), _stage2(dim=STALE)], cache=True)
         assert engine.cache_size == 1
         _assert_one_stale(stale)
 
     async def test_stale_first_then_canonical(self, engine) -> None:
-        await engine.execute([_stage1(), _stage2(STALE)], cache=True)
-        canon = await engine.execute([_stage1(), _stage2(CANON)], cache=True)
+        await engine.execute([_stage1(), _stage2(dim=STALE)], cache=True)
+        canon = await engine.execute([_stage1(), _stage2(dim=CANON)], cache=True)
         assert engine.cache_size == 1
         assert stale_warnings(canon) == []

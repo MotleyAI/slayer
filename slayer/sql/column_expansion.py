@@ -220,6 +220,7 @@ def reference_sites(
 
 
 def _walk_exact(
+    *,
     hops: Tuple[str, ...],
     source_model: SlayerModel,
     models_by_name: ModelsByName,
@@ -262,7 +263,7 @@ def resolve_ref_target(
     if not quals:
         return source_model
     try:
-        walked = _walk_exact(tuple(quals), source_model, models_by_name)
+        walked = _walk_exact(hops=tuple(quals), source_model=source_model, models_by_name=models_by_name)
     except (AmbiguousJoinPathError, CircularJoinPathError):
         return None
     return walked[0] if walked is not None else None
@@ -302,7 +303,7 @@ def _resolve_qualifiers(
     # ``a__b`` split-alias probe; re-raise both with the complete pre-strip
     # reference and the column being expanded.
     try:
-        walked = _walk_exact(path, source_model, models_by_name)
+        walked = _walk_exact(hops=path, source_model=source_model, models_by_name=models_by_name)
         if walked is not None:
             return walked[1]
         if len(path) == 1:
@@ -392,7 +393,7 @@ def _raise_if_legacy_split_alias(
         return
     naive = tuple(qualifier.split("__"))
     try:
-        walkable = _walk_exact(naive, source_model, models_by_name) is not None
+        walkable = _walk_exact(hops=naive, source_model=source_model, models_by_name=models_by_name) is not None
     except AmbiguousJoinPathError:
         walkable = True  # ambiguously walkable is still the legacy spelling
     if walkable:
@@ -462,9 +463,9 @@ def _lenient_path(
     if not quals:
         return ()
     try:
-        walked = _walk_exact(tuple(quals), source_model, models_by_name)
+        walked = _walk_exact(hops=tuple(quals), source_model=source_model, models_by_name=models_by_name)
         if walked is None and len(quals) == 1 and "__" in quals[0]:
-            walked = _walk_exact(tuple(quals[0].split("__")), source_model, models_by_name)
+            walked = _walk_exact(hops=tuple(quals[0].split("__")), source_model=source_model, models_by_name=models_by_name)
         if walked is not None:
             return walked[1]
     except (AmbiguousJoinPathError, CircularJoinPathError):
@@ -662,7 +663,7 @@ def _locate_site_target(
     """``(target_model, canonical_alias)`` of a resolved site path, recording crossed joins."""
     if not path:
         return model, alias_path
-    walked = _walk_exact(path, model, models_by_name)
+    walked = _walk_exact(hops=path, source_model=model, models_by_name=models_by_name)
     if walked is None:
         return None
     if crossed_paths is not None:
