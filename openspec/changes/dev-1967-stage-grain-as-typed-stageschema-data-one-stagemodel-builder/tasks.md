@@ -26,4 +26,4 @@
 ## 5. Docs and gates
 
 - [x] 5.1 `docs/concepts/models.md`: `primary_key` table row, the primary-key aggregation paragraph, and the `unique` row's "primary_key implies unique" (sole primary key only) — one sentence each; `docs/concepts/queries.md`: one sentence that a join onto a sibling stage covering its grain is proven. Verify: grep docs for the old claims.
-- [ ] 5.2 Full unit suite, `ruff check slayer/ tests/`, `tools/arch_check.py`, basedpyright (no new errors vs baseline); golden / notebook drift → stop and ask. Verify: all green.
+- [x] 5.2 Full unit suite, `ruff check slayer/ tests/`, `tools/arch_check.py`, basedpyright (no new errors vs baseline); golden / notebook drift → stop and ask. Verify: all green.

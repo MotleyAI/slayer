@@ -125,9 +125,8 @@ def test_partition_by_multi_column_parses_and_binds():
 
 
 def test_aggregation_eligibility_primary_key_rejected():
-    """Codex review: a primary-key column is restricted to ``count`` /
-    ``count_distinct``. The typed pipeline previously accepted ``id:sum``
-    silently — now raises ``AggregationNotAllowedError``."""
+    """A sole primary-key column is restricted to the count family and
+    ``min`` / ``max``; ``id:sum`` raises ``AggregationNotAllowedError``."""
     orders = SlayerModel(
         name="orders", data_source="prod", sql_table="orders",
         columns=[
@@ -137,11 +136,9 @@ def test_aggregation_eligibility_primary_key_rejected():
     )
     bundle = ResolvedSourceBundle(source_model=orders, referenced_models=[])
     scope = ModelScope(source_model=orders)
-    # count / count_distinct should pass.
-    bind_expr(parsed=parse_expr("id:count"), scope=scope, bundle=bundle)
-    bind_expr(parsed=parse_expr("id:count_distinct"), scope=scope, bundle=bundle)
-    # sum / avg / max / min on a PK are rejected.
-    for agg in ("sum", "avg", "max", "min"):
+    for agg in ("count", "count_distinct", "max", "min"):
+        bind_expr(parsed=parse_expr(f"id:{agg}"), scope=scope, bundle=bundle)
+    for agg in ("sum", "avg"):
         parsed = parse_expr(f"id:{agg}")
         with pytest.raises(AggregationNotAllowedError, match="primary-key"):
             bind_expr(parsed=parsed, scope=scope, bundle=bundle)
