@@ -594,6 +594,11 @@ _BUCKET_ALIGNED_SHIFT_UNITS: dict[str, frozenset[str]] = {
 }
 
 
+def _is_fragment(*, name: str, placeholders: Optional[frozenset[str]]) -> bool:
+    """A formula-less aggregation treats every string param as a fragment."""
+    return placeholders is None or name in placeholders
+
+
 def _percentile_literal(p: Expression) -> Expression:
     """The numeric literal inside ``p`` (optionally signed / parenthesised), validated to [0, 1]."""
     node, negative = p, False
@@ -5389,6 +5394,13 @@ class SQLGenerator:
             abs_refs=abs_refs, dialect=self.dialect,
         ), ()
 
+    def _fragment_placeholders(self, *, key, agg_def) -> Optional[frozenset[str]]:
+        """Placeholder names of the rendered formula; None when it has none (e.g. corr, percentile)."""
+        formula = (agg_def and agg_def.formula) or BUILTIN_AGGREGATION_FORMULAS.get(key.agg)
+        if not formula:
+            return None
+        return self._formula_template(agg_name=key.agg, formula=formula).placeholder_names
+
     def _register_fragment_kwarg_joins(
         self, *, key, scope: ScopeFrame, model, owner_path: Tuple[str, ...] = (),
         source_owner_path: Optional[Tuple[str, ...]] = None,
@@ -5397,22 +5409,17 @@ class SQLGenerator:
         agg_def = next(
             (a for a in (model.aggregations or []) if a.name == key.agg), None,
         )
-        formula = (agg_def and agg_def.formula) or BUILTIN_AGGREGATION_FORMULAS.get(key.agg)
-        # None: no template (e.g. corr, percentile) — every string kwarg / default is a fragment.
-        placeholders = (
-            self._formula_template(agg_name=key.agg, formula=formula).placeholder_names
-            if formula else None
-        )
+        placeholders = self._fragment_placeholders(key=key, agg_def=agg_def)
         overridden = {name for name, _ in key.kwargs}
         # (name, fragment, owner_path). Explicit string kwargs keep the caller's
         # owner_path; a definition default on a host-locus aggregate resolves at
         # the root or the source owner per its reference frame.
         named_fragments: List[Tuple[str, str, Tuple[str, ...]]] = [
             (name, v, tuple(owner_path)) for name, v in key.kwargs
-            if isinstance(v, str) and (placeholders is None or name in placeholders)
+            if isinstance(v, str) and _is_fragment(name=name, placeholders=placeholders)
         ]
         for p in (agg_def.params if agg_def else []):
-            if p.name in overridden or (placeholders is not None and p.name not in placeholders):
+            if p.name in overridden or not _is_fragment(name=p.name, placeholders=placeholders):
                 continue
             if source_owner_path is not None:
                 frag_sql, frag_owner_path = self._default_frag_entry(
