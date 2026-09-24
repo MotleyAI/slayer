@@ -60,8 +60,8 @@ def _customers_model(*, key_sql: str | None) -> SlayerModel:
 
 
 def _fk_hop_models(*, fk_sql: str | None) -> tuple[SlayerModel, dict[str, SlayerModel]]:
-    """``customers`` (FK ``region_id``, renamable) → ``regions`` (m:1); the join's
-    physical source column is ``fk_sql or "region_id"``."""
+    """``customers`` (FK ``region_id``, renamable) → ``regions`` (m:1), keyed by
+    the logical ``region_id`` whatever its physical spelling."""
     regions = SlayerModel(
         name="regions", data_source="prod", sql_table="regions",
         columns=[
@@ -76,7 +76,7 @@ def _fk_hop_models(*, fk_sql: str | None) -> tuple[SlayerModel, dict[str, Slayer
             Column(name="region_id", type=DataType.INT, sql=fk_sql),
         ],
         joins=[ModelJoin(
-            target_model="regions", join_pairs=[[fk_sql or "region_id", "id"]],
+            target_model="regions", join_pairs=[["region_id", "id"]],
             cardinality=JoinCardinality.MANY_TO_ONE,
         )],
     )
@@ -100,9 +100,8 @@ class TestGrainDeterminesRenamedKey:
         )
 
     def test_renamed_fk_seeds_to_one_hop(self) -> None:
-        # logical grain leaf ``region_id`` must seed the m:1 hop whose physical
-        # ``join_pairs`` source column is the rename ``region_fk`` — else a valid
-        # lifted parameter over ``regions.pop`` is wrongly rejected.
+        # grain leaf ``region_id`` seeds the m:1 hop keyed on the renamed FK
+        # (physical ``region_fk``) — else a valid lifted parameter is rejected.
         customers, models = _fk_hop_models(fk_sql="region_fk")
         assert grain_determines(
             key=ColumnKey(path=("regions",), leaf="pop"),

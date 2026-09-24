@@ -942,3 +942,40 @@ class TestSqliteIngestionProbe:
             weight_col = next(c for c in measurements.columns if c.name == "weight")
             # FK target's own model carries the probed type.
             assert weight_col.type is DataType.DOUBLE
+
+
+class TestCountColumnRenameInJoinKeys:
+    """Ingestion's ``_count`` → ``count_col`` rename applies to join keys too."""
+
+    def _ingest(self, ddl: list[str]):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "cnt.db")
+            with disposable_engine(f"sqlite:///{db_path}") as engine:
+                with engine.connect() as c:
+                    for stmt in ddl:
+                        c.execute(sa.text(stmt))
+                    c.commit()
+            ds = DatasourceConfig(name="cnt_ds", type="sqlite", database=db_path)
+            return {m.name: m for m in ingest_datasource(datasource=ds)}
+
+    def test_source_fk_named_count(self) -> None:
+        models = self._ingest([
+            "CREATE TABLE parents (id INTEGER PRIMARY KEY)",
+            "CREATE TABLE children (id INTEGER PRIMARY KEY, "
+            "_count INTEGER REFERENCES parents(id))",
+        ])
+        children = models["children"]
+        col = children.get_column("count_col")
+        assert col is not None
+        assert col.sql == "_count"
+        (join,) = children.joins
+        assert join.join_pairs == [["count_col", "id"]]
+
+    def test_target_key_named_count(self) -> None:
+        models = self._ingest([
+            "CREATE TABLE tallies (_count INTEGER PRIMARY KEY)",
+            "CREATE TABLE events (id INTEGER PRIMARY KEY, "
+            "tally INTEGER REFERENCES tallies(_count))",
+        ])
+        (join,) = models["events"].joins
+        assert join.join_pairs == [["tally", "count_col"]]

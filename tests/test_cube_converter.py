@@ -451,8 +451,8 @@ def test_window_is_part_of_dedup_key():
 # ── 4.4 joins — physical-column resolution (Codex #2) ──────────────────────
 
 def test_join_member_resolves_to_physical_column():
-    """`{customers.id}` where the `id` member's sql is `{CUBE}.cust_pk` must emit
-    the physical column `cust_pk`, not the member name `id`."""
+    """`{customers.id}` keys the join by member name `id`; the physical `cust_pk`
+    rides on the column's `sql`."""
     project = CubeProject(cubes=[
         CubeCube(name="orders", sql_table="public.orders",
                  joins=[CubeJoin(name="customers", relationship="many_to_one",
@@ -463,7 +463,10 @@ def test_join_member_resolves_to_physical_column():
                                            type="number", primary_key=True)]),
     ])
     models, _ = _convert(project)
-    assert models["orders"].joins[0].join_pairs == [["customer_id", "cust_pk"]]
+    assert models["orders"].joins[0].join_pairs == [["customer_id", "id"]]
+    pk = models["customers"].get_column("id")
+    assert pk is not None
+    assert pk.sql == "cust_pk"
 
 
 def test_join_with_nontrivial_member_sql_is_unsupported():
@@ -553,3 +556,23 @@ def test_number_agg_measure_deferred():
         [CubeMeasure(name="na", type="number_agg", sql="{CUBE}.amount")]))
     assert models["orders"].get_measure("na") is None
     assert any(i.category == CubeIssueCategory.DEFERRED_STAGE2 for i in report.issues)
+
+
+def test_join_operand_naming_no_member_synthesises_hidden_column():
+    project = CubeProject(cubes=[
+        CubeCube(name="orders", sql_table="public.orders",
+                 joins=[CubeJoin(name="customers", relationship="many_to_one",
+                                 sql="{CUBE}.customer_id = {customers.legacy_id}")],
+                 dimensions=[CubeDimension(name="id", sql="{CUBE}.id", type="number",
+                                           primary_key=True)]),
+        CubeCube(name="customers", sql_table="public.customers",
+                 dimensions=[CubeDimension(name="id", sql="{CUBE}.id", type="number",
+                                           primary_key=True)]),
+    ])
+    models, _ = _convert(project)
+    assert models["orders"].joins[0].join_pairs == [["customer_id", "legacy_id"]]
+    for model, key in ((models["orders"], "customer_id"), (models["customers"], "legacy_id")):
+        col = model.get_column(key)
+        assert col is not None
+        assert col.hidden is True
+        assert col.is_base

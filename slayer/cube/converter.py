@@ -21,6 +21,7 @@ from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.formula import ALL_TRANSFORMS, parse_formula
 from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import render_probe_text
+from slayer.core.refs import IDENTIFIER_RE
 from slayer.cube.extends import flatten_cube_extends, flatten_view_extends
 from slayer.cube.filter_params import (
     apply_filter_params,
@@ -156,6 +157,18 @@ def _drop_inverse_half(
         peer.joins.remove(back)
 
 
+def _declare_key(*, member: str, columns: list[Column], names: set[str]) -> bool:
+    """``member`` is usable as a join key: a base column, or synthesised as a hidden one."""
+    col = next((c for c in columns if c.name == member), None)
+    if col is not None:
+        return col.is_base and col.filter is None
+    if member in names or not IDENTIFIER_RE.match(member):
+        return False
+    names.add(member)
+    columns.append(Column(name=member, hidden=True))
+    return True
+
+
 def _map_relationship(relationship: str | None) -> JoinCardinality | None:
     """Map a Cube join ``relationship`` onto cardinality; unknown → None."""
     if relationship is None:
@@ -247,6 +260,7 @@ class CubeToSlayerConverter:
             if model is not None:
                 models.append(model)
                 self._models[model.name] = model
+        self._resolve_join_targets(models, report)
 
         for view in views:
             model = self._convert_view(view, report)
@@ -295,9 +309,9 @@ class CubeToSlayerConverter:
         for seg in cube.segments:
             self._convert_segment(cube, seg, columns, names, report)
 
-        joins = self._convert_joins(cube, report)
         columns, measures = self._validate_offline(cube.name, columns, measures, report)
         self._dedisambiguate_namespace(columns, measures, report, cube=cube.name)
+        joins = self._convert_joins(cube, columns, names, report)
         # Keep _measure_info in sync with what actually survived validation, so
         # view facades never re-export a measure the model no longer has.
         surviving = {m.name for m in measures}
@@ -724,7 +738,7 @@ class CubeToSlayerConverter:
 
     # ── joins ──────────────────────────────────────────────────────────────
 
-    def _convert_joins(self, cube, report) -> list[ModelJoin]:
+    def _convert_joins(self, cube, columns, names, report) -> list[ModelJoin]:
         joins: list[ModelJoin] = []
         for cj in cube.joins:
             if cj.name not in self._cubes:
@@ -734,12 +748,13 @@ class CubeToSlayerConverter:
                     message=f"Join target cube '{cj.name}' is not available; dropped."))
                 continue
             pairs = parse_join_on(cj.sql, source_cube=cube.name, target_cube=cj.name)
-            resolved = self._resolve_join_pairs(cube, cj, pairs) if pairs else None
-            if not resolved:
+            if not pairs or not all(
+                    _declare_key(member=src, columns=columns, names=names.used)
+                    for src, _ in pairs):
                 report.add(CubeConversionIssue(
                     category=CubeIssueCategory.UNSUPPORTED_JOIN, severity="warning",
                     cube=cube.name, member=cj.name,
-                    message=f"Join ON '{cj.sql}' is not an equality of physical columns; dropped."))
+                    message=f"Join ON '{cj.sql}' is not an equality of base columns; dropped."))
                 continue
             cardinality = _map_relationship(cj.relationship)
             if cardinality is None:
@@ -749,7 +764,7 @@ class CubeToSlayerConverter:
                     message=(f"Unrecognized join relationship {cj.relationship!r}; "
                              f"cardinality left unset (metrics crossing it broadcast).")))
             joins.append(ModelJoin(
-                target_model=cj.name, join_pairs=resolved,
+                target_model=cj.name, join_pairs=[[s, t] for s, t in pairs],
                 join_type=JoinType.LEFT, cardinality=cardinality))
         return joins
 
@@ -763,25 +778,23 @@ class CubeToSlayerConverter:
                     continue  # visit each unordered pair once
                 _drop_inverse_half(model=model, join=join, peer=peer)
 
-    def _resolve_join_pairs(self, cube, cj, pairs) -> list[list[str]] | None:
-        target = self._cubes.get(cj.name)
-        out: list[list[str]] = []
-        for src_member, tgt_member in pairs:
-            src = self._physical_col(cube, src_member)
-            tgt = self._physical_col(target, tgt_member) if target else tgt_member
-            if src is None or tgt is None:
-                return None
-            out.append([src, tgt])
-        return out
-
-    def _physical_col(self, cube, member: str) -> str | None:
-        if cube is None:
-            return member
-        dim = next((d for d in cube.dimensions if d.name == member), None)
-        if dim is None or dim.sql is None:
-            return member
-        translated = translate_cube_refs(dim.sql, mode="sql", cube=cube.name)
-        return translated.strip() if is_bare_identifier(translated) else None
+    def _resolve_join_targets(self, models: list[SlayerModel], report) -> None:
+        """Declare each join's target keys on its target model; drop a join keyed on a non-base member."""
+        by_name = {m.name: m for m in models}
+        for model in models:
+            for join in list(model.joins):  # NOSONAR(S7504) — materialised before in-place removal
+                target = by_name.get(join.target_model)
+                if target is None or all(
+                        _declare_key(member=t, columns=target.columns,
+                                     names={m.name for m in target.measures if m.name})
+                        for _, t in join.join_pairs):
+                    continue
+                model.joins.remove(join)
+                report.add(CubeConversionIssue(
+                    category=CubeIssueCategory.UNSUPPORTED_JOIN, severity="warning",
+                    cube=model.name, member=join.target_model,
+                    message=(f"Join to '{join.target_model}' is keyed on a member that is "
+                             f"not a base column there; dropped.")))
 
     # ── offline validation + namespace safety ──────────────────────────────
 
@@ -872,7 +885,12 @@ class CubeToSlayerConverter:
             self._convert_view_ref(view, ref, root_cube_name, root_model,
                                    columns, measures, names, join_targets, report)
 
-        joins = [j for j in root_model.joins if j.target_model in join_targets]
+        joins = [
+            j for j in root_model.joins
+            if j.target_model in join_targets and self._facade_join_keys(
+                join=j, root_model=root_model, columns=columns, names=names,
+                view=view, report=report)
+        ]
         filters = self._view_default_filters(view, root_cube_name, report)
         if unmapped:
             meta["cube_unmapped"] = unmapped
@@ -889,6 +907,23 @@ class CubeToSlayerConverter:
                 category=CubeIssueCategory.PARSE_ERROR, severity="error",
                 view=view.name, message=f"Could not build facade model: {exc}"))
             return None
+
+    def _facade_join_keys(self, *, join, root_model, columns, names, view, report) -> bool:
+        """Declare a carried join's source keys on the facade (hidden); ``False`` drops the join."""
+        for src, _ in join.join_pairs:
+            col = next((c for c in columns if c.name == src), None)
+            root_col = root_model.get_column(src)
+            if col is None and root_col is not None and src not in names.used:
+                names.reserve(src)
+                columns.append(Column(name=src, sql=root_col.sql, type=root_col.type,
+                                      hidden=True))
+            elif col is None or not col.is_base or col.filter is not None:
+                report.add(CubeConversionIssue(
+                    category=CubeIssueCategory.UNSUPPORTED_JOIN, severity="warning",
+                    view=view.name, member=join.target_model,
+                    message=f"Join key '{src}' is not a base column of the facade; join dropped."))
+                return False
+        return True
 
     def _convert_view_ref(self, view, ref, root_cube_name, root_model,
                           columns, measures, names, join_targets, report) -> None:

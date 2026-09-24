@@ -25,6 +25,8 @@ from slayer.core.models import (
     DatasourceConfig,
     ModelJoin,
     SlayerModel,
+    is_base_column_sql,
+    physical_column_sql,
 )
 from slayer.core.query import ModelExtension, SlayerQuery, SourceSpec
 from slayer.core.refs import IDENTIFIER_RE
@@ -233,10 +235,8 @@ def _is_bare_identifier(s: str | None) -> bool:
 
 
 def _column_is_base(col_sql: str | None) -> bool:
-    """A base column claims a live column: Column.sql is None or a bare identifier."""
-    if col_sql is None:
-        return True
-    return _is_bare_identifier(col_sql)
+    """A base column claims a live column (see ``is_base_column_sql``)."""
+    return is_base_column_sql(col_sql)
 
 
 # Pure diff functions
@@ -252,7 +252,7 @@ def _diff_sql_table_columns(
         # Base columns only; derived handled by cascade.
         if not _column_is_base(col.sql):
             continue
-        bare_name = (col.sql or col.name).strip()
+        bare_name = physical_column_sql(sql=col.sql, name=col.name)
         if bare_name not in live_table.columns:
             dropped.append(col.name)
             reasons.append(
@@ -286,18 +286,12 @@ def _diff_sql_table_joins(
     """Per-join diff of a sql_table-mode model against live FK columns and model availability."""
     dropped: list[str] = []
     reasons: list[DeleteReason] = []
-    # join_pairs[*][0] is the semantic Column.name; resolve to the physical
-    # Column.sql before the live-table check, else valid joins are dropped.
-    base_sql_by_name = {
-        c.name: (c.sql or c.name).strip()
-        for c in model.columns
-        if _column_is_base(c.sql)
-    }
     for join in model.joins:
         local_cols = [pair[0] for pair in join.join_pairs]
         missing_locals = [
             lc for lc in local_cols
-            if base_sql_by_name.get(lc, lc) not in live_table.columns
+            if (col := model.get_column(lc)) is None
+            or physical_column_sql(sql=col.sql, name=col.name) not in live_table.columns
         ]
         if missing_locals:
             dropped.append(join.target_model)
@@ -1172,7 +1166,7 @@ def _first_dropped_sql_column_ref(
     *, col: Column, model: SlayerModel, state: _CascadeState
 ) -> tuple[SlayerModel, str] | None:
     """``(target_model, ref_col)`` for the first ref in ``col.sql`` resolving to a dropped column, else None."""
-    if col.sql is None or _is_bare_identifier(col.sql):
+    if col.sql is None or is_base_column_sql(col.sql):
         return None
     for table_alias, ref_col in _extract_column_refs_from_sql(col.sql):
         is_dropped, target = _column_ref_targets_dropped(
@@ -1271,9 +1265,10 @@ def _cascade_joins(*, model: SlayerModel, state: _CascadeState) -> bool:
     for join in model.joins:
         if join.target_model in state.dropped_joins.get(model.name, set()):
             continue
+        # Raw dropped_cols: a dropped local PK key invalidates the join too.
         local_missing = [
             pair[0] for pair in join.join_pairs
-            if pair[0] in state.cascadable(model.name)
+            if pair[0] in state.dropped_cols.get(model.name, set())
         ]
         if local_missing:
             changed = _add_dropped_join(

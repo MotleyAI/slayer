@@ -25,7 +25,14 @@ import sqlalchemy as sa
 from slayer.core.enums import DataType
 from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.formula import parse_formula
-from slayer.core.models import Column, ModelMeasure, SlayerModel
+from slayer.core.models import (
+    Column,
+    ModelJoin,
+    ModelMeasure,
+    SlayerModel,
+    is_base_column_sql,
+    physical_column_sql,
+)
 from slayer.core.refs import IDENTIFIER_RE as _IDENTIFIER_RE
 from slayer.dbt.entities import EntityRegistry
 from slayer.dbt.filters import _DIMENSION_RE, convert_dbt_filter
@@ -110,6 +117,24 @@ def _is_simple_identifier(s: str) -> bool:
     return bool(_IDENTIFIER_RE.match(s))
 
 
+def _entity_column(expr: str) -> str | None:
+    """The physical column a bare or double-quoted entity ``expr`` names, else ``None``."""
+    return physical_column_sql(sql=expr, name=expr) if is_base_column_sql(expr) else None
+
+
+def _key_column(*, expr: str, cols: list[Column]) -> Column | None:
+    """The unfiltered base column reading the column entity ``expr`` names (a same-named one first)."""
+    phys = _entity_column(expr)
+    owners = [c for c in cols if c.is_base and c.filter is None and c.physical_name == phys]
+    return next((c for c in owners if c.name == phys), owners[0] if owners else None)
+
+
+def _free_key_name(*, expr: str, cols: list[Column], taken: set) -> str | None:
+    """The name for a new column reading entity ``expr``, unless non-bare or already taken."""
+    phys = _entity_column(expr)
+    return phys if phys and phys not in taken and all(c.name != phys for c in cols) else None
+
+
 def _meta_of(config: DbtConfig | None) -> dict[str, Any] | None:
     """Extract ``config.meta`` (or ``None``)."""
     if config is not None and config.meta:
@@ -183,6 +208,7 @@ class DbtToSlayerConverter:
             model = self._convert_semantic_model(sm)
             models.append(model)
             self._models_by_name[model.name] = model
+        self._resolve_target_keys()
 
         for metric in self.project.metrics:
             self._convert_metric(metric)
@@ -365,51 +391,21 @@ class DbtToSlayerConverter:
 
         cols: list[Column] = [_convert_dimension(d) for d in sm.dimensions]
 
-        # Add primary key column for primary/unique entities.
-        entity_col_names = {c.name for c in cols}
         for entity in sm.entities:
             if entity.type in ("primary", "unique"):
-                col_name = entity.expr or entity.name
-                if col_name not in entity_col_names:
-                    cols.append(Column(
-                        name=col_name,
-                        type=DataType.DOUBLE,
-                        primary_key=True,
-                        description=entity.description,
-                        label=entity.label,
-                        meta=self._entity_meta(entity),
-                    ))
-                    entity_col_names.add(col_name)
-                else:
-                    entity_meta = self._entity_meta(entity)
-                    for c in cols:
-                        if c.name == col_name:
-                            c.primary_key = True
-                            # Carry the entity's metadata onto the reused column
-                            # without clobbering anything the column already has
-                            # (parity with the synthetic-column branch above).
-                            if c.description is None:
-                                c.description = entity.description
-                            if c.label is None:
-                                c.label = entity.label
-                            if entity_meta:
-                                c.meta = {**entity_meta, **(c.meta or {})}
-                            break
+                self._declare_primary_key(sm_name=sm.name, entity=entity, cols=cols)
 
         if sm.primary_entity:
-            pe_name = sm.primary_entity
-            pe_expr = pe_name
-            for e in sm.entities:
-                if e.name == pe_name:
-                    pe_expr = e.expr or e.name
-                    break
-            if pe_expr not in entity_col_names:
-                cols.append(Column(
-                    name=pe_expr,
-                    type=DataType.DOUBLE,
-                    primary_key=True,
-                ))
-                entity_col_names.add(pe_expr)
+            pe_expr = next(
+                (e.expr or e.name for e in sm.entities if e.name == sm.primary_entity),
+                sm.primary_entity,
+            )
+            pk = _key_column(expr=pe_expr, cols=cols)
+            if pk is None and (name := _free_key_name(expr=pe_expr, cols=cols, taken=set())):
+                pk = Column(name=name, type=DataType.DOUBLE)
+                cols.append(pk)
+            if pk is not None:
+                pk.primary_key = True
 
         measure_cols, measures = self._convert_measures(
             dbt_measures=sm.measures,
@@ -419,7 +415,14 @@ class DbtToSlayerConverter:
         )
         cols.extend(measure_cols)
 
-        joins = self.entity_registry.resolve_joins_for_model(sm)
+        joins = self._declare_join_keys(
+            sm_name=sm.name, cols=cols, measure_names={m.name for m in measures},
+            joins=self.entity_registry.resolve_joins_for_model(sm),
+            unkeyable=[
+                e.expr for e in sm.entities
+                if e.type == "foreign" and e.expr and not is_base_column_sql(e.expr)
+            ],
+        )
 
         return SlayerModel(
             name=sm.name,
@@ -433,6 +436,88 @@ class DbtToSlayerConverter:
             joins=joins,
             meta=model_meta or None,
         )
+
+    def _declare_join_keys(
+        self, *, sm_name: str, cols: list[Column], measure_names: set,
+        joins: list[ModelJoin], unkeyable: list[str],
+    ) -> list[ModelJoin]:
+        """Keep joins whose source keys are base columns, synthesising a hidden one for an uncovered foreign entity."""
+        for expr in unkeyable:
+            self._warnings.append(ConversionWarning(
+                model_name=sm_name, category="join", severity="dropped",
+                message=f"Foreign entity expr {expr!r} is not a single column identifier; its join is skipped.",
+                suggestion="Expose the key as a column and name that column in the entity expr.",
+            ))
+        kept: list[ModelJoin] = []
+        for join in joins:
+            srcs = [self._declare_key(key=src, cols=cols, measure_names=measure_names)
+                    for src, _ in join.join_pairs]
+            bad = next((src for (src, _), name in zip(join.join_pairs, srcs) if name is None), None)
+            if bad is None:
+                kept.append(join.model_copy(update={"join_pairs": [
+                    [name, tgt] for name, (_, tgt) in zip(srcs, join.join_pairs)]}))
+                continue
+            self._warn_dropped_join(model_name=sm_name, target=join.target_model, key=bad)
+        return kept
+
+    def _resolve_target_keys(self) -> None:
+        """Rewrite each join's physical target key to the target column's name, dropping unresolvable joins."""
+        for model in self._models_by_name.values():
+            kept: list[ModelJoin] = []
+            for join in model.joins:
+                target = self._models_by_name[join.target_model]
+                tgts = [col.name if (col := _key_column(expr=tgt, cols=target.columns)) else None
+                        for _, tgt in join.join_pairs]
+                bad = next((tgt for (_, tgt), name in zip(join.join_pairs, tgts) if name is None), None)
+                if bad is None:
+                    kept.append(join.model_copy(update={"join_pairs": [
+                        [src, name] for (src, _), name in zip(join.join_pairs, tgts)]}))
+                    continue
+                self._warn_dropped_join(model_name=model.name, target=target.name, key=bad)
+            model.joins = kept
+
+    def _warn_dropped_join(self, *, model_name: str, target: str, key: str) -> None:
+        self._warnings.append(ConversionWarning(
+            model_name=model_name, category="join", severity="dropped",
+            message=(f"Join to '{target}' skipped: key {key!r} is not read by a base "
+                     f"column of its model."),
+        ))
+
+    def _declare_primary_key(self, *, sm_name: str, entity, cols: list[Column]) -> None:
+        """Mark the column reading the entity's physical column as PK, adding one when the name is free."""
+        expr = entity.expr or entity.name
+        col = _key_column(expr=expr, cols=cols)
+        if col is None:
+            name = _free_key_name(expr=expr, cols=cols, taken=set())
+            if name is None:
+                self._warnings.append(ConversionWarning(
+                    model_name=sm_name, category="join", severity="dropped",
+                    message=(f"Entity '{entity.name}' expr {expr!r} is not a free column "
+                             f"identifier; no primary key declared."),
+                ))
+                return
+            col = Column(name=name, type=DataType.DOUBLE)
+            cols.append(col)
+        col.primary_key = True
+        # Keep what the column already has.
+        if col.description is None:
+            col.description = entity.description
+        if col.label is None:
+            col.label = entity.label
+        entity_meta = self._entity_meta(entity)
+        if entity_meta:
+            col.meta = {**entity_meta, **(col.meta or {})}
+
+    @staticmethod
+    def _declare_key(*, key: str, cols: list[Column], measure_names: set) -> str | None:
+        """The name of the column reading physical ``key``, adding a hidden one when the name is free."""
+        col = _key_column(expr=key, cols=cols)
+        if col is not None:
+            return col.name
+        name = _free_key_name(expr=key, cols=cols, taken=measure_names)
+        if name is not None:
+            cols.append(Column(name=name, type=DataType.DOUBLE, hidden=True))
+        return name
 
     @staticmethod
     def _entity_meta(entity) -> dict[str, Any] | None:

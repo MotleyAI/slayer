@@ -19,9 +19,11 @@ from slayer.core.enums import (
     TimeGranularity,
     _coerce_legacy_datatype,
 )
+from slayer.core.errors import JoinKeyError
 from slayer.core.format import NumberFormat
 from slayer.core.formula import ALL_TRANSFORMS
 from slayer.core.keys import SCALAR_FUNCTIONS
+from slayer.core.refs import IDENTIFIER_RE
 from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.sql_predicate import parse_sql_predicate
 from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
@@ -135,6 +137,24 @@ def _validate_column_name(name: str, context: str) -> str:
     return name
 
 
+def _bare_identifier(sql: str) -> str | None:
+    """The identifier ``sql`` names — bare or double-quoted — else ``None``."""
+    text = sql.strip()
+    if len(text) > 1 and text[0] == text[-1] == '"':
+        text = text[1:-1]
+    return text if IDENTIFIER_RE.match(text) else None
+
+
+def is_base_column_sql(sql: str | None) -> bool:
+    """A column ``sql`` that names one physical column (unset, bare or double-quoted identifier)."""
+    return sql is None or _bare_identifier(sql) is not None
+
+
+def physical_column_sql(*, sql: str | None, name: str) -> str:
+    """The unquoted physical identifier of a base column, else ``name``."""
+    return (_bare_identifier(sql) if sql is not None else None) or name
+
+
 class Column(BaseModel):
     """A row-level column, usable per-query as a GROUP BY dimension or an aggregation measure."""
     name: str
@@ -213,6 +233,20 @@ class Column(BaseModel):
         """The value SQL is not the bare self-name; a QUOTED self-name counts, since
         only the expansion door re-qualifies it with its quoting intact."""
         return self.sql is not None and self.sql.strip() != self.name
+
+    @property
+    def is_base(self) -> bool:
+        return is_base_column_sql(self.sql)
+
+    @property
+    def physical_name(self) -> str:
+        """The physical column this base column reads; raises on an expression column."""
+        if not self.is_base:
+            raise JoinKeyError(
+                summary=f"column {self.name!r} is not a base column (sql={self.sql!r}) "
+                        f"and has no physical spelling",
+            )
+        return physical_column_sql(sql=self.sql, name=self.name)
 
     @property
     def needs_expansion(self) -> bool:
@@ -383,7 +417,7 @@ class SourceModelOrigin(BaseModel):
 class ModelJoin(BaseModel):
     """A join relationship to another model."""
     target_model: str                               # Name of the joined model
-    join_pairs: list[list[str]] = Field(...)        # [["source_dim", "target_dim"], ...]
+    join_pairs: list[list[str]] = Field(...)        # [[source column name, target column name], ...]
     join_type: JoinType = JoinType.LEFT             # LEFT (default) or INNER
     # Join arity, read source->target; None = undetermined.
     cardinality: JoinCardinality | None = None
@@ -409,9 +443,47 @@ class ModelJoin(BaseModel):
         for i, pair in enumerate(v):
             if len(pair) != 2 or not all(isinstance(s, str) and s for s in pair):
                 raise ValueError(
-                    f"join_pairs[{i}] must be [source_dim, target_dim] with non-empty strings, got {pair}"
+                    f"join_pairs[{i}] must be [source_column, target_column] with non-empty strings, got {pair}"
                 )
+            for key in pair:
+                _validate_column_name(key, "join_pairs key")
         return v
+
+
+def join_key_error(
+    *, model: str, target: str, key: str, side: str, columns: list[Column],
+) -> JoinKeyError | None:
+    """Why ``key`` is not a declared base column of ``side`` (whose ``columns`` are given)."""
+    head = f"join {model} → {target} key {key!r}"
+    col = next((c for c in columns if c.name == key), None)
+    if col is None:
+        renamed = next((c.name for c in columns
+                        if c.is_base and c.name != key and c.physical_name == key), None)
+        hint = (f"name the column by its name {renamed!r}, not its physical sql" if renamed
+                else f"declare Column(name={key!r}) on '{side}' (sql= its physical column if renamed)")
+        return JoinKeyError(summary=f"{head} is not a declared column of '{side}'",
+                            suggestion=hint)
+    if not col.is_base:
+        return JoinKeyError(
+            summary=f"{head} is an expression column of '{side}' (sql={col.sql!r})",
+            suggestion="key the join on a base column: sql unset or a single column identifier",
+        )
+    if col.filter is not None:
+        return JoinKeyError(
+            summary=f"{head} carries a filter on '{side}'",
+            suggestion="key the join on an unfiltered base column",
+        )
+    return None
+
+
+def _check_join_keys(*, model_name: str, columns: list[Column], joins: list[ModelJoin]) -> None:
+    """Every join's source-side key names a declared, unfiltered base column."""
+    for join in joins:
+        for src, _ in join.join_pairs:
+            err = join_key_error(model=model_name, target=join.target_model, key=src,
+                                 side=model_name, columns=columns)
+            if err is not None:
+                raise err
 
 
 def _check_column_measure_namespace(
@@ -450,7 +522,7 @@ def _check_column_measure_namespace(
 
 
 class SlayerModel(BaseModel):
-    version: int = 10  # v10 = exact-inverse join dedup (bidirectional traversal)
+    version: int = 11  # v11 = join keys canonicalised to Column.name
     name: str
     sql_table: str | None = None
     # Kind of DB object ``sql_table`` names; only auto-ingestion sets it. ``None`` = unknown.
@@ -530,6 +602,13 @@ class SlayerModel(BaseModel):
         _check_column_measure_namespace(
             model_name=self.name, columns=self.columns, measures=self.measures
         )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_join_keys(self) -> "SlayerModel":
+        # An unexpanded query-backed model has no columns yet; checked once populated.
+        if not self.awaits_columns:
+            _check_join_keys(model_name=self.name, columns=self.columns, joins=self.joins)
         return self
 
     @model_validator(mode="after")
@@ -665,6 +744,11 @@ class SlayerModel(BaseModel):
                 f"it with a ModelExtension at query time."
             )
         return self
+
+    @property
+    def awaits_columns(self) -> bool:
+        """Query-backed with its output columns not yet populated."""
+        return bool(self.source_queries) and not self.columns
 
     def get_column(self, name: str) -> Column | None:
         for c in self.columns:

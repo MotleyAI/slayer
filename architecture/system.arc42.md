@@ -128,6 +128,13 @@ All code, old and new, MUST obey these.
     exception). [review]
 15. **Row-level security fails closed**: anything a session policy cannot
     confirm is rejected, never passed through unscoped. [review]
+16. **Logical names, physical once**: every model-level column reference —
+    query fields, `join_pairs`, unique-key sets — names a column by
+    `Column.name`; the physical spelling (`Column.physical_name`: a base
+    column's bare `sql`, else its name) is applied once, where a reference
+    becomes SQL or meets the live schema, and is never the key two references
+    are matched on.
+    [enforced: test:tests/test_dev1902_join_key_spelling.py]
 
 ## 4. Enforcement
 

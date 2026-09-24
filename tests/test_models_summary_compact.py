@@ -65,6 +65,7 @@ async def _seed_orders(storage: YAMLStorage) -> None:
             Column(name="status", type=DataType.TEXT, description="Order state."),
             Column(name="amount", type=DataType.DOUBLE,
                    description="USD amount."),
+            Column(name="customer_id", type=DataType.INT, hidden=True),
         ],
         measures=[
             ModelMeasure(name="revenue", formula="amount:sum"),

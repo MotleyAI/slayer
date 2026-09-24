@@ -71,7 +71,7 @@ column.
 ### Joins
 
 A join's ON clause (`{CUBE}.customer_id = {customers.id}`) becomes
-`join_pairs`; member references resolve to their physical columns. Composite
+`join_pairs` keyed by member name (an operand naming no member becomes a hidden column, and a non-base member drops the join). Composite
 (`AND`-joined) keys are supported. All joins emit as `LEFT`. When a Cube schema
 declares both directions of one relationship (`orders belongs_to customers` and
 `customers has_many orders` over the same columns), the importer keeps a single

@@ -51,6 +51,8 @@ joins:
     cardinality: many_to_one
 ```
 
+An entity's `expr` names a physical column, so each join key names the column that reads it: a dimension whose `expr` is that column, otherwise a new (hidden, for a foreign entity) column; if the name is taken by a column reading something else, the join is skipped with a warning.
+
 Each generated join carries a [`cardinality`](../concepts/models.md#join-cardinality) read source→target: a foreign→primary entity reference is `many_to_one`, while a **peer** join (two models sharing the same primary/unique entity) is `one_to_one` and is declared once per pair — every edge traverses [in both directions](../concepts/models.md#bidirectional-traversal) automatically.
 
 ### Measures — Column + ModelMeasure Split

@@ -122,7 +122,8 @@ class TestModelsSummary:
             data_source="mydb",
             description="Orders fact table.",
             columns=[Column(name="status", type=DataType.TEXT, description="Order state"),
-Column(name="revenue", sql="amount", description="USD", type=DataType.DOUBLE)
+Column(name="revenue", sql="amount", description="USD", type=DataType.DOUBLE),
+                     Column(name="customer_id", type=DataType.INT, hidden=True),
             ],
             joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
         ))
@@ -191,7 +192,8 @@ class TestInspectModel:
             columns=[
                 Column(name="status", type=DataType.TEXT, label="Status", description="Order state"),
                 Column(name="id", type=DataType.DOUBLE, primary_key=True),
-Column(name="revenue", sql="amount", label="Revenue", description="USD total", type=DataType.DOUBLE)
+Column(name="revenue", sql="amount", label="Revenue", description="USD total", type=DataType.DOUBLE),
+                Column(name="customer_id", type=DataType.INT, hidden=True),
             ],
             filters=["deleted_at IS NULL"],
             joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
@@ -255,6 +257,10 @@ Column(name="revenue", sql="amount", label="Revenue", description="USD total", t
         """Joins table renders direct joins without kind labels."""
         await storage.save_model(SlayerModel(
             name="order_items", sql_table="order_items", data_source="test",
+            columns=[
+                Column(name="order_id", type=DataType.INT, hidden=True),
+                Column(name="product_id", type=DataType.INT, hidden=True),
+            ],
             joins=[
                 ModelJoin(target_model="orders", join_pairs=[["order_id", "id"]]),
                 ModelJoin(target_model="products", join_pairs=[["product_id", "id"]]),
@@ -643,6 +649,8 @@ class TestInspectModelSectionGating:
                 Column(name="id", type=DataType.DOUBLE, primary_key=True),
                 Column(name="status", type=DataType.TEXT, description="Order state"),
                 Column(name="amount", sql="amount", type=DataType.DOUBLE),
+                Column(name="customer_id", type=DataType.INT, hidden=True),
+                Column(name="product_id", type=DataType.INT, hidden=True),
             ],
             measures=[
                 ModelMeasure(name="aov", formula="amount:sum / *:count", description="Average order value"),
@@ -1004,6 +1012,7 @@ class TestInspectModelJsonGating:
             columns=[
                 Column(name="id", type=DataType.DOUBLE, primary_key=True),
                 Column(name="status", type=DataType.TEXT),
+                Column(name="customer_id", type=DataType.INT, hidden=True),
             ],
             measures=[ModelMeasure(name="aov", formula="*:count")],
             aggregations=[Aggregation(
@@ -1713,7 +1722,10 @@ class TestEditModel:
     # --- Join upserts ---
 
     async def test_upsert_new_join(self, mcp_server, storage: YAMLStorage) -> None:
-        await storage.save_model(SlayerModel(name="orders", sql_table="t", data_source="test"))
+        await storage.save_model(SlayerModel(
+            name="orders", sql_table="t", data_source="test",
+            columns=[Column(name="customer_id", type=DataType.INT, hidden=True)],
+        ))
         result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
             "joins": [{"target_model": "customers", "join_pairs": [["customer_id", "id"]]}],
@@ -1727,6 +1739,10 @@ class TestEditModel:
     async def test_upsert_existing_join(self, mcp_server, storage: YAMLStorage) -> None:
         await storage.save_model(SlayerModel(
             name="orders", sql_table="t", data_source="test",
+            columns=[
+                Column(name="customer_id", type=DataType.INT, hidden=True),
+                Column(name="buyer_id", type=DataType.INT, hidden=True),
+            ],
             joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
         ))
         result = await _call(mcp_server, name="edit_model", arguments={
@@ -1742,6 +1758,7 @@ class TestEditModel:
     async def test_remove_join(self, mcp_server, storage: YAMLStorage) -> None:
         await storage.save_model(SlayerModel(
             name="orders", sql_table="t", data_source="test",
+            columns=[Column(name="customer_id", type=DataType.INT, hidden=True)],
             joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
         ))
         result = await _call(mcp_server, name="edit_model", arguments={

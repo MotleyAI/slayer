@@ -23,7 +23,10 @@ def _m(name: str, joins: list[ModelJoin] | None = None) -> SlayerModel:
         name=name,
         data_source="mydb",
         sql_table=name,
-        columns=[Column(name="id", sql="id", type=DataType.INT, primary_key=True)],
+        columns=[
+            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+            Column(name="x_id", type=DataType.INT),
+        ],
         joins=joins or [],
     )
 

@@ -34,7 +34,7 @@ from pydantic import BaseModel, ConfigDict, field_validator
 from slayer.core.errors import AggregationNotAllowedError, MaterialisationStageError
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.keys import BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, Phase, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, column_leaf, column_path, is_boolean_shaped, shift_offset_of, source_anchor_path, substitute_value_keys, walk_value_keys
-from slayer.core.join_walker import resolve_hop, terminal_model
+from slayer.core.join_walker import physical_join_pairs, resolve_hop, terminal_model
 from slayer.core.models import Aggregation
 from slayer.core.refs import (
     EXPRESSION_SOURCE_KINDS as _EXPRESSION_SOURCE_KINDS,
@@ -4560,15 +4560,17 @@ class SQLGenerator:
             chain = self._oriented_hop_chain(
                 source_model=source_model, path=path, bundle=bundle,
             )
+            prev_model = source_model
             for hop_idx, (edge, next_model) in enumerate(chain):
                 next_alias = self._join_alias(
                     root=source_relation, path=path[: hop_idx + 1],
                 )
                 if next_alias not in emitted_aliases:
                     join_on_parts = []
-                    for src_col, tgt_col in edge.join_pairs:
-                        # Join keys are physical DB columns — quote them when mixed-case via _to_ident so a case-folding
-                        # backend resolves them; table qualifiers are internal aliases.
+                    for src_col, tgt_col in physical_join_pairs(
+                        edge=edge, source=prev_model, target=next_model,
+                    ):
+                        # _to_ident quotes mixed-case keys; table qualifiers are internal aliases.
                         join_on_parts.append(exp.EQ(
                             this=exp.Column(
                                 this=self._to_ident(src_col),
@@ -4603,6 +4605,7 @@ class SQLGenerator:
                     ))
                     emitted_aliases.add(next_alias)
                 current_alias = next_alias
+                prev_model = next_model
         return base_from, joins
 
     def _joined_or_local_dim_expr(

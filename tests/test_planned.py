@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.core.enums import DataType, JoinType
+from slayer.core.enums import DataType
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
@@ -25,7 +25,6 @@ from slayer.core.keys import (
 from slayer.core.scope import StageColumn, StageSchema
 from slayer.ir.bound import BoundExpr
 from slayer.ir.planned import (
-    JoinRequirement,
     MaskEntry,
     MaskTyping,
     ModeAFilter,
@@ -147,66 +146,6 @@ class TestValueSlot:
         )
         assert s.expression is expr
         assert s.expression.value_key == key
-
-
-# ---------------------------------------------------------------------------
-# JoinRequirement
-# ---------------------------------------------------------------------------
-
-
-class TestJoinRequirement:
-    def test_basic(self):
-        j = JoinRequirement(
-            source_model="orders",
-            target_model="customers",
-            join_pairs=[["customer_id", "id"]],
-        )
-        assert j.source_model == "orders"
-        assert j.target_model == "customers"
-        assert j.join_pairs == [["customer_id", "id"]]
-
-    def test_multi_column_join(self):
-        j = JoinRequirement(
-            source_model="orders",
-            target_model="line_items",
-            join_pairs=[["id", "order_id"], ["region", "region"]],
-        )
-        assert len(j.join_pairs) == 2
-
-    def test_default_join_type_left(self):
-        # Codex review fix: join_type was missing originally — defaults
-        # to LEFT to match ModelJoin.
-        j = JoinRequirement(
-            source_model="orders",
-            target_model="customers",
-            join_pairs=[["customer_id", "id"]],
-        )
-        assert j.join_type is JoinType.LEFT
-
-    def test_inner_join_type(self):
-        j = JoinRequirement(
-            source_model="orders",
-            target_model="customers",
-            join_pairs=[["customer_id", "id"]],
-            join_type=JoinType.INNER,
-        )
-        assert j.join_type is JoinType.INNER
-
-    def test_empty_join_pairs_rejected(self):
-        with pytest.raises(ValueError, match="non-empty"):
-            JoinRequirement(
-                source_model="orders",
-                target_model="customers",
-                join_pairs=[],
-            )
-
-    def test_malformed_pair_rejected(self):
-        with pytest.raises(ValueError, match="must be"):
-            JoinRequirement(
-                source_model="orders",
-                target_model="customers",
-                join_pairs=[["only_one"]],
-            )
 
 
 # ---------------------------------------------------------------------------

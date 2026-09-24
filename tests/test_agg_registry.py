@@ -41,7 +41,11 @@ def _make_model(name: str, *, aggs=None, joins=None) -> SlayerModel:
         name=name,
         data_source="prod",
         sql_table=name,
-        columns=[Column(name="id", type=DataType.INT, primary_key=True)],
+        columns=[
+            Column(name="id", type=DataType.INT, primary_key=True),
+            *(Column(name=k, type=DataType.INT)
+              for k in sorted({p[0] for j in joins or [] for p in j.join_pairs} - {"id"})),
+        ],
         aggregations=aggs or [],
         joins=joins or [],
     )
