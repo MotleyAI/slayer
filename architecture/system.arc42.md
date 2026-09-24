@@ -112,7 +112,11 @@ All code, old and new, MUST obey these.
 9. **Dotted-canonical references**: dots denote join paths in queries and model
    SQL; the legacy `__` split-alias input form is a hard error; `__` survives
    only as an internal generated-SQL join alias (`__slayer_` prefix reserved).
+   A resolved path is **canonical**: each hop spelled by its edge name, else its
+   target model (`customers.regions ≡ customers.hr` for an edge named `hr`); keys,
+   join aliases and result names carry only canonical paths.
    [enforced: test:tests/test_dev1743_resolution.py]
+   [enforced: test:tests/test_dev1954_canonical_paths.py]
 10. **Two expression layers**: Mode A free SQL (`Column.sql`, model `filters`)
     vs Mode B Python-AST DSL (formulas, query fields, scalar allowlist only) —
     one canonical `SCALAR_PASSTHROUGH` set, extended never forked. [review]

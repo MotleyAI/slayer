@@ -5,7 +5,14 @@ import os
 import re
 from typing import Annotated, Any, Optional
 
-from pydantic import BaseModel, BeforeValidator, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    Field,
+    PrivateAttr,
+    field_validator,
+    model_validator,
+)
 from sqlalchemy.engine import URL as _SA_URL
 
 from slayer.core.enums import (
@@ -191,6 +198,8 @@ class Column(BaseModel):
     sampled: str | None = None  # cached sample-value snapshot
     sampled_values: list[str] | None = None  # structured top-N
     distinct_count: int | None = None  # true cardinality at profile time
+    # Runtime-only (never persisted): stale respellings of a generated query-backed column.
+    _respellings: tuple[str, ...] = PrivateAttr(default=())
 
     @model_validator(mode="before")
     @classmethod
@@ -253,6 +262,15 @@ class Column(BaseModel):
         """The reference resolves to more than a bare physical column — a derived
         ``sql`` or an attached ``filter`` — so its uses expand to that definition."""
         return self._sql_is_nontrivial or self.filter is not None
+
+    @property
+    def respellings(self) -> tuple[str, ...]:
+        return self._respellings
+
+    def with_respellings(self, respellings: tuple[str, ...]) -> "Column":
+        out = self.model_copy()
+        out._respellings = tuple(respellings)
+        return out
 
 
 class ModelMeasure(BaseModel):

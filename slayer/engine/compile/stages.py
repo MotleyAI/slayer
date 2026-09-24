@@ -3,6 +3,7 @@ Binding lives in ``bind_inputs``; typing and the checker in ``elaborate_env``.""
 
 from __future__ import annotations
 
+import itertools
 from decimal import Decimal
 from typing import (
     AbstractSet,
@@ -3479,24 +3480,12 @@ def _rewrite_regrouped_prebound(
     mapping, a measure only the combined one (its inners desugar COMBINED)."""
     return PreboundQuery(
         declared_measures=[
-            DeclaredMeasure(
-                bound=BoundExpr(
-                    value_key=substitute_value_keys(
-                        dm.bound.value_key,
-                        mapping if dm.is_dimension else combined_mapping,
-                    ),
+            dm.model_copy(update={"bound": BoundExpr(
+                value_key=substitute_value_keys(
+                    dm.bound.value_key,
+                    mapping if dm.is_dimension else combined_mapping,
                 ),
-                declared_name=dm.declared_name,
-                public_name=dm.public_name,
-                label=dm.label,
-                canonical_alias=dm.canonical_alias,
-                type=dm.type,
-                type_is_explicit=dm.type_is_explicit,
-                preserve_native_type=dm.preserve_native_type,
-                format=dm.format,
-                description=dm.description,
-                is_dimension=dm.is_dimension,
-            )
+            )})
             for dm in prebound.declared_measures
         ],
         bound_filters=[
@@ -4236,6 +4225,10 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
     transform_layers = _emit_transform_layers(slots=projection.registry.slots)
     stage_schema = _emit_stage_schema(
         stage_name=query.name, projection=projection,
+        root=render_source_model, models_by_name=bundle.models_by_name,
+        originals={sub.placeholder: sub.original_key
+                   for attach in regroup_attach_plans for sub in attach.substitutions},
+        upstream=_upstream_respellings(scope),
     )
 
     # Frame-bound column set: raw columns of this stage's non-hidden time dimensions.
@@ -4452,10 +4445,92 @@ def _bucket_slots(slots: List[ValueSlot]):
     return row, agg, combined
 
 
+def _value_anchor_path(key: ValueKey) -> Tuple[str, ...]:
+    """The join path a path-derived output's auto-name is prefixed with."""
+    if isinstance(key, TimeTruncKey):
+        key = key.column
+    if isinstance(key, (ColumnKey, ColumnSqlKey, StarKey)):
+        return tuple(key.path)
+    if isinstance(key, AggregateKey):
+        return source_anchor_path(key.source)
+    return ()
+
+
+def _respellings(
+    *, flat: str, key: ValueKey, root: Optional[SlayerModel],
+    models_by_name: Dict[str, SlayerModel], upstream: Mapping[str, Tuple[str, ...]],
+) -> Tuple[str, ...]:
+    """Every stale spelling of ``flat``: its path's named hops spelled by their
+    target model (any subset), crossed with the leaf column's own respellings
+    (auto-names are path- then leaf-prefixed, so re-deriving substitutes both)."""
+    path = _value_anchor_path(key)
+    if not path:
+        return _leaf_variants(rest=flat, key=key, upstream=upstream)[1:]
+    prefix = "__".join(path) + "__"
+    if root is None or not flat.startswith(prefix):
+        return ()
+    try:
+        chain = walk(root=root, path=path, models_by_name=models_by_name)
+    except (AmbiguousJoinPathError, CircularJoinPathError):
+        return ()
+    if not chain:
+        return ()
+    named = [i for i, e in enumerate(chain) if e.name is not None]
+    paths = [
+        "__".join(chain[i].target_model if i in subset else tok
+                  for i, tok in enumerate(path))
+        for r in range(len(named) + 1)
+        for subset in itertools.combinations(named, r)
+    ]
+    terminal = models_by_name.get(chain[-1].target_model)
+    leaves = _leaf_variants(
+        rest=flat[len(prefix):], key=key,
+        upstream=_column_respellings(terminal.columns if terminal else []),
+    )
+    return tuple(p + "__" + leaf for p in paths for leaf in leaves)[1:]
+
+
+def _column_respellings(columns) -> Dict[str, Tuple[str, ...]]:
+    return {c.name: c.respellings for c in columns if c.respellings}
+
+
+def _upstream_respellings(
+    scope: Union[ModelScope, StageSchema],
+) -> Dict[str, Tuple[str, ...]]:
+    """Respellings of the columns a stage reads locally (upstream stage / query-backed)."""
+    if isinstance(scope, StageSchema):
+        return _column_respellings(scope.columns)
+    if scope.source_model is None:
+        return {}
+    return _column_respellings(scope.source_model.columns)
+
+
+def _leaf_variants(
+    *, rest: str, key: ValueKey, upstream: Mapping[str, Tuple[str, ...]],
+) -> Tuple[str, ...]:
+    """``rest`` first, then ``rest`` with its source column's name swapped for
+    each of that column's respellings."""
+    if isinstance(key, TimeTruncKey):
+        key = key.column
+    if isinstance(key, AggregateKey):
+        key = key.source
+    if not isinstance(key, (ColumnKey, ColumnSqlKey)):
+        return (rest,)
+    name = column_leaf(key)
+    if not rest.startswith(name):
+        return (rest,)
+    tail = rest[len(name):]
+    return (rest, *(r + tail for r in upstream.get(name, ())))
+
+
 def _emit_stage_schema(
     *,
     stage_name: Optional[str],
     projection,
+    root: Optional[SlayerModel] = None,
+    models_by_name: Optional[Dict[str, SlayerModel]] = None,
+    originals: Optional[Mapping[ValueKey, ValueKey]] = None,
+    upstream: Optional[Mapping[str, Tuple[str, ...]]] = None,
 ) -> StageSchema:
     columns: List[StageColumn] = []
     alias_idx: Dict[str, int] = {}
@@ -4491,6 +4566,10 @@ def _emit_stage_schema(
             hidden=False,
             format=slot.format,
             description=slot.description,
+            respellings=() if alias in slot.explicit_aliases else _respellings(
+                flat=flat, key=(originals or {}).get(slot.key, slot.key), root=root,
+                models_by_name=models_by_name or {}, upstream=upstream or {},
+            ),
         ))
     return StageSchema(
         relation_name=stage_name or "(unnamed_stage)", columns=columns,
