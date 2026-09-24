@@ -18,7 +18,7 @@
 ## 2. Baseline
 
 - [x] 2.1 Re-merge `origin/main` at the start of spec-implement (merge commit, never rebase); verify the full non-integration suite and every DEV-1958 test green before touching planner code
-- [ ] 2.2 Confirm the post-1958 regressions in `tests/test_dev1903_producer_flag.py` (written in 1.2 against the merged baseline): a shifted producer with an own-grain ranked answer, a strict-constituent ranked answer, a windowed constituent, and carried attaches — only strict constituents nest, the answer itself does not, `attach_phase="shifted"` / `shift_of` / `answer_slot_id` unchanged; verify RED where the always-on flag changes today's nesting, else document as pins
+- [x] 2.2 Confirm the post-1958 regressions in `tests/test_dev1903_producer_flag.py` (written in 1.2 against the merged baseline): a shifted producer with an own-grain ranked answer, a strict-constituent ranked answer, a windowed constituent, and carried attaches — only strict constituents nest, the answer itself does not, `attach_phase="shifted"` / `shift_of` / `answer_slot_id` unchanged; verify RED where the always-on flag changes today's nesting, else document as pins
 
 ## 3. Item 4 — first/last dispatch by type (design D5)
 
@@ -33,16 +33,16 @@
 
 ## 5. Item 2 — one producer flag (design D3)
 
-- [ ] 5.1 Delete both flags from every entry point (`slayer/engine/compile/__init__.py` included); add `elaborate_synthesized`, `ElaboratedStage` / `ElaboratedProducer`, `ProducerContext`, `InheritedPopulation` / `NoInheritedPopulation`; split `compile_prebound` into the private `_route_top_level` / `_route_producer` / `_emit_planned` core; the top-level path owns filter split, disposal, strip and the total-routing assert; `compile_synthesized` requires `population`; delete the six caller-side predicates + `_answers_need_nested_regroups`; verify 1.2 entry-point tests green
+- [x] 5.1 Delete both flags from every entry point (`slayer/engine/compile/__init__.py` included); add `elaborate_synthesized`, `ElaboratedStage` / `ElaboratedProducer`, `ProducerContext`, `InheritedPopulation` / `NoInheritedPopulation`; split `compile_prebound` into the private `_route_top_level` / `_route_producer` / `_emit_planned` core; the top-level path owns filter split, disposal, strip and the total-routing assert; `compile_synthesized` requires `population`; delete the six caller-side predicates + `_answers_need_nested_regroups`; verify 1.2 entry-point tests green
 - [ ] 5.2 `_route_producer` nesting rule under `ProducerContext.enclosing_grain`: strict subset of the producer grain (+ D6 clause + windowed-transform-input clause); verify the probe-A shape (1.2), `tests/test_dev1847_modes.py`, every golden byte-identical, full suite green
-- [ ] 5.3 1.9 / 1.10 edits land with this item; verify the whole `tests/test_filtered_local_isolation.py`, `tests/test_dev1747_order_entry.py`, `tests/test_dev1836_total_routing.py` green
+- [x] 5.3 1.9 / 1.10 edits land with this item; verify the whole `tests/test_filtered_local_isolation.py`, `tests/test_dev1747_order_entry.py`, `tests/test_dev1836_total_routing.py` green
 
 ## 6. Item 1 — one discovery walk (design D1, D2, D6)
 
-- [ ] 6.1 `slayer/engine/compile/discovery.py`: `RootDisposition` + `discover_roots`; verify 1.1 green
+- [x] 6.1 `slayer/engine/compile/discovery.py`: `RootDisposition` + `discover_roots`; verify 1.1 green
 - [ ] 6.2 `_plan_regroups` consumes the disposition list: grouping by (phase, routing), consumer names merged, synthesis loops unchanged; delete the four walks, `CombinedConsumers`, `_bare_combined_roots`, `_discover_roots`, the `_local_broadcasts` scan, `producer_bound` / `mixed_inline_inner` arithmetic; split into discovery → grouping → synthesis (NOSONAR gone); verify every golden byte-identical and the full suite green
-- [ ] 6.3 D2 opacity: `aggregate_input_closure` loses `descend_aggregates`; `local_crossing_input_paths` deleted; the crossing-root predicate judges each node by its own closure; verify 1.3 green, goldens byte-identical (record any movement in `divergences.md` in this folder)
-- [ ] 6.4 D6: `compile/shift.py::plan_shifted_producers` takes the walk's non-series shift candidates; verify every `tests/test_dev1958_*` test and 2.2 green
+- [x] 6.3 D2 opacity: `aggregate_input_closure` loses `descend_aggregates`; `local_crossing_input_paths` deleted; the crossing-root predicate judges each node by its own closure; verify 1.3 green, goldens byte-identical (record any movement in `divergences.md` in this folder)
+- [x] 6.4 D6: `compile/shift.py::plan_shifted_producers` takes the walk's non-series shift candidates; verify every `tests/test_dev1958_*` test and 2.2 green
 
 ## 7. Architecture, docs, gates
 
