@@ -1,14 +1,14 @@
 ## 1. Failing tests (spec-tests stage)
 
-- [ ] 1.1 Base ctor unit tests: keyword-only; renders `Class: summary` + optional `  at` / `  scope:` / `  suggestion:` lines; attributes set (`None` when absent); `QueryTypeError(...)` itself raises `TypeError` — verify red before 2.1
-- [ ] 1.2 Per-family table test: one real query per family (spec scenarios) asserting the exact class, `isinstance` of `QueryTypeError` / `SlayerError` / `ValueError`, first line `== f"{Class}: {exc.summary}"`, `at` / `suggestion` lines and attributes where expected — verify red
-- [ ] 1.3 Time-axis: `TimeAxisError`, `not isinstance(e, NotImplementedError)`; REST `/query` answers 400 with detail starting `TimeAxisError:` — verify red
-- [ ] 1.4 Flight SQL: a checker type error surfaces as invalid-argument (not unimplemented) carrying the error text — verify (may already pass via pyarrow; the pin is the deliverable)
-- [ ] 1.5 `WindowDurationError` from `parse_window_duration` directly for non-string, `''`, `'d90'`, `'0d'`, and through a query `sum(revenue, window='90x')` — verify red
-- [ ] 1.6 `SlayerQuery(distinct_dimension_values=False, measures=[...])` fails with `DistinctDimensionValuesError: ` text whose underlying error is a `QueryTypeError` — verify red
-- [ ] 1.7 MCP `_format_resolution_error` prints the class name once for a stably formatted error — verify red
-- [ ] 1.8 Parity-ratchet self-checks: a scratch checker row whose exc is `ValueError`, or the `QueryTypeError` base, is red — verify red against the extended assertion
-- [ ] 1.9 Ledger + parity test (design D5): `_collapsed` reads summary/location/scope/suggestion kwargs; slayer-root-relative scanned modules incl. `core/window_duration.py`; checker rows' `exc` / `message` rewritten to the target classes and collapsed D3 messages; new `_WD` rows — verify the parity test is red against today's code
+- [x] 1.1 Base ctor unit tests: keyword-only; renders `Class: summary` + optional `  at` / `  scope:` / `  suggestion:` lines; attributes set (`None` when absent); `QueryTypeError(...)` itself raises `TypeError` — verify red before 2.1
+- [x] 1.2 Per-family table test: one real query per family (spec scenarios) asserting the exact class, `isinstance` of `QueryTypeError` / `SlayerError` / `ValueError`, first line `== f"{Class}: {exc.summary}"`, `at` / `suggestion` lines and attributes where expected — verify red
+- [x] 1.3 Time-axis: `TimeAxisError`, `not isinstance(e, NotImplementedError)`; REST `/query` answers 400 with detail starting `TimeAxisError:` — verify red
+- [x] 1.4 Flight SQL: a checker type error surfaces as invalid-argument (not unimplemented) carrying the error text — verify (may already pass via pyarrow; the pin is the deliverable)
+- [x] 1.5 `WindowDurationError` from `parse_window_duration` directly for non-string, `''`, `'d90'`, `'0d'`, and through a query `sum(revenue, window='90x')` — verify red
+- [x] 1.6 `SlayerQuery(distinct_dimension_values=False, measures=[...])` fails with `DistinctDimensionValuesError: ` text whose underlying error is a `QueryTypeError` — verify red
+- [x] 1.7 MCP `_format_resolution_error` prints the class name once for a stably formatted error — verify red
+- [x] 1.8 Parity-ratchet self-checks: a scratch checker row whose exc is `ValueError`, or the `QueryTypeError` base, is red — verify red against the extended assertion
+- [x] 1.9 Ledger + parity test (design D5): `_collapsed` reads summary/location/scope/suggestion kwargs; slayer-root-relative scanned modules incl. `core/window_duration.py`; checker rows' `exc` / `message` rewritten to the target classes and collapsed D3 messages; new `_WD` rows — verify the parity test is red against today's code
 
 ## 2. Error family (`slayer/core/errors.py`)
 

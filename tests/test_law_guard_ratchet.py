@@ -36,8 +36,7 @@ DEFERRAL_CLASSIFIER = re.compile(
 
 #: Expressiveness fail-closed messages (regex vs the raise's literal parts,
 #: f-string expressions collapsed). Anchored entries double as ref-drop
-#: enforcement: the time-axis arm and the aggregated-expression arm may not
-#: keep their closed-issue tails.
+#: enforcement: the aggregated-expression arm may not keep its closed-issue tail.
 ALLOWED_EXPRESSIVENESS = [
     r"not supported on (MySQL|T-SQL)",
     r"^Ranked CTE cannot anchor",
@@ -59,7 +58,6 @@ ALLOWED_EXPRESSIVENESS = [
     r"NULL is not allowed inside an IN list",
     r"ScopeFrame\.resolve does not yet handle",
     r"^Row-level expression cannot contain",
-    r"^A time-ordered transform .* accumulates within its own grain\.$",
     r"^Scalar arity check failed:",
 ]
 

@@ -9,7 +9,7 @@ Every query type error the checker raises SHALL be an instance of a concrete rul
 
 #### Scenario: A partition key that is not a query dimension
 - **WHEN** a query's rank-family transform declares a `partition_by=` column that is neither a query dimension nor a time dimension
-- **THEN** the query fails with a `PartitionKeyError` whose first line is `PartitionKeyError: ` followed by its summary, whose `at` line names the transform's measure, and whose `suggestion:` line names the remedy and the available dimensions
+- **THEN** the query fails with a `PartitionKeyError` whose first line is `PartitionKeyError: ` followed by its summary, whose `at` line names the transform (`transform '<op>'`), and whose `suggestion:` line names the remedy and the available dimensions
 
 #### Scenario: The whole family is catchable as one type and as ValueError
 - **WHEN** any query type error is raised

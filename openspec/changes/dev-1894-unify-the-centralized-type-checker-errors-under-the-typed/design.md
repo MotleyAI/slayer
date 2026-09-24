@@ -38,7 +38,7 @@ Row → class mapping:
 
 `PositionTypingError`, `DistinctDimensionValuesError`, `TimeDimensionColumnError` move from a positional message to the base's keyword ctor.
 
-**D3 — Message schema (Q3 = a, Q6 = i).** `location` = the subject, spelled `measure '<alias>'` / `filter '<text>'` / `dimension '<name>'` / `order item '<text>'` / `transform '<op>'` / `time dimension '<name>'` / `model filter '<text>'`, omitted when none; `summary` = the defect with the subject removed — the only rewording allowed is dropping the subject and fixing grammar; `suggestion` = the remedy sentence(s), unchanged. Every changed message is an individually blessed golden delta. Rejected: prefix-only (satisfies P4 in the letter only; no structured fields).
+**D3 — Message schema (Q3 = a, Q6 = i).** `location` = the subject, spelled `measure '<alias>'` / `filter '<text>'` / `dimension '<name>'` / `order item '<text>'` / `transform '<op>'` / `aggregation '<agg>'` / `time dimension '<name>'` / `model filter '<text>'`, omitted when none; `summary` = the defect with the subject removed — the only rewording allowed is dropping the subject and fixing grammar; `suggestion` = the remedy sentence(s), unchanged. Every changed message is an individually blessed golden delta. Rejected: prefix-only (satisfies P4 in the letter only; no structured fields).
 
 **D4 — Window durations (Q4 = a).** `parse_window_duration` raises `WindowDurationError` for every arm and gains the non-string guard (Codex 3); `check_window_duration` just calls it, so there is one raise path. The ledger scans `core/window_duration.py`. Rejected: checker catch-and-rethrow (leaves the parser raising bare `ValueError`), leaving it to DEV-1969 (two shapes for one mistake).
 
