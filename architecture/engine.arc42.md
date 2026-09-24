@@ -123,6 +123,7 @@ elaborate→compile and `query_engine.py` orchestrates.
    in the parser; both aggregation spellings (colon and functional) collapse to
    one node, so everything downstream is spelling-insensitive by construction.
    [review]
+   [enforced: test:tests/test_dev1903_first_last_dispatch.py]
 3. **Resolution is pure; storage is consulted once**: everything binding needs
    is resolved eagerly into the source bundle at the top of execution, making
    the binder a deterministic function of (parsed, scope, bundle) — no
