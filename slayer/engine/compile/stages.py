@@ -3132,7 +3132,7 @@ class _ReaggregationRoots(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    phase: Dict[ValueKey, Literal["row", "combined"]] = Field(default_factory=dict)
+    phase: Dict[AggregateKey, Literal["row", "combined"]] = Field(default_factory=dict)
     public_alias: Dict[ValueKey, str] = Field(default_factory=dict)
     declared_type: Dict[ValueKey, DataType] = Field(default_factory=dict)
 
@@ -3140,7 +3140,7 @@ class _ReaggregationRoots(BaseModel):
 def _group_reaggregation_roots(dispositions: Sequence[RootDisposition]) -> _ReaggregationRoots:
     out = _ReaggregationRoots()
     for d in dispositions:
-        if d.routing != "reaggregation":
+        if d.routing != "reaggregation" or not isinstance(d.root, AggregateKey):
             continue
         if out.phase.get(d.root) != "row":
             out.phase[d.root] = d.phase
@@ -3160,7 +3160,7 @@ class _RoutedRoots(BaseModel):
     row_target: List[ValueKey] = Field(default_factory=list)
     combined_local: List[ValueKey] = Field(default_factory=list)
     combined_target: List[ValueKey] = Field(default_factory=list)
-    reagg_constituents: List[ValueKey] = Field(default_factory=list)
+    reagg_constituents: List[AggregateKey] = Field(default_factory=list)
     inline_inputs: List[ValueKey] = Field(default_factory=list)
     public_alias: Dict[ValueKey, str] = Field(default_factory=dict)
     declared_type: Dict[ValueKey, DataType] = Field(default_factory=dict)
@@ -3188,7 +3188,7 @@ def _group_routed_roots(  # NOSONAR(S3776) — one grouping pass over the dispos
     def _mapped(k: ValueKey) -> ValueKey:
         return substitute_consumer_keys(k, reagg_mapping) if reagg_mapping else k
 
-    def _add(bucket: List[ValueKey], k: ValueKey) -> None:
+    def _add(bucket: List[Any], k: ValueKey) -> None:
         if k not in bucket:
             bucket.append(k)
 
@@ -3201,7 +3201,7 @@ def _group_routed_roots(  # NOSONAR(S3776) — one grouping pass over the dispos
     for d in dispositions:
         if d.routing in ("reaggregation", "shifted", "inline"):
             continue
-        if d.routing == "reaggregation_constituent":
+        if d.routing == "reaggregation_constituent" and isinstance(d.root, AggregateKey):
             _add(out.reagg_constituents, d.root)
             consumers = out.constituent_consumers.setdefault(d.root, [])
             consumers.extend(n for n in d.consumer_public_names if n not in consumers)
@@ -3231,7 +3231,7 @@ def _group_routed_roots(  # NOSONAR(S3776) — one grouping pass over the dispos
     for root in dict.fromkeys([*inline_roots, *demoted]):
         for inp in (row_attach_inputs(root, names=names_of.get(root, ()))
                     if root in demoted else []):
-            if inp.routing == "reaggregation_constituent":
+            if inp.routing == "reaggregation_constituent" and isinstance(inp.root, AggregateKey):
                 _add(out.reagg_constituents, inp.root)
                 consumers = out.constituent_consumers.setdefault(inp.root, [])
                 consumers.extend(n for n in inp.consumer_public_names if n not in consumers)
@@ -3363,9 +3363,11 @@ def _local_regroup_kernel(
         build = _ranked_kernel
     else:
         return {}
+    root_model = producer_plan.render_source_model or bundle.source_model
+    assert root_model is not None  # a local producer renders against its host
     return {"kernel": build(
         producer_plan=producer_plan, agg_key=answer,
-        root_model=producer_plan.render_source_model or bundle.source_model,
+        root_model=root_model,
         bundle=bundle, alias=canonical_aggregate_alias(answer, profile="stage_formula"),
         target_rooted=False,
     )}
@@ -3607,16 +3609,19 @@ def _plan_regroups(
         population=population, producer_model=producer_model, mapping=mapping,
         inherited=inherited, n_inherited_date=n_inherited_date,
     )
+    phases: List[Tuple[
+        Literal["row", "combined"], List[ValueKey], Callable[[Grain], List[ValueKey]],
+        Dict[ValueKey, str], Dict[ValueKey, str],
+    ]] = [
+        ("row", row_aggs, _regroup_partition_order, {}, {}),
+        ("combined", combined_aggs, _combined_order, public_alias_by_agg, grain_name_by_key),
+    ]
     attaches: List[RegroupAttachPlan] = [
         _synthesize_local_regroup(
             ctx=ctx, phase=phase, pks=pks, windowed=windowed, aggs=aggs,
             order_fn=order_fn, alias_map=alias_map, grain_names=grain_names,
         )
-        for phase, phase_aggs, order_fn, alias_map, grain_names in (
-            ("row", row_aggs, _regroup_partition_order, {}, {}),
-            ("combined", combined_aggs, _combined_order, public_alias_by_agg,
-             grain_name_by_key),
-        )
+        for phase, phase_aggs, order_fn, alias_map, grain_names in phases
         for pks, windowed, aggs in _local_regroup_groups(
             phase_aggs, projected_dim_keys=projected_dim_keys,
             projected_td_keys=projected_td_keys, active_bucket=active_bucket,
@@ -3745,7 +3750,6 @@ def compile_synthesized(
         prebound, bundle=bundle, scope=scope, stage_schemas=stage_schemas,
         source_model=source_model,
     )
-    assert env.prebound is not None and env.query is not None
     context = ProducerContext(
         enclosing_grain=Grain.of(dm.bound.value_key for dm in env.prebound.grain_declared_measures),
         population=population,
@@ -3766,7 +3770,6 @@ def compile_stage(
 ) -> PlannedQuery:
     """Compile one user-authored stage: the once-per-stage steps (population
     disposal, redundant-partition strip, total routing) run here only."""
-    assert env.prebound is not None and env.scope is not None and env.bundle is not None
     return _emit_planned(_route_top_level(
         env, producer_registry={} if producer_registry is None else producer_registry,
     ))
@@ -3777,8 +3780,8 @@ class _Routed(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    query: Union[SlayerQuery, StrictQueryCarrier, None]
-    env: ElaboratedQuery
+    query: Union[SlayerQuery, StrictQueryCarrier]
+    env: Union[ElaboratedStage, ElaboratedProducer]
     typed_prebound: PreboundQuery
     prebound: PreboundQuery
     attaches: List[RegroupAttachPlan]
@@ -3798,7 +3801,6 @@ def _route_top_level(
     env: ElaboratedStage, *, producer_registry: Dict[Hashable, PlannedQuery],
 ) -> _Routed:
     prebound, scope, bundle = env.prebound, env.scope, env.bundle
-    assert prebound is not None and scope is not None and bundle is not None
     filter_typings = list(env.filter_typings)
     population = _population_of(dispose_population_filters(
         prebound=prebound, filter_typings=filter_typings, scope=scope, bundle=bundle,
@@ -3818,6 +3820,7 @@ def _route_top_level(
         population=population,
     )
     _assert_total_routing(routed_prebound)
+    assert env.query is not None  # compile_query admits only a stage with its query
     return _Routed(
         query=env.query, env=env, typed_prebound=prebound, prebound=routed_prebound,
         attaches=attaches, population=population, producer_registry=producer_registry,
@@ -3830,7 +3833,6 @@ def _route_producer(
     producer_registry: Dict[Hashable, PlannedQuery],
 ) -> _Routed:
     prebound, scope, bundle = env.prebound, env.scope, env.bundle
-    assert prebound is not None and scope is not None and bundle is not None
     dispositions = discover_roots(
         prebound, filter_typings=env.filter_typings, scope=scope, bundle=bundle,
     )
@@ -3853,10 +3855,9 @@ def _route_producer(
     )
 
 
-def _producer_source_model(env: ElaboratedQuery) -> Optional[str]:
-    query = getattr(env, "query", None)
-    if query is not None and isinstance(query.source_model, str):
-        return query.source_model
+def _producer_source_model(env: Union[ElaboratedStage, ElaboratedProducer]) -> Optional[str]:
+    if env.query is not None and isinstance(env.query.source_model, str):
+        return env.query.source_model
     if isinstance(env.scope, ModelScope) and env.scope.source_model is not None:
         return env.scope.source_model.name
     return None
@@ -3870,7 +3871,6 @@ def _strip_redundant_partitions(env: ElaboratedStage) -> PreboundQuery:
     """A LOCAL row-attach root partitioned by exactly the query grain aggregates
     INLINE with its inputs row-attached (DEV-1859 decision 10)."""
     prebound, scope, bundle = env.prebound, env.scope, env.bundle
-    assert prebound is not None and scope is not None and bundle is not None
     query_grain = Grain.of(dm.bound.value_key for dm in prebound.grain_declared_measures)
     roots = dict.fromkeys(d.root for d in discover_roots(
         prebound, filter_typings=env.filter_typings, scope=scope, bundle=bundle,
@@ -3936,7 +3936,6 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
     env = routed.env
     query = routed.query
     scope, bundle = env.scope, env.bundle
-    assert scope is not None and bundle is not None
     stage_schemas = dict(env.stage_schemas)
     filter_typings = list(env.filter_typings)
     typed_prebound = routed.typed_prebound
@@ -4261,7 +4260,7 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
         candidates=routed.shift_candidates,
     )]
     # Assign every slot its materialisation stage / needs-column / series fact
-    # (DEV-1800 D3); producer bodies were staged by their own compile_prebound.
+    # (DEV-1800 D3); producer bodies were staged by their own compilation.
     row_slots, agg_slots, combined_slots = stage_slots(
         row_slots=row_slots,
         aggregate_slots=agg_slots,
