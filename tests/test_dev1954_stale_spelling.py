@@ -70,6 +70,26 @@ async def unnamed_engine(request) -> AsyncIterator[SlayerQueryEngine]:
         yield e
 
 
+def _ambiguous_qb_models() -> List[SlayerModel]:
+    """+ ``pq`` projecting both parallel edges and ``regions.amb`` reading it by the
+    stale spelling (a respelling of two ``pq`` columns)."""
+    models = _parallel_models()
+    regions = next(m for m in models if m.name == "regions")
+    regions.joins.append(ModelJoin(
+        target_model="pq", join_pairs=[["id", "customers__region_id"]]))
+    regions.columns.append(Column(name="amb", sql=f"pq.{STALE}"))
+    return [*models, SlayerModel(
+        name="pq", data_source="test", source_queries=[orders_q(
+            dimensions=["customers.region_id", "customers.hr.rname", "customers.hr2.rname"],
+            measures=[{"formula": "amount:sum", "name": "amt"}])])]
+
+
+@pytest.fixture(params=["sqlite", "duckdb"])
+async def ambiguous_qb_engine(request) -> AsyncIterator[SlayerQueryEngine]:
+    async for e in make_exec_engine(request, models=_ambiguous_qb_models()):
+        yield e
+
+
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def parallel_engine(request) -> AsyncIterator[SlayerQueryEngine]:
     async for e in make_exec_engine(request, models=_parallel_models()):
@@ -221,6 +241,16 @@ class TestDownstreamStageStaleReference:
         with pytest.raises(UnknownReferenceError, match=STALE):
             await parallel_engine.execute(stages)
 
+    async def test_joined_query_backed_leaf_downstream(self, engine) -> None:
+        stage1 = slayer_query(name="s1", source_model="regions",
+                              dimensions=[f"region_amounts.{CANON}"])
+        resp = await engine.execute([stage1, slayer_query(
+            source_model="s1", dimensions=[f"region_amounts__{STALE}"])])
+        assert {r[f"s1.region_amounts__{CANON}"] for r in resp.data} == {"North", "South"}
+        (w,) = stale_warnings(resp)
+        assert (w.original, w.normalized) == (
+            f"region_amounts__{STALE}", f"region_amounts__{CANON}")
+
     async def test_exact_name_wins(self, engine) -> None:
         stage1 = _stage1(measures=[{"formula": "amount:sum", "name": STALE}])
         resp = await engine.execute([stage1, slayer_query(
@@ -243,6 +273,11 @@ class TestDownstreamStageStaleReference:
 # Query-backed consumers.
 # --------------------------------------------------------------------------- #
 class TestQueryBackedConsumer:
+    async def test_ambiguous_column_sql_fails_closed(self, ambiguous_qb_engine) -> None:
+        query = slayer_query(source_model="regions", dimensions=["amb"])
+        with pytest.raises(UnknownReferenceError, match=STALE):
+            await ambiguous_qb_engine.execute(query)
+
     async def test_query_on_the_query_backed_model(self, engine) -> None:
         stale = await engine.execute(slayer_query(
             source_model="region_amounts", dimensions=[STALE], measures=["amt:sum"]))

@@ -4460,12 +4460,12 @@ def _respellings(
     *, flat: str, key: ValueKey, root: Optional[SlayerModel],
     models_by_name: Dict[str, SlayerModel], upstream: Mapping[str, Tuple[str, ...]],
 ) -> Tuple[str, ...]:
-    """``flat`` with every non-empty subset of its path's named hops spelled by
-    their target model (auto-names are path-prefixed, so re-deriving substitutes
-    the prefix)."""
+    """Every stale spelling of ``flat``: its path's named hops spelled by their
+    target model (any subset), crossed with the leaf column's own respellings
+    (auto-names are path- then leaf-prefixed, so re-deriving substitutes both)."""
     path = _value_anchor_path(key)
     if not path:
-        return _inherited_respellings(flat=flat, key=key, upstream=upstream)
+        return _leaf_variants(rest=flat, key=key, upstream=upstream)[1:]
     prefix = "__".join(path) + "__"
     if root is None or not flat.startswith(prefix):
         return ()
@@ -4476,13 +4476,22 @@ def _respellings(
     if not chain:
         return ()
     named = [i for i, e in enumerate(chain) if e.name is not None]
-    rest = flat[len(prefix):]
-    return tuple(
+    paths = [
         "__".join(chain[i].target_model if i in subset else tok
-                  for i, tok in enumerate(path)) + "__" + rest
-        for r in range(1, len(named) + 1)
+                  for i, tok in enumerate(path))
+        for r in range(len(named) + 1)
         for subset in itertools.combinations(named, r)
+    ]
+    terminal = models_by_name.get(chain[-1].target_model)
+    leaves = _leaf_variants(
+        rest=flat[len(prefix):], key=key,
+        upstream=_column_respellings(terminal.columns if terminal else []),
     )
+    return tuple(p + "__" + leaf for p in paths for leaf in leaves)[1:]
+
+
+def _column_respellings(columns) -> Dict[str, Tuple[str, ...]]:
+    return {c.name: c.respellings for c in columns if c.respellings}
 
 
 def _upstream_respellings(
@@ -4490,28 +4499,28 @@ def _upstream_respellings(
 ) -> Dict[str, Tuple[str, ...]]:
     """Respellings of the columns a stage reads locally (upstream stage / query-backed)."""
     if isinstance(scope, StageSchema):
-        return {c.name: c.respellings for c in scope.columns if c.respellings}
+        return _column_respellings(scope.columns)
     if scope.source_model is None:
         return {}
-    return {c.name: c.respellings for c in scope.source_model.columns if c.respellings}
+    return _column_respellings(scope.source_model.columns)
 
 
-def _inherited_respellings(
-    *, flat: str, key: ValueKey, upstream: Mapping[str, Tuple[str, ...]],
+def _leaf_variants(
+    *, rest: str, key: ValueKey, upstream: Mapping[str, Tuple[str, ...]],
 ) -> Tuple[str, ...]:
-    """``flat`` with the passed-through upstream column's name swapped for each
-    of that column's respellings."""
+    """``rest`` first, then ``rest`` with its source column's name swapped for
+    each of that column's respellings."""
     if isinstance(key, TimeTruncKey):
         key = key.column
     if isinstance(key, AggregateKey):
         key = key.source
-    if not isinstance(key, (ColumnKey, ColumnSqlKey)) or key.path:
-        return ()
+    if not isinstance(key, (ColumnKey, ColumnSqlKey)):
+        return (rest,)
     name = column_leaf(key)
-    if not flat.startswith(name):
-        return ()
-    rest = flat[len(name):]
-    return tuple(r + rest for r in upstream.get(name, ()))
+    if not rest.startswith(name):
+        return (rest,)
+    tail = rest[len(name):]
+    return (rest, *(r + tail for r in upstream.get(name, ())))
 
 
 def _emit_stage_schema(

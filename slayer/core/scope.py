@@ -29,6 +29,7 @@ from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple, TypeVar
 from pydantic import BaseModel, ConfigDict
 
 from slayer.core.enums import DataType, TimeGranularity
+from slayer.core.errors import UnknownReferenceError
 from slayer.core.format import NumberFormat
 from slayer.core.models import Column, SlayerModel
 
@@ -145,10 +146,19 @@ def resolve_generated_column(
     model: SlayerModel, name: str, *, location: Optional[str] = None,
 ) -> Optional[Column]:
     """``resolve_flat_name`` over ``model``'s columns; only generated query-backed
-    columns carry respellings, so authored columns stay exact."""
-    return resolve_flat_name(
+    columns carry respellings, so authored columns stay exact. A stale name
+    matching several columns fails closed (never read as a physical column)."""
+    col = resolve_flat_name(
         name, [(c.name, c.respellings, c) for c in model.columns], location=location,
     )
+    if col is None:
+        matches = [c.name for c in model.columns if name in c.respellings]
+        if len(matches) > 1:
+            raise UnknownReferenceError(
+                name=name, scope_kind="SlayerModel",
+                scope_summary=f"model {model.name!r}: stale spelling of {matches}",
+            )
+    return col
 
 
 def resolve_flat_name(
