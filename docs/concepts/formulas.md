@@ -278,6 +278,7 @@ An outer dimension not determined by the operand's
 grain resolves per `to_many_handling` (broadcast + warning by default), and an
 operand grain equal to the outer grain is the identity plus a degenerate
 warning naming the `partition_by=` remedy.
+The outer `partition_by=` follows the combined-position rule above: only inside a computed dimension may it be finer than the query dimensions, where the re-aggregation is computed at that grain and broadcast onto its rows.
 
 ---
 

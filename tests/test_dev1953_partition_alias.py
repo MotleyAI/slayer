@@ -241,5 +241,5 @@ class TestAttachCarryingKey:
             dimensions=[BAND],
             measures=[ModelMeasure(
                 formula=f"weighted_avg(amount, weight={RANK_BAND})", name="w")])
-        with pytest.raises(RuntimeError, match="missing a host / producer grain slot"):
+        with pytest.raises(RuntimeError, match="transform partition_key not materialised"):
             await engine.execute(query)

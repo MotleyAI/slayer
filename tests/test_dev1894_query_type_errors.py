@@ -111,7 +111,7 @@ FAMILY_CASES = [
     ("rank-partition-key", _rank_partition, PartitionKeyError, "transform 'rank'", True),
     ("aggregate-partition-key",
      lambda: (orders_q(dimensions=["region"], measures=[_m("amount:sum(partition_by=city)", "p")]), f1739.dev1739_models()),
-     PartitionKeyError, "aggregation 'sum'", True),
+     PartitionKeyError, "measure 'p'", True),
     ("unsafe-join-input",
      lambda: (f1945.orders_q(measures=[f1945.measure("amount:last(li_ts)")]), f1945.dev1945_models(orders_default="created_at")),
      UnsafeJoinInputError, "measure 'amount_last_li_ts'", True),

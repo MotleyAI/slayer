@@ -131,7 +131,9 @@ elaborate→compile and `query_engine.py` orchestrates.
 4. **Interning is the dedup mechanism**: structurally-equal keys intern to one
    slot; public names are a separate namespace (one declared name, many
    aliases); filter/order-only values materialise as hidden slots trimmed from
-   the public projection. [review]
+   the public projection. [review] A value consumed at several attach phases
+   attaches once per phase over one interned producer — never a phase chosen by
+   precedence. [enforced: test:tests/test_dev1964_dual_phase_consumption.py]
 5. **Stages compose only through schemas**: every stage emits an explicit flat
    `StageSchema` downstream stages bind against; the two scope kinds
    (`ModelScope`: dots walk joins; `StageSchema`: flat names only) are distinct
