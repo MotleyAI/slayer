@@ -361,8 +361,7 @@ DEFAULT_AGGREGATIONS_BY_TYPE: dict[DataType, frozenset[str]] = {
     }),
 }
 
-# Primary-key columns are always restricted to row-counting aggregations,
-# regardless of data type. (You can ``count`` customer_ids, but not ``sum`` them.)
+# A sole primary key is restricted to counting and min/max, regardless of data type.
 PRIMARY_KEY_AGGREGATIONS: frozenset[str] = frozenset({
-    "count", "count_distinct", "count_distinct_approx",
+    "count", "count_distinct", "count_distinct_approx", "min", "max",
 })

@@ -16,11 +16,11 @@ import json
 import logging
 from typing import Any
 
-import sqlalchemy as sa
+from sqlalchemy.exc import DatabaseError, OperationalError
 
 from slayer.core.enums import DataType
 from slayer.core.join_walker import OrientedJoin, neighbors
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import Column, SlayerModel, is_identifier
 from slayer.core.query import (
     SlayerQuery,
     extract_model_variables,
@@ -279,13 +279,13 @@ def _render_column_type(column: Column) -> str:
 def _choose_sample_dims(
     model: SlayerModel,
 ) -> tuple[list[dict[str, str]], set]:
-    """Pick up to two categorical (TEXT/BOOLEAN) non-hidden, non-PK columns to
+    """Pick up to two categorical (TEXT/BOOLEAN) non-hidden, non-identifier columns to
     group the sample by, so they aren't also aggregated as measures
     (count_distinct(status) grouped by status is always 1)."""
     dims: list[dict[str, str]] = []
     dim_names: set = set()
     for c in model.columns:
-        if c.hidden or c.primary_key:
+        if c.hidden or is_identifier(column=c, columns=model.columns):
             continue
         # DEV-1361: TEXT/BOOLEAN are the categorical-shaped types. This filter
         # also excludes opaque (UNKNOWN) columns, which cannot be GROUP BY'd.
@@ -341,14 +341,14 @@ def _build_sample_query_args(
     """Build the ``SlayerQuery`` payload for ``inspect_model``'s sample data.
 
     First measure is always ``count(*)``; then one aggregation per non-hidden,
-    non-primary-key, non-grouped column (see :func:`_choose_sample_agg`).
+    non-identifier, non-grouped column (see :func:`_choose_sample_agg`).
     """
     measure_types = measure_types or {}
     dims, dim_names = _choose_sample_dims(model)
 
     measures: list[dict[str, str]] = [{"formula": "count(*)"}]
     for c in model.columns:
-        if c.hidden or c.primary_key or c.name in dim_names:
+        if c.hidden or is_identifier(column=c, columns=model.columns) or c.name in dim_names:
             continue
         agg = _choose_sample_agg(c, measure_types=measure_types)
         if agg is None:
@@ -418,13 +418,11 @@ async def _collect_measure_profile(
     model: SlayerModel,
     engine: SlayerQueryEngine,
 ) -> dict[str, str]:
-    """Probe min/max for each non-hidden, non-primary-key NUMERIC/TEMPORAL
+    """Probe min/max for each non-hidden, non-identifier NUMERIC/TEMPORAL
     column via a single batched query.
 
     Returns ``{column_name: "min .. max"}`` for columns with data, or
     ``{column_name: "all NULL"}`` for columns where both min and max are NULL.
-    Skips primary-key columns (their values are identifiers, not values to
-    profile).
 
     DEV-1480: text/boolean columns are excluded here so they are served
     exclusively by the categorical dim profile (which populates both
@@ -439,7 +437,7 @@ async def _collect_measure_profile(
     )
     columns = [
         c for c in model.columns
-        if not c.hidden and not c.primary_key
+        if not c.hidden and not is_identifier(column=c, columns=model.columns)
         and c.type in _NUMERIC_TEMPORAL
     ]
     if not columns:
@@ -794,12 +792,12 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
     if engine is not None and "columns" in included_set:
         uncached_columns: list[Column] = []
         for c in model.columns:
-            if c.hidden or c.primary_key:
+            if c.hidden or is_identifier(column=c, columns=model.columns):
                 continue
-            # DEV-1480 cache validity: categorical needs
+            # Cache validity: categorical needs
             # ``sampled_values`` to be present (the structured field
             # is authoritative); numeric/temporal needs ``sampled``.
-            if _is_sample_cached(c):
+            if _is_sample_cached(column=c, model=model):
                 if c.sampled is not None:
                     profile_by_name[c.name] = c.sampled
                 profile_values_by_name[c.name] = c.sampled_values
@@ -1140,7 +1138,7 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
                 )
             out_sections.append(sample_section)
         except Exception as e:
-            if isinstance(e, (sa.exc.OperationalError, sa.exc.DatabaseError)):
+            if isinstance(e, (OperationalError, DatabaseError)):
                 err = _friendly_db_error(e)
             else:
                 err = str(e)

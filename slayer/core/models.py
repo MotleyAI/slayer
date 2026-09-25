@@ -3,7 +3,7 @@
 import logging
 import os
 import re
-from typing import Annotated, Any, Optional
+from typing import AbstractSet, Annotated, Any, Optional
 
 from pydantic import (
     BaseModel,
@@ -36,7 +36,7 @@ from slayer.sql.sql_predicate import parse_sql_predicate
 from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
 from slayer.storage.migrations import migrate as _migrate_schema
 
-_NAME_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+_NAME_PATTERN = re.compile(r"^[a-zA-Z_]\w*$", re.ASCII)
 _GRANULARITY_NAMES = frozenset(g.value for g in TimeGranularity)
 
 logger = logging.getLogger(__name__)
@@ -177,7 +177,7 @@ class Column(BaseModel):
         ),
     )
     primary_key: bool = False
-    unique: bool = False  # single-column uniqueness (non-PK); primary_key implies it
+    unique: bool = False  # single-column uniqueness; a sole primary key implies it, a composite member does not
     description: str | None = None
     label: str | None = None
     hidden: bool = False
@@ -271,6 +271,45 @@ class Column(BaseModel):
         out = self.model_copy()
         out._respellings = tuple(respellings)
         return out
+
+
+def is_identifier(*, column: Column, columns: list[Column]) -> bool:
+    """``column`` is its model's sole primary key (composite-key members are not identifiers)."""
+    return column.primary_key and sum(1 for c in columns if c.primary_key) == 1
+
+
+def _check_allowed_aggregation(
+    *, column: Column, agg_name: str, identifier: bool,
+    custom_agg_names: AbstractSet[str], valid_names: AbstractSet[str],
+) -> None:
+    """One ``allowed_aggregations`` entry must be known and eligible for the column's type / identifier role."""
+    if agg_name not in valid_names:
+        raise ValueError(
+            f"Column '{column.name}': allowed_aggregations contains "
+            f"'{agg_name}', which is not a built-in aggregation "
+            f"or defined in this model's aggregations. "
+            f"Valid: {sorted(valid_names)}"
+        )
+    if identifier:
+        if agg_name not in PRIMARY_KEY_AGGREGATIONS:
+            raise ValueError(
+                f"Column '{column.name}': '{agg_name}' is not allowed "
+                f"on a primary-key column. PK columns can only be "
+                f"aggregated with {sorted(PRIMARY_KEY_AGGREGATIONS)}."
+            )
+        return
+    if agg_name in custom_agg_names and agg_name not in BUILTIN_AGGREGATIONS:
+        # Custom aggregations bypass type-default eligibility; the formula decides.
+        return
+    allowed_for_type = DEFAULT_AGGREGATIONS_BY_TYPE.get(column.type, frozenset())
+    if agg_name not in allowed_for_type:
+        raise ValueError(
+            f"Column '{column.name}': aggregation '{agg_name}' is not "
+            f"applicable to {column.type} columns. allowed_aggregations "
+            f"must be a subset of the type-default set "
+            f"{sorted(allowed_for_type)} (plus any custom "
+            f"aggregations defined on this model)."
+        )
 
 
 class ModelMeasure(BaseModel):
@@ -659,36 +698,12 @@ class SlayerModel(BaseModel):
                     f"aggregations are not supported for that type. Remove "
                     f"allowed_aggregations, or give the column an operable type."
                 )
+            identifier = is_identifier(column=c, columns=self.columns)
             for agg_name in c.allowed_aggregations:
-                if agg_name not in valid_names:
-                    raise ValueError(
-                        f"Column '{c.name}': allowed_aggregations contains "
-                        f"'{agg_name}', which is not a built-in aggregation "
-                        f"or defined in this model's aggregations. "
-                        f"Valid: {sorted(valid_names)}"
-                    )
-                if c.primary_key:
-                    if agg_name not in PRIMARY_KEY_AGGREGATIONS:
-                        raise ValueError(
-                            f"Column '{c.name}': '{agg_name}' is not allowed "
-                            f"on a primary-key column. PK columns can only be "
-                            f"aggregated with {sorted(PRIMARY_KEY_AGGREGATIONS)}."
-                        )
-                    continue
-                if agg_name in custom_agg_names and agg_name not in BUILTIN_AGGREGATIONS:
-                    # Custom aggregations bypass type-default eligibility; the formula decides.
-                    continue
-                allowed_for_type = DEFAULT_AGGREGATIONS_BY_TYPE.get(
-                    c.type, frozenset()
+                _check_allowed_aggregation(
+                    column=c, agg_name=agg_name, identifier=identifier,
+                    custom_agg_names=custom_agg_names, valid_names=valid_names,
                 )
-                if agg_name not in allowed_for_type:
-                    raise ValueError(
-                        f"Column '{c.name}': aggregation '{agg_name}' is not "
-                        f"applicable to {c.type} columns. allowed_aggregations "
-                        f"must be a subset of the type-default set "
-                        f"{sorted(allowed_for_type)} (plus any custom "
-                        f"aggregations defined on this model)."
-                    )
         return self
 
     @model_validator(mode="after")
@@ -883,29 +898,12 @@ class DatasourceConfig(BaseModel):
             "mariadb": "mysql+pymysql",
             "clickhouse": "clickhouse+http",
         }
-        driver = driver_map.get(self.type, self.type)
-        # Use SQLAlchemy's structured builder so reserved chars in credentials
-        # are percent-encoded rather than misparsed as URL delimiters.
-        host, port = self.host or "localhost", self.port
-        # ``URL.create`` wants a raw host + separate port, so lift any port
-        # embedded in the host field; a port set in both places is contradictory.
-        embedded_port: str | None = None
-        bracketed = _BRACKETED_HOST_RE.match(host)
-        if bracketed:
-            host = bracketed.group(1)
-            embedded_port = bracketed.group(2)
-        else:
-            embedded = _HOST_EMBEDDED_PORT_RE.match(host)
-            if embedded:
-                host, embedded_port = embedded.group(1), embedded.group(2)
-        if embedded_port is not None:
-            if port is not None:
-                raise ValueError(
-                    f"Datasource '{self.name}': port is set both in the host "
-                    f"field ({self.host!r}) and in the 'port' field ({port}); "
-                    f"specify it in only one place."
-                )
-            port = int(embedded_port)
+        driver = driver_map.get(self.type or "", self.type)
+        host, port = self._split_host_port()
+        if driver is None:
+            # Mirrors ``URL.create``'s own rejection of a non-string drivername.
+            raise TypeError("drivername must be a string")
+        # Structured builder: reserved chars in credentials are percent-encoded, not misparsed.
         return _SA_URL.create(
             drivername=driver,
             username=self.username or None,
@@ -914,6 +912,27 @@ class DatasourceConfig(BaseModel):
             port=port,
             database=self.database or "",
         ).render_as_string(hide_password=False)
+
+    def _split_host_port(self) -> tuple[str, int | None]:
+        """Raw host + port for ``URL.create``, lifting a port embedded in ``host``; a port set in both places is contradictory."""
+        host, port = self.host or "localhost", self.port
+        embedded_port: str | None = None
+        bracketed = _BRACKETED_HOST_RE.match(host)
+        if bracketed:
+            host, embedded_port = bracketed.group(1), bracketed.group(2)
+        else:
+            embedded = _HOST_EMBEDDED_PORT_RE.match(host)
+            if embedded:
+                host, embedded_port = embedded.group(1), embedded.group(2)
+        if embedded_port is None:
+            return host, port
+        if port is not None:
+            raise ValueError(
+                f"Datasource '{self.name}': port is set both in the host "
+                f"field ({self.host!r}) and in the 'port' field ({port}); "
+                f"specify it in only one place."
+            )
+        return host, int(embedded_port)
 
     def resolve_env_vars(self) -> "DatasourceConfig":
         data = self.model_dump()
@@ -933,7 +952,7 @@ class DatasourceConfig(BaseModel):
 
 
 def _resolve_env_string(value: str) -> str:
-    def replacer(match: re.Match) -> str:
+    def replacer(match: re.Match[str]) -> str:
         var_name = match.group(1)
         return os.environ.get(var_name, match.group(0))
 

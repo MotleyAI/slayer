@@ -42,7 +42,7 @@ from slayer.engine.ingestion import (
 )
 from slayer.engine.schema_scope import schema_ref_from_token, validate_scope_args
 from slayer.sql import engine_factory
-from slayer.engine.profiling import handle_edit_refresh
+from slayer.search.service import handle_edit_refresh
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.memories.help_seed import seed_help_memories
 from slayer.inspect.model_render import (  # noqa: F401 — re-exported for backward-compat (tests + other modules import these names from slayer.mcp.server)
@@ -886,8 +886,8 @@ To connect a new database: create_datasource → describe_datasource (verify + l
             description: What this model represents.
             columns: List of column definitions. Each: {"name": "col", "sql": "col", "type": "string"}.
                 Types: string, number, time, date, boolean. Optional fields: ``primary_key``,
-                ``unique`` (single-column uniqueness that is not the PK; ``primary_key``
-                already implies it), ``allowed_aggregations`` (whitelist), ``filter``
+                ``unique`` (single-column uniqueness that is not the PK; a sole
+                ``primary_key`` already implies it), ``allowed_aggregations`` (whitelist), ``filter``
                 (CASE WHEN inside aggregation), ``granularity`` (a temporal column's
                 declared time bucket, e.g. ``"month"`` — only when it is truly bucketed
                 at that grain), ``label``, ``description``, ``hidden``, ``meta``.
@@ -1070,7 +1070,7 @@ To connect a new database: create_datasource → describe_datasource (verify + l
                 If a column with this name exists, only the provided fields are updated.
                 Types: string, number, time, date, boolean.
                 ``unique`` marks single-column uniqueness that is not the primary key
-                (``primary_key`` already implies it); it is used to infer join
+                (a sole ``primary_key`` already implies it); it is used to infer join
                 cardinality.
             measures: Named formula measures to create or update (upsert by name). Each dict:
                 {"name": "aov", "formula": "sum(revenue) / count(*)", "label": "...",
