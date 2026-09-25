@@ -12,6 +12,7 @@ from slayer.core.models import Column, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
 from slayer.sql.dialects.mysql import MysqlDialect
 
+from tests._dev1965_fixtures import assert_single_top_level_with, cumsum_chain, gen, parse
 from tests._engine_helpers import _engine_generate
 
 
@@ -150,55 +151,20 @@ def test_mysql_build_time_offset_expr_quarter_normalizes_to_3_month() -> None:
     assert "3" in sql
 
 
-# Outer-wrap quote style mismatch
-#
-# Today's ``SQLGenerator._build_outer_wrap`` hardcodes ANSI double quotes
-# for the public projection list. MySQL parses ``"..."`` as a string
-# literal by default, so the outer wrap is invalid SQL on MySQL. The fix
-# emits each public alias via sqlglot's dialect-aware identifier quoting,
-# which yields backticks on MySQL.
+# Outer wrap: MySQL parses ``"..."`` as a string literal, so public aliases are backticked.
 
 
-def test_mysql_emit_outer_wrap_uses_backticks_for_aliases() -> None:
+async def test_mysql_outer_wrap_uses_backticks_for_aliases() -> None:
     """Outer projection list emits backticked identifiers on MySQL, never ANSI double quotes."""
-    out = MysqlDialect().emit_outer_wrap(
-        inner_sql="SELECT 1 AS `orders.created_at`",
-        public=["orders.created_at"],
-        projected=["orders.created_at"],
-        order=None,
-        limit=None,
-        offset_arg=None,
-    )
-    assert "`orders.created_at`" in out, (
-        f"MySQL outer projection must use backticks: {out}"
-    )
-    assert '"orders.created_at"' not in out, (
-        f"MySQL outer projection must not use ANSI double quotes: {out}"
-    )
+    top = parse(await gen(cumsum_chain(), dialect="mysql"), "mysql")
+    projected = [e.sql(dialect="mysql") for e in top.expressions]
+    assert "`orders.created_at`" in projected, projected
+    assert not [p for p in projected if '"' in p], projected
 
 
-def test_mysql_emit_outer_wrap_preserves_inner_cte_in_derived_table() -> None:
-    """MySQL 8+ tolerates ``WITH`` inside a derived-table subquery."""
-    inner = (
-        "WITH base AS (SELECT 1 AS x)\n"
-        "SELECT x AS `orders.x` FROM base"
-    )
-    out = MysqlDialect().emit_outer_wrap(
-        inner_sql=inner,
-        public=["orders.x"],
-        projected=["orders.x"],
-        order=None,
-        limit=None,
-        offset_arg=None,
-    )
-    # The inner WITH stays nested in the derived-table subquery on MySQL.
-    normalised = " ".join(out.split())
-    assert not normalised.startswith("WITH "), (
-        f"MySQL should NOT hoist CTEs (T-SQL bug 1 is T-SQL-only): {out}"
-    )
-    assert "WITH base" in out, (
-        f"Inner CTE list must be preserved verbatim on MySQL: {out}"
-    )
+async def test_mysql_outer_wrap_hoists_the_chain_with() -> None:
+    """One top-level WITH on every dialect, MySQL included."""
+    assert_single_top_level_with(await gen(cumsum_chain(), dialect="mysql"), "mysql")
 
 
 # Inner CTE assembly emits dialect-aware quotes.
