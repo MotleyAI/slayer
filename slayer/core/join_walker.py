@@ -38,6 +38,7 @@ __all__ = [
     "observe_traversals",
     "physical_join_pairs",
     "resolve_hop",
+    "reverse_token",
     "terminal_model",
     "walk",
     "walk_cancelling",
@@ -62,6 +63,9 @@ class OrientedJoin(BaseModel):
     cardinality: JoinCardinality | None
     name: str | None
     declaring_model: str
+    # A query stage's user spelling of an endpoint (``None`` for an ordinary model).
+    source_spelling: str | None = None
+    target_spelling: str | None = None
 
 
 _traversals: ContextVar[Optional[Dict[str, bool]]] = ContextVar(
@@ -90,8 +94,28 @@ def _observe(targets: Iterable[str], *, strict: bool) -> None:
 
 
 def canonical_token(edge: OrientedJoin) -> str:
-    """A hop's canonical spelling: the edge name, else the traversal-target model."""
-    return edge.name if edge.name is not None else edge.target_model
+    """A hop's canonical spelling: the edge name, else the target's spelling."""
+    return edge.name or edge.target_spelling or edge.target_model
+
+
+def reverse_token(edge: OrientedJoin) -> str:
+    """The spelling of ``edge`` walked backwards: the edge name, else the source's spelling."""
+    return edge.name or edge.source_spelling or edge.source_model
+
+
+def _matching(edges: list[OrientedJoin], token: str) -> list[OrientedJoin]:
+    """The edges ``token`` names, by precedence: edge name, then a query stage's
+    spelling (it shadows a same-named model), then a model name — never a
+    stage's minted identity."""
+    for match in (
+        lambda e: e.name == token,
+        lambda e: e.target_spelling == token,
+        lambda e: e.target_spelling is None and e.target_model == token,
+    ):
+        hits = [e for e in edges if match(e)]
+        if hits:
+            return hits
+    return []
 
 
 def canonical_path(chain: Sequence[OrientedJoin]) -> tuple[str, ...]:
@@ -99,7 +123,10 @@ def canonical_path(chain: Sequence[OrientedJoin]) -> tuple[str, ...]:
     return tuple(canonical_token(e) for e in chain)
 
 
-def _orient(*, join: ModelJoin, declaring: str, from_model: str) -> OrientedJoin:
+def _orient(
+    *, join: ModelJoin, declaring: str, from_model: str,
+    spellings: Dict[str, Optional[str]],
+) -> OrientedJoin:
     """Orient ``join`` (declared on ``declaring``) so its source is ``from_model``."""
     if from_model == declaring:
         to_model = join.target_model
@@ -117,6 +144,8 @@ def _orient(*, join: ModelJoin, declaring: str, from_model: str) -> OrientedJoin
         cardinality=cardinality,
         name=join.name,
         declaring_model=declaring,
+        source_spelling=spellings.get(from_model),
+        target_spelling=spellings.get(to_model),
     )
 
 
@@ -128,12 +157,15 @@ def edges_between(*, source: SlayerModel, target: SlayerModel) -> list[OrientedJ
     list for the caller to reject.
     """
     out: list[OrientedJoin] = []
+    spellings = {m.name: m.explicit_spelling for m in (source, target)}
     for j in source.joins:
         if j.target_model == target.name:
-            out.append(_orient(join=j, declaring=source.name, from_model=source.name))
+            out.append(_orient(join=j, declaring=source.name, from_model=source.name,
+                               spellings=spellings))
     for j in target.joins:
         if j.target_model == source.name:
-            out.append(_orient(join=j, declaring=target.name, from_model=source.name))
+            out.append(_orient(join=j, declaring=target.name, from_model=source.name,
+                               spellings=spellings))
     _observe((e.target_model for e in out), strict=False)
     return out
 
@@ -166,14 +198,18 @@ def neighbors(
     ``model`` (inverted). Never raises.
     """
     out: list[OrientedJoin] = []
+    spellings = {n: m.explicit_spelling for n, m in models_by_name.items()}
+    spellings[model.name] = model.explicit_spelling
     for j in model.joins:
-        out.append(_orient(join=j, declaring=model.name, from_model=model.name))
+        out.append(_orient(join=j, declaring=model.name, from_model=model.name,
+                           spellings=spellings))
     for other in models_by_name.values():
         if other.name == model.name:
             continue
         for j in other.joins:
             if j.target_model == model.name:
-                out.append(_orient(join=j, declaring=other.name, from_model=model.name))
+                out.append(_orient(join=j, declaring=other.name, from_model=model.name,
+                                   spellings=spellings))
     _observe((e.target_model for e in out), strict=False)
     return out
 
@@ -186,15 +222,12 @@ def resolve_hop(
 ) -> OrientedJoin | None:
     """Resolve one path ``token`` from ``current``.
 
-    A token matches an incident edge's ``name`` first, else the opposite-endpoint
-    model name. Returns ``None`` when nothing matches (the caller raises its own
+    A token matches an incident edge's ``name`` first, then a query stage's
+    spelling, else the opposite-endpoint model name. Returns ``None`` when nothing matches (the caller raises its own
     reference error) and raises :class:`AmbiguousJoinPathError` when two or more
     edges qualify.
     """
-    incident = neighbors(model=current, models_by_name=models_by_name)
-    candidates = [e for e in incident if e.name == token]
-    if not candidates:
-        candidates = [e for e in incident if e.target_model == token]
+    candidates = _matching(neighbors(model=current, models_by_name=models_by_name), token)
     if not candidates:
         return None
     if len(candidates) > 1:
@@ -255,9 +288,7 @@ def _owner_stack(
     ``None`` on an unresolvable or revisiting owner hop."""
     stack: list[SlayerModel] = [root]
     for token in owner_path:
-        incident = neighbors(model=stack[-1], models_by_name=models_by_name)
-        cands = [e for e in incident if e.name == token] or [
-            e for e in incident if e.target_model == token]
+        cands = _matching(neighbors(model=stack[-1], models_by_name=models_by_name), token)
         target = {e.target_model for e in cands}
         if len(target) != 1:
             return None
@@ -320,7 +351,7 @@ def walk_cancelling(
             stack.append(nxt)
             path_tokens.append(canonical_token(edge))
             continue
-        cancel_at = next((i for i, m in enumerate(stack) if m.name == token), None)
+        cancel_at = next((i for i, m in enumerate(stack) if m.spelling == token), None)
         if cancel_at is not None:
             del stack[cancel_at + 1:]
             del path_tokens[cancel_at:]

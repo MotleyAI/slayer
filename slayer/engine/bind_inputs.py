@@ -438,7 +438,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
 
     order_specs = []
     # Host spelling for the qualifier check below.
-    _order_host_name = bundle.relation_display(host_model_name(scope))
+    _order_host_name = host_model_name(scope)
     for i, o in enumerate(query.order or []):
         with stale_spelling_position(f"order[{i}]"):
             col_name = o.column.name

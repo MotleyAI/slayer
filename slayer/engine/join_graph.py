@@ -27,9 +27,12 @@ class JoinGraph:
     """Undirected multigraph over model names built from declared joins."""
 
     def __init__(
-        self, *, nodes: set[str], edges: list[tuple[str, str, str | None]]
+        self, *, nodes: set[str], edges: list[tuple[str, str, str | None]],
+        spellings: dict[str, str] | None = None,
     ) -> None:
         self._nodes: set[str] = set(nodes)
+        # A query stage's user spelling, where it differs from its node name.
+        self._spellings: dict[str, str] = dict(spellings or {})
         # Each edge is ``(model_a, model_b, name)`` — undirected; parallel
         # edges between the same pair are kept distinct.
         self._edges = list(edges)
@@ -51,7 +54,8 @@ class JoinGraph:
             for j in m.joins:
                 if j.target_model in names:
                     edges.append((m.name, j.target_model, j.name))
-        return cls(nodes=names, edges=edges)
+        spellings = {m.name: m.explicit_spelling for m in models if m.explicit_spelling}
+        return cls(nodes=names, edges=edges, spellings=spellings)
 
     def _incident(self, node: str):
         """Yield ``(neighbor, edge_index, name)`` for every edge on ``node``."""
@@ -128,12 +132,18 @@ class JoinGraph:
         by_nbr: dict[str, list[str | None]] = {}
         for nbr, _idx, name in incident:
             by_nbr.setdefault(nbr, []).append(name)
+        stage_spellings = {self._spellings[n] for n in by_nbr if n in self._spellings}
         out: list[tuple[str, str]] = []
         for nbr, names in by_nbr.items():
-            # Bare model-name token: only for a unique edge, and only when no
-            # incident edge name shadows it (name resolves first).
-            if len(names) == 1 and nbr not in name_counts:
-                out.append((nbr, nbr))
+            # Bare token (a stage's spelling, else the model name): only for a unique
+            # edge, and only when no edge name — nor, for a model, a stage spelling —
+            # shadows it (the walker's resolution order).
+            token = self._spellings.get(nbr, nbr)
+            shadowed = token in name_counts or (
+                nbr not in self._spellings and token in stage_spellings
+            )
+            if len(names) == 1 and not shadowed:
+                out.append((nbr, token))
             else:
                 out.extend(
                     (nbr, nm) for nm in names

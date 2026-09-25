@@ -218,3 +218,33 @@ class TestIdentifierLimit:
         assert names, resp.sql
         assert len(set(names)) == len(names), names
         assert all(len(n.encode()) <= 63 for n in names), names
+
+
+class TestReverseHopSpelling:
+    async def test_reverse_hop_out_of_a_stage_is_spelled_by_its_name(self, engine) -> None:
+        s = query(name="s", source_model="customers", dimensions=["id", "tier"],
+                  measures=[m("spend:sum", "sp")])
+        root = query(source_model={"source_name": "s", "joins": [
+                         {"target_model": "orders", "join_pairs": [["id", "customer_id"]]}]},
+                     dimensions=["tier"], measures=[m("orders.amount:sum", "a")])
+        with pytest.warns(UserWarning):
+            resp = await engine.execute([s, root])
+        assert rows_by(resp.data, key="s.tier", value="s.a") == {t: 145.0 for t in AMOUNT_BY_TIER}
+        (w,) = [w for w in resp.warnings if w.kind == "broadcast"]
+        assert [d.reason for d in w.dimensions] == ["crosses a fanning or unproven join hop to s"]
+        assert INTERNAL not in str([x.model_dump() for x in resp.warnings])
+
+    async def test_producer_rooted_at_a_stage_aliases_its_host_by_model(self, engine) -> None:
+        k = query(name="kpis", source_model="orders", dimensions=["customer_id"],
+                  measures=[m("amount:sum", "amt")])
+        root = query(source_model={"source_name": "customers", "joins": [
+                         {"target_model": "kpis", "join_pairs": [["id", "customer_id"]]}]},
+                     dimensions=["tier"], measures=[m("kpis.amt:sum", "t")])
+        resp = await engine.execute([k, root])
+        assert rows_by(resp.data, key="customers.tier", value="customers.t") == AMOUNT_BY_TIER
+        dry = await engine.execute([k, root], dry_run=True)
+        assert dry.sql is not None
+        joins = [j for j in sqlglot.parse_one(dry.sql).find_all(exp.Join)
+                 if isinstance(j.this, exp.Table) and j.this.name == "customers"]
+        assert joins, dry.sql
+        assert all(j.this.alias == "customers" for j in joins), dry.sql

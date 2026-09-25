@@ -55,11 +55,6 @@ class ResolvedSourceBundle(BaseModel):
     runtime_variables: Dict[str, Any] = Field(default_factory=dict)
     dry_run_placeholders: bool = False
 
-    def relation_display(self, name: str) -> str:
-        """``name``'s user-facing spelling: a stage's display name, else ``name``."""
-        display = self.stage_displays.get(name)
-        return display.name if display is not None else name
-
     def get_referenced_model(self, name: str) -> Optional[SlayerModel]:
         """Linear lookup by name (list is small, O(n) scan is fine)."""
         for m in self.referenced_models:
@@ -205,7 +200,7 @@ def model_from_stage_schema(
     return model.model_copy(update={
         "name": name, "sql_table": name if sql is None else None,
         "default_time_dimension": default_time_dimension or schema.default_time_dimension,
-    })
+    }).with_spelling(schema.display_name if schema.display_name != name else None)
 
 
 def stage_bundle_with_siblings(

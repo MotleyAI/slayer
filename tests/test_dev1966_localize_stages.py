@@ -42,7 +42,7 @@ class TestUserScope:
         stages, _ = localize_stages([_x(), root])
         spec = stages[-1].source_model
         assert isinstance(spec, ModelExtension)
-        assert [j.target_model for j in spec.joins or []] == [USER_X]
+        assert [(j.target_model, j.name) for j in spec.joins or []] == [(USER_X, None)]
 
     def test_inline_model_join_target_is_respelled(self) -> None:
         inline = {"name": "orders_inline", "data_source": "test", "sql_table": "orders",

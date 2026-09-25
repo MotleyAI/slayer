@@ -29,13 +29,18 @@ embedded pipeline land in the consumer's `WITH`. A stale DEV-1878 attempt
 1. **Minted stage identities (M1).** One pure rewriter `localize_stages` in
    `slayer/engine/stage_ordering.py` gives every named non-root stage a reserved identity
    (`__slayer_stage_<name>` for user stages, `__slayer_qb__<model>__<stage>` for a spliced model's
-   private stages; the spliced final stage keeps the model's own name) and rewrites only
-   references the query writes: `source_model` strings, `ModelExtension.source_name`, and
-   `joins[].target_model` of inline models and extensions. A rewritten join with no `name` gets
-   `name=<old spelling>`, so dotted paths, canonical paths (edge name else target) and result keys
-   keep the user spelling. Stored definitions are never rewritten — that is what makes a stored
-   join to `customers` keep meaning the model. Alternative — rename only on collision: rejected,
-   two code paths and the stage-vs-physical-table clash stays open.
+   private stages; the spliced final stage keeps the model's own name) and rewrites only references
+   the query writes: `source_model` strings, `ModelExtension.source_name`, and
+   `joins[].target_model` of inline models and extensions. A stage's synthetic model carries its
+   display name as its path spelling (a runtime-only `SlayerModel` attribute); the join walker
+   spells a hop edge name → explicit spelling → model name in both directions and resolves tokens in
+   the same order, so dotted paths, canonical paths and result keys keep the user spelling, a
+   stage's spelling shadows a same-named model inside its query list, and a minted identity never
+   becomes a path token. Rewritten joins carry no `name`. Stored definitions are never rewritten —
+   that is what makes a stored join to `customers` keep meaning the model. Alternative — rename only
+   on collision: rejected, two code paths and the stage-vs-physical-table clash stays open; naming
+   the rewritten join after the old spelling: rejected — an edge name spells the reverse hop too,
+   and a reverse hop out of a stage along an unnamed edge would still spell the identity.
 2. **Where localization runs.** First step of `_prepare_pipeline` (before `_infer_populations`)
    and of the run-by-name path, after the list is validated and topo-sorted on user names (so
    ordering errors name user stages). Population inference then fills rootless stages with storage

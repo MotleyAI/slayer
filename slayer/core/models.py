@@ -674,6 +674,8 @@ class SlayerModel(BaseModel):
     meta: dict[str, Any] | None = None
     # In-memory breadcrumb for virtual stage models; ``exclude=True`` keeps it unpersisted.
     source_model_origin: SourceModelOrigin | None = Field(default=None, exclude=True)
+    # Runtime-only (never persisted): a query stage's user spelling in join paths.
+    _spelling: str | None = PrivateAttr(default=None)
 
     @field_validator("filters")
     @classmethod
@@ -807,6 +809,20 @@ class SlayerModel(BaseModel):
                 f"it with a ModelExtension at query time."
             )
         return self
+
+    @property
+    def explicit_spelling(self) -> str | None:
+        """A query stage's user spelling in join paths, when it differs from ``name``."""
+        return self._spelling
+
+    @property
+    def spelling(self) -> str:
+        return self._spelling or self.name
+
+    def with_spelling(self, spelling: str | None) -> "SlayerModel":
+        out = self.model_copy()
+        out._spelling = spelling
+        return out
 
     @property
     def awaits_columns(self) -> bool:

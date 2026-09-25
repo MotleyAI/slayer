@@ -12,7 +12,7 @@ from pydantic import BaseModel
 
 from slayer.core.enums import JoinCardinality, RANKED_AGGREGATIONS, invert_cardinality
 from slayer.core.errors import AmbiguousJoinPathError, CircularJoinPathError
-from slayer.core.join_walker import OrientedJoin, resolve_hop, walk
+from slayer.core.join_walker import OrientedJoin, resolve_hop, reverse_token, walk
 from slayer.core.keys import (
     AggregateKey,
     ColumnKey,
@@ -272,15 +272,16 @@ def _back_path(
     Falls back to ``(host_name,)`` with no forward path; an ambiguous reverse hop
     fails closed at walk time."""
     host_model = models_by_name.get(host_name)
+    host_token = host_model.spelling if host_model is not None else host_name
     if host_model is None or not target_path:
-        return (host_name,)
+        return (host_token,)
     try:
         chain = walk(root=host_model, path=target_path, models_by_name=models_by_name)
     except CircularJoinPathError:
-        return (host_name,)
+        return (host_token,)
     if chain is None:
-        return (host_name,)
-    return tuple(reversed([edge.name or edge.source_model for edge in chain]))
+        return (host_token,)
+    return tuple(reversed([reverse_token(edge) for edge in chain]))
 
 
 def _common_prefix_len(a: Tuple[str, ...], b: Tuple[str, ...]) -> int:
@@ -305,17 +306,17 @@ def _route_via_common_prefix(
     an ambiguous reverse hop propagates from ``walk``, a revisiting one keeps the
     round trip."""
     host_model = models_by_name.get(host_name)
+    host_token = host_model.spelling if host_model is not None else host_name
     if host_model is None or not target_path:
-        return (host_name, *host_path)
+        return (host_token, *host_path)
     try:
         chain = walk(root=host_model, path=target_path, models_by_name=models_by_name)
     except CircularJoinPathError:
-        return (host_name, *host_path)
+        return (host_token, *host_path)
     if chain is None:
-        return (host_name, *host_path)
+        return (host_token, *host_path)
     cp = _common_prefix_len(target_path, host_path)
-    reverse_suffix = tuple(
-        reversed([edge.name or edge.source_model for edge in chain[cp:]]))
+    reverse_suffix = tuple(reversed([reverse_token(edge) for edge in chain[cp:]]))
     return (*reverse_suffix, *host_path[cp:])
 
 

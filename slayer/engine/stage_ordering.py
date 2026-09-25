@@ -50,10 +50,8 @@ def stage_identity(*, name: str, model: Optional[str] = None) -> str:
 
 def _respell_joins(joins: List[ModelJoin], rename: Dict[str, str]) -> List[ModelJoin]:
     return [
-        j.model_copy(update={
-            "target_model": rename[j.target_model],
-            "name": j.name if j.name is not None else j.target_model,
-        }) if j.target_model in rename else j
+        j.model_copy(update={"target_model": rename[j.target_model]})
+        if j.target_model in rename else j
         for j in joins
     ]
 

@@ -12,11 +12,12 @@
 ## 2. Scoping
 
 - [x] 2.1 `StageSchema.display_name`; result keys (`response_meta`), warnings (incl. `stale_spelling_stage` labels) and stage errors read it. Verify 1.2 key/message tests.
-- [ ] 2.2 `localize_stages` in `slayer/engine/stage_ordering.py` (design decision 1), with unit tests over each reference shape; `_walk_spec` drops the nested `source_queries` branch. Verify its unit tests.
+- [x] 2.2 `localize_stages` in `slayer/engine/stage_ordering.py` (design decision 1), with unit tests over each reference shape; `_walk_spec` drops the nested `source_queries` branch. Verify its unit tests.
 - [x] 2.3 Wire localization as the first step of `_prepare_pipeline` and of run-by-name (design decision 2), inference's `SIBLING_STAGE` check against user spellings. Verify 1.2.
 - [x] 2.4 `stage_bundle_with_siblings` collision invariant (design decision 4). Verify 1.6.
 - [x] 2.5 Stamp the per-stage bundle (placeholders excluded) on `PlannedQuery`; generator reads it; delete `_bundle_for_stage`. Verify 1.6 and the full multi-stage suite.
 - [x] 2.6 Over-limit identifier fitting covers prefixed CTE names (extend if not). Verify the near-limit test.
+- [x] 2.7 Model path spelling (design decision 1): `SlayerModel` runtime spelling set from `StageSchema.display`; join-walker spelling tiers (`canonical_token`, `reverse_token`, `resolve_hop`, `_owner_stack`, `walk_cancelling`); every token producer (join_safety back paths, compile token sites, join_graph, dimension_routing) routes through them; rewritten joins carry no name; the compile display/identity split is dropped. Verify 1.2, the 1.4 warning tests and the reverse-hop spelling tests.
 
 ## 3. Inline query-backed ban
 
@@ -39,7 +40,7 @@
 
 ## 6. Architecture, docs, convergence
 
-- [ ] 6.1 Apply the user-approved arc42 edits verbatim. `architecture/engine.arc42.md` §3 new principle 11: "**Stage names are query-local**: a stage name is visible only within its own query list, where it overrides a same-named model; stored definitions (joins, stored `source_queries`) never see it. Internally every stage carries a minted identity; the user's name survives only in result keys, join edge names and messages. [enforced: test:tests/test_dev1966_stage_scope.py]". `architecture/sql.arc42.md` §3 principle 11: after "a WITH never nests inside a CTE definition" insert " — every hoisted CTE renamed through the allocator, so no two statements' private names meet". Verify `poetry run python tools/arch_check.py`.
+- [x] 6.1 Apply the user-approved arc42 edits verbatim. `architecture/engine.arc42.md` §3 new principle 11: "**Stage names are query-local**: a stage name is visible only within its own query list, where it overrides a same-named model; stored definitions (joins, stored `source_queries`) never see it. Internally every stage carries a minted identity; the user's name survives only in result keys, join paths and messages. [enforced: test:tests/test_dev1966_stage_scope.py]". `architecture/sql.arc42.md` §3 principle 11: after "a WITH never nests inside a CTE definition" insert " — every hoisted CTE renamed through the allocator, so no two statements' private names meet". Verify `poetry run python tools/arch_check.py`.
 - [x] 6.2 Re-bless multi-stage SQL goldens and subquery-shape assertions (CTE names / flat `WITH` only; values and keys unchanged). Verify `poetry run pytest -m "not integration"` green.
 - [x] 6.3 Docs, one sentence each: `docs/concepts/queries.md` multi-stage section (stage names are local and override same-named models; inline query-backed `source_model` rejected in favour of named stages); `docs/concepts/models.md` query-backed section (consumed inline as spliced stages with private stage names; self-reference rejected). Verify by reading the rendered sections.
-- [ ] 6.4 Enforcement bundle green: `poetry run python tools/arch_check.py`, `poetry run basedpyright`, `poetry run ruff check slayer/ tests/`, full non-integration suite, and the integration suite with CI settings.
+- [x] 6.4 Enforcement bundle green: `poetry run python tools/arch_check.py`, `poetry run basedpyright`, `poetry run ruff check slayer/ tests/`, full non-integration suite, and the integration suite with CI settings.

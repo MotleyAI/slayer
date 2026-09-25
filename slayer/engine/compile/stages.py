@@ -43,7 +43,13 @@ from slayer.engine.reference_closure import (
     resolve_aggregation_params,
     source_row_leaf_closure,
 )
-from slayer.core.join_walker import physical_join_pairs, resolve_hop, walk
+from slayer.core.join_walker import (
+    canonical_token,
+    physical_join_pairs,
+    resolve_hop,
+    reverse_token,
+    walk,
+)
 from slayer.engine.join_safety import (
     UNREACHABLE_NO_PATH,
     _back_path,
@@ -1367,7 +1373,7 @@ def _forward_hops(
                 f"unreachable from the aggregate's root (no join edge from "
                 f"{current.name} to {hop_name})"
             )
-        node_path = (*node_path, edge.name or edge.target_model)
+        node_path = (*node_path, canonical_token(edge))
         _register_hop(
             nodes, node_path=node_path, target_model=edge.target_model,
             pairs=physical_join_pairs(edge=edge, source=current, target=target),
@@ -1400,7 +1406,7 @@ def _reverse_hops(
     node_path: Tuple[str, ...] = ()
     by_name = {**models_by_name, host_model.name: host_model}
     for edge in reversed(fwd):
-        node_path = (*node_path, edge.name or edge.source_model)
+        node_path = (*node_path, reverse_token(edge))
         physical = physical_join_pairs(
             edge=edge, source=by_name[edge.source_model], target=by_name[edge.target_model],
         )
@@ -1915,7 +1921,7 @@ def _canonical_path(
         return tuple(path)
     if edges is None:
         return tuple(path)
-    return tuple(e.name or e.target_model for e in edges)
+    return tuple(canonical_token(e) for e in edges)
 
 
 def _grain_closure_paths(
@@ -3995,10 +4001,7 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
             ))
 
     source_col_names = _source_column_names(scope)
-    # A top-level stage is spelled as the user wrote it; a producer (possibly
-    # rerooted at a stage) keeps the identity, which no edge name can collide with.
-    spell = bundle.relation_display if isinstance(env, ElaboratedStage) else str
-    host_name = spell(host_model_name(scope))
+    host_name = host_model_name(scope)
 
     # Windowed-measure guards on the pre-projection trees; returns the cleanly-selected windowed AggregateKeys.
     selected_windowed = _guard_windowed_measures(
@@ -4183,9 +4186,7 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
         )
     # Per-mask structural reachability summary, in this plan's coordinate system.
     reachability_anchor_model = render_source_model or bundle.source_model
-    source_relation = spell(
-        query.source_model if isinstance(query.source_model, str) else host_name
-    )
+    source_relation = host_name
     filter_reachability: List[FilterReachability] = []
     # One expansion cache for the whole plan (both visitors and every filter share it).
     reachability_cache: dict = {}
