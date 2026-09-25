@@ -13,6 +13,7 @@ import sqlalchemy as sa
 import sqlalchemy.exc
 import sqlglot
 from sqlglot import expressions as exp
+from sqlglot.errors import ParseError, TokenError
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from slayer.core.models import DatasourceConfig
@@ -339,8 +340,13 @@ def _get_column_types_sync(
         ro_sql = _read_only_transaction_sql(db_type)
         if ro_sql:
             _exec_verbatim(conn, ro_sql)
-        _apply_type_probe_timeout(conn, db_type, _TYPE_PROBE_TIMEOUT_SECONDS)
-        result = _exec_verbatim(conn, limit_sql)
+        if db_type == "clickhouse":
+            result = _exec_clickhouse(
+                conn=conn, sql=limit_sql, engine=engine, timeout_seconds=_TYPE_PROBE_TIMEOUT_SECONDS,
+            )
+        else:
+            _apply_type_probe_timeout(conn, db_type, _TYPE_PROBE_TIMEOUT_SECONDS)
+            result = _exec_verbatim(conn=conn, sql=limit_sql)
         types = _extract_types_from_cursor(result, db_type=db_type)
         conn.rollback()
     return types
@@ -859,9 +865,9 @@ def _execute_sql_sync(
     with engine.connect() as conn:
         timeout_ms = timeout_seconds * 1000
         if db_type == "clickhouse":
-            return _execute_clickhouse_sync(
-                conn, sql=sql, engine=engine, timeout_seconds=timeout_seconds,
-            )
+            return _fetch_rows(_exec_clickhouse(
+                conn=conn, sql=sql, engine=engine, timeout_seconds=timeout_seconds,
+            ))
         if db_type in ("mysql", "mariadb"):
             _exec_verbatim(conn, f"SET max_execution_time = {timeout_ms}")
         elif db_type in ("postgres", "postgresql", None):
@@ -874,7 +880,7 @@ def _execute_sql_sync(
             timeout_sql = dialect_for_ds_type(db_type).statement_timeout_sql(timeout_seconds)
             if timeout_sql:
                 _exec_verbatim(conn, timeout_sql)
-        return _fetch_rows(_exec_verbatim(conn, sql))
+        return _fetch_rows(_exec_verbatim(conn=conn, sql=sql))
 
 
 def _fetch_rows(result) -> list[dict[str, Any]]:
@@ -898,7 +904,7 @@ def _with_ch_statement_timeout(sql: str, timeout_seconds: int) -> str:
     """
     try:
         ast = sqlglot.parse_one(sql, dialect="clickhouse")
-    except (sqlglot.errors.ParseError, sqlglot.errors.TokenError):
+    except (ParseError, TokenError):
         return sql
     if not isinstance(ast, exp.Query):
         return sql
@@ -910,10 +916,10 @@ def _with_ch_statement_timeout(sql: str, timeout_seconds: int) -> str:
     return ast.sql(dialect="clickhouse")
 
 
-def _execute_clickhouse_sync(
+def _exec_clickhouse(
     conn, *, sql: str, engine: sa.Engine, timeout_seconds: int,
-) -> list[dict[str, Any]]:
-    """Run a ClickHouse query with a per-statement timeout.
+) -> Any:
+    """Run a ClickHouse statement with a per-statement timeout.
 
     A ``readonly = 1`` user refuses every setting change. For that user the query
     runs without the setting, and the server profile's limit applies.
@@ -921,7 +927,7 @@ def _execute_clickhouse_sync(
     if engine not in _ch_readonly_engines:
         timed_sql = _with_ch_statement_timeout(sql=sql, timeout_seconds=timeout_seconds)
         try:
-            return _fetch_rows(_exec_verbatim(conn, timed_sql))
+            return _exec_verbatim(conn=conn, sql=timed_sql)
         except Exception as exc:
             # Unchanged SQL means the refused setting is the statement's own.
             if timed_sql == sql or _CH_READONLY_ERROR_MARKER not in str(exc):
@@ -932,4 +938,4 @@ def _execute_clickhouse_sync(
                 "the server profile's limit applies instead.",
                 _CH_TIMEOUT_SETTING,
             )
-    return _fetch_rows(_exec_verbatim(conn, sql))
+    return _exec_verbatim(conn=conn, sql=sql)
