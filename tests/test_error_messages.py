@@ -259,7 +259,7 @@ class TestMeasureCycleError:
 
 
 # ---------------------------------------------------------------------------
-# Alias-collision validations (DEV-1443)
+# Alias-collision validations
 # ---------------------------------------------------------------------------
 
 
@@ -270,7 +270,8 @@ class TestDuplicateMeasureNameError:
             occurrences=["measures[0]", "measures[3]"],
         )
         assert str(e) == (
-            "DuplicateMeasureNameError: Measure name 'rev' is declared more than once.\n"
+            "DuplicateMeasureNameError: The measure name is declared more than once.\n"
+            "  at measure 'rev'\n"
             "  occurrences: ['measures[0]', 'measures[3]']"
         )
 
@@ -279,8 +280,9 @@ class TestMeasureNameCollidesWithColumnError:
     def test_basic(self):
         e = MeasureNameCollidesWithColumnError(name="status", model="orders")
         assert str(e) == (
-            "MeasureNameCollidesWithColumnError: Declared measure name 'status' "
-            "matches a source column on model 'orders'."
+            "MeasureNameCollidesWithColumnError: The declared measure name "
+            "matches a source column on model 'orders'.\n"
+            "  at measure 'status'"
         )
 
 
@@ -292,8 +294,9 @@ class TestCanonicalAliasShadowsColumnError:
             model="orders",
         )
         assert str(e) == (
-            "CanonicalAliasShadowsColumnError: Canonical alias 'status_count' for "
-            "formula 'status:count' shadows a source column on model 'orders'."
+            "CanonicalAliasShadowsColumnError: The canonical alias 'status_count' "
+            "shadows a source column on model 'orders'.\n"
+            "  at measure 'status:count'"
         )
 
 

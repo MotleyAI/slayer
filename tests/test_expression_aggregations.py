@@ -350,7 +350,7 @@ class TestExpressionNaming:
 
     async def test_colliding_derived_keys_fail_loudly(self) -> None:
         q = _q(measures=["sum(amount - cost)", "sum(amount + cost)"])
-        with pytest.raises(ValueError, match="rename") as ei:
+        with pytest.raises(ValueError, match="Rename") as ei:
             await _dry(q)
         assert "amount_cost_sum" in str(ei.value)
 

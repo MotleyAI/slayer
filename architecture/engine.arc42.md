@@ -154,7 +154,7 @@ elaborate→compile and `query_engine.py` orchestrates.
    `elaborate`, `elaborate_env` (THE checker), `compile` and `plan` are
    declared children with only the modeled arrows among them — the compiler
    consults the checker, never syntax or binding; every user-facing algebra
-   type error raises in the checker.
+   type error raises in the checker, as a `QueryTypeError`.
    [enforced: arch_check:model-truth]
    [enforced: test:tests/test_dev1871_raise_parity.py]
 10. **Dependencies are closures**: every predicate that classifies a column

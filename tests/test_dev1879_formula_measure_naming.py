@@ -138,7 +138,7 @@ class TestCollisions:
                 "logo_churn:sum * logo_bop:sum",
             ]
         )
-        with pytest.raises(ValueError, match="rename") as ei:
+        with pytest.raises(ValueError, match="Rename") as ei:
             await _dry(q)
         msg = str(ei.value)
         assert "logo_churn:sum / logo_bop:sum" in msg

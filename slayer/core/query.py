@@ -35,8 +35,8 @@ from slayer.storage.migrations import CURRENT_VERSIONS, migrate as _migrate_sche
 
 logger = logging.getLogger(__name__)
 
-_NAME_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
-_VAR_PATTERN = re.compile(r"\{\{|\}\}|\{([a-zA-Z_][a-zA-Z0-9_]*)\}|\{([^}]*)\}")
+_NAME_PATTERN = re.compile(r"^[a-zA-Z_]\w*$", re.ASCII)
+_VAR_PATTERN = re.compile(r"\{\{|\}\}|\{([a-zA-Z_]\w*)\}|\{([^}]*)\}", re.ASCII)
 
 _GRANULARITY_VALUES = frozenset(g.value for g in TimeGranularity)
 # Leading callee of a whole-string single call ``name( ... )``; used only when
@@ -356,7 +356,7 @@ def _contains_block_delimiter(text: str) -> bool:
 
 
 def _make_var_replacer(
-    filter_str: str, variables: dict, escape: str, backslash_escapes: bool
+    filter_str: str, variables: dict, escape: Literal["sql", "python"], backslash_escapes: bool
 ):
     """Build the ``re.sub`` replacement callable for ``{var}`` / ``{{`` / ``}}`` tokens."""
 
@@ -911,6 +911,48 @@ def _strip_column_ref(ref, model_name: str):
     return ref
 
 
+def _strip_time_dimensions(tds: list[TimeDimension] | None, model_name: str) -> list[TimeDimension] | None:
+    """The prefix-stripped time dimensions, or ``None`` when nothing changed."""
+    if not tds:
+        return None
+    new_tds = []
+    for td in tds:
+        stripped = _strip_column_ref(td.dimension, model_name)
+        if stripped is td.dimension:
+            new_tds.append(td)
+        else:
+            new_tds.append(TimeDimension(
+                dimension=stripped, granularity=td.granularity, date_range=td.date_range, label=td.label,
+            ))
+    return None if all(n is o for n, o in zip(new_tds, tds)) else new_tds
+
+
+def _strip_order(order: list[OrderItem] | None, model_name: str, pattern: re.Pattern) -> list[OrderItem] | None:
+    """The prefix-stripped order items, or ``None`` when nothing changed."""
+    if not order:
+        return None
+    new_order = []
+    for item in order:
+        stripped = _strip_column_ref(item.column, model_name)
+        raw_formula = pattern.sub("", item.raw_formula) if item.raw_formula else None
+        if stripped is item.column and raw_formula == item.raw_formula:
+            new_order.append(item)
+        else:
+            new_order.append(OrderItem(column=stripped, direction=item.direction, raw_formula=raw_formula))
+    return None if all(n is o for n, o in zip(new_order, order)) else new_order
+
+
+def _strip_measures(measures: list[ModelMeasure] | None, pattern: re.Pattern) -> list[ModelMeasure] | None:
+    """The prefix-stripped measures, or ``None`` when nothing changed."""
+    if not measures:
+        return None
+    new_measures = [
+        f if (formula := pattern.sub("", f.formula)) == f.formula else f.model_copy(update={"formula": formula})
+        for f in measures
+    ]
+    return None if all(n is o for n, o in zip(new_measures, measures)) else new_measures
+
+
 class SlayerQuery(BaseModel):
     """User-facing query object — what to retrieve from a model, as names/references, no SQL."""
 
@@ -1122,18 +1164,18 @@ class SlayerQuery(BaseModel):
         if self.measures:
             n = len(self.measures)
             raise DistinctDimensionValuesError(
-                f"distinct_dimension_values=False requires an empty `measures` "
-                f"field, but {n} measure(s) were supplied. Either remove the "
-                f"measures (and any other measure references) or set "
-                f"distinct_dimension_values=True (the default) to keep the "
-                f"auto-aggregating behaviour."
+                summary=f"distinct_dimension_values=False requires an empty `measures` "
+                f"field, but {n} measure(s) were supplied.",
+                suggestion="Either remove the measures (and any other measure "
+                "references) or set distinct_dimension_values=True (the default) "
+                "to keep the auto-aggregating behaviour.",
             )
         if not self.dimensions and not self.time_dimensions:
             raise DistinctDimensionValuesError(
-                "distinct_dimension_values=False requires at least one of "
+                summary="distinct_dimension_values=False requires at least one of "
                 "`dimensions` or `time_dimensions` to be non-empty — there "
-                "are no columns to SELECT. Add the columns you want to "
-                "project."
+                "are no columns to SELECT.",
+                suggestion="Add the columns you want to project.",
             )
 
     def snap_to_whole_periods(self) -> "SlayerQuery":
@@ -1181,56 +1223,12 @@ class SlayerQuery(BaseModel):
             if any(n is not o for n, o in zip(new_dims, self.dimensions)):
                 updates["dimensions"] = new_dims
 
-        if self.time_dimensions:
-            new_tds = []
-            td_changed = False
-            for td in self.time_dimensions:
-                stripped = _strip_column_ref(td.dimension, model_name)
-                if stripped is not td.dimension:
-                    new_tds.append(TimeDimension(
-                        dimension=stripped,
-                        granularity=td.granularity,
-                        date_range=td.date_range,
-                        label=td.label,
-                    ))
-                    td_changed = True
-                else:
-                    new_tds.append(td)
-            if td_changed:
-                updates["time_dimensions"] = new_tds
-
-        if self.order:
-            new_order = []
-            order_changed = False
-            for item in self.order:
-                stripped = _strip_column_ref(item.column, model_name)
-                stripped_raw_formula = (
-                    pattern.sub("", item.raw_formula) if item.raw_formula else None
-                )
-                if stripped is not item.column or stripped_raw_formula != item.raw_formula:
-                    new_order.append(OrderItem(
-                        column=stripped,
-                        direction=item.direction,
-                        raw_formula=stripped_raw_formula,
-                    ))
-                    order_changed = True
-                else:
-                    new_order.append(item)
-            if order_changed:
-                updates["order"] = new_order
-
-        if self.measures:
-            new_measures = []
-            measures_changed = False
-            for f in self.measures:
-                new_formula = pattern.sub("", f.formula)
-                if new_formula != f.formula:
-                    new_measures.append(f.model_copy(update={"formula": new_formula}))
-                    measures_changed = True
-                else:
-                    new_measures.append(f)
-            if measures_changed:
-                updates["measures"] = new_measures
+        stripped_lists = (
+            ("time_dimensions", _strip_time_dimensions(self.time_dimensions, model_name)),
+            ("order", _strip_order(self.order, model_name, pattern)),
+            ("measures", _strip_measures(self.measures, pattern)),
+        )
+        updates.update((key, value) for key, value in stripped_lists if value is not None)
 
         if self.filters:
             new_filters = [pattern.sub("", f) for f in self.filters]

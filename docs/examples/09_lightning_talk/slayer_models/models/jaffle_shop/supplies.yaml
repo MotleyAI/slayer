@@ -1,4 +1,4 @@
-version: 11
+version: 12
 name: supplies
 sql_table: supplies
 source_kind: table

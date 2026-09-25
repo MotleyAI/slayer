@@ -57,7 +57,7 @@ LI_QTY_LAST = AggregateKey(source=ColumnKey(path=("line_items",), leaf="qty"), a
 
 
 def _alias_of(msg: str) -> str:
-    match = re.search(r"[Aa]ggregate '([^']+)'", msg)
+    match = re.search(r"\n  at measure '([^']+)'", msg)
     assert match, msg
     return match.group(1)
 
