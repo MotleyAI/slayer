@@ -399,7 +399,7 @@ These are SQL-mode expressions (Mode A): any valid SQL the underlying dialect ac
 
 A query-backed model is a queryable relation whose rows are the final-stage result of one or more saved `SlayerQuery` stages. You can save any query as a model, then run it directly by name or use it as `source_model` in another query — exactly like any table-backed model.
 
-### Saving a query as a model
+### Creating models from queries
 
 ```python
 await engine.create_model_from_query(
@@ -436,6 +436,8 @@ Or use the saved result as a model in another query:
   "dimensions": ["region"]
 }
 ```
+
+A consumed query-backed model is spliced into the consuming query as stages whose names stay private to it, and one that references itself, directly or through other query-backed models, is rejected.
 
 ### Variables in model SQL
 

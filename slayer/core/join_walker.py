@@ -19,7 +19,9 @@ Two faces:
 
 from __future__ import annotations
 
-from typing import Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
+from typing import Dict, Iterable, Iterator, Optional, Sequence
 
 from pydantic import BaseModel, ConfigDict
 
@@ -33,6 +35,7 @@ __all__ = [
     "canonical_token",
     "edges_between",
     "neighbors",
+    "observe_traversals",
     "physical_join_pairs",
     "resolve_hop",
     "terminal_model",
@@ -59,6 +62,31 @@ class OrientedJoin(BaseModel):
     cardinality: JoinCardinality | None
     name: str | None
     declaring_model: str
+
+
+_traversals: ContextVar[Optional[Dict[str, bool]]] = ContextVar(
+    "slayer_join_traversals", default=None,
+)
+
+
+@contextmanager
+def observe_traversals() -> Iterator[Dict[str, bool]]:
+    """Record every model a traversal in the block yields: name → strictly resolved
+    (a hop walked) rather than only enumerated. Output-only; never feeds resolution."""
+    sink: Dict[str, bool] = {}
+    token = _traversals.set(sink)
+    try:
+        yield sink
+    finally:
+        _traversals.reset(token)
+
+
+def _observe(targets: Iterable[str], *, strict: bool) -> None:
+    sink = _traversals.get()
+    if sink is None:
+        return
+    for name in targets:
+        sink[name] = sink.get(name, False) or strict
 
 
 def canonical_token(edge: OrientedJoin) -> str:
@@ -106,6 +134,7 @@ def edges_between(*, source: SlayerModel, target: SlayerModel) -> list[OrientedJ
     for j in target.joins:
         if j.target_model == source.name:
             out.append(_orient(join=j, declaring=target.name, from_model=source.name))
+    _observe((e.target_model for e in out), strict=False)
     return out
 
 
@@ -145,6 +174,7 @@ def neighbors(
         for j in other.joins:
             if j.target_model == model.name:
                 out.append(_orient(join=j, declaring=other.name, from_model=model.name))
+    _observe((e.target_model for e in out), strict=False)
     return out
 
 
@@ -174,6 +204,7 @@ def resolve_hop(
             candidates=candidates,
             token=token,
         )
+    _observe([candidates[0].target_model], strict=True)
     return candidates[0]
 
 
@@ -230,6 +261,7 @@ def _owner_stack(
         target = {e.target_model for e in cands}
         if len(target) != 1:
             return None
+        _observe(target, strict=True)
         nxt = models_by_name.get(next(iter(target)))
         if nxt is None or any(m.name == nxt.name for m in stack):
             return None
@@ -251,6 +283,7 @@ def _incident_named(
             source_model=current.name, target_model=named[0].target_model,
             candidates=named, token=token,
         )
+    _observe([named[0].target_model], strict=True)
     return named[0]
 
 

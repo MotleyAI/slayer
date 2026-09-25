@@ -4252,6 +4252,7 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
         originals={sub.placeholder: sub.original_key
                    for attach in regroup_attach_plans for sub in attach.substitutions},
         upstream=_upstream_respellings(scope),
+        scope=scope,
     )
 
     # Frame-bound column set: raw columns of this stage's non-hidden time dimensions.
@@ -4516,6 +4517,7 @@ def _emit_stage_schema(
     models_by_name: Dict[str, SlayerModel],
     originals: Mapping[ValueKey, ValueKey],
     upstream: Mapping[str, Tuple[str, ...]],
+    scope: Union[ModelScope, StageSchema, None] = None,
 ) -> StageSchema:
     """``public_projection[:n_grain_positions]`` are the declared dimension / time-dimension occurrences."""
     columns: List[StageColumn] = []
@@ -4537,6 +4539,7 @@ def _emit_stage_schema(
         )
         columns.append(_stage_column(
             slot=slot, alias=alias, flat=flat,
+            source=_source_column(key=slot.key, root=root, models_by_name=models_by_name, scope=scope),
             respellings=() if alias in slot.explicit_aliases else _respellings(
                 flat=flat, key=originals.get(slot.key, slot.key), root=root,
                 models_by_name=models_by_name, upstream=upstream,
@@ -4551,24 +4554,50 @@ def _emit_stage_schema(
     )
 
 
+def _source_column(
+    *, key: ValueKey, root: Optional[SlayerModel], models_by_name: Dict[str, SlayerModel],
+    scope: Union[ModelScope, StageSchema, None],
+):
+    """The column a row-level stage output reads (a model column or an upstream stage
+    column), for the metadata it carries downstream; ``None`` for anything else."""
+    if isinstance(key, TimeTruncKey):
+        key = key.column
+    if not isinstance(key, (ColumnKey, ColumnSqlKey)):
+        return None
+    leaf = column_leaf(key)
+    if isinstance(scope, StageSchema):
+        return scope.get(leaf) if not key.path else None
+    if root is None:
+        return None
+    try:
+        chain = walk(root=root, path=key.path, models_by_name=models_by_name)
+    except (AmbiguousJoinPathError, CircularJoinPathError):
+        return None
+    if chain is None:
+        return None
+    model = models_by_name.get(chain[-1].target_model) if chain else root
+    return model.get_column(leaf) if model is not None else None
+
+
 def _stage_column(
-    *, slot: ValueSlot, alias: str, flat: str, respellings: Tuple[str, ...],
+    *, slot: ValueSlot, alias: str, flat: str, respellings: Tuple[str, ...], source=None,
 ) -> StageColumn:
     # An upstream-bucketed column carries its granularity so a re-binding TimeDimension can type-check the re-bucket.
     upstream_gran = (
         TimeGranularity(slot.key.granularity)
         if isinstance(slot.key, TimeTruncKey) else None
     )
+    row = source if slot.phase == Phase.ROW else None
     return StageColumn(
         name=flat,
         sql_alias=flat,
         public_alias=alias,
         type=slot.type,
         granularity=upstream_gran,
-        label=slot.label,
+        label=slot.label or (row.label if row is not None else None),
         hidden=False,
-        format=slot.format,
-        description=slot.description,
+        format=slot.format or (row.format if row is not None else None),
+        description=slot.description or (row.description if row is not None else None),
         respellings=respellings,
     )
 

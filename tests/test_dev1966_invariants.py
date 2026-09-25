@@ -30,12 +30,14 @@ class TestGeneratorInvariant:
     def test_unspliced_query_backed_model_raises_a_non_deferral_value_error(self) -> None:
         qb = SlayerModel(name="qb_unspliced", data_source="test",
                          source_queries=[query(source_model="orders", measures=[m("amount:sum", "a")])])
+        generator = SQLGenerator(dialect="postgres")
         with pytest.raises(ValueError) as exc:
-            SQLGenerator(dialect="postgres")._build_from_clause_from_planned(
-                source_model=qb, source_relation="qb_unspliced")
+            generator._build_from_clause_from_planned(source_model=qb, source_relation="qb_unspliced")
         msg = str(exc.value)
-        assert "qb_unspliced" in msg and "query-backed" in msg, msg
-        assert "deferred" not in msg.lower() and "DEV-" not in msg, msg
+        assert "qb_unspliced" in msg, msg
+        assert "query-backed" in msg, msg
+        assert "deferred" not in msg.lower(), msg
+        assert "DEV-" not in msg, msg
 
     def test_no_query_backed_deferral_site(self) -> None:
         assert [s for s in DEFERRAL_SITES if "source_queries" in s.fragment] == []
@@ -74,10 +76,10 @@ class TestStageBundleCollision:
         assert host.get_column("double_amount") is not None
 
     def test_a_stage_identity_meeting_a_different_model_raises(self) -> None:
+        bundle, host, siblings = _bundle(), orders_model(), {"customers": _schema("customers")}
         with pytest.raises(ValueError, match="customers"):
             stage_bundle_with_siblings(
-                bundle=_bundle(), source_model=orders_model(),
-                sibling_schemas={"customers": _schema("customers")}, data_source="test")
+                bundle=bundle, source_model=host, sibling_schemas=siblings, data_source="test")
 
 
 def _stamped_bundle(planned: PlannedQuery) -> ResolvedSourceBundle:

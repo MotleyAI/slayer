@@ -19,7 +19,7 @@ from slayer.core.keys import (
     walk_value_keys,
 )
 from slayer.core.models import SlayerModel
-from slayer.core.scope import StageSchema
+from slayer.core.scope import StageSchema, StaleSpelling
 from slayer.ir.bound import BoundExpr
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
@@ -441,6 +441,10 @@ class PlannedQuery(BaseModel):
     stage_reads: List[str] = Field(default_factory=list)
     # The per-stage model universe this stage was planned (and renders) against.
     stage_bundle: Optional[ResolvedSourceBundle] = None
+    # Set on a spliced model's stages read under conflicting variables; fatal if emitted.
+    splice_conflict: Optional[str] = None
+    # Stale flat-name spellings bound while planning this stage.
+    stale_spellings: List[StaleSpelling] = Field(default_factory=list)
     # Active-TD slot (None if none); time-needing transforms use it for the OVER ORDER BY.
     active_time_dimension_slot_id: Optional[SlotId] = None
     render_source_model: Optional[SlayerModel] = None

@@ -84,7 +84,8 @@ class TestReachIsNotReading:
                                   dry_run=True)
         assert resp.data == [{"orders.t": 145.0}]
         assert resp.warnings == []
-        assert dry.sql is not None and "broken_qb" not in dry.sql
+        assert dry.sql is not None
+        assert "broken_qb" not in dry.sql
 
     async def test_an_unread_warning_model_stays_silent(self, dialect) -> None:
         models = [orders_model(), _joined(customers_model(), ("bcast_qb", [["tier", "status"]])),
@@ -135,16 +136,17 @@ class TestFailedAttemptKeepsItsError:
     async def test_invalid_expression_survives_an_incident_in_flight_model(self) -> None:
         models = [_orders_joining("bad_self"), customers_model(), clients_model(),
                   cust_rev_model(), BAD_SELF]
+        consumer = query(source_model="bad_self", measures=[m("a:sum", "t")])
         async with dev1966_engine("sqlite", models=models) as e:
             with pytest.raises(ValueError) as exc:
-                await e.execute(query(source_model="bad_self", measures=[m("a:sum", "t")]))
+                await e.execute(consumer)
         assert not isinstance(exc.value, QueryBackedCycleError)
         assert "nope" in str(exc.value)
 
 
 class TestPruning:
     def test_a_producer_reused_by_a_reachable_stage_survives(self) -> None:
-        body = sqlglot.parse_one("SELECT 1 AS x")
+        body = sqlglot.select("1 AS x")
         entries = [
             CteEntry(name="_cm_p", query=body),
             CteEntry(name="__slayer_qb__m__s", query=body, depends_on=["_cm_p"]),

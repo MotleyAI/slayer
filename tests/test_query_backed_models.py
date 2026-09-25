@@ -69,10 +69,8 @@ async def _expand_stage_as_model(
     model = SlayerModel(name=name, source_queries=[stage], data_source=data_source)
     return await engine._expand_query_backed_model(
         model=model,
-        outer_vars=None,
         runtime_kwarg=None,
         dry_run_placeholders=False,
-        _resolving=None,
     )
 
 

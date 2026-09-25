@@ -176,9 +176,11 @@ class TestOneFlatWith:
                 _CONSUMERS[consumer], dry_run=True)
         assert resp.sql is not None
         statements = sqlglot.parse(resp.sql, dialect=dialect)
-        assert len(statements) == 1 and statements[0] is not None, resp.sql
+        assert len(statements) == 1, resp.sql
+        assert statements[0] is not None, resp.sql
         withs = list(statements[0].find_all(exp.With))
-        assert len(withs) == 1 and withs[0].parent is statements[0], resp.sql
+        assert len(withs) == 1, resp.sql
+        assert withs[0].parent is statements[0], resp.sql
         names = [cte.alias for cte in withs[0].expressions]
         assert "x" not in names, names
 
@@ -210,7 +212,8 @@ class TestMetadata:
         status_meta = got.attributes.dimensions["monthly.status"]
         assert status_meta.label == STATUS_LABEL
         t_meta = got.attributes.measures["monthly.t"]
-        assert t_meta.format is not None and t_meta.format.type == NumberFormatType.CURRENCY
+        assert t_meta.format is not None
+        assert t_meta.format.type == NumberFormatType.CURRENCY
 
     async def test_time_defaulting_through_a_spliced_model(self, engine) -> None:
         resp = await engine.execute(query(
@@ -315,8 +318,9 @@ class TestExtensions:
         s = query(name="s", source_model={"source_name": "cust_rev",
                                           "measures": [{"name": "mm", "formula": "rev:sum"}]},
                   dimensions=["customer_id"], measures=["mm"])
+        stages = [s, query(source_model="s", measures=[m("mm:sum", "t")])]
         with pytest.raises(ValueError, match=r"(?s)cust_rev.*may not add measures"):
-            await engine.execute([s, query(source_model="s", measures=[m("mm:sum", "t")])])
+            await engine.execute(stages)
 
 
 # --------------------------------------------------------------------------- #
@@ -330,7 +334,8 @@ class TestSplicedWarnings:
         assert rows_by(resp.data, key="bcast_qb.status", value="bcast_qb.t") == AMOUNT_BY_STATUS
         (w,) = [w for w in resp.warnings if w.kind == "broadcast"]
         assert w.measure == "cs"
-        assert "bstage" in w.location and "bcast_qb" in w.location, w.location
+        assert "bstage" in w.location, w.location
+        assert "bcast_qb" in w.location, w.location
         assert INTERNAL not in w.location
 
     async def test_consumer_warnings_equal_the_explicit_splice(self, engine) -> None:

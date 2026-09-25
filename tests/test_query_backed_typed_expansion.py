@@ -507,10 +507,8 @@ class TestVirtualModelColumns:
         try:
             virtual = await engine._expand_query_backed_model(
                 model=m,
-                outer_vars=None,
                 runtime_kwarg=None,
                 dry_run_placeholders=True,
-                _resolving=set(),
             )
             assert virtual.default_time_dimension == "created_at"
         finally:
@@ -695,14 +693,9 @@ class TestInlineNestedSourceQueriesIntegrated:
 
     def test_inline_nested_source_rejected_at_construction(self) -> None:
         """An inline query-backed stage source is rejected before any save-time cycle walk."""
+        inline = SlayerModel(name="_inline_a", source_queries=[SlayerQuery(source_model="b")])
         with pytest.raises(ValueError, match=r"(?is)_inline_a.*named stages?|named stages?.*_inline_a"):
-            SlayerQuery(
-                name="a",
-                source_model=SlayerModel(
-                    name="_inline_a",
-                    source_queries=[SlayerQuery(source_model="b")],
-                ),
-            )
+            SlayerQuery(name="a", source_model=inline)
 
 
 class TestNestedQueryBackedSavePath:

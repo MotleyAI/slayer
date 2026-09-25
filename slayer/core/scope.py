@@ -112,6 +112,8 @@ class StageSchema(BaseModel):
     sql: Optional[str] = None
     columns: List[StageColumn]
     grain: Optional[List[str]] = None
+    # A spliced query-backed model's final stage keeps its source's default time dimension.
+    default_time_dimension: Optional[str] = None
 
     @property
     def display_name(self) -> str:

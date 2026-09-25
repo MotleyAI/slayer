@@ -7,39 +7,39 @@
 - [x] 1.5 Cycle tests: direct + transitive, reached by consumer execution, run-by-name, `save_model` (`models/save-validation` scenarios) and `get_column_types`, each asserting one error type with the ordered path. Verify red today.
 - [x] 1.6 Invariant tests: generator `ValueError` (type + stable, non-deferral fragment) for an un-spliced query-backed model reaching `_build_from_clause_from_planned`; `stage_bundle_with_siblings` accepts the host duplicate and raises on a stage identity meeting a different model; a stage's stamped bundle never contains a later stage. Verify red today.
 - [x] 1.7 Codex-review the test suite against this change's specs; resolve findings; commit.
-- [ ] 1.8 Tests: reach is not reference; unread broken / warning models inert; non-root and Mode-A stored-join reads; one query-backed model reading another; a failed attempt keeps its error; pruning keeps reused producers; emission law.
+- [x] 1.8 Tests: reach is not reference; unread broken / warning models inert; non-root and Mode-A stored-join reads; one query-backed model reading another; a failed attempt keeps its error; pruning keeps reused producers; emission law.
 
 ## 2. Scoping
 
-- [ ] 2.1 `StageSchema.display_name`; result keys (`response_meta`), warnings (incl. `stale_spelling_stage` labels) and stage errors read it. Verify 1.2 key/message tests.
+- [x] 2.1 `StageSchema.display_name`; result keys (`response_meta`), warnings (incl. `stale_spelling_stage` labels) and stage errors read it. Verify 1.2 key/message tests.
 - [ ] 2.2 `localize_stages` in `slayer/engine/stage_ordering.py` (design decision 1), with unit tests over each reference shape; `_walk_spec` drops the nested `source_queries` branch. Verify its unit tests.
-- [ ] 2.3 Wire localization as the first step of `_prepare_pipeline` and of run-by-name (design decision 2), inference's `SIBLING_STAGE` check against user spellings. Verify 1.2.
-- [ ] 2.4 `stage_bundle_with_siblings` collision invariant (design decision 4). Verify 1.6.
-- [ ] 2.5 Stamp the per-stage bundle (placeholders excluded) on `PlannedQuery`; generator reads it; delete `_bundle_for_stage`. Verify 1.6 and the full multi-stage suite.
-- [ ] 2.6 Over-limit identifier fitting covers prefixed CTE names (extend if not). Verify the near-limit test.
+- [x] 2.3 Wire localization as the first step of `_prepare_pipeline` and of run-by-name (design decision 2), inference's `SIBLING_STAGE` check against user spellings. Verify 1.2.
+- [x] 2.4 `stage_bundle_with_siblings` collision invariant (design decision 4). Verify 1.6.
+- [x] 2.5 Stamp the per-stage bundle (placeholders excluded) on `PlannedQuery`; generator reads it; delete `_bundle_for_stage`. Verify 1.6 and the full multi-stage suite.
+- [x] 2.6 Over-limit identifier fitting covers prefixed CTE names (extend if not). Verify the near-limit test.
 
 ## 3. Inline query-backed ban
 
-- [ ] 3.1 `SlayerQuery.source_model` validator rejecting an inline model with `source_queries` (design decision 12). Verify 1.3.
+- [x] 3.1 `SlayerQuery.source_model` validator rejecting an inline model with `source_queries` (design decision 12). Verify 1.3.
 
 ## 4. Splicing
 
-- [ ] 4.1 `core.errors.QueryBackedCycleError`; `splice_chain` seed; raised by the builder (source names), `ensure()` (explicit on-chain demand) and the generator (emitted on-chain relation); failed attempts keep their error; `get_column_types` propagates; delete the cached-SQL short-circuit. Verify 1.5.
-- [ ] 4.2 Builder placeholder closure (datasource-scoped); `core.join_walker` observation sink over every edge-yielding traversal; demand loop in `plan_stages` (attempt → splice touched non-chain placeholders → retry; inert placeholder on a failed touched splice); `stage_reads` from strict hits (design decision 6). Verify 1.4 parity tests.
-- [ ] 4.3 Lexical variable environments (design decision 7). Verify 1.4 variable tests.
-- [ ] 4.4 Extension handling (design decision 8). Verify 1.4 extension tests.
-- [ ] 4.5 Spliced-stage warnings labelled (design decision 9) and selected, with `to_many_handling='error'`, from emitted stages only after generation. Verify 1.4 warning tests.
-- [ ] 4.6 Confine `_expand_query_backed_model` to save-time cache population and `get_column_types`. Verify the save and column-type tests.
-- [ ] 4.7 Relation-emission helper recording emitted stage relations; `CteEntry`-graph pruning of unreached spliced entries (design decision 14). Verify `tests/test_dev1966_splice_demand.py`.
+- [x] 4.1 `core.errors.QueryBackedCycleError`; `splice_chain` seed; raised by the builder (source names), `ensure()` (explicit on-chain demand) and the generator (emitted on-chain relation); failed attempts keep their error; `get_column_types` propagates; delete the cached-SQL short-circuit. Verify 1.5.
+- [x] 4.2 Builder placeholder closure (datasource-scoped); `core.join_walker` observation sink over every edge-yielding traversal; demand loop in `plan_stages` (attempt → splice touched non-chain placeholders → retry; inert placeholder on a failed touched splice); `stage_reads` from strict hits (design decision 6). Verify 1.4 parity tests.
+- [x] 4.3 Lexical variable environments (design decision 7). Verify 1.4 variable tests.
+- [x] 4.4 Extension handling (design decision 8). Verify 1.4 extension tests.
+- [x] 4.5 Spliced-stage warnings labelled (design decision 9) and selected, with `to_many_handling='error'`, from emitted stages only after generation. Verify 1.4 warning tests.
+- [x] 4.6 Confine `_expand_query_backed_model` to save-time cache population and `get_column_types`. Verify the save and column-type tests.
+- [x] 4.7 Relation-emission helper recording emitted stage relations; `CteEntry`-graph pruning of unreached spliced entries (design decision 14). Verify `tests/test_dev1966_splice_demand.py`.
 
 ## 5. Generator
 
-- [ ] 5.1 Scope-aware hoist renaming (design decision 11). Verify 1.4 embedded-`WITH` tests.
-- [ ] 5.2 Replace the `NotImplementedError` arm with the invariant `ValueError`; remove the DEV-1878 `DEFERRAL_SITES` entry; `guards.baseline` 1→0 in `architecture/index.yaml`; remove the `KNOWN_GAPS` "nested WITH" entries in `tests/test_dev1958_golden_sql.py` that now pass. Verify `poetry run pytest tests/test_law_guard_ratchet.py tests/test_dev1958_golden_sql.py`.
+- [x] 5.1 Scope-aware hoist renaming (design decision 11). Verify 1.4 embedded-`WITH` tests.
+- [x] 5.2 Replace the `NotImplementedError` arm with the invariant `ValueError`; remove the DEV-1878 `DEFERRAL_SITES` entry; `guards.baseline` 1→0 in `architecture/index.yaml`; remove the `KNOWN_GAPS` "nested WITH" entries in `tests/test_dev1958_golden_sql.py` that now pass. Verify `poetry run pytest tests/test_law_guard_ratchet.py tests/test_dev1958_golden_sql.py`.
 
 ## 6. Architecture, docs, convergence
 
 - [ ] 6.1 Apply the user-approved arc42 edits verbatim. `architecture/engine.arc42.md` §3 new principle 11: "**Stage names are query-local**: a stage name is visible only within its own query list, where it overrides a same-named model; stored definitions (joins, stored `source_queries`) never see it. Internally every stage carries a minted identity; the user's name survives only in result keys, join edge names and messages. [enforced: test:tests/test_dev1966_stage_scope.py]". `architecture/sql.arc42.md` §3 principle 11: after "a WITH never nests inside a CTE definition" insert " — every hoisted CTE renamed through the allocator, so no two statements' private names meet". Verify `poetry run python tools/arch_check.py`.
-- [ ] 6.2 Re-bless multi-stage SQL goldens and subquery-shape assertions (CTE names / flat `WITH` only; values and keys unchanged). Verify `poetry run pytest -m "not integration"` green.
-- [ ] 6.3 Docs, one sentence each: `docs/concepts/queries.md` multi-stage section (stage names are local and override same-named models; inline query-backed `source_model` rejected in favour of named stages); `docs/concepts/models.md` query-backed section (consumed inline as spliced stages with private stage names; self-reference rejected). Verify by reading the rendered sections.
+- [x] 6.2 Re-bless multi-stage SQL goldens and subquery-shape assertions (CTE names / flat `WITH` only; values and keys unchanged). Verify `poetry run pytest -m "not integration"` green.
+- [x] 6.3 Docs, one sentence each: `docs/concepts/queries.md` multi-stage section (stage names are local and override same-named models; inline query-backed `source_model` rejected in favour of named stages); `docs/concepts/models.md` query-backed section (consumed inline as spliced stages with private stage names; self-reference rejected). Verify by reading the rendered sections.
 - [ ] 6.4 Enforcement bundle green: `poetry run python tools/arch_check.py`, `poetry run basedpyright`, `poetry run ruff check slayer/ tests/`, full non-integration suite, and the integration suite with CI settings.

@@ -4,7 +4,7 @@ The orchestrator builds this once at execute start; the binder reads it purely.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -48,6 +48,12 @@ class ResolvedSourceBundle(BaseModel):
     dialect: str  # sqlglot dialect the query renders in
     # Minted stage identity → its user-facing spelling.
     stage_displays: Dict[str, StageDisplay] = Field(default_factory=dict)
+    # Stored query-backed models the statement may splice (stored form, joins dropped).
+    query_backed: Dict[str, SlayerModel] = Field(default_factory=dict)
+    # Query-backed models whose stages are being planned, outermost first.
+    splice_chain: Tuple[str, ...] = ()
+    runtime_variables: Dict[str, Any] = Field(default_factory=dict)
+    dry_run_placeholders: bool = False
 
     def relation_display(self, name: str) -> str:
         """``name``'s user-facing spelling: a stage's display name, else ``name``."""
@@ -180,7 +186,6 @@ def model_from_stage_schema(
         data_source=data_source,
         sql_table="_stage" if sql is None else None,
         sql=sql,
-        default_time_dimension=default_time_dimension,
         columns=[
             Column(
                 name=c.name,
@@ -197,7 +202,10 @@ def model_from_stage_schema(
         ],
     )
     # A minted stage identity carries the reserved prefix the name validator rejects.
-    return model.model_copy(update={"name": name, "sql_table": name if sql is None else None})
+    return model.model_copy(update={
+        "name": name, "sql_table": name if sql is None else None,
+        "default_time_dimension": default_time_dimension or schema.default_time_dimension,
+    })
 
 
 def stage_bundle_with_siblings(

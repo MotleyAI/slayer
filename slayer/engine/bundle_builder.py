@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, cast
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, cast
 
+from slayer.core.errors import QueryBackedCycleError
 from slayer.core.models import SlayerModel
 from slayer.core.query import ModelExtension, SlayerQuery, SourceSpec
+from slayer.core.scope import StageDisplay
 from slayer.ir.source_bundle import (
     ResolvedSourceBundle,
     apply_extension_overlay,
@@ -29,89 +31,6 @@ logger = logging.getLogger(__name__)
 _PEER_LOAD_CONCURRENCY = 8
 
 
-async def expand_query_backed_models_in_bundle(  # NOSONAR(S3776) — three sequential expansion blocks (source + referenced + stage_source) that mutate the bundle in series. Each block guards on its own condition; splitting forces ``bundle`` to ping-pong through helpers without simplifying anything. The inner recursion guard is the only shared state.
-    *,
-    bundle: ResolvedSourceBundle,
-    outer_vars: Optional[Dict[str, Any]],
-    runtime_kwarg: Optional[Dict[str, Any]],
-    dry_run_placeholders: bool,
-    expander,
-    _resolving: Optional["set[str]"] = None,
-) -> ResolvedSourceBundle:
-    """Expand every query-backed model in the bundle and re-apply any root overlay.
-
-    Three expansion blocks mirroring ``_execute_pipeline``: (1) source model,
-    re-applying every ``inline_extensions`` overlay; (2) referenced join /
-    cross-model targets; (3) stage source models. ``expander`` performs the
-    per-model expansion; ``_resolving`` is the re-entry recursion guard (a
-    transitively self-referencing target short-circuits to cached
-    ``backing_query_sql`` if available, else is left unchanged). Returns a fresh
-    bundle; ``inline_extensions`` is preserved for traceability.
-    """
-    resolving: "set[str]" = set(_resolving) if _resolving is not None else set()
-
-    async def _expand_or_short_circuit(model: SlayerModel) -> SlayerModel:
-        if model.name in resolving:
-            # Re-entry: cached backing SQL if available, else return unchanged.
-            if model.backing_query_sql:
-                return model.model_copy(
-                    update={"sql": model.backing_query_sql},
-                )
-            return model
-        resolving.add(model.name)
-        try:
-            return await expander(
-                model=model,
-                outer_vars=outer_vars,
-                runtime_kwarg=runtime_kwarg,
-                dry_run_placeholders=dry_run_placeholders,
-                _resolving=resolving,
-            )
-        finally:
-            resolving.discard(model.name)
-
-    if bundle.source_model is not None and bundle.source_model.source_queries:
-        expanded = await _expand_or_short_circuit(bundle.source_model)
-        for ext in bundle.inline_extensions:
-            expanded = apply_extension_overlay(expanded, ext)
-        bundle = bundle.model_copy(
-            update={
-                "source_model": expanded,
-                "referenced_models": [expanded]
-                + [
-                    m
-                    for m in bundle.referenced_models
-                    if m.name != expanded.name
-                ],
-            }
-        )
-    source_model = bundle.source_model
-
-    # Referenced models (source model handled above).
-    if source_model is not None and any(
-        rm.name != source_model.name and rm.source_queries
-        for rm in bundle.referenced_models
-    ):
-        expanded_refs: List[SlayerModel] = []
-        for rm in bundle.referenced_models:
-            if rm.name != source_model.name and rm.source_queries:
-                rm = await _expand_or_short_circuit(rm)
-            expanded_refs.append(rm)
-        bundle = bundle.model_copy(update={"referenced_models": expanded_refs})
-
-    if any(m.source_queries for m in bundle.stage_source_models.values()):
-        expanded_stage_sources: Dict[str, SlayerModel] = {}
-        for nm, sm in bundle.stage_source_models.items():
-            if sm.source_queries:
-                sm = await _expand_or_short_circuit(sm)
-            expanded_stage_sources[nm] = sm
-        bundle = bundle.model_copy(
-            update={"stage_source_models": expanded_stage_sources}
-        )
-
-    return bundle
-
-
 async def build_resolved_source_bundle(
     *,
     query: SlayerQuery,
@@ -120,20 +39,25 @@ async def build_resolved_source_bundle(
     runtime_variables: Optional[Dict[str, Any]] = None,
     outer_variables: Optional[Dict[str, Any]] = None,
     named_queries: Optional[Dict[str, SlayerQuery]] = None,
+    stage_displays: Optional[Dict[str, StageDisplay]] = None,
+    splice_chain: Tuple[str, ...] = (),
+    dry_run_placeholders: bool = False,
 ) -> ResolvedSourceBundle:
     """Eagerly assemble the :class:`ResolvedSourceBundle` for one execution (P11).
 
     Storage is consulted here and only here; the binder then reads the bundle
     purely. Variable precedence (highest first): runtime > query (stage) >
-    outer > source-model defaults.
+    outer > source-model defaults. Stored query-backed models are collected as
+    splice placeholders, never as referenced models.
     """
     named_queries = named_queries or {}
+    stage_displays = stage_displays or {}
     sibling_names = set(named_queries)
     storage = cast("StorageBackend", _ModelReadCache(storage))
+    for q in [*named_queries.values(), query]:
+        _reject_chain_source(spec=q.source_model, chain=splice_chain)
 
-    # source_model is the real base the root chain bottoms out at. A ROOT
-    # ModelExtension over a NON-sibling base is recorded in inline_extensions so
-    # the engine can re-apply the overlay after a query-backed base expands.
+    # source_model is the real base the root chain bottoms out at.
     root_spec = follow_sibling_chain(spec=query.source_model, named_queries=named_queries)
     inline_extensions: List[ModelExtension] = []
     if source_name_if_sibling(spec=root_spec, sibling_names=sibling_names) is None:
@@ -143,20 +67,33 @@ async def build_resolved_source_bundle(
     source_model = await _resolve_source_spec(
         root_spec, storage=storage, data_source=data_source
     )
+    if source_model.source_queries and isinstance(root_spec, ModelExtension):
+        # The overlay applies once, over the spliced stage (design decision 8).
+        source_model = await _resolve_source_spec(
+            root_spec.source_name, storage=storage, data_source=data_source,
+        )
 
     # Joins never cross datasource boundaries: scope the walk by the source
     # model's own data_source, falling back to the hint only when it carries none.
     walk_ds = source_model.data_source or data_source or None
 
-    referenced_models = await _collect_referenced_models(
+    component = await _collect_referenced_models(
         source_model=source_model,
         named_queries=named_queries,
         storage=storage,
         data_source=walk_ds,
     )
+    component.extend(await _query_written_targets(
+        queries=[*named_queries.values(), query], known={m.name for m in component},
+        sibling_names=sibling_names, storage=storage, data_source=walk_ds,
+    ))
+    referenced_models, query_backed = await _split_query_backed(
+        models=component, storage=storage, data_source=walk_ds, chain=splice_chain,
+    )
 
     # Per-named-stage source models — each non-sibling-sourced sibling resolves
-    # to its OWN concrete model so heterogeneous DAGs bind against the right host.
+    # to its OWN concrete model so heterogeneous DAGs bind against the right host;
+    # a query-backed source becomes a spliced sibling instead.
     stage_source_models: Dict[str, SlayerModel] = {}
     for nm, nq in named_queries.items():
         if source_name_if_sibling(spec=nq.source_model, sibling_names=sibling_names) is not None:
@@ -166,23 +103,23 @@ async def build_resolved_source_bundle(
         resolved_stage = await _resolve_source_spec(
             nq.source_model, storage=storage, data_source=walk_ds or data_source
         )
-        # Deferred-measure re-application is wired only for the ROOT source, not
-        # stage sources — a stage extension's measures would silently drop.
-        if resolved_stage.source_queries and spec_adds_measures(nq.source_model):
-            raise ValueError(
-                f"Stage {nm!r}: a ModelExtension over query-backed model "
-                f"{resolved_stage.name!r} may not add measures — deferred-overlay "
-                f"re-application is not wired for stage sources, so the measures "
-                f"would be silently dropped. Reference them from the root source "
-                f"or a table-backed base."
-            )
+        if resolved_stage.source_queries:
+            if spec_adds_measures(nq.source_model):
+                label = stage_displays[nm].label if nm in stage_displays else f"stage {nm!r}"
+                raise ValueError(
+                    f"{label[0].upper()}{label[1:]}: a ModelExtension over query-backed "
+                    f"model {resolved_stage.name!r} may not add measures; define them in "
+                    f"a later stage over it instead."
+                )
+            continue
         stage_source_models[nm] = resolved_stage
 
     query_variables = merge_query_variables(
         runtime=runtime_variables,
         stage=query.variables,
         outer=outer_variables,
-        model_defaults=source_model.query_variables,
+        # A query-backed root's own defaults layer its spliced stages, not the root.
+        model_defaults=None if source_model.source_queries else source_model.query_variables,
     )
 
     ds = await storage.get_datasource(source_model.data_source) if source_model.data_source else None
@@ -195,7 +132,96 @@ async def build_resolved_source_bundle(
         stage_source_models=stage_source_models,
         query_variables=query_variables,
         datasource_hint=data_source,
+        stage_displays=dict(stage_displays),
+        query_backed=query_backed,
+        splice_chain=tuple(splice_chain),
+        runtime_variables=dict(runtime_variables or {}),
+        dry_run_placeholders=dry_run_placeholders,
     )
+
+
+async def _query_written_targets(
+    *,
+    queries: List[SlayerQuery],
+    known: "set[str]",
+    sibling_names: "set[str]",
+    storage: "StorageBackend",
+    data_source: Optional[str],
+) -> List[SlayerModel]:
+    """The components of models the queries name as join targets but the join-graph
+    walk did not reach (an extension over a sibling carries its own joins)."""
+    out: List[SlayerModel] = []
+    for q in queries:
+        spec = q.source_model
+        for join in (spec.joins or []) if spec is not None and not isinstance(spec, str) else []:
+            name = join.target_model
+            if name in known or name in sibling_names:
+                continue
+            model = await _frontier_model(name=name, all_models={}, storage=storage, ds=data_source)
+            if model is None:
+                continue
+            for m in await _collect_referenced_models(
+                source_model=model, named_queries={}, storage=storage, data_source=data_source,
+            ):
+                if m.name not in known:
+                    known.add(m.name)
+                    out.append(m)
+    return out
+
+
+def _spec_base_name(spec: SourceSpec | None) -> Optional[str]:
+    if isinstance(spec, str):
+        return spec
+    if isinstance(spec, ModelExtension):
+        return spec.source_name
+    return None
+
+
+def _reject_chain_source(*, spec: SourceSpec | None, chain: Tuple[str, ...]) -> None:
+    """A source naming a model on the in-flight splice chain is a cycle."""
+    name = _spec_base_name(spec)
+    if name is not None and name in chain:
+        raise QueryBackedCycleError(path=[*chain[chain.index(name):], name])
+
+
+async def _split_query_backed(
+    *,
+    models: List[SlayerModel],
+    storage: "StorageBackend",
+    data_source: Optional[str],
+    chain: Tuple[str, ...],
+) -> "Tuple[List[SlayerModel], Dict[str, SlayerModel]]":
+    """Split ``models`` into referenced models and query-backed placeholders, closing
+    over each placeholder's stage bases (and their components). Placeholders keep
+    their stored form with joins dropped; on-chain names are never loaded."""
+    referenced: Dict[str, SlayerModel] = {}
+    query_backed: Dict[str, SlayerModel] = {}
+    pending = list(models)
+    while pending:
+        model = pending.pop(0)
+        if model.name in referenced or model.name in query_backed:
+            continue
+        if not model.source_queries:
+            referenced[model.name] = model
+            continue
+        query_backed[model.name] = model.model_copy(update={"joins": []})
+        private = {q.name: q for q in model.source_queries if q.name}
+        for stage in model.source_queries:
+            spec = follow_sibling_chain(spec=stage.source_model, named_queries=private)
+            name = _spec_base_name(spec)
+            if spec is None or (name is not None and (name in chain or name in query_backed)):
+                continue
+            try:
+                base = await _resolve_source_spec(spec, storage=storage, data_source=data_source)
+            except ValueError as exc:
+                logger.debug("query-backed stage base %r unresolved: %s", name, exc)
+                continue
+            if base.name in referenced or base.name in query_backed:
+                continue
+            pending.extend(await _collect_referenced_models(
+                source_model=base, named_queries={}, storage=storage, data_source=data_source,
+            ))
+    return list(referenced.values()), query_backed
 
 
 async def _preseed_sibling_models(

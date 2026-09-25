@@ -115,8 +115,9 @@ class TestQueryBackedPrivateStageNames:
     async def test_private_stage_is_unreachable_from_the_consumer(self, engine) -> None:
         s = query(name="s", source_model="cust_rev", dimensions=["customer_id"],
                   measures=[m("rev:sum", "r")])
+        stages = [s, query(source_model="x", measures=[m("amt:sum", "t")])]
         with pytest.raises(ValueError, match=r"'x'") as exc:
-            await engine.execute([s, query(source_model="x", measures=[m("amt:sum", "t")])])
+            await engine.execute(stages)
         assert INTERNAL not in str(exc.value)
 
 
@@ -214,5 +215,6 @@ class TestIdentifierLimit:
         assert resp.sql is not None
         tree = sqlglot.parse_one(resp.sql, dialect="postgres")
         names = [cte.alias for cte in tree.find_all(exp.CTE)]
-        assert names and len(set(names)) == len(names), names
+        assert names, resp.sql
+        assert len(set(names)) == len(names), names
         assert all(len(n.encode()) <= 63 for n in names), names

@@ -53,8 +53,9 @@ async def engine(request) -> AsyncIterator[SlayerQueryEngine]:
 
 class TestConstructionRejects:
     def test_object_form(self) -> None:
+        inline = SlayerModel.model_validate(INLINE_QB)
         with pytest.raises(ValueError) as exc:
-            SlayerQuery(source_model=SlayerModel.model_validate(INLINE_QB), **OUTER)
+            SlayerQuery(source_model=inline, **OUTER)
         _assert_ban(exc.value)
 
     def test_dict_form(self) -> None:
@@ -100,8 +101,9 @@ class TestStoredModelsReject:
             raw["source_queries"][0]["source_model"] = INLINE_QB
             with open(path, "w") as fh:
                 yaml.safe_dump(raw, fh)
+            reloaded = YAMLStorage(base_dir=tmp)
             with pytest.raises(ValueError) as exc:
-                await YAMLStorage(base_dir=tmp).get_model("rev_by_status", data_source="test")
+                await reloaded.get_model("rev_by_status", data_source="test")
         _assert_ban(exc.value)
 
 
