@@ -3211,13 +3211,14 @@ class SQLGenerator:
         # Level 2 aggregates over the picked rows per grain; ``count(*)`` counts
         # the entity rows (COUNT(*)), every other family runs over ``_v``.
         if is_star:
+            formula = rendered_formula(
+                agg=agg_slot.key.agg, definition=self._resolve_aggregation_def(
+                    key=agg_slot.key, source_model=source_model, src_leaf="*",
+                ))
             level2_spec = AggRenderSpec(
                 name="", sql=None, aggregation=agg_slot.key.agg,
                 alias=agg_alias, model_name="_base", type=agg_slot.type,
-                formula=(formula := rendered_formula(
-                    agg=agg_slot.key.agg, definition=self._resolve_aggregation_def(
-                        key=agg_slot.key, source_model=source_model, src_leaf="*",
-                    ))),
+                formula=formula,
                 agg_kwargs=self._agg_param_exprs(
                     key=agg_slot.key, formula=formula, resolved=picked_kwarg_exprs,
                     scope=scope,
@@ -4384,47 +4385,46 @@ class SQLGenerator:
                     root=source_relation, path=path[: hop_idx + 1],
                 )
                 if next_alias not in emitted_aliases:
-                    join_on_parts = []
-                    for src_col, tgt_col in physical_join_pairs(
-                        edge=edge, source=prev_model, target=next_model,
-                    ):
-                        # _to_ident quotes mixed-case keys; table qualifiers are internal aliases.
-                        join_on_parts.append(exp.EQ(
-                            this=exp.Column(
-                                this=self._to_ident(src_col),
-                                table=exp.to_identifier(current_alias),
-                            ),
-                            expression=exp.Column(
-                                this=self._to_ident(tgt_col),
-                                table=exp.to_identifier(next_alias),
-                            ),
-                        ))
-                    target_table = (
-                        next_model.sql_table or next_model.name
-                    )
-                    if next_model.sql and not next_model.sql_table:
-                        join_expr = exp.Subquery(
-                            this=self._parse(next_model.sql),
-                            alias=exp.to_identifier(next_alias),
-                        )
-                    else:
-                        join_expr = self._to_table(target_table, alias=next_alias)
-                    on_expr = (
-                        exp.and_(*join_on_parts)
-                        if len(join_on_parts) > 1
-                        else join_on_parts[0]
-                    )
-                    # Root-relative join type: LEFT keeps the querying root whole
-                    # in the traversal direction, INNER is symmetric; RIGHT is
-                    # never emitted. The oriented edge carries the
-                    # declared type unchanged.
-                    joins.append((
-                        join_expr, on_expr, edge.join_type.value.upper(),
+                    joins.append(self._hop_join(
+                        edge=edge, prev_model=prev_model, next_model=next_model,
+                        current_alias=current_alias, next_alias=next_alias,
                     ))
                     emitted_aliases.add(next_alias)
                 current_alias = next_alias
                 prev_model = next_model
         return base_from, joins
+
+    def _hop_join(
+        self, *, edge, prev_model, next_model, current_alias: str, next_alias: str,
+    ) -> Tuple[Expression, exp.Condition, str]:
+        """``(join_expr, on_expr, join_type)`` for one oriented hop."""
+        join_on_parts = [
+            # _to_ident quotes mixed-case keys; table qualifiers are internal aliases.
+            exp.EQ(
+                this=exp.Column(
+                    this=self._to_ident(src_col),
+                    table=exp.to_identifier(current_alias),
+                ),
+                expression=exp.Column(
+                    this=self._to_ident(tgt_col),
+                    table=exp.to_identifier(next_alias),
+                ),
+            )
+            for src_col, tgt_col in physical_join_pairs(
+                edge=edge, source=prev_model, target=next_model,
+            )
+        ]
+        if next_model.sql and not next_model.sql_table:
+            join_expr = exp.Subquery(
+                this=self._parse(next_model.sql),
+                alias=exp.to_identifier(next_alias),
+            )
+        else:
+            join_expr = self._to_table(next_model.sql_table or next_model.name, alias=next_alias)
+        on_expr = exp.and_(*join_on_parts) if len(join_on_parts) > 1 else join_on_parts[0]
+        # Root-relative join type: LEFT keeps the querying root whole in the traversal
+        # direction, INNER is symmetric; RIGHT is never emitted.
+        return join_expr, on_expr, edge.join_type.value.upper()
 
     def _joined_or_local_dim_expr(
         self,

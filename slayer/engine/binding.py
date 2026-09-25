@@ -1359,59 +1359,47 @@ def _validate_agg_eligibility(
     """
     owner_model, leaf = _resolve_agg_owner(source, bundle)
     if owner_model is None:
-        effective = normalize_aggregation_name(agg)
-        if effective not in BUILTIN_AGGREGATIONS:
-            raise ValueError(_unknown_aggregation_message(effective, BUILTIN_AGGREGATIONS))
-        return effective
+        return _known_aggregation(normalize_aggregation_name(agg), BUILTIN_AGGREGATIONS)
     # Alias healing — custom aggregation named like an alias wins.
     custom_names = {a.name for a in (owner_model.aggregations or [])}
     effective = agg if agg in custom_names else normalize_aggregation_name(agg)
     # Gate 0: unknown-name-first (precedence over PK / whitelist / type).
-    known = BUILTIN_AGGREGATIONS | custom_names
-    if effective not in known:
-        raise ValueError(_unknown_aggregation_message(effective, known))
-    if leaf is None:
-        return effective
-    col = next((c for c in owner_model.columns if c.name == leaf), None)
+    _known_aggregation(effective, BUILTIN_AGGREGATIONS | custom_names)
+    col = None if leaf is None else next((c for c in owner_model.columns if c.name == leaf), None)
     if col is None:
         return effective
-    if is_identifier(column=col, columns=owner_model.columns):
-        if effective not in PRIMARY_KEY_AGGREGATIONS:
-            raise AggregationNotAllowedError(
-                column=leaf,
-                agg=effective,
-                reason=(
-                    f"primary-key column {leaf!r} restricted to "
-                    f"{sorted(PRIMARY_KEY_AGGREGATIONS)}; got {effective!r}."
-                ),
-            )
-        return effective
-    if col.allowed_aggregations is not None:
-        if effective not in col.allowed_aggregations:
-            raise AggregationNotAllowedError(
-                column=leaf,
-                agg=effective,
-                reason=(
-                    f"column {leaf!r} restricts allowed_aggregations to "
-                    f"{sorted(col.allowed_aggregations)}; got {effective!r}."
-                ),
-            )
-        return effective
-    # Model-custom aggregations are exempt from the type-default gate.
-    if effective in custom_names:
-        return effective
-    allowed = DEFAULT_AGGREGATIONS_BY_TYPE.get(col.type, frozenset())
-    if effective not in allowed:
-        raise AggregationNotAllowedError(
-            column=leaf,
-            agg=effective,
-            reason=(
-                f"aggregation {effective!r} is not applicable to "
-                f"{col.type} column {leaf!r}; default aggregations are "
-                f"{sorted(allowed)}."
-            ),
-        )
+    reason = _column_agg_refusal(
+        col=col, columns=owner_model.columns, agg=effective, custom=effective in custom_names,
+    )
+    if reason is not None:
+        raise AggregationNotAllowedError(column=col.name, agg=effective, reason=reason)
     return effective
+
+
+def _known_aggregation(name: str, known) -> str:
+    if name not in known:
+        raise ValueError(_unknown_aggregation_message(name, known))
+    return name
+
+
+def _column_agg_refusal(*, col, columns, agg: str, custom: bool) -> Optional[str]:
+    """Why gates 1-3 refuse ``agg`` on ``col``, else ``None``."""
+    leaf = col.name
+    if is_identifier(column=col, columns=columns):
+        if agg in PRIMARY_KEY_AGGREGATIONS:
+            return None
+        return f"primary-key column {leaf!r} restricted to {sorted(PRIMARY_KEY_AGGREGATIONS)}; got {agg!r}."
+    if col.allowed_aggregations is not None:
+        if agg in col.allowed_aggregations:
+            return None
+        return (f"column {leaf!r} restricts allowed_aggregations to "
+                f"{sorted(col.allowed_aggregations)}; got {agg!r}.")
+    # Model-custom aggregations are exempt from the type-default gate.
+    allowed = DEFAULT_AGGREGATIONS_BY_TYPE.get(col.type, frozenset())
+    if custom or agg in allowed:
+        return None
+    return (f"aggregation {agg!r} is not applicable to {col.type} column {leaf!r}; "
+            f"default aggregations are {sorted(allowed)}.")
 
 
 def _bind_agg_arg(

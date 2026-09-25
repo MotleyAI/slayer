@@ -51,6 +51,9 @@ BAD_DEFAULTS = {
     "wbad_agg": "SUM(amount)",
     "wbad_win": "ROW_NUMBER() OVER (ORDER BY id)",
     "wbad_sub": "(SELECT MAX(amount) FROM orders)",
+    "wbad_alias": "amount AS x",
+    "wbad_bind": "?",
+    "wbad_var": "@x",
 }
 
 

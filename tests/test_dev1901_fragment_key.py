@@ -44,8 +44,9 @@ class TestShape:
         assert FRAG.phase == Phase.ROW
 
     def test_frozen(self) -> None:
+        key = SqlFragmentKey(template="{r0} * {r1}", refs=(SPEND, POP))
         with pytest.raises((TypeError, ValueError)):
-            FRAG.template = "{r0}"  # type: ignore[misc]
+            key.template = "{r0}"  # type: ignore[misc]
 
     def test_refs_accept_derived_columns(self) -> None:
         assert SqlFragmentKey(template="{r0} + 1", refs=(CUST_SPEND,)).refs == (CUST_SPEND,)

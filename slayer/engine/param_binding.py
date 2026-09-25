@@ -55,9 +55,18 @@ ColumnRef = Union[ColumnKey, ColumnSqlKey]
 #: Resolves a reference's dotted parts in the query frame, as its unquoted twin binds.
 QueryRefResolver = Callable[[Tuple[str, ...]], ValueKey]
 
-_UNANALYSABLE_NODES: Tuple[type, ...] = (
-    exp.AggFunc, exp.Window, exp.Query, exp.Subquery, exp.Star, exp.Command, DDL, DML,
+_UNANALYSABLE_KINDS: Tuple[Tuple[Tuple[type, ...], str], ...] = (
+    ((exp.AggFunc,), "an aggregate"),
+    ((exp.Window,), "a window function"),
+    ((exp.Query, exp.Subquery), "a subquery"),
+    ((exp.Alias,), "an alias"),
+    ((exp.Placeholder, exp.Parameter, exp.SessionParameter), "a bind parameter"),
+    ((exp.Star, exp.Command, DDL, DML), "a non-expression"),
 )
+
+
+def _unanalysable_kind(node: object) -> Optional[str]:
+    return next((kind for types, kind in _UNANALYSABLE_KINDS if isinstance(node, types)), None)
 
 
 def _fresh_sentinel(text: str) -> str:
@@ -200,13 +209,10 @@ def _parse(*, text: str, name: str, ctx: _Ctx) -> Expression:
             prequote_reserved_identifiers(text, dialect=dialect), dialect=dialect))
     except (SqlglotError, ValueError) as e:
         raise _unanalysable(text=text, name=name, ctx=ctx, reason="it does not parse") from e
-    bad = next((n for n in tree.walk() if isinstance(n, _UNANALYSABLE_NODES)), None)
-    if bad is not None:
-        kind = "an aggregate" if isinstance(bad, exp.AggFunc) else (
-            "a window function" if isinstance(bad, exp.Window) else
-            "a subquery" if isinstance(bad, (exp.Query, exp.Subquery)) else
-            "a non-expression")
-        raise _unanalysable(text=text, name=name, ctx=ctx, reason=f"it contains {kind}")
+    for node in tree.walk():
+        kind = _unanalysable_kind(node)
+        if kind is not None:
+            raise _unanalysable(text=text, name=name, ctx=ctx, reason=f"it contains {kind}")
     while isinstance(tree, exp.Paren):
         tree = tree.this
     return tree

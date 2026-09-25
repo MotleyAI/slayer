@@ -13,6 +13,7 @@ from typing import (
     FrozenSet,
     Hashable,
     Iterable,
+    Iterator,
     List,
     Literal,
     Mapping,
@@ -482,21 +483,26 @@ def _first_unattributable_arg_leaf(
     attributable from the root, judged on its dependency closure; an expression
     parameter is named by its parameter name. host_name lets an off-home input
     traverse a proven reverse hop."""
-    params = [*((None, a) for a in agg.args), *agg.kwargs]
-    for name, value in params:
-        for arg in parameter_row_leaves(value):
-            if not isinstance(arg, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
-                continue
-            reason = _unattributable_reason(
-                arg=arg, target_path=target_path, root_model=root_model,
-                models_by_name=models_by_name, bundle=bundle,
-                host_model=host_model, host_name=host_name,
-            )
-            if reason is None:
-                continue
+    for name, value, arg in _param_row_columns(agg):
+        reason = _unattributable_reason(
+            arg=arg, target_path=target_path, root_model=root_model,
+            models_by_name=models_by_name, bundle=bundle,
+            host_model=host_model, host_name=host_name,
+        )
+        if reason is not None:
             leaf = column_leaf(arg.column if isinstance(arg, TimeTruncKey) else arg)
             return [(leaf if arg is value or name is None else name, reason)]
     return []
+
+
+def _param_row_columns(
+    agg: AggregateKey,
+) -> Iterator[Tuple[Optional[str], object, Union[ColumnKey, ColumnSqlKey, TimeTruncKey]]]:
+    """``(parameter name or None, parameter value, column row leaf)`` per argument."""
+    for name, value in [*((None, a) for a in agg.args), *agg.kwargs]:
+        for arg in parameter_row_leaves(value):
+            if isinstance(arg, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
+                yield name, value, arg
 
 
 def _unattributable_reason(
