@@ -1,7 +1,7 @@
 // ONE LikeC4 model of SLayer's structure. Model truth: relations are the
 // AST-measured runtime import edges at every declared granularity — modules
 // attribute to their finest declared child, coverage licenses each edge by its
-// most-specific arrow (tools/arch_check.py). Authoring convention: see
+// most-specific arrow (la-arch-check). Authoring convention: see
 // system.arc42.md §5.
 specification {
   element node

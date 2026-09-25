@@ -85,8 +85,11 @@ jobs:
       - name: Lint with ruff
         run: poetry run ruff check slayer/ tests/
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
       - name: Check living-architecture cross-walk
-        run: poetry run python tools/arch_check.py
+        run: uvx --from git+https://github.com/MotleyAI/living-architecture@v0.1.0 la-arch-check
 
       - name: Run unit tests
         timeout-minutes: 15
