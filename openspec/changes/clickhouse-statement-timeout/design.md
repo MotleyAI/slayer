@@ -67,6 +67,8 @@ explicit). On failure the client rolls back the aborted transaction, reports
 TRANSACTION READ ONLY` in the probe so that rollback cannot discard the guard.
 `None`/unknown types reach this path through `dialect_for_ds_type`'s existing
 Postgres fallback (user decision: one lookup rule).
+The probe's read-only guard resolves through the same lookup, so `None` gets
+`SET TRANSACTION READ ONLY` like an unknown type.
 
 **D6 — Session carry-over accepted for MySQL, MariaDB, Snowflake.** Their
 session-scoped timeout persists on the pooled connection after the call. Each

@@ -9,17 +9,15 @@ import uuid
 
 import pytest
 
-pytest.importorskip("pytest_postgresql")
-
-import psycopg
-from pytest_postgresql import factories
-
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
+
+factories = pytest.importorskip("pytest_postgresql.factories")
+psycopg = pytest.importorskip("psycopg")
 
 postgresql_proc = factories.postgresql_proc(port=None)
 
@@ -146,7 +144,7 @@ class TestPostgresIdentifierLength:
                 model=await chain_env.storage.get_model("SandboxInvoiceV2", data_source=DS),
             ),
         )
-        rows = await client.execute(sql=f'SELECT 1 AS "{LONG_EMAIL}"')
+        rows = (await client.execute(sql=f'SELECT 1 AS "{LONG_EMAIL}"')).rows
         assert list(rows[0])[0] != LONG_EMAIL, "server did not truncate; premise broken"
         assert len(list(rows[0])[0].encode()) == 63
 

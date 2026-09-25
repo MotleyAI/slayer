@@ -80,8 +80,8 @@ async def test_async_cross_call_sees_same_in_memory_db() -> None:
             "INSERT INTO t VALUES (1), (2), (3)",
         ],
     )
-    rows1 = await client.execute("SELECT x FROM t WHERE x = 1")
-    rows2 = await client.execute("SELECT x FROM t WHERE x = 2")
+    rows1 = (await client.execute("SELECT x FROM t WHERE x = 1")).rows
+    rows2 = (await client.execute("SELECT x FROM t WHERE x = 2")).rows
     assert rows1 == [{"x": 1}]
     assert rows2 == [{"x": 2}]
 
@@ -118,7 +118,7 @@ async def test_two_clients_get_isolated_in_memory_dbs(no_retry: None) -> None:
     assert engine_b is not None
     assert engine_a is not engine_b
 
-    rows_a = await client_a.execute("SELECT x FROM only_a")
+    rows_a = (await client_a.execute("SELECT x FROM only_a")).rows
     assert rows_a == [{"x": 1}]
 
     with pytest.raises(sqlalchemy.exc.OperationalError):
@@ -135,8 +135,8 @@ async def test_sync_and_async_on_same_client_share_in_memory_db() -> None:
             "INSERT INTO s VALUES (42)",
         ],
     )
-    async_rows = await client.execute("SELECT n FROM s")
-    sync_rows = client.execute_sync("SELECT n FROM s")
+    async_rows = (await client.execute("SELECT n FROM s")).rows
+    sync_rows = client.execute_sync("SELECT n FROM s").rows
     assert async_rows == [{"n": 42}]
     assert sync_rows == [{"n": 42}]
 
@@ -156,7 +156,7 @@ async def test_sqlite_udfs_work_under_static_pool() -> None:
             "INSERT INTO m VALUES (1.0), (2.0), (3.0)",
         ],
     )
-    rows = await client.execute("SELECT median(x) AS med FROM m")
+    rows = (await client.execute("SELECT median(x) AS med FROM m")).rows
     assert rows == [{"med": 2.0}]
 
 
@@ -174,7 +174,7 @@ async def test_bare_memory_connection_string_works_end_to_end() -> None:
             name="bare", type="sqlite", connection_string=":memory:",
         ),
     )
-    rows = await client.execute("SELECT 1 AS n")
+    rows = (await client.execute("SELECT 1 AS n")).rows
     assert rows == [{"n": 1}]
 
 
@@ -199,5 +199,5 @@ async def test_concurrent_async_calls_share_in_memory_db(no_retry: None) -> None
     results = await asyncio.gather(
         *[client.execute(f"SELECT i FROM g WHERE i = {i}") for i in range(20)],
     )
-    for i, rows in enumerate(results):
+    for i, rows in enumerate(r.rows for r in results):
         assert rows == [{"i": i}], f"call {i} got {rows}"

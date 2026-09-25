@@ -91,6 +91,10 @@ SHALL fail with the database's error rather than run unbounded.
   that guard the probe with a read-only transaction the guard is still in
   force
 
+#### Scenario: Untyped datasource probe keeps the read-only guard
+- **WHEN** the column-type probe runs on a datasource with no type
+- **THEN** it runs inside a read-only transaction, as on Postgres
+
 #### Scenario: Database without a timeout mechanism
 - **WHEN** a query runs on a DuckDB datasource
 - **THEN** no timeout statement is sent and the response carries no timeout

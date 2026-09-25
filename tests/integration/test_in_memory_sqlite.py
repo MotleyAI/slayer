@@ -46,7 +46,7 @@ async def test_file_backed_sqlite_still_shares_state_across_async_calls(
             "INSERT INTO t VALUES (1), (2), (3)",
         ],
     )
-    rows = await client.execute("SELECT x FROM t ORDER BY x")
+    rows = (await client.execute("SELECT x FROM t ORDER BY x")).rows
     assert rows == [{"x": 1}, {"x": 2}, {"x": 3}]
 
 

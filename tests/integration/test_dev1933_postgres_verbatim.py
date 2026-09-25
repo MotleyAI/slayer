@@ -104,7 +104,7 @@ def pg_env(_pg_datasource, tmp_path) -> SlayerQueryEngine:
 class TestPostgresVerbatimExecution:
 
     async def test_execute_async_regex_and_percent(self, pg_client: SlayerSQLClient) -> None:
-        rows = await pg_client.execute(_HAZARD_SQL)
+        rows = (await pg_client.execute(_HAZARD_SQL)).rows
         assert [r["status"] for r in rows] == ["pending", "pending"]
 
     async def test_get_column_types_async_regex(self, pg_client: SlayerSQLClient) -> None:
@@ -112,7 +112,7 @@ class TestPostgresVerbatimExecution:
         assert types == {"pat": "string", "pct": "string"}
 
     def test_execute_sync_regex_and_percent(self, pg_client: SlayerSQLClient) -> None:
-        rows = pg_client.execute_sync(_HAZARD_SQL)
+        rows = pg_client.execute_sync(_HAZARD_SQL).rows
         assert [r["status"] for r in rows] == ["pending", "pending"]
 
     async def test_regexp_replace_extension_end_to_end(self, pg_env: SlayerQueryEngine) -> None:
