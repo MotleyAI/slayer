@@ -72,10 +72,10 @@ def _orders(*, extra_columns: Tuple[Column, ...] = (), **kw) -> SlayerModel:
     )
 
 
-async def _raise_of(case: Case) -> Exception:
+async def _raise_of(case: Case) -> QueryTypeError:
     query, models = case()
     source = next(m for m in models if m.name == query.source_model)
-    with pytest.raises(Exception) as ei:
+    with pytest.raises(QueryTypeError) as ei:
         await _engine_generate(
             query=query, model=source, extra_models=[m for m in models if m is not source],
             dialect="duckdb", validate=False,

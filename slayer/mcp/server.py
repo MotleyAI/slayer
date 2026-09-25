@@ -8,7 +8,7 @@ from importlib.metadata import version as _pkg_version
 from typing import Any
 
 import sqlalchemy as sa
-from sqlalchemy.exc import DatabaseError, OperationalError
+from sqlalchemy.exc import DatabaseError
 
 from slayer import __version__
 
@@ -77,6 +77,7 @@ _UNSET = object()  # Sentinel to distinguish "not provided" from "explicitly set
 # Response row cap when the caller passes no limit; an explicit limit is trusted verbatim.
 _MCP_ROW_CAP = 20
 _CAP_HINT = "pass a higher 'limit' to get more rows"
+_DS_LOAD_FAILED = "Failed to load datasource '%s': %s"
 _NESTED_CAP_HINT = "pass a higher 'limit' on the root query to get more rows"
 
 # Shared remedy for every mcp-import failure below.
@@ -181,7 +182,7 @@ def _fetch_tables(
         )
         return sorted(objects, key=lambda o: o.name), None
     except Exception as e:
-        if isinstance(e, (OperationalError, DatabaseError)):
+        if isinstance(e, DatabaseError):
             return None, _friendly_db_error(e)
         return None, str(e)
 
@@ -371,40 +372,30 @@ def _render_ingest_result(
     return "\n".join(lines)
 
 
+def _column_summary(c: Column) -> dict:
+    entry: dict = {"name": c.name, "type": str(c.type)}
+    if c.primary_key:
+        entry["primary_key"] = True
+    entry.update({k: v for k, v in (("label", c.label), ("description", c.description), ("filter", c.filter)) if v})
+    if c.allowed_aggregations is not None:
+        entry["allowed_aggregations"] = c.allowed_aggregations
+    return entry
+
+
+def _measure_summary(mm: ModelMeasure) -> dict:
+    entry = {"name": mm.name, "formula": mm.formula}
+    entry.update({k: v for k, v in (("label", mm.label), ("description", mm.description)) if v})
+    return entry
+
+
 def _model_to_summary(model: SlayerModel) -> dict:
     """Convert a SlayerModel to a summary dict."""
-    columns = []
-    for c in model.columns:
-        if c.hidden:
-            continue
-        entry: dict = {"name": c.name, "type": str(c.type)}
-        if c.primary_key:
-            entry["primary_key"] = True
-        if c.label:
-            entry["label"] = c.label
-        if c.description:
-            entry["description"] = c.description
-        if c.filter:
-            entry["filter"] = c.filter
-        if c.allowed_aggregations is not None:
-            entry["allowed_aggregations"] = c.allowed_aggregations
-        columns.append(entry)
-
-    measures = []
-    for mm in model.measures:
-        entry = {"name": mm.name, "formula": mm.formula}
-        if mm.label:
-            entry["label"] = mm.label
-        if mm.description:
-            entry["description"] = mm.description
-        measures.append(entry)
-
     return {
         "name": model.name,
         "description": model.description,
         "source_type": _source_type_for(model),
-        "columns": columns,
-        "measures": measures,
+        "columns": [_column_summary(c) for c in model.columns if not c.hidden],
+        "measures": [_measure_summary(mm) for mm in model.measures],
     }
 
 
@@ -608,7 +599,7 @@ To connect a new database: create_datasource → describe_datasource (verify + l
                 output = f"SQL:\n{result.sql}\n\n{output}"
             return output
         except Exception as e:
-            if isinstance(e, (OperationalError, DatabaseError)):
+            if isinstance(e, DatabaseError):
                 return _friendly_db_error(e)
             raise
 
@@ -647,7 +638,7 @@ To connect a new database: create_datasource → describe_datasource (verify + l
         try:
             ds = await storage.get_datasource(datasource_name)
         except Exception as exc:
-            logger.warning("Failed to load datasource '%s': %s", datasource_name, exc)
+            logger.warning(_DS_LOAD_FAILED, datasource_name, exc)
             return f"Datasource '{datasource_name}' has an invalid config."
         if ds is None:
             return f"Datasource '{datasource_name}' not found."
@@ -936,7 +927,7 @@ To connect a new database: create_datasource → describe_datasource (verify + l
                     variables=variables,
                 )
             except Exception as e:
-                if isinstance(e, (OperationalError, DatabaseError)):
+                if isinstance(e, DatabaseError):
                     return _friendly_db_error(e)
                 return f"Error creating model from query: {e}"
             cols = [c.name for c in model.columns]
@@ -966,7 +957,7 @@ To connect a new database: create_datasource → describe_datasource (verify + l
         try:
             await engine.save_model(model)
         except Exception as e:
-            if isinstance(e, (OperationalError, DatabaseError)):
+            if isinstance(e, DatabaseError):
                 return _friendly_db_error(e)
             return f"Error creating model '{model.name}': {e}"
         verb = "replaced" if existed else "created"
@@ -1013,7 +1004,7 @@ To connect a new database: create_datasource → describe_datasource (verify + l
 
     @mcp.tool()
     async def edit_model(
-        model_name: str,
+        model_name: str,  # NOSONAR(S107) — each parameter is a field of the agent-facing MCP tool schema
         description: str | None = None,
         data_source: str | None = None,
         new_data_source: str | None = None,
@@ -1465,7 +1456,7 @@ To connect a new database: create_datasource → describe_datasource (verify + l
                 all_schemas=all_schemas,
             )
         except Exception as e:
-            if isinstance(e, (OperationalError, DatabaseError)):
+            if isinstance(e, DatabaseError):
                 lines.append(f"Auto-ingestion failed: {_friendly_db_error(e)}")
                 return "\n".join(lines)
             raise
@@ -1521,7 +1512,7 @@ To connect a new database: create_datasource → describe_datasource (verify + l
                 ds = await storage.get_datasource(name)
                 pairs.append((name, ds.type if ds else "unknown"))
             except Exception as exc:
-                logger.warning("Failed to load datasource '%s': %s", name, exc)
+                logger.warning(_DS_LOAD_FAILED, name, exc)
                 pairs.append((name, None))
         return render_datasource_list(pairs=pairs, fmt="markdown")
 
@@ -1547,7 +1538,7 @@ To connect a new database: create_datasource → describe_datasource (verify + l
         try:
             ds = await storage.get_datasource(name)
         except Exception as exc:
-            logger.warning("Failed to load datasource '%s': %s", name, exc)
+            logger.warning(_DS_LOAD_FAILED, name, exc)
             return f"Datasource '{name}' has an invalid config."
         if ds is None:
             return f"Datasource '{name}' not found."
@@ -1688,7 +1679,7 @@ To connect a new database: create_datasource → describe_datasource (verify + l
         # disposed at teardown.
         try:
             entries = await engine.validate_models(data_source=data_source)
-        except (OperationalError, DatabaseError) as exc:
+        except DatabaseError as exc:
             return _friendly_db_error(exc)
         return json.dumps([e.model_dump(mode="json") for e in entries], indent=2)
 
@@ -1811,7 +1802,7 @@ To connect a new database: create_datasource → describe_datasource (verify + l
                 all_schemas=all_schemas,
             )
         except Exception as e:
-            if isinstance(e, (OperationalError, DatabaseError)):
+            if isinstance(e, DatabaseError):
                 return _friendly_db_error(e)
             raise
 

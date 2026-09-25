@@ -34,9 +34,7 @@ def parse_window_duration(value: str) -> list[tuple[int, str]]:
     parts: list[tuple[int, str]] = []
     for match in _WINDOW_DURATION_RE.finditer(value):
         if match.start() != pos:
-            raise WindowDurationError(
-                summary=f"Invalid window duration '{value}'.", suggestion="Use syntax like '1y2m3w5d6h7min8s'.",
-            )
+            break
         amount = int(match.group("num"))
         unit = match.group("unit")
         if amount <= 0:

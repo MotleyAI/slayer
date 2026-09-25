@@ -72,11 +72,10 @@ ROWS: Tuple[LedgerRow, ...] = (
     _row(module=_WD, function="parse_window_duration", exc="WindowDurationError",
          message="Window duration cannot be empty.",
          category="checker", family="local-partitioned", user=True, owner="checker"),
-    # Two sites: a gap before a part and an unparsed tail.
     _row(module=_WD, function="parse_window_duration", exc="WindowDurationError",
          message="Invalid window duration '…'."
          + SUGGEST + "Use syntax like '1y2m3w5d6h7min8s'.",
-         category="checker", family="local-partitioned", user=True, owner="checker", sites=2),
+         category="checker", family="local-partitioned", user=True, owner="checker"),
     _row(module=_WD, function="parse_window_duration", exc="WindowDurationError",
          message="Window duration parts must be positive in '…'.",
          category="checker", family="local-partitioned", user=True, owner="checker"),
