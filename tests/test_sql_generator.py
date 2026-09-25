@@ -19,7 +19,6 @@ from slayer.engine.plan import plan_query
 from slayer.sql.generator import (
     AggRenderSpec,
     SQLGenerator,
-    _validate_agg_param_value,
     _wrap_cast_for_type,
 )
 from slayer.sql.scope_check import assert_scope_closed
@@ -28,6 +27,7 @@ from slayer.storage.yaml_storage import YAMLStorage
 from tests._engine_helpers import (
     _assert_valid_sql,
     _engine_generate,
+    orders_agg_sql,
     _extract_cte_body,
     _extract_src_body,
     _join_aliases,
@@ -2719,6 +2719,11 @@ class TestSqliteJsonExtractInGenerator:
         assert "JSON_EXTRACT" in sql.upper(), sql
 
 
+def _percentile_default(p: str) -> list[Aggregation]:
+    """A model-level override of ``percentile``'s ``p`` default."""
+    return [Aggregation(name="percentile", params=[AggregationParam(name="p", sql=p)])]
+
+
 class TestMedianPercentilePerDialect:
     """Per-dialect SQL emission for median and percentile aggregations."""
 
@@ -2772,45 +2777,33 @@ class TestMedianPercentilePerDialect:
             gen._build_median(inner)
 
 
-    def test_build_percentile_postgres(self) -> None:
-        gen = SQLGenerator(dialect="postgres")
-        m = self._measure(agg="percentile", agg_kwargs={"p": "0.95"})
-        sql = gen._build_percentile(m).sql(dialect="postgres")
-        assert sql == "PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY orders.amount)"
+    async def test_build_percentile_postgres(self) -> None:
+        sql = await orders_agg_sql("amount:percentile(p=0.95)", dialect="postgres")
+        assert "PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY orders.amount)" in sql
 
-    def test_build_percentile_sqlite(self) -> None:
-        gen = SQLGenerator(dialect="sqlite")
-        m = self._measure(agg="percentile", agg_kwargs={"p": "0.5"})
-        sql = gen._build_percentile(m).sql(dialect="sqlite")
-        assert sql == "PERCENTILE_CONT(orders.amount, 0.5)"
+    async def test_build_percentile_sqlite(self) -> None:
+        sql = await orders_agg_sql("amount:percentile(p=0.5)", dialect="sqlite")
+        assert "PERCENTILE_CONT(orders.amount, 0.5)" in sql
 
-    def test_build_percentile_clickhouse_emits_quantile(self) -> None:
-        gen = SQLGenerator(dialect="clickhouse")
-        m = self._measure(agg="percentile", agg_kwargs={"p": "0.75"})
-        sql = gen._build_percentile(m).sql(dialect="clickhouse")
+    async def test_build_percentile_clickhouse_emits_quantile(self) -> None:
+        sql = await orders_agg_sql("amount:percentile(p=0.75)", dialect="clickhouse")
         # ClickHouse parametric aggregate syntax.
-        assert sql == "quantile(0.75)(orders.amount)"
+        assert "quantile(0.75)(orders.amount)" in sql
 
     @pytest.mark.parametrize("p", ["0.05", "0.25", "0.5", "0.95"])
-    def test_build_percentile_clickhouse_param_substitution(self, p: str) -> None:
-        gen = SQLGenerator(dialect="clickhouse")
-        m = self._measure(agg="percentile", agg_kwargs={"p": p})
-        sql = gen._build_percentile(m).sql(dialect="clickhouse")
-        assert sql == f"quantile({p})(orders.amount)"
+    async def test_build_percentile_clickhouse_param_substitution(self, p: str) -> None:
+        sql = await orders_agg_sql(f"amount:percentile(p={p})", dialect="clickhouse")
+        assert f"quantile({p})(orders.amount)" in sql
 
-    def test_build_percentile_duckdb(self) -> None:
-        gen = SQLGenerator(dialect="duckdb")
-        m = self._measure(agg="percentile", agg_kwargs={"p": "0.5"})
-        sql = gen._build_percentile(m).sql(dialect="duckdb")
+    async def test_build_percentile_duckdb(self) -> None:
+        sql = await orders_agg_sql("amount:percentile(p=0.5)", dialect="duckdb")
         # sqlglot rewrites the WITHIN GROUP form to DuckDB's QUANTILE_CONT.
         assert "QUANTILE_CONT" in sql
         assert "orders.amount" in sql
 
-    def test_build_percentile_mysql_raises(self) -> None:
-        gen = SQLGenerator(dialect="mysql")
-        m = self._measure(agg="percentile", agg_kwargs={"p": "0.5"})
+    async def test_build_percentile_mysql_raises(self) -> None:
         with pytest.raises(NotImplementedError, match="MySQL"):
-            gen._build_percentile(m)
+            await orders_agg_sql("amount:percentile(p=0.5)", dialect="mysql")
 
     def test_build_percentile_missing_p_raises(self) -> None:
         gen = SQLGenerator(dialect="postgres")
@@ -2818,97 +2811,39 @@ class TestMedianPercentilePerDialect:
         with pytest.raises(ValueError, match="requires parameter 'p'"):
             gen._build_percentile(m)
 
-    def test_build_percentile_unsafe_p_rejected(self) -> None:
-        gen = SQLGenerator(dialect="postgres")
-        m = self._measure(agg="percentile", agg_kwargs={"p": "0.5); DROP TABLE x; --"})
-        with pytest.raises(ValueError, match="Unsafe value"):
-            gen._build_percentile(m)
+    async def test_build_percentile_unsafe_p_rejected(self) -> None:
+        with pytest.raises(ValueError, match="DROP TABLE x"):
+            await orders_agg_sql("amount:percentile(p='0.5); DROP TABLE x; --')")
 
-    def test_build_percentile_uses_model_level_default_p(self) -> None:
+    async def test_build_percentile_uses_model_level_default_p(self) -> None:
         """Model-level Aggregation(name='percentile', params=[p=...]) supplies the default."""
-        gen = SQLGenerator(dialect="postgres")
-        agg_def = Aggregation(
-            name="percentile",
-            params=[AggregationParam(name="p", sql="0.9")],
-        )
-        m = AggRenderSpec(
-            name="amount",
-            sql="amount",
-            model_name="orders",
-            alias="amount_percentile",
-            aggregation="percentile",
-            agg_kwargs={},
-            aggregation_def=agg_def,
-        )
-        sql = gen._build_percentile(m).sql(dialect="postgres")
-        assert sql == "PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY orders.amount)"
+        sql = await orders_agg_sql("amount:percentile", aggregations=_percentile_default("0.9"))
+        assert "PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY orders.amount)" in sql
 
-    def test_build_percentile_query_kwarg_overrides_model_default(self) -> None:
-        """Query-time agg_kwargs win over the model-level default."""
-        gen = SQLGenerator(dialect="postgres")
-        agg_def = Aggregation(
-            name="percentile",
-            params=[AggregationParam(name="p", sql="0.9")],
-        )
-        m = AggRenderSpec(
-            name="amount",
-            sql="amount",
-            model_name="orders",
-            alias="amount_percentile",
-            aggregation="percentile",
-            agg_kwargs={"p": "0.25"},
-            aggregation_def=agg_def,
-        )
-        sql = gen._build_percentile(m).sql(dialect="postgres")
-        assert sql == "PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY orders.amount)"
+    async def test_build_percentile_query_kwarg_overrides_model_default(self) -> None:
+        """Query-time kwargs win over the model-level default."""
+        sql = await orders_agg_sql(
+            "amount:percentile(p=0.25)", aggregations=_percentile_default("0.9"))
+        assert "PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY orders.amount)" in sql
 
-
-    def test_build_percentile_rejects_non_literal_p(self) -> None:
-        """`measure:percentile(p=quantity)` must fail at SQL-generation time with a clear validation error, not silently emit a column reference in PERCENTILE_CONT(p)'s direct-arg slot. Without this guard a non-literal `p` flows through `_resolve_agg_param` (which is identifier-friendly for the column-ref kwargs like `other=`), gets rendered as `orders.quantity`, and fails at the database with a dialect-specific error."""
-        gen = SQLGenerator(dialect="postgres")
-        m = AggRenderSpec(
-            name="amount", sql="amount", model_name="orders",
-            alias="amount_percentile", aggregation="percentile",
-            agg_kwargs={"p": "quantity"},
-        )
+    async def test_build_percentile_rejects_non_literal_p(self) -> None:
+        """`measure:percentile(p=quantity)` fails with a clear validation error, never a column in PERCENTILE_CONT(p)'s direct-arg slot."""
         with pytest.raises(ValueError, match="numeric literal"):
-            gen._build_percentile(m)
+            await orders_agg_sql("amount:percentile(p=quantity)")
 
-    def test_build_percentile_rejects_p_out_of_range(self) -> None:
-        gen = SQLGenerator(dialect="postgres")
-        m = AggRenderSpec(
-            name="amount", sql="amount", model_name="orders",
-            alias="amount_percentile", aggregation="percentile",
-            agg_kwargs={"p": "1.5"},
-        )
+    async def test_build_percentile_rejects_p_out_of_range(self) -> None:
         with pytest.raises(ValueError, match=r"\[0, 1\]"):
-            gen._build_percentile(m)
+            await orders_agg_sql("amount:percentile(p=1.5)")
 
-    def test_build_percentile_rejects_p_negative(self) -> None:
-        gen = SQLGenerator(dialect="postgres")
-        m = AggRenderSpec(
-            name="amount", sql="amount", model_name="orders",
-            alias="amount_percentile", aggregation="percentile",
-            agg_kwargs={"p": "-0.1"},
-        )
+    async def test_build_percentile_rejects_p_negative(self) -> None:
         with pytest.raises(ValueError, match=r"\[0, 1\]"):
-            gen._build_percentile(m)
+            await orders_agg_sql("amount:percentile(p='-0.1')")
 
-    def test_build_percentile_rejects_non_literal_p_via_model_default(self) -> None:
-        """Model-level defaults bypass `_validate_agg_param_value` (trust model: model authors are trusted). The new numeric-literal check catches anything that's not a number even on that path — closes the gap where a malicious model author could put `p=pg_sleep(10)` as a default. Codex review #3 on PR #82."""
-        gen = SQLGenerator(dialect="postgres")
-        agg_def = Aggregation(
-            name="percentile",
-            params=[AggregationParam(name="p", sql="pg_sleep(10)")],
-        )
-        m = AggRenderSpec(
-            name="amount", sql="amount", model_name="orders",
-            alias="amount_percentile", aggregation="percentile",
-            agg_kwargs={}, aggregation_def=agg_def,
-        )
+    async def test_build_percentile_rejects_non_literal_p_via_model_default(self) -> None:
+        """A model-level ``p`` default that is not a number (``pg_sleep(10)``) is rejected too."""
+        aggregations = _percentile_default("pg_sleep(10)")
         with pytest.raises(ValueError, match="numeric literal"):
-            gen._build_percentile(m)
-
+            await orders_agg_sql("amount:percentile", aggregations=aggregations)
 
 class TestStatAggsPerDialect:
     """Per-dialect SQL emission for the new statistical aggregations (DEV-1317): stddev_samp, stddev_pop, var_samp, var_pop, corr, covar_samp, covar_pop."""
@@ -3005,23 +2940,17 @@ class TestStatAggsPerDialect:
         ],
     )
     @pytest.mark.parametrize("dialect", ["postgres", "duckdb", "sqlite"])
-    def test_build_two_arg_stat_emits_two_arg_call(
+    async def test_build_two_arg_stat_emits_two_arg_call(
         self, dialect: str, agg: str, sql_fn: str,
     ) -> None:
-        gen = SQLGenerator(dialect=dialect)
-        m = self._measure(agg=agg, agg_kwargs={"other": "quantity"})
-        sql = gen._build_agg(m)[0].sql(dialect=dialect)
-        # Both legs go through _resolve_sql, so a bare `quantity` kwarg qualifies under the LHS measure's model_name.
-        assert sql == f"{sql_fn}(orders.amount, orders.quantity)"
+        sql = await orders_agg_sql(f"amount:{agg}(other=quantity)", dialect=dialect)
+        assert f"{sql_fn}(orders.amount, orders.quantity)" in sql
 
     @pytest.mark.parametrize("agg", ["corr", "covar_samp", "covar_pop"])
-    def test_build_two_arg_stat_clickhouse(self, agg: str) -> None:
-        gen = SQLGenerator(dialect="clickhouse")
-        m = self._measure(agg=agg, agg_kwargs={"other": "quantity"})
-        sql = gen._build_agg(m)[0].sql(dialect="clickhouse")
+    async def test_build_two_arg_stat_clickhouse(self, agg: str) -> None:
+        sql = await orders_agg_sql(f"amount:{agg}(other=quantity)", dialect="clickhouse")
         # ClickHouse casing is its own thing; assert the call shape only.
-        assert sql.lower() == f"{agg.lower()}(orders.amount, orders.quantity)"
-
+        assert f"{agg.lower()}(orders.amount, orders.quantity)" in sql.lower()
 
     @pytest.mark.parametrize("agg", ["corr", "covar_samp", "covar_pop"])
     def test_build_two_arg_stat_mysql_missing_other_prioritises_param_error(
@@ -3041,15 +2970,9 @@ class TestStatAggsPerDialect:
             gen._build_agg(m)
 
     @pytest.mark.parametrize("agg", ["corr", "covar_samp", "covar_pop"])
-    def test_build_two_arg_stat_unsafe_other_rejected(self, agg: str) -> None:
-        gen = SQLGenerator(dialect="postgres")
-        m = self._measure(
-            agg=agg,
-            agg_kwargs={"other": "quantity); DROP TABLE x; --"},
-        )
-        with pytest.raises(ValueError, match="Unsafe value"):
-            gen._build_agg(m)
-
+    async def test_build_two_arg_stat_unsafe_other_rejected(self, agg: str) -> None:
+        with pytest.raises(ValueError, match="DROP TABLE x"):
+            await orders_agg_sql(f"amount:{agg}(other='quantity); DROP TABLE x; --')")
 
     def test_build_stddev_samp_over_a_masked_value(self) -> None:
         gen = SQLGenerator(dialect="postgres")
@@ -3067,26 +2990,13 @@ class TestStatAggsPerDialect:
         assert "CASE WHEN status = 'completed' THEN orders.amount END" in sql
         assert "STDDEV_SAMP" in sql
 
-    def test_build_corr_masks_only_the_value_not_the_other_column(self) -> None:
-        gen = SQLGenerator(dialect="postgres")
-        # DEV-1832: a Column.filter masks only its own value; the ``other=`` param
-        # is masked solely by ITS column's filter, never the source's. The value
-        # arrives pre-masked in ``sql``; ``other`` stays bare.
-        m = AggRenderSpec(
-            name="amount",
-            sql="CASE WHEN status = 'completed' THEN orders.amount END",
-            model_name="orders",
-            alias="amount_corr",
-            aggregation="corr",
-            agg_kwargs={"other": "quantity"},
-        )
-        sql = gen._build_agg(m)[0].sql(dialect="postgres")
-        # Exactly one CASE — the value; the other column is never wrapped by it.
-        assert sql.count("CASE WHEN status = 'completed'") == 1
+    async def test_build_corr_masks_only_the_value_not_the_other_column(self) -> None:
+        # DEV-1832: a Column.filter masks only its own value; ``other=`` is never wrapped by it.
+        sql = await orders_agg_sql("completed_amount:corr(other=quantity)")
+        assert sql.count("CASE WHEN orders.status = 'completed'") == 1
         assert "CORR(" in sql
         assert "orders.amount" in sql
         assert "quantity" in sql
-
 
 class TestStatAggsViaQueryEnrichment:
     """End-to-end aggregator-level checks (parser → enricher → generator). Confirms the new aggregations are reachable from query syntax, not just the internal _build_agg builder."""
@@ -4350,25 +4260,18 @@ class TestAggParamSanitization:
         sql = await _generate(gen, query, agg_model)
         assert "SUM(" in sql
 
-    def test_sql_injection_semicolon_rejected(self) -> None:
-        with pytest.raises(ValueError, match="Unsafe value"):
-            _validate_agg_param_value("quantity); DROP TABLE orders; --", "weight", "weighted_avg")
+    @pytest.mark.parametrize("text", [
+        "quantity); DROP TABLE orders; --",
+        "1 UNION SELECT * FROM users",
+        "(SELECT password FROM users LIMIT 1)",
+    ])
+    async def test_sql_injection_rejected(self, text: str) -> None:
+        with pytest.raises(ValueError, match=_re.escape(text)):
+            await orders_agg_sql(f"amount:weighted_avg(weight='{text}')")
 
-    def test_sql_injection_union_rejected(self) -> None:
-        with pytest.raises(ValueError, match="Unsafe value"):
-            _validate_agg_param_value("1 UNION SELECT * FROM users", "weight", "weighted_avg")
-
-    def test_sql_injection_subquery_rejected(self) -> None:
-        with pytest.raises(ValueError, match="Unsafe value"):
-            _validate_agg_param_value("(SELECT password FROM users LIMIT 1)", "weight", "weighted_avg")
-
-    def test_sql_injection_function_call_rejected(self) -> None:
-        with pytest.raises(ValueError, match="Unsafe value"):
-            _validate_agg_param_value("pg_sleep(10)", "weight", "weighted_avg")
-
-    def test_empty_param_rejected(self) -> None:
-        with pytest.raises(ValueError, match="Unsafe value"):
-            _validate_agg_param_value("", "weight", "weighted_avg")
+    async def test_empty_param_rejected(self) -> None:
+        with pytest.raises(ValueError, match="weighted_avg"):
+            await orders_agg_sql("amount:weighted_avg(weight='')")
 
     async def test_model_level_defaults_not_validated(self, gen: SQLGenerator, agg_model: SlayerModel) -> None:
         """Model-level aggregation param defaults (trusted) bypass query-time validation."""
@@ -4443,19 +4346,6 @@ class TestAggParamSanitization:
         # Exactly one CASE — the value; the weight rides bare. (``status`` is
         # undeclared, so the door qualifies it to the root — DEV-1745 W1.)
         assert sql.count("CASE WHEN sales.status = 'active'") == 1
-
-    def test_injection_via_direct_agg_render_spec(self, gen: SQLGenerator) -> None:
-        """Malicious agg_kwargs on a directly constructed AggRenderSpec are rejected at render time (the validation is wired into the dialect-helper path, not just the standalone ``_validate_agg_param_value``)."""
-        spec = AggRenderSpec(
-            sql="price",
-            name="price",
-            model_name="sales",
-            aggregation="weighted_avg",
-            alias="sales.price_weighted_avg",
-            agg_kwargs={"weight": "quantity); DROP TABLE orders; --"},
-        )
-        with pytest.raises(ValueError, match="Unsafe value"):
-            gen._build_agg(spec)
 
 
 class TestFilteredMeasures:

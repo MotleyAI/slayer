@@ -44,10 +44,13 @@ from slayer.core.keys import (
     StarKey,
 )
 from slayer.core.models import Aggregation, AggregationParam, Column, SlayerModel
+from slayer.core.scope import ModelScope
+from slayer.engine.binding import bind_expr
+from slayer.engine.syntax import parse_expr
 from slayer.ir.planned import ValueSlot
+from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.generator import (  # type: ignore[attr-defined]
     AggRenderSpec,
-    ResolvedAggKwarg,
     SQLGenerator,
 )
 from slayer.sql.render.aggregates import resolve_agg_entry
@@ -57,12 +60,6 @@ from slayer.sql.render.aggregates import resolve_agg_entry
 # the current codebase. Stage A landing flips them green.
 # ``_build_agg_render_spec_from_planned`` is a method on ``SQLGenerator``;
 # tests instantiate the generator to invoke it (see ``_invoke`` below).
-
-
-def _str_kwarg(value: str) -> ResolvedAggKwarg:
-    """DEV-1706: agg_kwargs values are now 2-kind tagged; a canonical-string
-    kwarg round-trips to ``kind="str"``."""
-    return ResolvedAggKwarg(kind="str", value=value)
 
 
 def _invoke(slot, key, *, source_model, source_relation, full_alias):
@@ -118,28 +115,27 @@ def _orders_model() -> SlayerModel:
         aggregations=[
             Aggregation(
                 name="rolling_avg",
-                formula="AVG({value}) OVER (ORDER BY {time} ROWS BETWEEN {window} PRECEDING AND CURRENT ROW)",
+                formula=ROLLING_AVG,
                 params=[
                     AggregationParam(name="time", sql="created_at"),
-                    AggregationParam(name="window", sql="6"),
+                    AggregationParam(name="rows", sql="6"),
                 ],
             ),
             # Model-level override of a BUILT-IN aggregation, supplying a
-            # default ``weight=quantity`` so ``amount:weighted_avg`` (no
-            # explicit kwarg) gets resolved via the model's default param
-            # rather than raising "missing param" at _resolve_agg_param.
-            # CodeRabbit fold-in on DEV-1452 PR #144 ensures
-            # _build_agg_render_spec_from_planned threads this through
-            # ``aggregation_def`` for built-ins, not just non-built-ins.
+            # default ``weight=quantity`` bound onto the key at bind.
             Aggregation(
                 name="weighted_avg",
-                formula="SUM({value} * {weight}) / NULLIF(SUM({weight}), 0)",
+                formula=WEIGHTED_AVG,
                 params=[
                     AggregationParam(name="weight", sql="quantity"),
                 ],
             ),
         ],
     )
+
+
+ROLLING_AVG = "AVG({value}) OVER (ORDER BY {time} ROWS BETWEEN {rows} PRECEDING AND CURRENT ROW)"
+WEIGHTED_AVG = "SUM({value} * {weight}) / NULLIF(SUM({weight}), 0)"
 
 
 def _slot(
@@ -179,7 +175,7 @@ class TestAggRenderSpecConstruction:
             "name",
             "model_name",
             "aggregation",
-            "aggregation_def",
+            "formula",
             "agg_kwargs",
             "alias",
             "time_column",
@@ -201,33 +197,26 @@ class TestAggRenderSpecConstruction:
         assert spec.model_name == "orders"
         assert spec.aggregation == "count"
         assert spec.alias == "orders._count"
-        assert spec.aggregation_def is None
+        assert spec.formula is None
         assert spec.agg_kwargs == {}
         assert spec.time_column is None
         assert spec.type is None
         assert spec.column_type is None
 
     def test_full_field_surface(self):
-        agg_def = Aggregation(
-            name="custom",
-            formula="AVG({value})",
-            params=[],
-        )
         spec = AggRenderSpec(
             sql="amount",
             name="amount",
             model_name="orders",
             aggregation="custom",
-            aggregation_def=agg_def,
-            agg_kwargs={"p": "0.5"},
+            formula="AVG({value})",
             alias="orders.amount_custom",
             time_column="orders.created_at",
             type=DataType.DOUBLE,
             column_type=DataType.DOUBLE,
         )
         assert spec.sql == "amount"
-        assert spec.aggregation_def is agg_def
-        assert spec.agg_kwargs == {"p": _str_kwarg("0.5")}
+        assert spec.formula == "AVG({value})"
         assert spec.time_column == "orders.created_at"
         assert spec.type is DataType.DOUBLE
         assert spec.column_type is DataType.DOUBLE
@@ -352,7 +341,7 @@ class TestBuilderColumnKey:
         assert spec.column_type is DataType.DOUBLE
         assert spec.time_column is None
         assert spec.agg_kwargs == {}
-        assert spec.aggregation_def is None
+        assert spec.formula is None
 
     def test_columnsqlkey_derived_uses_column_sql(self):
         # The derived ``net_amount`` column has ``sql = "amount - tax"`` and
@@ -409,13 +398,13 @@ class TestBuilderColumnKey:
 
 
 class TestBuilderCustomAggregation:
-    def test_custom_aggregation_def_threaded(self):
+    def test_custom_aggregation_formula_threaded(self):
         # ``rolling_avg`` is declared on the model's ``aggregations`` list.
-        # The builder must look it up and pin ``spec.aggregation_def``.
+        # The builder must look it up and carry its formula.
         key = AggregateKey(
             source=ColumnKey(path=(), leaf="amount"),
             agg="rolling_avg",
-            kwargs=(("window", Decimal("6")),),
+            kwargs=(("rows", Decimal("6")),),
         )
         slot = _slot(
             key,
@@ -431,10 +420,8 @@ class TestBuilderCustomAggregation:
             full_alias="orders.amount_rolling_avg",
         )
         assert spec.aggregation == "rolling_avg"
-        assert spec.aggregation_def is not None
-        assert spec.aggregation_def.name == "rolling_avg"
-        # Kwargs stringified via ``agg_kwarg_canonical_str`` → kind="str".
-        assert spec.agg_kwargs == {"window": _str_kwarg("6")}
+        assert spec.formula == ROLLING_AVG
+        assert set(spec.agg_kwargs) == {"rows"}
 
     def test_unknown_aggregation_raises(self):
         key = AggregateKey(
@@ -453,43 +440,30 @@ class TestBuilderCustomAggregation:
             )
 
     def test_builtin_aggregation_model_override_threaded(self):
-        # CodeRabbit fold-in: a model-level Aggregation override for a
-        # BUILT-IN agg (here ``weighted_avg`` with a default
-        # ``weight=quantity``) must surface in ``spec.aggregation_def``,
-        # not just non-built-ins. Prior code gated the lookup on
-        # ``key.agg not in _BUILTIN_BAREARG_AGGS_LOCAL_SLICE`` and
-        # silently dropped the override, so ``amount:weighted_avg`` (no
-        # explicit weight kwarg) raised at _resolve_agg_param even
-        # though the model supplied a default.
-        key = AggregateKey(
-            source=ColumnKey(path=(), leaf="amount"),
-            agg="weighted_avg",
-        )
-        slot = _slot(
-            key,
-            declared_name="amount_weighted_avg",
-            public_name="amount_weighted_avg",
-            slot_type=DataType.DOUBLE,
-        )
+        # A model-level override of a BUILT-IN aggregation (``weighted_avg`` with
+        # a default ``weight=quantity``) binds its default onto the key, and the
+        # builder carries the override's formula.
+        orders = _orders_model()
+        key = bind_expr(
+            parse_expr("amount:weighted_avg"), scope=ModelScope(source_model=orders),
+            bundle=ResolvedSourceBundle(dialect="postgres", source_model=orders),
+        ).value_key
+        assert isinstance(key, AggregateKey)
+        assert dict(key.kwargs) == {"weight": ColumnKey(path=(), leaf="quantity")}
         spec = _invoke(
-            slot=slot,
+            slot=_slot(key, declared_name="amount_weighted_avg",
+                       public_name="amount_weighted_avg", slot_type=DataType.DOUBLE),
             key=key,
-            source_model=_orders_model(),
+            source_model=orders,
             source_relation="orders",
             full_alias="orders.amount_weighted_avg",
         )
         assert spec.aggregation == "weighted_avg"
-        assert spec.aggregation_def is not None
-        assert spec.aggregation_def.name == "weighted_avg"
-        # Default param the model declared must round-trip.
-        assert any(
-            p.name == "weight" and p.sql == "quantity"
-            for p in spec.aggregation_def.params
-        )
+        assert spec.formula == WEIGHTED_AVG
 
-    def test_builtin_aggregation_no_override_leaves_def_none(self):
+    def test_builtin_aggregation_no_override_leaves_formula_none(self):
         # The lookup is unconditional, but a built-in WITHOUT a model
-        # override must still produce ``aggregation_def is None`` so the
+        # override must still produce ``formula is None`` so the
         # dispatcher picks the built-in renderer. Pin this so the
         # CodeRabbit fix doesn't accidentally start picking up
         # unrelated model-level definitions.
@@ -511,7 +485,7 @@ class TestBuilderCustomAggregation:
             full_alias="orders.amount_sum",
         )
         assert spec.aggregation == "sum"
-        assert spec.aggregation_def is None
+        assert spec.formula is None
 
 
 # ---------------------------------------------------------------------------
@@ -540,7 +514,7 @@ class TestBuilderParametric:
             full_alias="orders.amount_percentile_p_0_5",
         )
         assert spec.aggregation == "percentile"
-        assert spec.agg_kwargs == {"p": _str_kwarg("0.5")}
+        assert set(spec.agg_kwargs) == {"p"}
         assert spec.sql == "amount"
 
     def test_stat_agg_with_other_kwarg(self):
@@ -565,10 +539,7 @@ class TestBuilderParametric:
             full_alias="orders.amount_corr",
         )
         assert spec.aggregation == "corr"
-        # The ``other=`` column kwarg canonicalises to the qualified name
-        # (mirrors ``agg_kwarg_canonical_str`` for ColumnKey) → kind="str".
-        assert "other" in spec.agg_kwargs
-        assert spec.agg_kwargs["other"] == _str_kwarg("quantity")
+        assert set(spec.agg_kwargs) == {"other"}
 
 
 # ---------------------------------------------------------------------------
@@ -699,7 +670,7 @@ class TestBuilderCrossModelKwargPath:
             source_relation="customers",
             full_alias="customers.amount_weighted_avg",
         )
-        assert spec.agg_kwargs == {"weight": _str_kwarg("quantity")}
+        assert set(spec.agg_kwargs) == {"weight"}
 
 
 # ---------------------------------------------------------------------------

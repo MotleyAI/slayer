@@ -14,7 +14,6 @@ Public surface:
 - ``is_known_aggregation_name(name, custom_names)`` — built-in or
   in the custom set.
 - ``required_params_for(agg_name)`` — required built-in params.
-- ``merge_agg_params(agg_def, query_kwargs)`` — defaults + overrides.
 """
 
 from __future__ import annotations
@@ -30,7 +29,6 @@ from slayer.core.models import (
 from slayer.engine.agg_registry import (
     collect_reachable_agg_names,
     is_known_aggregation_name,
-    merge_agg_params,
     required_params_for,
     resolve_aggregation,
 )
@@ -222,51 +220,6 @@ class TestRequiredParamsFor:
         # Custom aggregations declare their required-ness via Aggregation.params,
         # not via the built-in table.
         assert required_params_for("my_custom_agg") == ()
-
-
-# ---------------------------------------------------------------------------
-# merge_agg_params
-# ---------------------------------------------------------------------------
-
-
-class TestMergeAggParams:
-    def test_no_agg_def_returns_query_kwargs(self):
-        result = merge_agg_params(None, {"weight": "quantity"})
-        assert result == {"weight": "quantity"}
-
-    def test_defaults_from_agg_def(self):
-        agg = Aggregation(
-            name="my", formula="X",
-            params=[AggregationParam(name="weight", sql="default_w")],
-        )
-        result = merge_agg_params(agg, {})
-        assert result == {"weight": "default_w"}
-
-    def test_query_overrides_defaults(self):
-        agg = Aggregation(
-            name="my", formula="X",
-            params=[AggregationParam(name="weight", sql="default_w")],
-        )
-        result = merge_agg_params(agg, {"weight": "override_w"})
-        assert result == {"weight": "override_w"}
-
-    def test_partial_override(self):
-        agg = Aggregation(
-            name="my", formula="X",
-            params=[
-                AggregationParam(name="a", sql="default_a"),
-                AggregationParam(name="b", sql="default_b"),
-            ],
-        )
-        result = merge_agg_params(agg, {"b": "override_b"})
-        assert result == {"a": "default_a", "b": "override_b"}
-
-    def test_query_only_kwargs_pass_through(self):
-        # Even params not declared by the agg_def are passed through;
-        # validation belongs to the caller (binder).
-        agg = Aggregation(name="my", formula="X", params=[])
-        result = merge_agg_params(agg, {"window": "30d"})
-        assert result == {"window": "30d"}
 
 
 # ---------------------------------------------------------------------------

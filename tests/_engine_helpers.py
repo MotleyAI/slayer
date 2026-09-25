@@ -30,7 +30,8 @@ import sqlalchemy as sa
 import sqlglot
 from sqlglot import exp
 
-from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.core.enums import DataType
+from slayer.core.models import Aggregation, Column, DatasourceConfig, ModelMeasure, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.bind_inputs import bind_query_inputs
 from slayer.engine.compile import stages
@@ -314,3 +315,28 @@ def plan_as_producer(*, query: SlayerQuery, bundle):
         bundle=bundle, scope=scope, stage_schemas={},
         population=stages.NoInheritedPopulation(reason="compiled as a producer by a test"),
     )
+
+
+async def orders_agg_sql(
+    formula: str, *, dialect: str = "postgres",
+    aggregations: Optional[list[Aggregation]] = None,
+) -> str:
+    """Whitespace-normalised SQL for one ``formula`` measure over a flat ``orders`` model
+    (``amount``, ``quantity``, ``status`` and the masked ``completed_amount``)."""
+    model = SlayerModel(
+        name="orders", sql_table="orders", data_source="test",
+        columns=[
+            Column(name="id", type=DataType.INT, primary_key=True),
+            Column(name="amount", type=DataType.DOUBLE),
+            Column(name="quantity", type=DataType.DOUBLE),
+            Column(name="status", type=DataType.TEXT),
+            Column(name="completed_amount", type=DataType.DOUBLE, sql="amount",
+                   filter="status = 'completed'"),
+        ],
+        aggregations=aggregations or [],
+    )
+    sql = await _engine_generate(
+        query=SlayerQuery(source_model="orders", measures=[ModelMeasure(formula=formula)]),
+        model=model, dialect=dialect,
+    )
+    return " ".join(sql.split())
