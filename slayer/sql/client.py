@@ -19,6 +19,7 @@ from slayer.core.models import DatasourceConfig
 from slayer.sql import engine_factory
 from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.reserved_keywords import prequote_reserved_identifiers
+from slayer.sql.session_policy import _settings_holder
 from slayer.core import timing
 
 logger = logging.getLogger(__name__)
@@ -857,10 +858,12 @@ def _execute_sql_sync(
 ) -> list[dict[str, Any]]:
     with engine.connect() as conn:
         timeout_ms = timeout_seconds * 1000
+        if db_type == "clickhouse":
+            return _execute_clickhouse_sync(
+                conn, sql=sql, engine=engine, timeout_seconds=timeout_seconds,
+            )
         if db_type in ("mysql", "mariadb"):
             _exec_verbatim(conn, f"SET max_execution_time = {timeout_ms}")
-        elif db_type == "clickhouse":
-            _exec_verbatim(conn, f"SET max_execution_time = {timeout_seconds}")
         elif db_type in ("postgres", "postgresql", None):
             try:
                 _exec_verbatim(conn, f"SET statement_timeout = {timeout_ms}")
@@ -871,6 +874,61 @@ def _execute_sql_sync(
             timeout_sql = dialect_for_ds_type(db_type).statement_timeout_sql(timeout_seconds)
             if timeout_sql:
                 _exec_verbatim(conn, timeout_sql)
-        result = _exec_verbatim(conn, sql)
-        columns = list(result.keys())
-        return [dict(zip(columns, row)) for row in result.fetchall()]
+        return _fetch_rows(_exec_verbatim(conn, sql))
+
+
+def _fetch_rows(result) -> list[dict[str, Any]]:
+    columns = list(result.keys())
+    return [dict(zip(columns, row)) for row in result.fetchall()]
+
+
+_CH_TIMEOUT_SETTING = "max_execution_time"
+# ClickHouse error code 164 (READONLY): a ``readonly = 1`` user can't change settings.
+_CH_READONLY_ERROR_MARKER = "Code: 164."
+# Engines whose user refused the timeout setting; later queries skip it.
+_ch_readonly_engines: "weakref.WeakSet[sa.Engine]" = weakref.WeakSet()
+
+
+def _with_ch_statement_timeout(sql: str, timeout_seconds: int) -> str:
+    """Put ``max_execution_time`` in the statement's own ``SETTINGS`` clause.
+
+    The HTTP driver sends each statement without a session, so a separate ``SET``
+    does not reach the query. A value the SQL already sets wins. SQL that sqlglot
+    can't parse runs unchanged.
+    """
+    try:
+        ast = sqlglot.parse_one(sql, dialect="clickhouse")
+    except sqlglot.errors.ParseError:
+        return sql
+    if not isinstance(ast, exp.Query):
+        return sql
+    holder = _settings_holder(ast)
+    settings = holder.args.get("settings") or []
+    if any(getattr(s.this, "name", None) == _CH_TIMEOUT_SETTING for s in settings):
+        return sql
+    holder.set("settings", [*settings, exp.var(_CH_TIMEOUT_SETTING).eq(timeout_seconds)])
+    return ast.sql(dialect="clickhouse")
+
+
+def _execute_clickhouse_sync(
+    conn, *, sql: str, engine: sa.Engine, timeout_seconds: int,
+) -> list[dict[str, Any]]:
+    """Run a ClickHouse query with a per-statement timeout.
+
+    A ``readonly = 1`` user refuses every setting change. For that user the query
+    runs without the setting, and the server profile's limit applies.
+    """
+    if engine not in _ch_readonly_engines:
+        try:
+            timed_sql = _with_ch_statement_timeout(sql=sql, timeout_seconds=timeout_seconds)
+            return _fetch_rows(_exec_verbatim(conn, timed_sql))
+        except Exception as exc:
+            if _CH_READONLY_ERROR_MARKER not in str(exc):
+                raise
+            _ch_readonly_engines.add(engine)
+            logger.warning(
+                "ClickHouse user is in readonly = 1 mode and can't set %s; "
+                "the server profile's limit applies instead.",
+                _CH_TIMEOUT_SETTING,
+            )
+    return _fetch_rows(_exec_verbatim(conn, sql))

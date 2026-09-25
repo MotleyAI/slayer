@@ -95,6 +95,13 @@ SQL generation is covered by unit tests, but not verified against live instances
 !!! note
     BigQuery, ClickHouse, and similar analytical warehouses typically don't have foreign keys, so auto-ingestion won't discover joins. Define joins manually in your model YAML. Snowflake is an exception — it stores declarative (non-enforced) FK constraints AND exposes them via the Inspector, so auto-ingestion discovers joins like Postgres / MySQL / SQLite.
 
+!!! note "ClickHouse — query timeout and readonly users"
+    SLayer adds `SETTINGS max_execution_time = N` to each ClickHouse query. A user with
+    `readonly = 1` can't change settings, so for that user SLayer runs the query without
+    the setting and logs one warning. The `max_execution_time` in the user's server
+    profile then applies. To use SLayer's timeout, set `readonly = 2`. This level also
+    allows `SET`, `CREATE TEMPORARY TABLE` and `RESTORE`, so check that it fits your policy.
+
 ### Snowflake
 
 The recommended path is the named-connection form, which delegates auth to

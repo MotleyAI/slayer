@@ -42,6 +42,7 @@ from slayer.core.query import ColumnRef, ModelExtension, OrderItem, SlayerQuery,
 from slayer.engine.ingestion import ingest_datasource
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql import engine_factory
+from slayer.sql.client import SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
 
 from tests._engine_helpers import disposable_engine
@@ -74,7 +75,10 @@ def _docker_available_or_skip():
 @pytest.fixture(scope="session")
 def clickhouse_container():
     """Session-scoped ClickHouse 24 container."""
-    container = ClickHouseContainer("clickhouse/clickhouse-server:24-alpine")
+    # Access management lets tests create a readonly user.
+    container = ClickHouseContainer("clickhouse/clickhouse-server:24-alpine").with_env(
+        "CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT", "1"
+    )
     with container as c:
         yield c
 
@@ -1290,3 +1294,47 @@ class TestClickHouseDecimalPreservation:
         value = result.data[0][result_key]
         assert isinstance(value, Decimal)
         assert value == expected
+
+
+# ---------------------------------------------------------------------------
+# Per-statement timeout (max_execution_time)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def clickhouse_readonly_datasource(clickhouse_container):
+    """A datasource whose user has ``readonly = 1`` and may change no settings."""
+    user = f"ro_{uuid.uuid4().hex[:8]}"
+    with disposable_engine(_admin_url(clickhouse_container)) as engine:
+        with engine.begin() as conn:
+            conn.execute(sa.text(
+                f"CREATE USER {user} IDENTIFIED WITH plaintext_password BY 'pw' "
+                "SETTINGS readonly = 1"
+            ))
+            conn.execute(sa.text(f"GRANT SELECT ON *.* TO {user}"))
+    yield DatasourceConfig(
+        name="readonly_clickhouse",
+        type="clickhouse",
+        host=clickhouse_container.get_container_host_ip(),
+        port=int(clickhouse_container.get_exposed_port(8123)),
+        database="default",
+        username=user,
+        password="pw",
+    )
+    with disposable_engine(_admin_url(clickhouse_container)) as engine:
+        with engine.begin() as conn:
+            conn.execute(sa.text(f"DROP USER IF EXISTS {user}"))
+
+
+@pytest.mark.integration
+class TestClickHouseStatementTimeout:
+    async def test_timeout_stops_long_query(self, clickhouse_container) -> None:
+        client = SlayerSQLClient(datasource=_ds_config(clickhouse_container, "default"))
+        with pytest.raises(Exception, match="TIMEOUT_EXCEEDED"):
+            await client.execute(sql="SELECT sleep(3)", timeout_seconds=1)
+
+    async def test_readonly_user_runs_queries(self, clickhouse_readonly_datasource) -> None:
+        client = SlayerSQLClient(datasource=clickhouse_readonly_datasource)
+        for _ in range(2):  # second call takes the cached no-setting path
+            rows = await client.execute(sql="SELECT 1 AS x")
+            assert [int(r["x"]) for r in rows] == [1]
