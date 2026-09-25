@@ -248,7 +248,7 @@ def _stable_text(obj: Any) -> str:
 def _regroup_grain_name(pk: ValueKey) -> str:
     """A column's path/leaf spelling; any other key a key-derived identifier."""
     if isinstance(pk, TimeTruncKey):
-        return f"{column_leaf(pk.column)}_{pk.granularity}"
+        return f"{_regroup_grain_name(pk.column)}_{pk.granularity}"
     if isinstance(pk, (ColumnKey, ColumnSqlKey)):
         return "__".join([*pk.path, column_leaf(pk)])
     return f"grain_{hashlib.sha1(_stable_text(pk).encode()).hexdigest()[:8]}"
@@ -286,33 +286,9 @@ def _regroup_producer_prebound(  # NOSONAR(S3776) — one producer-prebound asse
     tds = [pk for pk in ordered if isinstance(pk, TimeTruncKey)]
     if window_td_key is not None and window_td_key not in pks:
         tds = [*tds, window_td_key]
-    grain_dms: List[DeclaredMeasure] = []
-    for pk in [*dims, *tds]:
-        if model is not None:
-            d_type, d_fmt, d_desc = dimension_key_metadata(
-                model=model, key=pk, bundle=bundle,
-            )
-        else:
-            d_type, d_fmt, d_desc = None, None, None
-        # A combined attach names its grain by the consumer's dimension name.
-        name = grain_name_by_key.get(pk) or _regroup_grain_name(pk)
-        grain_dms.append(DeclaredMeasure(
-            bound=BoundExpr(value_key=pk),
-            declared_name=name, public_name=name,
-            type=d_type, format=d_fmt, description=d_desc,
-            # A grain key is a dimension the producer GROUPS BY; marking a computed one makes its inner aggregate a ROW attach.
-            is_dimension=True,
-        ))
-    grain_names = [dm.public_name for dm in grain_dms]
-    assert len(set(grain_names)) == len(grain_names), grain_names  # names wire the join-back
-    # Non-aggregate constituents (transforms, arithmetic, scalar) fall back to a
-    # bare op/name, so two same-op transforms — ``sum(cumsum(a) - cumsum(b))`` —
-    # would collide. Disambiguate against the names already taken (grain + prior
-    # constituents); the first occurrence keeps its bare name. Wiring is by key,
-    # so the label only needs to be unique.
-    used_names: set[str] = {
-        dm.public_name for dm in grain_dms if dm.public_name is not None
-    }
+    grain_keys = [*dims, *tds]
+    # Declared names are reserved first; a colliding synthesized name gets a suffix.
+    used_names: set[str] = {n for pk in grain_keys if (n := grain_name_by_key.get(pk))}
 
     def _unique(name: str) -> str:
         candidate = name
@@ -323,6 +299,27 @@ def _regroup_producer_prebound(  # NOSONAR(S3776) — one producer-prebound asse
         used_names.add(candidate)
         return candidate
 
+    grain_dms: List[DeclaredMeasure] = []
+    for pk in grain_keys:
+        if model is not None:
+            d_type, d_fmt, d_desc = dimension_key_metadata(
+                model=model, key=pk, bundle=bundle,
+            )
+        else:
+            d_type, d_fmt, d_desc = None, None, None
+        # A combined attach names its grain by the consumer's dimension name.
+        name = grain_name_by_key.get(pk) or _unique(_regroup_grain_name(pk))
+        grain_dms.append(DeclaredMeasure(
+            bound=BoundExpr(value_key=pk),
+            declared_name=name, public_name=name,
+            type=d_type, format=d_fmt, description=d_desc,
+            # A grain key is a dimension the producer GROUPS BY; marking a computed one makes its inner aggregate a ROW attach.
+            is_dimension=True,
+        ))
+    grain_names = [dm.public_name for dm in grain_dms]
+    assert len(set(grain_names)) == len(grain_names), grain_names
+    # Constituents fall back to a bare op/name (``sum(cumsum(a) - cumsum(b))``);
+    # disambiguated like grain names — wiring is by key, labels need only be unique.
     agg_dms: List[DeclaredMeasure] = []
     for agg in aggs:
         canonical = _unique(

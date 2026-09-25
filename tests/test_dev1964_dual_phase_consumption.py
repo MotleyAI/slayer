@@ -9,6 +9,7 @@ from typing import Callable, List
 
 import pytest
 
+from slayer.core.enums import DataType, JoinCardinality, TimeGranularity
 from slayer.core.errors import PartitionKeyError
 from slayer.core.keys import (
     REGROUP_LEAF_PREFIX,
@@ -18,14 +19,18 @@ from slayer.core.keys import (
     Grain,
     LiteralKey,
     ScalarCallKey,
+    TimeTruncKey,
     TransformKey,
     ValueKey,
 )
+from slayer.core.models import Column, ModelJoin, SlayerModel
+from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.engine.compile.discovery import RootDisposition
 from slayer.engine.compile.stages import _regroup_producer_prebound
 from slayer.engine.plan import plan_query
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.scope_check import assert_scope_closed
+from slayer.storage.sqlite_conn import transaction
 
 from tests._dev1847_fixtures import (
     ModelMeasure,
@@ -35,7 +40,7 @@ from tests._dev1847_fixtures import (
     make_exec_engine,
     sales_q,
 )
-from tests._engine_helpers import _extract_cte_body
+from tests._engine_helpers import _extract_cte_body, seeded_exec_engine
 from tests.test_dev1903_discovery import _discover
 
 R = "avg(sum(amount, partition_by=[city, region]), partition_by=region)"
@@ -227,6 +232,13 @@ class TestFinerGrainedReaggregationDimension:
         got = {(r["sales.region"], r["sales.x"]): r["sales.tot"] for r in resp.data}
         assert got == _approx(FINE_TOT)
 
+    async def test_order_by_name_of_the_reaggregation_dimension(self, exec_engine):
+        resp = await exec_engine.execute(sales_q(
+            dimensions=["region", {"expression": FINE, "name": "x"}], measures=[TOT],
+            order=[{"column": "x", "direction": "desc"}]))
+        xs = [r["sales.x"] for r in resp.data if r["sales.x"] is not None]
+        assert xs == pytest.approx([100.0, 80.0, 60.0, 50.0, 40.0, 15.0, 12.0, 8.0])
+
 
 class TestPlainMeasureTypedFilterOverDimensionAggregate:
     def test_same_partition_key_error_as_without_dimension(self):
@@ -279,6 +291,17 @@ class TestReaggregationOuterKeyCarriesTheRule:
         with pytest.raises(PartitionKeyError) as ei:
             plan_query(query=query, bundle=bundle)
         _assert_consumer_error(ei.value, key="city", location=location)
+
+    @pytest.mark.parametrize(("dim", "agg"), [(CITY_BAND, "amount:sum(partition_by=[city, region])"),
+                                              (FINE_DIM, FINE)], ids=["plain", "reagg"])
+    @pytest.mark.parametrize("template", ["rank({})", "{} + 1"], ids=["transform", "arithmetic"])
+    def test_order_expression_over_dimension_aggregate(self, dim, agg, template):
+        query = sales_q(dimensions=["region", dim], measures=[TOT],
+                        order=[{"column": template.format(agg), "direction": "asc"}])
+        bundle = _bundle()
+        with pytest.raises(PartitionKeyError) as ei:
+            plan_query(query=query, bundle=bundle)
+        _assert_consumer_error(ei.value, key="city", location=r"order item\b")
 
     def test_cross_model_outer_key(self):
         formula = "avg(sum(amount, partition_by=customer_id), partition_by=customers.region_id)"
@@ -390,3 +413,51 @@ class TestSynthesizedGrainNames:
         with_earlier = _grain_names([_flag("city", "Alpha"), a])
         assert len(set(with_later.values())) == len(set(with_earlier.values())) == 2
         assert with_later[a] == with_earlier[a]
+
+    def test_time_bucket_spelled_like_a_column(self):
+        bucket = TimeTruncKey(column=ColumnKey(leaf="city"), granularity="month")
+        names = _grain_names([bucket, ColumnKey(leaf="city_month")])
+        assert names[ColumnKey(leaf="city_month")] == "city_month"
+        assert len(set(names.values())) == 2
+
+    async def test_same_leaf_time_keys_on_different_paths(self):
+        # orders.created_at and customers.created_at, both by month.
+        rows = [(1, 1, "N", "2024-01-05", 10.0), (2, 1, "S", "2024-01-06", 20.0),
+                (3, 2, "N", "2024-02-05", 30.0), (4, 2, "S", "2024-02-07", 40.0)]
+        custs = [(1, "2023-01-01"), (2, "2023-02-01")]
+
+        def seed(path: str) -> None:
+            with transaction(path) as conn:
+                conn.execute("CREATE TABLE orders (id INT, customer_id INT, region TEXT, "
+                             "created_at TEXT, amount REAL)")
+                conn.execute("CREATE TABLE customers (id INT, created_at TEXT)")
+                conn.executemany("INSERT INTO orders VALUES (?,?,?,?,?)", rows)
+                conn.executemany("INSERT INTO customers VALUES (?,?)", custs)
+
+        models = [
+            SlayerModel(name="orders", data_source="test", sql_table="orders", columns=[
+                Column(name="id", type=DataType.INT, primary_key=True),
+                Column(name="customer_id", type=DataType.INT),
+                Column(name="region", type=DataType.TEXT),
+                Column(name="created_at", type=DataType.TIMESTAMP),
+                Column(name="amount", type=DataType.DOUBLE),
+            ], joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]],
+                                cardinality=JoinCardinality.MANY_TO_ONE)]),
+            SlayerModel(name="customers", data_source="test", sql_table="customers", columns=[
+                Column(name="id", type=DataType.INT, primary_key=True),
+                Column(name="created_at", type=DataType.TIMESTAMP),
+            ]),
+        ]
+        months = [TimeDimension(dimension=ColumnRef(name=n), granularity=TimeGranularity.MONTH)
+                  for n in ("created_at", "customers.created_at")]
+        q = SlayerQuery(
+            source_model="orders", dimensions=[ColumnRef(name="region")], time_dimensions=months,
+            measures=[ModelMeasure(
+                formula="avg(sum(amount, partition_by=[region, created_at, customers.created_at]),"
+                        " partition_by=[created_at, customers.created_at])", name="m")],
+        )
+        async with seeded_exec_engine(dialect="sqlite", seed=seed, models=models) as (eng, _):
+            resp = await eng.execute(q)
+        got = {(r["orders.region"], r["orders.created_at"][:7]): r["orders.m"] for r in resp.data}
+        assert got == {("N", "2024-01"): 15.0, ("S", "2024-01"): 15.0,
+                       ("N", "2024-02"): 35.0, ("S", "2024-02"): 35.0}

@@ -161,8 +161,9 @@ class _Walker:
                 continue
             top = n.key is vk
             if is_reaggregation_key(n.key):
-                self.emit_named(n.key, "combined", "reaggregation", top=top, name=name,
-                                declared=declared)
+                if self.classes.combined_admits(n, position=position, root=vk):
+                    self.emit_named(n.key, "combined", "reaggregation", top=top, name=name,
+                                    declared=declared)
                 continue
             self.combined_node(n, root=vk, position=position,
                                names=(name,) if name and top else (),

@@ -287,16 +287,16 @@ class PositionClasses(BaseModel):
         return None
 
     def combined_admits(self, node: ConsumerNode, *, position: ConsumerPosition, root: ValueKey) -> bool:
-        """A measure skips partition-key subtrees; a measure-typed filter skips a
-        dimension's grouped value; an order target that is itself a partitioned
-        aggregate is its only consumer; order-by-name and field-typed filter
-        references to a dimension's own aggregate are row-scope."""
+        """A measure skips partition-key subtrees; a measure-typed filter and an order
+        target skip a dimension's grouped value; an order target that is itself a
+        partitioned aggregate is its only consumer; a field-typed filter reference
+        to a dimension's own aggregate is row-scope."""
         if position == "measure":
             return not (node.own_pk or node.attach_pk)
         if position == "measure_filter":
             return not node.dim_key
-        if position == "order" and is_partitioned_consumer(root):
-            return node.key is root
+        if position == "order":
+            return not node.dim_key and (node.key is root or not is_partitioned_consumer(root))
         return not (is_partitioned_consumer(node.key) and node.key in self.row_aggregates)
 
 
@@ -324,6 +324,26 @@ def position_typing_context(prebound: PreboundQuery) -> Tuple[frozenset, frozens
     return pc.dim_keys, pc.row_attached
 
 
+def _combined_consumers(
+    prebound: PreboundQuery, *, filter_typings: Sequence[ConjunctTyping],
+    order_texts: Sequence[Optional[str]],
+) -> List[Tuple[ValueKey, ConsumerPosition, str]]:
+    """(root, position, error location) of every combined-phase consumer."""
+    texts = list(prebound.bound_filter_texts)
+    consumers: List[Tuple[ValueKey, ConsumerPosition, str]] = [
+        (dm.bound.value_key, "measure", f"measure {dm.public_name!r}")
+        for dm in prebound.declared_measures if not dm.is_dimension
+    ]
+    for i, sp in enumerate(prebound.order_specs):
+        text = order_texts[i] if i < len(order_texts) else i
+        consumers.append((sp.bound.value_key, "order", f"order item {text!r}"))
+    for i, (bf, ct) in enumerate(zip(prebound.bound_filters, filter_typings, strict=True)):
+        if ct.typing == MaskTyping.MEASURE:
+            text = texts[i] if i < len(texts) else None
+            consumers.append((bf.value_key, "measure_filter", f"filter {text!r}" if text else "filter"))
+    return consumers
+
+
 def check_combined_partition_keys(
     prebound: PreboundQuery, *, filter_typings: Sequence[ConjunctTyping],
     order_texts: Sequence[Optional[str]] = (),
@@ -332,19 +352,13 @@ def check_combined_partition_keys(
     cross-model or re-aggregation — is a query dimension; judged after typing."""
     n_grain = prebound.n_dims + prebound.n_time_dimensions
     classes = position_classes(prebound.declared_measures, n_grain=n_grain)
-    texts = list(prebound.bound_filter_texts)
-    consumers: List[Tuple[ValueKey, ConsumerPosition, str]] = []
-    for dm in prebound.declared_measures:
-        if not dm.is_dimension:
-            consumers.append((dm.bound.value_key, "measure", f"measure {dm.public_name!r}"))
-    for i, sp in enumerate(prebound.order_specs):
-        text = order_texts[i] if i < len(order_texts) else i
-        consumers.append((sp.bound.value_key, "order", f"order item {text!r}"))
-    for i, (bf, ct) in enumerate(zip(prebound.bound_filters, filter_typings, strict=True)):
-        if ct.typing == MaskTyping.MEASURE:
-            text = texts[i] if i < len(texts) else None
-            consumers.append((bf.value_key, "measure_filter", f"filter {text!r}" if text else "filter"))
-    available = [dm.declared_name for dm in prebound.declared_measures[:n_grain]]
+    consumers = _combined_consumers(
+        prebound, filter_typings=filter_typings, order_texts=order_texts,
+    )
+    available = [
+        dm.declared_name for dm in prebound.declared_measures[:n_grain]
+        if dm.declared_name is not None
+    ]
     for root, position, location in consumers:
         for n in walk_consumer_positions(root, dim_keys=classes.dim_keys):
             if not (is_partitioned_consumer(n.key)
@@ -354,7 +368,7 @@ def check_combined_partition_keys(
                 check_partition_key_resolves(
                     label=location, pk=pk, is_query_dim=pk in classes.dim_keys,
                     ambiguous=False, maps_to_bucket=False, lenient=False,
-                    available_dims=[d for d in available if d is not None],
+                    available_dims=available,
                 )
 
 
