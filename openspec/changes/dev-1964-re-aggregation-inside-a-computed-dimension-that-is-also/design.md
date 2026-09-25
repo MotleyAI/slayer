@@ -22,7 +22,7 @@ A throwaway probe (collect all phases per re-aggregation root + one attach per p
 type-based dimension predicate; skipping a covered re-aggregation in `_Walker.dimension`)
 fixed shapes 1, 2 and ORDER BY R with correct values and one producer CTE joined twice, and
 broke 8 tests — among them `tests/test_dev1903_discovery.py::TestTransformOverReaggregationDimension`
-(`Regroup attach join keys do not match the producer's grouping grain`), which D4 must keep green.
+(`Regroup attach join keys do not match the producer's grouping grain`), which D4 turns into the typed `TimeAxisError`.
 
 Normative harnesses: semantics Axiom 9 (inspect types only), Axiom 13 (positions), engine P4
 (interning; gains the D1 clause), P6 (phase/stage), P9 (type errors raise in the checker).
@@ -42,8 +42,8 @@ field-typed filter on a computed dimension's own aggregate (`queries/positions`)
 `_ReaggregationRoots`; re-aggregation becomes a routing of `_group_routed_roots` with row and
 combined buckets. Each (root, phase) gets its own `RegroupAttachPlan`; both share one
 placeholder (`RegroupPlaceholderRegistry.placeholder_for(root)`) and one producer via
-`producer_registry` interning. Public alias and declared type are carried per occurrence
-(each attach takes its own occurrence's metadata; a row-only root keeps its dimension's) — no
+`producer_registry` interning. Public alias and declared type are the root's, first seen across
+its occurrences; they name the one interned producer. Only the phase is per occurrence — no
 phase precedence. Invariant (asserted by a plan-level test): at each consumer phase the
 placeholder resolves to exactly one attach — dimensions read the ROW attach; measure, filter
 and order slots read the COMBINED attach, never the ROW one.

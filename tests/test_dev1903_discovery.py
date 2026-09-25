@@ -11,7 +11,7 @@ from typing import Callable, List, Sequence
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.errors import PartitionKeyError
+from slayer.core.errors import PartitionKeyError, TimeAxisError
 from slayer.core.keys import AggregateKey, TransformKey, ValueKey
 from slayer.core.models import ModelMeasure
 from slayer.core.query import SlayerQuery
@@ -20,7 +20,7 @@ from slayer.engine.elaborate import elaborate_query
 from slayer.engine.plan import plan_query
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
-from tests._dev1832_fixtures import dev1832_models, make_exec_engine, month_key, monthly_q
+from tests._dev1832_fixtures import dev1832_models, make_exec_engine, monthly_q
 from tests._dev1832_fixtures import month_td as monthly_month_td
 from tests._dev1836_fixtures import SPEND_BAND, dev1836_models, month_td, q
 from tests._dev1847_fixtures import (
@@ -384,14 +384,13 @@ class TestUnderReaggregationPartitionKeys:
 
 
 class TestTransformOverReaggregationDimension:
-    async def test_filter_on_it_executes(self, exec_engine):
-        """Typing and discovery share one computed-dimension transform-root definition,
-        so a filter on ``cumsum(<re-aggregation>)`` compiles and keeps its rows."""
-        resp = await exec_engine.execute(monthly_q(
+    async def test_filter_on_it_is_a_time_axis_error(self, exec_engine):
+        """The re-aggregation is opaque at grain ``region`` — no time axis for ``cumsum``,
+        exactly as over ``amount:sum(partition_by=region)``."""
+        query = monthly_q(
             dimensions=["region", {"expression": f"cumsum({REAGG_STANDALONE})", "name": "rr"}],
             time_dimensions=monthly_month_td(),
             measures=[ModelMeasure(formula="amount:sum", name="s")],
-            filters=["rr > 10"]))
-        mcol = next(c for c in resp.columns if "ordered_at" in c)
-        got = {(r["monthly.region"], month_key(r[mcol])): r["monthly.rr"] for r in resp.data}
-        assert got == {("North", "2024-02"): 20.0, ("North", "2024-03"): 30.0}
+            filters=["rr > 10"])
+        with pytest.raises(TimeAxisError, match="cumsum"):
+            await exec_engine.execute(query)

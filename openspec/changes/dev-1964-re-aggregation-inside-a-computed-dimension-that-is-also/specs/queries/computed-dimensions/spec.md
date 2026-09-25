@@ -35,7 +35,7 @@ Oracles below use the DEV-1847 `sales` fixture with `R` = `avg(sum(amount, parti
 
 #### Scenario: Windowed transform over a re-aggregation in a dimension with a filter
 - WHEN a monthly query declares the dimension `cumsum(min(<attached operand>, partition_by=region))` and filters on that dimension
-- THEN it executes with the same values as before this change
+- THEN it fails at plan time with the `TimeAxisError` naming `cumsum`, exactly as the same transform over `amount:sum(partition_by=region)` does
 
 #### Scenario: Cross-model re-aggregation in a dimension and a measure-typed filter
 - WHEN a `corders` query over dimensions `[customers.regions.name, cl]`, with `cl` banding `avg(sum(amount, partition_by=customer_id), partition_by=customers.regions.name)` at 40, filters on that re-aggregation `< amount:sum`
