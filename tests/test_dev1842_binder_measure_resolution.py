@@ -191,7 +191,7 @@ class TestStageSchemaScope:
             columns=[StageColumn(name="aov", sql_alias="aov", type=DataType.DOUBLE)],
         )
         parsed = parse_expr("customers.aov")
-        bundle = ResolvedSourceBundle()
+        bundle = ResolvedSourceBundle(dialect="duckdb")
         with pytest.raises(IllegalScopeReferenceError):
             bind_expr(parsed, scope=stage, bundle=bundle)
 

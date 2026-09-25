@@ -233,6 +233,7 @@ class TestProducersThatMustStaySeparate:
         )
         models = dev1838_models()
         bundle = ResolvedSourceBundle(
+            dialect="postgres",
             source_model=models[0], referenced_models=models[1:],
         )
         base = plan.plan_query(query=q(

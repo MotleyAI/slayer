@@ -42,7 +42,7 @@ def _orders_model() -> SlayerModel:
 
 
 def _bundle() -> ResolvedSourceBundle:
-    return ResolvedSourceBundle(source_model=_orders_model())
+    return ResolvedSourceBundle(dialect="postgres", source_model=_orders_model())
 
 
 def _partitioned_key(partition: ColumnKey) -> AggregateKey:

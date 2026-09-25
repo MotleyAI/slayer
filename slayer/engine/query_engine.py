@@ -24,8 +24,9 @@ from pydantic import (
 )
 
 from slayer.async_utils import run_sync
-from slayer.core.enums import DEFAULT_AGGREGATIONS_BY_TYPE, JoinCardinality
+from slayer.core.enums import DEFAULT_AGGREGATIONS_BY_TYPE, RANKED_AGGREGATIONS, JoinCardinality
 from slayer.core.errors import (
+    AggregationArgumentError,
     AmbiguousModelError,
     AssociatedGrainWarning,
     BroadcastGrainWarning,
@@ -130,7 +131,8 @@ from slayer.sql.client import (
     build_sql_model_trial_query,
     classify_model_sql,
 )
-from slayer.sql.dialects import SqlDialect, dialect_for_ds_type, get_dialect
+from slayer.sql.dialects import SQLGLOT_NAMES, SqlDialect, dialect_for_ds_type, get_dialect
+from slayer.sql.sql_template import SqlTemplateError, sql_template
 from slayer.sql import engine_factory
 from slayer.sql.engine_factory import EngineCacheKey, _sql_client_cache_key
 from slayer.sql.generator import generate_planned_stages
@@ -621,6 +623,25 @@ class _Prepared(BaseModel):
     population_inferred: bool = False
 
 
+def _reject_formulas_unparseable_everywhere(model: SlayerModel) -> None:
+    for agg in model.aggregations:
+        if not agg.formula:
+            continue
+        if agg.name in RANKED_AGGREGATIONS:
+            raise AggregationArgumentError(
+                f"Model '{model.name}', aggregation '{agg.name}': a ranked aggregation cannot take a formula."
+            )
+        errors: list[SqlTemplateError] = []
+        for dialect in SQLGLOT_NAMES:
+            try:
+                sql_template(text=agg.formula, dialect=dialect)
+                break
+            except SqlTemplateError as e:
+                errors.append(e)
+        else:
+            raise SqlTemplateError(f"Model '{model.name}', aggregation '{agg.name}': {errors[0]}")
+
+
 class SlayerQueryEngine:
     """Central orchestrator: resolves queries via storage, generates SQL, executes."""
 
@@ -1046,6 +1067,8 @@ class SlayerQueryEngine:
         # substitution) because escaping is dialect-aware; safe since substitution
         # never touches ``model.data_source``.
         datasource = override_datasource or await self._resolve_datasource(model=model)
+        dialect = self._dialect_for_type(datasource.type)
+        bundle = bundle.model_copy(update={"dialect": dialect})
 
         # Substitute {var} into the direct source model's Mode-A surfaces before
         # anything parses them; the substituted copy replaces the model as both
@@ -1143,7 +1166,6 @@ class SlayerQueryEngine:
         slack_warnings.extend(semi_join_infos)
         slack_warnings.extend(degenerate_warnings)
 
-        dialect = self._dialect_for_type(datasource.type)
         with collect_stale_spellings() as render_stale_spellings:
             sql = generate_planned_stages(
                 planned_queries=planned_list, bundle=bundle, dialect=dialect,
@@ -1898,9 +1920,10 @@ class SlayerQueryEngine:
                 dry_run_placeholders=True,
                 expander=self._expand_query_backed_model,
             )
+            dialect = self._dialect_for_type(datasource.type)
+            bundle = bundle.model_copy(update={"dialect": dialect})
             planned = plan_stages(queries=[probe_query], bundle=bundle)
             root = planned[-1]
-            dialect = self._dialect_for_type(datasource.type)
             sql = generate_planned_stages(
                 planned, bundle=bundle, dialect=dialect,
                 projection_aliases=projection_result_keys(root_planned=root),
@@ -2072,7 +2095,7 @@ class SlayerQueryEngine:
             raise ValueError(
                 f"'{raw}' does not name a column or metric on '{model_name}'."
             )
-        # an aggregation suffix or a saved-measure leaf makes this an
+        # An aggregation suffix or a saved-measure leaf makes this an
         # attachment (reachability-only); a plain column is a determination item.
         attachment = suffix is not None or (
             owning.get_column(leaf) is None and owning.get_measure(leaf) is not None
@@ -2735,6 +2758,11 @@ class SlayerQueryEngine:
             expander=self._expand_query_backed_model,
             _resolving=(_resolving or set()) | {model.name},
         )
+        inner_source_model = bundle.source_model
+        assert inner_source_model is not None
+        datasource = await self._resolve_datasource(model=inner_source_model)
+        dialect = self._dialect_for_type(datasource.type)
+        bundle = bundle.model_copy(update={"dialect": dialect})
 
         # Per-stage normalize + variable substitution.
         sibling_names = set(named_q)
@@ -2782,10 +2810,6 @@ class SlayerQueryEngine:
         plan_input = [*normed_named.values(), final_stage]
         planned_list = plan_stages(queries=plan_input, bundle=bundle)
         root_planned = planned_list[-1]
-        inner_source_model = bundle.source_model
-        assert inner_source_model is not None
-        datasource = await self._resolve_datasource(model=inner_source_model)
-        dialect = self._dialect_for_type(datasource.type)
         # Backing SQL is persisted on the virtual model, so length-fit here too.
         aliases = projection_result_keys(root_planned=root_planned)
         rendered = generate_planned_stages(
@@ -2919,6 +2943,8 @@ class SlayerQueryEngine:
             except AmbiguousModelError:
                 # Multiple entries for this name — don't silently mass-delete.
                 prior_data_source = None
+        # Fail fast before any trial run / expansion; storage re-checks in the saved dialect.
+        _reject_formulas_unparseable_everywhere(model)
         if model.source_queries:
             if model.columns:
                 raise ValueError(

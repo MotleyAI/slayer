@@ -329,6 +329,7 @@ def dev1748_bundle() -> "ResolvedSourceBundle":
     """
     models = dev1748_models()
     return ResolvedSourceBundle(
+        dialect="postgres",
         source_model=models[0], referenced_models=list(models[1:]),
     )
 

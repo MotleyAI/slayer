@@ -130,7 +130,7 @@ def _orders_scope_bundle():
 def _sales_scope_bundle():
     models = dev1847_models()
     return (ModelScope(source_model=models[0]),
-            ResolvedSourceBundle(source_model=models[0], referenced_models=models[1:]))
+            ResolvedSourceBundle(dialect="sqlite", source_model=models[0], referenced_models=models[1:]))
 
 
 # --------------------------------------------------------------------------- #
@@ -458,7 +458,7 @@ class TestPlanShape:
 # --------------------------------------------------------------------------- #
 def _sales_bundle() -> ResolvedSourceBundle:
     models = dev1847_models()
-    return ResolvedSourceBundle(source_model=models[0], referenced_models=models[1:])
+    return ResolvedSourceBundle(dialect="sqlite", source_model=models[0], referenced_models=models[1:])
 
 
 class TestReaggregationOuter:

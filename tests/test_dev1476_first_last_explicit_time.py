@@ -531,6 +531,7 @@ def _u_orders(extra: list[Column] | None = None) -> SlayerModel:
 
 def _u_bundle(orders: SlayerModel) -> ResolvedSourceBundle:
     return ResolvedSourceBundle(
+        dialect="postgres",
         source_model=orders,
         referenced_models=[orders, _u_customers(), _u_regions()],
     )

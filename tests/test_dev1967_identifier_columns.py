@@ -60,7 +60,7 @@ def _plan(*, model: SlayerModel, formula: str) -> None:
     query = SlayerQuery.model_validate({
         "source_model": model.name, "measures": [{"formula": formula, "name": "m"}],
     })
-    plan_query(query=query, bundle=ResolvedSourceBundle(source_model=model, referenced_models=[model]))
+    plan_query(query=query, bundle=ResolvedSourceBundle(source_model=model, referenced_models=[model], dialect="postgres"))
 
 
 def _col(*, model: SlayerModel, name: str) -> Column:

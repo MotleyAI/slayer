@@ -1,4 +1,4 @@
-"""DEV-1542: Tier-2 dialect subclasses (no live integration tests).
+"""Tier-2 dialect subclasses (no live integration tests).
 
 Each Tier-2 dialect differs from ``SqlDialect``'s Postgres-shaped defaults
 only in scalar config (sqlglot name, EXPLAIN prefix/postfix, log10/log2
@@ -13,7 +13,7 @@ Two dialects were promoted out of this file to their own Tier 1 modules:
 
 * ``BigqueryDialect`` — see ``slayer/sql/dialects/bigquery.py`` (alias
   mangling for joined-column references and per-statement quota tweaks).
-* ``SnowflakeDialect`` (DEV-1551) — see ``slayer/sql/dialects/snowflake.py``
+* ``SnowflakeDialect`` — see ``slayer/sql/dialects/snowflake.py``
   (connection URL builder, ``creator=`` engine bridge, per-connection
   session overrides, statement timeout, cursor type-code map).
 """
@@ -33,12 +33,12 @@ class RedshiftDialect(SqlDialect):
     log10_native: bool = True
     log2_native: bool = False
     max_identifier_bytes: int | None = 127
-    approx_count_distinct_template: str = "APPROXIMATE COUNT(DISTINCT {col})"
+    approx_count_distinct_native: bool = True
 
     def build_null_safe_eq(
         self, left: exp.Expression, right: exp.Expression,
     ) -> exp.Expression:
-        """DEV-1708: Redshift (Postgres 8.0.2 fork) has no ``IS NOT DISTINCT
+        """Redshift (Postgres 8.0.2 fork) has no ``IS NOT DISTINCT
         FROM`` — emit the expanded ``a = b OR (a IS NULL AND b IS NULL)``."""
         return self._expanded_null_safe_eq(left, right)
 
@@ -51,7 +51,7 @@ class TrinoDialect(SqlDialect):
     log10_native: bool = True
     log2_native: bool = True
     max_identifier_bytes: int | None = None  # unbounded
-    approx_count_distinct_template: str = "approx_distinct({col})"
+    approx_count_distinct_native: bool = True
 
 
 class PrestoDialect(SqlDialect):
@@ -63,7 +63,7 @@ class PrestoDialect(SqlDialect):
     log10_native: bool = True
     log2_native: bool = True
     max_identifier_bytes: int | None = None  # unbounded
-    approx_count_distinct_template: str = "approx_distinct({col})"
+    approx_count_distinct_native: bool = True
 
 
 class DatabricksDialect(SqlDialect):
@@ -74,7 +74,7 @@ class DatabricksDialect(SqlDialect):
     log10_native: bool = True
     log2_native: bool = True
     max_identifier_bytes: int | None = None  # unbounded
-    approx_count_distinct_template: str = "approx_count_distinct({col})"
+    approx_count_distinct_native: bool = True
 
 
 class SparkDialect(SqlDialect):
@@ -85,7 +85,7 @@ class SparkDialect(SqlDialect):
     log10_native: bool = True
     log2_native: bool = True
     max_identifier_bytes: int | None = None  # unbounded
-    approx_count_distinct_template: str = "approx_count_distinct({col})"
+    approx_count_distinct_native: bool = True
 
 
 class OracleDialect(SqlDialect):
@@ -105,6 +105,6 @@ class OracleDialect(SqlDialect):
     def build_null_safe_eq(
         self, left: exp.Expression, right: exp.Expression,
     ) -> exp.Expression:
-        """DEV-1708: Oracle has no ``IS NOT DISTINCT FROM`` — emit the expanded
+        """Oracle has no ``IS NOT DISTINCT FROM`` — emit the expanded
         ``a = b OR (a IS NULL AND b IS NULL)``."""
         return self._expanded_null_safe_eq(left, right)

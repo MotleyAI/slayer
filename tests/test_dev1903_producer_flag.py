@@ -54,7 +54,7 @@ def _probe_a_query() -> SlayerQuery:
 
 def _sales_bundle() -> ResolvedSourceBundle:
     models = dev1847_models()
-    return ResolvedSourceBundle(source_model=models[0], referenced_models=models[1:])
+    return ResolvedSourceBundle(dialect="postgres", source_model=models[0], referenced_models=models[1:])
 
 
 def _monthly_plan(formula: str) -> PlannedQuery:
@@ -64,6 +64,7 @@ def _monthly_plan(formula: str) -> PlannedQuery:
         query=monthly_q(dimensions=["region"], time_dimensions=month_td(),
                         measures=[ModelMeasure(formula=formula, name="t")]),
         bundle=ResolvedSourceBundle(
+            dialect="postgres",
             source_model=root, referenced_models=[m for m in models if m is not root]))
 
 
@@ -92,13 +93,13 @@ async def exec_engine(request):
 
 def _dev1836_bundle() -> ResolvedSourceBundle:
     models = dev1836_models()
-    return ResolvedSourceBundle(source_model=models[0], referenced_models=list(models[1:]))
+    return ResolvedSourceBundle(dialect="postgres", source_model=models[0], referenced_models=list(models[1:]))
 
 
 def _customers_bundle() -> ResolvedSourceBundle:
     models = dev1900_models()
     src = next(m for m in models if m.name == "customers")
-    return ResolvedSourceBundle(source_model=src,
+    return ResolvedSourceBundle(dialect="postgres", source_model=src,
                                 referenced_models=[m for m in models if m is not src])
 
 

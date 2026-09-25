@@ -35,7 +35,7 @@ from slayer.core.query import SlayerQuery
 from slayer.engine.bind_inputs import bind_query_inputs
 from slayer.engine.compile import stages
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.ir.source_bundle import resolve_scope
+from slayer.ir.source_bundle import ResolvedSourceBundle, resolve_scope
 from slayer.sql import engine_factory
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -132,6 +132,11 @@ async def make_seeded_sqlite_engine(
     for model in models:
         await storage.save_model(model)
     return SlayerQueryEngine(storage=storage)
+
+
+def models_bundle(models_by_name: dict[str, SlayerModel], *, dialect: str = "postgres") -> ResolvedSourceBundle:
+    """A rootless bundle over a model map, for unit tests over plain keys."""
+    return ResolvedSourceBundle(dialect=dialect, referenced_models=list(models_by_name.values()))
 
 
 def _assert_valid_sql(sql: str, dialect: str = "postgres") -> None:

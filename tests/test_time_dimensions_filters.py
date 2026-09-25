@@ -91,6 +91,7 @@ def _orders_with_customers_join() -> SlayerModel:
 
 def _bundle_local() -> ResolvedSourceBundle:
     return ResolvedSourceBundle(
+        dialect="postgres",
         source_model=_orders_model(),
         referenced_models=[],
     )
@@ -98,6 +99,7 @@ def _bundle_local() -> ResolvedSourceBundle:
 
 def _bundle_joined() -> ResolvedSourceBundle:
     return ResolvedSourceBundle(
+        dialect="postgres",
         source_model=_orders_with_customers_join(),
         referenced_models=[_customers_model()],
     )

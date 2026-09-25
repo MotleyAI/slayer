@@ -62,7 +62,7 @@ def _model_with(
 class TestConstruction:
     def test_minimal(self):
         m = _model("orders")
-        b = ResolvedSourceBundle(source_model=m, referenced_models=[m])
+        b = ResolvedSourceBundle(dialect="postgres", source_model=m, referenced_models=[m])
         assert b.source_model is m
         assert b.referenced_models == [m]
         assert b.inline_extensions == []
@@ -74,13 +74,14 @@ class TestConstruction:
         m = _model("orders")
         c = _model("customers")
         r = _model("regions")
-        b = ResolvedSourceBundle(source_model=m, referenced_models=[m, c, r])
+        b = ResolvedSourceBundle(dialect="postgres", source_model=m, referenced_models=[m, c, r])
         assert b.referenced_models == [m, c, r]
 
     def test_with_extensions(self):
         m = _model("orders")
         ext = ModelExtension(source_name="orders")
         b = ResolvedSourceBundle(
+            dialect="postgres",
             source_model=m, referenced_models=[m], inline_extensions=[ext]
         )
         assert b.inline_extensions == [ext]
@@ -89,6 +90,7 @@ class TestConstruction:
         m = _model("orders")
         q = SlayerQuery(source_model="orders")
         b = ResolvedSourceBundle(
+            dialect="postgres",
             source_model=m,
             referenced_models=[m],
             named_queries={"stage_a": q},
@@ -98,6 +100,7 @@ class TestConstruction:
     def test_with_query_variables(self):
         m = _model("orders")
         b = ResolvedSourceBundle(
+            dialect="postgres",
             source_model=m,
             referenced_models=[m],
             query_variables={"region": "NA", "threshold": 100},
@@ -107,6 +110,7 @@ class TestConstruction:
     def test_with_datasource_hint(self):
         m = _model("orders", ds="warehouse")
         b = ResolvedSourceBundle(
+            dialect="postgres",
             source_model=m,
             referenced_models=[m],
             datasource_hint="warehouse",
@@ -123,19 +127,19 @@ class TestGetReferencedModel:
     def test_returns_match(self):
         m = _model("orders")
         c = _model("customers")
-        b = ResolvedSourceBundle(source_model=m, referenced_models=[m, c])
+        b = ResolvedSourceBundle(dialect="postgres", source_model=m, referenced_models=[m, c])
         assert b.get_referenced_model("customers") is c
 
     def test_returns_none_for_missing(self):
         m = _model("orders")
-        b = ResolvedSourceBundle(source_model=m, referenced_models=[m])
+        b = ResolvedSourceBundle(dialect="postgres", source_model=m, referenced_models=[m])
         assert b.get_referenced_model("absent") is None
 
     def test_source_model_is_in_referenced(self):
         # Convention: source_model is also in referenced_models so the
         # binder doesn't have to special-case the host.
         m = _model("orders")
-        b = ResolvedSourceBundle(source_model=m, referenced_models=[m])
+        b = ResolvedSourceBundle(dialect="postgres", source_model=m, referenced_models=[m])
         assert b.get_referenced_model("orders") is m
 
 
@@ -148,6 +152,7 @@ class TestAnchorlessReadiness:
     def test_source_model_none_is_constructible(self):
         # I2: future anchor-less mode reserves source_model=None.
         b = ResolvedSourceBundle(
+            dialect="postgres",
             source_model=None,
             referenced_models=[_model("orders"), _model("customers")],
         )
@@ -159,6 +164,6 @@ class TestAnchorlessReadiness:
     def test_default_source_model_is_none(self):
         # Defaulting to None keeps both modes type-compatible without
         # callers having to pass an explicit None.
-        b = ResolvedSourceBundle()
+        b = ResolvedSourceBundle(dialect="postgres")
         assert b.source_model is None
         assert b.referenced_models == []

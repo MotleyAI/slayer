@@ -41,7 +41,7 @@ DEDUP_SHARED = f"weighted_avg(quantity * {_REGION_SUM}, weight={_REGION_SUM})"
 
 def _bundle() -> ResolvedSourceBundle:
     models = dev1847_models()
-    return ResolvedSourceBundle(source_model=models[0],
+    return ResolvedSourceBundle(dialect="postgres", source_model=models[0],
                                 referenced_models=models[1:])
 
 
