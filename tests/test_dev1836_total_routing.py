@@ -88,8 +88,9 @@ class TestExplicitRejections:
             ],
         ), bundle=bundle)
         generator = SQLGenerator(dialect="postgres")
-        sql = generator.generate_from_planned(planned, bundle=bundle,
-                                              as_cte_body=True)
+        sql = generator._build_from_planned(
+            planned, bundle=bundle, as_cte_body=True,
+        ).sql(dialect="postgres")
         assert sql
         assert "__regroup__" not in sql
 

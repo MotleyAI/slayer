@@ -93,11 +93,7 @@ def _cases() -> dict:
 #: The one shape whose raise is the contract.
 MUST_RAISE = {"population/fanning_partition"}
 #: Multi-stage transform SQL gaps outside this change, keyed ``case::dialect``.
-KNOWN_GAPS = {
-    **{f"stage/share::{d}": "nested WITH in multi-stage SQL; DEV-1878 renders stages inline"
-       for d in ("postgres", "sqlite", "duckdb")},
-    "stage/share::bigquery": "DEV-1961: BigQuery transform chain over a stage leaks scope",
-}
+KNOWN_GAPS: dict[str, str] = {}
 
 
 def _query(case) -> SlayerQuery | list[SlayerQuery | dict]:

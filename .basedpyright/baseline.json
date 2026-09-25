@@ -3590,22 +3590,6 @@
             {
                 "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 35,
-                    "endColumn": 41,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportReturnType",
-                "range": {
-                    "startColumn": 15,
-                    "endColumn": 21,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
                     "startColumn": 55,
                     "endColumn": 60,
                     "lineCount": 1
@@ -3648,14 +3632,6 @@
                 "range": {
                     "startColumn": 42,
                     "endColumn": 52,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 39,
-                    "endColumn": 45,
                     "lineCount": 1
                 }
             },
@@ -3913,14 +3889,6 @@
                     "startColumn": 27,
                     "endColumn": 41,
                     "lineCount": 1
-                }
-            },
-            {
-                "code": "reportReturnType",
-                "range": {
-                    "startColumn": 11,
-                    "endColumn": 5,
-                    "lineCount": 3
                 }
             }
         ],
@@ -4626,14 +4594,6 @@
                 }
             },
             {
-                "code": "reportReturnType",
-                "range": {
-                    "startColumn": 15,
-                    "endColumn": 72,
-                    "lineCount": 1
-                }
-            },
-            {
                 "code": "reportPrivateImportUsage",
                 "range": {
                     "startColumn": 41,
@@ -4758,30 +4718,6 @@
                 "range": {
                     "startColumn": 41,
                     "endColumn": 51,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportPrivateImportUsage",
-                "range": {
-                    "startColumn": 9,
-                    "endColumn": 19,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 31,
-                    "endColumn": 35,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 21,
-                    "endColumn": 34,
                     "lineCount": 1
                 }
             }
@@ -18156,14 +18092,6 @@
             {
                 "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 44,
-                    "endColumn": 47,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
                     "startColumn": 28,
                     "endColumn": 14,
                     "lineCount": 5
@@ -21220,16 +21148,6 @@
                 "range": {
                     "startColumn": 36,
                     "endColumn": 57,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./tests/test_dev1837_guards.py": [
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 47,
-                    "endColumn": 50,
                     "lineCount": 1
                 }
             }
@@ -38824,46 +38742,6 @@
             {
                 "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 21,
-                    "endColumn": 24,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportCallIssue",
-                "range": {
-                    "startColumn": 19,
-                    "endColumn": 50,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 46,
-                    "endColumn": 49,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 36,
-                    "endColumn": 39,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 36,
-                    "endColumn": 39,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
                     "startColumn": 34,
                     "endColumn": 68,
                     "lineCount": 1
@@ -41738,22 +41616,6 @@
                 "range": {
                     "startColumn": 25,
                     "endColumn": 38,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 25,
-                    "endColumn": 38,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 18,
-                    "endColumn": 31,
                     "lineCount": 1
                 }
             }
