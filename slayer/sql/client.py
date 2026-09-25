@@ -898,7 +898,7 @@ def _with_ch_statement_timeout(sql: str, timeout_seconds: int) -> str:
     """
     try:
         ast = sqlglot.parse_one(sql, dialect="clickhouse")
-    except sqlglot.errors.ParseError:
+    except (sqlglot.errors.ParseError, sqlglot.errors.TokenError):
         return sql
     if not isinstance(ast, exp.Query):
         return sql
@@ -919,11 +919,12 @@ def _execute_clickhouse_sync(
     runs without the setting, and the server profile's limit applies.
     """
     if engine not in _ch_readonly_engines:
+        timed_sql = _with_ch_statement_timeout(sql=sql, timeout_seconds=timeout_seconds)
         try:
-            timed_sql = _with_ch_statement_timeout(sql=sql, timeout_seconds=timeout_seconds)
             return _fetch_rows(_exec_verbatim(conn, timed_sql))
         except Exception as exc:
-            if _CH_READONLY_ERROR_MARKER not in str(exc):
+            # Unchanged SQL means the refused setting is the statement's own.
+            if timed_sql == sql or _CH_READONLY_ERROR_MARKER not in str(exc):
                 raise
             _ch_readonly_engines.add(engine)
             logger.warning(

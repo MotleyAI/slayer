@@ -58,6 +58,6 @@ def test_timeout_already_in_sql_wins() -> None:
     assert _with_ch_statement_timeout(sql=sql, timeout_seconds=30) == sql
 
 
-@pytest.mark.parametrize("sql", ["SHOW TABLES", "SELECT FROM WHERE ((("])
+@pytest.mark.parametrize("sql", ["SHOW TABLES", "SELECT FROM WHERE (((", "SELECT 'abc"])
 def test_non_query_or_unparseable_sql_runs_unchanged(sql: str) -> None:
     assert _with_ch_statement_timeout(sql=sql, timeout_seconds=30) == sql

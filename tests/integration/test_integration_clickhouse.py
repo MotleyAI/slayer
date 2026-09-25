@@ -42,7 +42,7 @@ from slayer.core.query import ColumnRef, ModelExtension, OrderItem, SlayerQuery,
 from slayer.engine.ingestion import ingest_datasource
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql import engine_factory
-from slayer.sql.client import SlayerSQLClient
+from slayer.sql.client import SlayerSQLClient, _ch_readonly_engines
 from slayer.storage.yaml_storage import YAMLStorage
 
 from tests._engine_helpers import disposable_engine
@@ -1338,3 +1338,11 @@ class TestClickHouseStatementTimeout:
         for _ in range(2):  # second call takes the cached no-setting path
             rows = await client.execute(sql="SELECT 1 AS x")
             assert [int(r["x"]) for r in rows] == [1]
+
+    async def test_readonly_user_own_setting_fails_without_retry(
+        self, clickhouse_readonly_datasource,
+    ) -> None:
+        client = SlayerSQLClient(datasource=clickhouse_readonly_datasource)
+        with pytest.raises(Exception, match="READONLY"):
+            await client.execute(sql="SELECT number FROM system.numbers LIMIT 1 SETTINGS max_execution_time = 5")
+        assert client._get_sync_engine_for_client() not in _ch_readonly_engines
