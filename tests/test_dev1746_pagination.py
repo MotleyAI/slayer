@@ -23,6 +23,7 @@ from tests._dev1746_fixtures import (
     outer_statement,
     seed_dev1746_sqlite,
 )
+from tests._dev1965_fixtures import cumsum_chain, gen, parse
 from tests._engine_helpers import _engine_generate
 
 DIALECTS = ["tsql", "bigquery", "postgres", "snowflake", "sqlite"]
@@ -275,55 +276,31 @@ class TestApplyPaginationHook:
 
 
 # =========================================================================== #
-# The OTHER outer wrap (emit_outer_wrap), which had no guard.
+# The transform-chain outer wrap.
 # =========================================================================== #
-class TestEmitOuterWrapInjectsOrderingForOffset:
-    """``emit_outer_wrap`` applies the same OFFSET-needs-ORDER-BY guard."""
+class TestChainOuterWrapInjectsOrderingForOffset:
+    """The chain's outer wrap applies the same OFFSET-needs-ORDER-BY guard."""
 
-    @staticmethod
-    def _offset(n: int) -> exp.Offset:
-        return exp.Offset(expression=exp.Literal.number(n))
+    async def test_bare_offset_is_ordered_by_a_noop(self) -> None:
+        sql = await gen(cumsum_chain(offset=5), dialect="tsql")
+        order = parse(sql, "tsql").args.get("order")
+        assert order is not None, f"tsql outer-wrap emitted OFFSET without ORDER BY:\n{sql}"
+        assert re.search(r"SELECT\s+NULL", order.sql(dialect="tsql"), re.IGNORECASE), (
+            f"OFFSET ordering is not the synthesized no-op:\n{sql}"
+        )
+        assert order.find(exp.Column) is None, sql
+        assert "OFFSET" in sql.upper(), sql
 
-    @staticmethod
-    def _assert_bare_offset_guarded(out: str) -> None:
-        """OFFSET is ordered by a synthesized no-op, never a real column."""
-        assert re.search(r"\bORDER\s+BY\b", out, re.IGNORECASE), (
-            f"tsql outer-wrap emitted OFFSET without ORDER BY:\n{out}"
+    async def test_user_order_is_never_replaced(self) -> None:
+        sql = await gen(cumsum_chain(
+            order=[{"column": "created_at", "direction": "desc"}], offset=5,
+        ), dialect="tsql")
+        assert "SELECT NULL" not in sql.upper(), (
+            f"the user's ORDER BY was replaced by the fallback ordering:\n{sql}"
         )
-        assert "OFFSET" in out.upper(), out
-        assert re.search(r"SELECT\s+NULL", out, re.IGNORECASE), (
-            f"OFFSET ordering is not the synthesized no-op:\n{out}"
-        )
-
-    def test_ast_path_injects_ordering_for_a_bare_offset(self) -> None:
-        out = get_dialect("tsql").emit_outer_wrap(
-            inner_sql="SELECT 1 AS a", public=["a"], projected=["a"],
-            order=None, limit=None, offset_arg=self._offset(5),
-        )
-        self._assert_bare_offset_guarded(out)
-
-    def test_base_fallback_injects_ordering_for_a_bare_offset(self) -> None:
-        """A UNION inner takes the base-impl fallback, which also appends OFFSET."""
-        out = get_dialect("tsql").emit_outer_wrap(
-            inner_sql="SELECT 1 AS a UNION SELECT 2 AS a", public=["a"], projected=["a"],
-            order=None, limit=None, offset_arg=self._offset(5),
-        )
-        self._assert_bare_offset_guarded(out)
-
-    def test_user_order_is_never_replaced(self) -> None:
-        user_order = exp.Order(expressions=[
-            exp.Ordered(this=exp.column("a", quoted=True)),
-        ])
-        out = get_dialect("tsql").emit_outer_wrap(
-            inner_sql="SELECT 1 AS a", public=["a"], projected=["a"],
-            order=user_order, limit=None, offset_arg=self._offset(5),
-        )
-        assert "SELECT NULL" not in out.upper(), (
-            f"the user's ORDER BY was replaced by the fallback ordering:\n{out}"
-        )
-        assert "OFFSET" in out.upper(), out
-        assert re.search(r"\bORDER\s+BY\b.*\[a\]", out, re.IGNORECASE | re.DOTALL), (
-            f"the user's ORDER BY column was dropped:\n{out}"
+        assert "OFFSET" in sql.upper(), sql
+        assert re.search(r"\bORDER\s+BY\b.*\[orders___created_at\]", sql, re.IGNORECASE | re.DOTALL), (
+            f"the user's ORDER BY column was dropped:\n{sql}"
         )
 
 

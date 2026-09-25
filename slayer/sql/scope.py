@@ -23,7 +23,6 @@ from __future__ import annotations
 
 from typing import Callable, Dict, List, Literal, Optional, Tuple, Union
 
-import sqlglot
 from pydantic import BaseModel, ConfigDict, Field
 from sqlglot import exp
 from sqlglot.errors import ParseError
@@ -47,7 +46,7 @@ from slayer.sql.column_expansion import (
 )
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.dialects.base import SqlDialect
-from slayer.sql.naming import AliasAllocator
+from slayer.sql.naming import AliasAllocator, quote_mixed_case_identifiers
 from slayer.sql.render.parse import parse_expression, parse_predicate
 from slayer.sql.render.row_expr import render_row_expression
 from slayer.sql.reserved_keywords import (
@@ -396,10 +395,10 @@ class ScopeFrame(BaseModel):
                 limit=self.dialect.max_identifier_bytes,
             )
             self._register_path_prefixes(ref.path)
-            return exp.Column(
+            return quote_mixed_case_identifiers(exp.Column(
                 this=exp.to_identifier(ref.leaf),
                 table=exp.to_identifier(alias),
-            )
+            ))
         if isinstance(ref, ColumnSqlKey):
             model = self._model_for(ref.model)
             col = next(
@@ -527,7 +526,7 @@ class ScopeFrame(BaseModel):
         return model
 
     def _parse(self, sql: str) -> exp.Expression:
-        return sqlglot.parse_one(sql, dialect=self.dialect.sqlglot_name)
+        return parse_expression(sql=sql, target_dialect=self.dialect)
 
     # ---- Law 2 -------------------------------------------------------------
     def may_inline(self, crossed_paths: List[Tuple[str, ...]]) -> bool:  # NOSONAR(S1172) — crossed_paths is the documented v1 API seam; the Stage-N inlining optimisation reads it, hardcoded False until then.

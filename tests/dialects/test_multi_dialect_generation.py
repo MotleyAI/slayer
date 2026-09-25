@@ -279,10 +279,8 @@ class TestMultiDialectGeneration:
             f"sql:\n{sql}"
         )
         # Per-unit INTERVAL clauses must each be present, still one-unit-per-clause
-        # (never a single combined literal). DEV-1835's regroup producer renders
-        # through a sqlglot parse/serialize round-trip, which quotes the amount —
-        # `INTERVAL 'N' UNIT` — a valid per-dialect form on MySQL + ClickHouse.
-        for piece in ("INTERVAL '1' YEAR", "INTERVAL '2' MONTH", "INTERVAL '3' DAY"):
+        # (never a single combined literal): `INTERVAL N UNIT` on MySQL + ClickHouse.
+        for piece in ("INTERVAL 1 YEAR", "INTERVAL 2 MONTH", "INTERVAL 3 DAY"):
             assert piece in norm, (
                 f"Expected dialect-correct '{piece}' in {dialect} output.\n"
                 f"sql:\n{sql}"
@@ -294,9 +292,8 @@ class TestMultiDialectGeneration:
     ) -> None:
         """Single-unit windows must render as a per-unit clause, never the
         combined `INTERVAL '7 day'` string that is invalid MySQL syntax. sqlglot's
-        per-dialect transpiler emits `INTERVAL '7' DAY` (amount quoted, unit bare)
-        for MySQL/ClickHouse after DEV-1835's producer round-trip — a valid form,
-        distinct from the combined-string bug this guards against.
+        per-dialect transpiler emits `INTERVAL 7 DAY` for MySQL/ClickHouse — a
+        valid form, distinct from the combined-string bug this guards against.
         """
         gen = SQLGenerator(dialect=dialect)
         query = SlayerQuery(
@@ -314,8 +311,8 @@ class TestMultiDialectGeneration:
             f"Quoted single-unit INTERVAL literal is invalid on {dialect}.\n"
             f"sql:\n{sql}"
         )
-        assert "INTERVAL '7' DAY" in norm, (
-            f"Expected dialect-correct \"INTERVAL '7' DAY\" in {dialect} output.\n"
+        assert "INTERVAL 7 DAY" in norm, (
+            f"Expected dialect-correct \"INTERVAL 7 DAY\" in {dialect} output.\n"
             f"sql:\n{sql}"
         )
 

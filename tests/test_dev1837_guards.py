@@ -176,10 +176,10 @@ class TestCteBodyArms:
     def _split_cte_body(planned, bundle):
         generator = SQLGenerator(dialect="postgres")
         generator.install_generation()
-        sql = generator.generate_from_planned(
+        hoisted, body = generator._split_ast_ctes(generator._build_from_planned(
             planned, bundle=bundle, as_cte_body=True, reuse_allocator=True,
-        )
-        return generator._split_statement_ctes(sql)
+        ))
+        return hoisted, body.sql(dialect="postgres", pretty=True)
 
     def _assert_hoistable(self, hoisted, body: str) -> None:
         assert any(e.name.startswith("_cm_") for e in hoisted)

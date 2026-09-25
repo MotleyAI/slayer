@@ -52,10 +52,12 @@ flowchart TD
 
 ## 3. Principles
 
-1. **AST end to end**: statements are built and composed as sqlglot AST; text
-   round-trips of already-emitted SQL are forbidden (dotted aliases corrupt on
-   re-parse). A dialect hook returning AST takes only typed, non-`str`,
-   non-callable operands. [review] [enforced: test:tests/test_law_ast_dialect_hooks.py]
+1. **AST end to end**: statements are built and composed as sqlglot AST and
+   rendered to text once; text round-trips of already-emitted SQL are forbidden
+   (dotted aliases corrupt on re-parse) [target: DEV-1972] [target: DEV-1961]. A dialect
+   hook returning AST takes only typed, non-`str`, non-callable operands.
+   [review] [enforced: test:tests/test_law_ast_dialect_hooks.py]
+   [enforced: test:tests/test_law_no_statement_reparse.py]
 2. **Dialect quirks live only in `dialects/`** — one file per Tier-1 dialect,
    data-shaped Tier-2 table; everything not explicitly overridden goes through
    sqlglot transpilation. No `if dialect == …` outside `dialects/`. [review]

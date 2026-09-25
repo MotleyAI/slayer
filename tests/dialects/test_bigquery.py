@@ -25,6 +25,7 @@ from slayer.sql.dialects import (
 )
 from slayer.storage.yaml_storage import YAMLStorage
 
+from tests._dev1965_fixtures import cumsum_chain, gen, outer_order, parse
 from tests._engine_helpers import _engine_generate
 
 
@@ -250,27 +251,14 @@ def test_base_default_decode_result_keys_is_identity() -> None:
     assert SqlDialect().decode_result_keys(rows) == rows
 
 
-# Base impl identifier quoting picks BigQuery's backticks
-# (not ANSI double quotes), proving the fix is dialect-driven via sqlglot
-# rather than special-cased only for MySQL.
+# Outer-wrap identifier quoting is dialect-driven: backticks on BigQuery.
 
 
-def test_bigquery_emit_outer_wrap_uses_backticks_for_aliases() -> None:
-    """BigQuery inherits the base ``emit_outer_wrap``."""
-    out = BigqueryDialect().emit_outer_wrap(
-        inner_sql="SELECT 1 AS `orders.x`",
-        public=["orders.x"],
-        projected=["orders.x"],
-        order=None,
-        limit=None,
-        offset_arg=None,
-    )
-    assert "`orders.x`" in out, (
-        f"BigQuery outer projection must use backticks: {out}"
-    )
-    assert '"orders.x"' not in out, (
-        f"BigQuery outer projection must not use ANSI double quotes: {out}"
-    )
+async def test_bigquery_outer_wrap_uses_backticks_for_aliases() -> None:
+    top = parse(await gen(cumsum_chain(), dialect="bigquery"), "bigquery")
+    projected = [e.sql(dialect="bigquery") for e in top.expressions]
+    assert "`orders___created_at`" in projected, projected
+    assert not [p for p in projected if '"' in p], projected
 
 
 # Generic-hook dispatch — prove the generator/engine call the dialect hook,
@@ -839,29 +827,19 @@ def test_build_engine_oauth_validates_before_importing_optional_driver() -> None
 
 
 # Outer-wrap ORDER BY — BigQuery parses a quoted dotted alias into one part
-# per segment, so the qualifier strip must rebuild the whole alias.
+# per segment, so the ORDER BY must name the whole carried alias.
 
 
 @pytest.mark.parametrize(
-    "order_sql",
-    [
-        "SELECT 1 FROM t ORDER BY `orders.created_at` DESC",
-        "SELECT 1 FROM t ORDER BY `_base`.`orders.created_at` DESC",
-    ],
+    ("column", "alias"),
+    [("created_at", "orders___created_at"), ("amount:max", "orders___amount_max")],
 )
-def test_bigquery_outer_wrap_order_by_keeps_full_alias(order_sql: str) -> None:
-    """No empty backtick qualifier; the alias keeps its model prefix."""
-    order = sqlglot.parse_one(order_sql, dialect="bigquery").args["order"]
-    out = BigqueryDialect().emit_outer_wrap(
-        inner_sql="SELECT `orders.created_at` AS `orders.created_at`, 1 AS x FROM t",
-        public=["orders.created_at"],
-        projected=["orders.created_at"],
-        order=order,
-        limit=None,
-        offset_arg=None,
-    )
-    assert "``" not in out, f"empty identifier emitted: {out}"
-    assert "ORDER BY\n  `orders.created_at` DESC" in out, out
+async def test_bigquery_outer_wrap_order_by_keeps_full_alias(column: str, alias: str) -> None:
+    """No empty backtick qualifier; the alias keeps its model prefix (public or hidden)."""
+    sql = await gen(cumsum_chain(order=[{"column": column, "direction": "desc"}]),
+                    dialect="bigquery")
+    assert "``" not in sql, f"empty identifier emitted: {sql}"
+    assert outer_order(sql, "bigquery") == [(alias, "", True)], sql
 
 
 async def test_bigquery_computed_measure_with_order_by_resolves() -> None:
@@ -893,20 +871,3 @@ async def test_bigquery_computed_measure_with_order_by_resolves() -> None:
     # ``orders.created_at`` is mangled to ``orders___created_at`` and must
     # match across SELECT / GROUP BY / ORDER BY.
     assert "ORDER BY\n  `orders___created_at` DESC" in sql, sql
-
-
-def test_bigquery_outer_wrap_order_by_prefers_projected_alias() -> None:
-    """A qualified source column resolves to the alias ``_outer`` exposes."""
-    order = sqlglot.parse_one(
-        "SELECT 1 FROM t ORDER BY `_base`.`orders.created_at` DESC",
-        dialect="bigquery",
-    ).args["order"]
-    out = BigqueryDialect().emit_outer_wrap(
-        inner_sql="SELECT `_base`.`orders.created_at` AS `created_at` FROM _base",
-        public=["created_at"],
-        projected=["created_at"],
-        order=order,
-        limit=None,
-        offset_arg=None,
-    )
-    assert "ORDER BY\n  `created_at` DESC" in out, out

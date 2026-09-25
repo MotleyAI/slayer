@@ -135,7 +135,12 @@ from slayer.sql.dialects import SQLGLOT_NAMES, SqlDialect, dialect_for_ds_type, 
 from slayer.sql.sql_template import SqlTemplateError, sql_template
 from slayer.sql import engine_factory
 from slayer.sql.engine_factory import EngineCacheKey, _sql_client_cache_key
-from slayer.sql.generator import generate_planned_stages
+from slayer.sql.generator import (
+    _build_planned_stages_ast,
+    _finish_statement,
+    _user_authored_exemptions,
+    generate_planned_stages,
+)
 from slayer.sql.session_policy import (
     ScopedTable,
     _attach_ch_correlated_setting,
@@ -593,7 +598,8 @@ class _Rendered(BaseModel):
 
     model_config = PydanticConfigDict(arbitrary_types_allowed=True)
 
-    sql: str
+    sql: Optional[str] = None
+    statement: Optional[Any] = None
     dialect: str
     datasource: DatasourceConfig
     bundle: ResolvedSourceBundle
@@ -1014,6 +1020,7 @@ class SlayerQueryEngine:
             splice_chain=splice_chain,
         )
         sql, dialect, datasource = rendered.sql, rendered.dialect, rendered.datasource
+        assert sql is not None
         planned_list = rendered.planned_list
         root_planned = planned_list[-1]
         # Semi-join pushdown emits correlated EXISTS, which ClickHouse supports
@@ -1072,9 +1079,11 @@ class SlayerQueryEngine:
         override_datasource: Optional[DatasourceConfig] = None,
         splice_chain: Tuple[str, ...] = (),
         dry_run_placeholders: bool = False,
+        as_statement: bool = False,
     ) -> _Rendered:
         """Plan and render one statement, splicing the stored query-backed models it
-        reads; warnings come from the stages the SQL emits."""
+        reads; warnings come from the stages the SQL emits. ``as_statement`` leaves it
+        as its AST for the caller to wrap and render once."""
         # Stage names are query-local: mint identities before anything resolves a name.
         localized, stage_displays = localize_stages([*named_queries.values(), query])
         query = localized[-1]
@@ -1202,14 +1211,21 @@ class SlayerQueryEngine:
         # Plan the DAG (root last) and render the whole chain to one SQL string.
         planned_list = plan_stages(queries=[*normed_named.values(), query], bundle=bundle)
         kept: Set[str] = set()
+        sql: Optional[str] = None
+        statement: Optional[Any] = None
         with collect_stale_spellings() as render_stale_spellings:
-            sql = generate_planned_stages(
-                planned_queries=planned_list, bundle=bundle, dialect=dialect,
-                # Plan-derived canonical projection keys drive the write-side length
-                # fit; the read side decodes against the same set.
-                projection_aliases=projection_result_keys(root_planned=planned_list[-1]),
-                kept_stages=kept,
-            )
+            if as_statement:
+                statement = _build_planned_stages_ast(
+                    planned_list, bundle=bundle, dialect=dialect, kept_stages=kept,
+                )
+            else:
+                sql = generate_planned_stages(
+                    planned_queries=planned_list, bundle=bundle, dialect=dialect,
+                    # Plan-derived canonical projection keys drive the write-side length
+                    # fit; the read side decodes against the same set.
+                    projection_aliases=projection_result_keys(root_planned=planned_list[-1]),
+                    kept_stages=kept,
+                )
 
         # Warnings come from the stages the SQL emits (a spliced stage nothing reads is pruned).
         emitted = [
@@ -1232,7 +1248,7 @@ class SlayerQueryEngine:
             *(s for p in plans for s in p.stale_spellings), *render_stale_spellings,
         ]))))
         return _Rendered(
-            sql=sql, dialect=dialect, datasource=datasource, bundle=bundle,
+            sql=sql, statement=statement, dialect=dialect, datasource=datasource, bundle=bundle,
             planned_list=planned_list, model=model, warnings=warnings,
             population=population, population_inferred=population_inferred,
         )
@@ -2745,31 +2761,42 @@ class SlayerQueryEngine:
         rendered = await self._plan_and_render(
             query=main_query, named_queries=named_queries, runtime_kwarg=runtime_kwarg or {},
             prefer_data_source=None, splice_chain=(model.name,),
-            dry_run_placeholders=dry_run_placeholders,
+            dry_run_placeholders=dry_run_placeholders, as_statement=True,
         )
         root_planned = rendered.planned_list[-1]
-        dialect = rendered.dialect
-        # Backing SQL is persisted on the virtual model, so length-fit here too.
-        aliases = projection_result_keys(root_planned=root_planned)
+        dialect, bundle = rendered.dialect, rendered.bundle
+        assert rendered.statement is not None
+        # Wrap the stage AST with a flat-renamed SELECT over the root stage's output columns, then render once.
         schema = root_planned.stage_schema
         assert schema is not None
         expected = [c.name for c in schema.columns]
         wrapped_ast = build_flat_rename_wrapper(
             source_relation=root_planned.source_relation,
-            stage_sql=rendered.sql,
+            inner=rendered.statement,
             expected_columns=expected,
             dialect=dialect,
-            projection_aliases=aliases,
         )
-        # ``Column.sql`` carries the length-fitted alias; ``Column.name`` stays canonical.
+        # ``Column.sql`` carries the length-fitted alias; ``Column.name`` stays canonical. A flat name equals the
+        # user-authored column name, which the finishing pass exempts, so the output aliases are fitted here.
         fit_map = get_dialect(dialect).alias_rewrite_map(expected)
-        inner_source_model = rendered.bundle.source_model
+        for alias in wrapped_ast.expressions:
+            fitted = fit_map.get(alias.alias)
+            if fitted is not None:
+                alias.set("alias", exp.to_identifier(fitted, quoted=True))
+        # Backing SQL is persisted on the virtual model, so length-fit here too.
+        wrapped_sql = _finish_statement(
+            wrapped_ast,
+            dialect=dialect,
+            aliases=projection_result_keys(root_planned=root_planned),
+            exempt=_user_authored_exemptions(bundle=bundle, dialect=dialect),
+        )
+        inner_source_model = bundle.source_model
         assert inner_source_model is not None
         return model_from_stage_schema(
             name=model.name,
             schema=schema,
             data_source=inner_source_model.data_source,
-            sql=wrapped_ast.sql(dialect=dialect, pretty=True),
+            sql=wrapped_sql,
             column_sql={n: fit_map.get(n, n) for n in expected},
             default_time_dimension=inner_source_model.default_time_dimension,
         )

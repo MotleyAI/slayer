@@ -30,6 +30,14 @@ from slayer.sql.dialects._tier2 import (
 )
 from slayer.sql.dialects.base import SqlDialect
 from slayer.sql.dialects.bigquery import BigqueryDialect
+from tests._dev1965_fixtures import (
+    assert_single_top_level_with,
+    cumsum_chain,
+    gen,
+    outer_derived,
+    outer_order,
+    parse,
+)
 
 
 # build_date_trunc — default impl
@@ -286,98 +294,38 @@ def test_oracle_overrides_log10_and_log2_to_false() -> None:
     assert d.should_use_native_log(2) is False
 
 
-# Base emit_outer_wrap (today's derived-table wrap shape)
-#
-# The base impl IS today's behaviour: wrap ``inner_sql`` in a derived
-# table, project the public alias list, re-emit detached
-# ORDER/LIMIT/OFFSET on the outer statement. The T-SQL override (in
-# ``test_tsql.py``) lifts inner CTEs to the top so T-SQL's
-# "WITH only as statement prefix" rule is satisfied; the base impl makes
-# no such hoist and emits the existing shape verbatim.
+# Outer wrap over a transform chain (postgres): the chain's WITH sits on the
+# statement; the public projection reads the ``_outer`` derived table.
+
+_DESC_CREATED = [{"column": "created_at", "direction": "desc"}]
 
 
-def test_default_emit_outer_wrap_basic_shape() -> None:
-    """Base impl: ``SELECT <quoted public> FROM (<inner>) AS _outer``."""
-    out = SqlDialect().emit_outer_wrap(
-        inner_sql="SELECT 1 AS x",
-        public=["x"],
-        projected=["x"],
-        order=None,
-        limit=None,
-        offset_arg=None,
-    )
-    normalised = " ".join(out.split())
-    assert normalised.startswith('SELECT "x"'), (
-        f"Default outer projection must use ANSI double quotes: {out}"
-    )
-    assert "AS _outer" in normalised
-    # Inner SELECT survives inside the derived-table wrap.
-    assert "SELECT 1 AS x" in normalised
+async def test_chain_outer_wrap_basic_shape() -> None:
+    """``SELECT <quoted public> FROM (<chain final select>) AS _outer``."""
+    top = parse(await gen(cumsum_chain(), dialect="postgres"), "postgres")
+    assert [e.sql(dialect="postgres") for e in top.expressions] == [
+        '"orders.created_at"', '"orders.running"',
+    ]
+    assert "orders.amount_sum" in outer_derived(top).named_selects
 
 
-def test_default_emit_outer_wrap_preserves_inner_cte_inside_derived_table() -> None:
-    """Base impl does NOT hoist inner CTEs."""
-    inner = "WITH base AS (SELECT 1 AS x) SELECT x AS y FROM base"
-    out = SqlDialect().emit_outer_wrap(
-        inner_sql=inner,
-        public=["y"],
-        projected=["y"],
-        order=None,
-        limit=None,
-        offset_arg=None,
-    )
-    normalised = " ".join(out.split())
-    assert not normalised.startswith("WITH "), (
-        f"Base impl must not hoist CTEs: {out}"
-    )
-    assert "WITH base" in out
+async def test_chain_outer_wrap_hoists_the_chain_with() -> None:
+    """The chain's CTEs sit on the statement, never inside the derived table."""
+    assert_single_top_level_with(await gen(cumsum_chain(), dialect="postgres"), "postgres")
 
 
-def test_default_emit_outer_wrap_with_order() -> None:
-    """ORDER BY rides on the outer statement and renders via sqlglot's Postgres dialect quoting."""
-    order = sqlglot.parse_one('SELECT 1 ORDER BY "x" ASC', dialect="postgres").args.get("order")
-    out = SqlDialect().emit_outer_wrap(
-        inner_sql="SELECT 1 AS x",
-        public=["x"],
-        projected=["x"],
-        order=order,
-        limit=None,
-        offset_arg=None,
-    )
-    assert "ORDER BY" in out.upper()
+async def test_chain_outer_wrap_with_order() -> None:
+    """ORDER BY rides on the outer statement."""
+    top = parse(await gen(cumsum_chain(order=_DESC_CREATED), dialect="postgres"), "postgres")
+    assert top.args.get("order") is not None
+    assert outer_derived(top).args.get("order") is None
 
 
-def test_default_emit_outer_wrap_strips_inner_qualifiers_in_order_by() -> None:
-    """The detached ORDER BY may carry inner-CTE qualifiers (e.g. ``_base."col"``)."""
-    order = sqlglot.parse_one(
-        'SELECT 1 ORDER BY _base."orders.id" ASC', dialect="postgres"
-    ).args.get("order")
-    out = SqlDialect().emit_outer_wrap(
-        inner_sql="SELECT 1 AS x",
-        public=["orders.id"],
-        projected=["orders.id"],
-        order=order,
-        limit=None,
-        offset_arg=None,
-    )
-    assert "_base." not in out, (
-        f"Inner-CTE qualifier _base. leaked into outer ORDER BY: {out}"
-    )
-
-
-def test_default_emit_outer_wrap_uses_sqlglot_name_not_dialect_attr() -> None:
-    """The base impl renders with ``self.sqlglot_name``."""
-    # Calling on bare SqlDialect must succeed — proving the impl reaches
-    # for the right attribute name. AttributeError would surface here if
-    # the impl referenced ``self.dialect``.
-    SqlDialect().emit_outer_wrap(
-        inner_sql="SELECT 1 AS x",
-        public=["x"],
-        projected=["x"],
-        order=None,
-        limit=None,
-        offset_arg=None,
-    )
+async def test_chain_outer_wrap_hidden_order_by_names_the_carried_alias() -> None:
+    """A non-projected sort key resolves to the alias the chain carries."""
+    sql = await gen(cumsum_chain(order=[{"column": "amount:max", "direction": "desc"}]),
+                    dialect="postgres")
+    assert outer_order(sql, "postgres") == [("orders.amount_max", "", True)], sql
 
 
 # rewrite_target_ast default is identity (only Postgres overrides).

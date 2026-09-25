@@ -13,6 +13,7 @@ from slayer.embeddings import client as embedding_client
 from slayer.sql import engine_factory
 from slayer.storage.yaml_storage import YAMLStorage
 
+from tests import _statement_render_law as statement_render_law
 from tests._dev1824_fixtures import make_exec_engine
 
 
@@ -87,6 +88,12 @@ def _enable_scope_validation(monkeypatch: pytest.MonkeyPatch) -> None:
     owning stage) or a validator bug (fix the validator) — never silence it.
     """
     monkeypatch.setenv("SLAYER_VALIDATE_SCOPES", "1")
+
+
+@pytest.fixture(autouse=True)
+def _no_statement_render_during_composition(monkeypatch: pytest.MonkeyPatch) -> None:
+    """sql.arc42.md §3.1: rendering a statement inside an AST builder fails the test."""
+    statement_render_law.install(monkeypatch)
 
 
 @pytest.fixture
