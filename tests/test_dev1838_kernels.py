@@ -40,6 +40,7 @@ M = ModelMeasure(formula="amount:sum", name="m")
 def _bundle() -> ResolvedSourceBundle:
     models = dev1838_models()
     return ResolvedSourceBundle(
+        dialect="postgres",
         source_model=models[0], referenced_models=models[1:],
     )
 
@@ -227,7 +228,7 @@ class TestRankingKeyPrecedence:
                 Column(name="amount", type=DataType.DOUBLE),
             ],
         )
-        bundle = ResolvedSourceBundle(source_model=model, referenced_models=[])
+        bundle = ResolvedSourceBundle(dialect="postgres", source_model=model, referenced_models=[])
         query = SlayerQuery(
             source_model="untimed", dimensions=["status"],
             measures=[{"formula": "amount:last", "name": "l"}],

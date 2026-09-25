@@ -47,7 +47,7 @@ CM_TIER_SPEND = {"gold": 150.0, "silver": 200.0}
 
 def bundle(models: Optional[List] = None) -> ResolvedSourceBundle:
     models = models if models is not None else dev1865_models()
-    return ResolvedSourceBundle(source_model=models[0], referenced_models=models[1:])
+    return ResolvedSourceBundle(dialect="postgres", source_model=models[0], referenced_models=models[1:])
 
 
 def plan(query: SlayerQuery, **kw):

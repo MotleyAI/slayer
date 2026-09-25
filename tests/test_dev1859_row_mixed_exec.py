@@ -450,6 +450,7 @@ class TestWindowedConstituent:
         """Scenario: the windowed inner is exactly one nested producer at the
         bucket grain, row-attached — never an attach of the enclosing level."""
         bundle = ResolvedSourceBundle(
+            dialect="postgres",
             source_model=dev1846_models()[0],
             referenced_models=dev1846_models()[1:])
         planned = plan_query(

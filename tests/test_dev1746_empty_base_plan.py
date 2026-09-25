@@ -71,6 +71,7 @@ FILTERED_BASE = _norm(
 
 def _bundle() -> ResolvedSourceBundle:
     return ResolvedSourceBundle(
+        dialect="postgres",
         source_model=_orders_x(),
         referenced_models=[_customers_v2(), _regions(), _countries()],
     )

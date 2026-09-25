@@ -45,7 +45,7 @@ REAGG_BAND = {
 
 
 def _bundle(models) -> ResolvedSourceBundle:
-    return ResolvedSourceBundle(source_model=models[0], referenced_models=models[1:])
+    return ResolvedSourceBundle(dialect="postgres", source_model=models[0], referenced_models=models[1:])
 
 
 def _monthly_models():

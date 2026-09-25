@@ -49,7 +49,7 @@ _C_BROADCAST = "customers.regions.pop:weighted_avg(weight=customers.spend)"
 
 def _orders_bundle() -> ResolvedSourceBundle:
     models = dev1840_models()
-    return ResolvedSourceBundle(source_model=models[0], referenced_models=models[1:])
+    return ResolvedSourceBundle(dialect="sqlite", source_model=models[0], referenced_models=models[1:])
 
 
 def _association_attaches(planned) -> list:

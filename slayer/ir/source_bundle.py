@@ -41,17 +41,11 @@ class ResolvedSourceBundle(BaseModel):
     referenced_models: List[SlayerModel] = Field(default_factory=list)
     inline_extensions: List[ModelExtension] = Field(default_factory=list)
     named_queries: Dict[str, SlayerQuery] = Field(default_factory=dict)
-    # DEV-1450 stage 7b.15d — per-named-stage resolved source model, keyed by
-    # stage name. Populated for siblings whose source resolves to a concrete
-    # model (a stored model, an inline ``SlayerModel``, or a ``ModelExtension``
-    # over a stored base). Siblings sourced FROM another sibling (chain or a
-    # ``ModelExtension`` over a sibling) are omitted — the planner resolves
-    # those against the upstream ``StageSchema`` at plan time. Lets each stage
-    # in a heterogeneous DAG bind against its OWN source rather than the root's.
     # Per-named-stage source model (sibling-sourced stages omitted).
     stage_source_models: Dict[str, SlayerModel] = Field(default_factory=dict)
     query_variables: Dict[str, Any] = Field(default_factory=dict)
     datasource_hint: Optional[str] = None
+    dialect: str  # sqlglot dialect the query renders in
 
     def get_referenced_model(self, name: str) -> Optional[SlayerModel]:
         """Linear lookup by name (list is small, O(n) scan is fine)."""

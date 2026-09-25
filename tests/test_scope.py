@@ -98,7 +98,7 @@ def _reserved_target() -> SlayerModel:
 def _scope(host: SlayerModel, *others: SlayerModel, dialect: str = "postgres",
            allocator: AliasAllocator | None = None) -> ScopeFrame:
     alloc = allocator or AliasAllocator()
-    bundle = ResolvedSourceBundle(source_model=host, referenced_models=[host, *others])
+    bundle = ResolvedSourceBundle(dialect="postgres", source_model=host, referenced_models=[host, *others])
     return ScopeFrame(
         scope_id=alloc.next_scope_id(host.name),
         root_model=host, root_relation=host.name,

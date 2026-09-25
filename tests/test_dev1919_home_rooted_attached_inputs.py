@@ -328,6 +328,7 @@ class TestWindowedOuter:
             query=mode_q(None, time_dimensions=signup_month_td(),
                          measures=[_m(WINDOWED_PARAM)]),
             bundle=ResolvedSourceBundle(
+                dialect="sqlite",
                 source_model=models[0], referenced_models=models[1:]))
         [attach] = planned.regroup_attach_plans
         kernel = attach.kernel

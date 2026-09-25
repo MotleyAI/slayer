@@ -1,4 +1,4 @@
-"""DEV-1817: byte-exact characterization locks for the dialect dedup refactor.
+"""Byte-exact characterization locks for the dialect dedup refactor.
 
 Pins the exact emitted SQL of ``build_approx_count_distinct`` per dialect
 (finding 4a: config attributes must not shift casing / function name / the
@@ -10,7 +10,6 @@ Stricter than the pre-existing substring assertions in ``test_tsql.py`` /
 
 from __future__ import annotations
 
-import sqlglot
 import pytest
 from sqlglot import exp
 
@@ -31,10 +30,6 @@ from slayer.sql.dialects.snowflake import SnowflakeDialect
 from slayer.sql.dialects.sqlite import SqliteDialect
 from slayer.sql.dialects.tsql import TsqlDialect
 from slayer.sql.naming import decode_alias
-
-
-def _parse(dialect: str):
-    return lambda sql: sqlglot.parse_one(sql, dialect=dialect)
 
 
 _APPROX_EXACT = {
@@ -58,7 +53,7 @@ _APPROX_EXACT = {
 @pytest.mark.parametrize("dialect", sorted(_APPROX_EXACT))
 def test_approx_count_distinct_emits_exact_sql(dialect: str) -> None:
     d, expected = _APPROX_EXACT[dialect]
-    out = d.build_approx_count_distinct("customer_id", parse=_parse(dialect))
+    out = d.build_approx_count_distinct(col_expr=exp.column("customer_id"))
     assert out.sql(dialect=dialect) == expected
 
 
@@ -67,7 +62,7 @@ def test_approx_count_distinct_anonymous_survives_reemission(dialect: str) -> No
     # T-SQL / Oracle build an exp.Anonymous so sqlglot does not re-emit
     # APPROX_COUNT_DISTINCT as its Presto-family APPROX_DISTINCT canonical.
     d, _ = _APPROX_EXACT[dialect]
-    out = d.build_approx_count_distinct("customer_id", parse=_parse(dialect))
+    out = d.build_approx_count_distinct(col_expr=exp.column("customer_id"))
     assert isinstance(out, exp.Anonymous)
     assert out.name == "APPROX_COUNT_DISTINCT"
 

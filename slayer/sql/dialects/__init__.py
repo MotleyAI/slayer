@@ -31,6 +31,7 @@ from slayer.sql.dialects.postgres import PostgresDialect
 from slayer.sql.dialects.snowflake import SnowflakeDialect
 from slayer.sql.dialects.sqlite import SqliteDialect
 from slayer.sql.dialects.tsql import TsqlDialect
+from slayer.sql.reserved_keywords import install_reserved_keywords
 
 
 __all__ = [
@@ -49,6 +50,7 @@ __all__ = [
     "DatabricksDialect",
     "SparkDialect",
     "OracleDialect",
+    "SQLGLOT_NAMES",
     "get_dialect",
     "dialect_for_ds_type",
 ]
@@ -75,6 +77,8 @@ _ALL_DIALECTS: tuple[SqlDialect, ...] = (
 _BY_SQLGLOT_NAME: dict[str, SqlDialect] = {
     d.sqlglot_name: d for d in _ALL_DIALECTS
 }
+
+SQLGLOT_NAMES: tuple[str, ...] = tuple(_BY_SQLGLOT_NAME)
 
 
 _BY_DS_TYPE: dict[str, SqlDialect] = {
@@ -104,11 +108,5 @@ def dialect_for_ds_type(ds_type: str | None) -> SqlDialect:
     return _BY_DS_TYPE.get(ds_type or "", _BY_SQLGLOT_NAME["postgres"])
 
 
-# DEV-1686: quote reserved-word identifiers. Union the curated reserved-word set
-# into every dialect generator's RESERVED_KEYWORDS as soon as the registry is
-# built, so any ``.sql(dialect=...)`` emission quotes reserved aliases /
-# qualifiers / physical names. Imported here (after ``_ALL_DIALECTS`` is defined)
-# so the installer runs before any SQL is generated; idempotent.
-from slayer.sql.reserved_keywords import install_reserved_keywords  # noqa: E402
-
+# Quote reserved-word identifiers in every dialect's emission; runs at import, idempotent.
 install_reserved_keywords()

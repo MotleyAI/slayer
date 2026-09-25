@@ -49,6 +49,7 @@ def _orders_model() -> SlayerModel:
 
 def _bundle() -> ResolvedSourceBundle:
     return ResolvedSourceBundle(
+        dialect="postgres",
         source_model=_orders_model(), referenced_models=[],
     )
 

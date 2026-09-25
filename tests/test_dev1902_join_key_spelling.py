@@ -34,6 +34,7 @@ from tests._dev1902_fixtures import (
     renamed_graph,
     warnings_of,
 )
+from tests._engine_helpers import models_bundle
 
 AMT = ModelMeasure(formula="sum(amount)", name="amt")
 
@@ -158,7 +159,8 @@ class TestJoinSafetyLogicalSpace:
         customers = customers_model()
         assert grain_determines(
             key=ColumnKey(leaf="tier"), grain=Grain.of([ColumnKey(leaf="id")]),
-            host_model=customers, models_by_name={"customers": customers})
+            host_model=customers, models_by_name={"customers": customers},
+            bundle=models_bundle({"customers": customers}))
 
     def test_renamed_fk_seeds_to_one_hop(self):
         # FK ``region_id`` (physical ``region_fk``) onto a renamed PK.
@@ -167,7 +169,8 @@ class TestJoinSafetyLogicalSpace:
             key=ColumnKey(path=("regions",), leaf="name"),
             grain=Grain.of([ColumnKey(leaf="region_id")]),
             host_model=customers,
-            models_by_name={"customers": customers, "regions": regions})
+            models_by_name={"customers": customers, "regions": regions},
+            bundle=models_bundle({"customers": customers, "regions": regions}))
 
     def test_fk_seed_ignores_a_physical_spelling_match(self):
         # A grain leaf spelled like the FK's physical column names no column.
@@ -185,7 +188,8 @@ class TestJoinSafetyLogicalSpace:
         assert not grain_determines(
             key=ColumnKey(path=("regions",), leaf="name"),
             grain=Grain.of([ColumnKey(leaf="region_fk")]),
-            host_model=hub, models_by_name={"hub": hub, "regions": regions})
+            host_model=hub, models_by_name={"hub": hub, "regions": regions},
+            bundle=models_bundle({"hub": hub, "regions": regions}))
 
 
 def _customer_totals(*, key: str = "customer_id") -> SlayerModel:

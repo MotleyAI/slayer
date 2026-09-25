@@ -29,7 +29,7 @@ CROSS = ("regions", "region_events")
 def _bundle(models):
     by = {m.name: m for m in models}
     referenced = [by[n] for n in ("customers", "regions", "region_events", "stores", "plans")]
-    return by, ResolvedSourceBundle(source_model=by["orders"], referenced_models=referenced)
+    return by, ResolvedSourceBundle(dialect="postgres", source_model=by["orders"], referenced_models=referenced)
 
 
 def _regions_sqlkey(column_name: str) -> ColumnSqlKey:
@@ -183,6 +183,7 @@ class TestModelsByName:
         shadow_orders = SlayerModel(name="orders", data_source="test", sql_table="orders")
         assert shadow_orders is not source_orders
         bundle = ResolvedSourceBundle(
+            dialect="postgres",
             source_model=source_orders,
             referenced_models=[shadow_orders, by["customers"]])
         mbn = bundle.models_by_name
@@ -195,6 +196,7 @@ class TestModelsByName:
         rather than incidentally (gap 5)."""
         by = {m.name: m for m in dev1900_models()}
         bundle = ResolvedSourceBundle(
+            dialect="postgres",
             source_model=by["regions"], referenced_models=[by["region_events"]])
         assert "regions" in bundle.models_by_name
 
@@ -203,12 +205,14 @@ class TestModelsByName:
         source stays visible so a root→ex-host reverse hop remains provable."""
         by = {m.name: m for m in dev1900_models()}
         bundle = ResolvedSourceBundle(
+            dialect="postgres",
             source_model=by["orders"], referenced_models=[by["customers"]])
         rerooted = bundle.rerooted(by["customers"])
         assert rerooted.source_model is by["customers"]
         assert set(rerooted.models_by_name) == {"orders", "customers"}
         # Already-listed source: no duplicate entry.
         listed = ResolvedSourceBundle(
+            dialect="postgres",
             source_model=by["orders"],
             referenced_models=[by["orders"], by["customers"]])
         assert [m.name for m in listed.rerooted(by["customers"]).referenced_models] == [

@@ -16,6 +16,7 @@ from pydantic import (
 from sqlalchemy.engine import URL as _SA_URL
 
 from slayer.core.enums import (
+    BUILTIN_AGGREGATION_FORMULAS,
     BUILTIN_AGGREGATIONS,
     DEFAULT_AGGREGATIONS_BY_TYPE,
     DataType,
@@ -23,6 +24,7 @@ from slayer.core.enums import (
     JoinType,
     ObjectKind,
     PRIMARY_KEY_AGGREGATIONS,
+    RANKED_AGGREGATIONS,
     TimeGranularity,
     _coerce_legacy_datatype,
 )
@@ -34,7 +36,7 @@ from slayer.core.refs import IDENTIFIER_RE
 from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.sql_predicate import parse_sql_predicate
 from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
-from slayer.storage.migrations import migrate as _migrate_schema
+from slayer.storage.migrations import CURRENT_VERSIONS, migrate as _migrate_schema
 
 _NAME_PATTERN = re.compile(r"^[a-zA-Z_]\w*$", re.ASCII)
 _GRANULARITY_NAMES = frozenset(g.value for g in TimeGranularity)
@@ -65,7 +67,7 @@ class _SubstringRule:
             )
 
 
-# ``__`` is allowed in names (DEV-1743); only the internal ``__slayer_`` prefix
+# ``__`` is allowed in names; only the internal ``__slayer_`` prefix
 # is reserved, so user input cannot spoof colon-agg preprocessor identifiers.
 _RESERVED_NAME_PREFIX = "__slayer_"
 
@@ -195,9 +197,9 @@ class Column(BaseModel):
     allowed_aggregations: list[str] | None = None
     filter: str | None = None  # Desugars to CASE WHEN (filter) THEN (value) END in every position
     meta: dict[str, Any] | None = None
-    sampled: str | None = None  # DEV-1375: cached sample-value snapshot
-    sampled_values: list[str] | None = None  # DEV-1480: structured top-N
-    distinct_count: int | None = None  # DEV-1480: true cardinality at profile time
+    sampled: str | None = None  # cached sample-value snapshot
+    sampled_values: list[str] | None = None  # structured top-N
+    distinct_count: int | None = None  # true cardinality at profile time
     # Runtime-only (never persisted): stale respellings of a generated query-backed column.
     _respellings: tuple[str, ...] = PrivateAttr(default=())
 
@@ -370,10 +372,27 @@ class ModelMeasure(BaseModel):
     # caught by strict resolution at binding time.
 
 
+VALUE_PLACEHOLDER = "value"
+
+
+def reserved_value_param_message(agg_name: str) -> str:
+    return (
+        f"Aggregation '{agg_name}': a parameter may not be named '{VALUE_PLACEHOLDER}'. "
+        f"'{{{VALUE_PLACEHOLDER}}}' in an aggregation formula always stands for the "
+        f"aggregated column, so such a parameter could never be used; rename it."
+    )
+
+
 class AggregationParam(BaseModel):
     """A named parameter for an aggregation formula."""
     name: str
     sql: str  # default value — column name or SQL expression
+
+    @model_validator(mode="after")
+    def _require_sql(self) -> "AggregationParam":
+        if not self.sql.strip():
+            raise ValueError(f"Aggregation parameter '{self.name}' has an empty sql default.")
+        return self
 
 
 class Aggregation(BaseModel):
@@ -403,6 +422,10 @@ class Aggregation(BaseModel):
                 f"a 'formula' is required. Built-in aggregations: "
                 f"{', '.join(sorted(BUILTIN_AGGREGATIONS))}"
             )
+        if self.formula is not None and not self.formula.strip():
+            raise ValueError(f"Aggregation '{self.name}' has an empty formula.")
+        if any(p.name == VALUE_PLACEHOLDER for p in self.params):
+            raise ValueError(reserved_value_param_message(self.name))
         return self
 
     @model_validator(mode="after")
@@ -415,7 +438,7 @@ class Aggregation(BaseModel):
                 f"transform function. Reserved names: "
                 f"{', '.join(sorted(transform_only))}"
             )
-        # DEV-1826: scalar-function names would shadow the scalar in functional
+        # Scalar-function names would shadow the scalar in functional
         # form (``round(x)`` must stay the scalar call), so every legal
         # aggregation stays reachable as ``agg(col)``. Case-insensitive to
         # match the parser's scalar dispatch.
@@ -426,7 +449,7 @@ class Aggregation(BaseModel):
                 f"{', '.join(sorted(SCALAR_FUNCTIONS))}"
             )
         # A granularity-named aggregation would shadow the functional ``gran(col)``
-        # time-bucket form in a query dimension (DEV-1883).
+        # time-bucket form in a query dimension.
         if self.name.lower() in _GRANULARITY_NAMES:
             raise ValueError(
                 f"Aggregation name '{self.name}' conflicts with a time "
@@ -434,6 +457,13 @@ class Aggregation(BaseModel):
                 f"{', '.join(sorted(_GRANULARITY_NAMES))}"
             )
         return self
+
+
+def rendered_formula(*, agg: str, definition: Aggregation | None) -> str | None:
+    """The template ``agg`` renders through (a definition's override wins); ``None``: a built-in builder."""
+    if agg in RANKED_AGGREGATIONS:
+        return None
+    return (definition.formula if definition else None) or BUILTIN_AGGREGATION_FORMULAS.get(agg)
 
 
 def _coerce_source_queries(v: Any) -> Any:
@@ -479,7 +509,7 @@ class ModelJoin(BaseModel):
     # Join arity, read source->target; None = undetermined.
     cardinality: JoinCardinality | None = None
     # Optional edge name, usable as a path segment in either direction — the
-    # disambiguator for parallel edges (DEV-1853). Model-name identifier rules.
+    # disambiguator for parallel edges. Model-name identifier rules.
     name: str | None = None
     # Optional human/agent metadata; additive, so no schema-version bump needed.
     description: str | None = None
@@ -579,7 +609,7 @@ def _check_column_measure_namespace(
 
 
 class SlayerModel(BaseModel):
-    version: int = 11  # v11 = join keys canonicalised to Column.name
+    version: int = CURRENT_VERSIONS["SlayerModel"]
     name: str
     sql_table: str | None = None
     # Kind of DB object ``sql_table`` names; only auto-ingestion sets it. ``None`` = unknown.
@@ -803,7 +833,7 @@ class SlayerModel(BaseModel):
 
 
 class DatasourceConfig(BaseModel):
-    version: int = 2
+    version: int = CURRENT_VERSIONS["DatasourceConfig"]
     name: str
     type: str | None = None
     host: str | None = None

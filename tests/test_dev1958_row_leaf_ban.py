@@ -38,7 +38,7 @@ def _q(**kw) -> SlayerQuery:
 
 def _bundle() -> ResolvedSourceBundle:
     models = dev1846_models()
-    return ResolvedSourceBundle(source_model=models[0], referenced_models=models[1:])
+    return ResolvedSourceBundle(dialect="postgres", source_model=models[0], referenced_models=models[1:])
 
 
 def _call(op: str, inner: str) -> str:

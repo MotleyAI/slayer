@@ -118,6 +118,7 @@ def _bundle1900() -> ResolvedSourceBundle:
     m = dev1900_models()
     src = next(x for x in m if x.name == "customers")
     return ResolvedSourceBundle(
+        dialect="postgres",
         source_model=src, referenced_models=[x for x in m if x.name != "customers"])
 
 
@@ -182,6 +183,7 @@ class TestWindowedDerivedFanningAxisFailsClosed:
             name="bad_date", type=DataType.DATE,
             sql="CAST(regions.region_events.value AS DATE)"))
         return ResolvedSourceBundle(
+            dialect="postgres",
             source_model=cust, referenced_models=[x for x in m if x.name != "customers"])
 
     @pytest.mark.parametrize("mode", MODES)

@@ -19,7 +19,7 @@ CHANNEL_TOTAL = {"expression": "sum(amount, partition_by=channel)", "name": "ct"
 
 def _bundle() -> ResolvedSourceBundle:
     models = dev1836_models()
-    return ResolvedSourceBundle(source_model=models[0], referenced_models=models)
+    return ResolvedSourceBundle(source_model=models[0], referenced_models=models, dialect="postgres")
 
 
 def _grain(**body):

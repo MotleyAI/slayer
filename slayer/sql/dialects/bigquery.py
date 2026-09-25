@@ -13,12 +13,12 @@ used by ``_query_as_model`` to flatten cross-model leaves (e.g.
 ``stores__name``); using a distinct sentinel keeps the two encodings
 unambiguous.
 
-Per DEV-1542's "every dialect quirk lives behind a hook on
+Per the "every dialect quirk lives behind a hook on
 ``SqlDialect``" rule, this file is BigQuery's home. The plain
 ``rewrite_emitted_sql`` / ``decode_result_keys`` hooks on the base class
-have identity defaults; only ``BigqueryDialect`` (and ``TsqlDialect``,
-DEV-1571) override them today. The shared encode/decode bijection lives
-in :mod:`slayer.sql.naming` (DEV-1713) and is reused by both dialects —
+have identity defaults; only ``BigqueryDialect`` (and ``TsqlDialect``)
+override them today. The shared encode/decode bijection lives
+in :mod:`slayer.sql.naming` and is reused by both dialects —
 only the regex anchor (backticks here, brackets in T-SQL) differs.
 """
 
@@ -27,7 +27,6 @@ from __future__ import annotations
 import json
 import re
 from typing import TYPE_CHECKING, Any, ClassVar
-from collections.abc import Callable
 
 import sqlalchemy as sa
 from sqlglot import exp
@@ -67,6 +66,7 @@ if TYPE_CHECKING:
 #     ``tests/dialects/test_bigquery.py::test_rewrite_emitted_sql_false_positive_on_single_backticked_dotted_path``
 #     for the characterization pin.
 _DOTTED_ALIAS_RE = re.compile(r"`(\w+(?:\.\w+)+)`", re.ASCII)
+_WEEK_ANCHORS = {TimeGranularity.WEEK: "MONDAY", TimeGranularity.WEEK_SUNDAY: "SUNDAY"}
 
 
 # ---------------------------------------------------------------------------
@@ -143,8 +143,8 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
     log10_native: bool = True
     log2_native: bool = True
     max_identifier_bytes: int | None = 300  # column-name limit
-    approx_count_distinct_template: str = "APPROX_COUNT_DISTINCT({col})"
-    # DEV-1571 backtick-quoted dotted-alias mangling (DottedAliasManglingMixin).
+    approx_count_distinct_native: bool = True
+    # Backtick-quoted dotted-alias mangling (DottedAliasManglingMixin).
     dotted_alias_re: ClassVar[re.Pattern[str]] = _DOTTED_ALIAS_RE
     alias_quote_open: ClassVar[str] = "`"
     alias_quote_close: ClassVar[str] = "`"
@@ -153,33 +153,22 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
         self,
         col_expr: exp.Expression,
         granularity: TimeGranularity,
-        *,
-        parse: Callable[[str], exp.Expression],
     ) -> exp.Expression:
-        """BigQuery override for WEEK_SUNDAY (DEV-1572).
+        """Anchor both weeks explicitly: BigQuery's bare ``WEEK`` is Sunday-based.
 
-        BigQuery's native ``DATE_TRUNC(x, WEEK)`` is already Sunday-based, so
-        the base class's generic +1d/-1d shift (which reuses a Monday-based
-        WEEK) would double-shift. Emit the native Sunday form
-        ``DATE_TRUNC(col, WEEK(SUNDAY))`` instead.
-
-        Built as an ``exp.Anonymous`` because sqlglot (30.4.x) drops the
-        ``(SUNDAY)`` weekday modifier when re-emitting an ``exp.DateTrunc`` —
-        the anonymous call renders verbatim on the single final emission.
-        Non-column/non-cast operands are wrapped in ``CAST(... AS TIMESTAMP)``
-        to mirror the base class's operand handling. Every other granularity
-        delegates to the base implementation.
+        ``DATE_TRUNC(col, WEEK(MONDAY|SUNDAY))`` is an ``exp.Anonymous`` since
+        sqlglot drops the weekday modifier from ``exp.DateTrunc``. Non-column
+        operands are cast to TIMESTAMP like the base; other grains delegate.
         """
-        if granularity != TimeGranularity.WEEK_SUNDAY:
+        weekday = _WEEK_ANCHORS.get(granularity)
+        if weekday is None:
             return super().build_date_trunc(
-                col_expr=col_expr, granularity=granularity, parse=parse,
+                col_expr=col_expr, granularity=granularity,
             )
         if not isinstance(col_expr, (exp.Column, exp.Cast)):
             col_expr = exp.Cast(this=col_expr, to=exp.DataType.build("TIMESTAMP"))
-        week_sunday = exp.Anonymous(this="WEEK", expressions=[exp.var("SUNDAY")])
-        return exp.Anonymous(
-            this="DATE_TRUNC", expressions=[col_expr, week_sunday],
-        )
+        week = exp.Anonymous(this="WEEK", expressions=[exp.var(weekday)])
+        return exp.Anonymous(this="DATE_TRUNC", expressions=[col_expr, week])
 
     def build_engine(
         self,
@@ -264,8 +253,8 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
                 f"the connection string as 'bigquery://<project>/<dataset>', or "
                 f"as 'quota_project_id' inside oauth_credentials_json."
             )
-        from google.cloud import bigquery  # noqa: PLC0415  (optional 'bigquery' extra)
-        from google.oauth2.credentials import Credentials  # noqa: PLC0415
+        from google.cloud import bigquery  # ALLOW(import-not-top): optional heavy driver, imported lazily
+        from google.oauth2.credentials import Credentials  # ALLOW(import-not-top): optional heavy driver, imported lazily
 
         try:
             credentials = Credentials.from_authorized_user_info(info)

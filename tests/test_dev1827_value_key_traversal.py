@@ -623,6 +623,7 @@ def _customers_model() -> SlayerModel:
 def _paths_for(key: AggregateKey):
     orders = _orders_model()
     bundle = ResolvedSourceBundle(
+        dialect="postgres",
         source_model=orders, referenced_models=[orders, _customers_model()],
     )
     paths = aggregate_input_closure(

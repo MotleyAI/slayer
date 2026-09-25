@@ -275,6 +275,7 @@ def tq(**kw) -> SlayerQuery:
 def bundle(models: Optional[List[SlayerModel]] = None) -> ResolvedSourceBundle:
     models = models if models is not None else dev1840_models()
     return ResolvedSourceBundle(
+        dialect="postgres",
         source_model=models[0], referenced_models=models[1:],
     )
 

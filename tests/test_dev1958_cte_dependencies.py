@@ -106,6 +106,7 @@ class TestIdentityDeduplicatedTraversal:
         models = dev1832_models()
         root = next(m for m in models if m.name == "monthly")
         return plan_query(query=_q(formula), bundle=ResolvedSourceBundle(
+            dialect="duckdb",
             source_model=root, referenced_models=[m for m in models if m is not root]))
 
     def test_carried_attach_yielded_once(self) -> None:

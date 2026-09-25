@@ -49,7 +49,7 @@ def _models():
 
 def _bundle() -> ResolvedSourceBundle:
     sales, regions = _models()
-    return ResolvedSourceBundle(source_model=sales, referenced_models=[regions])
+    return ResolvedSourceBundle(dialect="postgres", source_model=sales, referenced_models=[regions])
 
 
 def _q(**kw) -> SlayerQuery:

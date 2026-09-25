@@ -174,7 +174,7 @@ class TestBinderAndChecker:
         bound = bind_time_dimension(
             TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TG.DAY),
             scope=ModelScope(source_model=orders),
-            bundle=ResolvedSourceBundle(source_model=orders, referenced_models=[customers]),
+            bundle=ResolvedSourceBundle(dialect="postgres", source_model=orders, referenced_models=[customers]),
         )
         assert bound.upstream_granularity == TG.DAY
         assert bound.column_type == DataType.TIMESTAMP
@@ -184,7 +184,7 @@ class TestBinderAndChecker:
         bound = bind_time_dimension(
             TimeDimension(dimension=ColumnRef(name="customers.signup_at"), granularity=TG.YEAR),
             scope=ModelScope(source_model=orders),
-            bundle=ResolvedSourceBundle(source_model=orders, referenced_models=[customers]),
+            bundle=ResolvedSourceBundle(dialect="postgres", source_model=orders, referenced_models=[customers]),
         )
         assert bound.upstream_granularity == TG.MONTH
 
@@ -421,7 +421,7 @@ class TestSiblingStandIns:
             columns=[Column(name="id", type=DataType.DOUBLE, primary_key=True)],
             joins=[ModelJoin(target_model="s1", join_pairs=[["id", "created_at"]])],
         )
-        bundle = ResolvedSourceBundle(source_model=host, referenced_models=[sibling])
+        bundle = ResolvedSourceBundle(dialect="postgres", source_model=host, referenced_models=[sibling])
         bound = bind_time_dimension(
             TimeDimension(dimension=ColumnRef(name="s1.created_at"), granularity=TG.DAY),
             scope=ModelScope(source_model=host), bundle=bundle,

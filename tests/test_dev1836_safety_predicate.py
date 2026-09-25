@@ -247,6 +247,7 @@ class TestMayInlineSeam:
             filter="customers.tier = 'gold'",
         ))
         bundle = ResolvedSourceBundle(
+            dialect="postgres",
             source_model=host,
             referenced_models=[host, customers_model(), regions_model(),
                                segments_model()],

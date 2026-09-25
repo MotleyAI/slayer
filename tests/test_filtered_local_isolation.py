@@ -110,6 +110,7 @@ def _claim_amount(
 
 def _bundle(host: SlayerModel) -> ResolvedSourceBundle:
     return ResolvedSourceBundle(
+        dialect="postgres",
         source_model=host,
         referenced_models=[_loss_payment(), _loss_reserve(), _claim()],
     )
@@ -144,6 +145,7 @@ def _orders_with_derived_eu_filter(*, eu_amount_filter: str):
         ],
     )
     bundle = ResolvedSourceBundle(
+        dialect="postgres",
         source_model=host, referenced_models=[customers],
     )
     return host, bundle
@@ -262,6 +264,7 @@ class TestCrossModelPlannerTriggerPredicate:
             joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
         )
         bundle = ResolvedSourceBundle(
+            dialect="postgres",
             source_model=orders, referenced_models=[customers, regions],
         )
         q = SlayerQuery(
@@ -327,6 +330,7 @@ class TestHostModelFiltersInteractions:
             filters=["amount > 0"],
         )
         bundle = ResolvedSourceBundle(
+            dialect="postgres",
             source_model=host, referenced_models=[_loss_payment()],
         )
         q = SlayerQuery(
@@ -469,6 +473,7 @@ def _s5_orders() -> SlayerModel:
 
 def _s5_bundle(host: SlayerModel | None = None) -> ResolvedSourceBundle:
     return ResolvedSourceBundle(
+        dialect="postgres",
         source_model=host or _s5_orders(),
         referenced_models=[_s5_customers(), _s5_regions()],
     )

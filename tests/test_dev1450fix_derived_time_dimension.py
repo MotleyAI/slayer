@@ -141,6 +141,7 @@ async def engine() -> AsyncIterator[Tuple[SlayerQueryEngine, str]]:
 
 def _bundle_local() -> ResolvedSourceBundle:
     return ResolvedSourceBundle(
+        dialect="postgres",
         source_model=_orders_model(),
         referenced_models=[_customers_model()],
     )

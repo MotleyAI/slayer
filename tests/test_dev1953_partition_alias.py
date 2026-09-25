@@ -107,7 +107,7 @@ async def engine(request):
 def _scope_bundle():
     models = dev1847_models()
     return (ModelScope(source_model=models[0]),
-            ResolvedSourceBundle(source_model=models[0], referenced_models=models[1:]))
+            ResolvedSourceBundle(dialect="postgres", source_model=models[0], referenced_models=models[1:]))
 
 
 def _bind(formula: str, alias_map: Optional[Dict] = None):

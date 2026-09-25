@@ -103,6 +103,7 @@ def _monthly_bundle() -> ResolvedSourceBundle:
     models = dev1832_models()
     monthly = next(m for m in models if m.name == "monthly")
     return ResolvedSourceBundle(
+        dialect="duckdb",
         source_model=monthly,
         referenced_models=[m for m in models if m.name != "monthly"])
 
