@@ -107,8 +107,9 @@ AST-only composition.
 legitimate Mode-A parses.
 If a value-layer render of a `Query` (a Mode-A scalar-subquery `Column.sql`) trips the
 law, stop and ask. Do not allowlist it silently, because that case belongs to DEV-1972.
-Until DEV-1972, `column_expansion.expand_derived_refs_sync` is a law exemption: it renders
-user fragments that may hold subqueries.
+Until DEV-1972, `column_expansion.expand_derived_refs_sync` and
+`SQLGenerator._expand_derived_column_sql` are law exemptions: they render user fragments that
+may hold subqueries.
 
 **D8. MySQL sample statistics.** The MySQL hook's `exp.Anonymous("VAR_SAMP")` survives
 once D1 and D4 remove the re-parse. Goldens `dev1915` `corr::mysql` and

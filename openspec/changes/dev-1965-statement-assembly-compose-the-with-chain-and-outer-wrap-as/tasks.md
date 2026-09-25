@@ -35,6 +35,6 @@
   redundant `AS [x]`, BigQuery qualifier quoting), the round-trip-undone function names (MySQL
   `VAR_POP`, T-SQL `APPROX_COUNT_DISTINCT`) and root-stage transform chains that now compose
   (`stage/share`). Any other byte change → stop and investigate. Verify: the golden suites are green and the diff review is recorded in the commit message.
-- [ ] 6.2 Law 1.1 green over the full unit suite. If a value-layer `Query` render (DEV-1972) trips it → STOP and ask, never allowlist silently. Verify: the full unit suite is green with the fixture active.
+- [x] 6.2 Law 1.1 green over the full unit suite. If a value-layer `Query` render (DEV-1972) trips it → STOP and ask, never allowlist silently. Verify: the full unit suite is green with the fixture active.
 - [x] 6.3 Update the `tsql.py` module docstring (drop the `emit_outer_wrap` bullet) and any `docs/` mention of `emit_outer_wrap` / `_filtered` (search first; expected none). Verify: a grep for `emit_outer_wrap|FILTERED_ALIAS|_filtered` over `slayer/` and `docs/` is empty.
-- [ ] 6.4 Full unit suite, the CI-style integration suite, `ruff check slayer/ tests/`, basedpyright (baseline not grown, and shrunk in touched files) and `tools/arch_check.py`. Verify: all green.
+- [x] 6.4 Full unit suite, the CI-style integration suite, `ruff check slayer/ tests/`, basedpyright (baseline not grown, and shrunk in touched files) and `tools/arch_check.py`. Verify: all green.
