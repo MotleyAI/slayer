@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import re
+from decimal import Decimal
 from typing import Callable, List
 
 import pytest
@@ -185,6 +186,27 @@ class TestOrderByTransformSharedWithDimension:
         assert _regions(resp)[0] == "East"
 
 
+class TestFilterOnAggregateOwnedByDimensionTransform:
+    """The aggregate inside a dimension's transform is not itself row-attached, so a
+    filter on it is a measure-typed combined consumer."""
+
+    async def test_executes_at_query_grain(self, exec_engine):
+        resp = await exec_engine.execute(sales_q(
+            dimensions=["region", PBAND], measures=[TOT],
+            filters=["amount:sum(partition_by=region) > 100"]))
+        assert _col(resp, "tot") == _approx({"South": 140.0, "East": 180.0})
+
+    def test_finer_partition_key_is_a_typed_error(self):
+        band = {"expression": "CASE WHEN rank(amount:sum(partition_by=[city, region])) > 1 "
+                              "THEN 'top' ELSE 'rest' END", "name": "cband"}
+        query = sales_q(dimensions=["region", band], measures=[TOT],
+                        filters=["amount:sum(partition_by=[city, region]) > 50"])
+        bundle = _bundle()
+        with pytest.raises(PartitionKeyError) as ei:
+            plan_query(query=query, bundle=bundle)
+        _assert_consumer_error(ei.value, key="city", location=r"filter\b")
+
+
 class TestCrossModelReaggregationInDimension:
     async def test_measure_typed_filter(self, exec_engine):
         resp = await exec_engine.execute(chain_q(
@@ -209,13 +231,13 @@ class TestFinerGrainedReaggregationDimension:
 class TestPlainMeasureTypedFilterOverDimensionAggregate:
     def test_same_partition_key_error_as_without_dimension(self):
         flt = "amount:sum(partition_by=[city, region]) < amount:sum"
+        bare_q = sales_q(dimensions=["region"], measures=[TOT], filters=[flt])
+        banded_q = sales_q(dimensions=["region", CITY_BAND], measures=[TOT], filters=[flt])
+        bundle = _bundle()
         with pytest.raises(PartitionKeyError) as bare:
-            plan_query(query=sales_q(dimensions=["region"], measures=[TOT], filters=[flt]),
-                       bundle=_bundle())
+            plan_query(query=bare_q, bundle=bundle)
         with pytest.raises(PartitionKeyError) as banded:
-            plan_query(query=sales_q(dimensions=["region", CITY_BAND], measures=[TOT],
-                                     filters=[flt]),
-                       bundle=_bundle())
+            plan_query(query=banded_q, bundle=bundle)
         assert "'city'" in banded.value.summary
         assert (banded.value.summary, banded.value.location) == (
             bare.value.summary, bare.value.location)
@@ -241,7 +263,8 @@ def _fine_cases():
 
 def _assert_consumer_error(exc: PartitionKeyError, *, key: str, location: str) -> None:
     assert re.search(rf"\b{re.escape(key)}\b", exc.summary), exc.summary
-    assert exc.location is not None and re.match(location, exc.location), str(exc)
+    assert exc.location is not None, str(exc)
+    assert re.match(location, exc.location), str(exc)
     assert "dimension" not in exc.location
     assert REGROUP_LEAF_PREFIX not in str(exc)
 
@@ -252,16 +275,18 @@ class TestReaggregationOuterKeyCarriesTheRule:
                              [pytest.param(kw, loc, id=i) for i, kw, loc in _fine_cases()])
     def test_combined_consumer_rejected(self, kw, location, with_dim):
         dims = ["region", FINE_DIM] if with_dim else ["region"]
+        query, bundle = sales_q(dimensions=dims, **kw), _bundle()
         with pytest.raises(PartitionKeyError) as ei:
-            plan_query(query=sales_q(dimensions=dims, **kw), bundle=_bundle())
+            plan_query(query=query, bundle=bundle)
         _assert_consumer_error(ei.value, key="city", location=location)
 
     def test_cross_model_outer_key(self):
         formula = "avg(sum(amount, partition_by=customer_id), partition_by=customers.region_id)"
+        query = chain_q(dimensions=["customers.regions.name"],
+                        measures=[ModelMeasure(formula=formula, name="c")])
+        bundle = _bundle("corders")
         with pytest.raises(PartitionKeyError) as ei:
-            plan_query(query=chain_q(dimensions=["customers.regions.name"],
-                                     measures=[ModelMeasure(formula=formula, name="c")]),
-                       bundle=_bundle("corders"))
+            plan_query(query=query, bundle=bundle)
         _assert_consumer_error(ei.value, key="customers.region_id", location=r"measure 'c'")
 
 
@@ -336,7 +361,8 @@ class TestDimensionTransformOwnsReaggregation:
 # --------------------------------------------------------------------------- #
 def _flag(column: str, value: str) -> ScalarCallKey:
     cond = ArithmeticKey(op="=", operands=(ColumnKey(leaf=column), LiteralKey(value=value)))
-    return ScalarCallKey(name="iif", args=(cond, LiteralKey(value=1), LiteralKey(value=0)))
+    return ScalarCallKey(name="iif", args=(cond, LiteralKey(value=Decimal(1)),
+                                           LiteralKey(value=Decimal(0))))
 
 
 def _grain_names(keys) -> dict:

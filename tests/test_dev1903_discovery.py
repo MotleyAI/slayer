@@ -346,9 +346,11 @@ class TestReaggregationInComputedDimension:
     ])
     def test_partition_key_error(self, kw, location):
         query = sales_q(dimensions=["product", _RLEVEL], **kw)
+        bundle = _bundle(dev1847_models())
         with pytest.raises(PartitionKeyError) as ei:
-            plan_query(query=query, bundle=_bundle(dev1847_models()))
+            plan_query(query=query, bundle=bundle)
         assert "partition_by column 'region' is not a query dimension" in ei.value.summary
+        assert ei.value.location is not None
         assert ei.value.location.startswith(location)
 
     @pytest.mark.parametrize(("filters", "expected"), [

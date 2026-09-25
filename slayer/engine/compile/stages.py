@@ -3,6 +3,8 @@ Binding lives in ``bind_inputs``; typing and the checker in ``elaborate_env``.""
 
 from __future__ import annotations
 
+import functools
+import hashlib
 import itertools
 from decimal import Decimal
 from typing import (
@@ -69,6 +71,9 @@ from slayer.core.window_duration import parse_window_duration
 from slayer.core.scope import ModelScope, StageColumn, StageSchema, host_model_name
 from slayer.engine.elaborate_env import (
     check_reserved_regroup_prefix,
+    ConsumerPosition,
+    is_dimension_transform_root,
+    position_classes,
     check_stage_flatten_collision,
     validate_model_filter,
     check_association_root_unique_key,
@@ -84,7 +89,6 @@ from slayer.engine.elaborate_env import (
     check_raw_rows_no_aggregate_slots,
     check_reaggregation_dims_attributable,
     check_reaggregation_no_window,
-    check_reaggregation_partition_key_is_query_dim,
     check_windowed_time_axis_attributable,
     check_window_duration,
     check_windowed_time_dimension,
@@ -229,12 +233,25 @@ def _windowed_slot_id_set(
 # Regroup desugar: synthesize a producer stage per partition set.
 
 
+def _stable_text(obj: Any) -> str:
+    """A process-independent spelling of a key (sets sorted, never hash order)."""
+    if isinstance(obj, BaseModel):
+        fields = ",".join(_stable_text(getattr(obj, f)) for f in type(obj).model_fields)
+        return f"{type(obj).__name__}({fields})"
+    if isinstance(obj, (set, frozenset)):
+        return "{" + ",".join(sorted(_stable_text(x) for x in obj)) + "}"
+    if isinstance(obj, (list, tuple)):
+        return "(" + ",".join(_stable_text(x) for x in obj) + ")"
+    return repr(obj)
+
+
 def _regroup_grain_name(pk: ValueKey) -> str:
+    """A column's path/leaf spelling; any other key a key-derived identifier."""
     if isinstance(pk, TimeTruncKey):
         return f"{column_leaf(pk.column)}_{pk.granularity}"
-    path = tuple(getattr(pk, "path", ()) or ())
-    leaf = getattr(pk, "leaf", None) or getattr(pk, "column_name", None) or "grain"
-    return "__".join([*path, leaf])
+    if isinstance(pk, (ColumnKey, ColumnSqlKey)):
+        return "__".join([*pk.path, column_leaf(pk)])
+    return f"grain_{hashlib.sha1(_stable_text(pk).encode()).hexdigest()[:8]}"
 
 
 def _regroup_partition_order(pks: Grain) -> List[ValueKey]:
@@ -286,6 +303,8 @@ def _regroup_producer_prebound(  # NOSONAR(S3776) — one producer-prebound asse
             # A grain key is a dimension the producer GROUPS BY; marking a computed one makes its inner aggregate a ROW attach.
             is_dimension=True,
         ))
+    grain_names = [dm.public_name for dm in grain_dms]
+    assert len(set(grain_names)) == len(grain_names), grain_names  # names wire the join-back
     # Non-aggregate constituents (transforms, arithmetic, scalar) fall back to a
     # bare op/name, so two same-op transforms — ``sum(cumsum(a) - cumsum(b))`` —
     # would collide. Disambiguate against the names already taken (grain + prior
@@ -2582,31 +2601,56 @@ def _association_present_keys(
 
 def _substitute_prebound(
     prebound: PreboundQuery, mapping: Mapping[ValueKey, ValueKey],
-    *, substitute: Callable[..., ValueKey] = substitute_value_keys,
+    *, law: Callable[[ConsumerPosition], Callable[..., ValueKey]] = lambda _p: substitute_value_keys,
+    filter_positions: Optional[Sequence[ConsumerPosition]] = None,
 ) -> PreboundQuery:
-    """Substitute value keys across a prebound's measures / filters / orders.
-
-    ``substitute`` selects the traversal law: deep by default; the re-aggregation
-    pre-substitution passes ``substitute_consumer_keys`` so a root nested where
-    discovery does not look (a mixed row-attach source) is never substituted away."""
+    """Substitute value keys across a prebound's measures / filters / orders; ``law``
+    picks the traversal per consumer position (deep by default)."""
+    dimension: ConsumerPosition = "dimension"
+    measure: ConsumerPosition = "measure"
+    positions: List[ConsumerPosition] = (
+        list(filter_positions) if filter_positions is not None
+        else ["field_filter" for _ in prebound.bound_filters]
+    )
     return prebound.model_copy(update={
         "declared_measures": [
             dm.model_copy(update={"bound": BoundExpr(
-                value_key=substitute(key=dm.bound.value_key, mapping=mapping),
+                value_key=law(dimension if dm.is_dimension else measure)(
+                    key=dm.bound.value_key, mapping=mapping,
+                ),
             )})
             for dm in prebound.declared_measures
         ],
         "bound_filters": [
-            substitute_in_bound_filter(bf, mapping, substitute=substitute)
-            for bf in prebound.bound_filters
+            substitute_in_bound_filter(bf, mapping, substitute=law(p))
+            for bf, p in zip(prebound.bound_filters, positions, strict=True)
         ],
         "order_specs": [
             sp.model_copy(update={"bound": BoundExpr(
-                value_key=substitute(key=sp.bound.value_key, mapping=mapping),
+                value_key=law("order")(key=sp.bound.value_key, mapping=mapping),
             )})
             for sp in prebound.order_specs
         ],
     })
+
+
+def _filter_position(ct: ConjunctTyping) -> ConsumerPosition:
+    return "measure_filter" if ct.typing == MaskTyping.MEASURE else "field_filter"
+
+
+def _substitute_reaggregations(
+    prebound: PreboundQuery, mapping: Mapping[ValueKey, ValueKey],
+    *, filter_typings: Sequence[ConjunctTyping],
+) -> PreboundQuery:
+    """Substitute re-aggregation roots where discovery finds them — its per-position walk."""
+    classes = position_classes(
+        prebound.declared_measures, n_grain=prebound.n_dims + prebound.n_time_dimensions,
+    )
+    return _substitute_prebound(
+        prebound, mapping,
+        law=lambda p: functools.partial(substitute_consumer_keys, opaque=classes.opaque(p)),
+        filter_positions=[_filter_position(ct) for ct in filter_typings],
+    )
 
 
 def _non_aggregate_leaf_check(
@@ -2717,18 +2761,8 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
 
     # Checked before TD resolution — name the combination, not a misleading TD error.
     check_reaggregation_no_window(alias=alias, window_val=window_kwarg_of(root))
-    # Requested outer grain: explicit partition_by= (combined-consumer rule: each
-    # key must be a query dimension) else the query dimensions.
-    if root.partition_keys is not None:
-        requested = list(root.partition_keys)
-        proj_set = set(proj)
-        for g in requested:
-            check_reaggregation_partition_key_is_query_dim(
-                alias=alias,
-                offending=None if g in proj_set else _regroup_grain_name(g),
-            )
-    else:
-        requested = list(proj)
+    # Requested outer grain: explicit partition_by= else the query dimensions.
+    requested = list(root.partition_keys if root.partition_keys is not None else proj)
 
     # Type each outer parameter against the operand grain; a legal aggregate-valued
     # parameter rides the carrier as an extra constituent, a legal column parameter
@@ -3145,30 +3179,6 @@ def _intern_producer(
     return attach.model_copy(update={"producer_plan": shared})
 
 
-class _ReaggregationRoots(BaseModel):
-    """Re-aggregation roots in first-seen order: phase (row wins), alias, type."""
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    phase: Dict[AggregateKey, Literal["row", "combined"]] = Field(default_factory=dict)
-    public_alias: Dict[ValueKey, str] = Field(default_factory=dict)
-    declared_type: Dict[ValueKey, DataType] = Field(default_factory=dict)
-
-
-def _group_reaggregation_roots(dispositions: Sequence[RootDisposition]) -> _ReaggregationRoots:
-    out = _ReaggregationRoots()
-    for d in dispositions:
-        if d.routing != "reaggregation" or not isinstance(d.root, AggregateKey):
-            continue
-        if out.phase.get(d.root) != "row":
-            out.phase[d.root] = d.phase
-        if d.consumer_public_names:
-            out.public_alias.setdefault(d.root, d.consumer_public_names[0])
-        if d.declared_type is not None:
-            out.declared_type.setdefault(d.root, d.declared_type)
-    return out
-
-
 class _RoutedRoots(BaseModel):
     """The discovered roots grouped by (phase, routing), in placeholder-mint order."""
 
@@ -3178,11 +3188,30 @@ class _RoutedRoots(BaseModel):
     row_target: List[ValueKey] = Field(default_factory=list)
     combined_local: List[ValueKey] = Field(default_factory=list)
     combined_target: List[ValueKey] = Field(default_factory=list)
-    reagg_constituents: List[AggregateKey] = Field(default_factory=list)
+    #: Row-phase re-aggregations: a dimension's own, or a row-attach root's constituent.
+    row_reagg: List[AggregateKey] = Field(default_factory=list)
+    combined_reagg: List[AggregateKey] = Field(default_factory=list)
     inline_inputs: List[ValueKey] = Field(default_factory=list)
     public_alias: Dict[ValueKey, str] = Field(default_factory=dict)
     declared_type: Dict[ValueKey, DataType] = Field(default_factory=dict)
     constituent_consumers: Dict[ValueKey, List[str]] = Field(default_factory=dict)
+
+    def add_constituent(self, root: AggregateKey, names: Sequence[str]) -> None:
+        if root not in self.row_reagg:
+            self.row_reagg.append(root)
+        consumers = self.constituent_consumers.setdefault(root, [])
+        consumers.extend(n for n in names if n not in consumers)
+
+    def add_reaggregation(self, d: RootDisposition) -> None:
+        """One attach per (root, phase); name and type are the root's, phase-free."""
+        assert isinstance(d.root, AggregateKey)
+        bucket = self.row_reagg if d.phase == "row" else self.combined_reagg
+        if d.root not in bucket:
+            bucket.append(d.root)
+        if d.consumer_public_names:
+            self.public_alias.setdefault(d.root, d.consumer_public_names[0])
+        if d.declared_type is not None:
+            self.declared_type.setdefault(d.root, d.declared_type)
 
 
 def _combined_rank(k: ValueKey) -> int:
@@ -3198,13 +3227,17 @@ def _group_routed_roots(  # NOSONAR(S3776) — one grouping pass over the dispos
     reagg_mapping: Mapping[ValueKey, ValueKey],
     nests: Callable[[ValueKey, str], bool],
 ) -> _RoutedRoots:
-    """Group non-re-aggregation dispositions, keep only the roots ``nests`` admits
-    (an inline root's inputs always attach), and demote a row-attach root whose
-    every producer disposition was dropped to inline, attaching its inputs."""
+    """Group the dispositions per (phase, routing), keep only the roots ``nests``
+    admits (an inline root's inputs and a re-aggregation always attach), and demote
+    a row-attach root whose every producer disposition was dropped to inline,
+    attaching its inputs."""
     out = _RoutedRoots()
 
-    def _mapped(k: ValueKey) -> ValueKey:
-        return substitute_consumer_keys(k, reagg_mapping) if reagg_mapping else k
+    def _mapped(k: ValueKey, phase: str) -> ValueKey:
+        if not reagg_mapping:
+            return k
+        opaque = is_dimension_transform_root if phase == "row" else None
+        return substitute_consumer_keys(k, reagg_mapping, opaque=opaque)
 
     def _add(bucket: List[Any], k: ValueKey) -> None:
         if k not in bucket:
@@ -3217,15 +3250,16 @@ def _group_routed_roots(  # NOSONAR(S3776) — one grouping pass over the dispos
         names_of.setdefault(d.root, d.consumer_public_names)
     combined: List[Tuple[ValueKey, RootDisposition]] = []
     for d in dispositions:
-        if d.routing in ("reaggregation", "shifted", "inline"):
+        if d.routing in ("shifted", "inline"):
+            continue
+        if d.routing == "reaggregation":
+            out.add_reaggregation(d)
             continue
         if d.routing == "reaggregation_constituent" and isinstance(d.root, AggregateKey):
-            _add(out.reagg_constituents, d.root)
-            consumers = out.constituent_consumers.setdefault(d.root, [])
-            consumers.extend(n for n in d.consumer_public_names if n not in consumers)
+            out.add_constituent(d.root, d.consumer_public_names)
             continue
         is_input = d.phase == "row" and d.root in inputs
-        k = d.root if is_input else _mapped(d.root)
+        k = d.root if is_input else _mapped(d.root, d.phase)
         if d.phase == "row":
             if is_input or nests(k, "row"):
                 _add(out.row_target if d.routing == "target_rooted" else out.row_local, k)
@@ -3244,15 +3278,13 @@ def _group_routed_roots(  # NOSONAR(S3776) — one grouping pass over the dispos
     demoted = [
         d.root for d in dispositions
         if d.routing in ("local_producer", "target_rooted") and is_row_attach_root(d.root)
-        and _mapped(d.root) not in producer_bound and d.root not in inline_roots
+        and _mapped(d.root, d.phase) not in producer_bound and d.root not in inline_roots
     ]
     for root in dict.fromkeys([*inline_roots, *demoted]):
         for inp in (row_attach_inputs(root, names=names_of.get(root, ()))
                     if root in demoted else []):
             if inp.routing == "reaggregation_constituent" and isinstance(inp.root, AggregateKey):
-                _add(out.reagg_constituents, inp.root)
-                consumers = out.constituent_consumers.setdefault(inp.root, [])
-                consumers.extend(n for n in inp.consumer_public_names if n not in consumers)
+                out.add_constituent(inp.root, inp.consumer_public_names)
             else:
                 _add(out.row_target if inp.routing == "target_rooted" else out.row_local,
                      inp.root)
@@ -3544,16 +3576,13 @@ def _plan_regroups(
     reserved-leaf placeholders (row attach at base FROM, combined at the combined
     SELECT)."""
     registry = RegroupPlaceholderRegistry(reserved=reserved_placeholders)
-    reagg = _group_reaggregation_roots(dispositions)
-    reagg_roots = list(reagg.phase)
     reagg_mapping: Dict[ValueKey, ValueKey] = {
-        root: registry.placeholder_for(root) for root in reagg_roots
+        d.root: registry.placeholder_for(d.root)
+        for d in dispositions if d.routing == "reaggregation"
     }
     if reagg_mapping:
-        # Consumer-scoped, so a root nested in a row-attach root's inputs stays in
-        # place for that root's own attach.
-        prebound = _substitute_prebound(
-            prebound, reagg_mapping, substitute=substitute_consumer_keys,
+        prebound = _substitute_reaggregations(
+            prebound, reagg_mapping, filter_typings=filter_typings,
         )
     dim_dms, td_dms, _ = partition_declared_measures(
         declared_measures=prebound.declared_measures,
@@ -3571,11 +3600,10 @@ def _plan_regroups(
     public_alias_by_agg = routed.public_alias
     cm_type = routed.declared_type
     mixed_inline_inner = routed.inline_inputs
-    reagg_constituents = routed.reagg_constituents
-    reagg_constituent_consumers = routed.constituent_consumers
+    row_reaggs, combined_reaggs = routed.row_reagg, routed.combined_reagg
     if (
         not row_aggs and not combined_aggs and not cm_combined and not cm_row
-        and not reagg_roots and not reagg_constituents
+        and not row_reaggs and not combined_reaggs
     ):
         return prebound, []
     # A real column sharing the reserved placeholder prefix would shadow a placeholder at render; reject while a regroup is active.
@@ -3587,7 +3615,7 @@ def _plan_regroups(
     mapping: Dict[ValueKey, ValueKey] = {
         agg: registry.placeholder_for(agg)
         for agg in (
-            *row_aggs, *combined_aggs, *cm_row, *cm_combined, *reagg_constituents,
+            *row_aggs, *combined_aggs, *cm_row, *cm_combined, *row_reaggs,
         )
     }
 
@@ -3667,32 +3695,27 @@ def _plan_regroups(
                 producer_registry=producer_registry,
             ))
 
-    # DEV-1847: one producer-over-producer per re-aggregation root.
-    for root in reagg_roots:
+    # One producer-over-producer per re-aggregation, attached once per phase.
+    for root in combined_reaggs:
         attaches.append(_synthesize_reaggregation_producer(
-            root=root, placeholder=reagg_mapping[root],
-            attach_phase=reagg.phase[root],
-            public_alias=reagg.public_alias.get(root),
+            root=root, placeholder=reagg_mapping[root], attach_phase="combined",
+            public_alias=public_alias_by_agg.get(root),
             context=synthesis_context,
-            declared_type=reagg.declared_type.get(root),
+            declared_type=cm_type.get(root),
             producer_registry=producer_registry, registry=registry,
             inherited=inherited, n_date_range=n_inherited_date,
             population=population,
         ))
-
-    # DEV-1928: a re-aggregation constituent of a row-attach root is the same
-    # second-order producer, but synthesized in a context whose projected grain IS
-    # the constituent's own grain (so each partition key is attributable without
-    # being a query dimension — the compile-time mirror of _reagg_operand_keys) and
-    # attached at ROW phase to broadcast per partition onto the source's rows.
-    for c in reagg_constituents:
+    # A row-phase one is synthesized at its own declared grain (never widened to the
+    # query dimensions) and broadcast per partition onto the base rows.
+    for c in row_reaggs:
         c_grain = constituent_grain(
             c=c, projected_dim_keys=projected_dim_keys,
             projected_td_keys=projected_td_keys, active_bucket=active_bucket,
         )
         attaches.append(_synthesize_reaggregation_producer(
             root=c, placeholder=mapping[c], attach_phase="row",
-            public_alias=None,
+            public_alias=public_alias_by_agg.get(c),
             context=synthesis_context.model_copy(update={
                 "projected_dim_keys": [
                     k for k in c_grain if not isinstance(k, TimeTruncKey)
@@ -3701,11 +3724,11 @@ def _plan_regroups(
                     k for k in c_grain if isinstance(k, TimeTruncKey)
                 ],
             }),
-            declared_type=None,
+            declared_type=cm_type.get(c),
             producer_registry=producer_registry, registry=registry,
             inherited=inherited, n_date_range=n_inherited_date,
             population=population,
-            population_semi_join_measures=reagg_constituent_consumers.get(c, []),
+            population_semi_join_measures=routed.constituent_consumers.get(c),
         ))
 
     # The ROW substitution applies ONLY to computed DIMENSIONS; a non-dim measure

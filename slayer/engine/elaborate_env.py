@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import (
     Callable, Dict, Iterator, List, Literal, NamedTuple, NoReturn, Optional,
-    Sequence, Tuple, Union,
+    Sequence, Tuple, TypeGuard, Union,
 )
 
 from pydantic import BaseModel, ConfigDict
@@ -206,8 +206,8 @@ def opaque_keys(key: ValueKey) -> Iterator[ValueKey]:
 
 
 def is_grained_aggregate(k: ValueKey) -> bool:
-    return isinstance(k, AggregateKey) and k.partition_keys is not None \
-        and not is_reaggregation_key(k)
+    """An explicitly grained aggregate, re-aggregations included."""
+    return isinstance(k, AggregateKey) and k.partition_keys is not None
 
 
 def combined_kind(k: ValueKey) -> Optional[str]:
@@ -222,19 +222,23 @@ def combined_kind(k: ValueKey) -> Optional[str]:
     return "cross_partitioned" if partitioned else "cross_bare"
 
 
-def is_partitioned_consumer(k: ValueKey) -> bool:
+def is_partitioned_consumer(k: ValueKey) -> TypeGuard[AggregateKey]:
     """A partitioned aggregate needing query-dimension keys when consumed combined."""
     return isinstance(k, AggregateKey) and k.partition_keys is not None and not (
         source_anchor_path(k.source) and k.locus == "host"
     )
 
 
-def dimension_transform_roots(nodes: Sequence[ValueKey]) -> List[TransformKey]:
-    """Transforms over a grained aggregate among a computed dimension's nodes."""
-    return [
-        k for k in nodes
-        if isinstance(k, TransformKey) and any(is_grained_aggregate(g) for g in opaque_keys(k.input))
-    ]
+def is_dimension_transform_root(k: ValueKey) -> bool:
+    """A transform over a grained aggregate — in a dimension, it owns its input."""
+    return isinstance(k, TransformKey) and any(
+        is_grained_aggregate(g) for g in opaque_keys(k.input)
+    )
+
+
+def dimension_nodes(key: ValueKey) -> List[ValueKey]:
+    """A computed dimension's consumer nodes, pre-order, not below a transform root."""
+    return [n.key for n in walk_consumer_positions(key, opaque=is_dimension_transform_root)]
 
 
 class ConsumerRoot(NamedTuple):
@@ -273,6 +277,15 @@ class PositionClasses(BaseModel):
     def row_attached(self) -> frozenset:
         return self.row_aggregates | self.row_transform_roots
 
+    def opaque(self, position: ConsumerPosition) -> Optional[Callable[[ValueKey], bool]]:
+        """Keys a position's walk yields but never enters: a dimension's transform
+        roots own their input; a field-typed filter reads a dimension's row value whole."""
+        if position == "dimension":
+            return is_dimension_transform_root
+        if position == "field_filter":
+            return self.row_attached.__contains__
+        return None
+
     def combined_admits(self, node: ConsumerNode, *, position: ConsumerPosition, root: ValueKey) -> bool:
         """A measure skips partition-key subtrees; a measure-typed filter skips a
         dimension's grouped value; an order target that is itself a partitioned
@@ -294,9 +307,9 @@ def position_classes(declared_measures: Sequence[DeclaredMeasure], *, n_grain: i
     for dm in declared_measures:
         if not dm.is_dimension:
             continue
-        nodes = [n.key for n in walk_consumer_positions(dm.bound.value_key)]
-        aggs.update(k for k in nodes if isinstance(k, AggregateKey) and k.partition_keys is not None)
-        troots.update(dimension_transform_roots(nodes))
+        nodes = dimension_nodes(dm.bound.value_key)
+        aggs.update(k for k in nodes if is_grained_aggregate(k))
+        troots.update(k for k in nodes if is_dimension_transform_root(k))
     return PositionClasses(
         dim_keys=frozenset(dm.bound.value_key for dm in declared_measures[:n_grain]),
         row_aggregates=frozenset(aggs), row_transform_roots=frozenset(troots),
@@ -311,22 +324,38 @@ def position_typing_context(prebound: PreboundQuery) -> Tuple[frozenset, frozens
     return pc.dim_keys, pc.row_attached
 
 
-def combined_partitioned_consumers(
-    classes: PositionClasses, *, declared_measures: Sequence[DeclaredMeasure],
-    order_specs: Sequence[OrderSpec], bound_filters: Sequence[BoundFilter],
-    measure_typed: frozenset = frozenset(),
-) -> frozenset:
-    """Partitioned aggregates with a combined-position consumer."""
-    out: set = set()
-    for r in consumer_roots(declared_measures=declared_measures, order_specs=order_specs,
-                            bound_filters=bound_filters, measure_typed=measure_typed):
-        if r.position == "dimension":
-            continue
-        for n in walk_consumer_positions(r.key, dim_keys=classes.dim_keys):
-            if is_partitioned_consumer(n.key) and \
-                    classes.combined_admits(n, position=r.position, root=r.key):
-                out.add(n.key)
-    return frozenset(out)
+def check_combined_partition_keys(
+    prebound: PreboundQuery, *, filter_typings: Sequence[ConjunctTyping],
+    order_texts: Sequence[Optional[str]] = (),
+) -> None:
+    """Every partition key of a combined-consumed partitioned aggregate — plain,
+    cross-model or re-aggregation — is a query dimension; judged after typing."""
+    n_grain = prebound.n_dims + prebound.n_time_dimensions
+    classes = position_classes(prebound.declared_measures, n_grain=n_grain)
+    texts = list(prebound.bound_filter_texts)
+    consumers: List[Tuple[ValueKey, ConsumerPosition, str]] = []
+    for dm in prebound.declared_measures:
+        if not dm.is_dimension:
+            consumers.append((dm.bound.value_key, "measure", f"measure {dm.public_name!r}"))
+    for i, sp in enumerate(prebound.order_specs):
+        text = order_texts[i] if i < len(order_texts) else i
+        consumers.append((sp.bound.value_key, "order", f"order item {text!r}"))
+    for i, (bf, ct) in enumerate(zip(prebound.bound_filters, filter_typings, strict=True)):
+        if ct.typing == MaskTyping.MEASURE:
+            text = texts[i] if i < len(texts) else None
+            consumers.append((bf.value_key, "measure_filter", f"filter {text!r}" if text else "filter"))
+    available = [dm.declared_name for dm in prebound.declared_measures[:n_grain]]
+    for root, position, location in consumers:
+        for n in walk_consumer_positions(root, dim_keys=classes.dim_keys):
+            if not (is_partitioned_consumer(n.key)
+                    and classes.combined_admits(n, position=position, root=root)):
+                continue
+            for pk in n.key.partition_keys or ():
+                check_partition_key_resolves(
+                    label=location, pk=pk, is_query_dim=pk in classes.dim_keys,
+                    ambiguous=False, maps_to_bucket=False, lenient=False,
+                    available_dims=[d for d in available if d is not None],
+                )
 
 
 def type_and_split_filters(
@@ -1179,20 +1208,6 @@ def check_reaggregation_no_window(*, alias: str, window_val) -> None:
             location=f"measure {alias!r}",
             suggestion="Apply the window inside the operand or consume the "
             "re-aggregated value through a transform.",
-        )
-
-
-def check_reaggregation_partition_key_is_query_dim(
-    *, alias: str, offending: Optional[str],
-) -> None:
-    """Every explicit outer partition key must be a query dimension; ``offending`` = the key's display name when it is not."""
-    if offending is not None:
-        raise PartitionKeyError(
-            summary=f"The re-aggregation declares partition_by={offending}, which "
-            f"is not a query dimension; every explicit partition key must be a "
-            f"query dimension.",
-            location=f"measure {alias!r}",
-            suggestion="Add it to dimensions/time_dimensions.",
         )
 
 
