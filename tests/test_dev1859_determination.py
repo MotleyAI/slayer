@@ -24,6 +24,7 @@ from slayer.engine.join_safety import grain_determines
 
 from tests._dev1840_fixtures import dev1840_models
 from tests._dev1847_fixtures import dev1847_models
+from tests._engine_helpers import models_bundle
 
 
 def _mbn(models: List[SlayerModel]) -> dict:
@@ -46,7 +47,7 @@ class TestRecursiveAggregateArm:
             [ColumnKey(leaf="status"), ColumnKey(path=("customers",), leaf="id")])
         assert grain_determines(
             key=key, grain=grain, host_model=mbn["orders"],
-            models_by_name=mbn) is True
+            models_by_name=mbn, bundle=models_bundle(mbn)) is True
 
     def test_aggregate_valued_partition_key_within_grain(self):
         """A partition key that is itself `sum(amount, partition_by=region)` is
@@ -60,7 +61,7 @@ class TestRecursiveAggregateArm:
         grain = Grain.of([ColumnKey(leaf="region")])
         assert grain_determines(
             key=outer, grain=grain, host_model=mbn["sales"],
-            models_by_name=mbn) is True
+            models_by_name=mbn, bundle=models_bundle(mbn)) is True
 
     def test_exact_expression_partition_key_is_a_member(self):
         """An expression-valued partition key is determined only as an exact
@@ -76,7 +77,7 @@ class TestRecursiveAggregateArm:
                            partition_keys=Grain.of([band]))
         assert grain_determines(
             key=key, grain=Grain.of([band]), host_model=mbn["sales"],
-            models_by_name=mbn) is True
+            models_by_name=mbn, bundle=models_bundle(mbn)) is True
 
 
 class TestUndeterminedStaysConservative:
@@ -92,7 +93,7 @@ class TestUndeterminedStaysConservative:
         grain = Grain.of([ColumnKey(leaf="city"), ColumnKey(leaf="region")])
         assert grain_determines(
             key=key, grain=grain, host_model=mbn["sales"],
-            models_by_name=mbn) is False
+            models_by_name=mbn, bundle=models_bundle(mbn)) is False
 
     def test_aggregate_valued_partition_key_outside_grain(self):
         models = dev1847_models()
@@ -103,7 +104,7 @@ class TestUndeterminedStaysConservative:
                              partition_keys=Grain.of([inner]))
         assert grain_determines(
             key=outer, grain=Grain.of([ColumnKey(leaf="city")]),
-            host_model=mbn["sales"], models_by_name=mbn) is False
+            host_model=mbn["sales"], models_by_name=mbn, bundle=models_bundle(mbn)) is False
 
     def test_non_member_expression_partition_key(self):
         band = ArithmeticKey(
@@ -117,7 +118,7 @@ class TestUndeterminedStaysConservative:
                            partition_keys=Grain.of([band]))
         assert grain_determines(
             key=key, grain=Grain.of([ColumnKey(leaf="region")]),
-            host_model=mbn["sales"], models_by_name=mbn) is False
+            host_model=mbn["sales"], models_by_name=mbn, bundle=models_bundle(mbn)) is False
 
 
 class TestColumnArmControl:
@@ -132,4 +133,4 @@ class TestColumnArmControl:
             [ColumnKey(leaf="status"), ColumnKey(path=("customers",), leaf="id")])
         assert grain_determines(
             key=name, grain=grain, host_model=mbn["orders"],
-            models_by_name=mbn) is True
+            models_by_name=mbn, bundle=models_bundle(mbn)) is True

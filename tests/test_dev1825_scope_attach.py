@@ -32,7 +32,7 @@ def _orders() -> SlayerModel:
 def _scope(*, attached=None) -> ScopeFrame:
     host = _orders()
     alloc = AliasAllocator()
-    bundle = ResolvedSourceBundle(source_model=host, referenced_models=[host])
+    bundle = ResolvedSourceBundle(dialect="postgres", source_model=host, referenced_models=[host])
     return ScopeFrame(
         scope_id=alloc.next_scope_id(host.name),
         root_model=host, root_relation=host.name,

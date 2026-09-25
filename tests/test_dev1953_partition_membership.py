@@ -92,7 +92,7 @@ def _assert_membership_error(msg: str, *, key: str, grain: str, op: str = "rank"
 
 def _sales_bundle() -> ResolvedSourceBundle:
     models = dev1847_models()
-    return ResolvedSourceBundle(source_model=models[0], referenced_models=models[1:])
+    return ResolvedSourceBundle(dialect="postgres", source_model=models[0], referenced_models=models[1:])
 
 
 def _measure(formula: str) -> ModelMeasure:

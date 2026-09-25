@@ -1,34 +1,4 @@
-"""DEV-1746 §5.9 — pagination through the dialect strategy (B3).
-
-Today SLayer paginates three different ways depending on which render path a
-query happens to take:
-
-* the plain single-model path sets ``limit``/``offset`` on the sqlglot
-  ``Select`` (correct everywhere — sqlglot transposes T-SQL's ``TOP`` /
-  ``OFFSET … FETCH``),
-* the transform-chain paths hand the detached nodes to ``emit_outer_wrap``
-  (also correct — ``TsqlDialect`` re-attaches them to a ``Select``),
-* and the **cross-model combined path appends raw text**::
-
-      sql += f"\\nLIMIT {planned_query.limit}"
-
-  which emits a literal ``LIMIT 10 OFFSET 5`` on SQL Server. So the *same*
-  cross-model query is valid T-SQL when it carries a transform layer and
-  invalid when it does not.
-
-B3 routes every path through one dialect-strategy hook. The T-SQL rule is
-specified rather than discovered: limit-only becomes ``TOP``; an offset without
-an ``ORDER BY`` gets a deterministic ``ORDER BY (SELECT NULL)`` before
-``OFFSET … ROWS``, because SQL Server rejects ``OFFSET`` without ordering.
-sqlglot 30.11 happens to do this itself, but that is *its* behaviour, not our
-contract — these tests pin the contract so a sqlglot upgrade that drops it
-fails here instead of at a customer's database.
-
-The matrix is {limit-only, offset-only, both} x {with, without ORDER BY} x
-{tsql, bigquery, postgres, snowflake, sqlite} x {plain, outer-trim, combined},
-plus SQLite execution for all three shapes (Codex D5 — pagination changes row
-sets, so parse-only coverage is not enough).
-"""
+"""Pagination through the dialect strategy."""
 
 from __future__ import annotations
 
@@ -88,9 +58,7 @@ def _plain_query(
 def _outer_trim_query(
     *, limit: Optional[int], offset: Optional[int], ordered: bool,
 ) -> SlayerQuery:
-    """Ordering by an aggregate that is NOT projected materialises a hidden
-    slot, so the generator wraps the base SELECT to trim it — the outer-trim
-    shape, whose pagination lands on the wrapper rather than the base."""
+    """Ordering by a non-projected aggregate produces the outer-trim wrapper shape."""
     return SlayerQuery(
         source_model="orders",
         dimensions=[ColumnRef(name="status")],
@@ -166,8 +134,7 @@ class TestPaginationMatrix:
     async def test_tsql_never_emits_a_bare_limit_keyword(
         self, shape: str, limit, offset, ordered: bool,
     ) -> None:
-        """NEW (B3): SQL Server has no ``LIMIT``. The combined shape emits one
-        today; after B3 no shape does."""
+        """SQL Server has no ``LIMIT``."""
         query = SHAPES[shape](limit=limit, offset=offset, ordered=ordered)
         sql = await _gen_sql(query, dialect="tsql")
         found = _BARE_LIMIT.search(sql)
@@ -181,11 +148,7 @@ class TestPaginationMatrix:
     async def test_tsql_limit_only_uses_top(
         self, shape: str, ordered: bool,
     ) -> None:
-        """The specified T-SQL rule, part 1: a limit with no offset is ``TOP``.
-
-        Asserted on the OUTER statement rendered without its CTEs — a global
-        search could be satisfied by a ``TOP`` inside an inner scope.
-        """
+        """The specified T-SQL rule, part 1: a limit with no offset is ``TOP``."""
         query = SHAPES[shape](limit=10, offset=None, ordered=ordered)
         sql = await _gen_sql(query, dialect="tsql")
         outer = outer_clause_sql(sql, dialect="tsql")
@@ -199,15 +162,7 @@ class TestPaginationMatrix:
     async def test_tsql_offset_always_carries_an_order_by(
         self, shape: str, limit, offset,
     ) -> None:
-        """The specified T-SQL rule, part 2: ``OFFSET`` requires an ``ORDER BY``
-        **on the SELECT that carries the OFFSET**.
-
-        The ordering is asserted on the outer statement's own AST node, not by
-        searching the text: a window function's ``OVER (ORDER BY …)``, a hidden
-        order slot, or an inner CTE would satisfy a global search while leaving
-        the paginated SELECT unordered — precisely the SQL Server error this
-        rule exists to prevent.
-        """
+        """T-SQL rule, part 2: ``OFFSET`` requires an ``ORDER BY`` on the same SELECT."""
         query = SHAPES[shape](limit=limit, offset=offset, ordered=False)
         sql = await _gen_sql(query, dialect="tsql")
         outer = outer_statement(sql, dialect="tsql")
@@ -223,8 +178,7 @@ class TestPaginationMatrix:
 
     @pytest.mark.parametrize("shape", sorted(SHAPES))
     async def test_tsql_limit_with_offset_uses_fetch(self, shape: str) -> None:
-        """With an offset present the limit becomes ``FETCH … ROWS ONLY``
-        (``TOP`` cannot express a window)."""
+        """With an offset present the limit becomes ``FETCH … ROWS ONLY`` (``TOP`` cannot express a window)."""
         query = SHAPES[shape](limit=10, offset=5, ordered=True)
         sql = await _gen_sql(query, dialect="tsql")
         outer = outer_clause_sql(sql, dialect="tsql")
@@ -240,9 +194,7 @@ class TestPaginationMatrix:
     async def test_non_tsql_dialects_keep_limit_offset(
         self, dialect: str, shape: str,
     ) -> None:
-        """Regression guard: routing through the hook must not change the
-        dialects that were already correct — and the bounds must land on the
-        OUTER statement, not on some inner scope."""
+        """Other dialects are unchanged and bounds land on the outer statement."""
         query = SHAPES[shape](limit=10, offset=5, ordered=True)
         sql = await _gen_sql(query, dialect=dialect)
         outer = outer_statement(sql, dialect=dialect)
@@ -258,8 +210,7 @@ class TestPaginationMatrix:
 # The hook itself.
 # =========================================================================== #
 class TestApplyPaginationHook:
-    """``SqlDialect.apply_pagination`` is the single place pagination is
-    expressed, so it gets direct coverage independent of any query shape."""
+    """Direct coverage of ``SqlDialect.apply_pagination``."""
 
     @staticmethod
     def _select() -> exp.Select:
@@ -324,13 +275,10 @@ class TestApplyPaginationHook:
 
 
 # =========================================================================== #
-# DEV-1783 item 2 — the OTHER outer wrap (emit_outer_wrap), which had no guard.
+# The OTHER outer wrap (emit_outer_wrap), which had no guard.
 # =========================================================================== #
 class TestEmitOuterWrapInjectsOrderingForOffset:
-    """``emit_outer_wrap`` (transform-chain / cross-model combined outer wrap)
-    must apply the same OFFSET-needs-ORDER-BY guard ``apply_pagination`` does —
-    SQL Server rejects OFFSET without ORDER BY. The guard must cover the AST
-    path AND the base-impl fallback taken for a non-``Select`` inner."""
+    """``emit_outer_wrap`` applies the same OFFSET-needs-ORDER-BY guard."""
 
     @staticmethod
     def _offset(n: int) -> exp.Offset:
@@ -338,9 +286,7 @@ class TestEmitOuterWrapInjectsOrderingForOffset:
 
     @staticmethod
     def _assert_bare_offset_guarded(out: str) -> None:
-        """OFFSET is emitted, ordered by the synthesized no-op (a ``SELECT NULL``
-        subquery — sqlglot renders it via its NULLS-ordering ``CASE`` form, not a
-        literal ``ORDER BY (SELECT NULL)``), never a real column."""
+        """OFFSET is ordered by a synthesized no-op, never a real column."""
         assert re.search(r"\bORDER\s+BY\b", out, re.IGNORECASE), (
             f"tsql outer-wrap emitted OFFSET without ORDER BY:\n{out}"
         )
@@ -351,17 +297,15 @@ class TestEmitOuterWrapInjectsOrderingForOffset:
 
     def test_ast_path_injects_ordering_for_a_bare_offset(self) -> None:
         out = get_dialect("tsql").emit_outer_wrap(
-            inner_sql="SELECT 1 AS a", public=["a"],
+            inner_sql="SELECT 1 AS a", public=["a"], projected=["a"],
             order=None, limit=None, offset_arg=self._offset(5),
         )
         self._assert_bare_offset_guarded(out)
 
     def test_base_fallback_injects_ordering_for_a_bare_offset(self) -> None:
-        """A UNION inner parses to a non-``Select`` and takes the base-impl
-        fallback, which also appends OFFSET with no ORDER BY. The guard runs
-        before branching, so the fallback receives the synthesized ordering."""
+        """A UNION inner takes the base-impl fallback, which also appends OFFSET."""
         out = get_dialect("tsql").emit_outer_wrap(
-            inner_sql="SELECT 1 AS a UNION SELECT 2 AS a", public=["a"],
+            inner_sql="SELECT 1 AS a UNION SELECT 2 AS a", public=["a"], projected=["a"],
             order=None, limit=None, offset_arg=self._offset(5),
         )
         self._assert_bare_offset_guarded(out)
@@ -371,7 +315,7 @@ class TestEmitOuterWrapInjectsOrderingForOffset:
             exp.Ordered(this=exp.column("a", quoted=True)),
         ])
         out = get_dialect("tsql").emit_outer_wrap(
-            inner_sql="SELECT 1 AS a", public=["a"],
+            inner_sql="SELECT 1 AS a", public=["a"], projected=["a"],
             order=user_order, limit=None, offset_arg=self._offset(5),
         )
         assert "SELECT NULL" not in out.upper(), (
@@ -387,8 +331,7 @@ class TestEmitOuterWrapInjectsOrderingForOffset:
 # Execution — pagination changes row sets, so parse-only is not enough (D5).
 # =========================================================================== #
 class TestPaginationExecution:
-    """Seeded groups: ``paid`` sums to 30.0, the NULL-status group to 12.0 —
-    distinct, so ordering and slicing are unambiguous."""
+    """Seeded groups: ``paid`` sums to 30.0, the NULL-status group to 12.0."""
 
     async def test_plain_shape_limit_and_offset(
         self, exec_engine: SlayerQueryEngine,
@@ -408,8 +351,7 @@ class TestPaginationExecution:
     async def test_outer_trim_shape_limit_and_offset(
         self, exec_engine: SlayerQueryEngine,
     ) -> None:
-        """Pagination on the trim wrapper must slice the same ordering the
-        hidden aggregate defines, and must not resurrect the hidden column."""
+        """The trim wrapper slices the hidden-aggregate ordering without resurrecting it."""
         top = await exec_engine.execute(
             _outer_trim_query(limit=1, offset=None, ordered=True),
         )
@@ -426,7 +368,7 @@ class TestPaginationExecution:
     async def test_combined_shape_limit_and_offset(
         self, exec_engine: SlayerQueryEngine,
     ) -> None:
-        """NEW (B3), EXECUTED: the cross-model combined shape paginates."""
+        """The cross-model combined shape paginates when executed."""
         top = await exec_engine.execute(
             _combined_query(limit=1, offset=None, ordered=True),
         )

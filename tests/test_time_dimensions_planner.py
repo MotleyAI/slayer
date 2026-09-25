@@ -154,6 +154,7 @@ def _orders_with_derived_temporal() -> SlayerModel:
 
 def _bundle_local() -> ResolvedSourceBundle:
     return ResolvedSourceBundle(
+        dialect="postgres",
         source_model=_orders_model(),
         referenced_models=[],
     )
@@ -161,6 +162,7 @@ def _bundle_local() -> ResolvedSourceBundle:
 
 def _bundle_joined() -> ResolvedSourceBundle:
     return ResolvedSourceBundle(
+        dialect="postgres",
         source_model=_orders_with_customers_join(),
         referenced_models=[_customers_model()],
     )
@@ -168,6 +170,7 @@ def _bundle_joined() -> ResolvedSourceBundle:
 
 def _bundle_multi_hop() -> ResolvedSourceBundle:
     return ResolvedSourceBundle(
+        dialect="postgres",
         source_model=_orders_with_customers_join(),
         referenced_models=[_customers_with_regions_join(), _regions_model()],
     )
@@ -175,6 +178,7 @@ def _bundle_multi_hop() -> ResolvedSourceBundle:
 
 def _bundle_derived() -> ResolvedSourceBundle:
     return ResolvedSourceBundle(
+        dialect="postgres",
         source_model=_orders_with_derived_temporal(),
         referenced_models=[],
     )

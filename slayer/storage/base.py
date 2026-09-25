@@ -37,6 +37,8 @@ from slayer.storage.legacy_alias_rewrite import (
     extract_dunder_chains,
     mode_a_surface_texts,
 )
+from slayer.sql.dialects import dialect_for_ds_type
+from slayer.sql.sql_template import check_aggregation_definition
 from slayer.storage.type_refinement import (
     has_refineable_columns,
     has_sqlite_widenable_columns,
@@ -46,6 +48,8 @@ from slayer.storage.type_refinement import (
 
 
 _TO_ONE_CARDINALITIES = {"many_to_one", "one_to_one"}
+# Live type refinement repairs pre-v11 schemas only; later bumps are dict-only.
+_LIVE_REFINEMENT_BELOW_VERSION = 11
 
 
 def _is_exact_inverse_join(a: dict, b: dict) -> bool:
@@ -352,7 +356,18 @@ class StorageBackend(ABC):
                 await self._check_model_identity_collision(model)
             await validate_derived_columns(model=model, storage=self)
             await self._validate_join_edges(model)
+            await self._validate_aggregations(model)
         await self._save_model_impl(model)
+
+    async def _validate_aggregations(self, model: SlayerModel) -> None:
+        if not model.aggregations:
+            return
+        ds = await self.get_datasource(model.data_source) if model.data_source else None
+        dialect = dialect_for_ds_type(ds.type).sqlglot_name if ds else ""
+        for agg in model.aggregations:
+            check_aggregation_definition(
+                where=f"Model '{model.name}', aggregation '{agg.name}'", agg=agg, dialect=dialect,
+            )
 
     async def _validate_join_edges(self, model: SlayerModel) -> None:
         """Save-time join validation: reject duplicate incident edge names, edge/model name collisions (both directions), and exact-inverse re-declarations; warn on unnamed parallel edges."""
@@ -590,9 +605,10 @@ class StorageBackend(ABC):
                 name=name, data=data, data_source=data_source,
             )
             write_back = True
-            await self._apply_refinement_or_raise(
-                name=name, data=data, data_source=data_source,
-            )
+            if pre_version < _LIVE_REFINEMENT_BELOW_VERSION:
+                await self._apply_refinement_or_raise(
+                    name=name, data=data, data_source=data_source,
+                )
         model = SlayerModel.model_validate(data)
         if write_back:
             # Write-back must not re-validate: legacy models may hold cycles or

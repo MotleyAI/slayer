@@ -4226,6 +4226,7 @@ class TestDev1709WidenedIsolationShapes:
                    type=DataType.INT),
         ])
         bundle = ResolvedSourceBundle(
+            dialect="postgres",
             source_model=orders,
             referenced_models=[self._customers_model(), self._regions_model()],
         )
@@ -4259,6 +4260,7 @@ class TestDev1709WidenedIsolationShapes:
                    type=DataType.DOUBLE),
         ])
         bundle = ResolvedSourceBundle(
+            dialect="postgres",
             source_model=orders,
             referenced_models=[self._customers_model(), self._regions_model()],
         )
@@ -10837,7 +10839,7 @@ class TestWindowedMeasureGuards:
             )
 
         def _bundle(model: SlayerModel, referenced=None) -> ResolvedSourceBundle:
-            return ResolvedSourceBundle(source_model=model, referenced_models=referenced or [])
+            return ResolvedSourceBundle(dialect="postgres", source_model=model, referenced_models=referenced or [])
 
         if case == "g1_non_sum_avg":
             # DEV-1915 lift: window= is no longer sum/avg-only — min plans cleanly.

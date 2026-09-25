@@ -29,6 +29,7 @@ M = ModelMeasure(formula="amount:sum", name="m")
 def _bundle() -> ResolvedSourceBundle:
     models = dev1838_models()
     return ResolvedSourceBundle(
+        dialect="postgres",
         source_model=models[0], referenced_models=list(models[1:]),
     )
 

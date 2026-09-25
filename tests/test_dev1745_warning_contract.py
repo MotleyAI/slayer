@@ -356,6 +356,7 @@ class TestLowerLayersStaySilent:
     def test_planning_emits_no_python_warning(self) -> None:
 
         bundle = ResolvedSourceBundle(
+            dialect="duckdb",
             source_model=_orders(),
             referenced_models=[_customers(), _warehouses(), _shippers()],
         )
@@ -370,6 +371,7 @@ class TestLowerLayersStaySilent:
     def test_rendering_emits_no_python_warning(self) -> None:
 
         bundle = ResolvedSourceBundle(
+            dialect="duckdb",
             source_model=_orders(),
             referenced_models=[_customers(), _warehouses(), _shippers()],
         )

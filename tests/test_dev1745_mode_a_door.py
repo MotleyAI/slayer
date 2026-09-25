@@ -94,6 +94,7 @@ def _scope(dialect: str = "postgres") -> ScopeFrame:
     host = _orders()
     alloc = AliasAllocator()
     bundle = ResolvedSourceBundle(
+        dialect="postgres",
         source_model=host, referenced_models=[host, _customers(), _regions()],
     )
     return ScopeFrame(
@@ -172,6 +173,7 @@ class TestQualification:
         )
         alloc = AliasAllocator()
         bundle = ResolvedSourceBundle(
+            dialect="postgres",
             source_model=host, referenced_models=[host, customers, _regions()],
         )
         scope = ScopeFrame(
@@ -272,6 +274,7 @@ class TestJoinRegistration:
         host = _orders()
         alloc = AliasAllocator()
         bundle = ResolvedSourceBundle(
+            dialect="postgres",
             source_model=host, referenced_models=[host, customers, _regions()],
         )
         scope = ScopeFrame(

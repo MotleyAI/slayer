@@ -134,6 +134,7 @@ async def _dry(engine, query, dialect: str) -> str:
 def _bundle(*, models, root: str) -> ResolvedSourceBundle:
     src = next(x for x in models if x.name == root)
     return ResolvedSourceBundle(
+        dialect="postgres",
         source_model=src, referenced_models=[x for x in models if x.name != root])
 
 

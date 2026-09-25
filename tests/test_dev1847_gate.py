@@ -154,7 +154,7 @@ class TestCrossModelAndFilteredOperandNowAccepted:
 
 def _bound(formula: str):
     models = dev1847_models()
-    bundle = ResolvedSourceBundle(source_model=models[0], referenced_models=models[1:])
+    bundle = ResolvedSourceBundle(dialect="postgres", source_model=models[0], referenced_models=models[1:])
     return bind_expr(
         parse_expr(formula), scope=ModelScope(source_model=models[0]), bundle=bundle,
     ).value_key

@@ -317,6 +317,7 @@ class TestHostLocalFilterReachability:
         orders.columns.append(Column(
             name="probe", type=DataType.DOUBLE, sql=sql, filter=filter_))
         b = ResolvedSourceBundle(
+            dialect="sqlite",
             source_model=orders,
             referenced_models=[m for m in models if m.name != "orders"])
         key = ColumnSqlKey(path=(), model="orders", column_name="probe")

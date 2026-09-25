@@ -221,6 +221,7 @@ def test_filter_over_own_cross_model_aggregate_routes_row_not_combined() -> None
     """The dim's OWN cross-model aggregate in a filter types as FIELD (row-scoped, attached), not measure."""
     models = dev1838_models()
     bundle = ResolvedSourceBundle(
+        dialect="postgres",
         source_model=models[0], referenced_models=list(models[1:]),
     )
     query = q(

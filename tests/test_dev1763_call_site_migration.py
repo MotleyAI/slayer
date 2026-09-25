@@ -184,6 +184,7 @@ def _scope(dialect: str = "postgres") -> ScopeFrame:
     host, cust, reg = _orders(), _customers(), _regions()
     alloc = AliasAllocator()
     bundle = ResolvedSourceBundle(
+        dialect="postgres",
         source_model=host, referenced_models=[host, cust, reg],
     )
     return ScopeFrame(

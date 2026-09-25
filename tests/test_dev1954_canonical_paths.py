@@ -61,6 +61,7 @@ def _bundle(root: str = "orders") -> ResolvedSourceBundle:
     models = dev1954_models()
     src = next(m for m in models if m.name == root)
     return ResolvedSourceBundle(
+        dialect="postgres",
         source_model=src, referenced_models=[m for m in models if m.name != root])
 
 

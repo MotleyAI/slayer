@@ -14,7 +14,7 @@ from slayer.ir.source_bundle import ResolvedSourceBundle
 
 
 def _bundle() -> ResolvedSourceBundle:
-    return ResolvedSourceBundle(source_model=SlayerModel(
+    return ResolvedSourceBundle(dialect="postgres", source_model=SlayerModel(
         name="orders", data_source="coh_ds", sql_table="orders",
         columns=[
             Column(name="id", type=DataType.INT, primary_key=True),

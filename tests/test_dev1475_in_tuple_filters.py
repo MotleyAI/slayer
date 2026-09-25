@@ -165,8 +165,9 @@ class TestParserGuards:
         # the parser and constructs ``InKey(values=())`` directly, the
         # SQL generator must not emit invalid ``col IN ()``. The
         # field_validator on InKey raises at construction time.
+        column = ColumnKey(leaf="status")
         with pytest.raises(ValueError, match="non-empty"):
-            InKey(column=ColumnKey(leaf="status"), values=())
+            InKey(column=column, values=())
 
 
 # ---------------------------------------------------------------------------
@@ -221,7 +222,7 @@ class TestBinder:
 
         model = _make_orders_with_status()
         parsed = parse_filter_expr("status in ('completed', 'pending')")
-        bundle = ResolvedSourceBundle(source_model=model, referenced_models=[])
+        bundle = ResolvedSourceBundle(dialect="postgres", source_model=model, referenced_models=[])
         scope = ModelScope(source_model=model)
         bound = bind_filter(parsed, scope=scope, bundle=bundle)
 
@@ -238,7 +239,7 @@ class TestBinder:
 
         model = _make_orders_with_status()
         parsed = parse_filter_expr("status not in ('cancelled',)")
-        bundle = ResolvedSourceBundle(source_model=model, referenced_models=[])
+        bundle = ResolvedSourceBundle(dialect="postgres", source_model=model, referenced_models=[])
         scope = ModelScope(source_model=model)
         bound = bind_filter(parsed, scope=scope, bundle=bundle)
 

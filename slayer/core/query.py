@@ -916,7 +916,7 @@ class SlayerQuery(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    version: int = 4
+    version: int = CURRENT_VERSIONS["SlayerQuery"]
     name: str | None = Field(
         default=None,
         description=(

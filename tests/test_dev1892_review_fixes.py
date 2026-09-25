@@ -46,7 +46,7 @@ from tests._dev1892_fixtures import (
     unmodeled_physical_expr_default_models,
     unparseable_expr_default_models,
 )
-from tests._engine_helpers import _engine_generate
+from tests._engine_helpers import _engine_generate, models_bundle
 
 
 def _customers_model(*, key_sql: str | None) -> SlayerModel:
@@ -90,6 +90,7 @@ class TestGrainDeterminesRenamedKey:
         assert grain_determines(
             key=ColumnKey(leaf="name"), grain=Grain.of([ColumnKey(leaf="id")]),
             host_model=model, models_by_name={"customers": model},
+            bundle=models_bundle({"customers": model}),
         )
 
     def test_plain_key_unaffected(self) -> None:
@@ -97,6 +98,7 @@ class TestGrainDeterminesRenamedKey:
         assert grain_determines(
             key=ColumnKey(leaf="name"), grain=Grain.of([ColumnKey(leaf="id")]),
             host_model=model, models_by_name={"customers": model},
+            bundle=models_bundle({"customers": model}),
         )
 
     def test_renamed_fk_seeds_to_one_hop(self) -> None:
@@ -106,7 +108,7 @@ class TestGrainDeterminesRenamedKey:
         assert grain_determines(
             key=ColumnKey(path=("regions",), leaf="pop"),
             grain=Grain.of([ColumnKey(leaf="region_id")]),
-            host_model=customers, models_by_name=models,
+            host_model=customers, models_by_name=models, bundle=models_bundle(models),
         )
 
     def test_plain_fk_unaffected(self) -> None:
@@ -114,7 +116,7 @@ class TestGrainDeterminesRenamedKey:
         assert grain_determines(
             key=ColumnKey(path=("regions",), leaf="pop"),
             grain=Grain.of([ColumnKey(leaf="region_id")]),
-            host_model=customers, models_by_name=models,
+            host_model=customers, models_by_name=models, bundle=models_bundle(models),
         )
 
 

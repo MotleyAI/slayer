@@ -732,6 +732,7 @@ class TestBinderParity:
         # resolution, but the circular error keeps the complete reference as
         # spelled (bound directly, before the query layer's own prefix strip).
         bundle = ResolvedSourceBundle(
+            dialect="postgres",
             source_model=_orders(), referenced_models=[_customers(), _regions()])
         parsed = parse_expr("orders.customers.regions.customers.spend")
         scope = ModelScope(source_model=_orders())
