@@ -259,6 +259,28 @@ class ColumnSqlKey(_LeafKey, frozen=True):
         return Phase.ROW
 
 
+class SqlFragmentKey(_FrozenKey, frozen=True):
+    """A bound aggregation-parameter expression: canonical Mode-A ``template`` whose
+    ``{r<i>}`` placeholders stand for ``refs[i]`` (absolute column keys). Phase ROW."""
+
+    template: str
+    refs: Tuple[Union[ColumnKey, ColumnSqlKey], ...] = ()
+
+    @property
+    def phase(self) -> Phase:
+        return Phase.ROW
+
+    def children(self) -> Tuple["ValueKey", ...]:
+        return self.refs
+
+    def map_children(
+        self, fn: Callable[["ValueKey"], "ValueKey"],
+    ) -> "SqlFragmentKey":
+        m = _ChildMapper(fn)
+        refs = tuple(m(r) for r in self.refs)
+        return self.model_copy(update={"refs": refs}) if m.changed else self
+
+
 class TimeTruncKey(_FrozenKey, frozen=True):
     """Row-level reference to a time-truncated column, keyed by (column, granularity).
 
@@ -354,7 +376,8 @@ _AggregateSource = Union[
 # `weighted_avg(weight=rank(sum(amount, partition_by=…)))` a grained transform —
 # all via `_bind_agg_arg`.
 _AggregateArgValue = Union[
-    ColumnKey, ColumnSqlKey, "AggregateKey", "TransformKey", Decimal, str, bool, None,
+    ColumnKey, ColumnSqlKey, SqlFragmentKey, "AggregateKey", "TransformKey",
+    Decimal, str, bool, None,
 ]
 _AggregateKwargValue = _AggregateArgValue
 
@@ -705,6 +728,7 @@ ValueKey = Union[
     ScalarCallKey,
     BetweenKey,
     InKey,
+    SqlFragmentKey,
 ]
 
 
@@ -844,6 +868,7 @@ KIND_POLICY: dict[type, KindPolicy] = {
     ScalarCallKey: KindPolicy(slot_composite=True, materialised_order=True),
     BetweenKey: KindPolicy(),
     InKey: KindPolicy(),
+    SqlFragmentKey: KindPolicy(),
 }
 
 
@@ -1209,6 +1234,7 @@ def rewrite_rank_partition_keys(
         and bool(key.partition_keys)
     ) or (isinstance(key, AggregateKey) and bool(key.partition_keys)):
         new_pk = rewrite_fn(key)
+        assert isinstance(rebuilt, (TransformKey, AggregateKey))
         if new_pk != rebuilt.partition_keys:
             rebuilt = rebuilt.model_copy(update={"partition_keys": new_pk})
     return rebuilt
@@ -1324,6 +1350,14 @@ def source_row_leaves(source: ValueKey) -> List[ValueKey]:
 
     _walk(source)
     return out
+
+
+def parameter_row_leaves(value) -> List[ValueKey]:
+    """The row-level column leaves of an aggregation parameter value; a scalar, a
+    marker string or an attached value (aggregate / transform) has none."""
+    if not isinstance(value, _FrozenKey) or isinstance(value, (AggregateKey, TransformKey)):
+        return []
+    return source_row_leaves(cast(ValueKey, value))
 
 
 def _leaf_join_path(k: ValueKey) -> Tuple[str, ...]:

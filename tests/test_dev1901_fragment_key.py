@@ -57,7 +57,7 @@ class TestShape:
     def test_refs_reject_non_column_keys(self) -> None:
         agg = AggregateKey(source=AMOUNT, agg="sum")
         with pytest.raises(ValidationError):
-            SqlFragmentKey(template="{r0}", refs=(agg,))
+            SqlFragmentKey(template="{r0}", refs=(agg,))  # pyright: ignore[reportArgumentType] — deliberately invalid
 
 
 class TestIdentity:

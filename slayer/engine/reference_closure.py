@@ -15,9 +15,8 @@ and the key-tree ``_child_keys`` dispatch that lived in ``filter_reachability``.
 
 from __future__ import annotations
 
-import re
 from decimal import Decimal
-from typing import List, NamedTuple, Optional, Tuple
+from typing import List, Optional, Tuple
 
 import sqlglot
 from sqlglot import exp
@@ -31,34 +30,27 @@ from slayer.core.keys import (
     InKey,
     LiteralKey,
     ScalarCallKey,
+    SqlFragmentKey,
     StarKey,
     TimeTruncKey,
     TransformKey,
     ValueKey,
-    source_anchor_path,
     source_row_leaves,
 )
 from slayer.core.errors import (
     CircularJoinPathError,
     SlayerError,
-    UnresolvableDimensionJoinError,
 )
-from slayer.core.models import AggregationParam, Column, SlayerModel
-from slayer.ir.prebound import walk_key_path
+from slayer.core.models import Column, SlayerModel
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.column_expansion import (
     ColumnCycleError,
     expand_derived_refs_sync,
     is_trivial_base,
-    requalify_default_references,
-    resolve_default_qualifier_path,
-    resolve_default_reference_paths,
 )
 
 Path = Tuple[str, ...]
 
-_BARE_IDENT_RE = re.compile(r"^[A-Za-z_]\w*$")
-_DOTTED_PATH_RE = re.compile(r"^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+$")
 
 # The planner doesn't carry the datasource dialect, so a backend-specific
 # ``Column.sql`` / filter (MySQL backticks, T-SQL brackets, ClickHouse fns) could
@@ -250,6 +242,8 @@ def _child_keys(node, *, descend_aggregates: bool = True) -> List:
         return [node.column, *node.values]
     if isinstance(node, BetweenKey):
         return [node.column, node.low, node.high]
+    if isinstance(node, SqlFragmentKey):
+        return list(node.refs)
     raise UnhandledValueKindError(node)
 
 
@@ -354,30 +348,9 @@ def _leaf_closure(
         )
     if isinstance(node, ColumnKey):
         return _prefixes(tuple(node.path))
-    if isinstance(node, str):
-        frag = fragment_closure(
-            sql=node, model=anchor_model, owner_path=(),
-            anchor_relation=anchor_relation, bundle=bundle, cache=cache,
-        )
-        return None if frag is None else list(frag)
     return []
 
 
-# ---------------------------------------------------------------------------
-# Aggregation-parameter defaults (moved from compile/stages).
-# ---------------------------------------------------------------------------
-
-
-class ParamSpec(NamedTuple):
-    """A resolved aggregation parameter that references data: a bound ``key``
-    (column / aggregate) or an ``expr_sql`` expression default whose referenced
-    columns are ``expr_refs`` (``None`` = an unresolvable qualifier, fails
-    closed). Literal params never become a ``ParamSpec``."""
-
-    name: str
-    key: Optional[ValueKey]
-    expr_sql: Optional[str]
-    expr_refs: Tuple[Optional[ValueKey], ...] = ()
 
 
 def column_default_key(
@@ -391,184 +364,6 @@ def column_default_key(
         if col is not None and col.needs_expansion:
             return ColumnSqlKey(path=path, model=base.name, column_name=leaf)
     return ColumnKey(path=path, leaf=leaf)
-
-
-def _resolve_default_abs(
-    *, chain: Tuple[str, ...], leaf: str, root_model: SlayerModel,
-    owner_path: Path, root_path: Path, bundle: ResolvedSourceBundle,
-) -> Path:
-    """The absolute (root-frame) path of a dotted default's qualifier chain,
-    resolved owner-first with cancellation and a query-root fallback (DEV-1908);
-    fails closed on an ambiguous or partially-broken chain, or one unreachable
-    from both frames."""
-    mbn = bundle.models_by_name
-    abs_path = resolve_default_qualifier_path(
-        qualifiers=chain, leaf=leaf, root_model=root_model,
-        owner_path=tuple(owner_path), models_by_name=mbn,
-    )
-    if abs_path is None:
-        abs_path = resolve_default_qualifier_path(
-            qualifiers=chain, leaf=leaf, root_model=root_model,
-            owner_path=tuple(root_path), models_by_name=mbn,
-        )
-    if abs_path is None:
-        raise UnresolvableDimensionJoinError(
-            reference=".".join((*chain, leaf)), root_model=root_model.name,
-            reason="not reachable forward from the owning model or the query root.",
-        )
-    return abs_path
-
-
-def default_param_value_key(
-    *, sql: str, owner_path: Path, owner_model: Optional[SlayerModel] = None,
-    bundle: ResolvedSourceBundle, root_model: SlayerModel, root_path: Path = (),
-) -> Optional[ValueKey]:
-    """A bare-identifier or dotted-path definition default → a structured key (a
-    ``ColumnSqlKey`` when the named column is derived); an expression or literal
-    default → ``None``. A bare default is owner-local; a dotted default resolves
-    owner-first with reverse-hop cancellation (DEV-1908) — a qualifier naming a
-    dataset already on the owner's path (the query root included) cancels back to
-    it — falling back to the query root for an owner-unreachable qualifier, and
-    failing closed on an ambiguous or partially-broken chain or one unreachable
-    from both frames."""
-    text = sql.strip()
-    if _BARE_IDENT_RE.match(text):
-        return column_default_key(path=tuple(owner_path), leaf=text, base=owner_model)
-    if not _DOTTED_PATH_RE.match(text):
-        return None
-    parts = text.split(".")
-    abs_path = _resolve_default_abs(
-        chain=tuple(parts[:-1]), leaf=parts[-1], root_model=root_model,
-        owner_path=owner_path, root_path=root_path, bundle=bundle,
-    )
-    return column_default_key(
-        path=abs_path, leaf=parts[-1],
-        base=walk_key_path(model=root_model, path=abs_path, bundle=bundle),
-    )
-
-
-def expr_default_ref_keys(
-    *, sql: str, owner_model: Optional[SlayerModel], owner_path: Path,
-    bundle: ResolvedSourceBundle,
-    root_model: SlayerModel, root_path: Path = (),
-) -> List[Optional[ValueKey]]:
-    """Parse-based column refs of an expression default, as absolute (root-frame)
-    keys. Each reference resolves owner-first with reverse-hop cancellation
-    (DEV-1908), retried root-relative when the owner cannot reach it (so
-    ``spend + orders.amount`` resolves ``spend`` owner-local and ``orders.amount``
-    root-local). ``None`` entries — an unresolvable qualifier, or an unanalysable
-    fragment — fail closed at typing. An ambiguous / partially-broken owner
-    qualifier raises (fail closed), never silently re-anchors at the root."""
-    if owner_model is None:
-        return []
-    parsed = _parse_filter_sql_any_dialect(sql)
-    if parsed is None:
-        return [None]
-    abs_refs = resolve_default_reference_paths(
-        parsed=parsed, owner_path=owner_path,
-        root_model=root_model, root_path=root_path, bundle=bundle,
-    )
-    return [
-        column_default_key(
-            path=abs, leaf=leaf,
-            base=walk_key_path(model=root_model, path=abs, bundle=bundle),
-        )
-        if abs is not None else None
-        for abs, leaf in abs_refs
-    ]
-
-
-def resolve_aggregation_params(
-    *, agg: AggregateKey, owner_model: Optional[SlayerModel], owner_path: Path,
-    bundle: ResolvedSourceBundle,
-    root_model: SlayerModel, root_path: Path = (),
-) -> List[ParamSpec]:
-    """Every aggregation parameter that references data — explicit non-scalar
-    kwargs and non-overridden definition defaults resolved on the owner (terminal
-    of the source path) owner-first with reverse-hop cancellation and a query-root
-    fallback (DEV-1908). Literal params are omitted."""
-    explicit = {name for name, _ in agg.kwargs}
-    out: List[ParamSpec] = [
-        ParamSpec(name=name, key=v, expr_sql=None)
-        for name, v in agg.kwargs
-        if isinstance(v, (ColumnKey, ColumnSqlKey, AggregateKey, TransformKey))
-    ]
-    agg_def = next(
-        (a for a in (owner_model.aggregations or []) if a.name == agg.agg), None,
-    ) if owner_model is not None else None
-    if agg_def is not None and owner_model is not None:
-        out.extend(
-            spec for p in agg_def.params if p.name not in explicit
-            and (spec := _default_param_spec(
-                p=p, owner_model=owner_model, owner_path=owner_path, bundle=bundle,
-                root_model=root_model, root_path=root_path,
-            )) is not None
-        )
-    return out
-
-
-def _default_param_spec(
-    *, p: AggregationParam, owner_model: SlayerModel, owner_path: Path,
-    bundle: ResolvedSourceBundle,
-    root_model: SlayerModel, root_path: Path = (),
-) -> Optional[ParamSpec]:
-    """A non-overridden definition default → its ``ParamSpec`` (a bound key, or a
-    lifted expression whose referenced columns and ``expr_sql`` are both in
-    query-root coordinates, D8), or ``None`` when it rides the plain kwarg/default
-    machinery unchanged."""
-    vk = default_param_value_key(
-        sql=p.sql, owner_path=owner_path, owner_model=owner_model, bundle=bundle,
-        root_model=root_model, root_path=root_path,
-    )
-    if vk is not None:
-        return ParamSpec(name=p.name, key=vk, expr_sql=None)
-    refs = expr_default_ref_keys(
-        sql=p.sql, owner_model=owner_model, owner_path=owner_path, bundle=bundle,
-        root_model=root_model, root_path=root_path,
-    )
-    if refs:
-        return ParamSpec(
-            name=p.name, key=None,
-            expr_sql=_canonical_default_sql(
-                sql=p.sql, owner_path=owner_path, root_model=root_model,
-                root_path=root_path, bundle=bundle,
-            ),
-            expr_refs=tuple(refs),
-        )
-    return None
-
-
-def _canonical_default_sql(
-    *, sql: str, owner_path: Path, root_model: SlayerModel, root_path: Path,
-    bundle: ResolvedSourceBundle,
-) -> str:
-    """An expression default requalified into query-root coordinates (D8) — each
-    reference to its absolute path so a kernel can reroot it into a producer root.
-    The raw text is kept when the fragment is unparseable or any reference fails
-    closed (typing rejects it before it renders)."""
-    parsed = _parse_filter_sql_any_dialect(sql)
-    if parsed is None:
-        return sql
-    abs_refs = resolve_default_reference_paths(
-        parsed=parsed, owner_path=owner_path, root_model=root_model,
-        root_path=root_path, bundle=bundle,
-    )
-    if any(a is None for a, _ in abs_refs):
-        return sql
-    return requalify_default_references(parsed=parsed, abs_refs=abs_refs, dialect=None)
-
-
-def requalify_expr_to_paths(
-    *, sql: str, abs_refs: List[Tuple[Optional[Path], str]],
-    dialect: Optional[str] = None,
-) -> str:
-    """Rewrite an expression default's references to the absolute dotted paths in
-    ``abs_refs`` (reference-site order); the raw text when unparseable. A kernel
-    rerooting a canonical default into its producer root (D8) passes the rerooted
-    ``(path, leaf)`` per reference here."""
-    parsed = _parse_filter_sql_any_dialect(sql)
-    return sql if parsed is None else requalify_default_references(
-        parsed=parsed, abs_refs=abs_refs, dialect=dialect)
 
 
 # ---------------------------------------------------------------------------
@@ -586,63 +381,18 @@ def _explicit_input_refs(*, key: AggregateKey, include_source: bool) -> List[obj
     ]
 
 
-def _default_param_specs(
-    *, key: AggregateKey, anchor_model: SlayerModel, bundle: ResolvedSourceBundle,
-) -> List[ParamSpec]:
-    """Resolved default parameters NOT overridden by an explicit kwarg. The
-    definition is looked up on its DECLARING model — the re-rooted source anchor
-    (mirroring the parameter-typing caller) — so a fanning default resolves on
-    the declaring model even when the home widened away from it; a default the
-    owner cannot reach forward falls back to the aggregate's root frame."""
-    explicit = {name for name, _ in key.kwargs}
-    source_path = source_anchor_path(key.source)
-    owner_model = walk_key_path(
-        model=anchor_model, path=source_path, bundle=bundle,
-    ) or anchor_model
-    return [
-        spec
-        for spec in resolve_aggregation_params(
-            agg=key, owner_model=owner_model, owner_path=source_path, bundle=bundle,
-            root_model=anchor_model, root_path=(),
-        )
-        if spec.name not in explicit
-    ]
-
-
 def _refs_closure(
     *, refs: List[object], anchor_model: SlayerModel,
     anchor_relation: str, bundle: ResolvedSourceBundle,
 ) -> Optional[List[Path]]:
     """The combined closure of a list of input refs, attached constituents opaque
-    (their inputs belong to their own producer, Axiom 2.3). ``None`` when any
-    non-string ref is unanalysable. A raw, unparseable template-fragment STRING
-    contributes nothing (the pre-existing defensive fallback; a malformed SQL
-    fragment is the renderer's gate) — only a named DERIVED COLUMN fails closed."""
+    (their inputs belong to their own producer, Axiom 2.3); ``None`` when any ref is
+    unanalysable."""
     out: List[Path] = []
     for ref in refs:
         c = _closure(
             ref, anchor_model=anchor_model, anchor_relation=anchor_relation,
             bundle=bundle, cache=None, opaque=(AggregateKey, TransformKey),
-        )
-        if c is None:
-            if isinstance(ref, str):
-                continue
-            return None
-        out.extend(c)
-    return out
-
-
-def _default_params_closure(
-    *, key: AggregateKey, anchor_model: SlayerModel, anchor_relation: str,
-    bundle: ResolvedSourceBundle,
-) -> Optional[List[Path]]:
-    """The combined closure of every non-overridden default parameter (``None``
-    fails closed)."""
-    out: List[Path] = []
-    for spec in _default_param_specs(key=key, anchor_model=anchor_model, bundle=bundle):
-        c = _param_spec_closure(
-            spec, anchor_model=anchor_model, anchor_relation=anchor_relation,
-            bundle=bundle,
         )
         if c is None:
             return None
@@ -684,11 +434,6 @@ def aggregate_input_closure(
         anchor_relation=anchor_relation, bundle=bundle,
     )):
         return None
-    if not _merge_paths(seen=seen, part=_default_params_closure(
-        key=key, anchor_model=anchor_model, anchor_relation=anchor_relation,
-        bundle=bundle,
-    )):
-        return None
     return tuple(seen)
 
 
@@ -697,7 +442,7 @@ def _unanalyzable_derived_name(
     bundle: ResolvedSourceBundle,
 ) -> Optional[str]:
     """``ref``'s column name when its definition — derived ``sql`` OR
-    ``Column.filter`` (DEV-1832) — is one no dialect can analyse, else ``None``."""
+    ``Column.filter`` — is one no dialect can analyse, else ``None``."""
     if not isinstance(ref, ColumnSqlKey):
         return None
     path = tuple(ref.path or ())
@@ -730,11 +475,10 @@ def first_unanalyzable_input_column(
     closure's tri-state), else ``None``."""
     if anchor_model is None:
         return None
-    refs: List[object] = _explicit_input_refs(key=key, include_source=include_source)
-    for spec in _default_param_specs(key=key, anchor_model=anchor_model, bundle=bundle):
-        if spec.key is not None:
-            refs.append(spec.key)
-        refs.extend(r for r in spec.expr_refs if r is not None)
+    refs = [
+        leaf for ref in _explicit_input_refs(key=key, include_source=include_source)
+        for leaf in (ref.refs if isinstance(ref, SqlFragmentKey) else (ref,))
+    ]
     for ref in refs:
         name = _unanalyzable_derived_name(
             ref=ref, anchor_model=anchor_model, anchor_relation=anchor_relation,
@@ -807,31 +551,3 @@ def first_unanalyzable_filter_column(
             return name
         stack.extend(_child_keys(node))
     return None
-
-
-def _param_spec_closure(
-    spec: ParamSpec, *, anchor_model: SlayerModel, anchor_relation: str,
-    bundle: ResolvedSourceBundle,
-) -> Optional[List[Path]]:
-    """Closure of one resolved default parameter — its bound key, or every ref of
-    an expression default (a ``None`` ref fails closed)."""
-    if spec.key is not None:
-        if isinstance(spec.key, AggregateKey):
-            return []  # opaque: its own producer
-        c = key_closure(
-            key=spec.key, anchor_model=anchor_model,
-            anchor_relation=anchor_relation, bundle=bundle,
-        )
-        return None if c is None else list(c)
-    out: List[Path] = []
-    for ref in spec.expr_refs:
-        if ref is None:
-            return None
-        c = key_closure(
-            key=ref, anchor_model=anchor_model, anchor_relation=anchor_relation,
-            bundle=bundle,
-        )
-        if c is None:
-            return None
-        out.extend(c)
-    return out

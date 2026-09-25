@@ -490,6 +490,25 @@ class AggregationArgumentError(SlayerError, ValueError):
     """An aggregation argument, or declared parameter, that the rendered aggregation never reads."""
 
 
+class UnanalyzableAggregationParameterError(SlayerError):
+    """An aggregation parameter's SQL text does not parse, or holds an aggregate,
+    window function or subquery, so it cannot bind to a value."""
+
+    def __init__(
+        self, *, model: str | None, aggregation: str, parameter: str, text: str, reason: str,
+    ) -> None:
+        self.model = model
+        self.aggregation = aggregation
+        self.parameter = parameter
+        self.text = text
+        where = f" on model '{model}'" if model else ""
+        super().__init__(
+            f"Aggregation '{aggregation}'{where}: parameter '{parameter}' = `{text}` "
+            f"cannot be used ({reason}); a parameter must be a column, a literal, or a "
+            f"row-level expression over columns."
+        )
+
+
 class UnknownFunctionError(SlayerError, ValueError):
     """A Mode-B function call is not in the ``SCALAR_FUNCTIONS`` allowlist, transform registry, or model aggregation set (REST maps it to 400)."""
 

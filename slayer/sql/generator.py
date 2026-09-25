@@ -16,7 +16,6 @@ from typing import (
     Optional,
     Set,
     Tuple,
-    Union,
     cast,
 )
 
@@ -27,20 +26,19 @@ from sqlglot.expressions.core import Expr, Expression
 
 from slayer.core.enums import (
     BUILTIN_AGGREGATIONS,
-    BUILTIN_AGGREGATION_REQUIRED_PARAMS,
+    BUILTIN_AGGREGATION_PARAM_ORDER,
     DataType,
     TimeGranularity,
 )
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict
 
 from slayer.core.errors import AggregationNotAllowedError, MaterialisationStageError
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
-from slayer.core.keys import BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, Phase, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, column_leaf, column_path, is_boolean_shaped, shift_offset_of, source_anchor_path, substitute_value_keys, walk_value_keys
+from slayer.core.keys import BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimeTruncKey, TransformKey, column_leaf, column_path, is_boolean_shaped, parameter_row_leaves, shift_offset_of, source_anchor_path, substitute_value_keys, walk_value_keys
 from slayer.core.join_walker import physical_join_pairs, resolve_hop, terminal_model
-from slayer.core.models import VALUE_PLACEHOLDER, Aggregation, rendered_formula, reserved_value_param_message
+from slayer.core.models import VALUE_PLACEHOLDER, rendered_formula, reserved_value_param_message
 from slayer.core.refs import (
     EXPRESSION_SOURCE_KINDS as _EXPRESSION_SOURCE_KINDS,
-    agg_kwarg_canonical_str,
     expression_source_leaf,
 )
 from slayer.core.window_duration import parse_window_duration as _parse_window_duration
@@ -48,8 +46,6 @@ from slayer.sql.column_expansion import (
     is_trivial_base,
     collect_root_scope_joined_paths,
     expand_column_definition_parts_sync,
-    requalify_default_references,
-    resolve_default_reference_paths,
     wrap_column_filter,
 )
 from slayer.ir.planned import MaskTyping, RankedGrainMember, StageKind, ValueSlot, regroup_producer_identity
@@ -105,6 +101,7 @@ from slayer.sql.render.aggregates import (
 )
 from slayer.sql.render.parse import parse_expression, parse_predicate
 from slayer.sql.sql_template import SqlTemplate, SqlTemplateError, sql_template
+from slayer.sql.render.row_expr import _literal
 from slayer.sql.render.value_expr import (
     AliasFacilities,
     CompositeFacilities,
@@ -129,16 +126,17 @@ from slayer.sql.stage_wrapper import (
 
 
 class ResolvedAggKwarg(BaseModel):
-    """A resolved parametric-aggregation kwarg value (2-kind tag)."""
+    """A parameter value resolved to SQL (a literal, or a key rendered through a scope)."""
 
     model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
-    kind: Literal["expr", "str"]
-    value: Union[Expression, str]
+    kind: Literal["expr"] = "expr"
+    value: Expression
 
 
 class AggRenderSpec(BaseModel):
-    """Typed input record for the dialect-aware aggregation"""
+    """Typed input record for the dialect-aware aggregation builders; ``formula`` is
+    the rendered template (``None``: a built-in builder), never the definition."""
 
     model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
@@ -152,25 +150,9 @@ class AggRenderSpec(BaseModel):
 
     alias: str
 
-    aggregation_def: Optional[Aggregation] = None
+    formula: Optional[str] = None
 
     agg_kwargs: Dict[str, ResolvedAggKwarg] = {}
-
-    @field_validator("agg_kwargs", mode="before")
-    @classmethod
-    def _coerce_agg_kwargs(cls, v: Any) -> Any:
-        """Coerce bare ``str`` kwarg values to ``ResolvedAggKwarg(kind="str")``;"""
-        if not isinstance(v, dict):
-            return v
-        coerced: Dict[str, Any] = {}
-        for key, val in v.items():
-            if isinstance(val, (ResolvedAggKwarg, dict)):
-                coerced[key] = val
-            elif isinstance(val, str):
-                coerced[key] = ResolvedAggKwarg(kind="str", value=val)
-            else:
-                coerced[key] = val  # bool / None / other → Pydantic rejects
-        return coerced
 
     time_column: Optional[str] = None
 
@@ -566,17 +548,8 @@ _BUILTIN_BAREARG_AGGS_LOCAL_SLICE: frozenset[str] = BUILTIN_AGGREGATIONS
 
 _SQL_AND_JOINER = " AND "
 
-# Safe agg-param values: identifiers, qualified names, numeric literals.
-_SAFE_AGG_PARAM_RE = re.compile(
-    r'^(?:'
-    r'[a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*'  # identifier or qualified name
-    r'|'
-    r'-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?'  # numeric literal
-    r'|'
-    r'\(-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?\)'  # parenthesised numeric literal
-    r')$'
-)
-
+# Parameter values rendered through a scope; scalars render as literals, markers never.
+_ROW_PARAM_KINDS = (ColumnKey, ColumnSqlKey, SqlFragmentKey)
 
 # Shift units whose whole-unit offsets map each bucket start onto another, making the outer re-trunc a per-row no-op.
 _BUCKET_ALIGNED_SHIFT_UNITS: dict[str, frozenset[str]] = {
@@ -592,11 +565,6 @@ _BUCKET_ALIGNED_SHIFT_UNITS: dict[str, frozenset[str]] = {
     "second": frozenset({"second", "minute", "hour", "day", "week", "week_sunday",
                          "month", "quarter", "year"}),
 }
-
-
-def _is_fragment(*, name: str, placeholders: Optional[frozenset[str]]) -> bool:
-    """A formula-less aggregation treats every string param as a fragment."""
-    return placeholders is None or name in placeholders
 
 
 def _percentile_literal(p: Expression) -> Expression:
@@ -761,20 +729,6 @@ _WINDOW_UNIT_SQLITE = {
     "min": "minutes",
     "s": "seconds",
 }
-
-
-def _validate_agg_param_value(value: str, param_name: str, agg_name: str) -> None:
-    """Validate that a query-time aggregation parameter value is safe for substitution."""
-    if not _SAFE_AGG_PARAM_RE.match(value):
-        raise ValueError(
-            f"Unsafe value '{value}' for parameter '{param_name}' in "
-            f"aggregation '{agg_name}'. Parameter values must be column names "
-            f"(e.g., 'quantity') or numeric literals (e.g., '0.95')."
-        )
-
-
-
-
 
 
 def _effective_src_filters(*, lowered_filters, plan) -> list:
@@ -1241,21 +1195,6 @@ class SQLGenerator:
             type=spec.column_type,
         )
 
-    def _agg_param_ast(
-        self, value: "ResolvedAggKwarg | str", *, model_name: str,
-    ) -> Expression:
-        """Resolve a parametric-agg param value to a sqlglot AST."""
-        if isinstance(value, ResolvedAggKwarg):
-            if value.kind == "expr":
-                # Return a copy: sqlglot re-parents a node on attach, so sharing one kwarg AST across trees corrupts the
-                # first.
-                return value.value.copy() if isinstance(value.value, Expression) \
-                    else self._parse(value.value)
-            raw = value.value
-        else:
-            raw = value
-        return self._resolve_sql(sql=raw, name=raw, model_name=model_name)
-
     def _resolve_agg_param(
         self,
         spec: AggRenderSpec,
@@ -1263,29 +1202,16 @@ class SQLGenerator:
         name: str,
         agg_name: str,
     ) -> Expression:
-        """Pull a named aggregation parameter, with query-time SQL-injection"""
-        value: "ResolvedAggKwarg | str | None" = None
-        if name in spec.agg_kwargs:
-            value = spec.agg_kwargs[name]
-            # Guard only the untrusted str forms; kind="expr" is a trusted bind-time-resolved expression, embedded
-            # verbatim.
-            if isinstance(value, ResolvedAggKwarg):
-                if value.kind == "str":
-                    _validate_agg_param_value(value.value, name, agg_name)
-            elif isinstance(value, str):
-                _validate_agg_param_value(value, name, agg_name)
-        elif spec.aggregation_def:
-            for param in spec.aggregation_def.params:
-                if param.name == name:
-                    value = param.sql
-                    break
+        """A named parameter's bound SQL; a missing one fails closed."""
+        value = spec.agg_kwargs.get(name)
         if value is None:
             raise ValueError(
                 f"Aggregation '{agg_name}' requires parameter '{name}'. "
                 f"Set it in the model's aggregation definition or at query time "
                 f"(e.g., 'measure:{agg_name}({name}=column)')."
             )
-        return self._agg_param_ast(value, model_name=spec.model_name)
+        # A copy: sqlglot re-parents a node on attach.
+        return value.value.copy()
 
     def _build_agg(
         self,
@@ -1308,7 +1234,7 @@ class SQLGenerator:
                 table=exp.to_identifier(spec.model_name),
             ), False
 
-        if not is_builtin_agg(agg_name) or rendered_formula(agg=agg_name, definition=spec.aggregation_def):
+        if not is_builtin_agg(agg_name) or spec.formula:
             return self._build_formula_agg(spec, agg_name), True
 
         entry = resolve_agg_entry(agg_name)
@@ -1350,39 +1276,20 @@ class SQLGenerator:
 
     def _build_formula_agg(self, spec: AggRenderSpec, agg_name: str) -> Expression:
         """Build SQL for formula-based aggregations (weighted_avg, custom)."""
-        formula = rendered_formula(agg=agg_name, definition=spec.aggregation_def)
+        formula = spec.formula
         if formula is None:
             raise ValueError(
                 f"Aggregation '{agg_name}' has no formula. "
                 f"Custom aggregations must define a formula."
             )
-
-        param_defaults = {}
-        if spec.aggregation_def:
-            param_defaults = {p.name: p.sql for p in spec.aggregation_def.params}
-        params = {**param_defaults, **spec.agg_kwargs}
-
-        # Guard only the untrusted kind="str" form against injection; kind="expr" is bind-resolved and trusted.
-        for pname, pval in spec.agg_kwargs.items():
-            if isinstance(pval, ResolvedAggKwarg) and pval.kind == "str":
-                _validate_agg_param_value(pval.value, pname, agg_name)
-
-        template = self._formula_template(agg_name=agg_name, formula=formula)
-        for req in BUILTIN_AGGREGATION_REQUIRED_PARAMS.get(agg_name, []):
-            if req in template.placeholder_names and req not in params:
-                raise ValueError(
-                    f"Aggregation '{agg_name}' requires parameter '{req}'. "
-                    f"Set it in the model's aggregation definition or at query time "
-                    f"(e.g., 'measure:{agg_name}({req}=column)')."
-                )
-
-        if VALUE_PLACEHOLDER in params:
+        if VALUE_PLACEHOLDER in spec.agg_kwargs:
             raise SqlTemplateError(reserved_value_param_message(agg_name))
+        template = self._formula_template(agg_name=agg_name, formula=formula)
         bindings = {
-            name: self._agg_param_ast(val, model_name=spec.model_name)
-            for name, val in params.items() if name in template.placeholder_names
+            name: self._resolve_agg_param(spec, name=name, agg_name=agg_name)
+            for name in template.placeholder_names if name != VALUE_PLACEHOLDER
         }
-        # Bound last: the aggregated column always wins. A source ``Column.filter`` is already baked in.
+        # The aggregated column; a source ``Column.filter`` is already baked in.
         bindings[VALUE_PLACEHOLDER] = (
             exp.Star() if spec.sql is None and not spec.name else self._resolve_value_ast(spec)
         )
@@ -2091,36 +1998,9 @@ class SQLGenerator:
                 scope.resolve(key.source)
 
         def _resolve_kwargs(key) -> None:
-            kw: Dict[str, ResolvedAggKwarg] = {}
-            for kname, kval in key.kwargs:
-                if isinstance(kval, (ColumnKey, ColumnSqlKey)):
-                    kw[kname] = ResolvedAggKwarg(kind="expr", value=scope.resolve(kval))
+            kw = self._resolve_agg_kwargs_for_key(key=key, scope=scope)
             if kw:
                 resolved[key] = kw
-
-        def _resolve_fragment_kwargs(key) -> None:
-            # Template-fragment kwargs are substituted as qualified SQL, so their crossed joins must register like
-            # Column.filter; keep the resolved (alias-rewritten) fragment. A host-locus source beyond the root carries
-            # its aggregation definition on the source model, so look the params up there.
-            # A definition default resolves per its reference frame: the source
-            # owner for a source-relative default (regions.pop), the root for a home-frame
-            # default naming the widened home (customers.spend) — the reverse hop back to it.
-            frag_model, source_owner_path = scope.root_model, None
-            src_path = source_anchor_path(key.source)
-            if src_path and _is_host_grain(key):
-                walked = self._walk_join_path_model(
-                    source_model=scope.root_model, path=src_path, bundle=scope.bundle,
-                )
-                if walked is not None:
-                    frag_model, source_owner_path = walked, src_path
-            frags = self._register_fragment_kwarg_joins(
-                key=key, scope=scope, model=frag_model,
-                source_owner_path=source_owner_path,
-            )
-            if frags:
-                bucket = resolved.setdefault(key, {})
-                for name, ast in frags.items():
-                    bucket.setdefault(name, ResolvedAggKwarg(kind="expr", value=ast))
 
         def _resolve_first_last_time_arg(key) -> None:
             arg = self._explicit_time_arg_of(key)
@@ -2134,7 +2014,6 @@ class SQLGenerator:
 
         _for_each_local_agg(_resolve_source)
         _for_each_local_agg(_resolve_kwargs)
-        _for_each_local_agg(_resolve_fragment_kwargs)
         _for_each_local_agg(_resolve_first_last_time_arg)
         return resolved
 
@@ -2197,14 +2076,12 @@ class SQLGenerator:
     def _resolve_agg_kwargs_for_key(
         self, *, key, scope: ScopeFrame,
     ) -> "Optional[Dict[str, ResolvedAggKwarg]]":
-        """Resolve a single LOCAL aggregate's column-ref kwargs through ``scope`` (a row-attached placeholder resolves to its producer join column)."""
-        kwargs = getattr(key, "kwargs", None)
-        if not kwargs:
-            return None
+        """Resolve a LOCAL aggregate's row-valued parameters through ``scope``, registering
+        the joins they cross (a row-attached placeholder resolves to its producer column)."""
         resolved = {
-            kname: ResolvedAggKwarg(kind="expr", value=scope.resolve(kval))
-            for kname, kval in kwargs
-            if isinstance(kval, (ColumnKey, ColumnSqlKey))
+            kname: ResolvedAggKwarg(value=scope.resolve(kval))
+            for kname, kval in getattr(key, "kwargs", ())
+            if isinstance(kval, _ROW_PARAM_KINDS)
         }
         return resolved or None
 
@@ -2572,6 +2449,18 @@ class SQLGenerator:
         # the latest row's value may be NULL if it fails the filter.
         # ``count(*)`` projects a literal so the outer COUNT(_w_value) counts interval
         # rows (0, not 1, on an empty interval) — the star never enters resolve.
+        # The custom-aggregation definition lives on the source's owning model,
+        # which a parameter may widen the home above (D4) — resolve it there.
+        formula = rendered_formula(agg=key.agg, definition=self._resolve_aggregation_def(
+            key=key,
+            source_model=(
+                self._walk_join_path_model(
+                    source_model=source_model,
+                    path=source_anchor_path(key.source), bundle=bundle,
+                ) or source_model
+            ),
+            src_leaf="_w_value",
+        ))
         if isinstance(key.source, StarKey):
             # ``*`` is only legal with count (as in the plain path); any other
             # aggregation over the star would silently become ``<agg>(1)``.
@@ -2583,7 +2472,7 @@ class SQLGenerator:
             # ``count(*)`` takes no inputs but its own ``window=`` (plain-path guard);
             # a stray arg/kwarg would otherwise be projected and silently ignored.
             extra_kwargs = [(k, v) for k, v in key.kwargs if k != "window"]
-            if key.args or extra_kwargs:
+            if key.args or (extra_kwargs and not formula):
                 raise ValueError(
                     f"'count(*)' takes no args or kwargs other than window; got "
                     f"args={key.args!r}, kwargs={extra_kwargs!r}."
@@ -2597,13 +2486,11 @@ class SQLGenerator:
         picked_kwarg_exprs: Dict[str, ResolvedAggKwarg] = {}
         for _i, _pp in enumerate(plan.picked_params):
             _p_alias = f"_w_p{_i}"
-            _picked = self._render_picked_param_value(
-                pp=_pp, ctx=RenderContext(scope=src_scope, dialect=self._dialect),
+            _picked = render_value_key(
+                key=_pp.key, ctx=RenderContext(scope=src_scope, dialect=self._dialect),
             )
             src_cols.append(_picked.as_(_p_alias))
-            picked_kwarg_exprs[_pp.name] = ResolvedAggKwarg(
-                kind="expr", value=_src_col(_p_alias),
-            )
+            picked_kwarg_exprs[_pp.name] = ResolvedAggKwarg(value=_src_col(_p_alias))
 
         # A windowed first/last ranks the interval rows by this key, projected as
         # _w_rank (uncast, like the plain ranked path).
@@ -2751,28 +2638,10 @@ class SQLGenerator:
             alias=full_agg_alias,
             model_name="_src",
             type=agg_slot.type,
-            # The custom-aggregation definition lives on the source's owning model,
-            # which a parameter may widen the home above (D4) — resolve it there,
-            # not on the producer root, mirroring _trailing_window_kernel.
-            aggregation_def=self._resolve_aggregation_def(
-                key=key,
-                source_model=(
-                    self._walk_join_path_model(
-                        source_model=source_model,
-                        path=source_anchor_path(key.source), bundle=bundle,
-                    ) or source_model
-                ),
-                src_leaf="_w_value",
+            formula=formula,
+            agg_kwargs=self._agg_param_exprs(
+                key=key, formula=formula, resolved=picked_kwarg_exprs, scope=src_scope,
             ),
-            agg_kwargs={
-                **{
-                    k: ResolvedAggKwarg(kind="str", value=agg_kwarg_canonical_str(v))
-                    for k, v in key.kwargs
-                    if k not in ("window", "partition_by")
-                    and k not in picked_kwarg_exprs
-                },
-                **picked_kwarg_exprs,
-            },
         )
         agg_expr, _ = self._build_agg(level2_spec)
         agg_expr = _wrap_cast_for_type(
@@ -3153,19 +3022,6 @@ class SQLGenerator:
             )
         return body.sql(dialect=self.dialect, pretty=True)
 
-    def _render_picked_param_value(self, *, pp, ctx) -> Expression:  # pyright: ignore[reportPrivateImportUsage]
-        """The level-1 SQL for a picked parameter: a canonical expression default
-        entered at the producer root (the kernel already rerooted it
-        into producer coordinates), else the parameter's value key rendered through
-        the scope (a column / placeholder / composite; a derived ``Column.sql``
-        expands, a carrier placeholder resolves to its carrier column)."""
-        if pp.sql is not None:
-            return ctx.scope.enter_expression(
-                pp.sql, owner_path=(),
-                location=f"parameter default {pp.name!r}",
-            )
-        return render_value_key(key=pp.key, ctx=ctx)
-
     def _render_association_producer_body(  # NOSONAR(S3776) — one cohesive two-level association body: level-1 dedup SELECT (grain × entity key, picked value) wrapped as ``_base``, level-2 aggregate over the picked rows. The two arms share the grain-alias / scope state.
         self, *, planned_query, bundle, kernel, source_model, source_relation,
         slots_by_id, regroup_env=None, regroup_join_specs=None,
@@ -3232,17 +3088,17 @@ class SQLGenerator:
             # attached composite; render it through the scope (its placeholders
             # resolve to the carrier columns) and pick it once per cell.
             value_expr = render_value_key(key=agg_slot.key.source, ctx=ctx)
-            agg_def = self._resolve_aggregation_def(
+            formula = rendered_formula(agg=agg_slot.key.agg, definition=self._resolve_aggregation_def(
                 key=agg_slot.key, source_model=source_model, src_leaf=picked_alias,
-            )
+            ))
             spec = AggRenderSpec(
                 name=picked_alias, sql=None, aggregation=agg_slot.key.agg,
                 alias=agg_alias, model_name="_base", type=agg_slot.type,
-                aggregation_def=agg_def,
-                agg_kwargs={
-                    k: ResolvedAggKwarg(kind="str", value=agg_kwarg_canonical_str(v))
-                    for k, v in agg_slot.key.kwargs if k not in picked_names
-                },
+                formula=formula,
+                agg_kwargs=self._agg_param_exprs(
+                    key=agg_slot.key, formula=formula, scope=scope,
+                    skip=frozenset(picked_names),
+                ),
             )
             inner_cols.append(exp.Alias(
                 this=exp.Max(this=value_expr.copy()),
@@ -3283,13 +3139,12 @@ class SQLGenerator:
         picked_kwarg_exprs: Dict[str, ResolvedAggKwarg] = {}
         for _i, _pp in enumerate(picked_params):
             _p_alias = f"_p{_i}"
-            _picked = self._render_picked_param_value(pp=_pp, ctx=ctx)
+            _picked = render_value_key(key=_pp.key, ctx=ctx)
             inner_cols.append(exp.Alias(
                 this=exp.Max(this=_picked),
                 alias=exp.to_identifier(_p_alias),
             ))
             picked_kwarg_exprs[_pp.name] = ResolvedAggKwarg(
-                kind="expr",
                 value=exp.Column(
                     this=exp.to_identifier(_p_alias),
                     table=exp.to_identifier("_base"),
@@ -3362,14 +3217,14 @@ class SQLGenerator:
             level2_spec = AggRenderSpec(
                 name="", sql=None, aggregation=agg_slot.key.agg,
                 alias=agg_alias, model_name="_base", type=agg_slot.type,
-                aggregation_def=self._resolve_aggregation_def(
-                    key=agg_slot.key, source_model=source_model, src_leaf="*",
+                formula=(formula := rendered_formula(
+                    agg=agg_slot.key.agg, definition=self._resolve_aggregation_def(
+                        key=agg_slot.key, source_model=source_model, src_leaf="*",
+                    ))),
+                agg_kwargs=self._agg_param_exprs(
+                    key=agg_slot.key, formula=formula, resolved=picked_kwarg_exprs,
+                    scope=scope,
                 ),
-                agg_kwargs={
-                    **{k: ResolvedAggKwarg(kind="str", value=agg_kwarg_canonical_str(v))
-                       for k, v in agg_slot.key.kwargs if k not in picked_names},
-                    **picked_kwarg_exprs,
-                },
             )
         else:
             assert spec is not None  # set in both non-star arms above
@@ -3392,7 +3247,7 @@ class SQLGenerator:
                 # A picked parameter reads from _base._p<i>, overriding its
                 # explicit-kwarg / definition-default resolution.
                 agg_kwargs={**spec.agg_kwargs, **picked_kwarg_exprs},
-                aggregation_def=spec.aggregation_def,
+                formula=spec.formula,
             )
         agg_expr, _ = self._build_agg(level2_spec)
         agg_expr = _wrap_cast_for_type(expr=agg_expr, dt=self._slot_cast_type(agg_slot))
@@ -5367,94 +5222,6 @@ class SQLGenerator:
         )
         return frame.enter_predicate(sql, location=location, owner_path=tuple(owner_path))
 
-    def _enter_mode_a_expression(
-        self,
-        *,
-        sql: str,
-        scope: ScopeFrame,
-        location: Optional[str] = None,
-        owner_path: Tuple[str, ...] = (),
-    ) -> Expression:
-        """Enter a Mode-A scalar EXPRESSION (a ``Column.sql`` / aggregation"""
-        return scope.enter_expression(sql, location=location, owner_path=tuple(owner_path))
-
-    def _default_frag_entry(
-        self, *, frag: str, scope: ScopeFrame, source_owner_path: Tuple[str, ...],
-    ) -> Tuple[str, Tuple[str, ...]]:
-        """The (fragment, owner_path) to enter for a definition default on a
-        host-locus aggregate. Every reference resolves owner-first
-        with reverse-hop cancellation and a root fallback. A fragment whose every
-        reference is owner-forward (its absolute path extends the source owner
-        path) enters raw at the owner path — byte-identical by construction. Any
-        cancelled or root-anchored reference makes the fragment MIXED: it is
-        requalified per reference to its absolute path and entered at the root, so
-        each reference resolves in its own frame, never as a reverse join."""
-        try:
-            parsed = sqlglot.parse_one(frag, dialect=self.dialect)
-            abs_refs = resolve_default_reference_paths(
-                parsed=parsed,  # pyright: ignore[reportArgumentType] — parse_one's Expr TypeVar
-                owner_path=source_owner_path,
-                root_model=scope.root_model, root_path=(), bundle=scope.bundle,
-            )
-        except Exception:
-            return frag, source_owner_path  # unanalysable: raw at the source owner
-        n = len(source_owner_path)
-        if all(
-            a is not None and tuple(a[:n]) == tuple(source_owner_path)
-            for a, _ in abs_refs
-        ):
-            return frag, tuple(source_owner_path)  # owner-forward: raw at the owner
-        return requalify_default_references(
-            parsed=parsed,  # pyright: ignore[reportArgumentType] — parse_one's Expr TypeVar
-            abs_refs=abs_refs, dialect=self.dialect,
-        ), ()
-
-    def _fragment_placeholders(self, *, key, agg_def) -> Optional[frozenset[str]]:
-        """Placeholder names of the rendered formula; None when it has none (e.g. corr, percentile)."""
-        formula = rendered_formula(agg=key.agg, definition=agg_def)
-        if not formula:
-            return None
-        return self._formula_template(agg_name=key.agg, formula=formula).placeholder_names
-
-    def _register_fragment_kwarg_joins(
-        self, *, key, scope: ScopeFrame, model, owner_path: Tuple[str, ...] = (),
-        source_owner_path: Optional[Tuple[str, ...]] = None,
-    ) -> "Dict[str, Expression]":
-        """Resolve an aggregation's template FRAGMENTS through the Mode-A door,"""
-        agg_def = next(
-            (a for a in (model.aggregations or []) if a.name == key.agg), None,
-        )
-        placeholders = self._fragment_placeholders(key=key, agg_def=agg_def)
-        overridden = {name for name, _ in key.kwargs}
-        # (name, fragment, owner_path). Explicit string kwargs keep the caller's
-        # owner_path; a definition default on a host-locus aggregate resolves at
-        # the root or the source owner per its reference frame.
-        named_fragments: List[Tuple[str, str, Tuple[str, ...]]] = [
-            (name, v, tuple(owner_path)) for name, v in key.kwargs
-            if isinstance(v, str) and _is_fragment(name=name, placeholders=placeholders)
-        ]
-        for p in (agg_def.params if agg_def else []):
-            if p.name in overridden or not _is_fragment(name=p.name, placeholders=placeholders):
-                continue
-            if source_owner_path is not None:
-                frag_sql, frag_owner_path = self._default_frag_entry(
-                    frag=p.sql, scope=scope,
-                    source_owner_path=source_owner_path,
-                )
-            else:
-                frag_sql, frag_owner_path = p.sql, tuple(owner_path)
-            named_fragments.append((p.name, frag_sql, frag_owner_path))
-        resolved: "Dict[str, Expression]" = {}
-        for name, frag, frag_owner_path in named_fragments:
-            resolved[name] = self._enter_mode_a_expression(
-                sql=frag, scope=scope, owner_path=frag_owner_path,
-                location=(
-                    f"aggregation {key.agg!r} template fragment on model "
-                    f"{model.name!r}"
-                ),
-            )
-        return resolved
-
     def _expand_derived_row_dims(  # NOSONAR(S3776) — one cohesive per-slot pass expanding derived ROW/TIME dimensions and registering the joins they cross.
         self, *, base_render_order, slots_by_id, source_relation: str,
         source_model, bundle, scope: ScopeFrame,
@@ -5801,18 +5568,59 @@ class SQLGenerator:
         if not source.path or _is_host_grain(key):
             return
         for kname, kval in key.kwargs:
-            if isinstance(kval, (ColumnKey, ColumnSqlKey)) and kval.path != source.path:
+            leaf = next((
+                r for r in parameter_row_leaves(kval)
+                if isinstance(r, (ColumnKey, ColumnSqlKey)) and r.path != source.path
+            ), None)
+            if leaf is not None:
                 raise AggregationNotAllowedError(
                     column=src_leaf,
                     agg=key.agg,
                     reason=(
                         f"kwarg {kname!r} references "
-                        f"{type(kval).__name__} with path {kval.path!r}; "
+                        f"{type(leaf).__name__} with path {leaf.path!r}; "
                         f"aggregate source path is {source.path!r}. "
                         f"Cross-model kwargs must share the source's "
                         f"join path."
                     ),
                 )
+
+    def _agg_param_exprs(
+        self, *, key, formula: Optional[str], scope: ScopeFrame,
+        resolved: "Optional[Dict[str, ResolvedAggKwarg]]" = None,
+        skip: frozenset = frozenset(),
+    ) -> "Dict[str, ResolvedAggKwarg]":
+        """The one parameter render path: a pre-resolved value wins, a scalar renders as a
+        literal, a row value key through ``scope``; a marker string is never SQL."""
+        reads = self._formula_reads(agg=key.agg, formula=formula)
+        out: "Dict[str, ResolvedAggKwarg]" = {}
+        for name, value in key.kwargs:
+            if name in skip:
+                continue
+            if resolved and name in resolved:
+                out[name] = resolved[name]
+            elif isinstance(value, str):
+                if name in reads:
+                    raise TypeError(
+                        f"Aggregation {key.agg!r} parameter {name!r} is unbound text "
+                        f"{value!r}; a parameter binds at query binding, never as SQL text."
+                    )
+            elif isinstance(value, _ROW_PARAM_KINDS):
+                out[name] = ResolvedAggKwarg(value=scope.resolve(value))
+            elif isinstance(value, VALUE_KEY_TYPES):
+                raise RuntimeError(
+                    f"Aggregation {key.agg!r} parameter {name!r} ({type(value).__name__}) "
+                    f"reached the renderer unattached."
+                )
+            else:
+                out[name] = ResolvedAggKwarg(value=_literal(value))
+        return out
+
+    def _formula_reads(self, *, agg: str, formula: Optional[str]) -> frozenset:
+        """The parameter names ``agg`` reads: its formula's placeholders, else a built-in's own."""
+        if formula is None:
+            return frozenset(BUILTIN_AGGREGATION_PARAM_ORDER.get(agg, ()))
+        return self._formula_template(agg_name=agg, formula=formula).placeholder_names
 
     def _walk_join_path_model(self, *, source_model, path, bundle):
         """The terminal model of a join ``path`` walked from ``source_model``
@@ -5853,12 +5661,12 @@ class SQLGenerator:
                 if source_anchor_path(source) and bundle is not None else source_model
             ) or source_model
             agg_def = self._resolve_aggregation_def(key=key, source_model=owner, src_leaf="*")
-            if key.args or (key.kwargs and not rendered_formula(agg=key.agg, definition=agg_def)):
+            formula = rendered_formula(agg=key.agg, definition=agg_def)
+            if key.args or (key.kwargs and not formula):
                 raise ValueError(
                     f"'count(*)' takes no args or kwargs; got "
                     f"args={key.args!r}, kwargs={key.kwargs!r}."
                 )
-            resolved_kw = resolved_agg_kwargs or {}
             return AggRenderSpec(
                 name="",
                 sql=None,
@@ -5866,15 +5674,20 @@ class SQLGenerator:
                 alias=full_alias,
                 model_name=source_relation,
                 type=slot_type,
-                aggregation_def=agg_def,
-                agg_kwargs={
-                    **resolved_kw,
-                    **{
-                        k: ResolvedAggKwarg(kind="str", value=agg_kwarg_canonical_str(v))
-                        for k, v in key.kwargs if k not in resolved_kw
-                    },
-                },
+                formula=formula,
+                agg_kwargs=self._agg_param_exprs(
+                    key=key, formula=formula, resolved=resolved_agg_kwargs,
+                    scope=scope or self._throwaway_frame(
+                        model=source_model, relation=source_relation,
+                        bundle=bundle or ResolvedSourceBundle(
+                            dialect=self.dialect, source_model=source_model),
+                    ),
+                ),
             )
+        param_scope = scope or self._throwaway_frame(
+            model=source_model, relation=source_relation,
+            bundle=bundle or ResolvedSourceBundle(dialect=self.dialect, source_model=source_model),
+        )
         if isinstance(source, (ColumnKey, ColumnSqlKey)):
             host_grain_root: Optional[str] = None
             if source.path and _is_host_grain(key) and bundle is not None:
@@ -5935,15 +5748,7 @@ class SQLGenerator:
             else:
                 sql_text = col.sql if col.sql else col.name
                 column_type = col.type
-            resolved_kw = resolved_agg_kwargs or {}
-            agg_kwargs_str = {
-                k: (resolved_kw[k] if k in resolved_kw else agg_kwarg_canonical_str(v))
-                for k, v in key.kwargs
-            }
-            key_kwarg_names = {k for k, _ in key.kwargs}
-            for _name, _resolved in resolved_kw.items():
-                if _name not in key_kwarg_names:
-                    agg_kwargs_str.setdefault(_name, _resolved)
+            formula = rendered_formula(agg=key.agg, definition=agg_def)
             return AggRenderSpec(
                 name=col.name,
                 sql=sql_text,
@@ -5952,8 +5757,10 @@ class SQLGenerator:
                 model_name=source_relation,
                 type=slot_type,
                 column_type=column_type,
-                agg_kwargs=agg_kwargs_str,
-                aggregation_def=agg_def,
+                agg_kwargs=self._agg_param_exprs(
+                    key=key, formula=formula, resolved=resolved_agg_kwargs, scope=param_scope,
+                ),
+                formula=formula,
                 time_column=None,
             )
         if isinstance(source, _EXPRESSION_SOURCE_KINDS):
@@ -5965,18 +5772,8 @@ class SQLGenerator:
             agg_def = self._resolve_aggregation_def(
                 key=key, source_model=source_model, src_leaf=expr_leaf,
             )
-            if scope is None:
-                scope = self._throwaway_frame(
-                    model=source_model, relation=source_relation, bundle=bundle,
-                )
-            sql_text = self._render_expression_source_sql(source=source, scope=scope)
-            resolved_kw = resolved_agg_kwargs or {}
-            agg_kwargs_str = {
-                k: (resolved_kw[k] if k in resolved_kw else agg_kwarg_canonical_str(v))
-                for k, v in key.kwargs
-            }
-            for _name, _resolved in resolved_kw.items():
-                agg_kwargs_str.setdefault(_name, _resolved)
+            sql_text = self._render_expression_source_sql(source=source, scope=param_scope)
+            formula = rendered_formula(agg=key.agg, definition=agg_def)
             return AggRenderSpec(
                 name=expr_leaf,
                 sql=sql_text,
@@ -5985,8 +5782,10 @@ class SQLGenerator:
                 model_name=source_relation,
                 type=slot_type,
                 column_type=None,
-                agg_kwargs=agg_kwargs_str,
-                aggregation_def=agg_def,
+                agg_kwargs=self._agg_param_exprs(
+                    key=key, formula=formula, resolved=resolved_agg_kwargs, scope=param_scope,
+                ),
+                formula=formula,
                 time_column=None,
             )
         raise NotImplementedError(

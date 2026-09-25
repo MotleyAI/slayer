@@ -35,6 +35,7 @@ from slayer.core.keys import (
     TransformKey,
     ValueKey,
     reroot_value_key,
+    SqlFragmentKey,
 )
 from slayer.core.keys import Grain
 
@@ -74,6 +75,9 @@ def _samples() -> dict:
         InKey: InKey(
             column=ColumnKey(path=(), leaf="tier"),
             values=(LiteralKey(value="gold"),),
+        ),
+        SqlFragmentKey: SqlFragmentKey(
+            template="{r0} * 2", refs=(ColumnKey(path=(), leaf="spend"),),
         ),
     }
 
@@ -175,6 +179,8 @@ class TestPrependCompositeKinds:
             ),
             host_path=HOST,
         )
+        assert isinstance(out.input, AggregateKey)
+        assert isinstance(out.time_key, TimeTruncKey)
         assert out.input.source == ColumnKey(path=("customers",), leaf="spend")
         assert out.partition_keys == Grain.of({ColumnKey(path=("customers",), leaf="tier")})
         assert out.time_key.column == ColumnKey(path=("customers",), leaf="signup_at")
@@ -194,6 +200,7 @@ class TestPrependCompositeKinds:
         )
         call, col = out.operands
         assert col == ColumnKey(path=("customers", "regions"), leaf="pop")
+        assert isinstance(call, ScalarCallKey)
         in_key, between = call.args
         assert isinstance(in_key, InKey)
         assert isinstance(between, BetweenKey)

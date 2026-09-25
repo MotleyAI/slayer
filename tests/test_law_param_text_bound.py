@@ -42,7 +42,7 @@ def _violations(source: str, *, module: str) -> Iterator[str]:
 
     for node, func in walk(tree, None):
         if _reads_params(node) and (module, func) not in _ALLOWED:
-            yield f"{module}:{node.lineno} ({func}) reads .params"
+            yield f"{module}:{getattr(node, 'lineno', '?')} ({func}) reads .params"
         if isinstance(node, ast.ImportFrom) and any(
                 a.name == "AggregationParam" for a in node.names):
             yield f"{module}:{node.lineno} imports AggregationParam"

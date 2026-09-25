@@ -693,6 +693,7 @@ class TestTimeArgJoinDiscovery:
             s for s in attach.producer_plan.aggregate_slots
             if isinstance(s.key, AggregateKey) and s.key.agg == "last"
         )
+        assert isinstance(prod_agg.key, AggregateKey)
         assert prod_agg.key.locus == "target", prod_agg.key
         assert not any(isinstance(s.key, AggregateKey) for s in slots.values())
         gen = self._gen()

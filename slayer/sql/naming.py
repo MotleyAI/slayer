@@ -213,6 +213,13 @@ AggAliasProfile = Literal[
 _PROFILES_WITHOUT_RELATION = ("cte_schema", "declared_name", "stage_formula")
 
 
+def _alias_param(value) -> str:
+    """A parameter's alias token; a boolean spells itself, never as ``1``."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return agg_kwarg_canonical_str(value)
+
+
 def canonical_aggregate_alias(  # NOSONAR(S3776) — sequential dispatch over the four frozen alias profiles; each branch IS that profile's contract, and extracting per-profile helpers would restore the four-copy drift this function removes.
     key: "AggregateKey",
     *,
@@ -266,10 +273,8 @@ def canonical_aggregate_alias(  # NOSONAR(S3776) — sequential dispatch over th
     canonical = canonical_agg_name(
         measure_name=measure_name,
         aggregation_name=key.agg,
-        agg_args=[agg_kwarg_canonical_str(a) for a in key.args] or None,
-        agg_kwargs={
-            k: agg_kwarg_canonical_str(v) for k, v in key.kwargs
-        } or None,
+        agg_args=[_alias_param(a) for a in key.args] or None,
+        agg_kwargs={k: _alias_param(v) for k, v in key.kwargs} or None,
     )
 
     # Host-grain and target-grain aggregates intern separately; ``_host`` keeps their columns distinct.

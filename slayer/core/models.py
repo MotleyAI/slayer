@@ -383,6 +383,17 @@ def reserved_value_param_message(agg_name: str) -> str:
     )
 
 
+WINDOW_PARAM = "window"
+
+
+def reserved_window_param_message(agg_name: str) -> str:
+    return (
+        f"Aggregation '{agg_name}': a parameter or placeholder may not be named "
+        f"'{WINDOW_PARAM}'. '{WINDOW_PARAM}' is the trailing-window argument "
+        f"(e.g. {WINDOW_PARAM}='90d'), so such a parameter could never receive a value; rename it."
+    )
+
+
 class AggregationParam(BaseModel):
     """A named parameter for an aggregation formula."""
     name: str
