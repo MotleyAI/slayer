@@ -6474,7 +6474,7 @@ def generate_from_planned(
     )
 
 
-def _bundle_for_stage(planned_query, bundle, schema_by_name):
+def _bundle_for_stage(*, planned_query, bundle, schema_by_name):
     """Pick the per-stage bundle a single DAG stage renders against."""
     ds = (bundle.source_model.data_source if bundle.source_model else "") or "_stage"
     relation = planned_query.source_relation
@@ -6538,7 +6538,7 @@ def _user_authored_exemptions(
     return frozenset(tokens)
 
 
-def _stage_relation(planned, *, is_root: bool) -> Optional[str]:
+def _stage_relation(*, planned, is_root: bool) -> Optional[str]:
     """A stage's CTE name; ``None`` for the root."""
     if is_root:
         return None
@@ -6595,18 +6595,20 @@ def generate_planned_stages(
     root_entries: List[CteEntry] = []
     root_final: Optional[exp.Select] = None
     for planned in planned_queries:
-        relation = _stage_relation(planned, is_root=planned is planned_queries[-1])
-        stage_bundle = _bundle_for_stage(planned, bundle, schema_by_name)
+        relation = _stage_relation(planned=planned, is_root=planned is planned_queries[-1])
+        stage_bundle = _bundle_for_stage(
+            planned_query=planned, bundle=bundle, schema_by_name=schema_by_name,
+        )
         with generator._stage_scope(relation):
             stage_sql = cast(str, generator.generate_from_planned(
                 planned, bundle=stage_bundle, reuse_allocator=True,
             ))
             if relation is None:
                 root_entries, root_final = generator._split_root_ctes(stage_sql)
-                root_entries = _with_stage_reads(root_entries, planned.stage_reads)
+                root_entries = _with_stage_reads(entries=root_entries, reads=planned.stage_reads)
                 continue
             hoisted, body_sql = generator._split_statement_ctes(stage_sql)
-        stage_entries.extend(_with_stage_reads(hoisted, planned.stage_reads))
+        stage_entries.extend(_with_stage_reads(entries=hoisted, reads=planned.stage_reads))
         stage_entries.append(CteEntry(
             name=relation,
             query=_stage_rename_wrapper(
@@ -6655,7 +6657,7 @@ def _merged_deps(*groups: Sequence[str]) -> List[str]:
     return list(dict.fromkeys(d for group in groups for d in group))
 
 
-def _with_stage_reads(entries: List[CteEntry], reads: Sequence[str]) -> List[CteEntry]:
+def _with_stage_reads(*, entries: List[CteEntry], reads: Sequence[str]) -> List[CteEntry]:
     """``entries`` with their statement's sibling reads added as prerequisites."""
     if not reads:
         return entries
