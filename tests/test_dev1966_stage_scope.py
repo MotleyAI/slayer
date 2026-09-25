@@ -136,9 +136,9 @@ class TestUserSpelling:
     async def test_stage_warning_names_the_user_stage(self, engine) -> None:
         b = query(name="b", source_model="orders", dimensions=["status"],
                   measures=[m("amount:sum", "amt"), m("customers.spend:sum", "cs")])
+        stages = [b, query(source_model="b", dimensions=["status"], measures=[m("amt:sum", "t")])]
         with pytest.warns(UserWarning):
-            resp = await engine.execute(
-                [b, query(source_model="b", dimensions=["status"], measures=[m("amt:sum", "t")])])
+            resp = await engine.execute(stages)
         assert [w.location for w in resp.warnings if w.kind == "broadcast"] == ["stage 'b'"]
 
     async def test_stage_binding_error_names_the_user_stage(self, engine48) -> None:

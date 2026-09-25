@@ -675,7 +675,7 @@ class SlayerModel(BaseModel):
     # In-memory breadcrumb for virtual stage models; ``exclude=True`` keeps it unpersisted.
     source_model_origin: SourceModelOrigin | None = Field(default=None, exclude=True)
     # Runtime-only (never persisted): a query stage's user spelling in join paths.
-    _spelling: str | None = PrivateAttr(default=None)
+    _spelling: str | None = PrivateAttr(default=None)  # NOSONAR(S5890) — pydantic PrivateAttr descriptor; the attribute holds str | None
 
     @field_validator("filters")
     @classmethod

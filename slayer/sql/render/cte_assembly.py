@@ -28,7 +28,7 @@ class CteEntry(BaseModel):
     #: CTEs that must precede this one; a name absent here is ordered by the enclosing assembly.
     depends_on: List[str] = Field(default_factory=list)
     #: The CTE's column list (``n(k)``), if its definition carries one.
-    columns: List[str] = Field(default_factory=list)
+    columns: List[exp.Identifier] = Field(default_factory=list)
     #: Defined under ``WITH RECURSIVE``; the assembled WITH is recursive if any entry is.
     recursive: bool = False
     quoted: bool = False
@@ -41,7 +41,7 @@ def cte_entry(*, cte: exp.CTE, name: str, depends_on: List[str]) -> CteEntry:
     with_node = cte.parent
     return CteEntry(
         name=name, query=cte.this.copy(), depends_on=depends_on,
-        columns=[c.name for c in (alias.columns if isinstance(alias, exp.TableAlias) else [])],
+        columns=[c.copy() for c in (alias.columns if isinstance(alias, exp.TableAlias) else [])],
         recursive=isinstance(with_node, exp.With) and bool(with_node.args.get("recursive")),
         quoted=isinstance(ident, exp.Identifier) and bool(ident.quoted),
     )
@@ -130,7 +130,7 @@ def assemble_with_chain(
                 this=entry.query.copy(),
                 alias=exp.TableAlias(
                     this=exp.to_identifier(entry.name, quoted=entry.quoted or None),
-                    columns=[exp.to_identifier(c) for c in entry.columns] or None,
+                    columns=[c.copy() for c in entry.columns] or None,
                 ),
             )
             for entry in ordered
@@ -171,18 +171,24 @@ def _binding_with(table: exp.Table) -> Optional[Tuple[exp.With, str]]:
     prev: object = table
     node = table.parent
     while node is not None:
-        if isinstance(node, exp.With):
-            names = [_ident_key(c.args["alias"].this) for c in node.expressions]
-            idx = next(i for i, c in enumerate(node.expressions) if c is prev)
-            visible = names if node.args.get("recursive") else names[:idx]
-            if key in visible:
-                return node, key
-        elif node.args.get("with_") is not None and node.args["with_"] is not prev:
-            names = [_ident_key(c.args["alias"].this) for c in node.args["with_"].expressions]
-            if key in names:
-                return node.args["with_"], key
+        scope = _visible_ctes(node, prev=prev)
+        if scope is not None and key in scope[1]:
+            return scope[0], key
         prev, node = node, node.parent
     return None
+
+
+def _visible_ctes(node: exp.Expr, *, prev: object) -> Optional[Tuple[exp.With, List[str]]]:
+    """The ``WITH`` ``node`` holds, and the CTE keys visible from its child ``prev``."""
+    if isinstance(node, exp.With):
+        names = [_ident_key(c.args["alias"].this) for c in node.expressions]
+        if node.args.get("recursive"):
+            return node, names
+        return node, names[:next(i for i, c in enumerate(node.expressions) if c is prev)]
+    with_ = node.args.get("with_")
+    if with_ is None or with_ is prev:
+        return None
+    return with_, [_ident_key(c.args["alias"].this) for c in with_.expressions]
 
 
 def rename_embedded_ctes(statement: Expression, *, allocate: Callable[[str], str]) -> None:

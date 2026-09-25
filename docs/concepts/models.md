@@ -490,7 +490,7 @@ Rules:
     With `variables={"regions": ["US","CA"]}` this renders `... WHERE 1=1 AND (region IN ('US', 'CA'))`; with no `regions` supplied it renders `... WHERE 1=1 AND (1=1)`. A block must contain at least one `{var}`; blocks do not nest; a block collapses even on a **zero-variable** call (unlike bare placeholders, which are left literal when no variable is in play at all). Optional blocks are rejected in Mode-B query filters.
 - **`inspect` / `inspect_model` show the literal template** (`{floor}`), not a rendered value. A `Variables:` line lists the model's placeholders classified **required** (bare, no default — omitting it raises) vs **optional** (inside a block, or carrying a `query_variables` default). The classification is derived from the SQL, not stored, so it can never drift from the template.
 
-**Scope (DEV-1625):** substitution currently applies to the **direct source model** of a query. Nested `source_queries` stages, query-backed direct sources, join-target models, and cross-model-target models are the deferred follow-up ([DEV-1678](https://linear.app/motley-ai/issue/DEV-1678)). A `{var}` in one of those lineages is left untouched (and surfaces as an error on the stray placeholder) until that lands.
+**Scope:** substitution applies to the **direct source model**, each stage's own source model, and every stage of a query-backed source (spliced into the statement); join-target and cross-model-target models are not yet substituted, so a `{var}` there is left untouched (and surfaces as an error on the stray placeholder).
 
 **Trusted input.** Substituted values are still treated as trusted, not attacker-controlled — prefer not to feed untrusted end-user input through `variables`. The Mode-A escaping is now dialect-aware (DEV-1727): it keeps a string value inside the quoted literal you wrote on every supported dialect, including backslash-escaping backends like MySQL and ClickHouse. Two residual caveats: a `{var}` placed in an **unquoted** position is still raw substitution (only *quoted* string literals are escaped); and the backslash-dialect escaping assumes the server's **default** string mode — a MySQL server running with `sql_mode=NO_BACKSLASH_ESCAPES` treats backslash as an ordinary char, which the whole sqlglot dialect layer (not just this feature) assumes is off.
 
@@ -503,7 +503,7 @@ When a query-backed model references `{var}` placeholders, values flow in this o
 1. **Runtime kwarg** — `variables=` on `engine.execute(...)` (also via REST `/query`, MCP `query` / `create_model`, CLI `--variables` / `--variables-json`). Wins at every nesting level.
 2. **Stage `.variables`** — set on an individual `SlayerQuery` stage.
 3. **Outer query `.variables`** — when a query-backed model is used as `source_model` in another query.
-4. **Model defaults** — `model.query_variables`.
+4. **Model defaults** — `model.query_variables`; through nested query-backed models each enclosing model's defaults override those of the model it wraps, with the innermost stage's source model lowest.
 
 Unresolved placeholders raise a clear error at execute time, naming the model and the missing variable. Runtime-kwarg variables that don't appear anywhere are silently ignored.
 

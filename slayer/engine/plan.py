@@ -7,7 +7,7 @@ multi-stage DAG through it, splicing the stored query-backed models its stages r
 
 from __future__ import annotations
 
-from typing import Any, Dict, Hashable, List, Optional, Set, Tuple, Union
+from typing import Any, Dict, Hashable, List, NoReturn, Optional, Set, Tuple, Union
 
 from pydantic import BaseModel, Field
 
@@ -176,49 +176,73 @@ class _StagePlanner:
         for name in self._explicit_demands(query, chain=chain):
             self.ensure(name, chain=chain, explicit=True)
         while True:
-            alone = single and not self.state.schemas
-            scope, stamped = self._universe(query, stage_model=stage_model, single=alone)
-            attempt = stamped.model_copy(update={"referenced_models": [
-                *stamped.referenced_models, *self._placeholders(),
-            ]})
-            failure: Optional[Exception] = None
-            planned: Optional[PlannedQuery] = None
-            with observe_traversals() as seen:
-                try:
-                    planned = self._plan_once(query, bundle=attempt, scope=scope, single=alone)
-                except Exception as exc:  # noqa: BLE001 — a miss may be a missing splice; retried below
-                    failure = exc
-            demand = sorted(
-                n for n in seen
-                if n in self.bundle.query_backed and n not in chain
-                and n not in self.state.spliced and n not in self.inert
+            planned, failure, seen, stamped = self._attempt(
+                query, stage_model=stage_model, single=single and not self.state.schemas,
             )
-            if demand and any([self.ensure(n, chain=chain, explicit=False) for n in demand]):
+            if self._splice_demand(seen, chain=chain):
                 continue
             on_chain = sorted(n for n, strict in seen.items() if strict and n in chain)
             unspliceable = sorted(n for n, strict in seen.items() if strict and n in self.failures)
             if failure is not None:
-                if unspliceable:
-                    # The stage reads a query-backed model that cannot be spliced: its error is the cause.
-                    raise self.failures[unspliceable[0]] from failure
-                if on_chain:
-                    failure.add_note(
-                        f"(it reads query-backed model(s) {on_chain} still being planned: "
-                        f"{' -> '.join(chain)})"
-                    )
-                raise failure
+                self._raise_failure(failure, on_chain=on_chain, unspliceable=unspliceable, chain=chain)
             assert planned is not None
             self._record(query, planned=planned, stamped=stamped, seen=seen, chain=chain,
                          raw=[*on_chain, *unspliceable], owner=owner)
             return
 
+    def _attempt(
+        self, query: SlayerQuery, *, stage_model: Optional[SlayerModel], single: bool,
+    ) -> "Tuple[Optional[PlannedQuery], Optional[Exception], Dict[str, bool], ResolvedSourceBundle]":
+        """One planning attempt over the placeholders: its result or failure, and what it traversed."""
+        scope, stamped = self._universe(query, stage_model=stage_model, single=single)
+        attempt = stamped.model_copy(update={"referenced_models": [
+            *stamped.referenced_models, *self._placeholders(),
+        ]})
+        failure: Optional[Exception] = None
+        planned: Optional[PlannedQuery] = None
+        with observe_traversals() as seen:
+            try:
+                planned = self._plan_once(query, bundle=attempt, scope=scope, single=single)
+            except Exception as exc:  # noqa: BLE001 — a miss may be a missing splice; retried by the caller
+                failure = exc
+        return planned, failure, seen, stamped
+
+    def _splice_demand(self, seen: Dict[str, bool], *, chain: Tuple[str, ...]) -> bool:
+        """Splice every unspliced query-backed model an attempt touched; ``True`` if any was."""
+        demand = sorted(
+            n for n in seen
+            if n in self.bundle.query_backed and n not in chain
+            and n not in self.state.spliced and n not in self.inert
+        )
+        progressed = False
+        for n in demand:
+            progressed = self.ensure(n, chain=chain, explicit=False) or progressed
+        return progressed
+
+    def _raise_failure(
+        self, failure: Exception, *, on_chain: List[str], unspliceable: List[str],
+        chain: Tuple[str, ...],
+    ) -> NoReturn:
+        if unspliceable:
+            # The stage reads a query-backed model that cannot be spliced: its error is the cause.
+            raise self.failures[unspliceable[0]] from failure
+        if on_chain:
+            failure.add_note(
+                f"(it reads query-backed model(s) {on_chain} still being planned: "
+                f"{' -> '.join(chain)})"
+            )
+        raise failure
+
     def _plan_once(
         self, query: SlayerQuery, *, bundle: ResolvedSourceBundle, scope, single: bool,
     ) -> PlannedQuery:
         display = self.state.displays.get(query.name) if query.name else None
-        label = display.label if display else (
-            f"stage {query.name!r}" if query.name else f"stages[{len(self.state.planned)}]"
-        )
+        if display:
+            label = display.label
+        elif query.name:
+            label = f"stage {query.name!r}"
+        else:
+            label = f"stages[{len(self.state.planned)}]"
         with collect_stale_spellings() as spellings:
             if single:
                 planned = plan_query(query=query, bundle=bundle)
@@ -402,8 +426,10 @@ class _StagePlanner:
     def _base_time_dimension(self, name: str) -> Optional[str]:
         model = self.bundle.query_backed[name]
         private = {q.name: q for q in model.source_queries or [] if q.name}
-        final = topologically_order_stages(list(model.source_queries or []))[-1]
-        spec = follow_sibling_chain(spec=final.source_model, named_queries=private)
+        stages = topologically_order_stages(list(model.source_queries or []))
+        if not stages:
+            return None
+        spec = follow_sibling_chain(spec=stages[-1].source_model, named_queries=private)
         base_name = spec.source_name if isinstance(spec, ModelExtension) else spec
         if isinstance(spec, SlayerModel):
             return spec.default_time_dimension

@@ -328,9 +328,9 @@ class TestExtensions:
 # --------------------------------------------------------------------------- #
 class TestSplicedWarnings:
     async def test_broadcast_inside_a_query_backed_model_is_visible(self, engine) -> None:
+        q = query(source_model="bcast_qb", dimensions=["status"], measures=[m("amt2:sum", "t")])
         with pytest.warns(UserWarning):
-            resp = await engine.execute(query(
-                source_model="bcast_qb", dimensions=["status"], measures=[m("amt2:sum", "t")]))
+            resp = await engine.execute(q)
         assert rows_by(resp.data, key="bcast_qb.status", value="bcast_qb.t") == AMOUNT_BY_STATUS
         (w,) = [w for w in resp.warnings if w.kind == "broadcast"]
         assert w.measure == "cs"
@@ -345,8 +345,9 @@ class TestSplicedWarnings:
             measures=[m("amount:sum", "m"), m("customers.spend:sum", "cm"), m("cust_rev.rev:max", "rm")])
         with pytest.warns(UserWarning):
             got = await engine.execute(consumer)
+        spliced = [*explicit_splice(cust_rev_model()), consumer]
         with pytest.warns(UserWarning):
-            ref = await engine.execute([*explicit_splice(cust_rev_model()), consumer])
+            ref = await engine.execute(spliced)
         assert sorted_rows(got.data) == sorted_rows(ref.data)
         assert [w.model_dump() for w in got.warnings] == [w.model_dump() for w in ref.warnings]
         assert {w.measure for w in got.warnings if w.kind == "broadcast"} == {"cm", "rm"}

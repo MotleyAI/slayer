@@ -986,6 +986,8 @@ class SlayerQueryEngine:
         # Stored ``source_queries`` may be non-topological for
         # ``joins[].target_model`` deps; topo-sort to match save-time semantics.
         stages = topologically_order_stages(list(model.source_queries or []))
+        if not stages:
+            raise ValueError(f"Model {model.name!r} has no source_queries")
         main_query = stages[-1]
         named_queries = {q.name: q for q in stages[:-1] if q.name}
         # Precedence ``runtime > stage > model_defaults`` (no outer query here,

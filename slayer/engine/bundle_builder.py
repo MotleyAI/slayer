@@ -57,21 +57,9 @@ async def build_resolved_source_bundle(
     for q in [*named_queries.values(), query]:
         _reject_chain_source(spec=q.source_model, chain=splice_chain)
 
-    # source_model is the real base the root chain bottoms out at.
-    root_spec = follow_sibling_chain(spec=query.source_model, named_queries=named_queries)
-    inline_extensions: List[ModelExtension] = []
-    if source_name_if_sibling(spec=root_spec, sibling_names=sibling_names) is None:
-        ext = as_extension_over_nonsibling(spec=root_spec, sibling_names=sibling_names)
-        if ext is not None:
-            inline_extensions.append(ext)
-    source_model = await _resolve_source_spec(
-        root_spec, storage=storage, data_source=data_source
+    source_model, inline_extensions = await _resolve_root(
+        query=query, named_queries=named_queries, storage=storage, data_source=data_source,
     )
-    if source_model.source_queries and isinstance(root_spec, ModelExtension):
-        # The overlay applies once, over the spliced stage (design decision 8).
-        source_model = await _resolve_source_spec(
-            root_spec.source_name, storage=storage, data_source=data_source,
-        )
 
     # Joins never cross datasource boundaries: scope the walk by the source
     # model's own data_source, falling back to the hint only when it carries none.
@@ -91,28 +79,10 @@ async def build_resolved_source_bundle(
         models=component, storage=storage, data_source=walk_ds, chain=splice_chain,
     )
 
-    # Per-named-stage source models — each non-sibling-sourced sibling resolves
-    # to its OWN concrete model so heterogeneous DAGs bind against the right host;
-    # a query-backed source becomes a spliced sibling instead.
-    stage_source_models: Dict[str, SlayerModel] = {}
-    for nm, nq in named_queries.items():
-        if source_name_if_sibling(spec=nq.source_model, sibling_names=sibling_names) is not None:
-            continue  # sibling-sourced: planner resolves via upstream StageSchema
-        # MUST resolve to a concrete model; a failure is a genuine error, not a
-        # best-effort skip (would silently fall back to the root source).
-        resolved_stage = await _resolve_source_spec(
-            nq.source_model, storage=storage, data_source=walk_ds or data_source
-        )
-        if resolved_stage.source_queries:
-            if spec_adds_measures(nq.source_model):
-                label = stage_displays[nm].label if nm in stage_displays else f"stage {nm!r}"
-                raise ValueError(
-                    f"{label[0].upper()}{label[1:]}: a ModelExtension over query-backed "
-                    f"model {resolved_stage.name!r} may not add measures; define them in "
-                    f"a later stage over it instead."
-                )
-            continue
-        stage_source_models[nm] = resolved_stage
+    stage_source_models = await _stage_source_models(
+        named_queries=named_queries, stage_displays=stage_displays,
+        storage=storage, data_source=walk_ds or data_source,
+    )
 
     query_variables = merge_query_variables(
         runtime=runtime_variables,
@@ -140,6 +110,66 @@ async def build_resolved_source_bundle(
     )
 
 
+async def _resolve_root(
+    *,
+    query: SlayerQuery,
+    named_queries: Dict[str, SlayerQuery],
+    storage: "StorageBackend",
+    data_source: Optional[str],
+) -> "Tuple[SlayerModel, List[ModelExtension]]":
+    """The real base the root chain bottoms out at, and its inline extensions."""
+    sibling_names = set(named_queries)
+    root_spec = follow_sibling_chain(spec=query.source_model, named_queries=named_queries)
+    inline_extensions: List[ModelExtension] = []
+    if source_name_if_sibling(spec=root_spec, sibling_names=sibling_names) is None:
+        ext = as_extension_over_nonsibling(spec=root_spec, sibling_names=sibling_names)
+        if ext is not None:
+            inline_extensions.append(ext)
+    source_model = await _resolve_source_spec(
+        root_spec, storage=storage, data_source=data_source
+    )
+    if source_model.source_queries and isinstance(root_spec, ModelExtension):
+        # The overlay applies once, over the spliced stage (design decision 8).
+        source_model = await _resolve_source_spec(
+            root_spec.source_name, storage=storage, data_source=data_source,
+        )
+    return source_model, inline_extensions
+
+
+async def _stage_source_models(
+    *,
+    named_queries: Dict[str, SlayerQuery],
+    stage_displays: Dict[str, StageDisplay],
+    storage: "StorageBackend",
+    data_source: Optional[str],
+) -> Dict[str, SlayerModel]:
+    """Each non-sibling-sourced stage's OWN concrete model, so heterogeneous DAGs
+    bind against the right host; a query-backed source becomes a spliced sibling instead."""
+    sibling_names = set(named_queries)
+    out: Dict[str, SlayerModel] = {}
+    for nm, nq in named_queries.items():
+        if source_name_if_sibling(spec=nq.source_model, sibling_names=sibling_names) is not None:
+            continue  # sibling-sourced: planner resolves via upstream StageSchema
+        # MUST resolve; a failure is a genuine error (a skip would fall back to the root source).
+        resolved = await _resolve_source_spec(nq.source_model, storage=storage, data_source=data_source)
+        if not resolved.source_queries:
+            out[nm] = resolved
+        elif spec_adds_measures(nq.source_model):
+            label = stage_displays[nm].label if nm in stage_displays else f"stage {nm!r}"
+            raise ValueError(
+                f"{label[0].upper()}{label[1:]}: a ModelExtension over query-backed "
+                f"model {resolved.name!r} may not add measures; define them in "
+                f"a later stage over it instead."
+            )
+    return out
+
+
+def _written_join_targets(spec: SourceSpec | None) -> List[str]:
+    if spec is None or isinstance(spec, str):
+        return []
+    return [j.target_model for j in spec.joins or []]
+
+
 async def _query_written_targets(
     *,
     queries: List[SlayerQuery],
@@ -152,20 +182,20 @@ async def _query_written_targets(
     walk did not reach (an extension over a sibling carries its own joins)."""
     out: List[SlayerModel] = []
     for q in queries:
-        spec = q.source_model
-        for join in (spec.joins or []) if spec is not None and not isinstance(spec, str) else []:
-            name = join.target_model
+        for name in _written_join_targets(q.source_model):
             if name in known or name in sibling_names:
                 continue
             model = await _frontier_model(name=name, all_models={}, storage=storage, ds=data_source)
             if model is None:
                 continue
-            for m in await _collect_referenced_models(
-                source_model=model, named_queries={}, storage=storage, data_source=data_source,
-            ):
-                if m.name not in known:
-                    known.add(m.name)
-                    out.append(m)
+            fresh = [
+                m for m in await _collect_referenced_models(
+                    source_model=model, named_queries={}, storage=storage, data_source=data_source,
+                )
+                if m.name not in known
+            ]
+            known.update(m.name for m in fresh)
+            out.extend(fresh)
     return out
 
 
@@ -205,23 +235,39 @@ async def _split_query_backed(
             referenced[model.name] = model
             continue
         query_backed[model.name] = model.model_copy(update={"joins": []})
-        private = {q.name: q for q in model.source_queries if q.name}
-        for stage in model.source_queries:
-            spec = follow_sibling_chain(spec=stage.source_model, named_queries=private)
-            name = _spec_base_name(spec)
-            if spec is None or (name is not None and (name in chain or name in query_backed)):
-                continue
-            try:
-                base = await _resolve_source_spec(spec, storage=storage, data_source=data_source)
-            except ValueError as exc:
-                logger.debug("query-backed stage base %r unresolved: %s", name, exc)
-                continue
-            if base.name in referenced or base.name in query_backed:
-                continue
-            pending.extend(await _collect_referenced_models(
+        pending.extend(await _stage_base_components(
+            model=model, skip=[*chain, *query_backed], known={*referenced, *query_backed},
+            storage=storage, data_source=data_source,
+        ))
+    return list(referenced.values()), query_backed
+
+
+async def _stage_base_components(
+    *,
+    model: SlayerModel,
+    skip: List[str],
+    known: "set[str]",
+    storage: "StorageBackend",
+    data_source: Optional[str],
+) -> List[SlayerModel]:
+    """The components of ``model``'s stage bases, bar bases named in ``skip`` or resolving into ``known``."""
+    out: List[SlayerModel] = []
+    private = {q.name: q for q in model.source_queries or [] if q.name}
+    for stage in model.source_queries or []:
+        spec = follow_sibling_chain(spec=stage.source_model, named_queries=private)
+        name = _spec_base_name(spec)
+        if spec is None or (name is not None and name in skip):
+            continue
+        try:
+            base = await _resolve_source_spec(spec, storage=storage, data_source=data_source)
+        except ValueError as exc:
+            logger.debug("query-backed stage base %r unresolved: %s", name, exc)
+            continue
+        if base.name not in known:
+            out.extend(await _collect_referenced_models(
                 source_model=base, named_queries={}, storage=storage, data_source=data_source,
             ))
-    return list(referenced.values()), query_backed
+    return out
 
 
 async def _preseed_sibling_models(

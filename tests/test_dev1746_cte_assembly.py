@@ -38,7 +38,7 @@ from slayer.core.models import ModelMeasure
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.sql import generator as generator_mod
 from slayer.sql.naming import assert_unique_cte_names
-from slayer.sql.render.cte_assembly import CteEntry, assemble_with_chain
+from slayer.sql.render.cte_assembly import CteEntry, assemble_with_chain, cte_entry
 
 from tests._cross_model_chain import _gen
 from tests._dev1746_fixtures import cte_names_in_order
@@ -217,6 +217,12 @@ class TestWithChainAssembler:
         out = assemble_with_chain(entries=entries, final=self._sel("other"))
         names = [cte.alias_or_name for cte in out.args["with_"].expressions]
         assert names == ["MixedCase", "other"], names
+
+    def test_a_hoisted_quoted_column_list_keeps_its_quoting(self) -> None:
+        with_node = sqlglot.parse_one('WITH n("MixedCase", k) AS (SELECT 1, 2) SELECT 1')
+        entry = cte_entry(cte=with_node.args["with_"].expressions[0], name="m", depends_on=[])
+        out = assemble_with_chain(entries=[entry], final=self._sel("m"))
+        assert out.sql().startswith('WITH m("MixedCase", k) AS'), out.sql()
 
     def test_case_folding_duplicates_are_rejected(self) -> None:
         """DEV-1726: two names differing only in case collide on a folding

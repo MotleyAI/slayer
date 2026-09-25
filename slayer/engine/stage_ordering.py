@@ -33,9 +33,8 @@ def _walk_spec(spec: SourceSpec | None, against: AbstractSet[str], out: Set[str]
         if spec in against:
             out.add(spec)
         return
-    if isinstance(spec, ModelExtension):
-        if spec.source_name in against:
-            out.add(spec.source_name)
+    if isinstance(spec, ModelExtension) and spec.source_name in against:
+        out.add(spec.source_name)
     for j in spec.joins or []:
         if j.target_model in against:
             out.add(j.target_model)
