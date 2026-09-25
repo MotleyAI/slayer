@@ -147,13 +147,14 @@ MotleyAI/living-architecture; CI pins the version) runs in CI; the full bundle
 runs at the spec-review gate and the arch-slice move gate:
 
 ```bash
-la-arch-check                                # also runs in CI
+la-arch-check                                # also runs in CI; pinned uvx form in CLAUDE.md
 npx -y likec4@1.47.0 validate architecture   # pinned; run from the repo root
 poetry run basedpyright                      # gate = no new errors vs baseline
 ```
 
 `arch_check`'s `diagrams-fresh` goes red when a mapped doc's embedded mermaid
-drifts from the model or views — the one fix is `la-arch-diagrams`.
+drifts from the model or views — the one fix is `la-arch-diagrams` (pinned uvx
+form in CLAUDE.md).
 
 Every numbered principle item in an arc42 file carries at least one
 square-bracketed status tag (all three kinds validated by arch_check, per
