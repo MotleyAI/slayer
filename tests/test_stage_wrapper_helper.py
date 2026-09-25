@@ -1,8 +1,6 @@
 """DEV-1452 Stage B — shared ``build_flat_rename_wrapper`` helper.
 
-Extracted from ``slayer.sql.generator._stage_rename_wrapper`` (decision B
-of the Stage B plan). Both the multi-stage CTE chaining in
-``generate_planned_stages`` AND the migrated
+Both the multi-stage CTE chaining in ``generate_planned_stages`` AND the
 ``_expand_query_backed_model`` virtual-model wrap call it.
 
 The helper takes no planner shapes — pure (source_relation, inner,
@@ -60,10 +58,11 @@ def test_mismatch_between_rendered_and_expected_raises() -> None:
     stage_sql = (
         'SELECT "orders.status" AS "orders.status" FROM orders_t AS orders'
     )
+    inner = _select(stage_sql, "postgres")
     with pytest.raises(ValueError, match="do not match"):
         build_flat_rename_wrapper(
             source_relation="orders",
-            inner=_select(stage_sql, "postgres"),
+            inner=inner,
             expected_columns=["status", "missing_extra"],
             dialect="postgres",
         )

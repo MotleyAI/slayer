@@ -20,6 +20,7 @@ from typing import AsyncGenerator, Optional
 import pytest
 import sqlglot
 from sqlglot import exp
+from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, SlayerModel
@@ -143,7 +144,8 @@ def parse(sql: str, dialect: str) -> exp.Select:
 def outer_derived(top: exp.Select) -> exp.Select:
     """The chain's final select: the body of the ``_outer`` derived table."""
     frm = top.args.get("from_") or top.args.get("from")
-    assert frm is not None and isinstance(frm.this, exp.Subquery), top.sql()
+    assert frm is not None, top.sql()
+    assert isinstance(frm.this, exp.Subquery), top.sql()
     assert frm.this.alias == OUTER_ALIAS, top.sql()
     inner = frm.this.this
     assert isinstance(inner, exp.Select), top.sql()
@@ -171,7 +173,7 @@ def from_name(select: exp.Select) -> str:
     return frm.this.alias_or_name
 
 
-def where_of(select: exp.Select) -> Optional[exp.Expression]:
+def where_of(select: exp.Select) -> Optional[Expression]:
     where = select.args.get("where")
     return where.this if where is not None else None
 

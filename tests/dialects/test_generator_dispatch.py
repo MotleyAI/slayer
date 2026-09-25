@@ -86,9 +86,8 @@ def test_sqlgenerator_dialect_attribute_used_by_sqlglot_emission() -> None:
     assert parsed.sql(dialect=gen.dialect) == "SELECT 1"
 
 
-# DEV-1571 Bug 1 — the live outer-wrap (``_emit_planned_outer_wrap``) delegates
-# to ``SqlDialect.emit_outer_wrap`` at generator.py; the hook itself is pinned
-# directly by ``tests/dialects/test_base.py`` / ``test_mysql.py``. The two tests
+# DEV-1571 Bug 1 — the outer wrap is one AST builder in the generator, pinned by
+# ``tests/dialects/test_base.py`` / ``test_mysql.py``. The two tests
 # that drove the deleted EnrichedQuery-era ``_build_outer_wrap`` (delegation +
 # text-based trailing-pagination strip) were removed with it in PR 6 (DEV-1749);
 # the planned path carries pagination as detached AST, so there is nothing to
@@ -148,8 +147,6 @@ def test_parse_delegates_rewrite_parsed_ast_to_active_dialect() -> None:
     ``rewrite_parsed_ast`` hook (SQLite's JSONExtract->func-form rewrite),
     not an inline ``if d == 'sqlite':`` branch. Pins the mechanism behind
     the JSONExtract output-shape tests in test_generator_delegation.py."""
-    from slayer.sql.dialects.sqlite import SqliteDialect
-
     gen = SQLGenerator(dialect="sqlite")
     with patch.object(
         SqliteDialect,
@@ -166,8 +163,6 @@ def test_parse_delegates_rewrite_parsed_ast_to_active_dialect() -> None:
 
 def test_parse_predicate_delegates_rewrite_parsed_ast_to_active_dialect() -> None:
     """Same contract for the bare-predicate parser ``_parse_predicate``."""
-    from slayer.sql.dialects.sqlite import SqliteDialect
-
     gen = SQLGenerator(dialect="sqlite")
     with patch.object(
         SqliteDialect,

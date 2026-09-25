@@ -84,12 +84,13 @@ is more than one part, else the single part; `_SQL_AND_JOINER` is deleted if unu
 bundle, dialect) -> exp.Select` is used by both `generate_planned_stages` (then
 `_finish_statement`) and the engine. The engine path is `_build_planned_stages_ast` →
 `build_flat_rename_wrapper(inner=<AST>, source_relation, expected_columns, dialect)` →
-`_finish_statement(aliases=[*projection_result_keys, *flat names])`. The inner canonical
-keys are included because after wrapping they are derived-table columns, which the
-internal-CTE scan may not cover. `build_flat_rename_wrapper` loses `stage_sql: str`,
+`_finish_statement(aliases=projection_result_keys)`. The inner canonical keys are included
+because after wrapping they are derived-table columns, which the internal-CTE scan may not
+cover. The engine fits the wrapper's flat output aliases on the AST with
+`alias_rewrite_map(expected)` before finishing; a flat name equals the user-authored
+`Column.name`, which the finishing pass exempts. `build_flat_rename_wrapper` loses `stage_sql: str`,
 `projection_aliases` and the `decode_result_keys` step: it always sees canonical names.
-`Column.sql` keeps `alias_rewrite_map(expected)`, which is the same fitting function the
-finishing pass applies to those flat names.
+`Column.sql` keeps `alias_rewrite_map(expected)`, the same map applied to those output aliases.
 
 **D7. Law: no statement render inside composition.** An autouse test-harness fixture
 (`tests/conftest.py`) wraps the internal AST builders (the generator's statement builders
@@ -106,6 +107,8 @@ AST-only composition.
 legitimate Mode-A parses.
 If a value-layer render of a `Query` (a Mode-A scalar-subquery `Column.sql`) trips the
 law, stop and ask. Do not allowlist it silently, because that case belongs to DEV-1972.
+Until DEV-1972, `column_expansion.expand_derived_refs_sync` is a law exemption: it renders
+user fragments that may hold subqueries.
 
 **D8. MySQL sample statistics.** The MySQL hook's `exp.Anonymous("VAR_SAMP")` survives
 once D1 and D4 remove the re-parse. Goldens `dev1915` `corr::mysql` and

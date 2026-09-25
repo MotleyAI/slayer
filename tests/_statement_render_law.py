@@ -18,6 +18,7 @@ from typing import Any, Callable, Optional
 import pytest
 from sqlglot import exp
 from sqlglot.dialects.dialect import Dialect
+from sqlglot.expressions.core import Expression
 
 #: ``(module, qualified name)`` of every guarded AST statement builder.
 BUILDERS: tuple[tuple[str, str], ...] = (
@@ -30,6 +31,11 @@ BUILDERS: tuple[tuple[str, str], ...] = (
 #: The single finishing step (render → fit → validate), exempt inside any builder.
 FINISHERS: tuple[tuple[str, str], ...] = (
     ("slayer.sql.generator", "_finish_statement"),
+)
+
+#: Value-layer renders of user fragments (which may hold subqueries); DEV-1972 makes them AST and removes this.
+VALUE_LAYER_EXEMPT: tuple[tuple[str, str], ...] = (
+    ("slayer.sql.column_expansion", "expand_derived_refs_sync"),
 )
 
 GUARD_MARK = "__statement_render_law__"
@@ -88,7 +94,7 @@ def _guarded_generate(original: Callable) -> Callable:
         builder = _ACTIVE.get()
         if (
             builder is not None
-            and isinstance(expression, exp.Expression)
+            and isinstance(expression, Expression)
             and expression.find(exp.Query) is not None
         ):
             raise StatementRenderedDuringComposition(
@@ -107,7 +113,7 @@ def install(mp: pytest.MonkeyPatch) -> list[str]:
     Returns the targets that could not be resolved; ``test_every_target_exists``
     turns a missing one into a failure."""
     missing: list[str] = []
-    targets = [(t, t[1]) for t in BUILDERS] + [(t, None) for t in FINISHERS]
+    targets = [(t, t[1]) for t in BUILDERS] + [(t, None) for t in (*FINISHERS, *VALUE_LAYER_EXEMPT)]
     for (module_name, qualname), mark in targets:
         target = resolve(module_name, qualname)
         if target is None:
@@ -129,6 +135,7 @@ __all__ = [
     "FINISHERS",
     "GUARD_MARK",
     "StatementRenderedDuringComposition",
+    "VALUE_LAYER_EXEMPT",
     "guard_builder",
     "install",
     "resolve",

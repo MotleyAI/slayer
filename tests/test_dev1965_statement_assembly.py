@@ -8,6 +8,7 @@ import tempfile
 
 import pytest
 from sqlglot import exp
+from sqlglot.expressions.core import Expression
 
 import slayer.sql.dialects.tsql as tsql_module
 import slayer.sql.naming as naming
@@ -51,20 +52,20 @@ class _CompositionFailure(Exception):
     pass
 
 
-def _conjuncts(node: exp.Expression) -> list[exp.Expression]:
+def _conjuncts(node: Expression) -> list[Expression]:
     if isinstance(node, exp.And):
         return _conjuncts(node.this) + _conjuncts(node.expression)
     return [node]
 
 
-def _assert_grouped_conjuncts(node: exp.Expression, *, expected: int) -> None:
+def _assert_grouped_conjuncts(node: Expression, *, expected: int) -> None:
     """``node`` is an AND of ``expected`` conjuncts; every OR conjunct is parenthesised."""
     parts = _conjuncts(node)
     assert len(parts) == expected, node.sql()
     assert not [p for p in parts if isinstance(p, exp.Or)], node.sql()
 
 
-def _column_names(node: exp.Expression) -> set[str]:
+def _column_names(node: Expression) -> set[str]:
     return {c.name for c in node.find_all(exp.Column)}
 
 
@@ -111,7 +112,8 @@ class TestOneTopLevelWith:
         sql = await gen(cumsum_chain(limit=2, offset=1), dialect="tsql")
         order = assert_single_top_level_with(sql, "tsql").args.get("order")
         assert order is not None, sql
-        assert order.find(exp.Null) is not None and order.find(exp.Column) is None, sql
+        assert order.find(exp.Null) is not None, sql
+        assert order.find(exp.Column) is None, sql
         assert re.search(rf"OFFSET 1 ROWS\s+{_FETCH} 2 ROWS ONLY\s*\Z", sql), sql
 
 
@@ -121,8 +123,9 @@ class TestOneTopLevelWith:
             raise _CompositionFailure
 
         monkeypatch.setattr(TsqlDialect, "apply_pagination", _boom)
+        query = cumsum_chain(limit=2)
         with pytest.raises(_CompositionFailure):
-            await gen(cumsum_chain(limit=2), dialect="tsql")
+            await gen(query, dialect="tsql")
 
 
 class TestOuterOrderBy:
@@ -135,7 +138,8 @@ class TestOuterOrderBy:
         carried = set(outer_derived(top).named_selects)
         for ordered in top.args["order"].expressions:
             col = ordered.this
-            assert isinstance(col, exp.Column) and not col.table, sql
+            assert isinstance(col, exp.Column), sql
+            assert not col.table, sql
             assert col.name in carried, sql
         assert not [n for n in top.named_selects if "amount_max" in n], sql
 
@@ -175,10 +179,12 @@ class TestPostFilter:
         last = cte_names(top)[-1]
         assert from_name(final) == last, sql
         where = where_of(final)
-        assert where is not None and "50" in where.sql(dialect=dialect), sql
+        assert where is not None, sql
+        assert "50" in where.sql(dialect=dialect), sql
         assert _column_names(where) <= _carried(top, last), sql
         base = next(c.this for c in top.args["with_"].expressions if c.alias_or_name == "base")
-        assert base.args.get("where") is None and base.args.get("having") is None, sql
+        assert base.args.get("where") is None, sql
+        assert base.args.get("having") is None, sql
 
     @pytest.mark.parametrize("dialect", ["sqlite", "duckdb"])
     async def test_post_filter_keeps_the_transform_inputs(self, dialect: str) -> None:
@@ -343,8 +349,9 @@ def _stat_seams(formula: str) -> dict:
     month = [{"dimension": "created_at", "granularity": "month"}]
     measure = [{"formula": formula, "name": "w"}]
     return {
-        "producer_hoist": SlayerQuery(source_model="orders", time_dimensions=F15.month_td(),
-                                      measures=measure),
+        "producer_hoist": SlayerQuery.model_validate({
+            "source_model": "orders", "time_dimensions": F15.month_td(), "measures": measure,
+        }),
         "non_root_stage": [
             {"name": "s1", "source_model": "orders", "time_dimensions": month, "measures": measure},
             {"source_model": "s1", "measures": [{"formula": "w:max", "name": "mx"}]},

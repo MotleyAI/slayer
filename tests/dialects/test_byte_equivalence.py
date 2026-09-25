@@ -449,13 +449,8 @@ async def test_byte_equivalence_time_shift_tsql(orders_model: SlayerModel) -> No
     assert "INTERVAL" not in sql
     # DEV-1571 Bug 1: T-SQL accepts WITH only as a statement prefix, so the
     # CTE chain must be hoisted onto the outer statement rather than left
-    # inside ``FROM (...) AS _outer``. The hoist re-parses the inner SQL
-    # through sqlglot's T-SQL dialect, which upper-cases the datepart on the
-    # way through (T-SQL dateparts are case-insensitive keywords, so this is
-    # cosmetic). Both facts are pinned here because the typed pipeline
-    # briefly regressed the hoist by string-building the wrap instead of
-    # delegating to ``SqlDialect.emit_outer_wrap``.
-    assert "DATETRUNC(MONTH, " in sql
+    # inside ``FROM (...) AS _outer``.
+    assert "DATETRUNC(month, " in sql
     assert sql.lstrip().upper().startswith("WITH "), sql
     assert not re.search(r"FROM\s*\(\s*WITH", sql, re.IGNORECASE), sql
 

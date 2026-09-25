@@ -2469,8 +2469,8 @@ class TestMultiDialectGeneration:
             f"Multi-unit Postgres-shape INTERVAL literal is invalid on {dialect}.\n"
             f"sql:\n{sql}"
         )
-        # Per-unit INTERVAL clauses must each be present (sqlglot transpiles exp.Interval per dialect; DEV-1835's regroup desugar renders the amount as a quoted literal — `INTERVAL 'N' UNIT` — on both dialects).
-        for piece in ("INTERVAL '1' YEAR", "INTERVAL '2' MONTH", "INTERVAL '3' DAY"):
+        # Per-unit INTERVAL clauses must each be present (sqlglot transpiles exp.Interval per dialect: `INTERVAL N UNIT`).
+        for piece in ("INTERVAL 1 YEAR", "INTERVAL 2 MONTH", "INTERVAL 3 DAY"):
             assert piece in norm, (
                 f"Expected dialect-correct '{piece}' in {dialect} output.\n"
                 f"sql:\n{sql}"
@@ -2497,8 +2497,8 @@ class TestMultiDialectGeneration:
             f"Quoted single-unit INTERVAL literal is invalid on {dialect}.\n"
             f"sql:\n{sql}"
         )
-        assert "INTERVAL '7' DAY" in norm, (
-            f"Expected dialect-correct 'INTERVAL '7' DAY' in {dialect} output.\n"
+        assert "INTERVAL 7 DAY" in norm, (
+            f"Expected dialect-correct 'INTERVAL 7 DAY' in {dialect} output.\n"
             f"sql:\n{sql}"
         )
 

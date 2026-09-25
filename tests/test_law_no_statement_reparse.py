@@ -8,6 +8,7 @@ its self-tests plus a compile sweep over every assembly seam.
 from __future__ import annotations
 
 import asyncio
+from typing import cast
 
 import pytest
 import sqlglot
@@ -37,7 +38,7 @@ class TestSelfCheck:
         @_fake_builder
         def build() -> exp.Select:
             text = _inner().sql()
-            return exp.select("*").from_(sqlglot.parse_one(text).subquery("x"))
+            return exp.select("*").from_(cast(exp.Select, sqlglot.parse_one(text)).subquery("x"))
 
         with pytest.raises(law.StatementRenderedDuringComposition, match="fake_builder"):
             build()
@@ -46,7 +47,7 @@ class TestSelfCheck:
         @_fake_builder
         def build() -> exp.Select:
             text = _inner().sql().replace("a", "b")
-            return exp.select("*").from_(sqlglot.parse_one(text).subquery("x"))
+            return exp.select("*").from_(cast(exp.Select, sqlglot.parse_one(text)).subquery("x"))
 
         with pytest.raises(law.StatementRenderedDuringComposition):
             build()
@@ -86,12 +87,15 @@ class TestSelfCheck:
         async def build() -> str:
             return _inner().sql()
 
+        coroutine = _fake_builder(build)()
         with pytest.raises(law.StatementRenderedDuringComposition):
-            asyncio.run(_fake_builder(build)())
+            asyncio.run(coroutine)
 
 
 class TestTargets:
-    @pytest.mark.parametrize(("module", "qualname"), [*law.BUILDERS, *law.FINISHERS])
+    @pytest.mark.parametrize(
+        ("module", "qualname"), [*law.BUILDERS, *law.FINISHERS, *law.VALUE_LAYER_EXEMPT],
+    )
     def test_every_target_exists(self, module: str, qualname: str) -> None:
         assert law.resolve(module, qualname) is not None, (
             f"law target {module}.{qualname} is gone; re-point BUILDERS at its successor"
@@ -106,7 +110,7 @@ class TestTargets:
             target = law.resolve(module, qualname)
             if target is not None:
                 assert getattr(target[2], law.GUARD_MARK, None) == qualname, qualname
-        for module, qualname in law.FINISHERS:
+        for module, qualname in (*law.FINISHERS, *law.VALUE_LAYER_EXEMPT):
             target = law.resolve(module, qualname)
             if target is not None:
                 assert getattr(target[2], law.GUARD_MARK, None) == "finisher", qualname
@@ -125,8 +129,9 @@ class TestLiveGenerator:
             _inner().sql()
 
         monkeypatch.setattr(SQLGenerator, "_assert_stages_assigned", staticmethod(_renders))
+        query = q(dimensions=["status"], measures=["amount:sum"])
         with pytest.raises(law.StatementRenderedDuringComposition):
-            await gen(q(dimensions=["status"], measures=["amount:sum"]), dialect="postgres")
+            await gen(query, dialect="postgres")
 
 
 # --------------------------------------------------------------------------- #

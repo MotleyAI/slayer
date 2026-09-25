@@ -1065,8 +1065,8 @@ class TestMySQLStatAggregations:
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"),
                                            granularity=TimeGranularity.MONTH)],
             measures=[
-                {"formula": "total:covar_samp(other=customer_id, window='90d')", "name": "cv"},
-                {"formula": "total:corr(other=customer_id, window='90d')", "name": "co"},
+                ModelMeasure(formula="total:covar_samp(other=customer_id, window='90d')", name="cv"),
+                ModelMeasure(formula="total:corr(other=customer_id, window='90d')", name="co"),
             ],
         )
         rows = [  # (amount, customer_id, created_at)
