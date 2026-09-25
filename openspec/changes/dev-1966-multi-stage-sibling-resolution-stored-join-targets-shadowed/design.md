@@ -53,14 +53,16 @@ embedded pipeline land in the consumer's `WITH`. A stale DEV-1878 attempt
    `ResolvedSourceBundle` (an `ir` type the renderer already consumes) on `PlannedQuery`; the
    generator reads it and `_bundle_for_stage` is deleted. It holds only siblings planned earlier.
    A narrow new IR type was rejected: it would rewrite every generator bundle consumer for no
-   layering gain.
+   layering gain. Response metadata for a stage-sourced root reads that stage's stamped bundle;
+   stage columns carry their source column's label.
 6. **Splicing (M7).** `_prepare_pipeline` builds the bundle, discovers stored query-backed models
    depth-first in every position (source, stage source, join / cross-model target, including
    inside spliced stages), localizes each model's stages under its scope, splices them, re-runs
    `topologically_order_stages` over the augmented list (it sees join-target deps), then rebuilds
    the bundle (two passes; the second reuses resolved models). A model reached from several places
-   is spliced once. Alternative — keep text expansion + hoist renaming for query-backed models:
-   rejected, it keeps nested scopes as text and the deferral arm alive.
+   is spliced once. The spliced final stage carries its source model's default time dimension;
+   user stages carry none. Alternative — keep text expansion + hoist renaming for query-backed
+   models: rejected, it keeps nested scopes as text and the deferral arm alive.
 7. **Lexical variables (M8).** Splicing records each spliced stage's enclosing-model
    `query_variables` stack; the sibling variable merge consults it (precedence in the
    `queries/query-backed-inline` spec). A model spliced once but reached from contexts whose

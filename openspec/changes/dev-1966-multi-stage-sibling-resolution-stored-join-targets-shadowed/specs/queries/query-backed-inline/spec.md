@@ -52,12 +52,17 @@ statements' private CTE names collide and nested shadowing is preserved.
 - **THEN** the statement executes and returns the hand-computed values
 
 ### Requirement: Metadata flows through a spliced model
-A spliced query-backed model SHALL expose the same default time dimension, column labels,
-descriptions, formats and grain to its consumer as the explicit splice.
+A spliced query-backed model SHALL expose the same column labels, descriptions, formats and
+grain to its consumer as the explicit splice. Its default time dimension SHALL be its final
+stage's source-model default time dimension, as before splicing; a user stage has none.
 
 #### Scenario: Metadata parity
 - **WHEN** a consumer reads a query-backed model whose final stage has a time dimension and labelled, formatted columns
-- **THEN** time defaulting, response column metadata and join cardinality match the explicit splice
+- **THEN** response column metadata and join cardinality match the explicit splice
+
+#### Scenario: Time defaulting through a spliced model
+- **WHEN** a consumer applies `last` with no time dimension of its own to a query-backed model whose final stage projects its source's default time dimension
+- **THEN** that column ranks, with the same values as before splicing
 
 ### Requirement: Variables layer lexically across nesting
 Each spliced stage SHALL resolve query variables from, lowest to highest precedence: its source

@@ -12,7 +12,6 @@ from typing import Any, Dict, List
 import pytest
 
 import slayer.engine.query_engine as query_engine_module
-import slayer.engine.stage_ordering as stage_ordering
 import slayer.sql.generator as generator_module
 from slayer.core.query import SlayerQuery
 from slayer.engine.plan import plan_stages
@@ -31,8 +30,6 @@ from tests._dev1948_fixtures import (
     customers_model,
     inline_join_list,
     make_dev1948_engine,
-    nested_list,
-    nested_stage_n,
     orders_model,
     pop_check_list,
     producer_at_sibling_list,
@@ -156,15 +153,17 @@ class TestExecution:
         resp = await exec_engine.execute(shared_producer_list())
         assert rows_by(resp.data, key="s2.status", value="s2.total") == AMOUNT_BY_STATUS
 
-    @pytest.mark.xfail(strict=True, reason="DEV-1966: a sibling shadows a same-named stored-join target")
     async def test_stored_join_resolves_to_the_model_not_a_sibling(self, exec_engine) -> None:
         resp = await exec_engine.execute(stored_join_collision_list())
         assert rows_by(resp.data, key="b.customers__tier", value="b.total") == AMOUNT_BY_TIER
 
-    @pytest.mark.xfail(strict=True, reason="DEV-1966: nested inline source_queries cannot read a sibling")
-    async def test_nested_source_queries_read_a_sibling(self, exec_engine) -> None:
-        resp = await exec_engine.execute(nested_list())
-        assert rows_by(resp.data, key="n.tr", value="n.total") == SPEND_BY_TIER
+    def test_nested_source_queries_rejected(self) -> None:
+        outer = {"name": "outer", "source_queries": [
+            {"source_model": "x", "dimensions": ["tier"], "measures": [{"formula": "total_spend:sum", "name": "s"}]}]}
+        with pytest.raises(ValueError, match=r"(?is)outer.*named stages?|named stages?.*outer"):
+            SlayerQuery.model_validate({
+                "name": "n", "source_model": outer, "dimensions": ["tier"],
+                "measures": [{"formula": "s:sum", "name": "s3"}]})
 
 
 # --------------------------------------------------------------------------- #
@@ -251,18 +250,6 @@ class TestPlanStagesDirect:
         queries, bundle = [_q("a", "orders"), _q("a", "orders"), _q(None, "a")], _bundle()
         with pytest.raises(ValueError, match="Duplicate stage name 'a'"):
             plan_stages(queries=queries, bundle=bundle)
-
-
-class TestNestedSourceQueriesOrdering:
-    def test_extractor_sees_a_depth_two_read(self) -> None:
-        reads = stage_ordering.stage_sibling_reads(
-            query=nested_stage_n(), siblings={"x", "c", "n"})
-        assert set(reads) == {"c"}
-
-    def test_nested_reader_is_ordered_after_its_sibling(self) -> None:
-        stages = nested_list()
-        supplied = [stages[2], stages[1], stages[0], stages[3]]
-        assert [q.name for q in topologically_order_stages(supplied)[:-1]] == ["x", "c", "n"]
 
 
 # --------------------------------------------------------------------------- #

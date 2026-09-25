@@ -14,10 +14,12 @@ from __future__ import annotations
 
 import ast
 import re
+import sys
 from collections import Counter
 from pathlib import Path
 from typing import Iterator, Optional, Tuple
 
+import pytest
 import yaml
 
 import slayer.engine
@@ -163,6 +165,13 @@ class TestClassifierSelfChecks:
     """The gate's acceptance criterion in CI: a scratch unenumerated
     fail-closed site turns it red."""
 
+    @pytest.fixture
+    def synthetic_site(self, monkeypatch) -> DeferralSite:
+        """A registry of one scratch site, so these checks never depend on the live list."""
+        site = DeferralSite(fragment="frobnication deferred", issue="DEV-9999")
+        monkeypatch.setattr(sys.modules[__name__], "DEFERRAL_SITES", (site,))
+        return site
+
     @staticmethod
     def _classify_source(source: str):
         (message,) = [m for _lineno, m in _messages_of(ast.parse(source))]
@@ -192,25 +201,22 @@ class TestClassifierSelfChecks:
         )
         assert problem is not None
 
-    def test_enumerated_site_missing_its_issue_ref_is_red(self) -> None:
-        site = DEFERRAL_SITES[0]
+    def test_enumerated_site_missing_its_issue_ref_is_red(self, synthetic_site) -> None:
         _bucket, matched, problem = classify_message(
-            f"{site.fragment} (DEV-1824).",
+            f"{synthetic_site.fragment} (DEV-1824).",
         )
-        assert matched == site
+        assert matched == synthetic_site
         assert problem is not None
 
-    def test_enumerated_site_with_a_stale_extra_ref_is_red(self) -> None:
-        site = DEFERRAL_SITES[0]
+    def test_enumerated_site_with_a_stale_extra_ref_is_red(self, synthetic_site) -> None:
         _bucket, matched, problem = classify_message(
-            f"DEV-1824: {site.fragment} ({site.issue}).",
+            f"DEV-1824: {synthetic_site.fragment} ({synthetic_site.issue}).",
         )
-        assert matched == site
+        assert matched == synthetic_site
         assert problem is not None
 
-    def test_enumerated_site_with_its_issue_ref_is_green(self) -> None:
-        site = DEFERRAL_SITES[0]
+    def test_enumerated_site_with_its_issue_ref_is_green(self, synthetic_site) -> None:
         bucket, matched, problem = classify_message(
-            f"{site.fragment} ({site.issue}).",
+            f"{synthetic_site.fragment} ({synthetic_site.issue}).",
         )
-        assert (bucket, matched, problem) == ("deferral", site, None)
+        assert (bucket, matched, problem) == ("deferral", synthetic_site, None)

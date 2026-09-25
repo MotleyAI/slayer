@@ -691,42 +691,18 @@ class TestGetColumnTypesTypedPipeline:
 
 
 class TestInlineNestedSourceQueriesIntegrated:
-    """Decision E end-to-end — inline nested ``SlayerModel.source_queries``
-    contributes to ordering when the outer model is saved / executed.
+    """Inline nested ``SlayerModel.source_queries`` as a stage source are rejected."""
 
-    The recursive ``stage_sibling_reads`` walk catches edges hidden
-    inside inline nested ``source_queries`` so cycles + forward refs are
-    flagged at save time. End-to-end execution of inline-nested stages
-    that reference outer siblings is a separate concern (the inline
-    expansion runs against storage, not the enclosing named_queries dict).
-    """
-
-    async def test_inline_nested_cycle_via_save_path_raises(self) -> None:
-        """A cycle that runs through an inline-nested stage's own
-        ``source_queries`` must be caught at save time by the recursive
-        edge walk.
-        """
-        engine, tmp = await _engine()
-        try:
-            m = SlayerModel(
-                name="qb_inline_cycle",
-                data_source="ds",
-                source_queries=[
-                    SlayerQuery(
-                        name="a",
-                        source_model=SlayerModel(
-                            name="_inline_a",
-                            source_queries=[SlayerQuery(source_model="b")],
-                        ),
-                    ),
-                    SlayerQuery(name="b", source_model="a"),
-                    SlayerQuery(source_model="a"),
-                ],
+    def test_inline_nested_source_rejected_at_construction(self) -> None:
+        """An inline query-backed stage source is rejected before any save-time cycle walk."""
+        with pytest.raises(ValueError, match=r"(?is)_inline_a.*named stages?|named stages?.*_inline_a"):
+            SlayerQuery(
+                name="a",
+                source_model=SlayerModel(
+                    name="_inline_a",
+                    source_queries=[SlayerQuery(source_model="b")],
+                ),
             )
-            with pytest.raises(ValueError, match=r"[Cc]ycle"):
-                await engine.save_model(m)
-        finally:
-            tmp.cleanup()
 
 
 class TestNestedQueryBackedSavePath:

@@ -364,18 +364,9 @@ class TestHelpersOverTypedSpecs:
                 "joins": [{"target_model": "c", "join_pairs": [["id", "id"]]}],
             },
         })
-        via_nested = SlayerQuery.model_validate({
-            "name": "via_nested",
-            "source_model": {
-                "name": "inline_qb",
-                "source_queries": [{"source_model": {"source_name": "a"}}],
-            },
-        })
         assert isinstance(via_join.source_model, ModelExtension)
-        assert isinstance(via_nested.source_model, SlayerModel)
-        root = SlayerQuery(source_model="via_nested")
-        names = [q.name for q in topologically_order_stages([via_nested, via_join, a, c, root])]
-        assert names.index("a") < names.index("via_nested")
+        root = SlayerQuery(source_model="via_join")
+        names = [q.name for q in topologically_order_stages([via_join, a, c, root])]
         assert names.index("c") < names.index("via_join")
 
 
