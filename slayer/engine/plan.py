@@ -40,7 +40,12 @@ from slayer.ir.source_bundle import (
     source_name_if_sibling,
     stage_bundle_with_siblings,
 )
-from slayer.ir.variables import apply_variables_to_query
+from slayer.ir.variables import (
+    apply_variables_to_query,
+    model_placeholder_names,
+    substitute_model_sql_surfaces,
+)
+from slayer.sql.dialects import get_dialect
 
 __all__ = [
     "plan_query",
@@ -156,6 +161,8 @@ class _StagePlanner:
         self.outer_variables = outer_variables
         self.state = _State(displays=dict(bundle.stage_displays))
         self.inert: Set[str] = set()
+        # A merely touched model that failed to splice: its error, raised if it is read.
+        self.failures: Dict[str, Exception] = {}
         self.data_source = (
             (bundle.source_model.data_source if bundle.source_model else None) or "_stage"
         )
@@ -168,8 +175,6 @@ class _StagePlanner:
         """Plan ``query`` after every query-backed model it names or reads is spliced."""
         for name in self._explicit_demands(query, chain=chain):
             self.ensure(name, chain=chain, explicit=True)
-        if owner is not None:
-            stage_model = self._resolve_stage_model(query.source_model)
         while True:
             alone = single and not self.state.schemas
             scope, stamped = self._universe(query, stage_model=stage_model, single=alone)
@@ -191,7 +196,11 @@ class _StagePlanner:
             if demand and any([self.ensure(n, chain=chain, explicit=False) for n in demand]):
                 continue
             on_chain = sorted(n for n, strict in seen.items() if strict and n in chain)
+            unspliceable = sorted(n for n, strict in seen.items() if strict and n in self.failures)
             if failure is not None:
+                if unspliceable:
+                    # The stage reads a query-backed model that cannot be spliced: its error is the cause.
+                    raise self.failures[unspliceable[0]] from failure
                 if on_chain:
                     failure.add_note(
                         f"(it reads query-backed model(s) {on_chain} still being planned: "
@@ -200,7 +209,7 @@ class _StagePlanner:
                 raise failure
             assert planned is not None
             self._record(query, planned=planned, stamped=stamped, seen=seen, chain=chain,
-                         on_chain=on_chain, owner=owner)
+                         raw=[*on_chain, *unspliceable], owner=owner)
             return
 
     def _plan_once(
@@ -240,7 +249,7 @@ class _StagePlanner:
 
     def _record(
         self, query: SlayerQuery, *, planned: PlannedQuery, stamped: ResolvedSourceBundle,
-        seen: Dict[str, bool], chain: Tuple[str, ...], on_chain: List[str],
+        seen: Dict[str, bool], chain: Tuple[str, ...], raw: List[str],
         owner: Optional[str],
     ) -> None:
         position = {
@@ -249,13 +258,18 @@ class _StagePlanner:
         }
         reads = stage_sibling_reads(query=query, siblings=set(self.state.schemas))
         reads |= {n for n, strict in seen.items() if strict and n in self.state.spliced}
-        if on_chain:
+        # A read of a model still in flight, or one that failed to splice, stays in the
+        # universe in stored form so its emission raises the cause.
+        if raw:
             stamped = stamped.model_copy(update={"referenced_models": [
-                *stamped.referenced_models, *(self.bundle.query_backed[n] for n in on_chain),
+                *stamped.referenced_models, *(self.bundle.query_backed[n] for n in raw),
             ]})
         update: Dict[str, Any] = {
             "stage_reads": sorted(reads, key=position.__getitem__),
-            "stage_bundle": stamped.model_copy(update={"splice_chain": chain}),
+            "stage_bundle": stamped.model_copy(update={
+                "splice_chain": chain,
+                "splice_failures": {n: self.failures[n] for n in raw if n in self.failures},
+            }),
         }
         display = self.state.displays.get(query.name) if query.name else None
         if planned.stage_schema is not None:
@@ -310,11 +324,12 @@ class _StagePlanner:
         before = self.state.snapshot()
         try:
             self._splice(name, model=model, chain=(*chain, name), context=context)
-        except Exception:
+        except Exception as exc:
             if explicit:
                 raise
             self.state = before
             self.inert.add(name)
+            self.failures[name] = exc
             return False
         return True
 
@@ -332,17 +347,20 @@ class _StagePlanner:
         self.state.spliced[name] = record
         own = {q.name for q in stages if q.name}
         for stage in stages:
-            self.plan_stage(
-                self._prepare(stage, chain=chain, private=own),
-                chain=chain, stage_model=None, owner=name,
-            )
+            prepared, source, placeholders = self._prepare(stage, chain=chain, private=own)
+            record.footprint |= placeholders
+            self.plan_stage(prepared, chain=chain, stage_model=source, owner=name)
         for child in record.children:
             if child in self.state.spliced:
                 record.footprint |= self.state.spliced[child].footprint
         record.context = self._context(chain=chain)
 
-    def _prepare(self, stage: SlayerQuery, *, chain: Tuple[str, ...], private: Set[str]) -> SlayerQuery:
-        """Normalize a spliced stage and substitute its lexically layered variables."""
+    def _prepare(
+        self, stage: SlayerQuery, *, chain: Tuple[str, ...], private: Set[str],
+    ) -> "Tuple[SlayerQuery, Optional[SlayerModel], Set[str]]":
+        """A spliced stage, normalized and with its lexically layered variables
+        substituted; its own source model with its Mode-A surfaces substituted
+        (``None`` when it reads a sibling); and the placeholders that source reads."""
         stage = stage.strip_source_model_prefix()
         base_name = stage.source_model_name
         source = None
@@ -358,10 +376,16 @@ class _StagePlanner:
             **(stage.variables or {}),
             **self.bundle.runtime_variables,
         }
-        return apply_variables_to_query(
+        stage = apply_variables_to_query(
             query=stage, variables=variables,
             dry_run_placeholders=self.bundle.dry_run_placeholders,
         )
+        if source is None:
+            return stage, None, set()
+        return stage, substitute_model_sql_surfaces(
+            model=source, variables=variables,
+            backslash_escapes=get_dialect(self.bundle.dialect).backslash_escapes_strings,
+        ), model_placeholder_names(source)
 
     def _resolve_stage_model(self, spec) -> Optional[SlayerModel]:
         """A spliced stage's own source model; ``None`` when it reads a sibling."""

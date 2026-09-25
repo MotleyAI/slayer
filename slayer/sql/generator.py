@@ -985,6 +985,7 @@ class SQLGenerator:
         self._gen_stage_relations: FrozenSet[str] = frozenset()
         self._gen_stage_reads: FrozenSet[str] = frozenset()
         self._gen_splice_chain: Tuple[str, ...] = ()
+        self._gen_splice_failures: Dict[str, Exception] = {}
 
     def install_generation(self, *, reserve: "Iterable[str]" = ()) -> None:
         """Open one generation scope spanning SEVERAL ``reuse_allocator=True``"""
@@ -5561,6 +5562,8 @@ class SQLGenerator:
             return self._to_table(model.sql_table, alias=alias)
         if model.sql:
             return self._embed_model_sql(sql=model.sql, alias=alias)
+        if model.name in self._gen_splice_failures:
+            raise self._gen_splice_failures[model.name]
         if model.name in self._gen_splice_chain:
             chain = self._gen_splice_chain
             raise QueryBackedCycleError(path=[*chain[chain.index(model.name):], model.name])
@@ -6467,6 +6470,7 @@ def generate_from_planned(
     """Render a ``PlannedQuery`` to SQL."""
     generator = SQLGenerator(dialect=dialect)
     generator._gen_splice_chain = getattr(bundle, "splice_chain", ())
+    generator._gen_splice_failures = getattr(bundle, "splice_failures", {})
     return cast(str, generator.generate_from_planned(planned_query, bundle=bundle))
 
 
@@ -6587,6 +6591,7 @@ def generate_planned_stages(
             )
         generator._gen_stage_reads = frozenset(planned.stage_reads)
         generator._gen_splice_chain = stage_bundle.splice_chain
+        generator._gen_splice_failures = stage_bundle.splice_failures
         spliced = (
             planned.stage_schema is not None and planned.stage_schema.display is not None
             and planned.stage_schema.display.model is not None

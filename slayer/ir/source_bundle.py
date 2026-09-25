@@ -54,6 +54,8 @@ class ResolvedSourceBundle(BaseModel):
     splice_chain: Tuple[str, ...] = ()
     runtime_variables: Dict[str, Any] = Field(default_factory=dict)
     dry_run_placeholders: bool = False
+    # Query-backed models this stage reads that could not be spliced, with the cause.
+    splice_failures: Dict[str, Exception] = Field(default_factory=dict)
 
     def get_referenced_model(self, name: str) -> Optional[SlayerModel]:
         """Linear lookup by name (list is small, O(n) scan is fine)."""

@@ -61,13 +61,8 @@ from slayer.core.models import (
 from slayer.core.query import (
     ModelExtension,
     SlayerQuery,
-    _contains_block_delimiter,
-    coerce_declared_list_variables,
-    declares_variables,
     extract_variable_refs,
-    list_valued_variable_names,
     render_probe_text,
-    substitute_variables,
 )
 from slayer.engine.population import (
     infer_population,
@@ -116,7 +111,11 @@ from slayer.sql.column_expansion import expand_derived_refs_sync
 from slayer.ir.source_bundle import ResolvedSourceBundle, model_from_stage_schema
 from slayer.engine.stage_ordering import localize_stages, topologically_order_stages
 from slayer.engine.plan import plan_stages
-from slayer.ir.variables import apply_variables_to_query
+from slayer.ir.variables import (
+    apply_variables_to_query,
+    model_needs_substitution_pass,
+    substitute_model_sql_surfaces,
+)
 from slayer.engine.introspect_utils import _safe_get_columns
 from slayer.engine.schema_scope import SchemaRef
 from slayer.engine.join_graph import JoinGraph
@@ -262,20 +261,6 @@ def _merge_query_variables(
     return {**(outer or {}), **(stage or {}), **(runtime or {})}
 
 
-def _model_has_optional_block(model: SlayerModel) -> bool:
-    """True if any Mode-A surface carries an optional ``{? ... ?}`` block."""
-    surfaces = [model.sql, *(model.filters or [])]
-    for col in model.columns:
-        surfaces.append(col.sql)
-        surfaces.append(col.filter)
-    return any(s and _contains_block_delimiter(s) for s in surfaces)
-
-
-def _model_needs_substitution_pass(model: SlayerModel) -> bool:
-    """True if substitution must run with no variables (a ``{? ?}`` block or declared variables)."""
-    return _model_has_optional_block(model) or declares_variables(model)
-
-
 def _sql_safety_reject_reason(safety: str, *, parameterized: bool) -> str | None:
     """Save-time reject reason for a classified ``model.sql``, or None to admit
     it. Unparseable blocks only when static (a parameterized source may parse
@@ -291,43 +276,15 @@ def _substitute_model_sql_surfaces(
     *, model: SlayerModel, variables: dict[str, Any], dialect: SqlDialect
 ) -> SlayerModel:
     """Copy of ``model`` with ``{var}`` substituted into its four Mode-A surfaces (no-op when unneeded; never mutates input)."""
-    if not variables and not _model_needs_substitution_pass(model):
-        return model
-
-    variables = coerce_declared_list_variables(
-        variables, list_valued=list_valued_variable_names(model)
+    return substitute_model_sql_surfaces(
+        model=model, variables=variables, backslash_escapes=dialect.backslash_escapes_strings,
     )
-    backslash_escapes = dialect.backslash_escapes_strings
-
-    def _sub(text: str) -> str:
-        return substitute_variables(
-            filter_str=text,
-            variables=variables,
-            escape="sql",
-            backslash_escapes=backslash_escapes,
-        )
-
-    new_columns = []
-    for col in model.columns:
-        updates: dict[str, Any] = {}
-        if col.sql is not None:
-            updates["sql"] = _sub(col.sql)
-        if col.filter is not None:
-            updates["filter"] = _sub(col.filter)
-        new_columns.append(col.model_copy(update=updates) if updates else col)
-
-    model_updates: dict[str, Any] = {"columns": new_columns}
-    if model.sql is not None:
-        model_updates["sql"] = _sub(model.sql)
-    if model.filters:
-        model_updates["filters"] = [_sub(f) for f in model.filters]
-    return model.model_copy(update=model_updates)
 
 
 def _render_probe_model(model: SlayerModel, *, dialect: SqlDialect) -> SlayerModel:
     """Substitute a template model's own ``query_variables`` defaults for type-probing (raises on undefaulted)."""
     if model.source_model_origin is None and (
-        model.query_variables or _model_needs_substitution_pass(model)
+        model.query_variables or model_needs_substitution_pass(model)
     ):
         return _substitute_model_sql_surfaces(
             model=model, variables=model.query_variables, dialect=dialect
@@ -1222,27 +1179,25 @@ class SlayerQueryEngine:
         # Sibling-sourced stages fall back to the root model's defaults (a
         # query-backed root's own defaults layer only its spliced stages).
         fallback_vars = {} if model.source_queries else model.query_variables
-        normed_named = {
-            nm: apply_variables_to_query(
-                query=nq,
-                variables={
-                    # Lowest layer: the stage's own source-model defaults.
-                    **(
-                        (
-                            bundle.stage_source_models[nm].query_variables
-                            if nm in bundle.stage_source_models
-                            else fallback_vars
-                        )
-                        or {}
-                    ),
-                    **(root_vars or {}),
-                    **(nq.variables or {}),
-                    **(runtime_kwarg or {}),
-                },
-                dry_run_placeholders=dry_run_placeholders,
+        stage_sources = dict(bundle.stage_source_models)
+        for nm, nq in list(normed_named.items()):
+            source = stage_sources.get(nm)
+            # Lowest layer: the stage's own source-model defaults.
+            stage_vars = {
+                **((source.query_variables if source is not None else fallback_vars) or {}),
+                **(root_vars or {}),
+                **(nq.variables or {}),
+                **(runtime_kwarg or {}),
+            }
+            normed_named[nm] = apply_variables_to_query(
+                query=nq, variables=stage_vars, dry_run_placeholders=dry_run_placeholders,
             )
-            for nm, nq in normed_named.items()
-        }
+            if source is not None:
+                stage_sources[nm] = _substitute_model_sql_surfaces(
+                    model=source, variables=stage_vars,
+                    dialect=dialect_for_ds_type(datasource.type),
+                )
+        bundle = bundle.model_copy(update={"stage_source_models": stage_sources})
 
         # Plan the DAG (root last) and render the whole chain to one SQL string.
         planned_list = plan_stages(queries=[*normed_named.values(), query], bundle=bundle)

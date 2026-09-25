@@ -154,3 +154,74 @@ class TestPruning:
         ]
         kept = reachable_cte_entries(entries=entries, seeds={"__slayer_stage_u"})
         assert [e.name for e in kept] == ["_cm_p", "__slayer_stage_u"]
+
+
+def _floored() -> SlayerModel:
+    """``sql``-backed over ``orders`` with a ``{floor}`` threshold (default 0)."""
+    return SlayerModel(
+        name="floored", data_source="test", query_variables={"floor": 0},
+        sql="SELECT id, customer_id, amount FROM orders WHERE amount >= {floor}",
+        columns=[Column(name="id", type=DataType.INT, primary_key=True),
+                 Column(name="customer_id", type=DataType.INT),
+                 Column(name="amount", type=DataType.DOUBLE)])
+
+
+FLOORED_REV = _qb("floored_rev", query(
+    source_model="floored", dimensions=["customer_id"], measures=[m("amount:sum", "rev")]))
+
+
+def _wrap(name: str, floor: int) -> SlayerModel:
+    return SlayerModel(name=name, data_source="test", query_variables={"floor": floor},
+                       source_queries=[query(source_model="floored_rev", dimensions=["customer_id"],
+                                             measures=[m("rev:sum", "r")])])
+
+
+class TestModeAVariables:
+    async def test_a_spliced_stage_source_sql_takes_the_consumer_variables(self, dialect) -> None:
+        models = [orders_model(), customers_model(), _floored(), FLOORED_REV]
+        consumer = query(source_model="floored_rev", measures=[m("rev:sum", "t")])
+        async with dev1966_engine(dialect, models=models) as e:
+            default = await e.execute(consumer)
+            floored = await e.execute(consumer, variables={"floor": 20})
+        assert default.data == [{"floored_rev.t": 145.0}]
+        assert floored.data == [{"floored_rev.t": 115.0}]
+
+    async def test_a_user_stage_source_sql_takes_its_variables(self, dialect) -> None:
+        s = query(name="s", source_model="floored", measures=[m("amount:sum", "a")],
+                  variables={"floor": 30})
+        async with dev1966_engine(dialect, models=[orders_model(), _floored()]) as e:
+            resp = await e.execute([s, query(source_model="s", measures=[m("a:sum", "t")])])
+        assert resp.data == [{"s.t": 70.0}]
+
+    async def test_conflicting_mode_a_contexts_fail_closed(self) -> None:
+        models = [orders_model(), customers_model(), _floored(), FLOORED_REV,
+                  _wrap("wrap_a", 20), _wrap("wrap_b", 30)]
+        s1 = query(name="s1", source_model="wrap_a", dimensions=["customer_id"], measures=[m("r:sum", "a")])
+        s2 = query(name="s2", source_model="wrap_b", dimensions=["customer_id"], measures=[m("r:sum", "b")])
+        root = query(source_model={"source_name": "s1", "joins": [
+            {"target_model": "s2", "join_pairs": [["customer_id", "customer_id"]]}]},
+            dimensions=["customer_id", "a", "s2.b"])
+        async with dev1966_engine("sqlite", models=models) as e:
+            with pytest.raises(ValueError, match="floored_rev"):
+                await e.execute([s1, s2, root])
+
+
+CYC_A = _qb("cyc_a", query(source_model="cyc_b", measures=[m("amount:sum", "amount")]))
+CYC_B = _qb("cyc_b", query(source_model="cyc_a", measures=[m("amount:sum", "amount")]))
+
+
+class TestCyclesThroughStoredJoins:
+    async def test_a_read_through_a_stored_join_raises_the_cycle(self) -> None:
+        orders = _joined(orders_model(), ("cyc_a", [["id", "amount"]]))
+        consumer = query(source_model="orders", dimensions=["status"],
+                         measures=[m("cyc_a.amount:sum", "t")])
+        async with dev1966_engine("sqlite", models=[orders, customers_model(), CYC_A, CYC_B]) as e:
+            with pytest.raises(QueryBackedCycleError) as exc:
+                await e.execute(consumer)
+        assert "cyc_a -> cyc_b -> cyc_a" in str(exc.value)
+
+    async def test_an_unread_cyclic_model_is_inert(self) -> None:
+        orders = _joined(orders_model(), ("cyc_a", [["id", "amount"]]))
+        async with dev1966_engine("sqlite", models=[orders, customers_model(), CYC_A, CYC_B]) as e:
+            resp = await e.execute(query(source_model="orders", measures=[m("amount:sum", "t")]))
+        assert resp.data == [{"orders.t": 145.0}]
