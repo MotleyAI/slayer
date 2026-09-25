@@ -199,7 +199,9 @@ class TestPlanStages:
 
 
 def _bundle() -> ResolvedSourceBundle:
-    return ResolvedSourceBundle(source_model=orders_model(), referenced_models=[customers_model()])
+    return ResolvedSourceBundle(
+        dialect="postgres", source_model=orders_model(), referenced_models=[customers_model()],
+    )
 
 
 def _q(name, source, **kw) -> SlayerQuery:
