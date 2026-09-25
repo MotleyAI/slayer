@@ -37,6 +37,8 @@ poetry run pytest tests/test_sql_generator.py -v     # one file
 poetry run slayer serve                              # REST API server
 poetry run slayer mcp                                # MCP server
 poetry run ruff check slayer/ tests/                 # lint
+uvx --from git+https://github.com/MotleyAI/living-architecture@v0.1.0 la-arch-check     # architecture check (CI's pin)
+uvx --from git+https://github.com/MotleyAI/living-architecture@v0.1.0 la-arch-diagrams  # regenerate arc42 diagrams
 ```
 
 ## Key Conventions
