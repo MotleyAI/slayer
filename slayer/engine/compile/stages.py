@@ -3995,7 +3995,10 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
             ))
 
     source_col_names = _source_column_names(scope)
-    host_name = host_model_name(scope)
+    # A top-level stage is spelled as the user wrote it; a producer (possibly
+    # rerooted at a stage) keeps the identity, which no edge name can collide with.
+    spell = bundle.relation_display if isinstance(env, ElaboratedStage) else str
+    host_name = spell(host_model_name(scope))
 
     # Windowed-measure guards on the pre-projection trees; returns the cleanly-selected windowed AggregateKeys.
     selected_windowed = _guard_windowed_measures(
@@ -4180,10 +4183,8 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
         )
     # Per-mask structural reachability summary, in this plan's coordinate system.
     reachability_anchor_model = render_source_model or bundle.source_model
-    source_relation = (
-        query.source_model
-        if isinstance(query.source_model, str)
-        else host_name
+    source_relation = spell(
+        query.source_model if isinstance(query.source_model, str) else host_name
     )
     filter_reachability: List[FilterReachability] = []
     # One expansion cache for the whole plan (both visitors and every filter share it).

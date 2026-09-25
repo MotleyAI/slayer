@@ -54,19 +54,31 @@ embedded pipeline land in the consumer's `WITH`. A stale DEV-1878 attempt
    generator reads it and `_bundle_for_stage` is deleted. It holds only siblings planned earlier.
    A narrow new IR type was rejected: it would rewrite every generator bundle consumer for no
    layering gain. Response metadata for a stage-sourced root reads that stage's stamped bundle;
-   stage columns carry their source column's label.
-6. **Splicing (M7).** `_prepare_pipeline` builds the bundle, discovers stored query-backed models
-   depth-first in every position (source, stage source, join / cross-model target, including
-   inside spliced stages), localizes each model's stages under its scope, splices them, re-runs
-   `topologically_order_stages` over the augmented list (it sees join-target deps), then rebuilds
-   the bundle (two passes; the second reuses resolved models). A model reached from several places
-   is spliced once. The spliced final stage carries its source model's default time dimension;
-   user stages carry none. Alternative — keep text expansion + hoist renaming for query-backed
-   models: rejected, it keeps nested scopes as text and the deferral arm alive.
-7. **Lexical variables (M8).** Splicing records each spliced stage's enclosing-model
-   `query_variables` stack; the sibling variable merge consults it (precedence in the
-   `queries/query-backed-inline` spec). A model spliced once but reached from contexts whose
-   effective variables disagree on a placeholder it uses fails closed (per-context copies: DEV-1918).
+   stage columns carry their source column's label. It never holds a stored query-backed model.
+6. **Splicing follows reads (M7).** The bundle builder collects every stored query-backed model in
+   the connected component of each stage base (and of those models' stage bases) as a placeholder.
+   `plan_stages` plans each stage in attempts while an output-only sink in `core.join_walker`
+   records every edge traversal yields; an attempt that touched a placeholder not on the in-flight
+   chain splices it (localized, normalized, variable-substituted, planned through the same loop,
+   before the consumer) and retries, so every accepted plan saw live schemas for everything it
+   touched and only on-chain placeholders (today's in-flight semantics) remain observable. A splice
+   that fails for a merely touched model leaves an inert placeholder whose error surfaces only if
+   emitted. `stage_reads` = query-written sibling reads ∪ strictly resolved spliced identities
+   (ordering). Emission is the exact read truth: the generator's one relation-emission helper
+   records emitted stage relations as declared CTE dependencies, and spliced entries unreachable
+   from the root and user stages are pruned; warnings and error-mode checks read emitted stages
+   only. A model is spliced once; a spliced model outside the statement's datasource is rejected.
+   The spliced final stage carries its source model's default time dimension; user stages carry
+   none. Alternatives — pre-bind reach discovery (false cycles; wrong order between query-backed
+   models over one base), a bind-only probe against cached columns (empty/stale caches), a
+   post-plan read extractor (a second model of the renderer), an all-candidate fixpoint
+   (unstable, error-hiding): rejected.
+7. **Lexical variables (M8).** Splicing records, per demand, the enclosing chain's
+   `query_variables` (precedence in the `queries/query-backed-inline` spec) and the model's
+   placeholder footprint (its stages' filters, their source models' Mode-A surfaces, its spliced
+   descendants); conflicts are judged for emitted models only. A model spliced once but reached
+   from contexts whose effective variables disagree on a placeholder it uses fails closed
+   (per-context copies: DEV-1918).
 8. **Extensions (M9).** A root `ModelExtension` over a spliced root applies once through the
    extension-over-sibling planner path (`inline_extensions` is no longer re-applied after
    expansion on the execute path); measure-bearing stage extensions over query-backed models keep
@@ -74,10 +86,13 @@ embedded pipeline land in the consumer's `WITH`. A stale DEV-1878 attempt
 9. **Warnings from spliced stages are surfaced (user decision).** Spliced stages' warnings are
    collected like any stage's and labelled via `display_name` with stage and model; dangerous
    conditions inside a stored model (to-many broadcast) must be visible to every consumer.
-10. **One cycle guard (M10; Codex #6).** One exception type naming the ordered path, raised by one
-    in-flight chain threaded through splicing, run-by-name (seeded with the run model), `save_model`
-    and `get_column_types`. The cached-SQL short-circuit in `expand_query_backed_models_in_bundle`
-    is deleted. Text expansion survives only for save-time cache population and
+10. **One cycle guard (M10; Codex #6).** One exception type (`core.errors.QueryBackedCycleError`)
+    naming the ordered path, seeded by `ResolvedSourceBundle.splice_chain` (empty for execute; the
+    model for run-by-name, `save_model` and `get_column_types`) and raised authoritatively only by
+    the bundle builder (a source or extension-base name on the chain), by `ensure()` for an
+    explicitly named on-chain model, and by the generator for an emitted relation on the chain; a
+    failed planning attempt keeps its own error. `get_column_types` propagates it. The cached-SQL
+    short-circuit in `expand_query_backed_models_in_bundle` is deleted. Text expansion survives only for save-time cache population and
     `get_column_types`.
 11. **Scope-aware hoist renaming (M5; Codex #2).** Every CTE hoisted out of an embedded statement
     is renamed through the shared allocator, the rename keyed by its defining `WITH` node and
@@ -91,6 +106,10 @@ embedded pipeline land in the consumer's `WITH`. A stale DEV-1878 attempt
 13. **Generator arm (M11).** The `NotImplementedError` in `_build_from_clause_from_planned` becomes
     a non-deferral `ValueError` invariant; the `DEFERRAL_SITES` entry is removed and
     `guards.baseline` goes 1→0 atomically.
+14. **One relation emission.** FROM, join targets and semi-join hops render through one generator
+    helper: a raw query-backed model or placeholder is an invariant `ValueError`, an undeclared
+    stage relation is a `ValueError`, and every emitted stage relation is recorded as a declared
+    dependency.
 
 ## Risks / Trade-offs
 

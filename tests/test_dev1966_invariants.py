@@ -124,3 +124,29 @@ class TestStampedBundle:
                                   measures=[m("cust_rev.rev:sum", "r")]), dry_run=True)
         assert len(planned) == 3
         _assert_no_later_stage(planned)
+
+
+class TestEmissionLaw:
+    @pytest.mark.parametrize("consumer", ["source", "join_target", "stage_chain"])
+    async def test_emitted_stage_relations_are_declared(self, consumer, monkeypatch) -> None:
+        seen: List[tuple] = []
+        real = SQLGenerator._emit_relation
+
+        def spy(self, *, model, alias):
+            seen.append((model.sql_table, frozenset(self._gen_stage_reads)))
+            return real(self, model=model, alias=alias)
+
+        monkeypatch.setattr(SQLGenerator, "_emit_relation", spy)
+        queries = {
+            "source": query(source_model="cust_rev", measures=[m("rev:sum", "t")]),
+            "join_target": query(source_model="clients", dimensions=["tier"],
+                                 measures=[m("cust_rev.rev:sum", "r")]),
+            "stage_chain": [query(name="s", source_model="clients", dimensions=["tier"],
+                                  measures=[m("cust_rev.rev:sum", "r")]),
+                            query(source_model="s", measures=[m("r:sum", "t")])],
+        }
+        async with dev1966_engine("sqlite") as e:
+            await e.execute(queries[consumer], dry_run=True)
+        stage_tables = {t for t, reads in seen if t and (t.startswith("__slayer_") or t == "cust_rev")}
+        assert stage_tables
+        assert all(t in reads for t, reads in seen if t in stage_tables)

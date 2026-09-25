@@ -53,12 +53,8 @@ from slayer.sql.column_expansion import (
     wrap_column_filter,
 )
 from slayer.ir.planned import MaskTyping, RankedGrainMember, StageKind, ValueSlot, regroup_producer_identity
-from slayer.ir.source_bundle import (
-    ResolvedSourceBundle,
-    model_from_stage_schema,
-    stage_bundle_with_siblings,
-)
-from slayer.sql._identifier_fit import overlimit_tokens
+from slayer.ir.source_bundle import ResolvedSourceBundle
+from slayer.sql._identifier_fit import fit_identifier, overlimit_tokens
 from slayer.sql import staged_plan
 from slayer.sql.dialects import SqlDialect, get_dialect
 from slayer.sql.dialects.base import TimeUnit, is_stat_agg1, is_stat_agg2
@@ -75,7 +71,12 @@ from slayer.sql.naming import (
     result_key_from_alias,
     time_trunc_result_key,
 )
-from slayer.sql.render.cte_assembly import CteEntry, assemble_with_chain
+from slayer.sql.render.cte_assembly import (
+    CteEntry,
+    assemble_with_chain,
+    cte_entry,
+    rename_embedded_ctes,
+)
 from slayer.sql.render.nodes import Node, fusion_blockers
 from slayer.sql.render.joins import (
     build_grain_joinback_condition,
@@ -1119,6 +1120,17 @@ class SQLGenerator:
 
 
 
+
+    def _embed_model_sql(self, *, sql: str, alias: str) -> Expression:
+        """A model's own ``sql`` as an aliased subquery, its CTEs renamed through the
+        generation allocator so a later hoist never meets another statement's names."""
+        statement = self._parse(sql)
+        allocator = self._gen_allocator or self._new_allocator()
+        limit = self._dialect.max_identifier_bytes
+        rename_embedded_ctes(statement, allocate=lambda name: allocator.allocate_cte(
+            fit_identifier(name=f"_w_{name}", limit=limit),
+        ))
+        return exp.Subquery(this=statement, alias=exp.to_identifier(alias))
 
     def _quote_ident(self, name: str) -> str:
         """Render ``name`` as ONE dialect-quoted identifier string."""
@@ -4077,14 +4089,18 @@ class SQLGenerator:
 
     def _split_ast_ctes(
         self, parsed: Expression,  # pyright: ignore[reportPrivateImportUsage] — sqlglot ships no __all__
+        *, root: bool = False,
     ) -> Tuple[List[CteEntry], Expression]:  # pyright: ignore[reportPrivateImportUsage] — sqlglot ships no __all__
         """Split a rendered statement into (hoisted CTE entries, de-WITHed body).
 
         Each entry's ``depends_on`` comes from the top statement-scoped registry
         (declared at assembly time), re-keyed through the ``_base`` rename map so
-        an edge onto a renamed base still resolves. Fails closed if one CTE name
-        appears in two ``WITH`` nodes of the statement."""
-        self._unmangle_dotted_table_refs(parsed)
+        an edge onto a renamed base still resolves. The multi-stage ``root`` is the
+        outermost consumer: its own top-level CTEs keep their names. Fails closed if
+        one CTE name appears in two ``WITH`` nodes of the statement."""
+        if not root:
+            self._unmangle_dotted_table_refs(parsed)
+        top = parsed.args.get("with_") if root else None
         with_nodes = list(parsed.find_all(exp.With))
         if not with_nodes:
             return [], parsed
@@ -4093,7 +4109,7 @@ class SQLGenerator:
         entries: List[CteEntry] = []
         seen: Set[str] = set()
         for with_node in with_nodes:
-            rename = self._uniquify_producer_base_ctes(
+            rename = {} if with_node is top else self._uniquify_producer_base_ctes(
                 with_node=with_node, allocator=allocator,
             )
             reverse = {new: old for old, new in rename.items()}
@@ -4107,32 +4123,18 @@ class SQLGenerator:
                 seen.add(name)
                 orig = reverse.get(name, name)
                 deps = [rename.get(d, d) for d in captured.get(orig, ())]
-                entries.append(CteEntry(
-                    name=name, query=cte.this.copy(), depends_on=deps,
-                ))
+                entries.append(cte_entry(cte=cte, name=name, depends_on=deps))
             with_node.pop()
         return entries, parsed
 
     def _split_root_ctes(
         self, sql: str,
     ) -> Tuple[List[CteEntry], "exp.Select"]:
-        """Split the multi-stage ROOT statement into (its own CTE entries, de-WITHed
-        body). The root is the outermost consumer, so its base CTE is NOT renamed;
-        each entry takes its declared deps from the top registry (identity re-key)."""
-        parsed = cast(exp.Select, sqlglot.parse_one(sql, dialect=self.dialect))
-        with_node = parsed.args.get("with_")
-        if with_node is None:
-            return [], parsed
-        captured = self._gen_dep_stack[-1] if self._gen_dep_stack else {}
-        entries = [
-            CteEntry(
-                name=cast(str, cte.alias_or_name), query=cte.this.copy(),
-                depends_on=list(captured.get(cast(str, cte.alias_or_name), ())),
-            )
-            for cte in with_node.expressions
-        ]
-        parsed.set("with_", None)
-        return entries, parsed
+        """Split the multi-stage ROOT statement into (its CTE entries, de-WITHed body)."""
+        entries, body = self._split_ast_ctes(
+            sqlglot.parse_one(sql, dialect=self.dialect), root=True,
+        )
+        return entries, cast(exp.Select, body)
 
     _unmangle_dotted_table_refs = staticmethod(unmangle_dotted_table_refs)
 
@@ -4568,10 +4570,7 @@ class SQLGenerator:
                         next_model.sql_table or next_model.name
                     )
                     if next_model.sql and not next_model.sql_table:
-                        join_expr = exp.Subquery(
-                            this=self._parse(next_model.sql),
-                            alias=exp.to_identifier(next_alias),
-                        )
+                        join_expr = self._embed_model_sql(sql=next_model.sql, alias=next_alias)
                     else:
                         join_expr = self._to_table(target_table, alias=next_alias)
                     on_expr = (
@@ -5545,14 +5544,10 @@ class SQLGenerator:
         if source_model.sql_table:
             return self._to_table(source_model.sql_table, alias=source_relation)
         if source_model.sql:
-            return exp.Subquery(
-                this=self._parse(source_model.sql),
-                alias=exp.to_identifier(source_relation),
-            )
-        raise NotImplementedError(
-            f"Model {source_model.name!r} has neither sql_table nor sql set; "
-            f"query-backed models (source_queries) deferred to multi-stage "
-            f"slices (DEV-1878)."
+            return self._embed_model_sql(sql=source_model.sql, alias=source_relation)
+        raise ValueError(
+            f"Model {source_model.name!r} has neither sql_table nor sql: a query-backed "
+            f"model reaches the renderer only as its spliced stages."
         )
 
     def _dim_column_expr_from_planned(
@@ -6025,10 +6020,7 @@ class SQLGenerator:
 
     def _hop_table_expr(self, *, hop_model, alias: str) -> Expression:
         if hop_model.sql and not hop_model.sql_table:
-            return exp.Subquery(
-                this=self._parse(hop_model.sql),
-                alias=exp.to_identifier(alias),
-            )
+            return self._embed_model_sql(sql=hop_model.sql, alias=alias)
         return self._to_table(
             name=hop_model.sql_table or hop_model.name, alias=alias,
         )
@@ -6463,25 +6455,6 @@ def generate_from_planned(
     )
 
 
-def _bundle_for_stage(*, planned_query, bundle, schema_by_name):
-    """Pick the per-stage bundle a single DAG stage renders against."""
-    ds = (bundle.source_model.data_source if bundle.source_model else "") or "_stage"
-    relation = planned_query.source_relation
-    if planned_query.render_source_model is not None:
-        source = planned_query.render_source_model
-    elif relation in schema_by_name:
-        source = model_from_stage_schema(
-            name=relation, schema=schema_by_name[relation], data_source=ds,
-        )
-    else:
-        return bundle
-    sibling_schemas = {n: s for n, s in schema_by_name.items() if n != relation}
-    return stage_bundle_with_siblings(
-        bundle=bundle, source_model=source,
-        sibling_schemas=sibling_schemas, data_source=ds,
-    )
-
-
 def _user_authored_exemptions(
     *, bundle: ResolvedSourceBundle, dialect: str,
 ) -> frozenset[str]:
@@ -6585,9 +6558,12 @@ def generate_planned_stages(
     root_final: Optional[exp.Select] = None
     for planned in planned_queries:
         relation = _stage_relation(planned=planned, is_root=planned is planned_queries[-1])
-        stage_bundle = _bundle_for_stage(
-            planned_query=planned, bundle=bundle, schema_by_name=schema_by_name,
-        )
+        stage_bundle = planned.stage_bundle
+        if stage_bundle is None:
+            raise ValueError(
+                f"stage {planned.source_relation!r} carries no stamped per-stage bundle; "
+                "multi-stage plans come from plan_stages",
+            )
         with generator._stage_scope(relation):
             stage_sql = cast(str, generator.generate_from_planned(
                 planned, bundle=stage_bundle, reuse_allocator=True,
@@ -6615,6 +6591,7 @@ def generate_planned_stages(
         entries=[*stage_entries, *root_entries], final=root_final,
         external_names=generator._external_cte_names(),
     )
+    _fit_stage_identities(combined, identities=schema_by_name.keys(), dialect=dialect)
     sql = combined.sql(dialect=dialect, pretty=True)
     sql = get_dialect(dialect).rewrite_emitted_sql(
         sql, aliases=projection_aliases, exempt=exempt,
@@ -6624,8 +6601,25 @@ def generate_planned_stages(
     return sql
 
 
+def _fit_stage_identities(tree, *, identities, dialect: str) -> None:
+    """Length-fit over-limit stage identities in place; they carry the reserved
+    prefix, so no user identifier can share their spelling."""
+    d = get_dialect(dialect)
+    fitted = {n: d.fit_alias(n) for n in identities}
+    fitted = {n: f for n, f in fitted.items() if f != n}
+    if not fitted:
+        return
+    for ident in tree.find_all(exp.Identifier):
+        if ident.name in fitted:
+            ident.set("this", fitted[ident.name])
+
+
 def _check_stage_order(planned_queries) -> None:
     """Fail closed unless every stage's ``stage_reads`` names an earlier stage."""
+    spelling = {
+        p.stage_schema.relation_name: p.stage_schema.display_name
+        for p in planned_queries if p.stage_schema is not None
+    }
     earlier: Set[str] = set()
     for planned in planned_queries:
         name = (
@@ -6635,7 +6629,8 @@ def _check_stage_order(planned_queries) -> None:
         late = [r for r in planned.stage_reads if r not in earlier]
         if late:
             raise ValueError(
-                f"stage {name!r} reads sibling(s) {late!r} not planned before it; "
+                f"stage {spelling.get(name, name)!r} reads sibling(s) "
+                f"{[spelling.get(r, r) for r in late]!r} not planned before it; "
                 "planned stages must be in dependency order",
             )
         earlier.add(name)

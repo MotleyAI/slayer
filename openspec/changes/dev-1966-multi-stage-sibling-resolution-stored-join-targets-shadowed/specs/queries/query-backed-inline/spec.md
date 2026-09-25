@@ -11,7 +11,9 @@ Consuming a stored query-backed model as a relation — as the `source_model`, a
 source, or as a join / cross-model target — SHALL return the same values and result keys as the
 same statement with that model's stages written into the query list as named stages. Its final
 stage SHALL be readable under the model's own name; its private stage names SHALL stay local to it.
-The same model consumed from several places SHALL be spliced once.
+The same model consumed from several places SHALL be spliced once. A query-backed model is spliced
+only when the statement reads it; reaching it through stored joins alone neither splices it nor
+contributes its warnings.
 
 #### Scenario: Parity as the source
 - **WHEN** a query's `source_model` is a stored multi-stage query-backed model
@@ -35,6 +37,14 @@ The same model consumed from several places SHALL be spliced once.
 
 #### Scenario: Dependency through a join target only
 - **WHEN** a spliced stage depends on another only through `joins[].target_model` and the input list is supplied in reverse order
+- **THEN** it executes and returns the hand-computed values
+
+#### Scenario: Reaching is not reading
+- **WHEN** a query-backed model's stage source stored-joins that model, or an unread (even broken, or warning) query-backed model sits in the join graph, and a consumer executes
+- **THEN** it executes with the hand-computed values, reports no cycle, and the unread model contributes no SQL or warning
+
+#### Scenario: Reads through stored joins at any depth
+- **WHEN** a non-root stage, a derived column's definition, or another query-backed model's stage reads a query-backed model only through a stored join
 - **THEN** it executes and returns the hand-computed values
 
 ### Requirement: One flat WITH
@@ -107,7 +117,7 @@ the query-backed model it belongs to; the consumer's own warnings SHALL be uncha
 A query-backed model that references itself directly or transitively SHALL raise one cycle error,
 naming the ordered cycle path, whether the cycle is reached by executing a consumer, by running a
 model by name, by `save_model`, or by column-type discovery. No cached SQL SHALL be used to break a
-cycle.
+cycle. A planning failure unrelated to a cycle SHALL keep its own error.
 
 #### Scenario: Direct and transitive cycles
 - **WHEN** `A` consumes `A`, or `A` consumes `B` which consumes `A`, and a consumer of `A` executes, `A` runs by name, `A` is saved, or `A`'s column types are requested

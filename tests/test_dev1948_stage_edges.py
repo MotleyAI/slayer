@@ -95,19 +95,30 @@ class _Capture:
         monkeypatch.setattr(query_engine_module, "generate_planned_stages", gen_spy)
         monkeypatch.setattr(generator_module, "assemble_with_chain", assemble_spy)
 
+    def display(self, name: str) -> str:
+        """A relation's user spelling (stage identities are minted)."""
+        return {
+            p.stage_schema.relation_name: p.stage_schema.display_name for p in self.planned[:-1]
+        }.get(name, name)
+
     def stage_names(self) -> List[str]:
-        """Planned relation names, root as ``<root>``."""
-        return [p.stage_schema.relation_name for p in self.planned[:-1]] + ["<root>"]
+        """Planned stage names (user spelling), root as ``<root>``."""
+        return [p.stage_schema.display_name for p in self.planned[:-1]] + ["<root>"]
 
     def reads(self) -> Dict[str, List[str]]:
-        return {n: list(p.stage_reads) for n, p in zip(self.stage_names(), self.planned)}
+        return {n: [self.display(r) for r in p.stage_reads]
+                for n, p in zip(self.stage_names(), self.planned)}
 
     def segments(self) -> Dict[str, List[CteEntry]]:
-        """Final ``WITH`` entries grouped per stage: its hoisted CTEs then its relation; root entries last."""
+        """Final ``WITH`` entries (user-spelled) grouped per stage: its hoisted CTEs then its relation; root entries last."""
         relations = set(self.stage_names()[:-1])
         out: Dict[str, List[CteEntry]] = {}
         current: List[CteEntry] = []
         for entry in self.final_entries:
+            entry = entry.model_copy(update={
+                "name": self.display(entry.name),
+                "depends_on": [self.display(d) for d in entry.depends_on],
+            })
             current.append(entry)
             if entry.name in relations:
                 out[entry.name] = current
@@ -187,7 +198,7 @@ class TestPlanStages:
     async def test_order_and_stage_reads(self, sqlite_engine, monkeypatch, case) -> None:
         build, expected = _READS_CASES[case]
         cap = await _capture(sqlite_engine, build(), monkeypatch)
-        canonical = [q.name for q in topologically_order_stages(cap.queries)[:-1]]
+        canonical = [cap.display(q.name) for q in topologically_order_stages(cap.queries)[:-1]]
         assert cap.stage_names()[:-1] == canonical
         assert cap.reads() == expected
 

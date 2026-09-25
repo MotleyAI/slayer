@@ -8,6 +8,7 @@ import re
 from typing import Annotated, Any, Literal, Union
 
 from pydantic import (
+    AfterValidator,
     AliasChoices,
     BaseModel,
     BeforeValidator,
@@ -886,6 +887,16 @@ def _source_spec_tag(value: Any) -> str:
     return "name"
 
 
+def _reject_inline_query_backed(value: Any) -> Any:
+    if isinstance(value, SlayerModel) and value.source_queries:
+        raise ValueError(
+            f"Inline model {value.name!r} carries source_queries; an inline query-backed "
+            f"source is not supported — write those queries as named stages of the "
+            f"query list instead."
+        )
+    return value
+
+
 # Anything accepted as ``SlayerQuery.source_model``; validated at construction.
 SourceSpec = Annotated[
     Union[
@@ -894,6 +905,7 @@ SourceSpec = Annotated[
         Annotated[SlayerModel, Tag("model")],
     ],
     Discriminator(_source_spec_tag),
+    AfterValidator(_reject_inline_query_backed),
 ]
 
 

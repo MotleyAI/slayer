@@ -3,12 +3,12 @@
 
 from __future__ import annotations
 
-from typing import AbstractSet, Dict, List, Sequence
+from typing import AbstractSet, Callable, Dict, List, Optional, Sequence, Tuple
 
 from pydantic import BaseModel, ConfigDict, Field
 from sqlglot import exp
 
-__all__ = ["CteEntry", "assemble_with_chain"]
+__all__ = ["CteEntry", "assemble_with_chain", "cte_entry", "rename_embedded_ctes"]
 
 
 class CteEntry(BaseModel):
@@ -20,6 +20,24 @@ class CteEntry(BaseModel):
     query: exp.Expression
     #: CTEs that must precede this one; a name absent here is ordered by the enclosing assembly.
     depends_on: List[str] = Field(default_factory=list)
+    #: The CTE's column list (``n(k)``), if its definition carries one.
+    columns: List[str] = Field(default_factory=list)
+    #: Defined under ``WITH RECURSIVE``; the assembled WITH is recursive if any entry is.
+    recursive: bool = False
+    quoted: bool = False
+
+
+def cte_entry(*, cte: exp.CTE, name: str, depends_on: List[str]) -> CteEntry:
+    """A hoisted ``cte`` as an entry named ``name``, keeping its column list, recursion and quoting."""
+    alias = cte.args.get("alias")
+    ident = alias.this if isinstance(alias, exp.TableAlias) else None
+    with_node = cte.parent
+    return CteEntry(
+        name=name, query=cte.this.copy(), depends_on=depends_on,
+        columns=[c.name for c in (alias.columns if isinstance(alias, exp.TableAlias) else [])],
+        recursive=isinstance(with_node, exp.With) and bool(with_node.args.get("recursive")),
+        quoted=isinstance(ident, exp.Identifier) and bool(ident.quoted),
+    )
 
 
 def _index_entries(
@@ -99,6 +117,73 @@ def assemble_with_chain(
     ordered = _topological_order(entries=entries, by_name=by_name)
 
     out = final.copy()
-    for entry in ordered:
-        out = out.with_(entry.name, as_=entry.query.copy(), copy=False)
+    out.set("with_", exp.With(
+        expressions=[
+            exp.CTE(
+                this=entry.query.copy(),
+                alias=exp.TableAlias(
+                    this=exp.to_identifier(entry.name, quoted=entry.quoted or None),
+                    columns=[exp.to_identifier(c) for c in entry.columns] or None,
+                ),
+            )
+            for entry in ordered
+        ],
+        recursive=any(entry.recursive for entry in ordered) or None,
+    ))
     return out
+
+
+def _ident_key(ident: exp.Identifier) -> str:
+    """Unquoted identifiers compare case-insensitively, quoted ones exactly."""
+    return ident.name if ident.quoted else ident.name.lower()
+
+
+def _binding_with(table: exp.Table) -> Optional[Tuple[exp.With, str]]:
+    """The ``WITH`` whose CTE ``table`` references, by SQL scoping: the nearest
+    enclosing definition, where a CTE body sees only earlier siblings (or all of
+    them, itself included, under ``RECURSIVE``); ``None`` for a physical table."""
+    if table.args.get("db") is not None or not isinstance(table.this, exp.Identifier):
+        return None
+    key = _ident_key(table.this)
+    prev: exp.Expression = table
+    node = table.parent
+    while node is not None:
+        if isinstance(node, exp.With):
+            names = [_ident_key(c.args["alias"].this) for c in node.expressions]
+            idx = next(i for i, c in enumerate(node.expressions) if c is prev)
+            visible = names if node.args.get("recursive") else names[:idx]
+            if key in visible:
+                return node, key
+        elif node.args.get("with_") is not None and node.args["with_"] is not prev:
+            names = [_ident_key(c.args["alias"].this) for c in node.args["with_"].expressions]
+            if key in names:
+                return node.args["with_"], key
+        prev, node = node, node.parent
+    return None
+
+
+def rename_embedded_ctes(statement: exp.Expression, *, allocate: Callable[[str], str]) -> None:
+    """Rename every CTE ``statement`` defines through ``allocate``, in place, rebinding
+    only the table references bound to that definition (nested shadowing, alias
+    reuse, recursion and quoting preserved); a renamed reference keeps its old
+    spelling as its alias, so column qualifiers stay valid."""
+    withs = list(statement.find_all(exp.With))
+    if not withs:
+        return
+    bindings = [(t, _binding_with(t)) for t in statement.find_all(exp.Table)]
+    new_names: Dict[Tuple[int, str], str] = {}
+    for with_node in withs:
+        for cte in with_node.expressions:
+            ident = cte.args["alias"].this
+            new = allocate(ident.name)
+            new_names[(id(with_node), _ident_key(ident))] = new
+            cte.args["alias"].set("this", exp.to_identifier(new, quoted=ident.quoted or None))
+    for table, binding in bindings:
+        if binding is None:
+            continue
+        old = table.this
+        table.set("this", exp.to_identifier(
+            new_names[(id(binding[0]), binding[1])], quoted=old.quoted or None,
+        ))
+        if table.args.get("alias") is None:
+            table.set("alias", exp.TableAlias(this=old.copy()))

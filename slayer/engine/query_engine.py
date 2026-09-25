@@ -72,7 +72,7 @@ from slayer.engine.population import (
     infer_population,
     to_one_reachable,
 )
-from slayer.core.scope import collect_stale_spellings
+from slayer.core.scope import StageDisplay, collect_stale_spellings
 from slayer.core.warnings import (
     AnySlayerWarning,
     AssociatedWarningPayload,
@@ -113,7 +113,7 @@ from slayer.engine.response_meta import (
 )
 from slayer.sql.column_expansion import expand_derived_refs_sync
 from slayer.ir.source_bundle import ResolvedSourceBundle, model_from_stage_schema
-from slayer.engine.stage_ordering import topologically_order_stages
+from slayer.engine.stage_ordering import localize_stages, topologically_order_stages
 from slayer.engine.plan import plan_stages
 from slayer.ir.variables import apply_variables_to_query
 from slayer.engine.introspect_utils import _safe_get_columns
@@ -341,11 +341,14 @@ def _build_explain_sql(dialect: str, sql: str) -> str:
     return get_dialect(dialect).build_explain_sql(sql)
 
 
-def _stage_location(*, stages, index: int, member: Optional[str] = "filters") -> str:
-    """Human-readable stage pointer; part of the dedup identity (distinguishes same-text stages)."""
-    name = getattr(stages[index], "name", None) if index < len(stages) else None
-    base = f"stage {name!r}" if name else f"stages[{index}]"
-    return f"{base}.{member}" if member else base
+def _stage_labels(*, stages, displays=None) -> List[str]:
+    """Each stage's user-facing pointer; part of the dedup identity (distinguishes same-text stages)."""
+    displays = displays or {}
+    return [
+        displays[q.name].label if q.name in displays
+        else (f"stage {q.name!r}" if q.name else f"stages[{i}]")
+        for i, q in enumerate(stages)
+    ]
 
 
 def _walk_regroup_attaches(planned):
@@ -396,12 +399,11 @@ def _semi_join_filter_texts(planned_list) -> List[str]:
 
 
 def _collect_broadcast_warnings(
-    *, planned_list, stages,
+    *, planned_list, stages, displays=None,
 ) -> List[BroadcastGrainWarningPayload]:
     """One broadcast payload per ``(stage location, measure label)``; dimensions unioned."""
     dims_by_key: "dict[tuple[str, str], list[tuple[str, str]]]" = {}
-    for index, planned in enumerate(planned_list):
-        location = _stage_location(stages=stages, index=index, member=None)
+    for planned, location in zip(planned_list, _stage_labels(stages=stages, displays=displays)):
         for attach in _walk_regroup_attaches(planned):
             measure = attach.broadcast_measure
             if not measure:
@@ -422,12 +424,11 @@ def _collect_broadcast_warnings(
 
 
 def _collect_associated_warnings(
-    *, planned_list, stages,
+    *, planned_list, stages, displays=None,
 ) -> List[AssociatedWarningPayload]:
     """One associated payload per ``(stage location, measure label)``; dimensions unioned."""
     dims_by_key: "dict[tuple[str, str], list[str]]" = {}
-    for index, planned in enumerate(planned_list):
-        location = _stage_location(stages=stages, index=index, member=None)
+    for planned, location in zip(planned_list, _stage_labels(stages=stages, displays=displays)):
         for attach in _walk_regroup_attaches(planned):
             measure = attach.associated_measure
             if not measure:
@@ -443,13 +444,12 @@ def _collect_associated_warnings(
 
 
 def _collect_degenerate_warnings(
-    *, planned_list, stages,
+    *, planned_list, stages, displays=None,
 ) -> List[DegenerateReaggregationWarningPayload]:
     """One degenerate-re-aggregation payload per ``(location, measure)``."""
     seen: set = set()
     out: List[DegenerateReaggregationWarningPayload] = []
-    for index, planned in enumerate(planned_list):
-        location = _stage_location(stages=stages, index=index, member=None)
+    for planned, location in zip(planned_list, _stage_labels(stages=stages, displays=displays)):
         for attach in _walk_regroup_attaches(planned):
             measure = attach.degenerate_measure
             if not measure:
@@ -502,14 +502,13 @@ def _attach_pushed_entries(planned) -> Iterator[Tuple[str, str]]:
 
 
 def _collect_semi_join_pushed_warnings(
-    *, planned_list, stages,
+    *, planned_list, stages, displays=None,
 ) -> List[SemiJoinPushedWarningPayload]:
     """Response-only informational entries for semi-join-pushed conjuncts; one per
     ``(location, aggregate, filter text)``."""
     seen: set = set()
     out: List[SemiJoinPushedWarningPayload] = []
-    for index, planned in enumerate(planned_list):
-        location = _stage_location(stages=stages, index=index, member=None)
+    for planned, location in zip(planned_list, _stage_labels(stages=stages, displays=displays)):
         entries = (
             *_population_pushed_entries(planned),
             *_attach_pushed_entries(planned),
@@ -1011,6 +1010,10 @@ class SlayerQueryEngine:
         Produces the final executed SQL; no SQL client on the no-policy path (so
         ``evict()`` recomputes a key without connecting).
         """
+        # Stage names are query-local: mint identities before anything resolves a name.
+        localized, stage_displays = localize_stages([*named_queries.values(), query])
+        query = localized[-1]
+        named_queries = {q.name: q for q in localized[:-1] if q.name}
         # Infer the population of any rootless stage (main + each named
         # stage independently) BEFORE prefix-strip, so the chosen model flows
         # through the untouched pipeline byte-identically to its explicit twin.
@@ -1019,6 +1022,7 @@ class SlayerQueryEngine:
                 query=query,
                 named_queries=named_queries,
                 prefer_data_source=prefer_data_source,
+                stage_displays=stage_displays,
             )
         )
         # Pin bundle resolution to the inferred datasource (anchor voting already
@@ -1045,6 +1049,7 @@ class SlayerQueryEngine:
             runtime_variables=runtime_kwarg,
             named_queries=named_queries,
         )
+        bundle = bundle.model_copy(update={"stage_displays": stage_displays})
 
         # Expand every query-backed model in the bundle and re-apply root
         # inline_extensions. Shared with ``_expand_query_backed_model`` so both
@@ -1149,15 +1154,19 @@ class SlayerQueryEngine:
         ordered_stages = topologically_order_stages(stages)
         broadcast_warnings = _collect_broadcast_warnings(
             planned_list=planned_list, stages=ordered_stages,
+            displays=bundle.stage_displays,
         )
         associated_warnings = _collect_associated_warnings(
             planned_list=planned_list, stages=ordered_stages,
+            displays=bundle.stage_displays,
         )
         semi_join_infos = _collect_semi_join_pushed_warnings(
             planned_list=planned_list, stages=ordered_stages,
+            displays=bundle.stage_displays,
         )
         degenerate_warnings = _collect_degenerate_warnings(
             planned_list=planned_list, stages=ordered_stages,
+            displays=bundle.stage_displays,
         )
         if getattr(query, "to_many_handling", "broadcast") == "error":
             _raise_on_error_events(broadcasts=broadcast_warnings)
@@ -1197,7 +1206,8 @@ class SlayerQueryEngine:
         logger.debug("Generated SQL:\n%s", sql)
 
         attributes, expected_columns = build_response_metadata(
-            root_planned=root_planned, bundle=bundle, sql=sql, dialect=dialect,
+            root_planned=root_planned, bundle=root_planned.stage_bundle or bundle,
+            sql=sql, dialect=dialect,
         )
 
         # Models whose schema a query-time DBAPI error could be attributed to.
@@ -1227,23 +1237,23 @@ class SlayerQueryEngine:
         query: SlayerQuery,
         named_queries: Dict[str, SlayerQuery],
         prefer_data_source: Optional[str],
+        stage_displays: "Dict[str, StageDisplay]",
     ) -> "tuple[SlayerQuery, Dict[str, SlayerQuery], Optional[str], bool, Optional[str]]":
         """Fill in an omitted ``source_model`` on the main query and each named stage.
 
-        Runs before prefix-strip (design §1). Returns the (possibly rewritten) main
-        query and stages, the main query's effective population + inferred flag, and
-        the inferred datasource (pins bundle resolution so the winning model name
-        can't resolve ambiguously to a same-named model in another datasource).
+        Runs before prefix-strip (design §1). Sibling checks compare user spellings;
+        identities are minted, so an inferred model name never resolves to a stage. Returns the (possibly rewritten) main query and
+        stages, the main query's effective population + inferred flag, and the
+        inferred datasource (pins bundle resolution so the winning model name can't
+        resolve ambiguously to a same-named model in another datasource).
         """
-        stage_names = set(named_queries) | ({query.name} if query.name else set())
-
         inferred = query.source_model is None
         inferred_data_source: Optional[str] = None
         if inferred:
             choice = await infer_population(
                 query=query, storage=self.storage,
                 data_source=prefer_data_source,
-                sibling_stage_names=stage_names - ({query.name} if query.name else set()),
+                sibling_stage_names={d.name for d in stage_displays.values()} - {query.name},
             )
             query = query.model_copy(update={"source_model": choice.model_name})
             inferred_data_source = choice.data_source
@@ -1254,7 +1264,9 @@ class SlayerQueryEngine:
                 choice = await infer_population(
                     query=stage, storage=self.storage,
                     data_source=prefer_data_source or inferred_data_source,
-                    sibling_stage_names=stage_names - {name},
+                    sibling_stage_names={
+                        d.name for ident, d in stage_displays.items() if ident != name
+                    },
                 )
                 stage = stage.model_copy(update={"source_model": choice.model_name})
                 # Pin bundle resolution to the inferred datasource even when only a

@@ -7,6 +7,7 @@
 - [x] 1.5 Cycle tests: direct + transitive, reached by consumer execution, run-by-name, `save_model` (`models/save-validation` scenarios) and `get_column_types`, each asserting one error type with the ordered path. Verify red today.
 - [x] 1.6 Invariant tests: generator `ValueError` (type + stable, non-deferral fragment) for an un-spliced query-backed model reaching `_build_from_clause_from_planned`; `stage_bundle_with_siblings` accepts the host duplicate and raises on a stage identity meeting a different model; a stage's stamped bundle never contains a later stage. Verify red today.
 - [x] 1.7 Codex-review the test suite against this change's specs; resolve findings; commit.
+- [ ] 1.8 Tests: reach is not reference; unread broken / warning models inert; non-root and Mode-A stored-join reads; one query-backed model reading another; a failed attempt keeps its error; pruning keeps reused producers; emission law.
 
 ## 2. Scoping
 
@@ -14,7 +15,7 @@
 - [ ] 2.2 `localize_stages` in `slayer/engine/stage_ordering.py` (design decision 1), with unit tests over each reference shape; `_walk_spec` drops the nested `source_queries` branch. Verify its unit tests.
 - [ ] 2.3 Wire localization as the first step of `_prepare_pipeline` and of run-by-name (design decision 2), inference's `SIBLING_STAGE` check against user spellings. Verify 1.2.
 - [ ] 2.4 `stage_bundle_with_siblings` collision invariant (design decision 4). Verify 1.6.
-- [ ] 2.5 Stamp the per-stage bundle on `PlannedQuery`; generator reads it; delete `_bundle_for_stage`. Verify 1.6 and the full multi-stage suite.
+- [ ] 2.5 Stamp the per-stage bundle (placeholders excluded) on `PlannedQuery`; generator reads it; delete `_bundle_for_stage`. Verify 1.6 and the full multi-stage suite.
 - [ ] 2.6 Over-limit identifier fitting covers prefixed CTE names (extend if not). Verify the near-limit test.
 
 ## 3. Inline query-backed ban
@@ -23,12 +24,13 @@
 
 ## 4. Splicing
 
-- [ ] 4.1 One cycle exception + in-flight chain threaded through splicing, run-by-name, `save_model`, `get_column_types`; delete the cached-SQL short-circuit. Verify 1.5.
-- [ ] 4.2 Depth-first splice in `_prepare_pipeline` with two-pass bundle build and re-topo-sort (design decision 6). Verify 1.4 parity tests.
+- [ ] 4.1 `core.errors.QueryBackedCycleError`; `splice_chain` seed; raised by the builder (source names), `ensure()` (explicit on-chain demand) and the generator (emitted on-chain relation); failed attempts keep their error; `get_column_types` propagates; delete the cached-SQL short-circuit. Verify 1.5.
+- [ ] 4.2 Builder placeholder closure (datasource-scoped); `core.join_walker` observation sink over every edge-yielding traversal; demand loop in `plan_stages` (attempt → splice touched non-chain placeholders → retry; inert placeholder on a failed touched splice); `stage_reads` from strict hits (design decision 6). Verify 1.4 parity tests.
 - [ ] 4.3 Lexical variable environments (design decision 7). Verify 1.4 variable tests.
 - [ ] 4.4 Extension handling (design decision 8). Verify 1.4 extension tests.
-- [ ] 4.5 Spliced-stage warnings collected and labelled (design decision 9). Verify 1.4 warning tests.
+- [ ] 4.5 Spliced-stage warnings labelled (design decision 9) and selected, with `to_many_handling='error'`, from emitted stages only after generation. Verify 1.4 warning tests.
 - [ ] 4.6 Confine `_expand_query_backed_model` to save-time cache population and `get_column_types`. Verify the save and column-type tests.
+- [ ] 4.7 Relation-emission helper recording emitted stage relations; `CteEntry`-graph pruning of unreached spliced entries (design decision 14). Verify `tests/test_dev1966_splice_demand.py`.
 
 ## 5. Generator
 

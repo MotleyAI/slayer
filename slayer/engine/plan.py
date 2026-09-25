@@ -111,12 +111,10 @@ def plan_stages(
     queries: List[SlayerQuery],
     bundle: ResolvedSourceBundle,
 ) -> List[PlannedQuery]:
-    """Plan a multi-stage DAG: topo sort, then plan each stage against its own resolved source + already-planned siblings' synthetic models, recording its sibling reads."""
+    """Plan a multi-stage DAG: topo sort, then plan each stage against its own resolved source + already-planned siblings' synthetic models, recording its sibling reads and stamping its per-stage bundle."""
     if len(queries) == 1:
-        return [plan_query(
-            query=queries[0],
-            bundle=bundle,
-        )]
+        planned = plan_query(query=queries[0], bundle=bundle)
+        return [planned.model_copy(update={"stage_bundle": bundle})]
     ordered = topologically_order_stages(queries)
     root = ordered[-1]
     position = {q.name: i for i, q in enumerate(ordered[:-1])}
@@ -135,7 +133,9 @@ def plan_stages(
             data_source=data_source,
             is_root=q is root,
         )
-        with stale_spelling_stage(f"stage {q.name!r}" if q.name else f"stages[{index}]"):
+        display = bundle.stage_displays.get(q.name) if q.name else None
+        label = display.label if display else (f"stage {q.name!r}" if q.name else f"stages[{index}]")
+        with stale_spelling_stage(label):
             planned = plan_query(
                 query=q,
                 bundle=stage_bundle,
@@ -143,9 +143,13 @@ def plan_stages(
                 stage_schemas=stage_schemas,
             )
         reads = stage_sibling_reads(query=q, siblings=siblings)
-        planned = planned.model_copy(
-            update={"stage_reads": sorted(reads, key=position.__getitem__)},
-        )
+        update: Dict[str, object] = {
+            "stage_reads": sorted(reads, key=position.__getitem__),
+            "stage_bundle": stage_bundle,
+        }
+        if display is not None and planned.stage_schema is not None:
+            update["stage_schema"] = planned.stage_schema.model_copy(update={"display": display})
+        planned = planned.model_copy(update=update)
         results.append(planned)
         if q.name and planned.stage_schema is not None:
             stage_schemas[q.name] = planned.stage_schema

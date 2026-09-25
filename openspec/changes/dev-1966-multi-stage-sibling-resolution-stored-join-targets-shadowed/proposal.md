@@ -45,15 +45,18 @@ cannot read a sibling and why the generator keeps a fail-closed deferral arm for
 
 ## Impact
 
-- `slayer/engine`: `query_engine` (`_prepare_pipeline` localize + splice + two-pass bundle build,
-  run-by-name, cycle guard, `_expand_query_backed_model` confined to save / `get_column_types`),
-  `bundle_builder`, `stage_ordering` (`localize_stages`, nested walk removed), `plan` (per-stage
-  bundle stamped on the plan), `response_meta` (display names).
+- `slayer/engine`: `query_engine` (`_prepare_pipeline` localize, run-by-name, post-generation
+  warning selection, `_expand_query_backed_model` confined to save / `get_column_types`),
+  `bundle_builder` (placeholder closure, chain seed, source cycles), `stage_ordering`
+  (`localize_stages`, nested walk removed), `plan` (demand splicing, per-stage bundle stamped on
+  the plan), `response_meta` (display names).
+- `slayer/core`: `join_walker` traversal observation sink; `errors` `QueryBackedCycleError`.
 - `slayer/ir`: `source_bundle` (collision invariant), `planned` (per-stage bundle), `core.scope`
   `StageSchema.display_name`.
 - `slayer/core/query.py`: inline query-backed source rejection.
 - `slayer/sql/generator.py`: `_bundle_for_stage` deleted, scope-aware hoist renaming, deferral arm
-  replaced.
+  replaced; one relation-emission helper recording emitted stage relations; unreached spliced CTEs
+  pruned.
 - `architecture/`: `engine.arc42.md` new principle 11, `sql.arc42.md` principle 11 extended,
   `index.yaml` `guards.baseline` 1→0.
 - Tests: multi-stage SQL goldens and subquery-shape assertions re-blessed; inline query-backed
