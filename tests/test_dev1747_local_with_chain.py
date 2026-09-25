@@ -160,27 +160,6 @@ class TestNoTextRoundTrip:
             "chain never round-trips through text (D8)"
         )
 
-    async def test_local_chain_does_not_call_the_parse_seam(
-        self, monkeypatch,
-    ) -> None:
-        """``_parse_cte_body`` is the documented seam PR 3 kept for the ONE
-        input that arrives as a complete nested statement. The local chain
-        builds its own bodies, so for THIS query it must not be called at all.
-
-        A source-level ``count(...) <= 2`` would pass while permitting two live
-        round-trips — the very thing D8 removes. A raising sentinel scoped to
-        this render is the exact claim: zero.
-        """
-
-        def _boom(self, sql):  # noqa: ANN001 - signature mirrors the seam
-            raise AssertionError(
-                "the local transform chain routed a CTE body through the parse "
-                "seam; keep bodies as exp.Select from renderer to assembler (D8)"
-            )
-
-        monkeypatch.setattr(SQLGenerator, "_parse_cte_body", _boom)
-        await _sql(_MULTI_STEP_QUERY)
-
     async def test_chain_bodies_reach_the_assembler_as_ast(
         self, monkeypatch,
     ) -> None:
