@@ -58,7 +58,14 @@ QueryRefResolver = Callable[[Tuple[str, ...]], ValueKey]
 _UNANALYSABLE_NODES: Tuple[type, ...] = (
     exp.AggFunc, exp.Window, exp.Query, exp.Subquery, exp.Star, exp.Command, DDL, DML,
 )
-_SENTINEL = "__slayer_r{}__"
+
+
+def _fresh_sentinel(text: str) -> str:
+    """A reference-placeholder pattern that occurs nowhere in ``text``."""
+    salt = 0
+    while f"__slayer{salt}_r" in text:
+        salt += 1
+    return f"__slayer{salt}_r{{}}__"
 
 
 def agg_owner(*, source: ValueKey, bundle: ResolvedSourceBundle) -> Optional[SlayerModel]:
@@ -175,13 +182,14 @@ def _bind_text(
             raise _unanalysable(text=text, name=name, ctx=ctx, reason="it names a measure, not a column")
     if len(sites) == 1 and sites[0][0] is tree:
         return keys[0]
+    sentinel = _fresh_sentinel(text)
     refs: Dict[ValueKey, int] = {}
     for (node, _q, _l), key in zip(sites, keys):
         index = refs.setdefault(key, len(refs))
-        node.replace(exp.column(_SENTINEL.format(index)))
+        node.replace(exp.column(sentinel.format(index)))
     template = tree.sql(dialect=_sqlglot_name(ctx.bundle))
     for index in range(len(refs)):
-        template = template.replace(_SENTINEL.format(index), f"{{r{index}}}")
+        template = template.replace(sentinel.format(index), f"{{r{index}}}")
     return SqlFragmentKey(template=template, refs=tuple(refs))  # type: ignore[arg-type]
 
 
@@ -299,9 +307,9 @@ def resolve_default_qualifier_path(
 ) -> Optional[Path]:
     """Owner-first resolution of a default's qualifier chain with reverse-hop
     cancellation, from ``root_model`` walked along ``owner_path``: the absolute path, or
-    ``None`` on a clean first-token miss (the caller retries at the root). A chain whose
-    first token resolves but a later one misses fails closed — a revisit with the
-    circular-join error, anything else as unresolvable."""
+    ``None`` on a clean first-token miss (the caller retries at the root). A revisit
+    through an edge name fails closed with the circular-join error, and a chain whose
+    first token resolves but a later one misses as unresolvable."""
     quals = tuple(qualifiers)
     if not quals:
         return tuple(owner_path)
@@ -310,6 +318,10 @@ def resolve_default_qualifier_path(
     )
     if resolved is not None:
         return resolved
+    _raise_if_circular(
+        qualifiers=quals, leaf=leaf, root_model=root_model,
+        owner_path=owner_path, models_by_name=models_by_name,
+    )
     if walk_cancelling(
         root=root_model, owner_path=owner_path, tokens=quals[:1], models_by_name=models_by_name,
     ) is None:
@@ -321,10 +333,6 @@ def resolve_default_qualifier_path(
                 ) or root_model,
             )
         return None
-    _raise_if_circular(
-        qualifiers=quals, leaf=leaf, root_model=root_model,
-        owner_path=owner_path, models_by_name=models_by_name,
-    )
     failing = next(
         (quals[i - 1] for i in range(2, len(quals) + 1)
          if walk_cancelling(root=root_model, owner_path=owner_path,

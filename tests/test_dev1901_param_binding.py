@@ -12,7 +12,7 @@ from typing import List, Optional
 
 import pytest
 
-from slayer.core.enums import DataType
+from slayer.core.enums import DataType, JoinCardinality
 from slayer.core.errors import (
     CircularJoinPathError,
     SlayerError,
@@ -20,7 +20,7 @@ from slayer.core.errors import (
     UnknownReferenceError,
 )
 from slayer.core.keys import AggregateKey, ColumnKey, ColumnSqlKey, SqlFragmentKey
-from slayer.core.models import SlayerModel
+from slayer.core.models import Aggregation, AggregationParam, Column, ModelJoin, SlayerModel
 from slayer.core.scope import ModelScope, StageColumn, StageSchema
 from slayer.engine.binding import bind_expr
 from slayer.engine.compile.stages import _first_unattributable_arg_leaf
@@ -249,6 +249,44 @@ class TestOtherBindErrors:
         models = window_param_models(placeholder=placeholder)
         with pytest.raises(SlayerError, match="(?s)wwin.*trailing|trailing.*wwin"):
             _key("amount:wwin", models=models)
+
+
+def _first_token_revisit_models() -> List[SlayerModel]:
+    """``orders →(primary) customers``; ``customers →(back) orders`` is an edge name,
+    so ``wback``'s default ``back.amount`` revisits ``orders`` on its first token."""
+    orders = SlayerModel(
+        name="orders", data_source="test", sql_table="orders",
+        columns=[Column(name="id", type=DataType.INT, primary_key=True),
+                 Column(name="customer_id", type=DataType.INT),
+                 Column(name="amount", type=DataType.DOUBLE)],
+        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]],
+                         name="primary", cardinality=JoinCardinality.MANY_TO_ONE)])
+    customers = SlayerModel(
+        name="customers", data_source="test", sql_table="customers",
+        columns=[Column(name="id", type=DataType.INT, primary_key=True),
+                 Column(name="order_ref", type=DataType.INT),
+                 Column(name="spend", type=DataType.DOUBLE),
+                 Column(name="amount", type=DataType.DOUBLE)],
+        joins=[ModelJoin(target_model="orders", join_pairs=[["order_ref", "id"]],
+                         name="back", cardinality=JoinCardinality.MANY_TO_ONE)],
+        aggregations=[Aggregation(name="wback", formula="SUM({value} * {weight})",
+                                  params=[AggregationParam(name="weight", sql="back.amount")])])
+    return [orders, customers]
+
+
+class TestFragmentTextSurvives:
+    def test_a_literal_spelling_the_placeholder_sentinel_is_kept(self) -> None:
+        frag = _fragment(_kw(
+            "amount:wsum(weight='CASE WHEN status = \\'__slayer_r0__\\' THEN amount ELSE 0 END')")["weight"])
+        assert "'__slayer_r0__'" in frag.template, frag.template
+        assert set(frag.refs) == {AMOUNT, ColumnKey(path=(), leaf="status")}
+
+
+class TestFirstTokenRevisit:
+    def test_is_circular_not_a_root_fallback(self) -> None:
+        models = _first_token_revisit_models()
+        with pytest.raises(CircularJoinPathError, match="back"):
+            _key("primary.spend:wback", models=models)
 
 
 class TestUnattributableParameterName:
