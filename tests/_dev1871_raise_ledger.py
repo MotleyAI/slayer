@@ -322,12 +322,6 @@ ROWS: Tuple[LedgerRow, ...] = (
          message="Measures … and … merge into one result column … but declare different label/type."
          + SUGGEST + "Rename one (set 'name') to disambiguate.",
          category="checker", family="names", user=True, owner="checker"),
-    _row(module=_SP, function="_topo_sort", exc="ValueError",
-         message="Duplicate stage names in source_queries DAG: …",
-         category="compiler", family="stages", user=True, owner="compiler"),
-    _row(module=_SP, function="_topo_sort", exc="ValueError",
-         message="Cycle detected in source_queries DAG involving stages: …",
-         category="compiler", family="stages", user=True, owner="compiler"),
 
     _row(module=_EE, function="validate_model_filter", exc="ModelFilterError",
          message="The model filter references measure …. Model filters can only reference table columns (WHERE)."

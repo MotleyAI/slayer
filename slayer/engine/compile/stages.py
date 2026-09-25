@@ -151,7 +151,6 @@ from slayer.engine.compile.regroup import (
 )
 from slayer.ir.source_bundle import (
     ResolvedSourceBundle,
-    source_name_if_sibling,
 )
 
 
@@ -4402,46 +4401,6 @@ def _plan_src_row_filters(
                 expression=BoundExpr(value_key=residual),
             ))
     return where_ids, rewrites
-
-
-def _topo_sort(queries: List[SlayerQuery]) -> List[SlayerQuery]:
-    """Kahn's algorithm: order stages so each follows the siblings it references (unnamed stages appended last); raises on duplicate names or a cycle."""
-    if len(queries) <= 1:
-        return list(queries)
-    named: List[Tuple[str, SlayerQuery]] = [(q.name, q) for q in queries if q.name]
-    names = [n for n, _ in named]
-    duplicates = sorted({n for n in names if names.count(n) > 1})
-    if duplicates:
-        raise ValueError(
-            f"Duplicate stage names in source_queries DAG: {duplicates}"
-        )
-    by_name: Dict[str, SlayerQuery] = dict(named)
-    in_degree = dict.fromkeys(names, 0)
-    edges: Dict[str, List[str]] = {n: [] for n in names}
-    for name, q in named:
-        # A stage depends on a sibling its source_model reads from (bare-string OR ModelExtension/dict over the sibling).
-        dep = source_name_if_sibling(q.source_model, by_name)
-        if dep is not None and dep != name:
-            in_degree[name] += 1
-            edges[dep].append(name)
-    sorted_names: List[str] = []
-    queue = [n for n, d in in_degree.items() if d == 0]
-    while queue:
-        n = queue.pop(0)
-        sorted_names.append(n)
-        for dep in edges[n]:
-            in_degree[dep] -= 1
-            if in_degree[dep] == 0:
-                queue.append(dep)
-    if len(sorted_names) != len(in_degree):
-        remaining = sorted(set(in_degree) - set(sorted_names))
-        raise ValueError(
-            f"Cycle detected in source_queries DAG involving stages: "
-            f"{remaining}"
-        )
-    sorted_named = [by_name[n] for n in sorted_names]
-    unnamed = [q for q in queries if q.name is None]
-    return sorted_named + unnamed
 
 
 def _source_column_names(

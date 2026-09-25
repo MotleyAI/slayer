@@ -18,7 +18,7 @@ class CteEntry(BaseModel):
 
     name: str
     query: exp.Expression
-    #: CTEs this one references; a name absent here is ordered by the enclosing assembly.
+    #: CTEs that must precede this one; a name absent here is ordered by the enclosing assembly.
     depends_on: List[str] = Field(default_factory=list)
 
 

@@ -3,12 +3,14 @@
 import logging
 import re
 from collections.abc import Sequence
+from contextlib import contextmanager
 from typing import (
     AbstractSet,
     Any,
     Callable,
     Dict,
     Iterable,
+    Iterator,
     List,
     Literal,
     Optional,
@@ -4051,6 +4053,19 @@ class SQLGenerator:
         finally:
             self._gen_dep_stack.pop()
 
+    @contextmanager
+    def _stage_scope(self, relation: Optional[str]) -> Iterator[None]:
+        """One multi-stage statement's dep-registry frame; a non-root stage is also a split consumer."""
+        self._gen_dep_stack.append({})
+        if relation is not None:
+            self._gen_split_consumers.append(relation)
+        try:
+            yield
+        finally:
+            if relation is not None:
+                self._gen_split_consumers.pop()
+            self._gen_dep_stack.pop()
+
     def _split_statement_ctes(
         self, sql: str,
     ) -> Tuple[List[CteEntry], str]:
@@ -6448,7 +6463,7 @@ def generate_from_planned(
     )
 
 
-def _bundle_for_stage(planned_query, bundle, schema_by_name):
+def _bundle_for_stage(*, planned_query, bundle, schema_by_name):
     """Pick the per-stage bundle a single DAG stage renders against."""
     ds = (bundle.source_model.data_source if bundle.source_model else "") or "_stage"
     relation = planned_query.source_relation
@@ -6512,6 +6527,18 @@ def _user_authored_exemptions(
     return frozenset(tokens)
 
 
+def _stage_relation(*, planned, is_root: bool) -> Optional[str]:
+    """A stage's CTE name; ``None`` for the root."""
+    if is_root:
+        return None
+    if planned.stage_schema is None:
+        raise ValueError(
+            "non-root stage must carry a stage_schema for CTE chaining; "
+            f"source_relation={planned.source_relation!r}",
+        )
+    return planned.stage_schema.relation_name
+
+
 def generate_planned_stages(
     planned_queries,
     *,
@@ -6549,36 +6576,38 @@ def generate_planned_stages(
 
     # Hoist each stage's internal CTEs and de-WITH its body into one flat WITH
     # assembled by declared edges (sql P6) — a nested WITH inside a stage CTE is
-    # invalid on T-SQL. Stage relations follow their hoisted producers; the plan's
-    # topological stage order is the insertion tiebreak (byte-stable output).
+    # invalid on T-SQL. Every entry of a stage's statement declares that
+    # statement's sibling reads; stage relations also declare their hoisted CTEs
+    # and body reuses. Plan order is the insertion tiebreak (byte-stable output).
+    _check_stage_order(planned_queries)
     stage_entries: List[CteEntry] = []
     root_entries: List[CteEntry] = []
     root_final: Optional[exp.Select] = None
     for planned in planned_queries:
-        stage_bundle = _bundle_for_stage(planned, bundle, schema_by_name)
-        generator._gen_dep_stack.append({})
-        try:
+        relation = _stage_relation(planned=planned, is_root=planned is planned_queries[-1])
+        stage_bundle = _bundle_for_stage(
+            planned_query=planned, bundle=bundle, schema_by_name=schema_by_name,
+        )
+        with generator._stage_scope(relation):
             stage_sql = cast(str, generator.generate_from_planned(
                 planned, bundle=stage_bundle, reuse_allocator=True,
             ))
-            if planned is planned_queries[-1]:
+            if relation is None:
                 root_entries, root_final = generator._split_root_ctes(stage_sql)
+                root_entries = _with_stage_reads(entries=root_entries, reads=planned.stage_reads)
                 continue
-            if planned.stage_schema is None:
-                raise ValueError(
-                    "non-root stage must carry a stage_schema for CTE chaining; "
-                    f"source_relation={planned.source_relation!r}",
-                )
             hoisted, body_sql = generator._split_statement_ctes(stage_sql)
-        finally:
-            generator._gen_dep_stack.pop()
-        stage_entries.extend(hoisted)
+        stage_entries.extend(_with_stage_reads(entries=hoisted, reads=planned.stage_reads))
         stage_entries.append(CteEntry(
-            name=planned.stage_schema.relation_name,
+            name=relation,
             query=_stage_rename_wrapper(
                 planned=planned, stage_sql=body_sql, dialect=dialect,
             ),
-            depends_on=[h.name for h in hoisted],
+            depends_on=_merged_deps(
+                [h.name for h in hoisted],
+                generator._reuse_deps_of(relation),
+                planned.stage_reads,
+            ),
         ))
 
     assert root_final is not None
@@ -6593,6 +6622,38 @@ def generate_planned_stages(
     maybe_validate_scopes(sql, dialect=dialect)
     get_dialect(dialect).assert_no_overlimit_identifiers(sql, exempt=exempt)
     return sql
+
+
+def _check_stage_order(planned_queries) -> None:
+    """Fail closed unless every stage's ``stage_reads`` names an earlier stage."""
+    earlier: Set[str] = set()
+    for planned in planned_queries:
+        name = (
+            planned.stage_schema.relation_name
+            if planned.stage_schema is not None else "<root>"
+        )
+        late = [r for r in planned.stage_reads if r not in earlier]
+        if late:
+            raise ValueError(
+                f"stage {name!r} reads sibling(s) {late!r} not planned before it; "
+                "planned stages must be in dependency order",
+            )
+        earlier.add(name)
+
+
+def _merged_deps(*groups: Sequence[str]) -> List[str]:
+    """Concatenate dependency lists, dropping repeats (first occurrence wins)."""
+    return list(dict.fromkeys(d for group in groups for d in group))
+
+
+def _with_stage_reads(*, entries: List[CteEntry], reads: Sequence[str]) -> List[CteEntry]:
+    """``entries`` with their statement's sibling reads added as prerequisites."""
+    if not reads:
+        return entries
+    return [
+        e.model_copy(update={"depends_on": _merged_deps(e.depends_on, reads)})
+        for e in entries
+    ]
 
 
 def _stage_rename_wrapper(*, planned, stage_sql, dialect):

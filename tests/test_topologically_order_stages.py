@@ -1,20 +1,4 @@
-"""DEV-1452 Stage B — module-level ``topologically_order_stages`` helper.
-
-Extracted from ``SlayerQueryEngine._topologically_order_queries`` so the
-migrated ``_expand_query_backed_model`` / ``_validate_and_populate_cache``
-can call the same Kahn topo-sort the runtime-list ``execute`` path uses.
-
-The helper is the SAME logic the engine-method shim delegates to (decision
-#1 of the Stage B plan). Tests pin:
-
-* Public surface (``topologically_order_stages`` lives at
-  ``slayer.engine.stage_ordering``).
-* Engine-method shim still works at
-  ``SlayerQueryEngine._topologically_order_queries(queries)``.
-* Decision E: inline-nested ``SlayerModel.source_queries`` contribute to
-  the sibling dependency edges (recursive ``_extract_sibling_refs``
-  extension).
-"""
+"""``topologically_order_stages``: surface, engine shim, input-order invariance, and sibling edges (incl. inline-nested ``source_queries``)."""
 from __future__ import annotations
 
 import pytest
@@ -31,16 +15,12 @@ from slayer.engine.stage_ordering import topologically_order_stages
 
 
 def test_module_surface_exists() -> None:
-    """``topologically_order_stages`` is a public callable — the import canary
-    that let the rest of the Stage B migration land."""
+    """``topologically_order_stages`` is a public callable."""
     assert callable(topologically_order_stages)
 
 
 def test_engine_shim_delegates() -> None:
-    """``SlayerQueryEngine._topologically_order_queries`` keeps the
-    classmethod surface that ``execute(query=list[...])`` already calls;
-    the body just delegates to the new module-level helper.
-    """
+    """``SlayerQueryEngine._topologically_order_queries`` delegates to the module helper."""
     a = SlayerQuery(name="a", source_model="orders")
     b = SlayerQuery(
         name="b",
@@ -80,8 +60,7 @@ def test_reorders_simple_forward_reference() -> None:
 
 
 def test_non_root_input_order_is_invariant() -> None:
-    """Non-root stages may be supplied in any order: both input orderings of
-    the same stages (same final root) yield the same topological order."""
+    """Both input orderings of the non-root stages yield the same order."""
     a = SlayerQuery(name="a", source_model="orders")
     b = SlayerQuery(
         name="b",
@@ -121,9 +100,7 @@ def test_cycle_raises() -> None:
 
 
 def test_root_referenced_raises() -> None:
-    """The final entry is the DAG root / sink and must not be referenced
-    by any other stage (a stored convention; surfaces a clear error).
-    """
+    """The final entry is the DAG root and must not be referenced by another stage."""
     a = SlayerQuery(name="a", source_model="root_stage")
     root = SlayerQuery(name="root_stage", source_model="orders")
     with pytest.raises(ValueError, match="root"):
@@ -151,10 +128,7 @@ def test_duplicate_name_raises() -> None:
 
 
 def test_inline_nested_slayer_model_source_queries_contribute_to_edges() -> None:
-    """A stage whose ``source_model`` is an inline ``SlayerModel`` carrying
-    its own ``source_queries`` referencing sibling ``A`` by name MUST cause
-    the outer topo-sort to place ``A`` before the enclosing stage.
-    """
+    """An inline model's nested ``source_queries`` reading sibling ``a`` orders ``a`` first."""
     inner = SlayerModel(
         name="inline_qb",
         source_queries=[
@@ -190,9 +164,7 @@ def test_inline_nested_dict_form_contributes_to_edges() -> None:
 
 
 def test_typed_modelextension_nested_join_contributes_to_edges() -> None:
-    """Typed ``ModelExtension`` with nested ``joins[].target_model``
-    referencing a sibling adds an edge.
-    """
+    """A ``ModelExtension`` join to a sibling adds an edge."""
     a = SlayerQuery(name="a", source_model="orders")
     b = SlayerQuery(
         name="b",
@@ -211,9 +183,7 @@ def test_typed_modelextension_nested_join_contributes_to_edges() -> None:
 
 
 def test_dict_modelextension_nested_join_contributes_to_edges() -> None:
-    """``ModelExtension`` expressed as a raw dict (``{"source_name": ...,
-    "joins": [...]}``) — same edge contribution as the typed shape.
-    """
+    """A raw-dict ``ModelExtension`` adds the same edge as the typed shape."""
     a = SlayerQuery(name="a", source_model="orders")
     b = SlayerQuery.model_validate({
         "name": "b",
@@ -232,9 +202,7 @@ def test_dict_modelextension_nested_join_contributes_to_edges() -> None:
 
 
 def test_cycle_via_inline_nested_reference_raises() -> None:
-    """A reference cycle that runs through an inline-nested stage's own
-    ``source_queries`` must be detected.
-    """
+    """A cycle through an inline-nested stage's ``source_queries`` is detected."""
     a = SlayerQuery(
         name="a",
         source_model=SlayerModel(
