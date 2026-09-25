@@ -19,6 +19,16 @@ from slayer.sql.dialects.base import StatAgg1Name
 from slayer.sql.dialects.tsql import TsqlDialect
 from slayer.storage.yaml_storage import YAMLStorage
 
+from tests._dev1965_fixtures import (
+    assert_single_top_level_with,
+    cte_names,
+    cumsum_chain,
+    from_name,
+    gen,
+    outer_derived,
+    parse,
+    q,
+)
 from tests._engine_helpers import _engine_generate
 
 
@@ -209,14 +219,11 @@ def test_tsql_build_explain_sql_wraps_in_showplan_pair() -> None:
     )
 
 
-# emit_outer_wrap hoists inner CTEs to top
+# Outer wrap: T-SQL accepts WITH only as a statement prefix, so the chain's CTEs
+# sit on the statement and pagination is TOP / OFFSET … FETCH.
 
-
-_INNER_WITH_CTES = (
-    "WITH base AS (SELECT id, status FROM orders),\n"
-    "     step2 AS (SELECT id, status FROM base)\n"
-    "SELECT id AS [orders.id], status AS [orders.status] FROM step2"
-)
+_DESC_CREATED = [{"column": "created_at", "direction": "desc"}]
+_FETCH = r"FETCH\s+(?:FIRST|NEXT)"
 
 
 def _normalise(sql: str) -> str:
@@ -224,226 +231,81 @@ def _normalise(sql: str) -> str:
     return " ".join(sql.split())
 
 
-def test_tsql_emit_outer_wrap_hoists_inner_ctes() -> None:
-    """T-SQL rejects ``WITH`` inside a derived-table subquery."""
-    out = TsqlDialect().emit_outer_wrap(
-        inner_sql=_INNER_WITH_CTES,
-        public=["orders.id", "orders.status"],
-        projected=["orders.id", "orders.status"],
-        order=None,
-        limit=None,
-        offset_arg=None,
-    )
-    normalised = _normalise(out)
-    assert normalised.startswith("WITH "), (
-        f"Expected hoisted statement to start with WITH; got: {out}"
-    )
-    # No nested WITH inside parens.
-    assert "(WITH " not in normalised, (
-        f"Hoisted output still has nested WITH inside parens: {out}"
-    )
-    assert "( WITH " not in normalised, (
-        f"Hoisted output still has nested WITH inside parens: {out}"
-    )
-    assert "base AS" in normalised
-    assert "step2 AS" in normalised
-    # The original main SELECT body must survive verbatim inside the
-    # derived-table wrap — the hoist must not drop or substitute it
-    # (Codex MEDIUM #3 pin: the test wouldn't catch a broken impl that
-    # hoists CTEs but loses the main FROM clause).
-    assert "FROM step2" in normalised, (
-        f"Inner main SELECT body lost after CTE hoist: {out}"
-    )
-    # And the outer projection still names the public aliases.
-    assert "[orders.id]" in out
-    assert "[orders.status]" in out
+async def _tsql(query) -> str:
+    return await gen(query, dialect="tsql")
 
 
-def test_tsql_emit_outer_wrap_no_ctes_passthrough_shape() -> None:
-    """Without CTEs the hoist is a no-op and the shape matches the base impl."""
-    inner = "SELECT id AS [orders.id], status AS [orders.status] FROM orders"
-    out = TsqlDialect().emit_outer_wrap(
-        inner_sql=inner,
-        public=["orders.id", "orders.status"],
-        projected=["orders.id", "orders.status"],
-        order=None,
-        limit=None,
-        offset_arg=None,
-    )
-    normalised = _normalise(out)
-    assert not normalised.startswith("WITH "), (
-        f"No CTEs in inner — should not emit top-level WITH: {out}"
-    )
-    assert ") AS _outer" in normalised
-    assert "AS _outer" in normalised
+def _plain_hidden_order(**kw) -> SlayerQuery:
+    """A no-transform query whose hidden ORDER BY slot forces the outer trim wrap."""
+    return q(dimensions=["status"], measures=["amount:sum"],
+             order=[{"column": "amount:max", "direction": "desc"}], **kw)
 
 
-def test_tsql_emit_outer_wrap_uses_brackets_for_aliases() -> None:
-    """Outer projection identifiers use ``[...]`` brackets."""
-    out = TsqlDialect().emit_outer_wrap(
-        inner_sql="SELECT 1 AS [orders.x]",
-        public=["orders.x"],
-        projected=["orders.x"],
-        order=None,
-        limit=None,
-        offset_arg=None,
-    )
-    # Bracketed alias is present pre-mangle. Bug 2 mangling fires later in
-    # rewrite_emitted_sql; emit_outer_wrap stays naive about it.
-    assert "[orders.x]" in out
-    assert '"orders.x"' not in out
-    assert "`orders.x`" not in out
+async def test_tsql_chain_ctes_are_hoisted_to_the_statement() -> None:
+    sql = await _tsql(cumsum_chain())
+    top = assert_single_top_level_with(sql, "tsql")
+    assert not re.search(r"\(\s*WITH\b", sql, re.IGNORECASE), sql
+    assert cte_names(top)[:2] == ["base", "step1"], sql
+    assert from_name(outer_derived(top)) == cte_names(top)[-1], sql
+    assert [e.sql(dialect="tsql") for e in top.expressions] == [
+        "[orders___created_at]", "[orders___running]",
+    ]
 
 
-def test_tsql_emit_outer_wrap_with_limit() -> None:
-    """Outer wrap with ``LIMIT N`` re-emits as T-SQL ``TOP``/``FETCH NEXT`` via sqlglot."""
-    limit = sqlglot.parse_one("SELECT 1 LIMIT 5", dialect="tsql").args.get("limit")
-    out = TsqlDialect().emit_outer_wrap(
-        inner_sql=_INNER_WITH_CTES,
-        public=["orders.id"],
-        projected=["orders.id"],
-        order=None,
-        limit=limit,
-        offset_arg=None,
-    )
-    # Either FETCH NEXT or TOP — both are valid T-SQL spellings; LIMIT
-    # itself is not valid T-SQL syntax and must not appear in the output.
-    normalised_upper = _normalise(out).upper()
-    assert "LIMIT" not in normalised_upper, (
-        f"Bare LIMIT survived in T-SQL outer wrap: {out}"
-    )
-    assert "5" in out
+async def test_tsql_outer_wrap_without_ctes_has_no_top_level_with() -> None:
+    sql = await _tsql(_plain_hidden_order())
+    normalised = _normalise(sql)
+    assert not normalised.startswith("WITH "), sql
+    assert ") AS _outer" in normalised, sql
 
 
-def test_tsql_emit_outer_wrap_no_ctes_with_limit_transposes_pagination() -> None:
-    """The no-CTE branch also transposes ``LIMIT`` into ``TOP`` / ``FETCH NEXT``."""
-    inner = "SELECT id AS [orders.id] FROM orders"  # no WITH
-    limit = sqlglot.parse_one("SELECT 1 LIMIT 5", dialect="tsql").args.get("limit")
-    out = TsqlDialect().emit_outer_wrap(
-        inner_sql=inner,
-        public=["orders.id"],
-        projected=["orders.id"],
-        order=None,
-        limit=limit,
-        offset_arg=None,
-    )
-    upper = _normalise(out).upper()
-    assert "LIMIT" not in upper, (
-        f"No-CTE T-SQL outer wrap still emits literal LIMIT: {out}"
-    )
-    assert "5" in out
+async def test_tsql_outer_wrap_uses_brackets_for_aliases() -> None:
+    sql = await _tsql(cumsum_chain(order=_DESC_CREATED))
+    assert "[orders___running]" in sql
+    assert '"orders.' not in sql
+    assert "`orders" not in sql
 
 
-def test_tsql_emit_outer_wrap_with_offset() -> None:
-    """Outer wrap with ``OFFSET N`` re-emits via sqlglot's T-SQL dialect."""
-    offset_arg = sqlglot.parse_one(
-        "SELECT 1 ORDER BY 1 OFFSET 10 ROWS", dialect="tsql"
-    ).args.get("offset")
-    out = TsqlDialect().emit_outer_wrap(
-        inner_sql=_INNER_WITH_CTES,
-        public=["orders.id"],
-        projected=["orders.id"],
-        order=None,
-        limit=None,
-        offset_arg=offset_arg,
-    )
-    assert "10" in out
-    assert "OFFSET" in out.upper()
+async def test_tsql_chain_with_limit_transposes_pagination() -> None:
+    sql = await _tsql(cumsum_chain(limit=5))
+    assert "LIMIT" not in _normalise(sql).upper(), sql
+    assert re.search(rf"\bTOP \(?5\)?|{_FETCH} 5 ROWS ONLY", sql), sql
 
 
-def test_tsql_emit_outer_wrap_with_order_and_offset() -> None:
-    """ORDER BY and OFFSET both ride on the outer statement."""
-    sql = "SELECT 1 ORDER BY 1 OFFSET 10 ROWS"
-    parsed = sqlglot.parse_one(sql, dialect="tsql")
-    order = parsed.args.get("order")
-    offset_arg = parsed.args.get("offset")
-    out = TsqlDialect().emit_outer_wrap(
-        inner_sql=_INNER_WITH_CTES,
-        public=["orders.id"],
-        projected=["orders.id"],
-        order=order,
-        limit=None,
-        offset_arg=offset_arg,
-    )
-    upper = out.upper()
-    assert "ORDER BY" in upper
-    assert "OFFSET" in upper
-    assert _normalise(out).startswith("WITH ")
+async def test_tsql_outer_wrap_without_ctes_transposes_pagination() -> None:
+    sql = await _tsql(_plain_hidden_order(limit=5))
+    assert "LIMIT" not in _normalise(sql).upper(), sql
+    assert re.search(rf"\bTOP \(?5\)?|{_FETCH} 5 ROWS ONLY", sql), sql
 
 
-def test_tsql_emit_outer_wrap_strips_inner_qualifiers_in_order_by() -> None:
-    """The detached ORDER BY may carry inner-CTE qualifiers like ``_base."col"`` from ``_assemble_combined_sql``."""
-    order = sqlglot.parse_one(
-        'SELECT 1 ORDER BY _base."orders.id" ASC', dialect="tsql"
-    ).args.get("order")
-    out = TsqlDialect().emit_outer_wrap(
-        inner_sql=_INNER_WITH_CTES,
-        public=["orders.id"],
-        projected=["orders.id"],
-        order=order,
-        limit=None,
-        offset_arg=None,
-    )
-    # The inner CTE alias must not leak into the outer ORDER BY.
-    assert "_base." not in out, (
-        f"Inner-CTE qualifier _base. leaked into outer ORDER BY: {out}"
-    )
+async def test_tsql_chain_with_offset() -> None:
+    sql = await _tsql(cumsum_chain(offset=10))
+    assert re.search(r"OFFSET 10 ROWS\s*\Z", sql), sql
 
 
-def test_tsql_emit_outer_wrap_hidden_alias_in_order_by() -> None:
-    """ORDER BY may reference a hidden inner alias not in ``public``."""
-    inner = (
-        "WITH base AS (SELECT id, status, created_at FROM orders)\n"
-        "SELECT id AS [orders.id], created_at AS [orders.created_at] "
-        "FROM base"
-    )
-    order = sqlglot.parse_one(
-        'SELECT 1 ORDER BY _base."orders.created_at" DESC', dialect="tsql"
-    ).args.get("order")
-    # ``public`` excludes the sort key.
-    out = TsqlDialect().emit_outer_wrap(
-        inner_sql=inner,
-        public=["orders.id"],
-        projected=["orders.id"],
-        order=order,
-        limit=None,
-        offset_arg=None,
-    )
-    # The hidden alias must still appear in the outer ORDER BY (bare,
-    # no qualifier) so the derived-table scope can resolve it.
-    assert "_base." not in out
-    assert "orders.created_at" in out
-    # And the outer projection still trims to the public list.
-    upper = out.upper()
-    select_clause = upper.split("FROM (")[0]
-    assert "ORDERS.CREATED_AT" not in select_clause, (
-        f"Hidden alias leaked into outer projection (not in public): {out}"
-    )
+async def test_tsql_chain_with_order_and_offset() -> None:
+    sql = await _tsql(cumsum_chain(order=_DESC_CREATED, offset=10))
+    assert re.search(r"ORDER BY\s+\[orders___created_at\] DESC\s+OFFSET 10 ROWS", sql), sql
+    assert _normalise(sql).startswith("WITH "), sql
 
 
-def test_tsql_emit_outer_wrap_preserves_multiple_ctes_in_order() -> None:
-    """Multiple inner CTEs are hoisted in declared order (sqlglot's ``With`` node preserves declaration order)."""
-    inner = (
-        "WITH alpha AS (SELECT 1 AS a),\n"
-        "     beta AS (SELECT 2 AS b),\n"
-        "     gamma AS (SELECT 3 AS c)\n"
-        "SELECT * FROM gamma"
-    )
-    out = TsqlDialect().emit_outer_wrap(
-        inner_sql=inner,
-        public=["c"],
-        projected=["c"],
-        order=None,
-        limit=None,
-        offset_arg=None,
-    )
-    normalised = _normalise(out)
-    a_idx = normalised.find("alpha")
-    b_idx = normalised.find("beta")
-    g_idx = normalised.find("gamma")
-    assert 0 < a_idx < b_idx < g_idx, (
-        f"CTE declaration order lost: alpha@{a_idx} beta@{b_idx} gamma@{g_idx} in {out}"
-    )
+async def test_tsql_hidden_alias_in_order_by() -> None:
+    """ORDER BY may name a carried alias that is not in the public projection."""
+    sql = await _tsql(cumsum_chain(order=[{"column": "amount:max", "direction": "desc"}]))
+    top = parse(sql, "tsql")
+    assert [c.name for c in top.args["order"].find_all(exp.Column)] == ["orders___amount_max"]
+    assert "orders___amount_max" in outer_derived(top).named_selects
+    assert "orders___amount_max" not in top.named_selects
+
+
+async def test_tsql_hoisted_ctes_keep_dependency_order() -> None:
+    sql = await _tsql(cumsum_chain(measures=[
+        {"formula": "cumsum(amount:sum)", "name": "running"},
+        {"formula": "change(cumsum(amount:sum))", "name": "d"},
+    ]))
+    names = cte_names(assert_single_top_level_with(sql, "tsql"))
+    assert names[0] == "base", names
+    assert names.index("step1") < names.index("step2"), names
 
 
 # Bracketed dotted alias mangling on rewrite_emitted_sql

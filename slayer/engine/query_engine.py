@@ -135,7 +135,12 @@ from slayer.sql.dialects import SQLGLOT_NAMES, SqlDialect, dialect_for_ds_type, 
 from slayer.sql.sql_template import SqlTemplateError, sql_template
 from slayer.sql import engine_factory
 from slayer.sql.engine_factory import EngineCacheKey, _sql_client_cache_key
-from slayer.sql.generator import generate_planned_stages
+from slayer.sql.generator import (
+    _build_planned_stages_ast,
+    _finish_statement,
+    _user_authored_exemptions,
+    generate_planned_stages,
+)
 from slayer.sql.session_policy import (
     ScopedTable,
     _attach_ch_correlated_setting,
@@ -2810,28 +2815,30 @@ class SlayerQueryEngine:
         plan_input = [*normed_named.values(), final_stage]
         planned_list = plan_stages(queries=plan_input, bundle=bundle)
         root_planned = planned_list[-1]
-        # Backing SQL is persisted on the virtual model, so length-fit here too.
-        aliases = projection_result_keys(root_planned=root_planned)
-        rendered = generate_planned_stages(
-            planned_queries=planned_list, bundle=bundle, dialect=dialect,
-            projection_aliases=aliases,
-        )
-
-        # Wrap with a flat-renamed SELECT over the root stage's output columns.
+        # Wrap the stage AST with a flat-renamed SELECT over the root stage's output columns, then render once.
         schema = root_planned.stage_schema
         assert schema is not None
         expected = [c.name for c in schema.columns]
         wrapped_ast = build_flat_rename_wrapper(
             source_relation=root_planned.source_relation,
-            stage_sql=rendered,
+            inner=_build_planned_stages_ast(planned_list, bundle=bundle, dialect=dialect),
             expected_columns=expected,
             dialect=dialect,
-            projection_aliases=aliases,
         )
-        wrapped_sql = wrapped_ast.sql(dialect=dialect, pretty=True)
-
-        # ``Column.sql`` carries the length-fitted alias; ``Column.name`` stays canonical.
+        # ``Column.sql`` carries the length-fitted alias; ``Column.name`` stays canonical. A flat name equals the
+        # user-authored column name, which the finishing pass exempts, so the output aliases are fitted here.
         fit_map = get_dialect(dialect).alias_rewrite_map(expected)
+        for alias in wrapped_ast.expressions:
+            fitted = fit_map.get(alias.alias)
+            if fitted is not None:
+                alias.set("alias", exp.to_identifier(fitted, quoted=True))
+        # Backing SQL is persisted on the virtual model, so length-fit here too.
+        wrapped_sql = _finish_statement(
+            wrapped_ast,
+            dialect=dialect,
+            aliases=projection_result_keys(root_planned=root_planned),
+            exempt=_user_authored_exemptions(bundle=bundle, dialect=dialect),
+        )
         return model_from_stage_schema(
             name=model.name,
             schema=schema,
