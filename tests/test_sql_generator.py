@@ -25,6 +25,7 @@ from slayer.sql.generator import (
 from slayer.sql.scope_check import assert_scope_closed
 from slayer.storage.yaml_storage import YAMLStorage
 
+from tests._dev1965_fixtures import post_filter_where, split_chain
 from tests._engine_helpers import (
     _assert_valid_sql,
     _engine_generate,
@@ -1760,8 +1761,8 @@ class TestFields:
             filters=["rev_change < 0"],
         )
         sql = await _generate(generator, query, orders_model)
-        # Wraps in a post-filter SELECT; the change(revenue:sum) measure is inlined (revenue_sum minus its time-shift) into the predicate, not referenced by alias.
-        assert "_filtered" in sql
+        # The post-phase filter is the final select's WHERE; the change(revenue:sum) measure is inlined (revenue_sum minus its time-shift) into the predicate, not referenced by alias.
+        assert "< 0" in post_filter_where(sql)
         assert '"orders.revenue_sum" - "orders._time_shift_inner" < 0' in sql
 
     async def test_inline_transform_filter(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
@@ -1776,8 +1777,7 @@ class TestFields:
         sql = await _generate(generator, query, orders_model)
         assert "FIRST_VALUE" in sql  # last()
         assert "shifted_" in sql  # change() via self-join
-        assert "_filtered" in sql
-        assert "< 0" in sql
+        assert "< 0" in post_filter_where(sql)
 
     async def test_mixed_base_and_post_filters(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         """Base filters and post-filters should coexist correctly."""
@@ -1792,7 +1792,8 @@ class TestFields:
         assert "'completed'" in sql
         # Post-filter should be in the outer wrapper. The computed change measure is inlined into the predicate (revenue_sum minus its time-shift) rather than referenced by the ``rev_change`` alias.
         assert '"orders.revenue_sum" - "orders._time_shift_inner" > 0' in sql
-        assert "_filtered" in sql
+        assert "> 0" in post_filter_where(sql)
+        assert "'completed'" not in post_filter_where(sql)
 
     async def test_transform_without_time_raises(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         """Transforms requiring time should fail if no time dimension available."""
@@ -2021,9 +2022,9 @@ class TestRankFamilyTransforms:
             filters=["dense_rank(revenue:sum) <= 5"],
         )
         sql = await _generate(generator, query, orders_model)
-        assert "_filtered" in sql, f"expected post-filter wrapper, got:\n{sql}"
-        # Split on the wrapper marker so we can pin DENSE_RANK to the inner SELECT and the predicate to the outer wrapper, not just "somewhere in the SQL".
-        inner_sql, outer_sql = sql.split("_filtered", 1)
+        assert "<= 5" in post_filter_where(sql)
+        # Pin DENSE_RANK to the chain CTEs and the predicate to the outermost statement, not just "somewhere in the SQL".
+        inner_sql, outer_sql = split_chain(sql)
         assert "DENSE_RANK()" in inner_sql, (
             f"DENSE_RANK should be materialised in the inner SELECT, got:\n{sql}"
         )
@@ -2045,8 +2046,8 @@ class TestRankFamilyTransforms:
             filters=["ntile(revenue:sum, n=4) <= 1"],
         )
         sql = await _generate(generator, query, orders_model)
-        assert "_filtered" in sql, f"expected post-filter wrapper, got:\n{sql}"
-        inner_sql, outer_sql = sql.split("_filtered", 1)
+        post_filter_where(sql)
+        inner_sql, outer_sql = split_chain(sql)
         assert "NTILE(4)" in inner_sql, (
             f"NTILE(4) should be materialised in the inner SELECT, got:\n{sql}"
         )
@@ -2068,8 +2069,8 @@ class TestRankFamilyTransforms:
             filters=["rank(revenue:sum, partition_by=status) <= 1"],
         )
         sql = await _generate(generator, query, orders_model)
-        assert "_filtered" in sql, f"expected post-filter wrapper, got:\n{sql}"
-        inner_sql, outer_sql = sql.split("_filtered", 1)
+        post_filter_where(sql)
+        inner_sql, outer_sql = split_chain(sql)
         assert (
             'RANK() OVER (PARTITION BY "orders.status" '
             'ORDER BY "orders.revenue_sum" DESC NULLS LAST)'
@@ -8242,21 +8243,15 @@ class TestIsolatedFilteredMeasureCTEs:
         assert "OVER" in sql.upper(), (
             f"Expected windowed SUM ... OVER (...) for cumsum:\n{sql}"
         )
-        # Layer-boundary pin: the POST predicate lives in the _filtered outer wrap, not base — routing it into base.WHERE would filter rows before the cumsum window and change the semantics.
+        # Layer-boundary pin: the POST predicate is the WHERE of the chain's final select, not base — routing it into base.WHERE would filter rows before the cumsum window and change the semantics.
         base_body = _extract_cte_body(sql, r"\bbase\b")
         assert "> 0" not in base_body, (
             f"POST filter '> 0' leaked into the combined ``base`` CTE — "
-            f"it must stay at the post-transform ``_filtered`` wrapper:"
+            f"it must stay at the chain's final select:"
             f"\n{base_body}"
         )
-        # And the POST predicate IS in the outer ``_filtered`` wrap.
-        filtered_match = _re.search(r"\)\s*AS\s+_filtered\s*WHERE\s+([^)]+)", sql)
-        assert filtered_match, (
-            f"Expected ``_filtered`` outer wrap with WHERE for POST filter:\n{sql}"
-        )
-        assert "> 0" in filtered_match.group(1), (
-            f"POST filter '> 0' must apply at the ``_filtered`` outer wrap:"
-            f"\n{filtered_match.group(0)}"
+        assert "> 0" in post_filter_where(sql), (
+            f"POST filter '> 0' must be the WHERE of the chain's final select:\n{sql}"
         )
         _assert_valid_sql(sql)
 
@@ -8286,7 +8281,7 @@ class TestIsolatedFilteredMeasureCTEs:
         assert "> 1000" in sql, f"AGGREGATE filter '> 1000' missing:\n{sql}"
         assert "> 0" in sql, f"POST filter '> 0' missing:\n{sql}"
         assert "OVER" in sql.upper(), f"Expected windowed SUM ... OVER (...) for cumsum:\n{sql}"
-        # Layer-boundary pin: AGGREGATE in the combined ``base`` CTE WHERE; POST in the outer ``_filtered`` wrap; neither leaks into the other layer.
+        # Layer-boundary pin: AGGREGATE in the combined ``base`` CTE WHERE; POST in the chain's final-select WHERE; neither leaks into the other layer.
         base_body = _extract_cte_body(sql, r"\bbase\b")
         assert "> 1000" in base_body, (
             f"AGGREGATE filter '> 1000' must apply in the combined "
@@ -8294,21 +8289,16 @@ class TestIsolatedFilteredMeasureCTEs:
         )
         assert "> 0" not in base_body, (
             f"POST filter '> 0' leaked into the combined ``base`` CTE — "
-            f"it must stay at the post-transform ``_filtered`` wrapper:"
+            f"it must stay at the chain's final select:"
             f"\n{base_body}"
         )
-        filtered_match = _re.search(r"\)\s*AS\s+_filtered\s*WHERE\s+([^)]+)", sql)
-        assert filtered_match, (
-            f"Expected ``_filtered`` outer wrap with WHERE for POST filter:\n{sql}"
-        )
-        filtered_where = filtered_match.group(1)
+        filtered_where = post_filter_where(sql)
         assert "> 0" in filtered_where, (
-            f"POST filter '> 0' must apply at the ``_filtered`` outer wrap:"
-            f"\n{filtered_match.group(0)}"
+            f"POST filter '> 0' must be the WHERE of the chain's final select:\n{sql}"
         )
         assert "> 1000" not in filtered_where, (
-            f"AGGREGATE filter '> 1000' leaked into the ``_filtered`` "
-            f"outer wrap:\n{filtered_match.group(0)}"
+            f"AGGREGATE filter '> 1000' leaked into the chain's final-select "
+            f"WHERE:\n{filtered_where}"
         )
         _assert_valid_sql(sql)
 

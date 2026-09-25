@@ -76,8 +76,7 @@ last chain step carries.
 
 #### Scenario: Filter over a non-projected composite dimension
 
-- **WHEN** a post-phase filter references a composite dimension that is not in the public
-  projection
+- **WHEN** a post-phase filter references a computed dimension by its expression
 - **THEN** the filter resolves against a column carried by the last chain step
 - **AND** executing on DuckDB returns only the matching rows
 

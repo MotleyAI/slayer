@@ -123,4 +123,4 @@ non-root stage split and root split.
 - [The query-backed persisted SQL changes bytes] → it is re-derived on expansion and not
   keyed by bytes elsewhere. Tests pin execution and key match.
 - [Fixture coupling to builder method names] → the law test's self-check fails loudly if
-  a wrapped name disappears (the fixture asserts each target exists).
+  a wrapped name disappears (the law's self-test asserts each target exists).

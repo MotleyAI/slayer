@@ -45,8 +45,6 @@ from slayer.engine.bind_inputs import _canonical_alias_for_formula
 from slayer.sql import generator as generator_module
 from slayer.sql import naming
 from slayer.sql import stage_wrapper as sw_module
-from slayer.sql.dialects import get_dialect
-from slayer.sql.dialects import tsql as tsql_module
 from slayer.sql.generator import SQLGenerator
 from slayer.sql.naming import AliasAllocator
 from slayer.storage.yaml_storage import YAMLStorage
@@ -478,7 +476,6 @@ _INTERNAL_NAMES = [
     "_w_time",        # windowed _src time column
     "_w_value",       # windowed _src value column
     "_having_agg",    # synthetic HAVING aggregate slot
-    "_filtered",      # transform-chain wrapper alias
     "_outer",         # outer-wrap subquery alias
     "_stage_inner",   # stage-schema flat-rename wrapper alias
     "base",           # the transform chain's base CTE
@@ -621,19 +618,10 @@ class TestInternalNamesDoNotCollideWithUserColumns:
 
 
 class TestNamingConstants:
-    """``_outer`` was a literal in both generator.py and dialects/tsql.py; the
-    constants move to naming.py. Both sites keep it as a CONSTANT — a named carve-out."""
+    """Structural aliases are constants owned by naming.py."""
     def test_constants_exist_and_match_the_current_literals(self) -> None:
         assert naming.OUTER_WRAP_ALIAS == "_outer"
         assert naming.STAGE_INNER_ALIAS == "_stage_inner"
-        assert naming.FILTERED_ALIAS == "_filtered"
-
-    def test_tsql_dialect_imports_the_shared_constant(self) -> None:
-        """The coupling becomes an import — asserted on the namespace, not the source text."""
-        assert hasattr(tsql_module, "OUTER_WRAP_ALIAS"), (
-            "tsql.py does not import naming.OUTER_WRAP_ALIAS"
-        )
-        assert tsql_module.OUTER_WRAP_ALIAS is naming.OUTER_WRAP_ALIAS
 
     def test_stage_wrapper_imports_the_shared_constant(self) -> None:
 
@@ -641,11 +629,6 @@ class TestNamingConstants:
             "stage_wrapper.py does not import naming.STAGE_INNER_ALIAS"
         )
         assert sw_module.STAGE_INNER_ALIAS is naming.STAGE_INNER_ALIAS
-
-    def test_tsql_outer_wrap_alias_still_round_trips(self) -> None:
-        """The T-SQL detach rewrite keeps using the shared constant, not an allocated name."""
-        assert get_dialect("tsql") is not None
-        assert naming.OUTER_WRAP_ALIAS == "_outer"
 
 
 class TestParityGuardRepair:

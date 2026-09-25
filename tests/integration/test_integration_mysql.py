@@ -16,6 +16,7 @@ in CI surfaces as a workflow failure, not a silent skip.
 
 import math as _math
 import statistics
+from datetime import date, timedelta
 import tempfile
 import uuid
 
@@ -1054,6 +1055,51 @@ class TestMySQLStatAggregations:
         assert sql_lower.count("var_pop(") >= 3, (
             f"MySQL COVAR_POP should use variance-decomposition. Got:\n{dry.sql}"
         )
+
+    async def test_windowed_covar_samp_and_corr_keep_sample_semantics(
+        self, mysql_env: SlayerQueryEngine,
+    ) -> None:
+        """Trailing 90d windows (bucket end exclusive) over the six seeded orders."""
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"),
+                                           granularity=TimeGranularity.MONTH)],
+            measures=[
+                {"formula": "total:covar_samp(other=customer_id, window='90d')", "name": "cv"},
+                {"formula": "total:corr(other=customer_id, window='90d')", "name": "co"},
+            ],
+        )
+        rows = [  # (amount, customer_id, created_at)
+            (100.0, 1.0, date(2024, 1, 15)), (200.0, 1.0, date(2024, 1, 20)),
+            (50.0, 2.0, date(2024, 2, 10)), (150.0, 2.0, date(2024, 2, 15)),
+            (75.0, 3.0, date(2024, 3, 1)), (300.0, 3.0, date(2024, 3, 10)),
+        ]
+        month_ends = {"2024-01": date(2024, 2, 1), "2024-02": date(2024, 3, 1),
+                      "2024-03": date(2024, 4, 1)}
+
+        def members(month: str) -> tuple[list[float], list[float]]:
+            end = month_ends[month]
+            picked = [(x, y) for x, y, d in rows if end - timedelta(days=90) <= d < end]
+            return [x for x, _ in picked], [y for _, y in picked]
+
+        result = await mysql_env.execute(query=query)
+        by_month = {str(r["orders.created_at"])[:7]: r for r in result.data}
+        assert set(by_month) == set(month_ends)
+        for month in month_ends:
+            xs, ys = members(month)
+            assert float(by_month[month]["orders.cv"]) == pytest.approx(
+                statistics.covariance(xs, ys), rel=1e-9, abs=1e-9,
+            )
+        for month in ("2024-02", "2024-03"):
+            xs, ys = members(month)
+            assert float(by_month[month]["orders.co"]) == pytest.approx(
+                statistics.correlation(xs, ys), rel=1e-9,
+            )
+
+        dry = await mysql_env.execute(query=query, dry_run=True)
+        assert dry.sql is not None
+        assert "VAR_SAMP(" in dry.sql, dry.sql
+        assert "VARIANCE(" not in dry.sql.upper(), dry.sql
 
 
 # ---------------------------------------------------------------------------
