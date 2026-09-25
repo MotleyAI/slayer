@@ -15,6 +15,7 @@ from slayer.core.scope import ModelScope, StageSchema
 from slayer.engine.bind_inputs import bind_query_inputs
 from slayer.engine.elaborate_env import (
     build_environment,
+    check_combined_partition_keys,
     home_dataset,
     position_typing_context,
     type_and_split_filters,
@@ -52,6 +53,10 @@ def elaborate_query(
         )
     prebound, filter_typings = type_and_split_filters(
         prebound, crossing_root=crossing_local_root_predicate(scope=scope, bundle=bundle),
+    )
+    check_combined_partition_keys(
+        prebound, filter_typings=filter_typings,
+        order_texts=[o.raw_formula or o.column.full_name for o in query.order or []],
     )
     return ElaboratedStage(query=query, **_environment_fields(
         prebound, filter_typings=filter_typings, bundle=bundle, scope=scope,
