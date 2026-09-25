@@ -59,7 +59,7 @@ _GRAIN = [
 
 
 def _bundle() -> ResolvedSourceBundle:
-    return ResolvedSourceBundle(source_model=orders_model(), referenced_models=[])
+    return ResolvedSourceBundle(dialect="postgres", source_model=orders_model(), referenced_models=[])
 
 
 def _stage(*columns: StageColumn) -> StageSchema:

@@ -17,6 +17,7 @@ import sqlglot
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Aggregation, AggregationParam, Column, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
+from slayer.sql.dialects.base import TimeUnit
 from slayer.sql.generator import AggRenderSpec, SQLGenerator
 
 from tests._engine_helpers import _engine_generate
@@ -692,7 +693,7 @@ class TestTsqlDialect:
         assert "INTERVAL" not in sql.upper()
 
     @pytest.mark.parametrize("gran", ["year", "month", "day", "week"])
-    def test_build_time_offset_no_interval_keyword(self, gen: SQLGenerator, gran: str) -> None:
+    def test_build_time_offset_no_interval_keyword(self, gen: SQLGenerator, gran: TimeUnit) -> None:
         """T-SQL must never emit INTERVAL (invalid syntax) for time offsets."""
         col = sqlglot.parse_one("created_at", dialect="tsql")
         sql = gen._build_time_offset_expr(col, -1, gran).sql(dialect="tsql")

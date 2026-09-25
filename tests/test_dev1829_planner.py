@@ -29,7 +29,7 @@ from tests._dev1739_fixtures import dev1739_models, gen, month_td
 
 def _bundle() -> ResolvedSourceBundle:
     models = dev1739_models()
-    return ResolvedSourceBundle(source_model=models[0], referenced_models=models[1:])
+    return ResolvedSourceBundle(dialect="postgres", source_model=models[0], referenced_models=models[1:])
 
 
 def _q(**kw) -> SlayerQuery:

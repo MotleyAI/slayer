@@ -44,6 +44,7 @@ async def exec_backend(request):
 def _bundle() -> ResolvedSourceBundle:
     models = dev1836_models()
     return ResolvedSourceBundle(
+        dialect="postgres",
         source_model=models[0], referenced_models=list(models[1:]),
     )
 

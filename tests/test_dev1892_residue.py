@@ -92,6 +92,7 @@ class TestResidueFiresAtPlanTime:
     def test_default_column_parameter_rejected_by_plan_query(self):
         models = dev1847_models()
         bundle = ResolvedSourceBundle(
+            dialect="sqlite",
             source_model=models[0], referenced_models=models[1:])
         query = sales_q(dimensions=["region"], measures=[ModelMeasure(
             formula=f"wavg({INNER_CR})", name="w")])

@@ -171,6 +171,7 @@ class TestJoinDiscoveryRootOnly:
         )
         host = _orders()
         bundle = ResolvedSourceBundle(
+            dialect="postgres",
             source_model=host, referenced_models=[host, _customers(), _regions()],
         )
         paths = collect_root_scope_joined_paths(
@@ -189,6 +190,7 @@ class TestJoinDiscoveryRootOnly:
         )
         host = _orders()
         bundle = ResolvedSourceBundle(
+            dialect="postgres",
             source_model=host, referenced_models=[host, _customers(), _regions()],
         )
         paths = collect_root_scope_joined_paths(

@@ -27,6 +27,7 @@ from tests._dev1750_fixtures import (
 
 def _bundle() -> ResolvedSourceBundle:
     return ResolvedSourceBundle(
+        dialect="postgres",
         source_model=orders_model(),
         referenced_models=[customers_model(), regions_model(), line_items_model()],
     )

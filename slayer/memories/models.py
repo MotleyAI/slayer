@@ -24,7 +24,7 @@ from typing import Any
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from slayer.core.query import SlayerQuery
-from slayer.storage.migrations import migrate as _migrate_schema
+from slayer.storage.migrations import CURRENT_VERSIONS, migrate as _migrate_schema
 
 
 def _utcnow() -> datetime:
@@ -86,7 +86,7 @@ class Memory(BaseModel):
     """A single agent memory: a note plus its canonical entity tags,
     optionally bundled with a ``SlayerQuery`` example."""
 
-    version: int = 2
+    version: int = CURRENT_VERSIONS["Memory"]
     id: str = ""
     learning: str
     description: str | None = None

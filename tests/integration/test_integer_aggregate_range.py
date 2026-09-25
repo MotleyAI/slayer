@@ -32,7 +32,7 @@ def integer_orders():
 
 
 def _sql(*, model, measures, referenced_models=(), **query_kwargs):
-    bundle = ResolvedSourceBundle(source_model=model, referenced_models=list(referenced_models))
+    bundle = ResolvedSourceBundle(dialect="duckdb", source_model=model, referenced_models=list(referenced_models))
     planned = plan_query(
         query=SlayerQuery.model_validate({"source_model": "orders", "measures": measures, **query_kwargs}),
         bundle=bundle,

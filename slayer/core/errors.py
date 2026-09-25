@@ -356,6 +356,10 @@ class AggregationNotAllowedError(SlayerError, ValueError):
         ))
 
 
+class AggregationArgumentError(SlayerError, ValueError):
+    """An aggregation argument, or declared parameter, that the rendered aggregation never reads."""
+
+
 class UnknownFunctionError(SlayerError, ValueError):
     """A Mode-B function call is not in the ``SCALAR_FUNCTIONS`` allowlist, transform registry, or model aggregation set (REST maps it to 400)."""
 

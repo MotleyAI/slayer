@@ -26,7 +26,7 @@ HEADLINE = ("customers.spend:weighted_avg("
 
 def _bundle1900():
     models = dev1900_models()
-    return ResolvedSourceBundle(source_model=models[0], referenced_models=models[1:])
+    return ResolvedSourceBundle(dialect="postgres", source_model=models[0], referenced_models=models[1:])
 
 
 def _assoc(planned):
@@ -102,6 +102,7 @@ class TestPresenceKeys:
             query=orders_q(dimensions=["customers.regions.unparseable"], measures=[CM],
                            to_many_handling="associate"),
             bundle=ResolvedSourceBundle(
+                dialect="postgres",
                 source_model=models[0], referenced_models=models[1:])))
         assert _present(att) == {(("orders",), "customer_id")}
 

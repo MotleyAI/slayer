@@ -156,7 +156,7 @@ class TestParallelNamedEdges:
         elab = elaborate_query(
             query=SlayerQuery(source_model="tk", measures=[
                 ModelMeasure(formula="sum(opener.score - closer.score)", name="m")]),
-            bundle=ResolvedSourceBundle(source_model=models[0], referenced_models=models[1:]))
+            bundle=ResolvedSourceBundle(dialect="postgres", source_model=models[0], referenced_models=models[1:]))
         aggs = [k for k in elab.terms if isinstance(k, AggregateKey)]
         assert len(aggs) == 1
         term = elab.terms[aggs[0]]

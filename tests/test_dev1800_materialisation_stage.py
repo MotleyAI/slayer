@@ -49,7 +49,7 @@ CM = "customers.spend:sum"
 # --------------------------------------------------------------------------- #
 def _bundle() -> ResolvedSourceBundle:
     models = dev1800_models()
-    return ResolvedSourceBundle(source_model=models[0], referenced_models=models[1:])
+    return ResolvedSourceBundle(dialect="postgres", source_model=models[0], referenced_models=models[1:])
 
 
 def _plan(*, source_model: str = "orders", **kw) -> PlannedQuery:
@@ -482,8 +482,9 @@ class TestGeneratorBelt:
 # --------------------------------------------------------------------------- #
 class TestTraversalContract:
     def test_opaque_kind_raises(self) -> None:
+        deps = _iter_slot_deps(object())  # pyright: ignore[reportArgumentType] — the opaque-kind rejection under test
         with pytest.raises(TypeError):
-            list(_iter_slot_deps(object()))  # pyright: ignore[reportArgumentType] — the opaque-kind rejection under test
+            list(deps)
 
     def test_aggregate_is_terminal(self) -> None:
         agg = _agg_key()

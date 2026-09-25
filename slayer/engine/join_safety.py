@@ -1,8 +1,8 @@
 """Join-arity safety: a hop is *provably many-to-one* iff, on its traversal
 orientation, its target-side columns cover a declared PK/unique set or its
 oriented cardinality is ``many_to_one``/``one_to_one``. Unknown = unsafe.
-Both orientations of every declared edge participate; proof is per orientation
-(DEV-1853), so one direction may be provably to-one while the other fans out."""
+Both orientations of every declared edge participate; proof is per orientation,
+so one direction may be provably to-one while the other fans out."""
 
 from __future__ import annotations
 
@@ -108,7 +108,7 @@ def safe_reachable(
     models_by_name: dict[str, SlayerModel],
 ) -> bool:
     """Is ``path`` a reachable chain of provably many-to-one hops from ``root``?
-    Any declared edge traverses in either orientation (DEV-1853); an unresolvable
+    Any declared edge traverses in either orientation; an unresolvable
     or revisiting hop fails the walk. Empty path is safe. An ambiguous hop raises."""
     try:
         chain = walk(root=root, path=path, models_by_name=models_by_name)
@@ -270,7 +270,7 @@ def _back_path(
     """Reverse path from the aggregate's root back to the host (per hop, the
     reverse token: edge name if declared, else source model; then reversed).
     Falls back to ``(host_name,)`` with no forward path; an ambiguous reverse hop
-    fails closed at walk time (DEV-1853 D5)."""
+    fails closed at walk time."""
     host_model = models_by_name.get(host_name)
     if host_model is None or not target_path:
         return (host_name,)
@@ -367,7 +367,7 @@ def key_attributable_from_root(
     host_model: SlayerModel, host_name: Optional[str] = None,
 ) -> bool:
     """Is every path in ``key``'s dependency closure attributable from the
-    aggregate's root (DEV-1900)? A derived reference is unattributable exactly
+    aggregate's root? A derived reference is unattributable exactly
     when its definition crosses a fanning hop; an unanalysable closure is
     unattributable (fail closed)."""
     closure = key_closure(
@@ -391,7 +391,7 @@ def key_broadcast_reason(
     host_model: SlayerModel, host_name: Optional[str] = None,
 ) -> str:
     """Why ``key`` broadcasts: the first path in its dependency closure not
-    attributable from the root names the fanning hop (DEV-1900) — so a derived
+    attributable from the root names the fanning hop — so a derived
     fanning dimension's warning names ``region_events``, not 'unreachable'."""
     closure = key_closure(
         key=key, anchor_model=host_model, anchor_relation=host_model.name,
@@ -475,7 +475,7 @@ def _hop_walk_reason(
     *, root_model: SlayerModel, path: Tuple[str, ...],
     models_by_name: Dict[str, SlayerModel],
 ) -> Optional[str]:
-    """Walk ``path`` from ``root_model`` (bidirectional, DEV-1853): the
+    """Walk ``path`` from ``root_model`` (bidirectional): the
     fanning/unproven-hop reason if the path resolves but a hop is not provably
     many-to-one, else ``None`` (an unresolvable/ambiguous path is unreachable)."""
     try:
@@ -525,7 +525,7 @@ def assert_partition_key_attributable(
     *, key: ValueKey, pk: ValueKey, label: str,
     scope: Union[ModelScope, StageSchema], bundle: ResolvedSourceBundle,
 ) -> None:
-    """A partition key whose dependency closure crosses a fanning hop is unattributable; the checker raises. Path-less keys are judged from the host (DEV-1911), path-bearing from the aggregate's root."""
+    """A partition key whose dependency closure crosses a fanning hop is unattributable; the checker raises. Path-less keys are judged from the host, path-bearing from the aggregate's root."""
     # StageSchema binds flat stage outputs — no join graph, so no fanning closure exists.
     host_m = scope.source_model if isinstance(scope, ModelScope) else None
     if host_m is None:
@@ -585,7 +585,7 @@ def grain_member_attributable(
     host_model: SlayerModel, host_name: Optional[str] = None,
 ) -> bool:
     """Is a grain member attributable from the aggregate's root? Every column it
-    references must be — judged on its dependency closure (DEV-1900) so a derived
+    references must be — judged on its dependency closure so a derived
     fanning reference is unattributable; every nested aggregate must be too."""
     saw = False
     for r in walk_value_keys(key):
@@ -619,11 +619,11 @@ def _grain_leaf_name(key: ValueKey) -> Optional[str]:
 def grain_determines(
     *, key: ValueKey, grain: Grain, host_model: SlayerModel,
     models_by_name: Dict[str, SlayerModel],
-    bundle: Optional[ResolvedSourceBundle] = None,
+    bundle: ResolvedSourceBundle,
 ) -> bool:
     """Does a dataset grain determine ``key`` (Axiom 1)? True iff ``key`` is a
     grain member, an aggregate whose ``partition_by=`` grain ⊆ the grain, or a
-    column whose every dependency-closure path (DEV-1900) is reached over provably
+    column whose every dependency-closure path is reached over provably
     to-one hops from a model the grain pins. A fanning or unanalysable closure is
     not determined."""
     if key in grain:
@@ -631,7 +631,7 @@ def grain_determines(
     if isinstance(key, AggregateKey):
         # Recursive: each partition key must itself be determined — a member, a
         # to-one column, or a nested aggregate whose grain is determined; an
-        # expression key only as an exact member (DEV-1859 decision 12).
+        # expression key only as an exact member.
         return key.partition_keys is not None and all(
             grain_determines(
                 key=pk, grain=grain, host_model=host_model,
@@ -640,11 +640,6 @@ def grain_determines(
             for pk in key.partition_keys)
     if not isinstance(key, (ColumnKey, ColumnSqlKey)):
         return False
-    if bundle is None:
-        # Callers without a resolved bundle (direct unit tests over plain keys)
-        # get a throwaway one from the model map; production always threads the
-        # real bundle, which alone carries a derived column's owning model.
-        bundle = ResolvedSourceBundle(referenced_models=list(models_by_name.values()))
     closure = key_closure(
         key=key, anchor_model=host_model, anchor_relation=host_model.name,
         bundle=bundle,
@@ -730,7 +725,7 @@ def crossing_local_root_predicate(
             and not source_anchor_path(k.source)
             # A host-locus wrap already compiles inline at the producer grain; its
             # attached parameter's crossing closure must not re-route it onto a
-            # host-rooted producer (DEV-1910 D6, as ``_local_broadcasts`` excludes).
+            # host-rooted producer (as ``_local_broadcasts`` excludes).
             and k.locus != "host"
             and window_kwarg_of(k) is None
             and k.agg not in RANKED_AGGREGATIONS

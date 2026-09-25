@@ -22,7 +22,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
-from slayer.storage.migrations import migrate as _migrate_schema
+from slayer.storage.migrations import CURRENT_VERSIONS, migrate as _migrate_schema
 
 
 EntityKind = Literal[
@@ -37,7 +37,7 @@ def _utcnow() -> datetime:
 class Embedding(BaseModel):
     """One persisted embedding row."""
 
-    version: int = 1
+    version: int = CURRENT_VERSIONS["Embedding"]
     canonical_id: str
     embedding_model_name: str
     entity_kind: EntityKind

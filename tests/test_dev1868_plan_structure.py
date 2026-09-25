@@ -24,13 +24,13 @@ from tests._dev1868_fixtures import CM_PART_TIER, LAST_TIER
 
 def _bundle36() -> ResolvedSourceBundle:
     models = dev1836_models()
-    return ResolvedSourceBundle(source_model=models[0],
+    return ResolvedSourceBundle(dialect="postgres", source_model=models[0],
                                 referenced_models=models[1:])
 
 
 def _bundle46() -> ResolvedSourceBundle:
     models = dev1846_models()
-    return ResolvedSourceBundle(source_model=models[0],
+    return ResolvedSourceBundle(dialect="postgres", source_model=models[0],
                                 referenced_models=models[1:])
 
 
