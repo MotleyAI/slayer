@@ -598,12 +598,23 @@ class TestBuilderCrossModelKwargPath:
             public_name="amount_weighted_avg",
             slot_type=DataType.DOUBLE,
         )
-        spec = _invoke(
+        orders = _orders_model()
+        customers = SlayerModel(
+            name="customers", data_source="prod", sql_table="customers",
+            columns=[
+                Column(name="id", type=DataType.INT, primary_key=True),
+                Column(name="quantity", type=DataType.INT),
+                Column(name="net_quantity", sql="quantity - 1", type=DataType.INT),
+            ],
+        )
+        spec = SQLGenerator(dialect="postgres")._build_agg_render_spec_from_planned(
             slot=slot,
             key=key,
-            source_model=_orders_model(),
+            source_model=orders,
             source_relation="orders",
             full_alias="orders.amount_weighted_avg",
+            bundle=ResolvedSourceBundle(
+                dialect="postgres", source_model=orders, referenced_models=[customers]),
         )
         assert spec is not None
 

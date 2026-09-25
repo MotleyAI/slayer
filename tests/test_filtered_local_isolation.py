@@ -13,6 +13,7 @@ import importlib
 import pytest
 
 from slayer.core.enums import DataType, JoinType, TimeGranularity
+from slayer.core.errors import UnanalyzableAggregationParameterError
 from slayer.core.keys import ColumnKey
 from slayer.core.models import (
     Aggregation,
@@ -619,11 +620,9 @@ class TestWidenedLaw3TriggerCrossingInputs:
         _, plans = _s5_plans("amount:scaled_sum(scale='amount * 2')")
         assert plans == []
 
-    def test_unparseable_template_fragment_does_not_trigger(self):
-        # Parity with the Column.filter scan: an unparseable fragment contributes
-        # no paths (defensive fallback), preserving pre-Stage-5 behavior.
-        _, plans = _s5_plans("amount:scaled_sum(scale='%% !! ((')")
-        assert plans == []
+    def test_unparseable_template_fragment_fails_at_binding(self):
+        with pytest.raises(UnanalyzableAggregationParameterError, match="scale"):
+            _s5_plans("amount:scaled_sum(scale='%% !! ((')")
 
     def test_crossing_dimension_only_does_not_trigger(self):
         # A joined dimension is Law-1 (base-pull); only aggregate inputs trigger Law-3.

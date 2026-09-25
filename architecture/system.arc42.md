@@ -123,10 +123,10 @@ All code, old and new, MUST obey these.
 11. **Versioned persistence**: models/queries/datasource configs carry
     `version`; migrations run automatically on load. [review]
 12. **Pydantic v2 for all models; never dataclasses.** [review]
-13. **The ValueKey union grows reluctantly**: a construct that traverses like an
-    existing key kind reuses it (reserved-name scalar, reserved-leaf
-    placeholder) rather than adding a union member — hand-rolled visitors are
-    fail-open on new kinds. [review]
+13. **One key kind per meaning**: a construct with an existing kind's shape and
+    meaning reuses it; anything else is a new kind, never a reserved name
+    bending an existing kind's contract. Every kind dispatch fails closed on a
+    kind it does not handle. [review]
 14. **Ingestion is idempotent and additive-only**: user metadata is never
     overwritten by a re-ingest (`source_kind` refresh is the one documented
     exception). [review]

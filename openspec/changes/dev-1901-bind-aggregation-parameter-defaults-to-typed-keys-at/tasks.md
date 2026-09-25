@@ -17,7 +17,7 @@
 
 - [x] 2.1 Add `SqlFragmentKey` to `slayer/core/keys.py` (ValueKey union, aggregate arg/kwarg union, `KIND_POLICY`, `model_rebuild`); verify 1.1 passes
 - [x] 2.2 Add `UnanalyzableAggregationParameterError(SlayerError)` to `slayer/core/errors.py`; canonical encoding arm for `SqlFragmentKey` + booleans in `slayer/core/refs.py` / `slayer/sql/naming.py`; verify 1.7
-- [ ] 2.3 Reword system P13 and add `[enforced: test:tests/test_law_param_text_bound.py]` to engine P1 exactly as approved; verify `poetry run python tools/arch_check.py`
+- [x] 2.3 Reword system P13 and add `[enforced: test:tests/test_law_param_text_bound.py]` to engine P1 exactly as approved; verify `poetry run python tools/arch_check.py`
 
 ## 3. Binder
 
@@ -38,5 +38,5 @@
 ## 6. Docs, goldens, gates
 
 - [x] 6.1 `docs/concepts/models.md` (lines ~307/309): one sentence each — `window` reserved; a default computes identically to (and shares) its explicit spelling; unanalysable default text fails when queried
-- [ ] 6.2 Re-bless goldens whose internal CTE / hidden-slot names changed (divergence protocol: review each diff is a naming-only change)
-- [ ] 6.3 Full unit suite, integration suite (CI invocation), ruff, basedpyright (no baseline growth), arch_check, `npx -y likec4@1.47.0 validate architecture`
+- [x] 6.2 Re-bless goldens whose internal CTE / hidden-slot names changed (divergence protocol: review each diff is a naming-only change)
+- [x] 6.3 Full unit suite, integration suite (CI invocation), ruff, basedpyright (no baseline growth), arch_check, `npx -y likec4@1.47.0 validate architecture`

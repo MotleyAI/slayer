@@ -191,7 +191,7 @@ def _parse(*, text: str, name: str, ctx: _Ctx) -> Expression:
         tree = cast(Expression, sqlglot.parse_one(
             prequote_reserved_identifiers(text, dialect=dialect), dialect=dialect))
     except (SqlglotError, ValueError) as e:
-        raise _unanalysable(text=text, name=name, ctx=ctx, reason=f"it does not parse: {e}") from e
+        raise _unanalysable(text=text, name=name, ctx=ctx, reason="it does not parse") from e
     bad = next((n for n in tree.walk() if isinstance(n, _UNANALYSABLE_NODES)), None)
     if bad is not None:
         kind = "an aggregate" if isinstance(bad, exp.AggFunc) else (
