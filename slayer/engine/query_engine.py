@@ -114,7 +114,6 @@ from slayer.engine.response_meta import (
 from slayer.sql.column_expansion import expand_derived_refs_sync
 from slayer.ir.source_bundle import ResolvedSourceBundle, model_from_stage_schema
 from slayer.engine.stage_ordering import topologically_order_stages
-from slayer.engine.compile.stages import _topo_sort
 from slayer.engine.plan import plan_stages
 from slayer.ir.variables import apply_variables_to_query
 from slayer.engine.introspect_utils import _safe_get_columns
@@ -1147,7 +1146,7 @@ class SlayerQueryEngine:
         # Collect + dedup payloads across every plan (nested subplans included).
         # ``plan_stages`` returns plans topo-ordered — align the stage list the
         # same way so each warning names its own stage.
-        ordered_stages = _topo_sort(stages) if len(stages) > 1 else stages
+        ordered_stages = topologically_order_stages(stages)
         broadcast_warnings = _collect_broadcast_warnings(
             planned_list=planned_list, stages=ordered_stages,
         )

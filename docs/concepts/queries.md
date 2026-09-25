@@ -292,6 +292,8 @@ length — the alias is rewritten on the way out and restored on the way back, s
 form, since that is what actually ran. See
 [Database support](../database-support.md#identifier-length-limits).
 
+An ill-typed query fails with a `QueryTypeError` subclass (a `ValueError`, e.g. `PartitionKeyError`) whose text is a `<ClassName>: <summary>` first line, then an optional `  at <subject>` line naming the offending measure, filter, dimension or transform, then an optional `  suggestion: <remedy>` line.
+
 ---
 
 ## Filters

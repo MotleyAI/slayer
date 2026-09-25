@@ -1076,7 +1076,7 @@ class TestDev1709SiblingProtection:
             await dev1709_env.execute(query=query)
         message = str(ei.value)
         assert "line_items" in message
-        assert "aggregate the target column directly" in message
+        assert "Aggregate the target column directly" in message
 
     async def test_local_first_last_sibling_protected(
         self, dev1709_env: SlayerQueryEngine,

@@ -638,8 +638,8 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
 
     def _validate_partition_keys(key: Union[AggregateKey, TransformKey]) -> Grain:
         label = (
-            f"Transform '{key.op}'" if isinstance(key, TransformKey)
-            else f"Aggregation '{key.agg}'"
+            f"transform {key.op!r}" if isinstance(key, TransformKey)
+            else f"aggregation {key.agg!r}"
         )
         lenient = (
             key in _dim_agg_keys and key not in _combined_consumer_keys

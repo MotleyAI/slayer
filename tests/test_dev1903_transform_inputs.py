@@ -61,8 +61,8 @@ BOOLEAN = "cannot consume a boolean-shaped predicate"
 
 
 def _row_leaf_op(msg: str) -> str:
-    assert _ledger_pattern(ROW_LEAF).fullmatch(msg), msg
-    m = re.match(r"Transform '(\w+)'", msg)
+    assert _ledger_pattern(ROW_LEAF).fullmatch(msg.removeprefix("TransformInputError: ")), msg
+    m = re.search(r"\n  at transform '(\w+)'", msg)
     assert m is not None, msg
     return m.group(1)
 
@@ -78,8 +78,8 @@ class TestMessagesMatchTheLedger:
         with pytest.raises(ValueError) as ei:
             _check(f"{op}(revenue:sum > 100)")
         msg = str(ei.value)
-        assert _ledger_pattern(BOOLEAN).fullmatch(msg), msg
-        assert msg.startswith(f"'{op}' ")
+        assert _ledger_pattern(BOOLEAN).fullmatch(msg.removeprefix("TransformInputError: ")), msg
+        assert f"\n  at transform '{op}'\n" in msg
 
     @pytest.mark.parametrize("formula", [
         "time_shift(revenue:sum > 100, -1)", "cumsum(revenue:sum > 100)",

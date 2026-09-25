@@ -18,7 +18,7 @@ import pytest
 import sqlglot
 from sqlglot import exp
 
-from slayer.core.errors import SlayerError
+from slayer.core.errors import SlayerError, TimeAxisError
 from slayer.core.keys import AggregateKey, TimeTruncKey, walk_value_keys
 from slayer.engine.elaborate import elaborate_query
 from slayer.engine.plan import plan_query
@@ -264,12 +264,12 @@ class TestTransformSourceRejections:
 
     async def test_transform_constituent_without_time_axis_fails(self):
         # The same time-axis error a dimension-position transform raises
-        # (check_dimension_temporal_axis → NotImplementedError), position-neutral.
+        # (check_dimension_temporal_axis → TimeAxisError), position-neutral.
         query = monthly_q(
             measures=[ModelMeasure(
                 formula="sum(cumsum(amount:sum(partition_by=region)))", name="m")],
             time_dimensions=month_td())
-        with pytest.raises(NotImplementedError, match="time axis"):
+        with pytest.raises(TimeAxisError, match="time axis"):
             await gen(query)
 
     async def test_axis_check_covers_filter_and_order_positions(self):
@@ -279,13 +279,13 @@ class TestTransformSourceRejections:
         filter_query = monthly_q(
             measures=[ModelMeasure(formula="amount:sum", name="s")],
             filters=[f"{axis_missing} > 5"], time_dimensions=month_td())
-        with pytest.raises(NotImplementedError, match="time axis"):
+        with pytest.raises(TimeAxisError, match="time axis"):
             await gen(filter_query)
         order_query = monthly_q(
             measures=[ModelMeasure(formula="amount:sum", name="s")],
             order=[{"column": axis_missing, "direction": "desc"}],
             time_dimensions=month_td())
-        with pytest.raises(NotImplementedError, match="time axis"):
+        with pytest.raises(TimeAxisError, match="time axis"):
             await gen(order_query)
 
     async def test_transform_in_scalar_call_aggregate_arg_needs_time_dim(self):

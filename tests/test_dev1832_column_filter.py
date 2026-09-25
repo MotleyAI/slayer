@@ -283,7 +283,7 @@ class TestFilteredLeafOnJoinedModel:
         query = orders_q(measures=[_measure("sum(amount - customers.bad_pop_spend)")])
         with pytest.raises(ValueError, match="unproven or fanning join hop") as ei:
             await gen(query)
-        assert "aggregate the target column directly" in str(ei.value)
+        assert "Aggregate the target column directly" in str(ei.value)
 
     async def test_fanning_filter_default_parameter_fails_closed(self) -> None:
         # A filtered PHYSICAL column (no sql) whose filter crosses the fanning hop,

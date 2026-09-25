@@ -186,13 +186,6 @@ class DerivedColumnCircularError(CircularJoinPathError):
         )
 
 
-class TimeDimensionColumnError(SlayerError, ValueError):
-    """A time dimension's column is non-temporal / untyped, or re-buckets to a granularity its upstream bucket does not nest into. Plain message (both variants pinned by the raise ledger)."""
-
-    def __init__(self, message: str) -> None:
-        super().__init__(message)
-
-
 class ModelSqlValidationError(SlayerError, ValueError):
     """Raw-``sql`` model source rejected by its reachable datasource at save time.
 
@@ -243,6 +236,143 @@ def _format_error_message(
     if suggestion:
         lines.append(f"  suggestion: {suggestion}")
     return "\n".join(lines)
+
+
+class QueryTypeError(SlayerError):
+    """Base of the checker's query type errors; only its concrete families are raised."""
+
+    def __init__(
+        self,
+        *,
+        summary: str,
+        location: str | None = None,
+        scope: str | None = None,
+        suggestion: str | None = None,
+        extras: List[Tuple[str, str]] | None = None,
+    ) -> None:
+        if type(self) is QueryTypeError:
+            raise TypeError("QueryTypeError is abstract; raise a concrete family class.")
+        self.summary = summary
+        self.location = location
+        self.scope = scope
+        self.suggestion = suggestion
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__, summary=summary, location=location,
+            scope=scope, suggestion=suggestion, extras=extras,
+        ))
+
+    def __reduce__(self):
+        return _rebuild_query_type_error, (type(self), self.args, self.__dict__)
+
+
+def _rebuild_query_type_error(cls: "type[QueryTypeError]", args: tuple, state: dict) -> QueryTypeError:
+    """Unpickle without re-running the keyword-only constructor."""
+    exc = cls.__new__(cls)
+    Exception.__init__(exc, *args)
+    exc.__dict__.update(state)
+    return exc
+
+
+class TimeAxisError(QueryTypeError):
+    """A time-ordered or windowed computation lacks a usable time axis."""
+
+
+class TimeDimensionColumnError(TimeAxisError):
+    """A time dimension's column is non-temporal, or re-buckets to a non-nesting granularity."""
+
+
+class WindowDurationError(QueryTypeError):
+    """A malformed ``window=`` duration."""
+
+
+class PartitionKeyError(QueryTypeError):
+    """A ``partition_by=`` key that does not resolve or is not attributable."""
+
+
+class UnsafeJoinInputError(QueryTypeError):
+    """An aggregate input read across an unproven or fanning join hop."""
+
+
+class UnanalyzableDependencyError(QueryTypeError):
+    """A dependency whose definition cannot be analysed for join hops."""
+
+
+class TransformInputError(QueryTypeError):
+    """A transform operand the transform cannot consume."""
+
+
+class ComputedDimensionError(QueryTypeError):
+    """A malformed computed (expression) dimension."""
+
+
+class AssociationError(QueryTypeError):
+    """Distinct-entity association that cannot be applied."""
+
+
+class ParameterGrainError(QueryTypeError):
+    """An aggregation parameter not determined by its operand grain."""
+
+
+class ReaggregationError(QueryTypeError):
+    """A re-aggregation the outer aggregation cannot express."""
+
+
+class NameCollisionError(QueryTypeError):
+    """Two names in one query that collide."""
+
+
+class DimensionTypeError(QueryTypeError):
+    """A column whose type cannot be grouped on."""
+
+
+class ModelFilterError(QueryTypeError):
+    """A model filter referencing something only a query filter may."""
+
+
+class PositionTypingError(QueryTypeError):
+    """A filter conjunct / order target is valid as neither field nor measure."""
+
+
+class DistinctDimensionValuesError(QueryTypeError):
+    """``distinct_dimension_values=False`` (raw rows) conflicts with an aggregation or an empty projection."""
+
+
+class DuplicateMeasureNameError(NameCollisionError):
+    """Two measures in one query declare the same explicit ``name``."""
+
+    def __init__(self, name: str, occurrences: List[str]) -> None:
+        self.name = name
+        self.occurrences = list(occurrences)
+        super().__init__(
+            summary="The measure name is declared more than once.",
+            location=f"measure {name!r}",
+            extras=[("occurrences", repr(self.occurrences))],
+        )
+
+
+class MeasureNameCollidesWithColumnError(NameCollisionError):
+    """A declared measure ``name`` matches a source column, so the alias-form filter would bind to the column."""
+
+    def __init__(self, name: str, model: str) -> None:
+        self.name = name
+        self.model = model
+        super().__init__(
+            summary=f"The declared measure name matches a source column on model {model!r}.",
+            location=f"measure {name!r}",
+        )
+
+
+class CanonicalAliasShadowsColumnError(NameCollisionError):
+    """A formula's canonical alias (``amount_sum`` for ``sum(amount)``) shadows a source column."""
+
+    def __init__(self, formula: str, canonical: str, model: str) -> None:
+        self.formula = formula
+        self.canonical = canonical
+        self.model = model
+        super().__init__(
+            summary=f"The canonical alias {canonical!r} shadows a source column on model {model!r}.",
+            location=f"measure {formula!r}",
+        )
 
 
 class UnknownReferenceError(SlayerError, ValueError):
@@ -407,50 +537,6 @@ class MeasureCycleError(SlayerError, ValueError):
         ))
 
 
-class DuplicateMeasureNameError(SlayerError, ValueError):
-    """Two measures in one query declare the same explicit ``name``."""
-
-    def __init__(self, name: str, occurrences: List[str]) -> None:
-        self.name = name
-        self.occurrences = list(occurrences)
-        super().__init__(_format_error_message(
-            cls_name=type(self).__name__,
-            summary=f"Measure name {name!r} is declared more than once.",
-            extras=[("occurrences", repr(self.occurrences))],
-        ))
-
-
-class MeasureNameCollidesWithColumnError(SlayerError, ValueError):
-    """A declared measure ``name`` matches a source column, so the alias-form filter would bind to the column, not the aggregate."""
-
-    def __init__(self, name: str, model: str) -> None:
-        self.name = name
-        self.model = model
-        super().__init__(_format_error_message(
-            cls_name=type(self).__name__,
-            summary=(
-                f"Declared measure name {name!r} matches a source column on "
-                f"model {model!r}."
-            ),
-        ))
-
-
-class CanonicalAliasShadowsColumnError(SlayerError, ValueError):
-    """A formula's canonical alias (``amount_sum`` for ``sum(amount)``) shadows a source column on the same model."""
-
-    def __init__(self, formula: str, canonical: str, model: str) -> None:
-        self.formula = formula
-        self.canonical = canonical
-        self.model = model
-        super().__init__(_format_error_message(
-            cls_name=type(self).__name__,
-            summary=(
-                f"Canonical alias {canonical!r} for formula {formula!r} "
-                f"shadows a source column on model {model!r}."
-            ),
-        ))
-
-
 class BroadcastGrainWarning(UserWarning):
     """A cross-model aggregate's implicit grain lost a dimension (not attributable from its root) to broadcasting; result grain unchanged. Visibility warning, not an error."""
 
@@ -600,16 +686,8 @@ class ForcedFilterError(SlayerError):
         super().__init__(message)
 
 
-class DistinctDimensionValuesError(SlayerError, ValueError):
-    """``distinct_dimension_values=False`` (raw rows, no top-level ``GROUP BY``) conflicts with any aggregation or a query with no projected columns."""
-
-
 class GranularityCallError(SlayerError, ValueError):
     """A functional ``gran(col)`` query entry is malformed or unresolvable: wrong-shape granularity call, an unknown ``name(col)`` dimension, a bare ``time_dimensions`` string, a same-column+granularity metadata conflict, or an order key with no matching projected time dimension."""
-
-
-class PositionTypingError(SlayerError, ValueError):
-    """A filter conjunct / order target is valid as neither field nor measure; names both failed typings."""
 
 
 class UnresolvableOrderColumnError(SlayerError, ValueError):

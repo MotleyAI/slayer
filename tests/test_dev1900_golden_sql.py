@@ -91,12 +91,7 @@ async def _generate_one(case, dialect: str):
         return record_raise(exc)
 
 
-ALLOWED_DELTAS: dict[str, str] = {
-    f"fanning/cross_model_kwarg::{d}": (
-        "DEV-1919 D5: the argument-leaf message naming bad_pop and its hop "
-        "region_events now precedes the hop-only closure message")
-    for d in DIALECTS
-}
+ALLOWED_DELTAS: dict[str, str] = {}
 
 bind_golden_tests(
     namespace=globals(),

@@ -78,11 +78,10 @@ models alongside.
    `children()` / `map_children()` protocol so generic walkers and rewriters
    cover new kinds the day they are added; deliberately asymmetric visitors
    keep explicit dispatch with a fail-closed raise tail. [review]
-4. **Errors are typed, with a stable format**: the intentional-failure
-   vocabulary is `SlayerError` subclasses, distinguishable from driver/IO
-   errors; the stage-5 resolution family renders via `_format_error_message` —
-   a class-name-prefixed first line binding tests and greps to a stable
-   prefix, plus optional input/scope/suggestion lines. [review]
+4. **Errors are typed, with a stable format**: intentional failures are
+   `SlayerError` subclasses rendered via `_format_error_message`
+   [target: DEV-1969]; the checker's `QueryTypeError` family already is.
+   [enforced: test:tests/test_dev1871_raise_parity.py]
 5. **Warnings are structured payloads, surfaced twice**: degradations emit
    payload-carrying warnings that appear both as Python warnings and on
    `SlayerResponse.warnings` — never only a log line. [review]

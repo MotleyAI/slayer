@@ -1,23 +1,12 @@
-"""DEV-1452 Stage B — migrated ``_expand_query_backed_model`` +
-``_validate_and_populate_cache`` + ``get_column_types`` on the typed pipeline.
+"""Query-backed expansion on the typed pipeline: ``_expand_query_backed_model``,
+``_validate_and_populate_cache`` and ``get_column_types``.
 
-These tests pin the invariants Stage B's migration MUST preserve and the
-behavioural breaks it INTENDS:
-
-* Stored ``source_queries`` topo-sort acceptance (Kahn) — replaces the
-  legacy strict-top-to-bottom convention with a fault-tolerance contract.
-* Virtual-model column TYPES from typed-plan slot types (decision #2).
-* Virtual-model columns are PUBLIC slots only (decision #3).
-* ``SourceModelOrigin`` / ``agg_column_names`` dropped (decision D).
+* Stored ``source_queries`` are topo-sorted (Kahn), not required top-to-bottom.
+* Virtual-model columns are the PUBLIC slots only, typed from typed-plan slot types.
 * Per-stage normalize + variable substitution mirror ``_execute_pipeline``.
-* Shared ``expand_query_backed_models_in_bundle`` helper handles nested
-  query-backed join targets, query-backed stage sources, and the root
-  ``ModelExtension`` overlay re-apply (decision F).
-* ``get_column_types`` renders its probe through ``generate_planned_stages``
-  (DEV-1703: was "does not call ``SQLGenerator.generate(enriched=...)``";
-  that entry point no longer exists, so the positive form is what is pinned).
-* The two ContextVars (``_join_target_resolving_var`` /
-  ``_forbidden_sibling_refs_var``) are NEVER touched by the migrated path.
+* ``expand_query_backed_models_in_bundle`` handles nested query-backed join
+  targets, query-backed stage sources, and the root ``ModelExtension`` overlay.
+* ``get_column_types`` renders its probe through ``generate_planned_stages``.
 """
 from __future__ import annotations
 
@@ -647,19 +636,7 @@ class TestGetColumnTypesTypedPipeline:
         assert types["amount_sum"], types["amount_sum"]
 
     async def test_get_column_types_renders_via_generate_planned_stages(self) -> None:
-        """Spy on ``generate_planned_stages`` and assert the query-backed
-        probe path renders through it.
-
-        (Was ``test_get_column_types_makes_zero_legacy_generate_calls``,
-        which patched ``SQLGenerator.generate`` with an
-        ``AssertionError`` side effect to prove the legacy probe path was
-        never taken. DEV-1703 deletes that entry point, so the negative
-        form is unpatchable — ``patch.object`` has no attribute left to
-        replace — and vacuous. Stage B's migration replaced the legacy
-        probe path with ``plan_stages + generate_planned_stages``, so the
-        positive half of the same contract is pinned instead: the probe
-        for a query-backed model goes through the planned-stage renderer.)
-        """
+        """The query-backed probe path renders through ``generate_planned_stages``."""
         # Save a real query-backed model so the prelude branch runs too.
         m = SlayerModel(
             name="qb_for_types",
@@ -705,13 +682,6 @@ class TestGetColumnTypesTypedPipeline:
 # ---------------------------------------------------------------------------
 
 
-# DEV-1485 Stage D: ``_TrackingContextVar`` + ``TestContextVarSafety`` were
-# deleted here. They pinned that the migrated path never set or read the two
-# legacy ContextVars (``_join_target_resolving_var`` /
-# ``_forbidden_sibling_refs_var``) while the legacy query-backed wrap still
-# used them. Both ContextVars are now gone with the legacy enrichment stack,
-# so there is no longer anything the migrated path could touch -- the
-# property is structural, not a behaviour needing a regression guard.
 
 
 
@@ -724,7 +694,7 @@ class TestInlineNestedSourceQueriesIntegrated:
     """Decision E end-to-end — inline nested ``SlayerModel.source_queries``
     contributes to ordering when the outer model is saved / executed.
 
-    The recursive ``_extract_sibling_refs`` walk catches edges hidden
+    The recursive ``stage_sibling_reads`` walk catches edges hidden
     inside inline nested ``source_queries`` so cycles + forward refs are
     flagged at save time. End-to-end execution of inline-nested stages
     that reference outer siblings is a separate concern (the inline
@@ -1170,8 +1140,7 @@ class TestWrapperAliasShapes:
         self,
     ) -> None:
         """``customers.revenue:percentile(p=0.5)`` (cross-model parametric)
-        flattens to ``customers__revenue_percentile_p_0_5`` (decision B —
-        the wrapper helper preserves the kwarg suffix per DEV-1450).
+        flattens to ``customers__revenue_percentile_p_0_5`` (the wrapper keeps the kwarg suffix).
         """
         orders_with_join = _orders_model().model_copy(update={
             "joins": [ModelJoin(
@@ -1232,7 +1201,7 @@ class TestWrapperAliasShapes:
             saved = await engine.save_model(m)
             by_name = {c.name: c for c in saved.columns}
             assert "customers__name" in by_name, set(by_name)
-            # DEV-1452 / Codex — a joined (dotted) dimension must persist the
+            # A joined (dotted) dimension must persist the
             # TARGET column's type. Before the fix ``_type_for_dimension``
             # returned None for dotted refs and ``_query_as_model`` coerced
             # the slot to DOUBLE, mistyping joined string / temporal dims.

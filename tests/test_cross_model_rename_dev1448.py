@@ -526,7 +526,7 @@ class TestCrossModelRenameCollisionGuards:
                 ModelMeasure(formula="customers.id:count_distinct", name="metric"),
             ],
         )
-        with pytest.raises(ValueError, match=r"'metric' is declared more than once"):
+        with pytest.raises(ValueError, match=r"declared more than once\.\n  at measure 'metric'"):
             await engine.execute(query=query, dry_run=True)
 
     async def test_cross_model_star_count_vs_renamed_sibling_stay_distinct(
@@ -578,7 +578,7 @@ class TestCrossModelRenameCollisionGuards:
             ],
         )
         with pytest.raises(
-            ValueError, match=r"'customers__region_id' is declared more than once",
+            ValueError, match=r"declared more than once\.\n  at measure 'customers__region_id'",
         ):
             await engine.execute(query=query, dry_run=True)
 

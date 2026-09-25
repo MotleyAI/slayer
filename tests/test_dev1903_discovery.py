@@ -324,7 +324,7 @@ class TestDeletedSymbols:
 
 _R = "avg(sum(amount, partition_by=[city, region]), partition_by=region)"
 _RLEVEL = {"expression": f"CASE WHEN {_R} > 50 THEN 'hi' ELSE 'lo' END", "name": "rlevel"}
-_NOT_A_DIM = "Aggregation 'avg': partition_by column 'region' is not a query dimension"
+_NOT_A_DIM = "The partition_by column 'region' is not a query dimension.\n  at aggregation 'avg'"
 _REAGG_DECLARES = "declares partition_by=region, which is not a query dimension"
 
 

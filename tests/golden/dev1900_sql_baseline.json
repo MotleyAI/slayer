@@ -1,59 +1,59 @@
 {
   "fanning/cross_model_kwarg::bigquery": {
-    "error": "ValueError",
-    "message": "Cross-model aggregate 'customers.spend_weighted_avg_weight_customers_regions_bad_pop' ranks/reads by bad_pop, which is not attributable from customers (crosses a fanning or unproven join hop to region_events); declare join cardinality or a covering unique key on the target."
+    "error": "UnsafeJoinInputError",
+    "message": "UnsafeJoinInputError: The cross-model aggregate ranks/reads by bad_pop, which is not attributable from customers (crosses a fanning or unproven join hop to region_events).\n  at measure 'customers.spend_weighted_avg_weight_customers_regions_bad_pop'\n  suggestion: Declare join cardinality or a covering unique key on the target."
   },
   "fanning/cross_model_kwarg::duckdb": {
-    "error": "ValueError",
-    "message": "Cross-model aggregate 'customers.spend_weighted_avg_weight_customers_regions_bad_pop' ranks/reads by bad_pop, which is not attributable from customers (crosses a fanning or unproven join hop to region_events); declare join cardinality or a covering unique key on the target."
+    "error": "UnsafeJoinInputError",
+    "message": "UnsafeJoinInputError: The cross-model aggregate ranks/reads by bad_pop, which is not attributable from customers (crosses a fanning or unproven join hop to region_events).\n  at measure 'customers.spend_weighted_avg_weight_customers_regions_bad_pop'\n  suggestion: Declare join cardinality or a covering unique key on the target."
   },
   "fanning/cross_model_kwarg::mysql": {
-    "error": "ValueError",
-    "message": "Cross-model aggregate 'customers.spend_weighted_avg_weight_customers_regions_bad_pop' ranks/reads by bad_pop, which is not attributable from customers (crosses a fanning or unproven join hop to region_events); declare join cardinality or a covering unique key on the target."
+    "error": "UnsafeJoinInputError",
+    "message": "UnsafeJoinInputError: The cross-model aggregate ranks/reads by bad_pop, which is not attributable from customers (crosses a fanning or unproven join hop to region_events).\n  at measure 'customers.spend_weighted_avg_weight_customers_regions_bad_pop'\n  suggestion: Declare join cardinality or a covering unique key on the target."
   },
   "fanning/cross_model_kwarg::postgres": {
-    "error": "ValueError",
-    "message": "Cross-model aggregate 'customers.spend_weighted_avg_weight_customers_regions_bad_pop' ranks/reads by bad_pop, which is not attributable from customers (crosses a fanning or unproven join hop to region_events); declare join cardinality or a covering unique key on the target."
+    "error": "UnsafeJoinInputError",
+    "message": "UnsafeJoinInputError: The cross-model aggregate ranks/reads by bad_pop, which is not attributable from customers (crosses a fanning or unproven join hop to region_events).\n  at measure 'customers.spend_weighted_avg_weight_customers_regions_bad_pop'\n  suggestion: Declare join cardinality or a covering unique key on the target."
   },
   "fanning/cross_model_kwarg::snowflake": {
-    "error": "ValueError",
-    "message": "Cross-model aggregate 'customers.spend_weighted_avg_weight_customers_regions_bad_pop' ranks/reads by bad_pop, which is not attributable from customers (crosses a fanning or unproven join hop to region_events); declare join cardinality or a covering unique key on the target."
+    "error": "UnsafeJoinInputError",
+    "message": "UnsafeJoinInputError: The cross-model aggregate ranks/reads by bad_pop, which is not attributable from customers (crosses a fanning or unproven join hop to region_events).\n  at measure 'customers.spend_weighted_avg_weight_customers_regions_bad_pop'\n  suggestion: Declare join cardinality or a covering unique key on the target."
   },
   "fanning/cross_model_kwarg::sqlite": {
-    "error": "ValueError",
-    "message": "Cross-model aggregate 'customers.spend_weighted_avg_weight_customers_regions_bad_pop' ranks/reads by bad_pop, which is not attributable from customers (crosses a fanning or unproven join hop to region_events); declare join cardinality or a covering unique key on the target."
+    "error": "UnsafeJoinInputError",
+    "message": "UnsafeJoinInputError: The cross-model aggregate ranks/reads by bad_pop, which is not attributable from customers (crosses a fanning or unproven join hop to region_events).\n  at measure 'customers.spend_weighted_avg_weight_customers_regions_bad_pop'\n  suggestion: Declare join cardinality or a covering unique key on the target."
   },
   "fanning/cross_model_kwarg::tsql": {
-    "error": "ValueError",
-    "message": "Cross-model aggregate 'customers.spend_weighted_avg_weight_customers_regions_bad_pop' ranks/reads by bad_pop, which is not attributable from customers (crosses a fanning or unproven join hop to region_events); declare join cardinality or a covering unique key on the target."
+    "error": "UnsafeJoinInputError",
+    "message": "UnsafeJoinInputError: The cross-model aggregate ranks/reads by bad_pop, which is not attributable from customers (crosses a fanning or unproven join hop to region_events).\n  at measure 'customers.spend_weighted_avg_weight_customers_regions_bad_pop'\n  suggestion: Declare join cardinality or a covering unique key on the target."
   },
   "fanning/definition_default::bigquery": {
-    "error": "ValueError",
-    "message": "Cross-model aggregate 'customers.spend_wsumx' reads an input across an unproven join hop to region_events from customers; declare join cardinality or a covering unique key on the target."
+    "error": "UnsafeJoinInputError",
+    "message": "UnsafeJoinInputError: The cross-model aggregate reads an input across an unproven join hop to region_events from customers.\n  at measure 'customers.spend_wsumx'\n  suggestion: Declare join cardinality or a covering unique key on the target."
   },
   "fanning/definition_default::duckdb": {
-    "error": "ValueError",
-    "message": "Cross-model aggregate 'customers.spend_wsumx' reads an input across an unproven join hop to region_events from customers; declare join cardinality or a covering unique key on the target."
+    "error": "UnsafeJoinInputError",
+    "message": "UnsafeJoinInputError: The cross-model aggregate reads an input across an unproven join hop to region_events from customers.\n  at measure 'customers.spend_wsumx'\n  suggestion: Declare join cardinality or a covering unique key on the target."
   },
   "fanning/definition_default::mysql": {
-    "error": "ValueError",
-    "message": "Cross-model aggregate 'customers.spend_wsumx' reads an input across an unproven join hop to region_events from customers; declare join cardinality or a covering unique key on the target."
+    "error": "UnsafeJoinInputError",
+    "message": "UnsafeJoinInputError: The cross-model aggregate reads an input across an unproven join hop to region_events from customers.\n  at measure 'customers.spend_wsumx'\n  suggestion: Declare join cardinality or a covering unique key on the target."
   },
   "fanning/definition_default::postgres": {
-    "error": "ValueError",
-    "message": "Cross-model aggregate 'customers.spend_wsumx' reads an input across an unproven join hop to region_events from customers; declare join cardinality or a covering unique key on the target."
+    "error": "UnsafeJoinInputError",
+    "message": "UnsafeJoinInputError: The cross-model aggregate reads an input across an unproven join hop to region_events from customers.\n  at measure 'customers.spend_wsumx'\n  suggestion: Declare join cardinality or a covering unique key on the target."
   },
   "fanning/definition_default::snowflake": {
-    "error": "ValueError",
-    "message": "Cross-model aggregate 'customers.spend_wsumx' reads an input across an unproven join hop to region_events from customers; declare join cardinality or a covering unique key on the target."
+    "error": "UnsafeJoinInputError",
+    "message": "UnsafeJoinInputError: The cross-model aggregate reads an input across an unproven join hop to region_events from customers.\n  at measure 'customers.spend_wsumx'\n  suggestion: Declare join cardinality or a covering unique key on the target."
   },
   "fanning/definition_default::sqlite": {
-    "error": "ValueError",
-    "message": "Cross-model aggregate 'customers.spend_wsumx' reads an input across an unproven join hop to region_events from customers; declare join cardinality or a covering unique key on the target."
+    "error": "UnsafeJoinInputError",
+    "message": "UnsafeJoinInputError: The cross-model aggregate reads an input across an unproven join hop to region_events from customers.\n  at measure 'customers.spend_wsumx'\n  suggestion: Declare join cardinality or a covering unique key on the target."
   },
   "fanning/definition_default::tsql": {
-    "error": "ValueError",
-    "message": "Cross-model aggregate 'customers.spend_wsumx' reads an input across an unproven join hop to region_events from customers; declare join cardinality or a covering unique key on the target."
+    "error": "UnsafeJoinInputError",
+    "message": "UnsafeJoinInputError: The cross-model aggregate reads an input across an unproven join hop to region_events from customers.\n  at measure 'customers.spend_wsumx'\n  suggestion: Declare join cardinality or a covering unique key on the target."
   },
   "fanning/dim_error_mode::bigquery": {
     "error": "SlayerError",
@@ -84,32 +84,32 @@
     "message": "error mode: metric 'amt' would broadcast across unattributable dimension(s) customers__regions__bad_pop (crosses a fanning or unproven join hop to region_events); declare join cardinality, a covering unique key, switch to to_many_handling='associate', or remove the dimension."
   },
   "fanning/local_kwarg::bigquery": {
-    "error": "ValueError",
-    "message": "Aggregate 'amount_weighted_avg_weight_customers_regions_bad_pop' reads an input across an unproven join hop to region_events from orders; declare join cardinality or a covering unique key on the target."
+    "error": "UnsafeJoinInputError",
+    "message": "UnsafeJoinInputError: The aggregate reads an input across an unproven join hop to region_events from orders.\n  at measure 'amount_weighted_avg_weight_customers_regions_bad_pop'\n  suggestion: Declare join cardinality or a covering unique key on the target."
   },
   "fanning/local_kwarg::duckdb": {
-    "error": "ValueError",
-    "message": "Aggregate 'amount_weighted_avg_weight_customers_regions_bad_pop' reads an input across an unproven join hop to region_events from orders; declare join cardinality or a covering unique key on the target."
+    "error": "UnsafeJoinInputError",
+    "message": "UnsafeJoinInputError: The aggregate reads an input across an unproven join hop to region_events from orders.\n  at measure 'amount_weighted_avg_weight_customers_regions_bad_pop'\n  suggestion: Declare join cardinality or a covering unique key on the target."
   },
   "fanning/local_kwarg::mysql": {
-    "error": "ValueError",
-    "message": "Aggregate 'amount_weighted_avg_weight_customers_regions_bad_pop' reads an input across an unproven join hop to region_events from orders; declare join cardinality or a covering unique key on the target."
+    "error": "UnsafeJoinInputError",
+    "message": "UnsafeJoinInputError: The aggregate reads an input across an unproven join hop to region_events from orders.\n  at measure 'amount_weighted_avg_weight_customers_regions_bad_pop'\n  suggestion: Declare join cardinality or a covering unique key on the target."
   },
   "fanning/local_kwarg::postgres": {
-    "error": "ValueError",
-    "message": "Aggregate 'amount_weighted_avg_weight_customers_regions_bad_pop' reads an input across an unproven join hop to region_events from orders; declare join cardinality or a covering unique key on the target."
+    "error": "UnsafeJoinInputError",
+    "message": "UnsafeJoinInputError: The aggregate reads an input across an unproven join hop to region_events from orders.\n  at measure 'amount_weighted_avg_weight_customers_regions_bad_pop'\n  suggestion: Declare join cardinality or a covering unique key on the target."
   },
   "fanning/local_kwarg::snowflake": {
-    "error": "ValueError",
-    "message": "Aggregate 'amount_weighted_avg_weight_customers_regions_bad_pop' reads an input across an unproven join hop to region_events from orders; declare join cardinality or a covering unique key on the target."
+    "error": "UnsafeJoinInputError",
+    "message": "UnsafeJoinInputError: The aggregate reads an input across an unproven join hop to region_events from orders.\n  at measure 'amount_weighted_avg_weight_customers_regions_bad_pop'\n  suggestion: Declare join cardinality or a covering unique key on the target."
   },
   "fanning/local_kwarg::sqlite": {
-    "error": "ValueError",
-    "message": "Aggregate 'amount_weighted_avg_weight_customers_regions_bad_pop' reads an input across an unproven join hop to region_events from orders; declare join cardinality or a covering unique key on the target."
+    "error": "UnsafeJoinInputError",
+    "message": "UnsafeJoinInputError: The aggregate reads an input across an unproven join hop to region_events from orders.\n  at measure 'amount_weighted_avg_weight_customers_regions_bad_pop'\n  suggestion: Declare join cardinality or a covering unique key on the target."
   },
   "fanning/local_kwarg::tsql": {
-    "error": "ValueError",
-    "message": "Aggregate 'amount_weighted_avg_weight_customers_regions_bad_pop' reads an input across an unproven join hop to region_events from orders; declare join cardinality or a covering unique key on the target."
+    "error": "UnsafeJoinInputError",
+    "message": "UnsafeJoinInputError: The aggregate reads an input across an unproven join hop to region_events from orders.\n  at measure 'amount_weighted_avg_weight_customers_regions_bad_pop'\n  suggestion: Declare join cardinality or a covering unique key on the target."
   },
   "fanning/pop_filter_derived::bigquery": "SELECT\n  CAST(SUM(orders.amount) AS FLOAT64) AS `orders___amt`\nFROM orders AS orders\nWHERE\n  EXISTS(\n    SELECT\n      1\n    FROM customers AS customers\n    INNER JOIN regions AS customers__regions\n      ON customers.region_id = customers__regions.id\n    INNER JOIN region_events AS customers__regions__region_events\n      ON customers__regions.id = customers__regions__region_events.region_id\n    WHERE\n      orders.customer_id = customers.id\n      AND CAST(customers__regions.pop + customers__regions__region_events.value AS FLOAT64) > 0\n  )",
   "fanning/pop_filter_derived::duckdb": "SELECT\n  CAST(SUM(orders.amount) AS DOUBLE) AS \"orders.amt\"\nFROM orders AS orders\nWHERE\n  EXISTS(\n    SELECT\n      1\n    FROM customers AS customers\n    INNER JOIN regions AS customers__regions\n      ON customers.region_id = customers__regions.id\n    INNER JOIN region_events AS customers__regions__region_events\n      ON customers__regions.id = customers__regions__region_events.region_id\n    WHERE\n      orders.customer_id = customers.id\n      AND CAST(customers__regions.pop + customers__regions__region_events.value AS DOUBLE) > 0\n  )",
@@ -119,32 +119,32 @@
   "fanning/pop_filter_derived::sqlite": "SELECT\n  CAST(SUM(orders.amount) AS REAL) AS \"orders.amt\"\nFROM orders AS orders\nWHERE\n  EXISTS(\n    SELECT\n      1\n    FROM customers AS customers\n    INNER JOIN regions AS customers__regions\n      ON customers.region_id = customers__regions.id\n    INNER JOIN region_events AS customers__regions__region_events\n      ON customers__regions.id = customers__regions__region_events.region_id\n    WHERE\n      orders.customer_id = customers.id\n      AND CAST(customers__regions.pop + customers__regions__region_events.value AS REAL) > 0\n  )",
   "fanning/pop_filter_derived::tsql": "SELECT\n  CAST(SUM(orders.amount) AS FLOAT) AS [orders___amt]\nFROM orders AS orders\nWHERE\n  EXISTS(\n    SELECT\n      1\n    FROM customers AS customers\n    INNER JOIN regions AS customers__regions\n      ON customers.region_id = customers__regions.id\n    INNER JOIN region_events AS customers__regions__region_events\n      ON customers__regions.id = customers__regions__region_events.region_id\n    WHERE\n      orders.customer_id = customers.id\n      AND CAST(customers__regions.pop + customers__regions__region_events.value AS FLOAT) > 0\n  )",
   "fanning/reagg_param::bigquery": {
-    "error": "SlayerError",
-    "message": "Aggregation 'w' parameter 'weight' is not determined by the operand grain (customers__regions__id); the aggregation reads one value per cell of that grain. Aggregate the parameter to that grain, or add its determining keys to the operand's partition_by=."
+    "error": "ParameterGrainError",
+    "message": "ParameterGrainError: Parameter 'weight' is not determined by the operand grain (customers__regions__id); the aggregation reads one value per cell of that grain.\n  at measure 'w'\n  suggestion: Aggregate the parameter to that grain, or add its determining keys to the operand's partition_by=."
   },
   "fanning/reagg_param::duckdb": {
-    "error": "SlayerError",
-    "message": "Aggregation 'w' parameter 'weight' is not determined by the operand grain (customers__regions__id); the aggregation reads one value per cell of that grain. Aggregate the parameter to that grain, or add its determining keys to the operand's partition_by=."
+    "error": "ParameterGrainError",
+    "message": "ParameterGrainError: Parameter 'weight' is not determined by the operand grain (customers__regions__id); the aggregation reads one value per cell of that grain.\n  at measure 'w'\n  suggestion: Aggregate the parameter to that grain, or add its determining keys to the operand's partition_by=."
   },
   "fanning/reagg_param::mysql": {
-    "error": "SlayerError",
-    "message": "Aggregation 'w' parameter 'weight' is not determined by the operand grain (customers__regions__id); the aggregation reads one value per cell of that grain. Aggregate the parameter to that grain, or add its determining keys to the operand's partition_by=."
+    "error": "ParameterGrainError",
+    "message": "ParameterGrainError: Parameter 'weight' is not determined by the operand grain (customers__regions__id); the aggregation reads one value per cell of that grain.\n  at measure 'w'\n  suggestion: Aggregate the parameter to that grain, or add its determining keys to the operand's partition_by=."
   },
   "fanning/reagg_param::postgres": {
-    "error": "SlayerError",
-    "message": "Aggregation 'w' parameter 'weight' is not determined by the operand grain (customers__regions__id); the aggregation reads one value per cell of that grain. Aggregate the parameter to that grain, or add its determining keys to the operand's partition_by=."
+    "error": "ParameterGrainError",
+    "message": "ParameterGrainError: Parameter 'weight' is not determined by the operand grain (customers__regions__id); the aggregation reads one value per cell of that grain.\n  at measure 'w'\n  suggestion: Aggregate the parameter to that grain, or add its determining keys to the operand's partition_by=."
   },
   "fanning/reagg_param::snowflake": {
-    "error": "SlayerError",
-    "message": "Aggregation 'w' parameter 'weight' is not determined by the operand grain (customers__regions__id); the aggregation reads one value per cell of that grain. Aggregate the parameter to that grain, or add its determining keys to the operand's partition_by=."
+    "error": "ParameterGrainError",
+    "message": "ParameterGrainError: Parameter 'weight' is not determined by the operand grain (customers__regions__id); the aggregation reads one value per cell of that grain.\n  at measure 'w'\n  suggestion: Aggregate the parameter to that grain, or add its determining keys to the operand's partition_by=."
   },
   "fanning/reagg_param::sqlite": {
-    "error": "SlayerError",
-    "message": "Aggregation 'w' parameter 'weight' is not determined by the operand grain (customers__regions__id); the aggregation reads one value per cell of that grain. Aggregate the parameter to that grain, or add its determining keys to the operand's partition_by=."
+    "error": "ParameterGrainError",
+    "message": "ParameterGrainError: Parameter 'weight' is not determined by the operand grain (customers__regions__id); the aggregation reads one value per cell of that grain.\n  at measure 'w'\n  suggestion: Aggregate the parameter to that grain, or add its determining keys to the operand's partition_by=."
   },
   "fanning/reagg_param::tsql": {
-    "error": "SlayerError",
-    "message": "Aggregation 'w' parameter 'weight' is not determined by the operand grain (customers__regions__id); the aggregation reads one value per cell of that grain. Aggregate the parameter to that grain, or add its determining keys to the operand's partition_by=."
+    "error": "ParameterGrainError",
+    "message": "ParameterGrainError: Parameter 'weight' is not determined by the operand grain (customers__regions__id); the aggregation reads one value per cell of that grain.\n  at measure 'w'\n  suggestion: Aggregate the parameter to that grain, or add its determining keys to the operand's partition_by=."
   },
   "positive/assoc_region_name::bigquery": "WITH _base AS (\n  SELECT\n    customers__regions.name AS `orders___customers___regions___name`,\n    CAST(SUM(orders.amount) AS FLOAT64) AS `orders___amt`\n  FROM orders AS orders\n  LEFT JOIN customers AS customers\n    ON orders.customer_id = customers.id\n  LEFT JOIN regions AS customers__regions\n    ON customers.region_id = customers__regions.id\n  GROUP BY\n    customers__regions.name\n), _cm_orders__customers__spend_sum AS (\n  SELECT\n    regions.name AS `customers___regions___name`,\n    CAST(SUM(customers.spend) AS FLOAT64) AS `customers___spend_sum`\n  FROM customers AS customers\n  LEFT JOIN regions AS regions\n    ON customers.region_id = regions.id\n  GROUP BY\n    regions.name\n)\nSELECT\n  _base.`orders___customers___regions___name`,\n  _base.`orders___amt`,\n  _cm_orders__customers__spend_sum.`customers___spend_sum` AS `orders___csp`\nFROM _base\nLEFT JOIN _cm_orders__customers__spend_sum\n  ON _base.`orders___customers___regions___name` IS NOT DISTINCT FROM _cm_orders__customers__spend_sum.`customers___regions___name`",
   "positive/assoc_region_name::duckdb": "WITH _base AS (\n  SELECT\n    customers__regions.name AS \"orders.customers.regions.name\",\n    CAST(SUM(orders.amount) AS DOUBLE) AS \"orders.amt\"\n  FROM orders AS orders\n  LEFT JOIN customers AS customers\n    ON orders.customer_id = customers.id\n  LEFT JOIN regions AS customers__regions\n    ON customers.region_id = customers__regions.id\n  GROUP BY\n    customers__regions.name\n), _cm_orders__customers__spend_sum AS (\n  SELECT\n    regions.name AS \"customers.regions.name\",\n    CAST(SUM(customers.spend) AS DOUBLE) AS \"customers.spend_sum\"\n  FROM customers AS customers\n  LEFT JOIN regions AS regions\n    ON customers.region_id = regions.id\n  GROUP BY\n    regions.name\n)\nSELECT\n  _base.\"orders.customers.regions.name\",\n  _base.\"orders.amt\",\n  _cm_orders__customers__spend_sum.\"customers.spend_sum\" AS \"orders.csp\"\nFROM _base\nLEFT JOIN _cm_orders__customers__spend_sum\n  ON _base.\"orders.customers.regions.name\" IS NOT DISTINCT FROM _cm_orders__customers__spend_sum.\"customers.regions.name\"",
