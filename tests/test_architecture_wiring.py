@@ -6,7 +6,7 @@ from pathlib import Path
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-PIN_RE = re.compile(r"living-architecture==([\w.]+) la-arch-check\b")
+PIN_RE = re.compile(r"living-architecture==([\w.]+) la-arch-")
 STEP_RE = re.compile(r"^uvx --no-build --from living-architecture==([\w.]+) la-arch-check\b", re.MULTILINE)
 
 
