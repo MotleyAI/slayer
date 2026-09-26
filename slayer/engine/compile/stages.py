@@ -45,7 +45,13 @@ from slayer.engine.reference_closure import (
     resolve_aggregation_params,
     source_row_leaf_closure,
 )
-from slayer.core.join_walker import physical_join_pairs, resolve_hop, walk
+from slayer.core.join_walker import (
+    canonical_token,
+    physical_join_pairs,
+    resolve_hop,
+    reverse_token,
+    walk,
+)
 from slayer.engine.join_safety import (
     UNREACHABLE_NO_PATH,
     _back_path,
@@ -1383,7 +1389,7 @@ def _forward_hops(
                 f"unreachable from the aggregate's root (no join edge from "
                 f"{current.name} to {hop_name})"
             )
-        node_path = (*node_path, edge.name or edge.target_model)
+        node_path = (*node_path, canonical_token(edge))
         _register_hop(
             nodes, node_path=node_path, target_model=edge.target_model,
             pairs=physical_join_pairs(edge=edge, source=current, target=target),
@@ -1416,7 +1422,7 @@ def _reverse_hops(
     node_path: Tuple[str, ...] = ()
     by_name = {**models_by_name, host_model.name: host_model}
     for edge in reversed(fwd):
-        node_path = (*node_path, edge.name or edge.source_model)
+        node_path = (*node_path, reverse_token(edge))
         physical = physical_join_pairs(
             edge=edge, source=by_name[edge.source_model], target=by_name[edge.target_model],
         )
@@ -1931,7 +1937,7 @@ def _canonical_path(
         return tuple(path)
     if edges is None:
         return tuple(path)
-    return tuple(e.name or e.target_model for e in edges)
+    return tuple(canonical_token(e) for e in edges)
 
 
 def _grain_closure_paths(
@@ -4200,11 +4206,7 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
         )
     # Per-mask structural reachability summary, in this plan's coordinate system.
     reachability_anchor_model = render_source_model or bundle.source_model
-    source_relation = (
-        query.source_model
-        if isinstance(query.source_model, str)
-        else host_name
-    )
+    source_relation = host_name
     filter_reachability: List[FilterReachability] = []
     # One expansion cache for the whole plan (both visitors and every filter share it).
     reachability_cache: dict = {}
@@ -4271,6 +4273,7 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
         originals={sub.placeholder: sub.original_key
                    for attach in regroup_attach_plans for sub in attach.substitutions},
         upstream=_upstream_respellings(scope),
+        scope=scope,
     )
 
     # Frame-bound column set: raw columns of this stage's non-hidden time dimensions.
@@ -4535,6 +4538,7 @@ def _emit_stage_schema(
     models_by_name: Dict[str, SlayerModel],
     originals: Mapping[ValueKey, ValueKey],
     upstream: Mapping[str, Tuple[str, ...]],
+    scope: Union[ModelScope, StageSchema, None] = None,
 ) -> StageSchema:
     """``public_projection[:n_grain_positions]`` are the declared dimension / time-dimension occurrences."""
     columns: List[StageColumn] = []
@@ -4556,6 +4560,7 @@ def _emit_stage_schema(
         )
         columns.append(_stage_column(
             slot=slot, alias=alias, flat=flat,
+            source=_source_column(key=slot.key, root=root, models_by_name=models_by_name, scope=scope),
             respellings=() if alias in slot.explicit_aliases else _respellings(
                 flat=flat, key=originals.get(slot.key, slot.key), root=root,
                 models_by_name=models_by_name, upstream=upstream,
@@ -4570,24 +4575,50 @@ def _emit_stage_schema(
     )
 
 
+def _source_column(
+    *, key: ValueKey, root: Optional[SlayerModel], models_by_name: Dict[str, SlayerModel],
+    scope: Union[ModelScope, StageSchema, None],
+):
+    """The column a row-level stage output reads (a model column or an upstream stage
+    column), for the metadata it carries downstream; ``None`` for anything else."""
+    if isinstance(key, TimeTruncKey):
+        key = key.column
+    if not isinstance(key, (ColumnKey, ColumnSqlKey)):
+        return None
+    leaf = column_leaf(key)
+    if isinstance(scope, StageSchema):
+        return scope.get(leaf) if not key.path else None
+    if root is None:
+        return None
+    try:
+        chain = walk(root=root, path=key.path, models_by_name=models_by_name)
+    except (AmbiguousJoinPathError, CircularJoinPathError):
+        return None
+    if chain is None:
+        return None
+    model = models_by_name.get(chain[-1].target_model) if chain else root
+    return model.get_column(leaf) if model is not None else None
+
+
 def _stage_column(
-    *, slot: ValueSlot, alias: str, flat: str, respellings: Tuple[str, ...],
+    *, slot: ValueSlot, alias: str, flat: str, respellings: Tuple[str, ...], source=None,
 ) -> StageColumn:
     # An upstream-bucketed column carries its granularity so a re-binding TimeDimension can type-check the re-bucket.
     upstream_gran = (
         TimeGranularity(slot.key.granularity)
         if isinstance(slot.key, TimeTruncKey) else None
     )
+    row = source if slot.phase == Phase.ROW else None
     return StageColumn(
         name=flat,
         sql_alias=flat,
         public_alias=alias,
         type=slot.type,
         granularity=upstream_gran,
-        label=slot.label,
+        label=slot.label or (row.label if row is not None else None),
         hidden=False,
-        format=slot.format,
-        description=slot.description,
+        format=slot.format or (row.format if row is not None else None),
+        description=slot.description or (row.description if row is not None else None),
         respellings=respellings,
     )
 

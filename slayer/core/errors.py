@@ -844,3 +844,15 @@ class LegacyDunderAliasError(SlayerError, ValueError):
             f"'__'-delimited split-alias form is no longer accepted; write the "
             f"join path with dots instead: '{self.dotted}'."
         )
+
+
+class QueryBackedCycleError(SlayerError, ValueError):
+    """A query-backed model that references itself, directly or transitively."""
+
+    def __init__(self, *, path: Sequence[str]) -> None:
+        self.path = list(path)
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__,
+            summary=f"Query-backed models reference each other in a cycle: {' -> '.join(self.path)}.",
+            suggestion="Break the cycle so no query-backed model reads itself.",
+        ))

@@ -15,11 +15,8 @@ Public surface:
   — used by save-time dry-run SQL generation. Invalid placeholder names
   still raise regardless of ``dry_run_placeholders``.
 
-Scope deliberately matches the legacy enrichment scope —
-``SlayerQuery.filters`` is the only field this helper substitutes into.
-Formula text, ``Column.sql``, ``Column.filter``, and
-``SlayerModel.filters`` are NOT variable-substituted today, and this
-module preserves that contract.
+- :func:`substitute_model_sql_surfaces` substitutes a model's four Mode-A
+  surfaces (``sql``, ``filters``, ``Column.sql`` / ``Column.filter``).
 
 This is the active substitution path used by ``engine.execute`` and
 ``engine.save_model``.
@@ -29,9 +26,15 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
+from slayer.core.models import SlayerModel
 from slayer.core.query import (
     SlayerQuery,
+    _contains_block_delimiter,
+    coerce_declared_list_variables,
+    declares_variables,
     extract_placeholder_names,
+    extract_variable_refs,
+    list_valued_variable_names,
     substitute_variables,
 )
 
@@ -94,8 +97,65 @@ def apply_variables_to_query(
     return query.model_copy(update={"filters": substituted})
 
 
+def _mode_a_surfaces(model: SlayerModel) -> list:
+    return [model.sql, *(model.filters or []), *(t for c in model.columns for t in (c.sql, c.filter))]
+
+
+def model_needs_substitution_pass(model: SlayerModel) -> bool:
+    """True if substitution must run with no variables (a ``{? ?}`` block or declared variables)."""
+    return any(
+        s and _contains_block_delimiter(s) for s in _mode_a_surfaces(model)
+    ) or declares_variables(model)
+
+
+def model_placeholder_names(model: SlayerModel) -> set:
+    """Every ``{var}`` a model's Mode-A surfaces read."""
+    out: set = set()
+    for text in _mode_a_surfaces(model):
+        if text:
+            bare, blocked = extract_variable_refs(text)
+            out |= bare | blocked
+    return out
+
+
+def substitute_model_sql_surfaces(
+    *, model: SlayerModel, variables: Dict[str, Any], backslash_escapes: bool,
+) -> SlayerModel:
+    """Copy of ``model`` with ``{var}`` substituted into its four Mode-A surfaces
+    (``sql``, ``filters``, ``Column.sql`` / ``Column.filter``); no-op when unneeded."""
+    if not variables and not model_needs_substitution_pass(model):
+        return model
+    variables = coerce_declared_list_variables(
+        variables, list_valued=list_valued_variable_names(model)
+    )
+
+    def _sub(text: str) -> str:
+        return substitute_variables(
+            filter_str=text, variables=variables, escape="sql",
+            backslash_escapes=backslash_escapes,
+        )
+
+    columns = []
+    for col in model.columns:
+        updates: Dict[str, Any] = {}
+        if col.sql is not None:
+            updates["sql"] = _sub(col.sql)
+        if col.filter is not None:
+            updates["filter"] = _sub(col.filter)
+        columns.append(col.model_copy(update=updates) if updates else col)
+    update: Dict[str, Any] = {"columns": columns}
+    if model.sql is not None:
+        update["sql"] = _sub(model.sql)
+    if model.filters:
+        update["filters"] = [_sub(f) for f in model.filters]
+    return model.model_copy(update=update)
+
+
 __all__ = [
     "apply_variables_to_query",
+    "model_needs_substitution_pass",
+    "model_placeholder_names",
+    "substitute_model_sql_surfaces",
     "extract_placeholder_names",
     "merge_query_variables",
     "substitute_variables",

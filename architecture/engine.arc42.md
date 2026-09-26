@@ -168,6 +168,11 @@ elaborate→compile and `query_engine.py` orchestrates.
     definition's owner ride the source (the ownership-boundary exemption); a
     definition that cannot be analysed is unsafe, never "crosses nothing".
     [enforced: test:tests/test_dev1900_closure.py]
+11. **Stage names are query-local**: a stage name is visible only within its own
+    query list, where it overrides a same-named model; stored definitions (joins,
+    stored `source_queries`) never see it. Internally every stage carries a minted
+    identity; the user's name survives only in result keys, join paths and
+    messages. [enforced: test:tests/test_dev1966_stage_scope.py]
 
 ## 4. Rationale
 

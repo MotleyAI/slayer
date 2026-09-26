@@ -435,7 +435,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
             bound_filter_texts.append(f)
 
     order_specs = []
-    # Host identity for the qualifier check below (StageSchema uses its relation name).
+    # Host spelling for the qualifier check below.
     _order_host_name = host_model_name(scope)
     for i, o in enumerate(query.order or []):
         with stale_spelling_position(f"order[{i}]"):
