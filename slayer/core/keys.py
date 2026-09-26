@@ -259,6 +259,28 @@ class ColumnSqlKey(_LeafKey, frozen=True):
         return Phase.ROW
 
 
+class SqlFragmentKey(_FrozenKey, frozen=True):
+    """A bound aggregation-parameter expression: canonical Mode-A ``template`` whose
+    ``{r<i>}`` placeholders stand for ``refs[i]`` (absolute column keys). Phase ROW."""
+
+    template: str
+    refs: Tuple[Union[ColumnKey, ColumnSqlKey], ...] = ()
+
+    @property
+    def phase(self) -> Phase:
+        return Phase.ROW
+
+    def children(self) -> Tuple["ValueKey", ...]:
+        return self.refs
+
+    def map_children(
+        self, fn: Callable[["ValueKey"], "ValueKey"],
+    ) -> "SqlFragmentKey":
+        m = _ChildMapper(fn)
+        refs = tuple(m(r) for r in self.refs)
+        return self.model_copy(update={"refs": refs}) if m.changed else self
+
+
 class TimeTruncKey(_FrozenKey, frozen=True):
     """Row-level reference to a time-truncated column, keyed by (column, granularity).
 
@@ -354,7 +376,8 @@ _AggregateSource = Union[
 # `weighted_avg(weight=rank(sum(amount, partition_by=…)))` a grained transform —
 # all via `_bind_agg_arg`.
 _AggregateArgValue = Union[
-    ColumnKey, ColumnSqlKey, "AggregateKey", "TransformKey", Decimal, str, bool, None,
+    ColumnKey, ColumnSqlKey, SqlFragmentKey, "AggregateKey", "TransformKey",
+    Decimal, str, bool, None,
 ]
 _AggregateKwargValue = _AggregateArgValue
 
@@ -705,6 +728,7 @@ ValueKey = Union[
     ScalarCallKey,
     BetweenKey,
     InKey,
+    SqlFragmentKey,
 ]
 
 
@@ -844,6 +868,7 @@ KIND_POLICY: dict[type, KindPolicy] = {
     ScalarCallKey: KindPolicy(slot_composite=True, materialised_order=True),
     BetweenKey: KindPolicy(),
     InKey: KindPolicy(),
+    SqlFragmentKey: KindPolicy(),
 }
 
 
@@ -878,22 +903,21 @@ def walk_value_keys(key: ValueKey):
         yield from walk_value_keys(child)
 
 
-def grained_inner_aggregates(vk: ValueKey) -> List[AggregateKey]:
-    """Explicitly-partitioned ``AggregateKey``s reachable from ``vk``."""
-    return [
-        k for k in walk_value_keys(vk)
-        if isinstance(k, AggregateKey) and k.partition_keys is not None
-    ]
+def _inner_partition_grain(k: ValueKey) -> Grain:
+    """Union of the outermost aggregates' partition grains; an aggregate is opaque."""
+    if isinstance(k, AggregateKey):
+        return Grain.of(k.partition_keys or frozenset())
+    grain = Grain.EMPTY
+    for c in k.children():
+        grain = grain | _inner_partition_grain(c)
+    return grain
 
 
 def regroup_root_grain(root: ValueKey) -> Grain:
     """Producer grain of a row-attach root: a transform evaluates at the set-union
-    of ALL inner aggregates' partition grains; a bare aggregate at its own grain."""
+    of its inner aggregates' partition grains; a bare aggregate at its own grain."""
     if isinstance(root, TransformKey):
-        grain = Grain.EMPTY
-        for inner in grained_inner_aggregates(root.input):
-            grain = grain | (inner.partition_keys or frozenset())
-        return grain
+        return _inner_partition_grain(root.input)
     return Grain.of(getattr(root, "partition_keys", None) or frozenset())
 
 
@@ -1209,6 +1233,7 @@ def rewrite_rank_partition_keys(
         and bool(key.partition_keys)
     ) or (isinstance(key, AggregateKey) and bool(key.partition_keys)):
         new_pk = rewrite_fn(key)
+        assert isinstance(rebuilt, (TransformKey, AggregateKey))
         if new_pk != rebuilt.partition_keys:
             rebuilt = rebuilt.model_copy(update={"partition_keys": new_pk})
     return rebuilt
@@ -1324,6 +1349,14 @@ def source_row_leaves(source: ValueKey) -> List[ValueKey]:
 
     _walk(source)
     return out
+
+
+def parameter_row_leaves(value) -> List[ValueKey]:
+    """The row-level column leaves of an aggregation parameter value; a scalar, a
+    marker string or an attached value (aggregate / transform) has none."""
+    if not isinstance(value, _FrozenKey) or isinstance(value, (AggregateKey, TransformKey)):
+        return []
+    return source_row_leaves(cast(ValueKey, value))
 
 
 def _leaf_join_path(k: ValueKey) -> Tuple[str, ...]:
@@ -1540,24 +1573,28 @@ class ConsumerNode(NamedTuple):
 def walk_consumer_positions(
     key: ValueKey, *, dim_keys: AbstractSet["ValueKey"] = frozenset(),
     own_pk: bool = False, attach_pk: bool = False, dim_key: bool = False,
+    opaque: Optional[Callable[["ValueKey"], bool]] = None,
 ) -> Iterator[ConsumerNode]:
     """Reachable keys for root discovery, pre-order: opaque below an attach-owning
     aggregate's inputs (they belong to its own attach), still walking its partition
     keys — an attach-carrying computed dimension in ``partition_by=`` needs the
-    outer attach the grain join is built on."""
+    outer attach the grain join is built on. An ``opaque`` key is yielded, not entered."""
     dim_key = dim_key or key in dim_keys
     yield ConsumerNode(key, own_pk, attach_pk, dim_key)
+    if opaque is not None and opaque(key):
+        return
     if isinstance(key, AggregateKey) and attached_inputs(key):
         for pk in key.partition_keys or ():
             yield from walk_consumer_positions(
                 pk, dim_keys=dim_keys, own_pk=True, attach_pk=True, dim_key=dim_key,
+                opaque=opaque,
             )
         return
     pks = frozenset(getattr(key, "partition_keys", None) or ())
     for c in key.children():
         yield from walk_consumer_positions(
             c, dim_keys=dim_keys, own_pk=own_pk or c in pks, attach_pk=attach_pk,
-            dim_key=dim_key,
+            dim_key=dim_key, opaque=opaque,
         )
 
 
@@ -1568,14 +1605,15 @@ def walk_consumer_keys(key: ValueKey) -> Iterator["ValueKey"]:
 
 def substitute_consumer_keys(
     key: _RerootableT, mapping: Mapping["ValueKey", "ValueKey"],
+    *, opaque: Optional[Callable[["ValueKey"], bool]] = None,
 ) -> _RerootableT:
     """Replace sub-keys named in ``mapping`` where root discovery looks — the
     substitution law mirroring :func:`walk_consumer_keys`.
 
     Pre-order match-before-recurse like :func:`substitute_value_keys`, but below an
     attach-owning aggregate the source/args/kwargs are opaque (they belong to its
-    own attach) and only ``partition_keys`` are traversed. Scalars ride through;
-    identity is preserved when nothing matches.
+    own attach) and only ``partition_keys`` are traversed; an unmatched ``opaque``
+    key is kept whole. Scalars ride through; identity is preserved when nothing matches.
     """
     if key is None or isinstance(key, (Decimal, str, bool, int, float)):
         return key
@@ -1586,11 +1624,13 @@ def substitute_consumer_keys(
         )
     if key in mapping:
         return cast(_RerootableT, mapping[cast("ValueKey", key)])
+    if opaque is not None and opaque(cast("ValueKey", key)):
+        return key
     if isinstance(key, AggregateKey) and attached_inputs(key):
         if key.partition_keys is None:
             return key
         new_pks = Grain.of(
-            substitute_consumer_keys(p, mapping) for p in key.partition_keys
+            substitute_consumer_keys(p, mapping, opaque=opaque) for p in key.partition_keys
         )
         if new_pks == key.partition_keys:
             return key
@@ -1599,5 +1639,5 @@ def substitute_consumer_keys(
         )
     return cast(
         _RerootableT,
-        key.map_children(lambda c: substitute_consumer_keys(c, mapping)),
+        key.map_children(lambda c: substitute_consumer_keys(c, mapping, opaque=opaque)),
     )

@@ -17,6 +17,7 @@ from slayer.core.keys import (
     InKey,
     LiteralKey,
     ScalarCallKey,
+    SqlFragmentKey,
     StarKey,
     TimeTruncKey,
     TransformKey,
@@ -111,6 +112,9 @@ _LEGACY_KEY_SPELLINGS: dict[type, tuple[str, _LegacyFields]] = {
     InKey: ("InKey", (
         ("column", attrgetter("column")), ("values", attrgetter("values")),
         ("negated", attrgetter("negated")),
+    )),
+    SqlFragmentKey: ("SqlFragmentKey", (
+        ("template", attrgetter("template")), ("refs", attrgetter("refs")),
     )),
 }
 
@@ -287,10 +291,19 @@ def agg_kwarg_canonical_str(value: Any) -> str:
         return _agg_key_canonical_str(value)
     if isinstance(value, TransformKey):
         return _transform_key_canonical_str(value)
+    if isinstance(value, SqlFragmentKey):
+        return sql_fragment_digest(value)
     raise TypeError(
         f"AggregateKey kwarg value of type {type(value).__name__!r} "
         f"is not supported: {value!r}",
     )
+
+
+def sql_fragment_digest(value: SqlFragmentKey) -> str:
+    """A short stable name for a bound parameter expression (template + refs)."""
+    refs = ",".join(agg_kwarg_canonical_str(r) for r in value.refs)
+    digest = hashlib.sha256(f"{value.template}|{refs}".encode("utf-8"))
+    return f"expr_{digest.hexdigest()[:8]}"
 
 
 def _agg_key_canonical_str(value: AggregateKey) -> str:

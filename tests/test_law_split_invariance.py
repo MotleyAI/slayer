@@ -8,7 +8,6 @@ import pytest
 
 from tests._law_harness import (
     CM_PARTITIONED_OPERANDS,
-    DEFERRAL_SITES,
     EXPECTED_RAISES,
     PAIRS_BY_GRAIN,
     SHAPES,
@@ -83,7 +82,7 @@ class TestHarnessSelfChecks:
         registry can never silently outlive a lifted guard."""
         shape = SHAPES[0]
         monkeypatch.setitem(
-            EXPECTED_RAISES, (shape.shape_id, None), DEFERRAL_SITES[0].fragment,
+            EXPECTED_RAISES, (shape.shape_id, None), "frobnication deferred",
         )
         async for engine, _db_path in make_law_engine("sqlite"):
             with pytest.raises(pytest.fail.Exception, match="DID NOT RAISE"):

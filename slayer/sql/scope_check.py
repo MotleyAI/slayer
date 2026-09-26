@@ -102,7 +102,7 @@ def assert_dependency_ordered_ctes(sql: str, *, dialect: str = "postgres") -> No
     without full scope resolution it is indistinguishable from a non-recursive CTE
     shadowing a physical table of the same name (a legal pattern), so — like
     :func:`assert_scope_closed` — this backstop stays sound on the corpus (no false
-    positives); SLayer emits no ``WITH RECURSIVE`` for it to miss."""
+    positives)."""
     ast = sqlglot.parse_one(sql, dialect=dialect)
     if ast is None:
         return
@@ -287,11 +287,14 @@ def _projects(inner: Scope, name: str) -> bool:
     A plain / ``REPLACE`` star exports every name; a ``* EXCEPT (name)`` star
     does not export ``name``.
     """
+    folded = name.casefold()
     expr = inner.expression
+    alias = expr.parent.args.get("alias") if isinstance(expr.parent, (exp.CTE, exp.Subquery)) else None
+    if isinstance(alias, exp.TableAlias) and alias.columns:
+        return folded in {c.name.casefold() for c in alias.columns}  # ``n(k)`` renames the outputs
     while isinstance(expr, exp.SetOperation):
         expr = expr.this  # left leg carries the public output names
     selects = getattr(expr, "selects", None) or []
-    folded = name.casefold()
     explicit: set = set()
     for projection in selects:
         star = _star_of(projection)

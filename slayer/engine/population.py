@@ -306,7 +306,7 @@ def _to_one_hops(
     for edge in incident:
         if edge.name:
             tokens.add(edge.name)
-        tokens.add(edge.target_model)
+        tokens.add(edge.target_spelling or edge.target_model)
     out: list[tuple[str, str]] = []
     for token in tokens:
         try:

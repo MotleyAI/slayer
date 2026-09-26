@@ -89,7 +89,7 @@ def countries_model() -> SlayerModel:
             Aggregation(name="wsum_plan_fee", formula="SUM({value} * {weight})",
                         params=[AggregationParam(name="weight",
                                                  sql="regions.customers.plans.fee")]),
-            # Cancel then FANNING hop: regions cancels, region_events fans → closed.
+            # Cancel then FANNING hop: homes at region_events, like its explicit twin.
             Aggregation(name="wsum_fan", formula="SUM({value} * {weight})",
                         params=[AggregationParam(name="weight",
                                                  sql="regions.region_events.value")]),

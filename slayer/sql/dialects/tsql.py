@@ -13,9 +13,6 @@ T-SQL is the most divergent Tier-1 dialect:
 * Variance-decomposition formula for CORR / COVAR_* with the T-SQL names
 * EXPLAIN is a session-toggle pair: ``SET SHOWPLAN_ALL ON; ... ; OFF``
 * No native LOG2
-* T-SQL rejects ``WITH`` inside a derived-table subquery.
-  ``emit_outer_wrap`` overrides the base to hoist inner top-level CTEs
-  to the outer statement.
 * T-SQL's ``ORDER BY`` resolver does not treat
   ``[a.b]`` as a SELECT alias — it tries to resolve it as a column-name
   lookup against the FROM scope. ``rewrite_emitted_sql`` mangles dotted
@@ -28,14 +25,11 @@ from __future__ import annotations
 
 import re
 from typing import ClassVar, Literal
-from collections.abc import Callable, Sequence
 
-import sqlglot
 from sqlglot import exp
 from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import TimeGranularity
-from slayer.sql.naming import OUTER_WRAP_ALIAS
 from slayer.sql.dialects.base import (
     DottedAliasManglingMixin,
     SqlDialect,
@@ -69,20 +63,6 @@ _TSQL_STAT_NAMES: dict[str, str] = {
 # or other non-``\w`` characters (``[my table]``) are safe — the
 # non-word character breaks the match.
 _TSQL_DOTTED_ALIAS_RE = re.compile(r"\[(\w+(?:\.\w+)+)\]", re.ASCII)
-
-
-def _offset_ordering_fallback(
-    order: "Expression | None", offset_arg: "Expression | None",
-) -> "Expression | None":
-    """The ORDER BY an OFFSET-bearing outer wrap must carry: the caller's, or a
-    synthesized ``ORDER BY (SELECT NULL)`` no-op when there is none (SQL Server
-    rejects OFFSET without ORDER BY). Returns ``order`` unchanged otherwise, so
-    a user's ordering is never replaced."""
-    if order is not None or offset_arg is None:
-        return order
-    return exp.Order(expressions=[
-        exp.Ordered(this=exp.Subquery(this=exp.Select().select(exp.Null()))),
-    ])
 
 
 class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
@@ -266,10 +246,6 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
             stddev_fn="STDEV",
         )
 
-    # ------------------------------------------------------------------
-    # emit_outer_wrap hoists inner top-level CTEs
-    # ------------------------------------------------------------------
-
     def apply_pagination(
         self,
         select: exp.Select,
@@ -300,108 +276,3 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
                 exp.Subquery(this=exp.Select().select(exp.Null())),
             )
         return super().apply_pagination(select, limit=limit, offset=offset)
-
-    def emit_outer_wrap(
-        self,
-        *,
-        inner_sql: str,
-        public: list[str],
-        projected: Sequence[str],
-        order: Expression | None,
-        limit: Expression | None,
-        offset_arg: Expression | None,
-        parse: Callable[[str], Expression] | None = None,
-    ) -> str:
-        """T-SQL: hoist inner top-level CTEs to the outer statement AND
-        transpose detached pagination to ``TOP`` / ``FETCH NEXT N ROWS
-        ONLY`` syntax.
-
-        SQL Server allows ``WITH`` only as a statement prefix, not inside
-        a derived-table subquery. Without this override, SLayer's
-        outer wrap emits ``SELECT ... FROM (WITH ctes SELECT ...
-        FROM step2) AS _outer ORDER BY ...``, which T-SQL rejects with
-        ``Incorrect syntax near the keyword 'WITH'``.
-
-        Strategy (single AST path, no fallback to the base impl):
-
-        1. Parse ``inner_sql`` via the generator's ``_parse`` (when
-           supplied) so SLayer-specific AST rewrites survive the
-           round-trip — LOG10/LOG2 alias preservation and
-           SQLite JSONExtract function-form.
-        2. Detach the top-level ``With`` node (if any) from the inner
-           ``Select`` so the inner main SELECT can be wrapped in the
-           derived table without re-introducing nested WITH.
-        3. Build the outer wrap entirely via sqlglot AST so dialect-
-           aware rendering transposes the detached ``Limit`` / ``Offset``
-           nodes into T-SQL's ``TOP`` / ``FETCH NEXT N ROWS ONLY``
-           syntax. A naïve ``limit.sql(dialect="tsql")`` only emits
-           ``LIMIT N`` because the transposition fires on the wrapping
-           Select, not on a free-standing Limit node. The CTE-less
-           branch must take the AST path too, otherwise any T-SQL query
-           that hits the outer-wrap path without CTEs would still emit
-           literal ``LIMIT N``.
-
-        When the generator doesn't pass ``parse`` (direct unit-test
-        invocation), falls back to ``sqlglot.parse_one(dialect="tsql")``.
-        When the parse itself fails (malformed SQL / sqlglot bug), defers
-        to the base impl — T-SQL will still reject malformed SQL at the
-        DB layer, but we don't make it worse.
-        """
-        # SQL Server rejects OFFSET without ORDER BY. Resolve the effective
-        # ordering BEFORE branching, so BOTH the AST path AND the base-impl
-        # fallback (a non-Select inner, base.py also emits a bare OFFSET) get it.
-        order = _offset_ordering_fallback(order, offset_arg)
-        parse_fn = parse if parse is not None else (
-            lambda s: sqlglot.parse_one(s, dialect=self.sqlglot_name)
-        )
-        try:
-            parsed = parse_fn(inner_sql)
-        except Exception:
-            return super().emit_outer_wrap(
-                inner_sql=inner_sql,
-                public=public,
-                projected=projected,
-                order=order,
-                limit=limit,
-                offset_arg=offset_arg,
-            )
-        if not isinstance(parsed, exp.Select):
-            return super().emit_outer_wrap(
-                inner_sql=inner_sql,
-                public=public,
-                projected=projected,
-                order=order,
-                limit=limit,
-                offset_arg=offset_arg,
-            )
-        # Detach the With (if present) so the inner main SELECT can be
-        # wrapped in a derived table. ``with_`` is the sqlglot args key
-        # (Python-keyword avoidance); other clauses use their natural
-        # names (``order`` / ``limit`` / ``offset``).
-        with_node = parsed.args.get("with_")
-        if with_node is not None:
-            parsed.set("with_", None)
-        # Strip inner-CTE qualifiers from detached ORDER BY columns so
-        # they resolve at the outer-wrapper scope (only ``_outer`` is
-        # visible).
-        if order is not None:
-            for col in order.find_all(exp.Column):
-                if col.args.get("table") is not None:
-                    col.set("table", None)
-        derived = exp.Subquery(
-            this=parsed,
-            alias=exp.TableAlias(this=exp.to_identifier(OUTER_WRAP_ALIAS)),
-        )
-        outer = exp.Select()
-        for a in public:
-            outer = outer.select(exp.Identifier(this=a, quoted=True))
-        outer = outer.from_(derived)
-        if with_node is not None:
-            outer.set("with_", with_node)
-        if order is not None:
-            outer.set("order", order)
-        if limit is not None:
-            outer.set("limit", limit)
-        if offset_arg is not None:
-            outer.set("offset", offset_arg)
-        return outer.sql(dialect=self.sqlglot_name, pretty=True)

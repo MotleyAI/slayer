@@ -55,7 +55,7 @@ nodes:
 legacy_arrows: {baseline: 8}
 
 # Fail-closed deferral-site count (tests/test_law_guard_ratchet.py). Only ever lower.
-guards: {baseline: 1}
+guards: {baseline: 0}
 
 cross_cutting_specs:
   queries: {touches: [core, engine, sql, storage]}

@@ -34,9 +34,7 @@ from slayer.core.errors import (
 from slayer.core.join_walker import (
     canonical_path,
     resolve_hop,
-    terminal_model,
     walk,
-    walk_cancelling,
 )
 from slayer.core.models import Column, SlayerModel
 from slayer.core.scope import resolve_generated_column
@@ -49,10 +47,8 @@ __all__ = [
     "expand_column_definition_sync",
     "expand_derived_refs_sync",
     "is_trivial_base",
+    "raise_if_legacy_split_alias",
     "reference_sites",
-    "requalify_default_references",
-    "resolve_default_qualifier_path",
-    "resolve_default_reference_paths",
     "resolve_ref_target",
     "root_scope_column_ids",
     "wrap_column_filter",
@@ -307,7 +303,7 @@ def _resolve_qualifiers(
         if walked is not None:
             return walked[1]
         if len(path) == 1:
-            _raise_if_legacy_split_alias(
+            raise_if_legacy_split_alias(
                 qualifier=path[0], leaf=leaf,
                 source_model=source_model, models_by_name=models_by_name,
             )
@@ -326,59 +322,7 @@ def _resolve_qualifiers(
         ) from exc
 
 
-def resolve_default_qualifier_path(
-    *,
-    qualifiers: Tuple[str, ...],
-    leaf: str,
-    root_model: SlayerModel,
-    owner_path: Tuple[str, ...],
-    models_by_name: ModelsByName,
-) -> Optional[Tuple[str, ...]]:
-    """Owner-first resolution of a definition default's qualifier chain with
-    reverse-hop cancellation (DEV-1908 D1-D3), from the owner (``root_model``
-    walked along ``owner_path``). Returns the ABSOLUTE path from the root frame
-    (``owner_path`` itself for an empty or self-cancelling chain), or ``None`` on a
-    clean first-token miss — an opaque single qualifier, or a first token the owner
-    cannot reach — so the caller may retry at the root. Raises
-    :class:`LegacyDunderAliasError` on a split-alias and
-    :class:`UnresolvableDimensionJoinError` when the first token resolves (hop or
-    cancel) but a later one misses — never re-anchored at the root (D3)."""
-    quals = tuple(qualifiers)
-    if not quals:
-        return tuple(owner_path)
-    resolved = walk_cancelling(
-        root=root_model, owner_path=owner_path, tokens=quals,
-        models_by_name=models_by_name,
-    )
-    if resolved is not None:
-        return resolved
-    first_resolves = walk_cancelling(
-        root=root_model, owner_path=owner_path, tokens=quals[:1],
-        models_by_name=models_by_name,
-    ) is not None
-    if not first_resolves:
-        if len(quals) == 1:
-            owner_model = terminal_model(
-                root=root_model, path=owner_path, models_by_name=models_by_name,
-            ) or root_model
-            _raise_if_legacy_split_alias(
-                qualifier=quals[0], leaf=leaf, source_model=owner_model,
-                models_by_name=models_by_name,
-            )
-        return None  # clean first-token miss: opaque, or retried at the root
-    failing = next(
-        (quals[i - 1] for i in range(2, len(quals) + 1)
-         if walk_cancelling(root=root_model, owner_path=owner_path,
-                            tokens=quals[:i], models_by_name=models_by_name) is None),
-        quals[-1],
-    )
-    raise UnresolvableDimensionJoinError(
-        reference=".".join((*quals, leaf)), root_model=root_model.name,
-        reason=f"'{failing}' is not a joined model on the preceding hop.",
-    )
-
-
-def _raise_if_legacy_split_alias(
+def raise_if_legacy_split_alias(
     *,
     qualifier: str,
     leaf: str,
@@ -515,88 +459,8 @@ def collect_root_scope_joined_paths(
     return ordered
 
 
-def collect_root_scope_reference_columns(
-    *,
-    parsed: exp.Expression,  # pyright: ignore[reportPrivateImportUsage] — sqlglot ships no __all__
-    source_model: SlayerModel,
-    source_relation: str,
-    bundle: ResolvedSourceBundle,
-) -> List[Tuple[Optional[Tuple[str, ...]], str]]:
-    """Every root-scope reference of a parsed fragment as ``(join path, leaf)``:
-    ``()`` = anchored on the host/owner, non-empty = a resolved join walk,
-    ``None`` = an opaque or ambiguous qualifier (the caller decides its fate).
-    Literals never contribute — only ``exp.Column`` sites are walked."""
-    root_ids = root_scope_column_ids(parsed=parsed)
-    models_by_name = bundle.models_by_name
-    return [
-        (
-            _lenient_path(
-                qualifiers=quals, source_model=source_model,
-                owner_alias=source_relation, models_by_name=models_by_name,
-            ),
-            leaf,
-        )
-        for _node, quals, leaf in reference_sites(parsed, root_ids)
-    ]
-
-
-def resolve_default_reference_paths(
-    *, parsed: exp.Expression,  # pyright: ignore[reportPrivateImportUsage] — sqlglot ships no __all__
-    owner_path: Path,
-    root_model: SlayerModel, root_path: Path, bundle: ResolvedSourceBundle,
-) -> List[Tuple[Optional[Path], str]]:
-    """Per-reference frame resolution of a definition-default fragment (DEV-1908),
-    SHARED by the home/safety planner (→ keys) and the SQL generator (→ a
-    requalified fragment). Each root-scope column reference resolves owner-first
-    with reverse-hop cancellation — the owner is ``root_model`` walked along
-    ``owner_path`` — so an ambiguous or partially-broken owner reference FAILS
-    CLOSED (raises); a clean owner miss falls back to the query root. Returns
-    ``(absolute path from the root frame, leaf)`` per reference in reference-site
-    order (path ``None`` = reachable from neither frame)."""
-    root_ids = root_scope_column_ids(parsed=parsed)
-    mbn = bundle.models_by_name
-    out: List[Tuple[Optional[Path], str]] = []
-    for _node, quals, leaf in reference_sites(parsed, root_ids):
-        abs_path = resolve_default_qualifier_path(
-            qualifiers=quals, leaf=leaf, root_model=root_model,
-            owner_path=tuple(owner_path), models_by_name=mbn,
-        )
-        if abs_path is None:
-            abs_path = resolve_default_qualifier_path(
-                qualifiers=quals, leaf=leaf, root_model=root_model,
-                owner_path=tuple(root_path), models_by_name=mbn,
-            )
-        out.append((abs_path, leaf))
-    return out
-
-
-def requalify_default_references(
-    *, parsed: exp.Expression,  # pyright: ignore[reportPrivateImportUsage] — sqlglot ships no __all__
-    abs_refs: List[Tuple[Optional[Path], str]], dialect: Optional[str],
-) -> str:
-    """Rewrite each root-scope reference of ``parsed`` to its absolute dotted path
-    from ``abs_refs`` (reference-site order) and return the SQL — so a
-    mixed-frame default (``spend + orders.amount``) renders correctly at the root
-    frame (``customers.spend + amount``). Mutates ``parsed`` in place."""
-    root_ids = root_scope_column_ids(parsed=parsed)
-    whole: Optional[exp.Expression] = None  # pyright: ignore[reportPrivateImportUsage]
-    for (node, _quals, _leaf), (abs_path, leaf) in zip(
-        reference_sites(parsed, root_ids), abs_refs,
-    ):
-        if abs_path is None:
-            continue
-        replacement = exp.maybe_parse(".".join((*abs_path, leaf)), dialect=dialect)
-        node.replace(replacement)
-        # When the whole fragment IS this reference (``regions.customers.spend``),
-        # it has no parent, so ``node.replace`` is a silent no-op — keep the rewritten
-        # root (as ``expand_derived_refs_sync`` does) or the requalification is lost.
-        if node is parsed:
-            whole = replacement
-    return (whole if whole is not None else parsed).sql(dialect=dialect)
-
-
 # ---------------------------------------------------------------------------
-# Synchronous expansion (DEV-1450 typed pipeline)
+# Synchronous expansion
 # ---------------------------------------------------------------------------
 #
 # The generator runs synchronously over a ``ResolvedSourceBundle`` that has

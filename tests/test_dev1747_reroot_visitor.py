@@ -36,6 +36,7 @@ from slayer.core.keys import (
     StarKey,
     TimeTruncKey,
     TransformKey,
+    SqlFragmentKey,
 )
 from slayer.core.keys import Grain
 
@@ -168,6 +169,8 @@ class TestCompositeKinds:
             ),
             target_path=TARGET,
         )
+        assert isinstance(out.input, AggregateKey)
+        assert isinstance(out.time_key, TimeTruncKey)
         assert out.input.source == ColumnKey(path=(), leaf="spend")
         assert out.partition_keys == Grain.of({ColumnKey(path=(), leaf="tier")})
         assert out.time_key.column == ColumnKey(path=(), leaf="signup_at")
@@ -282,6 +285,9 @@ class TestCompositeKinds:
         )
         out = reroot_value_key(key, target_path=TARGET)
         transform, call = out.operands
+        assert isinstance(transform, TransformKey)
+        assert isinstance(transform.input, AggregateKey)
+        assert isinstance(call, ScalarCallKey)
         assert transform.input.source == ColumnKey(path=("regions",), leaf="pop")
         assert transform.partition_keys == Grain.of({ColumnKey(path=(), leaf="tier")})
         in_key, between_key = call.args
@@ -343,6 +349,9 @@ class TestTotalityAndFailClosed:
             InKey: InKey(
                 column=ColumnKey(path=("customers",), leaf="tier"),
                 values=(LiteralKey(value="gold"),),
+            ),
+            SqlFragmentKey: SqlFragmentKey(
+                template="{r0} * 2", refs=(ColumnKey(path=("customers",), leaf="spend"),),
             ),
         }
         members = set(get_args(ValueKey))

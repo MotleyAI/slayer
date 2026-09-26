@@ -23,12 +23,12 @@ from slayer.core.keys import (
 )
 from slayer.core.scope import ModelScope, StageSchema
 from slayer.engine.compile.shift import _series_mode
-from slayer.engine.elaborate_env import opaque_keys as _opaque
 from slayer.engine.elaborate_env import (
     ConsumerPosition,
     combined_kind,
     consumer_roots,
-    dimension_transform_roots,
+    dimension_nodes,
+    is_dimension_transform_root,
     is_grained_aggregate,
     position_classes,
 )
@@ -135,15 +135,12 @@ class _Walker:
                   declared_type=declared if top else None)
 
     def dimension(self, vk: ValueKey, *, name: Optional[str], declared: Optional[DataType]) -> None:
-        nodes = [n.key for n in walk_consumer_positions(vk)]
-        transform_roots = dimension_transform_roots(nodes)
-        covered = {g for t in transform_roots for g in _opaque(t.input)}
-        for k in nodes:
+        for k in dimension_nodes(vk):
             if is_reaggregation_key(k):
                 self.emit_named(k, "row", "reaggregation", top=k == vk, name=name,
                                 declared=declared)
                 continue
-            if k in transform_roots or (is_grained_aggregate(k) and k not in covered):
+            if is_dimension_transform_root(k) or is_grained_aggregate(k):
                 self.emit(k, "row", _input_routing(k))
             self.row_attach(k, attach_pk=False)
 
@@ -156,12 +153,17 @@ class _Walker:
         self, vk: ValueKey, *, position: ConsumerPosition, name: Optional[str] = None,
         declared: Optional[DataType] = None, containing: Sequence[str] = (),
     ) -> None:
-        """Route every node of a measure / order / filter root."""
-        for n in walk_consumer_positions(vk, dim_keys=self.classes.dim_keys):
+        """Route every node of a measure / order / filter root; a row-scope reference
+        to a dimension's own value routes nowhere."""
+        opaque = self.classes.opaque(position)
+        for n in walk_consumer_positions(vk, dim_keys=self.classes.dim_keys, opaque=opaque):
+            if opaque is not None and opaque(n.key):
+                continue
             top = n.key is vk
             if is_reaggregation_key(n.key):
-                self.emit_named(n.key, "combined", "reaggregation", top=top, name=name,
-                                declared=declared)
+                if self.classes.combined_admits(n, position=position, root=vk):
+                    self.emit_named(n.key, "combined", "reaggregation", top=top, name=name,
+                                    declared=declared)
                 continue
             self.combined_node(n, root=vk, position=position,
                                names=(name,) if name and top else (),

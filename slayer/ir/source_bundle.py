@@ -4,7 +4,7 @@ The orchestrator builds this once at execute start; the binder reads it purely.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -17,7 +17,7 @@ from slayer.core.models import (
 )
 from slayer.core.query import ModelExtension, SlayerQuery, SourceSpec
 
-from slayer.core.scope import ModelScope, StageSchema
+from slayer.core.scope import ModelScope, StageDisplay, StageSchema
 
 __all__ = [
     "resolve_scope",
@@ -46,6 +46,16 @@ class ResolvedSourceBundle(BaseModel):
     query_variables: Dict[str, Any] = Field(default_factory=dict)
     datasource_hint: Optional[str] = None
     dialect: str  # sqlglot dialect the query renders in
+    # Minted stage identity → its user-facing spelling.
+    stage_displays: Dict[str, StageDisplay] = Field(default_factory=dict)
+    # Stored query-backed models the statement may splice (stored form, joins dropped).
+    query_backed: Dict[str, SlayerModel] = Field(default_factory=dict)
+    # Query-backed models whose stages are being planned, outermost first.
+    splice_chain: Tuple[str, ...] = ()
+    runtime_variables: Dict[str, Any] = Field(default_factory=dict)
+    dry_run_placeholders: bool = False
+    # Query-backed models this stage reads that could not be spliced, with the cause.
+    splice_failures: Dict[str, Exception] = Field(default_factory=dict)
 
     def get_referenced_model(self, name: str) -> Optional[SlayerModel]:
         """Linear lookup by name (list is small, O(n) scan is fine)."""
@@ -168,12 +178,11 @@ def model_from_stage_schema(
     grain = schema.grain or []
     composite = len(grain) > 1
     column_sql = column_sql or {}
-    return SlayerModel(
-        name=name,
+    model = SlayerModel(
+        name="_stage",
         data_source=data_source,
-        sql_table=name if sql is None else None,
+        sql_table="_stage" if sql is None else None,
         sql=sql,
-        default_time_dimension=default_time_dimension,
         columns=[
             Column(
                 name=c.name,
@@ -189,6 +198,11 @@ def model_from_stage_schema(
             for c in schema.columns
         ],
     )
+    # A minted stage identity carries the reserved prefix the name validator rejects.
+    return model.model_copy(update={
+        "name": name, "sql_table": name if sql is None else None,
+        "default_time_dimension": default_time_dimension or schema.default_time_dimension,
+    }).with_spelling(schema.display_name if schema.display_name != name else None)
 
 
 def stage_bundle_with_siblings(
@@ -203,7 +217,8 @@ def stage_bundle_with_siblings(
     ``referenced_models`` so a join / cross-model ref to a sibling resolves.
 
     Order: host first, then synthetic siblings, then the original bundle's
-    referenced models minus any shadowed by the host or a synthetic sibling.
+    referenced models minus the host's own entry. A sibling identity meeting a
+    referenced model is an invariant violation (identities are minted unique).
     """
     synths = [
         model_from_stage_schema(
@@ -211,11 +226,16 @@ def stage_bundle_with_siblings(
         )
         for n, s in sibling_schemas.items()
     ]
-    shadow = {source_model.name} | {s.name for s in synths}
+    clashes = sorted({s.name for s in synths} & {m.name for m in bundle.referenced_models})
+    if clashes:
+        raise ValueError(
+            f"Stage identities {clashes} collide with models in the source bundle; "
+            f"stage identities must be minted apart from model names."
+        )
     referenced = (
         [source_model]
         + synths
-        + [m for m in bundle.referenced_models if m.name not in shadow]
+        + [m for m in bundle.referenced_models if m.name != source_model.name]
     )
     return bundle.model_copy(
         update={"source_model": source_model, "referenced_models": referenced}

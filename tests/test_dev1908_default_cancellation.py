@@ -271,12 +271,27 @@ class TestStageQueryUnaffected:
         assert vals == [82.0, 85.0]  # ok=82, new=85
 
 
-class TestFailClosed:
-    async def test_cancel_then_fanning_hop_names_region_events(self):
-        with pytest.raises(ValueError, match="(?i)unproven join hop|fanning") as ei:
-            await _gen("customers.regions.countries.gdp:wsum_fan")
-        assert "region_events" in str(ei.value)
+class TestCancelThenFanningHop:
+    """α: the default homes at the fanned dataset exactly as its explicit twin."""
 
+    def test_homes_like_the_explicit_twin(self):
+        home = ("customers", "regions", "region_events")
+        assert _home_path("customers.regions.countries.gdp:wsum_fan") == home
+        assert _home_path("customers.regions.countries.gdp:wsum_fan"
+                          "(weight=customers.regions.region_events.value)") == home
+
+    async def test_equals_the_explicit_twin(self, engine):
+        explicit = await _value(
+            engine, "customers.regions.countries.gdp:wsum_fan"
+            "(weight=customers.regions.region_events.value)")
+        default = await _value(engine, "customers.regions.countries.gdp:wsum_fan")
+        assert default == pytest.approx(explicit)
+        plain = await _value(
+            engine, "sum(customers.regions.countries.gdp * customers.regions.region_events.value)")
+        assert plain == pytest.approx(explicit)
+
+
+class TestFailClosed:
     async def test_cancel_then_miss_fails_closed(self):
         # D3: `regions` cancels, then `plans` misses (not a hop from regions) —
         # never re-anchored at the root.

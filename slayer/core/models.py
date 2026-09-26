@@ -164,6 +164,17 @@ def physical_column_sql(*, sql: str | None, name: str) -> str:
     return (_bare_identifier(sql) if sql is not None else None) or name
 
 
+def _coerce_legacy_type_field(data: Any) -> Any:
+    """Map a legacy lowercase ``type`` string in a raw payload; drop pseudo-types."""
+    if isinstance(data, dict) and "type" in data:
+        mapped = _coerce_legacy_datatype(data["type"])
+        if mapped is None:
+            data = {k: v for k, v in data.items() if k != "type"}
+        elif mapped is not data["type"]:
+            data = {**data, "type": mapped}
+    return data
+
+
 class Column(BaseModel):
     """A row-level column, usable per-query as a GROUP BY dimension or an aggregation measure."""
     name: str
@@ -206,14 +217,7 @@ class Column(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _coerce_legacy_type(cls, data: Any) -> Any:
-        # Absorb legacy lowercase ``type`` strings; drop pseudo-types to None.
-        if isinstance(data, dict) and "type" in data:
-            mapped = _coerce_legacy_datatype(data["type"])
-            if mapped is None:
-                data = {k: v for k, v in data.items() if k != "type"}
-            elif mapped is not data["type"]:
-                data = {**data, "type": mapped}
-        return data
+        return _coerce_legacy_type_field(data)
 
     @field_validator("name")
     @classmethod
@@ -326,14 +330,8 @@ class ModelMeasure(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _coerce_legacy_type(cls, data: Any) -> Any:
-        # ``type`` declares the formula's result type; legacy strings mapped, pseudo-types dropped.
-        if isinstance(data, dict) and "type" in data:
-            mapped = _coerce_legacy_datatype(data["type"])
-            if mapped is None:
-                data = {k: v for k, v in data.items() if k != "type"}
-            elif mapped is not data["type"]:
-                data = {**data, "type": mapped}
-        return data
+        # ``type`` declares the formula's result type.
+        return _coerce_legacy_type_field(data)
 
     @field_validator("name")
     @classmethod
@@ -380,6 +378,17 @@ def reserved_value_param_message(agg_name: str) -> str:
         f"Aggregation '{agg_name}': a parameter may not be named '{VALUE_PLACEHOLDER}'. "
         f"'{{{VALUE_PLACEHOLDER}}}' in an aggregation formula always stands for the "
         f"aggregated column, so such a parameter could never be used; rename it."
+    )
+
+
+WINDOW_PARAM = "window"
+
+
+def reserved_window_param_message(agg_name: str) -> str:
+    return (
+        f"Aggregation '{agg_name}': a parameter or placeholder may not be named "
+        f"'{WINDOW_PARAM}'. '{WINDOW_PARAM}' is the trailing-window argument "
+        f"(e.g. {WINDOW_PARAM}='90d'), so such a parameter could never receive a value; rename it."
     )
 
 
@@ -674,6 +683,8 @@ class SlayerModel(BaseModel):
     meta: dict[str, Any] | None = None
     # In-memory breadcrumb for virtual stage models; ``exclude=True`` keeps it unpersisted.
     source_model_origin: SourceModelOrigin | None = Field(default=None, exclude=True)
+    # Runtime-only (never persisted): a query stage's user spelling in join paths.
+    _spelling: str | None = PrivateAttr(default=None)  # NOSONAR(S5890) — pydantic PrivateAttr descriptor; the attribute holds str | None
 
     @field_validator("filters")
     @classmethod
@@ -807,6 +818,20 @@ class SlayerModel(BaseModel):
                 f"it with a ModelExtension at query time."
             )
         return self
+
+    @property
+    def explicit_spelling(self) -> str | None:
+        """A query stage's user spelling in join paths, when it differs from ``name``."""
+        return self._spelling
+
+    @property
+    def spelling(self) -> str:
+        return self._spelling or self.name
+
+    def with_spelling(self, spelling: str | None) -> "SlayerModel":
+        out = self.model_copy()
+        out._spelling = spelling
+        return out
 
     @property
     def awaits_columns(self) -> bool:

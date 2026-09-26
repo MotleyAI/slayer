@@ -113,7 +113,8 @@ All code, old and new, MUST obey these.
    SQL; the legacy `__` split-alias input form is a hard error; `__` survives
    only as an internal generated-SQL join alias (`__slayer_` prefix reserved).
    A resolved path is **canonical**: each hop spelled by its edge name, else its
-   target model (`customers.regions ≡ customers.hr` for an edge named `hr`); keys,
+   target model — a query stage by its name in its own query list, which precedes
+   a same-named model (`customers.regions ≡ customers.hr` for an edge named `hr`); keys,
    join aliases and result names carry only canonical paths.
    [enforced: test:tests/test_dev1743_resolution.py]
    [enforced: test:tests/test_dev1954_canonical_paths.py]
@@ -123,10 +124,10 @@ All code, old and new, MUST obey these.
 11. **Versioned persistence**: models/queries/datasource configs carry
     `version`; migrations run automatically on load. [review]
 12. **Pydantic v2 for all models; never dataclasses.** [review]
-13. **The ValueKey union grows reluctantly**: a construct that traverses like an
-    existing key kind reuses it (reserved-name scalar, reserved-leaf
-    placeholder) rather than adding a union member — hand-rolled visitors are
-    fail-open on new kinds. [review]
+13. **One key kind per meaning**: a construct with an existing kind's shape and
+    meaning reuses it; anything else is a new kind, never a reserved name
+    bending an existing kind's contract. Every kind dispatch fails closed on a
+    kind it does not handle. [review]
 14. **Ingestion is idempotent and additive-only**: user metadata is never
     overwritten by a re-ingest (`source_kind` refresh is the one documented
     exception). [review]

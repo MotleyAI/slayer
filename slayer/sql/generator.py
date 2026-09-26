@@ -9,6 +9,7 @@ from typing import (
     Any,
     Callable,
     Dict,
+    FrozenSet,
     Iterable,
     Iterator,
     List,
@@ -16,31 +17,32 @@ from typing import (
     Optional,
     Set,
     Tuple,
-    Union,
     cast,
 )
 
 from decimal import Decimal
-import sqlglot
 from sqlglot import exp
 from sqlglot.expressions.core import Expr, Expression
 
 from slayer.core.enums import (
     BUILTIN_AGGREGATIONS,
-    BUILTIN_AGGREGATION_REQUIRED_PARAMS,
+    BUILTIN_AGGREGATION_PARAM_ORDER,
     DataType,
     TimeGranularity,
 )
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict
 
-from slayer.core.errors import AggregationNotAllowedError, MaterialisationStageError
+from slayer.core.errors import (
+    AggregationNotAllowedError,
+    MaterialisationStageError,
+    QueryBackedCycleError,
+)
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
-from slayer.core.keys import BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, Phase, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, column_leaf, column_path, is_boolean_shaped, shift_offset_of, source_anchor_path, substitute_value_keys, walk_value_keys
+from slayer.core.keys import BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimeTruncKey, TransformKey, column_leaf, column_path, is_boolean_shaped, parameter_row_leaves, shift_offset_of, source_anchor_path, substitute_value_keys, walk_value_keys
 from slayer.core.join_walker import physical_join_pairs, resolve_hop, terminal_model
-from slayer.core.models import VALUE_PLACEHOLDER, Aggregation, rendered_formula, reserved_value_param_message
+from slayer.core.models import VALUE_PLACEHOLDER, rendered_formula, reserved_value_param_message
 from slayer.core.refs import (
     EXPRESSION_SOURCE_KINDS as _EXPRESSION_SOURCE_KINDS,
-    agg_kwarg_canonical_str,
     expression_source_leaf,
 )
 from slayer.core.window_duration import parse_window_duration as _parse_window_duration
@@ -48,22 +50,15 @@ from slayer.sql.column_expansion import (
     is_trivial_base,
     collect_root_scope_joined_paths,
     expand_column_definition_parts_sync,
-    requalify_default_references,
-    resolve_default_reference_paths,
     wrap_column_filter,
 )
 from slayer.ir.planned import MaskTyping, RankedGrainMember, StageKind, ValueSlot, regroup_producer_identity
-from slayer.ir.source_bundle import (
-    ResolvedSourceBundle,
-    model_from_stage_schema,
-    stage_bundle_with_siblings,
-)
-from slayer.sql._identifier_fit import overlimit_tokens
+from slayer.ir.source_bundle import ResolvedSourceBundle
+from slayer.sql._identifier_fit import fit_identifier, overlimit_tokens
 from slayer.sql import staged_plan
 from slayer.sql.dialects import SqlDialect, get_dialect
 from slayer.sql.dialects.base import TimeUnit, is_stat_agg1, is_stat_agg2
 from slayer.sql.naming import (
-    FILTERED_ALIAS,
     OUTER_WRAP_ALIAS,
     AliasAllocator,
     canonical_aggregate_alias,
@@ -75,7 +70,13 @@ from slayer.sql.naming import (
     result_key_from_alias,
     time_trunc_result_key,
 )
-from slayer.sql.render.cte_assembly import CteEntry, assemble_with_chain
+from slayer.sql.render.cte_assembly import (
+    CteEntry,
+    assemble_with_chain,
+    cte_entry,
+    reachable_cte_entries,
+    rename_embedded_ctes,
+)
 from slayer.sql.render.nodes import Node, fusion_blockers
 from slayer.sql.render.joins import (
     build_grain_joinback_condition,
@@ -105,6 +106,7 @@ from slayer.sql.render.aggregates import (
 )
 from slayer.sql.render.parse import parse_expression, parse_predicate
 from slayer.sql.sql_template import SqlTemplate, SqlTemplateError, sql_template
+from slayer.sql.render.row_expr import _literal
 from slayer.sql.render.value_expr import (
     AliasFacilities,
     CompositeFacilities,
@@ -129,16 +131,17 @@ from slayer.sql.stage_wrapper import (
 
 
 class ResolvedAggKwarg(BaseModel):
-    """A resolved parametric-aggregation kwarg value (2-kind tag)."""
+    """A parameter value resolved to SQL (a literal, or a key rendered through a scope)."""
 
     model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
-    kind: Literal["expr", "str"]
-    value: Union[Expression, str]
+    kind: Literal["expr"] = "expr"
+    value: Expression
 
 
 class AggRenderSpec(BaseModel):
-    """Typed input record for the dialect-aware aggregation"""
+    """Typed input record for the dialect-aware aggregation builders; ``formula`` is
+    the rendered template (``None``: a built-in builder), never the definition."""
 
     model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
@@ -152,25 +155,9 @@ class AggRenderSpec(BaseModel):
 
     alias: str
 
-    aggregation_def: Optional[Aggregation] = None
+    formula: Optional[str] = None
 
     agg_kwargs: Dict[str, ResolvedAggKwarg] = {}
-
-    @field_validator("agg_kwargs", mode="before")
-    @classmethod
-    def _coerce_agg_kwargs(cls, v: Any) -> Any:
-        """Coerce bare ``str`` kwarg values to ``ResolvedAggKwarg(kind="str")``;"""
-        if not isinstance(v, dict):
-            return v
-        coerced: Dict[str, Any] = {}
-        for key, val in v.items():
-            if isinstance(val, (ResolvedAggKwarg, dict)):
-                coerced[key] = val
-            elif isinstance(val, str):
-                coerced[key] = ResolvedAggKwarg(kind="str", value=val)
-            else:
-                coerced[key] = val  # bool / None / other → Pydantic rejects
-        return coerced
 
     time_column: Optional[str] = None
 
@@ -564,19 +551,22 @@ _BUILTIN_BAREARG_AGGS_LOCAL_SLICE: frozenset[str] = BUILTIN_AGGREGATIONS
 # sqlglot rewrites log10/log2 into 2-arg LOG(base,x), breaking dialects lacking 2-arg LOG; rewrite back to Anonymous.
 
 
-_SQL_AND_JOINER = " AND "
+def _grouped(predicate: Expression) -> Expression:  # pyright: ignore[reportPrivateImportUsage]
+    """``predicate`` parenthesised when it is an ``AND`` / ``OR`` (safe as a conjunct)."""
+    return exp.Paren(this=predicate) if isinstance(predicate, (exp.And, exp.Or)) else predicate
 
-# Safe agg-param values: identifiers, qualified names, numeric literals.
-_SAFE_AGG_PARAM_RE = re.compile(
-    r'^(?:'
-    r'[a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*'  # identifier or qualified name
-    r'|'
-    r'-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?'  # numeric literal
-    r'|'
-    r'\(-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?\)'  # parenthesised numeric literal
-    r')$'
-)
 
+def _conjunction(parts: Sequence[Expression]) -> Optional[Expression]:  # pyright: ignore[reportPrivateImportUsage]
+    """The ``AND`` of already-grouped ``parts``; ``None`` when empty."""
+    if not parts:
+        return None
+    out = parts[0]
+    for part in parts[1:]:
+        out = exp.And(this=out, expression=part)
+    return out
+
+# Parameter values rendered through a scope; scalars render as literals, markers never.
+_ROW_PARAM_KINDS = (ColumnKey, ColumnSqlKey, SqlFragmentKey)
 
 # Shift units whose whole-unit offsets map each bucket start onto another, making the outer re-trunc a per-row no-op.
 _BUCKET_ALIGNED_SHIFT_UNITS: dict[str, frozenset[str]] = {
@@ -592,11 +582,6 @@ _BUCKET_ALIGNED_SHIFT_UNITS: dict[str, frozenset[str]] = {
     "second": frozenset({"second", "minute", "hour", "day", "week", "week_sunday",
                          "month", "quarter", "year"}),
 }
-
-
-def _is_fragment(*, name: str, placeholders: Optional[frozenset[str]]) -> bool:
-    """A formula-less aggregation treats every string param as a fragment."""
-    return placeholders is None or name in placeholders
 
 
 def _percentile_literal(p: Expression) -> Expression:
@@ -761,20 +746,6 @@ _WINDOW_UNIT_SQLITE = {
     "min": "minutes",
     "s": "seconds",
 }
-
-
-def _validate_agg_param_value(value: str, param_name: str, agg_name: str) -> None:
-    """Validate that a query-time aggregation parameter value is safe for substitution."""
-    if not _SAFE_AGG_PARAM_RE.match(value):
-        raise ValueError(
-            f"Unsafe value '{value}' for parameter '{param_name}' in "
-            f"aggregation '{agg_name}'. Parameter values must be column names "
-            f"(e.g., 'quantity') or numeric literals (e.g., '0.95')."
-        )
-
-
-
-
 
 
 def _effective_src_filters(*, lowered_filters, plan) -> list:
@@ -973,6 +944,12 @@ class SQLGenerator:
         #: {cte name -> declared deps}, one per statement being rendered, so a
         #: later split recovers a hoisted producer's edges (never AST-scanned).
         self._gen_dep_stack: List[Dict[str, List[str]]] = []
+        #: Multi-stage statement state: every stage relation, the current
+        #: statement's declared reads and its in-flight splice chain.
+        self._gen_stage_relations: FrozenSet[str] = frozenset()
+        self._gen_stage_reads: FrozenSet[str] = frozenset()
+        self._gen_splice_chain: Tuple[str, ...] = ()
+        self._gen_splice_failures: Dict[str, Exception] = {}
 
     def install_generation(self, *, reserve: "Iterable[str]" = ()) -> None:
         """Open one generation scope spanning SEVERAL ``reuse_allocator=True``"""
@@ -1120,15 +1097,20 @@ class SQLGenerator:
 
 
 
+    def _embed_model_sql(self, *, sql: str, alias: str) -> Expression:
+        """A model's own ``sql`` as an aliased subquery, its CTEs renamed through the
+        generation allocator so a later hoist never meets another statement's names."""
+        statement = self._parse(sql)
+        allocator = self._gen_allocator or self._new_allocator()
+        limit = self._dialect.max_identifier_bytes
+        rename_embedded_ctes(statement, allocate=lambda name: allocator.allocate_cte(
+            fit_identifier(name=f"_w_{name}", limit=limit),
+        ))
+        return exp.Subquery(this=statement, alias=exp.to_identifier(alias))
+
     def _quote_ident(self, name: str) -> str:
         """Render ``name`` as ONE dialect-quoted identifier string."""
         return exp.to_identifier(name, quoted=True).sql(dialect=self.dialect)
-
-    def _parse_cte_body(self, sql: str) -> Expression:
-        """Parse a rendered CTE body back into AST for the WITH assembler."""
-        parsed = sqlglot.parse_one(sql, dialect=self.dialect)
-        unmangle_dotted_table_refs(parsed)
-        return parsed
 
     @staticmethod
     def _carry_aliases_in_plan_order(
@@ -1241,21 +1223,6 @@ class SQLGenerator:
             type=spec.column_type,
         )
 
-    def _agg_param_ast(
-        self, value: "ResolvedAggKwarg | str", *, model_name: str,
-    ) -> Expression:
-        """Resolve a parametric-agg param value to a sqlglot AST."""
-        if isinstance(value, ResolvedAggKwarg):
-            if value.kind == "expr":
-                # Return a copy: sqlglot re-parents a node on attach, so sharing one kwarg AST across trees corrupts the
-                # first.
-                return value.value.copy() if isinstance(value.value, Expression) \
-                    else self._parse(value.value)
-            raw = value.value
-        else:
-            raw = value
-        return self._resolve_sql(sql=raw, name=raw, model_name=model_name)
-
     def _resolve_agg_param(
         self,
         spec: AggRenderSpec,
@@ -1263,29 +1230,16 @@ class SQLGenerator:
         name: str,
         agg_name: str,
     ) -> Expression:
-        """Pull a named aggregation parameter, with query-time SQL-injection"""
-        value: "ResolvedAggKwarg | str | None" = None
-        if name in spec.agg_kwargs:
-            value = spec.agg_kwargs[name]
-            # Guard only the untrusted str forms; kind="expr" is a trusted bind-time-resolved expression, embedded
-            # verbatim.
-            if isinstance(value, ResolvedAggKwarg):
-                if value.kind == "str":
-                    _validate_agg_param_value(value.value, name, agg_name)
-            elif isinstance(value, str):
-                _validate_agg_param_value(value, name, agg_name)
-        elif spec.aggregation_def:
-            for param in spec.aggregation_def.params:
-                if param.name == name:
-                    value = param.sql
-                    break
+        """A named parameter's bound SQL; a missing one fails closed."""
+        value = spec.agg_kwargs.get(name)
         if value is None:
             raise ValueError(
                 f"Aggregation '{agg_name}' requires parameter '{name}'. "
                 f"Set it in the model's aggregation definition or at query time "
                 f"(e.g., 'measure:{agg_name}({name}=column)')."
             )
-        return self._agg_param_ast(value, model_name=spec.model_name)
+        # A copy: sqlglot re-parents a node on attach.
+        return value.value.copy()
 
     def _build_agg(
         self,
@@ -1308,7 +1262,7 @@ class SQLGenerator:
                 table=exp.to_identifier(spec.model_name),
             ), False
 
-        if not is_builtin_agg(agg_name) or rendered_formula(agg=agg_name, definition=spec.aggregation_def):
+        if not is_builtin_agg(agg_name) or spec.formula:
             return self._build_formula_agg(spec, agg_name), True
 
         entry = resolve_agg_entry(agg_name)
@@ -1350,39 +1304,20 @@ class SQLGenerator:
 
     def _build_formula_agg(self, spec: AggRenderSpec, agg_name: str) -> Expression:
         """Build SQL for formula-based aggregations (weighted_avg, custom)."""
-        formula = rendered_formula(agg=agg_name, definition=spec.aggregation_def)
+        formula = spec.formula
         if formula is None:
             raise ValueError(
                 f"Aggregation '{agg_name}' has no formula. "
                 f"Custom aggregations must define a formula."
             )
-
-        param_defaults = {}
-        if spec.aggregation_def:
-            param_defaults = {p.name: p.sql for p in spec.aggregation_def.params}
-        params = {**param_defaults, **spec.agg_kwargs}
-
-        # Guard only the untrusted kind="str" form against injection; kind="expr" is bind-resolved and trusted.
-        for pname, pval in spec.agg_kwargs.items():
-            if isinstance(pval, ResolvedAggKwarg) and pval.kind == "str":
-                _validate_agg_param_value(pval.value, pname, agg_name)
-
-        template = self._formula_template(agg_name=agg_name, formula=formula)
-        for req in BUILTIN_AGGREGATION_REQUIRED_PARAMS.get(agg_name, []):
-            if req in template.placeholder_names and req not in params:
-                raise ValueError(
-                    f"Aggregation '{agg_name}' requires parameter '{req}'. "
-                    f"Set it in the model's aggregation definition or at query time "
-                    f"(e.g., 'measure:{agg_name}({req}=column)')."
-                )
-
-        if VALUE_PLACEHOLDER in params:
+        if VALUE_PLACEHOLDER in spec.agg_kwargs:
             raise SqlTemplateError(reserved_value_param_message(agg_name))
+        template = self._formula_template(agg_name=agg_name, formula=formula)
         bindings = {
-            name: self._agg_param_ast(val, model_name=spec.model_name)
-            for name, val in params.items() if name in template.placeholder_names
+            name: self._resolve_agg_param(spec, name=name, agg_name=agg_name)
+            for name in template.placeholder_names if name != VALUE_PLACEHOLDER
         }
-        # Bound last: the aggregated column always wins. A source ``Column.filter`` is already baked in.
+        # The aggregated column; a source ``Column.filter`` is already baked in.
         bindings[VALUE_PLACEHOLDER] = (
             exp.Star() if spec.sql is None and not spec.name else self._resolve_value_ast(spec)
         )
@@ -1421,17 +1356,24 @@ class SQLGenerator:
             )
         raise ValueError(f"Unknown statistical aggregation {agg_name!r}.")
 
-    def generate_from_planned(
+    def generate_from_planned(self, planned_query, *, bundle) -> str:
+        """Render a typed ``PlannedQuery`` to finished SQL (public entry)."""
+        return _finish_statement(
+            self._build_from_planned(planned_query, bundle=bundle),
+            dialect=self._dialect,
+            exempt=_user_authored_exemptions(bundle=bundle, dialect=self._dialect),
+        )
+
+    def _build_from_planned(
         self, planned_query, *, bundle, as_cte_body: bool = False,
-        reuse_allocator: bool = False, as_ast: bool = False,
-        producer_kernel=None,
-    ):
-        """Render a typed ``PlannedQuery`` to SQL (public entry)."""
+        reuse_allocator: bool = False, producer_kernel=None,
+    ) -> exp.Select:
+        """Compose a typed ``PlannedQuery`` as AST, in a fresh generation scope unless ``reuse_allocator``."""
         self._assert_projection_is_public(planned_query)
         if reuse_allocator and self._gen_allocator is not None:
-            result = self._generate_from_planned_impl(
+            return self._generate_from_planned_impl(
                 planned_query, bundle=bundle, as_cte_body=as_cte_body,
-                as_ast=as_ast, producer_kernel=producer_kernel,
+                producer_kernel=producer_kernel,
             )
         else:
             prev_allocator = getattr(self, "_gen_allocator", None)
@@ -1445,9 +1387,9 @@ class SQLGenerator:
             self._gen_reuse_deps = {}
             self._gen_dep_stack = []
             try:
-                result = self._generate_from_planned_impl(
+                return self._generate_from_planned_impl(
                     planned_query, bundle=bundle, as_cte_body=as_cte_body,
-                    as_ast=as_ast, producer_kernel=producer_kernel,
+                    producer_kernel=producer_kernel,
                 )
             finally:
                 self._gen_allocator = prev_allocator
@@ -1455,12 +1397,6 @@ class SQLGenerator:
                 self._gen_split_consumers = prev_split_consumers
                 self._gen_reuse_deps = prev_reuse_deps
                 self._gen_dep_stack = prev_dep_stack
-        # Hoist consumes the producer AST, not re-parsed SQL text (a round-trip mis-binds a dotted result-key column on
-        # BigQuery / T-SQL).
-        if as_ast and not isinstance(result, Expression):
-            result = sqlglot.parse_one(result, dialect=self.dialect)
-            unmangle_dotted_table_refs(result)
-        return result
 
     @staticmethod
     def _assert_projection_is_public(planned_query) -> None:
@@ -1488,10 +1424,9 @@ class SQLGenerator:
         *,
         bundle,
         as_cte_body: bool = False,
-        as_ast: bool = False,
         producer_kernel=None,
-    ):
-        """Render a typed ``PlannedQuery`` to SQL."""
+    ) -> exp.Select:
+        """Compose a typed ``PlannedQuery`` as one statement AST."""
 
         source_model = bundle.source_model
         if source_model is None:
@@ -1633,9 +1568,7 @@ class SQLGenerator:
                     entries=regroup_ctes, final=final_select,
                     external_names=self._external_cte_names(),
                 )
-            return final_select if as_ast else final_select.sql(
-                dialect=self.dialect, pretty=True,
-            )
+            return final_select
 
         # Chain bodies stay exp.Select end-to-end: render-to-text-and-reparse would mis-split the dotted
         # <relation>.<alias> names on dot-path dialects.
@@ -1735,7 +1668,7 @@ class SQLGenerator:
         regroup_join_specs: Optional[List[Tuple[str, List[Tuple[Any, str]]]]] = None,
         reserve_bare_aliases: bool = False,
         reused_names: Sequence[str] = (),
-    ) -> str:
+    ) -> exp.Select:
         """Steps + post phases over a built relation tail (D1) — shared by the"""
         # The base relation joins the prelude producers AND any reused producer its
         # tail_select reads (a dual-role producer shared with the combined/row phase);
@@ -1977,40 +1910,36 @@ class SQLGenerator:
         available_alias_by_slot_id,
         aliases_by_slot_id,
         planned_query,
-    ) -> str:
-        """Assemble the ``WITH`` chain, apply the POST-phase filter wrap, and emit"""
+    ) -> exp.Select:
+        """The ``WITH`` chain whose final select (POST filters as its ``WHERE``) sits under the public outer wrap."""
         projected = self._carry_aliases_in_plan_order(aliases_by_slot_id)
-        inner_select = exp.Select().select(
+        final_select = exp.Select().select(
             *(exp.column(a, quoted=True) for a in projected),
         ).from_(chain_tail)
-        chain_sql = self._assemble_with_chain(
-            entries=ctes, final=inner_select,
-            external_names=self._external_cte_names(),
-        ).sql(dialect=self.dialect, pretty=True)
-
-        post_filter_conditions = self._render_post_phase_filter_conditions(
+        post_where = _conjunction(self._render_post_phase_filter_conditions(
             planned_query=planned_query,
             slot_id_by_key=slot_id_by_key,
             available_alias_by_slot_id=available_alias_by_slot_id,
+        ))
+        if post_where is not None:
+            final_select = final_select.where(post_where)
+        chain = self._assemble_with_chain(
+            entries=ctes, final=final_select,
+            external_names=self._external_cte_names(),
         )
-        if post_filter_conditions:
-            chain_sql = (
-                f"SELECT *\nFROM (\n{chain_sql}\n) AS {FILTERED_ALIAS}"
-                f"\nWHERE {_SQL_AND_JOINER.join(post_filter_conditions)}"
-            )
-
-        public_aliases_user_order = _cycle_public_aliases_in_projection_order(
+        return self._public_outer_wrap(
+            inner=chain,
+            public_aliases=_cycle_public_aliases_in_projection_order(
+                planned_query=planned_query,
+                slots_by_id=slots_by_id,
+                aliases_by_slot_id=aliases_by_slot_id,
+            ),
+            order_terms=self._planned_order_terms(
+                planned_query=planned_query,
+                slots_by_id=slots_by_id,
+                available_alias_by_slot_id=available_alias_by_slot_id,
+            ),
             planned_query=planned_query,
-            slots_by_id=slots_by_id,
-            aliases_by_slot_id=aliases_by_slot_id,
-        )
-        return self._emit_planned_outer_wrap(
-            chain_sql=chain_sql,
-            public_aliases=public_aliases_user_order,
-            projected=projected,
-            planned_query=planned_query,
-            slots_by_id=slots_by_id,
-            available_alias_by_slot_id=available_alias_by_slot_id,
         )
 
 
@@ -2091,36 +2020,9 @@ class SQLGenerator:
                 scope.resolve(key.source)
 
         def _resolve_kwargs(key) -> None:
-            kw: Dict[str, ResolvedAggKwarg] = {}
-            for kname, kval in key.kwargs:
-                if isinstance(kval, (ColumnKey, ColumnSqlKey)):
-                    kw[kname] = ResolvedAggKwarg(kind="expr", value=scope.resolve(kval))
+            kw = self._resolve_agg_kwargs_for_key(key=key, scope=scope)
             if kw:
                 resolved[key] = kw
-
-        def _resolve_fragment_kwargs(key) -> None:
-            # Template-fragment kwargs are substituted as qualified SQL, so their crossed joins must register like
-            # Column.filter; keep the resolved (alias-rewritten) fragment. A host-locus source beyond the root carries
-            # its aggregation definition on the source model, so look the params up there.
-            # A definition default resolves per its reference frame: the source
-            # owner for a source-relative default (regions.pop), the root for a home-frame
-            # default naming the widened home (customers.spend) — the reverse hop back to it.
-            frag_model, source_owner_path = scope.root_model, None
-            src_path = source_anchor_path(key.source)
-            if src_path and _is_host_grain(key):
-                walked = self._walk_join_path_model(
-                    source_model=scope.root_model, path=src_path, bundle=scope.bundle,
-                )
-                if walked is not None:
-                    frag_model, source_owner_path = walked, src_path
-            frags = self._register_fragment_kwarg_joins(
-                key=key, scope=scope, model=frag_model,
-                source_owner_path=source_owner_path,
-            )
-            if frags:
-                bucket = resolved.setdefault(key, {})
-                for name, ast in frags.items():
-                    bucket.setdefault(name, ResolvedAggKwarg(kind="expr", value=ast))
 
         def _resolve_first_last_time_arg(key) -> None:
             arg = self._explicit_time_arg_of(key)
@@ -2134,7 +2036,6 @@ class SQLGenerator:
 
         _for_each_local_agg(_resolve_source)
         _for_each_local_agg(_resolve_kwargs)
-        _for_each_local_agg(_resolve_fragment_kwargs)
         _for_each_local_agg(_resolve_first_last_time_arg)
         return resolved
 
@@ -2197,14 +2098,12 @@ class SQLGenerator:
     def _resolve_agg_kwargs_for_key(
         self, *, key, scope: ScopeFrame,
     ) -> "Optional[Dict[str, ResolvedAggKwarg]]":
-        """Resolve a single LOCAL aggregate's column-ref kwargs through ``scope`` (a row-attached placeholder resolves to its producer join column)."""
-        kwargs = getattr(key, "kwargs", None)
-        if not kwargs:
-            return None
+        """Resolve a LOCAL aggregate's row-valued parameters through ``scope``, registering
+        the joins they cross (a row-attached placeholder resolves to its producer column)."""
         resolved = {
-            kname: ResolvedAggKwarg(kind="expr", value=scope.resolve(kval))
-            for kname, kval in kwargs
-            if isinstance(kval, (ColumnKey, ColumnSqlKey))
+            kname: ResolvedAggKwarg(value=scope.resolve(kval))
+            for kname, kval in getattr(key, "kwargs", ())
+            if isinstance(kval, _ROW_PARAM_KINDS)
         }
         return resolved or None
 
@@ -2434,8 +2333,7 @@ class SQLGenerator:
                 )
         # A regroup value carrying a dotted producer alias (`_cm_x.`a.b``) round-trips
         # through `_resolve_sql` and BigQuery/T-SQL re-parse it as `_cm_x.a.b`; repair
-        # it here, where the base select's FROM/JOIN sources are complete (same fix as
-        # `_parse_cte_body`, which needs the source context this select now has).
+        # it here, where the base select's FROM/JOIN sources are complete.
         unmangle_dotted_table_refs(base_select)
         return (
             base_select, aliases_by_slot_id, has_aggregation, group_by_keys,
@@ -2572,6 +2470,18 @@ class SQLGenerator:
         # the latest row's value may be NULL if it fails the filter.
         # ``count(*)`` projects a literal so the outer COUNT(_w_value) counts interval
         # rows (0, not 1, on an empty interval) — the star never enters resolve.
+        # The custom-aggregation definition lives on the source's owning model,
+        # which a parameter may widen the home above (D4) — resolve it there.
+        formula = rendered_formula(agg=key.agg, definition=self._resolve_aggregation_def(
+            key=key,
+            source_model=(
+                self._walk_join_path_model(
+                    source_model=source_model,
+                    path=source_anchor_path(key.source), bundle=bundle,
+                ) or source_model
+            ),
+            src_leaf="_w_value",
+        ))
         if isinstance(key.source, StarKey):
             # ``*`` is only legal with count (as in the plain path); any other
             # aggregation over the star would silently become ``<agg>(1)``.
@@ -2583,7 +2493,7 @@ class SQLGenerator:
             # ``count(*)`` takes no inputs but its own ``window=`` (plain-path guard);
             # a stray arg/kwarg would otherwise be projected and silently ignored.
             extra_kwargs = [(k, v) for k, v in key.kwargs if k != "window"]
-            if key.args or extra_kwargs:
+            if key.args or (extra_kwargs and not formula):
                 raise ValueError(
                     f"'count(*)' takes no args or kwargs other than window; got "
                     f"args={key.args!r}, kwargs={extra_kwargs!r}."
@@ -2597,13 +2507,11 @@ class SQLGenerator:
         picked_kwarg_exprs: Dict[str, ResolvedAggKwarg] = {}
         for _i, _pp in enumerate(plan.picked_params):
             _p_alias = f"_w_p{_i}"
-            _picked = self._render_picked_param_value(
-                pp=_pp, ctx=RenderContext(scope=src_scope, dialect=self._dialect),
+            _picked = render_value_key(
+                key=_pp.key, ctx=RenderContext(scope=src_scope, dialect=self._dialect),
             )
             src_cols.append(_picked.as_(_p_alias))
-            picked_kwarg_exprs[_pp.name] = ResolvedAggKwarg(
-                kind="expr", value=_src_col(_p_alias),
-            )
+            picked_kwarg_exprs[_pp.name] = ResolvedAggKwarg(value=_src_col(_p_alias))
 
         # A windowed first/last ranks the interval rows by this key, projected as
         # _w_rank (uncast, like the plain ranked path).
@@ -2751,28 +2659,10 @@ class SQLGenerator:
             alias=full_agg_alias,
             model_name="_src",
             type=agg_slot.type,
-            # The custom-aggregation definition lives on the source's owning model,
-            # which a parameter may widen the home above (D4) — resolve it there,
-            # not on the producer root, mirroring _trailing_window_kernel.
-            aggregation_def=self._resolve_aggregation_def(
-                key=key,
-                source_model=(
-                    self._walk_join_path_model(
-                        source_model=source_model,
-                        path=source_anchor_path(key.source), bundle=bundle,
-                    ) or source_model
-                ),
-                src_leaf="_w_value",
+            formula=formula,
+            agg_kwargs=self._agg_param_exprs(
+                key=key, formula=formula, resolved=picked_kwarg_exprs, scope=src_scope,
             ),
-            agg_kwargs={
-                **{
-                    k: ResolvedAggKwarg(kind="str", value=agg_kwarg_canonical_str(v))
-                    for k, v in key.kwargs
-                    if k not in ("window", "partition_by")
-                    and k not in picked_kwarg_exprs
-                },
-                **picked_kwarg_exprs,
-            },
         )
         agg_expr, _ = self._build_agg(level2_spec)
         agg_expr = _wrap_cast_for_type(
@@ -3072,7 +2962,7 @@ class SQLGenerator:
         ))
         return parts
 
-    def _render_kernel_producer_body(self, *, planned_query, bundle, kernel) -> str:
+    def _render_kernel_producer_body(self, *, planned_query, bundle, kernel) -> exp.Select:
         """The aggregate phase of a ranked / trailing-window kernel producer"""
         source_model = bundle.source_model
         source_relation = planned_query.source_relation
@@ -3151,20 +3041,7 @@ class SQLGenerator:
                 entries=regroup_ctes, final=body,
                 external_names=self._external_cte_names(),
             )
-        return body.sql(dialect=self.dialect, pretty=True)
-
-    def _render_picked_param_value(self, *, pp, ctx) -> Expression:  # pyright: ignore[reportPrivateImportUsage]
-        """The level-1 SQL for a picked parameter: a canonical expression default
-        entered at the producer root (the kernel already rerooted it
-        into producer coordinates), else the parameter's value key rendered through
-        the scope (a column / placeholder / composite; a derived ``Column.sql``
-        expands, a carrier placeholder resolves to its carrier column)."""
-        if pp.sql is not None:
-            return ctx.scope.enter_expression(
-                pp.sql, owner_path=(),
-                location=f"parameter default {pp.name!r}",
-            )
-        return render_value_key(key=pp.key, ctx=ctx)
+        return body
 
     def _render_association_producer_body(  # NOSONAR(S3776) — one cohesive two-level association body: level-1 dedup SELECT (grain × entity key, picked value) wrapped as ``_base``, level-2 aggregate over the picked rows. The two arms share the grain-alias / scope state.
         self, *, planned_query, bundle, kernel, source_model, source_relation,
@@ -3232,17 +3109,17 @@ class SQLGenerator:
             # attached composite; render it through the scope (its placeholders
             # resolve to the carrier columns) and pick it once per cell.
             value_expr = render_value_key(key=agg_slot.key.source, ctx=ctx)
-            agg_def = self._resolve_aggregation_def(
+            formula = rendered_formula(agg=agg_slot.key.agg, definition=self._resolve_aggregation_def(
                 key=agg_slot.key, source_model=source_model, src_leaf=picked_alias,
-            )
+            ))
             spec = AggRenderSpec(
                 name=picked_alias, sql=None, aggregation=agg_slot.key.agg,
                 alias=agg_alias, model_name="_base", type=agg_slot.type,
-                aggregation_def=agg_def,
-                agg_kwargs={
-                    k: ResolvedAggKwarg(kind="str", value=agg_kwarg_canonical_str(v))
-                    for k, v in agg_slot.key.kwargs if k not in picked_names
-                },
+                formula=formula,
+                agg_kwargs=self._agg_param_exprs(
+                    key=agg_slot.key, formula=formula, scope=scope,
+                    skip=frozenset(picked_names),
+                ),
             )
             inner_cols.append(exp.Alias(
                 this=exp.Max(this=value_expr.copy()),
@@ -3283,13 +3160,12 @@ class SQLGenerator:
         picked_kwarg_exprs: Dict[str, ResolvedAggKwarg] = {}
         for _i, _pp in enumerate(picked_params):
             _p_alias = f"_p{_i}"
-            _picked = self._render_picked_param_value(pp=_pp, ctx=ctx)
+            _picked = render_value_key(key=_pp.key, ctx=ctx)
             inner_cols.append(exp.Alias(
                 this=exp.Max(this=_picked),
                 alias=exp.to_identifier(_p_alias),
             ))
             picked_kwarg_exprs[_pp.name] = ResolvedAggKwarg(
-                kind="expr",
                 value=exp.Column(
                     this=exp.to_identifier(_p_alias),
                     table=exp.to_identifier("_base"),
@@ -3359,17 +3235,18 @@ class SQLGenerator:
         # Level 2 aggregates over the picked rows per grain; ``count(*)`` counts
         # the entity rows (COUNT(*)), every other family runs over ``_v``.
         if is_star:
+            formula = rendered_formula(
+                agg=agg_slot.key.agg, definition=self._resolve_aggregation_def(
+                    key=agg_slot.key, source_model=source_model, src_leaf="*",
+                ))
             level2_spec = AggRenderSpec(
                 name="", sql=None, aggregation=agg_slot.key.agg,
                 alias=agg_alias, model_name="_base", type=agg_slot.type,
-                aggregation_def=self._resolve_aggregation_def(
-                    key=agg_slot.key, source_model=source_model, src_leaf="*",
+                formula=formula,
+                agg_kwargs=self._agg_param_exprs(
+                    key=agg_slot.key, formula=formula, resolved=picked_kwarg_exprs,
+                    scope=scope,
                 ),
-                agg_kwargs={
-                    **{k: ResolvedAggKwarg(kind="str", value=agg_kwarg_canonical_str(v))
-                       for k, v in agg_slot.key.kwargs if k not in picked_names},
-                    **picked_kwarg_exprs,
-                },
             )
         else:
             assert spec is not None  # set in both non-star arms above
@@ -3392,7 +3269,7 @@ class SQLGenerator:
                 # A picked parameter reads from _base._p<i>, overriding its
                 # explicit-kwarg / definition-default resolution.
                 agg_kwargs={**spec.agg_kwargs, **picked_kwarg_exprs},
-                aggregation_def=spec.aggregation_def,
+                formula=spec.formula,
             )
         agg_expr, _ = self._build_agg(level2_spec)
         agg_expr = _wrap_cast_for_type(expr=agg_expr, dt=self._slot_cast_type(agg_slot))
@@ -3483,7 +3360,7 @@ class SQLGenerator:
         *,
         planned_query,
         bundle,
-    ) -> str:
+    ) -> exp.Select:
         """Render a ``PlannedQuery`` that carries one or more COMBINED"""
 
         source_model = bundle.source_model
@@ -3879,9 +3756,7 @@ class SQLGenerator:
                         aliases_by_slot_id=aliases_by_slot_id,
                     ),
                 )
-                if isinstance(rendered, (exp.And, exp.Or)):
-                    rendered = exp.Paren(this=rendered)
-                combined_select = combined_select.where(rendered)
+                combined_select = combined_select.where(_grouped(rendered))
 
         if planned_query.transform_layers:
             return self._render_steps_and_post(
@@ -3978,7 +3853,7 @@ class SQLGenerator:
             offset=planned_query.offset,
         )
 
-        return combined_statement.sql(dialect=self.dialect, pretty=True)
+        return combined_statement
 
     def _canonical_cross_model_alias(
         self,
@@ -4040,16 +3915,16 @@ class SQLGenerator:
 
     def _render_producer_split(
         self, *, producer, bundle, kernel=None,
-    ) -> Tuple[List[CteEntry], Expression]:  # pyright: ignore[reportPrivateImportUsage] — sqlglot ships no __all__
+    ) -> Tuple[List[CteEntry], exp.Select]:
         """Render a regroup producer as AST, split into (hoisted CTEs, body) — D2.
         A pushed registry scope captures the producer statement's declared CTE
-        deps for :meth:`_split_statement_ctes`."""
+        deps for :meth:`_split_ast_ctes`."""
         self._gen_dep_stack.append({})
         try:
-            return self._split_ast_ctes(cast(exp.Select, self.generate_from_planned(
-                planned_query=producer, bundle=bundle, as_cte_body=True,
-                reuse_allocator=True, producer_kernel=kernel, as_ast=True,
-            )))
+            return self._split_ast_ctes(self._build_from_planned(
+                producer, bundle=bundle, as_cte_body=True,
+                reuse_allocator=True, producer_kernel=kernel,
+            ))
         finally:
             self._gen_dep_stack.pop()
 
@@ -4066,25 +3941,17 @@ class SQLGenerator:
                 self._gen_split_consumers.pop()
             self._gen_dep_stack.pop()
 
-    def _split_statement_ctes(
-        self, sql: str,
-    ) -> Tuple[List[CteEntry], str]:
-        """Text form of :meth:`_split_ast_ctes` (a multi-stage statement arrives as SQL)."""
-        entries, body = self._split_ast_ctes(
-            cast(exp.Select, sqlglot.parse_one(sql, dialect=self.dialect)),
-        )
-        return entries, body.sql(dialect=self.dialect, pretty=True) if entries else sql
-
     def _split_ast_ctes(
-        self, parsed: Expression,  # pyright: ignore[reportPrivateImportUsage] — sqlglot ships no __all__
-    ) -> Tuple[List[CteEntry], Expression]:  # pyright: ignore[reportPrivateImportUsage] — sqlglot ships no __all__
-        """Split a rendered statement into (hoisted CTE entries, de-WITHed body).
+        self, parsed: exp.Select, *, root: bool = False,
+    ) -> Tuple[List[CteEntry], exp.Select]:
+        """Split a composed statement into (hoisted CTE entries, de-WITHed body).
 
         Each entry's ``depends_on`` comes from the top statement-scoped registry
         (declared at assembly time), re-keyed through the ``_base`` rename map so
-        an edge onto a renamed base still resolves. Fails closed if one CTE name
-        appears in two ``WITH`` nodes of the statement."""
-        self._unmangle_dotted_table_refs(parsed)
+        an edge onto a renamed base still resolves. The multi-stage ``root`` is the
+        outermost consumer: its own top-level CTEs keep their names. Fails closed if
+        one CTE name appears in two ``WITH`` nodes of the statement."""
+        top = parsed.args.get("with_") if root else None
         with_nodes = list(parsed.find_all(exp.With))
         if not with_nodes:
             return [], parsed
@@ -4093,7 +3960,7 @@ class SQLGenerator:
         entries: List[CteEntry] = []
         seen: Set[str] = set()
         for with_node in with_nodes:
-            rename = self._uniquify_producer_base_ctes(
+            rename = {} if with_node is top else self._uniquify_producer_base_ctes(
                 with_node=with_node, allocator=allocator,
             )
             reverse = {new: old for old, new in rename.items()}
@@ -4107,34 +3974,15 @@ class SQLGenerator:
                 seen.add(name)
                 orig = reverse.get(name, name)
                 deps = [rename.get(d, d) for d in captured.get(orig, ())]
-                entries.append(CteEntry(
-                    name=name, query=cte.this.copy(), depends_on=deps,
-                ))
+                entries.append(cte_entry(cte=cte, name=name, depends_on=deps))
             with_node.pop()
         return entries, parsed
 
     def _split_root_ctes(
-        self, sql: str,
-    ) -> Tuple[List[CteEntry], "exp.Select"]:
-        """Split the multi-stage ROOT statement into (its own CTE entries, de-WITHed
-        body). The root is the outermost consumer, so its base CTE is NOT renamed;
-        each entry takes its declared deps from the top registry (identity re-key)."""
-        parsed = cast(exp.Select, sqlglot.parse_one(sql, dialect=self.dialect))
-        with_node = parsed.args.get("with_")
-        if with_node is None:
-            return [], parsed
-        captured = self._gen_dep_stack[-1] if self._gen_dep_stack else {}
-        entries = [
-            CteEntry(
-                name=cast(str, cte.alias_or_name), query=cte.this.copy(),
-                depends_on=list(captured.get(cast(str, cte.alias_or_name), ())),
-            )
-            for cte in with_node.expressions
-        ]
-        parsed.set("with_", None)
-        return entries, parsed
-
-    _unmangle_dotted_table_refs = staticmethod(unmangle_dotted_table_refs)
+        self, parsed: exp.Select,
+    ) -> Tuple[List[CteEntry], exp.Select]:
+        """Split the multi-stage ROOT statement into (its CTE entries, de-WITHed body)."""
+        return self._split_ast_ctes(parsed, root=True)
 
     @staticmethod
     def _uniquify_producer_base_ctes(*, with_node, allocator) -> Dict[str, str]:  # NOSONAR(S3776) — one rename pass; the collect / table-ref / column-qualifier / cte-alias rewrites share the rename map.
@@ -4356,8 +4204,7 @@ class SQLGenerator:
                     + list(producer.combined_expression_slots)
                 )
             }
-            # Flatten each producer output column to a dot-free name: a dotted alias in a WHERE predicate is stringified
-            # and re-parsed, and BigQuery mis-splits it.
+            # Flatten each producer output column to a dot-free name.
             def _flat(slot) -> str:
                 dotted = self._full_alias_for_slot(
                     slot=slot, source_relation=relation, alias_index={},
@@ -4382,8 +4229,7 @@ class SQLGenerator:
                 if sid in sub_slots
             ]
             wrapped = build_flat_rename_wrapper(
-                source_relation=relation,
-                stage_sql=producer_body.sql(dialect=self.dialect, pretty=True),
+                source_relation=relation, inner=producer_body,
                 expected_columns=expected, dialect=self.dialect,
             )
             for h in producer_hoisted:
@@ -4549,47 +4395,40 @@ class SQLGenerator:
                     root=source_relation, path=path[: hop_idx + 1],
                 )
                 if next_alias not in emitted_aliases:
-                    join_on_parts = []
-                    for src_col, tgt_col in physical_join_pairs(
-                        edge=edge, source=prev_model, target=next_model,
-                    ):
-                        # _to_ident quotes mixed-case keys; table qualifiers are internal aliases.
-                        join_on_parts.append(exp.EQ(
-                            this=exp.Column(
-                                this=self._to_ident(src_col),
-                                table=exp.to_identifier(current_alias),
-                            ),
-                            expression=exp.Column(
-                                this=self._to_ident(tgt_col),
-                                table=exp.to_identifier(next_alias),
-                            ),
-                        ))
-                    target_table = (
-                        next_model.sql_table or next_model.name
-                    )
-                    if next_model.sql and not next_model.sql_table:
-                        join_expr = exp.Subquery(
-                            this=self._parse(next_model.sql),
-                            alias=exp.to_identifier(next_alias),
-                        )
-                    else:
-                        join_expr = self._to_table(target_table, alias=next_alias)
-                    on_expr = (
-                        exp.and_(*join_on_parts)
-                        if len(join_on_parts) > 1
-                        else join_on_parts[0]
-                    )
-                    # Root-relative join type: LEFT keeps the querying root whole
-                    # in the traversal direction, INNER is symmetric; RIGHT is
-                    # never emitted. The oriented edge carries the
-                    # declared type unchanged.
-                    joins.append((
-                        join_expr, on_expr, edge.join_type.value.upper(),
+                    joins.append(self._hop_join(
+                        edge=edge, prev_model=prev_model, next_model=next_model,
+                        current_alias=current_alias, next_alias=next_alias,
                     ))
                     emitted_aliases.add(next_alias)
                 current_alias = next_alias
                 prev_model = next_model
         return base_from, joins
+
+    def _hop_join(
+        self, *, edge, prev_model, next_model, current_alias: str, next_alias: str,
+    ) -> Tuple[Expression, exp.Condition, str]:
+        """``(join_expr, on_expr, join_type)`` for one oriented hop."""
+        join_on_parts = [
+            # _to_ident quotes mixed-case keys; table qualifiers are internal aliases.
+            exp.EQ(
+                this=exp.Column(
+                    this=self._to_ident(src_col),
+                    table=exp.to_identifier(current_alias),
+                ),
+                expression=exp.Column(
+                    this=self._to_ident(tgt_col),
+                    table=exp.to_identifier(next_alias),
+                ),
+            )
+            for src_col, tgt_col in physical_join_pairs(
+                edge=edge, source=prev_model, target=next_model,
+            )
+        ]
+        join_expr = self._emit_relation(model=next_model, alias=next_alias)
+        on_expr = exp.and_(*join_on_parts) if len(join_on_parts) > 1 else join_on_parts[0]
+        # Root-relative join type: LEFT keeps the querying root whole in the traversal
+        # direction, INNER is symmetric; RIGHT is never emitted.
+        return join_expr, on_expr, edge.join_type.value.upper()
 
     def _joined_or_local_dim_expr(
         self,
@@ -4868,10 +4707,10 @@ class SQLGenerator:
         planned_query,
         slot_id_by_key: Dict[Any, str],
         available_alias_by_slot_id: Dict[str, str],
-    ) -> List[str]:
-        """Render each POST-phase lowered mask expression to a SQL"""
+    ) -> List[Expression]:  # pyright: ignore[reportPrivateImportUsage]
+        """Each POST-phase lowered mask as a grouped conjunct over the chain's carried aliases."""
 
-        out: List[str] = []
+        out: List[Expression] = []
         for fp in _lower_positions(planned_query).filters:
             if fp.phase != Phase.POST:
                 continue
@@ -4890,45 +4729,8 @@ class SQLGenerator:
                     ),
                 ),
             )
-            out.append(rendered.sql(dialect=self.dialect))
+            out.append(_grouped(rendered))
         return out
-
-    def _emit_planned_outer_wrap(
-        self,
-        *,
-        chain_sql: str,
-        public_aliases: List[str],
-        projected: List[str],
-        planned_query,
-        slots_by_id: Dict[str, Any],
-        available_alias_by_slot_id: Dict[str, str],
-    ) -> str:
-        """Wrap ``chain_sql`` in the public-projection outer SELECT, through"""
-        order_terms = self._planned_order_terms(
-            planned_query=planned_query,
-            slots_by_id=slots_by_id,
-            available_alias_by_slot_id=available_alias_by_slot_id,
-        )
-        order_expr = exp.Order(expressions=order_terms) if order_terms else None
-        limit_expr = (
-            exp.Limit(expression=exp.Literal.number(planned_query.limit))
-            if planned_query.limit is not None
-            else None
-        )
-        offset_expr = (
-            exp.Offset(expression=exp.Literal.number(planned_query.offset))
-            if planned_query.offset is not None
-            else None
-        )
-        return self._dialect.emit_outer_wrap(
-            inner_sql=chain_sql,
-            public=public_aliases,
-            projected=projected,
-            order=order_expr,
-            limit=limit_expr,
-            offset_arg=offset_expr,
-            parse=self._parse,
-        )
 
     def _planned_order_terms(
         self,
@@ -5367,94 +5169,6 @@ class SQLGenerator:
         )
         return frame.enter_predicate(sql, location=location, owner_path=tuple(owner_path))
 
-    def _enter_mode_a_expression(
-        self,
-        *,
-        sql: str,
-        scope: ScopeFrame,
-        location: Optional[str] = None,
-        owner_path: Tuple[str, ...] = (),
-    ) -> Expression:
-        """Enter a Mode-A scalar EXPRESSION (a ``Column.sql`` / aggregation"""
-        return scope.enter_expression(sql, location=location, owner_path=tuple(owner_path))
-
-    def _default_frag_entry(
-        self, *, frag: str, scope: ScopeFrame, source_owner_path: Tuple[str, ...],
-    ) -> Tuple[str, Tuple[str, ...]]:
-        """The (fragment, owner_path) to enter for a definition default on a
-        host-locus aggregate. Every reference resolves owner-first
-        with reverse-hop cancellation and a root fallback. A fragment whose every
-        reference is owner-forward (its absolute path extends the source owner
-        path) enters raw at the owner path — byte-identical by construction. Any
-        cancelled or root-anchored reference makes the fragment MIXED: it is
-        requalified per reference to its absolute path and entered at the root, so
-        each reference resolves in its own frame, never as a reverse join."""
-        try:
-            parsed = sqlglot.parse_one(frag, dialect=self.dialect)
-            abs_refs = resolve_default_reference_paths(
-                parsed=parsed,  # pyright: ignore[reportArgumentType] — parse_one's Expr TypeVar
-                owner_path=source_owner_path,
-                root_model=scope.root_model, root_path=(), bundle=scope.bundle,
-            )
-        except Exception:
-            return frag, source_owner_path  # unanalysable: raw at the source owner
-        n = len(source_owner_path)
-        if all(
-            a is not None and tuple(a[:n]) == tuple(source_owner_path)
-            for a, _ in abs_refs
-        ):
-            return frag, tuple(source_owner_path)  # owner-forward: raw at the owner
-        return requalify_default_references(
-            parsed=parsed,  # pyright: ignore[reportArgumentType] — parse_one's Expr TypeVar
-            abs_refs=abs_refs, dialect=self.dialect,
-        ), ()
-
-    def _fragment_placeholders(self, *, key, agg_def) -> Optional[frozenset[str]]:
-        """Placeholder names of the rendered formula; None when it has none (e.g. corr, percentile)."""
-        formula = rendered_formula(agg=key.agg, definition=agg_def)
-        if not formula:
-            return None
-        return self._formula_template(agg_name=key.agg, formula=formula).placeholder_names
-
-    def _register_fragment_kwarg_joins(
-        self, *, key, scope: ScopeFrame, model, owner_path: Tuple[str, ...] = (),
-        source_owner_path: Optional[Tuple[str, ...]] = None,
-    ) -> "Dict[str, Expression]":
-        """Resolve an aggregation's template FRAGMENTS through the Mode-A door,"""
-        agg_def = next(
-            (a for a in (model.aggregations or []) if a.name == key.agg), None,
-        )
-        placeholders = self._fragment_placeholders(key=key, agg_def=agg_def)
-        overridden = {name for name, _ in key.kwargs}
-        # (name, fragment, owner_path). Explicit string kwargs keep the caller's
-        # owner_path; a definition default on a host-locus aggregate resolves at
-        # the root or the source owner per its reference frame.
-        named_fragments: List[Tuple[str, str, Tuple[str, ...]]] = [
-            (name, v, tuple(owner_path)) for name, v in key.kwargs
-            if isinstance(v, str) and _is_fragment(name=name, placeholders=placeholders)
-        ]
-        for p in (agg_def.params if agg_def else []):
-            if p.name in overridden or not _is_fragment(name=p.name, placeholders=placeholders):
-                continue
-            if source_owner_path is not None:
-                frag_sql, frag_owner_path = self._default_frag_entry(
-                    frag=p.sql, scope=scope,
-                    source_owner_path=source_owner_path,
-                )
-            else:
-                frag_sql, frag_owner_path = p.sql, tuple(owner_path)
-            named_fragments.append((p.name, frag_sql, frag_owner_path))
-        resolved: "Dict[str, Expression]" = {}
-        for name, frag, frag_owner_path in named_fragments:
-            resolved[name] = self._enter_mode_a_expression(
-                sql=frag, scope=scope, owner_path=frag_owner_path,
-                location=(
-                    f"aggregation {key.agg!r} template fragment on model "
-                    f"{model.name!r}"
-                ),
-            )
-        return resolved
-
     def _expand_derived_row_dims(  # NOSONAR(S3776) — one cohesive per-slot pass expanding derived ROW/TIME dimensions and registering the joins they cross.
         self, *, base_render_order, slots_by_id, source_relation: str,
         source_model, bundle, scope: ScopeFrame,
@@ -5542,17 +5256,30 @@ class SQLGenerator:
         source_model,
         source_relation: str,
     ) -> Expression:
-        if source_model.sql_table:
-            return self._to_table(source_model.sql_table, alias=source_relation)
-        if source_model.sql:
-            return exp.Subquery(
-                this=self._parse(source_model.sql),
-                alias=exp.to_identifier(source_relation),
-            )
-        raise NotImplementedError(
-            f"Model {source_model.name!r} has neither sql_table nor sql set; "
-            f"query-backed models (source_queries) deferred to multi-stage "
-            f"slices (DEV-1878)."
+        return self._emit_relation(model=source_model, alias=source_relation)
+
+    def _emit_relation(self, *, model, alias: str) -> Expression:
+        """The one door a model reaches the SQL through (FROM, join target, semi-join
+        hop): a stage relation must be one the statement declared it reads."""
+        if model.sql_table:
+            if model.sql_table in self._gen_stage_relations and (
+                model.sql_table not in self._gen_stage_reads
+            ):
+                raise ValueError(
+                    f"stage relation {model.sql_table!r} is emitted by a statement that "
+                    f"does not declare reading it (declared: {sorted(self._gen_stage_reads)})"
+                )
+            return self._to_table(model.sql_table, alias=alias)
+        if model.sql:
+            return self._embed_model_sql(sql=model.sql, alias=alias)
+        if model.name in self._gen_splice_failures:
+            raise self._gen_splice_failures[model.name]
+        if model.name in self._gen_splice_chain:
+            chain = self._gen_splice_chain
+            raise QueryBackedCycleError(path=[*chain[chain.index(model.name):], model.name])
+        raise ValueError(
+            f"Model {model.name!r} has neither sql_table nor sql: a query-backed "
+            f"model reaches the renderer only as its spliced stages."
         )
 
     def _dim_column_expr_from_planned(
@@ -5801,18 +5528,59 @@ class SQLGenerator:
         if not source.path or _is_host_grain(key):
             return
         for kname, kval in key.kwargs:
-            if isinstance(kval, (ColumnKey, ColumnSqlKey)) and kval.path != source.path:
+            leaf = next((
+                r for r in parameter_row_leaves(kval)
+                if isinstance(r, (ColumnKey, ColumnSqlKey)) and r.path != source.path
+            ), None)
+            if leaf is not None:
                 raise AggregationNotAllowedError(
                     column=src_leaf,
                     agg=key.agg,
                     reason=(
                         f"kwarg {kname!r} references "
-                        f"{type(kval).__name__} with path {kval.path!r}; "
+                        f"{type(leaf).__name__} with path {leaf.path!r}; "
                         f"aggregate source path is {source.path!r}. "
                         f"Cross-model kwargs must share the source's "
                         f"join path."
                     ),
                 )
+
+    def _agg_param_exprs(
+        self, *, key, formula: Optional[str], scope: ScopeFrame,
+        resolved: "Optional[Dict[str, ResolvedAggKwarg]]" = None,
+        skip: frozenset = frozenset(),
+    ) -> "Dict[str, ResolvedAggKwarg]":
+        """The one parameter render path: a pre-resolved value wins, a scalar renders as a
+        literal, a row value key through ``scope``; a marker string is never SQL."""
+        reads = self._formula_reads(agg=key.agg, formula=formula)
+        out: "Dict[str, ResolvedAggKwarg]" = {}
+        for name, value in key.kwargs:
+            if name in skip:
+                continue
+            if resolved and name in resolved:
+                out[name] = resolved[name]
+            elif isinstance(value, str):
+                if name in reads:
+                    raise TypeError(
+                        f"Aggregation {key.agg!r} parameter {name!r} is unbound text "
+                        f"{value!r}; a parameter binds at query binding, never as SQL text."
+                    )
+            elif isinstance(value, _ROW_PARAM_KINDS):
+                out[name] = ResolvedAggKwarg(value=scope.resolve(value))
+            elif isinstance(value, VALUE_KEY_TYPES):
+                raise RuntimeError(
+                    f"Aggregation {key.agg!r} parameter {name!r} ({type(value).__name__}) "
+                    f"reached the renderer unattached."
+                )
+            else:
+                out[name] = ResolvedAggKwarg(value=_literal(value))
+        return out
+
+    def _formula_reads(self, *, agg: str, formula: Optional[str]) -> frozenset:
+        """The parameter names ``agg`` reads: its formula's placeholders, else a built-in's own."""
+        if formula is None:
+            return frozenset(BUILTIN_AGGREGATION_PARAM_ORDER.get(agg, ()))
+        return self._formula_template(agg_name=agg, formula=formula).placeholder_names
 
     def _walk_join_path_model(self, *, source_model, path, bundle):
         """The terminal model of a join ``path`` walked from ``source_model``
@@ -5853,12 +5621,12 @@ class SQLGenerator:
                 if source_anchor_path(source) and bundle is not None else source_model
             ) or source_model
             agg_def = self._resolve_aggregation_def(key=key, source_model=owner, src_leaf="*")
-            if key.args or (key.kwargs and not rendered_formula(agg=key.agg, definition=agg_def)):
+            formula = rendered_formula(agg=key.agg, definition=agg_def)
+            if key.args or (key.kwargs and not formula):
                 raise ValueError(
                     f"'count(*)' takes no args or kwargs; got "
                     f"args={key.args!r}, kwargs={key.kwargs!r}."
                 )
-            resolved_kw = resolved_agg_kwargs or {}
             return AggRenderSpec(
                 name="",
                 sql=None,
@@ -5866,15 +5634,20 @@ class SQLGenerator:
                 alias=full_alias,
                 model_name=source_relation,
                 type=slot_type,
-                aggregation_def=agg_def,
-                agg_kwargs={
-                    **resolved_kw,
-                    **{
-                        k: ResolvedAggKwarg(kind="str", value=agg_kwarg_canonical_str(v))
-                        for k, v in key.kwargs if k not in resolved_kw
-                    },
-                },
+                formula=formula,
+                agg_kwargs=self._agg_param_exprs(
+                    key=key, formula=formula, resolved=resolved_agg_kwargs,
+                    scope=scope or self._throwaway_frame(
+                        model=source_model, relation=source_relation,
+                        bundle=bundle or ResolvedSourceBundle(
+                            dialect=self.dialect, source_model=source_model),
+                    ),
+                ),
             )
+        param_scope = scope or self._throwaway_frame(
+            model=source_model, relation=source_relation,
+            bundle=bundle or ResolvedSourceBundle(dialect=self.dialect, source_model=source_model),
+        )
         if isinstance(source, (ColumnKey, ColumnSqlKey)):
             host_grain_root: Optional[str] = None
             if source.path and _is_host_grain(key) and bundle is not None:
@@ -5935,15 +5708,7 @@ class SQLGenerator:
             else:
                 sql_text = col.sql if col.sql else col.name
                 column_type = col.type
-            resolved_kw = resolved_agg_kwargs or {}
-            agg_kwargs_str = {
-                k: (resolved_kw[k] if k in resolved_kw else agg_kwarg_canonical_str(v))
-                for k, v in key.kwargs
-            }
-            key_kwarg_names = {k for k, _ in key.kwargs}
-            for _name, _resolved in resolved_kw.items():
-                if _name not in key_kwarg_names:
-                    agg_kwargs_str.setdefault(_name, _resolved)
+            formula = rendered_formula(agg=key.agg, definition=agg_def)
             return AggRenderSpec(
                 name=col.name,
                 sql=sql_text,
@@ -5952,8 +5717,10 @@ class SQLGenerator:
                 model_name=source_relation,
                 type=slot_type,
                 column_type=column_type,
-                agg_kwargs=agg_kwargs_str,
-                aggregation_def=agg_def,
+                agg_kwargs=self._agg_param_exprs(
+                    key=key, formula=formula, resolved=resolved_agg_kwargs, scope=param_scope,
+                ),
+                formula=formula,
                 time_column=None,
             )
         if isinstance(source, _EXPRESSION_SOURCE_KINDS):
@@ -5965,18 +5732,8 @@ class SQLGenerator:
             agg_def = self._resolve_aggregation_def(
                 key=key, source_model=source_model, src_leaf=expr_leaf,
             )
-            if scope is None:
-                scope = self._throwaway_frame(
-                    model=source_model, relation=source_relation, bundle=bundle,
-                )
-            sql_text = self._render_expression_source_sql(source=source, scope=scope)
-            resolved_kw = resolved_agg_kwargs or {}
-            agg_kwargs_str = {
-                k: (resolved_kw[k] if k in resolved_kw else agg_kwarg_canonical_str(v))
-                for k, v in key.kwargs
-            }
-            for _name, _resolved in resolved_kw.items():
-                agg_kwargs_str.setdefault(_name, _resolved)
+            sql_text = self._render_expression_source_sql(source=source, scope=param_scope)
+            formula = rendered_formula(agg=key.agg, definition=agg_def)
             return AggRenderSpec(
                 name=expr_leaf,
                 sql=sql_text,
@@ -5985,8 +5742,10 @@ class SQLGenerator:
                 model_name=source_relation,
                 type=slot_type,
                 column_type=None,
-                agg_kwargs=agg_kwargs_str,
-                aggregation_def=agg_def,
+                agg_kwargs=self._agg_param_exprs(
+                    key=key, formula=formula, resolved=resolved_agg_kwargs, scope=param_scope,
+                ),
+                formula=formula,
                 time_column=None,
             )
         raise NotImplementedError(
@@ -6024,14 +5783,7 @@ class SQLGenerator:
         return model
 
     def _hop_table_expr(self, *, hop_model, alias: str) -> Expression:
-        if hop_model.sql and not hop_model.sql_table:
-            return exp.Subquery(
-                this=self._parse(hop_model.sql),
-                alias=exp.to_identifier(alias),
-            )
-        return self._to_table(
-            name=hop_model.sql_table or hop_model.name, alias=alias,
-        )
+        return self._emit_relation(model=hop_model, alias=alias)
 
     def _build_semi_join_exists(
         self, *, group, source_model, source_relation: str, bundle, allocator,
@@ -6109,8 +5861,8 @@ class SQLGenerator:
                 + list(planned_query.combined_expression_slots)
             )
         }
-        where_parts: list[str] = []
-        having_parts: list[str] = []
+        where_parts: List[Expression] = []
+        having_parts: List[Expression] = []
         filters = (
             _lower_positions(planned_query).filters
             if filters_override is None else filters_override
@@ -6156,13 +5908,11 @@ class SQLGenerator:
                         regroup_env=regroup_env,
                     ),
                 )
-                if isinstance(rendered, (exp.And, exp.Or)):
-                    rendered = exp.Paren(this=rendered)
-                target_parts.append(rendered.sql(dialect=self.dialect))
+                target_parts.append(_grouped(rendered))
             elif fp.text is not None:
                 # Mode-A filter: qualify bare refs with the source relation; a non-trivial derived reference is
                 # inline-expanded and pulls its crossed joins into the FROM.
-                target_parts.append(self._enter_mode_a_predicate(
+                target_parts.append(_grouped(self._enter_mode_a_predicate(
                     sql=fp.text,
                     source_model=source_model,
                     source_relation=source_relation,
@@ -6170,20 +5920,14 @@ class SQLGenerator:
                     location=(
                         f"SlayerModel.filters on model {source_model.name!r}"
                     ),
-                ).sql(dialect=self.dialect))
+                )))
             else:
                 raise ValueError(
                     f"Lowered filter id={fp.id!r} has neither expression "
                     f"nor text (planner gap).",
                 )
 
-        where_clause = None
-        if where_parts:
-            where_clause = self._parse_predicate(_SQL_AND_JOINER.join(where_parts))
-        having_clause = None
-        if having_parts:
-            having_clause = self._parse_predicate(_SQL_AND_JOINER.join(having_parts))
-        return where_clause, having_clause
+        return _conjunction(where_parts), _conjunction(having_parts)
 
     @staticmethod
     def _is_nontrivial_derived(model, name: str) -> bool:
@@ -6300,31 +6044,79 @@ class SQLGenerator:
         slots_by_id: Dict[str, Any],
         bundle,
     ) -> exp.Select:
-        """Wrap a no-transform base SELECT in an outer SELECT"""
-        public_aliases = _cycle_public_aliases_in_projection_order(
+        """Wrap a no-transform base SELECT in the public outer wrap, trimming hidden columns."""
+        return self._public_outer_wrap(
+            inner=base_select,
+            public_aliases=_cycle_public_aliases_in_projection_order(
+                planned_query=planned_query,
+                slots_by_id=slots_by_id,
+                aliases_by_slot_id=aliases_by_slot_id,
+            ),
+            order_terms=self._host_order_terms(
+                planned_query=planned_query,
+                source_relation=source_relation,
+                slots_by_id=slots_by_id,
+                bundle=bundle,
+                aliases_by_slot_id=aliases_by_slot_id,
+            ),
             planned_query=planned_query,
-            slots_by_id=slots_by_id,
-            aliases_by_slot_id=aliases_by_slot_id,
         )
 
-        outer_select = exp.Select()
-        for alias in public_aliases:
-            outer_select = outer_select.select(
-                exp.Column(this=exp.to_identifier(alias, quoted=True)),
-            )
-        outer_select = outer_select.from_(
-            exp.Subquery(this=base_select, alias=exp.to_identifier(OUTER_WRAP_ALIAS)),
+    def _public_outer_wrap(
+        self,
+        *,
+        inner: exp.Select,
+        public_aliases: Sequence[str],
+        order_terms: Sequence[exp.Ordered],
+        planned_query,
+    ) -> exp.Select:
+        """``SELECT <public> FROM (<inner>) AS _outer``: the inner's ``WITH`` hoisted, then ordered and paginated."""
+        with_ = inner.args.get("with_")
+        if with_ is not None:
+            inner.set("with_", None)
+        outer = exp.Select().select(*(
+            exp.Column(this=exp.to_identifier(alias, quoted=True))
+            for alias in public_aliases
+        )).from_(
+            exp.Subquery(this=inner, alias=exp.to_identifier(OUTER_WRAP_ALIAS)),
+        )
+        if with_ is not None:
+            outer.set("with_", with_)
+        return self._order_and_paginate(
+            select=outer, order_terms=order_terms, planned_query=planned_query,
         )
 
-        return self._apply_planned_order_limit(
-            select=outer_select,
-            planned_query=planned_query,
+    def _order_and_paginate(
+        self, *, select: exp.Select, order_terms: Sequence[exp.Ordered], planned_query,
+    ) -> exp.Select:
+        """``select`` with ``order_terms`` and the plan's dialect pagination applied."""
+        for term in order_terms:
+            select = select.order_by(term)
+        return self._dialect.apply_pagination(
+            select, limit=planned_query.limit, offset=planned_query.offset,
+        )
+
+    def _host_order_terms(
+        self,
+        *,
+        planned_query,
+        source_relation: str,
+        slots_by_id: dict,
+        source_model=None,
+        bundle=None,
+        aliases_by_slot_id: Optional[Dict[str, List[str]]] = None,
+    ) -> List[exp.Ordered]:
+        """ORDER BY terms resolved against a base SELECT with no CTE chain."""
+        scoped_order = _lower_positions(planned_query).order
+        env = self._host_base_order_env(
+            scoped_order=scoped_order,
             source_relation=source_relation,
             slots_by_id=slots_by_id,
-            source_model=None,
+            source_model=source_model,
             bundle=bundle,
             aliases_by_slot_id=aliases_by_slot_id,
         )
+        return [resolve_order_term(entry=entry, env=env) for entry in scoped_order]
 
     def _apply_planned_order_limit(
         self,
@@ -6338,21 +6130,17 @@ class SQLGenerator:
         aliases_by_slot_id: Optional[Dict[str, List[str]]] = None,
     ) -> exp.Select:
         """ORDER BY / LIMIT / OFFSET for a base SELECT with no CTE chain."""
-        scoped_order = _lower_positions(planned_query).order
-        env = self._host_base_order_env(
-            scoped_order=scoped_order,
-            source_relation=source_relation,
-            slots_by_id=slots_by_id,
-            source_model=source_model,
-            bundle=bundle,
-            aliases_by_slot_id=aliases_by_slot_id,
-        )
-        for order_entry in scoped_order:
-            select = select.order_by(
-                resolve_order_term(entry=order_entry, env=env),
-            )
-        return self._dialect.apply_pagination(
-            select, limit=planned_query.limit, offset=planned_query.offset,
+        return self._order_and_paginate(
+            select=select,
+            order_terms=self._host_order_terms(
+                planned_query=planned_query,
+                source_relation=source_relation,
+                slots_by_id=slots_by_id,
+                source_model=source_model,
+                bundle=bundle,
+                aliases_by_slot_id=aliases_by_slot_id,
+            ),
+            planned_query=planned_query,
         )
 
     def _host_base_order_env(
@@ -6458,32 +6246,31 @@ def generate_from_planned(
     dialect: str = "postgres",
 ) -> str:
     """Render a ``PlannedQuery`` to SQL."""
-    return SQLGenerator(dialect=dialect).generate_from_planned(
-        planned_query, bundle=bundle,
-    )
+    generator = SQLGenerator(dialect=dialect)
+    generator._gen_splice_chain = getattr(bundle, "splice_chain", ())
+    generator._gen_splice_failures = getattr(bundle, "splice_failures", {})
+    return cast(str, generator.generate_from_planned(planned_query, bundle=bundle))
 
 
-def _bundle_for_stage(*, planned_query, bundle, schema_by_name):
-    """Pick the per-stage bundle a single DAG stage renders against."""
-    ds = (bundle.source_model.data_source if bundle.source_model else "") or "_stage"
-    relation = planned_query.source_relation
-    if planned_query.render_source_model is not None:
-        source = planned_query.render_source_model
-    elif relation in schema_by_name:
-        source = model_from_stage_schema(
-            name=relation, schema=schema_by_name[relation], data_source=ds,
-        )
-    else:
-        return bundle
-    sibling_schemas = {n: s for n, s in schema_by_name.items() if n != relation}
-    return stage_bundle_with_siblings(
-        bundle=bundle, source_model=source,
-        sibling_schemas=sibling_schemas, data_source=ds,
+def _finish_statement(
+    statement: exp.Select,
+    *,
+    dialect: "str | SqlDialect",
+    aliases: Sequence[str] = (),
+    exempt: frozenset[str] = frozenset(),
+) -> str:
+    """The one render of a composed statement: text, then identifier fitting, scope validation and the limit check."""
+    d = dialect if isinstance(dialect, SqlDialect) else get_dialect(dialect)
+    sql = d.rewrite_emitted_sql(
+        statement.sql(dialect=d.sqlglot_name, pretty=True), aliases=aliases, exempt=exempt,
     )
+    maybe_validate_scopes(sql, dialect=d.sqlglot_name)
+    d.assert_no_overlimit_identifiers(sql, exempt=exempt)
+    return sql
 
 
 def _user_authored_exemptions(
-    *, bundle: ResolvedSourceBundle, dialect: str,
+    *, bundle: ResolvedSourceBundle, dialect: "str | SqlDialect",
 ) -> frozenset[str]:
     """Over-limit identifier-shaped tokens from every user-authored raw-SQL surface
     in ``bundle`` — model ``sql``/``sql_table``/``filters`` and per-column
@@ -6491,7 +6278,7 @@ def _user_authored_exemptions(
     inline-extension models. These pass through emission
     unfitted; SLayer-generated ``backing_query_sql`` and synthetic stage-schema
     models (built later) are deliberately excluded."""
-    d = get_dialect(dialect)
+    d = dialect if isinstance(dialect, SqlDialect) else get_dialect(dialect)
     limit = d.max_identifier_bytes
     if limit is None:
         return frozenset()
@@ -6545,23 +6332,33 @@ def generate_planned_stages(
     bundle,
     dialect: str = "postgres",
     projection_aliases: "Sequence[str]" = (),
+    kept_stages: "Optional[Set[str]]" = None,
 ) -> str:
-    """Render a multi-stage DAG (``plan_stages`` output) to one SQL string."""
+    """Render a multi-stage DAG (``plan_stages`` output) to one SQL string; spliced
+    stages nothing reaches are pruned, the stage relations emitted land in ``kept_stages``."""
+    # Length-fit over-limit projection aliases from the plan-derived canonical keys, not parsed off the SQL —
+    # BigQuery can't parse a backticked dotted alias.
+    return _finish_statement(
+        _build_planned_stages_ast(
+            planned_queries, bundle=bundle, dialect=dialect, kept_stages=kept_stages,
+        ),
+        dialect=dialect,
+        aliases=projection_aliases,
+        exempt=_user_authored_exemptions(bundle=bundle, dialect=dialect),
+    )
+
+
+def _build_planned_stages_ast(
+    planned_queries, *, bundle, dialect: str, kept_stages: "Optional[Set[str]]" = None,
+) -> exp.Select:
+    """Compose a multi-stage DAG (``plan_stages`` output) as one statement AST."""
     if not planned_queries:
         raise ValueError("generate_planned_stages requires at least one stage")
-    exempt = _user_authored_exemptions(bundle=bundle, dialect=dialect)
     if len(planned_queries) == 1:
-        sql = generate_from_planned(
-            planned_queries[0], bundle=bundle, dialect=dialect,
-        )
-        # Length-fit over-limit projection aliases from the plan-derived canonical keys, not parsed off the SQL —
-        # BigQuery can't parse a backticked dotted alias.
-        sql = get_dialect(dialect).rewrite_emitted_sql(
-            sql, aliases=projection_aliases, exempt=exempt,
-        )
-        maybe_validate_scopes(sql, dialect=dialect)
-        get_dialect(dialect).assert_no_overlimit_identifiers(sql, exempt=exempt)
-        return sql
+        single = SQLGenerator(dialect=dialect)
+        single._gen_splice_chain = getattr(bundle, "splice_chain", ())
+        single._gen_splice_failures = getattr(bundle, "splice_failures", {})
+        return single._build_from_planned(planned_queries[0], bundle=bundle)
 
     schema_by_name = {
         p.stage_schema.relation_name: p.stage_schema
@@ -6580,28 +6377,48 @@ def generate_planned_stages(
     # statement's sibling reads; stage relations also declare their hoisted CTEs
     # and body reuses. Plan order is the insertion tiebreak (byte-stable output).
     _check_stage_order(planned_queries)
+    generator._gen_stage_relations = frozenset(
+        p.stage_schema.relation_name for p in planned_queries[:-1] if p.stage_schema is not None
+    )
     stage_entries: List[CteEntry] = []
     root_entries: List[CteEntry] = []
     root_final: Optional[exp.Select] = None
+    seeds: Set[str] = set(planned_queries[-1].stage_reads)
     for planned in planned_queries:
         relation = _stage_relation(planned=planned, is_root=planned is planned_queries[-1])
-        stage_bundle = _bundle_for_stage(
-            planned_query=planned, bundle=bundle, schema_by_name=schema_by_name,
+        stage_bundle = planned.stage_bundle
+        if stage_bundle is None:
+            raise ValueError(
+                f"stage {planned.source_relation!r} carries no stamped per-stage bundle; "
+                "multi-stage plans come from plan_stages",
+            )
+        generator._gen_stage_reads = frozenset(planned.stage_reads)
+        generator._gen_splice_chain = stage_bundle.splice_chain
+        generator._gen_splice_failures = stage_bundle.splice_failures
+        spliced = (
+            planned.stage_schema is not None and planned.stage_schema.display is not None
+            and planned.stage_schema.display.model is not None
         )
         with generator._stage_scope(relation):
-            stage_sql = cast(str, generator.generate_from_planned(
+            statement = generator._build_from_planned(
                 planned, bundle=stage_bundle, reuse_allocator=True,
-            ))
+            )
             if relation is None:
-                root_entries, root_final = generator._split_root_ctes(stage_sql)
+                root_entries, root_final = generator._split_root_ctes(statement)
                 root_entries = _with_stage_reads(entries=root_entries, reads=planned.stage_reads)
                 continue
-            hoisted, body_sql = generator._split_statement_ctes(stage_sql)
+            hoisted, body = generator._split_ast_ctes(statement)
+        if not spliced:
+            seeds.update([relation, *(h.name for h in hoisted)])
         stage_entries.extend(_with_stage_reads(entries=hoisted, reads=planned.stage_reads))
+        assert planned.stage_schema is not None  # _stage_relation guarantees it
         stage_entries.append(CteEntry(
             name=relation,
-            query=_stage_rename_wrapper(
-                planned=planned, stage_sql=body_sql, dialect=dialect,
+            query=build_flat_rename_wrapper(
+                source_relation=planned.source_relation,
+                inner=body,
+                expected_columns=[c.name for c in planned.stage_schema.columns],
+                dialect=dialect,
             ),
             depends_on=_merged_deps(
                 [h.name for h in hoisted],
@@ -6611,21 +6428,54 @@ def generate_planned_stages(
         ))
 
     assert root_final is not None
+    seeds.update(e.name for e in root_entries)
+    entries = reachable_cte_entries(entries=[*stage_entries, *root_entries], seeds=seeds)
+    kept = {e.name for e in entries} & generator._gen_stage_relations
+    for planned in planned_queries[:-1]:
+        if planned.splice_conflict and planned.stage_schema.relation_name in kept:
+            raise ValueError(planned.splice_conflict)
+    if kept_stages is not None:
+        kept_stages.update(kept)
     combined = assemble_with_chain(
-        entries=[*stage_entries, *root_entries], final=root_final,
+        entries=entries, final=root_final,
         external_names=generator._external_cte_names(),
     )
-    sql = combined.sql(dialect=dialect, pretty=True)
-    sql = get_dialect(dialect).rewrite_emitted_sql(
-        sql, aliases=projection_aliases, exempt=exempt,
+    _fit_overlimit_identifiers(
+        combined, dialect=dialect, exempt=_user_authored_exemptions(bundle=bundle, dialect=dialect),
+        stage_columns={
+            c.name for p in planned_queries[:-1] if p.stage_schema is not None
+            for c in p.stage_schema.columns
+        },
     )
-    maybe_validate_scopes(sql, dialect=dialect)
-    get_dialect(dialect).assert_no_overlimit_identifiers(sql, exempt=exempt)
-    return sql
+    return combined
+
+
+def _fit_overlimit_identifiers(
+    tree, *, dialect: str, exempt: AbstractSet[str], stage_columns: AbstractSet[str],
+) -> None:
+    """Length-fit over-limit SLayer-minted identifiers in place the way the emission
+    pass fits quoted ones: every unquoted one (stage identities, stage column
+    references) and the stage column names wherever they occur, so a definition and
+    its references agree; user-authored ``exempt`` names pass unless they name a
+    stage column."""
+    d = get_dialect(dialect)
+    if d.max_identifier_bytes is None:
+        return
+    for ident in tree.find_all(exp.Identifier):
+        name = ident.name
+        if name not in stage_columns and (ident.quoted or name in exempt):
+            continue
+        fitted = d.fit_alias(name)
+        if fitted != name:
+            ident.set("this", fitted)
 
 
 def _check_stage_order(planned_queries) -> None:
     """Fail closed unless every stage's ``stage_reads`` names an earlier stage."""
+    spelling = {
+        p.stage_schema.relation_name: p.stage_schema.display_name
+        for p in planned_queries if p.stage_schema is not None
+    }
     earlier: Set[str] = set()
     for planned in planned_queries:
         name = (
@@ -6635,7 +6485,8 @@ def _check_stage_order(planned_queries) -> None:
         late = [r for r in planned.stage_reads if r not in earlier]
         if late:
             raise ValueError(
-                f"stage {name!r} reads sibling(s) {late!r} not planned before it; "
+                f"stage {spelling.get(name, name)!r} reads sibling(s) "
+                f"{[spelling.get(r, r) for r in late]!r} not planned before it; "
                 "planned stages must be in dependency order",
             )
         earlier.add(name)
@@ -6654,13 +6505,3 @@ def _with_stage_reads(*, entries: List[CteEntry], reads: Sequence[str]) -> List[
         e.model_copy(update={"depends_on": _merged_deps(e.depends_on, reads)})
         for e in entries
     ]
-
-
-def _stage_rename_wrapper(*, planned, stage_sql, dialect):
-    """Wrap a rendered intermediate-stage SQL so its output columns are the"""
-    return build_flat_rename_wrapper(
-        source_relation=planned.source_relation,
-        stage_sql=stage_sql,
-        expected_columns=[c.name for c in planned.stage_schema.columns],
-        dialect=dialect,
-    )

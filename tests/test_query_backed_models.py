@@ -69,10 +69,8 @@ async def _expand_stage_as_model(
     model = SlayerModel(name=name, source_queries=[stage], data_source=data_source)
     return await engine._expand_query_backed_model(
         model=model,
-        outer_vars=None,
         runtime_kwarg=None,
         dry_run_placeholders=False,
-        _resolving=None,
     )
 
 
@@ -794,40 +792,30 @@ class TestBackingQuerySQLCacheHygiene:
 
 
 class TestInlineQueryBackedSourceModel:
-    """``source_model`` may be an inline ``SlayerModel(source_queries=[...])`` —
-    that model must be expanded into a virtual model with executable SQL,
-    same as a stored query-backed model.
-    """
+    """An inline ``SlayerModel(source_queries=[...])`` as ``source_model`` is rejected at construction."""
 
-    async def test_inline_slayermodel_with_source_queries_executes(self) -> None:
-        engine, tmp = await _engine_with_orders()
-        try:
-            inline = SlayerModel(
-                name="inline_qb",
-                data_source="ds",
-                source_queries=[SlayerQuery(
-                    source_model="orders",
-                    measures=[{"formula": "amount:sum"}],
-                    dimensions=["region"],
-                )],
-            )
-            outer = SlayerQuery(
-                source_model=inline,
-                dimensions=["region"],
-                measures=[{"formula": "amount_sum:max"}],
-            )
-            resp = await engine.execute(outer, dry_run=True)
-            assert resp.sql is not None
-            # The outer query references amount_sum (the inner result column).
-            assert "amount_sum" in resp.sql.lower()
-            assert "region" in resp.sql.lower()
-        finally:
-            tmp.cleanup()
+    def test_inline_slayermodel_with_source_queries_rejected(self) -> None:
+        inline = SlayerModel(
+            name="inline_qb",
+            data_source="ds",
+            source_queries=[SlayerQuery.model_validate({
+                "source_model": "orders",
+                "measures": [{"formula": "amount:sum"}],
+                "dimensions": ["region"],
+            })],
+        )
+        with pytest.raises(ValueError, match=r"(?is)inline_qb.*named stages?|named stages?.*inline_qb"):
+            SlayerQuery.model_validate({
+                "source_model": inline,
+                "dimensions": ["region"],
+                "measures": [{"formula": "amount_sum:max"}],
+            })
 
-    async def test_inline_dict_slayermodel_with_source_queries_executes(self) -> None:
-        engine, tmp = await _engine_with_orders()
-        try:
-            outer = SlayerQuery.model_validate({
+    def test_inline_dict_slayermodel_with_source_queries_rejected(self) -> None:
+        with pytest.raises(
+            ValueError, match=r"(?is)inline_qb_dict.*named stages?|named stages?.*inline_qb_dict",
+        ):
+            SlayerQuery.model_validate({
                 "source_model": {
                     "name": "inline_qb_dict",
                     "data_source": "ds",
@@ -840,11 +828,6 @@ class TestInlineQueryBackedSourceModel:
                 "dimensions": ["region"],
                 "measures": [{"formula": "amount_sum:max"}],
             })
-            resp = await engine.execute(outer, dry_run=True)
-            assert resp.sql is not None
-            assert "amount_sum" in resp.sql.lower()
-        finally:
-            tmp.cleanup()
 
 
 class TestJoinTargetIsQueryBacked:

@@ -225,7 +225,9 @@ class TestB7DeclarationOrderProjection:
             sid for sid in planned.projection
             if slots[sid].public_name == "running"
         )
-        operand_key = slots[running_sid].key.input
+        running_key = slots[running_sid].key
+        assert isinstance(running_key, TransformKey)
+        operand_key = running_key.input
         operand_sid = next(
             (sid for sid, s in slots.items() if s.key == operand_key), None,
         )

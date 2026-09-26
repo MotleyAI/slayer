@@ -12,7 +12,7 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.keys import ColumnKey
+from slayer.core.keys import ColumnKey, TimeTruncKey
 from slayer.core.models import Column, SlayerModel
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.ir.planned import (
@@ -70,6 +70,7 @@ class TestKernelSynthesis:
         producer = attach.producer_plan
         assert kern.bucket_slot_id == producer.active_time_dimension_slot_id
         bucket = next(s for s in producer.row_slots if s.id == kern.bucket_slot_id)
+        assert isinstance(bucket.key, TimeTruncKey)
         assert bucket.key.granularity == "month"
         assert kern.src_where_filter_ids == []
         assert kern.src_filter_rewrites == []
@@ -217,7 +218,9 @@ class TestRankingKeyPrecedence:
             dimensions=["status"],
             measures=[{"formula": "amount:last", "name": "l"}],
         ))
-        assert _ranked_kernel_of(planned).ranking_time_key.leaf == "created_at"
+        ranking = _ranked_kernel_of(planned).ranking_time_key
+        assert isinstance(ranking, ColumnKey)
+        assert ranking.leaf == "created_at"
 
     def test_no_resolvable_ranking_column_raises_the_host_message(self) -> None:
         model = SlayerModel(
@@ -254,6 +257,7 @@ class TestRankingKeyPrecedence:
             if a.producer_root_model == "customers"
         ]
         assert isinstance(attach.kernel, RankedProducerKernel)
+        assert isinstance(attach.kernel.ranking_time_key, ColumnKey)
         assert attach.kernel.ranking_time_key.leaf == "signup_at"
 
     def test_a_host_column_as_a_target_ranking_key_is_rejected(self) -> None:

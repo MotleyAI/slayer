@@ -10,7 +10,7 @@ import logging
 import re
 import warnings as _warnings_module
 from collections.abc import Callable
-from typing import Any, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
 
 import sqlalchemy as sa
 import sqlglot
@@ -34,6 +34,7 @@ from slayer.core.errors import (
     DerivedColumnCircularError,
     ForcedFilterError,
     ModelSqlValidationError,
+    QueryBackedCycleError,
     SchemaDriftError,
     SlayerError,
 )
@@ -60,19 +61,14 @@ from slayer.core.models import (
 from slayer.core.query import (
     ModelExtension,
     SlayerQuery,
-    _contains_block_delimiter,
-    coerce_declared_list_variables,
-    declares_variables,
     extract_variable_refs,
-    list_valued_variable_names,
     render_probe_text,
-    substitute_variables,
 )
 from slayer.engine.population import (
     infer_population,
     to_one_reachable,
 )
-from slayer.core.scope import collect_stale_spellings
+from slayer.core.scope import StageDisplay, collect_stale_spellings
 from slayer.core.warnings import (
     AnySlayerWarning,
     AssociatedWarningPayload,
@@ -113,9 +109,13 @@ from slayer.engine.response_meta import (
 )
 from slayer.sql.column_expansion import expand_derived_refs_sync
 from slayer.ir.source_bundle import ResolvedSourceBundle, model_from_stage_schema
-from slayer.engine.stage_ordering import topologically_order_stages
+from slayer.engine.stage_ordering import localize_stages, topologically_order_stages
 from slayer.engine.plan import plan_stages
-from slayer.ir.variables import apply_variables_to_query
+from slayer.ir.variables import (
+    apply_variables_to_query,
+    model_needs_substitution_pass,
+    substitute_model_sql_surfaces,
+)
 from slayer.engine.introspect_utils import _safe_get_columns
 from slayer.engine.schema_scope import SchemaRef
 from slayer.engine.join_graph import JoinGraph
@@ -135,7 +135,12 @@ from slayer.sql.dialects import SQLGLOT_NAMES, SqlDialect, dialect_for_ds_type, 
 from slayer.sql.sql_template import SqlTemplateError, sql_template
 from slayer.sql import engine_factory
 from slayer.sql.engine_factory import EngineCacheKey, _sql_client_cache_key
-from slayer.sql.generator import generate_planned_stages
+from slayer.sql.generator import (
+    _build_planned_stages_ast,
+    _finish_statement,
+    _user_authored_exemptions,
+    generate_planned_stages,
+)
 from slayer.sql.session_policy import (
     ScopedTable,
     _attach_ch_correlated_setting,
@@ -261,20 +266,6 @@ def _merge_query_variables(
     return {**(outer or {}), **(stage or {}), **(runtime or {})}
 
 
-def _model_has_optional_block(model: SlayerModel) -> bool:
-    """True if any Mode-A surface carries an optional ``{? ... ?}`` block."""
-    surfaces = [model.sql, *(model.filters or [])]
-    for col in model.columns:
-        surfaces.append(col.sql)
-        surfaces.append(col.filter)
-    return any(s and _contains_block_delimiter(s) for s in surfaces)
-
-
-def _model_needs_substitution_pass(model: SlayerModel) -> bool:
-    """True if substitution must run with no variables (a ``{? ?}`` block or declared variables)."""
-    return _model_has_optional_block(model) or declares_variables(model)
-
-
 def _sql_safety_reject_reason(safety: str, *, parameterized: bool) -> str | None:
     """Save-time reject reason for a classified ``model.sql``, or None to admit
     it. Unparseable blocks only when static (a parameterized source may parse
@@ -290,43 +281,15 @@ def _substitute_model_sql_surfaces(
     *, model: SlayerModel, variables: dict[str, Any], dialect: SqlDialect
 ) -> SlayerModel:
     """Copy of ``model`` with ``{var}`` substituted into its four Mode-A surfaces (no-op when unneeded; never mutates input)."""
-    if not variables and not _model_needs_substitution_pass(model):
-        return model
-
-    variables = coerce_declared_list_variables(
-        variables, list_valued=list_valued_variable_names(model)
+    return substitute_model_sql_surfaces(
+        model=model, variables=variables, backslash_escapes=dialect.backslash_escapes_strings,
     )
-    backslash_escapes = dialect.backslash_escapes_strings
-
-    def _sub(text: str) -> str:
-        return substitute_variables(
-            filter_str=text,
-            variables=variables,
-            escape="sql",
-            backslash_escapes=backslash_escapes,
-        )
-
-    new_columns = []
-    for col in model.columns:
-        updates: dict[str, Any] = {}
-        if col.sql is not None:
-            updates["sql"] = _sub(col.sql)
-        if col.filter is not None:
-            updates["filter"] = _sub(col.filter)
-        new_columns.append(col.model_copy(update=updates) if updates else col)
-
-    model_updates: dict[str, Any] = {"columns": new_columns}
-    if model.sql is not None:
-        model_updates["sql"] = _sub(model.sql)
-    if model.filters:
-        model_updates["filters"] = [_sub(f) for f in model.filters]
-    return model.model_copy(update=model_updates)
 
 
 def _render_probe_model(model: SlayerModel, *, dialect: SqlDialect) -> SlayerModel:
     """Substitute a template model's own ``query_variables`` defaults for type-probing (raises on undefaulted)."""
     if model.source_model_origin is None and (
-        model.query_variables or _model_needs_substitution_pass(model)
+        model.query_variables or model_needs_substitution_pass(model)
     ):
         return _substitute_model_sql_surfaces(
             model=model, variables=model.query_variables, dialect=dialect
@@ -341,11 +304,14 @@ def _build_explain_sql(dialect: str, sql: str) -> str:
     return get_dialect(dialect).build_explain_sql(sql)
 
 
-def _stage_location(*, stages, index: int, member: Optional[str] = "filters") -> str:
-    """Human-readable stage pointer; part of the dedup identity (distinguishes same-text stages)."""
-    name = getattr(stages[index], "name", None) if index < len(stages) else None
-    base = f"stage {name!r}" if name else f"stages[{index}]"
-    return f"{base}.{member}" if member else base
+def _stage_labels(*, stages, displays=None) -> List[str]:
+    """Each stage's user-facing pointer; part of the dedup identity (distinguishes same-text stages)."""
+    displays = displays or {}
+    return [
+        displays[q.name].label if q.name in displays
+        else (f"stage {q.name!r}" if q.name else f"stages[{i}]")
+        for i, q in enumerate(stages)
+    ]
 
 
 def _walk_regroup_attaches(planned):
@@ -396,12 +362,13 @@ def _semi_join_filter_texts(planned_list) -> List[str]:
 
 
 def _collect_broadcast_warnings(
-    *, planned_list, stages,
+    *, planned_list, stages=None, displays=None, labels=None,
 ) -> List[BroadcastGrainWarningPayload]:
     """One broadcast payload per ``(stage location, measure label)``; dimensions unioned."""
     dims_by_key: "dict[tuple[str, str], list[tuple[str, str]]]" = {}
-    for index, planned in enumerate(planned_list):
-        location = _stage_location(stages=stages, index=index, member=None)
+    if labels is None:
+        labels = _stage_labels(stages=stages, displays=displays)
+    for planned, location in zip(planned_list, labels):
         for attach in _walk_regroup_attaches(planned):
             measure = attach.broadcast_measure
             if not measure:
@@ -422,12 +389,13 @@ def _collect_broadcast_warnings(
 
 
 def _collect_associated_warnings(
-    *, planned_list, stages,
+    *, planned_list, stages=None, displays=None, labels=None,
 ) -> List[AssociatedWarningPayload]:
     """One associated payload per ``(stage location, measure label)``; dimensions unioned."""
     dims_by_key: "dict[tuple[str, str], list[str]]" = {}
-    for index, planned in enumerate(planned_list):
-        location = _stage_location(stages=stages, index=index, member=None)
+    if labels is None:
+        labels = _stage_labels(stages=stages, displays=displays)
+    for planned, location in zip(planned_list, labels):
         for attach in _walk_regroup_attaches(planned):
             measure = attach.associated_measure
             if not measure:
@@ -443,13 +411,14 @@ def _collect_associated_warnings(
 
 
 def _collect_degenerate_warnings(
-    *, planned_list, stages,
+    *, planned_list, stages=None, displays=None, labels=None,
 ) -> List[DegenerateReaggregationWarningPayload]:
     """One degenerate-re-aggregation payload per ``(location, measure)``."""
     seen: set = set()
     out: List[DegenerateReaggregationWarningPayload] = []
-    for index, planned in enumerate(planned_list):
-        location = _stage_location(stages=stages, index=index, member=None)
+    if labels is None:
+        labels = _stage_labels(stages=stages, displays=displays)
+    for planned, location in zip(planned_list, labels):
         for attach in _walk_regroup_attaches(planned):
             measure = attach.degenerate_measure
             if not measure:
@@ -502,14 +471,15 @@ def _attach_pushed_entries(planned) -> Iterator[Tuple[str, str]]:
 
 
 def _collect_semi_join_pushed_warnings(
-    *, planned_list, stages,
+    *, planned_list, stages=None, displays=None, labels=None,
 ) -> List[SemiJoinPushedWarningPayload]:
     """Response-only informational entries for semi-join-pushed conjuncts; one per
     ``(location, aggregate, filter text)``."""
     seen: set = set()
     out: List[SemiJoinPushedWarningPayload] = []
-    for index, planned in enumerate(planned_list):
-        location = _stage_location(stages=stages, index=index, member=None)
+    if labels is None:
+        labels = _stage_labels(stages=stages, displays=displays)
+    for planned, location in zip(planned_list, labels):
         entries = (
             *_population_pushed_entries(planned),
             *_attach_pushed_entries(planned),
@@ -621,6 +591,39 @@ class _Prepared(BaseModel):
     slack_warnings: List[Any] = PydanticField(default_factory=list)
     population: Optional[str] = None
     population_inferred: bool = False
+
+
+class _Rendered(BaseModel):
+    """One planned and rendered statement, before policy and response metadata."""
+
+    model_config = PydanticConfigDict(arbitrary_types_allowed=True)
+
+    sql: Optional[str] = None
+    statement: Optional[Any] = None
+    dialect: str
+    datasource: DatasourceConfig
+    bundle: ResolvedSourceBundle
+    planned_list: List[PlannedQuery]
+    model: SlayerModel
+    warnings: List[Any] = PydanticField(default_factory=list)
+    population: Optional[str] = None
+    population_inferred: bool = False
+
+
+def _relation_of(planned: PlannedQuery) -> Optional[str]:
+    return planned.stage_schema.relation_name if planned.stage_schema is not None else None
+
+
+def _is_spliced(planned: PlannedQuery) -> bool:
+    schema = planned.stage_schema
+    return schema is not None and schema.display is not None and schema.display.model is not None
+
+
+def _plan_label(*, planned: PlannedQuery, index: int, root: Optional[SlayerQuery]) -> str:
+    """A planned stage's user-facing pointer (``root`` given for the root plan)."""
+    if root is not None:
+        return f"stage {root.name!r}" if root.name else f"stages[{index}]"
+    return planned.stage_schema.label if planned.stage_schema is not None else f"stages[{index}]"
 
 
 def _reject_formulas_unparseable_everywhere(model: SlayerModel) -> None:
@@ -894,12 +897,13 @@ class SlayerQueryEngine:
         cache: bool = False,
     ) -> SlayerResponse:
         runtime_kwarg = variables or {}
-        main_query, named_queries, prefer_data_source = await self._normalize_input(
+        main_query, named_queries, prefer_data_source, splice_chain = await self._normalize_input(
             query, runtime_kwarg=runtime_kwarg, prefer_data_source=data_source
         )
         response = await self._execute_pipeline(
             query=main_query,
             named_queries=named_queries,
+            splice_chain=splice_chain,
             runtime_kwarg=runtime_kwarg,
             dry_run=dry_run,
             explain=explain,
@@ -919,8 +923,9 @@ class SlayerQueryEngine:
         *,
         runtime_kwarg: Dict[str, Any],
         prefer_data_source: Optional[str],
-    ) -> "tuple[SlayerQuery, Dict[str, SlayerQuery], Optional[str]]":
-        """Resolve the user input union into ``(main_query, named_queries, prefer_data_source)``."""
+    ) -> "tuple[SlayerQuery, Dict[str, SlayerQuery], Optional[str], Tuple[str, ...]]":
+        """Resolve the user input union into ``(main_query, named_queries, prefer_data_source,
+        splice_chain)``; running a query-backed model by name seeds the chain with it."""
         # Run-by-name: ``execute("model_name", ...)`` runs the backing query.
         if isinstance(query, str):
             return await self._normalize_by_name(
@@ -952,7 +957,7 @@ class SlayerQueryEngine:
             if merged_top != (main_query.variables or {}):
                 main_query = main_query.model_copy(update={"variables": merged_top})
 
-        return main_query, named_queries, prefer_data_source
+        return main_query, named_queries, prefer_data_source, ()
 
     async def _normalize_by_name(
         self,
@@ -960,7 +965,7 @@ class SlayerQueryEngine:
         name: str,
         runtime_kwarg: Dict[str, Any],
         prefer_data_source: Optional[str],
-    ) -> "tuple[SlayerQuery, Dict[str, SlayerQuery], Optional[str]]":
+    ) -> "tuple[SlayerQuery, Dict[str, SlayerQuery], Optional[str], Tuple[str, ...]]":
         """Normalize a run-by-name input into the shared prepare tuple (``prefer_data_source`` pins the lookup)."""
         model = await self.storage.get_model(name, data_source=prefer_data_source)
         if model is None:
@@ -970,21 +975,21 @@ class SlayerQueryEngine:
                 f"Model '{name}' is not query-backed; pass a SlayerQuery "
                 f"with source_model='{name}'."
             )
+        main_query, named_queries = self._stages_of_model(model=model, runtime_kwarg=runtime_kwarg)
+        return main_query, named_queries, model.data_source or prefer_data_source, (model.name,)
 
+    @staticmethod
+    def _stages_of_model(
+        *, model: SlayerModel, runtime_kwarg: Dict[str, Any],
+    ) -> "tuple[SlayerQuery, Dict[str, SlayerQuery]]":
+        """A query-backed model's stages as ``(main_query, named_queries)``, variables layered."""
         # Stored ``source_queries`` may be non-topological for
         # ``joins[].target_model`` deps; topo-sort to match save-time semantics.
-        stages = topologically_order_stages(list(model.source_queries))
+        stages = topologically_order_stages(list(model.source_queries or []))
+        if not stages:
+            raise ValueError(f"Model {model.name!r} has no source_queries")
         main_query = stages[-1]
-        named_queries: Dict[str, SlayerQuery] = {}
-        for q in stages[:-1]:
-            if q.name:
-                if q.name in named_queries:
-                    raise ValueError(
-                        f"Duplicate query name '{q.name}' in source_queries "
-                        f"of model '{name}'"
-                    )
-                named_queries[q.name] = q
-
+        named_queries = {q.name: q for q in stages[:-1] if q.name}
         # Precedence ``runtime > stage > model_defaults`` (no outer query here,
         # so ``model.query_variables`` is the lowest layer).
         merged = _merge_query_variables(
@@ -994,8 +999,7 @@ class SlayerQueryEngine:
         )
         if merged != (main_query.variables or {}):
             main_query = main_query.model_copy(update={"variables": merged})
-
-        return main_query, named_queries, model.data_source or prefer_data_source
+        return main_query, named_queries
 
     async def _prepare_pipeline(  # NOSONAR S3776 — linear pipeline (resolve→bind→generate→policy); breaking it up obscures the order of operations
         self,
@@ -1005,12 +1009,87 @@ class SlayerQueryEngine:
         *,
         prefer_data_source: Optional[str] = None,
         override_datasource: Optional[DatasourceConfig] = None,
+        splice_chain: Tuple[str, ...] = (),
     ) -> _Prepared:
         """Prepare portion shared by execute / evict / refresh (resolve→…→response-metadata).
 
         Produces the final executed SQL; no SQL client on the no-policy path (so
         ``evict()`` recomputes a key without connecting).
         """
+        rendered = await self._plan_and_render(
+            query=query, named_queries=named_queries, runtime_kwarg=runtime_kwarg,
+            prefer_data_source=prefer_data_source, override_datasource=override_datasource,
+            splice_chain=splice_chain,
+        )
+        sql, dialect, datasource = rendered.sql, rendered.dialect, rendered.datasource
+        assert sql is not None
+        planned_list = rendered.planned_list
+        root_planned = planned_list[-1]
+        # Semi-join pushdown emits correlated EXISTS, which ClickHouse supports
+        # only from 25.4 behind a setting: probe the version, fail closed below
+        # it, and attach the setting on every entry point (dry-run included).
+        has_semi_joins = any(plan_has_semi_join_filters(p) for p in planned_list)
+        await self._preflight_clickhouse_correlated(
+            dialect=dialect, datasource=datasource, needed=has_semi_joins
+        )
+        if has_semi_joins and dialect == "clickhouse":
+            self._require_clickhouse_semi_join_support(
+                datasource=datasource, planned_list=planned_list,
+            )
+            ast = sqlglot.parse_one(sql, dialect=dialect)
+            assert isinstance(ast, Expression)
+            _attach_ch_correlated_setting(ast)
+            sql = ast.sql(dialect=dialect, pretty=True)
+        # Forced-filter rewrite before dry-run / explain / execute so all three
+        # (and the cache key) see the policy-rewritten SQL; no-op without a policy.
+        sql = self._apply_policy(sql=sql, dialect=dialect, datasource=datasource)
+        logger.debug("Generated SQL:\n%s", sql)
+
+        attributes, expected_columns = build_response_metadata(
+            root_planned=root_planned, bundle=root_planned.stage_bundle or rendered.bundle,
+            sql=sql, dialect=dialect,
+        )
+
+        # Models whose schema a query-time DBAPI error could be attributed to.
+        touched = self._touched_models_for_plan(
+            bundle=rendered.bundle,
+            planned_list=planned_list,
+            original_source_model=rendered.bundle.source_model,
+        )
+
+        return _Prepared(
+            sql=sql,
+            dialect=dialect,
+            datasource=datasource,
+            resolved_data_source=datasource.name,
+            attributes=attributes,
+            expected_columns=list(expected_columns),
+            touched=touched,
+            model=rendered.model,
+            slack_warnings=rendered.warnings,
+            population=rendered.population,
+            population_inferred=rendered.population_inferred,
+        )
+
+    async def _plan_and_render(  # NOSONAR S3776 — linear pipeline (localize→infer→bundle→normalize→variables→plan→render); splitting hides the order of operations
+        self,
+        *,
+        query: SlayerQuery,
+        named_queries: Dict[str, SlayerQuery],
+        runtime_kwarg: Dict[str, Any],
+        prefer_data_source: Optional[str],
+        override_datasource: Optional[DatasourceConfig] = None,
+        splice_chain: Tuple[str, ...] = (),
+        dry_run_placeholders: bool = False,
+        as_statement: bool = False,
+    ) -> _Rendered:
+        """Plan and render one statement, splicing the stored query-backed models it
+        reads; warnings come from the stages the SQL emits. ``as_statement`` leaves it
+        as its AST for the caller to wrap and render once."""
+        # Stage names are query-local: mint identities before anything resolves a name.
+        localized, stage_displays = localize_stages([*named_queries.values(), query])
+        query = localized[-1]
+        named_queries = {q.name: q for q in localized[:-1] if q.name}
         # Infer the population of any rootless stage (main + each named
         # stage independently) BEFORE prefix-strip, so the chosen model flows
         # through the untouched pipeline byte-identically to its explicit twin.
@@ -1019,6 +1098,7 @@ class SlayerQueryEngine:
                 query=query,
                 named_queries=named_queries,
                 prefer_data_source=prefer_data_source,
+                stage_displays=stage_displays,
             )
         )
         # Pin bundle resolution to the inferred datasource (anchor voting already
@@ -1044,18 +1124,9 @@ class SlayerQueryEngine:
             data_source=prefer_data_source,
             runtime_variables=runtime_kwarg,
             named_queries=named_queries,
-        )
-
-        # Expand every query-backed model in the bundle and re-apply root
-        # inline_extensions. Shared with ``_expand_query_backed_model`` so both
-        # surfaces consume the identical expansion contract.
-        original_source_model = bundle.source_model
-        bundle = await slayer.engine.bundle_builder.expand_query_backed_models_in_bundle(
-            bundle=bundle,
-            outer_vars=query.variables,
-            runtime_kwarg=runtime_kwarg,
-            dry_run_placeholders=False,
-            expander=self._expand_query_backed_model,
+            stage_displays=stage_displays,
+            splice_chain=splice_chain,
+            dry_run_placeholders=dry_run_placeholders,
         )
         # ``build_resolved_source_bundle`` raises if unresolved, so it's populated.
         model = bundle.source_model
@@ -1076,7 +1147,7 @@ class SlayerQueryEngine:
         # models are skipped. Called unconditionally: a no-op for a variable-free,
         # block-free model, but a block-bearing model must run so its ``{? ?}``
         # collapse to ``(1=1)`` even on a zero-variable call.
-        if model.source_model_origin is None:
+        if model.source_model_origin is None and not model.source_queries:
             substituted = _substitute_model_sql_surfaces(
                 model=model,
                 variables=bundle.query_variables,
@@ -1100,125 +1171,88 @@ class SlayerQueryEngine:
         query, _norm_warnings = self._normalize_stage(
             query=query, bundle=bundle, sibling_names=sibling_names,
         )
-        slack_warnings: List[AnySlayerWarning] = list(_norm_warnings)
+        warnings: List[AnySlayerWarning] = list(_norm_warnings)
         normed_named: Dict[str, SlayerQuery] = {}
         for nm, nq in named_queries.items():
             nq2, nq_warnings = self._normalize_stage(
                 query=nq, bundle=bundle, sibling_names=sibling_names,
             )
             normed_named[nm] = nq2
-            slack_warnings.extend(nq_warnings)
+            warnings.extend(nq_warnings)
 
         # Substitute variables into filters. Root uses the bundle's merged
         # variables; each sibling re-merges its own stage layer.
         query = apply_variables_to_query(
             query=query, variables=bundle.query_variables,
+            dry_run_placeholders=dry_run_placeholders,
         )
         root_vars = query.variables
-        normed_named = {
-            nm: apply_variables_to_query(
-                query=nq,
-                variables={
-                    # Lowest layer: the stage's own source-model defaults
-                    # (sibling-sourced stages fall back to the root model's).
-                    **(
-                        (
-                            bundle.stage_source_models[nm].query_variables
-                            if nm in bundle.stage_source_models
-                            else (model.query_variables if model else None)
-                        )
-                        or {}
-                    ),
-                    **(root_vars or {}),
-                    **(nq.variables or {}),
-                    **(runtime_kwarg or {}),
-                },
+        # Sibling-sourced stages fall back to the root model's defaults (a
+        # query-backed root's own defaults layer only its spliced stages).
+        fallback_vars = {} if model.source_queries else model.query_variables
+        stage_sources = dict(bundle.stage_source_models)
+        for nm, nq in list(normed_named.items()):
+            source = stage_sources.get(nm)
+            # Lowest layer: the stage's own source-model defaults.
+            stage_vars = {
+                **((source.query_variables if source is not None else fallback_vars) or {}),
+                **(root_vars or {}),
+                **(nq.variables or {}),
+                **(runtime_kwarg or {}),
+            }
+            normed_named[nm] = apply_variables_to_query(
+                query=nq, variables=stage_vars, dry_run_placeholders=dry_run_placeholders,
             )
-            for nm, nq in normed_named.items()
-        }
+            if source is not None:
+                stage_sources[nm] = _substitute_model_sql_surfaces(
+                    model=source, variables=stage_vars,
+                    dialect=dialect_for_ds_type(datasource.type),
+                )
+        bundle = bundle.model_copy(update={"stage_source_models": stage_sources})
 
         # Plan the DAG (root last) and render the whole chain to one SQL string.
-        stages = [*normed_named.values(), query]
-        with collect_stale_spellings() as stale_spellings:
-            planned_list = plan_stages(queries=stages, bundle=bundle)
-        root_planned = planned_list[-1]
+        planned_list = plan_stages(queries=[*normed_named.values(), query], bundle=bundle)
+        kept: Set[str] = set()
+        sql: Optional[str] = None
+        statement: Optional[Any] = None
+        with collect_stale_spellings() as render_stale_spellings:
+            if as_statement:
+                statement = _build_planned_stages_ast(
+                    planned_list, bundle=bundle, dialect=dialect, kept_stages=kept,
+                )
+            else:
+                sql = generate_planned_stages(
+                    planned_queries=planned_list, bundle=bundle, dialect=dialect,
+                    # Plan-derived canonical projection keys drive the write-side length
+                    # fit; the read side decodes against the same set.
+                    projection_aliases=projection_result_keys(root_planned=planned_list[-1]),
+                    kept_stages=kept,
+                )
 
-        # Collect + dedup payloads across every plan (nested subplans included).
-        # ``plan_stages`` returns plans topo-ordered — align the stage list the
-        # same way so each warning names its own stage.
-        ordered_stages = topologically_order_stages(stages)
-        broadcast_warnings = _collect_broadcast_warnings(
-            planned_list=planned_list, stages=ordered_stages,
-        )
-        associated_warnings = _collect_associated_warnings(
-            planned_list=planned_list, stages=ordered_stages,
-        )
-        semi_join_infos = _collect_semi_join_pushed_warnings(
-            planned_list=planned_list, stages=ordered_stages,
-        )
-        degenerate_warnings = _collect_degenerate_warnings(
-            planned_list=planned_list, stages=ordered_stages,
-        )
+        # Warnings come from the stages the SQL emits (a spliced stage nothing reads is pruned).
+        emitted = [
+            (i, p) for i, p in enumerate(planned_list)
+            if p is planned_list[-1] or not _is_spliced(p) or _relation_of(p) in kept
+        ]
+        labels = [
+            _plan_label(planned=p, index=i, root=query if p is planned_list[-1] else None)
+            for i, p in emitted
+        ]
+        plans = [p for _, p in emitted]
+        broadcast_warnings = _collect_broadcast_warnings(planned_list=plans, labels=labels)
         if getattr(query, "to_many_handling", "broadcast") == "error":
             _raise_on_error_events(broadcasts=broadcast_warnings)
-        slack_warnings.extend(broadcast_warnings)
-        slack_warnings.extend(associated_warnings)
-        slack_warnings.extend(semi_join_infos)
-        slack_warnings.extend(degenerate_warnings)
-
-        with collect_stale_spellings() as render_stale_spellings:
-            sql = generate_planned_stages(
-                planned_queries=planned_list, bundle=bundle, dialect=dialect,
-                # Plan-derived canonical projection keys drive the write-side length
-                # fit; the read side decodes against the same set.
-                projection_aliases=projection_result_keys(root_planned=planned_list[-1]),
-            )
-        slack_warnings.extend(stale_spelling_warnings(
-            list(dict.fromkeys([*stale_spellings, *render_stale_spellings])),
-        ))
-        # Semi-join pushdown emits correlated EXISTS, which ClickHouse supports
-        # only from 25.4 behind a setting: probe the version, fail closed below
-        # it, and attach the setting on every entry point (dry-run included).
-        has_semi_joins = any(plan_has_semi_join_filters(p) for p in planned_list)
-        await self._preflight_clickhouse_correlated(
-            dialect=dialect, datasource=datasource, needed=has_semi_joins
-        )
-        if has_semi_joins and dialect == "clickhouse":
-            self._require_clickhouse_semi_join_support(
-                datasource=datasource, planned_list=planned_list,
-            )
-            ast = sqlglot.parse_one(sql, dialect=dialect)
-            assert isinstance(ast, Expression)
-            _attach_ch_correlated_setting(ast)
-            sql = ast.sql(dialect=dialect, pretty=True)
-        # Forced-filter rewrite before dry-run / explain / execute so all three
-        # (and the cache key) see the policy-rewritten SQL; no-op without a policy.
-        sql = self._apply_policy(sql=sql, dialect=dialect, datasource=datasource)
-        logger.debug("Generated SQL:\n%s", sql)
-
-        attributes, expected_columns = build_response_metadata(
-            root_planned=root_planned, bundle=bundle, sql=sql, dialect=dialect,
-        )
-
-        # Models whose schema a query-time DBAPI error could be attributed to.
-        touched = self._touched_models_for_plan(
-            bundle=bundle,
-            planned_list=planned_list,
-            original_source_model=original_source_model,
-        )
-
-        return _Prepared(
-            sql=sql,
-            dialect=dialect,
-            datasource=datasource,
-            resolved_data_source=datasource.name,
-            attributes=attributes,
-            expected_columns=list(expected_columns),
-            touched=touched,
-            model=model,
-            slack_warnings=slack_warnings,
-            population=population,
-            population_inferred=population_inferred,
+        warnings.extend(broadcast_warnings)
+        warnings.extend(_collect_associated_warnings(planned_list=plans, labels=labels))
+        warnings.extend(_collect_semi_join_pushed_warnings(planned_list=plans, labels=labels))
+        warnings.extend(_collect_degenerate_warnings(planned_list=plans, labels=labels))
+        warnings.extend(stale_spelling_warnings(list(dict.fromkeys([
+            *(s for p in plans for s in p.stale_spellings), *render_stale_spellings,
+        ]))))
+        return _Rendered(
+            sql=sql, statement=statement, dialect=dialect, datasource=datasource, bundle=bundle,
+            planned_list=planned_list, model=model, warnings=warnings,
+            population=population, population_inferred=population_inferred,
         )
 
     async def _infer_populations(
@@ -1227,23 +1261,23 @@ class SlayerQueryEngine:
         query: SlayerQuery,
         named_queries: Dict[str, SlayerQuery],
         prefer_data_source: Optional[str],
+        stage_displays: "Dict[str, StageDisplay]",
     ) -> "tuple[SlayerQuery, Dict[str, SlayerQuery], Optional[str], bool, Optional[str]]":
         """Fill in an omitted ``source_model`` on the main query and each named stage.
 
-        Runs before prefix-strip (design §1). Returns the (possibly rewritten) main
-        query and stages, the main query's effective population + inferred flag, and
-        the inferred datasource (pins bundle resolution so the winning model name
-        can't resolve ambiguously to a same-named model in another datasource).
+        Runs before prefix-strip (design §1). Sibling checks compare user spellings;
+        identities are minted, so an inferred model name never resolves to a stage. Returns the (possibly rewritten) main query and
+        stages, the main query's effective population + inferred flag, and the
+        inferred datasource (pins bundle resolution so the winning model name can't
+        resolve ambiguously to a same-named model in another datasource).
         """
-        stage_names = set(named_queries) | ({query.name} if query.name else set())
-
         inferred = query.source_model is None
         inferred_data_source: Optional[str] = None
         if inferred:
             choice = await infer_population(
                 query=query, storage=self.storage,
                 data_source=prefer_data_source,
-                sibling_stage_names=stage_names - ({query.name} if query.name else set()),
+                sibling_stage_names={d.name for d in stage_displays.values()} - {query.name},
             )
             query = query.model_copy(update={"source_model": choice.model_name})
             inferred_data_source = choice.data_source
@@ -1254,7 +1288,9 @@ class SlayerQueryEngine:
                 choice = await infer_population(
                     query=stage, storage=self.storage,
                     data_source=prefer_data_source or inferred_data_source,
-                    sibling_stage_names=stage_names - {name},
+                    sibling_stage_names={
+                        d.name for ident, d in stage_displays.items() if ident != name
+                    },
                 )
                 stage = stage.model_copy(update={"source_model": choice.model_name})
                 # Pin bundle resolution to the inferred datasource even when only a
@@ -1287,6 +1323,7 @@ class SlayerQueryEngine:
         named_queries: Dict[str, SlayerQuery],
         runtime_kwarg: Dict[str, Any],
         *,
+        splice_chain: Tuple[str, ...] = (),
         dry_run: bool = False,
         explain: bool = False,
         prefer_data_source: Optional[str] = None,
@@ -1300,6 +1337,7 @@ class SlayerQueryEngine:
             named_queries=named_queries,
             runtime_kwarg=runtime_kwarg,
             prefer_data_source=prefer_data_source,
+            splice_chain=splice_chain,
         )
 
         # dry_run: return SQL without executing. NEVER cached.
@@ -1486,12 +1524,13 @@ class SlayerQueryEngine:
     ) -> bool:
         """Remove one cached entry, recomputing its key DB-free; ``True`` if present."""
         runtime_kwarg = variables or {}
-        main_query, named_queries, prefer_ds = await self._normalize_input(
+        main_query, named_queries, prefer_ds, splice_chain = await self._normalize_input(
             query, runtime_kwarg=runtime_kwarg, prefer_data_source=data_source
         )
         prepared = await self._prepare_pipeline(
             query=main_query,
             named_queries=named_queries,
+            splice_chain=splice_chain,
             runtime_kwarg=runtime_kwarg,
             prefer_data_source=prefer_ds,
         )
@@ -1524,7 +1563,7 @@ class SlayerQueryEngine:
                 f"no cached SQL client for datasource fingerprint {entry.ds_key!r}; "
                 "cannot pin re-execution to the entry's connection identity"
             )
-        main_query, named_queries, prefer_ds = await self._normalize_input(
+        main_query, named_queries, prefer_ds, splice_chain = await self._normalize_input(
             entry.original_input,
             runtime_kwarg=entry.variables or {},
             prefer_data_source=entry.resolved_data_source,
@@ -1532,6 +1571,7 @@ class SlayerQueryEngine:
         prepared = await self._prepare_pipeline(
             query=main_query,
             named_queries=named_queries,
+            splice_chain=splice_chain,
             runtime_kwarg=entry.variables or {},
             prefer_data_source=prefer_ds,
             override_datasource=client.datasource,
@@ -1692,6 +1732,8 @@ class SlayerQueryEngine:
                     model = bundle.source_model
         else:
             model = bundle.source_model
+        if model is not None and model.source_queries:
+            model = None  # a query-backed source is read as a spliced stage
         norm = normalize_query(query, model=model)
         out = norm.query if norm.query is not None else query
         return out, list(norm.warnings)
@@ -1863,11 +1905,9 @@ class SlayerQueryEngine:
             try:
                 # No caller variables here; fill placeholders with ``0`` (the
                 # save-time render) so an undefaulted {var} doesn't fail SQL-gen.
-                model = await self._resolve_model(
-                    model_name=model_name,
-                    dry_run_placeholders=True,
-                    prefer_data_source=model.data_source or data_source,
-                )
+                model = await self._expand_query_backed_model(model=model)
+            except QueryBackedCycleError:
+                raise
             except Exception:
                 logger.warning(
                     "get_column_types: failed to resolve query-backed model '%s'",
@@ -1911,14 +1951,6 @@ class SlayerQueryEngine:
                 data_source=model.data_source or None,
                 runtime_variables={},
                 named_queries={},
-            )
-            # Expand nested query-backed models so the planner sees sql-mode shapes.
-            bundle = await slayer.engine.bundle_builder.expand_query_backed_models_in_bundle(
-                bundle=bundle,
-                outer_vars=None,
-                runtime_kwarg=None,
-                dry_run_placeholders=True,
-                expander=self._expand_query_backed_model,
             )
             dialect = self._dialect_for_type(datasource.type)
             bundle = bundle.model_copy(update={"dialect": dialect})
@@ -2713,125 +2745,55 @@ class SlayerQueryEngine:
             )
         )
 
-    async def _expand_query_backed_model(  # NOSONAR S3776 — linear render pipeline (topo-sort → bundle → expand-nested → normalize → variables → plan → render → wrap); splitting hides the order of operations
+    async def _expand_query_backed_model(
         self,
+        *,
         model: SlayerModel,
-        outer_vars: Optional[Dict[str, Any]],
-        runtime_kwarg: Optional[Dict[str, Any]],
-        dry_run_placeholders: bool,
-        _resolving: Optional[set],
+        runtime_kwarg: Optional[Dict[str, Any]] = None,
+        dry_run_placeholders: bool = True,
     ) -> SlayerModel:
-        """Expand a query-backed ``model`` into a virtual ``sql``-mode model (read-only).
-
-        Mirrors ``_execute_pipeline``'s mid-section, wrapping the backing SQL in a
-        flat-rename SELECT; nested targets recurse via ``expand_query_backed_models_in_bundle``.
-        """
-        if not model.source_queries:
-            return model
-
-        # Topo-sort + validate (root-as-sink, joins.target_model, inline-nested).
-        stages = topologically_order_stages(list(model.source_queries))
-        final_stage = stages[-1]
-        named_q = {q.name: q for q in stages[:-1] if q.name}
-
-        # Build the bundle for the final stage WITHOUT a DS hint, so inner
-        # resolution falls back to the priority-list resolver — letting
+        """Render a query-backed ``model`` as a virtual ``sql``-mode model (save-time cache,
+        column-type probing): its stages run as a run-by-name statement, wrapped in a
+        flat-rename SELECT."""
+        main_query, named_queries = self._stages_of_model(
+            model=model, runtime_kwarg=runtime_kwarg or {},
+        )
+        # No datasource hint, so inner resolution uses the priority list — letting
         # ``get_column_types`` recover from a stale persisted ``data_source``.
-        bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
-            query=final_stage,
-            storage=self.storage,
-            data_source=None,
-            runtime_variables=runtime_kwarg,
-            outer_variables={**model.query_variables, **(outer_vars or {})},
-            named_queries=named_q,
+        rendered = await self._plan_and_render(
+            query=main_query, named_queries=named_queries, runtime_kwarg=runtime_kwarg or {},
+            prefer_data_source=None, splice_chain=(model.name,),
+            dry_run_placeholders=dry_run_placeholders, as_statement=True,
         )
-
-        # Expand nested query-backed models. ``_resolving`` propagates in-flight
-        # names so a target referencing its parent short-circuits via cached SQL.
-        # Pass the bundle's MERGED variables (not the bare stage dict) so nested
-        # expansions keep the outer model's ``query_variables`` layer.
-        bundle = await slayer.engine.bundle_builder.expand_query_backed_models_in_bundle(
-            bundle=bundle,
-            outer_vars=bundle.query_variables,
-            runtime_kwarg=runtime_kwarg,
-            dry_run_placeholders=dry_run_placeholders,
-            expander=self._expand_query_backed_model,
-            _resolving=(_resolving or set()) | {model.name},
-        )
-        inner_source_model = bundle.source_model
-        assert inner_source_model is not None
-        datasource = await self._resolve_datasource(model=inner_source_model)
-        dialect = self._dialect_for_type(datasource.type)
-        bundle = bundle.model_copy(update={"dialect": dialect})
-
-        # Per-stage normalize + variable substitution.
-        sibling_names = set(named_q)
-        final_stage, _slack = self._normalize_stage(
-            query=final_stage, bundle=bundle, sibling_names=sibling_names,
-        )
-        normed_named: Dict[str, SlayerQuery] = {}
-        for nm, nq in named_q.items():
-            nq2, _ = self._normalize_stage(
-                query=nq, bundle=bundle, sibling_names=sibling_names,
-            )
-            normed_named[nm] = nq2
-        final_stage = apply_variables_to_query(
-            query=final_stage,
-            variables=bundle.query_variables,
-            dry_run_placeholders=dry_run_placeholders,
-        )
-        # Sibling substitution needs the merged ``bundle.query_variables``, not
-        # the bare stage dict (which drops the ``model.query_variables`` layer).
-        normed_named = {
-            nm: apply_variables_to_query(
-                query=nq,
-                variables={
-                    **(
-                        (
-                            bundle.stage_source_models[nm].query_variables
-                            if nm in bundle.stage_source_models
-                            else (
-                                bundle.source_model.query_variables
-                                if bundle.source_model else None
-                            )
-                        )
-                        or {}
-                    ),
-                    **(bundle.query_variables or {}),
-                    **(nq.variables or {}),
-                    **(runtime_kwarg or {}),
-                },
-                dry_run_placeholders=dry_run_placeholders,
-            )
-            for nm, nq in normed_named.items()
-        }
-
-        # Plan + render the DAG.
-        plan_input = [*normed_named.values(), final_stage]
-        planned_list = plan_stages(queries=plan_input, bundle=bundle)
-        root_planned = planned_list[-1]
-        # Backing SQL is persisted on the virtual model, so length-fit here too.
-        aliases = projection_result_keys(root_planned=root_planned)
-        rendered = generate_planned_stages(
-            planned_queries=planned_list, bundle=bundle, dialect=dialect,
-            projection_aliases=aliases,
-        )
-
-        # Wrap with a flat-renamed SELECT over the root stage's output columns.
+        root_planned = rendered.planned_list[-1]
+        dialect, bundle = rendered.dialect, rendered.bundle
+        assert rendered.statement is not None
+        # Wrap the stage AST with a flat-renamed SELECT over the root stage's output columns, then render once.
         schema = root_planned.stage_schema
         assert schema is not None
         expected = [c.name for c in schema.columns]
         wrapped_ast = build_flat_rename_wrapper(
             source_relation=root_planned.source_relation,
-            stage_sql=rendered,
+            inner=rendered.statement,
             expected_columns=expected,
             dialect=dialect,
-            projection_aliases=aliases,
         )
-        wrapped_sql = wrapped_ast.sql(dialect=dialect, pretty=True)
-
-        # ``Column.sql`` carries the length-fitted alias; ``Column.name`` stays canonical.
+        # ``Column.sql`` carries the length-fitted alias; ``Column.name`` stays canonical. A flat name equals the
+        # user-authored column name, which the finishing pass exempts, so the output aliases are fitted here.
         fit_map = get_dialect(dialect).alias_rewrite_map(expected)
+        for alias in wrapped_ast.expressions:
+            fitted = fit_map.get(alias.alias)
+            if fitted is not None:
+                alias.set("alias", exp.to_identifier(fitted, quoted=True))
+        # Backing SQL is persisted on the virtual model, so length-fit here too.
+        wrapped_sql = _finish_statement(
+            wrapped_ast,
+            dialect=dialect,
+            aliases=projection_result_keys(root_planned=root_planned),
+            exempt=_user_authored_exemptions(bundle=bundle, dialect=dialect),
+        )
+        inner_source_model = bundle.source_model
+        assert inner_source_model is not None
         return model_from_stage_schema(
             name=model.name,
             schema=schema,
@@ -2839,70 +2801,6 @@ class SlayerQueryEngine:
             sql=wrapped_sql,
             column_sql={n: fit_map.get(n, n) for n in expected},
             default_time_dimension=inner_source_model.default_time_dimension,
-        )
-
-    async def _resolve_model(
-        self,
-        model_name: str,
-        _resolving: Optional[set[str]] = None,
-        outer_vars: Optional[Dict[str, Any]] = None,
-        runtime_kwarg: Optional[Dict[str, Any]] = None,
-        dry_run_placeholders: bool = False,
-        prefer_data_source: Optional[str] = None,
-    ) -> SlayerModel:
-        """Resolve a model by name from storage, expanding a query-backed one."""
-        _resolving = _resolving if _resolving is not None else set()
-
-        # Circular-reference guard (per-call set, concurrency-safe).
-        if model_name in _resolving:
-            raise ValueError(
-                f"Circular reference detected: '{model_name}' references itself "
-                f"(resolution chain: {' → '.join(_resolving)} → {model_name})"
-            )
-        _resolving.add(model_name)
-        try:
-            return await self._resolve_model_inner(
-                model_name,
-                _resolving=_resolving,
-                outer_vars=outer_vars,
-                runtime_kwarg=runtime_kwarg,
-                dry_run_placeholders=dry_run_placeholders,
-                prefer_data_source=prefer_data_source,
-            )
-        finally:
-            _resolving.discard(model_name)
-
-    async def _resolve_model_inner(
-        self,
-        model_name: str,
-        _resolving: Optional[set[str]] = None,
-        outer_vars: Optional[Dict[str, Any]] = None,
-        runtime_kwarg: Optional[Dict[str, Any]] = None,
-        dry_run_placeholders: bool = False,
-        prefer_data_source: Optional[str] = None,
-    ) -> SlayerModel:
-
-        # With ``prefer_data_source`` the lookup is strict (joins never cross
-        # datasources silently); otherwise it consults the priority list.
-        if prefer_data_source:
-            model = await self.storage.get_model(model_name, data_source=prefer_data_source)
-        else:
-            model = await self.storage.get_model(model_name)
-        if model is None:
-            if prefer_data_source:
-                raise ValueError(
-                    f"Model '{model_name}' not found in data_source "
-                    f"'{prefer_data_source}'."
-                )
-            raise ValueError(f"Model '{model_name}' not found")
-
-        # Re-expand a query-backed model; model defaults fold into outer_vars.
-        return await self._expand_query_backed_model(
-            model=model,
-            outer_vars=outer_vars,
-            runtime_kwarg=runtime_kwarg,
-            dry_run_placeholders=dry_run_placeholders,
-            _resolving=_resolving,
         )
 
     async def create_model_from_query(
@@ -3107,13 +3005,7 @@ class SlayerQueryEngine:
         """Dry-run-validate a query-backed model → copy with cache fields populated (undefaulted ``{var}`` → ``"0"``)."""
         if not (model.source_queries or []):
             return model
-        virtual = await self._expand_query_backed_model(
-            model=model,
-            outer_vars=dict(model.query_variables),
-            runtime_kwarg={},
-            dry_run_placeholders=True,
-            _resolving=set(),
-        )
+        virtual = await self._expand_query_backed_model(model=model)
         return model.model_copy(update={
             "columns": list(virtual.columns),
             "backing_query_sql": virtual.sql,
