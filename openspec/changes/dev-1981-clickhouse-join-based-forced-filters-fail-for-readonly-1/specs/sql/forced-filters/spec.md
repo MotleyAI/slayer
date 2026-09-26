@@ -42,11 +42,12 @@ their existing correlated semi-join unchanged.
 - **WHEN** a ClickHouse user whose profile sets `transform_null_in = 1` queries a
   join target containing a row with a NULL join key, and the anchor side holds a
   tenant row with a NULL key
-- **THEN** the NULL-keyed target row is not returned
+- **THEN** the query succeeds, returns the tenant's non-NULL-keyed rows, and does not
+  return the NULL-keyed target row
 
 #### Scenario: Distributed tables
 - **WHEN** a join-based policy scopes a ClickHouse `Distributed` target table whose
-  join path reaches a `Distributed` anchor table
+  join path reaches a `Distributed` anchor table, with related rows on different shards
 - **THEN** the query succeeds with correctly scoped rows
 
 #### Scenario: Other databases keep the correlated semi-join

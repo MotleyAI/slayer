@@ -17,7 +17,6 @@ from sqlglot import exp
 
 import pytest
 
-import slayer.engine.query_engine as qe
 from slayer.core.errors import ForcedFilterError, SlayerError
 from slayer.core.models import DatasourceConfig
 from slayer.core.policy import (
@@ -28,12 +27,11 @@ from slayer.core.policy import (
 )
 from slayer.engine.plan import plan_query, plan_stages
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.ir.planned import plan_has_semi_join_filters
 from slayer.sql.client import ExecutionResult, SlayerSQLClient
+from slayer.sql.dialects.clickhouse import _attach_ch_correlated_setting
 from slayer.sql.generator import generate_planned_stages
-from slayer.sql.session_policy import (
-    _attach_ch_correlated_setting,
-    apply_session_policy,
-)
+from slayer.sql.session_policy import apply_session_policy
 from slayer.storage.yaml_storage import YAMLStorage
 
 from tests._ch_fake_http import FakeClickHouse, fake_ch_engine, route_engine
@@ -111,7 +109,7 @@ class TestPlanPredicate:
             query=q(dimensions=["customers.tier"], measures=[M, CM]),
             bundle=bundle(),
         )
-        assert qe.plan_has_semi_join_filters(planned) is False
+        assert plan_has_semi_join_filters(planned) is False
 
     def test_false_on_an_inline_filter(self):
         planned = plan_query(
@@ -119,11 +117,11 @@ class TestPlanPredicate:
                     filters=["customers.regions.name = 'North'"]),
             bundle=bundle(),
         )
-        assert qe.plan_has_semi_join_filters(planned) is False
+        assert plan_has_semi_join_filters(planned) is False
 
     def test_true_on_a_pushed_filter(self):
         planned = plan_query(query=PUSHED, bundle=bundle())
-        assert qe.plan_has_semi_join_filters(planned) is True
+        assert plan_has_semi_join_filters(planned) is True
 
     def test_true_when_only_a_nested_producer_pushes(self):
         planned = plan_query(
@@ -131,7 +129,7 @@ class TestPlanPredicate:
                     measures=[M], filters=["channel = 'app'"]),
             bundle=bundle(),
         )
-        assert qe.plan_has_semi_join_filters(planned) is True
+        assert plan_has_semi_join_filters(planned) is True
 
 
 class TestVersionGate:

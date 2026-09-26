@@ -227,7 +227,7 @@ def test_apply_policy_join_rule_clickhouse_needs_no_version(join_engine, monkeyp
     )
     assert "allow_experimental_correlated_subqueries" not in out
     assert "EXISTS" not in out.upper()
-    assert "_rls_src.customer_id IN (SELECT" in out
+    assert "_rls_src.customer_id GLOBAL IN (SELECT toNullable(_rls_j0.id)" in out
 
 
 def test_apply_policy_column_only_clickhouse_not_blocked(engine, monkeypatch):

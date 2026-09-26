@@ -51,6 +51,7 @@ __all__ = [
     "TrailingWindowProducerKernel",
     "TransformLayer",
     "ValueSlot",
+    "plan_has_semi_join_filters",
 ]
 
 
@@ -658,3 +659,39 @@ def _structural_fingerprint(obj) -> Hashable:
     ):
         return obj
     return (type(obj).__name__, repr(obj))
+
+
+def plan_has_semi_join_filters(planned) -> bool:
+    """Whether any (nested) plan carries a pushed semi-join filter."""
+    return any(
+        getattr(plan, "semi_join_filters", None)
+        for plan in _iter_plans_with_producers([planned])
+    )
+
+
+def _iter_plans_with_producers(planned_list):
+    """Each planned query followed by every nested producer plan, each object once."""
+    seen: set = set()
+    for planned in planned_list:
+        for plan in (planned, *(a.producer_plan for a in _walk_regroup_attaches(planned))):
+            if id(plan) not in seen:
+                seen.add(id(plan))
+                yield plan
+
+
+def _walk_regroup_attaches(planned):
+    """Every ``RegroupAttachPlan`` reachable from ``planned`` (a producer is a nested
+    plan), each object once — a carried or interned one is reachable twice."""
+    seen: set = set()
+
+    def walk(plan):
+        if id(plan) in seen:
+            return
+        seen.add(id(plan))
+        for attach in getattr(plan, "regroup_attach_plans", ()) or ():
+            if id(attach) not in seen:
+                seen.add(id(attach))
+                yield attach
+            yield from walk(attach.producer_plan)
+
+    yield from walk(planned)

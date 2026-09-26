@@ -17,11 +17,9 @@ from slayer.core.policy import (
     SessionPolicy,
 )
 from slayer.sql.scope_check import assert_scope_closed
-from slayer.sql.session_policy import (
-    ScopedTable,
-    _attach_ch_correlated_setting,
-    apply_session_policy,
-)
+from slayer.sql.session_policy import ScopedTable, _build_in, apply_session_policy
+from slayer.sql.dialects import SqlDialect
+from slayer.sql.dialects.clickhouse import ClickhouseDialect, _attach_ch_correlated_setting
 
 
 def _norm(sql: str, dialect: str = "sqlite") -> str:
@@ -431,7 +429,8 @@ def test_same_target_twice_each_gets_own_exists():
     )
     parsed = sqlglot.parse_one(out, dialect="sqlite")
     assert len(list(parsed.find_all(exp.Exists))) == 2
-    assert "AS a" in out and "AS b" in out
+    assert "AS a" in out
+    assert "AS b" in out
     subqueries = [
         s for s in parsed.find_all(exp.Subquery) if s.this.find(exp.Exists) is not None
     ]
@@ -715,15 +714,15 @@ def test_clickhouse_join_emits_guarded_in_without_settings():
 
 
 _CH_SINGLE_HOP = (
-    "SELECT * FROM (SELECT * FROM orders AS _rls_src WHERE _rls_src.customer_id IN "
-    "(SELECT _rls_j0.id FROM customers AS _rls_j0 "
+    "SELECT * FROM (SELECT * FROM orders AS _rls_src WHERE _rls_src.customer_id GLOBAL IN "
+    "(SELECT toNullable(_rls_j0.id) FROM customers AS _rls_j0 "
     "WHERE _rls_j0.id IS NOT NULL AND _rls_j0.organization_uuid = 'orgA')) AS orders"
 )
 
 _CH_MULTI_HOP = (
-    "SELECT * FROM (SELECT * FROM line_items AS _rls_src WHERE _rls_src.order_id IN "
-    "(SELECT _rls_j0.id FROM orders AS _rls_j0 "
-    "INNER JOIN customers AS _rls_j1 ON _rls_j1.id = _rls_j0.customer_id "
+    "SELECT * FROM (SELECT * FROM line_items AS _rls_src WHERE _rls_src.order_id GLOBAL IN "
+    "(SELECT toNullable(_rls_j0.id) FROM orders AS _rls_j0 "
+    "GLOBAL INNER JOIN customers AS _rls_j1 ON _rls_j1.id = _rls_j0.customer_id "
     "WHERE _rls_j0.id IS NOT NULL AND _rls_j1.organization_uuid = 'orgA')) AS line_items"
 )
 
@@ -748,6 +747,22 @@ def test_clickhouse_multi_hop_exact_shape():
     assert out == _norm(_CH_MULTI_HOP, "clickhouse")
 
 
+class _GatedOnly(SqlDialect):
+    correlated_subqueries_gated: bool = True
+
+
+def test_in_takes_set_key_and_globalness_from_the_dialect():
+    ruleset = _join_ruleset(joins=[_LINE_ITEMS_RULE])
+    plain = _build_in(_LINE_ITEMS_RULE, ruleset=ruleset, sql_dialect=_GatedOnly())
+    ch = _build_in(_LINE_ITEMS_RULE, ruleset=ruleset, sql_dialect=ClickhouseDialect())
+    assert not plain.args.get("is_global")
+    assert not any(j.args.get("global_") for j in plain.args["query"].this.args["joins"])
+    assert isinstance(plain.args["query"].this.expressions[0], exp.Column)
+    assert ch.args.get("is_global")
+    assert all(j.args.get("global_") for j in ch.args["query"].this.args["joins"])
+    assert ch.args["query"].this.expressions[0].sql(dialect="clickhouse") == "toNullable(_rls_j0.id)"
+
+
 def test_clickhouse_multi_rule_each_target_gets_its_in():
     rules = [_join_ruleset().joins[0], _LINE_ITEMS_RULE]
     out = _ch(
@@ -759,7 +774,8 @@ def test_clickhouse_multi_rule_each_target_gets_its_in():
     assert len(semi) == 2
     assert parsed.find(exp.Exists) is None
     assert out.count("organization_uuid = 'orgA'") == 2
-    assert "AS o" in out and "AS li" in out
+    assert "AS o" in out
+    assert "AS li" in out
 
 
 def test_clickhouse_list_value_on_terminal_hop():

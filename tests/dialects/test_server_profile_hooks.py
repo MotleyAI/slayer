@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 import sqlglot
 from sqlglot import exp
+from sqlglot.expressions.core import Expression
 
 from slayer.sql.dialects import SqlDialect, _ALL_DIALECTS, _DS_TYPE_ONLY_DIALECTS
 from slayer.sql.dialects.base import ServerProfile
@@ -29,6 +30,20 @@ class TestGatedFlag:
     @pytest.mark.parametrize("dialect", [*_ALL_DIALECTS, *_DS_TYPE_ONLY_DIALECTS], ids=lambda d: type(d).__name__)
     def test_only_clickhouse_is_gated(self, dialect: SqlDialect) -> None:
         assert dialect.correlated_subqueries_gated is isinstance(dialect, ClickhouseDialect)
+
+
+class TestInSubqueryHooks:
+    def test_default_set_key_unchanged_and_not_global(self) -> None:
+        key = exp.column("id", table="j")
+        assert SqlDialect().in_subquery_key(key) is key
+        assert SqlDialect().global_in_subqueries is False
+
+    def test_clickhouse_set_key_is_nullable(self) -> None:
+        assert CH.in_subquery_key(exp.column("id", table="j")).sql(dialect="clickhouse") == "toNullable(j.id)"
+
+    @pytest.mark.parametrize("dialect", [*_ALL_DIALECTS, *_DS_TYPE_ONLY_DIALECTS], ids=lambda d: type(d).__name__)
+    def test_only_clickhouse_in_subqueries_are_global(self, dialect: SqlDialect) -> None:
+        assert dialect.global_in_subqueries is isinstance(dialect, ClickhouseDialect)
 
 
 class TestProbeStatements:
@@ -162,7 +177,7 @@ class TestCorrelatedSubqueryRefusal:
 
 def _attached(sql: str, dialect: SqlDialect) -> str:
     ast = sqlglot.parse_one(sql, dialect="clickhouse")
-    assert isinstance(ast, exp.Expression)
+    assert isinstance(ast, Expression)
     dialect.attach_correlated_setting(ast)
     return ast.sql(dialect="clickhouse")
 

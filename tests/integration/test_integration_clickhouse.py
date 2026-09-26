@@ -1501,7 +1501,7 @@ def _rls_models() -> list[SlayerModel]:
 
     return [
         _ids("customers"), _ids("orders", "customer_id"), _ids("line_items", "order_id"),
-        _ids("customers_dist"), _ids("orders_dist", "customer_id"),
+        _ids("customers_dist"), _ids("orders_dist", "customer_id"), _ids("line_items_dist", "order_id"),
         SlayerModel(name="sj_customers", sql_table="sj_customers", data_source="rls_ch", columns=[
             Column(name="id", type=DataType.INT, primary_key=True),
             Column(name="org", type=DataType.TEXT),
@@ -1521,12 +1521,15 @@ def _rls_models() -> list[SlayerModel]:
 
 
 @contextlib.contextmanager
-def _user_datasource(container, db_name: str, *, settings: str) -> Generator[DatasourceConfig]:
+def _user_datasource(
+    container, db_name: str, *, settings: str, extra_dbs: tuple[str, ...] = (),
+) -> Generator[DatasourceConfig]:
     user = f"rls_{uuid.uuid4().hex[:8]}"
     with disposable_engine(_admin_url(container)) as engine:
         with engine.begin() as conn:
             conn.exec_driver_sql(f"CREATE USER {user} IDENTIFIED WITH plaintext_password BY 'pw' SETTINGS {settings}")
-            conn.exec_driver_sql(f"GRANT SELECT ON {db_name}.* TO {user}")
+            for db in (db_name, *extra_dbs):
+                conn.exec_driver_sql(f"GRANT SELECT ON {db}.* TO {user}")
     try:
         yield DatasourceConfig(
             name="rls_ch", type="clickhouse",
@@ -1561,10 +1564,21 @@ _TENANT_POLICY = SessionPolicy(ruleset=JoinFilterRuleset(
 
 _DIST_POLICY = SessionPolicy(ruleset=JoinFilterRuleset(
     table="customers_dist", column="org", value="A",
-    joins=(JoinFilterRule(
-        target_table="orders_dist", join_path=("orders_dist.customer_id = customers_dist.id",),
-    ),),
+    joins=(
+        JoinFilterRule(target_table="orders_dist", join_path=("orders_dist.customer_id = customers_dist.id",)),
+        JoinFilterRule(
+            target_table="line_items_dist",
+            join_path=("line_items_dist.order_id = orders_dist.id", "orders_dist.customer_id = customers_dist.id"),
+        ),
+    ),
 ))
+
+# Each order / line item sits on the other shard from its customer / order.
+_SHARD_ROWS = {
+    "customers": ["(1, 'A')", "(2, 'B'), (NULL, 'A')"],
+    "orders": ["(13, 1)", "(10, 1), (11, 2), (12, NULL)"],
+    "line_items": ["(100, 10), (103, NULL)", "(101, 11), (102, 12), (104, 13)"],
+}
 
 _SEMI_JOIN_QUERY = SlayerQuery.model_validate({
     "source_model": "sj_orders", "dimensions": ["sj_customers.org"],
@@ -1584,6 +1598,43 @@ async def _assert_semi_join_runs_with_setting(engine: SlayerQueryEngine) -> None
     assert dry.sql is not None
     assert f"{_CORRELATED_SETTING} = 1" in dry.sql
     assert (await engine.execute(_SEMI_JOIN_QUERY)).data == _SEMI_JOIN_ROWS
+
+
+@pytest.fixture(scope="module")
+def rls_sharded_db(clickhouse_container):
+    """Distributed tables over a two-shard cluster (one server, a database per shard)."""
+    uid = uuid.uuid4().hex[:8]
+    cluster, shards = f"rls_{uid}", tuple(f"rls_{uid}_s{i}" for i in (1, 2))
+    replicas = "".join(
+        f"<shard><replica><host>127.0.0.{i}</host><port>9000</port><user>{clickhouse_container.username}</user>"
+        f"<password>{clickhouse_container.password}</password><default_database>{db}</default_database></replica></shard>"
+        for i, db in enumerate(shards, start=1)
+    )
+    config = f"/etc/clickhouse-server/config.d/{cluster}.xml"
+    xml = f"<clickhouse><remote_servers><{cluster}>{replicas}</{cluster}></remote_servers></clickhouse>"
+    assert clickhouse_container.exec(["sh", "-c", f"cat > {config} <<'EOF'\n{xml}\nEOF"]).exit_code == 0
+    db_name = _create_module_db(clickhouse_container)
+    with disposable_engine(_admin_url(clickhouse_container)) as engine:
+        with engine.begin() as conn:
+            conn.exec_driver_sql("SYSTEM RELOAD CONFIG")
+            for i, shard in enumerate(shards):
+                conn.exec_driver_sql(f"CREATE DATABASE {shard}")
+                for create in _RLS_DDL[:3]:
+                    conn.exec_driver_sql(create.replace("CREATE TABLE ", f"CREATE TABLE {shard}.", 1))
+                for table, rows in _SHARD_ROWS.items():
+                    conn.exec_driver_sql(f"INSERT INTO {shard}.{table} VALUES {rows[i]}")
+            for table in _SHARD_ROWS:
+                conn.exec_driver_sql(
+                    f"CREATE TABLE {db_name}.{table}_dist AS {shards[0]}.{table} "
+                    f"ENGINE = Distributed('{cluster}', '', '{table}')"
+                )
+    yield db_name, shards
+    _drop_module_db(clickhouse_container, db_name)
+    with disposable_engine(_admin_url(clickhouse_container)) as engine:
+        with engine.begin() as conn:
+            for shard in shards:
+                conn.exec_driver_sql(f"DROP DATABASE IF EXISTS {shard}")
+    clickhouse_container.exec(["rm", "-f", config])
 
 
 @pytest.fixture(scope="module")
@@ -1621,6 +1672,16 @@ class TestJoinPolicyReadonly:
         with _user_datasource(clickhouse_container, rls_db, settings="readonly = 1") as ds:
             engine = _rls_engine(ds, policy=_DIST_POLICY)
             assert await _ids(engine, "orders_dist") == [10, 13]
+
+    @pytest.mark.parametrize("product_mode", ["deny", "local"])
+    async def test_sharded_distributed_tables(self, clickhouse_container, rls_sharded_db, product_mode) -> None:
+        """Scenario: Distributed tables — rows and their join partners on different shards."""
+        db_name, shards = rls_sharded_db
+        settings = f"readonly = 1, transform_null_in = 1, distributed_product_mode = '{product_mode}'"
+        with _user_datasource(clickhouse_container, db_name, settings=settings, extra_dbs=shards) as ds:
+            engine = _rls_engine(ds, policy=_DIST_POLICY)
+            assert await _ids(engine, "orders_dist") == [10, 13]
+            assert await _ids(engine, "line_items_dist") == [100, 104]
 
 
 @pytest.fixture(scope="module", params=["25.4", "25.8"])

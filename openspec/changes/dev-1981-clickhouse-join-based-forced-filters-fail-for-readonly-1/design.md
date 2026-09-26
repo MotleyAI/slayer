@@ -11,9 +11,13 @@ Live probes (throwaway containers, `readonly = 1` user):
 - `readonly = 1` rejects `SETTINGS x = 1` (Code 164) only when it changes the value;
   re-sending the current value passes.
 - Correlated `EXISTS` over `Distributed` tables fails on every version ("not supported
-  with remote tables"); non-correlated `IN` runs on 24.x through 26.x, incl. `Distributed`.
+  with remote tables"). A non-correlated `IN` over a multi-shard `Distributed` table is
+  denied (Code 288, default `distributed_product_mode`) or, under `local`, silently
+  evaluated per shard; `GLOBAL IN` plus `GLOBAL JOIN` between hops is exact on 24.3–26.9.
 - With `transform_null_in = 1`, a plain `IN` admits a NULL-key row when the subquery
-  yields a NULL; a `to_col IS NOT NULL` guard closes it.
+  yields a NULL; a `to_col IS NOT NULL` guard closes it. On 24.x it also errors (Code
+  349) when a Nullable outer key probes a non-Nullable set; projecting
+  `toNullable(to_col)` fixes it.
 - `getSetting('readonly')` needs no grant; `getSetting` of an unknown setting errors
   (so the correlated setting is read only on 25.4+); `getSettingOrDefault` exists
   only from 24.10.
@@ -41,11 +45,16 @@ RLS builder across nodes and cannot serve the second consumer; flags such as
 version range of one database.
 
 **D2 — Guarded `IN` for gated dialects.** `session_policy.py` reads the flag. Gated:
-each targeting rule becomes `_rls_src.<from0> IN (SELECT _rls_j0.<to0> FROM <hop0> AS
-_rls_j0 [INNER JOIN <hop i> AS _rls_j<i> ON …] WHERE _rls_j0.<to0> IS NOT NULL AND
-_rls_j<N>.<col> <op> <value>)`, AND-combined inside the same `_rls_src` wrapper and
-alias. Equivalent to the correlated `EXISTS` in this positive position: a NULL outer
-key matches nothing in both; the guard makes it independent of `transform_null_in`.
+each targeting rule becomes `_rls_src.<from0> [GLOBAL] IN (SELECT <key> FROM <hop0> AS
+_rls_j0 [[GLOBAL] INNER JOIN <hop i> AS _rls_j<i> ON …] WHERE _rls_j0.<to0> IS NOT NULL
+AND _rls_j<N>.<col> <op> <value>)`, AND-combined inside the same `_rls_src` wrapper and
+alias. Two dialect members shape it: the typed hook `in_subquery_key(_rls_j0.<to0>)`
+gives `<key>` (ClickHouse `toNullable`, so a Nullable outer key can probe the set on
+24.x under `transform_null_in = 1`), and the flag `global_in_subqueries` (ClickHouse)
+adds `GLOBAL`, so the set is built once on the initiator and multi-shard `Distributed`
+targets and hops are scoped exactly under every `distributed_product_mode`. Equivalent
+to the correlated `EXISTS` in this positive position: a NULL outer key matches nothing
+in both; the guard makes it independent of `transform_null_in`.
 Non-gated dialects keep the `EXISTS` byte-for-byte; `scope_check.allow_rls_correlation`
 stays for them.
 

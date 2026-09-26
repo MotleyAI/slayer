@@ -7,15 +7,11 @@ import asyncio
 import copy
 import decimal
 import logging
-import re
 import warnings as _warnings_module
-from collections.abc import Callable
 from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
 
 import sqlalchemy as sa
-import sqlglot
 from sqlglot import exp
-from sqlglot.expressions.core import Expression
 from pydantic import (
     BaseModel,
     ConfigDict as PydanticConfigDict,
@@ -48,7 +44,7 @@ from slayer.engine.cardinality import (
     declares_solo_unique,
 )
 from slayer.core.join_walker import neighbors
-from slayer.core.policy import JoinFilterRuleset, SessionPolicy
+from slayer.core.policy import SessionPolicy
 from slayer.core.format import format_number
 from slayer.core.models import (
     DatasourceConfig,
@@ -93,7 +89,12 @@ from slayer.engine.cache import (
     _CacheEntry,
 )
 from slayer.engine.normalization import normalize_query, stale_spelling_warnings
-from slayer.ir.planned import PlannedQuery
+from slayer.ir.planned import (
+    PlannedQuery,
+    _iter_plans_with_producers,
+    _walk_regroup_attaches,
+    plan_has_semi_join_filters,
+)
 from slayer.engine.schema_drift import (
     AppliedEntry,
     ApplyDriftResult,
@@ -133,6 +134,7 @@ from slayer.sql.client import (
     classify_model_sql,
 )
 from slayer.sql.dialects import SQLGLOT_NAMES, SqlDialect, dialect_for_ds_type, get_dialect
+from slayer.sql.dialects.base import ServerProfile
 from slayer.sql.sql_template import SqlTemplateError, sql_template
 from slayer.sql import engine_factory
 from slayer.sql.engine_factory import EngineCacheKey, _sql_client_cache_key
@@ -142,11 +144,7 @@ from slayer.sql.generator import (
     _user_authored_exemptions,
     generate_planned_stages,
 )
-from slayer.sql.session_policy import (
-    ScopedTable,
-    _attach_ch_correlated_setting,
-    apply_session_policy,
-)
+from slayer.sql.session_policy import ScopedTable, apply_session_policy
 from slayer.sql.stage_wrapper import build_flat_rename_wrapper
 from slayer.storage.base import StorageBackend
 import slayer.engine.bundle_builder
@@ -313,42 +311,6 @@ def _stage_labels(*, stages, displays=None) -> List[str]:
         else (f"stage {q.name!r}" if q.name else f"stages[{i}]")
         for i, q in enumerate(stages)
     ]
-
-
-def _walk_regroup_attaches(planned):
-    """Every ``RegroupAttachPlan`` reachable from ``planned`` (a producer is a nested
-    plan), each object once — a carried or interned one is reachable twice."""
-    seen: set = set()
-
-    def walk(plan):
-        if id(plan) in seen:
-            return
-        seen.add(id(plan))
-        for attach in getattr(plan, "regroup_attach_plans", ()) or ():
-            if id(attach) not in seen:
-                seen.add(id(attach))
-                yield attach
-            yield from walk(attach.producer_plan)
-
-    yield from walk(planned)
-
-
-def plan_has_semi_join_filters(planned) -> bool:
-    """Whether any (nested) plan carries a pushed semi-join filter."""
-    return any(
-        getattr(plan, "semi_join_filters", None)
-        for plan in _iter_plans_with_producers([planned])
-    )
-
-
-def _iter_plans_with_producers(planned_list):
-    """Each planned query followed by every nested producer plan, each object once."""
-    seen: set = set()
-    for planned in planned_list:
-        for plan in (planned, *(a.producer_plan for a in _walk_regroup_attaches(planned))):
-            if id(plan) not in seen:
-                seen.add(id(plan))
-                yield plan
 
 
 def _semi_join_filter_texts(planned_list) -> List[str]:
@@ -665,8 +627,6 @@ class SlayerQueryEngine:
         self.policy = policy
         # Column-presence facts; an unconfirmable ``None`` is re-probed, never cached.
         self._column_presence_cache: dict[tuple, bool] = {}
-        # Cached ClickHouse version per datasource; missing/None fails closed.
-        self._ch_version_cache: dict[EngineCacheKey, tuple[int, int] | None] = {}
 
     @property
     def cache_config(self) -> CacheConfig:
@@ -698,109 +658,27 @@ class SlayerQueryEngine:
             has_column=lambda scoped, column: self._column_present(
                 datasource=datasource, scoped_table=scoped, column=column
             ),
-            on_correlated_emitted=self._clickhouse_correlated_guard(
-                dialect=dialect, datasource=datasource
-            ),
         )
 
-    def _policy_has_join_rules(self) -> bool:
-        return bool(
-            self.policy
-            and isinstance(self.policy.ruleset, JoinFilterRuleset)
-            and self.policy.ruleset.joins
-        )
-
-    @staticmethod
-    def _parse_clickhouse_version(raw: Any) -> tuple[int, int] | None:
-        """Parse a ClickHouse ``version()`` string to ``(major, minor)``; ``None`` if unparseable."""
-        if not isinstance(raw, str):
-            return None
-        match = re.match(r"\s*v?(\d+)\.(\d+)", raw)
-        if not match:
-            return None
-        return (int(match.group(1)), int(match.group(2)))
-
-    def _clickhouse_correlated_guard(
-        self, *, dialect: str, datasource: DatasourceConfig
-    ) -> Callable[[], None] | None:
-        """Guard for a correlated ``EXISTS`` rewrite; raises ``ForcedFilterError`` when version unknown or ``< (25, 4)``."""
-        if dialect != "clickhouse":
-            return None
-        ds_key = _sql_client_cache_key(datasource)
-
-        def guard() -> None:
-            version = self._ch_version_cache.get(ds_key)
-            if version is None:
-                raise ForcedFilterError(
-                    "ClickHouse join-based forced filter needs a correlated "
-                    "subquery (server >= 25.4), but the server version could "
-                    "not be determined; failing closed."
-                )
-            if version < (25, 4):
-                raise ForcedFilterError(
-                    "ClickHouse join-based forced filter needs a correlated "
-                    "subquery, which requires server >= 25.4; detected "
-                    f"{version[0]}.{version[1]}; failing closed."
-                )
-            logger.warning(
-                "Applying a join-based forced filter on ClickHouse via an "
-                "experimental correlated subquery "
-                "(allow_experimental_correlated_subqueries=1); requires "
-                "server >= 25.4 (detected %d.%d).",
-                version[0],
-                version[1],
-            )
-
-        return guard
-
-    def _require_clickhouse_semi_join_support(
-        self, *, datasource: DatasourceConfig, planned_list,
+    async def _require_correlated_subqueries(
+        self, *, dialect: str, datasource: DatasourceConfig, planned_list,
     ) -> None:
-        """Fail closed when a semi-join plan targets ClickHouse < 25.4 (or an
-        undeterminable version) — correlated EXISTS is unsupported there."""
-        version = self._ch_version_cache.get(_sql_client_cache_key(datasource))
-        if version is not None and version >= (25, 4):
+        """Fail closed when this user cannot run the semi-join pushdown's correlated ``EXISTS``."""
+        sql_dialect = get_dialect(dialect)
+        if not sql_dialect.correlated_subqueries_gated:
             return
         texts = _semi_join_filter_texts(planned_list)
-        named = f" filter(s): {', '.join(repr(t) for t in texts)};" if texts else ""
-        detected = (
-            f"detected {version[0]}.{version[1]}" if version is not None
-            else "the server version could not be determined"
-        )
-        raise SlayerError(
-            f"This query pushes a filter into a related model as a correlated "
-            f"EXISTS semi-join;{named} ClickHouse supports correlated "
-            f"subqueries only from server 25.4, but {detected}. Upgrade the "
-            f"server, or restructure the filter."
-        )
-
-    async def _preflight_clickhouse_correlated(
-        self, *, dialect: str, datasource: DatasourceConfig, needed: bool = False
-    ) -> None:
-        """Probe + cache the ClickHouse version once per datasource (join-rule
-        policies, or ``needed=True`` for semi-join plans); failure caches ``None``."""
-        if dialect != "clickhouse" or not (needed or self._policy_has_join_rules()):
-            return
-        ds_key = _sql_client_cache_key(datasource)
-        if ds_key in self._ch_version_cache:
-            return  # already probed (value may be None)
+        named = f" (filter(s): {', '.join(repr(t) for t in texts)})" if texts else ""
+        lead = f"This query pushes a filter into a related model as a correlated EXISTS semi-join{named}."
         try:
-            if ds_key not in self._sql_clients:
-                self._sql_clients[ds_key] = SlayerSQLClient(datasource=datasource)
-            client = self._sql_clients[ds_key]
-            rows = (await client.execute("SELECT version()")).rows
-            raw = None
-            if rows and isinstance(rows[0], dict):
-                raw = next(iter(rows[0].values()), None)
-            self._ch_version_cache[ds_key] = self._parse_clickhouse_version(raw)
+            profile = await self._client_for(datasource).server_profile()
         except Exception as exc:
-            logger.warning(
-                "ClickHouse version preflight failed for datasource '%s'; "
-                "join-based forced filters will fail closed: %s",
-                datasource.name,
-                exc,
-            )
-            self._ch_version_cache[ds_key] = None
+            # An unreadable profile is refused like an empty one; the next query re-probes.
+            reason = sql_dialect.correlated_subquery_refusal(ServerProfile())
+            raise SlayerError(f"{lead} {reason}") from exc
+        reason = sql_dialect.correlated_subquery_refusal(profile)
+        if reason is not None:
+            raise SlayerError(f"{lead} {reason} Alternatively, restructure the filter.")
 
     def _column_present(
         self,
@@ -1026,21 +904,10 @@ class SlayerQueryEngine:
         assert sql is not None
         planned_list = rendered.planned_list
         root_planned = planned_list[-1]
-        # Semi-join pushdown emits correlated EXISTS, which ClickHouse supports
-        # only from 25.4 behind a setting: probe the version, fail closed below
-        # it, and attach the setting on every entry point (dry-run included).
-        has_semi_joins = any(plan_has_semi_join_filters(p) for p in planned_list)
-        await self._preflight_clickhouse_correlated(
-            dialect=dialect, datasource=datasource, needed=has_semi_joins
-        )
-        if has_semi_joins and dialect == "clickhouse":
-            self._require_clickhouse_semi_join_support(
-                datasource=datasource, planned_list=planned_list,
+        if any(plan_has_semi_join_filters(p) for p in planned_list):
+            await self._require_correlated_subqueries(
+                dialect=dialect, datasource=datasource, planned_list=planned_list,
             )
-            ast = sqlglot.parse_one(sql, dialect=dialect)
-            assert isinstance(ast, Expression)
-            _attach_ch_correlated_setting(ast)
-            sql = ast.sql(dialect=dialect, pretty=True)
         # Forced-filter rewrite before dry-run / explain / execute so all three
         # (and the cache key) see the policy-rewritten SQL; no-op without a policy.
         sql = self._apply_policy(sql=sql, dialect=dialect, datasource=datasource)
@@ -1643,11 +1510,6 @@ class SlayerQueryEngine:
                 try:
                     datasource = client.datasource
                     dialect = self._dialect_for_type(datasource.type)
-                    # Warm the ClickHouse version cache before policy-applying the
-                    # scan SQL so a join-policy refresh matches normal execution.
-                    await self._preflight_clickhouse_correlated(
-                        dialect=dialect, datasource=datasource
-                    )
                     scanned[(ds_key, table)] = await self._scan_one_table_values(
                         table=table, exprs=exprs, dialect=dialect,
                         datasource=datasource, client=client,
@@ -1964,9 +1826,6 @@ class SlayerQueryEngine:
             )
             # Type probing honours the forced-filter policy too; a policy failure
             # degrades to {} rather than leaking an unscoped probe.
-            await self._preflight_clickhouse_correlated(
-                dialect=dialect, datasource=datasource
-            )
             sql = self._apply_policy(sql=sql, dialect=dialect, datasource=datasource)
         except Exception:
             logger.warning(
@@ -2646,10 +2505,6 @@ class SlayerQueryEngine:
         """Full-scan one side of a join: non-null key rows vs distinct key-tuples."""
         rows_sql, dist_sql = self._side_stats_sql(
             table=table, key_cols=key_cols, sqlglot_name=sqlglot_name,
-        )
-        # Give the correlated-subquery guard a version to gate on.
-        await self._preflight_clickhouse_correlated(
-            dialect=sqlglot_name, datasource=datasource
         )
         # Profile the tenant-scoped rows, like every execution path (no-op without a policy).
         rows_sql = self._apply_policy(
