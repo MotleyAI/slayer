@@ -20,6 +20,7 @@ from slayer.core.keys import (
     InKey,
     LiteralKey,
     ScalarCallKey,
+    SqlFragmentKey,
     StarKey,
     TimeTruncKey,
     TransformKey,
@@ -326,7 +327,7 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
     ):
         return _render_via_alias(key, ctx)
 
-    if isinstance(key, ColumnKey):
+    if isinstance(key, (ColumnKey, SqlFragmentKey)):
         return _require_scope(ctx, key).resolve(key, consumer=ctx.consumer)
 
     if isinstance(key, ColumnSqlKey):

@@ -33,7 +33,10 @@ from slayer.core.models import (
     SlayerModel,
 )
 from slayer.core.query import SlayerQuery
-from slayer.sql.generator import SQLGenerator
+from slayer.core.scope import ModelScope
+from slayer.engine.binding import bind_expr
+from slayer.engine.syntax import parse_expr
+from slayer.ir.source_bundle import ResolvedSourceBundle
 
 from tests._dev1746_fixtures import cte_names_in_order, find_cte
 from tests._engine_helpers import _engine_generate
@@ -129,54 +132,31 @@ async def _sql(
 
 class TestOnlySubstitutedKwargsAreSql:
     """A string kwarg is a SQL fragment only when the aggregation's template
-    substitutes it. Anything else is a marker, and handing a marker to a SQL
-    parser is meaningless — harmless while the scan swallowed parse errors,
-    query-fatal now that the door raises."""
+    substitutes it; anything else is a marker, kept as a string on the key and
+    never handed to a SQL parser."""
 
     @staticmethod
-    def _entered_fragments(*, kwargs, agg="sum") -> list:
-        gen = SQLGenerator(dialect="postgres")
-        seen: list = []
-        gen._enter_mode_a_expression = (  # type: ignore[method-assign]
-            lambda **kw: seen.append(kw["sql"])
-        )
-        gen._register_fragment_kwarg_joins(
-            key=AggregateKey(
-                source=ColumnKey(path=(), leaf="spend"), agg=agg,
-                kwargs=kwargs,
-            ),
-            scope=object(),
-            model=_customers(),
-        )
-        return seen
+    def _kwargs(formula: str) -> dict:
+        orders = _orders()
+        key = bind_expr(
+            parse_expr(formula), scope=ModelScope(source_model=orders),
+            bundle=ResolvedSourceBundle(dialect="postgres", source_model=orders,
+                                        referenced_models=[_customers(), _regions()]),
+        ).value_key
+        assert isinstance(key, AggregateKey), key
+        return dict(key.kwargs)
 
     def test_reserved_marker_kwarg_is_not_parsed_as_sql(self) -> None:
-        """``window='90d'`` is the standing example — a marker whose ``{window}``
-        never appears in ``wscaled_sum``'s template, so it is not a fragment.
-        Uses a TEMPLATED aggregation so the scan runs PAST the no-template
-        guard; the default ``w`` param still contributes ``regions.weight``, so
-        the check is that the MARKER's value is absent, not that nothing ran."""
-        entered = self._entered_fragments(
-            kwargs=(("window", "90d"),), agg="wscaled_sum",
-        )
-        assert "90d" not in entered, entered
+        kwargs = self._kwargs("customers.spend:wscaled_sum(window='90d')")
+        assert kwargs["window"] == "90d"
+        assert kwargs["w"] == ColumnKey(path=("customers", "regions"), leaf="weight")
 
     def test_marker_that_is_not_parseable_sql_is_still_skipped(self) -> None:
-        """The failure this guards: a marker whose text sqlglot rejects. Under a
-        TEMPLATED aggregation the substitution filter is what skips it, so it
-        never reaches the door (which would raise)."""
-        entered = self._entered_fragments(
-            kwargs=(("fmt", "%Y-%m"),), agg="wscaled_sum",
-        )
-        assert "%Y-%m" not in entered, entered
+        assert self._kwargs("customers.spend:wscaled_sum(window='%Y-%m')")["window"] == "%Y-%m"
 
-    def test_a_substituted_kwarg_is_still_scanned(self) -> None:
-        """The counter-case, so the filter is not blanket suppression:
-        ``wscaled_sum``'s template does substitute ``{w}``."""
-        entered = self._entered_fragments(
-            kwargs=(("w", "regions.weight"),), agg="wscaled_sum",
-        )
-        assert entered == ["regions.weight"], entered
+    def test_a_substituted_kwarg_is_still_bound(self) -> None:
+        assert self._kwargs("customers.spend:wscaled_sum(w='customers.regions.weight')") == {
+            "w": ColumnKey(path=("customers", "regions"), leaf="weight")}
 
 
 def _cm_body(sql: str, *, dialect: str = "postgres") -> str:

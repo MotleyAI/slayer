@@ -684,16 +684,21 @@ ambiguous or only partially resolvable owner reference — a first segment that
 resolves, by cancellation or as a hop, followed by one that does not — SHALL fail
 closed rather than silently re-anchor at the root. An edge-name segment never
 cancels. Only a definition default cancels: a query-typed path that revisits a
-dataset stays refused with the circular-join error. (Whether a derived column whose
+dataset stays refused with the circular-join error, and so does a default reference
+that is circular from the query root. (Whether a derived column whose
 own `Column.sql` revisits is likewise refused is out of scope here — DEV-1952.) A
-default that resolves to a genuine
-host-local (root) column SHALL widen the home to the root exactly as spelling that
-column explicitly would. This same owning-model resolution governs the input-safety
-check and every rendering of the default in every producer kind — plain, association,
-windowed and second-order — so a definition default whose definition crosses a fanning
-hop SHALL fail closed even when other inputs widen the home away from the declaring
-model, and a cancelled or root-anchored default is never rendered as a join from the
-owner back to the dataset it names.
+default is resolved once, when the query is bound, and is thereafter the same value as
+its explicit spelling — the column it resolves to, or for an expression default each
+of its references: it homes, is checked for input safety and renders exactly as that
+spelling would, in every producer kind — plain, association, windowed and
+second-order — and in every position, filters and order keys included; a default and
+its identical explicit spelling in one query are computed once. So a default that
+resolves to a genuine host-local (root) column SHALL widen the home to the root, and a
+default whose resolved path reaches a dataset over a fanning hop SHALL widen the home
+to that dataset, exactly as spelling that column explicitly would; a definition
+default whose definition crosses a fanning hop SHALL fail closed even when other
+inputs widen the home away from the declaring model; and a cancelled or root-anchored
+default is never rendered as a join from the owner back to the dataset it names.
 Candidates are the input paths and their
 longest common prefix, deepest first; a tie prefers the source's anchor, the longest
 common prefix of the source leaves' own paths. The aggregation is computed over the
@@ -804,8 +809,11 @@ applies exactly as for a single-column source rooted at the home.
 #### Scenario: A cancelled default that then crosses a fanning hop fails closed
 - **WHEN** the `countries`-declared default is `regions.region_events.value` and the
   query selects `customers.regions.countries.gdp:wsum_fan` from `orders`
-- **THEN** the query fails with the input-safety error naming `region_events`, never a
-  multiplied value
+- **THEN** the default resolves to `customers.regions.region_events.value`, the home is
+  `customers.regions.region_events` exactly as for the explicit
+  `weight=customers.regions.region_events.value` twin, and the value equals that twin
+  and `sum(customers.regions.countries.gdp * customers.regions.region_events.value)` —
+  each event counted once — on SQLite and DuckDB, by executed values
 
 #### Scenario: A reverse hop to a dataset not on the path stays refused
 - **WHEN** a query rooted at `regions` selects `pop:wsum_cust_spend`, whose
@@ -878,3 +886,33 @@ applies exactly as for a single-column source rooted at the home.
   one-to-many hop and a query rooted at `orders` selects `li_qty:sum`
 - **THEN** it fails with the input-safety error naming `line_items` and the
   cross-model spelling, while `line_items.qty:sum` returns the per-line-item total
+
+#### Scenario: A default and its explicit spelling are computed once
+- **WHEN** one query rooted at `orders` selects both `amount:wpop` — whose weight
+  defaults to `customers.hr.pop` — and `amount:wpop(weight=customers.hr.pop)` under
+  two names
+- **THEN** both names carry the same value from a single computation (one producer in
+  the generated SQL), each keeping its own public name, and the generated SQL equals
+  the SQL of the same query spelling the default by model name (`customers.regions.pop`)
+
+#### Scenario: A bare default names the owner's column even when the root shadows it
+- **WHEN** both `customers` and the query root `orders` declare a column of the same
+  name and a `customers`-declared aggregation defaults its weight to that bare name
+- **THEN** the default reads the owner's (`customers`) column in every producer kind,
+  equal by executed values on SQLite and DuckDB to the explicit
+  `weight=customers.<column>` twin
+
+#### Scenario: A mixed-frame expression default keeps a quoted column's identity
+- **WHEN** an expression default combines an owner-local column whose physical name
+  must be quoted (mixed-case or a reserved word) with a root-anchored column
+  (`<owner column> + orders.amount`)
+- **THEN** the quoted column renders with its exact identity and the executed value on
+  SQLite and DuckDB equals the explicit two-reference spelling
+
+#### Scenario: A default that revisits a dataset without cancelling is refused
+- **WHEN** a `customers`-declared default returns to `customers` through edge names,
+  which never cancel (`hr.back.spend`, with `hr` a named join `customers → regions` and
+  `back` a named join `regions → customers`), alone or inside an expression default
+  (`hr.back.spend * 1`)
+- **THEN** the query is refused with the circular-join error when it is bound — never
+  a reference emitted verbatim into the SQL, and never a later or different failure

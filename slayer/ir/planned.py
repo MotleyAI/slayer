@@ -291,19 +291,14 @@ class RankedProducerKernel(BaseModel):
 
 
 class PickedParam(BaseModel):
-    """An aggregation parameter lifted onto the two-level kernel:
-    picked once per level-1 cell as ``MAX(<value>) AS _p<i>`` and read by level 2
-    as ``_base._p<i>``. Exactly one source form is set — ``key`` (a column /
-    placeholder / composite value key rendered through the scope, with a
-    ``ColumnSqlKey`` taking the derived expansion) or ``sql`` (a canonical Mode-A
-    fragment for an expression default, in producer-root coordinates — DEV-1908 D8
-    — so it always enters at the producer root)."""
+    """An aggregation parameter lifted onto the two-level kernel: picked once per
+    level-1 cell as ``MAX(<key>) AS _p<i>`` (rendered through the scope) and read by
+    level 2 as ``_base._p<i>``."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     name: str
-    key: Optional[ValueKey] = None
-    sql: Optional[str] = None
+    key: ValueKey
 
 
 class TrailingWindowProducerKernel(BaseModel):

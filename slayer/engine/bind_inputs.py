@@ -60,7 +60,7 @@ from slayer.core.scope import (
     stale_spelling_position,
 )
 from slayer.engine import dimension_routing
-from slayer.engine.binding import bind_expr, bind_filter, bind_time_dimension
+from slayer.engine.binding import bind_expr, bind_filter, bind_time_dimension, spelled_aggregate_key
 from slayer.engine.elaborate_env import (
     check_computed_dim_name_collision,
     check_computed_dimension,
@@ -1068,7 +1068,7 @@ def _declared_measures_from_query(  # NOSONAR(S3776) — three sequential projec
             # The parsed tree drives text-shape alias derivation, so both spellings
             # of one formula share an alias.
             canonical = _canonical_alias_for_formula(
-                formula, bound=bound, parsed=parsed,
+                formula, bound=bound, parsed=parsed, bundle=bundle,
             )
             # A bare/dotted saved-ModelMeasure reference surfaces under the formula text (explicit query name still wins).
             saved_name = _saved_measure_public_name(
@@ -1132,6 +1132,7 @@ def _canonical_alias_for_formula(
     *,
     bound: Optional[BoundExpr] = None,
     parsed: Optional[ParsedExpr] = None,
+    bundle: Optional[ResolvedSourceBundle] = None,
 ) -> str:
     """Canonical public alias for a measure formula: ``canonical_aggregate_alias``
     for an AggregateKey root, ``canonical_agg_name`` for a plain ``col:agg``
@@ -1140,10 +1141,10 @@ def _canonical_alias_for_formula(
     when given, so ``cumsum(sum(revenue))`` and
     ``cumsum(revenue:sum)`` derive one alias."""
     if bound is not None and isinstance(bound.value_key, AggregateKey):
+        spelled = bound.value_key if parsed is None or bundle is None else spelled_aggregate_key(
+            parsed=parsed, key=bound.value_key, bundle=bundle)
         # stage_formula profile prefixes the join path relative to the stage (``count(customers.*)`` → ``customers._count``).
-        alias = canonical_aggregate_alias(
-            bound.value_key, profile="stage_formula",
-        )
+        alias = canonical_aggregate_alias(spelled, profile="stage_formula")
         if alias is not None:
             return alias
         # None means the source exposes no leaf/column name; use the text-shape path.

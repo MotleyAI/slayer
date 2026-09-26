@@ -164,6 +164,17 @@ def physical_column_sql(*, sql: str | None, name: str) -> str:
     return (_bare_identifier(sql) if sql is not None else None) or name
 
 
+def _coerce_legacy_type_field(data: Any) -> Any:
+    """Map a legacy lowercase ``type`` string in a raw payload; drop pseudo-types."""
+    if isinstance(data, dict) and "type" in data:
+        mapped = _coerce_legacy_datatype(data["type"])
+        if mapped is None:
+            data = {k: v for k, v in data.items() if k != "type"}
+        elif mapped is not data["type"]:
+            data = {**data, "type": mapped}
+    return data
+
+
 class Column(BaseModel):
     """A row-level column, usable per-query as a GROUP BY dimension or an aggregation measure."""
     name: str
@@ -206,14 +217,7 @@ class Column(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _coerce_legacy_type(cls, data: Any) -> Any:
-        # Absorb legacy lowercase ``type`` strings; drop pseudo-types to None.
-        if isinstance(data, dict) and "type" in data:
-            mapped = _coerce_legacy_datatype(data["type"])
-            if mapped is None:
-                data = {k: v for k, v in data.items() if k != "type"}
-            elif mapped is not data["type"]:
-                data = {**data, "type": mapped}
-        return data
+        return _coerce_legacy_type_field(data)
 
     @field_validator("name")
     @classmethod
@@ -326,14 +330,8 @@ class ModelMeasure(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _coerce_legacy_type(cls, data: Any) -> Any:
-        # ``type`` declares the formula's result type; legacy strings mapped, pseudo-types dropped.
-        if isinstance(data, dict) and "type" in data:
-            mapped = _coerce_legacy_datatype(data["type"])
-            if mapped is None:
-                data = {k: v for k, v in data.items() if k != "type"}
-            elif mapped is not data["type"]:
-                data = {**data, "type": mapped}
-        return data
+        # ``type`` declares the formula's result type.
+        return _coerce_legacy_type_field(data)
 
     @field_validator("name")
     @classmethod
@@ -380,6 +378,17 @@ def reserved_value_param_message(agg_name: str) -> str:
         f"Aggregation '{agg_name}': a parameter may not be named '{VALUE_PLACEHOLDER}'. "
         f"'{{{VALUE_PLACEHOLDER}}}' in an aggregation formula always stands for the "
         f"aggregated column, so such a parameter could never be used; rename it."
+    )
+
+
+WINDOW_PARAM = "window"
+
+
+def reserved_window_param_message(agg_name: str) -> str:
+    return (
+        f"Aggregation '{agg_name}': a parameter or placeholder may not be named "
+        f"'{WINDOW_PARAM}'. '{WINDOW_PARAM}' is the trailing-window argument "
+        f"(e.g. {WINDOW_PARAM}='90d'), so such a parameter could never receive a value; rename it."
     )
 
 

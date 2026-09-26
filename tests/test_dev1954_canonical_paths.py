@@ -21,7 +21,7 @@ from slayer.core.keys import AggregateKey, ColumnKey, ColumnSqlKey, StarKey, Tim
 from slayer.core.models import ModelJoin, SlayerModel
 from slayer.core.query import ColumnRef, TimeDimension
 from slayer.core.scope import ModelScope
-from slayer.engine import bind_inputs, schema_drift
+from slayer.engine import bind_inputs, param_binding, schema_drift
 from slayer.engine.binding import bind_expr, bind_time_dimension
 from slayer.engine.join_safety import attributable_from_root, reroot_from_root
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -231,7 +231,7 @@ class TestModeAQualifiersAreCanonical:
 
     def test_default_qualifier_path(self) -> None:
         M = _mbn()
-        assert column_expansion.resolve_default_qualifier_path(
+        assert param_binding.resolve_default_qualifier_path(
             qualifiers=("customers", "regions"), leaf="pop",
             root_model=M["orders"], owner_path=(), models_by_name=M,
         ) == ("customers", "hr")
@@ -240,7 +240,7 @@ class TestModeAQualifiersAreCanonical:
         M = _mbn()
         parsed = sqlglot.parse_one("customers.regions.pop * 1")
         assert isinstance(parsed, exp.Expression)  # pyright: ignore[reportPrivateImportUsage] — sqlglot ships no __all__
-        assert column_expansion.resolve_default_reference_paths(
+        assert param_binding.resolve_default_reference_paths(
             parsed=parsed, owner_path=(), root_model=M["orders"], root_path=(),
             bundle=_bundle(),
         ) == [(("customers", "hr"), "pop")]
@@ -410,6 +410,7 @@ class TestDefinitionDefaultSpelledByModelName:
         assert not broadcast_warnings(resp)
         assert by_key(await engine.execute(explicit), RNAME, "orders.w") == WPOP_BY_RNAME
         sql = await _dry(engine, default)
+        assert sql == await _dry(engine, explicit)
         orders = await engine.storage.get_model("orders", data_source="test")
         assert orders is not None
         wpop = next(a for a in orders.aggregations if a.name == "wpop")

@@ -13,8 +13,6 @@ Public surface:
 - ``is_known_aggregation_name`` — built-in or in the custom set.
 - ``required_params_for`` — required built-in params (e.g.,
   ``weighted_avg`` requires ``weight``).
-- ``merge_agg_params`` — defaults from the agg-def overridden by
-  query-time kwargs.
 
 These are dormant in stage 4 — the existing call sites still inline
 their own logic. Stages 7a/7b switch them over.
@@ -133,20 +131,3 @@ def required_params_for(agg_name: str) -> Tuple[str, ...]:
     names so callers can branch on emptiness rather than ``KeyError``.
     """
     return tuple(BUILTIN_AGGREGATION_REQUIRED_PARAMS.get(agg_name, []))
-
-
-def merge_agg_params(
-    agg_def: Optional[Aggregation],
-    query_kwargs: Dict[str, Any],
-) -> Dict[str, Any]:
-    """Combine ``Aggregation.params`` defaults with query-time kwargs.
-
-    Query-time kwargs override defaults. Kwargs not declared by the
-    ``agg_def`` pass through unchanged — validation of param names
-    (e.g., rejecting unknown ones) is the binder's responsibility,
-    not this helper's.
-    """
-    if agg_def is None:
-        return dict(query_kwargs)
-    defaults = {p.name: p.sql for p in agg_def.params}
-    return {**defaults, **query_kwargs}

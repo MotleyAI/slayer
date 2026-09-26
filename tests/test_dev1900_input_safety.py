@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.core.errors import SlayerError
+from slayer.core.errors import SlayerError, UnanalyzableAggregationParameterError
 from slayer.engine.elaborate_env import check_input_dependencies_analyzable
 
 from tests._dev1892_fixtures import assert_grain_residue, assert_ref_free
@@ -156,7 +156,7 @@ class TestUnanalyzableDefinition:
         None, so the guard must still fail closed rather than leak the failure to
         the renderer (CodeRabbit; without the fix the guard is a no-op)."""
         q = orders_q(measures=[CM_EXPR_UNPARSE])
-        with pytest.raises(ValueError, match="no supported dialect can analyse"):
+        with pytest.raises(UnanalyzableAggregationParameterError, match="weight"):
             await unparse_engine.execute(q)
 
 

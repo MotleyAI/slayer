@@ -27,6 +27,7 @@ from slayer.core.keys import (
     TransformKey,
     ValueKey,
     substitute_value_keys,
+    SqlFragmentKey,
 )
 from slayer.core.keys import Grain
 
@@ -57,6 +58,7 @@ class TestDirectAndNestedHits:
             Decimal("0"),
         ))
         out = substitute_value_keys(tree, MAPPING)
+        assert isinstance(out.args[0], ArithmeticKey)
         assert out.args[0].operands[0] == PLACEHOLDER
         assert out.args[1] == Decimal("1")
 
@@ -116,6 +118,7 @@ class TestTotality:
                 column=CITY, low=LiteralKey(value="a"), high=LiteralKey(value="b"),
             ),
             InKey: InKey(column=CITY, values=(LiteralKey(value="gold"),)),
+            SqlFragmentKey: SqlFragmentKey(template="{r0} * 2", refs=(CITY,)),
         }
         members = set(get_args(ValueKey))
         missing = members - set(samples)

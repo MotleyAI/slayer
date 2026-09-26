@@ -112,4 +112,7 @@ class TestReroot:
         )
         rerooted = reroot_value_key(key=key, target_path=("customers",))
         assert rerooted.args[1] == ColumnKey(path=(), leaf="tier")
-        assert rerooted.args[0].operands[0].source == ColumnKey(path=(), leaf="spend")
+        cond = rerooted.args[0]
+        assert isinstance(cond, ArithmeticKey)
+        assert isinstance(cond.operands[0], AggregateKey)
+        assert cond.operands[0].source == ColumnKey(path=(), leaf="spend")

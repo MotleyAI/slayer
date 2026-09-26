@@ -21,7 +21,7 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.errors import AggregationNotAllowedError, IllegalWindowInFilterError
-from slayer.core.keys import StarKey, TransformKey
+from slayer.core.keys import AggregateKey, StarKey, TransformKey
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery
 from slayer.core.scope import ModelScope
@@ -272,6 +272,7 @@ def test_noncyclic_dotted_star_ok():
     scope = ModelScope(source_model=bundle.source_model)
     bound = bind_expr(parse_expr("b.*:count"), scope=scope, bundle=bundle)
     # *:count over the joined model -> AggregateKey on a StarKey(path=("b",)).
+    assert isinstance(bound.value_key, AggregateKey)
     assert isinstance(bound.value_key.source, StarKey)
     assert bound.value_key.source.path == ("b",)
 

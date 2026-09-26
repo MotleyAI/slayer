@@ -13,6 +13,8 @@ import importlib
 import pytest
 
 from slayer.core.enums import DataType, JoinType, TimeGranularity
+from slayer.core.errors import UnanalyzableAggregationParameterError
+from slayer.core.keys import ColumnKey
 from slayer.core.models import (
     Aggregation,
     AggregationParam,
@@ -22,7 +24,7 @@ from slayer.core.models import (
     SlayerModel,
 )
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
-from slayer.ir.planned import MaskTyping
+from slayer.ir.planned import MaskTyping, RankedProducerKernel
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.plan import plan_query
 
@@ -546,6 +548,8 @@ class TestCrossingFirstLastStaysRanked:
         planned, _ = _s5_plans("amount:last(customers.signup_at)")
         attach = _assert_single_ranked_host(planned)
         # The ranking key reaches through the customers join (path () if non-crossing).
+        assert isinstance(attach.kernel, RankedProducerKernel)
+        assert isinstance(attach.kernel.ranking_time_key, ColumnKey)
         assert attach.kernel.ranking_time_key.path == ("customers",)
 
     def test_derived_time_arg_stays_ranked(self):
@@ -616,11 +620,9 @@ class TestWidenedLaw3TriggerCrossingInputs:
         _, plans = _s5_plans("amount:scaled_sum(scale='amount * 2')")
         assert plans == []
 
-    def test_unparseable_template_fragment_does_not_trigger(self):
-        # Parity with the Column.filter scan: an unparseable fragment contributes
-        # no paths (defensive fallback), preserving pre-Stage-5 behavior.
-        _, plans = _s5_plans("amount:scaled_sum(scale='%% !! ((')")
-        assert plans == []
+    def test_unparseable_template_fragment_fails_at_binding(self):
+        with pytest.raises(UnanalyzableAggregationParameterError, match="scale"):
+            _s5_plans("amount:scaled_sum(scale='%% !! ((')")
 
     def test_crossing_dimension_only_does_not_trigger(self):
         # A joined dimension is Law-1 (base-pull); only aggregate inputs trigger Law-3.
