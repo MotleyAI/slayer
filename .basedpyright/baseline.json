@@ -620,24 +620,6 @@
                 }
             }
         ],
-        "./slayer/engine/plan.py": [
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 53,
-                    "endColumn": 63,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 36,
-                    "endColumn": 47,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./slayer/engine/response_meta.py": [
             {
                 "code": "reportAttributeAccessIssue",
@@ -4650,6 +4632,30 @@
                 "range": {
                     "startColumn": 33,
                     "endColumn": 43,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportPrivateImportUsage",
+                "range": {
+                    "startColumn": 30,
+                    "endColumn": 40,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportPrivateImportUsage",
+                "range": {
+                    "startColumn": 49,
+                    "endColumn": 59,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportPrivateImportUsage",
+                "range": {
+                    "startColumn": 18,
+                    "endColumn": 28,
                     "lineCount": 1
                 }
             },
@@ -34028,38 +34034,6 @@
                 "range": {
                     "startColumn": 51,
                     "endColumn": 62,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 29,
-                    "endColumn": 56,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 32,
-                    "endColumn": 40,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 28,
-                    "endColumn": 36,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 25,
-                    "endColumn": 56,
                     "lineCount": 1
                 }
             },

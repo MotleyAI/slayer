@@ -147,6 +147,24 @@ class ResponseTruncationWarning(SlayerWarning):
         )
 
 
+class StatementTimeoutSkippedWarning(SlayerWarning):
+    """A statement ran without the caller's statement timeout; ``reason`` says why."""
+
+    kind: Literal["statement_timeout_skipped"] = "statement_timeout_skipped"
+    datasource: str
+    timeout_seconds: int
+    reason: Literal["readonly_user", "timeout_rejected"]
+
+    def human_message(self) -> str:
+        head = f"datasource {self.datasource!r} ran without SLayer's {self.timeout_seconds}s statement timeout"
+        if self.reason == "readonly_user":
+            return (
+                f"{head}: its ClickHouse user has readonly = 1 and may change no settings; "
+                "the server profile's limit applies — grant readonly = 2 to enable the timeout"
+            )
+        return f"{head}: the database rejected the timeout statement"
+
+
 # Discriminated union, not the bare base: a ``List[SlayerWarning]`` would validate
 # down to the base type and drop subclass fields. Keyed on ``kind``, each round-trips.
 AnySlayerWarning = Annotated[
@@ -157,6 +175,7 @@ AnySlayerWarning = Annotated[
         DegenerateReaggregationWarningPayload,
         SemiJoinPushedWarningPayload,
         ResponseTruncationWarning,
+        StatementTimeoutSkippedWarning,
     ],
     Field(discriminator="kind"),
 ]
@@ -167,6 +186,17 @@ class SlayerNormalizationWarning(UserWarning):
 
     def __init__(self, payload: NormalizationWarning) -> None:
         super().__init__(payload)  # arg mirrors param; __str__ is the one wording (pytest-xdist degrades to str() for the unserializable payload)
+        self.payload = payload
+
+    def __str__(self) -> str:
+        return self.payload.human_message()
+
+
+class SlayerStatementTimeoutSkippedWarning(UserWarning):
+    """Carrier ``UserWarning`` for a ``StatementTimeoutSkippedWarning`` payload — one wording on both channels."""
+
+    def __init__(self, payload: StatementTimeoutSkippedWarning) -> None:
+        super().__init__(payload)
         self.payload = payload
 
     def __str__(self) -> str:

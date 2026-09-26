@@ -26,7 +26,7 @@ from slayer.sql.dialects.base import SqlDialect
 from slayer.sql.dialects.bigquery import BigqueryDialect
 from slayer.sql.dialects.clickhouse import ClickhouseDialect
 from slayer.sql.dialects.duckdb import DuckdbDialect
-from slayer.sql.dialects.mysql import MysqlDialect
+from slayer.sql.dialects.mysql import MariadbDialect, MysqlDialect
 from slayer.sql.dialects.postgres import PostgresDialect
 from slayer.sql.dialects.snowflake import SnowflakeDialect
 from slayer.sql.dialects.sqlite import SqliteDialect
@@ -40,6 +40,7 @@ __all__ = [
     "PostgresDialect",
     "DuckdbDialect",
     "MysqlDialect",
+    "MariadbDialect",
     "ClickhouseDialect",
     "TsqlDialect",
     "SnowflakeDialect",
@@ -81,8 +82,11 @@ _BY_SQLGLOT_NAME: dict[str, SqlDialect] = {
 SQLGLOT_NAMES: tuple[str, ...] = tuple(_BY_SQLGLOT_NAME)
 
 
+# Reached by ds-type only: they share a sqlglot name with a dialect above.
+_DS_TYPE_ONLY_DIALECTS: tuple[SqlDialect, ...] = (MariadbDialect(),)
+
 _BY_DS_TYPE: dict[str, SqlDialect] = {
-    alias: d for d in _ALL_DIALECTS for alias in d.ds_type_aliases
+    alias: d for d in (*_ALL_DIALECTS, *_DS_TYPE_ONLY_DIALECTS) for alias in d.ds_type_aliases
 }
 
 

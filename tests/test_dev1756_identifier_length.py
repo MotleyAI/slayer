@@ -19,6 +19,7 @@ from slayer.core.errors import IdentifierCollisionError
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.sql.client import ExecutionResult
 from slayer.sql.dialects import get_dialect
 from slayer.sql.dialects.postgres import PostgresDialect
 from slayer.sql.generator import SQLGenerator  # noqa: F401 — used by the skipped TestVirtualModelShorts
@@ -571,7 +572,7 @@ class TestDecodeWiring:
 
         class _FakeClient:
             async def execute(self, sql):
-                return []
+                return ExecutionResult(rows=[])
 
         await engine._run_data_query(prepared=prepared, client=_FakeClient())
         assert seen["aliases"] == list(prepared.expected_columns)

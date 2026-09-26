@@ -264,6 +264,9 @@ class SqlDialect(BaseModel):
     approx_count_distinct_native: bool = False
     approx_count_distinct_anonymous_name: str | None = None
 
+    # A rejected ``statement_timeout_sql`` is rolled back and reported instead of raised.
+    statement_timeout_best_effort: bool = False
+
     @property
     def backslash_escapes_strings(self) -> bool:
         """Whether this dialect's string literals treat a backslash as an escape
@@ -942,14 +945,24 @@ class SqlDialect(BaseModel):
         return None
 
     def statement_timeout_sql(self, timeout_seconds: int) -> str | None:
-        """Hook: SQL to set a per-statement timeout, or ``None`` if the
-        dialect doesn't expose one or the existing client.py path handles
-        it via a hardcoded branch (mysql / clickhouse / postgres).
-
-        SnowflakeDialect returns
-        ``ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS = N``.
-        """
+        """Hook: statement that sets the timeout before the query, or ``None``."""
         return None
+
+    def set_connection_timeout(self, dbapi_connection: Any, timeout_seconds: int) -> object:
+        """Hook: put the timeout on the DBAPI connection; returns the prior state for restore."""
+        return None
+
+    def restore_connection_timeout(self, dbapi_connection: Any, prior: object) -> None:
+        """Hook: undo ``set_connection_timeout`` with the state it returned."""
+        return None
+
+    def timeout_permission_sql(self) -> str | None:
+        """Hook: query whose scalar says whether this user may set the timeout, or ``None``."""
+        return None
+
+    def timeout_permitted(self, value: Any) -> bool:
+        """Hook: interpret the ``timeout_permission_sql`` scalar."""
+        return True
 
     def map_cursor_type_code(self, type_code: int) -> str | None:
         """Hook: dialect-specific cursor-type-code → SLayer category

@@ -132,7 +132,7 @@ class TestSqliteDoorsPassRegexLiteralVerbatim:
         try:
             rows = sql_client._execute_sql_sync(
                 sql=_DOOR_SQL, db_type="sqlite", engine=engine,
-            )
+            ).rows
         finally:
             engine.dispose()
         assert rows == [_DOOR_ROW]
@@ -164,6 +164,7 @@ def _fake_async_conn() -> MagicMock:
     conn.exec_driver_sql = AsyncMock(return_value=result)
     conn.execute = AsyncMock(return_value=result)
     conn.rollback = AsyncMock()
+    conn.get_raw_connection = AsyncMock()
     return conn
 
 
@@ -189,9 +190,9 @@ class TestAsyncPathsUseVerbatimDoor:
 
     async def test_execute_sql_async(self) -> None:
         conn = _fake_async_conn()
-        rows = await sql_client._execute_sql_async(
+        rows = (await sql_client._execute_sql_async(
             sql=_DOOR_SQL, engine=_fake_async_engine(conn), db_type="postgres", timeout_seconds=30,
-        )
+        )).rows
         assert rows == [_DOOR_ROW]
         _assert_all_verbatim(conn)
         # The timeout SET *and* the query both went through the door.
@@ -244,7 +245,7 @@ class TestSyncPathsUseVerbatimDoor:
         rows = sql_client._execute_sql_sync(
             sql=_DOOR_SQL, db_type="postgres", timeout_seconds=30,
             engine=_fake_sync_engine(conn),
-        )
+        ).rows
         assert rows == [_DOOR_ROW]
         _assert_all_verbatim_sync(conn)
         statements = [call.args[0] for call in conn.exec_driver_sql.call_args_list]

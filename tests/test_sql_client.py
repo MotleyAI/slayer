@@ -441,6 +441,24 @@ class TestRetryEmptySqlExcerpt:
         )
 
 
+class TestRetryRejectsNonPositiveAttempts:
+    """``max_attempts < 1`` raises on every retry path instead of silently returning ``None``."""
+
+    def test_sync(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        called = MagicMock()
+        monkeypatch.setattr(sql_client, "_execute_sql_sync", called)
+        with pytest.raises(ValueError, match="max_attempts"):
+            _execute_with_retry_sync(sql="SELECT 1", db_type="sqlite", engine=MagicMock(), max_attempts=0)
+        called.assert_not_called()
+
+    async def test_threaded(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        called = MagicMock()
+        monkeypatch.setattr(sql_client, "_execute_sql_sync", called)
+        with pytest.raises(ValueError, match="max_attempts"):
+            await _execute_with_retry_threaded(sql="SELECT 1", db_type="sqlite", engine=MagicMock(), max_attempts=0)
+        called.assert_not_called()
+
+
 class TestBuildTypeProbeSQL:
     """_build_type_probe_sql must emit dialect-appropriate row-limiting syntax."""
 

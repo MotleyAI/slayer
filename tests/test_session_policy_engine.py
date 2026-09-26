@@ -17,7 +17,7 @@ from slayer.core.policy import (
     SessionPolicy,
 )
 from slayer.engine.query_engine import SlayerQueryEngine, _sql_client_cache_key
-from slayer.sql.client import SlayerSQLClient
+from slayer.sql.client import ExecutionResult, SlayerSQLClient
 from slayer.sql.session_policy import ScopedTable
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -300,7 +300,7 @@ async def test_preflight_probes_and_caches_version(join_engine, monkeypatch):
     async def fake_execute(self, sql, timeout_seconds=120):  # NOSONAR(S7503) — must stay async
         calls["n"] += 1
         assert "version" in sql.lower()
-        return [{"version()": "25.4.1.100"}]  # NOSONAR(S1313) — ClickHouse version
+        return ExecutionResult(rows=[{"version()": "25.4.1.100"}])  # NOSONAR(S1313) — ClickHouse version
 
     monkeypatch.setattr(SlayerSQLClient, "execute", fake_execute)
     ds = _ch_ds()
@@ -326,7 +326,7 @@ async def test_preflight_noop_when_column_ruleset(engine, monkeypatch):
 
     async def fake_execute(self, sql, timeout_seconds=120):  # NOSONAR(S7503) — must stay async
         calls["n"] += 1
-        return [{"version()": "24.8.1"}]
+        return ExecutionResult(rows=[{"version()": "24.8.1"}])
 
     monkeypatch.setattr(SlayerSQLClient, "execute", fake_execute)
     await engine._preflight_clickhouse_correlated(dialect="clickhouse", datasource=_ch_ds())
@@ -338,7 +338,7 @@ async def test_preflight_noop_for_anchor_only_join_ruleset(tmp_path, monkeypatch
 
     async def fake_execute(self, sql, timeout_seconds=120):  # NOSONAR(S7503) — must stay async
         calls["n"] += 1
-        return [{"version()": "24.8.1"}]
+        return ExecutionResult(rows=[{"version()": "24.8.1"}])
 
     monkeypatch.setattr(SlayerSQLClient, "execute", fake_execute)
     eng = _mk_engine(

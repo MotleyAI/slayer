@@ -47,6 +47,11 @@ class PostgresDialect(SqlDialect):
     log2_native: bool = True
     # NAMEDATALEN: 63 usable bytes; over-length names are SILENTLY truncated.
     max_identifier_bytes: int | None = 63
+    statement_timeout_best_effort: bool = True
+
+    def statement_timeout_sql(self, timeout_seconds: int) -> str | None:
+        """Transaction-local, so it never outlives the call on a pooled connection."""
+        return f"SET LOCAL statement_timeout = {timeout_seconds * 1000}"
 
     def rewrite_target_ast(self, tree: exp.Expression) -> exp.Expression:
         """DEV-1576: numeric-cast the first arg of every 2-arg ROUND so

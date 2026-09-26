@@ -23,6 +23,7 @@ from slayer.sql.dialects import (
     dialect_for_ds_type,
     get_dialect,
 )
+from slayer.sql.client import ExecutionResult
 from slayer.storage.yaml_storage import YAMLStorage
 
 from tests._dev1965_fixtures import cumsum_chain, gen, outer_order, parse
@@ -349,8 +350,8 @@ class _FakeBigQueryClient:
     def __init__(self, rows: list[dict]) -> None:
         self._rows = rows
 
-    async def execute(self, *, sql: str) -> list[dict]:  # noqa: ARG002 — stub signature  # NOSONAR(S7503) — must remain async to match SlayerSQLClient.execute (awaited by engine.execute)
-        return [dict(row) for row in self._rows]
+    async def execute(self, *, sql: str) -> ExecutionResult:  # noqa: ARG002 — stub signature  # NOSONAR(S7503) — must remain async to match SlayerSQLClient.execute (awaited by engine.execute)
+        return ExecutionResult(rows=[dict(row) for row in self._rows])
 
 
 async def _build_bigquery_engine(rows: list[dict]) -> tuple[SlayerQueryEngine, tempfile.TemporaryDirectory, DatasourceConfig]:
@@ -534,8 +535,8 @@ async def test_bigquery_attributes_survive_alias_mangling() -> None:
 class _EchoTypesClient:
     """Stub client echoing the probe SQL's mangled column names as types."""
 
-    async def execute(self, *, sql: str) -> list[dict]:  # noqa: ARG002  # NOSONAR(S7503)
-        return []
+    async def execute(self, *, sql: str) -> ExecutionResult:  # noqa: ARG002  # NOSONAR(S7503)
+        return ExecutionResult(rows=[])
 
     async def get_column_types(self, *, sql: str) -> dict:
         parsed = sqlglot.parse_one(sql, dialect="bigquery")

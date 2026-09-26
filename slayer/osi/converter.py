@@ -289,6 +289,7 @@ class OsiToSlayerConverter:
         # probe (LIMIT 0 vs SELECT TOP vs SQLite's LIMIT-1 fallback).
         types = get_column_types_sync(
             sql=query, engine=self.sa_engine, db_type=self.target_dialect,
+            datasource_name=self.data_source,
         )
         columns = [Column(name=name, type=category) for name, category in types.items()]
         return SlayerModel(name=ds.name, sql=query, data_source=self.data_source,
@@ -450,6 +451,7 @@ class OsiToSlayerConverter:
         try:
             types = get_column_types_sync(
                 sql=probe, engine=self.sa_engine, db_type=self.target_dialect,
+                datasource_name=self.data_source,
             )
         except Exception:  # noqa: BLE001 — probe is best-effort; fall back
             return None

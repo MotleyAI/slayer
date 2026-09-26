@@ -1,8 +1,20 @@
-"""Forced-filter SQL rewrite for session-policy RLS on the final SQL.
+"""Forced-filter SQL rewrite for session-policy RLS.
 
-Every physical table ref is wrapped: a column ruleset filters it directly, a join ruleset
-reaches the anchor via a correlated ``EXISTS``. Literals and identifiers are built
-structurally, so the rewrite is injection-safe.
+``apply_session_policy`` is a pure sqlglot transform wrapping every *physical* table
+reference in the final SQL per the policy's ``ruleset``. A column ruleset filters each
+table having the tenant column; a join ruleset filters the anchor directly and reaches
+it from other tables via a correlated ``EXISTS``::
+
+    FROM orders  -->  FROM (SELECT * FROM orders AS _rls_src
+                            WHERE EXISTS (
+                              SELECT 1 FROM customers AS _rls_j0
+                              WHERE _rls_j0.id = _rls_src.customer_id
+                                AND _rls_j0.organization_uuid = '7ef3'
+                            )) AS orders
+
+Rewriting at the final-SQL layer means base tables, joins, CTEs, sql-mode raw tables and
+query-backed stages all funnel through one code path. Values are always ``exp.convert``
+literals and identifiers are built structurally, so the rewrite is injection-safe.
 """
 
 from __future__ import annotations
@@ -36,7 +48,11 @@ def _hop_alias(i: int) -> str:
 
 
 class ScopedTable(BaseModel):
-    """A physical table ref's identity; qualifiers are ``None`` unless the SQL states them."""
+    """A physical table reference's identity, as parsed from the SQL.
+
+    ``schema_name`` and ``catalog`` mirror the qualifiers the SQL actually states, so
+    both are ``None`` for a bare name; the engine's probe falls back to the datasource.
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -81,7 +97,11 @@ def _physical_tables(ast: exp.Expression) -> list:
 
 
 def _target_matches(scoped: ScopedTable, target_table: str) -> bool:
-    """Bare target matches any schema; stated qualifiers must match (case-insensitive)."""
+    """Whether ``scoped`` is the table a policy entry names.
+
+    A bare target matches the table in any schema; a qualified one matches only when
+    every qualifier it states matches. Case-insensitive throughout.
+    """
     parsed = exp.to_table(target_table)
     if scoped.name.casefold() != parsed.name.casefold():
         return False
@@ -146,10 +166,16 @@ def _apply_column_ruleset(
 
 
 def _build_exists(rule: JoinFilterRule, *, ruleset: JoinFilterRuleset) -> exp.Exists:
-    """Correlated ``EXISTS`` for one rule: first hop correlates to ``_rls_src``, later
-    hops inner-join, and the tenant predicate lands on the anchor (last hop)."""
+    """Build the correlated ``EXISTS`` body for one join rule.
+
+    Walks the target-first hops: the first hop's ``to_table`` is the ``FROM`` and
+    correlates back to the wrapper's ``_rls_src``, later hops become inner joins, and
+    the tenant predicate lands on the terminal hop — the anchor.
+    """
     try:
-        # Re-validated so a model_copy bypassing the validator fails closed.
+        # Re-validated at the SQL boundary via the same helper construction uses, so a
+        # model_copy bypassing the ruleset validator fails closed here rather than
+        # emitting a mis-scoped EXISTS.
         hops = _validate_join_rule_anchor(rule, ruleset.table)
     except ValueError as exc:
         raise ForcedFilterError(
@@ -239,7 +265,7 @@ def _apply_join_ruleset(ast: exp.Expression, ruleset: JoinFilterRuleset) -> bool
 _CH_CORRELATED_SETTING = "allow_experimental_correlated_subqueries"
 
 
-def _settings_holder(ast: exp.Expr) -> exp.Expr:
+def _settings_holder(ast: exp.Expression) -> exp.Expression:
     """The node carrying (or that should carry) this statement's ClickHouse ``SETTINGS``.
 
     sqlglot parks a trailing ``SETTINGS`` on the last branch of an unparenthesised
@@ -250,7 +276,7 @@ def _settings_holder(ast: exp.Expr) -> exp.Expr:
     if ast.args.get("settings"):
         return ast
     if isinstance(ast, exp.SetOperation):
-        node: exp.Expr = ast
+        node: exp.Expression = ast
         while isinstance(node, exp.SetOperation):
             node = node.expression  # right branch owns the trailing SETTINGS
         if node.args.get("settings"):
@@ -259,7 +285,11 @@ def _settings_holder(ast: exp.Expr) -> exp.Expr:
 
 
 def _attach_ch_correlated_setting(ast: exp.Expression) -> None:
-    """Force ``allow_experimental_correlated_subqueries = 1``, overriding any caller value."""
+    """Force ``allow_experimental_correlated_subqueries = 1``, preserving other settings.
+
+    Any prior entry for this setting is dropped so a caller-supplied ``= 0`` can't leave
+    the correlated subquery emitted with the setting disabled.
+    """
     holder = _settings_holder(ast)
     kept = [
         s

@@ -112,6 +112,7 @@ class TestSnowflakeStatementTimeout:
             ctx = MagicMock()
             fake_conn = MagicMock()
             fake_conn.exec_driver_sql = AsyncMock()
+            fake_conn.get_raw_connection = AsyncMock()
             fake_result = MagicMock()
             fake_result.keys.return_value = ["col"]
             fake_result.fetchall.return_value = []
