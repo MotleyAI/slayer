@@ -860,11 +860,11 @@ class SqlDialect(BaseModel):
         return None
 
     def set_connection_timeout(self, dbapi_connection: Any, timeout_seconds: int) -> object:
-        """Hook: put the timeout on the DBAPI connection; returns the prior state for restore."""
+        """Hook: put ``timeout_seconds`` on ``dbapi_connection``; returns the prior state for restore."""
         return None
 
     def restore_connection_timeout(self, dbapi_connection: Any, prior: object) -> None:
-        """Hook: undo ``set_connection_timeout`` with the state it returned."""
+        """Hook: restore ``dbapi_connection`` to ``prior``, the state ``set_connection_timeout`` returned."""
         return None
 
     def timeout_permission_sql(self) -> str | None:
@@ -872,7 +872,7 @@ class SqlDialect(BaseModel):
         return None
 
     def timeout_permitted(self, value: Any) -> bool:
-        """Hook: interpret the ``timeout_permission_sql`` scalar."""
+        """Hook: whether ``value``, the ``timeout_permission_sql`` scalar, permits the timeout."""
         return True
 
     def map_cursor_type_code(self, type_code: int) -> str | None:
