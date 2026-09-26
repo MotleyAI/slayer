@@ -829,11 +829,11 @@ class TestClassifyModelSql:
 class TestReadOnlyTransactionSql:
     """Dialects whose ``SET TRANSACTION READ ONLY`` binds the current txn."""
 
-    @pytest.mark.parametrize("ds_type", ["postgres", "postgresql", "redshift", "oracle"])
+    @pytest.mark.parametrize("ds_type", ["postgres", "postgresql", "redshift", "oracle", None])
     def test_read_only_capable_dialects(self, ds_type: str) -> None:
         assert _read_only_transaction_sql(ds_type) == "SET TRANSACTION READ ONLY"
 
-    @pytest.mark.parametrize("ds_type", ["sqlite", "mysql", "duckdb", "bigquery", None])
+    @pytest.mark.parametrize("ds_type", ["sqlite", "mysql", "duckdb", "bigquery"])
     def test_dialects_without_current_txn_read_only(self, ds_type: str) -> None:
         assert _read_only_transaction_sql(ds_type) is None
 
