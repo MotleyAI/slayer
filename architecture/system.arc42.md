@@ -143,18 +143,19 @@ All code, old and new, MUST obey these.
 
 ## 4. Enforcement
 
-The enforcement bundle — `tools/arch_check.py` (the one import law) runs in CI;
-the full bundle runs at the spec-review gate and the arch-slice move gate:
+The enforcement bundle — `la-arch-check` (the one import law, from
+MotleyAI/living-architecture; CI pins the version) runs in CI; the full bundle
+runs at the spec-review gate and the arch-slice move gate:
 
 ```bash
-poetry run python tools/arch_check.py        # also runs in CI
+la-arch-check                                # also runs in CI; pinned uvx form in CLAUDE.md
 npx -y likec4@1.47.0 validate architecture   # pinned; run from the repo root
 poetry run basedpyright                      # gate = no new errors vs baseline
 ```
 
 `arch_check`'s `diagrams-fresh` goes red when a mapped doc's embedded mermaid
-drifts from the model or views — the one fix is `poetry run python
-tools/arch_diagrams.py`.
+drifts from the model or views — the one fix is `la-arch-diagrams` (pinned uvx
+form in CLAUDE.md).
 
 Every numbered principle item in an arc42 file carries at least one
 square-bracketed status tag (all three kinds validated by arch_check, per
@@ -171,8 +172,8 @@ clause where clauses differ):
 
 ## 5. Model & diagram authoring convention
 
-`likec4 validate` owns syntax; `tools/arch_diagrams.py` is the one parser of the
-constrained convention `arch_check` enforces (`model-identity`, `model-truth`,
+`likec4 validate` owns syntax; living-architecture's `arch_diagrams` is the one
+parser of the constrained convention `arch_check` enforces (`model-identity`, `model-truth`,
 `diagrams-fresh`):
 
 - every element declared as `<id> = <kind> '<title>'`, one per line; children
@@ -193,7 +194,7 @@ constrained convention `arch_check` enforces (`model-identity`, `model-truth`,
   nested mermaid subgraphs;
 - each mapped doc (the `diagrams:` block in [index.yaml](index.yaml)) carries a
   `<!-- likec4:<view_id> -->` … `<!-- /likec4:<view_id> -->` marker pair placed
-  once by hand, and `poetry run python tools/arch_diagrams.py` fills the mermaid
+  once by hand, and `la-arch-diagrams` fills the mermaid
   between the markers.
 
 ## 6. Rationale

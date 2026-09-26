@@ -16,7 +16,7 @@ references), `docs/examples/`, `docs/cube/cube_import.md`, `docs/database-suppor
 ## Structure
 
 The package map and per-node docs live in `architecture/`: package→node claims in
-`architecture/index.yaml` (enforced by `tools/arch_check.py`), node descriptions in
+`architecture/index.yaml` (enforced by `la-arch-check` from MotleyAI/living-architecture), node descriptions in
 `architecture/*.arc42.md`, cross-cutting principles in `architecture/system.arc42.md` §3,
 and the enforcement-bundle commands in §4.
 
@@ -37,6 +37,8 @@ poetry run pytest tests/test_sql_generator.py -v     # one file
 poetry run slayer serve                              # REST API server
 poetry run slayer mcp                                # MCP server
 poetry run ruff check slayer/ tests/                 # lint
+uvx --no-build --from living-architecture==0.1.1 la-arch-check     # architecture check (CI's pin)
+uvx --no-build --from living-architecture==0.1.1 la-arch-diagrams  # regenerate arc42 diagrams
 ```
 
 ## Key Conventions
