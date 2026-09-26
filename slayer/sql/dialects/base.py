@@ -411,7 +411,7 @@ class SqlDialect(BaseModel):
     def duration_interval_exprs(
         self,
         parts: list[tuple[int, str]],
-        sign: int = 1,
+        sign: int = 1,  # NOSONAR(S1172) — hook signature; overrides use it
     ) -> list[Expression]:
         """Default: one ``exp.Interval`` per (amount, unit) pair.
 
@@ -790,7 +790,7 @@ class SqlDialect(BaseModel):
             return rows
         return [self._rekey_row(row=row, mapping=mapping) for row in rows]
 
-    def register_udfs(self, dbapi_connection) -> None:
+    def register_udfs(self, dbapi_connection) -> None:  # NOSONAR(S1172) — no-op hook default; overrides use it
         """Default: no-op. SQLite overrides to register Python aggregate
         / scalar UDFs on every fresh connection."""
         return None
@@ -819,16 +819,16 @@ class SqlDialect(BaseModel):
 
     def build_connection_url(
         self,
-        datasource: "DatasourceConfig",
+        datasource: "DatasourceConfig",  # NOSONAR(S1172) — no-op hook default; overrides use it
     ) -> str | None:
         """Hook: connection string, or ``None`` to use ``DatasourceConfig.get_connection_string()``."""
         return None
 
     def build_engine(
         self,
-        datasource: "DatasourceConfig",
+        datasource: "DatasourceConfig",  # NOSONAR(S1172) — no-op hook default; overrides use it
         *,
-        connection_string: str,
+        connection_string: str,  # NOSONAR(S1172) — no-op hook default; overrides use it
     ) -> "sa.Engine | None":
         """Hook: a dialect-built engine, or ``None`` for ``engine_factory``'s default ``create_engine``."""
         return None
@@ -849,21 +849,21 @@ class SqlDialect(BaseModel):
 
     def apply_session_overrides(
         self,
-        dbapi_connection: Any,
-        datasource: "DatasourceConfig",
+        dbapi_connection: Any,  # NOSONAR(S1172) — no-op hook default; overrides use it
+        datasource: "DatasourceConfig",  # NOSONAR(S1172) — no-op hook default; overrides use it
     ) -> None:
         """Hook: session setup on every new pooled connection (e.g. ``USE WAREHOUSE``)."""
         return None
 
-    def statement_timeout_sql(self, timeout_seconds: int) -> str | None:
+    def statement_timeout_sql(self, timeout_seconds: int) -> str | None:  # NOSONAR(S1172) — no-op hook default
         """Hook: statement that sets the timeout before the query, or ``None``."""
         return None
 
-    def set_connection_timeout(self, dbapi_connection: Any, timeout_seconds: int) -> object:
+    def set_connection_timeout(self, dbapi_connection: Any, timeout_seconds: int) -> object:  # NOSONAR(S1172) — hook
         """Hook: put the timeout on the DBAPI connection; returns the prior state for restore."""
         return None
 
-    def restore_connection_timeout(self, dbapi_connection: Any, prior: object) -> None:
+    def restore_connection_timeout(self, dbapi_connection: Any, prior: object) -> None:  # NOSONAR(S1172) — hook
         """Hook: undo ``set_connection_timeout`` with the state it returned."""
         return None
 
@@ -871,11 +871,11 @@ class SqlDialect(BaseModel):
         """Hook: query whose scalar says whether this user may set the timeout, or ``None``."""
         return None
 
-    def timeout_permitted(self, value: Any) -> bool:
+    def timeout_permitted(self, value: Any) -> bool:  # NOSONAR(S1172) — no-op hook default; overrides use it
         """Hook: interpret the ``timeout_permission_sql`` scalar."""
         return True
 
-    def map_cursor_type_code(self, type_code: int) -> str | None:
+    def map_cursor_type_code(self, type_code: int) -> str | None:  # NOSONAR(S1172) — no-op hook default
         """Hook: cursor type code → SLayer category, or ``None`` for the Postgres OID map."""
         return None
 

@@ -127,6 +127,14 @@ class TestMapTypeCode:
         """MySQL MYSQL_TYPE_DECIMAL = 0."""
         assert _map_type_code(0, db_type="mysql") == "number"
 
+    @pytest.mark.xfail(strict=True, reason="mariadb type codes fall through to the Postgres OID map; fix in DEV-1975")
+    @pytest.mark.parametrize(
+        ("type_code", "category"),
+        [(3, "number"), (246, "number"), (10, "time"), (12, "time"), (16, "number")],
+    )
+    def test_mariadb_uses_mysql_type_codes(self, type_code: int, category: str) -> None:
+        assert _map_type_code(type_code, db_type="mariadb") == category
+
     # --- SQL Server / pyodbc ODBC SQL type codes ---
 
     @pytest.mark.parametrize("db_type", ["mssql", "sqlserver", "tsql"])
