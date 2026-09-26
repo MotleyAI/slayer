@@ -124,6 +124,7 @@ from slayer.memories.resolver import (
     resolve_entity,
 )
 from slayer.sql.client import (
+    ExecutionResult,
     SlayerSQLClient,
     _is_auth_failure,
     _is_transient_db_error,
@@ -787,7 +788,7 @@ class SlayerQueryEngine:
             if ds_key not in self._sql_clients:
                 self._sql_clients[ds_key] = SlayerSQLClient(datasource=datasource)
             client = self._sql_clients[ds_key]
-            rows = await client.execute("SELECT version()")
+            rows = (await client.execute("SELECT version()")).rows
             raw = None
             if rows and isinstance(rows[0], dict):
                 raw = next(iter(rows[0].values()), None)
@@ -1375,15 +1376,15 @@ class SlayerQueryEngine:
         if explain:
             explain_sql = _build_explain_sql(dialect=prepared.dialect, sql=prepared.sql)
             try:
-                rows = await client.execute(sql=explain_sql)
+                explained = await client.execute(sql=explain_sql)
             except Exception as exc:
                 await self._maybe_raise_schema_drift(
                     err=exc, model=prepared.model, touched_models=prepared.touched
                 )
                 raise
             return SlayerResponse(
-                data=rows, sql=prepared.sql, attributes=prepared.attributes,
-                warnings=prepared.slack_warnings,
+                data=explained.rows, sql=prepared.sql, attributes=prepared.attributes,
+                warnings=[*prepared.slack_warnings, *explained.warnings],
                 population=prepared.population,
                 population_inferred=prepared.population_inferred,
             )
@@ -1397,11 +1398,11 @@ class SlayerQueryEngine:
                 prepared=prepared, client=client, cache=cache_obj
             )
 
-        rows = await self._run_data_query(prepared=prepared, client=client)
-        columns = prepared.expected_columns if not rows else []  # [] triggers auto-derive
+        result = await self._run_data_query(prepared=prepared, client=client)
+        columns = prepared.expected_columns if not result.rows else []  # [] triggers auto-derive
         response = SlayerResponse(
-            data=rows, columns=columns, sql=prepared.sql,
-            attributes=prepared.attributes, warnings=prepared.slack_warnings,
+            data=result.rows, columns=columns, sql=prepared.sql,
+            attributes=prepared.attributes, warnings=[*prepared.slack_warnings, *result.warnings],
             population=prepared.population,
             population_inferred=prepared.population_inferred,
         )
@@ -1423,19 +1424,20 @@ class SlayerQueryEngine:
 
     async def _run_data_query(
         self, *, prepared: _Prepared, client: SlayerSQLClient
-    ) -> "list[dict]":
+    ) -> ExecutionResult:
         """Run the prepared data query (schema-drift attribution on error); decodes result keys."""
         try:
-            rows = await client.execute(sql=prepared.sql)
+            result = await client.execute(sql=prepared.sql)
         except Exception as exc:
             await self._maybe_raise_schema_drift(
                 err=exc, model=prepared.model, touched_models=prepared.touched
             )
             raise
         # Pass canonical aliases so length-fitted keys are restored.
-        return get_dialect(prepared.dialect).decode_result_keys(
-            rows, aliases=prepared.expected_columns,
+        rows = get_dialect(prepared.dialect).decode_result_keys(
+            result.rows, aliases=prepared.expected_columns,
         )
+        return result.model_copy(update={"rows": rows})
 
     async def _scan_one_table_values(
         self,
@@ -1449,7 +1451,7 @@ class SlayerQueryEngine:
         """One batched refresh-key scan → ``{expression: value}``; policy-rewritten like the data query."""
         scan_sql = self._cache.build_refresh_key_sql(table, exprs, dialect)
         scan_sql = self._apply_policy(sql=scan_sql, dialect=dialect, datasource=datasource)
-        rows = await client.execute(sql=scan_sql)
+        rows = (await client.execute(sql=scan_sql)).rows
         row0 = rows[0] if rows else {}
         return {e: row0.get(self._cache.rk_alias(i)) for i, e in enumerate(exprs)}
 
@@ -1579,11 +1581,11 @@ class SlayerQueryEngine:
         applicable, refresh_key_values = await self._scan_refresh_key_baselines(
             prepared=prepared, client=client, cache=self._cache
         )
-        rows = await self._run_data_query(prepared=prepared, client=client)
-        columns = prepared.expected_columns if not rows else []
+        result = await self._run_data_query(prepared=prepared, client=client)
+        columns = prepared.expected_columns if not result.rows else []
         response = SlayerResponse(
-            data=rows, columns=columns, sql=prepared.sql,
-            attributes=prepared.attributes, warnings=prepared.slack_warnings,
+            data=result.rows, columns=columns, sql=prepared.sql,
+            attributes=prepared.attributes, warnings=[*prepared.slack_warnings, *result.warnings],
             population=prepared.population,
             population_inferred=prepared.population_inferred,
         )
@@ -2656,8 +2658,8 @@ class SlayerQueryEngine:
         dist_sql = self._apply_policy(
             sql=dist_sql, dialect=sqlglot_name, datasource=datasource
         )
-        row_rows = await client.execute(sql=rows_sql)
-        dist_rows = await client.execute(sql=dist_sql)
+        row_rows = (await client.execute(sql=rows_sql)).rows
+        dist_rows = (await client.execute(sql=dist_sql)).rows
         row_count = int(next(iter(row_rows[0].values())))
         distinct_count = int(next(iter(dist_rows[0].values())))
         return SideStats(

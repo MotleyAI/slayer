@@ -1,4 +1,4 @@
-"""DEV-1840 task 1.7 — ClickHouse gating for semi-join pushdown (design D7).
+"""ClickHouse gating for semi-join pushdown.
 
 The recursive plan predicate triggers the version preflight and the settings
 finalization on planner-emitted SQL; below 25.4 (or unknown) the query fails
@@ -18,7 +18,7 @@ from slayer.core.models import DatasourceConfig
 from slayer.core.policy import JoinFilterRule, JoinFilterRuleset, SessionPolicy
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.plan import plan_query
-from slayer.sql.client import SlayerSQLClient
+from slayer.sql.client import ExecutionResult, SlayerSQLClient
 from slayer.sql.session_policy import (
     _attach_ch_correlated_setting,
     apply_session_policy,
@@ -58,11 +58,11 @@ def _version_probe(monkeypatch, raw: str | None) -> dict:
 
     async def fake_execute(self, sql, timeout_seconds=120):  # NOSONAR(S7503) — must stay async
         if "version" not in sql.lower():
-            return []
+            return ExecutionResult(rows=[])
         calls["n"] += 1
         if raw is None:
             raise RuntimeError("cannot reach clickhouse")
-        return [{"version()": raw}]
+        return ExecutionResult(rows=[{"version()": raw}])
 
     monkeypatch.setattr(SlayerSQLClient, "execute", fake_execute)
     return calls

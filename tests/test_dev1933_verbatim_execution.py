@@ -1,4 +1,4 @@
-"""Rendered SQL reaches the driver verbatim (DEV-1933).
+"""Rendered SQL reaches the driver verbatim.
 
 The client used to run rendered SQL through ``sa.text()``, whose bind-parameter
 regex reads any ``:word`` (e.g. a regex ``(?:too ...)`` non-capturing group) as a
@@ -116,11 +116,11 @@ class TestSqliteDoorsPassRegexLiteralVerbatim:
     ``A value is required for bind parameter 'too'``."""
 
     async def test_execute_async(self) -> None:
-        rows = await _in_memory_client().execute(_DOOR_SQL)
+        rows = (await _in_memory_client().execute(_DOOR_SQL)).rows
         assert rows == [_DOOR_ROW]
 
     def test_execute_sync(self) -> None:
-        rows = _in_memory_client().execute_sync(_DOOR_SQL)
+        rows = _in_memory_client().execute_sync(_DOOR_SQL).rows
         assert rows == [_DOOR_ROW]
 
     async def test_get_column_types(self) -> None:
@@ -132,7 +132,7 @@ class TestSqliteDoorsPassRegexLiteralVerbatim:
         try:
             rows = sql_client._execute_sql_sync(
                 sql=_DOOR_SQL, db_type="sqlite", engine=engine,
-            )
+            ).rows
         finally:
             engine.dispose()
         assert rows == [_DOOR_ROW]
@@ -164,6 +164,7 @@ def _fake_async_conn() -> MagicMock:
     conn.exec_driver_sql = AsyncMock(return_value=result)
     conn.execute = AsyncMock(return_value=result)
     conn.rollback = AsyncMock()
+    conn.get_raw_connection = AsyncMock()
     return conn
 
 
@@ -189,15 +190,15 @@ class TestAsyncPathsUseVerbatimDoor:
 
     async def test_execute_sql_async(self) -> None:
         conn = _fake_async_conn()
-        rows = await sql_client._execute_sql_async(
+        rows = (await sql_client._execute_sql_async(
             sql=_DOOR_SQL, engine=_fake_async_engine(conn), db_type="postgres", timeout_seconds=30,
-        )
+        )).rows
         assert rows == [_DOOR_ROW]
         _assert_all_verbatim(conn)
         # The timeout SET *and* the query both went through the door.
         statements = [call.args[0] for call in conn.exec_driver_sql.await_args_list]
         assert _DOOR_SQL in statements
-        assert any(stmt.startswith("SET statement_timeout") for stmt in statements)
+        assert any(stmt.startswith("SET LOCAL statement_timeout") for stmt in statements)
 
     async def test_get_column_types_async(self) -> None:
         conn = _fake_async_conn()
@@ -244,12 +245,12 @@ class TestSyncPathsUseVerbatimDoor:
         rows = sql_client._execute_sql_sync(
             sql=_DOOR_SQL, db_type="postgres", timeout_seconds=30,
             engine=_fake_sync_engine(conn),
-        )
+        ).rows
         assert rows == [_DOOR_ROW]
         _assert_all_verbatim_sync(conn)
         statements = [call.args[0] for call in conn.exec_driver_sql.call_args_list]
         assert _DOOR_SQL in statements
-        assert any(stmt.startswith("SET statement_timeout") for stmt in statements)
+        assert any(stmt.startswith("SET LOCAL statement_timeout") for stmt in statements)
 
     def test_get_column_types_sync(self) -> None:
         conn = _fake_sync_conn()

@@ -178,15 +178,8 @@ def _build_covar_decomposition(
 
 @lru_cache(maxsize=None)
 def _sqlglot_backslash_escapes(sqlglot_name: str) -> bool:
-    """Whether ``sqlglot``'s tokenizer for ``sqlglot_name`` treats a backslash
-    as a string-literal escape character.
-
-    This is the single source of truth for the Mode-A ``{var}`` escaping regime:
-    deriving it from the same tokenizer that later PARSES the substituted SQL
-    means our escaping can never drift from the parser. ``STRING_ESCAPES`` is a
-    semi-internal sqlglot attribute; guard it so a future sqlglot change that
-    renames/reshapes it fails loudly here rather than silently mis-escaping.
-    """
+    """Whether sqlglot's tokenizer treats backslash as a string escape — read from the
+    parser itself so Mode-A escaping can't drift; a reshaped internal API fails loudly."""
     tokenizer = _SqlglotDialect.get_or_raise(sqlglot_name).tokenizer_class
     escapes = getattr(tokenizer, "STRING_ESCAPES", None)
     if not isinstance(escapes, (list, tuple, set, frozenset)):
@@ -233,12 +226,7 @@ def _digest(secret: str | None) -> str:
 
 
 class SqlDialect(BaseModel):
-    """Strategy class encapsulating one database's SQL-generation quirks.
-
-    The base class IS the Postgres-shaped default. Concrete dialects
-    (``SqliteDialect``, ``TsqlDialect``, ...) subclass and override only
-    what differs.
-    """
+    """One database's quirks; the base IS the Postgres-shaped default, subclasses override what differs."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
 
@@ -264,19 +252,12 @@ class SqlDialect(BaseModel):
     approx_count_distinct_native: bool = False
     approx_count_distinct_anonymous_name: str | None = None
 
+    # A rejected ``statement_timeout_sql`` is rolled back and reported instead of raised.
+    statement_timeout_best_effort: bool = False
+
     @property
     def backslash_escapes_strings(self) -> bool:
-        """Whether this dialect's string literals treat a backslash as an escape
-        character (MySQL/ClickHouse/Snowflake/Redshift/BigQuery/Databricks/Spark)
-        rather than an ordinary char (SQLite/Postgres/DuckDB/T-SQL/Trino/Presto/
-        Oracle).
-
-        Drives dialect-aware Mode-A ``{var}`` escaping: pass this to
-        ``substitute_variables(..., backslash_escapes=...)`` so a value like
-        ``a\\'b`` stays inside its quoted literal on every backend. Derived from
-        sqlglot's tokenizer (see :func:`_sqlglot_backslash_escapes`) so it can't
-        disagree with the parser; a pinning test freezes the expected value.
-        """
+        """Whether string literals treat backslash as an escape; feeds Mode-A ``{var}`` escaping."""
         return _sqlglot_backslash_escapes(self.sqlglot_name)
 
     @property
@@ -301,17 +282,8 @@ class SqlDialect(BaseModel):
     def build_null_safe_eq(
         self, left: Expression, right: Expression,
     ) -> Expression:
-        """A null-safe equality (``left`` and ``right`` compare equal, and two
-        NULLs compare equal) for the cross-model grain join-back's ``ON`` clause.
-
-        Base (Postgres-family) uses sqlglot's ``NullSafeEQ`` → ``IS NOT DISTINCT
-        FROM``, which sqlglot also transpiles correctly for DuckDB / Snowflake /
-        BigQuery / Trino / Databricks / ClickHouse — and for MySQL, where it
-        emits ``<=>``. MySQL therefore needs no override here (an earlier
-        version of this docstring claimed one existed). ``SqliteDialect``
-        overrides to bare ``IS``; dialects with no native form (T-SQL / Oracle /
-        Redshift) to the expanded ``a = b OR (a IS NULL AND b IS NULL)``.
-        """
+        """Null-safe equality for grain join-backs (``IS NOT DISTINCT FROM``; sqlglot transpiles
+        it, incl. MySQL ``<=>``); dialects without a native form override."""
         return exp.NullSafeEQ(this=left, expression=right)
 
     # ------------------------------------------------------------------
@@ -325,28 +297,9 @@ class SqlDialect(BaseModel):
         descending: bool,
         nulls: Literal["default", "first", "last"] = "default",
     ) -> exp.Ordered:
-        """Build one ``ORDER BY`` term with its null-ordering policy applied.
-
-        The single place any render site turns a resolved column plus a
-        direction into an ``exp.Ordered`` (P-H). It previously lived on the
-        generator as ``_ordered``, which meant the combined and transform-chain
-        paths — which built their own ``exp.Ordered`` — silently skipped it.
-
-        ``nulls="default"`` leaves ``nulls_first`` unset, which sqlglot renders
-        as **nulls last on every dialect** — an explicit ``NULLS LAST`` where
-        the native default differs and the syntax exists, a ``CASE WHEN <col>
-        IS NULL …`` emulation where it does not (MySQL / SQLite). That
-        uniformity is the point: a semantic layer whose NULLs sort first on
-        SQLite and last on Postgres answers the same question two ways.
-
-        T-SQL is the one exception and overrides this, because its emulation
-        does not merely look different — the bracketed alias inside the CASE
-        re-resolves against the FROM scope and the statement fails.
-
-        ``"first"`` / ``"last"`` are an explicit intent and are honoured as
-        asked, emulation included — that is the only way to express them on a
-        dialect with no NULLS syntax.
-        """
+        """The one builder of ``ORDER BY`` terms. ``"default"`` renders nulls last on every
+        dialect (emulated where there's no syntax); ``"first"``/``"last"`` are honoured as asked.
+        T-SQL overrides: its emulation re-resolves the alias against FROM and fails."""
         kwargs: dict = {"this": order_col, "desc": descending}
         if nulls == "first":
             kwargs["nulls_first"] = True
@@ -355,19 +308,8 @@ class SqlDialect(BaseModel):
         return exp.Ordered(**kwargs)
 
     def native_nulls_first(self, *, descending: bool) -> bool:
-        """Where NULLs sort in this dialect's OWN ordering for ``descending``.
-
-        Setting ``nulls_first`` to this value is what makes sqlglot emit a bare
-        ``ORDER BY``: no NULLS clause, no ``CASE WHEN … IS NULL`` emulation.
-        That is wanted for orderings that are internal machinery rather than a
-        user-visible sort — a window frame's ``OVER (ORDER BY …)``, where an
-        emulation term would change which rows the frame covers.
-
-        Read from the same dialect class that GENERATES the clause, for the
-        same reason :func:`_sqlglot_backslash_escapes` reads the tokenizer: a
-        hand-kept table would silently disagree with the emitter, and the
-        symptom is a wrong sort rather than an error.
-        """
+        """Where NULLs natively sort for ``descending`` — setting it yields a bare ``ORDER BY``
+        (wanted inside window frames); read from sqlglot's emitter so it can't disagree."""
         ordering = getattr(
             _SqlglotDialect.get_or_raise(self.sqlglot_name),
             "NULL_ORDERING", None,
@@ -469,7 +411,7 @@ class SqlDialect(BaseModel):
     def duration_interval_exprs(
         self,
         parts: list[tuple[int, str]],
-        sign: int = 1,
+        sign: int = 1,  # NOSONAR(S1172) — hook signature; overrides use it
     ) -> list[Expression]:
         """Default: one ``exp.Interval`` per (amount, unit) pair.
 
@@ -848,7 +790,7 @@ class SqlDialect(BaseModel):
             return rows
         return [self._rekey_row(row=row, mapping=mapping) for row in rows]
 
-    def register_udfs(self, dbapi_connection) -> None:
+    def register_udfs(self, dbapi_connection) -> None:  # NOSONAR(S1172) — no-op hook default; overrides use it
         """Default: no-op. SQLite overrides to register Python aggregate
         / scalar UDFs on every fresh connection."""
         return None
@@ -872,45 +814,23 @@ class SqlDialect(BaseModel):
         return f"{self.explain_prefix} {sql}{self.explain_postfix}"
 
     # ------------------------------------------------------------------
-    # Engine / connection / runtime hooks
-    #
-    # These let a dialect carry its own runtime quirks (connection-string
-    # form, engine-creation bridge, per-connection session setup, per-
-    # statement timeout, cursor-type-code mapping) without spilling
-    # dialect-specific conditionals into ``slayer/sql/engine_factory.py``
-    # or ``slayer/sql/client.py``. Defaults are all no-op — concrete
-    # dialects override what's relevant.
+    # Runtime hooks: keep dialect conditionals out of engine_factory / client (no-op defaults).
     # ------------------------------------------------------------------
 
     def build_connection_url(
         self,
-        datasource: "DatasourceConfig",
+        datasource: "DatasourceConfig",  # NOSONAR(S1172) — no-op hook default; overrides use it
     ) -> str | None:
-        """Hook: dialect-specific connection-string builder.
-
-        Returning ``None`` (the default) means: defer to
-        ``DatasourceConfig.get_connection_string()``'s standard branches
-        (sqlite / duckdb / tsql / generic URL form). SnowflakeDialect
-        overrides this to emit either the
-        ``snowflake://?connection_name=<name>`` sentinel or the inline
-        ``snowflake-sqlalchemy`` URL.
-        """
+        """Hook: connection string, or ``None`` to use ``DatasourceConfig.get_connection_string()``."""
         return None
 
     def build_engine(
         self,
-        datasource: "DatasourceConfig",
+        datasource: "DatasourceConfig",  # NOSONAR(S1172) — no-op hook default; overrides use it
         *,
-        connection_string: str,
+        connection_string: str,  # NOSONAR(S1172) — no-op hook default; overrides use it
     ) -> "sa.Engine | None":
-        """Hook: build a dialect-specific SQLAlchemy engine.
-
-        Returning ``None`` (the default) means: ``engine_factory`` falls
-        back to ``sa.create_engine(connection_string, pool_pre_ping=True)``.
-        SnowflakeDialect overrides this when the sentinel URL is in play,
-        wiring the ``creator=`` kwarg to delegate to
-        ``snowflake.connector.connect(connection_name=...)``.
-        """
+        """Hook: a dialect-built engine, or ``None`` for ``engine_factory``'s default ``create_engine``."""
         return None
 
     # ------------------------------------------------------------------
@@ -929,37 +849,34 @@ class SqlDialect(BaseModel):
 
     def apply_session_overrides(
         self,
-        dbapi_connection: Any,
-        datasource: "DatasourceConfig",
+        dbapi_connection: Any,  # NOSONAR(S1172) — no-op hook default; overrides use it
+        datasource: "DatasourceConfig",  # NOSONAR(S1172) — no-op hook default; overrides use it
     ) -> None:
-        """Hook: per-connection session setup (e.g. ``USE WAREHOUSE``).
-
-        Called by ``engine_factory``'s ``connect`` event listener on every
-        new pooled connection. SnowflakeDialect overrides this to issue
-        ``USE WAREHOUSE / USE ROLE / USE DATABASE / USE SCHEMA`` from the
-        DatasourceConfig's typed fields.
-        """
+        """Hook: session setup on every new pooled connection (e.g. ``USE WAREHOUSE``)."""
         return None
 
-    def statement_timeout_sql(self, timeout_seconds: int) -> str | None:
-        """Hook: SQL to set a per-statement timeout, or ``None`` if the
-        dialect doesn't expose one or the existing client.py path handles
-        it via a hardcoded branch (mysql / clickhouse / postgres).
-
-        SnowflakeDialect returns
-        ``ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS = N``.
-        """
+    def statement_timeout_sql(self, timeout_seconds: int) -> str | None:  # NOSONAR(S1172) — no-op hook default
+        """Hook: statement that sets the timeout before the query, or ``None``."""
         return None
 
-    def map_cursor_type_code(self, type_code: int) -> str | None:
-        """Hook: dialect-specific cursor-type-code → SLayer category
-        (one of ``"number"``, ``"string"``, ``"time"``, ``"boolean"``).
+    def set_connection_timeout(self, dbapi_connection: Any, timeout_seconds: int) -> object:  # NOSONAR(S1172) — hook
+        """Hook: put the timeout on the DBAPI connection; returns the prior state for restore."""
+        return None
 
-        Returning ``None`` (the default) means: ``client._map_type_code``
-        falls back to the Postgres OID map. SnowflakeDialect overrides
-        this to return the snowflake-connector ``FieldType`` integer
-        codes' mapping.
-        """
+    def restore_connection_timeout(self, dbapi_connection: Any, prior: object) -> None:  # NOSONAR(S1172) — hook
+        """Hook: undo ``set_connection_timeout`` with the state it returned."""
+        return None
+
+    def timeout_permission_sql(self) -> str | None:
+        """Hook: query whose scalar says whether this user may set the timeout, or ``None``."""
+        return None
+
+    def timeout_permitted(self, value: Any) -> bool:  # NOSONAR(S1172) — no-op hook default; overrides use it
+        """Hook: interpret the ``timeout_permission_sql`` scalar."""
+        return True
+
+    def map_cursor_type_code(self, type_code: int) -> str | None:  # NOSONAR(S1172) — no-op hook default
+        """Hook: cursor type code → SLayer category, or ``None`` for the Postgres OID map."""
         return None
 
 

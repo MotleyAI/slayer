@@ -1,4 +1,4 @@
-"""Client-side tests for Snowflake (DEV-1551).
+"""Client-side tests for Snowflake.
 
 Where the **dialect-class methods** are tested in
 ``tests/dialects/test_snowflake.py``, this module covers
@@ -112,6 +112,7 @@ class TestSnowflakeStatementTimeout:
             ctx = MagicMock()
             fake_conn = MagicMock()
             fake_conn.exec_driver_sql = AsyncMock()
+            fake_conn.get_raw_connection = AsyncMock()
             fake_result = MagicMock()
             fake_result.keys.return_value = ["col"]
             fake_result.fetchall.return_value = []

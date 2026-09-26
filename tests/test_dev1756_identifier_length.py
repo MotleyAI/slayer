@@ -2,7 +2,7 @@
 
 Postgres caps identifiers at 63 bytes and silently truncates past it, so long
 projection aliases collide. Fixed here: projection aliases (quoted), CTE names
-(unquoted), virtual-model shorts. Table aliases are surface 2, deferred to DEV-1743.
+(unquoted), virtual-model shorts. Table aliases are surface 2.
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ from slayer.core.errors import IdentifierCollisionError
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.sql.client import ExecutionResult
 from slayer.sql.dialects import get_dialect
 from slayer.sql.dialects.postgres import PostgresDialect
 from slayer.sql.generator import SQLGenerator  # noqa: F401 — used by the skipped TestVirtualModelShorts
@@ -31,16 +32,10 @@ from tests._engine_helpers import _engine_generate
 # how the "no churn for the common case" tests prove the write pass was identity.
 _FIT_MARKER_RE = re.compile(r"_[0-9a-f]{8}_")
 
-# DEV-1756 was ported to the DEV-1450 pipeline for the PROJECTION-ALIAS surface
-# (TestProjectionAliases / TestManglingDialects / TestDecode* / TestEngineContract)
-# and the CTE-NAME surface (TestCteNames / TestSweep — ``naming.cte_name_from_alias``
-# now length-fits and guards collisions). One secondary surface is NOT ported:
-# virtual-model shorts — there is no ``engine._query_as_model`` / ``_fit_short``
-# on this branch (query-backed shorts flow through ``source_bundle`` expansion),
-# so TestVirtualModelShorts below exercises removed internals. Tracked as a
-# DEV-1756 follow-up on DEV-1450 (decision trail in git history).
+# Virtual-model shorts are not ported to the typed pipeline (query-backed shorts flow
+# through ``source_bundle``), so TestVirtualModelShorts exercises removed internals.
 _UNPORTED_SURFACE = (
-    "DEV-1756 virtual-model-short fitting not ported to the DEV-1450 pipeline "
+    "Virtual-model-short fitting not ported to the typed pipeline "
     "(no engine._query_as_model / _fit_short); tests exercise removed internals."
 )
 
@@ -189,7 +184,7 @@ async def chain(tmp_path):
 
 
 def _repro_query(*, with_order: bool = False) -> SlayerQuery:
-    """The exact query from the DEV-1756 report."""
+    """The exact query from the original identifier-length report."""
     kwargs = {}
     if with_order:
         kwargs["order"] = [OrderItem(column="totalAmount:avg", direction="desc")]
@@ -214,7 +209,7 @@ SHORT_QUERY = SlayerQuery(
 
 
 # Identifier-inspection helpers — only the namespaces this issue owns (aliases,
-# ORDER BY refs, CTE names). Join-path table aliases are surface 2 (DEV-1743).
+# ORDER BY refs, CTE names). Join-path table aliases are surface 2.
 
 
 def _nbytes(s: str) -> int:
@@ -341,7 +336,7 @@ async def _public_aliases(engine, model, query) -> list[str]:
     """The canonical PUBLIC projection result keys for ``query``.
 
     Read off an unbounded, non-mangling dialect (SQLite) so the outer SELECT's
-    aliases are the canonical dotted keys — the DEV-1756 write pass leaves them
+    aliases are the canonical dotted keys — the length-fitting pass leaves them
     untouched there. Branch replacement for the old
     ``enriched.public_projection_aliases``.
     """
@@ -571,7 +566,7 @@ class TestDecodeWiring:
 
         class _FakeClient:
             async def execute(self, sql):
-                return []
+                return ExecutionResult(rows=[])
 
         await engine._run_data_query(prepared=prepared, client=_FakeClient())
         assert seen["aliases"] == list(prepared.expected_columns)
@@ -789,7 +784,7 @@ class TestVirtualModelShorts:
             )
 
     async def test_mixed_case_short_is_quoted(self, chain) -> None:
-        """The original DEV-1756 defect: a mixed-case short emitted bare."""
+        """The original defect: a mixed-case short emitted bare."""
         engine, _ = chain
         vm = await engine._query_as_model(inner_query=_repro_query())
         mixed = [

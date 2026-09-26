@@ -24,13 +24,16 @@ from slayer.sql.dialects.base import (
 
 class MysqlDialect(SqlDialect):
     sqlglot_name: str = "mysql"
-    ds_type_aliases: frozenset[str] = frozenset({"mysql", "mariadb"})
+    ds_type_aliases: frozenset[str] = frozenset({"mysql"})
     explain_prefix: str | None = "EXPLAIN FORMAT=JSON"
     explain_postfix: str = ""
     log10_native: bool = True
     log2_native: bool = True
     # Conservative: MySQL allows 256 for column aliases but errors (not truncates).
     max_identifier_bytes: int | None = 64
+
+    def statement_timeout_sql(self, timeout_seconds: int) -> str | None:
+        return f"SET max_execution_time = {timeout_seconds * 1000}"
 
     def rewrite_target_ast(self, tree: Expression) -> Expression:
         """MySQL's ``TRUNCATE`` has no single-argument form — ``TRUNCATE(x)`` is
@@ -42,10 +45,7 @@ class MysqlDialect(SqlDialect):
         return tree.transform(_fix)
 
     def build_median(self, inner: Expression) -> Expression:
-        # ``mariadb`` resolves to this same dialect via ``ds_type_aliases``,
-        # so the error must NOT suggest "use MariaDB" — that would loop the
-        # user back here. Point them at a datasource with native percentile
-        # support or client-side computation instead.
+        # ``MariadbDialect`` inherits this, so never suggest "use MariaDB".
         raise NotImplementedError(
             "Aggregation 'median' is not supported on MySQL: MySQL has no native "
             "MEDIAN/PERCENTILE_CONT function and no Python UDF mechanism. "
@@ -96,3 +96,12 @@ class MysqlDialect(SqlDialect):
             var_fn_pop="VAR_POP",
             stddev_fn="STDDEV_SAMP",
         )
+
+
+class MariadbDialect(MysqlDialect):
+    """MariaDB renders as MySQL; it names its statement timeout differently."""
+
+    ds_type_aliases: frozenset[str] = frozenset({"mariadb"})
+
+    def statement_timeout_sql(self, timeout_seconds: int) -> str | None:
+        return f"SET max_statement_time = {timeout_seconds}"

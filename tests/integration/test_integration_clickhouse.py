@@ -1,6 +1,6 @@
 """Integration tests using a real ClickHouse database via testcontainers.
 
-DEV-1564: mirror of test_integration_postgres.py focused on ClickHouse's
+Mirror of test_integration_postgres.py focused on ClickHouse's
 distinguishing characteristics:
 
 * Parametric ``quantile(p)(x)`` syntax (pinned via dry_run SQL inspection).
@@ -24,6 +24,7 @@ import math as _math
 import statistics
 import tempfile
 import uuid
+import warnings
 from decimal import Decimal
 
 import pytest
@@ -39,9 +40,11 @@ from slayer.core.models import (
     SlayerModel,
 )
 from slayer.core.query import ColumnRef, ModelExtension, OrderItem, SlayerQuery, TimeDimension
+from slayer.core.warnings import SlayerStatementTimeoutSkippedWarning, StatementTimeoutSkippedWarning
 from slayer.engine.ingestion import ingest_datasource
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql import engine_factory
+from slayer.sql.client import SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
 
 from tests._engine_helpers import disposable_engine
@@ -74,7 +77,10 @@ def _docker_available_or_skip():
 @pytest.fixture(scope="session")
 def clickhouse_container():
     """Session-scoped ClickHouse 24 container."""
-    container = ClickHouseContainer("clickhouse/clickhouse-server:24-alpine")
+    # Access management lets tests create a readonly user.
+    container = ClickHouseContainer("clickhouse/clickhouse-server:24-alpine").with_env(
+        "CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT", "1"
+    )
     with container as c:
         yield c
 
@@ -227,7 +233,7 @@ class TestClickHouseQueries:
         assert result.data[0]["orders._count"] == 6
 
     async def test_dev1933_regex_literal_extension_column(self, clickhouse_env: SlayerQueryEngine) -> None:
-        """DEV-1933: an ad-hoc column holding a ``(?:...)`` regex literal and a ``%``
+        """An ad-hoc column holding a ``(?:...)`` regex literal and a ``%``
         LIKE pattern executes verbatim; text() misread ``:too`` as a bind parameter."""
         query = SlayerQuery(
             source_model=ModelExtension(
@@ -296,7 +302,7 @@ class TestClickHouseQueries:
     async def test_trunc_executes_lowercase(
         self, clickhouse_env: SlayerQueryEngine
     ) -> None:
-        """DEV-1753: sqlglot emits ClickHouse ``trunc`` LOWERCASE while every
+        """Sqlglot emits ClickHouse ``trunc`` LOWERCASE while every
         other backend uppercases it. ClickHouse function names are case-sensitive
         in general, so this pins that the lowercase spelling really resolves on a
         live server — and that ``trunc`` truncates toward zero rather than
@@ -737,7 +743,7 @@ class TestClickHouseMedianPercentile:
 
 
 # ---------------------------------------------------------------------------
-# Native stat aggregations (DEV-1317 cross-dialect parity)
+# Native stat aggregations (cross-dialect parity)
 # ---------------------------------------------------------------------------
 
 
@@ -838,7 +844,7 @@ class TestClickHouseStatAggregations:
 
 
 # ---------------------------------------------------------------------------
-# log10 round-trip (DEV-1337 — ClickHouse has native log10)
+# log10 round-trip (ClickHouse has native log10)
 # ---------------------------------------------------------------------------
 
 
@@ -900,7 +906,7 @@ async def test_log10_round_trip_clickhouse(clickhouse_log10_env: SlayerQueryEngi
 
 
 # ---------------------------------------------------------------------------
-# Window-in-filter raises (DEV-1369 parity)
+# Window-in-filter raises (parity)
 # ---------------------------------------------------------------------------
 
 
@@ -965,7 +971,7 @@ async def test_filter_on_windowed_column_clickhouse_raises(planets_clickhouse_en
 
 
 # ---------------------------------------------------------------------------
-# Cross-model derived Column.sql (DEV-1333)
+# Cross-model derived Column.sql
 # ---------------------------------------------------------------------------
 
 
@@ -1108,10 +1114,8 @@ def test_clickhouse_comments_imported(clickhouse_ingest_for_types_env) -> None:
 
 
 # ---------------------------------------------------------------------------
-# DEV-1727 — dialect-aware Mode-A {var} escaping (ClickHouse is a Tier-1
-# backslash dialect with C-style string literals: the naive '' quote-doubling
-# from DEV-1625 mis-parses a backslash-bearing value; the hardened escaping
-# must round-trip end-to-end).
+# Dialect-aware Mode-A {var} escaping: ClickHouse's C-style literals break naive
+# '' quote-doubling on a backslash-bearing value; escaping must round-trip.
 # ---------------------------------------------------------------------------
 
 # Distinct amounts per tricky status so a correct match is provable via the sum.
@@ -1290,3 +1294,154 @@ class TestClickHouseDecimalPreservation:
         value = result.data[0][result_key]
         assert isinstance(value, Decimal)
         assert value == expected
+
+
+# ---------------------------------------------------------------------------
+# Per-statement timeout (max_execution_time)
+# ---------------------------------------------------------------------------
+
+
+def _admin_rows(clickhouse_container, sql: str) -> list[tuple]:
+    with disposable_engine(_admin_url(clickhouse_container)) as engine:
+        with engine.connect() as conn:
+            conn.exec_driver_sql("SYSTEM FLUSH LOGS")
+            rows = conn.exec_driver_sql(sql, execution_options={"no_parameters": True}).fetchall()
+            return [tuple(r) for r in rows]
+
+
+def _readonly_level_datasource(clickhouse_container, level: int):
+    """A datasource whose user has ``readonly = <level>``."""
+    user = f"ro{level}_{uuid.uuid4().hex[:8]}"
+    with disposable_engine(_admin_url(clickhouse_container)) as engine:
+        with engine.begin() as conn:
+            conn.execute(sa.text(
+                f"CREATE USER {user} IDENTIFIED WITH plaintext_password BY 'pw' "
+                f"SETTINGS readonly = {level}"
+            ))
+            conn.execute(sa.text(f"GRANT SELECT ON *.* TO {user}"))
+    yield DatasourceConfig(
+        name="readonly_clickhouse",
+        type="clickhouse",
+        host=clickhouse_container.get_container_host_ip(),
+        port=int(clickhouse_container.get_exposed_port(8123)),
+        database="default",
+        username=user,
+        password="pw",
+    )
+    with disposable_engine(_admin_url(clickhouse_container)) as engine:
+        with engine.begin() as conn:
+            conn.execute(sa.text(f"DROP USER IF EXISTS {user}"))
+
+
+@pytest.fixture
+def clickhouse_readonly_datasource(clickhouse_container):
+    """A datasource whose user has ``readonly = 1`` and may change no settings."""
+    yield from _readonly_level_datasource(clickhouse_container, 1)
+
+
+@pytest.fixture
+def clickhouse_readonly2_datasource(clickhouse_container):
+    """A datasource whose user has ``readonly = 2``: read-only, but may change settings."""
+    yield from _readonly_level_datasource(clickhouse_container, 2)
+
+
+def _pooled_max_execution_time(client: SlayerSQLClient) -> str:
+    with client._get_sync_engine_for_client().connect() as conn:
+        return str(conn.exec_driver_sql("SELECT getSetting('max_execution_time')").scalar())
+
+
+@pytest.mark.integration
+class TestClickHouseStatementTimeout:
+    async def test_timeout_stops_long_query(self, clickhouse_container) -> None:
+        client = SlayerSQLClient(datasource=_ds_config(clickhouse_container, "default"))
+        with pytest.raises(Exception, match="TIMEOUT_EXCEEDED"):
+            await client.execute(sql="SELECT sleep(3)", timeout_seconds=1)
+
+    async def test_statement_reaches_server_byte_identical(self, clickhouse_container) -> None:
+        marker = f"slayer_{uuid.uuid4().hex[:12]}"
+        sql = (
+            "SELECT toStartOfMonth(d) AS m, x::Int32 AS y "
+            f"FROM (SELECT toDate('2024-03-15') AS d, '7' AS x) -- {marker}"
+        )
+        client = SlayerSQLClient(datasource=_ds_config(clickhouse_container, "default"))
+        rows = (await client.execute(sql=sql, timeout_seconds=30)).rows
+        assert [(str(r["m"]), int(r["y"])) for r in rows] == [("2024-03-01", 7)]
+        logged = _admin_rows(
+            clickhouse_container,
+            "SELECT query FROM system.query_log WHERE type = 'QueryFinish' "
+            f"AND query LIKE '%{marker}%' AND query NOT LIKE '%system.query_log%'",
+        )
+        assert logged == [(sql,)]
+
+    async def test_sql_own_setting_wins(self, clickhouse_container) -> None:
+        client = SlayerSQLClient(datasource=_ds_config(clickhouse_container, "default"))
+        result = await client.execute(
+            sql="SELECT sleep(2) AS s SETTINGS max_execution_time = 5", timeout_seconds=1,
+        )
+        assert len(result.rows) == 1
+
+    def test_setting_restored_on_pooled_connection(self, clickhouse_container) -> None:
+        client = SlayerSQLClient(datasource=_ds_config(clickhouse_container, "default"))
+        prior = _pooled_max_execution_time(client)
+        client.execute_sync("SELECT 1", timeout_seconds=1)
+        assert _pooled_max_execution_time(client) == prior
+
+    def test_setting_restored_after_timed_query_raised(self, clickhouse_container) -> None:
+        client = SlayerSQLClient(datasource=_ds_config(clickhouse_container, "default"))
+        prior = _pooled_max_execution_time(client)
+        with pytest.raises(Exception, match="TIMEOUT_EXCEEDED"):
+            client.execute_sync("SELECT sleep(3)", timeout_seconds=1)
+        assert _pooled_max_execution_time(client) == prior
+
+    async def test_readonly_user_runs_queries(self, clickhouse_readonly_datasource) -> None:
+        client = SlayerSQLClient(datasource=clickhouse_readonly_datasource)
+        for _ in range(2):  # second call takes the cached no-setting path
+            rows = (await client.execute(sql="SELECT 1 AS x")).rows
+            assert [int(r["x"]) for r in rows] == [1]
+
+    async def test_readonly_user_warned_and_checked_once(
+        self, clickhouse_container, clickhouse_readonly_datasource,
+    ) -> None:
+        client = SlayerSQLClient(datasource=clickhouse_readonly_datasource)
+        expected = StatementTimeoutSkippedWarning(
+            datasource="readonly_clickhouse", timeout_seconds=120, reason="readonly_user",
+        )
+        for _ in range(2):
+            with pytest.warns(SlayerStatementTimeoutSkippedWarning, match="readonly = 2"):
+                result = await client.execute(sql="SELECT 1 AS x")
+            assert result.warnings == [expected]
+        (checks,) = _admin_rows(
+            clickhouse_container,
+            "SELECT count() FROM system.query_log WHERE type = 'QueryFinish' "
+            f"AND user = '{clickhouse_readonly_datasource.username}' "
+            "AND query LIKE '%getSetting(%readonly%'",
+        )
+        assert checks == (1,)
+
+    async def test_readonly_user_own_setting_fails_without_retry(
+        self, clickhouse_container, clickhouse_readonly_datasource,
+    ) -> None:
+        client = SlayerSQLClient(datasource=clickhouse_readonly_datasource)
+        marker = f"slayer_{uuid.uuid4().hex[:12]}"
+        with pytest.raises(Exception, match="READONLY"):
+            await client.execute(
+                sql=f"SELECT number FROM system.numbers LIMIT 1 SETTINGS max_execution_time = 5 -- {marker}",
+            )
+        (attempts,) = _admin_rows(
+            clickhouse_container,
+            "SELECT count() FROM system.query_log WHERE type != 'QueryStart' "
+            f"AND user = '{clickhouse_readonly_datasource.username}' AND query LIKE '%{marker}%'",
+        )
+        assert attempts == (1,)
+
+    async def test_readonly_2_user_gets_timeout(self, clickhouse_readonly2_datasource) -> None:
+        client = SlayerSQLClient(datasource=clickhouse_readonly2_datasource)
+        with pytest.raises(Exception, match="TIMEOUT_EXCEEDED"):
+            await client.execute(sql="SELECT sleep(3)", timeout_seconds=1)
+
+    async def test_readonly_2_user_not_warned(self, clickhouse_readonly2_datasource) -> None:
+        client = SlayerSQLClient(datasource=clickhouse_readonly2_datasource)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", SlayerStatementTimeoutSkippedWarning)
+            result = await client.execute(sql="SELECT 1 AS x")
+        assert result.warnings == []
