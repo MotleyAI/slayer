@@ -12,7 +12,7 @@ from slayer.core.warnings import SlayerStatementTimeoutSkippedWarning, Statement
 from slayer.sql.client import SlayerSQLClient, _TYPE_PROBE_TIMEOUT_SECONDS
 from tests._ch_fake_http import (
     CH_TIMEOUT_KEY,
-    PERMISSION_SQL,
+    PROFILE_SQL,
     FakeClickHouse,
     ch_datasource,
     fake_ch_engine,
@@ -52,7 +52,7 @@ class TestTimeoutTravelsBesideTheStatement:
         assert result.rows == [{"x": 1}]
         (params,) = fake.params_for(VERBATIM_SQL)
         assert params[CH_TIMEOUT_KEY] == 30
-        assert set(fake.statements()) == {PERMISSION_SQL, VERBATIM_SQL}
+        assert set(fake.statements()) == {PROFILE_SQL, VERBATIM_SQL}
 
     def test_sql_own_setting_sent_unchanged(self, monkeypatch, execute) -> None:
         sql = "SELECT sleep(2) SETTINGS max_execution_time = 5"
@@ -140,8 +140,8 @@ class TestReadonlyUsers:
         with fake_ch_engine(fake) as engine:
             route_engine(monkeypatch, engine)
             execute(SlayerSQLClient(datasource=ch_datasource()), "SELECT 1", 30)
-        assert fake.statements() == [PERMISSION_SQL, "SELECT 1"]
-        assert CH_TIMEOUT_KEY not in fake.params_for(PERMISSION_SQL)[0]
+        assert fake.statements() == [PROFILE_SQL, "SELECT 1"]
+        assert CH_TIMEOUT_KEY not in fake.params_for(PROFILE_SQL)[0]
 
     def test_checked_once_per_engine_across_clients_and_paths(self, monkeypatch) -> None:
         fake = FakeClickHouse(readonly=1)
@@ -205,7 +205,7 @@ class TestTypeProbe:
             types = asyncio.run(SlayerSQLClient(datasource=ch_datasource()).get_column_types("SELECT 1 AS x"))
             assert CH_TIMEOUT_KEY not in pooled_ch_settings(engine)
         assert types == {"x": "number"}
-        (probe,) = [s for s in fake.statements() if s != PERMISSION_SQL]
+        (probe,) = [s for s in fake.statements() if s != PROFILE_SQL]
         assert "SELECT 1 AS x" in probe
         assert fake.params_for(probe)[0][CH_TIMEOUT_KEY] == _TYPE_PROBE_TIMEOUT_SECONDS
 
@@ -217,6 +217,6 @@ class TestTypeProbe:
                 warnings.simplefilter("always")
                 types = asyncio.run(SlayerSQLClient(datasource=ch_datasource()).get_column_types("SELECT 1 AS x"))
         assert types == {"x": "number"}
-        (probe,) = [s for s in fake.statements() if s != PERMISSION_SQL]
+        (probe,) = [s for s in fake.statements() if s != PROFILE_SQL]
         assert CH_TIMEOUT_KEY not in fake.params_for(probe)[0]
         assert _skipped(record) == [_readonly_payload(_TYPE_PROBE_TIMEOUT_SECONDS)]
