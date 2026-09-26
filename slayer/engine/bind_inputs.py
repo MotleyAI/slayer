@@ -76,8 +76,6 @@ from slayer.engine.elaborate_env import (
     check_transform_inputs,
     check_transform_partition_keys_in_operand_grain,
     check_time_transforms_resolved,
-    combined_partitioned_consumers,
-    position_classes,
 )
 from slayer.engine.join_safety import assert_partition_key_attributable
 from slayer.engine.key_metadata import (
@@ -437,7 +435,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
             bound_filter_texts.append(f)
 
     order_specs = []
-    # Host identity for the qualifier check below (StageSchema uses its relation name).
+    # Host spelling for the qualifier check below.
     _order_host_name = host_model_name(scope)
     for i, o in enumerate(query.order or []):
         with stale_spelling_position(f"order[{i}]"):
@@ -618,18 +616,9 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         skip_dimensions=True,
     )
 
-    # A computed dimension's partitioned aggregate declares a producer grain; a
-    # combined consumer needs query-dimension partition keys for the join-back.
-    _classes = position_classes(declared_measures, n_grain=n_dims + n_tds)
-    _dim_agg_keys = _classes.row_aggregates
-    _combined_consumer_keys = combined_partitioned_consumers(
-        _classes, declared_measures=declared_measures, order_specs=order_specs,
-        bound_filters=bound_filters,
-    )
-    # An attached operand — a re-aggregation constituent or a
-    # row-attached input / parameter — declares an internal producer
-    # grain, so its partition keys need not be query dimensions; the enclosing
-    # root is the combined consumer and carries the rule.
+    # An aggregate's "must be a query dimension" rule is positional — judged by the
+    # checker after typing. A transform nested in an attached operand declares an
+    # internal producer grain, so its partition keys need not be query dimensions.
     _reagg_operand_keys = attached_operand_keys([
         *[dm.bound.value_key for dm in declared_measures],
         *[bf.value_key for bf in bound_filters],
@@ -641,9 +630,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
             f"transform {key.op!r}" if isinstance(key, TransformKey)
             else f"aggregation {key.agg!r}"
         )
-        lenient = (
-            key in _dim_agg_keys and key not in _combined_consumer_keys
-        ) or key in _reagg_operand_keys
+        lenient = isinstance(key, AggregateKey) or key in _reagg_operand_keys
         new_pks = []
         for pk in key.partition_keys or ():
             # A partition key over a join must be attributable from the root; else a hard error.

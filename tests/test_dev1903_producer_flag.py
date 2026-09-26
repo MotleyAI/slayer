@@ -377,16 +377,27 @@ class TestStrictSubsetNesting:
 BAND = {"expression": SPEND_BAND_EXPR, "name": "spend_band"}
 
 
+_W_BY_BAND = {("hi",): 68.0, ("lo",): 9.0}
+_W_BY_BAND_REGION = {("hi", "East"): 60.0, ("hi", "North"): 60.0, ("hi", "South"): 100.0,
+                     ("lo", "Gap"): 20.0 / 3, ("lo", "North"): 10.0, ("lo", "South"): 20.0,
+                     ("lo", "Void"): None}
+
+
 class TestOffGrainConstituentNests:
-    @pytest.mark.parametrize("dimensions", [[BAND], [BAND, "region"]], ids=["band", "band-region"])
-    async def test_never_aggregated_at_the_producer_grain(self, exec_engine, dimensions):
-        """The rank producer's grain prunes ``spend_band``; its ``[spend_band]`` inner nests
-        (fails closed until DEV-1960), never aggregates inline at ``[city, region]``."""
+    @pytest.mark.parametrize(("dimensions", "expected"), [
+        pytest.param([BAND], _W_BY_BAND, id="band"),
+        pytest.param([BAND, "region"], _W_BY_BAND_REGION, id="band-region"),
+    ])
+    async def test_executes_at_the_band_grain(self, exec_engine, dimensions, expected):
+        """Grained at ``spend_band`` alone (the nested aggregate is opaque): a constant
+        weight per band."""
         query = sales_q(dimensions=dimensions, measures=[ModelMeasure(
             formula="weighted_avg(amount, weight=rank(sum(amount, partition_by=spend_band)))",
             name="w")])
-        with pytest.raises(RuntimeError, match="missing a host / producer grain slot"):
-            await exec_engine.execute(query)
+        resp = await exec_engine.execute(query)
+        names = [d if isinstance(d, str) else d["name"] for d in dimensions]
+        got = {tuple(r[f"sales.{n}"] for n in names): r["sales.w"] for r in resp.data}
+        assert got == {k: None if v is None else pytest.approx(v) for k, v in expected.items()}
 
 
 class TestShiftedProducerNesting:

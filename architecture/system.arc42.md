@@ -113,7 +113,8 @@ All code, old and new, MUST obey these.
    SQL; the legacy `__` split-alias input form is a hard error; `__` survives
    only as an internal generated-SQL join alias (`__slayer_` prefix reserved).
    A resolved path is **canonical**: each hop spelled by its edge name, else its
-   target model (`customers.regions ≡ customers.hr` for an edge named `hr`); keys,
+   target model — a query stage by its name in its own query list, which precedes
+   a same-named model (`customers.regions ≡ customers.hr` for an edge named `hr`); keys,
    join aliases and result names carry only canonical paths.
    [enforced: test:tests/test_dev1743_resolution.py]
    [enforced: test:tests/test_dev1954_canonical_paths.py]

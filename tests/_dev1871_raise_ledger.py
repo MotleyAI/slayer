@@ -253,11 +253,6 @@ ROWS: Tuple[LedgerRow, ...] = (
          + AT + "measure …"
          + SUGGEST + "Apply the window inside the operand or consume the re-aggregated value through a transform.",
          category="checker", family="reaggregation", user=True, owner="checker"),
-    _row(module=_EE, function="check_reaggregation_partition_key_is_query_dim", exc="PartitionKeyError",
-         message="The re-aggregation declares partition_by=…, which is not a query dimension; every explicit partition key must be a query dimension."
-         + AT + "measure …"
-         + SUGGEST + "Add it to dimensions/time_dimensions.",
-         category="checker", family="reaggregation", user=True, owner="checker"),
     _row(module=_EE, function="check_reaggregation_dims_attributable", exc="ReaggregationError",
          message="The re-aggregation cannot attribute dimension(s) … to the operand dataset under to_many_handling='error'."
          + AT + "measure …"

@@ -299,27 +299,5 @@ def stored_join_collision_list() -> List[SlayerQuery]:
     return [sibling, b, root]
 
 
-def nested_stage_n() -> SlayerQuery:
-    """``n`` reads sibling ``c`` two ``source_queries`` levels down."""
-    inner = SlayerModel(name="inner", source_queries=[_query(
-        source_model="c", dimensions=["tr"],
-        measures=[{"formula": "cspend:sum", "name": "s"}])])
-    outer = SlayerModel(name="outer", source_queries=[_query(
-        source_model=inner, dimensions=["tr"],
-        measures=[{"formula": "s:sum", "name": "s2"}])])
-    return _query(
-        name="n", source_model=outer, dimensions=["tr"],
-        measures=[{"formula": "s2:sum", "name": "s3"}],
-    )
-
-
-def nested_list() -> List[SlayerQuery]:
-    root = _query(
-        source_model="n", dimensions=["tr"],
-        measures=[{"formula": "s3:sum", "name": "total"}],
-    )
-    return [stage_x(), stage_c(), nested_stage_n(), root]
-
-
 def rows_by(rows: list, *, key: str, value: str) -> dict:
     return {r[key]: r[value] for r in rows}

@@ -87,8 +87,9 @@ flowchart TD
 11. **One flat WITH, partitioned by stage**: every statement renders through
     one pipeline with one allocator, each value materialising in the relation
     its planner-assigned stage names; a producer's internal WITH hoists to the
-    top level — a WITH never nests inside a CTE definition; fusion of adjacent
-    phases is an emission decision, never semantic. [review]
+    top level — a WITH never nests inside a CTE definition — every hoisted CTE
+    renamed through the allocator, so no two statements' private names meet;
+    fusion of adjacent phases is an emission decision, never semantic. [review]
 12. **Attach is cardinality-neutral**: attaching a producer never changes the
     host row count or any other column's value.
     [enforced: test:tests/test_dev1837_dimension_measure_matrix.py]
