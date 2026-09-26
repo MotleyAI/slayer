@@ -127,7 +127,7 @@ class ClickhouseDialect(SqlDialect):
     ) -> ServerProfile:
         base = tuple(base_row or ())
         return ServerProfile(
-            version=_parse_clickhouse_version(base[0]) if base else None,
+            version=_parse_clickhouse_version(base[0]) if len(base) > 0 else None,
             readonly=_parse_readonly(base[1]) if len(base) > 1 else None,
             correlated_subqueries=_parse_bool_setting(correlated_row[0]) if correlated_row else None,
         )
