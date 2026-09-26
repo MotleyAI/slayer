@@ -188,8 +188,28 @@ def _stage_key(formula: str) -> AggregateKey:
     return key
 
 
+#: Row expressions whose nodes span every accepted helper-node family.
+ROW_TEXTS = [
+    "INTERVAL '1' DAY",
+    "ordered_at AT TIME ZONE 'UTC'",
+    "ordered_at + INTERVAL '1' DAY",
+    "CAST(amount AS DECIMAL(10, 2))",
+    "EXTRACT(YEAR FROM ordered_at)",
+    "status->>'tier'",
+    "CASE WHEN amount > 10 THEN amount ELSE 0 END",
+    "COALESCE(amount, 0) * 2",
+    "amount IN (1, 2)",
+    "status LIKE 'a%'",
+    "(amount, cost) IN ((1, 2))",
+    "amount[1:2]",
+    "JSON_OBJECT('a': amount)",
+    "CAST(amount AS STRUCT(x INT))",
+    "NULL",
+]
+
+
 class TestUnanalysableText:
-    """Unparseable text, or an aggregate / window / subquery, fails at bind."""
+    """Text that does not parse or is not a row expression fails at bind."""
 
     @staticmethod
     def _assert_names(err: Exception, *, agg: str, text: str) -> None:
@@ -209,6 +229,26 @@ class TestUnanalysableText:
         with pytest.raises(UnanalyzableAggregationParameterError) as ei:
             _key(f"amount:wsum(weight='{quoted}')")
         self._assert_names(ei.value, agg="wsum", text=text)
+
+    @pytest.mark.parametrize("text", ROW_TEXTS)
+    def test_row_expression_binds(self, text: str) -> None:
+        quoted = text.replace("'", "\\'")
+        assert _kw(f"amount:wsum(weight='{quoted}')")["weight"] is not None
+
+    @pytest.mark.parametrize("dialect,text", [
+        ("duckdb", "list_transform(amount, x -> x + 1)"),
+        ("mysql", "JSON_VALUE(status, '$.x') + amount"),
+    ])
+    def test_dialect_row_expression_binds(self, dialect: str, text: str) -> None:
+        models = dev1901_models()
+        quoted = text.replace("'", "\\'")
+        key = bind_expr(
+            parse_expr(f"amount:wsum(weight='{quoted}')"),
+            scope=ModelScope(source_model=models[0]),
+            bundle=bundle_of(models, dialect=dialect), allow_measures=True,
+        ).value_key
+        assert isinstance(key, AggregateKey)
+        assert AMOUNT in _fragment(dict(key.kwargs)["weight"]).refs
 
     def test_is_a_slayer_error(self) -> None:
         assert issubclass(UnanalyzableAggregationParameterError, SlayerError)

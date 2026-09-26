@@ -10,8 +10,6 @@ import sqlglot
 from sqlglot import exp
 from sqlglot.errors import SqlglotError
 from sqlglot.expressions.core import Expression
-from sqlglot.expressions.ddl import DDL
-from sqlglot.expressions.dml import DML
 
 from slayer.core.enums import BUILTIN_AGGREGATION_PARAM_ORDER
 from slayer.core.errors import (
@@ -55,18 +53,30 @@ ColumnRef = Union[ColumnKey, ColumnSqlKey]
 #: Resolves a reference's dotted parts in the query frame, as its unquoted twin binds.
 QueryRefResolver = Callable[[Tuple[str, ...]], ValueKey]
 
+#: Named refusals, checked first: these are expressions to sqlglot but not row values.
 _UNANALYSABLE_KINDS: Tuple[Tuple[Tuple[type, ...], str], ...] = (
     ((exp.AggFunc,), "an aggregate"),
     ((exp.Window,), "a window function"),
     ((exp.Query, exp.Subquery), "a subquery"),
-    ((exp.Alias,), "an alias"),
     ((exp.Placeholder, exp.Parameter, exp.SessionParameter), "a bind parameter"),
-    ((exp.Star, exp.Command, DDL, DML), "a non-expression"),
+    ((exp.Explode, exp.Unnest, exp.Inline, exp.Flatten, exp.GenerateSeries, exp.NextValueFor),
+     "a set-returning or sequence function"),
+)
+#: Every node of row-expression text is an expression or one of these helper nodes.
+_ROW_HELPER_NODES: Tuple[type, ...] = (
+    exp.Identifier, exp.Var, exp.DataType, exp.DataTypeParam, exp.Interval, exp.AtTimeZone,
+    exp.JSONPath, exp.JSONPathPart, exp.JSONKeyValue, exp.JSONValue, exp.Tuple, exp.Lambda,
+    exp.Slice, exp.ColumnDef,
 )
 
 
-def _unanalysable_kind(node: object) -> Optional[str]:
-    return next((kind for types, kind in _UNANALYSABLE_KINDS if isinstance(node, types)), None)
+def _non_row_reason(node: object) -> Optional[str]:
+    kind = next((kind for types, kind in _UNANALYSABLE_KINDS if isinstance(node, types)), None)
+    if kind is not None:
+        return f"it contains {kind}"
+    if isinstance(node, (exp.Condition, *_ROW_HELPER_NODES)):
+        return None
+    return "it is not a row expression"
 
 
 def _fresh_sentinel(text: str) -> str:
@@ -210,9 +220,9 @@ def _parse(*, text: str, name: str, ctx: _Ctx) -> Expression:
     except (SqlglotError, ValueError) as e:
         raise _unanalysable(text=text, name=name, ctx=ctx, reason="it does not parse") from e
     for node in tree.walk():
-        kind = _unanalysable_kind(node)
-        if kind is not None:
-            raise _unanalysable(text=text, name=name, ctx=ctx, reason=f"it contains {kind}")
+        reason = _non_row_reason(node)
+        if reason is not None:
+            raise _unanalysable(text=text, name=name, ctx=ctx, reason=reason)
     while isinstance(tree, exp.Paren):
         tree = tree.this
     return tree

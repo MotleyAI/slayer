@@ -54,6 +54,15 @@ BAD_DEFAULTS = {
     "wbad_alias": "amount AS x",
     "wbad_bind": "?",
     "wbad_var": "@x",
+    "wbad_multi": "1; 2",
+    "wbad_drop": "DROP TABLE x",
+    "wbad_values": "VALUES (1)",
+    "wbad_star": "*",
+    "wbad_star_arg": "FOO(*)",
+    "wbad_values_in": "amount IN (VALUES (1))",
+    "wbad_txn": "BEGIN",
+    "wbad_unnest": "UNNEST(amount)",
+    "wbad_series": "generate_series(1, amount)",
 }
 
 
