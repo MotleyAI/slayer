@@ -16,7 +16,7 @@ from sqlglot.tokenizer_core import Token, TokenType
 
 from slayer.core.enums import BUILTIN_AGGREGATION_PARAM_ORDER, RANKED_AGGREGATIONS
 from slayer.core.errors import AggregationArgumentError, SlayerError
-from slayer.core.models import Aggregation, rendered_formula
+from slayer.core.models import WINDOW_PARAM, Aggregation, rendered_formula, reserved_window_param_message
 from slayer.sql.dialects import get_dialect
 from slayer.sql.dialects.base import SqlDialect, is_operator
 from slayer.sql.render.parse import parse_expression
@@ -165,6 +165,8 @@ def check_aggregation_definition(*, where: str, agg: Aggregation, dialect: str) 
         reads = aggregation_reads(agg=agg.name, definition=agg, dialect=dialect)
     except SqlTemplateError as e:
         raise SqlTemplateError(f"{where}: {e}") from e
+    if WINDOW_PARAM in reads or any(p.name == WINDOW_PARAM for p in agg.params):
+        raise AggregationArgumentError(f"{where}: {reserved_window_param_message(agg.name)}")
     unread = [p.name for p in agg.params if p.name not in reads]
     if unread:
         reader = "its formula" if rendered_formula(agg=agg.name, definition=agg) else "the built-in"

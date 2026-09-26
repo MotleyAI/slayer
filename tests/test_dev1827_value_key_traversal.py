@@ -16,7 +16,7 @@ import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.keys import Grain
-from slayer.core.keys import KIND_POLICY, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, KindPolicy, LiteralKey, Phase, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, ValueKey, _FrozenKey, reroot_value_key, substitute_value_keys, walk_value_keys
+from slayer.core.keys import KIND_POLICY, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, KindPolicy, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimeTruncKey, TransformKey, ValueKey, _FrozenKey, reroot_value_key, substitute_value_keys, walk_value_keys
 from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.engine.reference_closure import UnhandledValueKindError, aggregate_input_closure
@@ -83,6 +83,7 @@ SAMPLES = {
     ScalarCallKey: SC,
     BetweenKey: BT,
     InKey: IK,
+    SqlFragmentKey: SqlFragmentKey(template="{r0} * {r1}", refs=(CITY, JOINED)),
 }
 LEAF_KINDS = (ColumnKey, ColumnSqlKey, StarKey, LiteralKey)
 
@@ -326,6 +327,7 @@ class TestDummyFlowsThroughGenericVisitors:
 
     def test_lower_sugar_reaches_a_nested_change(self) -> None:
         out = lower_sugar_transforms(DummyKey(child=CHANGE_TR))
+        assert isinstance(out, DummyKey)
         assert isinstance(out.child, ArithmeticKey)
         assert out.child.op == "-"
 
@@ -334,6 +336,8 @@ class TestDummyFlowsThroughGenericVisitors:
             key=DummyKey(child=RANK_TR),
             rewrite_fn=lambda k: Grain.of({REGION}),
         )
+        assert isinstance(out, DummyKey)
+        assert isinstance(out.child, TransformKey)
         assert out.child.partition_keys == Grain.of({REGION})
 
     def test_reroot_reaches_the_dummy_child(self) -> None:
@@ -473,6 +477,7 @@ class TestLowerSugarTraversal:
         out = lower_sugar_transforms(
             InKey(column=CHANGE_TR, values=(LiteralKey(value="gold"),)),
         )
+        assert isinstance(out, InKey)
         assert isinstance(out.column, ArithmeticKey)
 
     def test_change_inside_aggregate_source_is_lowered(self) -> None:
@@ -490,11 +495,13 @@ class TestLowerSugarTraversal:
             op="cumsum", input=AGG, partition_keys=Grain.of({CHANGE_TR}),
         )
         out = lower_sugar_transforms(key)
+        assert isinstance(out, TransformKey)
         assert all(isinstance(p, ArithmeticKey) for p in out.partition_keys)
 
     def test_change_in_transform_time_key_is_lowered(self) -> None:
         key = TransformKey(op="cumsum", input=AGG, time_key=CHANGE_TR)
         out = lower_sugar_transforms(key)
+        assert isinstance(out, TransformKey)
         assert isinstance(out.time_key, ArithmeticKey)
 
     def test_identity_preserved_when_nothing_lowers(self) -> None:
@@ -538,6 +545,8 @@ class TestRankRewriteContract:
         assert seen[0] is inner
         assert seen[1] is outer
         assert seen[1].input is inner
+        assert isinstance(out, TransformKey)
+        assert isinstance(out.input, TransformKey)
         assert out.partition_keys == Grain.of({REGION})
         assert out.input.partition_keys == Grain.of({REGION})
 
@@ -548,6 +557,7 @@ class TestRankRewriteContract:
         out = rewrite_rank_partition_keys(
             key=agg, rewrite_fn=lambda k: Grain.of({REGION}),
         )
+        assert isinstance(out, AggregateKey)
         assert out.partition_keys == Grain.of({REGION})
 
     def test_identity_preserved_without_rank_keys(self) -> None:
@@ -571,6 +581,7 @@ class TestSubstituteAtomicity:
             mapping={CITY: replacement},
         )
         assert out.operands[0] is replacement
+        assert isinstance(out.operands[0], ArithmeticKey)
         assert out.operands[0].operands[0] == CITY
 
 

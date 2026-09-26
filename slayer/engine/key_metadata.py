@@ -152,7 +152,7 @@ def measure_key_type(
             )
         return result
     name = _local_aggregate_source_name(key)
-    if name is None:
+    if name is None or not isinstance(key, AggregateKey):
         return None
     return aggregated_type(
         model=model, measure_name=name, aggregation=key.agg,
@@ -179,7 +179,7 @@ def measure_key_format_description(
     no source column to document it.
     """
     name = _local_aggregate_source_name(key)
-    if name is None:
+    if name is None or not isinstance(key, AggregateKey):
         return None, None
     fmt = _infer_aggregated_format(
         model=model, measure_name=name, aggregation=key.agg,

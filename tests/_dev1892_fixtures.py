@@ -200,7 +200,7 @@ def literal_only_reagg_models() -> List[SlayerModel]:
 
 
 def unmodeled_physical_expr_default_models() -> List[SlayerModel]:
-    """``wphys`` weight default references ``tier`` after it is REMOVED from the model — a physical-only column, lifted like a bare default."""
+    """``wphys`` weight default references ``tier`` after it is REMOVED from the model — a physical-only column, so the default fails closed."""
     models = dev1840_models()
     cust = _customers(models)
     cust.columns = [c for c in cust.columns if c.name != "tier"]
@@ -297,8 +297,6 @@ ASSOC_WSUM6_BY_STATUS = {"ok": 112000.0, "new": 50000.0}
 ASSOC_WSUM7_BY_STATUS = {"ok": 5340000.0, "new": 3250000.0}
 #: wsum9 (weight default double_spend * regions.pop) = 2 * SUM(spend^2 * pop).
 ASSOC_WSUM9_BY_STATUS = {"ok": 10680000.0, "new": 6500000.0}
-#: wphys (weight = 2.0 for gold, 1.0 else; gold c1,c3,c6, silver c2,c5, bronze c4).
-ASSOC_WPHYS_BY_STATUS = {"ok": 610.0, "new": 390.0}
 
 # Re-aggregation oracles (sales graph; [city, region] cell totals / id counts).
 #   North: Alpha 30/3, Beta 60/1 | South: Alpha 40/2, Gamma 100/1
@@ -351,7 +349,6 @@ __all__ = [
     "ASSOC_WAVG_SPEND_BY_STATUS", "ASSOC_WAVG_OK_FAN_DEFECT",
     "ASSOC_WSUM_BY_STATUS", "ASSOC_WAVG_POP_BY_STATUS",
     "ASSOC_WSUM6_BY_STATUS", "ASSOC_WSUM7_BY_STATUS", "ASSOC_WSUM9_BY_STATUS",
-    "ASSOC_WPHYS_BY_STATUS",
     "WAVG_CITY_BY_REGION", "UNWEIGHTED_CITY_BY_REGION",
     "DEGENERATE_WAVG_BY_REGION", "CORDERS_GLOBAL_WAVG",
     "CORDERS_GLOBAL_UNWEIGHTED", "SEEDED_AVG_BY_REGION_ID",

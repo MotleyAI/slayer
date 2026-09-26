@@ -1,7 +1,6 @@
 """DEV-1750 Part 1 — the shifted (``time_shift``) CTE must register the joins
 its inner aggregate's template FRAGMENTS (and positional column args) cross,
-through the same one door the host and ``_cm_`` paths use
-(``_register_fragment_kwarg_joins`` / ``scope.resolve``).
+through the same one door the host and ``_cm_`` paths use.
 
 Before this, ``_emit_time_shift_ctes_for_planned`` registered source / typed
 column kwargs but never the string fragments, so a
@@ -19,7 +18,10 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.keys import AggregateKey, ColumnKey
-from slayer.sql.generator import SQLGenerator
+from slayer.core.scope import ModelScope
+from slayer.engine.binding import bind_expr
+from slayer.engine.syntax import parse_expr
+from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.scope_check import assert_scope_closed
 
 from tests._dev1750_fixtures import (
@@ -28,7 +30,7 @@ from tests._dev1750_fixtures import (
     base_cte_body,
     gen,
     month_td,
-    orders_model,
+    dev1750_models,
     shifted_cte_body,
     shifted_relation,
 )
@@ -92,39 +94,28 @@ class TestShiftedCteFragmentUserKwarg:
         assert "customers__regions.weight" in producer, producer
 
 
-class TestFragmentRegistrationUnit:
-    """Unit-level parity with ``tests/test_dev1745_fragment_joins.py``: the
-    shared helper treats an OVERRIDDEN default as replaced, so the shifted path
-    (which calls the same helper) cannot double-register the default fragment's
-    join."""
+class TestFragmentBindingUnit:
+    """An OVERRIDDEN default is replaced at bind: only the override lands on the
+    key, so no path can register the default fragment's join."""
 
     @staticmethod
-    def _entered(*, kwargs) -> list:
-        gen_ = SQLGenerator(dialect="duckdb")
-        seen: list = []
-        gen_._enter_mode_a_expression = (  # type: ignore[method-assign]
-            lambda **kw: seen.append(kw["sql"])
-        )
-        gen_._register_fragment_kwarg_joins(
-            key=AggregateKey(
-                source=ColumnKey(path=(), leaf="amount"), agg="wscaled_sum",
-                kwargs=kwargs,
-            ),
-            scope=object(),
-            model=orders_model(),
-        )
-        return seen
+    def _kwargs(formula: str) -> dict:
+        models = dev1750_models()
+        key = bind_expr(
+            parse_expr(formula), scope=ModelScope(source_model=models[0]),
+            bundle=ResolvedSourceBundle(dialect="duckdb", source_model=models[0],
+                                        referenced_models=models[1:]),
+        ).value_key
+        assert isinstance(key, AggregateKey), key
+        return dict(key.kwargs)
 
-    def test_non_overridden_default_is_scanned(self) -> None:
-        entered = self._entered(kwargs=())
-        assert entered == ["customers.regions.weight"], entered
+    def test_non_overridden_default_is_bound(self) -> None:
+        assert self._kwargs("amount:wscaled_sum") == {
+            "w": ColumnKey(path=("customers", "regions"), leaf="weight")}
 
     def test_overridden_default_uses_the_override_not_the_default(self) -> None:
-        # Overriding ``w`` replaces the default: only the override is scanned,
-        # never the default ``customers__regions.weight``.
-        entered = self._entered(kwargs=(("w", "customers.region_id"),))
-        assert entered == ["customers.region_id"], entered
-        assert "customers__regions.weight" not in entered, entered
+        assert self._kwargs("amount:wscaled_sum(w='customers.region_id')") == {
+            "w": ColumnKey(path=("customers",), leaf="region_id")}
 
 
 class TestShiftedCtePositionalArgRegistration:

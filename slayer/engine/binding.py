@@ -36,16 +36,16 @@ from slayer.core.enums import (
 )
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS
-from slayer.core.keys import SCALAR_FUNCTIONS, check_scalar_arity, AggregateKey, ArithmeticKey, ColumnKey, ColumnSqlKey, Grain, InKey, LiteralKey, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, column_path, is_attached_source, normalize_scalar, prepend_value_key, source_anchor_path, walk_value_keys
+from slayer.core.keys import SCALAR_FUNCTIONS, check_scalar_arity, AggregateKey, ArithmeticKey, ColumnKey, ColumnSqlKey, Grain, InKey, LiteralKey, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, column_path, is_attached_source, normalize_scalar, prepend_value_key, walk_value_keys
 from slayer.core.join_walker import (
     OrientedJoin,
     canonical_path,
     resolve_hop,
-    terminal_model,
     walk,
 )
 from slayer.core.models import VALUE_PLACEHOLDER, SlayerModel, is_identifier, reserved_value_param_message
 from slayer.engine import dimension_routing
+from slayer.engine.param_binding import agg_owner, bind_aggregation_params
 from slayer.core.query import TimeDimension
 from slayer.core.scope import ModelScope, StageSchema, resolve_generated_column
 from slayer.ir.source_bundle import ResolvedSourceBundle
@@ -140,6 +140,20 @@ def bind_expr(
             parsed=parsed, value_key=value_key, scope=scope,
         ),
     )
+
+
+def spelled_aggregate_key(
+    *, parsed: ParsedExpr, key: AggregateKey, bundle: ResolvedSourceBundle,
+) -> AggregateKey:
+    """``key`` keeping only the parameters the query wrote (the public name's basis);
+    a bound definition default is never part of the spelling."""
+    if not isinstance(parsed, AggCall):
+        return key
+    positional = _declared_agg_param_names(agg=key.agg, source=key.source, bundle=bundle)
+    written = {k for k, _ in parsed.kwargs} | set(positional[:len(parsed.args)])
+    return key.model_copy(update={
+        "kwargs": tuple((k, v) for k, v in key.kwargs if k in written),
+    })
 
 
 def bind_time_dimension(
@@ -1190,6 +1204,13 @@ def _bind_agg(
         _reject_non_numeric_expression_agg(
             source=source, agg=effective_agg, scope=scope,
         )
+    kwargs = bind_aggregation_params(
+        agg=effective_agg, source=source, kwargs=kwargs, bundle=bundle,
+        resolve_query_ref=lambda parts: _bind(
+            Ref(name=parts[0]) if len(parts) == 1 else DottedRef(parts=parts),
+            scope=scope, bundle=bundle, in_filter=False,
+        ),
+    )
     return AggregateKey(
         source=source,
         agg=effective_agg,
@@ -1199,41 +1220,15 @@ def _bind_agg(
     )
 
 
-def _walk_tokens_best_effort(
-    *, host: SlayerModel, path, bundle: ResolvedSourceBundle,
-) -> Optional[SlayerModel]:
-    """Terminal model of ``path`` from ``host`` via the shared walker (tokens
-    may be edge names); ``None`` when a hop doesn't resolve — callers skip
-    their validation best-effort."""
-    return terminal_model(
-        root=host, path=tuple(path),
-        models_by_name=bundle.models_by_name,
-    )
-
-
-
-
 def _resolve_agg_owner(
     source, bundle: ResolvedSourceBundle,
 ) -> "tuple[Optional[SlayerModel], Optional[str]]":
-    """``(owning_model, gate_leaf)`` for an aggregate source.
-
-    Star and expression sources own no column (``leaf`` is ``None``) but still
-    resolve an owning model for custom-aggregation names — the join-path
-    terminal for a pathed star, the host otherwise. ``(None, None)`` when the
-    model can't be confirmed (no host model, unresolved join hop): the caller
-    best-effort skips validation there (the compile-time path validator
-    catches truly broken refs).
-    """
-    host = bundle.source_model
-    if host is None:
+    """``(owning_model, gate_leaf)`` for an aggregate source; ``(None, None)`` when
+    the owner can't be confirmed (no host model, unresolved join hop)."""
+    owner = agg_owner(source=source, bundle=bundle)
+    if owner is None:
         return None, None
-    leaf = getattr(source, "leaf", None) or getattr(source, "column_name", None)
-    current = _walk_tokens_best_effort(
-        host=host, path=source_anchor_path(source), bundle=bundle)
-    if current is None:
-        return None, None
-    return current, leaf
+    return owner, getattr(source, "leaf", None) or getattr(source, "column_name", None)
 
 
 def _declared_agg_param_names(
@@ -1364,56 +1359,47 @@ def _validate_agg_eligibility(
     """
     owner_model, leaf = _resolve_agg_owner(source, bundle)
     if owner_model is None:
-        return normalize_aggregation_name(agg)
+        return _known_aggregation(normalize_aggregation_name(agg), BUILTIN_AGGREGATIONS)
     # Alias healing — custom aggregation named like an alias wins.
     custom_names = {a.name for a in (owner_model.aggregations or [])}
     effective = agg if agg in custom_names else normalize_aggregation_name(agg)
     # Gate 0: unknown-name-first (precedence over PK / whitelist / type).
-    known = BUILTIN_AGGREGATIONS | custom_names
-    if effective not in known:
-        raise ValueError(_unknown_aggregation_message(effective, known))
-    if leaf is None:
-        return effective
-    col = next((c for c in owner_model.columns if c.name == leaf), None)
+    _known_aggregation(effective, BUILTIN_AGGREGATIONS | custom_names)
+    col = None if leaf is None else next((c for c in owner_model.columns if c.name == leaf), None)
     if col is None:
         return effective
-    if is_identifier(column=col, columns=owner_model.columns):
-        if effective not in PRIMARY_KEY_AGGREGATIONS:
-            raise AggregationNotAllowedError(
-                column=leaf,
-                agg=effective,
-                reason=(
-                    f"primary-key column {leaf!r} restricted to "
-                    f"{sorted(PRIMARY_KEY_AGGREGATIONS)}; got {effective!r}."
-                ),
-            )
-        return effective
-    if col.allowed_aggregations is not None:
-        if effective not in col.allowed_aggregations:
-            raise AggregationNotAllowedError(
-                column=leaf,
-                agg=effective,
-                reason=(
-                    f"column {leaf!r} restricts allowed_aggregations to "
-                    f"{sorted(col.allowed_aggregations)}; got {effective!r}."
-                ),
-            )
-        return effective
-    # Model-custom aggregations are exempt from the type-default gate.
-    if effective in custom_names:
-        return effective
-    allowed = DEFAULT_AGGREGATIONS_BY_TYPE.get(col.type, frozenset())
-    if effective not in allowed:
-        raise AggregationNotAllowedError(
-            column=leaf,
-            agg=effective,
-            reason=(
-                f"aggregation {effective!r} is not applicable to "
-                f"{col.type} column {leaf!r}; default aggregations are "
-                f"{sorted(allowed)}."
-            ),
-        )
+    reason = _column_agg_refusal(
+        col=col, columns=owner_model.columns, agg=effective, custom=effective in custom_names,
+    )
+    if reason is not None:
+        raise AggregationNotAllowedError(column=col.name, agg=effective, reason=reason)
     return effective
+
+
+def _known_aggregation(name: str, known) -> str:
+    if name not in known:
+        raise ValueError(_unknown_aggregation_message(name, known))
+    return name
+
+
+def _column_agg_refusal(*, col, columns, agg: str, custom: bool) -> Optional[str]:
+    """Why gates 1-3 refuse ``agg`` on ``col``, else ``None``."""
+    leaf = col.name
+    if is_identifier(column=col, columns=columns):
+        if agg in PRIMARY_KEY_AGGREGATIONS:
+            return None
+        return f"primary-key column {leaf!r} restricted to {sorted(PRIMARY_KEY_AGGREGATIONS)}; got {agg!r}."
+    if col.allowed_aggregations is not None:
+        if agg in col.allowed_aggregations:
+            return None
+        return (f"column {leaf!r} restricts allowed_aggregations to "
+                f"{sorted(col.allowed_aggregations)}; got {agg!r}.")
+    # Model-custom aggregations are exempt from the type-default gate.
+    allowed = DEFAULT_AGGREGATIONS_BY_TYPE.get(col.type, frozenset())
+    if custom or agg in allowed:
+        return None
+    return (f"aggregation {agg!r} is not applicable to {col.type} column {leaf!r}; "
+            f"default aggregations are {sorted(allowed)}.")
 
 
 def _bind_agg_arg(

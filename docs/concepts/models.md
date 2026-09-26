@@ -304,9 +304,11 @@ aggregations:
     formula: "avg(CASE WHEN {value} BETWEEN {low} AND {high} THEN {value} END)"
 ```
 
-Use at query time: `weighted_avg(price, weight=quantity)`, `trimmed_mean(revenue, low=10, high=1000)`. An aggregation entry can also override a built-in's default parameters without redefining the SQL, or give a built-in other than `first`/`last` a `formula`, which then replaces its SQL. Like columns and measures, aggregations accept an optional `meta` dict for caller bookkeeping. A formula that does not parse as SQL is rejected when the model is saved, and so is a parameter whose default `sql` is empty, whose name is `value` (which always stands for the aggregated column), or that the formula never references; a query argument the aggregation does not accept is rejected, listing the accepted names.
+Use at query time: `weighted_avg(price, weight=quantity)`, `trimmed_mean(revenue, low=10, high=1000)`. An aggregation entry can also override a built-in's default parameters without redefining the SQL, or give a built-in other than `first`/`last` a `formula`, which then replaces its SQL. Like columns and measures, aggregations accept an optional `meta` dict for caller bookkeeping. A formula that does not parse as SQL is rejected when the model is saved, and so is a parameter whose default `sql` is empty, whose name is `value` (which always stands for the aggregated column) or `window` (the trailing-window argument), or that the formula never references; a query argument the aggregation does not accept is rejected, listing the accepted names.
 
 A parameter default resolves from the model that declares the aggregation, and a qualifier naming a model already on the query's path to it reads that row rather than re-joining (`weight: customers.spend` on a `regions` aggregation queried as `weighted_avg(customers.regions.pop)` weights by that customer's own spend), while any other qualifier the declaring model cannot reach resolves from the query root.
+
+A default behaves exactly like the same value passed explicitly, and the two spellings in one query are computed once. Default text that does not parse, or that contains an aggregate, a window function or a subquery, fails when a query uses the aggregation.
 
 ## Joins
 

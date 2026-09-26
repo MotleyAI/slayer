@@ -29,31 +29,31 @@
   },
   "fanning/definition_default::bigquery": {
     "error": "UnsafeJoinInputError",
-    "message": "UnsafeJoinInputError: The cross-model aggregate reads an input across an unproven join hop to region_events from customers.\n  at measure 'customers.spend_wsumx'\n  suggestion: Declare join cardinality or a covering unique key on the target."
+    "message": "UnsafeJoinInputError: The cross-model aggregate ranks/reads by bad_pop, which is not attributable from customers (crosses a fanning or unproven join hop to region_events).\n  at measure 'customers.spend_wsumx_weight_customers_regions_bad_pop'\n  suggestion: Declare join cardinality or a covering unique key on the target."
   },
   "fanning/definition_default::duckdb": {
     "error": "UnsafeJoinInputError",
-    "message": "UnsafeJoinInputError: The cross-model aggregate reads an input across an unproven join hop to region_events from customers.\n  at measure 'customers.spend_wsumx'\n  suggestion: Declare join cardinality or a covering unique key on the target."
+    "message": "UnsafeJoinInputError: The cross-model aggregate ranks/reads by bad_pop, which is not attributable from customers (crosses a fanning or unproven join hop to region_events).\n  at measure 'customers.spend_wsumx_weight_customers_regions_bad_pop'\n  suggestion: Declare join cardinality or a covering unique key on the target."
   },
   "fanning/definition_default::mysql": {
     "error": "UnsafeJoinInputError",
-    "message": "UnsafeJoinInputError: The cross-model aggregate reads an input across an unproven join hop to region_events from customers.\n  at measure 'customers.spend_wsumx'\n  suggestion: Declare join cardinality or a covering unique key on the target."
+    "message": "UnsafeJoinInputError: The cross-model aggregate ranks/reads by bad_pop, which is not attributable from customers (crosses a fanning or unproven join hop to region_events).\n  at measure 'customers.spend_wsumx_weight_customers_regions_bad_pop'\n  suggestion: Declare join cardinality or a covering unique key on the target."
   },
   "fanning/definition_default::postgres": {
     "error": "UnsafeJoinInputError",
-    "message": "UnsafeJoinInputError: The cross-model aggregate reads an input across an unproven join hop to region_events from customers.\n  at measure 'customers.spend_wsumx'\n  suggestion: Declare join cardinality or a covering unique key on the target."
+    "message": "UnsafeJoinInputError: The cross-model aggregate ranks/reads by bad_pop, which is not attributable from customers (crosses a fanning or unproven join hop to region_events).\n  at measure 'customers.spend_wsumx_weight_customers_regions_bad_pop'\n  suggestion: Declare join cardinality or a covering unique key on the target."
   },
   "fanning/definition_default::snowflake": {
     "error": "UnsafeJoinInputError",
-    "message": "UnsafeJoinInputError: The cross-model aggregate reads an input across an unproven join hop to region_events from customers.\n  at measure 'customers.spend_wsumx'\n  suggestion: Declare join cardinality or a covering unique key on the target."
+    "message": "UnsafeJoinInputError: The cross-model aggregate ranks/reads by bad_pop, which is not attributable from customers (crosses a fanning or unproven join hop to region_events).\n  at measure 'customers.spend_wsumx_weight_customers_regions_bad_pop'\n  suggestion: Declare join cardinality or a covering unique key on the target."
   },
   "fanning/definition_default::sqlite": {
     "error": "UnsafeJoinInputError",
-    "message": "UnsafeJoinInputError: The cross-model aggregate reads an input across an unproven join hop to region_events from customers.\n  at measure 'customers.spend_wsumx'\n  suggestion: Declare join cardinality or a covering unique key on the target."
+    "message": "UnsafeJoinInputError: The cross-model aggregate ranks/reads by bad_pop, which is not attributable from customers (crosses a fanning or unproven join hop to region_events).\n  at measure 'customers.spend_wsumx_weight_customers_regions_bad_pop'\n  suggestion: Declare join cardinality or a covering unique key on the target."
   },
   "fanning/definition_default::tsql": {
     "error": "UnsafeJoinInputError",
-    "message": "UnsafeJoinInputError: The cross-model aggregate reads an input across an unproven join hop to region_events from customers.\n  at measure 'customers.spend_wsumx'\n  suggestion: Declare join cardinality or a covering unique key on the target."
+    "message": "UnsafeJoinInputError: The cross-model aggregate ranks/reads by bad_pop, which is not attributable from customers (crosses a fanning or unproven join hop to region_events).\n  at measure 'customers.spend_wsumx_weight_customers_regions_bad_pop'\n  suggestion: Declare join cardinality or a covering unique key on the target."
   },
   "fanning/dim_error_mode::bigquery": {
     "error": "SlayerError",

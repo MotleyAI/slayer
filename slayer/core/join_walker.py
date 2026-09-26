@@ -40,6 +40,7 @@ __all__ = [
     "resolve_hop",
     "reverse_token",
     "terminal_model",
+    "cancelling_revisit",
     "walk",
     "walk_cancelling",
 ]
@@ -335,36 +336,60 @@ def walk_cancelling(
     truncates the absolute path back to it — keeping ``owner_path``'s spelling —
     then resolution continues forward from there. Returns the absolute canonical
     path from ``root`` (``()`` = the root itself), ``None`` on a miss or a hop
-    onto an already-visited model; ambiguity raises."""
+    onto an already-visited model (see :func:`cancelling_revisit`); ambiguity raises."""
+    path, _revisit = _cancelling_walk(
+        root=root, owner_path=owner_path, tokens=tokens, models_by_name=models_by_name,
+    )
+    return path
+
+
+def cancelling_revisit(
+    *,
+    root: SlayerModel,
+    owner_path: Sequence[str],
+    tokens: Sequence[str],
+    models_by_name: dict[str, SlayerModel],
+) -> tuple[str, str, str] | None:
+    """``(hop, revisited, via)`` when :func:`walk_cancelling` misses because a hop
+    lands on a model already on the path, else ``None``."""
+    _path, revisit = _cancelling_walk(
+        root=root, owner_path=owner_path, tokens=tokens, models_by_name=models_by_name,
+    )
+    return revisit
+
+
+def _cancelling_walk(
+    *,
+    root: SlayerModel,
+    owner_path: Sequence[str],
+    tokens: Sequence[str],
+    models_by_name: dict[str, SlayerModel],
+) -> tuple[tuple[str, ...] | None, tuple[str, str, str] | None]:
     models = dict(models_by_name)
     models.setdefault(root.name, root)
     stack = _owner_stack(root=root, owner_path=owner_path, models_by_name=models)
     if stack is None:
-        return None
+        return None, None
     path_tokens: list[str] = list(owner_path)
     for token in tokens:
         edge = _incident_named(current=stack[-1], token=token, models_by_name=models)
-        if edge is not None:  # edge name wins over a same-named path model
-            nxt = models.get(edge.target_model)
-            if nxt is None or any(m.name == edge.target_model for m in stack):
-                return None
-            stack.append(nxt)
-            path_tokens.append(canonical_token(edge))
-            continue
-        cancel_at = next((i for i, m in enumerate(stack) if m.spelling == token), None)
-        if cancel_at is not None:
-            del stack[cancel_at + 1:]
-            del path_tokens[cancel_at:]
-            continue
-        edge = resolve_hop(current=stack[-1], token=token, models_by_name=models)
-        if edge is None or edge.target_model in {m.name for m in stack}:
-            return None
+        if edge is None:
+            cancel_at = next((i for i, m in enumerate(stack) if m.spelling == token), None)
+            if cancel_at is not None:
+                del stack[cancel_at + 1:]
+                del path_tokens[cancel_at:]
+                continue
+            edge = resolve_hop(current=stack[-1], token=token, models_by_name=models)
+        if edge is None:
+            return None, None
+        if any(m.name == edge.target_model for m in stack):
+            return None, (token, edge.target_model, stack[-1].name)
         nxt = models.get(edge.target_model)
         if nxt is None:
-            return None
+            return None, None
         stack.append(nxt)
         path_tokens.append(canonical_token(edge))
-    return tuple(path_tokens)
+    return tuple(path_tokens), None
 
 
 def terminal_model(

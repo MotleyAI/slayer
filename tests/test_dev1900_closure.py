@@ -109,11 +109,11 @@ class TestKeyClosure:
         assert CROSS not in got
         assert all(len(p) <= 1 for p in got), f"StarKey must not descend: {got}"
 
-    def test_string_fragment_key_takes_fragment_closure(self):
+    def test_a_string_is_never_sql(self):
         by, bundle = _bundle(dev1900_models())
         got = key_closure(key="region_events.value", anchor_model=by["regions"],
                           anchor_relation="regions", bundle=bundle)
-        assert got == (("region_events",),)
+        assert got == ()
 
     def test_time_trunc_delegates_to_its_column(self):
         key = TimeTruncKey(column=_regions_sqlkey("bad_pop"), granularity="month")

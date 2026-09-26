@@ -6,18 +6,11 @@ The defect: ``AggRenderSpec.agg_kwargs`` was flattened through
 (a non-existent column) and never pulling the crossed join.
 
 The fix (D-C / D-I): ``AggRenderSpec.agg_kwargs`` becomes
-``Dict[str, ResolvedAggKwarg]`` with a 2-kind tag —
+``Dict[str, ResolvedAggKwarg]``: a trusted, scope-resolved ``exp.Expression``
+for a column-ref kwarg (the join registers as a side effect → base FROM).
 
-* ``kind="expr"`` — a trusted, scope-resolved ``exp.Expression`` for a column-ref
-  kwarg (the join registers as a side effect → base FROM). Embedded directly.
-* ``kind="str"`` — everything else (scalars via the retained
-  ``agg_kwarg_canonical_str``, existing strings), consumed EXACTLY as today
-  (``_SAFE_AGG_PARAM_RE`` guard + ``_resolve_sql`` / formula substitution).
-
-A bare ``str`` value coerces to ``kind="str"`` so the legacy shim and the direct
-injection test keep working. Only the EMISSION round-trip of
-``agg_kwarg_canonical_str`` is deleted; the naming-only use survives (D-H) and is
-frozen by golden tests here.
+The naming-only use of ``agg_kwarg_canonical_str`` survives (D-H) and is frozen by
+golden tests here.
 
 The e2e promotion test itself (``weighted_avg(weight=region_weight)``) is
 un-pinned in place at
@@ -110,24 +103,6 @@ class TestResolvedAggKwarg:
         rk = ResolvedAggKwarg(kind="expr", value=col)
         assert rk.kind == "expr"
         assert rk.value.sql(dialect="postgres") == "customers__regions.weight"
-
-    def test_str_kind_holds_string(self) -> None:
-        rk = ResolvedAggKwarg(kind="str", value="quantity")
-        assert rk.kind == "str"
-        assert rk.value == "quantity"
-
-    def test_agg_render_spec_coerces_bare_str_to_str_kind(self) -> None:
-        # Legacy shim (generator.py:226) + injection test pass a bare str dict;
-        # a before-validator coerces to kind="str" so they keep working.
-        spec = AggRenderSpec(
-            sql="price", name="price", model_name="sales",
-            aggregation="weighted_avg", alias="sales.price_weighted_avg",
-            agg_kwargs={"weight": "quantity"},
-        )
-        val = spec.agg_kwargs["weight"]
-        assert isinstance(val, ResolvedAggKwarg)
-        assert val.kind == "str"
-        assert val.value == "quantity"
 
     def test_agg_render_spec_accepts_expr_kind(self) -> None:
         spec = AggRenderSpec(

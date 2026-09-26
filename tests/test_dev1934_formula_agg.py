@@ -299,16 +299,12 @@ class TestInvalidTemplates:
             Aggregation(name=name, formula=formula)
 
 
-def _pct_spec(p: str | None = None, *, default: str | None = None) -> AggRenderSpec:
-    agg_def = (
-        Aggregation(name="percentile", params=[AggregationParam(name="p", sql=default)])
-        if default is not None else None
-    )
-    return AggRenderSpec.model_validate({
-        "name": "amount", "sql": "amount", "model_name": "orders", "alias": "orders.amount_percentile",
-        "aggregation": "percentile", "agg_kwargs": {} if p is None else {"p": p},
-        "aggregation_def": agg_def,
-    })
+async def _pct_sql(p: str | None = None, *, default: str | None = None) -> str:
+    """``price:percentile`` with ``p`` passed as a query-time string and/or a model default."""
+    aggs = (Aggregation(name="percentile", params=[AggregationParam(name="p", sql=default)]),) \
+        if default is not None else ()
+    arg = "" if p is None else "(p='" + p.replace("'", "\\'") + "')"
+    return await _sql(f"price:percentile{arg}", aggs=aggs)
 
 
 def _emitted_p(sql: str) -> Expression:
@@ -317,26 +313,29 @@ def _emitted_p(sql: str) -> Expression:
     return node.this
 
 
+# A bare ``nan`` / ``inf`` is a (missing) column name, never a number.
+_REJECTED = r"numeric literal|\[0, 1\]|Cannot resolve reference"
+
+
 class TestPercentileP:
     @pytest.mark.parametrize(("p", "value"), [
         ("0", Decimal(0)), ("1", Decimal(1)), ("0.50", Decimal("0.5")),
         ("5e-2", Decimal("0.05")), ("-0", Decimal(0)), ("(0.5)", Decimal("0.5")),
     ])
-    def test_accepted_query_time(self, p: str, value: Decimal) -> None:
-        sql = SQLGenerator(dialect="postgres")._build_percentile(_pct_spec(p)).sql(dialect="postgres")
-        emitted = _emitted_p(sql)
+    async def test_accepted_query_time(self, p: str, value: Decimal) -> None:
+        emitted = _emitted_p(await _pct_sql(p))
         assert Decimal(emitted.sql(dialect="postgres").replace("(", "").replace(")", "")) == value
 
     @pytest.mark.parametrize(("p", "spelled"), [
-        ("0", "0"), ("1", "1"), ("0.50", "0.50"), ("5e-2", "5e-2"), ("-0", "0"), ("(0.5)", "0.5"),
+        ("0", "0"), ("1", "1"), ("0.50", "0.50"), ("5e-2", "0.05"), ("-0", "0"), ("(0.5)", "0.5"),
     ])
-    def test_literal_spelling_emitted(self, p: str, spelled: str) -> None:
-        sql = SQLGenerator(dialect="postgres")._build_percentile(_pct_spec(p)).sql(dialect="postgres")
-        assert sql == f"PERCENTILE_CONT({spelled}) WITHIN GROUP (ORDER BY orders.amount)"
+    async def test_literal_spelling_emitted(self, p: str, spelled: str) -> None:
+        sql = " ".join((await _pct_sql(p)).split())
+        assert f"PERCENTILE_CONT({spelled}) WITHIN GROUP (ORDER BY orders.price)" in sql
 
     @pytest.mark.parametrize("p", ["(0.5)", "-0", "0.50"])
-    def test_accepted_model_default(self, p: str) -> None:
-        SQLGenerator(dialect="postgres")._build_percentile(_pct_spec(default=p))
+    async def test_accepted_model_default(self, p: str) -> None:
+        await _pct_sql(default=p)
 
     async def test_model_default_spelling_reaches_the_query_sql(self) -> None:
         pct = Aggregation(name="percentile", params=[AggregationParam(name="p", sql="0.50")])
@@ -345,25 +344,19 @@ class TestPercentileP:
 
     @pytest.mark.parametrize("p", ["nan", "NaN", "1e999", "1.5", "-0.1", "'0.5'", "quantity",
                                    "0.1 + 0.2", "inf"])
-    def test_rejected_query_time(self, p: str) -> None:
-        gen = SQLGenerator(dialect="postgres")
-        spec = _pct_spec(p)
-        with pytest.raises(ValueError, match=r"numeric literal|\[0, 1\]|Unsafe value"):
-            gen._build_percentile(spec)
+    async def test_rejected_query_time(self, p: str) -> None:
+        with pytest.raises(ValueError, match=_REJECTED):
+            await _pct_sql(p)
 
     @pytest.mark.parametrize("p", ["nan", "1e999", "1.5", "'0.5'", "quantity", "0.1 + 0.2",
                                    "pg_sleep(10)"])
-    def test_rejected_model_default(self, p: str) -> None:
-        gen = SQLGenerator(dialect="postgres")
-        spec = _pct_spec(default=p)
-        with pytest.raises(ValueError, match=r"numeric literal|\[0, 1\]"):
-            gen._build_percentile(spec)
+    async def test_rejected_model_default(self, p: str) -> None:
+        with pytest.raises(ValueError, match=_REJECTED):
+            await _pct_sql(default=p)
 
-    def test_range_error_shows_the_signed_value(self) -> None:
-        gen = SQLGenerator(dialect="postgres")
-        spec = _pct_spec("-0.5")
+    async def test_range_error_shows_the_signed_value(self) -> None:
         with pytest.raises(ValueError, match=r"got -0\.5\.$"):
-            gen._build_percentile(spec)
+            await _pct_sql("-0.5")
 
     async def test_non_literal_p_rejected_at_query_level(self) -> None:
         with pytest.raises(ValueError, match=r"must be a numeric literal in \[0, 1\]"):

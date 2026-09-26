@@ -6,6 +6,11 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.enums import DataType, JoinCardinality
+from slayer.core.errors import (
+    UnanalyzableAggregationParameterError,
+    UnknownReferenceError,
+    UnresolvableDimensionJoinError,
+)
 from slayer.core.keys import ColumnKey, Grain
 from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.engine.join_safety import grain_determines
@@ -23,7 +28,6 @@ from tests._dev1847_fixtures import (
     sales_q,
 )
 from tests._dev1892_fixtures import (
-    ASSOC_WPHYS_BY_STATUS,
     ASSOC_WSUM_BY_STATUS,
     ASSOC_WSUM6_BY_STATUS,
     ASSOC_WSUM7_BY_STATUS,
@@ -261,15 +265,14 @@ class TestExprDefaultQualifiedRefs:
         for status, expected in ASSOC_WSUM9_BY_STATUS.items():
             assert float(vals[status]) == pytest.approx(expected)
 
-    async def test_unmodeled_physical_ref_lifts(self, phys_expr_engine):
-        # ``tier`` is physical-only (removed from the model): a bare ref in an
-        # expr default is owner-anchored like a bare default, never dropped.
-        resp = await phys_expr_engine.execute(assoc_q(
+    async def test_unmodeled_physical_ref_fails_closed(self, phys_expr_engine):
+        # ``tier`` is physical-only (removed from the model): a default names only
+        # model columns, exactly as its explicit spelling must.
+        q = assoc_q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula="customers.spend:wphys", name="w")]))
-        vals = _status_vals(resp, "orders.w")
-        for status, expected in ASSOC_WPHYS_BY_STATUS.items():
-            assert float(vals[status]) == pytest.approx(expected)
+            measures=[ModelMeasure(formula="customers.spend:wphys", name="w")])
+        with pytest.raises(UnknownReferenceError, match="tier"):
+            await phys_expr_engine.execute(q)
 
     async def test_reagg_qualified_expr_default(self, qual_reagg_engine):
         # Was silent NULL: ``customers.region_id * 1`` is FK-seeded by the
@@ -319,24 +322,22 @@ class TestExprDefaultLiteralsAndResidue:
         assert_grain_residue(ei.value, param="weight")
 
     async def test_opaque_qualifier_fails_closed(self, opaque_expr_engine):
-        # ``nosuch.col`` resolves no join walk -> the input closure is
-        # unanalysable with no nameable column, so the analyzability guard
-        # fails it closed (preempts the grain-residue diagnosis).
+        # ``nosuch.col`` resolves no join walk -> the default fails at binding.
         q = assoc_q(
             dimensions=["status"],
             measures=[ModelMeasure(formula="customers.spend:wopq", name="w")])
-        with pytest.raises(ValueError, match="no supported dialect can analyse"):
+        with pytest.raises(UnresolvableDimensionJoinError, match="nosuch.col"):
             await opaque_expr_engine.execute(q)
 
     async def test_unparseable_default_fails_closed(self, unparseable_engine):
-        # No dialect parses ``)((( bad``: an unanalysable input with no nameable
-        # column fails closed via the analyzability guard, never a raw
-        # level-2 render.
+        # ``)((( bad`` does not parse: a typed error at binding, never a raw
+        # level-2 render, and never the parser's own diagnostics.
         q = assoc_q(
             dimensions=["status"],
             measures=[ModelMeasure(formula="customers.spend:wugly", name="w")])
-        with pytest.raises(ValueError, match="no supported dialect can analyse"):
+        with pytest.raises(UnanalyzableAggregationParameterError, match="weight") as ei:
             await unparseable_engine.execute(q)
+        assert "\x1b" not in str(ei.value)
 
     async def test_root_named_expr_default_widens_to_root(self, root_named_expr_engine):
         # DEV-1931 (Reading A): the default ``orders.amount + 0`` names the query
