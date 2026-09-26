@@ -129,11 +129,7 @@ class DeferralSite(BaseModel):
 #: The exact fail-closed deferral list. The guard ratchet
 #: (tests/test_law_guard_ratchet.py) pins this to ``guards.baseline`` in
 #: architecture/index.yaml — the list may only ever shrink.
-DEFERRAL_SITES: Tuple[DeferralSite, ...] = (
-    DeferralSite(
-        fragment="query-backed models (source_queries) deferred",
-        issue="DEV-1878"),
-)
+DEFERRAL_SITES: Tuple[DeferralSite, ...] = ()
 
 _FRAGMENTS = frozenset(site.fragment for site in DEFERRAL_SITES)
 

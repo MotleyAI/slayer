@@ -19,7 +19,7 @@ import logging
 from pydantic import BaseModel, ConfigDict, Field
 
 from slayer.core.errors import AmbiguousJoinPathError
-from slayer.core.join_walker import OrientedJoin, neighbors, resolve_hop
+from slayer.core.join_walker import OrientedJoin, canonical_token, neighbors, resolve_hop
 from slayer.core.enums import (
     DEFAULT_AGGREGATIONS_BY_TYPE,
     PRIMARY_KEY_AGGREGATIONS,
@@ -425,7 +425,7 @@ def _resolvable_token(
 ) -> str | None:
     """The engine-resolvable hop token for ``edge`` (name first), or ``None``
     when the hop is unaddressable (a parallel unnamed pair)."""
-    token = edge.name or edge.target_model
+    token = canonical_token(edge)
     try:
         if resolve_hop(
             current=current, token=token, models_by_name=models_by_name,

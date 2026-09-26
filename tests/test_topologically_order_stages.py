@@ -1,9 +1,9 @@
-"""``topologically_order_stages``: surface, engine shim, input-order invariance, and sibling edges (incl. inline-nested ``source_queries``)."""
+"""``topologically_order_stages``: surface, engine shim, input-order invariance, and sibling edges."""
 from __future__ import annotations
 
 import pytest
 
-from slayer.core.models import ModelJoin, SlayerModel
+from slayer.core.models import ModelJoin
 from slayer.core.query import ModelExtension, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.stage_ordering import topologically_order_stages
@@ -123,44 +123,8 @@ def test_duplicate_name_raises() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Decision E — inline-nested SlayerModel.source_queries contribute edges
+# Sibling edges through inline specs
 # ---------------------------------------------------------------------------
-
-
-def test_inline_nested_slayer_model_source_queries_contribute_to_edges() -> None:
-    """An inline model's nested ``source_queries`` reading sibling ``a`` orders ``a`` first."""
-    inner = SlayerModel(
-        name="inline_qb",
-        source_queries=[
-            SlayerQuery(source_model="a"),  # references sibling "a"
-        ],
-    )
-    a = SlayerQuery(name="a", source_model="orders")
-    b = SlayerQuery(name="b", source_model=inner)
-    root = SlayerQuery(source_model="b")
-    ordered = topologically_order_stages([b, a, root])
-    names = [q.name for q in ordered]
-    assert names.index("a") < names.index("b"), names
-
-
-def test_inline_nested_dict_form_contributes_to_edges() -> None:
-    """Same as above with the inline model expressed as a dict literal."""
-    a = SlayerQuery(name="a", source_model="orders")
-    b = SlayerQuery.model_validate({
-        "name": "b",
-        "source_model": {
-            # Inline SlayerModel-as-dict: presence of ``source_queries``
-            # but NOT ``source_name`` => inline SlayerModel form.
-            "name": "inline_qb",
-            "source_queries": [
-                {"source_model": "a"},
-            ],
-        },
-    })
-    root = SlayerQuery(source_model="b")
-    ordered = topologically_order_stages([b, a, root])
-    names = [q.name for q in ordered]
-    assert names.index("a") < names.index("b"), names
 
 
 def test_typed_modelextension_nested_join_contributes_to_edges() -> None:
@@ -199,18 +163,3 @@ def test_dict_modelextension_nested_join_contributes_to_edges() -> None:
     ordered = topologically_order_stages([b, a, root])
     names = [q.name for q in ordered]
     assert names.index("a") < names.index("b"), names
-
-
-def test_cycle_via_inline_nested_reference_raises() -> None:
-    """A cycle through an inline-nested stage's ``source_queries`` is detected."""
-    a = SlayerQuery(
-        name="a",
-        source_model=SlayerModel(
-            name="inline_a",
-            source_queries=[SlayerQuery(source_model="b")],
-        ),
-    )
-    b = SlayerQuery(name="b", source_model="a")
-    root = SlayerQuery(source_model="a")
-    with pytest.raises(ValueError, match=r"[Cc]ycle"):
-        topologically_order_stages([a, b, root])

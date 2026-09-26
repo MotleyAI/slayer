@@ -73,6 +73,24 @@ class StageColumn(BaseModel):
     respellings: Tuple[str, ...] = ()
 
 
+class StageDisplay(BaseModel):
+    """A stage's user-facing spelling: its name in its own query list, plus the
+    stored query-backed model it was spliced from (``None`` for a user stage)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    name: str
+    model: Optional[str] = None
+
+    @property
+    def label(self) -> str:
+        if self.model is None:
+            return f"stage {self.name!r}"
+        if self.name == self.model:
+            return f"model {self.model!r}"
+        return f"stage {self.name!r} of model {self.model!r}"
+
+
 class StageSchema(BaseModel):
     """The typed projection of one query stage (P6).
 
@@ -80,8 +98,8 @@ class StageSchema(BaseModel):
     never re-walk the upstream join graph through a StageSchema — the
     only legal refs are entries in ``columns``.
 
-    ``relation_name`` is the SQL identifier used when this stage is
-    referenced from a downstream stage (CTE name or subquery alias).
+    ``relation_name`` is the stage's internal identity: its CTE name.
+    ``display`` is its user-facing spelling (``None`` → ``relation_name``).
     ``sql`` is the emitted text of the stage's SELECT — populated by the
     planner; left ``None`` until rendering. ``grain`` names the columns the
     stage is unique on (its dimension positions); ``None`` for a raw-rows stage.
@@ -90,9 +108,20 @@ class StageSchema(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     relation_name: str
+    display: Optional[StageDisplay] = None
     sql: Optional[str] = None
     columns: List[StageColumn]
     grain: Optional[List[str]] = None
+    # A spliced query-backed model's final stage keeps its source's default time dimension.
+    default_time_dimension: Optional[str] = None
+
+    @property
+    def display_name(self) -> str:
+        return self.display.name if self.display is not None else self.relation_name
+
+    @property
+    def label(self) -> str:
+        return (self.display or StageDisplay(name=self.relation_name)).label
 
     @model_validator(mode="after")
     def _grain_names_columns(self) -> "StageSchema":
@@ -100,7 +129,7 @@ class StageSchema(BaseModel):
         missing = [g for g in self.grain or [] if g not in names]
         if missing:
             raise ValueError(
-                f"Stage {self.relation_name!r} grain names unknown columns {missing}."
+                f"Stage {self.display_name!r} grain names unknown columns {missing}."
             )
         return self
 
@@ -109,7 +138,7 @@ class StageSchema(BaseModel):
             if c.name == name:
                 return c
         raise KeyError(
-            f"No column named {name!r} in stage {self.relation_name!r}."
+            f"No column named {name!r} in stage {self.display_name!r}."
         )
 
     def get(self, name: str) -> Optional[StageColumn]:
@@ -148,9 +177,9 @@ class ModelScope(BaseModel):
 def host_model_name(scope) -> str:
     """The host relation's display name for alias-collision reporting."""
     if isinstance(scope, ModelScope) and scope.source_model is not None:
-        return scope.source_model.name
+        return scope.source_model.spelling
     if isinstance(scope, StageSchema):
-        return scope.relation_name
+        return scope.display_name
     return "(stage)"
 
 

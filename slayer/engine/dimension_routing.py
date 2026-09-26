@@ -34,14 +34,20 @@ __all__ = [
 
 
 def _safe_hops_for_neighbor(
-    *, nbr: str, edges: list, target: SlayerModel, name_counts: dict[str, int]
+    *, nbr: str, edges: list, target: SlayerModel, name_counts: dict[str, int],
+    stage_spellings: set,
 ) -> list[Tuple[str, str]]:
-    """Executable to-one hop tokens from a model to one neighbour: the bare
-    neighbour name for a lone unshadowed edge, else one entry per uniquely-named
-    parallel edge; each kept only if provably many-to-one on its orientation."""
-    if len(edges) == 1 and nbr not in name_counts:
+    """Executable to-one hop tokens from a model to one neighbour: its bare
+    spelling for a lone unshadowed edge (a model name is shadowed by a stage
+    spelling too), else one entry per uniquely-named parallel edge; each kept
+    only if provably many-to-one on its orientation."""
+    token = target.spelling
+    shadowed = token in name_counts or (
+        target.explicit_spelling is None and token in stage_spellings
+    )
+    if len(edges) == 1 and not shadowed:
         return (
-            [(nbr, nbr)]
+            [(token, nbr)]
             if provably_to_one(edge=edges[0], target_model=target)
             else []
         )
@@ -71,6 +77,10 @@ def _safe_hops(
     by_nbr: dict[str, list] = {}
     for e in incident:
         by_nbr.setdefault(e.target_model, []).append(e)
+    stage_spellings = {
+        models_by_name[n].explicit_spelling for n in by_nbr
+        if n in models_by_name and models_by_name[n].explicit_spelling
+    }
     out: list[Tuple[str, str]] = []
     for nbr, edges in by_nbr.items():
         target = models_by_name.get(nbr)
@@ -78,7 +88,8 @@ def _safe_hops(
             continue
         out.extend(
             _safe_hops_for_neighbor(
-                nbr=nbr, edges=edges, target=target, name_counts=name_counts
+                nbr=nbr, edges=edges, target=target, name_counts=name_counts,
+                stage_spellings=stage_spellings,
             )
         )
     return out

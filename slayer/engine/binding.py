@@ -482,7 +482,7 @@ def _resolve_ref(
                 name=name,
                 scope_kind="StageSchema",
                 scope_summary=(
-                    f"stage {scope.relation_name!r} columns: "
+                    f"{scope.label} columns: "
                     f"{[c.name for c in scope.columns]}"
                 ),
                 suggestion=None,

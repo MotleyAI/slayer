@@ -788,7 +788,7 @@ Pass a list of queries to `execute()`. Earlier queries are named sub-queries, th
 ]
 ```
 
-This counts how many months exist in the monthly summary. The main query references `"monthly"` by name — if a named query and a stored model share a name, the query takes precedence.
+This counts how many months exist in the monthly summary. The main query references `"monthly"` by name — a stage name overrides a same-named model only within its own query list, never inside stored definitions such as a model's stored joins.
 
 You can also join named queries to models:
 
@@ -808,7 +808,7 @@ You can also join named queries to models:
 ]
 ```
 
-The main query uses a `ModelExtension` to add a join to the named sub-query. Queries can also be saved as permanent models — see [Creating Models from Queries](models.md#creating-models-from-queries).
+The main query uses a `ModelExtension` to add a join to the named sub-query. Queries can also be saved as permanent models — see [Query-backed models](models.md#query-backed-models). An inline `source_model` carrying `source_queries` is rejected — write those queries as named stages of the list instead.
 
 Sibling stages can also reference each other — any non-final stage may use a *prior* named stage as `source_model` or as `joins.target_model`, so a query list forms a DAG, not just a chain. For example, two parallel rollups feeding a single final stage:
 

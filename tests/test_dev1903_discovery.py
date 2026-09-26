@@ -11,6 +11,7 @@ from typing import Callable, List, Sequence
 import pytest
 
 from slayer.core.enums import DataType
+from slayer.core.errors import PartitionKeyError, TimeAxisError
 from slayer.core.keys import AggregateKey, TransformKey, ValueKey
 from slayer.core.models import ModelMeasure
 from slayer.core.query import SlayerQuery
@@ -19,7 +20,7 @@ from slayer.engine.elaborate import elaborate_query
 from slayer.engine.plan import plan_query
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
-from tests._dev1832_fixtures import dev1832_models, make_exec_engine, month_key, monthly_q
+from tests._dev1832_fixtures import dev1832_models, make_exec_engine, monthly_q
 from tests._dev1832_fixtures import month_td as monthly_month_td
 from tests._dev1836_fixtures import SPEND_BAND, dev1836_models, month_td, q
 from tests._dev1847_fixtures import (
@@ -324,31 +325,46 @@ class TestDeletedSymbols:
 
 _R = "avg(sum(amount, partition_by=[city, region]), partition_by=region)"
 _RLEVEL = {"expression": f"CASE WHEN {_R} > 50 THEN 'hi' ELSE 'lo' END", "name": "rlevel"}
-_NOT_A_DIM = "The partition_by column 'region' is not a query dimension.\n  at aggregation 'avg'"
-_REAGG_DECLARES = "declares partition_by=region, which is not a query dimension"
+
+
+@pytest.fixture(params=["sqlite", "duckdb"])
+async def exec_engine(request):
+    async for engine in make_exec_engine(request):
+        yield engine
 
 
 class TestReaggregationInComputedDimension:
     """Row-role leniency keeps re-aggregations; a combined consumer of the same key
     still needs query-dimension partition keys."""
 
-    @pytest.mark.parametrize(("kw", "message"), [
-        pytest.param({"measures": [ModelMeasure(formula="amount:sum", name="s")]},
-                     _REAGG_DECLARES, id="dimension-only"),
+    @pytest.mark.parametrize(("kw", "location"), [
         pytest.param({"measures": [ModelMeasure(formula=_R, name="r")]},
-                     _NOT_A_DIM, id="dual-role-measure"),
+                     "measure 'r'", id="dual-role-measure"),
         pytest.param({"measures": [ModelMeasure(formula="amount:sum", name="s")],
                       "order": [{"column": _R, "direction": "asc"}]},
-                     _NOT_A_DIM, id="dual-role-order"),
-        pytest.param({"measures": [ModelMeasure(formula="amount:sum", name="s")],
-                      "filters": [f"{_R} > 50"]},
-                     _REAGG_DECLARES, id="filter-over-it"),
+                     "order item", id="dual-role-order"),
     ])
-    def test_partition_key_error(self, kw, message):
+    def test_partition_key_error(self, kw, location):
         query = sales_q(dimensions=["product", _RLEVEL], **kw)
         bundle = _bundle(dev1847_models())
-        with pytest.raises(ValueError, match=message):
+        with pytest.raises(PartitionKeyError) as ei:
             plan_query(query=query, bundle=bundle)
+        assert "partition_by column 'region' is not a query dimension" in ei.value.summary
+        assert ei.value.location is not None
+        assert ei.value.location.startswith(location)
+
+    @pytest.mark.parametrize(("filters", "expected"), [
+        pytest.param([], {("P", "lo"): 40.0, ("P", "hi"): 140.0,
+                          ("Q", "lo"): 70.0, ("Q", "hi"): 180.0}, id="dimension-only"),
+        pytest.param([f"{_R} > 50"], {("P", "hi"): 140.0, ("Q", "hi"): 180.0},
+                     id="filter-over-it"),
+    ])
+    async def test_dimension_only_consumption_executes(self, exec_engine, filters, expected):
+        resp = await exec_engine.execute(sales_q(
+            dimensions=["product", _RLEVEL],
+            measures=[ModelMeasure(formula="amount:sum", name="s")], filters=filters))
+        got = {(r["sales.product"], r["sales.rlevel"]): r["sales.s"] for r in resp.data}
+        assert got == pytest.approx(expected)
 
 
 class TestUnderReaggregationPartitionKeys:
@@ -367,21 +383,14 @@ class TestUnderReaggregationPartitionKeys:
         assert ds[1].consumer_public_names == ("r",)
 
 
-@pytest.fixture(params=["sqlite", "duckdb"])
-async def exec_engine(request):
-    async for engine in make_exec_engine(request):
-        yield engine
-
-
 class TestTransformOverReaggregationDimension:
-    async def test_filter_on_it_executes(self, exec_engine):
-        """Typing and discovery share one computed-dimension transform-root definition,
-        so a filter on ``cumsum(<re-aggregation>)`` compiles and keeps its rows."""
-        resp = await exec_engine.execute(monthly_q(
+    async def test_filter_on_it_is_a_time_axis_error(self, exec_engine):
+        """The re-aggregation is opaque at grain ``region`` — no time axis for ``cumsum``,
+        exactly as over ``amount:sum(partition_by=region)``."""
+        query = monthly_q(
             dimensions=["region", {"expression": f"cumsum({REAGG_STANDALONE})", "name": "rr"}],
             time_dimensions=monthly_month_td(),
             measures=[ModelMeasure(formula="amount:sum", name="s")],
-            filters=["rr > 10"]))
-        mcol = next(c for c in resp.columns if "ordered_at" in c)
-        got = {(r["monthly.region"], month_key(r[mcol])): r["monthly.rr"] for r in resp.data}
-        assert got == {("North", "2024-02"): 20.0, ("North", "2024-03"): 30.0}
+            filters=["rr > 10"])
+        with pytest.raises(TimeAxisError, match="cumsum"):
+            await exec_engine.execute(query)
