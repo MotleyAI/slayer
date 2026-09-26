@@ -65,8 +65,10 @@ profile), replacing DEV-1977's `timeout_permission_sql` / `timeout_permitted(val
   the field unknown (timeouts unaffected; the semi-join gate fails closed). Two
   statements instead of one `system.settings` read so hardened servers
   (`select_from_system_db_requires_grant`) cannot break the timeout path (Codex).
-- `parse_server_profile(...)` — tolerant: NULL, `""`, `"0"`/`"1"`, ints, malformed
-  version and missing columns normalise to unknown, never raise; absorbs
+- `parse_server_profile(...)` — tolerant: `getSetting` output is bool-typed
+  (`true`/`false` on 25.4 and 26.9; the driver may yield strings or Python bools), so
+  NULL, `""`, `"0"`/`"1"`, `"true"`/`"false"`, bools, ints, malformed version and
+  missing columns all normalise (to a value or unknown), never raise; absorbs
   `_parse_clickhouse_version`.
 - `timeout_permitted(profile)` — ClickHouse: `readonly != 1`.
 - `correlated_subquery_refusal(profile) -> str | None` — ClickHouse: `None` iff version
@@ -107,8 +109,11 @@ existing "version could not be determined" error.
 - [The profile is cached per SQLAlchemy engine; a changed user level is seen only after
   the engine is rebuilt] → same as DEV-1977's accepted trade-off.
 - [One extra round trip per engine on ClickHouse 25.4+] → once per engine lifetime.
-- [The 25.4 live container adds CI time to the ClickHouse workflow] → module-scoped,
-  only in the path-gated ClickHouse workflow.
+- [A probe parser that misreads real server output would refuse every readonly
+  semi-join on 25.8+] → live matrix covers 24.x (existing), 25.4 (setting off by
+  default) and 25.8 LTS (on by default); unit tests cover the known output formats.
+- [The 25.4 and 25.8 live containers add CI time to the ClickHouse workflow] →
+  module-scoped, only in the path-gated ClickHouse workflow.
 
 ## Migration Plan
 
