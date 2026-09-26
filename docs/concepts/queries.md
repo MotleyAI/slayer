@@ -727,8 +727,10 @@ referenced branches, each hop joined as declared (LEFT by default), so
 `tier = 'gold' or orders.status = 'ok'` keeps a gold customer with no orders and
 `orders.id is null` reads as "no orders"; a reference with no resolvable join path
 is refused with a typed error in every mode. On ClickHouse the semi-join needs
-server ≥ 25.4 (the required setting is attached automatically); older servers
-fail with a clear error.
+server ≥ 25.4 (the required setting is attached automatically), and older servers
+fail with a clear error, as does a `readonly = 1` user whose profile leaves
+`allow_experimental_correlated_subqueries` off (the 25.4–25.7 default) — enable it
+in the user's profile, use `readonly = 2`, or upgrade to 25.8+.
 
 `to_many_handling` chooses how a broadcast dimension resolves — `broadcast` (the
 default above), `associate` (each cell aggregates over the distinct entities

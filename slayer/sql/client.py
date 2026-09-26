@@ -23,6 +23,7 @@ from slayer.core.models import DatasourceConfig
 from slayer.core.warnings import SlayerStatementTimeoutSkippedWarning, StatementTimeoutSkippedWarning
 from slayer.sql import engine_factory
 from slayer.sql.dialects import SqlDialect, dialect_for_ds_type
+from slayer.sql.dialects.base import ServerProfile
 from slayer.sql.reserved_keywords import prequote_reserved_identifiers
 from slayer.core import timing
 
@@ -296,17 +297,17 @@ async def _exec_verbatim_async(conn, sql: str) -> Any:
     return await conn.exec_driver_sql(sql, execution_options={"no_parameters": True})
 
 
-# Per-engine answer of the dialect's timeout-permission check, and the lock guarding it.
-_timeout_permitted: "weakref.WeakKeyDictionary[Any, bool]" = weakref.WeakKeyDictionary()
-_permission_locks: "weakref.WeakKeyDictionary[Any, Any]" = weakref.WeakKeyDictionary()
-_permission_locks_guard = threading.Lock()
+# Per-engine server profile, and the lock guarding its fill. A failed fill is never cached.
+_server_profiles: "weakref.WeakKeyDictionary[Any, ServerProfile]" = weakref.WeakKeyDictionary()
+_profile_locks: "weakref.WeakKeyDictionary[Any, Any]" = weakref.WeakKeyDictionary()
+_profile_locks_guard = threading.Lock()
 
 
-def _permission_lock(engine: Any, factory: Callable[[], Any]) -> Any:
-    with _permission_locks_guard:
-        lock = _permission_locks.get(engine)
+def _profile_lock(engine: Any, factory: Callable[[], Any]) -> Any:
+    with _profile_locks_guard:
+        lock = _profile_locks.get(engine)
         if lock is None:
-            lock = _permission_locks[engine] = factory()
+            lock = _profile_locks[engine] = factory()
         return lock
 
 
@@ -319,26 +320,64 @@ def _skip(datasource_name: str, timeout_seconds: int, reason: str) -> StatementT
     return payload
 
 
-def _timeout_is_permitted(conn, *, engine: Any, dialect: SqlDialect) -> bool:
-    permission_sql = dialect.timeout_permission_sql()
-    if permission_sql is None:
-        return True
-    with _permission_lock(engine, threading.Lock):
-        if engine not in _timeout_permitted:
-            value = _exec_verbatim(conn, permission_sql).scalar()
-            _timeout_permitted[engine] = dialect.timeout_permitted(value)
-        return _timeout_permitted[engine]
+def _first_row(result: Any) -> tuple | None:
+    row = result.first()
+    return None if row is None else tuple(row)
 
 
-async def _timeout_is_permitted_async(conn, *, engine: Any, dialect: SqlDialect) -> bool:
-    permission_sql = dialect.timeout_permission_sql()
-    if permission_sql is None:
-        return True
-    async with _permission_lock(engine, asyncio.Lock):
-        if engine not in _timeout_permitted:
-            value = (await _exec_verbatim_async(conn, permission_sql)).scalar()
-            _timeout_permitted[engine] = dialect.timeout_permitted(value)
-        return _timeout_permitted[engine]
+def _correlated_probe_failed(exc: Exception) -> None:
+    logger.warning("Correlated-subquery setting probe failed; treating it as unknown: %s", exc)
+
+
+def _server_profile(conn, *, engine: Any, dialect: SqlDialect) -> ServerProfile:
+    """The engine's cached profile, filled over ``conn`` on first use (verbatim, never via ``execute``)."""
+    profile_sql = dialect.server_profile_sql()
+    if profile_sql is None:
+        return ServerProfile()
+    with _profile_lock(engine, threading.Lock):
+        cached = _server_profiles.get(engine)
+        if cached is not None:
+            return cached
+        base_row = _first_row(_exec_verbatim(conn, profile_sql))
+        profile = dialect.parse_server_profile(base_row=base_row)
+        correlated_sql = dialect.correlated_setting_sql(profile)
+        if correlated_sql is not None:
+            try:
+                correlated_row = _first_row(_exec_verbatim(conn, correlated_sql))
+            except Exception as exc:  # the driver's own error types need not be DBAPI errors
+                _correlated_probe_failed(exc)
+                return profile
+            profile = dialect.parse_server_profile(base_row=base_row, correlated_row=correlated_row)
+        _server_profiles[engine] = profile
+        return profile
+
+
+async def _server_profile_async(conn, *, engine: Any, dialect: SqlDialect) -> ServerProfile:
+    """Async sibling of ``_server_profile``."""
+    profile_sql = dialect.server_profile_sql()
+    if profile_sql is None:
+        return ServerProfile()
+    async with _profile_lock(engine, asyncio.Lock):
+        cached = _server_profiles.get(engine)
+        if cached is not None:
+            return cached
+        base_row = _first_row(await _exec_verbatim_async(conn, profile_sql))
+        profile = dialect.parse_server_profile(base_row=base_row)
+        correlated_sql = dialect.correlated_setting_sql(profile)
+        if correlated_sql is not None:
+            try:
+                correlated_row = _first_row(await _exec_verbatim_async(conn, correlated_sql))
+            except Exception as exc:  # the driver's own error types need not be DBAPI errors
+                _correlated_probe_failed(exc)
+                return profile
+            profile = dialect.parse_server_profile(base_row=base_row, correlated_row=correlated_row)
+        _server_profiles[engine] = profile
+        return profile
+
+
+def _server_profile_sync(*, engine: sa.Engine, dialect: SqlDialect) -> ServerProfile:
+    with engine.connect() as conn:
+        return _server_profile(conn, engine=engine, dialect=dialect)
 
 
 @contextlib.contextmanager
@@ -346,7 +385,7 @@ def _statement_timeout(
     conn, *, engine: Any, dialect: SqlDialect, datasource_name: str, timeout_seconds: int,
 ) -> Iterator[list[StatementTimeoutSkippedWarning]]:
     """Put the dialect's timeout on ``conn`` for the block; yields the skips to report."""
-    if not _timeout_is_permitted(conn, engine=engine, dialect=dialect):
+    if not dialect.timeout_permitted(_server_profile(conn, engine=engine, dialect=dialect)):
         yield [_skip(datasource_name, timeout_seconds, "readonly_user")]
         return
     dbapi_connection = conn.connection.dbapi_connection
@@ -372,7 +411,7 @@ async def _statement_timeout_async(
     conn, *, engine: Any, dialect: SqlDialect, datasource_name: str, timeout_seconds: int,
 ) -> AsyncIterator[list[StatementTimeoutSkippedWarning]]:
     """Async sibling of ``_statement_timeout``."""
-    if not await _timeout_is_permitted_async(conn, engine=engine, dialect=dialect):
+    if not dialect.timeout_permitted(await _server_profile_async(conn, engine=engine, dialect=dialect)):
         yield [_skip(datasource_name, timeout_seconds, "readonly_user")]
         return
     dbapi_connection = (await conn.get_raw_connection()).dbapi_connection
@@ -525,8 +564,7 @@ class SlayerSQLClient:
         try:
             await engine.dispose()
         except Exception as exc:  # pragma: no cover
-            import logging
-            logging.getLogger(__name__).warning(
+            logger.warning(
                 "Async engine dispose failed for datasource %r: %s",
                 self.datasource.name, exc,
             )
@@ -651,6 +689,23 @@ class SlayerSQLClient:
             engine=self._get_sync_engine_for_client(),
             datasource_name=self.datasource.name,
         )
+
+    async def server_profile(self) -> ServerProfile:
+        """The server's profile for this client's engine, probed once per engine."""
+        dialect = dialect_for_ds_type(self.datasource.type)
+        if dialect.server_profile_sql() is None:
+            return ServerProfile()
+        try:
+            async_engine = self._get_async_engine()
+            if async_engine is not None:
+                async with async_engine.connect() as conn:
+                    return await _server_profile_async(conn, engine=async_engine, dialect=dialect)
+            return await _run_sync_in_thread(
+                _server_profile_sync, engine=self._get_sync_engine_for_client(), dialect=dialect,
+            )
+        except Exception as exc:
+            await self._discard_engines_on_auth_failure(exc)
+            raise
 
     def execute_sync(
         self,

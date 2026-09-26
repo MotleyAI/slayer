@@ -20,11 +20,13 @@ Skipped silently when:
 - The Docker daemon is unreachable (autouse session fixture)
 """
 
+import contextlib
 import math as _math
 import statistics
 import tempfile
 import uuid
 import warnings
+from collections.abc import Generator
 from decimal import Decimal
 
 import pytest
@@ -32,6 +34,7 @@ import sqlalchemy as sa
 
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType, TimeGranularity
+from slayer.core.errors import SlayerError
 from slayer.core.models import (
     Column,
     DatasourceConfig,
@@ -39,6 +42,7 @@ from slayer.core.models import (
     ModelMeasure,
     SlayerModel,
 )
+from slayer.core.policy import JoinFilterRule, JoinFilterRuleset, SessionPolicy
 from slayer.core.query import ColumnRef, ModelExtension, OrderItem, SlayerQuery, TimeDimension
 from slayer.core.warnings import SlayerStatementTimeoutSkippedWarning, StatementTimeoutSkippedWarning
 from slayer.engine.ingestion import ingest_datasource
@@ -1445,3 +1449,292 @@ class TestClickHouseStatementTimeout:
             warnings.simplefilter("error", SlayerStatementTimeoutSkippedWarning)
             result = await client.execute(sql="SELECT 1 AS x")
         assert result.warnings == []
+
+
+# ---------------------------------------------------------------------------
+# Join-based session policy + semi-join gate for readonly users
+# ---------------------------------------------------------------------------
+
+_CORRELATED_SETTING = "allow_experimental_correlated_subqueries"
+
+_RLS_DDL = [
+    "CREATE TABLE customers (id Nullable(Int32), org String) ENGINE = MergeTree() ORDER BY tuple()",
+    "CREATE TABLE orders (id Int32, customer_id Nullable(Int32)) ENGINE = MergeTree() ORDER BY id",
+    "CREATE TABLE line_items (id Int32, order_id Nullable(Int32)) ENGINE = MergeTree() ORDER BY id",
+    "INSERT INTO customers VALUES (1, 'A'), (2, 'B'), (NULL, 'A')",
+    "INSERT INTO orders VALUES (10, 1), (11, 2), (12, NULL), (13, 1)",
+    "INSERT INTO line_items VALUES (100, 10), (101, 11), (102, 12), (103, NULL), (104, 13)",
+    "CREATE TABLE sj_customers (id Int32, org String, spend Float64) ENGINE = MergeTree() ORDER BY id",
+    "CREATE TABLE sj_orders (id Int32, customer_id Int32, channel String, amount Float64) "
+    "ENGINE = MergeTree() ORDER BY id",
+    "INSERT INTO sj_customers VALUES (1, 'A', 100), (2, 'B', 50), (3, 'A', 30)",
+    "INSERT INTO sj_orders VALUES (10, 1, 'app', 5), (11, 1, 'web', 6), (12, 2, 'web', 7), (13, 3, 'web', 8)",
+]
+
+
+def _distributed_ddl(db_name: str) -> list[str]:
+    return [
+        f"CREATE TABLE customers_dist AS customers ENGINE = Distributed('default', '{db_name}', 'customers')",
+        f"CREATE TABLE orders_dist AS orders ENGINE = Distributed('default', '{db_name}', 'orders')",
+    ]
+
+
+def _seed_rls_db(container, *, distributed: bool) -> str:
+    if distributed:
+        assert _admin_rows(container, "SELECT count() FROM system.clusters WHERE cluster = 'default'") != [(0,)], (
+            "image lacks the stock 'default' cluster the Distributed tables need"
+        )
+    db_name = _create_module_db(container)
+    with disposable_engine(_ds_url_for_db(container, db_name)) as engine:
+        with engine.begin() as conn:
+            for statement in [*_RLS_DDL, *(_distributed_ddl(db_name) if distributed else [])]:
+                conn.exec_driver_sql(statement)
+    return db_name
+
+
+def _rls_models() -> list[SlayerModel]:
+    def _ids(name: str, key: str | None = None) -> SlayerModel:
+        columns = [Column(name="id", type=DataType.INT, primary_key=True)]
+        if key:
+            columns.append(Column(name=key, type=DataType.INT))
+        return SlayerModel(name=name, sql_table=name, data_source="rls_ch", columns=columns)
+
+    return [
+        _ids("customers"), _ids("orders", "customer_id"), _ids("line_items", "order_id"),
+        _ids("customers_dist"), _ids("orders_dist", "customer_id"), _ids("line_items_dist", "order_id"),
+        SlayerModel(name="sj_customers", sql_table="sj_customers", data_source="rls_ch", columns=[
+            Column(name="id", type=DataType.INT, primary_key=True),
+            Column(name="org", type=DataType.TEXT),
+            Column(name="spend", type=DataType.DOUBLE),
+        ]),
+        SlayerModel(
+            name="sj_orders", sql_table="sj_orders", data_source="rls_ch",
+            columns=[
+                Column(name="id", type=DataType.INT, primary_key=True),
+                Column(name="customer_id", type=DataType.INT),
+                Column(name="channel", type=DataType.TEXT),
+                Column(name="amount", type=DataType.DOUBLE),
+            ],
+            joins=[ModelJoin(target_model="sj_customers", join_pairs=[["customer_id", "id"]])],
+        ),
+    ]
+
+
+@contextlib.contextmanager
+def _user_datasource(
+    container, db_name: str, *, settings: str, extra_dbs: tuple[str, ...] = (),
+) -> Generator[DatasourceConfig]:
+    user = f"rls_{uuid.uuid4().hex[:8]}"
+    with disposable_engine(_admin_url(container)) as engine:
+        with engine.begin() as conn:
+            conn.exec_driver_sql(f"CREATE USER {user} IDENTIFIED WITH plaintext_password BY 'pw' SETTINGS {settings}")
+            for db in (db_name, *extra_dbs):
+                conn.exec_driver_sql(f"GRANT SELECT ON {db}.* TO {user}")
+    try:
+        yield DatasourceConfig(
+            name="rls_ch", type="clickhouse",
+            host=container.get_container_host_ip(), port=int(container.get_exposed_port(8123)),
+            database=db_name, username=user, password="pw",
+        )
+    finally:
+        engine_factory.reset_cache()
+        with disposable_engine(_admin_url(container)) as engine:
+            with engine.begin() as conn:
+                conn.exec_driver_sql(f"DROP USER IF EXISTS {user}")
+
+
+def _rls_engine(datasource: DatasourceConfig, *, policy: SessionPolicy | None = None) -> SlayerQueryEngine:
+    storage = YAMLStorage(base_dir=tempfile.mkdtemp(prefix="rls_ch_"))
+    run_sync(storage.save_datasource(datasource))
+    for model in _rls_models():
+        run_sync(storage.save_model(model))
+    return SlayerQueryEngine(storage=storage, policy=policy)
+
+
+_TENANT_POLICY = SessionPolicy(ruleset=JoinFilterRuleset(
+    table="customers", column="org", value="A",
+    joins=(
+        JoinFilterRule(target_table="orders", join_path=("orders.customer_id = customers.id",)),
+        JoinFilterRule(
+            target_table="line_items",
+            join_path=("line_items.order_id = orders.id", "orders.customer_id = customers.id"),
+        ),
+    ),
+))
+
+_DIST_POLICY = SessionPolicy(ruleset=JoinFilterRuleset(
+    table="customers_dist", column="org", value="A",
+    joins=(
+        JoinFilterRule(target_table="orders_dist", join_path=("orders_dist.customer_id = customers_dist.id",)),
+        JoinFilterRule(
+            target_table="line_items_dist",
+            join_path=("line_items_dist.order_id = orders_dist.id", "orders_dist.customer_id = customers_dist.id"),
+        ),
+    ),
+))
+
+# Each order / line item sits on the other shard from its customer / order.
+_SHARD_ROWS = {
+    "customers": ["(1, 'A')", "(2, 'B'), (NULL, 'A')"],
+    "orders": ["(13, 1)", "(10, 1), (11, 2), (12, NULL)"],
+    "line_items": ["(100, 10), (103, NULL)", "(101, 11), (102, 12), (104, 13)"],
+}
+
+_SEMI_JOIN_QUERY = SlayerQuery.model_validate({
+    "source_model": "sj_orders", "dimensions": ["sj_customers.org"],
+    "measures": [{"formula": "amount:sum", "name": "m"}, {"formula": "sj_customers.spend:sum", "name": "cm"}],
+    "filters": ["channel = 'app'"],
+})
+_SEMI_JOIN_ROWS = [{"sj_orders.sj_customers.org": "A", "sj_orders.m": 5.0, "sj_orders.cm": 100.0}]
+
+
+async def _ids(engine: SlayerQueryEngine, model: str) -> list[int]:
+    resp = await engine.execute(SlayerQuery.model_validate({"source_model": model, "dimensions": ["id"]}))
+    return sorted(int(row[f"{model}.id"]) for row in resp.data)
+
+
+async def _assert_semi_join_runs_with_setting(engine: SlayerQueryEngine) -> None:
+    dry = await engine.execute(_SEMI_JOIN_QUERY, dry_run=True)
+    assert dry.sql is not None
+    assert f"{_CORRELATED_SETTING} = 1" in dry.sql
+    assert (await engine.execute(_SEMI_JOIN_QUERY)).data == _SEMI_JOIN_ROWS
+
+
+@pytest.fixture(scope="module")
+def rls_sharded_db(clickhouse_container):
+    """Distributed tables over a two-shard cluster (one server, a database per shard)."""
+    uid = uuid.uuid4().hex[:8]
+    cluster, shards = f"rls_{uid}", tuple(f"rls_{uid}_s{i}" for i in (1, 2))
+    replicas = "".join(
+        f"<shard><replica><host>127.0.0.{i}</host><port>9000</port><user>{clickhouse_container.username}</user>"
+        f"<password>{clickhouse_container.password}</password><default_database>{db}</default_database></replica></shard>"
+        for i, db in enumerate(shards, start=1)
+    )
+    config = f"/etc/clickhouse-server/config.d/{cluster}.xml"
+    xml = f"<clickhouse><remote_servers><{cluster}>{replicas}</{cluster}></remote_servers></clickhouse>"
+    assert clickhouse_container.exec(["sh", "-c", f"cat > {config} <<'EOF'\n{xml}\nEOF"]).exit_code == 0
+    db_name = _create_module_db(clickhouse_container)
+    with disposable_engine(_admin_url(clickhouse_container)) as engine:
+        with engine.begin() as conn:
+            conn.exec_driver_sql("SYSTEM RELOAD CONFIG")
+            for i, shard in enumerate(shards):
+                conn.exec_driver_sql(f"CREATE DATABASE {shard}")
+                for create in _RLS_DDL[:3]:
+                    conn.exec_driver_sql(create.replace("CREATE TABLE ", f"CREATE TABLE {shard}.", 1))
+                for table, rows in _SHARD_ROWS.items():
+                    conn.exec_driver_sql(f"INSERT INTO {shard}.{table} VALUES {rows[i]}")
+            for table in _SHARD_ROWS:
+                conn.exec_driver_sql(
+                    f"CREATE TABLE {db_name}.{table}_dist AS {shards[0]}.{table} "
+                    f"ENGINE = Distributed('{cluster}', '', '{table}')"
+                )
+    yield db_name, shards
+    _drop_module_db(clickhouse_container, db_name)
+    with disposable_engine(_admin_url(clickhouse_container)) as engine:
+        with engine.begin() as conn:
+            for shard in shards:
+                conn.exec_driver_sql(f"DROP DATABASE IF EXISTS {shard}")
+    clickhouse_container.exec(["rm", "-f", config])
+
+
+@pytest.fixture(scope="module")
+def rls_db(clickhouse_container):
+    db_name = _seed_rls_db(clickhouse_container, distributed=True)
+    yield db_name
+    _drop_module_db(clickhouse_container, db_name)
+
+
+@pytest.mark.integration
+class TestJoinPolicyReadonly:
+    async def test_single_and_multi_hop_scope(self, clickhouse_container, rls_db) -> None:
+        with _user_datasource(clickhouse_container, rls_db, settings="readonly = 1") as ds:
+            engine = _rls_engine(ds, policy=_TENANT_POLICY)
+            assert await _ids(engine, "orders") == [10, 13]
+            assert await _ids(engine, "line_items") == [100, 104]
+
+    async def test_no_setting_reaches_the_server(self, clickhouse_container, rls_db) -> None:
+        with _user_datasource(clickhouse_container, rls_db, settings="readonly = 1") as ds:
+            engine = _rls_engine(ds, policy=_TENANT_POLICY)
+            dry = await engine.execute(SlayerQuery.model_validate({"source_model": "line_items", "dimensions": ["id"]}), dry_run=True)
+        assert dry.sql is not None
+        assert _CORRELATED_SETTING not in dry.sql
+        assert "EXISTS" not in dry.sql.upper()
+
+    async def test_null_keys_never_admit_a_row(self, clickhouse_container, rls_db) -> None:
+        """Scenario: NULL keys never admit a row (``transform_null_in = 1``)."""
+        settings = "readonly = 1, transform_null_in = 1"
+        with _user_datasource(clickhouse_container, rls_db, settings=settings) as ds:
+            engine = _rls_engine(ds, policy=_TENANT_POLICY)
+            assert await _ids(engine, "orders") == [10, 13]
+            assert await _ids(engine, "line_items") == [100, 104]
+
+    async def test_distributed_tables(self, clickhouse_container, rls_db) -> None:
+        with _user_datasource(clickhouse_container, rls_db, settings="readonly = 1") as ds:
+            engine = _rls_engine(ds, policy=_DIST_POLICY)
+            assert await _ids(engine, "orders_dist") == [10, 13]
+
+    @pytest.mark.parametrize("product_mode", ["deny", "local"])
+    async def test_sharded_distributed_tables(self, clickhouse_container, rls_sharded_db, product_mode) -> None:
+        """Scenario: Distributed tables — rows and their join partners on different shards."""
+        db_name, shards = rls_sharded_db
+        settings = f"readonly = 1, transform_null_in = 1, distributed_product_mode = '{product_mode}'"
+        with _user_datasource(clickhouse_container, db_name, settings=settings, extra_dbs=shards) as ds:
+            engine = _rls_engine(ds, policy=_DIST_POLICY)
+            assert await _ids(engine, "orders_dist") == [10, 13]
+            assert await _ids(engine, "line_items_dist") == [100, 104]
+
+
+@pytest.fixture(scope="module", params=["25.4", "25.8"])
+def versioned_clickhouse(request):
+    """A ClickHouse server of the given version with the RLS / semi-join dataset seeded."""
+    container = ClickHouseContainer(f"clickhouse/clickhouse-server:{request.param}").with_env(
+        "CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT", "1"
+    )
+    with container as c:
+        db_name = _seed_rls_db(c, distributed=False)
+        yield request.param, c, db_name
+        _drop_module_db(c, db_name)
+
+
+def _user_queries_touching(container, *, user: str, table: str) -> int:
+    (count,) = _admin_rows(
+        container,
+        "SELECT count() FROM system.query_log WHERE type != 'QueryStart' "
+        f"AND user = '{user}' AND query LIKE '%{table}%'",
+    )
+    return int(count[0])
+
+
+@pytest.mark.integration
+class TestVersionedReadonly:
+    async def test_readonly_join_policy_scopes(self, versioned_clickhouse) -> None:
+        """Scenario: Readonly user on a server with correlated subqueries off."""
+        _, container, db_name = versioned_clickhouse
+        with _user_datasource(container, db_name, settings="readonly = 1") as ds:
+            engine = _rls_engine(ds, policy=_TENANT_POLICY)
+            assert await _ids(engine, "orders") == [10, 13]
+            assert await _ids(engine, "line_items") == [100, 104]
+
+    async def test_readonly_semi_join(self, versioned_clickhouse) -> None:
+        version, container, db_name = versioned_clickhouse
+        with _user_datasource(container, db_name, settings="readonly = 1") as ds:
+            engine = _rls_engine(ds)
+            if version == "25.4":
+                with pytest.raises(SlayerError) as ei:
+                    await engine.execute(_SEMI_JOIN_QUERY)
+                assert _CORRELATED_SETTING in str(ei.value)
+                assert "channel" in str(ei.value)
+                assert _user_queries_touching(container, user=ds.username or "", table="sj_orders") == 0
+            else:
+                await _assert_semi_join_runs_with_setting(engine)
+
+    async def test_readonly_2_semi_join_runs(self, versioned_clickhouse) -> None:
+        _, container, db_name = versioned_clickhouse
+        with _user_datasource(container, db_name, settings="readonly = 2") as ds:
+            await _assert_semi_join_runs_with_setting(_rls_engine(ds))
+
+    async def test_setting_enabled_in_profile_runs(self, versioned_clickhouse) -> None:
+        _, container, db_name = versioned_clickhouse
+        settings = f"readonly = 1, {_CORRELATED_SETTING} = 1"
+        with _user_datasource(container, db_name, settings=settings) as ds:
+            await _assert_semi_join_runs_with_setting(_rls_engine(ds))

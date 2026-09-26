@@ -75,18 +75,6 @@ def _dbapi(settings: dict) -> SimpleNamespace:
     return SimpleNamespace(transport=SimpleNamespace(ch_settings=settings))
 
 
-class TestPermissionHooks:
-    def test_default_no_check(self) -> None:
-        assert SqlDialect().timeout_permission_sql() is None
-
-    def test_clickhouse_asks_readonly_level(self) -> None:
-        assert ClickhouseDialect().timeout_permission_sql() == "SELECT getSetting('readonly')"
-
-    @pytest.mark.parametrize(("level", "permitted"), [(0, True), (1, False), (2, True)])
-    def test_clickhouse_readonly_levels(self, level: int, permitted: bool) -> None:
-        assert ClickhouseDialect().timeout_permitted(level) is permitted
-
-
 class TestConnectionTimeoutHooks:
     def test_default_leaves_connection_alone(self) -> None:
         settings = {"a": 1}
