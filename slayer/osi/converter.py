@@ -1,4 +1,4 @@
-"""Convert parsed OSI documents into SLayer models (DEV-1643).
+"""Convert parsed OSI documents into SLayer models.
 
 Each OSI dataset becomes one ``SlayerModel``: its physical table is introspected
 live (real column types + PK) and OSI semantic metadata (labels, descriptions,
@@ -62,8 +62,7 @@ class OsiConversionError(Exception):
 # Characters/shapes that are unsafe in a SLayer model name — notably path
 # separators and NUL, since a model name becomes a filename in YAML storage
 # (``<dir>/<name>.yaml``); an absolute/traversal name would escape the tree.
-# DEV-1743: ``__`` is no longer unsafe — model names may contain it (the ban is
-# lifted); it is matched exactly, never split.
+# ``__`` is allowed in model names; it is matched exactly, never split.
 _UNSAFE_MODEL_NAME_CHARS = (".", ":", "/", "\\", "\x00")
 
 
@@ -704,11 +703,8 @@ class OsiToSlayerConverter:
     def _walk_join_alias(self, host: SlayerModel, alias: str) -> SlayerModel | None:
         """Resolve a Mode-A join qualifier to its terminal joined model, or None.
 
-        DEV-1743 strict-D2 (P1): ``alias`` is exact-matched first (a directly-
-        joined model MAY contain ``__``), then walked as a dotted chain of exact
-        hops — NEVER ``__``-split. A legacy ``customers__regions`` split-alias
-        (no model of that exact name) is unresolvable (``None``), not silently
-        walked as ``customers → regions``."""
+        ``alias`` is exact-matched first, then walked as a dotted chain of exact hops —
+        never ``__``-split, so a legacy ``customers__regions`` alias is ``None``."""
         return resolve_ref_target(
             qualifiers=tuple(alias.split(".")),
             source_model=host,

@@ -1,4 +1,4 @@
-"""DEV-1542: registry tests for the SqlDialect strategy classes.
+"""Registry tests for the SqlDialect strategy classes.
 
 Verifies:
 * ``get_dialect(sqlglot_name)`` is strict — raises ``KeyError`` for unknown

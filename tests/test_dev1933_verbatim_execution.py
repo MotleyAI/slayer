@@ -1,4 +1,4 @@
-"""Rendered SQL reaches the driver verbatim (DEV-1933).
+"""Rendered SQL reaches the driver verbatim.
 
 The client used to run rendered SQL through ``sa.text()``, whose bind-parameter
 regex reads any ``:word`` (e.g. a regex ``(?:too ...)`` non-capturing group) as a

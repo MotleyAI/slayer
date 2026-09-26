@@ -147,7 +147,7 @@ def test_schema_resolves_ast_first(engine, tmp_path, monkeypatch):
     seen = {}
 
     def capture(inspector, sa_engine, table_name, ref):
-        # DEV-1758: the 4th arg is now a SchemaRef carrying the parsed schema.
+        # The 4th arg is a SchemaRef carrying the parsed schema.
         seen["schema"] = ref.name if ref else None
         return [{"name": "org"}]
 

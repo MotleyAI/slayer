@@ -1,6 +1,6 @@
 """Integration tests using a real ClickHouse database via testcontainers.
 
-DEV-1564: mirror of test_integration_postgres.py focused on ClickHouse's
+Mirror of test_integration_postgres.py focused on ClickHouse's
 distinguishing characteristics:
 
 * Parametric ``quantile(p)(x)`` syntax (pinned via dry_run SQL inspection).
@@ -233,7 +233,7 @@ class TestClickHouseQueries:
         assert result.data[0]["orders._count"] == 6
 
     async def test_dev1933_regex_literal_extension_column(self, clickhouse_env: SlayerQueryEngine) -> None:
-        """DEV-1933: an ad-hoc column holding a ``(?:...)`` regex literal and a ``%``
+        """An ad-hoc column holding a ``(?:...)`` regex literal and a ``%``
         LIKE pattern executes verbatim; text() misread ``:too`` as a bind parameter."""
         query = SlayerQuery(
             source_model=ModelExtension(
@@ -302,7 +302,7 @@ class TestClickHouseQueries:
     async def test_trunc_executes_lowercase(
         self, clickhouse_env: SlayerQueryEngine
     ) -> None:
-        """DEV-1753: sqlglot emits ClickHouse ``trunc`` LOWERCASE while every
+        """Sqlglot emits ClickHouse ``trunc`` LOWERCASE while every
         other backend uppercases it. ClickHouse function names are case-sensitive
         in general, so this pins that the lowercase spelling really resolves on a
         live server — and that ``trunc`` truncates toward zero rather than
@@ -743,7 +743,7 @@ class TestClickHouseMedianPercentile:
 
 
 # ---------------------------------------------------------------------------
-# Native stat aggregations (DEV-1317 cross-dialect parity)
+# Native stat aggregations (cross-dialect parity)
 # ---------------------------------------------------------------------------
 
 
@@ -844,7 +844,7 @@ class TestClickHouseStatAggregations:
 
 
 # ---------------------------------------------------------------------------
-# log10 round-trip (DEV-1337 — ClickHouse has native log10)
+# log10 round-trip (ClickHouse has native log10)
 # ---------------------------------------------------------------------------
 
 
@@ -906,7 +906,7 @@ async def test_log10_round_trip_clickhouse(clickhouse_log10_env: SlayerQueryEngi
 
 
 # ---------------------------------------------------------------------------
-# Window-in-filter raises (DEV-1369 parity)
+# Window-in-filter raises (parity)
 # ---------------------------------------------------------------------------
 
 
@@ -971,7 +971,7 @@ async def test_filter_on_windowed_column_clickhouse_raises(planets_clickhouse_en
 
 
 # ---------------------------------------------------------------------------
-# Cross-model derived Column.sql (DEV-1333)
+# Cross-model derived Column.sql
 # ---------------------------------------------------------------------------
 
 
@@ -1114,10 +1114,8 @@ def test_clickhouse_comments_imported(clickhouse_ingest_for_types_env) -> None:
 
 
 # ---------------------------------------------------------------------------
-# DEV-1727 — dialect-aware Mode-A {var} escaping (ClickHouse is a Tier-1
-# backslash dialect with C-style string literals: the naive '' quote-doubling
-# from DEV-1625 mis-parses a backslash-bearing value; the hardened escaping
-# must round-trip end-to-end).
+# Dialect-aware Mode-A {var} escaping: ClickHouse's C-style literals break naive
+# '' quote-doubling on a backslash-bearing value; escaping must round-trip.
 # ---------------------------------------------------------------------------
 
 # Distinct amounts per tricky status so a correct match is provable via the sum.

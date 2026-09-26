@@ -447,15 +447,17 @@ class TestRetryRejectsNonPositiveAttempts:
     def test_sync(self, monkeypatch: pytest.MonkeyPatch) -> None:
         called = MagicMock()
         monkeypatch.setattr(sql_client, "_execute_sql_sync", called)
+        engine = MagicMock()
         with pytest.raises(ValueError, match="max_attempts"):
-            _execute_with_retry_sync(sql="SELECT 1", db_type="sqlite", engine=MagicMock(), max_attempts=0)
+            _execute_with_retry_sync(sql="SELECT 1", db_type="sqlite", engine=engine, max_attempts=0)
         called.assert_not_called()
 
     async def test_threaded(self, monkeypatch: pytest.MonkeyPatch) -> None:
         called = MagicMock()
         monkeypatch.setattr(sql_client, "_execute_sql_sync", called)
+        engine = MagicMock()
         with pytest.raises(ValueError, match="max_attempts"):
-            await _execute_with_retry_threaded(sql="SELECT 1", db_type="sqlite", engine=MagicMock(), max_attempts=0)
+            await _execute_with_retry_threaded(sql="SELECT 1", db_type="sqlite", engine=engine, max_attempts=0)
         called.assert_not_called()
 
 

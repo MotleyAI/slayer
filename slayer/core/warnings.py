@@ -93,7 +93,7 @@ class AssociatedWarningPayload(SlayerWarning):
 
 
 class DegenerateReaggregationWarningPayload(SlayerWarning):
-    """A second-order aggregation whose operand grain equals the outer grain, so it is the identity (DEV-1847); ``operand_grain`` / ``outer_grain`` name the equal grains and ``hint`` the partition_by remedy."""
+    """A second-order aggregation whose operand grain equals the outer grain, so it is the identity; ``operand_grain`` / ``outer_grain`` name the equal grains and ``hint`` the partition_by remedy."""
 
     kind: Literal["degenerate_reaggregation"] = "degenerate_reaggregation"
     measure: str
@@ -115,7 +115,7 @@ class DegenerateReaggregationWarningPayload(SlayerWarning):
 
 
 class SemiJoinPushedWarningPayload(SlayerWarning):
-    """A ROW filter pushed as a semi-join (EXISTS): correctly applied, informational only — carried on the response, never a Python warning and never an error. ``measure`` names the affected aggregate, or is ``null`` when the query population itself is restricted (DEV-1909)."""
+    """A ROW filter pushed as a semi-join (EXISTS): correctly applied, informational only — carried on the response, never a Python warning and never an error. ``measure`` names the affected aggregate, or is ``null`` when the query population itself is restricted."""
 
     kind: Literal["semi_join_pushed"] = "semi_join_pushed"
     measure: Optional[str] = None

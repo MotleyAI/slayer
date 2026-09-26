@@ -53,19 +53,7 @@ async def test_file_backed_sqlite_still_shares_state_across_async_calls(
 @pytest.mark.integration
 async def test_file_backed_sqlite_engine_cached_in_module(tmp_path: Path) -> None:
     """White-box: file-backed SQLite routes through ``engine_factory``'s
-    shared cache (DEV-1551).
-
-    Pre-DEV-1551, ``SlayerSQLClient._get_sync_engine_for_client`` returned
-    ``None`` for file-backed SQLite and the engine lived in the
-    ``slayer.sql.client._sync_engines`` module dict. Post-migration, every
-    non-in-memory datasource goes through
-    ``engine_factory.get_engine(datasource)`` so dialect runtime hooks
-    (Snowflake's ``creator=`` bridge, SQLite UDF registration) fire
-    uniformly. The conceptual invariant — file-backed SQLite is cached
-    once and reused across clients on the same connection_string — is
-    preserved; the cache key just lives on ``engine_factory._engine_cache``
-    now.
-    """
+    shared cache, cached once and reused across clients on the same connection string."""
     db_path = tmp_path / "cached.db"
     conn_str = f"sqlite:///{db_path}"
     ds = DatasourceConfig(

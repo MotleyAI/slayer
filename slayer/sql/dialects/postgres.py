@@ -1,8 +1,4 @@
-"""DEV-1542: PostgresDialect.
-
-Postgres is the Postgres-shaped default made explicit. Native DATE_TRUNC,
-PERCENTILE_CONT, CORR, COVAR_SAMP, COVAR_POP, native log10/log2.
-"""
+"""PostgresDialect: the Postgres-shaped base default made explicit."""
 
 from __future__ import annotations
 
@@ -54,6 +50,5 @@ class PostgresDialect(SqlDialect):
         return f"SET LOCAL statement_timeout = {timeout_seconds * 1000}"
 
     def rewrite_target_ast(self, tree: exp.Expression) -> exp.Expression:
-        """DEV-1576: numeric-cast the first arg of every 2-arg ROUND so
-        ``round(double precision, int)`` becomes ``round(numeric, int)``."""
+        """Numeric-cast every 2-arg ROUND's first arg: Postgres has no ``round(double, int)``."""
         return tree.transform(_cast_round_arg_to_numeric)

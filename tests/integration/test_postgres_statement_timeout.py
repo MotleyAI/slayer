@@ -78,7 +78,6 @@ class TestPostgresStatementTimeout:
             await pg_client.get_column_types("SELECT bump() AS n")
 
     def test_sync_probe_keeps_read_only_guard(self, pg_client: SlayerSQLClient) -> None:
+        engine = pg_client._get_sync_engine_for_client()
         with pytest.raises(Exception, match="read-only transaction"):
-            get_column_types_sync(
-                "SELECT bump() AS n", engine=pg_client._get_sync_engine_for_client(), db_type="postgres",
-            )
+            get_column_types_sync("SELECT bump() AS n", engine=engine, db_type="postgres")

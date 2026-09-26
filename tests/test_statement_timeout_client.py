@@ -188,8 +188,9 @@ def test_fail_closed_rejected_timeout_raises(monkeypatch, run: Runner, ds_type: 
         reject_exc=sqlalchemy.exc.OperationalError(prefix, {}, Exception("(1193, \"Unknown system variable\")")),
     )
     rec.install(monkeypatch)
+    client = _client(ds_type)
     with pytest.raises(sqlalchemy.exc.OperationalError, match="Unknown system variable"):
-        run(_client(ds_type), SQL, 120)
+        run(client, SQL, 120)
     assert SQL not in rec.log
 
 
@@ -250,8 +251,9 @@ def test_probe_fail_closed_rejected_timeout_raises(monkeypatch) -> None:
         reject_exc=sqlalchemy.exc.OperationalError("SET", {}, Exception("(1193, \"Unknown system variable\")")),
     )
     rec.install(monkeypatch)
+    probe = _client("mysql").get_column_types(SQL)
     with pytest.raises(sqlalchemy.exc.OperationalError):
-        asyncio.run(_client("mysql").get_column_types(SQL))
+        asyncio.run(probe)
     assert not any(SQL in s for s in rec.log)
 
 
@@ -278,6 +280,7 @@ def test_sync_probe_fail_closed_rejected_timeout_raises() -> None:
         reject_prefix="SET max_execution_time",
         reject_exc=sqlalchemy.exc.OperationalError("SET", {}, Exception("(1193, \"Unknown system variable\")")),
     )
+    engine = rec.sync_engine()
     with pytest.raises(sqlalchemy.exc.OperationalError):
-        get_column_types_sync(SQL, engine=rec.sync_engine(), db_type="mysql")  # pyright: ignore[reportArgumentType]
+        get_column_types_sync(SQL, engine=engine, db_type="mysql")  # pyright: ignore[reportArgumentType]
     assert not any(SQL in s for s in rec.log)

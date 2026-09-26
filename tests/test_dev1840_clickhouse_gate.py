@@ -1,4 +1,4 @@
-"""DEV-1840 task 1.7 — ClickHouse gating for semi-join pushdown (design D7).
+"""ClickHouse gating for semi-join pushdown.
 
 The recursive plan predicate triggers the version preflight and the settings
 finalization on planner-emitted SQL; below 25.4 (or unknown) the query fails

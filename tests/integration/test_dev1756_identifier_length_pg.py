@@ -1,4 +1,4 @@
-"""DEV-1756 against a live Postgres, which truncates identifiers past 63 bytes with
+"""Identifier-length fitting against a live Postgres, which truncates identifiers past 63 bytes with
 only a NOTICE, so emission tests pass while the server mis-answers. Covers two modes:
 sibling aliases collapsing at a shared 63-byte prefix, and a lone over-limit alias
 vanishing with no error (the more dangerous case).

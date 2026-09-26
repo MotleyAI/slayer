@@ -1,16 +1,4 @@
-"""DEV-1542: SLayer SQL dialect registry.
-
-Strategy-pattern dispatch: every dialect-specific SQL-generation quirk
-lives on a subclass of ``SqlDialect`` (one file per Tier-1 dialect under
-this package, Tier-2 dialects together in ``_tier2.py``). The registry
-exposes two lookup functions:
-
-* ``get_dialect(sqlglot_name)`` — strict, raises ``KeyError`` on unknown
-  (preserves today's ``_build_explain_sql`` ``ValueError`` semantics).
-* ``dialect_for_ds_type(ds_type)`` — lenient, falls back to
-  ``PostgresDialect`` (preserves today's
-  ``_DIALECT_MAP.get(ds_type or "", "postgres")`` semantics).
-"""
+"""SqlDialect registry: strict lookup by sqlglot name, lenient lookup by datasource type."""
 
 from __future__ import annotations
 
@@ -91,24 +79,12 @@ _BY_DS_TYPE: dict[str, SqlDialect] = {
 
 
 def get_dialect(sqlglot_name: str) -> SqlDialect:
-    """Strict lookup by sqlglot name. Raises ``KeyError`` on unknown.
-
-    Preserves today's ``_build_explain_sql`` semantics at
-    ``query_engine.py:132`` — an unrecognised dialect string raises
-    rather than silently falling back. Internal callers resolve via
-    ``dialect_for_ds_type`` first, so this branch is unreachable in
-    normal flow but the strict error is preserved as defence in depth.
-    """
+    """Strict lookup by sqlglot name; raises ``KeyError`` on unknown."""
     return _BY_SQLGLOT_NAME[sqlglot_name]
 
 
 def dialect_for_ds_type(ds_type: str | None) -> SqlDialect:
-    """Lenient lookup by datasource-config ``type`` string.
-
-    Falls back to ``PostgresDialect`` for ``None``, empty, OR unknown
-    ds-types. Matches today's
-    ``_DIALECT_MAP.get(ds_type or "", "postgres")`` semantics exactly.
-    """
+    """Lenient lookup by datasource type; ``None``, empty and unknown types get Postgres."""
     return _BY_DS_TYPE.get(ds_type or "", _BY_SQLGLOT_NAME["postgres"])
 
 

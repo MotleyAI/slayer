@@ -1,4 +1,4 @@
-"""Client-side tests for Snowflake (DEV-1551).
+"""Client-side tests for Snowflake.
 
 Where the **dialect-class methods** are tested in
 ``tests/dialects/test_snowflake.py``, this module covers

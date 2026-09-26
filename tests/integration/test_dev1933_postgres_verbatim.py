@@ -1,4 +1,4 @@
-"""Rendered SQL reaches Postgres verbatim on real asyncpg + psycopg2 (DEV-1933).
+"""Rendered SQL reaches Postgres verbatim on real asyncpg + psycopg2.
 
 The bind hazard (``:too`` from a regex ``(?:...)`` group) and the pyformat ``%``
 hazard only surface on a real driver: asyncpg runs the async execute + type-probe

@@ -21,11 +21,11 @@ assertion; mechanical `.rows` edits at `execute`/`execute_sync` test call sites
 
 ## 2. Implementation (spec-implement)
 
-- [ ] 2.1 `slayer/core/warnings.py`: `StatementTimeoutSkippedWarning` + carrier + `AnySlayerWarning` member; verify 1.4 passes
-- [ ] 2.2 `slayer/sql/dialects/`: hooks on `SqlDialect` (D2); MySQL/Postgres/Snowflake/ClickHouse overrides; `MariadbDialect` registered by ds-type alias only (D7); verify 1.1–1.2 pass
-- [ ] 2.3 `slayer/sql/client.py`: `ExecutionResult`; `_apply_statement_timeout` + async sibling (D3–D5); lock-guarded per-engine permission cache (D4); delete `_with_ch_statement_timeout`, `_exec_clickhouse`, `_CH_*`, the `_settings_holder` import, the `db_type` branches and `_apply_type_probe_timeout` (+async); the read-only guard lookup resolves `None` through `dialect_for_ds_type`; verify 1.3, 1.6 and 1.10 pass
+- [x] 2.1 `slayer/core/warnings.py`: `StatementTimeoutSkippedWarning` + carrier + `AnySlayerWarning` member; verify 1.4 passes
+- [x] 2.2 `slayer/sql/dialects/`: hooks on `SqlDialect` (D2); MySQL/Postgres/Snowflake/ClickHouse overrides; `MariadbDialect` registered by ds-type alias only (D7); verify 1.1–1.2 pass
+- [x] 2.3 `slayer/sql/client.py`: `ExecutionResult`; `_apply_statement_timeout` + async sibling (D3–D5); lock-guarded per-engine permission cache (D4); delete `_with_ch_statement_timeout`, `_exec_clickhouse`, `_CH_*`, the `_settings_holder` import, the `db_type` branches and `_apply_type_probe_timeout` (+async); the read-only guard lookup resolves `None` through `dialect_for_ds_type`; verify 1.3, 1.6 and 1.10 pass
 - [ ] 2.4 Callers: `slayer/engine/query_engine.py` data-query + EXPLAIN paths attach warnings; every other `execute`/`execute_sync` caller reads `.rows`; verify 1.5 passes and the full unit suite is green
-- [ ] 2.5 Docs: rewrite the ClickHouse note in `docs/configuration/datasources.md` (request setting, readonly behaviour, warning) + one MariaDB sentence; add `statement_timeout_skipped` to the `warnings` row in `docs/concepts/queries.md` and any warning-kind list in `docs/reference/`; verify `grep -rn statement_timeout_skipped docs/`
+- [x] 2.5 Docs: rewrite the ClickHouse note in `docs/configuration/datasources.md` (request setting, readonly behaviour, warning) + one MariaDB sentence; add `statement_timeout_skipped` to the `warnings` row in `docs/concepts/queries.md` and any warning-kind list in `docs/reference/`; verify `grep -rn statement_timeout_skipped docs/`
 - [ ] 2.6 Gates: full unit suite, ClickHouse + Postgres integration (CI invocation), `ruff`, `basedpyright` (no new errors vs baseline), `tools/arch_check.py`, conventions gate
 
 ## 3. Review (spec-review)
