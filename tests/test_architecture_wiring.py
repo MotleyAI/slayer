@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-PIN_RE = re.compile(r"living-architecture@(v[\w.]+) la-arch-")
+PIN_RE = re.compile(r"living-architecture==([\w.]+) la-arch-")
 
 
 def _read(rel: str) -> str:
