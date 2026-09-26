@@ -28,6 +28,7 @@ from slayer.core.policy import (
 from slayer.core.query import ColumnRef, SlayerQuery
 from slayer.engine.profiling import profile_column
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.sql.client import SlayerSQLClient
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -555,35 +556,29 @@ async def test_dry_run_shows_exists_wrap(rls_join_storage):
     assert "organization_uuid = 'orgA'" in flat
 
 
-async def test_execute_invokes_clickhouse_preflight(rls_join_storage, monkeypatch):
-    """The execution pipeline calls the ClickHouse correlated-subquery preflight
-    before applying the policy (it no-ops for non-ClickHouse dialects)."""
+def _record_profile_probes(monkeypatch) -> list[str]:
+    probes: list[str] = []
+
+    async def record(self):  # NOSONAR(S7503) — must stay async
+        probes.append(self.datasource.name)
+        raise AssertionError("a policy-only query needs no server profile")
+
+    monkeypatch.setattr(SlayerSQLClient, "server_profile", record)
+    return probes
+
+
+async def test_execute_runs_no_profile_probe(rls_join_storage, monkeypatch):
+    """A join policy alone never probes the server profile."""
     engine = SlayerQueryEngine(storage=rls_join_storage, policy=_join_policy(ORG_A))
-    seen = {"n": 0}
-    real = engine._preflight_clickhouse_correlated
-
-    async def spy(*, dialect, datasource, needed=False):
-        seen["n"] += 1
-        return await real(dialect=dialect, datasource=datasource, needed=needed)
-
-    monkeypatch.setattr(engine, "_preflight_clickhouse_correlated", spy)
+    probes = _record_profile_probes(monkeypatch)
     await engine.execute(
         SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="*:count")])
     )
-    assert seen["n"] >= 1
+    assert probes == []
 
 
-async def test_get_column_types_invokes_clickhouse_preflight(
-    rls_join_storage, monkeypatch
-):
+async def test_get_column_types_runs_no_profile_probe(rls_join_storage, monkeypatch):
     engine = SlayerQueryEngine(storage=rls_join_storage, policy=_join_policy(ORG_A))
-    seen = {"n": 0}
-    real = engine._preflight_clickhouse_correlated
-
-    async def spy(*, dialect, datasource, needed=False):
-        seen["n"] += 1
-        return await real(dialect=dialect, datasource=datasource, needed=needed)
-
-    monkeypatch.setattr(engine, "_preflight_clickhouse_correlated", spy)
+    probes = _record_profile_probes(monkeypatch)
     await engine.get_column_types(model_name="orders", data_source="rls_sqlite")
-    assert seen["n"] >= 1
+    assert probes == []

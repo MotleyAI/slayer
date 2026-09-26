@@ -201,18 +201,18 @@ against the database. So:
 
 ### ClickHouse
 
-Correlated subqueries are experimental on ClickHouse and require **server
-≥ 25.4**. When a join target is scoped on ClickHouse, SLayer probes the server
-version once per datasource, attaches
-`SETTINGS allow_experimental_correlated_subqueries = 1`, and logs a warning.
-An older (or undeterminable) server version **fails closed** — the query is
-blocked rather than run unscoped.
+On ClickHouse a join target is scoped by a non-correlated semi-join instead —
+`WHERE _rls_src.customer_id GLOBAL IN (SELECT toNullable(_rls_j0.id) FROM customers AS
+_rls_j0 WHERE _rls_j0.id IS NOT NULL AND _rls_j0.organization_uuid = '7ef3...')` — which
+needs no server setting, so join rules work on every server version, for `readonly = 1`
+users, and over sharded `Distributed` tables.
 
 ## How it works
 
 The filter is applied at the final-SQL layer: each physical-table reference is
 wrapped in place (a filtered sub-query for a column filter / the anchor, or a
-correlated-`EXISTS` sub-query for a join target), preserving its alias.
+semi-join sub-query — `EXISTS`, or `IN` on ClickHouse — for a join target),
+preserving its alias.
 
 ```sql
 -- before

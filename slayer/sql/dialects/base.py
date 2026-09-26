@@ -225,6 +225,16 @@ def _digest(secret: str | None) -> str:
     return hashlib.sha256(secret.encode("utf-8")).hexdigest()[:16]
 
 
+class ServerProfile(BaseModel):
+    """What the server reports about itself and the connected user; ``None`` = unknown."""
+
+    model_config = ConfigDict(frozen=True)
+
+    version: tuple[int, int] | None = None
+    readonly: int | None = None
+    correlated_subqueries: bool | None = None
+
+
 class SqlDialect(BaseModel):
     """One database's quirks; the base IS the Postgres-shaped default, subclasses override what differs."""
 
@@ -254,6 +264,12 @@ class SqlDialect(BaseModel):
 
     # A rejected ``statement_timeout_sql`` is rolled back and reported instead of raised.
     statement_timeout_best_effort: bool = False
+
+    # Correlated subqueries need a server setting this user may be unable to set.
+    correlated_subqueries_gated: bool = False
+
+    # An ``IN`` subquery and its joins run once on the initiator (``GLOBAL``): exact over shards.
+    global_in_subqueries: bool = False
 
     @property
     def backslash_escapes_strings(self) -> bool:
@@ -867,13 +883,38 @@ class SqlDialect(BaseModel):
         """Hook: undo ``set_connection_timeout`` with the state it returned."""
         return None
 
-    def timeout_permission_sql(self) -> str | None:
-        """Hook: query whose scalar says whether this user may set the timeout, or ``None``."""
+    def server_profile_sql(self) -> str | None:
+        """Hook: probe whose one row ``parse_server_profile`` reads as ``base_row``, or ``None``."""
         return None
 
-    def timeout_permitted(self, value: Any) -> bool:  # NOSONAR(S1172) — no-op hook default; overrides use it
-        """Hook: interpret the ``timeout_permission_sql`` scalar."""
+    def correlated_setting_sql(self, profile: ServerProfile) -> str | None:  # NOSONAR(S1172) — no-op hook default
+        """Hook: follow-up probe for the correlated-subquery setting (its row is ``correlated_row``), or ``None``."""
+        return None
+
+    def parse_server_profile(
+        self,
+        *,
+        base_row: Sequence[Any] | None,  # NOSONAR(S1172) — no-op hook default; overrides use it
+        correlated_row: Sequence[Any] | None = None,  # NOSONAR(S1172) — no-op hook default
+    ) -> ServerProfile:
+        """Hook: probe rows → profile; tolerant, never raises."""
+        return ServerProfile()
+
+    def timeout_permitted(self, profile: ServerProfile) -> bool:  # NOSONAR(S1172) — no-op hook default
+        """Hook: whether this user may set the statement timeout."""
         return True
+
+    def correlated_subquery_refusal(self, profile: ServerProfile) -> str | None:  # NOSONAR(S1172) — no-op hook default
+        """Hook: why this user cannot run a correlated subquery, or ``None``."""
+        return None
+
+    def attach_correlated_setting(self, statement: Expression) -> None:  # NOSONAR(S1172) — no-op hook default
+        """Hook: enable correlated subqueries on ``statement`` in place."""
+        return None
+
+    def in_subquery_key(self, key: Expression) -> Expression:
+        """Hook: the key an uncorrelated ``IN`` subquery projects; default unchanged."""
+        return key
 
     def map_cursor_type_code(self, type_code: int) -> str | None:  # NOSONAR(S1172) — no-op hook default
         """Hook: cursor type code → SLayer category, or ``None`` for the Postgres OID map."""

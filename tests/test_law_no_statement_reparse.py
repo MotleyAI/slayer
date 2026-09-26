@@ -7,7 +7,10 @@ its self-tests plus a compile sweep over every assembly seam.
 
 from __future__ import annotations
 
+import ast
 import asyncio
+import inspect
+import textwrap
 from typing import cast
 
 import pytest
@@ -18,6 +21,7 @@ from sqlglot.dialects.dialect import Dialect
 import slayer.engine.query_engine as query_engine_module
 from slayer.core.enums import DataType
 from slayer.core.models import Column, ModelJoin, SlayerModel
+from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.generator import SQLGenerator
 from tests import _statement_render_law as law
 from tests._dev1965_fixtures import cumsum_chain, gen, month_td, orders_model, q
@@ -119,6 +123,17 @@ class TestTargets:
     def test_by_name_imports_are_guarded(self) -> None:
         fn = query_engine_module.build_flat_rename_wrapper
         assert getattr(fn, law.GUARD_MARK, None) == "build_flat_rename_wrapper"
+
+
+class TestEngine:
+    def test_prepare_pipeline_never_parses_rendered_sql(self) -> None:
+        source = textwrap.dedent(inspect.getsource(SlayerQueryEngine._prepare_pipeline))
+        called = {
+            node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "")
+            for node in ast.walk(ast.parse(source))
+            if isinstance(node, ast.Call)
+        }
+        assert "parse_one" not in called
 
 
 class TestLiveGenerator:

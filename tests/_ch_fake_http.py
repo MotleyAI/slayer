@@ -22,7 +22,9 @@ from tests._engine_helpers import disposable_engine
 pytest.importorskip("clickhouse_sqlalchemy")
 
 CH_TIMEOUT_KEY = "max_execution_time"
-PERMISSION_SQL = "SELECT getSetting('readonly')"
+CORRELATED_SETTING = "allow_experimental_correlated_subqueries"
+PROFILE_SQL = "SELECT version(), getSetting('readonly')"
+CORRELATED_SQL = f"SELECT getSetting('{CORRELATED_SETTING}')"
 
 
 class FakeResponse:
@@ -42,11 +44,16 @@ class FakeClickHouse:
     """Answers every request; records ``(sql, params)`` per request in order."""
 
     def __init__(self, *, readonly: int = 0, fail_marker: str | None = None,
-                 fail_permission: bool = False, permission_delay: float = 0.0) -> None:
+                 fail_permission: bool = False, permission_delay: float = 0.0,
+                 version: str = "24.3.1.1", correlated: bool = False,
+                 fail_correlated: bool = False) -> None:
         self.readonly = readonly
         self.fail_marker = fail_marker
         self.fail_permission = fail_permission
         self.permission_delay = permission_delay
+        self.version = version
+        self.correlated = correlated
+        self.fail_correlated = fail_correlated
         self.requests: list[tuple[str, dict[str, Any]]] = []
         self._lock = threading.Lock()
 
@@ -54,17 +61,27 @@ class FakeClickHouse:
         sql = data.decode("utf-8")
         with self._lock:
             self.requests.append((sql, dict(params)))
-        if sql == PERMISSION_SQL:
+        if sql == PROFILE_SQL:
             time.sleep(self.permission_delay)
             if self.fail_permission:
                 return FakeResponse(status_code=500, body="Code: 999. permission probe failed")
-            return FakeResponse(status_code=200, body=_tsv(["r"], ["UInt64"], [[str(self.readonly)]]))
+            return FakeResponse(status_code=200, body=_tsv(
+                ["version()", "getSetting('readonly')"], ["String", "UInt64"], [[self.version, str(self.readonly)]],
+            ))
+        if sql == CORRELATED_SQL:
+            if self.fail_correlated:
+                return FakeResponse(status_code=500, body="Code: 999. correlated probe failed")
+            return FakeResponse(status_code=200, body=_tsv(
+                [f"getSetting('{CORRELATED_SETTING}')"], ["Bool"], [["true" if self.correlated else "false"]],
+            ))
         if self.readonly == 1 and CH_TIMEOUT_KEY in params:
+            return FakeResponse(status_code=500, body="Code: 164. DB::Exception: Cannot modify setting in readonly mode. (READONLY)")
+        if self.readonly == 1 and not self.correlated and f"{CORRELATED_SETTING} = 1" in sql:
             return FakeResponse(status_code=500, body="Code: 164. DB::Exception: Cannot modify setting in readonly mode. (READONLY)")
         if self.fail_marker is not None and self.fail_marker in sql:
             return FakeResponse(status_code=500, body="Code: 159. DB::Exception: boom. (TIMEOUT_EXCEEDED)")
         if sql.lower() == "select version()":
-            return FakeResponse(status_code=200, body=_tsv(["v"], ["String"], [["24.3.1.1"]]))
+            return FakeResponse(status_code=200, body=_tsv(["v"], ["String"], [[self.version]]))
         if sql.lower() == "select currentdatabase()":
             return FakeResponse(status_code=200, body=_tsv(["d"], ["String"], [["default"]]))
         return FakeResponse(status_code=200, body=_tsv(["x"], ["UInt8"], [["1"]]))
@@ -78,7 +95,14 @@ class FakeClickHouse:
         return [params for s, params in self.requests if s == sql]
 
     def permission_checks(self) -> int:
-        return len(self.params_for(PERMISSION_SQL))
+        return len(self.params_for(PROFILE_SQL))
+
+    def correlated_checks(self) -> int:
+        return len(self.params_for(CORRELATED_SQL))
+
+    def user_statements(self) -> list[str]:
+        """Statements other than the server-profile probes."""
+        return [sql for sql in self.statements() if sql not in (PROFILE_SQL, CORRELATED_SQL)]
 
 
 def ch_datasource(name: str = "fake_ch") -> DatasourceConfig:

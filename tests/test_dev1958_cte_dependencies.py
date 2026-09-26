@@ -8,7 +8,7 @@ import re
 import pytest
 
 from slayer.engine.plan import plan_query
-from slayer.engine.query_engine import _iter_plans_with_producers, _walk_regroup_attaches
+from slayer.ir.planned import _iter_plans_with_producers, _walk_regroup_attaches
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.scope_check import assert_dependency_ordered_ctes, assert_scope_closed
 
