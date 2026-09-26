@@ -28,6 +28,6 @@ Approved test-logic changes (spec-plan, 2026-09-26) — any other test-logic cha
 
 ## 3. Review (spec-review)
 
-- [ ] 3.1 /process-reviews until every source is green
+- [x] 3.1 /process-reviews until every source is green
 - [ ] 3.2 Comment on DEV-1981 that it is done by this PR (after archive)
 - [ ] 3.3 `openspec archive dev-1981-clickhouse-join-based-forced-filters-fail-for-readonly-1` with the user's explicit go-ahead
