@@ -18,7 +18,7 @@ from sqlglot import exp
 import pytest
 
 from slayer.core.errors import ForcedFilterError, SlayerError
-from slayer.core.models import DatasourceConfig
+from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.core.policy import (
     ColumnFilterRuleset,
     JoinFilterRule,
@@ -264,6 +264,22 @@ class TestReadonlyGate:
             assert _SETTING in str(ei.value)
         assert ch_server.executed == []
         assert fake.correlated_checks() == 2
+
+
+class TestOnlyEmittedStagesGate:
+    async def test_pruned_spliced_semi_join_stage_neither_gates_nor_attaches(self, tmp_path, ch_server):
+        """A spliced stage nothing reads is pruned: its semi-join must not refuse or add the setting."""
+        fake = ch_server.start(version="25.4.1.1", readonly=1, correlated=False)
+        engine = await _ch_engine(tmp_path)
+        unused = PUSHED.model_copy(update={"name": "unused"})
+        await engine.storage.save_model(
+            SlayerModel(name="qb", data_source="test", source_queries=[unused, q(dimensions=["status"], measures=[M])]),
+            _validate=False,
+        )
+        sql = await _dry_sql(engine, q(source_model="qb", dimensions=["status"]))
+        assert "EXISTS" not in sql.upper()
+        assert _SETTING not in sql
+        assert fake.permission_checks() == 0
 
 
 class TestPolicyNeedsNoProbe:

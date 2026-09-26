@@ -51,6 +51,8 @@ __all__ = [
     "TrailingWindowProducerKernel",
     "TransformLayer",
     "ValueSlot",
+    "emitted_plans",
+    "is_spliced",
     "plan_has_semi_join_filters",
 ]
 
@@ -695,3 +697,18 @@ def _walk_regroup_attaches(planned):
             yield from walk(attach.producer_plan)
 
     yield from walk(planned)
+
+
+def is_spliced(planned) -> bool:
+    """Whether ``planned`` is a stage spliced in from a stored query-backed model."""
+    schema = planned.stage_schema
+    return schema is not None and schema.display is not None and schema.display.model is not None
+
+
+def emitted_plans(planned_list, *, kept_stages) -> list:
+    """The stages a rendered statement emits: the root, every own stage, each spliced stage it reaches."""
+    root = planned_list[-1]
+    return [
+        p for p in planned_list
+        if p is root or not is_spliced(p) or p.stage_schema.relation_name in kept_stages
+    ]

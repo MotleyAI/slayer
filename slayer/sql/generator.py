@@ -57,6 +57,8 @@ from slayer.ir.planned import (
     RankedGrainMember,
     StageKind,
     ValueSlot,
+    emitted_plans,
+    is_spliced,
     plan_has_semi_join_filters,
     regroup_producer_identity,
 )
@@ -6343,11 +6345,14 @@ def generate_planned_stages(
 ) -> str:
     """Render a multi-stage DAG (``plan_stages`` output) to one SQL string; spliced
     stages nothing reaches are pruned, the stage relations emitted land in ``kept_stages``."""
+    kept: Set[str] = set()
     statement = _build_planned_stages_ast(
-        planned_queries, bundle=bundle, dialect=dialect, kept_stages=kept_stages,
+        planned_queries, bundle=bundle, dialect=dialect, kept_stages=kept,
     )
+    if kept_stages is not None:
+        kept_stages.update(kept)
     # Semi-join pushdown emits a correlated EXISTS; attached unconditionally so SQL never depends on server state.
-    if any(plan_has_semi_join_filters(p) for p in planned_queries):
+    if any(plan_has_semi_join_filters(p) for p in emitted_plans(planned_queries, kept_stages=kept)):
         get_dialect(dialect).attach_correlated_setting(statement)
     # Length-fit over-limit projection aliases from the plan-derived canonical keys, not parsed off the SQL —
     # BigQuery can't parse a backticked dotted alias.
@@ -6406,10 +6411,7 @@ def _build_planned_stages_ast(
         generator._gen_stage_reads = frozenset(planned.stage_reads)
         generator._gen_splice_chain = stage_bundle.splice_chain
         generator._gen_splice_failures = stage_bundle.splice_failures
-        spliced = (
-            planned.stage_schema is not None and planned.stage_schema.display is not None
-            and planned.stage_schema.display.model is not None
-        )
+        spliced = is_spliced(planned)
         with generator._stage_scope(relation):
             statement = generator._build_from_planned(
                 planned, bundle=stage_bundle, reuse_allocator=True,

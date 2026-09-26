@@ -93,6 +93,7 @@ from slayer.ir.planned import (
     PlannedQuery,
     _iter_plans_with_producers,
     _walk_regroup_attaches,
+    emitted_plans,
     plan_has_semi_join_filters,
 )
 from slayer.engine.schema_drift import (
@@ -567,19 +568,12 @@ class _Rendered(BaseModel):
     datasource: DatasourceConfig
     bundle: ResolvedSourceBundle
     planned_list: List[PlannedQuery]
+    # The stages the SQL emits (a spliced stage nothing reads is pruned).
+    emitted_list: List[PlannedQuery]
     model: SlayerModel
     warnings: List[Any] = PydanticField(default_factory=list)
     population: Optional[str] = None
     population_inferred: bool = False
-
-
-def _relation_of(planned: PlannedQuery) -> Optional[str]:
-    return planned.stage_schema.relation_name if planned.stage_schema is not None else None
-
-
-def _is_spliced(planned: PlannedQuery) -> bool:
-    schema = planned.stage_schema
-    return schema is not None and schema.display is not None and schema.display.model is not None
 
 
 def _plan_label(*, planned: PlannedQuery, index: int, root: Optional[SlayerQuery]) -> str:
@@ -904,9 +898,9 @@ class SlayerQueryEngine:
         assert sql is not None
         planned_list = rendered.planned_list
         root_planned = planned_list[-1]
-        if any(plan_has_semi_join_filters(p) for p in planned_list):
+        if any(plan_has_semi_join_filters(p) for p in rendered.emitted_list):
             await self._require_correlated_subqueries(
-                dialect=dialect, datasource=datasource, planned_list=planned_list,
+                dialect=dialect, datasource=datasource, planned_list=rendered.emitted_list,
             )
         # Forced-filter rewrite before dry-run / explain / execute so all three
         # (and the cache key) see the policy-rewritten SQL; no-op without a policy.
@@ -1098,15 +1092,12 @@ class SlayerQueryEngine:
                 )
 
         # Warnings come from the stages the SQL emits (a spliced stage nothing reads is pruned).
-        emitted = [
-            (i, p) for i, p in enumerate(planned_list)
-            if p is planned_list[-1] or not _is_spliced(p) or _relation_of(p) in kept
-        ]
+        plans = emitted_plans(planned_list, kept_stages=kept)
+        emitted_ids = {id(p) for p in plans}
         labels = [
             _plan_label(planned=p, index=i, root=query if p is planned_list[-1] else None)
-            for i, p in emitted
+            for i, p in enumerate(planned_list) if id(p) in emitted_ids
         ]
-        plans = [p for _, p in emitted]
         broadcast_warnings = _collect_broadcast_warnings(planned_list=plans, labels=labels)
         if getattr(query, "to_many_handling", "broadcast") == "error":
             _raise_on_error_events(broadcasts=broadcast_warnings)
@@ -1119,7 +1110,7 @@ class SlayerQueryEngine:
         ]))))
         return _Rendered(
             sql=sql, statement=statement, dialect=dialect, datasource=datasource, bundle=bundle,
-            planned_list=planned_list, model=model, warnings=warnings,
+            planned_list=planned_list, emitted_list=plans, model=model, warnings=warnings,
             population=population, population_inferred=population_inferred,
         )
 
