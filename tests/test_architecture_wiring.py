@@ -3,19 +3,25 @@
 import re
 from pathlib import Path
 
+import yaml
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
-PIN_RE = re.compile(r"living-architecture==([\w.]+) la-arch-")
+PIN_RE = re.compile(r"living-architecture==([\w.]+) la-arch-check\b")
 
 
 def _read(rel: str) -> str:
     return (REPO_ROOT / rel).read_text(encoding="utf-8")
 
 
+def _ci_arch_check_pins() -> set[str]:
+    workflow = yaml.safe_load(_read(".github/workflows/ci.yml"))
+    runs = [step.get("run", "") for job in workflow["jobs"].values() for step in job.get("steps", [])]
+    return {pin for run in runs for pin in PIN_RE.findall(run)}
+
+
 def test_repo_ci_runs_arch_check():
-    assert "la-arch-check" in _read(".github/workflows/ci.yml")
+    assert len(_ci_arch_check_pins()) == 1
 
 
 def test_documented_pin_matches_ci():
-    ci_pins = set(PIN_RE.findall(_read(".github/workflows/ci.yml")))
-    assert len(ci_pins) == 1
-    assert set(PIN_RE.findall(_read("CLAUDE.md"))) == ci_pins
+    assert set(PIN_RE.findall(_read("CLAUDE.md"))) == _ci_arch_check_pins()
