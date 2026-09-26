@@ -32,5 +32,5 @@ assertion; mechanical `.rows` edits at `execute`/`execute_sync` test call sites
 
 - [ ] 3.1 Independent full review of the whole PR diff by the agent (the user asked for one: the original code was not written in this flow) — correctness, arc42 compliance, tests, docs — in addition to the /process-reviews loop
 - [ ] 3.2 /process-reviews until every source is green
-- [ ] 3.3 Comment on DEV-1940 that it is done by this PR (after archive)
-- [ ] 3.4 `openspec archive clickhouse-statement-timeout` with the user's explicit go-ahead
+- [ ] 3.3 Comment on DEV-1977 and DEV-1940 that they are done by this PR (after archive)
+- [ ] 3.4 `openspec archive dev-1977-clickhouse-query-timeout-is-never-applied-and-readonly-1` with the user's explicit go-ahead

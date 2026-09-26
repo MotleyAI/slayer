@@ -30,4 +30,4 @@ _None._
 - Code: `slayer/sql/client.py` (timeout orchestration, `ExecutionResult`), `slayer/sql/dialects/{base,mysql,postgres,clickhouse,snowflake,__init__}.py` (hooks, `MariadbDialect`), `slayer/core/warnings.py` (new payload), `slayer/engine/query_engine.py` and other `execute` callers (`.rows`).
 - Removes the ClickHouse SQL rewrite (`_with_ch_statement_timeout`) and its tests.
 - Docs: `docs/configuration/datasources.md`, `docs/concepts/queries.md`, warning-kind lists in `docs/reference/`.
-- Closes DEV-1940. MariaDB Tier 1 promotion is DEV-1975.
+- Closes DEV-1977 and DEV-1940. MariaDB Tier 1 promotion is DEV-1975.
