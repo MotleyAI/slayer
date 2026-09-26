@@ -113,6 +113,17 @@ class TestReadonlyUsers:
         assert fake.permission_checks() == 1
         assert all(CH_TIMEOUT_KEY not in p for p in fake.params_for("SELECT 1"))
 
+    def test_readonly_1_failing_query_still_warns(self, monkeypatch, execute) -> None:
+        fake = FakeClickHouse(readonly=1, fail_marker="boom_marker")
+        with fake_ch_engine(fake) as engine:
+            route_engine(monkeypatch, engine)
+            client = SlayerSQLClient(datasource=ch_datasource())
+            with warnings.catch_warnings(record=True) as record:
+                warnings.simplefilter("always")
+                with pytest.raises(Exception, match="TIMEOUT_EXCEEDED"):
+                    execute(client, "SELECT 'boom_marker'", 30)
+        assert _skipped(record) == [_readonly_payload(30)]
+
     def test_readonly_2_gets_timeout_without_warning(self, monkeypatch, execute) -> None:
         fake = FakeClickHouse(readonly=2)
         with fake_ch_engine(fake) as engine:

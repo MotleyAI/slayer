@@ -311,14 +311,12 @@ def _permission_lock(engine: Any, factory: Callable[[], Any]) -> Any:
 
 
 def _skip(datasource_name: str, timeout_seconds: int, reason: str) -> StatementTimeoutSkippedWarning:
-    return StatementTimeoutSkippedWarning.model_validate(
+    """Build the skip payload and emit its Python warning now, before the statement runs."""
+    payload = StatementTimeoutSkippedWarning.model_validate(
         {"datasource": datasource_name, "timeout_seconds": timeout_seconds, "reason": reason},
     )
-
-
-def _warn_skipped(skipped: list[StatementTimeoutSkippedWarning]) -> None:
-    for payload in skipped:
-        _warnings_module.warn(SlayerStatementTimeoutSkippedWarning(payload), stacklevel=3)
+    _warnings_module.warn(SlayerStatementTimeoutSkippedWarning(payload), stacklevel=2)
+    return payload
 
 
 def _timeout_is_permitted(conn, *, engine: Any, dialect: SqlDialect) -> bool:
@@ -421,14 +419,13 @@ def _get_column_types_sync(
     with engine.connect() as conn, _statement_timeout(
         conn, engine=engine, dialect=dialect_for_ds_type(db_type),
         datasource_name=datasource_name or str(engine.url), timeout_seconds=_TYPE_PROBE_TIMEOUT_SECONDS,
-    ) as skipped:
+    ):
         ro_sql = _read_only_transaction_sql(db_type)
         if ro_sql:
             _exec_verbatim(conn, ro_sql)
         result = _exec_verbatim(conn=conn, sql=limit_sql)
         types = _extract_types_from_cursor(result, db_type=db_type)
         conn.rollback()
-    _warn_skipped(skipped)
     return types
 
 
@@ -450,14 +447,13 @@ async def _get_column_types_async(
     async with engine.connect() as conn, _statement_timeout_async(
         conn, engine=engine, dialect=dialect_for_ds_type(db_type),
         datasource_name=datasource_name or str(engine.url), timeout_seconds=_TYPE_PROBE_TIMEOUT_SECONDS,
-    ) as skipped:
+    ):
         ro_sql = _read_only_transaction_sql(db_type)
         if ro_sql:
             await _exec_verbatim_async(conn, ro_sql)
         result = await _exec_verbatim_async(conn, limit_sql)
         types = _extract_types_from_cursor(result, db_type=db_type)
         await conn.rollback()
-    _warn_skipped(skipped)
     return types
 
 
@@ -897,7 +893,6 @@ async def _execute_sql_async(
             result = await _exec_verbatim_async(conn, sql)
             rows = _fetch_rows(result)
             timing.record("query", _t)
-    _warn_skipped(skipped)
     return ExecutionResult(rows=rows, warnings=skipped)
 
 
@@ -974,7 +969,6 @@ def _execute_sql_sync(
         datasource_name=datasource_name or str(engine.url), timeout_seconds=timeout_seconds,
     ) as skipped:
         rows = _fetch_rows(_exec_verbatim(conn=conn, sql=sql))
-    _warn_skipped(skipped)
     return ExecutionResult(rows=rows, warnings=skipped)
 
 
