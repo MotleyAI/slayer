@@ -248,10 +248,7 @@ formulas, not as the *names* of measures you declared in the same query —
 declared measure by its alias inside an expression is not supported anywhere in
 SLayer. Write `{"column": "sum(revenue) / sum(cnt)"}` instead.
 
-A windowed measure inside a **declared** composite measure
-(`{"formula": "sum(revenue, window='90d') / sum(cnt)"}`), and any combination of a
-windowed measure with a transform, are still rejected — see
-[formulas](formulas.md#windowed-aggregations).
+Windowed measures work in declared composites and transforms too — see [formulas](formulas.md#windowed-aggregations).
 
 ## Response
 

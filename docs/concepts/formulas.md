@@ -134,12 +134,6 @@ ranks by the rolling value and keeps it out of the result. That works both for a
 bare windowed measure and for one inside an order-only composite
 (`{"column": "sum(revenue, window='90d') / sum(cnt)"}`).
 
-Note the deliberate asymmetry: a windowed measure inside a composite is allowed
-in `order` but not yet in `measures`. Ordering needs only a single scalar
-comparison, whereas projecting the composite surfaces the rolling value's NULLs
-(a grain bucket with no matching source rows yields NULL) as user-visible
-result values — settling those semantics is part of the follow-up below.
-
 #### Time bounds do not clip the window
 
 A trailing window has to read rows from *before* the earliest bucket you asked
@@ -185,16 +179,7 @@ aggregation's home dataset — reachable from it over provably many-to-one join 
 that time dimension inside the measure's sub-query. When it is not
 attributable, the query errors naming the time dimension and the remedy.
 
-The following windowed-measure shapes raise a clear error rather than returning
-wrong numbers, and are planned follow-ups: a windowed measure combined with a
-transform (`cumsum`, `time_shift`, …) in a measure, dimension, filter, or order
-position — though a
-windowed inner under a transform *constituent* of an aggregation source
-(`sum(rank(sum(revenue, window='90d', partition_by=region)))`) does execute; a
-windowed measure nested in an arithmetic/composite expression in `measures`
-(`{"formula": "sum(revenue, window='90d') / 2"}`); or one compared
-against a plain aggregate inside one filter
-(`sum(revenue, window='90d') > 100 and sum(revenue) > 50`).
+A windowed measure composes like any other aggregate: inside arithmetic (`sum(revenue, window='90d') / sum(revenue)`), under a transform (`cumsum(sum(revenue, window='90d'))`, `time_shift(sum(revenue, window='90d'), -1)`), and in filters or `order`, alone or mixed with plain aggregates.
 
 ### Aggregate at a coarser grain (`partition_by=`)
 

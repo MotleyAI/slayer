@@ -21,6 +21,7 @@ pip install motley-slayer[client]        # httpx + pandas for remote mode
 Use SLayer directly in your Python code — no HTTP, no server process:
 
 ```python
+from slayer.async_utils import run_sync
 from slayer.core.models import DatasourceConfig
 from slayer.engine.ingestion import ingest_datasource
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -38,14 +39,16 @@ ds = DatasourceConfig(
     username="analyst",
     password="${DB_PASSWORD}",  # resolved from env vars
 )
-storage.save_datasource(ds)
+run_sync(storage.save_datasource(ds))
 
 # Auto-generate models from schema
 models = ingest_datasource(datasource=ds, schema="public")
 for model in models:
-    storage.save_model(model)
+    run_sync(storage.save_model(model))
     print(f"  {model.name}: {len(model.columns)} columns, {len(model.measures)} measures")
 ```
+
+Storage methods are async: `await` them inside async code, or wrap them with `run_sync` as above.
 
 ## Query
 
@@ -148,6 +151,7 @@ storage = resolve_storage("slayer.db")       # SQLite
 ## Verify it works
 
 ```python
+from slayer.async_utils import run_sync
 from slayer.storage.base import resolve_storage
 from slayer.engine.query_engine import SlayerQueryEngine
 
@@ -155,7 +159,7 @@ storage = resolve_storage("./slayer_data")
 engine = SlayerQueryEngine(storage=storage)
 
 # Should list your ingested models
-print(storage.list_models())
+print(run_sync(storage.list_models()))
 
 # Should return data
 result = engine.execute_sync(query={"source_model": "orders", "measures": ["count(*)"]})
