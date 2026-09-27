@@ -145,7 +145,7 @@ All code, old and new, MUST obey these.
 
 The enforcement bundle — `la-arch-check` (the one import law, from
 MotleyAI/living-architecture; CI pins the version) runs in CI; the full bundle
-runs at the spec-review gate and the arch-slice move gate:
+runs at the pr-review gate and the arch-slice move gate:
 
 ```bash
 la-arch-check                                # also runs in CI; pinned uvx form in CLAUDE.md
