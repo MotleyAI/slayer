@@ -127,6 +127,14 @@ class TestMapTypeCode:
         """MySQL MYSQL_TYPE_DECIMAL = 0."""
         assert _map_type_code(0, db_type="mysql") == "number"
 
+    @pytest.mark.xfail(strict=True, reason="mariadb type codes fall through to the Postgres OID map; fix in DEV-1975")
+    @pytest.mark.parametrize(
+        ("type_code", "category"),
+        [(3, "number"), (246, "number"), (10, "time"), (12, "time"), (16, "number")],
+    )
+    def test_mariadb_uses_mysql_type_codes(self, type_code: int, category: str) -> None:
+        assert _map_type_code(type_code, db_type="mariadb") == category
+
     # --- SQL Server / pyodbc ODBC SQL type codes ---
 
     @pytest.mark.parametrize("db_type", ["mssql", "sqlserver", "tsql"])
@@ -439,6 +447,26 @@ class TestRetryEmptySqlExcerpt:
             "Transient DB error" in rec.getMessage() and "<empty sql>" in rec.getMessage()
             for rec in caplog.records
         )
+
+
+class TestRetryRejectsNonPositiveAttempts:
+    """``max_attempts < 1`` raises on every retry path instead of silently returning ``None``."""
+
+    def test_sync(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        called = MagicMock()
+        monkeypatch.setattr(sql_client, "_execute_sql_sync", called)
+        engine = MagicMock()
+        with pytest.raises(ValueError, match="max_attempts"):
+            _execute_with_retry_sync(sql="SELECT 1", db_type="sqlite", engine=engine, max_attempts=0)
+        called.assert_not_called()
+
+    async def test_threaded(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        called = MagicMock()
+        monkeypatch.setattr(sql_client, "_execute_sql_sync", called)
+        engine = MagicMock()
+        with pytest.raises(ValueError, match="max_attempts"):
+            await _execute_with_retry_threaded(sql="SELECT 1", db_type="sqlite", engine=engine, max_attempts=0)
+        called.assert_not_called()
 
 
 class TestBuildTypeProbeSQL:
@@ -809,11 +837,11 @@ class TestClassifyModelSql:
 class TestReadOnlyTransactionSql:
     """Dialects whose ``SET TRANSACTION READ ONLY`` binds the current txn."""
 
-    @pytest.mark.parametrize("ds_type", ["postgres", "postgresql", "redshift", "oracle"])
+    @pytest.mark.parametrize("ds_type", ["postgres", "postgresql", "redshift", "oracle", None])
     def test_read_only_capable_dialects(self, ds_type: str) -> None:
         assert _read_only_transaction_sql(ds_type) == "SET TRANSACTION READ ONLY"
 
-    @pytest.mark.parametrize("ds_type", ["sqlite", "mysql", "duckdb", "bigquery", None])
+    @pytest.mark.parametrize("ds_type", ["sqlite", "mysql", "duckdb", "bigquery"])
     def test_dialects_without_current_txn_read_only(self, ds_type: str) -> None:
         assert _read_only_transaction_sql(ds_type) is None
 
