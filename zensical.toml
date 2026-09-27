@@ -23,7 +23,6 @@ nav = [
     { "CLI (Terminal)" = "getting-started/cli.md" },
     { "REST API (Any Language)" = "getting-started/rest-api.md" },
     { "Python SDK" = "getting-started/python.md" },
-    { "Flight SQL (BI Tools)" = "getting-started/flight-sql.md" },
   ]},
   { "Concepts" = [
     { "Terminology" = "concepts/terminology.md" },
