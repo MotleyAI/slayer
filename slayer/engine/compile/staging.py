@@ -17,13 +17,12 @@ from typing import Dict, List, Optional, Set, Tuple
 
 from slayer.core.errors import MaterialisationStageError
 from slayer.core.keys import (
-    ArithmeticKey,
-    BetweenKey,
+    KIND_POLICY,
+    VALUE_KEY_TYPES,
     ColumnKey,
     ColumnSqlKey,
     AggregateKey,
-    InKey,
-    ScalarCallKey,
+    LiteralKey,
     TimeTruncKey,
     TransformKey,
     ValueKey,
@@ -45,7 +44,7 @@ from slayer.ir.planned import (
 __all__ = ["stage_slots"]
 
 #: Composite / predicate kinds staged by their operands' stages.
-_COMPOSITE_KINDS = (ArithmeticKey, ScalarCallKey, BetweenKey, InKey)
+_COMPOSITE_KINDS = tuple(k for k in VALUE_KEY_TYPES if KIND_POLICY[k].slot_composite)
 
 
 def _placeholder_phases(
@@ -139,7 +138,7 @@ class _SlotStager:
             return self._aggregate_stage(key)
         if is_placeholder(key):
             return self._placeholder_stage(key)
-        if isinstance(key, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
+        if isinstance(key, (ColumnKey, ColumnSqlKey, TimeTruncKey, LiteralKey)):
             return Stage(kind=StageKind.BASE)
         if isinstance(key, TransformKey):
             return Stage(kind=StageKind.DERIVED, level=1 + self._max_transform_level(key))

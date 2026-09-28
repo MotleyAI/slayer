@@ -194,6 +194,53 @@ class TestPlainDimensionValue:
             dimensions=["quantity"], measures=[_m("quantity + 1")]))
         assert _col(resp, "m", key="sales.quantity") == {q: q + 1 for q in QTY_TIMES_COUNT}
 
+    @pytest.mark.parametrize(("formula", "hits"), [
+        pytest.param("quantity in (1, 2)", {1.0, 2.0}, id="in"),
+        pytest.param("quantity not in (1, 2)", {3.0, 4.0, 5.0}, id="not-in"),
+    ])
+    async def test_aggregate_free_in_predicate(self, exec_engine, formula, hits):
+        resp = await exec_engine.execute(sales_q(
+            dimensions=["quantity"], measures=[_m(formula)]))
+        got = {q: bool(v) for q, v in _col(resp, "m", key="sales.quantity").items()}
+        assert got == {q: q in hits for q in QTY_TIMES_COUNT}
+
+    async def test_literal_measure(self, exec_engine):
+        resp = await exec_engine.execute(sales_q(
+            dimensions=["region"], measures=[_m("1"), _m("'x'", "s"), N]))
+        assert _col(resp, "m") == dict.fromkeys(P_BY_REGION, 1)
+        assert _col(resp, "s") == dict.fromkeys(P_BY_REGION, "x")
+
+
+class TestPredicateDimension:
+    async def test_in_dimension(self, exec_engine):
+        resp = await exec_engine.execute(sales_q(
+            dimensions=["quantity", {"expression": "quantity in (1, 2)", "name": "b"}],
+            measures=[N]))
+        got = {r["sales.quantity"]: bool(r["sales.b"]) for r in resp.data}
+        assert got == {q: q in (1.0, 2.0) for q in QTY_TIMES_COUNT}
+
+
+# An aggregate-free measure without dimensions is the one grand-total cell, even when empty.
+class TestGrandTotalCell:
+    @pytest.mark.parametrize("filters", [
+        pytest.param([], id="all-rows"),
+        pytest.param(["quantity > 100"], id="empty"),
+    ])
+    async def test_constant_measures(self, exec_engine, filters):
+        resp = await exec_engine.execute(sales_q(
+            measures=[_m("1", "lit"), _m("1 + 2", "arith"), _m("abs(-1)", "call"),
+                      _m("1 in (1, 2)", "pred")],
+            filters=filters))
+        assert len(resp.data) == 1
+        [row] = resp.data
+        assert (row["sales.lit"], row["sales.arith"], row["sales.call"]) == (1, 3, 1)
+        assert bool(row["sales.pred"]) is True
+
+    async def test_cross_model(self, exec_engine):
+        resp = await exec_engine.execute(chain_q(
+            measures=[_m("1"), _m("customers.id:count", "c")]))
+        assert resp.data == [{"corders.m": 1, "corders.c": 3}]
+
 
 class TestComputedPlainDimensionValue:
     async def test_combined_with_count(self, exec_engine):

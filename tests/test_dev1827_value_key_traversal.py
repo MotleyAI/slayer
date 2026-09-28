@@ -292,7 +292,7 @@ class TestKindPolicyRegistry:
 
     def test_slot_composite_membership(self) -> None:
         assert {k for k, p in KIND_POLICY.items() if p.slot_composite} == {
-            ArithmeticKey, ScalarCallKey,
+            ArithmeticKey, ScalarCallKey, BetweenKey, InKey,
         }
 
     def test_materialised_order_membership(self) -> None:

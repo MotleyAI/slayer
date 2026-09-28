@@ -39,6 +39,7 @@ from tests._dev1953_fixtures import (
 
 RANK_UREG = "rank(sum(amount), partition_by=ureg)"
 RANK_BAND = "rank(sum(amount), partition_by=spend_band)"
+PARAM_BAND = "rank(sum(amount, partition_by=[spend_band, city]), partition_by=spend_band)"
 PARAM_UREG = ("weighted_avg(amount, weight=rank(sum(amount, partition_by=[ureg, city]), "
               "partition_by=ureg))")
 DIM_R = {"expression": "rank(sum(amount, partition_by=[city, ureg]), partition_by=ureg)",
@@ -95,8 +96,9 @@ def _band_city_ranks() -> Dict[Tuple, int]:
 
 def _param_by_band() -> Dict[str, Optional[float]]:
     band = band_of()
-    rank = rank_within(cell_totals(lambda r: (band[(r[2], r[1])],) * 2))
-    return _weighted_avg(lambda r: band[(r[2], r[1])], lambda r: rank[(band[(r[2], r[1])],) * 2])
+    rank = _band_city_ranks()
+    return _weighted_avg(lambda r: band[(r[2], r[1])],
+                         lambda r: rank[(band[(r[2], r[1])], r[2])])
 
 
 def _dim_cells() -> Dict[Tuple, Optional[float]]:
@@ -256,6 +258,6 @@ class TestAttachCarryingKey:
         resp = await engine.execute(sales_q(
             dimensions=[BAND],
             measures=[ModelMeasure(
-                formula=f"weighted_avg(amount, weight={RANK_BAND})", name="w")]))
+                formula=f"weighted_avg(amount, weight={PARAM_BAND})", name="w")]))
         approx_map(got={r["sales.spend_band"]: r["sales.w"] for r in resp.data},
                    want=_param_by_band())

@@ -6,7 +6,7 @@ The cause is structural: "this sub-expression is a dimension's value, available 
 
 ## What Changes
 
-- One concept, the **dimension value**: a sub-expression of a measure, order target or filter structurally equal to a query dimension's bound key is that dimension's grouped value, in every position and for every dimension kind (plain, joined, stage, computed, partitioned aggregate, re-aggregation, transform).
+- One concept, the **dimension value**: a sub-expression of a measure, order target or filter structurally equal to a query dimension's bound key is that dimension's grouped value, in every position and for every dimension kind (plain, joined, stage, computed, partitioned aggregate, re-aggregation, transform), except a transform-bearing computed dimension in measure position, which keeps its query-grain evaluation until DEV-1963.
 - The checker types every declared measure at query grain: a row-level reference outside aggregates and outside a dimension value fails with `PositionTypingError` at the consuming position, after the existing measure checks.
 - An aggregate-free measure over dimension values (`quantity + 1` by `quantity`) becomes legal, evaluating per result cell.
 - A measure equal to a computed dimension's whole aggregate (`C` with dimension `x = C`, `C` finer-grained) reads `x` instead of failing with `PartitionKeyError`, matching order and filter behaviour.

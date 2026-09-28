@@ -38,7 +38,7 @@ from slayer.core.errors import (
     QueryBackedCycleError,
 )
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
-from slayer.core.keys import BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimeTruncKey, TransformKey, column_leaf, column_path, is_boolean_shaped, parameter_row_leaves, shift_offset_of, source_anchor_path, substitute_value_keys, walk_value_keys
+from slayer.core.keys import BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimeTruncKey, TransformKey, column_leaf, column_path, is_boolean_shaped, parameter_row_leaves, shift_offset_of, source_anchor_path, substitute_value_keys, walk_value_keys
 from slayer.core.join_walker import physical_join_pairs, resolve_hop, terminal_model
 from slayer.core.models import VALUE_PLACEHOLDER, rendered_formula, reserved_value_param_message
 from slayer.core.refs import (
@@ -558,6 +558,12 @@ _MATERIALISED_ORDER_KINDS = tuple(
 _BUILTIN_BAREARG_AGGS_LOCAL_SLICE: frozenset[str] = BUILTIN_AGGREGATIONS
 
 # sqlglot rewrites log10/log2 into 2-arg LOG(base,x), breaking dialects lacking 2-arg LOG; rewrite back to Anonymous.
+
+
+def _grand_total_value(value: Expression) -> Expression:  # pyright: ignore[reportPrivateImportUsage]
+    """``value`` as an aggregate over the whole population: one row, even when empty."""
+    always = exp.GTE(this=exp.Count(this=exp.Star()), expression=exp.Literal.number(0))
+    return exp.Case(ifs=[exp.If(this=always, true=value)])
 
 
 def _grouped(predicate: Expression) -> Expression:  # pyright: ignore[reportPrivateImportUsage]
@@ -2054,7 +2060,7 @@ class SQLGenerator:
             if (
                 slot.phase == Phase.ROW
                 and slot.is_dimension
-                and isinstance(slot.key, (ScalarCallKey, ArithmeticKey))
+                and isinstance(slot.key, _SLOT_COMPOSITE_KINDS)
             ):
                 out[sid] = render_value_key(
                     key=slot.key,
@@ -2231,12 +2237,12 @@ class SQLGenerator:
                     select_columns.append(col_expr.copy().as_(full_alias))
                     group_by_keys.setdefault(sid, col_expr)
                     _record_alias(sid, full_alias)
-                elif isinstance(key, (ScalarCallKey, ArithmeticKey)) and slot.is_dimension:
+                elif isinstance(key, _SLOT_COMPOSITE_KINDS) and slot.is_dimension:
                     dim_expr = computed_dim_expr_by_sid[sid]
                     select_columns.append(dim_expr.copy().as_(full_alias))
                     group_by_keys.setdefault(sid, dim_expr)
                     _record_alias(sid, full_alias)
-                elif isinstance(key, (ScalarCallKey, ArithmeticKey)):
+                elif isinstance(key, (*_SLOT_COMPOSITE_KINDS, LiteralKey)):
                     _defer_composite(sid, slot, full_alias)
                 else:
                     raise NotImplementedError(
@@ -2286,6 +2292,8 @@ class SQLGenerator:
                 )
 
         dimension_values = {slots_by_id[sid].key: gb for sid, gb in group_by_keys.items()}
+        # No dimension and no aggregate: every measure is the single grand-total cell.
+        grand_total = not group_by_keys and not has_aggregation and bool(deferred_composites)
         for idx, slot, full_alias in deferred_composites:
             composite = render_value_key(
                 key=slot.key,
@@ -2306,7 +2314,10 @@ class SQLGenerator:
             )
             if contains_aggregate(slot.key):
                 composite = _wrap_cast_for_type(expr=composite, dt=self._slot_cast_type(slot))
+            elif grand_total:
+                composite = _grand_total_value(composite)
             select_columns[idx] = composite.as_(full_alias)
+        has_aggregation = has_aggregation or grand_total
 
         base_select = exp.Select()
         for col in select_columns:

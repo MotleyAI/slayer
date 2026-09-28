@@ -866,8 +866,8 @@ KIND_POLICY: dict[type, KindPolicy] = {
     TransformKey: KindPolicy(slottable=True, materialised_order=True),
     ArithmeticKey: KindPolicy(slot_composite=True, materialised_order=True),
     ScalarCallKey: KindPolicy(slot_composite=True, materialised_order=True),
-    BetweenKey: KindPolicy(),
-    InKey: KindPolicy(),
+    BetweenKey: KindPolicy(slot_composite=True),
+    InKey: KindPolicy(slot_composite=True),
     SqlFragmentKey: KindPolicy(),
 }
 
