@@ -29,8 +29,7 @@ import pytest_asyncio
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, ModelMeasure, SlayerModel
-from slayer.core.query import SlayerQuery
-from slayer.engine import profiling as _profiling_mod
+from slayer.core.query import ModelExtension, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.search.service import (
     SearchHit,
@@ -682,7 +681,7 @@ async def test_search_no_refresh_when_engine_is_none(
 async def test_search_stale_text_preserved_when_profile_raises(
     stale_setup: tuple[StorageBackend, SlayerQueryEngine], monkeypatch,
 ) -> None:
-    """If the helper's profile_column raises, the search hit falls back to
+    """If the profiling query raises, the search hit falls back to
     the original (stale) rendered text. No crash. Storage stays untouched.
 
     Codex round-3 finding #6: assert the hit text itself survives (not just
@@ -691,7 +690,7 @@ async def test_search_stale_text_preserved_when_profile_raises(
     storage, engine = stale_setup
     svc = SearchService(storage=storage, engine=engine)
 
-    async def explodes(**_kwargs):
+    async def explodes(*_args, **_kwargs):
         raise RuntimeError("simulated profile failure")
 
     persist_calls: list = []
@@ -701,7 +700,7 @@ async def test_search_stale_text_preserved_when_profile_raises(
         persist_calls.append(kwargs)
         return await original_persist(**kwargs)
 
-    monkeypatch.setattr("slayer.engine.profiling.profile_column", explodes)
+    monkeypatch.setattr(engine, "execute", explodes)
     monkeypatch.setattr(storage, "update_column_sampled", tracking_persist)
 
     response = await svc.search(
@@ -741,33 +740,28 @@ async def test_search_stale_text_preserved_when_profile_raises(
 async def test_search_numeric_column_hit_is_refreshed(
     stale_setup: tuple[StorageBackend, SlayerQueryEngine], monkeypatch,
 ) -> None:
-    """DEV-1615: the helper's categorical-only early-return was removed, so a
-    genuinely-unsampled NUMERIC column hit IS back-filled by the search refresh
-    path (min/max range), matching ``inspect``'s behavior. This inverts the
-    DEV-1516 assertion that search skipped numeric hits."""
+    """A genuinely-unsampled NUMERIC column hit is back-filled by the search
+    refresh path (min/max range), matching ``inspect``'s behavior."""
     storage, engine = stale_setup
     svc = SearchService(storage=storage, engine=engine)
 
-    profile_call_columns: list = []
-    real_profile = _profiling_mod.profile_column
+    numeric_queries: list = []
+    real_execute = engine.execute
 
-    async def counting_profile(*, model, column, engine):
-        profile_call_columns.append(column.name)
-        return await real_profile(model=model, column=column, engine=engine)
+    async def counting_execute(*args, **kwargs):
+        q = kwargs.get("query", args[0] if args else None)
+        if isinstance(q, SlayerQuery) and isinstance(q.source_model, ModelExtension):
+            numeric_queries.append(q)
+        return await real_execute(*args, **kwargs)
 
-    monkeypatch.setattr(
-        "slayer.engine.profiling.profile_column", counting_profile,
-    )
+    monkeypatch.setattr(engine, "execute", counting_execute)
 
     response = await svc.search(
         entities=["warehouse.orders.amount"],
         max_results=10,
     )
-    # profile_column IS invoked for the uncached numeric ``amount`` column.
-    assert "amount" in profile_call_columns, (
-        f"numeric column must trigger profile_column from search refresh; "
-        f"got calls for columns: {profile_call_columns}"
-    )
+    # A min/max query IS run for the uncached numeric ``amount`` column.
+    assert numeric_queries, "numeric column must trigger a min/max query from search refresh"
     # And the min/max range is persisted for later reads.
     reloaded = await storage.get_model("orders", data_source="warehouse")
     assert reloaded is not None

@@ -26,7 +26,7 @@ from slayer.core.policy import (
     SessionPolicy,
 )
 from slayer.core.query import ColumnRef, SlayerQuery
-from slayer.engine.profiling import profile_column
+from slayer.engine.profiling import ensure_samples_fresh
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.client import SlayerSQLClient
 from slayer.storage.sqlite_conn import transaction
@@ -228,9 +228,10 @@ async def test_profiling_sample_values_org_scoped(rls_storage):
     engine = SlayerQueryEngine(storage=rls_storage, policy=_org_policy(ORG_A))
     customers = await rls_storage.get_model("customers", data_source="rls_sqlite")
     region_col = next(c for c in customers.columns if c.name == "region")
-    sample = await profile_column(model=customers, column=region_col, engine=engine)
-    assert sample is not None
-    assert set(sample.sampled_values) == {"US", "EU"}  # APAC (orgB) excluded
+    outcome = await ensure_samples_fresh(
+        model=customers, columns=[region_col], engine=engine, storage=rls_storage,
+    )
+    assert set(outcome.columns[0].sampled_values) == {"US", "EU"}  # APAC (orgB) excluded
 
 
 # -- dry_run preview shows the wraps ----------------------------------------

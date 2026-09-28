@@ -172,9 +172,8 @@ class TestMCPModelToolsDataSourceArg:
     async def test_inspect_model_helper_chain_scoped_to_data_source(
         self, mcp_server, storage, monkeypatch
     ) -> None:
-        """The helpers backing ``inspect_model`` (``_get_row_count``,
-        ``_collect_dim_profile``, ``_collect_measure_profile``,
-        the sample-data query) all run ``engine.execute`` against the model.
+        """The helpers backing ``inspect_model`` (``_get_row_count``, sample
+        profiling, the sample-data query) all run ``engine.execute`` against the model.
         After v4 each of those calls must forward
         ``data_source=model.data_source`` so the engine's bare-name resolution
         doesn't pick the sibling in another datasource. See PR #92 thread #7.

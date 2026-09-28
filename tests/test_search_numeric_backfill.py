@@ -1,14 +1,9 @@
-"""DEV-1615: the search post-fusion column-hit hook now back-fills
-genuinely-unsampled NUMERIC/temporal columns too (not just categorical).
+"""The search post-fusion column-hit hook back-fills genuinely-unsampled
+NUMERIC/temporal columns too (not just categorical), against a REAL sqlite
+table so the end-to-end profile + persist is proven.
 
-Removing ``ensure_column_sample_fresh``'s categorical-only early-return is a
-deliberate, shared behavior change: both ``inspect`` and ``search`` fill
-ranges on read. These tests pin the search side against a REAL sqlite table
-(no monkeypatch of the helper) so the end-to-end profile + persist is proven.
-
-The hits are surfaced deterministically via ``entities=[<canonical>]`` (the
-BM25 implicit self-reference, DEV-1513) so the numeric column is reliably a
-column hit regardless of ranking.
+Hits are surfaced deterministically via ``entities=[<canonical>]`` so the
+numeric column is reliably a column hit regardless of ranking.
 """
 
 from __future__ import annotations

@@ -1,9 +1,9 @@
 ## 1. Tests (spec-tests stage)
 
-- [ ] 1.1 Write failing scenario tests for every `#### Scenario` in `specs/models/sample-profiling/spec.md` as unit tests on in-process SQLite/DuckDB engines (NOT `@pytest.mark.integration`); count executed queries by wrapping the engine's SQL client / `engine.execute`; simulate a column failure with a column whose `sql` errors and a model-wide failure with a missing `sql_table`; patch the profiling clock for TTL scenarios; use `caplog` for WARNING counts. Verify: each new test fails on the current code for the stated reason.
-- [ ] 1.2 Cover the non-scenario D6/D1 details: persist-failure partial + total (storage double that raises), `ProfileOutcome.errors` contents, forced refresh keeps `only_columns` and the `_is_table_backed` gate. Verify: tests fail before implementation where behaviour changes.
-- [ ] 1.3 Rewrite tests that exercise the deleted helpers (`tests/test_engine_profiling.py`, `tests/test_entry_points_namespacing.py`, `tests/test_dev1967_identifier_columns.py`, `tests/integration/test_mcp_inspect.py`) against the owner — ask the user's consent per file before changing any test's logic; mechanical call-site renames that preserve assertions need no OK. Verify: rewritten tests pass their collection and assert the same observable behaviour.
-- [ ] 1.4 Codex-review the tests against the spec and design. Verify: findings resolved or dispositioned with the user.
+- [x] 1.1 Write failing scenario tests for every `#### Scenario` in `specs/models/sample-profiling/spec.md` as unit tests on in-process SQLite/DuckDB engines (NOT `@pytest.mark.integration`); count executed queries by wrapping the engine's SQL client / `engine.execute`; simulate a column failure with a column whose `sql` errors and a model-wide failure with a missing `sql_table`; patch the profiling clock for TTL scenarios; use `caplog` for WARNING counts. Verify: each new test fails on the current code for the stated reason.
+- [x] 1.2 Cover the non-scenario D6/D1 details: persist-failure partial + total (storage double that raises), `ProfileOutcome.errors` contents, forced refresh keeps `only_columns` and the `_is_table_backed` gate. Verify: tests fail before implementation where behaviour changes.
+- [x] 1.3 Rewrite tests that exercise the deleted helpers (`tests/test_engine_profiling.py`, `tests/test_entry_points_namespacing.py`, `tests/test_dev1967_identifier_columns.py`, `tests/integration/test_mcp_inspect.py`) against the owner — ask the user's consent per file before changing any test's logic; mechanical call-site renames that preserve assertions need no OK. Verify: rewritten tests pass their collection and assert the same observable behaviour.
+- [x] 1.4 Codex-review the tests against the spec and design. Verify: findings resolved or dispositioned with the user.
 
 ## 2. Owner (`slayer/engine/profiling.py`)
 
@@ -28,5 +28,5 @@
 
 ## 5. Gates
 
-- [ ] 5.1 `poetry run pytest -m "not integration"` all green; `poetry run ruff check slayer/ tests/` clean; `poetry run basedpyright` no new errors vs baseline; `poetry run python tools/arch_check.py` green. Verify: command outputs.
+- [ ] 5.1 `poetry run pytest -m "not integration"` all green; `poetry run ruff check slayer/ tests/` clean; `poetry run basedpyright` no new errors vs baseline; `la-arch-check` (pinned uvx form in CLAUDE.md) green. Verify: command outputs.
 - [ ] 5.2 Integration suite with the CI invocation (CLAUDE.md) for `tests/integration/test_mcp_inspect.py` and any other touched integration file. Verify: green or skipped-for-unavailable-DB only.
