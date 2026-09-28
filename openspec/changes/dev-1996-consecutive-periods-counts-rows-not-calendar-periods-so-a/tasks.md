@@ -24,5 +24,5 @@
 ## 4. Verification
 
 - [x] 4.1 `poetry run pytest -m "not integration"` all green
-- [ ] 4.2 Integration suite with the CI invocation (CLAUDE.md) green, plus the MySQL/ClickHouse/SQL Server files run locally where their servers are available
+- [x] 4.2 Integration suite with the CI invocation (CLAUDE.md) green, plus the MySQL/ClickHouse/SQL Server files run locally where their servers are available
 - [x] 4.3 `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs baseline), `openspec validate dev-1996-consecutive-periods-counts-rows-not-calendar-periods-so-a --strict`
