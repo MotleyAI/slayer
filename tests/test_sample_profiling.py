@@ -180,6 +180,33 @@ def clock(monkeypatch) -> _Clock:
 
 
 # ---------------------------------------------------------------------------
+# Failure-cache fingerprints
+# ---------------------------------------------------------------------------
+
+
+def test_fingerprints_ignore_sample_fields() -> None:
+    model = _orders()
+    sampled = model.model_copy(update={"columns": [
+        c.model_copy(update={"sampled": "x", "sampled_values": ["x"], "distinct_count": 1}) for c in model.columns
+    ]})
+    assert profiling._model_fingerprint(sampled) == profiling._model_fingerprint(model)
+    assert profiling._column_fingerprint(sampled.columns[1]) == profiling._column_fingerprint(model.columns[1])
+
+
+def test_fingerprints_change_on_definition_edits() -> None:
+    model = _orders()
+    status = _cols(model, "status")[0]
+    assert profiling._model_fingerprint(model.model_copy(update={"sql_table": "u"})) != profiling._model_fingerprint(model)
+    assert profiling._column_fingerprint(status.model_copy(update={"sql": "channel"})) != profiling._column_fingerprint(status)
+
+
+def test_model_fingerprint_ignores_column_order() -> None:
+    model = _orders()
+    reordered = model.model_copy(update={"columns": list(reversed(model.columns))})
+    assert profiling._model_fingerprint(reordered) == profiling._model_fingerprint(model)
+
+
+# ---------------------------------------------------------------------------
 # One profiling path
 # ---------------------------------------------------------------------------
 
