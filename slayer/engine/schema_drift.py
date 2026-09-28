@@ -1532,6 +1532,10 @@ class IntrospectionUnavailable(Exception):
     """Every table failed to introspect — callers must not read this as "all dropped"."""
 
 
+class DatasourceUnreachable(Exception):
+    """A snapshot's datasource recently failed to connect; no verdict until it expires."""
+
+
 def _live_schema_refs(
     *,
     inspector: sa.engine.Inspector,
@@ -1714,6 +1718,15 @@ class _LiveConnection:
             ingestion._dispose_quietly(self._opened[0])
 
 
+def _probe_connect(datasource: DatasourceConfig) -> None:
+    """Raise when ``datasource`` cannot be connected to."""
+    conn = _LiveConnection(datasource)
+    try:
+        conn.open()
+    finally:
+        conn.close()
+
+
 def _live_schema_for_datasource(
     *,
     datasource: DatasourceConfig,
@@ -1764,10 +1777,15 @@ class DriftSnapshot(BaseModel):
 
     created_at: float
     unavailable: bool = False
+    unreachable: str | None = None
     catalog: _Catalog | None = None
     tables: dict[tuple[SchemaRef, str], LiveTable] = Field(default_factory=dict)
     sql_trials: dict[str, _SqlTrial] = Field(default_factory=dict)
     lock: asyncio.Lock = Field(default_factory=asyncio.Lock)
+
+    def raise_if_unreachable(self) -> None:
+        if self.unreachable is not None:
+            raise DatasourceUnreachable(self.unreachable)
 
     def live_tables(
         self, *, datasource: DatasourceConfig, sql_tables: set[str], fallback_schema_tokens: set[str],
@@ -1807,6 +1825,9 @@ class DriftSnapshot(BaseModel):
             return live
         except IntrospectionUnavailable:
             self.unavailable = True
+            raise
+        except Exception as exc:
+            self.unreachable = f"live schema of datasource {datasource.name!r} failed: {exc}"
             raise
         finally:
             conn.close()
@@ -2408,6 +2429,55 @@ async def _collect_sql_table_diffs(
     }
 
 
+def _sql_client_for(
+    datasource: DatasourceConfig, sql_clients: dict[EngineCacheKey, SlayerSQLClient] | None,
+) -> SlayerSQLClient:
+    # Tuple-keyed like SlayerQueryEngine._sql_clients so Snowflake datasources
+    # differing in warehouse/role get distinct clients.
+    key = _sql_client_cache_key(datasource)
+    client = (sql_clients or {}).get(key)
+    if client is None:
+        client = SlayerSQLClient(datasource=datasource)
+        # Cache the client back so its asyncpg pool is reachable by
+        # SlayerQueryEngine.aclose(). None sql_clients (direct/test) is unchanged.
+        if sql_clients is not None:
+            sql_clients[key] = client
+    return client
+
+
+async def _sql_trials(
+    *,
+    datasource: DatasourceConfig,
+    client: SlayerSQLClient,
+    sql_models: list[SlayerModel],
+    snapshot: DriftSnapshot | None,
+) -> dict[str, _SqlTrial]:
+    """Trial results keyed by SQL text: one trial per distinct text not already in ``snapshot``."""
+
+    async def _invalid_sql(model: SlayerModel, live_cols: dict[str, DataType] | None) -> bool:
+        return live_cols is None and await _source_tables_resolve(model=model, client=client)
+
+    trials: dict[str, _SqlTrial] = dict(snapshot.sql_trials) if snapshot is not None else {}
+    pending = {m.sql or "": m for m in sql_models if (m.sql or "") not in trials}
+    live = await asyncio.gather(
+        *(_live_columns_for_sql_model(model=m, client=client) for m in pending.values())
+    )
+    if any(cols is None for cols in live):
+        # A failed trial is drift evidence only while the datasource is reachable.
+        try:
+            await asyncio.to_thread(_probe_connect, datasource)
+        except Exception as exc:
+            if snapshot is not None:
+                snapshot.unreachable = f"datasource {datasource.name!r} unreachable: {exc}"
+            raise
+    flags = await asyncio.gather(*map(_invalid_sql, pending.values(), live))
+    for sql_text, live_cols, invalid_sql in zip(pending, live, flags):
+        trials[sql_text] = _SqlTrial(live_columns=live_cols, invalid_sql=invalid_sql)
+        if snapshot is not None:
+            snapshot.sql_trials[sql_text] = trials[sql_text]
+    return trials
+
+
 async def _collect_sql_diffs(
     *,
     datasource: DatasourceConfig,
@@ -2419,35 +2489,15 @@ async def _collect_sql_diffs(
     out: dict[str, tuple[ToDeleteEntry | None, set[str]]] = {}
     if not sql_models:
         return out
-    # Tuple-keyed like SlayerQueryEngine._sql_clients so Snowflake datasources
-    # differing in warehouse/role get distinct clients.
-    key = _sql_client_cache_key(datasource)
-    client = (sql_clients or {}).get(key)
-    if client is None:
-        client = SlayerSQLClient(datasource=datasource)
-        # Cache the client back so its asyncpg pool is reachable by
-        # SlayerQueryEngine.aclose(). None sql_clients (direct/test) is unchanged.
-        if sql_clients is not None:
-            sql_clients[key] = client
-
-    async def _trial(model: SlayerModel) -> _SqlTrial:
-        live_cols = await _live_columns_for_sql_model(model=model, client=client)
-        invalid_sql = live_cols is None and await _source_tables_resolve(
-            model=model, client=client
-        )
-        return _SqlTrial(live_columns=live_cols, invalid_sql=invalid_sql)
-
-    async def _diff_one(model: SlayerModel) -> None:
-        trial = snapshot.sql_trials.get(model.sql or "") if snapshot is not None else None
-        if trial is None:
-            trial = await _trial(model)
-            if snapshot is not None:
-                snapshot.sql_trials[model.sql or ""] = trial
+    trials = await _sql_trials(
+        datasource=datasource, client=_sql_client_for(datasource, sql_clients),
+        sql_models=sql_models, snapshot=snapshot,
+    )
+    for model in sql_models:
+        trial = trials[model.sql or ""]
         out[model.name] = diff_sql_model(
             model=model, live_columns=trial.live_columns, invalid_sql=trial.invalid_sql
         )
-
-    await asyncio.gather(*(_diff_one(m) for m in sql_models))
     return out
 
 
@@ -2466,6 +2516,8 @@ async def validate_datasource(
     """
     if not models:
         return []
+    if snapshot is not None:
+        snapshot.raise_if_unreachable()
 
     if available_in_ds is None:
         available_in_ds = {m.name for m in models}

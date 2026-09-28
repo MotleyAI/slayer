@@ -9,8 +9,11 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import gc
 import inspect
+import sys
 import textwrap
+import types
 from typing import cast
 
 import pytest
@@ -123,6 +126,28 @@ class TestTargets:
     def test_by_name_imports_are_guarded(self) -> None:
         fn = query_engine_module.build_flat_rename_wrapper
         assert getattr(fn, law.GUARD_MARK, None) == "build_flat_rename_wrapper"
+
+    def test_install_survives_an_import_during_its_module_scan(self) -> None:
+        # A finalizer run by GC mid-scan may import, growing sys.modules.
+        added: list[str] = []
+
+        def _import_on_gc(phase: str, _info: dict) -> None:
+            if phase == "start":
+                added.append(f"_law_gc_probe_{len(added)}")
+                sys.modules[added[-1]] = types.ModuleType(added[-1])
+
+        threshold = gc.get_threshold()
+        gc.callbacks.append(_import_on_gc)
+        gc.set_threshold(1)
+        try:
+            with pytest.MonkeyPatch.context() as mp:
+                law.install(mp)
+        finally:
+            gc.set_threshold(*threshold)
+            gc.callbacks.remove(_import_on_gc)
+            for name in added:
+                sys.modules.pop(name, None)
+        assert added
 
 
 class TestEngine:

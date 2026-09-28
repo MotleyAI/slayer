@@ -440,6 +440,20 @@ class TestSnapshotReuse:
             )
         assert spies.trialled() == ["sq_orders"]
 
+    async def test_read_sql_models_sharing_sql_are_trialled_once(
+        self, env: _Env, spies: _Spies,
+    ) -> None:
+        sql = "SELECT id, amount FROM orders"
+        await env.save(_sql_model(name="sq_b", sql=sql))
+        await env.save(_sql_model(name="sq_a", sql=sql).model_copy(update={
+            "joins": [ModelJoin(target_model="sq_b", join_pairs=[["id", "id"]])],
+        }))
+        await _fails_unwrapped(env.engine, {
+            "source_model": "sq_a", "dimensions": ["sq_b.id"],
+            "measures": [{"formula": "sum(bad)"}],
+        })
+        assert len(spies.trialled()) == 1
+
     async def test_broken_sql_model_classification_is_reused(self, env: _Env, spies: _Spies) -> None:
         await env.save(_sql_model(
             name="sq_broken", sql="SELECT id, NO_SUCH_FUNCTION(amount) AS amount FROM orders",
@@ -629,6 +643,58 @@ class TestResolvedDatasource:
         monkeypatch.setattr(SlayerQueryEngine, "_plan_and_render", _foreign_source)
         await _fails_unwrapped(env.engine, _UNRELATED_FAILURE)
         assert spies.listed_databases() == {env.db_path}
+
+
+async def _unreachable_engine(tmp: Path) -> SlayerQueryEngine:
+    """An engine whose one sqlite datasource lives in a missing directory, so every connect fails."""
+    storage = YAMLStorage(base_dir=str(tmp / "storage"))
+    await storage.save_datasource(
+        DatasourceConfig(name="ds", type="sqlite", database=str(tmp / "missing" / "live.db")),
+    )
+    await storage.save_model(_base_models("ds")[0])
+    await storage.save_model(_sql_model(name="sq_customers", sql="SELECT id, region FROM customers"))
+    engine = SlayerQueryEngine(storage=storage)
+    _install_clock(engine, _Clock())
+    return engine
+
+
+class TestUnreachableDatasource:
+    @pytest.mark.parametrize("source", ["customers", "sq_customers"])
+    async def test_an_unreachable_datasource_is_reused_as_no_verdict(
+        self, tmp_path: Path, source: str,
+    ) -> None:
+        engine = await _unreachable_engine(tmp_path)
+        query = {"source_model": source, "measures": [{"formula": "count(*)"}]}
+        try:
+            with patch.object(
+                schema_drift._LiveConnection, "open", autospec=True,
+                side_effect=schema_drift._LiveConnection.open,
+            ) as connect, patch.object(
+                schema_drift, "_live_columns_for_sql_model",
+                wraps=schema_drift._live_columns_for_sql_model,
+            ) as trial:
+                await _fails_unwrapped(engine, query)
+                attempts = connect.call_count + trial.call_count
+                await _fails_unwrapped(engine, query)
+            assert attempts >= 1
+            assert connect.call_count + trial.call_count == attempts
+        finally:
+            await engine.aclose()
+
+    async def test_explicit_validation_of_an_unreachable_datasource_reports_no_sql_drift(
+        self, tmp_path: Path,
+    ) -> None:
+        storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
+        await storage.save_datasource(
+            DatasourceConfig(name="ds", type="sqlite", database=str(tmp_path / "missing" / "live.db")),
+        )
+        await storage.save_model(_sql_model(name="sq_customers", sql="SELECT id, region FROM customers"))
+        engine = SlayerQueryEngine(storage=storage)
+        try:
+            with pytest.raises(SQLAlchemyError):
+                await engine.validate_models(data_source="ds")
+        finally:
+            await engine.aclose()
 
 
 _STAMP = "slayer_model"

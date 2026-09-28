@@ -49,6 +49,10 @@ Attribution SHALL introspect only the live objects of read `sql_table` models, t
 - **WHEN** `validate_models` is called for a datasource
 - **THEN** it reports drift on every model of that datasource, as before
 
+#### Scenario: Explicit validation of an unreachable datasource reports no sql drift
+- **WHEN** `validate_models` is called for a datasource that cannot be connected to
+- **THEN** it raises the connection error instead of reporting its `sql` models as dropped
+
 ### Requirement: Attribution reuses live-schema facts for a bounded time
 Attribution SHALL reuse the live-schema facts it gathered for a datasource (schema listings, table metadata, `sql`-model trial results, and an "introspection unavailable" outcome) for at most 60 seconds from when they were first gathered, sharing them between concurrent failures. Verdicts SHALL be recomputed from the current persisted models on every failure. A cached listing's absence of a table SHALL be trusted only for tables that listing was taken to look for; otherwise the listing SHALL be re-taken. Explicit validation SHALL NOT use reused facts.
 
@@ -67,6 +71,10 @@ Attribution SHALL reuse the live-schema facts it gathered for a datasource (sche
 #### Scenario: Unavailable introspection is reused as no verdict
 - **WHEN** the datasource's schemas cannot be listed and a query fails twice within 60 seconds
 - **THEN** both failures propagate the original database error and schema listing is attempted once
+
+#### Scenario: An unreachable datasource is reused as no verdict
+- **WHEN** the datasource cannot be connected to and queries reading its `sql_table` or `sql` models fail twice within 60 seconds
+- **THEN** both failures propagate the original database error and the connection is attempted once
 
 #### Scenario: A model edit within the window is honoured
 - **WHEN** a query fails, then within 60 seconds the model is edited to drop the column the live table lost, and a different query on the model fails
