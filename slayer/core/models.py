@@ -27,6 +27,7 @@ from slayer.core.enums import (
     RANKED_AGGREGATIONS,
     TimeGranularity,
     _coerce_legacy_datatype,
+    builtin_empty_value,
 )
 from slayer.core.errors import JoinKeyError
 from slayer.core.format import NumberFormat
@@ -466,6 +467,20 @@ class Aggregation(BaseModel):
                 f"{', '.join(sorted(_GRANULARITY_NAMES))}"
             )
         return self
+
+
+def aggregation_definition(*, owner: "SlayerModel | None", agg: str) -> Aggregation | None:
+    """``owner``'s declaration of ``agg``, else ``None``."""
+    if owner is None:
+        return None
+    return next((a for a in (owner.aggregations or []) if a.name == agg), None)
+
+
+def empty_value(*, agg: str, definition: Aggregation | None) -> int | None:
+    """``agg``'s value over no rows; a declared ``formula`` overrides the built-in's."""
+    if definition is not None and definition.formula is not None:
+        return None
+    return builtin_empty_value(agg)
 
 
 def rendered_formula(*, agg: str, definition: Aggregation | None) -> str | None:

@@ -27,10 +27,12 @@ from pydantic import BaseModel, ConfigDict
 
 from slayer.core.enums import JoinCardinality, JoinType, invert_cardinality
 from slayer.core.errors import AmbiguousJoinPathError, CircularJoinPathError
+from slayer.core.keys import ValueKey, source_anchor_path
 from slayer.core.models import ModelJoin, SlayerModel, join_key_error
 
 __all__ = [
     "OrientedJoin",
+    "aggregation_owner",
     "canonical_path",
     "canonical_token",
     "edges_between",
@@ -410,3 +412,15 @@ def terminal_model(
     if chain is None:
         return None
     return models.get(chain[-1].target_model) if chain else root
+
+
+def aggregation_owner(
+    *, root: SlayerModel | None, source: ValueKey, models_by_name: dict[str, SlayerModel],
+) -> SlayerModel | None:
+    """The model declaring ``source``'s aggregation: ``root`` walked along the source
+    anchor; ``None`` with no root or an unresolvable hop."""
+    if root is None:
+        return None
+    return terminal_model(
+        root=root, path=source_anchor_path(source), models_by_name=models_by_name,
+    )

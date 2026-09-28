@@ -137,6 +137,8 @@ class AliasFacilities(BaseModel):
     available_alias_by_slot_id: Dict[str, str] = Field(default_factory=dict)
     table_by_slot_id: Dict[str, str] = Field(default_factory=dict)
     composite_alias_slot_ids: Set[str] = Field(default_factory=set)
+    #: Attached-producer slots: their value expression (empty value applied) wins over the alias.
+    value_by_slot_id: Dict[str, Expression] = Field(default_factory=dict)
 
 
 class RenderContext(BaseModel):
@@ -190,6 +192,9 @@ def _render_via_alias(key: ValueKey, ctx: RenderContext) -> exp.Expression:
     facilities = ctx.aliases
     assert facilities is not None  # guarded by the caller
     slot_id = facilities.slot_id_by_key.get(key)
+    value = facilities.value_by_slot_id.get(slot_id) if slot_id is not None else None
+    if value is not None:
+        return value.copy()
     alias = (
         facilities.available_alias_by_slot_id.get(slot_id)
         if slot_id is not None
