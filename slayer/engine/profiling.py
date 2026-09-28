@@ -332,6 +332,30 @@ class _Run:
             self.errors.append(f"{self.model.name}.{target.column.name} (persist): {msg}")
 
 
+def _served_from_cache(
+    *,
+    target: _Target,
+    model: SlayerModel,
+    state: _EngineProfileState,
+    result: list[Column],
+    now: float,
+    scoped: bool,
+) -> bool:
+    """True when ``target`` needs no query; scoped sample hits are written into ``result``."""
+    c = target.column
+    if scoped:
+        hit = state.live(table=state.samples, key=target.key, now=now)
+        if hit is not None and hit.sample is not None:
+            result[target.index] = c.model_copy(update=hit.sample.model_dump())
+            return True
+    elif _is_sample_cached(c, model=model):
+        return True
+    if state.live(table=state.failures, key=target.key, now=now) is not None:
+        logger.debug("sample profiling: %s.%s.%s skipped (cached failure)", model.data_source, model.name, c.name)
+        return True
+    return False
+
+
 async def ensure_samples_fresh(
     *,
     model: SlayerModel,
@@ -347,29 +371,18 @@ async def ensure_samples_fresh(
     model_key: _Key = (model.data_source or "", model.name, _model_fingerprint(model))
     # Under a policy, stored samples are never surfaced.
     result = [c.model_copy(update=_NO_SAMPLE.model_dump()) for c in columns] if scoped else list(columns)
-    candidates = [(i, c) for i, c in enumerate(columns) if _is_profilable(c, model=model)]
-    if not candidates:
-        return ProfileOutcome(columns=result)
-    if not force and state.live(table=state.failures, key=model_key, now=now) is not None:
-        logger.debug("sample profiling: %s.%s skipped (cached model failure)", model.data_source, model.name)
-        return ProfileOutcome(columns=result)
-    targets: list[_Target] = []
-    for i, c in candidates:
-        key = (*model_key, c.name, _column_fingerprint(c))
-        if not force:
-            if scoped:
-                hit = state.live(table=state.samples, key=key, now=now)
-                if hit is not None and hit.sample is not None:
-                    result[i] = c.model_copy(update=hit.sample.model_dump())
-                    continue
-            elif _is_sample_cached(c, model=model):
-                continue
-            if state.live(table=state.failures, key=key, now=now) is not None:
-                logger.debug(
-                    "sample profiling: %s.%s.%s skipped (cached failure)", model.data_source, model.name, c.name,
-                )
-                continue
-        targets.append(_Target(index=i, column=c, key=key))
+    targets = [
+        _Target(index=i, column=c, key=(*model_key, c.name, _column_fingerprint(c)))
+        for i, c in enumerate(columns) if _is_profilable(c, model=model)
+    ]
+    if not force:
+        targets = [
+            t for t in targets
+            if not _served_from_cache(target=t, model=model, state=state, result=result, now=now, scoped=scoped)
+        ]
+        if targets and state.live(table=state.failures, key=model_key, now=now) is not None:
+            logger.debug("sample profiling: %s.%s skipped (cached model failure)", model.data_source, model.name)
+            return ProfileOutcome(columns=result)
     if not targets:
         return ProfileOutcome(columns=result)
     run = _Run(

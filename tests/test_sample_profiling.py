@@ -874,6 +874,19 @@ async def test_policy_engine_reuses_its_own_samples(env, monkeypatch, clock) -> 
     assert log
 
 
+async def test_policy_model_failure_still_returns_scoped_samples(env, monkeypatch) -> None:
+    _, storage = env
+    bad = [Column(name=f"bad{i}", sql=f"no_such_fn(status, {i})", type=DataType.TEXT) for i in range(3)]
+    model = await _save(storage, _orders(extra=bad))
+    engine = _policy_engine(storage)
+    first = await _profile(engine=engine, storage=storage, model=model)
+    assert any("profiling unavailable" in e for e in first.errors)
+    log = _record(engine=engine, monkeypatch=monkeypatch)
+    outcome = await _profile(engine=engine, storage=storage, model=model)
+    assert log == []
+    assert next(c for c in outcome.columns if c.name == "status").sampled_values == ["paid"]
+
+
 async def test_policy_engines_do_not_share_samples(env) -> None:
     _, storage = env
     model = await _save(storage, _orders())
