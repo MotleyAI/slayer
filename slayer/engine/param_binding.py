@@ -19,7 +19,12 @@ from slayer.core.errors import (
     UnknownReferenceError,
     UnresolvableDimensionJoinError,
 )
-from slayer.core.join_walker import cancelling_revisit, terminal_model, walk_cancelling
+from slayer.core.join_walker import (
+    aggregation_owner,
+    cancelling_revisit,
+    terminal_model,
+    walk_cancelling,
+)
 from slayer.core.keys import (
     ColumnKey,
     ColumnSqlKey,
@@ -33,6 +38,7 @@ from slayer.core.models import (
     WINDOW_PARAM,
     Aggregation,
     SlayerModel,
+    aggregation_definition,
     rendered_formula,
     reserved_window_param_message,
 )
@@ -87,17 +93,6 @@ def _fresh_sentinel(text: str) -> str:
     return f"__slayer{salt}_r{{}}__"
 
 
-def agg_owner(*, source: ValueKey, bundle: ResolvedSourceBundle) -> Optional[SlayerModel]:
-    """The model declaring ``source``'s aggregation: the host walked along the source
-    anchor; ``None`` with no host or an unresolvable hop."""
-    host = bundle.source_model
-    if host is None:
-        return None
-    return terminal_model(
-        root=host, path=source_anchor_path(source), models_by_name=bundle.models_by_name,
-    )
-
-
 def bind_aggregation_params(
     *,
     agg: str,
@@ -109,8 +104,10 @@ def bind_aggregation_params(
     """``kwargs`` with every parameter ``agg`` reads bound to a value: a string naming a
     read parameter binds in the query frame, a missing one binds its definition default
     in the owner's frame; any other string (``window='90d'``) stays a marker."""
-    owner = agg_owner(source=source, bundle=bundle)
-    definition = _definition(owner=owner, agg=agg)
+    owner = aggregation_owner(
+        root=bundle.source_model, source=source, models_by_name=bundle.models_by_name,
+    )
+    definition = aggregation_definition(owner=owner, agg=agg)
     if definition is not None and (
         any(p.name == WINDOW_PARAM for p in definition.params)
         or WINDOW_PARAM in _reads(agg=agg, definition=definition, bundle=bundle)
@@ -135,12 +132,6 @@ def bind_aggregation_params(
         out.append((name, _bind_text(
             text=defaults[name], name=name, ctx=ctx, resolve=ctx.resolve_default)))
     return tuple(out)
-
-
-def _definition(*, owner: Optional[SlayerModel], agg: str) -> Optional[Aggregation]:
-    if owner is None:
-        return None
-    return next((a for a in (owner.aggregations or []) if a.name == agg), None)
 
 
 def _reads(

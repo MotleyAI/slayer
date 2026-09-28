@@ -95,8 +95,9 @@ the query granularity (overlapping windows), equal to it (equivalent to normal
 `sum`/`avg` for that bucket), or smaller than it (only the trailing part of each
 bucket is included).
 
-An empty trailing interval yields 0 for the `count` family and NULL for every other
-aggregation; `first`/`last` pick the earliest/latest interval row by their ranking time
+An aggregate over no rows — an empty trailing interval, or a parent with no rows across a
+join (`count(orders.id)` for a customer without orders) — yields 0 for the `count` family and
+NULL for every other aggregation, including custom and formula-overridden ones; `first`/`last` pick the earliest/latest interval row by their ranking time
 column; and reference-bearing parameters (a column, an attached aggregate, a
 definition-default column) are read on each interval row while literals pass through.
 

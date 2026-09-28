@@ -39,8 +39,8 @@ from slayer.core.errors import (
 )
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.keys import BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimeTruncKey, TransformKey, column_leaf, column_path, is_boolean_shaped, parameter_row_leaves, shift_offset_of, source_anchor_path, substitute_value_keys, walk_value_keys
-from slayer.core.join_walker import physical_join_pairs, resolve_hop, terminal_model
-from slayer.core.models import VALUE_PLACEHOLDER, rendered_formula, reserved_value_param_message
+from slayer.core.join_walker import aggregation_owner, physical_join_pairs, resolve_hop, terminal_model
+from slayer.core.models import VALUE_PLACEHOLDER, aggregation_definition, rendered_formula, reserved_value_param_message
 from slayer.core.refs import (
     EXPRESSION_SOURCE_KINDS as _EXPRESSION_SOURCE_KINDS,
     expression_source_leaf,
@@ -88,6 +88,7 @@ from slayer.sql.render.cte_assembly import (
 )
 from slayer.sql.render.nodes import Node, fusion_blockers
 from slayer.sql.render.joins import (
+    AttachedValue,
     build_grain_joinback_condition,
     grain_alias_column,
 )
@@ -3412,7 +3413,7 @@ class SQLGenerator:
             _combined_attaches, regroup_shift_specs,
         ):
             _okey_to_col = {
-                sub.original_key: regroup_placeholder_to_cm[sub.placeholder][1]
+                sub.original_key: regroup_placeholder_to_cm[sub.placeholder].column_name
                 for sub in _attach.substitutions
                 if sub.placeholder in regroup_placeholder_to_cm
             }
@@ -3571,10 +3572,10 @@ class SQLGenerator:
 
 
 
-        proj_exprs: Dict[str, List[Expression]] = {}
+        proj_exprs: Dict[str, List[Expr]] = {}
         combined_aliases_by_slot_id: Dict[str, List[str]] = {}
 
-        def _emit(sid: str, expr: Expression) -> None:
+        def _emit(sid: str, expr: Expr) -> None:
             proj_exprs.setdefault(sid, []).append(expr)
         host_combined_ids = (
             base_render_order
@@ -3596,7 +3597,7 @@ class SQLGenerator:
         outer_composite_order_alias_by_sid: Dict[str, str] = {}
         outer_composite_order_expressions: Dict[str, Expression] = {}
         if outer_composite_slot_ids:
-            outer_composite_cm_map: Dict[str, Tuple[str, str]] = {}
+            outer_composite_cm_map: Dict[str, AttachedValue] = {}
             for _ph_key, _cm in regroup_placeholder_to_cm.items():
                 _ph_slot = slot_by_key.get(_ph_key)
                 if _ph_slot is not None:
@@ -3659,17 +3660,13 @@ class SQLGenerator:
                 outer_composite_order_expressions[sid] = (
                     _render_outer_composite(cslot)
                 )
-        for _ph_key, (_cte_name, _agg_col) in regroup_placeholder_to_cm.items():
+        for _ph_key, _attached in regroup_placeholder_to_cm.items():
             ph_slot = slot_by_key.get(_ph_key)
             if ph_slot is None or ph_slot.id not in regroup_placeholder_slot_ids:
                 continue
+            _agg_col = _attached.column_name
             if ph_slot.hidden and planned_query.transform_layers:
-                _emit(
-                    ph_slot.id,
-                    grain_alias_column(alias=_agg_col, table=_cte_name).as_(
-                        _agg_col, quoted=True,
-                    ),
-                )
+                _emit(ph_slot.id, _attached.value().as_(_agg_col, quoted=True))
                 combined_aliases_by_slot_id[ph_slot.id] = [_agg_col]
                 continue
             public_aliases = (
@@ -3682,18 +3679,16 @@ class SQLGenerator:
                 )
             )
             for pub in public_aliases:
-                col = grain_alias_column(alias=_agg_col, table=_cte_name)
-                _emit(
-                    ph_slot.id,
-                    col if pub == _agg_col else col.as_(pub, quoted=True),
-                )
+                value = _attached.value()
+                bare = pub == _agg_col and isinstance(value, exp.Column)
+                _emit(ph_slot.id, value if bare else value.as_(pub, quoted=True))
             combined_aliases_by_slot_id[ph_slot.id] = list(public_aliases)
 
         # Both plan kinds join back on the shared grain null-safely (a NULL dim value keeps its aggregate); an empty
         # grain becomes a CROSS JOIN.
         # Every renderer consumes planned_query.projection verbatim; a slot appears once per declared name and each
         # occurrence consumes the next of its rendered columns.
-        combined_select_exprs: List[Expression] = []
+        combined_select_exprs: List[Expr] = []
         consumed: Dict[str, int] = {}
         for sid in planned_query.projection:
             exprs = proj_exprs.get(sid)
@@ -3751,7 +3746,7 @@ class SQLGenerator:
         if outer_where_filters:
             # Map every cross-model aggregate slot (filtered-local AND forward) to its _cm_ column: a mixed AGGREGATE
             # filter resolves both operands outer, so mapping only filtered-local ones makes the forward operand raise.
-            cross_model_agg_slot_to_cm: Dict[str, Tuple[str, str]] = {}
+            cross_model_agg_slot_to_cm: Dict[str, AttachedValue] = {}
             for _ph_key, _cm in regroup_placeholder_to_cm.items():
                 _ph_slot = slot_by_key.get(_ph_key)
                 if _ph_slot is not None:
@@ -3792,9 +3787,8 @@ class SQLGenerator:
                 regroup_env={
                     **row_regroup_env,
                     **{
-                        ph: grain_alias_column(alias=agg_col, table=cte_name)
-                        for ph, (cte_name, agg_col)
-                        in regroup_placeholder_to_cm.items()
+                        ph: attached.value()
+                        for ph, attached in regroup_placeholder_to_cm.items()
                     },
                 },
                 regroup_join_specs=[
@@ -3822,12 +3816,10 @@ class SQLGenerator:
         # Emit ORDER BY/LIMIT/OFFSET at the combined level through one resolver: naming a projected cross-model
         # aggregate by its CTE column picks the wrong column once two scopes project the same name.
         order_env = OrderEnv(dialect=self._dialect)
-        for _ph_key, (_cte_name, _agg_col) in regroup_placeholder_to_cm.items():
+        for _ph_key, _attached in regroup_placeholder_to_cm.items():
             _ph_slot = slot_by_key.get(_ph_key)
             if _ph_slot is not None:
-                order_env.cross_model_cte[_ph_slot.id] = grain_alias_column(
-                    alias=_agg_col, table=_cte_name,
-                )
+                order_env.cross_model_cte[_ph_slot.id] = _attached.value()
         for _sid, _alias in outer_composite_order_alias_by_sid.items():
             order_env.outer_composite[_sid] = exp.column(_alias, quoted=True)
         for _sid, _expr in outer_composite_order_expressions.items():
@@ -4051,7 +4043,7 @@ class SQLGenerator:
     ):
         """Render each combined regroup producer as a ``_cm_*`` CTE."""
         ctes: List[Node] = []
-        placeholder_to_cm: Dict[Any, Tuple[str, str]] = {}
+        placeholder_to_cm: Dict[Any, AttachedValue] = {}
         placeholder_slot_ids: Set[str] = set()
         joinbacks: List[Tuple[str, List[Tuple[str, str]]]] = []
         shift_specs: List[Tuple[str, List[Tuple[Any, str]]]] = []
@@ -4095,7 +4087,9 @@ class SQLGenerator:
                         f"Combined regroup producer is missing aggregate slot "
                         f"{sub.producer_slot_id!r}.",
                     )
-                placeholder_to_cm[sub.placeholder] = (cte_name, agg_col)
+                placeholder_to_cm[sub.placeholder] = AttachedValue(
+                    cte_name=cte_name, column_name=agg_col, empty_value=sub.empty_value,
+                )
                 ph_slot = slot_by_key.get(sub.placeholder)
                 if ph_slot is not None:
                     placeholder_slot_ids.add(ph_slot.id)
@@ -4174,9 +4168,10 @@ class SQLGenerator:
             if dedup is not None:
                 dedup_cte, okey_to_col, grain_pairs = dedup
                 for sub in attach.substitutions:
-                    attached_env[sub.placeholder] = grain_alias_column(
-                        alias=okey_to_col[sub.original_key], table=dedup_cte,
-                    )
+                    attached_env[sub.placeholder] = AttachedValue(
+                        cte_name=dedup_cte, column_name=okey_to_col[sub.original_key],
+                        empty_value=sub.empty_value,
+                    ).value()
                 join_specs.append((dedup_cte, list(grain_pairs)))
                 reused_cte_names.append(dedup_cte)
                 continue
@@ -4190,9 +4185,10 @@ class SQLGenerator:
                 shared_cte, col_by_sid = rec
                 self._record_reuse_edges(shared_cte)
                 for sub in attach.substitutions:
-                    attached_env[sub.placeholder] = grain_alias_column(
-                        alias=col_by_sid[sub.producer_slot_id], table=shared_cte,
-                    )
+                    attached_env[sub.placeholder] = AttachedValue(
+                        cte_name=shared_cte, column_name=col_by_sid[sub.producer_slot_id],
+                        empty_value=sub.empty_value,
+                    ).value()
                 join_specs.append((shared_cte, [
                     (host_key, col_by_sid[producer_slot_id])
                     for host_key, producer_slot_id in attach.join_pairs
@@ -4262,9 +4258,10 @@ class SQLGenerator:
                         f"Regroup producer is missing aggregate slot "
                         f"{sub.producer_slot_id!r}.",
                     )
-                attached_env[sub.placeholder] = grain_alias_column(
-                    alias=_flat(agg_slot), table=cte_name,
-                )
+                attached_env[sub.placeholder] = AttachedValue(
+                    cte_name=cte_name, column_name=_flat(agg_slot),
+                    empty_value=sub.empty_value,
+                ).value()
             pairs: List[Tuple[Any, str]] = []
             for host_key, producer_slot_id in attach.join_pairs:
                 grain_slot = sub_slots.get(producer_slot_id)
@@ -5506,10 +5503,7 @@ class SQLGenerator:
         src_leaf: str,
     ):
         """Look up the model-level ``Aggregation`` definition for ``key.agg``,"""
-        agg_def = next(
-            (a for a in (source_model.aggregations or []) if a.name == key.agg),
-            None,
-        )
+        agg_def = aggregation_definition(owner=source_model, agg=key.agg)
         if agg_def is None and key.agg not in _BUILTIN_BAREARG_AGGS_LOCAL_SLICE:
             raise AggregationNotAllowedError(
                 column=src_leaf,
@@ -5626,8 +5620,9 @@ class SQLGenerator:
                     f"'*' — use 'count(*)' for COUNT(*)."
                 )
             owner = (
-                self._walk_join_path_model(source_model=source_model, path=source_anchor_path(source), bundle=bundle)
-                if source_anchor_path(source) and bundle is not None else source_model
+                aggregation_owner(
+                    root=source_model, source=source, models_by_name=bundle.models_by_name,
+                ) if bundle is not None else None
             ) or source_model
             agg_def = self._resolve_aggregation_def(key=key, source_model=owner, src_leaf="*")
             formula = rendered_formula(agg=key.agg, definition=agg_def)
@@ -6002,12 +5997,13 @@ class SQLGenerator:
         slot_id_by_key: Dict[Any, str] = {}
         available_alias_by_slot_id: Dict[str, str] = {}
         table_by_slot_id: Dict[str, str] = {}
+        value_by_slot_id: Dict[str, Expression] = {}
         for key, slot in slot_by_key.items():
             sid = slot.id
             cm_entry = cross_model_agg_slot_to_cm.get(sid)
             if cm_entry is not None:
-                cte_name, agg_col_alias = cm_entry
-                alias, table = agg_col_alias, cte_name
+                alias, table = cm_entry.column_name, cm_entry.cte_name
+                value_by_slot_id[sid] = cm_entry.value()
             else:
                 aliases = aliases_by_slot_id.get(sid) or []
                 if not aliases:
@@ -6020,6 +6016,7 @@ class SQLGenerator:
             slot_id_by_key=slot_id_by_key,
             available_alias_by_slot_id=available_alias_by_slot_id,
             table_by_slot_id=table_by_slot_id,
+            value_by_slot_id=value_by_slot_id,
         )
 
     @staticmethod
