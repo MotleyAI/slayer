@@ -1474,7 +1474,7 @@ _TRANSFORM_KWARG_RULES: dict = {
     "percent_rank": frozenset(),
     "dense_rank": frozenset(),
     "ntile": frozenset({"n"}),
-    "consecutive_periods": frozenset({"period"}),
+    "consecutive_periods": frozenset(),
 }
 
 # Positional-param signature (after the value) mapping the i-th positional onto

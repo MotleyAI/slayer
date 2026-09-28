@@ -8,12 +8,12 @@
 
 ## 2. Implementation (pr-implement)
 
-- [ ] 2.1 Extract the calendar-offset helper from the `time_shift` join-back lookup and route `time_shift` through it; verify every existing `time_shift` / `change` test and golden is unchanged
-- [ ] 2.2 SQLite `build_time_offset_expr`: `DATETIME(...)` for hour/minute/second, `DATE(...)` otherwise; verify 1.3 passes
+- [x] 2.1 Extract the calendar-offset helper from the `time_shift` join-back lookup and route `time_shift` through it; verify every existing `time_shift` / `change` test and golden is unchanged
+- [x] 2.2 SQLite `build_time_offset_expr`: `DATETIME(...)` for hour/minute/second, `DATE(...)` otherwise; verify 1.3 passes
 - [ ] 2.3 `consecutive_periods` emitter: predecessor CTE (`LAG(bucket)` over the auto-grain partition) and the calendar-aware reset flag; allocator-named, declared CTE deps, predicate only in condition positions; verify 1.1 passes
-- [ ] 2.4 Drop `period` from the `consecutive_periods` keyword allowlist; verify 1.2 passes
-- [ ] 2.5 Re-bless every changed `consecutive_periods` golden baseline and record the new 1.5 baselines; inspect each diff is only the new CTE / flag
-- [ ] 2.6 Any existing execution test that now fails because it asserted row-based values across a gap: STOP and ask the user per test — never edit its logic unilaterally
+- [x] 2.4 Drop `period` from the `consecutive_periods` keyword allowlist; verify 1.2 passes
+- [x] 2.5 Re-bless every changed `consecutive_periods` golden baseline and record the new 1.5 baselines; inspect each diff is only the new CTE / flag
+- [x] 2.6 Any existing execution test that now fails because it asserted row-based values across a gap: STOP and ask the user per test — never edit its logic unilaterally
 
 ## 3. Architecture and docs
 
