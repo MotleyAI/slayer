@@ -65,6 +65,12 @@ from slayer.engine.ingestion import ingest_datasource
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql import engine_factory
 from slayer.storage.yaml_storage import YAMLStorage
+from tests.integration._consecutive_periods_calendar import (
+    CALENDAR_CASES,
+    assert_calendar_streak,
+    seed_statements,
+    streak_model,
+)
 
 pytest.importorskip("testcontainers.mssql")
 pytest.importorskip("pyodbc")
@@ -233,6 +239,8 @@ def _sqlserver_env_storage(sqlserver_container, tmp_path_factory):
                     "(5, 'cancelled', 75, 3, '2024-03-01 08:00:00'), "
                     "(6, 'pending', 300, 3, '2024-03-10 16:00:00')"
                 ))
+                for stmt in seed_statements(timestamp_type="DATETIME2"):
+                    conn.execute(sa.text(stmt))
 
         tmpdir = str(tmp_path_factory.mktemp("sqlserver_env"))
         storage = YAMLStorage(base_dir=tmpdir)
@@ -263,6 +271,7 @@ def _sqlserver_env_storage(sqlserver_container, tmp_path_factory):
         )
         run_sync(storage.save_model(orders_model))
         run_sync(storage.save_model(customers_model))
+        run_sync(storage.save_model(streak_model("testmssql")))
         yield storage
     finally:
         _drop_module_db(sqlserver_container, db_name)
@@ -447,6 +456,12 @@ class TestSQLServerQueries:
         )
         result = await sqlserver_env.execute(query=query)
         assert [r["orders.positive_run"] for r in result.data] == [1, 0, 1]
+
+    @pytest.mark.parametrize("column,granularity", CALENDAR_CASES)
+    async def test_consecutive_periods_breaks_on_calendar_gap(
+        self, sqlserver_env: SlayerQueryEngine, column: str, granularity: str,
+    ) -> None:
+        await assert_calendar_streak(sqlserver_env, column=column, granularity=granularity)
 
     async def test_change_with_date_range(self, sqlserver_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(

@@ -1,10 +1,10 @@
 ## 1. Tests first (pr-tests)
 
-- [ ] 1.1 Add `tests/test_consecutive_periods_calendar.py` (no issue number in the name): the spec's `orders` fixture on SQLite + DuckDB (in-process, unit — not `integration`), one test per "consecutive_periods counts calendar periods" scenario except the server-dialect and golden ones; verify each fails on the current code for the right reason (row-based values), except scenarios the current code already satisfies
-- [ ] 1.2 Add the `period=` rejection test and verify it fails today (the keyword is silently accepted)
-- [ ] 1.3 Add SQLite sub-day tests: executed `time_shift` / `change` at hour, minute, second (fail today: all NULL) and direct render assertions that SQLite day/week/month/quarter/year offsets and `week_sunday` truncation are unchanged (pass today)
-- [ ] 1.4 Add a gapped-series executed case to each server integration file (`tests/integration/test_integration_postgres.py`, `_mysql`, `_clickhouse`, `_sqlserver`) over DATE- and TIMESTAMP-typed columns at month, quarter and week_sunday, marked `integration`
-- [ ] 1.5 Add golden-SQL cases for a gap-aware `consecutive_periods` query on postgres/sqlite/duckdb/tsql/bigquery, following the existing golden-test pattern (baselines recorded in pr-implement)
+- [x] 1.1 Add `tests/test_consecutive_periods_calendar.py` (no issue number in the name): the spec's `orders` fixture on SQLite + DuckDB (in-process, unit — not `integration`), one test per "consecutive_periods counts calendar periods" scenario except the server-dialect and golden ones; verify each fails on the current code for the right reason (row-based values), except scenarios the current code already satisfies
+- [x] 1.2 Add the `period=` rejection test and verify it fails today (the keyword is silently accepted)
+- [x] 1.3 Add SQLite sub-day tests: executed `time_shift` / `change` at hour, minute, second (fail today: all NULL) and direct render assertions that SQLite day/week/month/quarter/year offsets and `week_sunday` truncation are unchanged (pass today)
+- [x] 1.4 Add a gapped-series executed case to each server integration file (`tests/integration/test_integration_postgres.py`, `_mysql`, `_clickhouse`, `_sqlserver`) over DATE- and TIMESTAMP-typed columns at month, quarter and week_sunday, marked `integration`
+- [x] 1.5 Add golden-SQL cases for a gap-aware `consecutive_periods` query on postgres/sqlite/duckdb/tsql/bigquery, following the existing golden-test pattern (baselines recorded in pr-implement)
 
 ## 2. Implementation (pr-implement)
 
