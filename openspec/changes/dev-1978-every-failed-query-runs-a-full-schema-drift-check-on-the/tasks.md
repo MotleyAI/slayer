@@ -6,22 +6,22 @@
 
 ## 2. Read set
 
-- [ ] 2.1 Stamp `meta["slayer_model"]` on the node `_emit_relation` returns (tables and embedded `sql` subqueries; not stage relations). Verify: 1.2 passes.
-- [ ] 2.2 Collect the read set from the final statement AST (post-pruning, pre-policy) plus surviving spliced query-backed model names; carry it as `_Prepared.touched`. Delete `_touched_models_for_plan`, `_collect_query_backed_base_names`, `_expand_join_graph`, `_load_join_graph_models` after an LSP references check. Verify: read-set scenarios in 1.1 pass.
+- [x] 2.1 Stamp `meta["slayer_model"]` on the node `_emit_relation` returns (tables and embedded `sql` subqueries; not stage relations). Verify: 1.2 passes.
+- [x] 2.2 Collect the read set from the final statement AST (post-pruning, pre-policy) plus surviving spliced query-backed model names; carry it as `_Prepared.touched`. Delete `_touched_models_for_plan`, `_collect_query_backed_base_names`, `_expand_join_graph`, `_load_join_graph_models` after an LSP references check. Verify: read-set scenarios in 1.1 pass.
 
 ## 3. Scoped validation
 
-- [ ] 3.1 `_collect_live_tables` / `_live_schema_for_datasource` accept an optional `wanted` set (unchanged enumeration/listing/keying); `validate_datasource` accepts the models to validate + `available_in_ds` + optional snapshot; scope `sql` trials and the SQLite probe. Verify: "Attribution inspects only read models" scenarios pass and existing `tests/test_validate_models.py` stays green.
+- [x] 3.1 `_collect_live_tables` / `_live_schema_for_datasource` accept an optional `wanted` set (unchanged enumeration/listing/keying); `validate_datasource` accepts the models to validate + `available_in_ds` + optional snapshot; scope `sql` trials and the SQLite probe. Verify: "Attribution inspects only read models" scenarios pass and existing `tests/test_validate_models.py` stays green.
 
 ## 4. Snapshot cache
 
-- [ ] 4.1 `LiveSnapshotCache` / `DriftSnapshot` in `schema_drift.py` per design D3 (TTL 60 s, per-key `asyncio.Lock`, LRU 256, absence rule, negative-cached `IntrospectionUnavailable`, injectable clock); one instance per `SlayerQueryEngine`. Verify: "reuses live-schema facts" scenarios pass.
+- [x] 4.1 `LiveSnapshotCache` / `DriftSnapshot` in `schema_drift.py` per design D3 (TTL 60 s, per-key `asyncio.Lock`, LRU 256, absence rule, negative-cached `IntrospectionUnavailable`, injectable clock); one instance per `SlayerQueryEngine`. Verify: "reuses live-schema facts" scenarios pass.
 
 ## 5. Attribution rewrite
 
-- [ ] 5.1 `_maybe_raise_schema_drift` validates `prepared.datasource` over the read set through the cache; `SchemaDriftError.models` = sorted distinct blamed model names; `invalid_sql` exclusion and swallow-and-re-raise unchanged; both call sites (data query, EXPLAIN). Verify: all of 1.1 and 1.3 pass, `tests/test_schema_drift_error.py` and `tests/test_api_server.py` green.
+- [x] 5.1 `_maybe_raise_schema_drift` validates `prepared.datasource` over the read set through the cache; `SchemaDriftError.models` = sorted distinct blamed model names; `invalid_sql` exclusion and swallow-and-re-raise unchanged; both call sites (data query, EXPLAIN). Verify: all of 1.1 and 1.3 pass, `tests/test_schema_drift_error.py` and `tests/test_api_server.py` green.
 
 ## 6. Docs and gates
 
-- [ ] 6.1 `docs/concepts/schema-drift.md` item 3: one sentence — attribution checks only the models the failed statement read, reuses live-schema facts for up to 60 s, and `models` lists the drifted models. Verify: docs diff is one sentence.
-- [ ] 6.2 Full unit suite (`poetry run pytest -m "not integration" -n auto`), `poetry run ruff check slayer/ tests/`, `uvx --no-build --from living-architecture==0.2.0 la-arch-check`, basedpyright baseline not grown. Verify: all green.
+- [x] 6.1 `docs/concepts/schema-drift.md` item 3: one sentence — attribution checks only the models the failed statement read, reuses live-schema facts for up to 60 s, and `models` lists the drifted models. Verify: docs diff is one sentence.
+- [x] 6.2 Full unit suite (`poetry run pytest -m "not integration" -n auto`), `poetry run ruff check slayer/ tests/`, `uvx --no-build --from living-architecture==0.2.0 la-arch-check`, basedpyright baseline not grown. Verify: all green.

@@ -6,12 +6,14 @@ import asyncio
 import re
 from collections.abc import AsyncIterator
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
 from sqlalchemy.exc import SQLAlchemyError
 from sqlglot import exp
+from sqlglot.expressions.core import Expression
 
 import slayer.engine.schema_drift as schema_drift
 from slayer.core.enums import DataType
@@ -19,7 +21,8 @@ from slayer.core.errors import SchemaDriftError
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.engine import ingestion
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.schema_drift import EditModelDelete, WholeModelDelete
+from slayer.engine.schema_drift import EditModelDelete, LiveTable, WholeModelDelete
+from slayer.engine.schema_scope import SchemaRef
 from slayer.sql import sqlite_introspect
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
@@ -523,6 +526,70 @@ class TestSnapshotReuse:
             )
         assert spies.listing.call_count == 1
 
+    async def test_a_same_named_table_in_another_listed_schema_triggers_a_relist(
+        self, tmp_path: Path,
+    ) -> None:
+        db_path = str(tmp_path / "live.db")
+        with transaction(db_path) as conn:
+            conn.executescript("CREATE TABLE seed (id INTEGER);")
+        ds = DatasourceConfig(name="ds", type="sqlite", database=db_path)
+        listed_objects: dict[str | None, list[str]] = {"a": ["orders"], "b": []}
+
+        def _listing(*, inspector: Any, ref: SchemaRef, include_views: bool) -> list[Any]:
+            return [SimpleNamespace(name=n) for n in listed_objects[ref.name]]
+
+        def _orders(schema: str) -> SlayerModel:
+            return SlayerModel(
+                name="orders", sql_table=f"{schema}.orders", data_source="ds",
+                columns=[Column(name="id", type=DataType.TEXT, primary_key=True)],
+            )
+
+        snapshot = schema_drift.DriftSnapshot(created_at=0.0)
+        with patch.object(
+            schema_drift, "_live_schema_refs", return_value=[SchemaRef(name="a"), SchemaRef(name="b")],
+        ), patch.object(
+            ingestion, "list_ingestable_objects", side_effect=_listing,
+        ) as listing, patch.object(
+            schema_drift, "_introspect_one_table", return_value=LiveTable(columns={"id": DataType.TEXT}),
+        ):
+            first = await schema_drift.validate_datasource(
+                datasource=ds, models=[_orders("a")], snapshot=snapshot,
+            )
+            # b.orders is created after the listing; only its basename was listed (in a).
+            listed_objects["b"].append("orders")
+            second = await schema_drift.validate_datasource(
+                datasource=ds, models=[_orders("b")], snapshot=snapshot,
+            )
+        assert first == []
+        assert second == []
+        assert listing.call_count == 4
+
+    async def test_a_same_named_table_in_an_unread_schema_is_not_introspected(
+        self, tmp_path: Path,
+    ) -> None:
+        db_path = str(tmp_path / "live.db")
+        with transaction(db_path) as conn:
+            conn.executescript("CREATE TABLE seed (id INTEGER);")
+        ds = DatasourceConfig(name="ds", type="sqlite", database=db_path)
+        model = SlayerModel(
+            name="orders", sql_table="a.orders", data_source="ds",
+            columns=[Column(name="id", type=DataType.TEXT, primary_key=True)],
+        )
+        with patch.object(
+            schema_drift, "_live_schema_refs", return_value=[SchemaRef(name="a"), SchemaRef(name="b")],
+        ), patch.object(
+            ingestion, "list_ingestable_objects",
+            side_effect=lambda **_: [SimpleNamespace(name="orders")],
+        ), patch.object(
+            schema_drift, "_introspect_one_table", return_value=LiveTable(columns={"id": DataType.TEXT}),
+        ) as introspect:
+            entries = await schema_drift.validate_datasource(
+                datasource=ds, models=[model],
+                snapshot=schema_drift.DriftSnapshot(created_at=0.0),
+            )
+        assert entries == []
+        assert [c.kwargs["ref"].name for c in introspect.call_args_list] == ["a"]
+
     async def test_explicit_validation_reads_live(self, env: _Env, spies: _Spies) -> None:
         await _fails_unwrapped(env.engine, _UNRELATED_FAILURE)
         env.live("ALTER TABLE customers DROP COLUMN region")
@@ -639,7 +706,7 @@ def _long_chain_models(ds: str) -> list[SlayerModel]:
     ]
 
 
-def _assert_relations_stamped(statement: exp.Expression, *, model_by_table: dict[str, str]) -> set[str]:
+def _assert_relations_stamped(statement: Expression, *, model_by_table: dict[str, str]) -> set[str]:
     """Every physical model relation carries the stamp, stage/CTE relations never; returns stamped sql models."""
     ctes = {c.alias_or_name for c in statement.find_all(exp.CTE)}
     sql_models = [s for s in statement.find_all(exp.Subquery) if _STAMP in s.meta]
@@ -655,7 +722,7 @@ def _assert_relations_stamped(statement: exp.Expression, *, model_by_table: dict
     return {s.meta[_STAMP] for s in sql_models}
 
 
-async def _render(engine: SlayerQueryEngine, payload: Any) -> tuple[exp.Expression, set[str], str]:
+async def _render(engine: SlayerQueryEngine, payload: Any) -> tuple[Expression, set[str], str]:
     """The final statement AST, the prepared read set, and the executed SQL for ``payload``."""
     main, named, ds, chain = await engine._normalize_input(
         payload, runtime_kwarg={}, prefer_data_source=None,
@@ -668,6 +735,7 @@ async def _render(engine: SlayerQueryEngine, payload: Any) -> tuple[exp.Expressi
         query=main, named_queries=named, runtime_kwarg={}, prefer_data_source=ds,
         splice_chain=chain,
     )
+    assert rendered.statement is not None
     return rendered.statement, set(prepared.touched), prepared.sql
 
 
@@ -709,10 +777,9 @@ class TestReadSetStamp:
         engine = SlayerQueryEngine(storage=storage)
         try:
             statement, touched, sql = await _render(engine, {
-                "source_model": f"{_LONG}Invoice", "dimensions": ["status"],
-                "measures": [
-                    {"formula": f"sum({_LONG}Customer.{_LONG}Consumer.lifetime_value)"},
-                ],
+                "source_model": f"{_LONG}Invoice",
+                "dimensions": ["status", f"{_LONG}Customer.{_LONG}Consumer.lifetime_value"],
+                "measures": [{"formula": "count(*)"}],
             })
         finally:
             await engine.aclose()
@@ -745,6 +812,79 @@ class TestLiveSnapshotCache:
             assert recently_used.created_at == clock.now - 1
         async with cache.acquire(self._ds(1)) as evicted:
             assert evicted.created_at == clock.now
+
+    async def test_a_snapshot_that_expires_while_waiting_is_replaced(self) -> None:
+        clock = _Clock()
+        cache = schema_drift.LiveSnapshotCache(clock=clock)
+        release = asyncio.Event()
+
+        async def _holder() -> None:
+            async with cache.acquire(self._ds(0)):
+                await release.wait()
+
+        async def _waiter() -> float:
+            async with cache.acquire(self._ds(0)) as snapshot:
+                return snapshot.created_at
+
+        holder = asyncio.create_task(_holder())
+        await asyncio.sleep(0)
+        waiter = asyncio.create_task(_waiter())
+        await asyncio.sleep(0)
+        clock.now += _TTL_S + 1
+        release.set()
+        await holder
+        assert await waiter == clock.now
+
+    async def test_a_held_snapshot_is_not_swept(self) -> None:
+        clock = _Clock()
+        cache = schema_drift.LiveSnapshotCache(clock=clock)
+        release = asyncio.Event()
+        held = asyncio.Event()
+
+        async def _holder() -> None:
+            async with cache.acquire(self._ds(0)):
+                held.set()
+                await release.wait()
+
+        holder = asyncio.create_task(_holder())
+        await held.wait()
+        clock.now += _TTL_S + 1
+        async with cache.acquire(self._ds(1)):
+            pass
+        assert len(cache) == 2
+        release.set()
+        await holder
+
+    async def test_a_held_snapshot_is_not_evicted(self) -> None:
+        clock = _Clock()
+        cache = schema_drift.LiveSnapshotCache(clock=clock)
+        release = asyncio.Event()
+        held = asyncio.Event()
+
+        async def _holder() -> None:
+            async with cache.acquire(self._ds(0)):
+                held.set()
+                await release.wait()
+
+        holder = asyncio.create_task(_holder())
+        await held.wait()
+        for i in range(1, 258):
+            async with cache.acquire(self._ds(i)):
+                pass
+        release.set()
+        await holder
+        clock.now += 1
+        async with cache.acquire(self._ds(0)) as snapshot:
+            assert snapshot.created_at == clock.now - 1
+
+    @pytest.mark.parametrize("teardown", ["close", "aclose"])
+    async def test_engine_teardown_drops_snapshots(self, env: _Env, teardown: str) -> None:
+        async with env.engine._drift_snapshots.acquire(self._ds(0)):
+            pass
+        result = getattr(env.engine, teardown)()
+        if teardown == "aclose":
+            await result
+        assert len(env.engine._drift_snapshots) == 0
 
     async def test_expired_snapshots_are_swept_on_access(self) -> None:
         clock = _Clock()

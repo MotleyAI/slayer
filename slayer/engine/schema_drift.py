@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
+from collections import OrderedDict
+from collections.abc import AsyncGenerator, Callable
+from contextlib import asynccontextmanager
 from typing import (
     Annotated,
     Any,
@@ -482,7 +486,7 @@ def _parsed_ref_name(node: Union[Ref, DottedRef, AggCall]) -> Optional[str]:
     if isinstance(node, AggCall):
         source = node.source
         if not isinstance(source, (Ref, DottedRef)):
-            # Star, or a DEV-1826 expression source (the caller walks its
+            # Star, or an expression source (the caller walks its
             # operand refs itself).
             return None
         node = source
@@ -493,7 +497,7 @@ def _parsed_ref_name(node: Union[Ref, DottedRef, AggCall]) -> Optional[str]:
 
 def _walk_ref_names(parsed: ParsedExpr):
     """Yield the name of each reference in a parsed Mode-B tree; an ``AggCall``
-    collapses to its source name, a DEV-1826 expression source attributes each
+    collapses to its source name, an expression source attributes each
     operand ref, ``*`` sources yield nothing."""
     for node in walk_parsed_refs(parsed):
         if isinstance(node, AggCall) and not isinstance(
@@ -511,7 +515,7 @@ def _walk_ref_names(parsed: ParsedExpr):
 
 def _measure_formula_refs(formula: str) -> Set[str]:
     """Column/measure names in a Mode-B formula (dotted for cross-model);
-    textual only. Both aggregation spellings parse natively (DEV-1826), and an
+    textual only. Both aggregation spellings parse natively, and an
     unknown functional name defers as an ``AggCall`` candidate, so custom
     aggregations — joined-model ones included — need no registry walk."""
     try:
@@ -736,7 +740,7 @@ def _build_stage_graph(
         m = models_by_name.get(name)
         if m is None:
             continue
-        # Either traversal direction reaches (DEV-1853).
+        # Either traversal direction reaches.
         for edge in neighbors(model=m, models_by_name=models_by_name):
             if edge.target_model not in reachable:
                 reachable.add(edge.target_model)
@@ -770,7 +774,7 @@ def _attribute_ref_to_base(
         return leaf if graph.stage_source_name == base_name else None
     terminal = _walk_stage_path(path=path, graph=graph)
     if terminal is None and len(path) == 1:
-        # Short-form auto-routing (DEV-1856): a len==1 prefix with no direct join
+        # Short-form auto-routing: a len==1 prefix with no direct join
         # attributes to its uniquely-routed terminal only (mirroring full paths),
         # so the stage cascades on the terminal column or terminal-reaching join.
         # Route-precise attribution (earlier intervening joins, and no over-cascade
@@ -785,7 +789,7 @@ def _route_short_form_terminal(*, target: str, graph: _StageGraph) -> str | None
     """The short-form target when it is uniquely routable from the stage source
     over the datasource-scoped join graph (ambiguous / unreachable → None).
     Routing triggers only when the first hop resolves to no edge; a parallel pair
-    directly off the source is a fail-closed ambiguous hop (DEV-1853), not a
+    directly off the source is a fail-closed ambiguous hop, not a
     route, so it attributes to nothing — mirroring the binder."""
     root = (
         graph.models_by_name.get(graph.stage_source_name)
@@ -1580,19 +1584,21 @@ def _live_schema_refs(
     return list(by_token.values())
 
 
-def _add_live_object(
-    out: dict[str, LiveTable],
+_Listings = list[tuple[SchemaRef, list[str]]]
+_Lookup = Callable[[SchemaRef, str], "LiveTable | None"]
+
+
+def _introspect_live_object(
     *,
     inspector: sa.engine.Inspector,
     sa_engine: sa.Engine,
     ref: SchemaRef,
     obj_name: str,
-    single: bool,
     datasource: DatasourceConfig,
-) -> None:
-    """Introspect one object and key it into ``out`` (best-effort); the default/single-schema scope is keyed both bare and qualified so legacy and explicit models resolve."""
+) -> LiveTable | None:
+    """One object's ``LiveTable``; None when its introspection failed (best-effort)."""
     try:
-        live = _introspect_one_table(
+        return _introspect_one_table(
             inspector=inspector, sa_engine=sa_engine, table_name=obj_name, ref=ref,
         )
     except Exception as exc:  # noqa: BLE001 — one object's introspection failed
@@ -1600,25 +1606,33 @@ def _add_live_object(
             "validate_models: failed to introspect %r in datasource %r: %s",
             obj_name, datasource.name, exc,
         )
-        return
-    out[ref.qualify(obj_name)] = live
+        return None
+
+
+def _live_object_keys(*, ref: SchemaRef, obj_name: str, single: bool) -> list[str]:
+    """The live-map keys of one object; the default/single-schema scope is keyed both bare and qualified so legacy and explicit models resolve."""
+    keys = [ref.qualify(obj_name)]
     if ref.is_default or single:
-        out.setdefault(obj_name, live)
+        keys.append(obj_name)
         if ref.name:
-            out.setdefault(f"{ref.name}.{obj_name}", live)
+            keys.append(f"{ref.name}.{obj_name}")
+    return keys
 
 
-def _collect_live_tables(
-    refs: list[SchemaRef],
-    *,
-    inspector: sa.engine.Inspector,
-    sa_engine: sa.Engine,
-    datasource: DatasourceConfig,
-) -> tuple[dict[str, LiveTable], int]:
-    """Introspect every object across ``refs`` into a ``{key: LiveTable}`` map (persisted-``sql_table`` keys, default also bare); returns ``(map, object_count)``."""
-    single = len(refs) == 1
-    out: dict[str, LiveTable] = {}
-    object_count = 0
+def _key_live_object(
+    out: dict[str, LiveTable], *, ref: SchemaRef, obj_name: str, single: bool, live: LiveTable,
+) -> None:
+    first, *rest = _live_object_keys(ref=ref, obj_name=obj_name, single=single)
+    out[first] = live
+    for key in rest:
+        out.setdefault(key, live)
+
+
+def _list_live_objects(
+    refs: list[SchemaRef], *, inspector: sa.engine.Inspector, datasource: DatasourceConfig,
+) -> _Listings:
+    """Every table and view name per schema in ``refs``."""
+    listings: _Listings = []
     failed: list[str] = []
     for ref in refs:
         try:
@@ -1633,12 +1647,7 @@ def _collect_live_tables(
             )
             failed.append(str(ref.token))
             continue
-        for obj in objs:
-            object_count += 1
-            _add_live_object(
-                out=out, inspector=inspector, sa_engine=sa_engine, ref=ref,
-                obj_name=obj.name, single=single, datasource=datasource,
-            )
+        listings.append((ref, [obj.name for obj in objs]))
     if failed:
         # Fail closed: a partial map would report every model in the unlisted
         # schema as a WholeModelDelete — data loss under --force-clean.
@@ -1646,7 +1655,63 @@ def _collect_live_tables(
             f"validate_models: could not list schema(s) {failed} in datasource "
             f"{datasource.name!r}; skipping drift verdict to avoid false deletions"
         )
-    return out, object_count
+    return listings
+
+
+def _collect_live_tables(
+    listings: _Listings,
+    *,
+    lookup: _Lookup,
+    datasource: DatasourceConfig,
+    wanted: set[str] | None = None,
+) -> dict[str, LiveTable]:
+    """``{key: LiveTable}`` over the listed objects, only those with a key in ``wanted`` when given."""
+    single = len(listings) == 1
+    out: dict[str, LiveTable] = {}
+    found = 0
+    for ref, names in listings:
+        for name in names:
+            if wanted is not None and wanted.isdisjoint(
+                _live_object_keys(ref=ref, obj_name=name, single=single)
+            ):
+                continue
+            found += 1
+            live = lookup(ref, name)
+            if live is not None:
+                _key_live_object(out, ref=ref, obj_name=name, single=single, live=live)
+    if found and not out:
+        raise IntrospectionUnavailable(
+            f"failed to introspect every table in datasource "
+            f"{datasource.name!r} ({found} table(s))"
+        )
+    return out
+
+
+class _LiveConnection:
+    """A datasource's engine + inspector, opened on first use and disposed on close."""
+
+    def __init__(self, datasource: DatasourceConfig) -> None:
+        self._datasource = datasource
+        self._opened: tuple[sa.Engine, sa.engine.Inspector] | None = None
+
+    def open(self) -> tuple[sa.Engine, sa.engine.Inspector]:
+        if self._opened is None:
+            sa_engine = engine_factory.get_engine(self._datasource.resolve_env_vars())
+            self._opened = (sa_engine, sa.inspect(sa_engine))
+        return self._opened
+
+    def introspect(self, ref: SchemaRef, obj_name: str) -> LiveTable | None:
+        sa_engine, inspector = self.open()
+        return _introspect_live_object(
+            inspector=inspector, sa_engine=sa_engine, ref=ref, obj_name=obj_name,
+            datasource=self._datasource,
+        )
+
+    def close(self) -> None:
+        # Dispose to release the connection (unblocks direct file access); quiet so
+        # it can't mask an in-flight introspection error.
+        if self._opened is not None:
+            ingestion._dispose_quietly(self._opened[0])
 
 
 def _live_schema_for_datasource(
@@ -1656,27 +1721,172 @@ def _live_schema_for_datasource(
     fallback_schema_tokens: set[str] | None = None,
 ) -> dict[str, LiveTable]:
     """``{object_name: LiveTable}`` for every live table AND view in the DS; views are included so a model over a view isn't falsely reported as a WholeModelDelete."""
-    sa_engine = engine_factory.get_engine(datasource.resolve_env_vars())
+    conn = _LiveConnection(datasource)
     try:
-        inspector = sa.inspect(sa_engine)
+        sa_engine, inspector = conn.open()
         refs = _live_schema_refs(
             inspector=inspector, sa_engine=sa_engine,
             datasource=datasource, schema=schema,
             fallback_schema_tokens=fallback_schema_tokens,
         )
-        out, object_count = _collect_live_tables(
-            refs, inspector=inspector, sa_engine=sa_engine, datasource=datasource,
-        )
-        if object_count and not out:
-            raise IntrospectionUnavailable(
-                f"failed to introspect every table in datasource "
-                f"{datasource.name!r} ({object_count} table(s))"
-            )
-        return out
+        listings = _list_live_objects(refs, inspector=inspector, datasource=datasource)
+        return _collect_live_tables(listings, lookup=conn.introspect, datasource=datasource)
     finally:
-        # One-shot admin path: dispose to release the connection (unblocks direct
-        # file access); quiet so it can't mask an in-flight introspection error.
-        ingestion._dispose_quietly(sa_engine)
+        conn.close()
+
+
+_SNAPSHOT_TTL_S = 60.0
+_SNAPSHOT_CAP = 256
+
+
+class _Catalog(BaseModel):
+    """Schema refs and the latest listing pass over them."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    refs: list[SchemaRef]
+    # Enumeration may fall back to the models' own schemas, so refs cover only these.
+    refs_for: frozenset[str]
+    listings: _Listings | None = None
+    # ``sql_table``s the listing was taken to resolve: only their absence is trusted.
+    listed_for: set[str] = Field(default_factory=set)
+
+
+class _SqlTrial(BaseModel):
+    live_columns: dict[str, DataType] | None
+    invalid_sql: bool
+
+
+class DriftSnapshot(BaseModel):
+    """One datasource's reusable live-schema facts for query-time attribution."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    created_at: float
+    unavailable: bool = False
+    catalog: _Catalog | None = None
+    tables: dict[tuple[SchemaRef, str], LiveTable] = Field(default_factory=dict)
+    sql_trials: dict[str, _SqlTrial] = Field(default_factory=dict)
+    lock: asyncio.Lock = Field(default_factory=asyncio.Lock)
+
+    def live_tables(
+        self, *, datasource: DatasourceConfig, sql_tables: set[str], fallback_schema_tokens: set[str],
+    ) -> dict[str, LiveTable]:
+        """Keyed ``LiveTable``s of the objects ``sql_tables`` name, gathering only what is missing (blocking)."""
+        if self.unavailable:
+            raise IntrospectionUnavailable(
+                f"live schema of datasource {datasource.name!r} recently unavailable"
+            )
+        wanted = {c for t in sql_tables for c in _sql_table_candidates(t)}
+        conn = _LiveConnection(datasource)
+
+        def collect(cat: _Catalog) -> dict[str, LiveTable]:
+            assert cat.listings is not None
+            return _collect_live_tables(
+                cat.listings, datasource=datasource, wanted=wanted,
+                lookup=lambda ref, name: self._table(conn=conn, ref=ref, obj_name=name),
+            )
+
+        try:
+            cat = self._catalog(
+                conn=conn, datasource=datasource, fallback_schema_tokens=fallback_schema_tokens,
+            )
+            listed = cat.listings is None
+            if listed:
+                self._list(cat=cat, conn=conn, datasource=datasource)
+            live = collect(cat)
+            unresolved = {
+                t for t in sql_tables if _resolve_live_table(sql_table=t, live_tables=live) is None
+            }
+            if not listed and not unresolved <= cat.listed_for:
+                self._list(cat=cat, conn=conn, datasource=datasource)
+                listed = True
+                live = collect(cat)
+            if listed:
+                cat.listed_for |= sql_tables
+            return live
+        except IntrospectionUnavailable:
+            self.unavailable = True
+            raise
+        finally:
+            conn.close()
+
+    def _catalog(
+        self, *, conn: _LiveConnection, datasource: DatasourceConfig, fallback_schema_tokens: set[str],
+    ) -> _Catalog:
+        cat = self.catalog
+        if cat is None or not fallback_schema_tokens <= cat.refs_for:
+            tokens = fallback_schema_tokens | (cat.refs_for if cat is not None else frozenset())
+            sa_engine, inspector = conn.open()
+            refs = _live_schema_refs(
+                inspector=inspector, sa_engine=sa_engine, datasource=datasource,
+                schema=None, fallback_schema_tokens=set(tokens),
+            )
+            if cat is None or refs != cat.refs:
+                cat = self.catalog = _Catalog(refs=refs, refs_for=frozenset(tokens))
+            else:
+                cat.refs_for = frozenset(tokens)
+        return cat
+
+    @staticmethod
+    def _list(*, cat: _Catalog, conn: _LiveConnection, datasource: DatasourceConfig) -> None:
+        _, inspector = conn.open()
+        cat.listings = _list_live_objects(cat.refs, inspector=inspector, datasource=datasource)
+
+    def _table(self, *, conn: _LiveConnection, ref: SchemaRef, obj_name: str) -> LiveTable | None:
+        live = self.tables.get((ref, obj_name))
+        if live is None:
+            live = conn.introspect(ref, obj_name)
+            if live is not None:
+                self.tables[(ref, obj_name)] = live
+        return live
+
+
+class LiveSnapshotCache:
+    """Per-datasource ``DriftSnapshot``s: expire 60 s after creation, LRU-capped, single-flight."""
+
+    def __init__(self, *, clock: Callable[[], float] = time.monotonic) -> None:
+        self._clock = clock
+        self._entries: OrderedDict[EngineCacheKey, DriftSnapshot] = OrderedDict()
+
+    def __len__(self) -> int:
+        return len(self._entries)
+
+    def clear(self) -> None:
+        self._entries.clear()
+
+    def _expired(self, snapshot: DriftSnapshot) -> bool:
+        return self._clock() - snapshot.created_at >= _SNAPSHOT_TTL_S
+
+    def _entry(self, key: EngineCacheKey, *, stale: DriftSnapshot | None = None) -> DriftSnapshot:
+        """``key``'s snapshot (a fresh one in place of ``stale``); held snapshots are never dropped, keeping single-flight."""
+        idle = [k for k, s in self._entries.items() if k != key and not s.lock.locked()]
+        for expired in [k for k in idle if self._expired(self._entries[k])]:
+            del self._entries[expired]
+        snapshot = self._entries.get(key)
+        if snapshot is None or snapshot is stale or (
+            self._expired(snapshot) and not snapshot.lock.locked()
+        ):
+            snapshot = self._entries[key] = DriftSnapshot(created_at=self._clock())
+        self._entries.move_to_end(key)
+        # Least recently used first.
+        idle = [k for k in idle if k in self._entries]
+        for evicted in idle[: max(0, len(self._entries) - _SNAPSHOT_CAP)]:
+            del self._entries[evicted]
+        return snapshot
+
+    @asynccontextmanager
+    async def acquire(self, datasource: DatasourceConfig) -> AsyncGenerator[DriftSnapshot, None]:
+        """The datasource's snapshot, held exclusively for the block."""
+        key = _sql_client_cache_key(datasource)
+        snapshot = self._entry(key)
+        while True:
+            async with snapshot.lock:
+                if not self._expired(snapshot):
+                    yield snapshot
+                    return
+            # Expired while waiting: every waiter moves to one fresh snapshot.
+            snapshot = self._entry(key, stale=snapshot)
 
 
 def _introspect_one_table(
@@ -1952,10 +2162,8 @@ def _strip_ident_quotes(ident: str) -> str:
     return ident
 
 
-def _resolve_live_table(
-    *, sql_table: str, live_tables: dict[str, LiveTable]
-) -> LiveTable | None:
-    """Look up a model's ``sql_table`` in the live map (full / last-two / unquoted variants); a qualified name is NEVER stripped to bare, which would mask a dropped non-default twin."""
+def _sql_table_candidates(sql_table: str) -> list[str]:
+    """Live-map keys a ``sql_table`` may resolve through (full / last-two / unquoted variants); a qualified name is NEVER stripped to bare, which would mask a dropped non-default twin."""
     parts = sql_table.split(".")
     # Unquote per segment, not the whole string (only the object is quoted).
     unq = [_strip_ident_quotes(p) for p in parts]
@@ -1963,7 +2171,14 @@ def _resolve_live_table(
     if len(parts) >= 2:
         candidates.append(".".join(parts[-2:]))
         candidates.append(".".join(unq[-2:]))
-    for name in candidates:
+    return candidates
+
+
+def _resolve_live_table(
+    *, sql_table: str, live_tables: dict[str, LiveTable]
+) -> LiveTable | None:
+    """Look up a model's ``sql_table`` in the live map."""
+    for name in _sql_table_candidates(sql_table):
         live = live_tables.get(name)
         if live is not None:
             return live
@@ -2147,6 +2362,7 @@ async def _collect_sql_table_diffs(
     datasource: DatasourceConfig,
     sql_table_models: list[SlayerModel],
     available_in_ds: set[str],
+    snapshot: DriftSnapshot | None = None,
 ) -> dict[str, tuple[ToDeleteEntry | None, set[str]]]:
     """Introspect live (off the event loop) and diff each sql_table-mode model; on SQLite also run the affinity probe and merge drift into each diff."""
     if not sql_table_models:
@@ -2158,12 +2374,20 @@ async def _collect_sql_table_diffs(
         if (tok := split_sql_table(m.sql_table or "")[0]) is not None
     }
     try:
-        live_tables = await asyncio.to_thread(
-            _live_schema_for_datasource,
-            datasource=datasource,
-            schema=None,
-            fallback_schema_tokens=fallback_tokens,
-        )
+        if snapshot is None:
+            live_tables = await asyncio.to_thread(
+                _live_schema_for_datasource,
+                datasource=datasource,
+                schema=None,
+                fallback_schema_tokens=fallback_tokens,
+            )
+        else:
+            live_tables = await asyncio.to_thread(
+                snapshot.live_tables,
+                datasource=datasource,
+                sql_tables={m.sql_table for m in sql_table_models if m.sql_table},
+                fallback_schema_tokens=fallback_tokens,
+            )
     except IntrospectionUnavailable as exc:
         # Unknown live schema: don't report deletions (a transient error would
         # hand --force-clean a whole tenant).
@@ -2189,6 +2413,7 @@ async def _collect_sql_diffs(
     datasource: DatasourceConfig,
     sql_models: list[SlayerModel],
     sql_clients: dict[EngineCacheKey, SlayerSQLClient] | None,
+    snapshot: DriftSnapshot | None = None,
 ) -> dict[str, tuple[ToDeleteEntry | None, set[str]]]:
     """Trial-execute each sql-mode model concurrently and produce its diff."""
     out: dict[str, tuple[ToDeleteEntry | None, set[str]]] = {}
@@ -2205,13 +2430,21 @@ async def _collect_sql_diffs(
         if sql_clients is not None:
             sql_clients[key] = client
 
-    async def _diff_one(model: SlayerModel) -> None:
+    async def _trial(model: SlayerModel) -> _SqlTrial:
         live_cols = await _live_columns_for_sql_model(model=model, client=client)
         invalid_sql = live_cols is None and await _source_tables_resolve(
             model=model, client=client
         )
+        return _SqlTrial(live_columns=live_cols, invalid_sql=invalid_sql)
+
+    async def _diff_one(model: SlayerModel) -> None:
+        trial = snapshot.sql_trials.get(model.sql or "") if snapshot is not None else None
+        if trial is None:
+            trial = await _trial(model)
+            if snapshot is not None:
+                snapshot.sql_trials[model.sql or ""] = trial
         out[model.name] = diff_sql_model(
-            model=model, live_columns=live_cols, invalid_sql=invalid_sql
+            model=model, live_columns=trial.live_columns, invalid_sql=trial.invalid_sql
         )
 
     await asyncio.gather(*(_diff_one(m) for m in sql_models))
@@ -2223,21 +2456,30 @@ async def validate_datasource(
     datasource: DatasourceConfig,
     models: list[SlayerModel],
     sql_clients: dict[EngineCacheKey, SlayerSQLClient] | None = None,
+    available_in_ds: set[str] | None = None,
+    snapshot: DriftSnapshot | None = None,
 ) -> list[ToDeleteEntry]:
-    """Validate every persisted model in ``models`` (all one DS) against the live schema. Read-only."""
+    """Validate ``models`` (all one DS) against the live schema. Read-only.
+
+    ``available_in_ds`` names every model of the DS (default: ``models``); a
+    ``snapshot`` scopes introspection to ``models``' objects and reuses its facts.
+    """
     if not models:
         return []
 
-    available_in_ds = {m.name for m in models}
+    if available_in_ds is None:
+        available_in_ds = {m.name for m in models}
     sql_table_diffs = await _collect_sql_table_diffs(
         datasource=datasource,
         sql_table_models=[m for m in models if m.sql_table],
         available_in_ds=available_in_ds,
+        snapshot=snapshot,
     )
     sql_diffs = await _collect_sql_diffs(
         datasource=datasource,
         sql_models=[m for m in models if m.sql],
         sql_clients=sql_clients,
+        snapshot=snapshot,
     )
     return compute_datasource_drops(
         models=models,

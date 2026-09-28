@@ -14,7 +14,9 @@ SLayer surfaces drift as a first-class concept across three behaviours:
    plus what `validate_models` says still needs deleting.
 3. **`SchemaDriftError`** — query-time wrap that runs `validate_models`
    when a query fails and surfaces the structured drift payload instead
-   of the raw DBAPI message.
+   of the raw DBAPI message. It checks only the models the failed statement
+   read, reuses live-schema facts for up to 60 seconds, and its `models`
+   lists the drifted models.
 
 Use `validate_models` to inspect drift; use `slayer validate-models
 --force-clean` (CLI only) to apply the deletes.
