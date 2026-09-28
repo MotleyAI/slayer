@@ -46,9 +46,22 @@ import re as _re
 import statistics
 import tempfile
 import uuid
+from datetime import datetime, timezone
 
 import pytest
 import sqlalchemy as sa
+from tests._dev1737_fixtures import (
+    DT,
+    DateCase,
+    all_models,
+    assert_case,
+    check_server_scenarios,
+    matrix_cases,
+    matrix_query,
+    oracle_part,
+    parse_temporal,
+    server_seed_statements,
+)
 from tests._engine_helpers import disposable_engine
 
 from slayer.async_utils import run_sync
@@ -1338,3 +1351,75 @@ async def test_integration_sqlserver_cross_model_derived_columnsql(
     assert response.row_count == 2
     assert float(response.data[0]["a_tbl.ratio_using_derived"]) == pytest.approx(2.0)
     assert float(response.data[1]["a_tbl.ratio_using_derived"]) == pytest.approx(2.0)
+
+
+# ---------------------------------------------------------------------------
+# Mode-B date functions (the shared oracle matrix + spec scenarios)
+# ---------------------------------------------------------------------------
+
+_DATE_CASES = matrix_cases()
+
+
+@pytest.fixture(scope="module")
+def _sqlserver_dates_storage(sqlserver_container, tmp_path_factory):
+    db_name = _create_module_db(sqlserver_container)
+    try:
+        with disposable_engine(_db_url(sqlserver_container, db_name)) as engine:
+            with engine.begin() as conn:
+                for stmt in server_seed_statements("tsql", today=datetime.now(timezone.utc).date()):
+                    conn.execute(sa.text(stmt))
+        storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("sqlserver_dates")))
+        run_sync(storage.save_datasource(_ds_config(sqlserver_container, db_name)))
+        for model in all_models(data_source="testmssql"):
+            run_sync(storage.save_model(model))
+        yield storage
+    finally:
+        _drop_module_db(sqlserver_container, db_name)
+
+
+@pytest.fixture
+def sqlserver_dates(_sqlserver_dates_storage) -> SlayerQueryEngine:
+    return SlayerQueryEngine(storage=_sqlserver_dates_storage)
+
+
+def _set_sa_language(sqlserver_container, language: str) -> None:
+    """Change the login's default language (and so its DATEFIRST); drop pooled connections."""
+    with disposable_engine(_admin_url(sqlserver_container), isolation_level="AUTOCOMMIT") as engine:
+        with engine.connect() as conn:
+            conn.execute(sa.text(f"ALTER LOGIN [sa] WITH DEFAULT_LANGUAGE = [{language}]"))
+    for cached in engine_factory._engine_cache.values():
+        cached.dispose()
+    engine_factory.reset_cache()
+
+
+@pytest.mark.integration
+class TestSQLServerDateFunctions:
+    @pytest.mark.parametrize("case", _DATE_CASES, ids=[c.case_id for c in _DATE_CASES])
+    async def test_matrix(self, sqlserver_dates: SlayerQueryEngine, case: DateCase) -> None:
+        assert_case((await sqlserver_dates.execute(matrix_query(case))).data, case)
+
+    async def test_scenarios(self, sqlserver_dates: SlayerQueryEngine) -> None:
+        await check_server_scenarios(sqlserver_dates)
+
+    async def test_weekday_independent_of_datefirst(self, sqlserver_container, _sqlserver_dates_storage) -> None:
+        case = DateCase(
+            case_id="part|day_of_week|d1", expr="date_part('day_of_week', d1)",
+            expected={row[0]: oracle_part("day_of_week", parse_temporal(row[1])) for row in DT.rows},
+        )
+        try:
+            for language in ("us_english", "British"):  # DATEFIRST 7, then 1
+                _set_sa_language(sqlserver_container, language)
+                engine = SlayerQueryEngine(storage=_sqlserver_dates_storage)
+                assert_case((await engine.execute(matrix_query(case))).data, case)
+        finally:
+            _set_sa_language(sqlserver_container, "us_english")
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("fn", ["substring", "substr"])
+async def test_two_arg_substring_executes(sqlserver_env: SlayerQueryEngine, fn: str) -> None:
+    result = await sqlserver_env.execute(query=SlayerQuery(
+        source_model="orders", measures=[{"formula": "*:count", "name": "n"}],
+        filters=[f"{fn}(status, 2) == 'ending'"],
+    ))
+    assert result.data[0]["orders.n"] == 2

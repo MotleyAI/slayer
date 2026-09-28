@@ -27,6 +27,7 @@ import tempfile
 import uuid
 import warnings
 from collections.abc import Generator
+from datetime import datetime, timezone
 from decimal import Decimal
 
 import pytest
@@ -51,6 +52,15 @@ from slayer.sql import engine_factory
 from slayer.sql.client import SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
 
+from tests._dev1737_fixtures import (
+    DateCase,
+    all_models,
+    assert_case,
+    check_server_scenarios,
+    matrix_cases,
+    matrix_query,
+    server_seed_statements,
+)
 from tests._engine_helpers import disposable_engine
 
 pytest.importorskip("testcontainers.clickhouse")
@@ -1738,3 +1748,42 @@ class TestVersionedReadonly:
         settings = f"readonly = 1, {_CORRELATED_SETTING} = 1"
         with _user_datasource(container, db_name, settings=settings) as ds:
             await _assert_semi_join_runs_with_setting(_rls_engine(ds))
+
+
+# ---------------------------------------------------------------------------
+# Mode-B date functions (the shared oracle matrix + spec scenarios)
+# ---------------------------------------------------------------------------
+
+_DATE_CASES = matrix_cases()
+
+
+@pytest.fixture(scope="module")
+def _clickhouse_dates_storage(clickhouse_container, tmp_path_factory):
+    db_name = _create_module_db(clickhouse_container)
+    try:
+        with disposable_engine(_ds_url_for_db(clickhouse_container, db_name)) as engine:
+            with engine.begin() as conn:
+                for stmt in server_seed_statements("clickhouse", today=datetime.now(timezone.utc).date()):
+                    conn.execute(sa.text(stmt))
+        storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("clickhouse_dates")))
+        run_sync(storage.save_datasource(_ds_config(clickhouse_container, db_name)))
+        for model in all_models(data_source="testclickhouse"):
+            run_sync(storage.save_model(model))
+        yield storage
+    finally:
+        _drop_module_db(clickhouse_container, db_name)
+
+
+@pytest.fixture
+def clickhouse_dates(_clickhouse_dates_storage) -> SlayerQueryEngine:
+    return SlayerQueryEngine(storage=_clickhouse_dates_storage)
+
+
+@pytest.mark.integration
+class TestClickHouseDateFunctions:
+    @pytest.mark.parametrize("case", _DATE_CASES, ids=[c.case_id for c in _DATE_CASES])
+    async def test_matrix(self, clickhouse_dates: SlayerQueryEngine, case: DateCase) -> None:
+        assert_case((await clickhouse_dates.execute(matrix_query(case))).data, case)
+
+    async def test_scenarios(self, clickhouse_dates: SlayerQueryEngine) -> None:
+        await check_server_scenarios(clickhouse_dates)

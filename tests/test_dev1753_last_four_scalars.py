@@ -25,10 +25,10 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import DataType
-from slayer.core.formula import SCALAR_PASSTHROUGH
 from slayer.core.keys import (
     SCALAR_FUNCTION_ARITY,
     SCALAR_FUNCTIONS,
+    SCALAR_PASSTHROUGH,
     check_scalar_arity,
 )
 from slayer.core.models import (
@@ -72,10 +72,12 @@ class TestScalarSetsClosed:
         pass-through scalars."""
         assert SCALAR_PASSTHROUGH - SCALAR_FUNCTIONS == set()
 
-    def test_binder_only_names_are_like_and_iif(self) -> None:
-        # ``like`` arrives via the LIKE-operator rewrite, ``iif`` via the CASE
-        # rewrite (DEV-1740); neither is a legacy-formula pass-through name.
-        assert SCALAR_FUNCTIONS - SCALAR_PASSTHROUGH == {"like", "iif"}
+    def test_binder_only_names_are_like_iif_and_date_functions(self) -> None:
+        # Rewrite targets and dialect-rendered date functions are not SQL pass-throughs.
+        assert SCALAR_FUNCTIONS - SCALAR_PASSTHROUGH == {
+            "like", "iif", "date_part", "date_diff", "date_add", "interval",
+            "current_date", "now",
+        }
 
     def test_arity_entries_exist_for_the_four(self) -> None:
         assert SCALAR_FUNCTION_ARITY["greatest"] == (2, None)

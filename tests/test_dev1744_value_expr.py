@@ -36,13 +36,13 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import BUILTIN_AGGREGATIONS, DataType, TimeGranularity
-from slayer.core.formula import SCALAR_PASSTHROUGH
 from slayer.core.errors import (
     RenderContextMissingFacilityError,
     UnknownReferenceError,
 )
 from slayer.core.keys import (
     SCALAR_FUNCTIONS,
+    SCALAR_PASSTHROUGH,
     AggregateKey,
     ArithmeticKey,
     BetweenKey,
@@ -1863,11 +1863,13 @@ class TestParserAndBinderScalarSetsAgree:
     def test_no_parser_only_names_remain(self) -> None:
         assert SCALAR_PASSTHROUGH - SCALAR_FUNCTIONS == set()
 
-    def test_binder_only_names_are_like_and_iif(self) -> None:
-        """``like`` is the LIKE-operator rewrite target and ``iif`` the
-        CASE-rewrite target (DEV-1740); neither is a legacy-formula
-        pass-through name."""
-        assert SCALAR_FUNCTIONS - SCALAR_PASSTHROUGH == {"like", "iif"}
+    def test_binder_only_names_are_like_iif_and_date_functions(self) -> None:
+        """Names whose Mode-B call is not the same SQL function: the LIKE and
+        CASE rewrite targets, and the dialect-rendered date functions."""
+        assert SCALAR_FUNCTIONS - SCALAR_PASSTHROUGH == {
+            "like", "iif", "date_part", "date_diff", "date_add", "interval",
+            "current_date", "now",
+        }
 
 
 class TestArityIsRejectedAtBindTime:

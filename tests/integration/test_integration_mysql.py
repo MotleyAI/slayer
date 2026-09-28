@@ -23,6 +23,15 @@ import uuid
 import pytest
 
 import sqlalchemy as sa
+from tests._dev1737_fixtures import (
+    DateCase,
+    all_models,
+    assert_case,
+    check_server_scenarios,
+    matrix_cases,
+    matrix_query,
+    server_seed_statements,
+)
 from tests._engine_helpers import disposable_engine
 
 from slayer.async_utils import run_sync
@@ -1440,3 +1449,45 @@ class TestMySQLIngestComments:
         models, _, _ = mysql_ingest_env
         regions = next(m for m in models if m.name == "regions")
         assert regions.description is None
+
+
+# ---------------------------------------------------------------------------
+# Mode-B date functions (the shared oracle matrix + spec scenarios)
+# ---------------------------------------------------------------------------
+
+_DATE_CASES = matrix_cases()
+
+
+@pytest.fixture(scope="module")
+def _mysql_dates_storage(mysql_container, tmp_path_factory):
+    db_name = _create_module_db(mysql_container)
+    try:
+        conn = _admin_connect(mysql_container, dbname=db_name)
+        try:
+            with conn.cursor() as cur:
+                for stmt in server_seed_statements("mysql", today=date.today()):
+                    cur.execute(stmt)
+        finally:
+            conn.close()
+        storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("mysql_dates")))
+        run_sync(storage.save_datasource(_ds_config(mysql_container, db_name)))
+        for model in all_models(data_source="testmysql"):
+            run_sync(storage.save_model(model))
+        yield storage
+    finally:
+        _drop_module_db(mysql_container, db_name)
+
+
+@pytest.fixture
+def mysql_dates(_mysql_dates_storage) -> SlayerQueryEngine:
+    return SlayerQueryEngine(storage=_mysql_dates_storage)
+
+
+@pytest.mark.integration
+class TestMySQLDateFunctions:
+    @pytest.mark.parametrize("case", _DATE_CASES, ids=[c.case_id for c in _DATE_CASES])
+    async def test_matrix(self, mysql_dates: SlayerQueryEngine, case: DateCase) -> None:
+        assert_case((await mysql_dates.execute(matrix_query(case))).data, case)
+
+    async def test_scenarios(self, mysql_dates: SlayerQueryEngine) -> None:
+        await check_server_scenarios(mysql_dates)
