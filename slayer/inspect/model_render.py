@@ -1,13 +1,6 @@
-"""DEV-1588: model-render core extracted from ``slayer/mcp/server.py``.
+"""Model-render core shared by the ``inspect`` surfaces and the deprecated ``inspect_model`` tool.
 
-This module owns the helpers + the full ``render_model_inspection`` body
-that the legacy MCP ``inspect_model`` tool used to inline. Both the
-``inspect`` surfaces (via :class:`slayer.inspect.service.InspectService`)
-and the kept-but-deprecated ``inspect_model`` tool now delegate here, so
-there is a single source of truth for the model render.
-
-IMPORTANT: this module must NOT import ``slayer.mcp`` — ``mcp/server.py``
-imports from here, so the reverse would be a circular import.
+Must NOT import ``slayer.mcp`` — ``mcp/server.py`` imports from here (circular).
 """
 
 from __future__ import annotations
@@ -27,42 +20,27 @@ from slayer.core.query import (
     extract_placeholder_names,
 )
 from slayer.engine.ingestion import _friendly_db_error
-from slayer.engine.profiling import (
-    _is_sample_cached,
-    _profile_numeric_temporal_columns,
-    ensure_column_sample_fresh,
-)
+from slayer.engine.profiling import ensure_samples_fresh
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.search.render import compact_description_from_learning
 from slayer.storage.base import StorageBackend
 
 logger = logging.getLogger(__name__)
 
-# Aggregations that are safe for sample-data extraction: zero extra args,
-# no time-column context needed.
+# Zero-arg aggregations needing no time-column context.
 _SAFE_SAMPLE_AGGS = frozenset({"avg", "sum", "min", "max", "count", "count_distinct", "median"})
 
-# The one failure the Data Profile's count-only retry is designed to recover
-# from: the database cannot group / deduplicate one of the column types. Kept
-# deliberately narrow — every other failure (permission, connection, syntax,
-# validation) must keep its own cause rather than being relabeled as a type
-# problem, which would both mislead the caller and hide the real error.
+# Deliberately narrow: other failures must keep their own cause, not be relabeled as a type problem.
 _UNSUPPORTED_GROUPING_SIGNATURES = (
     "could not identify an equality operator",
     "could not identify a comparison function",
 )
-# Postgres SQLSTATE 42883 (undefined_function) is what the missing equality /
-# comparison operator behind GROUP BY / DISTINCT actually raises.
+# Postgres undefined_function, raised for the missing GROUP BY / DISTINCT operator.
 _UNSUPPORTED_GROUPING_SQLSTATES = frozenset({"42883"})
 
 
 def _is_unsupported_grouping_error(exc: BaseException) -> bool:
-    """True when ``exc`` says the database can't group/deduplicate a column type.
-
-    Checks the driver SQLSTATE first (precise) and falls back to the message
-    text. Anything not matched is treated as an unrelated failure, so it
-    propagates with its own cause instead of being retried and mislabeled.
-    """
+    """True when ``exc`` says the database can't group/deduplicate a column type (SQLSTATE, then message)."""
     for err in (exc, getattr(exc, "orig", None)):
         if err is None:
             continue
@@ -75,25 +53,16 @@ def _is_unsupported_grouping_error(exc: BaseException) -> bool:
         text = f"{text} {str(orig).lower()}"
     return any(sig in text for sig in _UNSUPPORTED_GROUPING_SIGNATURES)
 
-# Section-level budgeting for inspect_model output.
-# columns/measures/aggregations/joins fall back to a names-only CSV when the
-# caller drops the section from `sections`; samples/learnings are fully
-# omitted (they have no natural "names" to list).
+# Dropped sections: these collapse to a names-only CSV, the omittable ones vanish.
 _INSPECT_SECTIONS_NAMES_ONLY = ("columns", "measures", "aggregations", "joins")
 _INSPECT_SECTIONS_OMITTABLE = ("samples", "learnings")
 _VALID_INSPECT_SECTIONS = _INSPECT_SECTIONS_NAMES_ONLY + _INSPECT_SECTIONS_OMITTABLE
 _TRUNCATION_MARKER = " ... [truncated]"
-# Placeholder rendered for an empty section / pruned markdown table.
 _NONE_PLACEHOLDER = "_(none)_"
 
 
 def _escape_md_cell(value: Any) -> str:
-    """Escape a value for inclusion in a markdown table cell.
-
-    Pipes become ``\\|``, carriage returns and newlines collapse to a single
-    space, and ``None``/empty renders as an em-dash so empty columns stay
-    aligned in the rendered table.
-    """
+    """Escape a markdown table cell; ``None``/empty renders as an em-dash."""
     if value is None:
         return "—"
     s = str(value).replace("|", "\\|").replace("\r\n", " ").replace("\r", " ").replace("\n", " ").strip()
@@ -101,17 +70,10 @@ def _escape_md_cell(value: Any) -> str:
 
 
 def _md_code_span(value: Any) -> str:
-    """Wrap *value* in a CommonMark inline code span, safe for any content.
-
-    The fence is chosen to be one backtick longer than the longest contiguous
-    run of backticks inside the value, so embedded backticks never break the
-    span.  Per the CommonMark spec, a space is added inside the fence when the
-    content starts or ends with a backtick.
-    """
+    """Wrap *value* in a CommonMark code span whose fence outruns any embedded backtick run."""
     text = str(value).replace("|", "\\|").replace("\r\n", " ").replace("\r", " ").replace("\n", " ").strip()
     if not text:
         return "` `"
-    # Find the longest run of consecutive backticks
     max_run = 0
     run = 0
     for ch in text:
@@ -122,15 +84,13 @@ def _md_code_span(value: Any) -> str:
         else:
             run = 0
     fence = "`" * (max_run + 1)
-    # CommonMark: space padding needed when content starts or ends with backtick
     if text.startswith("`") or text.endswith("`"):
         return f"{fence} {text} {fence}"
     return f"{fence}{text}{fence}"
 
 
 def _cell_is_present(value: Any) -> bool:
-    """A cell is 'present' when it carries information: not None, and not an
-    empty (or whitespace-only) string. Every other value counts as present."""
+    """True unless ``None`` or a blank string."""
     if value is None:
         return False
     if isinstance(value, str):
@@ -139,12 +99,7 @@ def _cell_is_present(value: Any) -> bool:
 
 
 def _truncate_description(text: str | None, max_chars: int | None) -> str | None:
-    """Trim a description to ``max_chars`` and append the truncation marker.
-
-    Returns the input unchanged when ``max_chars`` is ``None`` or the text is
-    already short enough. ``max_chars=0`` is allowed and yields just the
-    marker for any non-empty input.
-    """
+    """Trim to ``max_chars`` plus the truncation marker; ``max_chars=None`` disables."""
     if text is None or max_chars is None:
         return text
     if len(text) <= max_chars:
@@ -153,11 +108,7 @@ def _truncate_description(text: str | None, max_chars: int | None) -> str | None
 
 
 def _format_meta(meta: dict[str, Any] | None) -> str | None:
-    """Compact JSON for the ``inspect_model`` meta cell.
-
-    Returns ``None`` when ``meta`` is ``None`` so ``_markdown_table``'s
-    all-empty-column pruner hides the meta column when no row has meta set.
-    """
+    """Compact JSON for a meta cell; ``None`` stays ``None`` so the column can be pruned."""
     if meta is None:
         return None
     return json.dumps(meta, sort_keys=True, default=str)
@@ -166,27 +117,15 @@ def _format_meta(meta: dict[str, Any] | None) -> str | None:
 def _resolve_inspect_sections(
     sections: list[str] | None,
 ) -> tuple[list[str], list[str]]:
-    """Validate and normalise the ``sections`` argument for ``inspect_model``.
+    """Return ``(resolved, unknown)``, ``resolved`` in canonical order.
 
-    Returns ``(resolved, unknown)`` where ``resolved`` is the list of valid
-    section names to render (preserving the canonical order, not the caller's
-    order) and ``unknown`` is the unrecognised entries (in caller order) for
-    the warning line.
-
-    ``sections=None`` and ``sections=[]`` both resolve to all six valid
-    sections — that's the documented "I want everything" path.
-
-    A non-empty list of *only* unknown names resolves to ``[]`` (not all six):
-    "all sections" is reserved for the explicit None/[] forms so a typo like
-    ``sections=["sample"]`` can't silently trigger the full expensive payload.
-    The footer warns about the unknown names and lists what was dropped, so
-    the caller can correct and re-call.
+    ``None``/``[]`` mean all sections; a list of only unknown names resolves to ``[]``
+    so a typo can't trigger the full expensive payload.
     """
     if not sections:
         return list(_VALID_INSPECT_SECTIONS), []
     valid_set = {s for s in sections if s in _VALID_INSPECT_SECTIONS}
     unknown = [s for s in sections if s not in _VALID_INSPECT_SECTIONS]
-    # Canonical order so output is stable regardless of caller's order
     resolved = [s for s in _VALID_INSPECT_SECTIONS if s in valid_set]
     return resolved, unknown
 
@@ -198,17 +137,12 @@ def _render_inspect_footer(
     omitted: list[str],
     unknown: list[str],
 ) -> str | None:
-    """Build the per-call truncation footer for ``inspect_model``.
-
-    Returns ``None`` when there is nothing to report (no trimming, no
-    unknown names). Otherwise returns a quoted-markdown block.
-    """
+    """Quoted-markdown truncation footer, or ``None`` when nothing was trimmed or unknown."""
     if not (names_only or omitted or unknown):
         return None
     lines: list[str] = []
     if unknown:
-        # repr() escapes newlines / quote chars so a caller-supplied value
-        # like "foo\n> evil" can't forge additional footer lines.
+        # repr() so a caller-supplied value can't forge extra footer lines.
         quoted = ", ".join(repr(u) for u in unknown)
         lines.append(
             f"> Warning: ignored unknown sections: {quoted}. "
@@ -225,17 +159,9 @@ def _render_inspect_footer(
 
 
 def _markdown_table(rows: list[dict[str, Any]], columns: list[str]) -> str:
-    """Render a list of row dicts as a GitHub-flavored markdown table.
+    """Render rows as a GFM table, pruning all-empty columns.
 
-    Columns with no present cell across every row are dropped automatically so
-    uninformative all-empty columns don't clutter the output. The degenerate
-    cases collapse:
-
-    - ``rows`` is empty, or every column gets pruned → ``"_(none)_"``.
-    - Exactly one column survives pruning → a comma-separated, backtick-wrapped
-      list of its values, much denser than a one-column table.
-
-    Otherwise a normal markdown table is produced over the surviving columns.
+    A single surviving column renders as a comma-separated code-span list; none as ``_(none)_``.
     """
     if not rows:
         return _NONE_PLACEHOLDER
@@ -264,12 +190,7 @@ def _markdown_table(rows: list[dict[str, Any]], columns: list[str]) -> str:
 
 
 def _render_column_type(column: Column) -> str:
-    """Render the ``type`` cell of the Columns table.
-
-    Opaque (``UNKNOWN``) columns are still shown — SLayer stores and displays
-    them — but annotated with their raw database type and a marker saying they
-    can't be queried, so an agent doesn't try to group or aggregate on them.
-    """
+    """``type`` cell; opaque columns get their raw DB type and a not-queryable marker."""
     if not column.type.is_opaque:
         return str(column.type)
     detail = column.db_type or "unrecognized DB type"
@@ -279,16 +200,13 @@ def _render_column_type(column: Column) -> str:
 def _choose_sample_dims(
     model: SlayerModel,
 ) -> tuple[list[dict[str, str]], set]:
-    """Pick up to two categorical (TEXT/BOOLEAN) non-hidden, non-identifier columns to
-    group the sample by, so they aren't also aggregated as measures
-    (count_distinct(status) grouped by status is always 1)."""
+    """Up to two visible categorical non-identifier columns to group the sample by (not also aggregated)."""
     dims: list[dict[str, str]] = []
     dim_names: set = set()
     for c in model.columns:
         if c.hidden or is_identifier(column=c, columns=model.columns):
             continue
-        # DEV-1361: TEXT/BOOLEAN are the categorical-shaped types. This filter
-        # also excludes opaque (UNKNOWN) columns, which cannot be GROUP BY'd.
+        # Also excludes opaque columns, which can't be GROUP BY'd.
         if c.type not in (DataType.TEXT, DataType.BOOLEAN):
             continue
         dims.append({"name": c.name})
@@ -305,16 +223,8 @@ def _choose_sample_agg(
 ) -> str | None:
     """Pick a sample aggregation for ``column``, or ``None`` to skip it.
 
-    - With a restricted ``allowed_aggregations`` that excludes ``avg``: prefer
-      the first zero-arg-safe built-in (``_SAFE_SAMPLE_AGGS``); if none, fall
-      back to the first allowed entry (even if it needs extra context — an
-      intentional, tested behavior). Empty list → skip.
-    - Otherwise (``avg`` permitted): prefer ``avg`` for numeric columns, else
-      ``count_distinct`` (type inferred from ``measure_types`` — the lowercase
-      ``engine.get_column_types`` contract — or the column's own ``type``).
-    - Opaque (``UNKNOWN``) columns are always skipped: the DB has no equality
-      operator for their underlying type, so ``count_distinct``/``min``/``max``
-      would fail and take the whole Data Profile query down with them.
+    Restricted aggs without ``avg`` → first zero-arg-safe one, else the first allowed (intentional).
+    Opaque columns are skipped: no equality operator, so they'd sink the whole profile query.
     """
     if column.type.is_opaque:
         return None
@@ -338,11 +248,7 @@ def _build_sample_query_args(
     num_rows: int,
     measure_types: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Build the ``SlayerQuery`` payload for ``inspect_model``'s sample data.
-
-    First measure is always ``count(*)``; then one aggregation per non-hidden,
-    non-identifier, non-grouped column (see :func:`_choose_sample_agg`).
-    """
+    """Sample-data query: ``count(*)`` plus one aggregation per visible ungrouped non-identifier column."""
     measure_types = measure_types or {}
     dims, dim_names = _choose_sample_dims(model)
 
@@ -368,11 +274,7 @@ def _strip_model_prefix(
     data: list[dict[str, Any]],
     model_name: str,
 ) -> tuple[list[str], list[dict[str, Any]]]:
-    """Drop the redundant ``{model_name}.`` prefix from sample-data column keys.
-
-    Keeps the markdown table compact (the model name already appears in the
-    ``# Model: X`` heading above the sample).
-    """
+    """Drop the redundant ``{model_name}.`` prefix from sample-data column keys."""
     prefix = f"{model_name}."
 
     def _strip(key: str) -> str:
@@ -386,14 +288,9 @@ def _strip_model_prefix(
 async def _get_row_count(
     model: SlayerModel, engine: SlayerQueryEngine,
 ) -> int | None:
-    """Return the total row count of ``model``'s underlying table, or ``None``
-    on any failure. Uses a bare ``count(*)`` query — the same aggregation a user
-    would run to ask for the count.
+    """Row count via a bare ``count(*)`` query, or ``None`` on any failure.
 
-    The result column is read positionally (the query has exactly one field)
-    rather than by name, because SLayer's column-naming convention for the
-    bare-count-no-dimensions case is ``{model}._count`` rather than the
-    with-dimensions ``{model}.count``.
+    Read positionally: the no-dimensions column is named ``{model}._count``, not ``{model}.count``.
     """
     try:
         q = SlayerQuery.model_validate({
@@ -414,83 +311,13 @@ async def _get_row_count(
         return None
 
 
-async def _collect_measure_profile(
-    model: SlayerModel,
-    engine: SlayerQueryEngine,
-) -> dict[str, str]:
-    """Probe min/max for each non-hidden, non-identifier NUMERIC/TEMPORAL
-    column via a single batched query.
-
-    Returns ``{column_name: "min .. max"}`` for columns with data, or
-    ``{column_name: "all NULL"}`` for columns where both min and max are NULL.
-
-    DEV-1480: text/boolean columns are excluded here so they are served
-    exclusively by the categorical dim profile (which populates both
-    ``Column.sampled`` and ``Column.sampled_values``). Mixing the two
-    paths for the same column would leave ``sampled_values=None`` while
-    ``sampled`` is set, which ``_is_sample_cached`` correctly treats as a
-    cache miss — leading to permanent re-profile every ``inspect_model``
-    call.
-    """
-    _NUMERIC_TEMPORAL = (
-        DataType.INT, DataType.DOUBLE, DataType.DATE, DataType.TIMESTAMP,
-    )
-    columns = [
-        c for c in model.columns
-        if not c.hidden and not is_identifier(column=c, columns=model.columns)
-        and c.type in _NUMERIC_TEMPORAL
-    ]
-    if not columns:
-        return {}
-
-    # Use ModelExtension with inline columns to bypass allowed_aggregations
-    ext_columns = [
-        {"name": f"_slayer_probe_{c.name}", "sql": c.sql if c.sql else c.name,
-         "type": str(c.type)}
-        for c in columns
-    ]
-    measures_payload: list[dict[str, str]] = []
-    for c in columns:
-        measures_payload.append({"formula": f"min(_slayer_probe_{c.name})"})
-        measures_payload.append({"formula": f"max(_slayer_probe_{c.name})"})
-
-    try:
-        q = SlayerQuery.model_validate({
-            "source_model": {"source_name": model.name, "columns": ext_columns},
-            "measures": measures_payload,
-        })
-        r = await engine.execute(query=q, data_source=model.data_source or None)
-        row = r.data[0] if r.data else {}
-    except Exception:
-        return {}
-
-    result: dict[str, str] = {}
-    for c in columns:
-        mn = row.get(f"{model.name}._slayer_probe_{c.name}_min")
-        mx = row.get(f"{model.name}._slayer_probe_{c.name}_max")
-        if mn is None and mx is None:
-            result[c.name] = "all NULL"
-        else:
-            result[c.name] = f"{mn} .. {mx}"
-    return result
-
-
 def _build_backing_query_info(model: SlayerModel) -> dict | None:
-    """Build the ``backing_query`` block for inspect_model output.
-
-    Returns ``None`` for non-query-backed models. For query-backed models,
-    returns ``{variables, required_variables, stages}`` where:
-
-    - ``variables``: ``model.query_variables`` (defaults).
-    - ``required_variables``: placeholder names that have no default.
-    - ``stages``: each stage dumped as a dict, ready for JSON output.
-    """
+    """``{variables, required_variables, stages}`` for a query-backed model, else ``None``."""
     if not model.source_queries:
         return None
     all_placeholders: set = set()
     stage_dicts: list[dict] = []
-    # A placeholder is "required" only if it has no default at any layer the
-    # engine consults: model.query_variables OR the stage's own variables.
+    # Required = no default in model.query_variables nor in the stage's own variables.
     defaulted: set = set(model.query_variables.keys())
     for q in model.source_queries:
         all_placeholders |= extract_placeholder_names(q)
@@ -506,12 +333,7 @@ def _build_backing_query_info(model: SlayerModel) -> dict | None:
 
 
 def _render_field_value(v: Any) -> str:
-    """Pick the most descriptive label out of a query-stage field value.
-
-    Stage list entries can be plain strings, simple `{name}` dicts, formula
-    dicts, or wrapper dicts like `{"dimension": {"name": ...}}`. Try each
-    shape in priority order and fall back to `str(v)` if nothing matches.
-    """
+    """Most descriptive label of a query-stage field value (name, formula, wrapped name, else ``str``)."""
     if not isinstance(v, dict):
         return str(v)
     name = v.get("name")
@@ -589,23 +411,13 @@ def _source_type_for(model: SlayerModel) -> str:
     return "unknown"
 
 
-# ---------------------------------------------------------------------------
-# Model schema skeleton (DEV-1588 follow-up)
-# ---------------------------------------------------------------------------
-
+# Model schema skeleton
 def model_skeleton_fields(
     *, model: SlayerModel, max_chars: int | None = None,
 ) -> dict[str, Any]:
     """Cheap, DB-free structured skeleton of a model.
 
-    Shape: ``{name, canonical_id, description, column_names, measure_names,
-    aggregation_names, joins_to, variables}`` — ``variables`` is
-    ``{required, optional}`` (DEV-1730), the Mode-A ``{var}`` / ``{? ?}``
-    placeholders classified structurally. Used by ``inspect(model, compact=True)``
-    JSON and by each entry of ``inspect(datasource, compact=False)``'s
-    ``models`` list (DEV-1588). ``description`` is truncated by ``max_chars``;
-    ``canonical_id`` falls back to the bare name when ``data_source`` is unset
-    (e.g. a not-yet-refined query-backed model).
+    ``canonical_id`` falls back to the bare name when ``data_source`` is unset.
     """
     canonical_id = (
         f"{model.data_source}.{model.name}" if model.data_source else model.name
@@ -630,15 +442,7 @@ def _skeleton_csv(names: list[str]) -> str:
 def render_model_skeleton(
     *, model: SlayerModel, max_chars: int | None = None,
 ) -> str:
-    """Heading-less markdown schema skeleton (DB-free).
-
-    An optional truncated description line (only when set), then four lines —
-    ``Columns`` / ``Measures`` / ``Aggregations`` / ``Joins to`` — always
-    present, each empty value rendered ``_(none)_`` (aligned to
-    ``models_summary(compact)``), plus a fifth ``Variables`` line when the model
-    is parameterised with Mode-A ``{var}`` / ``{? ?}`` placeholders (DEV-1730).
-    The caller prepends the ``#``/``##`` heading.
-    """
+    """Heading-less, DB-free markdown schema skeleton; the caller prepends the heading."""
     fields = model_skeleton_fields(model=model, max_chars=max_chars)
     lines: list[str] = []
     if fields["description"]:
@@ -654,10 +458,7 @@ def render_model_skeleton(
 
 
 def _render_variables_line(variables: dict[str, list[str]]) -> str | None:
-    """Render the model-variable line for sql-mode models parameterised with
-    ``{var}`` / ``{? ?}`` (DEV-1730). Returns ``None`` when the model takes no
-    variables so a plain table-backed model's skeleton is unchanged.
-    """
+    """``Variables:`` skeleton line, or ``None`` when the model takes no variables."""
     required = variables.get("required") or []
     optional = variables.get("optional") or []
     if not required and not optional:
@@ -669,9 +470,7 @@ def _render_variables_line(variables: dict[str, list[str]]) -> str | None:
 async def _oriented_hops(
     model: SlayerModel, storage: StorageBackend
 ) -> list[OrientedJoin]:
-    """Every hop incident to ``model`` — declared outgoing plus reverse-reachable
-    incoming edges declared on datasource peers — oriented from ``model``
-    (DEV-1853). Best-effort: a peer that fails to load is skipped."""
+    """Declared outgoing plus peer-declared incoming hops, oriented from ``model``; unloadable peers skipped."""
     models_by_name: dict[str, SlayerModel] = {model.name: model}
     try:
         peer_names = await storage.list_models(model.data_source)
@@ -703,13 +502,7 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
 ) -> str:
     """Render a complete-yet-compact view of an already-resolved model.
 
-    This is the verbatim body of the legacy ``inspect_model`` MCP tool,
-    extracted (DEV-1588) so the new ``inspect`` surfaces and the kept
-    ``inspect_model`` tool share one implementation.
-
-    ``engine=None`` contract: when no engine is supplied, the DB-hitting
-    blocks (row count, live profiling, sample data) are skipped and the
-    rest of the render proceeds without raising.
+    ``engine=None`` skips the DB-hitting blocks (row count, profiling, sample data).
     """
     fmt = format.lower().strip()
     if fmt not in ("markdown", "json"):
@@ -721,13 +514,9 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
             f"descriptions_max_chars must be >= 0, got {descriptions_max_chars}."
         )
 
-    # Resolve section gating up front so we can short-circuit DB calls
-    # for parts the caller doesn't want.
     included, unknown = _resolve_inspect_sections(sections)
     included_set = set(included)
 
-    # Categorise non-included sections into "names-only" (still listed,
-    # just collapsed to CSV) vs "fully omitted" (no heading at all).
     names_only_sections = [
         s for s in _INSPECT_SECTIONS_NAMES_ONLY if s not in included_set
     ]
@@ -740,7 +529,6 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
     if truncated_model_desc:
         out_sections.append(truncated_model_desc)
 
-    # Metadata bullets (incl. row_count from a cheap count(*) query)
     meta: list[str] = []
     if model.data_source:
         meta.append(f"- **data_source:** `{model.data_source}`")
@@ -769,10 +557,7 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
         filter_lines = "\n".join(f"- `{f}`" for f in model.filters)
         out_sections.append(f"## Filters (model-level)\n\n{filter_lines}")
 
-    # Backing-query section (query-backed models only). Structure is
-    # always-on (it's the model's identity for query-backed models, like
-    # `sql_table` is for table-backed); only the SQL cache is gated by
-    # show_sql.
+    # Backing-query structure is always on; only its SQL is gated by show_sql.
     backing_info = _build_backing_query_info(model)
     if backing_info is not None:
         out_sections.append(_backing_query_markdown_section(backing_info))
@@ -781,157 +566,18 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
                 f"## Backing Query SQL\n\n```sql\n{model.backing_query_sql}\n```"
             )
 
-    # ------------------------------------------------------------------
-    # DB-hitting computations — skip when their consumers aren't requested
-    # (and when no engine is available, DEV-1588).
-    # ------------------------------------------------------------------
-    profile_by_name: dict[str, str] = {}
-    profile_values_by_name: dict[str, list[str] | None] = {}
-    distinct_count_by_name: dict[str, int | None] = {}
-    measure_profile: dict[str, str] = {}
+    # Rendered samples come only from the profiling owner's returned columns.
+    sampled_by_name: dict[str, Column] = {}
     if engine is not None and "columns" in included_set:
-        uncached_columns: list[Column] = []
-        for c in model.columns:
-            if c.hidden or is_identifier(column=c, columns=model.columns):
-                continue
-            # Cache validity: categorical needs
-            # ``sampled_values`` to be present (the structured field
-            # is authoritative); numeric/temporal needs ``sampled``.
-            if _is_sample_cached(column=c, model=model):
-                if c.sampled is not None:
-                    profile_by_name[c.name] = c.sampled
-                profile_values_by_name[c.name] = c.sampled_values
-                distinct_count_by_name[c.name] = c.distinct_count
-            else:
-                # v6-upgrade fallback: a categorical column may have
-                # legacy ``sampled`` text but no ``sampled_values``
-                # yet. Surface the legacy text in case the live
-                # re-profile below fails for transient reasons —
-                # ``profile_column`` will overwrite on success.
-                if c.sampled is not None:
-                    profile_by_name[c.name] = c.sampled
-                uncached_columns.append(c)
-        if uncached_columns:
-            # DEV-1480: split the live profile into two paths so we
-            # preserve the pre-DEV-1480 batching for numeric/temporal
-            # columns. Categorical columns fire a top-values query
-            # (and a secondary count_distinct on overflow) per column —
-            # there's no efficient cross-column batching for those.
-            # Numeric/temporal columns share one batched min/max query.
-            _CATEGORICAL = (DataType.TEXT, DataType.BOOLEAN)
-            _NUMERIC_TEMPORAL = (
-                DataType.INT, DataType.DOUBLE,
-                DataType.DATE, DataType.TIMESTAMP,
-            )
-            cat_uncached = [
-                c for c in uncached_columns if c.type in _CATEGORICAL
-            ]
-            num_uncached = [
-                c for c in uncached_columns if c.type in _NUMERIC_TEMPORAL
-            ]
+        outcome = await ensure_samples_fresh(
+            model=model, columns=list(model.columns), engine=engine, storage=storage,
+        )
+        sampled_by_name = {
+            c.name: c for c in outcome.columns
+            if not c.hidden and not is_identifier(column=c, columns=model.columns)
+        }
 
-            async def _persist_sample(
-                *, col_name: str,
-                sampled: str | None,
-                sampled_values: list[str] | None,
-                distinct_count: int | None,
-            ) -> None:
-                try:
-                    await storage.update_column_sampled(
-                        data_source=model.data_source,
-                        model_name=model.name,
-                        column_name=col_name,
-                        sampled=sampled,
-                        sampled_values=sampled_values,
-                        distinct_count=distinct_count,
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "inspect_model: failed to persist sampled value for "
-                        "%s.%s.%s: %s",
-                        model.data_source, model.name, col_name, exc,
-                    )
-
-            # Categorical: one top-values query per column (+ optional
-            # count_distinct on overflow). DEV-1516: delegates to the
-            # shared ``ensure_column_sample_fresh`` helper so the
-            # cache-miss + persist + render-dict-population pattern is
-            # owned by exactly one place (also used by the search
-            # service's post-fusion column-hit hook).
-            for col in cat_uncached:
-                refreshed = await ensure_column_sample_fresh(
-                    model=model, column=col,
-                    engine=engine, storage=storage,
-                )
-                # On any failure (profile raise / None / persist raise)
-                # the helper returns the INPUT column. Legacy ``sampled``
-                # text on the input still feeds the markdown cell — the
-                # pre-pass above has already populated
-                # ``profile_by_name[col.name]`` from ``col.sampled``,
-                # so we only overwrite when we actually have something
-                # fresher (avoids clobbering the legacy fallback with
-                # ``None`` and producing an empty cell).
-                if refreshed.sampled is not None:
-                    profile_by_name[col.name] = refreshed.sampled
-                profile_values_by_name[col.name] = refreshed.sampled_values
-                distinct_count_by_name[col.name] = refreshed.distinct_count
-
-            # Numeric/temporal: one batched min/max query for all of
-            # them at once (restores the pre-DEV-1480 batching for
-            # wide models).
-            if num_uncached:
-                num_entries = await _profile_numeric_temporal_columns(
-                    model=model, columns=num_uncached, engine=engine,
-                )
-                for col in num_uncached:
-                    entry = num_entries.get(col.name)
-                    if entry is None:
-                        continue
-                    if entry.min_value is None and entry.max_value is None:
-                        continue
-                    sampled_text = f"{entry.min_value} .. {entry.max_value}"
-                    profile_by_name[col.name] = sampled_text
-                    # Numeric/temporal columns carry no structured list
-                    # and no distinct_count per the DEV-1480 contract.
-                    profile_values_by_name[col.name] = None
-                    distinct_count_by_name[col.name] = None
-                    await _persist_sample(
-                        col_name=col.name,
-                        sampled=sampled_text,
-                        sampled_values=None,
-                        distinct_count=None,
-                    )
-            measure_profile = await _collect_measure_profile(model=model, engine=engine)
-            # Persist any measure-side (numeric/temporal) profile
-            # values to ``Column.sampled`` so subsequent
-            # ``inspect_model`` / search calls hit the cache
-            # instead of re-running the live profile query.
-            for col in uncached_columns:
-                sampled_value = measure_profile.get(col.name)
-                if sampled_value is None or col.name in profile_by_name:
-                    # Either no measure-side value for this column
-                    # (already covered by dim profile above), or
-                    # the dim profile already won the cache slot.
-                    continue
-                profile_by_name[col.name] = sampled_value
-                try:
-                    await storage.update_column_sampled(
-                        data_source=model.data_source,
-                        model_name=model.name,
-                        column_name=col.name,
-                        sampled=sampled_value,
-                        sampled_values=None,
-                        distinct_count=None,
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "inspect_model: failed to persist sampled value for "
-                        "%s.%s.%s: %s",
-                        model.data_source, model.name, col.name, exc,
-                    )
-
-    # ``measure_types`` informs the sample query's choice of avg vs
-    # count_distinct. Only needed when ``samples`` is in the included set.
+    # Informs the sample query's avg vs count_distinct choice.
     measure_types: dict[str, str] = {}
     if engine is not None and "samples" in included_set:
         measure_types = await engine.get_column_types(
@@ -939,22 +585,12 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
             data_source=model.data_source or None,
         )
 
-    # ------------------------------------------------------------------
-    # Columns section
-    # ------------------------------------------------------------------
     visible_columns = [c for c in model.columns if not c.hidden]
     if "columns" in included_set:
         col_rows: list[dict[str, Any]] = []
         for c in visible_columns:
             aggs = ", ".join(c.allowed_aggregations) if c.allowed_aggregations else "all"
-            # DEV-1480: key-presence check (not ``or`` truthiness) so an
-            # all-NULL categorical column's ``sampled=""`` doesn't
-            # silently fall through to the measure_profile fallback's
-            # ``"all NULL"`` text.
-            if c.name in profile_by_name:
-                sampled_cell = profile_by_name[c.name]
-            else:
-                sampled_cell = measure_profile.get(c.name)
+            sampled_col = sampled_by_name.get(c.name)
             col_rows.append({
                 "name": c.name,
                 "type": _render_column_type(c),
@@ -966,7 +602,7 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
                 "label": c.label,
                 "description": _truncate_description(c.description, descriptions_max_chars),
                 "meta": _format_meta(c.meta),
-                "sampled": sampled_cell,
+                "sampled": sampled_col.sampled if sampled_col is not None else None,
             })
         col_columns = [
             "name", "type", "primary_key", "unique", "sql", "allowed_aggregations",
@@ -984,9 +620,6 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
             f"## Columns ({len(visible_columns)} — names only)\n\n{csv}"
         )
 
-    # ------------------------------------------------------------------
-    # Measures section
-    # ------------------------------------------------------------------
     if "measures" in included_set:
         measure_rows: list[dict[str, Any]] = []
         for mm in model.measures:
@@ -1010,9 +643,6 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
             f"## Measures ({len(model.measures)} — names only)\n\n{csv}"
         )
 
-    # ------------------------------------------------------------------
-    # Aggregations section
-    # ------------------------------------------------------------------
     if "aggregations" in included_set:
         if model.aggregations:
             agg_rows: list[dict[str, Any]] = []
@@ -1046,9 +676,6 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
             f"## Aggregations ({len(model.aggregations)} — names only)\n\n{csv}"
         )
 
-    # ------------------------------------------------------------------
-    # Joins section
-    # ------------------------------------------------------------------
     hops = await _oriented_hops(model, storage)
     if "joins" in included_set:
         join_rows: list[dict[str, Any]] = []
@@ -1072,28 +699,16 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
             f"## Joins ({len(hops)} — names only)\n\n{csv}"
         )
 
-    # ------------------------------------------------------------------
-    # Sample data (fully omitted when not in sections / no engine)
-    # ------------------------------------------------------------------
     sample_sql: str | None = None
     sample_data: dict[str, Any] | None = None
     sample_error: str | None = None
-    # Set when the profile fell back to a row count so JSON callers can tell a
-    # reduced profile from a complete one (the markdown note is not machine
-    # readable).
+    # Lets JSON callers tell a count-only fallback from a complete profile.
     sample_reduced_reason: str | None = None
     if engine is not None and "samples" in included_set:
         query_args = _build_sample_query_args(
             model=model, num_rows=num_rows, measure_types=measure_types,
         )
-        # A column whose underlying DB type has no equality operator (point,
-        # json, xml — all coarsed to TEXT before opaque classification existed,
-        # so still undetectable on older models) makes the grouped/DISTINCT
-        # profile fail. Retry once with a row-count-only profile so one exotic
-        # column can't sink the section — but ONLY for that specific failure.
-        # Any other error (permission, connection, validation, syntax) must
-        # surface with its own cause instead of being relabeled as a type
-        # problem; the outer handler still degrades the section gracefully.
+        # Older models may hold ungroupable types as TEXT: retry count-only, but ONLY on that failure.
         note = ""
         try:
             try:
@@ -1113,8 +728,7 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
                         query=sample_query, data_source=model.data_source or None
                     )
                 except Exception:
-                    # The reduced profile failed too — report the original
-                    # cause, not this second failure.
+                    # Report the original cause, not this second failure.
                     raise exc
                 sample_reduced_reason = (
                     "at least one column's type does not support the "
@@ -1151,11 +765,7 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
                 )
             out_sections.append(sample_section)
 
-    # ------------------------------------------------------------------
-    # Learnings (DEV-1357 v2) — surfaces only memories where ``query`` is
-    # ``None``; query-bearing memories are recall-only. Auto-pruned when
-    # no learning-shaped memory matches.
-    # ------------------------------------------------------------------
+    # Learnings: query-bearing memories are recall-only, so only ``query is None`` ones show.
     relevant_learnings: list[Any] = []
     wanted: list[str] = []
     if "learnings" in included_set:
@@ -1177,9 +787,6 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
             for memory in relevant_learnings:
                 matched = sorted(set(wanted) & set(memory.entities))
                 matched_md = ", ".join(f"`{e}`" for e in matched)
-                # DEV-1549: compact mode emits Memory.description (or
-                # the first-paragraph fallback computed from learning);
-                # verbose dumps the full learning body.
                 if compact:
                     body = (
                         memory.description
@@ -1193,10 +800,6 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
                 )
             out_sections.append("\n".join(lines))
 
-    # ------------------------------------------------------------------
-    # Per-call truncation footer (only when something was trimmed or an
-    # unknown section name was supplied).
-    # ------------------------------------------------------------------
     footer = _render_inspect_footer(
         included=included,
         names_only=names_only_sections,
@@ -1229,24 +832,17 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
         if "columns" in included_set:
             col_payloads: list[dict[str, Any]] = []
             for c in visible_columns:
-                # DEV-1480 key-presence (not ``or`` truthiness) so empty
-                # string ``sampled=""`` (all-NULL categorical) survives.
-                if c.name in profile_by_name:
-                    sampled_cell = profile_by_name[c.name]
-                else:
-                    sampled_cell = measure_profile.get(c.name)
+                sampled_col = sampled_by_name.get(c.name)
                 col_payloads.append({
                     "name": c.name,
                     "type": str(c.type),
-                    # Opaque columns only: the raw DB type plus an explicit
-                    # not-queryable marker (see _render_column_type).
+                    # Opaque columns only (see _render_column_type).
                     **(
                         {"db_type": c.db_type, "queryable": False}
                         if c.type.is_opaque else {}
                     ),
                     "primary_key": c.primary_key,
                     "unique": c.unique,
-                    # DEV-1929: present only when the column declares a bucket.
                     **({"granularity": c.granularity.value} if c.granularity is not None else {}),
                     **({"sql": c.sql} if show_sql else {}),
                     "allowed_aggregations": c.allowed_aggregations,
@@ -1256,12 +852,10 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
                         c.description, descriptions_max_chars,
                     ),
                     "meta": c.meta,
-                    "sampled": sampled_cell,
-                    # DEV-1480: structured top-50 list + true cardinality,
-                    # surfaced only in the JSON shape (the markdown table
-                    # text format is unchanged per the issue).
-                    "sampled_values": profile_values_by_name.get(c.name),
-                    "distinct_count": distinct_count_by_name.get(c.name),
+                    "sampled": sampled_col.sampled if sampled_col is not None else None,
+                    # Structured top-50 + cardinality: JSON shape only.
+                    "sampled_values": sampled_col.sampled_values if sampled_col is not None else None,
+                    "distinct_count": sampled_col.distinct_count if sampled_col is not None else None,
                 })
             payload["columns"] = col_payloads
         elif visible_columns:
@@ -1326,15 +920,7 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
             if show_sql and sample_sql:
                 payload["sample_sql"] = sample_sql
 
-        # Learnings (DEV-1357 v2) — Memory carries ``learning``,
-        # not ``body``; reading ``.body`` here would AttributeError
-        # the moment a memory matches and the caller asked for JSON
-        # output.
         if "learnings" in included_set and relevant_learnings:
-            # DEV-1549: compact JSON Learnings drops ``learning`` and
-            # surfaces ``description`` (Memory.description or the
-            # first-paragraph fallback). Verbose JSON keeps the full
-            # learning key as today.
             if compact:
                 payload["learnings"] = [
                     {

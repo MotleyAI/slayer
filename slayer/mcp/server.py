@@ -47,7 +47,6 @@ from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.memories.help_seed import seed_help_memories
 from slayer.inspect.model_render import (  # noqa: F401 — re-exported for backward-compat (tests + other modules import these names from slayer.mcp.server)
     _build_sample_query_args,
-    _collect_measure_profile,
     _escape_md_cell,
     _format_meta,
     _get_row_count,
@@ -485,7 +484,8 @@ To connect a new database: create_datasource → describe_datasource (verify + l
           plus model-defined custom aggregations. Write count_distinct(x), never count(distinct x).
         - Every aggregation also takes ``window='90d'`` (compact duration) for a trailing time
           window over the source rows ending at each output bucket, when the query has a time
-          dimension; first/last pick within the interval, an empty interval is 0 for counts else NULL.
+          dimension; first/last pick within the interval. Any aggregate over no rows (an empty
+          interval, a parent with no children across a join) is 0 for counts else NULL.
           A window adds no dialect support — an aggregation a dialect cannot emit (e.g. median or
           percentile on MySQL / SQL Server) stays unavailable windowed too.
         - All aggregations support ``partition_by=`` (bare names: ``partition_by=region``,

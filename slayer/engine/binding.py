@@ -39,13 +39,20 @@ from slayer.core.refs import EXPRESSION_SOURCE_KINDS
 from slayer.core.keys import SCALAR_FUNCTIONS, check_scalar_arity, AggregateKey, ArithmeticKey, ColumnKey, ColumnSqlKey, Grain, InKey, LiteralKey, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, column_path, is_attached_source, normalize_scalar, prepend_value_key, walk_value_keys
 from slayer.core.join_walker import (
     OrientedJoin,
+    aggregation_owner,
     canonical_path,
     resolve_hop,
     walk,
 )
-from slayer.core.models import VALUE_PLACEHOLDER, SlayerModel, is_identifier, reserved_value_param_message
+from slayer.core.models import (
+    VALUE_PLACEHOLDER,
+    SlayerModel,
+    aggregation_definition,
+    is_identifier,
+    reserved_value_param_message,
+)
 from slayer.engine import dimension_routing
-from slayer.engine.param_binding import agg_owner, bind_aggregation_params
+from slayer.engine.param_binding import bind_aggregation_params
 from slayer.core.query import TimeDimension
 from slayer.core.scope import ModelScope, StageSchema, resolve_generated_column
 from slayer.ir.source_bundle import ResolvedSourceBundle
@@ -1225,7 +1232,9 @@ def _resolve_agg_owner(
 ) -> "tuple[Optional[SlayerModel], Optional[str]]":
     """``(owning_model, gate_leaf)`` for an aggregate source; ``(None, None)`` when
     the owner can't be confirmed (no host model, unresolved join hop)."""
-    owner = agg_owner(source=source, bundle=bundle)
+    owner = aggregation_owner(
+        root=bundle.source_model, source=source, models_by_name=bundle.models_by_name,
+    )
     if owner is None:
         return None, None
     return owner, getattr(source, "leaf", None) or getattr(source, "column_name", None)
@@ -1237,12 +1246,9 @@ def _declared_agg_param_names(
     """Declared parameter order for ``agg`` — the owning model's custom
     definition wins over the built-in registry; ``[]`` when none declared."""
     owner, _leaf = _resolve_agg_owner(source, bundle)
-    if owner is not None:
-        custom = next(
-            (a for a in (owner.aggregations or []) if a.name == agg), None,
-        )
-        if custom is not None:
-            return [p.name for p in custom.params]
+    custom = aggregation_definition(owner=owner, agg=agg)
+    if custom is not None:
+        return [p.name for p in custom.params]
     return list(BUILTIN_AGGREGATION_PARAM_ORDER.get(agg, ()))
 
 
@@ -1253,7 +1259,7 @@ def _check_agg_kwarg_names(
     if not names:
         return
     owner, _leaf = _resolve_agg_owner(source, bundle)
-    definition = next((a for a in (owner.aggregations or []) if a.name == agg), None) if owner else None
+    definition = aggregation_definition(owner=owner, agg=agg)
     if definition is None and agg not in BUILTIN_AGGREGATIONS:
         return  # unresolved custom aggregation: eligibility / render reports it
     try:

@@ -424,6 +424,8 @@ The same auto-join logic applies to model-level `filters` (always-applied WHERE)
 
 A query filter that reaches the population root only across a fanning (not provably to-one) hop restricts the population *by association* — a correlated `EXISTS` that counts each population row once, surfaced as a `semi_join_pushed` warning rather than multiplying rows through the join.
 
+A negated condition on a joined model does not mean "has none": `not orders.status = 'bad'` keeps a customer with at least one non-bad order, while a customer with no orders fails it (the comparison is NULL) — include those with `or orders.id is null`.
+
 ### Window functions in filters
 
 Window functions (`OVER (...)`) are not allowed inside the inner WHERE on SQLite or most dialects. Query filters reject them in two ways:
