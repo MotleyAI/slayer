@@ -205,6 +205,8 @@ class LiveTable(BaseModel):
     pk_columns: set[str] = Field(default_factory=set)
     # Each entry: (local_column, ref_table, ref_column)
     fk_relationships: list[tuple[str, str, str]] = Field(default_factory=list)
+    # Listed but its metadata read failed: present, yet no drift evidence.
+    readable: bool = True
 
 
 # Type-bucket comparison
@@ -1589,7 +1591,7 @@ def _live_schema_refs(
 
 
 _Listings = list[tuple[SchemaRef, list[str]]]
-_Lookup = Callable[[SchemaRef, str], "LiveTable | None"]
+_Lookup = Callable[[SchemaRef, str], "LiveTable"]
 
 
 def _introspect_live_object(
@@ -1599,8 +1601,8 @@ def _introspect_live_object(
     ref: SchemaRef,
     obj_name: str,
     datasource: DatasourceConfig,
-) -> LiveTable | None:
-    """One object's ``LiveTable``; None when its introspection failed (best-effort)."""
+) -> LiveTable:
+    """One object's ``LiveTable``; unreadable when its introspection failed (best-effort)."""
     try:
         return _introspect_one_table(
             inspector=inspector, sa_engine=sa_engine, table_name=obj_name, ref=ref,
@@ -1610,7 +1612,7 @@ def _introspect_live_object(
             "validate_models: failed to introspect %r in datasource %r: %s",
             obj_name, datasource.name, exc,
         )
-        return None
+        return LiveTable(readable=False)
 
 
 def _live_object_keys(*, ref: SchemaRef, obj_name: str, single: bool) -> list[str]:
@@ -1680,10 +1682,9 @@ def _collect_live_tables(
             ):
                 continue
             found += 1
-            live = lookup(ref, name)
-            if live is not None:
-                _key_live_object(out, ref=ref, obj_name=name, single=single, live=live)
-    if found and not out:
+            _key_live_object(out, ref=ref, obj_name=name, single=single, live=lookup(ref, name))
+    # Only a whole-datasource pass can tell that every table failed.
+    if wanted is None and found and not any(t.readable for t in out.values()):
         raise IntrospectionUnavailable(
             f"failed to introspect every table in datasource "
             f"{datasource.name!r} ({found} table(s))"
@@ -1704,7 +1705,7 @@ class _LiveConnection:
             self._opened = (sa_engine, sa.inspect(sa_engine))
         return self._opened
 
-    def introspect(self, ref: SchemaRef, obj_name: str) -> LiveTable | None:
+    def introspect(self, ref: SchemaRef, obj_name: str) -> LiveTable:
         sa_engine, inspector = self.open()
         return _introspect_live_object(
             inspector=inspector, sa_engine=sa_engine, ref=ref, obj_name=obj_name,
@@ -1854,12 +1855,10 @@ class DriftSnapshot(BaseModel):
         _, inspector = conn.open()
         cat.listings = _list_live_objects(cat.refs, inspector=inspector, datasource=datasource)
 
-    def _table(self, *, conn: _LiveConnection, ref: SchemaRef, obj_name: str) -> LiveTable | None:
+    def _table(self, *, conn: _LiveConnection, ref: SchemaRef, obj_name: str) -> LiveTable:
         live = self.tables.get((ref, obj_name))
         if live is None:
-            live = conn.introspect(ref, obj_name)
-            if live is not None:
-                self.tables[(ref, obj_name)] = live
+            live = self.tables[(ref, obj_name)] = conn.introspect(ref, obj_name)
         return live
 
 
@@ -2368,6 +2367,8 @@ def _diff_one_sql_table_model(
     live = _resolve_live_table(
         sql_table=model.sql_table or "", live_tables=live_tables,
     )
+    if live is not None and not live.readable:
+        return None, set()
     base = diff_sql_table_model(
         model=model,
         live_table=live,

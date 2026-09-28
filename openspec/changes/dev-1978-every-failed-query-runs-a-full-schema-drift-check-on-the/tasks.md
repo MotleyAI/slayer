@@ -17,6 +17,7 @@
 
 - [x] 4.1 `LiveSnapshotCache` / `DriftSnapshot` in `schema_drift.py` per design D3 (TTL 60 s, per-key `asyncio.Lock`, LRU 256, absence rule, negative-cached `IntrospectionUnavailable`, injectable clock); one instance per `SlayerQueryEngine`. Verify: "reuses live-schema facts" scenarios pass.
 - [x] 4.2 Unreachable datasource (review fix): a failed `sql` trial whose `SELECT 1` also fails raises the connection error (both paths); a connection failure marks the snapshot unreachable for the TTL, re-raised without requests. Verify: the two "unreachable datasource" scenarios pass and fail without the fix.
+- [x] 4.3 Listed-but-unreadable objects give their models no verdict (both paths). Verify: the new scenario fails without the fix.
 
 ## 5. Attribution rewrite
 

@@ -645,6 +645,51 @@ class TestResolvedDatasource:
         assert spies.listed_databases() == {env.db_path}
 
 
+_INTROSPECT = schema_drift._introspect_one_table
+
+
+def _customers_unreadable(**kwargs: Any) -> LiveTable:
+    if kwargs["table_name"] == "customers":
+        raise SQLAlchemyError("metadata read timed out")
+    return _INTROSPECT(**kwargs)
+
+
+class TestUnreadableTable:
+    async def test_a_listed_table_that_fails_to_introspect_is_not_reported_dropped(
+        self, env: _Env,
+    ) -> None:
+        with patch.object(schema_drift, "_introspect_one_table", side_effect=_customers_unreadable):
+            entries = await env.engine.validate_models(data_source="ds")
+        assert "customers" not in {e.model_name for e in entries}
+
+    async def test_an_unreadable_read_table_is_no_attribution_evidence(self, env: _Env) -> None:
+        with patch.object(schema_drift, "_introspect_one_table", side_effect=_customers_unreadable):
+            await _fails_unwrapped(env.engine, _UNRELATED_FAILURE)
+
+    async def test_an_all_unreadable_read_set_leaves_other_reads_attributable(
+        self, env: _Env,
+    ) -> None:
+        env.live("ALTER TABLE customers DROP COLUMN region")
+        with patch.object(schema_drift, "_introspect_one_table", side_effect=_customers_unreadable):
+            await _fails_unwrapped(env.engine, {
+                "source_model": "customers", "dimensions": ["region"],
+                "measures": [{"formula": "count(*)"}],
+            })
+            env.live("ALTER TABLE orders DROP COLUMN amount")
+            err = await _fails_with_drift(
+                env.engine, {"source_model": "orders", "measures": [{"formula": "sum(amount)"}]},
+            )
+        assert "orders" in _blamed(err)
+
+    async def test_an_unreadable_table_is_read_once_per_snapshot(self, env: _Env) -> None:
+        with patch.object(
+            schema_drift, "_introspect_one_table", side_effect=_customers_unreadable,
+        ) as introspect:
+            for _ in range(2):
+                await _fails_unwrapped(env.engine, _UNRELATED_FAILURE)
+        assert [c.kwargs["table_name"] for c in introspect.call_args_list].count("customers") == 1
+
+
 async def _unreachable_engine(tmp: Path) -> SlayerQueryEngine:
     """An engine whose one sqlite datasource lives in a missing directory, so every connect fails."""
     storage = YAMLStorage(base_dir=str(tmp / "storage"))

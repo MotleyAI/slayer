@@ -42,6 +42,9 @@ Drift is computed per source mode:
   datasource produces a column or model drop, any query-backed model that
   transitively references the dropped thing gets a whole-model drop.
 
+A model whose listed table cannot be read, or whose datasource cannot be
+connected to, gets no verdict rather than a drop.
+
 ## Cascade rules
 
 A drop on `M.X` cascades through:

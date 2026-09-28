@@ -98,3 +98,10 @@ Attribution SHALL validate only against the datasource the failed statement exec
 #### Scenario: Only the executing datasource is validated
 - **WHEN** a query fails and two other datasources are configured, one of them named by the source model
 - **THEN** attribution introspects only the datasource the query ran on
+
+### Requirement: An unreadable live table is no drift evidence
+Validation, explicit and query-time, SHALL NOT report a model as drifted when its table is present in the schema listing but its metadata could not be read; such a model SHALL get no verdict.
+
+#### Scenario: A listed table that fails to introspect is not reported dropped
+- **WHEN** a datasource's tables `a` and `b` are listed, reading `b`'s metadata fails while `a` succeeds, and `validate_models` runs
+- **THEN** no entry names `b`'s model
