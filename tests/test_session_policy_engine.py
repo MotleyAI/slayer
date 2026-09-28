@@ -188,6 +188,16 @@ def join_engine(tmp_path):
     return _mk_engine(tmp_path, _join_policy())
 
 
+# -- policy immutability -----------------------------------------------------
+
+
+def test_policy_cannot_be_reassigned(engine):
+    """Engine-scoped caches (profiling samples) assume engine scope = policy scope."""
+    with pytest.raises(AttributeError):
+        engine.policy = None
+    assert engine.policy is not None
+
+
 # -- _apply_policy dispatch --------------------------------------------------
 
 

@@ -1,4 +1,4 @@
-"""Sample-value refresh hooks (DEV-1375).
+"""Sample-value refresh hooks.
 
 Pins the four refresh trigger paths from §7 of the spec:
 
@@ -19,7 +19,7 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
-from slayer.engine import profiling
+from slayer.core.query import ModelExtension, SlayerQuery
 from slayer.engine.ingestion import ingest_datasource_idempotent
 from slayer.engine.profiling import refresh_all_table_backed_sampled
 from slayer.search.service import handle_edit_refresh
@@ -202,8 +202,7 @@ async def test_inspect_model_writes_back_on_sampled_miss(
 async def test_inspect_model_reads_cached_sampled_without_recompute(
     sqlite_table_setup, monkeypatch,
 ) -> None:
-    """When Column.sampled is set, inspect_model uses it and does not call
-    profile_column."""
+    """When Column.sampled is set, inspect_model uses it and runs no profiling query."""
     storage, db_file = sqlite_table_setup
     await storage.save_datasource(DatasourceConfig(
         name="ds", type="sqlite", database=db_file,
@@ -215,13 +214,15 @@ async def test_inspect_model_reads_cached_sampled_without_recompute(
         ],
     ))
     profile_call_count = {"n": 0}
-    original = profiling.profile_column
+    original = SlayerQueryEngine.execute
 
-    async def counting_profile(*, model, column, engine):
-        profile_call_count["n"] += 1
-        return await original(model=model, column=column, engine=engine)
+    async def counting_execute(self, *args, **kwargs):
+        q = kwargs.get("query", args[0] if args else None)
+        if isinstance(q, SlayerQuery) and (q.dimensions or isinstance(q.source_model, ModelExtension)):
+            profile_call_count["n"] += 1
+        return await original(self, *args, **kwargs)
 
-    monkeypatch.setattr(profiling, "profile_column", counting_profile)
+    monkeypatch.setattr(SlayerQueryEngine, "execute", counting_execute)
 
     mcp = create_mcp_server(storage=storage)
     await mcp.call_tool("inspect_model", {
