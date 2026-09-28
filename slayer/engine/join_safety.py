@@ -441,6 +441,7 @@ def _reroot_leaf_via_host(
 
 
 _RerootableT = TypeVar("_RerootableT", bound=ValueKey)
+_PATH_LEAVES = (ColumnKey, ColumnSqlKey, StarKey)
 
 
 def reroot_from_root(
@@ -459,14 +460,11 @@ def reroot_from_root(
         )
         if rerooted is not None:
             mapping[r] = rerooted
-    # Strip the target prefix from under-target refs FIRST; off-side refs
-    # (the via-host mapping) never start with the target prefix so they survive
-    # unchanged, then get substituted. Doing it the other way round would let a
-    # direction-agnostic edge-name back-token (== the target token) be stripped.
-    key = reroot_value_key(key, target_path=tp)
-    if mapping:
-        key = substitute_value_keys(key, mapping)
-    return key
+        elif isinstance(r, _PATH_LEAVES):
+            mapping[r] = reroot_value_key(r, target_path=tp)
+    # One pass, each host leaf mapped once: a stripped leaf equal to a host key
+    # is never re-mapped, a via-host leaf never stripped.
+    return substitute_value_keys(key, mapping)
 
 
 UNREACHABLE_NO_PATH = "unreachable from the aggregate's root (no join path from it)"

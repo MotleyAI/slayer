@@ -46,6 +46,7 @@ def _plan_with_mask(
         producer_plan=producer, alias_hint="spend_sum", attach_phase="combined",
         substitutions=[RegroupSubstitution(
             placeholder=_PLACEHOLDER, producer_slot_id="p1", original_key=_SPEND,
+            empty_value=None,
         )],
     )
     return PlannedQuery(
