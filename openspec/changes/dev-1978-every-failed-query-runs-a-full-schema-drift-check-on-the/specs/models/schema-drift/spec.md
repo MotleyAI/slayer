@@ -87,6 +87,6 @@ Attribution SHALL reuse the live-schema facts it gathered for a datasource (sche
 ### Requirement: Attribution uses the query's resolved datasource
 Attribution SHALL validate only against the datasource the failed statement executed on, including when the source model declares no `data_source`.
 
-#### Scenario: A model without a data_source does not validate other datasources
-- **WHEN** a query on a model without `data_source` fails and two other datasources are configured
+#### Scenario: Only the executing datasource is validated
+- **WHEN** a query fails and two other datasources are configured, one of them named by the source model
 - **THEN** attribution introspects only the datasource the query ran on

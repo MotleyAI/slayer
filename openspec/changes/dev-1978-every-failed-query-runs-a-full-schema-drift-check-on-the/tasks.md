@@ -1,8 +1,8 @@
 ## 1. Tests (spec-tests stage)
 
-- [ ] 1.1 New `tests/test_drift_attribution_scope.py` covering every scenario in `specs/models/schema-drift/spec.md` (inline SQLite/DuckDB — unit, not `integration`); count calls on `_introspect_one_table`, the per-schema listing, and `_live_columns_for_sql_model`; inject the cache clock. Verify: the file collects and every new test fails for the right reason before implementation.
-- [ ] 1.2 Read-set ratchet test: render a corpus of query shapes (single-stage, multi-stage, query-backed splice, cross-model producer, filter semi-join, over-limit identifiers) and assert every model relation in the final AST carries the `slayer_model` stamp and stage relations do not. Verify: fails before 2.1.
-- [ ] 1.3 `tests/test_schema_drift_error.py` (user-approved): `test_validate_models_attribution_failure_re_raises_original` moves its patch target to the new attribution entry point, assertions unchanged; `test_healthy_query_does_not_call_validate_models` additionally patches the new entry point and asserts it is not called. Verify: both updated tests fail before implementation for the right reason.
+- [x] 1.1 New `tests/test_drift_attribution_scope.py` covering every scenario in `specs/models/schema-drift/spec.md` (inline SQLite/DuckDB — unit, not `integration`); count calls on `_introspect_one_table`, the per-schema listing, and `_live_columns_for_sql_model`; inject the cache clock. Verify: the file collects and every new test fails for the right reason before implementation.
+- [x] 1.2 Read-set ratchet test: render a corpus of query shapes (single-stage, multi-stage, query-backed splice, cross-model producer, filter semi-join, over-limit identifiers) and assert every model relation in the final AST carries the `slayer_model` stamp and stage relations do not. Verify: fails before 2.1.
+- [x] 1.3 `tests/test_schema_drift_error.py` (user-approved): `test_validate_models_attribution_failure_re_raises_original` moves its patch target to the new attribution entry point, assertions unchanged; `test_healthy_query_does_not_call_validate_models` additionally patches the new entry point and asserts it is not called. Verify: both updated tests fail before implementation for the right reason.
 
 ## 2. Read set
 
@@ -24,4 +24,4 @@
 ## 6. Docs and gates
 
 - [ ] 6.1 `docs/concepts/schema-drift.md` item 3: one sentence — attribution checks only the models the failed statement read, reuses live-schema facts for up to 60 s, and `models` lists the drifted models. Verify: docs diff is one sentence.
-- [ ] 6.2 Full unit suite (`poetry run pytest -m "not integration" -n auto`), `poetry run ruff check slayer/ tests/`, `poetry run python tools/arch_check.py`, basedpyright baseline not grown. Verify: all green.
+- [ ] 6.2 Full unit suite (`poetry run pytest -m "not integration" -n auto`), `poetry run ruff check slayer/ tests/`, `uvx --no-build --from living-architecture==0.2.0 la-arch-check`, basedpyright baseline not grown. Verify: all green.
