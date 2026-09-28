@@ -47,7 +47,6 @@ from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.memories.help_seed import seed_help_memories
 from slayer.inspect.model_render import (  # noqa: F401 — re-exported for backward-compat (tests + other modules import these names from slayer.mcp.server)
     _build_sample_query_args,
-    _collect_measure_profile,
     _escape_md_cell,
     _format_meta,
     _get_row_count,

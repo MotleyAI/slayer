@@ -140,6 +140,16 @@ def _triple(col: Column) -> tuple:
     return (col.sampled, col.sampled_values, col.distinct_count)
 
 
+def _cols(model: SlayerModel | None, *names: str) -> list[Column]:
+    assert model is not None
+    out: list[Column] = []
+    for name in names:
+        col = model.get_column(name)
+        assert col is not None, name
+        out.append(col)
+    return out
+
+
 async def _stored(storage: StorageBackend, *, model: str = "orders", column: str) -> Column:
     m = await storage.get_model(model, data_source=DS)
     assert m is not None
@@ -177,7 +187,7 @@ def clock(monkeypatch) -> _Clock:
 async def test_owner_returns_input_columns_in_order(env) -> None:
     engine, storage = env
     model = await _save(storage, _orders())
-    cols = [model.get_column("status"), model.get_column("id"), model.get_column("amount")]
+    cols = _cols(model, "status", "id", "amount")
     outcome = await ensure_samples_fresh(model=model, columns=cols, engine=engine, storage=storage)
     assert isinstance(outcome, ProfileOutcome)
     assert [c.name for c in outcome.columns] == ["status", "id", "amount"]
@@ -194,7 +204,7 @@ async def test_hidden_identifier_and_opaque_columns_are_never_profiled(env, monk
         Column(name="blob", sql="status", type=DataType.UNKNOWN),
     ]))
     log = _record(engine=engine, monkeypatch=monkeypatch)
-    cols = [model.get_column(n) for n in ("id", "secret", "blob")]
+    cols = _cols(model, "id", "secret", "blob")
     outcome = await ensure_samples_fresh(model=model, columns=cols, engine=engine, storage=storage)
     assert log == []
     assert outcome.columns == cols
@@ -311,7 +321,7 @@ async def test_all_null_numeric_is_cached(env, monkeypatch) -> None:
     engine, storage = env
     model = await _save(storage, _orders(extra=[Column(name="empty_num", type=DataType.DOUBLE)]))
     outcome = await ensure_samples_fresh(
-        model=model, columns=[model.get_column("empty_num")], engine=engine, storage=storage,
+        model=model, columns=_cols(model, "empty_num"), engine=engine, storage=storage,
     )
     assert outcome.columns[0].sampled == "all NULL"
     stored = await _stored(storage, column="empty_num")
@@ -319,7 +329,7 @@ async def test_all_null_numeric_is_cached(env, monkeypatch) -> None:
     log = _record(engine=engine, monkeypatch=monkeypatch)
     reloaded = await storage.get_model("orders", data_source=DS)
     await ensure_samples_fresh(
-        model=reloaded, columns=[reloaded.get_column("empty_num")], engine=engine, storage=storage,
+        model=reloaded, columns=_cols(reloaded, "empty_num"), engine=engine, storage=storage,
     )
     assert log == []
 
@@ -338,11 +348,11 @@ async def test_all_null_numeric_is_cached_via_inspect_column(env, monkeypatch) -
 async def test_empty_categorical_is_cached(env, monkeypatch) -> None:
     engine, storage = env
     model = await _save(storage, _orders(extra=[Column(name="note", type=DataType.TEXT)]))
-    await ensure_samples_fresh(model=model, columns=[model.get_column("note")], engine=engine, storage=storage)
+    await ensure_samples_fresh(model=model, columns=_cols(model, "note"), engine=engine, storage=storage)
     assert _triple(await _stored(storage, column="note")) == ("", [], 0)
     log = _record(engine=engine, monkeypatch=monkeypatch)
     reloaded = await storage.get_model("orders", data_source=DS)
-    await ensure_samples_fresh(model=reloaded, columns=[reloaded.get_column("note")], engine=engine, storage=storage)
+    await ensure_samples_fresh(model=reloaded, columns=_cols(reloaded, "note"), engine=engine, storage=storage)
     assert log == []
 
 
@@ -722,7 +732,7 @@ async def test_persist_failure_keeps_fresh_value(env, monkeypatch, caplog) -> No
         raise RuntimeError("disk on fire\nsecond line detail")
 
     monkeypatch.setattr(storage, "update_column_sampled", boom)
-    status = model.get_column("status")
+    [status] = _cols(model, "status")
     with caplog.at_level(logging.WARNING):
         outcome = await ensure_samples_fresh(model=model, columns=[status], engine=engine, storage=storage)
     assert outcome.columns[0].sampled_values == ["paid", "cancelled", "refunded"]

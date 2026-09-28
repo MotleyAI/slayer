@@ -30,13 +30,11 @@ The orchestrator owns:
   candidates outside the allowlist (full graph path) or outside the
   naive kind list (fallback path) are dropped before the
   ``max_results`` cap, so the cap always counts surviving items only.
-* Post-fusion column-hit refresh (DEV-1516) — categorical column
-  hits with stale ``sampled_values`` are re-profiled inline via
-  :func:`slayer.engine.profiling.ensure_column_sample_fresh` so the
-  surfaced text reflects live values. Per-model writes serialise
-  (storage's ``update_column_sampled`` is a model-level
-  read-modify-write); cross-model writes parallelise via
-  ``asyncio.gather``. Silently no-op when ``engine`` is None.
+* Post-fusion column-hit refresh — each model's stale column hits are
+  profiled in one :func:`slayer.engine.profiling.ensure_samples_fresh`
+  call (models in parallel) so the surfaced text reflects live values;
+  under a session policy the text is always re-rendered from the
+  engine-scoped column. No-op when ``engine`` is None.
 * Stale-``Memory.query`` warnings.
 
 Each registered retriever runs ONCE per search call, returning a
@@ -75,7 +73,7 @@ from pydantic import BaseModel, Field
 from slayer.core.errors import AmbiguousModelError, EntityResolutionError
 from slayer.core.models import SlayerModel
 from slayer.core.query import SlayerQuery
-from slayer.engine.profiling import ensure_column_sample_fresh, refresh_table_backed_model_sampled
+from slayer.engine.profiling import ensure_samples_fresh, refresh_table_backed_model_sampled
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.memories.models import MEMORY_CANONICAL_PREFIX as _MEMORY_PREFIX
 from slayer.memories.models import Memory
@@ -652,11 +650,7 @@ class SearchService:
         engine: SlayerQueryEngine | None = None,
         retrievers: list[Retriever] | None = None,
     ) -> None:
-        """DEV-1516: ``engine`` is optional so storage-only test contexts
-        keep working unchanged. When supplied, the post-fusion column-hit
-        hook auto-refreshes stale categorical columns via
-        :func:`ensure_column_sample_fresh` before rendering ``SearchHit.text``.
-        Without an engine the hook is a silent no-op."""
+        """``engine`` is optional; without one the post-fusion column-hit refresh is a no-op."""
         self._storage = storage
         self._engine = engine
         self._retrievers: list[Retriever] = (
@@ -682,19 +676,9 @@ class SearchService:
         results: list[SearchHit],
         compact: bool = True,
     ) -> list[SearchHit]:
-        """DEV-1516 post-fusion column-hit refresh.
+        """Refresh column hits per ``(data_source, model)`` group, models in parallel.
 
-        Groups column hits by ``(data_source, model_name)`` and dispatches
-        each group to :meth:`_refresh_group_worker`. Per-model writes
-        serialise (storage's ``update_column_sampled`` is a model-level
-        read-modify-write); cross-model writes parallelise via
-        ``asyncio.gather``. Returns ``results`` with refreshed text
-        spliced in for each column hit whose helper call returned a
-        materially-updated column.
-
-        DEV-1549 (Codex#3): under ``compact=True`` the refresh leaves
-        ``text=""`` and refreshes ``description`` so the column hit can
-        never resurrect the full render mid-search.
+        Under ``compact=True`` only ``description`` is refreshed; ``text`` stays ``""``.
         """
         assert self._engine is not None  # caller-guarded
         groups = _group_column_hits(results)
@@ -724,14 +708,8 @@ class SearchService:
         refreshed_by_idx: dict[int, SearchHit],
         compact: bool = True,
     ) -> None:
-        """Refresh every column hit on one ``(data_source, model_name)``
-        group sequentially (per-model serialisation). Loads the model
-        once, walks members, and writes refreshed hits into the shared
-        ``refreshed_by_idx`` buffer keyed by original hit index.
-
-        DEV-1549: under ``compact=True`` only refresh
-        ``SearchHit.description``; leave ``text=""``.
-        """
+        """Profile one model's column hits in a single owner call; write changed hits into ``refreshed_by_idx``."""
+        assert self._engine is not None  # caller-guarded
         try:
             model = await self._storage.get_model(
                 model_name, data_source=ds_name,
@@ -744,27 +722,23 @@ class SearchService:
             return
         if model is None:
             return
-        for idx, hit, column_name in members:
-            col = model.get_column(column_name)
-            if col is None:
+        hits = [
+            (idx, hit, col) for idx, hit, column_name in members
+            if (col := model.get_column(column_name)) is not None
+        ]
+        if not hits:
+            return
+        outcome = await ensure_samples_fresh(
+            model=model, columns=[col for _, _, col in hits],
+            engine=self._engine, storage=self._storage,
+        )
+        scoped = self._engine.policy is not None
+        for (idx, hit, col), fresh in zip(hits, outcome.columns, strict=True):
+            if fresh is col and not scoped:
                 continue
-            refreshed_col = await ensure_column_sample_fresh(
-                model=model,
-                column=col,
-                engine=self._engine,  # type: ignore[arg-type]
-                storage=self._storage,
-            )
-            if refreshed_col is col:
-                # Helper returned the input — cache hit, ineligible, or
-                # any failure. Leave the hit text as-is.
-                continue
-            update: dict[str, Any] = {
-                "description": refreshed_col.description,
-            }
+            update: dict[str, Any] = {"description": fresh.description}
             if not compact:
-                update["text"] = render_column_text(
-                    model=model, column=refreshed_col,
-                )
+                update["text"] = render_column_text(model=model, column=fresh)
             refreshed_by_idx[idx] = hit.model_copy(update=update)
 
     # ------------------------------------------------------------------

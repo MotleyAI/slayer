@@ -22,7 +22,7 @@ from slayer.core.errors import (
     MemoryNotFoundError,
 )
 from slayer.core.models import SlayerModel
-from slayer.engine.profiling import ensure_column_sample_fresh
+from slayer.engine.profiling import ensure_samples_fresh
 from slayer.inspect.collection_render import (
     BLOCK_SEP,
     datasource_skeleton_fields,
@@ -906,34 +906,19 @@ class InspectService:
         compact: bool,
         leaf: str,
     ) -> SlayerModel:
-        """DEV-1615: lazily back-fill a column's missing/stale sample values on
-        read — same shared helper + cache-aware semantics inspect_model /
-        search use — so this point-lookup is no longer a regression vs the
-        tools it replaced.
+        """Lazily back-fill a column's sample on a ``compact=False`` column read (engine-guarded).
 
-        Gated to ``entity_type="column"`` (measures / aggregations have no
-        sample concept) and to ``compact=False``: the compact leaf render is
-        description-only and never shows "Sample values:", so refreshing there
-        would add a profiling DB query to a deliberately cheap lookup. Engine-
-        guarded (no-op without an engine, like search's hook). Hidden columns
-        are rendered but never back-filled — the helper's ``_is_sample_cached``
-        treats hidden/PK as cached (system-wide convention, parity with
-        inspect_model).
-
-        Returns the input model unchanged when no refresh applies; otherwise a
-        ``model_copy`` with the refreshed column substituted, so the render
-        (``collect_model_entity_pairs``) reflects the fresh sample with no
-        change to the downstream render logic.
+        Returns ``model`` unchanged when nothing changed, else a copy with the returned column.
         """
         if entity_type != "column" or compact or self._engine is None:
             return model
         col = model.get_column(leaf)
         if col is None:
             return model
-        refreshed = await ensure_column_sample_fresh(
-            model=model, column=col,
-            engine=self._engine, storage=self._storage,
+        outcome = await ensure_samples_fresh(
+            model=model, columns=[col], engine=self._engine, storage=self._storage,
         )
+        refreshed = outcome.columns[0]
         if refreshed is col:
             return model
         return model.model_copy(update={

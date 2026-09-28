@@ -426,7 +426,9 @@ async def test_overflow_classification_unaffected_by_one_null_row() -> None:
         engine = SlayerQueryEngine(storage=storage)
 
         model = await storage.get_model("just_over", data_source="ds")
+        assert model is not None
         col = model.get_column("label")
+        assert col is not None
         sample = await _sample(model=model, column=col, engine=engine, storage=storage)
         assert sample is not None
         # 51 non-null distinct → overflow. Exact total not computed (single
@@ -463,7 +465,9 @@ async def test_non_overflow_at_50_boundary() -> None:
         engine = SlayerQueryEngine(storage=storage)
 
         model = await storage.get_model("at_cap", data_source="ds")
+        assert model is not None
         col = model.get_column("label")
+        assert col is not None
         sample = await _sample(model=model, column=col, engine=engine, storage=storage)
         assert sample is not None
         assert sample.distinct_count == 50
@@ -515,7 +519,9 @@ async def test_tiebreak_deterministic_at_limit_boundary(monkeypatch) -> None:
         engine = SlayerQueryEngine(storage=storage)
 
         model = await storage.get_model("ties", data_source="ds")
+        assert model is not None
         col = model.get_column("label")
+        assert col is not None
         sample = await _sample(model=model, column=col, engine=engine, storage=storage)
         assert sample is not None
         assert sample.distinct_count is None  # overflow → exact total not computed
@@ -571,7 +577,9 @@ async def test_values_with_commas_preserved_in_structured_list() -> None:
         engine = SlayerQueryEngine(storage=storage)
 
         model = await storage.get_model("income", data_source="ds")
+        assert model is not None
         col = model.get_column("bracket")
+        assert col is not None
         sample = await _sample(model=model, column=col, engine=engine, storage=storage)
         assert sample is not None
         assert sample.sampled_values is not None
@@ -674,7 +682,7 @@ async def test_refresh_continues_after_per_column_failure(sqlite_setup) -> None:
     engine, storage = sqlite_setup
     model = await storage.get_model("orders", data_source="ds")
     model.columns = [
-        Column(name="amount", sql="no_such_fn(amount)", type=DataType.DOUBLE) if c.name == "amount" else c
+        Column(name="amount", sql="no_such_fn(status)", type=DataType.DOUBLE) if c.name == "amount" else c
         for c in model.columns
     ]
     await storage.save_model(model)
@@ -886,6 +894,7 @@ async def test_ensure_fresh_refreshes_uncached_temporal(tmp_path) -> None:
     ))
     engine = SlayerQueryEngine(storage=storage)
     model = await storage.get_model("events", data_source="ds")
+    assert model is not None
     col = model.get_column("ts")
     assert col is not None
     assert col.sampled is None

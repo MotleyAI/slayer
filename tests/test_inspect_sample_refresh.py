@@ -108,6 +108,7 @@ def _count_profile_calls(monkeypatch, svc: InspectService) -> list:
     """Record the profiling queries (top-values or min/max) the service's engine runs."""
     calls: list = []
     engine = svc._engine
+    assert engine is not None
     real = engine.execute
 
     async def counting(*args, **kwargs):

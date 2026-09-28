@@ -27,11 +27,7 @@ from slayer.core.query import (
     extract_placeholder_names,
 )
 from slayer.engine.ingestion import _friendly_db_error
-from slayer.engine.profiling import (
-    _is_sample_cached,
-    _profile_numeric_temporal_columns,
-    ensure_column_sample_fresh,
-)
+from slayer.engine.profiling import ensure_samples_fresh
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.search.render import compact_description_from_learning
 from slayer.storage.base import StorageBackend
@@ -414,67 +410,6 @@ async def _get_row_count(
         return None
 
 
-async def _collect_measure_profile(
-    model: SlayerModel,
-    engine: SlayerQueryEngine,
-) -> dict[str, str]:
-    """Probe min/max for each non-hidden, non-identifier NUMERIC/TEMPORAL
-    column via a single batched query.
-
-    Returns ``{column_name: "min .. max"}`` for columns with data, or
-    ``{column_name: "all NULL"}`` for columns where both min and max are NULL.
-
-    DEV-1480: text/boolean columns are excluded here so they are served
-    exclusively by the categorical dim profile (which populates both
-    ``Column.sampled`` and ``Column.sampled_values``). Mixing the two
-    paths for the same column would leave ``sampled_values=None`` while
-    ``sampled`` is set, which ``_is_sample_cached`` correctly treats as a
-    cache miss — leading to permanent re-profile every ``inspect_model``
-    call.
-    """
-    _NUMERIC_TEMPORAL = (
-        DataType.INT, DataType.DOUBLE, DataType.DATE, DataType.TIMESTAMP,
-    )
-    columns = [
-        c for c in model.columns
-        if not c.hidden and not is_identifier(column=c, columns=model.columns)
-        and c.type in _NUMERIC_TEMPORAL
-    ]
-    if not columns:
-        return {}
-
-    # Use ModelExtension with inline columns to bypass allowed_aggregations
-    ext_columns = [
-        {"name": f"_slayer_probe_{c.name}", "sql": c.sql if c.sql else c.name,
-         "type": str(c.type)}
-        for c in columns
-    ]
-    measures_payload: list[dict[str, str]] = []
-    for c in columns:
-        measures_payload.append({"formula": f"min(_slayer_probe_{c.name})"})
-        measures_payload.append({"formula": f"max(_slayer_probe_{c.name})"})
-
-    try:
-        q = SlayerQuery.model_validate({
-            "source_model": {"source_name": model.name, "columns": ext_columns},
-            "measures": measures_payload,
-        })
-        r = await engine.execute(query=q, data_source=model.data_source or None)
-        row = r.data[0] if r.data else {}
-    except Exception:
-        return {}
-
-    result: dict[str, str] = {}
-    for c in columns:
-        mn = row.get(f"{model.name}._slayer_probe_{c.name}_min")
-        mx = row.get(f"{model.name}._slayer_probe_{c.name}_max")
-        if mn is None and mx is None:
-            result[c.name] = "all NULL"
-        else:
-            result[c.name] = f"{mn} .. {mx}"
-    return result
-
-
 def _build_backing_query_info(model: SlayerModel) -> dict | None:
     """Build the ``backing_query`` block for inspect_model output.
 
@@ -785,150 +720,16 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
     # DB-hitting computations — skip when their consumers aren't requested
     # (and when no engine is available, DEV-1588).
     # ------------------------------------------------------------------
-    profile_by_name: dict[str, str] = {}
-    profile_values_by_name: dict[str, list[str] | None] = {}
-    distinct_count_by_name: dict[str, int | None] = {}
-    measure_profile: dict[str, str] = {}
+    # Rendered samples come only from the profiling owner's returned columns.
+    sampled_by_name: dict[str, Column] = {}
     if engine is not None and "columns" in included_set:
-        uncached_columns: list[Column] = []
-        for c in model.columns:
-            if c.hidden or is_identifier(column=c, columns=model.columns):
-                continue
-            # Cache validity: categorical needs
-            # ``sampled_values`` to be present (the structured field
-            # is authoritative); numeric/temporal needs ``sampled``.
-            if _is_sample_cached(column=c, model=model):
-                if c.sampled is not None:
-                    profile_by_name[c.name] = c.sampled
-                profile_values_by_name[c.name] = c.sampled_values
-                distinct_count_by_name[c.name] = c.distinct_count
-            else:
-                # v6-upgrade fallback: a categorical column may have
-                # legacy ``sampled`` text but no ``sampled_values``
-                # yet. Surface the legacy text in case the live
-                # re-profile below fails for transient reasons —
-                # ``profile_column`` will overwrite on success.
-                if c.sampled is not None:
-                    profile_by_name[c.name] = c.sampled
-                uncached_columns.append(c)
-        if uncached_columns:
-            # DEV-1480: split the live profile into two paths so we
-            # preserve the pre-DEV-1480 batching for numeric/temporal
-            # columns. Categorical columns fire a top-values query
-            # (and a secondary count_distinct on overflow) per column —
-            # there's no efficient cross-column batching for those.
-            # Numeric/temporal columns share one batched min/max query.
-            _CATEGORICAL = (DataType.TEXT, DataType.BOOLEAN)
-            _NUMERIC_TEMPORAL = (
-                DataType.INT, DataType.DOUBLE,
-                DataType.DATE, DataType.TIMESTAMP,
-            )
-            cat_uncached = [
-                c for c in uncached_columns if c.type in _CATEGORICAL
-            ]
-            num_uncached = [
-                c for c in uncached_columns if c.type in _NUMERIC_TEMPORAL
-            ]
-
-            async def _persist_sample(
-                *, col_name: str,
-                sampled: str | None,
-                sampled_values: list[str] | None,
-                distinct_count: int | None,
-            ) -> None:
-                try:
-                    await storage.update_column_sampled(
-                        data_source=model.data_source,
-                        model_name=model.name,
-                        column_name=col_name,
-                        sampled=sampled,
-                        sampled_values=sampled_values,
-                        distinct_count=distinct_count,
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "inspect_model: failed to persist sampled value for "
-                        "%s.%s.%s: %s",
-                        model.data_source, model.name, col_name, exc,
-                    )
-
-            # Categorical: one top-values query per column (+ optional
-            # count_distinct on overflow). DEV-1516: delegates to the
-            # shared ``ensure_column_sample_fresh`` helper so the
-            # cache-miss + persist + render-dict-population pattern is
-            # owned by exactly one place (also used by the search
-            # service's post-fusion column-hit hook).
-            for col in cat_uncached:
-                refreshed = await ensure_column_sample_fresh(
-                    model=model, column=col,
-                    engine=engine, storage=storage,
-                )
-                # On any failure (profile raise / None / persist raise)
-                # the helper returns the INPUT column. Legacy ``sampled``
-                # text on the input still feeds the markdown cell — the
-                # pre-pass above has already populated
-                # ``profile_by_name[col.name]`` from ``col.sampled``,
-                # so we only overwrite when we actually have something
-                # fresher (avoids clobbering the legacy fallback with
-                # ``None`` and producing an empty cell).
-                if refreshed.sampled is not None:
-                    profile_by_name[col.name] = refreshed.sampled
-                profile_values_by_name[col.name] = refreshed.sampled_values
-                distinct_count_by_name[col.name] = refreshed.distinct_count
-
-            # Numeric/temporal: one batched min/max query for all of
-            # them at once (restores the pre-DEV-1480 batching for
-            # wide models).
-            if num_uncached:
-                num_entries = await _profile_numeric_temporal_columns(
-                    model=model, columns=num_uncached, engine=engine,
-                )
-                for col in num_uncached:
-                    entry = num_entries.get(col.name)
-                    if entry is None:
-                        continue
-                    if entry.min_value is None and entry.max_value is None:
-                        continue
-                    sampled_text = f"{entry.min_value} .. {entry.max_value}"
-                    profile_by_name[col.name] = sampled_text
-                    # Numeric/temporal columns carry no structured list
-                    # and no distinct_count per the DEV-1480 contract.
-                    profile_values_by_name[col.name] = None
-                    distinct_count_by_name[col.name] = None
-                    await _persist_sample(
-                        col_name=col.name,
-                        sampled=sampled_text,
-                        sampled_values=None,
-                        distinct_count=None,
-                    )
-            measure_profile = await _collect_measure_profile(model=model, engine=engine)
-            # Persist any measure-side (numeric/temporal) profile
-            # values to ``Column.sampled`` so subsequent
-            # ``inspect_model`` / search calls hit the cache
-            # instead of re-running the live profile query.
-            for col in uncached_columns:
-                sampled_value = measure_profile.get(col.name)
-                if sampled_value is None or col.name in profile_by_name:
-                    # Either no measure-side value for this column
-                    # (already covered by dim profile above), or
-                    # the dim profile already won the cache slot.
-                    continue
-                profile_by_name[col.name] = sampled_value
-                try:
-                    await storage.update_column_sampled(
-                        data_source=model.data_source,
-                        model_name=model.name,
-                        column_name=col.name,
-                        sampled=sampled_value,
-                        sampled_values=None,
-                        distinct_count=None,
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "inspect_model: failed to persist sampled value for "
-                        "%s.%s.%s: %s",
-                        model.data_source, model.name, col.name, exc,
-                    )
+        outcome = await ensure_samples_fresh(
+            model=model, columns=list(model.columns), engine=engine, storage=storage,
+        )
+        sampled_by_name = {
+            c.name: c for c in outcome.columns
+            if not c.hidden and not is_identifier(column=c, columns=model.columns)
+        }
 
     # ``measure_types`` informs the sample query's choice of avg vs
     # count_distinct. Only needed when ``samples`` is in the included set.
@@ -947,14 +748,7 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
         col_rows: list[dict[str, Any]] = []
         for c in visible_columns:
             aggs = ", ".join(c.allowed_aggregations) if c.allowed_aggregations else "all"
-            # DEV-1480: key-presence check (not ``or`` truthiness) so an
-            # all-NULL categorical column's ``sampled=""`` doesn't
-            # silently fall through to the measure_profile fallback's
-            # ``"all NULL"`` text.
-            if c.name in profile_by_name:
-                sampled_cell = profile_by_name[c.name]
-            else:
-                sampled_cell = measure_profile.get(c.name)
+            sampled_col = sampled_by_name.get(c.name)
             col_rows.append({
                 "name": c.name,
                 "type": _render_column_type(c),
@@ -966,7 +760,7 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
                 "label": c.label,
                 "description": _truncate_description(c.description, descriptions_max_chars),
                 "meta": _format_meta(c.meta),
-                "sampled": sampled_cell,
+                "sampled": sampled_col.sampled if sampled_col is not None else None,
             })
         col_columns = [
             "name", "type", "primary_key", "unique", "sql", "allowed_aggregations",
@@ -1229,12 +1023,7 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
         if "columns" in included_set:
             col_payloads: list[dict[str, Any]] = []
             for c in visible_columns:
-                # DEV-1480 key-presence (not ``or`` truthiness) so empty
-                # string ``sampled=""`` (all-NULL categorical) survives.
-                if c.name in profile_by_name:
-                    sampled_cell = profile_by_name[c.name]
-                else:
-                    sampled_cell = measure_profile.get(c.name)
+                sampled_col = sampled_by_name.get(c.name)
                 col_payloads.append({
                     "name": c.name,
                     "type": str(c.type),
@@ -1256,12 +1045,10 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
                         c.description, descriptions_max_chars,
                     ),
                     "meta": c.meta,
-                    "sampled": sampled_cell,
-                    # DEV-1480: structured top-50 list + true cardinality,
-                    # surfaced only in the JSON shape (the markdown table
-                    # text format is unchanged per the issue).
-                    "sampled_values": profile_values_by_name.get(c.name),
-                    "distinct_count": distinct_count_by_name.get(c.name),
+                    "sampled": sampled_col.sampled if sampled_col is not None else None,
+                    # Structured top-50 + cardinality: JSON shape only.
+                    "sampled_values": sampled_col.sampled_values if sampled_col is not None else None,
+                    "distinct_count": sampled_col.distinct_count if sampled_col is not None else None,
                 })
             payload["columns"] = col_payloads
         elif visible_columns:

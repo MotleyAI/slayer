@@ -4,7 +4,7 @@ SLayer can scope every query a session runs to a single tenant, so an agent
 only ever sees that tenant's rows — across joins, CTEs, sql-mode sub-queries,
 query-backed stages, and profiling/sample data. The scoping is **immutable
 engine state**: the agent cannot read it, override it, or disable it through
-any query field.
+any query field. Under a policy, column samples are profiled and cached per engine, never read from or written to shared model storage.
 
 A policy carries exactly one **ruleset**, one of two kinds:
 

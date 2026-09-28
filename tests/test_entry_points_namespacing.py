@@ -29,6 +29,7 @@ from slayer.api.server import create_app
 from slayer.client.slayer_client import SlayerClient
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.engine import query_engine as qe_mod
 from slayer.mcp.server import create_mcp_server
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -134,9 +135,11 @@ class TestMCPModelToolsDataSourceArg:
 
         users_a = await storage.get_model("users", data_source="db_a")
         users_b = await storage.get_model("users", data_source="db_b")
-        assert users_a is not None and users_a.description == "edited a"
+        assert users_a is not None
+        assert users_a.description == "edited a"
         # db_b's model is untouched.
-        assert users_b is not None and users_b.description != "edited a"
+        assert users_b is not None
+        assert users_b.description != "edited a"
 
     async def test_edit_model_ambiguous_without_data_source_returns_error(self, mcp_server, storage) -> None:
         await storage.save_datasource(_ds("db_a"))
@@ -152,7 +155,8 @@ class TestMCPModelToolsDataSourceArg:
         # Error surfaces both remediations + lists the candidates.
         assert "data_source" in result
         assert "set_datasource_priority" in result
-        assert "db_a" in result and "db_b" in result
+        assert "db_a" in result
+        assert "db_b" in result
 
     async def test_inspect_model_with_data_source_filters(self, mcp_server, storage) -> None:
         await storage.save_datasource(_ds("db_a"))
@@ -184,8 +188,6 @@ class TestMCPModelToolsDataSourceArg:
         await storage.save_model(_model("users", data_source="db_b"))
 
         # Capture every engine.execute call made by the inspect_model helpers.
-        from slayer.engine import query_engine as qe_mod
-
         captured: list[dict[str, Any]] = []
         original_execute = qe_mod.SlayerQueryEngine.execute
 
@@ -263,7 +265,8 @@ class TestAPINamespacedModels:
         assert resp.status_code == 409
         detail = resp.json()["detail"]
         # Body cites both candidates.
-        assert "db_a" in detail and "db_b" in detail
+        assert "db_a" in detail
+        assert "db_b" in detail
 
     async def test_delete_model_with_data_source_query_param(self, http_client, storage) -> None:
         await storage.save_datasource(_ds("db_a"))

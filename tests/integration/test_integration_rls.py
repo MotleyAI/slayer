@@ -231,6 +231,7 @@ async def test_profiling_sample_values_org_scoped(rls_storage):
     outcome = await ensure_samples_fresh(
         model=customers, columns=[region_col], engine=engine, storage=rls_storage,
     )
+    assert outcome.columns[0].sampled_values is not None
     assert set(outcome.columns[0].sampled_values) == {"US", "EU"}  # APAC (orgB) excluded
 
 

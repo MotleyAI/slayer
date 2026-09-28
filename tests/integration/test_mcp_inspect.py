@@ -174,6 +174,7 @@ class TestCollectDimProfile:
         assert amt.sampled == "25.0 .. 300.0"
 
         ordered_at = by_name["ordered_at"]
+        assert ordered_at.sampled is not None
         low, high = ordered_at.sampled.split(" .. ")
         assert low.startswith("2025-01-15")
         assert high.startswith("2025-03-20")
@@ -412,13 +413,16 @@ class TestMeasureTypeInference:
     async def test_measure_sampled_shows_min_max(self, env) -> None:
         """Measures with data show min .. max in the sampled column."""
         profile = await _profile(model=env["model"], engine=env["engine"])
+        amount, quantity = profile["amount"].sampled, profile["quantity"].sampled
+        assert amount is not None
+        assert quantity is not None
         # amount: REAL values 25.0 .. 300.0
-        assert "25" in profile["amount"].sampled
-        assert "300" in profile["amount"].sampled
-        assert ".." in profile["amount"].sampled
+        assert "25" in amount
+        assert "300" in amount
+        assert ".." in amount
         # quantity: INTEGER values 1 .. 6
-        assert "1" in profile["quantity"].sampled
-        assert "6" in profile["quantity"].sampled
+        assert "1" in quantity
+        assert "6" in quantity
 
     async def test_measure_sampled_all_null(self, tmp_path) -> None:
         """Measures with all-NULL data show 'all NULL' in the sampled column."""
@@ -833,7 +837,7 @@ class TestCollectMeasureProfileTypeRestriction:
             assert result[name].sampled_values is not None, name
         for name in ("amount", "quantity", "ordered_at"):
             assert result[name].sampled_values is None, name
-            assert ".." in result[name].sampled, name
+            assert ".." in (result[name].sampled or ""), name
 
 
 class TestInspectModelEmptyStringSampledNotClobberedByFallback:

@@ -2645,7 +2645,7 @@ async def ingest_datasource_idempotent(
     # per-column full-table scan and, on a wide datasource (dozens of tables
     # × ~10 columns each), would run hundreds of full scans and dominate
     # ingest wall-clock. Samples are instead refreshed on demand on a cache
-    # miss by the async ``ensure_column_sample_fresh`` helper, invoked from
+    # miss by the async ``ensure_samples_fresh`` owner, invoked from
     # the read paths that surface samples — ``inspect_model``, the ``inspect``
     # point-lookup, and ``search()``. Use ``slayer search refresh-samples``
     # to warm the cache explicitly.

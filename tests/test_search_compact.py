@@ -24,6 +24,7 @@ Tests cover:
 
 from __future__ import annotations
 
+import inspect
 import tempfile
 from collections.abc import AsyncIterator
 
@@ -98,9 +99,7 @@ async def test_search_service_accepts_compact_kwarg(
 async def test_search_service_compact_default_true(
     storage: StorageBackend,
 ) -> None:
-    """Codex#7 / spec: compact defaults to True everywhere."""
-    import inspect
-
+    """compact defaults to True everywhere."""
     sig = inspect.signature(SearchService.search)
     assert sig.parameters["compact"].default is True
 
