@@ -1,6 +1,6 @@
 """Integration tests using a real ClickHouse database via testcontainers.
 
-DEV-1564: mirror of test_integration_postgres.py focused on ClickHouse's
+Mirror of test_integration_postgres.py focused on ClickHouse's
 distinguishing characteristics:
 
 * Parametric ``quantile(p)(x)`` syntax (pinned via dry_run SQL inspection).
@@ -20,10 +20,13 @@ Skipped silently when:
 - The Docker daemon is unreachable (autouse session fixture)
 """
 
+import contextlib
 import math as _math
 import statistics
 import tempfile
 import uuid
+import warnings
+from collections.abc import Generator
 from decimal import Decimal
 
 import pytest
@@ -31,6 +34,7 @@ import sqlalchemy as sa
 
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType, TimeGranularity
+from slayer.core.errors import SlayerError
 from slayer.core.models import (
     Column,
     DatasourceConfig,
@@ -38,10 +42,13 @@ from slayer.core.models import (
     ModelMeasure,
     SlayerModel,
 )
+from slayer.core.policy import JoinFilterRule, JoinFilterRuleset, SessionPolicy
 from slayer.core.query import ColumnRef, ModelExtension, OrderItem, SlayerQuery, TimeDimension
+from slayer.core.warnings import SlayerStatementTimeoutSkippedWarning, StatementTimeoutSkippedWarning
 from slayer.engine.ingestion import ingest_datasource
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql import engine_factory
+from slayer.sql.client import SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
 
 from tests._engine_helpers import disposable_engine
@@ -74,7 +81,10 @@ def _docker_available_or_skip():
 @pytest.fixture(scope="session")
 def clickhouse_container():
     """Session-scoped ClickHouse 24 container."""
-    container = ClickHouseContainer("clickhouse/clickhouse-server:24-alpine")
+    # Access management lets tests create a readonly user.
+    container = ClickHouseContainer("clickhouse/clickhouse-server:24-alpine").with_env(
+        "CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT", "1"
+    )
     with container as c:
         yield c
 
@@ -227,7 +237,7 @@ class TestClickHouseQueries:
         assert result.data[0]["orders._count"] == 6
 
     async def test_dev1933_regex_literal_extension_column(self, clickhouse_env: SlayerQueryEngine) -> None:
-        """DEV-1933: an ad-hoc column holding a ``(?:...)`` regex literal and a ``%``
+        """An ad-hoc column holding a ``(?:...)`` regex literal and a ``%``
         LIKE pattern executes verbatim; text() misread ``:too`` as a bind parameter."""
         query = SlayerQuery(
             source_model=ModelExtension(
@@ -296,7 +306,7 @@ class TestClickHouseQueries:
     async def test_trunc_executes_lowercase(
         self, clickhouse_env: SlayerQueryEngine
     ) -> None:
-        """DEV-1753: sqlglot emits ClickHouse ``trunc`` LOWERCASE while every
+        """Sqlglot emits ClickHouse ``trunc`` LOWERCASE while every
         other backend uppercases it. ClickHouse function names are case-sensitive
         in general, so this pins that the lowercase spelling really resolves on a
         live server — and that ``trunc`` truncates toward zero rather than
@@ -737,7 +747,7 @@ class TestClickHouseMedianPercentile:
 
 
 # ---------------------------------------------------------------------------
-# Native stat aggregations (DEV-1317 cross-dialect parity)
+# Native stat aggregations (cross-dialect parity)
 # ---------------------------------------------------------------------------
 
 
@@ -838,7 +848,7 @@ class TestClickHouseStatAggregations:
 
 
 # ---------------------------------------------------------------------------
-# log10 round-trip (DEV-1337 — ClickHouse has native log10)
+# log10 round-trip (ClickHouse has native log10)
 # ---------------------------------------------------------------------------
 
 
@@ -900,7 +910,7 @@ async def test_log10_round_trip_clickhouse(clickhouse_log10_env: SlayerQueryEngi
 
 
 # ---------------------------------------------------------------------------
-# Window-in-filter raises (DEV-1369 parity)
+# Window-in-filter raises (parity)
 # ---------------------------------------------------------------------------
 
 
@@ -965,7 +975,7 @@ async def test_filter_on_windowed_column_clickhouse_raises(planets_clickhouse_en
 
 
 # ---------------------------------------------------------------------------
-# Cross-model derived Column.sql (DEV-1333)
+# Cross-model derived Column.sql
 # ---------------------------------------------------------------------------
 
 
@@ -1108,10 +1118,8 @@ def test_clickhouse_comments_imported(clickhouse_ingest_for_types_env) -> None:
 
 
 # ---------------------------------------------------------------------------
-# DEV-1727 — dialect-aware Mode-A {var} escaping (ClickHouse is a Tier-1
-# backslash dialect with C-style string literals: the naive '' quote-doubling
-# from DEV-1625 mis-parses a backslash-bearing value; the hardened escaping
-# must round-trip end-to-end).
+# Dialect-aware Mode-A {var} escaping: ClickHouse's C-style literals break naive
+# '' quote-doubling on a backslash-bearing value; escaping must round-trip.
 # ---------------------------------------------------------------------------
 
 # Distinct amounts per tricky status so a correct match is provable via the sum.
@@ -1290,3 +1298,443 @@ class TestClickHouseDecimalPreservation:
         value = result.data[0][result_key]
         assert isinstance(value, Decimal)
         assert value == expected
+
+
+# ---------------------------------------------------------------------------
+# Per-statement timeout (max_execution_time)
+# ---------------------------------------------------------------------------
+
+
+def _admin_rows(clickhouse_container, sql: str) -> list[tuple]:
+    with disposable_engine(_admin_url(clickhouse_container)) as engine:
+        with engine.connect() as conn:
+            conn.exec_driver_sql("SYSTEM FLUSH LOGS")
+            rows = conn.exec_driver_sql(sql, execution_options={"no_parameters": True}).fetchall()
+            return [tuple(r) for r in rows]
+
+
+def _readonly_level_datasource(clickhouse_container, level: int):
+    """A datasource whose user has ``readonly = <level>``."""
+    user = f"ro{level}_{uuid.uuid4().hex[:8]}"
+    with disposable_engine(_admin_url(clickhouse_container)) as engine:
+        with engine.begin() as conn:
+            conn.execute(sa.text(
+                f"CREATE USER {user} IDENTIFIED WITH plaintext_password BY 'pw' "
+                f"SETTINGS readonly = {level}"
+            ))
+            conn.execute(sa.text(f"GRANT SELECT ON *.* TO {user}"))
+    yield DatasourceConfig(
+        name="readonly_clickhouse",
+        type="clickhouse",
+        host=clickhouse_container.get_container_host_ip(),
+        port=int(clickhouse_container.get_exposed_port(8123)),
+        database="default",
+        username=user,
+        password="pw",
+    )
+    with disposable_engine(_admin_url(clickhouse_container)) as engine:
+        with engine.begin() as conn:
+            conn.execute(sa.text(f"DROP USER IF EXISTS {user}"))
+
+
+@pytest.fixture
+def clickhouse_readonly_datasource(clickhouse_container):
+    """A datasource whose user has ``readonly = 1`` and may change no settings."""
+    yield from _readonly_level_datasource(clickhouse_container, 1)
+
+
+@pytest.fixture
+def clickhouse_readonly2_datasource(clickhouse_container):
+    """A datasource whose user has ``readonly = 2``: read-only, but may change settings."""
+    yield from _readonly_level_datasource(clickhouse_container, 2)
+
+
+def _pooled_max_execution_time(client: SlayerSQLClient) -> str:
+    with client._get_sync_engine_for_client().connect() as conn:
+        return str(conn.exec_driver_sql("SELECT getSetting('max_execution_time')").scalar())
+
+
+@pytest.mark.integration
+class TestClickHouseStatementTimeout:
+    async def test_timeout_stops_long_query(self, clickhouse_container) -> None:
+        client = SlayerSQLClient(datasource=_ds_config(clickhouse_container, "default"))
+        with pytest.raises(Exception, match="TIMEOUT_EXCEEDED"):
+            await client.execute(sql="SELECT sleep(3)", timeout_seconds=1)
+
+    async def test_statement_reaches_server_byte_identical(self, clickhouse_container) -> None:
+        marker = f"slayer_{uuid.uuid4().hex[:12]}"
+        sql = (
+            "SELECT toStartOfMonth(d) AS m, x::Int32 AS y "
+            f"FROM (SELECT toDate('2024-03-15') AS d, '7' AS x) -- {marker}"
+        )
+        client = SlayerSQLClient(datasource=_ds_config(clickhouse_container, "default"))
+        rows = (await client.execute(sql=sql, timeout_seconds=30)).rows
+        assert [(str(r["m"]), int(r["y"])) for r in rows] == [("2024-03-01", 7)]
+        logged = _admin_rows(
+            clickhouse_container,
+            "SELECT query FROM system.query_log WHERE type = 'QueryFinish' "
+            f"AND query LIKE '%{marker}%' AND query NOT LIKE '%system.query_log%'",
+        )
+        assert logged == [(sql,)]
+
+    async def test_sql_own_setting_wins(self, clickhouse_container) -> None:
+        client = SlayerSQLClient(datasource=_ds_config(clickhouse_container, "default"))
+        result = await client.execute(
+            sql="SELECT sleep(2) AS s SETTINGS max_execution_time = 5", timeout_seconds=1,
+        )
+        assert len(result.rows) == 1
+
+    def test_setting_restored_on_pooled_connection(self, clickhouse_container) -> None:
+        client = SlayerSQLClient(datasource=_ds_config(clickhouse_container, "default"))
+        prior = _pooled_max_execution_time(client)
+        client.execute_sync("SELECT 1", timeout_seconds=1)
+        assert _pooled_max_execution_time(client) == prior
+
+    def test_setting_restored_after_timed_query_raised(self, clickhouse_container) -> None:
+        client = SlayerSQLClient(datasource=_ds_config(clickhouse_container, "default"))
+        prior = _pooled_max_execution_time(client)
+        with pytest.raises(Exception, match="TIMEOUT_EXCEEDED"):
+            client.execute_sync("SELECT sleep(3)", timeout_seconds=1)
+        assert _pooled_max_execution_time(client) == prior
+
+    async def test_readonly_user_runs_queries(self, clickhouse_readonly_datasource) -> None:
+        client = SlayerSQLClient(datasource=clickhouse_readonly_datasource)
+        for _ in range(2):  # second call takes the cached no-setting path
+            rows = (await client.execute(sql="SELECT 1 AS x")).rows
+            assert [int(r["x"]) for r in rows] == [1]
+
+    async def test_readonly_user_warned_and_checked_once(
+        self, clickhouse_container, clickhouse_readonly_datasource,
+    ) -> None:
+        client = SlayerSQLClient(datasource=clickhouse_readonly_datasource)
+        expected = StatementTimeoutSkippedWarning(
+            datasource="readonly_clickhouse", timeout_seconds=120, reason="readonly_user",
+        )
+        for _ in range(2):
+            with pytest.warns(SlayerStatementTimeoutSkippedWarning, match="readonly = 2"):
+                result = await client.execute(sql="SELECT 1 AS x")
+            assert result.warnings == [expected]
+        (checks,) = _admin_rows(
+            clickhouse_container,
+            "SELECT count() FROM system.query_log WHERE type = 'QueryFinish' "
+            f"AND user = '{clickhouse_readonly_datasource.username}' "
+            "AND query LIKE '%getSetting(%readonly%'",
+        )
+        assert checks == (1,)
+
+    async def test_readonly_user_own_setting_fails_without_retry(
+        self, clickhouse_container, clickhouse_readonly_datasource,
+    ) -> None:
+        client = SlayerSQLClient(datasource=clickhouse_readonly_datasource)
+        marker = f"slayer_{uuid.uuid4().hex[:12]}"
+        with pytest.raises(Exception, match="READONLY"):
+            await client.execute(
+                sql=f"SELECT number FROM system.numbers LIMIT 1 SETTINGS max_execution_time = 5 -- {marker}",
+            )
+        (attempts,) = _admin_rows(
+            clickhouse_container,
+            "SELECT count() FROM system.query_log WHERE type != 'QueryStart' "
+            f"AND user = '{clickhouse_readonly_datasource.username}' AND query LIKE '%{marker}%'",
+        )
+        assert attempts == (1,)
+
+    async def test_readonly_2_user_gets_timeout(self, clickhouse_readonly2_datasource) -> None:
+        client = SlayerSQLClient(datasource=clickhouse_readonly2_datasource)
+        with pytest.raises(Exception, match="TIMEOUT_EXCEEDED"):
+            await client.execute(sql="SELECT sleep(3)", timeout_seconds=1)
+
+    async def test_readonly_2_user_not_warned(self, clickhouse_readonly2_datasource) -> None:
+        client = SlayerSQLClient(datasource=clickhouse_readonly2_datasource)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", SlayerStatementTimeoutSkippedWarning)
+            result = await client.execute(sql="SELECT 1 AS x")
+        assert result.warnings == []
+
+
+# ---------------------------------------------------------------------------
+# Join-based session policy + semi-join gate for readonly users
+# ---------------------------------------------------------------------------
+
+_CORRELATED_SETTING = "allow_experimental_correlated_subqueries"
+
+_RLS_DDL = [
+    "CREATE TABLE customers (id Nullable(Int32), org String) ENGINE = MergeTree() ORDER BY tuple()",
+    "CREATE TABLE orders (id Int32, customer_id Nullable(Int32)) ENGINE = MergeTree() ORDER BY id",
+    "CREATE TABLE line_items (id Int32, order_id Nullable(Int32)) ENGINE = MergeTree() ORDER BY id",
+    "INSERT INTO customers VALUES (1, 'A'), (2, 'B'), (NULL, 'A')",
+    "INSERT INTO orders VALUES (10, 1), (11, 2), (12, NULL), (13, 1)",
+    "INSERT INTO line_items VALUES (100, 10), (101, 11), (102, 12), (103, NULL), (104, 13)",
+    "CREATE TABLE sj_customers (id Int32, org String, spend Float64) ENGINE = MergeTree() ORDER BY id",
+    "CREATE TABLE sj_orders (id Int32, customer_id Int32, channel String, amount Float64) "
+    "ENGINE = MergeTree() ORDER BY id",
+    "INSERT INTO sj_customers VALUES (1, 'A', 100), (2, 'B', 50), (3, 'A', 30)",
+    "INSERT INTO sj_orders VALUES (10, 1, 'app', 5), (11, 1, 'web', 6), (12, 2, 'web', 7), (13, 3, 'web', 8)",
+]
+
+
+def _distributed_ddl(db_name: str) -> list[str]:
+    return [
+        f"CREATE TABLE customers_dist AS customers ENGINE = Distributed('default', '{db_name}', 'customers')",
+        f"CREATE TABLE orders_dist AS orders ENGINE = Distributed('default', '{db_name}', 'orders')",
+    ]
+
+
+def _seed_rls_db(container, *, distributed: bool) -> str:
+    if distributed:
+        assert _admin_rows(container, "SELECT count() FROM system.clusters WHERE cluster = 'default'") != [(0,)], (
+            "image lacks the stock 'default' cluster the Distributed tables need"
+        )
+    db_name = _create_module_db(container)
+    with disposable_engine(_ds_url_for_db(container, db_name)) as engine:
+        with engine.begin() as conn:
+            for statement in [*_RLS_DDL, *(_distributed_ddl(db_name) if distributed else [])]:
+                conn.exec_driver_sql(statement)
+    return db_name
+
+
+def _rls_models() -> list[SlayerModel]:
+    def _ids(name: str, key: str | None = None) -> SlayerModel:
+        columns = [Column(name="id", type=DataType.INT, primary_key=True)]
+        if key:
+            columns.append(Column(name=key, type=DataType.INT))
+        return SlayerModel(name=name, sql_table=name, data_source="rls_ch", columns=columns)
+
+    return [
+        _ids("customers"), _ids("orders", "customer_id"), _ids("line_items", "order_id"),
+        _ids("customers_dist"), _ids("orders_dist", "customer_id"), _ids("line_items_dist", "order_id"),
+        SlayerModel(name="sj_customers", sql_table="sj_customers", data_source="rls_ch", columns=[
+            Column(name="id", type=DataType.INT, primary_key=True),
+            Column(name="org", type=DataType.TEXT),
+            Column(name="spend", type=DataType.DOUBLE),
+        ]),
+        SlayerModel(
+            name="sj_orders", sql_table="sj_orders", data_source="rls_ch",
+            columns=[
+                Column(name="id", type=DataType.INT, primary_key=True),
+                Column(name="customer_id", type=DataType.INT),
+                Column(name="channel", type=DataType.TEXT),
+                Column(name="amount", type=DataType.DOUBLE),
+            ],
+            joins=[ModelJoin(target_model="sj_customers", join_pairs=[["customer_id", "id"]])],
+        ),
+    ]
+
+
+@contextlib.contextmanager
+def _user_datasource(
+    container, db_name: str, *, settings: str, extra_dbs: tuple[str, ...] = (),
+) -> Generator[DatasourceConfig]:
+    user = f"rls_{uuid.uuid4().hex[:8]}"
+    with disposable_engine(_admin_url(container)) as engine:
+        with engine.begin() as conn:
+            conn.exec_driver_sql(f"CREATE USER {user} IDENTIFIED WITH plaintext_password BY 'pw' SETTINGS {settings}")
+            for db in (db_name, *extra_dbs):
+                conn.exec_driver_sql(f"GRANT SELECT ON {db}.* TO {user}")
+    try:
+        yield DatasourceConfig(
+            name="rls_ch", type="clickhouse",
+            host=container.get_container_host_ip(), port=int(container.get_exposed_port(8123)),
+            database=db_name, username=user, password="pw",
+        )
+    finally:
+        engine_factory.reset_cache()
+        with disposable_engine(_admin_url(container)) as engine:
+            with engine.begin() as conn:
+                conn.exec_driver_sql(f"DROP USER IF EXISTS {user}")
+
+
+def _rls_engine(datasource: DatasourceConfig, *, policy: SessionPolicy | None = None) -> SlayerQueryEngine:
+    storage = YAMLStorage(base_dir=tempfile.mkdtemp(prefix="rls_ch_"))
+    run_sync(storage.save_datasource(datasource))
+    for model in _rls_models():
+        run_sync(storage.save_model(model))
+    return SlayerQueryEngine(storage=storage, policy=policy)
+
+
+_TENANT_POLICY = SessionPolicy(ruleset=JoinFilterRuleset(
+    table="customers", column="org", value="A",
+    joins=(
+        JoinFilterRule(target_table="orders", join_path=("orders.customer_id = customers.id",)),
+        JoinFilterRule(
+            target_table="line_items",
+            join_path=("line_items.order_id = orders.id", "orders.customer_id = customers.id"),
+        ),
+    ),
+))
+
+_DIST_POLICY = SessionPolicy(ruleset=JoinFilterRuleset(
+    table="customers_dist", column="org", value="A",
+    joins=(
+        JoinFilterRule(target_table="orders_dist", join_path=("orders_dist.customer_id = customers_dist.id",)),
+        JoinFilterRule(
+            target_table="line_items_dist",
+            join_path=("line_items_dist.order_id = orders_dist.id", "orders_dist.customer_id = customers_dist.id"),
+        ),
+    ),
+))
+
+# Each order / line item sits on the other shard from its customer / order.
+_SHARD_ROWS = {
+    "customers": ["(1, 'A')", "(2, 'B'), (NULL, 'A')"],
+    "orders": ["(13, 1)", "(10, 1), (11, 2), (12, NULL)"],
+    "line_items": ["(100, 10), (103, NULL)", "(101, 11), (102, 12), (104, 13)"],
+}
+
+_SEMI_JOIN_QUERY = SlayerQuery.model_validate({
+    "source_model": "sj_orders", "dimensions": ["sj_customers.org"],
+    "measures": [{"formula": "amount:sum", "name": "m"}, {"formula": "sj_customers.spend:sum", "name": "cm"}],
+    "filters": ["channel = 'app'"],
+})
+_SEMI_JOIN_ROWS = [{"sj_orders.sj_customers.org": "A", "sj_orders.m": 5.0, "sj_orders.cm": 100.0}]
+
+
+async def _ids(engine: SlayerQueryEngine, model: str) -> list[int]:
+    resp = await engine.execute(SlayerQuery.model_validate({"source_model": model, "dimensions": ["id"]}))
+    return sorted(int(row[f"{model}.id"]) for row in resp.data)
+
+
+async def _assert_semi_join_runs_with_setting(engine: SlayerQueryEngine) -> None:
+    dry = await engine.execute(_SEMI_JOIN_QUERY, dry_run=True)
+    assert dry.sql is not None
+    assert f"{_CORRELATED_SETTING} = 1" in dry.sql
+    assert (await engine.execute(_SEMI_JOIN_QUERY)).data == _SEMI_JOIN_ROWS
+
+
+@pytest.fixture(scope="module")
+def rls_sharded_db(clickhouse_container):
+    """Distributed tables over a two-shard cluster (one server, a database per shard)."""
+    uid = uuid.uuid4().hex[:8]
+    cluster, shards = f"rls_{uid}", tuple(f"rls_{uid}_s{i}" for i in (1, 2))
+    replicas = "".join(
+        f"<shard><replica><host>127.0.0.{i}</host><port>9000</port><user>{clickhouse_container.username}</user>"
+        f"<password>{clickhouse_container.password}</password><default_database>{db}</default_database></replica></shard>"
+        for i, db in enumerate(shards, start=1)
+    )
+    config = f"/etc/clickhouse-server/config.d/{cluster}.xml"
+    xml = f"<clickhouse><remote_servers><{cluster}>{replicas}</{cluster}></remote_servers></clickhouse>"
+    assert clickhouse_container.exec(["sh", "-c", f"cat > {config} <<'EOF'\n{xml}\nEOF"]).exit_code == 0
+    db_name = _create_module_db(clickhouse_container)
+    with disposable_engine(_admin_url(clickhouse_container)) as engine:
+        with engine.begin() as conn:
+            conn.exec_driver_sql("SYSTEM RELOAD CONFIG")
+            for i, shard in enumerate(shards):
+                conn.exec_driver_sql(f"CREATE DATABASE {shard}")
+                for create in _RLS_DDL[:3]:
+                    conn.exec_driver_sql(create.replace("CREATE TABLE ", f"CREATE TABLE {shard}.", 1))
+                for table, rows in _SHARD_ROWS.items():
+                    conn.exec_driver_sql(f"INSERT INTO {shard}.{table} VALUES {rows[i]}")
+            for table in _SHARD_ROWS:
+                conn.exec_driver_sql(
+                    f"CREATE TABLE {db_name}.{table}_dist AS {shards[0]}.{table} "
+                    f"ENGINE = Distributed('{cluster}', '', '{table}')"
+                )
+    yield db_name, shards
+    _drop_module_db(clickhouse_container, db_name)
+    with disposable_engine(_admin_url(clickhouse_container)) as engine:
+        with engine.begin() as conn:
+            for shard in shards:
+                conn.exec_driver_sql(f"DROP DATABASE IF EXISTS {shard}")
+    clickhouse_container.exec(["rm", "-f", config])
+
+
+@pytest.fixture(scope="module")
+def rls_db(clickhouse_container):
+    db_name = _seed_rls_db(clickhouse_container, distributed=True)
+    yield db_name
+    _drop_module_db(clickhouse_container, db_name)
+
+
+@pytest.mark.integration
+class TestJoinPolicyReadonly:
+    async def test_single_and_multi_hop_scope(self, clickhouse_container, rls_db) -> None:
+        with _user_datasource(clickhouse_container, rls_db, settings="readonly = 1") as ds:
+            engine = _rls_engine(ds, policy=_TENANT_POLICY)
+            assert await _ids(engine, "orders") == [10, 13]
+            assert await _ids(engine, "line_items") == [100, 104]
+
+    async def test_no_setting_reaches_the_server(self, clickhouse_container, rls_db) -> None:
+        with _user_datasource(clickhouse_container, rls_db, settings="readonly = 1") as ds:
+            engine = _rls_engine(ds, policy=_TENANT_POLICY)
+            dry = await engine.execute(SlayerQuery.model_validate({"source_model": "line_items", "dimensions": ["id"]}), dry_run=True)
+        assert dry.sql is not None
+        assert _CORRELATED_SETTING not in dry.sql
+        assert "EXISTS" not in dry.sql.upper()
+
+    async def test_null_keys_never_admit_a_row(self, clickhouse_container, rls_db) -> None:
+        """Scenario: NULL keys never admit a row (``transform_null_in = 1``)."""
+        settings = "readonly = 1, transform_null_in = 1"
+        with _user_datasource(clickhouse_container, rls_db, settings=settings) as ds:
+            engine = _rls_engine(ds, policy=_TENANT_POLICY)
+            assert await _ids(engine, "orders") == [10, 13]
+            assert await _ids(engine, "line_items") == [100, 104]
+
+    async def test_distributed_tables(self, clickhouse_container, rls_db) -> None:
+        with _user_datasource(clickhouse_container, rls_db, settings="readonly = 1") as ds:
+            engine = _rls_engine(ds, policy=_DIST_POLICY)
+            assert await _ids(engine, "orders_dist") == [10, 13]
+
+    @pytest.mark.parametrize("product_mode", ["deny", "local"])
+    async def test_sharded_distributed_tables(self, clickhouse_container, rls_sharded_db, product_mode) -> None:
+        """Scenario: Distributed tables — rows and their join partners on different shards."""
+        db_name, shards = rls_sharded_db
+        settings = f"readonly = 1, transform_null_in = 1, distributed_product_mode = '{product_mode}'"
+        with _user_datasource(clickhouse_container, db_name, settings=settings, extra_dbs=shards) as ds:
+            engine = _rls_engine(ds, policy=_DIST_POLICY)
+            assert await _ids(engine, "orders_dist") == [10, 13]
+            assert await _ids(engine, "line_items_dist") == [100, 104]
+
+
+@pytest.fixture(scope="module", params=["25.4", "25.8"])
+def versioned_clickhouse(request):
+    """A ClickHouse server of the given version with the RLS / semi-join dataset seeded."""
+    container = ClickHouseContainer(f"clickhouse/clickhouse-server:{request.param}").with_env(
+        "CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT", "1"
+    )
+    with container as c:
+        db_name = _seed_rls_db(c, distributed=False)
+        yield request.param, c, db_name
+        _drop_module_db(c, db_name)
+
+
+def _user_queries_touching(container, *, user: str, table: str) -> int:
+    (count,) = _admin_rows(
+        container,
+        "SELECT count() FROM system.query_log WHERE type != 'QueryStart' "
+        f"AND user = '{user}' AND query LIKE '%{table}%'",
+    )
+    return int(count[0])
+
+
+@pytest.mark.integration
+class TestVersionedReadonly:
+    async def test_readonly_join_policy_scopes(self, versioned_clickhouse) -> None:
+        """Scenario: Readonly user on a server with correlated subqueries off."""
+        _, container, db_name = versioned_clickhouse
+        with _user_datasource(container, db_name, settings="readonly = 1") as ds:
+            engine = _rls_engine(ds, policy=_TENANT_POLICY)
+            assert await _ids(engine, "orders") == [10, 13]
+            assert await _ids(engine, "line_items") == [100, 104]
+
+    async def test_readonly_semi_join(self, versioned_clickhouse) -> None:
+        version, container, db_name = versioned_clickhouse
+        with _user_datasource(container, db_name, settings="readonly = 1") as ds:
+            engine = _rls_engine(ds)
+            if version == "25.4":
+                with pytest.raises(SlayerError) as ei:
+                    await engine.execute(_SEMI_JOIN_QUERY)
+                assert _CORRELATED_SETTING in str(ei.value)
+                assert "channel" in str(ei.value)
+                assert _user_queries_touching(container, user=ds.username or "", table="sj_orders") == 0
+            else:
+                await _assert_semi_join_runs_with_setting(engine)
+
+    async def test_readonly_2_semi_join_runs(self, versioned_clickhouse) -> None:
+        _, container, db_name = versioned_clickhouse
+        with _user_datasource(container, db_name, settings="readonly = 2") as ds:
+            await _assert_semi_join_runs_with_setting(_rls_engine(ds))
+
+    async def test_setting_enabled_in_profile_runs(self, versioned_clickhouse) -> None:
+        _, container, db_name = versioned_clickhouse
+        settings = f"readonly = 1, {_CORRELATED_SETTING} = 1"
+        with _user_datasource(container, db_name, settings=settings) as ds:
+            await _assert_semi_join_runs_with_setting(_rls_engine(ds))

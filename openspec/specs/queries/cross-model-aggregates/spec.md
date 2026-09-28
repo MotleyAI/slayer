@@ -538,8 +538,29 @@ only in the filter.
 - **WHEN** a semi-join pushdown query targets a ClickHouse server older than 25.4 or of
   undeterminable version
 - **THEN** the query fails with a clear error naming the version requirement instead of
-  executing with different semantics; on 25.4+ the required correlated-subquery setting
-  is applied automatically and the query executes
+  executing with different semantics; on 25.4+, when the user may enable it, the required
+  correlated-subquery setting is applied automatically and the query executes
+
+#### Scenario: ClickHouse readonly user who cannot enable correlated subqueries
+- **WHEN** a semi-join pushdown query (dry run, EXPLAIN, or execution) runs for a
+  `readonly = 1` ClickHouse user whose effective
+  `allow_experimental_correlated_subqueries` is 0
+- **THEN** the query fails before reaching the database with a SLayer error naming the
+  pushed filters, the setting, and the user's read-only level, and listing the remedies:
+  enable the setting in the user's profile, use `readonly = 2`, and — on servers older
+  than 25.8 — upgrade to 25.8 or later
+
+#### Scenario: ClickHouse readonly user with correlated subqueries already on
+- **WHEN** a semi-join pushdown query runs for a `readonly = 1` ClickHouse user whose
+  effective `allow_experimental_correlated_subqueries` is already 1
+- **THEN** the query executes and returns the association-restricted result
+
+#### Scenario: Undeterminable correlated-subquery setting fails closed
+- **WHEN** a semi-join pushdown query runs on ClickHouse 25.4+ and SLayer cannot read
+  the user's read-only level, or cannot read a `readonly = 1` user's correlated-subquery
+  setting
+- **THEN** the query fails with a clear error instead of executing, and the next query
+  checks again
 
 #### Scenario: Genuinely unreachable filter keeps the established behavior
 - **WHEN** a filter references a model with no resolvable join path from the query root
