@@ -17,7 +17,7 @@
 
 ## 3. Architecture and docs
 
-- [ ] 3.1 Apply the user-approved Axiom 11.3 sentence to `architecture/semantics.arc42.md` exactly as approved (calendar adjacency; `lag` / `lead` the only row steppers; `[enforced: test:tests/test_consecutive_periods_calendar.py]`); verify `poetry run python tools/arch_check.py` passes
+- [ ] 3.1 Apply the user-approved Axiom 11.3 sentence to `architecture/semantics.arc42.md` exactly as approved (calendar adjacency; `lag` / `lead` the only row steppers; `[enforced: test:tests/test_consecutive_periods_calendar.py]`); verify `uvx --no-build --from living-architecture==0.2.0 la-arch-check` passes
 - [ ] 3.2 `docs/concepts/formulas.md` `consecutive_periods` section: one sentence — a missing bucket breaks the streak, and the series is the query's rows (date range included)
 
 ## 4. Verification
