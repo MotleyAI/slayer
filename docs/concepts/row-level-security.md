@@ -22,7 +22,7 @@ For a runnable walkthrough on the Jaffle Shop demo, see the
 
 ## Configuring a policy
 
-A policy is set once, at engine (or local-engine client) construction:
+A policy is set once, at engine (or local-engine client) construction; `engine.policy` is read-only afterwards:
 
 ```python
 from slayer.core.policy import SessionPolicy, ColumnFilterRuleset

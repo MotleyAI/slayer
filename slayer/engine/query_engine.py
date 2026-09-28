@@ -617,10 +617,14 @@ class SlayerQueryEngine:
         self._cache = QueryCache(config=cache_config or CacheConfig())
         # Keyed so same-name Snowflake datasources (differing warehouse/role) get distinct clients.
         self._sql_clients: dict[EngineCacheKey, SlayerSQLClient] = {}
-        # Engine-global forced-filter policy; tenant-scopes every generated SQL.
-        self.policy = policy
+        self._policy = policy
         # Column-presence facts; an unconfirmable ``None`` is re-probed, never cached.
         self._column_presence_cache: dict[tuple, bool] = {}
+
+    @property
+    def policy(self) -> Optional[SessionPolicy]:
+        """Engine-global forced-filter policy; read-only, so engine-scoped caches are policy-scoped."""
+        return self._policy
 
     @property
     def cache_config(self) -> CacheConfig:
