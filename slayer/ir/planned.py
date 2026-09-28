@@ -268,13 +268,15 @@ class SemiJoinFilter(BaseModel):
 
 
 class RegroupSubstitution(BaseModel):
-    """One consumed aggregate: ``placeholder`` resolves to ``producer_slot_id``'s column."""
+    """One consumed aggregate: ``placeholder`` resolves to ``producer_slot_id``'s column,
+    reading ``empty_value`` where the producer has no row for the cell."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     placeholder: ValueKey
     producer_slot_id: SlotId
     original_key: ValueKey
+    empty_value: Optional[int]
 
 
 class PlainProducerKernel(BaseModel):

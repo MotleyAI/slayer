@@ -224,6 +224,11 @@ AXIS_COLLAPSING_TRANSFORMS = frozenset({"first", "last"})
 INTEGER_AGGREGATIONS: frozenset[str] = frozenset({
     "count", "count_distinct", "count_distinct_approx",
 })
+
+
+def builtin_empty_value(aggregation: str) -> Optional[int]:
+    """A built-in aggregation's value over no rows: 0 for the count family, else NULL."""
+    return 0 if aggregation in INTEGER_AGGREGATIONS else None
 # Result is a float in the SAME units as the source (display format inherited).
 FLOAT_SOURCE_UNIT_AGGREGATIONS: frozenset[str] = frozenset({
     "avg", "weighted_avg", "median", "percentile",

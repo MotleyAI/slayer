@@ -3570,30 +3570,6 @@
             {
                 "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 20,
-                    "endColumn": 79,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 20,
-                    "endColumn": 21,
-                    "lineCount": 3
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 20,
-                    "endColumn": 73,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
                     "startColumn": 28,
                     "endColumn": 43,
                     "lineCount": 1

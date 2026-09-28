@@ -32,7 +32,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from slayer.core.enums import DataType, JoinType, RANKED_AGGREGATIONS, TimeGranularity
 from slayer.core.errors import AmbiguousJoinPathError, CircularJoinPathError
 from slayer.core.keys import AggregateKey, Grain, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, PREDICATE_COMPARISON_OPS, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, effective_root_grain, constituent_grain, attached_parameter_grain, substitute_value_keys, substitute_consumer_keys, walk_value_keys, walk_consumer_keys, REGROUP_LEAF_PREFIX, is_cross_model_agg, split_top_level_and, window_kwarg_of, is_row_attach_root, attached_inputs, operand_aggregates, operand_constituents, parameter_row_leaves, source_anchor_path, source_row_leaves, VALUE_KEY_TYPES
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import Column, SlayerModel, aggregation_definition, empty_value
 from slayer.engine.reference_closure import (
     aggregate_input_closure,
     column_default_key,
@@ -45,6 +45,7 @@ from slayer.engine.reference_closure import (
     source_row_leaf_closure,
 )
 from slayer.core.join_walker import (
+    aggregation_owner,
     canonical_token,
     physical_join_pairs,
     resolve_hop,
@@ -936,6 +937,16 @@ def _ranked_kernel(
     )
 
 
+def _empty_value(key: ValueKey, *, bundle: ResolvedSourceBundle) -> Optional[int]:
+    """An attached aggregate's empty value, its definition read on the owning model."""
+    if not isinstance(key, AggregateKey):
+        return None
+    owner = aggregation_owner(
+        root=bundle.source_model, source=key.source, models_by_name=bundle.models_by_name,
+    )
+    return empty_value(agg=key.agg, definition=aggregation_definition(owner=owner, agg=key.agg))
+
+
 def _synthesize_wrap_attach(
     *,
     wrap_key: AggregateKey,
@@ -1030,7 +1041,7 @@ def _synthesize_wrap_attach(
         join_pairs=join_pairs,
         substitutions=[RegroupSubstitution(
             placeholder=wrap_key, producer_slot_id=answer_slot,
-            original_key=wrap_key,
+            original_key=wrap_key, empty_value=_empty_value(wrap_key, bundle=bundle),
         )],
         partition_display=[_regroup_grain_name(pk) for pk in ordered_pks],
     )
@@ -2263,7 +2274,7 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
         join_pairs=join_pairs,
         substitutions=[RegroupSubstitution(
             placeholder=placeholder, producer_slot_id=answer_slot,
-            original_key=agg,
+            original_key=agg, empty_value=_empty_value(agg, bundle=bundle),
         )],
         partition_display=[_regroup_grain_name(rr) for rr in ordered_pks],
         producer_root_model=root_name,
@@ -2952,7 +2963,7 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
         join_pairs=join_pairs,
         substitutions=[RegroupSubstitution(
             placeholder=placeholder, producer_slot_id=answer_slot,
-            original_key=root,
+            original_key=root, empty_value=_empty_value(root, bundle=bundle),
         )],
         partition_display=[
             _regroup_grain_name(original_by_pk.get(g, g)) for g in ordered_outer
@@ -3024,6 +3035,7 @@ def _build_carrier_attach(
                 fallback=answer_ids[i] if i < len(answer_ids) else None,
             ),
             original_key=c,
+            empty_value=_empty_value(c, bundle=bundle),
         )
         for i, c in enumerate(constituents)
     ]
@@ -3447,6 +3459,7 @@ def _synthesize_local_regroup(
                 else None,
             ),
             original_key=agg,
+            empty_value=_empty_value(agg, bundle=bundle),
         )
         for agg in aggs
     ]

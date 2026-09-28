@@ -308,7 +308,7 @@ _PLACEHOLDER = ColumnKey(path=(), leaf="__regroup__0__id_count")
 class TestRegroupSubstitutionIR:
     def test_empty_value_is_required(self) -> None:
         with pytest.raises(ValidationError, match="empty_value"):
-            RegroupSubstitution(placeholder=_PLACEHOLDER, producer_slot_id="p1", original_key=_KEY)
+            RegroupSubstitution(placeholder=_PLACEHOLDER, producer_slot_id="p1", original_key=_KEY)  # pyright: ignore[reportCallIssue]
 
     @pytest.mark.parametrize("value", [0, None])
     def test_empty_value_is_carried(self, value) -> None:
