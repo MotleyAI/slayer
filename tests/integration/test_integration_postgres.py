@@ -4,6 +4,7 @@ import math as _math
 import statistics
 import tempfile
 import uuid
+from typing import LiteralString, cast
 
 import pytest
 
@@ -110,7 +111,7 @@ def _pg_env_storage(postgresql_proc, tmp_path_factory):
             ],
         )
         for stmt in seed_statements():
-            cur.execute(stmt)
+            cur.execute(cast(LiteralString, stmt))
         conn.commit()
 
         tmpdir = str(tmp_path_factory.mktemp("pg_env"))

@@ -372,19 +372,25 @@ def _combined_attached_slot_ids(planned_query, slot_id_by_key) -> Set[str]:
 def _lower_positions(planned_query) -> _LoweredPositions:
     """Placement from the planner stage (D5): field → base WHERE; measure →
     HAVING at BASE, the combined outer WHERE at PRODUCER / COMBINED (or reading
-    a combined-attached dual-role value), the outer wrapper at DERIVED. Mode-A
+    a combined-attached dual-role value), the outer wrapper at DERIVED or when
+    any transform is present. Mode-A
     texts render in the base WHERE between the date-range and user masks."""
     slots_by_id = {s.id: s for s in _plan_slots(planned_query)}
     slot_id_by_key = {s.key: s.id for s in slots_by_id.values()}
     combined_attached = _combined_attached_slot_ids(planned_query, slot_id_by_key)
     outer_ids: List[str] = []
+    # A HAVING would shrink the series every transform reads (Axiom 14).
+    has_transform = any(
+        s.stage is not None and s.stage.kind is StageKind.DERIVED
+        for s in slots_by_id.values()
+    )
 
     def _lower_mask(mask) -> _LoweredFilter:
         slot = slots_by_id[mask.slot_id]
         stage_kind = slot.stage.kind if slot.stage is not None else None
         if mask.typing == MaskTyping.FIELD:
             phase = Phase.ROW
-        elif stage_kind is StageKind.DERIVED:
+        elif stage_kind is StageKind.DERIVED or has_transform:
             phase = Phase.POST
         else:
             phase = Phase.AGGREGATE

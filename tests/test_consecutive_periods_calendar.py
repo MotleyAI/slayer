@@ -91,6 +91,19 @@ class TestCalendarStreak:
             formula=_STREAK, filters=["customer_id = 1", "sum(amount) > 200"]))
         assert got == {"2024-02": 2, "2024-12": 1, "2025-05": 1, "2025-06": 2}
 
+    @pytest.mark.parametrize(("formula", "expected"), [
+        ("cumsum(sum(amount))",
+         {"2024-02": 650, "2024-12": 990, "2025-05": 1695, "2025-06": 1905}),
+        ("lag(sum(amount))",
+         {"2024-02": 150, "2024-12": 120, "2025-05": 140, "2025-06": 225}),
+    ])
+    async def test_measure_filter_keeps_other_transforms_unfiltered(
+        self, exec_engine, formula: str, expected: dict,
+    ) -> None:
+        got = await _by_month(exec_engine, orders_query(
+            formula=formula, filters=["customer_id = 1", "sum(amount) > 200"]))
+        assert got == expected
+
     async def test_null_time_bucket_is_adjacent_to_nothing(self, null_date_engine) -> None:
         got = await _by_month(null_date_engine, orders_query(formula=_STREAK))
         assert got == {None: 1, **dict(zip(C1_MONTHS, C1_STREAK))}
@@ -168,9 +181,8 @@ class TestSubDayTimeOffsets:
 class TestPeriodKeywordRejected:
     async def test_period_keyword_raises(self) -> None:
         models = calendar_models()
+        query = orders_query(formula="consecutive_periods(sum(amount) > 100, period='year')")
         with pytest.raises(ValueError, match=r"consecutive_periods.*'period'"):
             await _engine_generate(
-                query=orders_query(
-                    formula="consecutive_periods(sum(amount) > 100, period='year')"),
-                model=models[0], extra_models=models[1:], dialect="duckdb",
+                query=query, model=models[0], extra_models=models[1:], dialect="duckdb",
             )

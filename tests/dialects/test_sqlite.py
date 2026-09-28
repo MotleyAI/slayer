@@ -173,9 +173,8 @@ def test_sqlite_build_time_offset_expr_quarter_normalizes_to_months() -> None:
 )
 def test_sqlite_build_time_offset_expr_exact_render(granularity: str, expected: str) -> None:
     """Sub-day offsets keep the time of day; day-and-coarser render as ``DATE``."""
-    col = sqlglot.parse_one("ts", dialect="sqlite")
     out = SqliteDialect().build_time_offset_expr(
-        col, offset=-1, granularity=TimeGranularity(granularity),
+        exp.column("ts"), offset=-1, granularity=TimeGranularity(granularity),
     )
     assert out.sql(dialect="sqlite") == expected
 

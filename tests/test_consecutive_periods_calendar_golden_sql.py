@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 import sqlglot
 from sqlglot import exp
+from sqlglot.expressions.core import Expression
 
 from slayer.core.query import SlayerQuery
 
@@ -74,7 +75,7 @@ _COMPARISONS = (exp.GT, exp.GTE, exp.LT, exp.LTE, exp.EQ, exp.NEQ)
 _CONNECTIVES = (exp.And, exp.Or, exp.Not, exp.Paren)
 
 
-def _in_condition_position(node: exp.Expression) -> bool:
+def _in_condition_position(node: Expression) -> bool:
     child, parent = node, node.parent
     while isinstance(parent, _CONNECTIVES):
         child, parent = parent, parent.parent
