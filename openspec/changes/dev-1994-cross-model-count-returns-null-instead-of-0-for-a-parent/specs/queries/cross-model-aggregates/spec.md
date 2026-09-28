@@ -47,7 +47,7 @@ bucket is absent) SHALL stay NULL, and no population cell SHALL be fabricated.
 #### Scenario: Empty value in every position
 - **WHEN** a query rooted at `customers` groups by `name` and selects the composite
   `count(orders.id) * 2`, filters on `count(orders.id) = 0`, orders by
-  `count(orders.id)`, and adds the dimension `count(orders.id, partition_by=[id]) = 0`
+  `count(orders.id)`, and adds the dimension `count(orders.id, partition_by=[id]) == 0`
 - **THEN** the childless customer's composite is 0, the filter keeps exactly the
   childless customers, the ordering places them as 0, and they fall in the `true`
   dimension bucket
