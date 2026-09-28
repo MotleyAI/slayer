@@ -276,7 +276,7 @@ class RegroupSubstitution(BaseModel):
     placeholder: ValueKey
     producer_slot_id: SlotId
     original_key: ValueKey
-    empty_value: Optional[int]
+    empty_value: int | None
 
 
 class PlainProducerKernel(BaseModel):

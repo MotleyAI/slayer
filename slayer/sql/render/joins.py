@@ -67,7 +67,7 @@ class AttachedValue(BaseModel):
 
     cte_name: str
     column_name: str
-    empty_value: Optional[int]
+    empty_value: int | None
 
     def column(self) -> exp.Column:
         return grain_alias_column(alias=self.column_name, table=self.cte_name)
