@@ -2,22 +2,28 @@
 
 import asyncio
 import concurrent.futures
+import contextlib
 import functools
 import logging
+import threading
 import time
+import warnings as _warnings_module
 import weakref
 from typing import Any
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 
 import sqlalchemy as sa
 import sqlalchemy.exc
 import sqlglot
+from pydantic import BaseModel, Field
 from sqlglot import expressions as exp
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from slayer.core.models import DatasourceConfig
+from slayer.core.warnings import SlayerStatementTimeoutSkippedWarning, StatementTimeoutSkippedWarning
 from slayer.sql import engine_factory
-from slayer.sql.dialects import dialect_for_ds_type
+from slayer.sql.dialects import SqlDialect, dialect_for_ds_type
+from slayer.sql.dialects.base import ServerProfile
 from slayer.sql.reserved_keywords import prequote_reserved_identifiers
 from slayer.core import timing
 
@@ -291,25 +297,139 @@ async def _exec_verbatim_async(conn, sql: str) -> Any:
     return await conn.exec_driver_sql(sql, execution_options={"no_parameters": True})
 
 
-def _apply_type_probe_timeout(conn, db_type: str | None, timeout_seconds: int) -> None:
-    """Apply the dialect's statement-timeout SQL before a type probe.
+# Per-engine server profile, and the lock guarding its fill. A failed fill is never cached.
+_server_profiles: "weakref.WeakKeyDictionary[Any, ServerProfile]" = weakref.WeakKeyDictionary()
+_profile_locks: "weakref.WeakKeyDictionary[Any, Any]" = weakref.WeakKeyDictionary()
+_profile_locks_guard = threading.Lock()
 
-    No-op unless the dialect emits one (Snowflake — LIMIT 0 still burns compute).
-    """
-    if not db_type:
+
+def _profile_lock(engine: Any, factory: Callable[[], Any]) -> Any:
+    with _profile_locks_guard:
+        lock = _profile_locks.get(engine)
+        if lock is None:
+            lock = _profile_locks[engine] = factory()
+        return lock
+
+
+def _skip(datasource_name: str, timeout_seconds: int, reason: str) -> StatementTimeoutSkippedWarning:
+    """Build the skip payload and emit its Python warning now, before the statement runs."""
+    payload = StatementTimeoutSkippedWarning.model_validate(
+        {"datasource": datasource_name, "timeout_seconds": timeout_seconds, "reason": reason},
+    )
+    _warnings_module.warn(SlayerStatementTimeoutSkippedWarning(payload), stacklevel=2)
+    return payload
+
+
+def _first_row(result: Any) -> tuple | None:
+    row = result.first()
+    return None if row is None else tuple(row)
+
+
+def _correlated_probe_failed(exc: Exception) -> None:
+    logger.warning("Correlated-subquery setting probe failed; treating it as unknown: %s", exc)
+
+
+def _server_profile(conn, *, engine: Any, dialect: SqlDialect) -> ServerProfile:
+    """The engine's cached profile, filled over ``conn`` on first use (verbatim, never via ``execute``)."""
+    profile_sql = dialect.server_profile_sql()
+    if profile_sql is None:
+        return ServerProfile()
+    with _profile_lock(engine, threading.Lock):
+        cached = _server_profiles.get(engine)
+        if cached is not None:
+            return cached
+        base_row = _first_row(_exec_verbatim(conn, profile_sql))
+        profile = dialect.parse_server_profile(base_row=base_row)
+        correlated_sql = dialect.correlated_setting_sql(profile)
+        if correlated_sql is not None:
+            try:
+                correlated_row = _first_row(_exec_verbatim(conn, correlated_sql))
+            except Exception as exc:  # the driver's own error types need not be DBAPI errors
+                _correlated_probe_failed(exc)
+                return profile
+            profile = dialect.parse_server_profile(base_row=base_row, correlated_row=correlated_row)
+        _server_profiles[engine] = profile
+        return profile
+
+
+async def _server_profile_async(conn, *, engine: Any, dialect: SqlDialect) -> ServerProfile:
+    """Async sibling of ``_server_profile``."""
+    profile_sql = dialect.server_profile_sql()
+    if profile_sql is None:
+        return ServerProfile()
+    async with _profile_lock(engine, asyncio.Lock):
+        cached = _server_profiles.get(engine)
+        if cached is not None:
+            return cached
+        base_row = _first_row(await _exec_verbatim_async(conn, profile_sql))
+        profile = dialect.parse_server_profile(base_row=base_row)
+        correlated_sql = dialect.correlated_setting_sql(profile)
+        if correlated_sql is not None:
+            try:
+                correlated_row = _first_row(await _exec_verbatim_async(conn, correlated_sql))
+            except Exception as exc:  # the driver's own error types need not be DBAPI errors
+                _correlated_probe_failed(exc)
+                return profile
+            profile = dialect.parse_server_profile(base_row=base_row, correlated_row=correlated_row)
+        _server_profiles[engine] = profile
+        return profile
+
+
+def _server_profile_sync(*, engine: sa.Engine, dialect: SqlDialect) -> ServerProfile:
+    with engine.connect() as conn:
+        return _server_profile(conn, engine=engine, dialect=dialect)
+
+
+@contextlib.contextmanager
+def _statement_timeout(
+    conn, *, engine: Any, dialect: SqlDialect, datasource_name: str, timeout_seconds: int,
+) -> Iterator[list[StatementTimeoutSkippedWarning]]:
+    """Put the dialect's timeout on ``conn`` for the block; yields the skips to report."""
+    if not dialect.timeout_permitted(_server_profile(conn, engine=engine, dialect=dialect)):
+        yield [_skip(datasource_name, timeout_seconds, "readonly_user")]
         return
-    timeout_sql = dialect_for_ds_type(db_type).statement_timeout_sql(timeout_seconds)
-    if timeout_sql:
-        _exec_verbatim(conn, timeout_sql)
+    dbapi_connection = conn.connection.dbapi_connection
+    prior = dialect.set_connection_timeout(dbapi_connection, timeout_seconds)
+    try:
+        skipped: list[StatementTimeoutSkippedWarning] = []
+        timeout_sql = dialect.statement_timeout_sql(timeout_seconds)
+        if timeout_sql is not None:
+            try:
+                _exec_verbatim(conn, timeout_sql)
+            except sqlalchemy.exc.DBAPIError:
+                if not dialect.statement_timeout_best_effort:
+                    raise
+                conn.rollback()
+                skipped.append(_skip(datasource_name, timeout_seconds, "timeout_rejected"))
+        yield skipped
+    finally:
+        dialect.restore_connection_timeout(dbapi_connection, prior)
 
 
-async def _apply_type_probe_timeout_async(conn, db_type: str | None, timeout_seconds: int) -> None:
-    """Async sibling of ``_apply_type_probe_timeout``."""
-    if not db_type:
+@contextlib.asynccontextmanager
+async def _statement_timeout_async(
+    conn, *, engine: Any, dialect: SqlDialect, datasource_name: str, timeout_seconds: int,
+) -> AsyncIterator[list[StatementTimeoutSkippedWarning]]:
+    """Async sibling of ``_statement_timeout``."""
+    if not dialect.timeout_permitted(await _server_profile_async(conn, engine=engine, dialect=dialect)):
+        yield [_skip(datasource_name, timeout_seconds, "readonly_user")]
         return
-    timeout_sql = dialect_for_ds_type(db_type).statement_timeout_sql(timeout_seconds)
-    if timeout_sql:
-        await _exec_verbatim_async(conn, timeout_sql)
+    dbapi_connection = (await conn.get_raw_connection()).dbapi_connection
+    prior = dialect.set_connection_timeout(dbapi_connection, timeout_seconds)
+    try:
+        skipped: list[StatementTimeoutSkippedWarning] = []
+        timeout_sql = dialect.statement_timeout_sql(timeout_seconds)
+        if timeout_sql is not None:
+            try:
+                await _exec_verbatim_async(conn, timeout_sql)
+            except sqlalchemy.exc.DBAPIError:
+                if not dialect.statement_timeout_best_effort:
+                    raise
+                await conn.rollback()
+                skipped.append(_skip(datasource_name, timeout_seconds, "timeout_rejected"))
+        yield skipped
+    finally:
+        dialect.restore_connection_timeout(dbapi_connection, prior)
 
 
 # Type probes only compile (LIMIT 0/1); 60s is generous.
@@ -321,7 +441,7 @@ _READ_ONLY_TXN_DIALECTS = frozenset({"postgres", "redshift", "oracle"})
 
 
 def _read_only_transaction_sql(db_type: str | None) -> str | None:
-    if db_type and dialect_for_ds_type(db_type).sqlglot_name in _READ_ONLY_TXN_DIALECTS:
+    if dialect_for_ds_type(db_type).sqlglot_name in _READ_ONLY_TXN_DIALECTS:
         return "SET TRANSACTION READ ONLY"
     return None
 
@@ -331,43 +451,56 @@ def _get_column_types_sync(
     *,
     db_type: str | None,
     engine: sa.Engine,
+    datasource_name: str | None = None,
 ) -> dict[str, str]:
     """Infer column types read-only (rolled back) so a trial probe can't mutate."""
     limit_sql = _build_type_probe_sql(sql, db_type)
-    with engine.connect() as conn:
+    with engine.connect() as conn, _statement_timeout(
+        conn, engine=engine, dialect=dialect_for_ds_type(db_type),
+        datasource_name=datasource_name or str(engine.url), timeout_seconds=_TYPE_PROBE_TIMEOUT_SECONDS,
+    ):
         ro_sql = _read_only_transaction_sql(db_type)
         if ro_sql:
             _exec_verbatim(conn, ro_sql)
-        _apply_type_probe_timeout(conn, db_type, _TYPE_PROBE_TIMEOUT_SECONDS)
-        result = _exec_verbatim(conn, limit_sql)
+        result = _exec_verbatim(conn=conn, sql=limit_sql)
         types = _extract_types_from_cursor(result, db_type=db_type)
         conn.rollback()
     return types
 
 
 def get_column_types_sync(
-    sql: str, *, engine: sa.Engine, db_type: str | None = None
+    sql: str, *, engine: sa.Engine, db_type: str | None = None, datasource_name: str | None = None,
 ) -> dict[str, str]:
     """Public sync column-type inference over an existing engine (stable entry point)."""
-    return _get_column_types_sync(sql, db_type=db_type, engine=engine)
+    return _get_column_types_sync(sql, db_type=db_type, engine=engine, datasource_name=datasource_name)
 
 
 async def _get_column_types_async(
     sql: str,
     engine,
     db_type: str | None,
+    datasource_name: str | None = None,
 ) -> dict[str, str]:
     """Async type inference read-only (rolled back) so a trial probe can't mutate."""
     limit_sql = _build_type_probe_sql(sql, db_type)
-    async with engine.connect() as conn:
+    async with engine.connect() as conn, _statement_timeout_async(
+        conn, engine=engine, dialect=dialect_for_ds_type(db_type),
+        datasource_name=datasource_name or str(engine.url), timeout_seconds=_TYPE_PROBE_TIMEOUT_SECONDS,
+    ):
         ro_sql = _read_only_transaction_sql(db_type)
         if ro_sql:
             await _exec_verbatim_async(conn, ro_sql)
-        await _apply_type_probe_timeout_async(conn, db_type, _TYPE_PROBE_TIMEOUT_SECONDS)
         result = await _exec_verbatim_async(conn, limit_sql)
         types = _extract_types_from_cursor(result, db_type=db_type)
         await conn.rollback()
     return types
+
+
+class ExecutionResult(BaseModel):
+    """Rows of one executed statement, plus the timeout skips it ran under."""
+
+    rows: list[dict[str, Any]]
+    warnings: list[StatementTimeoutSkippedWarning] = Field(default_factory=list)
 
 
 class SlayerSQLClient:
@@ -431,8 +564,7 @@ class SlayerSQLClient:
         try:
             await engine.dispose()
         except Exception as exc:  # pragma: no cover
-            import logging
-            logging.getLogger(__name__).warning(
+            logger.warning(
                 "Async engine dispose failed for datasource %r: %s",
                 self.datasource.name, exc,
             )
@@ -502,7 +634,7 @@ class SlayerSQLClient:
         self,
         sql: str,
         timeout_seconds: int = 120,
-    ) -> list[dict[str, Any]]:
+    ) -> ExecutionResult:
         """Execute SQL asynchronously."""
         try:
             return await self._execute(sql=sql, timeout_seconds=timeout_seconds)
@@ -515,7 +647,7 @@ class SlayerSQLClient:
         *,
         sql: str,
         timeout_seconds: int,
-    ) -> list[dict[str, Any]]:
+    ) -> ExecutionResult:
         async_engine = self._get_async_engine()
         db_type = self.datasource.type
         if async_engine is not None:
@@ -524,6 +656,7 @@ class SlayerSQLClient:
                 engine=async_engine,
                 db_type=db_type,
                 timeout_seconds=timeout_seconds,
+                datasource_name=self.datasource.name,
             )
         # No async driver — fall back to sync in thread pool
         return await _execute_with_retry_threaded(
@@ -531,6 +664,7 @@ class SlayerSQLClient:
             db_type=db_type,
             timeout_seconds=timeout_seconds,
             engine=self._get_sync_engine_for_client(),
+            datasource_name=self.datasource.name,
         )
 
     async def get_column_types(self, sql: str) -> dict[str, str]:
@@ -546,19 +680,38 @@ class SlayerSQLClient:
         if async_engine is not None:
             return await _get_column_types_async(
                 sql=sql, engine=async_engine, db_type=self.datasource.type,
+                datasource_name=self.datasource.name,
             )
         return await _run_sync_in_thread(
             _get_column_types_sync,
             sql=sql,
             db_type=self.datasource.type,
             engine=self._get_sync_engine_for_client(),
+            datasource_name=self.datasource.name,
         )
+
+    async def server_profile(self) -> ServerProfile:
+        """The server's profile for this client's engine, probed once per engine."""
+        dialect = dialect_for_ds_type(self.datasource.type)
+        if dialect.server_profile_sql() is None:
+            return ServerProfile()
+        try:
+            async_engine = self._get_async_engine()
+            if async_engine is not None:
+                async with async_engine.connect() as conn:
+                    return await _server_profile_async(conn, engine=async_engine, dialect=dialect)
+            return await _run_sync_in_thread(
+                _server_profile_sync, engine=self._get_sync_engine_for_client(), dialect=dialect,
+            )
+        except Exception as exc:
+            await self._discard_engines_on_auth_failure(exc)
+            raise
 
     def execute_sync(
         self,
         sql: str,
         timeout_seconds: int = 120,
-    ) -> list[dict[str, Any]]:
+    ) -> ExecutionResult:
         """Execute SQL synchronously (CLI, notebooks, tests).
 
         Discards only the sync engine on auth failure — no loop for the async pool.
@@ -569,6 +722,7 @@ class SlayerSQLClient:
                 db_type=self.datasource.type,
                 timeout_seconds=timeout_seconds,
                 engine=self._get_sync_engine_for_client(),
+                datasource_name=self.datasource.name,
             )
         except Exception as exc:
             self._discard_sync_engine_on_auth_failure(exc)
@@ -711,32 +865,45 @@ def _is_unreachable_db_error(exc: BaseException) -> bool:
 async def _retry_with_backoff(
     *,
     sql: str,
-    do_call: Callable[[], Awaitable[list[dict[str, Any]]]],
+    do_call: Callable[[], Awaitable[ExecutionResult]],
     max_attempts: int,
     initial_delay: float,
     max_delay: float,
-) -> list[dict[str, Any]]:
+) -> ExecutionResult:
     """Retry an async DB call with exponential backoff on transient errors.
 
     `sql` is only the warning excerpt; the DBAPI message comes from exc.orig.
     """
-    if max_attempts < 1:
-        raise ValueError(f"max_attempts must be >= 1, got {max_attempts}")
+    _check_max_attempts(max_attempts)
     delay = initial_delay
-    for attempt in range(max_attempts):
+    for attempt in range(max_attempts - 1):
         try:
             return await do_call()
-        except (sqlalchemy.exc.OperationalError, sqlalchemy.exc.DisconnectionError) as exc:
-            if attempt == max_attempts - 1 or not _is_transient_db_error(exc):
-                raise
-            sql_lines = (sql or "").strip().splitlines()
-            sql_excerpt = sql_lines[0][:120] if sql_lines else _EMPTY_SQL_PLACEHOLDER
-            logger.warning(
-                _TRANSIENT_RETRY_LOG_FORMAT,
-                attempt + 1, delay, getattr(exc, "orig", exc), sql_excerpt,
-            )
+        except _RETRYABLE_ERRORS as exc:
+            _log_transient_or_raise(exc=exc, sql=sql, attempt=attempt, delay=delay)
             await asyncio.sleep(delay)
             delay = min(delay * 2, max_delay)
+    return await do_call()
+
+
+def _check_max_attempts(max_attempts: int) -> None:
+    if max_attempts < 1:
+        raise ValueError(f"max_attempts must be >= 1, got {max_attempts}")
+
+
+_RETRYABLE_ERRORS = (sqlalchemy.exc.OperationalError, sqlalchemy.exc.DisconnectionError)
+
+
+def _log_transient_or_raise(*, exc: Exception, sql: str, attempt: int, delay: float) -> None:
+    """Re-raise a non-transient error; log the retry of a transient one."""
+    if not _is_transient_db_error(exc):
+        raise exc
+    sql_lines = (sql or "").strip().splitlines()
+    sql_excerpt = sql_lines[0][:120] if sql_lines else _EMPTY_SQL_PLACEHOLDER
+    logger.warning(
+        _TRANSIENT_RETRY_LOG_FORMAT,
+        attempt + 1, delay, getattr(exc, "orig", exc), sql_excerpt,
+    )
 
 
 async def _execute_with_retry_async(
@@ -744,14 +911,16 @@ async def _execute_with_retry_async(
     engine,
     db_type: str | None,
     timeout_seconds: int = 120,
+    datasource_name: str | None = None,
     max_attempts: int = 3,
     initial_delay: float = 1.0,
     max_delay: float = 10.0,
-) -> list[dict[str, Any]]:
+) -> ExecutionResult:
     return await _retry_with_backoff(
         sql=sql,
         do_call=lambda: _execute_sql_async(
             sql=sql, engine=engine, db_type=db_type, timeout_seconds=timeout_seconds,
+            datasource_name=datasource_name,
         ),
         max_attempts=max_attempts,
         initial_delay=initial_delay,
@@ -764,31 +933,22 @@ async def _execute_sql_async(
     engine,
     db_type: str | None,
     timeout_seconds: int = 120,
-) -> list[dict[str, Any]]:
+    datasource_name: str | None = None,
+) -> ExecutionResult:
     _t = timing.start()
     async with engine.connect() as conn:
         timing.record("connect", _t)
-        timeout_ms = timeout_seconds * 1000
         _t = timing.start()
-        if db_type in ("mysql", "mariadb"):
-            await _exec_verbatim_async(conn, f"SET max_execution_time = {timeout_ms}")
-        elif db_type in ("postgres", "postgresql", None):
-            try:
-                await _exec_verbatim_async(conn, f"SET statement_timeout = {timeout_ms}")
-            except Exception:
-                pass
-        else:
-            # Dialect-specific timeout SET; base returns None (only Snowflake emits one).
-            timeout_sql = dialect_for_ds_type(db_type).statement_timeout_sql(timeout_seconds)
-            if timeout_sql:
-                await _exec_verbatim_async(conn, timeout_sql)
-        timing.record("set_timeout", _t)
-        _t = timing.start()
-        result = await _exec_verbatim_async(conn, sql)
-        columns = list(result.keys())
-        rows = [dict(zip(columns, row)) for row in result.fetchall()]
-        timing.record("query", _t)
-        return rows
+        async with _statement_timeout_async(
+            conn, engine=engine, dialect=dialect_for_ds_type(db_type),
+            datasource_name=datasource_name or str(engine.url), timeout_seconds=timeout_seconds,
+        ) as skipped:
+            timing.record("set_timeout", _t)
+            _t = timing.start()
+            result = await _exec_verbatim_async(conn, sql)
+            rows = _fetch_rows(result)
+            timing.record("query", _t)
+    return ExecutionResult(rows=rows, warnings=skipped)
 
 
 async def _execute_with_retry_threaded(
@@ -797,10 +957,11 @@ async def _execute_with_retry_threaded(
     *,
     engine: sa.Engine,
     timeout_seconds: int = 120,
+    datasource_name: str | None = None,
     max_attempts: int = 3,
     initial_delay: float = 1.0,
     max_delay: float = 10.0,
-) -> list[dict[str, Any]]:
+) -> ExecutionResult:
     return await _retry_with_backoff(
         sql=sql,
         do_call=lambda: _run_sync_in_thread(
@@ -809,6 +970,7 @@ async def _execute_with_retry_threaded(
             db_type=db_type,
             timeout_seconds=timeout_seconds,
             engine=engine,
+            datasource_name=datasource_name,
         ),
         max_attempts=max_attempts,
         initial_delay=initial_delay,
@@ -822,30 +984,31 @@ def _execute_with_retry_sync(
     *,
     engine: sa.Engine,
     timeout_seconds: int = 120,
+    datasource_name: str | None = None,
     max_attempts: int = 3,
     initial_delay: float = 1.0,
     max_delay: float = 10.0,
-) -> list[dict[str, Any]]:
+) -> ExecutionResult:
+    _check_max_attempts(max_attempts)
+
+    def _call() -> ExecutionResult:
+        return _execute_sql_sync(
+            sql=sql,
+            db_type=db_type,
+            timeout_seconds=timeout_seconds,
+            engine=engine,
+            datasource_name=datasource_name,
+        )
+
     delay = initial_delay
-    for attempt in range(max_attempts):
+    for attempt in range(max_attempts - 1):
         try:
-            return _execute_sql_sync(
-                sql=sql,
-                db_type=db_type,
-                timeout_seconds=timeout_seconds,
-                engine=engine,
-            )
-        except (sqlalchemy.exc.OperationalError, sqlalchemy.exc.DisconnectionError) as exc:
-            if attempt == max_attempts - 1 or not _is_transient_db_error(exc):
-                raise
-            sql_lines = (sql or "").strip().splitlines()
-            sql_excerpt = sql_lines[0][:120] if sql_lines else _EMPTY_SQL_PLACEHOLDER
-            logger.warning(
-                _TRANSIENT_RETRY_LOG_FORMAT,
-                attempt + 1, delay, getattr(exc, "orig", exc), sql_excerpt,
-            )
+            return _call()
+        except _RETRYABLE_ERRORS as exc:
+            _log_transient_or_raise(exc=exc, sql=sql, attempt=attempt, delay=delay)
             time.sleep(delay)
             delay = min(delay * 2, max_delay)
+    return _call()
 
 
 def _execute_sql_sync(
@@ -854,23 +1017,16 @@ def _execute_sql_sync(
     *,
     engine: sa.Engine,
     timeout_seconds: int = 120,
-) -> list[dict[str, Any]]:
-    with engine.connect() as conn:
-        timeout_ms = timeout_seconds * 1000
-        if db_type in ("mysql", "mariadb"):
-            _exec_verbatim(conn, f"SET max_execution_time = {timeout_ms}")
-        elif db_type == "clickhouse":
-            _exec_verbatim(conn, f"SET max_execution_time = {timeout_seconds}")
-        elif db_type in ("postgres", "postgresql", None):
-            try:
-                _exec_verbatim(conn, f"SET statement_timeout = {timeout_ms}")
-            except Exception:
-                pass
-        else:
-            # Dialect-specific timeout SET; base returns None (only Snowflake emits one).
-            timeout_sql = dialect_for_ds_type(db_type).statement_timeout_sql(timeout_seconds)
-            if timeout_sql:
-                _exec_verbatim(conn, timeout_sql)
-        result = _exec_verbatim(conn, sql)
-        columns = list(result.keys())
-        return [dict(zip(columns, row)) for row in result.fetchall()]
+    datasource_name: str | None = None,
+) -> ExecutionResult:
+    with engine.connect() as conn, _statement_timeout(
+        conn, engine=engine, dialect=dialect_for_ds_type(db_type),
+        datasource_name=datasource_name or str(engine.url), timeout_seconds=timeout_seconds,
+    ) as skipped:
+        rows = _fetch_rows(_exec_verbatim(conn=conn, sql=sql))
+    return ExecutionResult(rows=rows, warnings=skipped)
+
+
+def _fetch_rows(result) -> list[dict[str, Any]]:
+    columns = list(result.keys())
+    return [dict(zip(columns, row)) for row in result.fetchall()]

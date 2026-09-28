@@ -1,5 +1,5 @@
 # Cross-walk between the LikeC4 model, arc42 files, and OpenSpec specs.
-# Checked by tools/arch_check.py; schema in system.arc42.md §3/§5.
+# Checked by la-arch-check; schema in system.arc42.md §3/§5.
 
 root_package: slayer
 
@@ -67,7 +67,7 @@ cross_cutting_arc42: [architecture/semantics.arc42.md]
 
 # arc42 doc -> LikeC4 view ids embedded as mermaid between <!-- likec4:<id> --> markers.
 # arch_check's diagrams-fresh enforces byte-for-byte freshness; regenerate with
-# `poetry run python tools/arch_diagrams.py`. Keys are repo-relative architecture/*.arc42.md.
+# `la-arch-diagrams`. Keys are repo-relative architecture/*.arc42.md.
 # view_depth (default 3) sets how many levels each view expands before collapsing.
 view_depth:
   landscape: 1

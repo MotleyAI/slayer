@@ -16,11 +16,10 @@ from slayer.core.policy import (
     JoinFilterRuleset,
     SessionPolicy,
 )
-from slayer.sql.session_policy import (
-    ScopedTable,
-    _attach_ch_correlated_setting,
-    apply_session_policy,
-)
+from slayer.sql.scope_check import assert_scope_closed
+from slayer.sql.session_policy import ScopedTable, _build_in, apply_session_policy
+from slayer.sql.dialects import SqlDialect
+from slayer.sql.dialects.clickhouse import ClickhouseDialect, _attach_ch_correlated_setting
 
 
 def _norm(sql: str, dialect: str = "sqlite") -> str:
@@ -335,9 +334,12 @@ def test_both_path_orientations_emit_identical_sql():
             )
         ]
     )
-    kw = dict(dialect="sqlite", has_column=_boom_probe)
-    out_tf = apply_session_policy("SELECT * FROM orders", policy=target_first, **kw)
-    out_mf = apply_session_policy("SELECT * FROM orders", policy=master_first, **kw)
+    out_tf = apply_session_policy(
+        "SELECT * FROM orders", dialect="sqlite", policy=target_first, has_column=_boom_probe
+    )
+    out_mf = apply_session_policy(
+        "SELECT * FROM orders", dialect="sqlite", policy=master_first, has_column=_boom_probe
+    )
     assert out_tf == out_mf
 
 
@@ -427,7 +429,8 @@ def test_same_target_twice_each_gets_own_exists():
     )
     parsed = sqlglot.parse_one(out, dialect="sqlite")
     assert len(list(parsed.find_all(exp.Exists))) == 2
-    assert "AS a" in out and "AS b" in out
+    assert "AS a" in out
+    assert "AS b" in out
     subqueries = [
         s for s in parsed.find_all(exp.Subquery) if s.this.find(exp.Exists) is not None
     ]
@@ -696,23 +699,148 @@ def test_join_terminal_value_is_injection_safe():
 # -- ClickHouse --------------------------------------------------------------
 
 
-def test_clickhouse_join_appends_settings_and_calls_hook():
-    called = {"n": 0}
-
-    def hook():
-        called["n"] += 1
-
+def test_clickhouse_join_emits_guarded_in_without_settings():
     out = apply_session_policy(
         "SELECT * FROM orders",
         dialect="clickhouse",
         policy=_jpolicy(),
         has_column=_boom_probe,
-        on_correlated_emitted=hook,
     )
-    assert "allow_experimental_correlated_subqueries" in out
-    assert called["n"] == 1
-    settings = sqlglot.parse_one(out, dialect="clickhouse").args.get("settings")
-    assert any("allow_experimental_correlated_subqueries" in s.sql() for s in settings)
+    parsed = sqlglot.parse_one(out, dialect="clickhouse")
+    assert "allow_experimental_correlated_subqueries" not in out
+    assert not parsed.args.get("settings")
+    assert parsed.find(exp.Exists) is None
+    assert any(node.args.get("query") is not None for node in parsed.find_all(exp.In))
+
+
+_CH_SINGLE_HOP = (
+    "SELECT * FROM (SELECT * FROM orders AS _rls_src WHERE _rls_src.customer_id GLOBAL IN "
+    "(SELECT toNullable(_rls_j0.id) FROM customers AS _rls_j0 "
+    "WHERE _rls_j0.id IS NOT NULL AND _rls_j0.organization_uuid = 'orgA')) AS orders"
+)
+
+_CH_MULTI_HOP = (
+    "SELECT * FROM (SELECT * FROM line_items AS _rls_src WHERE _rls_src.order_id GLOBAL IN "
+    "(SELECT toNullable(_rls_j0.id) FROM orders AS _rls_j0 "
+    "GLOBAL INNER JOIN customers AS _rls_j1 ON _rls_j1.id = _rls_j0.customer_id "
+    "WHERE _rls_j0.id IS NOT NULL AND _rls_j1.organization_uuid = 'orgA')) AS line_items"
+)
+
+_LINE_ITEMS_RULE = JoinFilterRule(
+    target_table="line_items",
+    join_path=("line_items.order_id = orders.id", "orders.customer_id = customers.id"),
+)
+
+
+def _ch(sql: str, policy: SessionPolicy) -> str:
+    return apply_session_policy(
+        sql, dialect="clickhouse", policy=policy, has_column=_boom_probe
+    )
+
+
+def test_clickhouse_single_hop_exact_shape():
+    assert _ch("SELECT * FROM orders", _jpolicy()) == _norm(_CH_SINGLE_HOP, "clickhouse")
+
+
+def test_clickhouse_multi_hop_exact_shape():
+    out = _ch("SELECT * FROM line_items", _jpolicy(joins=[_LINE_ITEMS_RULE]))
+    assert out == _norm(_CH_MULTI_HOP, "clickhouse")
+
+
+class _GatedOnly(SqlDialect):
+    correlated_subqueries_gated: bool = True
+
+
+def test_in_takes_set_key_and_globalness_from_the_dialect():
+    ruleset = _join_ruleset(joins=[_LINE_ITEMS_RULE])
+    plain = _build_in(_LINE_ITEMS_RULE, ruleset=ruleset, sql_dialect=_GatedOnly())
+    ch = _build_in(_LINE_ITEMS_RULE, ruleset=ruleset, sql_dialect=ClickhouseDialect())
+    assert not plain.args.get("is_global")
+    assert not any(j.args.get("global_") for j in plain.args["query"].this.args["joins"])
+    assert isinstance(plain.args["query"].this.expressions[0], exp.Column)
+    assert ch.args.get("is_global")
+    assert all(j.args.get("global_") for j in ch.args["query"].this.args["joins"])
+    assert ch.args["query"].this.expressions[0].sql(dialect="clickhouse") == "toNullable(_rls_j0.id)"
+
+
+def test_clickhouse_multi_rule_each_target_gets_its_in():
+    rules = [_join_ruleset().joins[0], _LINE_ITEMS_RULE]
+    out = _ch(
+        "SELECT * FROM orders o JOIN line_items li ON li.order_id = o.id",
+        _jpolicy(joins=rules),
+    )
+    parsed = sqlglot.parse_one(out, dialect="clickhouse")
+    semi = [node for node in parsed.find_all(exp.In) if node.args.get("query")]
+    assert len(semi) == 2
+    assert parsed.find(exp.Exists) is None
+    assert out.count("organization_uuid = 'orgA'") == 2
+    assert "AS o" in out
+    assert "AS li" in out
+
+
+def test_clickhouse_list_value_on_terminal_hop():
+    out = _ch("SELECT * FROM orders", _jpolicy(value=["orgA", "orgB"]))
+    assert "_rls_j0.organization_uuid IN ('orgA', 'orgB')" in out
+    assert "allow_experimental_correlated_subqueries" not in out
+
+
+def test_clickhouse_same_target_twice_each_gets_own_in():
+    out = _ch("SELECT * FROM orders a JOIN orders b ON a.id = b.id", _jpolicy())
+    parsed = sqlglot.parse_one(out, dialect="clickhouse")
+    assert len([n for n in parsed.find_all(exp.In) if n.args.get("query")]) == 2
+    assert parsed.find(exp.Exists) is None
+
+
+def test_clickhouse_output_is_scope_closed_without_rls_correlation():
+    for sql, policy in [
+        ("SELECT * FROM orders", _jpolicy()),
+        ("SELECT * FROM line_items", _jpolicy(joins=[_LINE_ITEMS_RULE])),
+    ]:
+        assert_scope_closed(_ch(sql, policy), dialect="clickhouse", allow_rls_correlation=False)
+
+
+def test_clickhouse_anchor_whitelist_and_fail_closed_unchanged():
+    policy = _jpolicy(whitelist=["exchange_rates"])
+    assert _ch("SELECT * FROM customers", policy) == _norm(
+        "SELECT * FROM (SELECT * FROM customers WHERE organization_uuid = 'orgA') AS customers",
+        "clickhouse",
+    )
+    assert _ch("SELECT * FROM exchange_rates", policy) == _norm(
+        "SELECT * FROM exchange_rates", "clickhouse"
+    )
+    with pytest.raises(ForcedFilterError) as exc:
+        _ch("SELECT * FROM secret_table", policy)
+    assert exc.value.table == "secret_table"
+
+
+def test_clickhouse_join_terminal_value_is_injection_safe():
+    out = _ch("SELECT * FROM orders", _jpolicy(value="x' OR '1'='1"))
+    assert sqlglot.parse_one(out, dialect="clickhouse").find(exp.Or) is None
+    assert "'x'' OR ''1''=''1'" in out
+
+
+_EXISTS_SINGLE_HOP = (
+    "SELECT * FROM (SELECT * FROM orders AS _rls_src WHERE EXISTS(SELECT 1 FROM customers "
+    "AS _rls_j0 WHERE _rls_j0.id = _rls_src.customer_id AND _rls_j0.organization_uuid = "
+    "'orgA')) AS orders"
+)
+
+_EXISTS_MULTI_HOP = (
+    "SELECT * FROM (SELECT * FROM line_items AS _rls_src WHERE EXISTS(SELECT 1 FROM orders "
+    "AS _rls_j0 INNER JOIN customers AS _rls_j1 ON _rls_j1.id = _rls_j0.customer_id WHERE "
+    "_rls_j0.id = _rls_src.order_id AND _rls_j1.organization_uuid = 'orgA')) AS line_items"
+)
+
+
+@pytest.mark.parametrize("dialect", ["postgres", "duckdb"])
+def test_other_dialects_keep_correlated_exists_byte_for_byte(dialect):
+    policy = _jpolicy(joins=[_join_ruleset().joins[0], _LINE_ITEMS_RULE])
+    for sql, expected in [
+        ("SELECT * FROM orders", _EXISTS_SINGLE_HOP),
+        ("SELECT * FROM line_items", _EXISTS_MULTI_HOP),
+    ]:
+        out = apply_session_policy(sql, dialect=dialect, policy=policy, has_column=_boom_probe)
+        assert out == expected
 
 
 def test_clickhouse_correlated_setting_forced_on_when_disabled():
@@ -726,38 +854,24 @@ def test_clickhouse_correlated_setting_forced_on_when_disabled():
     assert out.count("SETTINGS") == 1
 
 
-def test_non_clickhouse_join_calls_hook_no_settings():
-    called = {"n": 0}
-
-    def hook():
-        called["n"] += 1
-
+def test_non_clickhouse_join_no_settings():
     out = apply_session_policy(
         "SELECT * FROM orders",
         dialect="sqlite",
         policy=_jpolicy(),
         has_column=_boom_probe,
-        on_correlated_emitted=hook,
     )
     assert "allow_experimental_correlated_subqueries" not in out
-    assert called["n"] == 1
 
 
-def test_clickhouse_column_only_does_not_append_settings_or_call_hook():
-    called = {"n": 0}
-
-    def hook():
-        called["n"] += 1
-
+def test_clickhouse_column_only_does_not_append_settings():
     out = apply_session_policy(
         "SELECT * FROM orders",
         dialect="clickhouse",
         policy=_col_policy(column="organization_uuid", value="orgA"),
         has_column=ALWAYS,
-        on_correlated_emitted=hook,
     )
     assert "allow_experimental_correlated_subqueries" not in out
-    assert called["n"] == 0
 
 
 def test_clickhouse_anchor_only_no_settings():

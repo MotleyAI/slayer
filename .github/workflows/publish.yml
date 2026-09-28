@@ -25,6 +25,16 @@ jobs:
       - name: Install Poetry
         run: pip install -U poetry
 
+      - name: Check release tag matches package version
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          version="$(poetry version -s)"
+          if [ "${TAG#v}" != "$version" ]; then
+            echo "::error::Release tag '$TAG' does not match pyproject.toml version '$version' at ${GITHUB_SHA::8}. Merge the version bump first, then point the tag at that commit and re-publish the release."
+            exit 1
+          fi
+
       - name: Load cached venv
         uses: actions/cache@v4
         with:

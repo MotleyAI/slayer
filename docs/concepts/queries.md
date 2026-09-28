@@ -248,10 +248,7 @@ formulas, not as the *names* of measures you declared in the same query —
 declared measure by its alias inside an expression is not supported anywhere in
 SLayer. Write `{"column": "sum(revenue) / sum(cnt)"}` instead.
 
-A windowed measure inside a **declared** composite measure
-(`{"formula": "sum(revenue, window='90d') / sum(cnt)"}`), and any combination of a
-windowed measure with a transform, are still rejected — see
-[formulas](formulas.md#windowed-aggregations).
+Windowed measures work in declared composites and transforms too — see [formulas](formulas.md#windowed-aggregations).
 
 ## Response
 
@@ -264,7 +261,7 @@ Query results are returned as a `SlayerResponse`:
 | `row_count` | int | Number of rows |
 | `sql` | string | The generated SQL (useful for debugging) |
 | `attributes` | ResponseAttributes | Field metadata split by type: `attributes.dimensions` and `attributes.measures`, each a dict of column alias → FieldMetadata (label, format) |
-| `warnings` | list[SlayerWarning] | Advisories, discriminated by `kind`: input normalizations (`"normalization"`), a [cross-model measure broadcast](#cross-model-measures) (`"broadcast"` — `measure`, `location`, and per-dimension `dimensions[].reason`), a distinct-entity attribution over an unattributable dimension (`"associated"` — `measure`, `location`, `dimensions`; cells overlap and are not additive), and a semi-join-pushed filter (`"semi_join_pushed"` — `measure` (`null` for a population-level push), `location`, `filter_text`) |
+| `warnings` | list[SlayerWarning] | Advisories, discriminated by `kind`: input normalizations (`"normalization"`), a [cross-model measure broadcast](#cross-model-measures) (`"broadcast"` — `measure`, `location`, and per-dimension `dimensions[].reason`), a distinct-entity attribution over an unattributable dimension (`"associated"` — `measure`, `location`, `dimensions`; cells overlap and are not additive), a semi-join-pushed filter (`"semi_join_pushed"` — `measure` (`null` for a population-level push), `location`, `filter_text`), and a query run without its statement timeout (`"statement_timeout_skipped"` — `datasource`, `timeout_seconds`, `reason`: `readonly_user` or `timeout_rejected`) |
 
 `columns` — and the key order of each row in `data` — follows the order you
 declared fields in the query: dimensions, then time dimensions, then measures,
@@ -727,8 +724,10 @@ referenced branches, each hop joined as declared (LEFT by default), so
 `tier = 'gold' or orders.status = 'ok'` keeps a gold customer with no orders and
 `orders.id is null` reads as "no orders"; a reference with no resolvable join path
 is refused with a typed error in every mode. On ClickHouse the semi-join needs
-server ≥ 25.4 (the required setting is attached automatically); older servers
-fail with a clear error.
+server ≥ 25.4 (the required setting is attached automatically), and older servers
+fail with a clear error, as does a `readonly = 1` user whose profile leaves
+`allow_experimental_correlated_subqueries` off (the 25.4–25.7 default) — enable it
+in the user's profile, use `readonly = 2`, or upgrade to 25.8+.
 
 `to_many_handling` chooses how a broadcast dimension resolves — `broadcast` (the
 default above), `associate` (each cell aggregates over the distinct entities

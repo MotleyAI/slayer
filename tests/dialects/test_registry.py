@@ -1,4 +1,4 @@
-"""DEV-1542: registry tests for the SqlDialect strategy classes.
+"""Registry tests for the SqlDialect strategy classes.
 
 Verifies:
 * ``get_dialect(sqlglot_name)`` is strict — raises ``KeyError`` for unknown
@@ -238,7 +238,7 @@ def test_postgres_dialect_aliases() -> None:
 
 
 def test_mysql_dialect_aliases() -> None:
-    assert MysqlDialect().ds_type_aliases == frozenset({"mysql", "mariadb"})
+    assert MysqlDialect().ds_type_aliases == frozenset({"mysql"})
 
 
 def test_tsql_dialect_aliases() -> None:
