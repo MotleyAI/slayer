@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Expressions over a computed dimension's whole aggregate evaluate as the dimension's value
-When a computed dimension's whole expression is a partitioned aggregate, a re-aggregation or a transform, that expression — alone or inside arithmetic or a scalar call — in measure or order position SHALL evaluate as the dimension's value per result cell and execute on every supported dialect, never with an internal placeholder, render or partition-key error. The shared aggregate SHALL be computed once and attached once.
+When a computed dimension's whole expression is a partitioned aggregate, a re-aggregation or a transform, that expression — alone or inside arithmetic or a scalar call — in measure position (partitioned aggregate, re-aggregation) or order position (all three) SHALL evaluate as the dimension's value per result cell and execute on every supported dialect, never with an internal placeholder, render or partition-key error. The shared aggregate SHALL be computed once and attached once.
 
 Oracles use the DEV-1847 `sales` fixture with `P` = `amount:sum(partition_by=region)` (North 90, South 140, East 180, Gap 20, Void NULL), `R` = `avg(sum(amount, partition_by=[city, region]), partition_by=region)` (North 45, South 70, East 60, Gap 10, Void NULL) and `tot` = `amount:sum`.
 

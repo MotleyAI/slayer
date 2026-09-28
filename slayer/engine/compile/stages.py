@@ -88,6 +88,7 @@ from slayer.engine.elaborate_env import (
     check_cross_model_source_resolves,
     check_input_dependencies_analyzable,
     check_local_producer_inputs_safe,
+    check_measures_at_query_grain,
     check_order_target_has_slot,
     check_parameter_determined,
     check_filter_dependencies_analyzable,
@@ -3488,13 +3489,23 @@ def _rewrite_regrouped_prebound(
     combined_mapping: Mapping[ValueKey, ValueKey],
 ) -> PreboundQuery:
     """Every root replaced by its placeholder: a computed dimension takes the full
-    mapping, a measure only the combined one (its inners desugar COMBINED)."""
+    mapping, a measure the combined one (its inners desugar COMBINED) plus each
+    dimension value's own substitution."""
+    measure_dims = position_classes(
+        prebound.declared_measures, n_grain=prebound.n_dims + prebound.n_time_dimensions,
+    ).dim_keys_for("measure")
+    dim_values: Dict[ValueKey, ValueKey] = {}
+    for d in measure_dims:
+        sub = substitute_value_keys(d, mapping)
+        if sub != d:
+            dim_values[d] = sub
+    measure_mapping = {**dim_values, **combined_mapping}
     return PreboundQuery(
         declared_measures=[
             dm.model_copy(update={"bound": BoundExpr(
                 value_key=substitute_value_keys(
                     dm.bound.value_key,
-                    mapping if dm.is_dimension else combined_mapping,
+                    mapping if dm.is_dimension else measure_mapping,
                 ),
             )})
             for dm in prebound.declared_measures
@@ -3819,6 +3830,7 @@ def _route_top_level(
         home_paths=_home_paths(env),
         population=population,
     )
+    check_measures_at_query_grain(prebound)
     _assert_total_routing(routed_prebound)
     return _Routed(
         query=env.query, env=env, typed_prebound=prebound, prebound=routed_prebound,

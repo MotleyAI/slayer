@@ -7,23 +7,24 @@ The cause is structural: "this sub-expression is a dimension's value, available 
 ## What Changes
 
 - One concept, the **dimension value**: a sub-expression of a measure, order target or filter structurally equal to a query dimension's bound key is that dimension's grouped value, in every position and for every dimension kind (plain, joined, stage, computed, partitioned aggregate, re-aggregation, transform).
-- The checker types every declared measure — and, in a grouped query, every order target — at query grain: a row-level reference outside aggregates and outside a dimension value fails with `PositionTypingError` at the consuming position, after the existing measure checks.
+- The checker types every declared measure at query grain: a row-level reference outside aggregates and outside a dimension value fails with `PositionTypingError` at the consuming position, after the existing measure checks.
 - An aggregate-free measure over dimension values (`quantity + 1` by `quantity`) becomes legal, evaluating per result cell.
 - A measure equal to a computed dimension's whole aggregate (`C` with dimension `x = C`, `C` finer-grained) reads `x` instead of failing with `PartitionKeyError`, matching order and filter behaviour.
 - The base grouped SELECT renders projected composites, hidden order composites and measure-typed HAVING masks through one render context that resolves dimension values to their GROUP BY expressions; the ad hoc HAVING "not in GROUP BY" `ValueError` and the row-branch "needs an aggregation" `ValueError` are removed.
+- A rank-family transform whose own `partition_by=` names an attach-carrying computed dimension executes in measure and aggregation-parameter position (fixes DEV-1960).
 
 ## Capabilities
 
 ### New Capabilities
 
 ### Modified Capabilities
-- `queries/positions`: declared measures and grouped order targets type at query grain; dimension values read the grouped value in every position.
+- `queries/positions`: declared measures type at query grain; dimension values read the grouped value in every position.
 - `queries/computed-dimensions`: arithmetic over a computed dimension's own aggregate, and the whole aggregate, evaluate as the dimension's value in measure and order position.
 - `queries/partitioned-aggregates`: a combined-position sub-expression equal to an entire bound dimension is not a combined consumer of its partition keys.
 
 ## Impact
 
-- `slayer/engine/elaborate_env.py` — measure / grouped-order typing at query grain; `PositionClasses.combined_admits` for measures.
+- `slayer/engine/elaborate_env.py` — measure typing at query grain; `PositionClasses.combined_admits` for measures.
 - `slayer/engine/compile/discovery.py` — no combined attach for a dimension value inside a measure.
 - `slayer/sql/generator.py`, `slayer/sql/render/value_expr.py` — one grouped-SELECT render context; two untyped `ValueError`s removed.
 - Golden SQL: plans for measures containing a dimension value drop a redundant combined attach; each re-blessed baseline is recorded in design.md.

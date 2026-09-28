@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from slayer.core.enums import DataType
+from slayer.core.errors import PositionTypingError
 from slayer.core.models import (
     Aggregation,
     Column,
@@ -123,7 +124,9 @@ class TestMisplacedMeasure:
         })
         q = SlayerQuery(source_model="orders", measures=[{"formula": "aov"}])
         result = normalize_query(q, model=m)
-        assert result.query.measures and result.query.measures[0].formula == "aov"
+        assert result.query is not None
+        assert result.query.measures
+        assert result.query.measures[0].formula == "aov"
         assert result.warnings == []
 
     def test_unknown_bare_token_left_alone(self):
@@ -131,14 +134,18 @@ class TestMisplacedMeasure:
         # but normalization does not preemptively rewrite.
         q = SlayerQuery(source_model="orders", measures=[{"formula": "noseucha"}])
         result = normalize_query(q, model=_orders())
-        assert result.query.measures and result.query.measures[0].formula == "noseucha"
+        assert result.query is not None
+        assert result.query.measures
+        assert result.query.measures[0].formula == "noseucha"
 
     def test_no_model_means_no_move(self):
         # MISPLACED_MEASURE needs model context to classify.
         q = SlayerQuery(source_model="orders", measures=[{"formula": "status"}])
         result = normalize_query(q, model=None)
         # Without a model the rule no-ops.
-        assert result.query.measures and result.query.measures[0].formula == "status"
+        assert result.query is not None
+        assert result.query.measures
+        assert result.query.measures[0].formula == "status"
         assert not any(w.rule_id == "MISPLACED_MEASURE" for w in result.warnings)
 
     def test_formula_with_call_not_moved(self):
@@ -349,12 +356,9 @@ class TestEngineWiring:
             assert "SUM(" in resp.sql.upper()
 
     # DEV-1484 backfill from TestAutoMoveDimensions.test_cross_model_dimension_moved
-    async def test_cross_model_dimension_in_measures_groups_correctly(self):
-        # Legacy `_auto_move_fields_to_dimensions` moved a bare cross-model
-        # dimension ref out of measures. On the typed pipeline the slack rule
-        # leaves dotted refs alone, but the binder classifies a cross-model
-        # dotted ref in `measures` as a dimension end-to-end: it must surface
-        # in GROUP BY and the projection, with the join emitted.
+    async def test_cross_model_column_in_measures_is_a_typing_error(self):
+        # MISPLACED_MEASURE moves only bare local columns; a dotted ref left in
+        # measures never changes the grain, so it is a typing error.
         with tempfile.TemporaryDirectory() as td:
             storage = YAMLStorage(base_dir=str(Path(td) / "models"))
             await storage.save_datasource(
@@ -381,10 +385,11 @@ class TestEngineWiring:
                 source_model="orders",
                 measures=[{"formula": "customers.name"}, {"formula": "revenue:sum"}],
             )
-            resp = await engine.execute(q, dry_run=True)
-            sql = resp.sql
-            assert "GROUP BY" in sql and "customers.name" in sql, sql
-            assert "JOIN customers" in sql, sql
+            with pytest.raises(PositionTypingError) as ei:
+                await engine.execute(q, dry_run=True)
+            assert ei.value.location == "measure 'customers_name'"
+            assert "customers.name" in ei.value.summary
+            assert "add it to the query dimensions" in str(ei.value)
 
     async def test_save_model_preserves_functional_spelling(self):
         with tempfile.TemporaryDirectory() as td:

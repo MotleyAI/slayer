@@ -8,6 +8,7 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from pydantic import BaseModel, ConfigDict, Field
 from sqlglot import exp
+from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.errors import RenderContextMissingFacilityError
@@ -150,6 +151,8 @@ class RenderContext(BaseModel):
     filters: Optional[FilterFacilities] = None
     composites: Optional[CompositeFacilities] = None
     aliases: Optional[AliasFacilities] = None
+    #: Grouped SELECT: each dimension's key → its GROUP BY expression.
+    dimension_values: Optional[Dict[Any, Expression]] = None
 
 
 def _require(*, ctx: RenderContext, facility: str, key: Any) -> Any:
@@ -326,6 +329,9 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
         in ctx.aliases.composite_alias_slot_ids
     ):
         return _render_via_alias(key, ctx)
+    # Aggregate internals render through their builder's own scope, never here.
+    if ctx.dimension_values is not None and key in ctx.dimension_values:
+        return ctx.dimension_values[key].copy()
 
     if isinstance(key, (ColumnKey, SqlFragmentKey)):
         return _require_scope(ctx, key).resolve(key, consumer=ctx.consumer)

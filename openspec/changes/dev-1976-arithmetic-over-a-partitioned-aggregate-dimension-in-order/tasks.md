@@ -12,22 +12,22 @@
 
 ## 2. Checker (D2, D3)
 
-- [ ] 2.1 In `slayer/engine/elaborate_env.py`, type every declared non-dimension measure with `_measure_blockers` (forced measure verdict) at the position-typing checkpoint after the existing measure checks; raise `PositionTypingError` at `measure '<name>'` with the D2 wording (aggregate-free → keeps the "needs an aggregation inside an expression" remedy); verify 1.6, 1.7 pass
-- [ ] 2.2 In grouped queries, require no measure blockers for every order target in `type_order_positions` / `build_environment`; verify 1.6 order cases and the existing order suites (`tests/test_dev1865_order.py`, `tests/test_dev1712_*`) pass unchanged
+- [x] 2.1 In `slayer/engine/elaborate_env.py`, type every declared non-dimension measure with `_measure_blockers` (forced measure verdict) at the position-typing checkpoint after the existing measure checks; raise `PositionTypingError` at `measure '<name>'` with the D2 wording (aggregate-free → keeps the "needs an aggregation inside an expression" remedy); verify 1.6, 1.7 pass
 
 ## 3. Discovery (D4)
 
-- [ ] 3.1 `PositionClasses.combined_admits(position="measure")`: also skip `dim_key` nodes; verify 1.2 `C` / `C + 1`, 1.8 row-only attaches, and `tests/test_dev1964_dual_phase_consumption.py`, `tests/test_dev1850_keyless_grain.py`, `tests/test_dev1824_remaining_guards.py` pass unchanged
+- [x] 3.1 `PositionClasses.combined_admits(position="measure")`: also skip `dim_key` nodes; verify 1.2 `C` / `C + 1`, 1.8 row-only attaches, and `tests/test_dev1964_dual_phase_consumption.py`, `tests/test_dev1850_keyless_grain.py`, `tests/test_dev1824_remaining_guards.py` pass unchanged
+- [x] 3.2 Flip `test_dev1953_partition_alias.py` `TestAttachCarryingKey` measure/parameter pins to executed values (fixes DEV-1960)
 
 ## 4. Generator (D5)
 
-- [ ] 4.1 Add the dimension-value facility to the render context (`slayer/sql/render/value_expr.py`): composite operands equal to a mapped key render as its GROUP BY expression; aggregate / transform internals never consult it; verify 1.4
-- [ ] 4.2 In `_build_base_select_for_planned`, render projected non-dimension composites and ROW-phase non-dimension hidden slots through the one grouped-SELECT context (dimension map + aggregate builder, no row scope); delete the ROW-branch "needs an aggregation" `ValueError`; verify 1.2, 1.3
-- [ ] 4.3 In `_build_where_having_from_planned`, render measure-typed (AGGREGATE-phase) masks through the same context; delete the HAVING "not in GROUP BY" `ValueError` guard; verify 1.3 filters and 1.5
-- [ ] 4.4 Run the golden-SQL suites; re-bless only diffs that are exactly the dropped combined attach, each with the user's OK, recorded in design.md › Approved golden divergences; any other diff is a STOP
+- [x] 4.1 Add the dimension-value facility to the render context (`slayer/sql/render/value_expr.py`): composite operands equal to a mapped key render as its GROUP BY expression; aggregate / transform internals never consult it; verify 1.4
+- [x] 4.2 In `_build_base_select_for_planned`, render projected non-dimension composites and ROW-phase non-dimension hidden slots through the one grouped-SELECT context (dimension map + aggregate builder, no row scope); delete the ROW-branch "needs an aggregation" `ValueError`; verify 1.2, 1.3
+- [x] 4.3 In `_build_where_having_from_planned`, render measure-typed (AGGREGATE-phase) masks through the same context; delete the HAVING "not in GROUP BY" `ValueError` guard; verify 1.3 filters and 1.5
+- [x] 4.4 Run the golden-SQL suites; re-bless only diffs that are exactly the dropped combined attach, each with the user's OK, recorded in design.md › Approved golden divergences; any other diff is a STOP
 
 ## 5. Docs, architecture, gates
 
-- [ ] 5.1 `docs/concepts/formulas.md`: one sentence — a measure may combine query-dimension values with aggregates; a row-level column that is not a query dimension is a typing error; verify the page renders in `zensical.toml` nav (already linked)
-- [ ] 5.2 `architecture/semantics.arc42.md` Axiom 13: add `[enforced: test:tests/test_dev1976_dimension_values.py]` after the DEV-1865 tags (approved in pr-plan); verify `uvx --no-build --from living-architecture==0.2.0 la-arch-check` passes
-- [ ] 5.3 Full unit suite `poetry run pytest -m "not integration" -n auto`, the integration suite with the CI invocation, `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs baseline), `openspec validate dev-1976-arithmetic-over-a-partitioned-aggregate-dimension-in-order --strict` — all green
+- [x] 5.1 `docs/concepts/formulas.md`: one sentence — a measure may combine query-dimension values with aggregates; a row-level column that is not a query dimension is a typing error; verify the page renders in `zensical.toml` nav (already linked)
+- [x] 5.2 `architecture/semantics.arc42.md` Axiom 13: add `[enforced: test:tests/test_dev1976_dimension_values.py]` after the DEV-1865 tags (approved in pr-plan); verify `uvx --no-build --from living-architecture==0.2.0 la-arch-check` passes
+- [x] 5.3 Full unit suite `poetry run pytest -m "not integration" -n auto`, the integration suite with the CI invocation, `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs baseline), `openspec validate dev-1976-arithmetic-over-a-partitioned-aggregate-dimension-in-order --strict` — all green

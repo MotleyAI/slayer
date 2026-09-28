@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
-### Requirement: Declared measures and grouped order targets type at query grain
-Every declared measure, and in a grouped query every order target, SHALL be typed at query grain: each row-level reference outside an aggregation SHALL be a query dimension's value (see "A dimension value reads the dimension's grouped value in every position"). A violation SHALL fail at plan time with the typing error naming the consuming position and the offending row-level references — never an internal error, a render error, or an internal placeholder name. A measure whose every row-level reference is a dimension value SHALL be legal whether or not it contains an aggregation, evaluating once per result cell. The typing error SHALL NOT pre-empt an error an existing measure rule raises for the same measure (partition keys, transform inputs, re-aggregation).
+### Requirement: Declared measures type at query grain
+Every declared measure SHALL be typed at query grain: each row-level reference outside an aggregation SHALL be a query dimension's value (see "A dimension value reads the dimension's grouped value in every position"). A violation SHALL fail at plan time with the typing error naming the consuming position and the offending row-level references — never an internal error, a render error, or an internal placeholder name. A measure whose every row-level reference is a dimension value SHALL be legal whether or not it contains an aggregation, evaluating once per result cell. The typing error SHALL NOT pre-empt an error an existing measure rule raises for the same measure (partition keys, transform inputs, re-aggregation).
 
 #### Scenario: A measure mixing a non-dimension column with an aggregate fails as a typing error
 - **WHEN** a query over dimensions `[region]` declares the measure `amount + sum(amount)` named `m`
@@ -24,7 +24,7 @@ Every declared measure, and in a grouped query every order target, SHALL be type
 - **THEN** the query executes and each row's measure equals its `quantity` plus 1
 
 ### Requirement: A dimension value reads the dimension's grouped value in every position
-A sub-expression of a measure, an order target or a filter that is equal to an entire query dimension — a plain, joined or stage column, or a computed dimension's whole expression, including a partitioned aggregate, a re-aggregation or a transform — SHALL evaluate as that dimension's value in the result cell, in every position and on every supported dialect. The same expression SHALL yield the same value as a measure, a measure-typed filter and an order target. A reference inside an aggregation's source, arguments or partition keys SHALL remain a row-level input of that aggregation, never the dimension's grouped value.
+A sub-expression of a measure, an order target or a filter that is equal to an entire query dimension — a plain, joined or stage column, or a computed dimension's whole expression, including a partitioned aggregate, a re-aggregation or a transform — SHALL evaluate as that dimension's value in the result cell, in every position and on every supported dialect — except a transform-bearing computed dimension in measure position, which keeps its query-grain evaluation. The same expression SHALL yield the same value as a measure, a measure-typed filter and an order target. A reference inside an aggregation's source, arguments or partition keys SHALL remain a row-level input of that aggregation, never the dimension's grouped value.
 
 #### Scenario: A plain dimension combined with an aggregate
 - **WHEN** a `sales` query over dimensions `[quantity]` declares the measure `quantity * count(*)`

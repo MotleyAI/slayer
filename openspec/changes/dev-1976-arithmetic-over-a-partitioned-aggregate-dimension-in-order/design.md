@@ -19,10 +19,10 @@ Architecture: Axiom 9 (closure), Axiom 13 (positions), Law 4 (position parity) i
 ## Decisions
 
 ### D1 — Dimension value
-A sub-expression of a measure / order / filter root structurally equal to a query dimension's bound key (`dim_keys`, as built by `position_classes`) is that dimension's grouped value. Equality is key identity — the same predicate `walk_consumer_positions(dim_keys=…)` already marks as `dim_key`. The boundary: aggregate and transform internals (source, args, kwargs, partition keys, transform input) are never dimension values — they are row-level inputs of their node (Axiom 2.3/2.4).
+A sub-expression of a measure / order / filter root structurally equal to a query dimension's bound key (`dim_keys`, as built by `position_classes`) is that dimension's grouped value. Equality is key identity — the same predicate `walk_consumer_positions(dim_keys=…)` already marks as `dim_key`. The boundary: aggregate and transform internals (source, args, kwargs, partition keys, transform input) are never dimension values — they are row-level inputs of their node (Axiom 2.3/2.4). Exception until DEV-1963: a computed dimension containing a transform is not a dimension value in measure position (its measure form keeps query-grain evaluation).
 
-### D2 — Checker types measures and grouped order targets at query grain
-Declared measures call the measure-availability primitive directly — `_measure_blockers(root, dim_keys)` — with a forced measure verdict; the field-first `type_position_conjunct` is NOT reused for them (it would type `amount + 1` as FIELD and never consult the blockers). In a grouped query (`distinct_dimension_values is not False`), every order target additionally must have no measure blockers regardless of its field/measure verdict — so a field-typed order target is reachable only as a function of dimension values (the grouped counterpart of D2 for order).
+### D2 — Checker types measures at query grain
+Declared measures call the measure-availability primitive directly — `_measure_blockers(root, dim_keys)` — with a forced measure verdict; the field-first `type_position_conjunct` is NOT reused for them (it would type `amount + 1` as FIELD and never consult the blockers).
 
 - Error: `PositionTypingError`, `location=f"measure {name!r}"` / `"order item …"`, summary naming the blockers via `_key_display` ("…row-level amount, not available at the query grain (not among the query dimensions)"). For a measure with no aggregate/transform at all, the summary also carries "'amount' needs an aggregation inside an expression" and the suggestion names `sum(amount)` / `avg(amount)` / `count(*)` — the three existing tests pinning that phrase (`tests/test_named_measures.py`, `tests/integration/test_integration.py` round/abs) keep passing unchanged.
 - Order of checks: the new check runs at the checker's position-typing checkpoint AFTER the existing measure checks (partition keys, transform inputs, re-aggregation, time axis), so no existing typed error changes family. An existing error test that would change type is a STOP-and-ask, not a re-bless.
@@ -32,7 +32,7 @@ Declared measures call the measure-availability primitive directly — `_measure
 Falls out of D2 with no extra rule; evaluates once per result cell in the base grouped SELECT.
 
 ### D4 — Discovery: measures resolve dimension values like order / measure-filter
-`PositionClasses.combined_admits(position="measure")` returns False for `dim_key` nodes too (keeping its partition-key skip). Consequences: no combined attach for a dimension value inside a measure (one producer, row attach only); `check_combined_partition_keys` skips it (row 9 legal). A partitioned aggregate nested inside a band/transform dimension is not `dim_key` and keeps the combined-consumer rule (DEV-1964 / DEV-1850 band tests unchanged).
+`PositionClasses.combined_admits(position="measure")` returns False for `dim_key` nodes too (keeping its partition-key skip). Consequences: no combined attach for a dimension value inside a measure (one producer, row attach only); `check_combined_partition_keys` skips it (row 9 legal). A partitioned aggregate nested inside a band/transform dimension is not `dim_key` and keeps the combined-consumer rule (DEV-1964 / DEV-1850 band tests unchanged). …except `dim_key` nodes of a transform-bearing dimension.
 
 ### D5 — One grouped-SELECT render context
 `_build_base_select_for_planned` builds, once per grouped base SELECT, a render context used for (a) projected non-dimension composites (AGGREGATE phase, incl. aggregate-free measures), (b) hidden order composites — AGGREGATE phase, or ROW phase and non-dimension (reachable only as a function of dimension values after D2), and (c) measure-typed HAVING masks in `_build_where_having_from_planned`.
@@ -51,7 +51,7 @@ No principle text changes. Approved: Axiom 13 gains `[enforced: test:tests/test_
 - [Golden SQL drift] Plans for measures containing a dimension value lose the redundant combined attach; measure-typed HAVING masks switch context. → HAVING expected byte-identical (GROUP BY expression = scope rendering for plain columns). Re-bless only diffs that are exactly the dropped attach; record each below under "Approved golden divergences". Any other diff is a STOP.
 - [Preempting existing typed errors] → D2 ordering; existing error tests must pass unchanged.
 - [Dimension lookup leaking into aggregate internals] → D5 boundary + tests with `q2 = quantity * 2` beside `sum(quantity * 2)` and `rd = P` beside `sum(P)`.
-- [Order targets newly rejected] D2's grouped-order rule could reject a currently-legal field-typed order target with measure blockers. → none known (the order grammar admits only aggregate-bearing strings; a row-attached aggregate is not a blocker); any such failing test is a STOP-and-ask.
+- Grouped-order rule dropped: a bare row-column order target is the spec'd MIN/MAX wrap.
 
 ## Approved golden divergences
 

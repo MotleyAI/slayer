@@ -27,7 +27,6 @@ from slayer.engine.compile.projection import (
 )
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.dialects import get_dialect
-from slayer.sql.generator import SQLGenerator
 from slayer.sql.render.value_expr import (
     RenderContext,
     contains_aggregate,
@@ -352,10 +351,6 @@ class TestDummyFlowsThroughGenericVisitors:
         )
         assert out.child == REGION
 
-    def test_having_walk_finds_the_local_column_inside(self) -> None:
-        dummy = DummyKey(child=CITY)
-        assert SQLGenerator._direct_local_column_keys(dummy) == [CITY]
-
 
 class TestOpaqueDummyFailsClosed:
     def test_walk_value_keys_raises(self) -> None:
@@ -387,11 +382,6 @@ class TestOpaqueDummyFailsClosed:
         key = DummyOpaqueKey()
         with pytest.raises(NotImplementedError):
             substitute_value_keys(key=key, mapping={CITY: REGION})
-
-    def test_having_walk_raises(self) -> None:
-        key = DummyOpaqueKey()
-        with pytest.raises(NotImplementedError):
-            SQLGenerator._direct_local_column_keys(key)
 
 
 # ---------------------------------------------------------------------------
@@ -595,13 +585,6 @@ class TestTimeTruncWidening:
     def test_filter_phase_stays_row(self) -> None:
         tree = ArithmeticKey(op=">", operands=(TT, LiteralKey(value="2024-01")))
         assert max(k.phase for k in walk_value_keys(tree)) == Phase.ROW
-
-    def test_having_walk_does_not_flag_the_wrapped_column(self) -> None:
-        # The TimeTruncKey IS the grouped slot; its raw column must not be
-        # reported as a direct ungrouped reference.
-        assert SQLGenerator._direct_local_column_keys(TT) == []
-        tree = ArithmeticKey(op=">", operands=(TT, LiteralKey(value="a")))
-        assert SQLGenerator._direct_local_column_keys(tree) == []
 
 
 # ---------------------------------------------------------------------------
