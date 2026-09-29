@@ -1,72 +1,23 @@
-"""Sample-value profiling for ``Column.sampled`` (DEV-1375 + DEV-1480).
+"""Sample-value profiling of ``Column.sampled`` / ``sampled_values`` / ``distinct_count``.
 
-The internals were extracted from ``slayer/mcp/server.py``'s
-``_collect_dim_profile`` so both ``inspect_model`` and the search-index
-refresh hooks can call them without circular imports.
-
-Public surface:
-
-* :class:`ColumnSample` — three-field result of profiling a single column.
-  Carries ``sampled`` (text), ``sampled_values`` (structured top-N for
-  categorical), and ``distinct_count`` (true cardinality for categorical).
-* :func:`profile_column` — produce the ``ColumnSample`` for a single column.
-* :func:`refresh_table_backed_model_sampled` — walk every non-hidden
-  column on a table-backed model, profile, persist via storage. Best-
-  effort: per-column failures are accumulated and returned as strings.
-* :func:`refresh_all_table_backed_sampled` — same as above for every
-  table-backed model in a single datasource.
-* :func:`handle_edit_refresh` — invalidation entry point used by
-  ``edit_model``: refresh just the changed columns, or all columns when
-  the model-level filters / sql / source body changed.
-
-sql-mode and query-backed models are silently skipped in v1; broader
-coverage is tracked in DEV-1377.
-
-DEV-1480 changes:
-- Categorical cap raised from 20 → 50 distinct values.
-- Categorical query orders by per-value count desc (alphabetical tie-break
-  in SQL) so the persisted top-N is "most common values first".
-- New ``Column.sampled_values: Optional[List[str]]`` carries the top-50
-  list verbatim (no ambiguous text split). For categorical columns it is
-  populated on ≤50 distinct AND on overflow (the top-50 is kept). It stays
-  ``None`` only for numeric/temporal columns.
-- New ``Column.distinct_count: Optional[int]`` carries the exact distinct
-  count when ≤50; on overflow it is ``None`` (see the single-scan note).
-- Text ``sampled`` format unchanged for ≤ 50 distinct (top-20 joined). For
-  overflow it becomes ``", ".join(top_20) + " ... (50+ distinct)"`` — a
-  marker, not the exact total (see the single-scan note).
-- The internal ``_DimProfileEntry`` shape stays the same — overflow keeps
-  ``values=None, distinct_count=None`` to signal "data omitted from the
-  legacy entry". The richer DEV-1480 data only lives on ``ColumnSample``
-  produced by ``profile_column``.
-
-Single-scan overflow (team decision, 2026-07): profiling never fires a
-secondary ``count_distinct`` query for the exact total on overflow — one
-full-table scan per categorical column is enough. The top-50 is still
-populated so ``_is_sample_cached`` marks the column cached (no re-scan on
-every read); ``distinct_count`` stays ``None`` on overflow. Sample
-profiling is also NOT run at ingest time — it is lazy, populated on the
-first ``inspect`` of a column (or explicitly via ``refresh-samples``).
-
-DEV-1516 additions:
-- :func:`ensure_column_sample_fresh` — shared cache-aware refresh helper
-  used by ``inspect_model``'s categorical loop, the search service's
-  post-fusion column-hit hook, and (DEV-1615) the single-entity ``inspect``
-  point-lookup. Returns the input column on cache hit / failure, and an
-  in-memory refreshed copy on success (after persisting via storage).
-
-DEV-1615 change:
-- :func:`ensure_column_sample_fresh` back-fills BOTH categorical (top-50 +
-  distinct_count) AND numeric/temporal (min/max range) uncached columns —
-  the prior categorical-only early-return was removed. Cached columns still
-  short-circuit at :func:`_is_sample_cached` (zero added cost), so the
-  common already-profiled case pays nothing.
+:func:`ensure_samples_fresh` is the one owner every read path and forced refresh goes through.
+Categorical columns: top 50 values by frequency in one scan (overflow keeps the top 50, total
+unknown). Numeric/temporal columns: one batched min/max query. Failures are classified by a
+row-count probe plus a consecutive-failure breaker and cached per engine; under a session policy
+samples live only in the engine, never in storage.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
-from typing import Any, NamedTuple
+import time
+from collections.abc import Callable
+from typing import Any
+from weakref import WeakKeyDictionary
+
+from pydantic import BaseModel, Field
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, SlayerModel, is_identifier
@@ -74,444 +25,372 @@ from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.base import StorageBackend
 
-
 logger = logging.getLogger(__name__)
 
-
-# ---------------------------------------------------------------------------
-# DEV-1480: categorical cap and public-ish result type
-# ---------------------------------------------------------------------------
-
-
-# Categorical cardinality cap. Lifts the legacy 20 from DEV-1375.
 _MAX_CATEGORICAL_VALUES = 50
-# How many of the top values get joined into the text ``sampled`` summary.
 _TEXT_SAMPLE_CAP = 20
-
-
-class ColumnSample(NamedTuple):
-    """Three-field result of profiling a single column.
-
-    - ``sampled`` is the human-readable string (``Column.sampled``).
-    - ``sampled_values`` is the structured top-N list (``Column.sampled_values``).
-      ``None`` for overflow > 50 and for numeric/temporal columns.
-    - ``distinct_count`` is the true cardinality (``Column.distinct_count``).
-      ``None`` for numeric/temporal columns.
-    """
-
-    sampled: str | None
-    sampled_values: list[str] | None
-    distinct_count: int | None
-
-
-# ---------------------------------------------------------------------------
-# Profile entry data structure (was internal to mcp/server.py)
-# ---------------------------------------------------------------------------
-
-
-class _DimProfileEntry(NamedTuple):
-    """One row of dimension-profile output.
-
-    Exactly one of two population modes is used:
-    - Categorical (string/boolean): ``distinct_count`` and ``values`` are set.
-      When cardinality exceeds the cap, both are ``None`` to signal overflow.
-    - Numeric/temporal: ``min_value`` and ``max_value`` are set.
-    """
-
-    name: str
-    type_str: str
-    distinct_count: int | None
-    values: list[Any] | None
-    min_value: Any | None
-    max_value: Any | None
-
-
-def _format_dim_profile_value(entry: _DimProfileEntry) -> str:
-    """Render a profile entry as a single-cell string.
-
-    Plain text — no backticks; backticking happens at render time in
-    ``inspect_model`` if needed (this string lives on disk in
-    ``Column.sampled`` for the search index to consume).
-
-    For categorical entries this is the "first ``_TEXT_SAMPLE_CAP`` values
-    joined by ``, ``" form; the DEV-1480 overflow suffix is appended only
-    by the higher-level ``profile_column`` flow when it has the true total
-    in hand.
-    """
-    if entry.values is not None:
-        return ", ".join(str(v) for v in entry.values[:_TEXT_SAMPLE_CAP])
-    if (
-        entry.distinct_count is None
-        and entry.values is None
-        and entry.min_value is None
-        and entry.max_value is None
-    ):
-        # Pre-DEV-1480 legacy callers still get a textual overflow marker;
-        # the DEV-1480 ``profile_column`` flow doesn't use this branch and
-        # produces the richer ``", ".join(top_20) + " ... (N distinct)"``
-        # form directly.
-        return f"> {_MAX_CATEGORICAL_VALUES} distinct"
-    return f"{entry.min_value} .. {entry.max_value}"
-
-
-async def _profile_categorical_column(
-    *,
-    model: SlayerModel,
-    column: Column,
-    engine: SlayerQueryEngine,
-    max_values: int,
-) -> _DimProfileEntry | None:
-    """Profile one string/boolean column.
-
-    DEV-1480: orders by per-value count desc with alphabetical tie-break in
-    SQL, so the top-N persisted is deterministic and "most common first".
-    LIMIT is ``max_values + 2`` so a single NULL row doesn't push a
-    legitimate non-overflow result over the cap.
-
-    Returns ``None`` when the column query fails — caller skips the column.
-    The returned entry uses the legacy shape (``values=None, distinct_count=None``
-    signals overflow). The structured top-50 + ``distinct_count`` live on the
-    ``ColumnSample`` produced by ``profile_column`` (which routes categorical
-    columns through ``_profile_categorical_with_total``, not this entry path).
-    """
-    try:
-        q = SlayerQuery.model_validate({
-            "source_model": model.name,
-            "dimensions": [{"name": column.name}],
-            "measures": [{"formula": "count(*)"}],
-            "order": [
-                {"column": "_count", "direction": "desc"},
-                {"column": column.name, "direction": "asc"},
-            ],
-            "limit": max_values + 2,
-        })
-        r = await engine.execute(query=q, data_source=model.data_source or None)
-    except Exception:
-        return None
-    value_key = f"{model.name}.{column.name}"
-    # Filter NULL values out — they map to ``col IS NULL`` predicates, not
-    # to literal-equality use cases the validator cares about.
-    raw_pairs: list[tuple[Any, Any]] = []
-    count_key = f"{model.name}._count"
-    for row in r.data:
-        v = row.get(value_key)
-        if v is None:
-            continue
-        raw_pairs.append((v, row.get(count_key)))
-    # SQL already sorted by (count desc, value asc). Python belt-and-braces
-    # re-sort guards against backends that ignore tie-break or return
-    # equally-ranked rows in arbitrary order. NB: this only re-orders what
-    # we received — the LIMIT cutoff is the SQL's responsibility.
-    raw_pairs.sort(key=lambda p: (-(p[1] or 0), str(p[0])))
-    values: list[str] = [str(v) for v, _ in raw_pairs]
-    overflow = len(values) > max_values
-    return _DimProfileEntry(
-        name=column.name,
-        type_str=str(column.type),
-        distinct_count=None if overflow else len(values),
-        values=None if overflow else values,
-        min_value=None,
-        max_value=None,
-    )
-
-
-async def _profile_numeric_temporal_columns(
-    *,
-    model: SlayerModel,
-    columns: list[Column],
-    engine: SlayerQueryEngine,
-) -> dict[str, _DimProfileEntry]:
-    """Profile every numeric/temporal column in a single batched min/max query."""
-    if not columns:
-        return {}
-    # Deliberately omit ``type`` on the ext columns: DEV-1361's CAST wrap
-    # on the aggregation expression (``CAST(MIN(ordered_at) AS TIMESTAMP)``)
-    # is harmful on SQLite, which has no TIMESTAMP type and falls back to
-    # NUMERIC affinity — coercing ``'2025-01-15'`` to the int ``2025``. The
-    # profile query only needs the raw min/max value, so we keep the column
-    # untyped and let the backend return whatever native shape it stores.
-    ext_columns = [
-        {"name": f"_slayer_range_{c.name}", "sql": c.sql if c.sql else c.name}
-        for c in columns
-    ]
-    measures_payload: list[dict[str, str]] = []
-    for c in columns:
-        measures_payload.append({"formula": f"min(_slayer_range_{c.name})"})
-        measures_payload.append({"formula": f"max(_slayer_range_{c.name})"})
-    row: dict[str, Any] = {}
-    try:
-        q = SlayerQuery.model_validate({
-            "source_model": {"source_name": model.name, "columns": ext_columns},
-            "measures": measures_payload,
-        })
-        r = await engine.execute(query=q, data_source=model.data_source or None)
-        if r.data:
-            row = r.data[0]
-    except Exception:
-        row = {}
-    out: dict[str, _DimProfileEntry] = {}
-    for c in columns:
-        mn = row.get(f"{model.name}._slayer_range_{c.name}_min")
-        mx = row.get(f"{model.name}._slayer_range_{c.name}_max")
-        if mn is None and mx is None:
-            continue
-        out[c.name] = _DimProfileEntry(
-            name=c.name,
-            type_str=str(c.type),
-            distinct_count=None,
-            values=None,
-            min_value=mn,
-            max_value=mx,
-        )
-    return out
-
-
-async def _collect_dim_profile(
-    *,
-    model: SlayerModel,
-    engine: SlayerQueryEngine,
-    max_values: int = _MAX_CATEGORICAL_VALUES,
-    max_dims: int = 10,
-    only_columns: set[str] | None = None,
-) -> list[_DimProfileEntry]:
-    """Produce one profile entry per eligible column (non-hidden, non-identifier).
-
-    - string/boolean columns: distinct values (or overflow marker) via one
-      query per column.
-    - number/date/time columns: min and max via one batched query across
-      all such columns, using a ``ModelExtension`` with transient inline
-      measures.
-
-    Caps the total number of eligible columns at ``max_dims``. Individual
-    failures are swallowed — the column is simply omitted from the result.
-    When ``only_columns`` is supplied, the eligibility filter is intersected
-    with the set, so callers can profile a single column cheaply.
-
-    DEV-1480: ``max_values`` defaults to 50 (was 20). Callers that need
-    the structured top-50 list should use :func:`profile_column` per
-    column, which returns a :class:`ColumnSample`. On overflow that path
-    keeps the top-50 and reports ``distinct_count=None`` — one scan only,
-    no secondary ``count_distinct`` query for the exact total.
-    """
-    eligible = [
-        c for c in model.columns
-        if not c.hidden and not is_identifier(column=c, columns=model.columns)
-        and (only_columns is None or c.name in only_columns)
-    ][:max_dims]
-    categorical = [c for c in eligible if c.type in (DataType.TEXT, DataType.BOOLEAN)]
-    numeric_temporal = [
-        c for c in eligible
-        if c.type in (DataType.INT, DataType.DOUBLE, DataType.DATE, DataType.TIMESTAMP)
-    ]
-
-    entries: dict[str, _DimProfileEntry] = {}
-    for c in categorical:
-        entry = await _profile_categorical_column(
-            model=model, column=c, engine=engine, max_values=max_values,
-        )
-        if entry is not None:
-            entries[c.name] = entry
-    entries.update(
-        await _profile_numeric_temporal_columns(
-            model=model, columns=numeric_temporal, engine=engine,
-        )
-    )
-    return [entries[c.name] for c in eligible if c.name in entries]
-
-
-# ---------------------------------------------------------------------------
-# DEV-1480: cache-validity helper
-# ---------------------------------------------------------------------------
-
-
 _CATEGORICAL_TYPES = (DataType.TEXT, DataType.BOOLEAN)
+_NUMERIC_TEMPORAL_TYPES = (DataType.INT, DataType.DOUBLE, DataType.DATE, DataType.TIMESTAMP)
+_ALL_NULL = "all NULL"
+_TTL_SECONDS = 3600.0
+_BREAKER_THRESHOLD = 3
+_SAMPLE_FIELDS = frozenset({"sampled", "sampled_values", "distinct_count"})
+
+# Injectable for tests.
+_clock: Callable[[], float] = time.monotonic
+
+_Key = tuple[str, ...]
+
+
+class _Sample(BaseModel):
+    sampled: str | None = None
+    sampled_values: list[str] | None = None
+    distinct_count: int | None = None
+
+
+_NO_SAMPLE = _Sample()
+
+
+class ProfileOutcome(BaseModel):
+    """The input columns (refreshed where profiled, in input order) plus error strings."""
+
+    columns: list[Column]
+    errors: list[str] = Field(default_factory=list)
+
+
+class _Entry(BaseModel):
+    expires_at: float
+    error: str | None = None
+    sample: _Sample | None = None
+
+
+class _EngineProfileState(BaseModel):
+    failures: dict[_Key, _Entry] = Field(default_factory=dict)
+    samples: dict[_Key, _Entry] = Field(default_factory=dict)
+
+    def live(self, *, table: dict[_Key, _Entry], key: _Key, now: float) -> _Entry | None:
+        entry = table.get(key)
+        if entry is None:
+            return None
+        if entry.expires_at <= now:
+            del table[key]
+            return None
+        return entry
+
+
+_ENGINE_STATE: WeakKeyDictionary[SlayerQueryEngine, _EngineProfileState] = WeakKeyDictionary()
+
+
+def _state_for(engine: SlayerQueryEngine) -> _EngineProfileState:
+    state = _ENGINE_STATE.get(engine)
+    if state is None:
+        state = _EngineProfileState()
+        _ENGINE_STATE[engine] = state
+    return state
+
+
+def _digest(payload: Any) -> str:
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def _column_fingerprint(column: Column) -> str:
+    return _digest(column.model_dump(mode="json", exclude=set(_SAMPLE_FIELDS)))
+
+
+def _model_fingerprint(model: SlayerModel) -> str:
+    columns = sorted(
+        (c.model_dump(mode="json", exclude=set(_SAMPLE_FIELDS)) for c in model.columns),
+        key=lambda d: str(d.get("name")),
+    )
+    return _digest({"model": model.model_dump(mode="json", exclude={"columns"}), "columns": columns})
+
+
+def _first_line(exc: BaseException) -> str:
+    text = str(exc).strip()
+    return text.splitlines()[0] if text else type(exc).__name__
 
 
 def _is_sample_cached(column: Column, *, model: SlayerModel) -> bool:
-    """Return ``True`` when the column's persisted sample-value cache is
-    valid (no re-profile needed), ``False`` when it's missing/stale.
-
-    Hidden/identifier columns are never profiled — treat them as "cached" (the
-    caller still skips them).
-
-    For categorical columns the structured ``sampled_values`` field is
-    authoritative: when it's ``None`` the cache is stale, even if a
-    pre-DEV-1480 ``sampled`` text string is set. This forces v6→v7
-    upgrades to re-profile categorical columns on next ``inspect_model``
-    so the new structured field gets populated.
-
-    For numeric/temporal columns ``sampled_values`` is always ``None`` —
-    the legacy ``sampled`` text is the cache indicator.
-    """
-    if column.hidden or is_identifier(column=column, columns=model.columns):
-        return True
-    if column.type.is_opaque:
-        # Opaque columns are never profiled (DISTINCT / min / max fail on the
-        # underlying DB type), so report them as "cached" — same convention as
-        # hidden / PK columns — and keep callers from re-querying every read.
+    """True when the persisted sample needs no re-profile; never-profiled columns count as cached."""
+    if not _is_profilable(column, model=model):
         return True
     if column.type in _CATEGORICAL_TYPES:
         return column.sampled_values is not None
     return column.sampled is not None
 
 
-# ---------------------------------------------------------------------------
-# Public helpers
-# ---------------------------------------------------------------------------
+def _is_profilable(column: Column, *, model: SlayerModel) -> bool:
+    return (
+        not column.hidden
+        and not is_identifier(column=column, columns=model.columns)
+        and (column.type in _CATEGORICAL_TYPES or column.type in _NUMERIC_TEMPORAL_TYPES)
+    )
 
 
 def _is_table_backed(model: SlayerModel) -> bool:
-    """Only ``sql_table`` mode supports the v1 sample-value refresh path.
-
-    sql-mode and query-backed models are silently skipped (DEV-1377
-    follow-up). This mirrors ``ingest_datasource_idempotent``'s carve-out.
-    """
+    """Only ``sql_table`` models take part in forced refresh."""
     return bool(model.sql_table) and not model.sql and not model.source_queries
 
 
-async def _profile_categorical_with_total(
-    *,
-    model: SlayerModel,
-    column: Column,
-    engine: SlayerQueryEngine,
-) -> ColumnSample | None:
-    """DEV-1480 categorical profile: top-50 values by frequency in a SINGLE
-    full-table scan.
-
-    On overflow (> 50 distinct) we keep the top-50 and report the total as
-    unknown rather than firing a second ``count_distinct`` scan — one scan
-    is enough; the exact distinct count isn't worth a second full scan.
-    """
-    # Run the top-values query directly (instead of going through
-    # ``_profile_categorical_column``) so we retain the values list even
-    # in the overflow case.
-    try:
-        q = SlayerQuery.model_validate({
-            "source_model": model.name,
-            "dimensions": [{"name": column.name}],
-            "measures": [{"formula": "count(*)"}],
-            "order": [
-                {"column": "_count", "direction": "desc"},
-                {"column": column.name, "direction": "asc"},
-            ],
-            "limit": _MAX_CATEGORICAL_VALUES + 2,
-        })
-        r = await engine.execute(query=q, data_source=model.data_source or None)
-    except Exception:  # NOSONAR(S112) — best-effort: see module docstring
-        return None
+async def _profile_categorical(
+    *, model: SlayerModel, column: Column, engine: SlayerQueryEngine,
+) -> _Sample:
+    """Top values by frequency (value asc tie-break) in one scan; raises on query failure."""
+    q = SlayerQuery.model_validate({
+        "source_model": model.name,
+        "dimensions": [{"name": column.name}],
+        "measures": [{"formula": "count(*)"}],
+        "order": [
+            {"column": "_count", "direction": "desc"},
+            {"column": column.name, "direction": "asc"},
+        ],
+        # +2 so one NULL row cannot push a non-overflow result over the cap.
+        "limit": _MAX_CATEGORICAL_VALUES + 2,
+    })
+    r = await engine.execute(query=q, data_source=model.data_source or None)
     value_key = f"{model.name}.{column.name}"
     count_key = f"{model.name}._count"
-    raw_pairs: list[tuple[Any, Any]] = []
-    for row in r.data:
-        v = row.get(value_key)
-        if v is None:
-            continue
-        raw_pairs.append((v, row.get(count_key)))
-    raw_pairs.sort(key=lambda p: (-(p[1] or 0), str(p[0])))
-    values: list[str] = [str(v) for v, _ in raw_pairs]
-    overflow = len(values) > _MAX_CATEGORICAL_VALUES
-    if not overflow:
-        text = ", ".join(values[:_TEXT_SAMPLE_CAP])
-        return ColumnSample(
-            sampled=text,
-            sampled_values=values,
-            distinct_count=len(values),
+    pairs = [(row.get(value_key), row.get(count_key)) for row in r.data if row.get(value_key) is not None]
+    pairs.sort(key=lambda p: (-(p[1] or 0), str(p[0])))
+    values = [str(v) for v, _ in pairs]
+    if len(values) <= _MAX_CATEGORICAL_VALUES:
+        return _Sample(
+            sampled=", ".join(values[:_TEXT_SAMPLE_CAP]), sampled_values=values, distinct_count=len(values),
         )
-    # Overflow (> _MAX_CATEGORICAL_VALUES distinct). We deliberately do NOT
-    # fire a secondary count_distinct query for the exact total — one full
-    # scan is enough. Keep the top-50 and report the total as unknown
-    # (``distinct_count=None``, sampled text carries a "50+" marker). The
-    # top-50 is still populated so ``_is_sample_cached`` marks the column
-    # cached and we don't re-scan on every read.
-    top_50 = values[:_MAX_CATEGORICAL_VALUES]
-    top_20_text = ", ".join(top_50[:_TEXT_SAMPLE_CAP])
-    return ColumnSample(
-        sampled=f"{top_20_text} ... ({_MAX_CATEGORICAL_VALUES}+ distinct)",
-        sampled_values=top_50,
+    top = values[:_MAX_CATEGORICAL_VALUES]
+    return _Sample(
+        sampled=f"{', '.join(top[:_TEXT_SAMPLE_CAP])} ... ({_MAX_CATEGORICAL_VALUES}+ distinct)",
+        sampled_values=top,
         distinct_count=None,
     )
 
 
-async def profile_column(
-    *,
-    model: SlayerModel,
-    column: Column,
-    engine: SlayerQueryEngine,
-) -> ColumnSample | None:
-    """Return the :class:`ColumnSample` for ``column`` on ``model``.
+async def _profile_numeric_temporal(
+    *, model: SlayerModel, columns: list[Column], engine: SlayerQueryEngine,
+) -> list[_Sample]:
+    """One batched min/max query; raises on query failure."""
+    # Untyped on purpose: a typed CAST coerces SQLite date strings to NUMERIC.
+    ext_columns = [{"name": f"_slayer_range_{c.name}", "sql": c.sql or c.name} for c in columns]
+    measures = [
+        {"formula": f"{agg}(_slayer_range_{c.name})"} for c in columns for agg in ("min", "max")
+    ]
+    q = SlayerQuery.model_validate({
+        "source_model": {"source_name": model.name, "columns": ext_columns},
+        "measures": measures,
+    })
+    r = await engine.execute(query=q, data_source=model.data_source or None)
+    row = r.data[0] if r.data else {}
+    out: list[_Sample] = []
+    for c in columns:
+        mn = row.get(f"{model.name}._slayer_range_{c.name}_min")
+        mx = row.get(f"{model.name}._slayer_range_{c.name}_max")
+        out.append(_Sample(sampled=_ALL_NULL if mn is None and mx is None else f"{mn} .. {mx}"))
+    return out
 
-    Returns ``None`` for identifier / hidden / opaque (``UNKNOWN``) columns
-    and when the profile query fails or yields no data. Caller decides whether
-    to persist the ``None`` (clearing any stale value) or skip it.
 
-    DEV-1480: signature widened from ``Optional[str]`` to
-    ``Optional[ColumnSample]`` so the structured ``sampled_values`` and
-    ``distinct_count`` are returned alongside the legacy text.
-    """
-    if column.hidden or is_identifier(column=column, columns=model.columns):
-        return None
-    if column.type.is_opaque:
-        # No equality operator / no orderable comparison on the underlying DB
-        # type — both the categorical top-values scan and the batched min/max
-        # query would raise. Skip sample-value profiling entirely.
-        return None
-    if column.type in _CATEGORICAL_TYPES:
-        return await _profile_categorical_with_total(
-            model=model, column=column, engine=engine,
+async def _probe(*, model: SlayerModel, engine: SlayerQueryEngine) -> Exception | None:
+    """Row-count the model; the exception when it fails, else ``None``."""
+    q = SlayerQuery.model_validate({"source_model": model.name, "measures": [{"formula": "count(*)"}]})
+    try:
+        await engine.execute(query=q, data_source=model.data_source or None)
+    except Exception as exc:  # NOSONAR(S112) — the probe's failure IS the classification
+        return exc
+    return None
+
+
+class _Target(BaseModel):
+    index: int
+    column: Column
+    key: _Key
+
+
+class _Run:
+    """One owner call: classification state, results, errors."""
+
+    def __init__(
+        self,
+        *,
+        model: SlayerModel,
+        engine: SlayerQueryEngine,
+        storage: StorageBackend,
+        state: _EngineProfileState,
+        model_key: _Key,
+        result: list[Column],
+        pending: int,
+    ) -> None:
+        self.model = model
+        self.engine = engine
+        self.storage = storage
+        self.state = state
+        self.model_key = model_key
+        self.result = result
+        self.scoped = engine.policy is not None
+        self.errors: list[str] = []
+        self.healthy: bool | None = None
+        self.model_failed = False
+        self.streak: list[tuple[_Target, Exception]] = []
+        self.pending = pending
+
+    def _expiry(self) -> float:
+        return _clock() + _TTL_SECONDS
+
+    async def run(self, targets: list[_Target]) -> None:
+        for t in (t for t in targets if t.column.type in _CATEGORICAL_TYPES):
+            if self.model_failed:
+                return
+            try:
+                sample = await _profile_categorical(model=self.model, column=t.column, engine=self.engine)
+            except Exception as exc:  # NOSONAR(S112) — classified by _on_failure
+                await self._on_failure(target=t, exc=exc)
+                continue
+            await self._on_success(target=t, sample=sample)
+        numeric = [t for t in targets if t.column.type in _NUMERIC_TEMPORAL_TYPES]
+        if numeric and not self.model_failed:
+            await self._run_numeric(numeric)
+        if not self.model_failed:
+            self._flush_streak()
+
+    async def _run_numeric(self, targets: list[_Target]) -> None:
+        try:
+            samples = await _profile_numeric_temporal(
+                model=self.model, columns=[t.column for t in targets], engine=self.engine,
+            )
+        except Exception as exc:  # NOSONAR(S112) — classified, then isolated per column
+            await self._on_failure(target=None, exc=exc)
+            for t in targets:
+                if self.model_failed:
+                    return
+                try:
+                    [sample] = await _profile_numeric_temporal(
+                        model=self.model, columns=[t.column], engine=self.engine,
+                    )
+                except Exception as col_exc:  # NOSONAR(S112) — classified by _on_failure
+                    await self._on_failure(target=t, exc=col_exc)
+                    continue
+                await self._on_success(target=t, sample=sample)
+            return
+        for t, sample in zip(targets, samples, strict=True):
+            await self._on_success(target=t, sample=sample)
+
+    async def _on_failure(self, *, target: _Target | None, exc: Exception) -> None:
+        if self.healthy is None:
+            probe_exc = await _probe(model=self.model, engine=self.engine)
+            self.healthy = probe_exc is None
+            if probe_exc is not None:
+                self._fail_model(exc=probe_exc)
+                return
+        if target is None:
+            return
+        self.streak.append((target, exc))
+        if len(self.streak) >= _BREAKER_THRESHOLD:
+            self._fail_model(exc=exc)
+
+    def _fail_model(self, *, exc: Exception) -> None:
+        msg = _first_line(exc)
+        self.model_failed = True
+        self.streak.clear()
+        self.state.failures[self.model_key] = _Entry(expires_at=self._expiry(), error=msg)
+        logger.warning(
+            "sample profiling: model %s.%s unavailable (%d columns skipped): %s",
+            self.model.data_source, self.model.name, self.pending, msg,
         )
-    # Numeric / temporal: route through the batched legacy entry path,
-    # then build a ColumnSample with only ``sampled`` populated.
-    entries = await _collect_dim_profile(
-        model=model, engine=engine, only_columns={column.name},
-    )
-    if not entries:
-        return None
-    entry = entries[0]
-    if entry.min_value is None and entry.max_value is None:
-        return None
-    return ColumnSample(
-        sampled=f"{entry.min_value} .. {entry.max_value}",
-        sampled_values=None,
-        distinct_count=None,
-    )
+        self.errors.append(f"{self.model.name}: profiling unavailable: {msg}")
+
+    def _flush_streak(self) -> None:
+        for target, exc in self.streak:
+            msg = _first_line(exc)
+            self.state.failures[target.key] = _Entry(expires_at=self._expiry(), error=msg)
+            logger.warning(
+                "sample profiling: column %s.%s.%s failed: %s",
+                self.model.data_source, self.model.name, target.column.name, msg,
+            )
+            self.errors.append(f"{self.model.name}.{target.column.name}: {msg}")
+        self.streak.clear()
+
+    async def _on_success(self, *, target: _Target, sample: _Sample) -> None:
+        self._flush_streak()
+        self.pending -= 1
+        self.state.failures.pop(target.key, None)
+        self.state.failures.pop(self.model_key, None)
+        self.result[target.index] = target.column.model_copy(update=sample.model_dump())
+        if self.scoped:
+            self.state.samples[target.key] = _Entry(expires_at=self._expiry(), sample=sample)
+            return
+        try:
+            await self.storage.update_column_sampled(
+                data_source=self.model.data_source,
+                model_name=self.model.name,
+                column_name=target.column.name,
+                **sample.model_dump(),
+            )
+        except Exception as exc:  # NOSONAR(S112) — reported; the fresh value is still returned
+            msg = _first_line(exc)
+            logger.warning(
+                "sample profiling: failed to persist %s.%s.%s: %s",
+                self.model.data_source, self.model.name, target.column.name, msg,
+            )
+            self.errors.append(f"{self.model.name}.{target.column.name} (persist): {msg}")
 
 
-async def _refresh_one_column(
+def _served_from_cache(
+    *,
+    target: _Target,
+    model: SlayerModel,
+    state: _EngineProfileState,
+    result: list[Column],
+    now: float,
+    scoped: bool,
+) -> bool:
+    """True when ``target`` needs no query; scoped sample hits are written into ``result``."""
+    c = target.column
+    if scoped:
+        hit = state.live(table=state.samples, key=target.key, now=now)
+        if hit is not None and hit.sample is not None:
+            result[target.index] = c.model_copy(update=hit.sample.model_dump())
+            return True
+    elif _is_sample_cached(c, model=model):
+        return True
+    if state.live(table=state.failures, key=target.key, now=now) is not None:
+        logger.debug("sample profiling: %s.%s.%s skipped (cached failure)", model.data_source, model.name, c.name)
+        return True
+    return False
+
+
+async def ensure_samples_fresh(
     *,
     model: SlayerModel,
-    column: Column,
+    columns: list[Column],
     engine: SlayerQueryEngine,
     storage: StorageBackend,
-) -> list[str]:
-    """Profile + persist a single column. Best-effort — returns the list of
-    error strings produced (empty on full success). Extracted from
-    ``refresh_table_backed_model_sampled`` to keep that function's cognitive
-    complexity low.
-    """
-    errors: list[str] = []
-    sample: ColumnSample | None = None
-    try:
-        sample = await profile_column(model=model, column=column, engine=engine)
-    except Exception as exc:  # NOSONAR(S112) — best-effort: see module docstring
-        errors.append(f"{model.name}.{column.name}: {exc}")
-    if sample is not None:
-        sampled = sample.sampled
-        sampled_values = sample.sampled_values
-        distinct_count = sample.distinct_count
-    else:
-        sampled = sampled_values = distinct_count = None
-    try:
-        await storage.update_column_sampled(
-            data_source=model.data_source,
-            model_name=model.name,
-            column_name=column.name,
-            sampled=sampled,
-            sampled_values=sampled_values,
-            distinct_count=distinct_count,
-        )
-    except Exception as exc:  # NOSONAR(S112) — best-effort: see module docstring
-        errors.append(f"{model.name}.{column.name} (persist): {exc}")
-    return errors
+    force: bool = False,
+) -> ProfileOutcome:
+    """Profile ``columns`` of ``model`` that need it; ``force`` ignores the sample and failure caches."""
+    scoped = engine.policy is not None
+    state = _state_for(engine)
+    now = _clock()
+    model_key: _Key = (model.data_source or "", model.name, _model_fingerprint(model))
+    # Under a policy, stored samples are never surfaced.
+    result = [c.model_copy(update=_NO_SAMPLE.model_dump()) for c in columns] if scoped else list(columns)
+    targets = [
+        _Target(index=i, column=c, key=(*model_key, c.name, _column_fingerprint(c)))
+        for i, c in enumerate(columns) if _is_profilable(c, model=model)
+    ]
+    if not force:
+        targets = [
+            t for t in targets
+            if not _served_from_cache(target=t, model=model, state=state, result=result, now=now, scoped=scoped)
+        ]
+        if targets and state.live(table=state.failures, key=model_key, now=now) is not None:
+            logger.debug("sample profiling: %s.%s skipped (cached model failure)", model.data_source, model.name)
+            return ProfileOutcome(columns=result)
+    if not targets:
+        return ProfileOutcome(columns=result)
+    run = _Run(
+        model=model, engine=engine, storage=storage, state=state,
+        model_key=model_key, result=result, pending=len(targets),
+    )
+    await run.run(targets)
+    return ProfileOutcome(columns=run.result, errors=run.errors)
 
 
 async def refresh_table_backed_model_sampled(
@@ -521,26 +400,14 @@ async def refresh_table_backed_model_sampled(
     storage: StorageBackend,
     only_columns: set[str] | None = None,
 ) -> list[str]:
-    """Refresh ``Column.sampled``, ``Column.sampled_values``, and
-    ``Column.distinct_count`` for each eligible column on ``model``.
-
-    sql-mode and query-backed models are silently skipped (returns ``[]``).
-    Best-effort: a per-column profile or persistence error is captured as
-    a string, the loop continues. Returns the list of error strings (empty
-    on full success).
-    """
+    """Force-refresh samples of a table-backed model (others skipped); returns error strings."""
     if not _is_table_backed(model):
         return []
-    errors: list[str] = []
-    for column in model.columns:
-        if column.hidden or is_identifier(column=column, columns=model.columns):
-            continue
-        if only_columns is not None and column.name not in only_columns:
-            continue
-        errors.extend(await _refresh_one_column(
-            model=model, column=column, engine=engine, storage=storage,
-        ))
-    return errors
+    columns = [c for c in model.columns if only_columns is None or c.name in only_columns]
+    outcome = await ensure_samples_fresh(
+        model=model, columns=columns, engine=engine, storage=storage, force=True,
+    )
+    return outcome.errors
 
 
 async def refresh_all_table_backed_sampled(
@@ -549,127 +416,13 @@ async def refresh_all_table_backed_sampled(
     storage: StorageBackend,
     data_source: str,
 ) -> list[str]:
-    """Refresh ``Column.sampled`` for every table-backed model in
-    ``data_source``. Best-effort across all models."""
+    """Force-refresh every table-backed model in ``data_source``; returns error strings."""
     errors: list[str] = []
-    identities = await storage._list_all_model_identities()
-    for ds, name in identities:
+    for ds, name in await storage._list_all_model_identities():
         if ds != data_source:
             continue
         model = await storage.get_model(name, data_source=ds)
         if model is None:
             continue
-        errors.extend(
-            await refresh_table_backed_model_sampled(
-                model=model, engine=engine, storage=storage,
-            )
-        )
+        errors.extend(await refresh_table_backed_model_sampled(model=model, engine=engine, storage=storage))
     return errors
-
-
-# ---------------------------------------------------------------------------
-# DEV-1516: shared cache-aware refresh helper
-# ---------------------------------------------------------------------------
-
-
-async def ensure_column_sample_fresh(
-    *,
-    model: SlayerModel,
-    column: Column,
-    engine: SlayerQueryEngine,
-    storage: StorageBackend,
-) -> Column:
-    """Best-effort refresh of a stale column's persisted sample.
-
-    Used by ``inspect_model`` (categorical cache-miss path),
-    :class:`slayer.search.service.SearchService` (post-fusion column-hit
-    hook), and — DEV-1615 — the single-entity ``inspect`` point-lookup
-    (`slayer.inspect.service.InspectService`), so the "stale columns
-    auto-refresh on the spot" contract has a single source of truth.
-
-    DEV-1615: back-fills BOTH categorical (top-50 + distinct_count) AND
-    numeric/temporal (min/max range) columns — :func:`profile_column`
-    already handles both kinds. The prior numeric/temporal early-return was
-    removed (see the inline note below).
-
-    Returns the **input column unchanged** when:
-
-    - ``_is_sample_cached`` is True (cache hit; includes hidden /
-      identifier / opaque ``UNKNOWN`` columns by convention),
-    - :func:`profile_column` returns ``None`` (e.g. transient query failure
-      or no rows),
-    - :func:`profile_column` raises (logged + swallowed),
-    - ``storage.update_column_sampled`` raises (logged + swallowed; the
-      in-memory refresh is still returned so the caller can render fresh
-      data this call).
-
-    Returns a Pydantic ``model_copy``'d column with refreshed
-    ``sampled`` / ``sampled_values`` / ``distinct_count`` fields on
-    success (after persisting via storage).
-
-    Logs ``WARNING`` on profile + persist failures with
-    ``(data_source, model_name, column_name)`` context so observability
-    matches the pre-DEV-1516 inline implementation in ``inspect_model``.
-    """
-    if _is_sample_cached(column, model=model):
-        return column
-    # DEV-1615: no categorical-only gate here. ``profile_column`` handles
-    # BOTH categorical (top-50 + distinct_count) AND numeric/temporal
-    # (min/max range) columns, so an uncached column of either kind is
-    # back-filled. The previous early-return for numeric/temporal existed
-    # only so the search post-fusion hook would skip ranges; that skip was
-    # an assumption (numeric is reliably profiled at ingest), not a
-    # correctness requirement. ``inspect`` and ``search`` both now fill
-    # ranges on read. Already-profiled columns short-circuit above via
-    # ``_is_sample_cached`` so the common case stays free.
-    try:
-        sample = await profile_column(
-            model=model, column=column, engine=engine,
-        )
-    except Exception as exc:  # NOSONAR(S112) — best-effort: see module docstring
-        logger.warning(
-            "ensure_column_sample_fresh: failed to profile %s.%s.%s: %s",
-            model.data_source, model.name, column.name, exc,
-        )
-        return column
-    if sample is None:
-        # No data to persist (e.g. PK / hidden / no rows). Helper short-
-        # circuits without writing — keeps cache predicate from flipping.
-        return column
-    if (
-        sample.sampled_values is None
-        and sample.distinct_count is None
-        and column.sampled
-    ):
-        # Overflow-retry path failed to recover structured data: the
-        # ``ColumnSample`` carries only the generic ``"> 50 distinct"``
-        # marker. The column already has a richer ``sampled`` text
-        # (e.g. v6 legacy ``"a, b, c ... (1234 distinct)"`` or a
-        # previous successful-overflow run). Skip the persist + return
-        # the input so the rich text survives — cache predicate still
-        # flags the column stale so the next call retries.
-        return column
-    try:
-        await storage.update_column_sampled(
-            data_source=model.data_source,
-            model_name=model.name,
-            column_name=column.name,
-            sampled=sample.sampled,
-            sampled_values=sample.sampled_values,
-            distinct_count=sample.distinct_count,
-        )
-    except Exception as exc:  # NOSONAR(S112) — best-effort: see module docstring
-        logger.warning(
-            "ensure_column_sample_fresh: failed to persist sample for "
-            "%s.%s.%s via update_column_sampled: %s",
-            model.data_source, model.name, column.name, exc,
-        )
-        # Fall through: surface the in-memory refresh so the caller can
-        # still render fresh data this call. Next call will retry — the
-        # cache predicate still flags the column stale because the persist
-        # never landed.
-    return column.model_copy(update={
-        "sampled": sample.sampled,
-        "sampled_values": sample.sampled_values,
-        "distinct_count": sample.distinct_count,
-    })

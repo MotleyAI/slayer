@@ -38,7 +38,7 @@ from slayer.core.errors import (
     QueryBackedCycleError,
 )
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
-from slayer.core.keys import BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, TEMPORAL_TYPES, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, ColumnTypeFn, InKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimeTruncKey, TransformKey, column_leaf, column_path, is_boolean_shaped, parameter_row_leaves, shift_offset_of, source_anchor_path, substitute_value_keys, temporal_type, walk_value_keys
+from slayer.core.keys import BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, SLOT_COMPOSITE_KINDS, TEMPORAL_TYPES, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, ColumnTypeFn, InKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimeTruncKey, TransformKey, column_leaf, column_path, is_boolean_shaped, parameter_row_leaves, shift_offset_of, source_anchor_path, substitute_value_keys, temporal_type, walk_value_keys
 from slayer.core.join_walker import aggregation_owner, model_column_type, physical_join_pairs, resolve_hop, terminal_model
 from slayer.core.models import VALUE_PLACEHOLDER, aggregation_definition, rendered_formula, reserved_value_param_message
 from slayer.core.refs import (
@@ -501,7 +501,7 @@ def _classify_order_scope(
         return OrderScope.CROSS_MODEL_CTE
     if isinstance(slot.key, TransformKey):
         return OrderScope.TRANSFORM_STEP
-    if isinstance(slot.key, (ArithmeticKey, ScalarCallKey)) and _composite_operand_in_isolated_cte(
+    if isinstance(slot.key, SLOT_COMPOSITE_KINDS) and _composite_operand_in_isolated_cte(
         slot,
         slots_by_id=slots_by_id,
         slot_by_key=slot_by_key,
@@ -549,9 +549,6 @@ def _layer_batches_at_level(
 logger = logging.getLogger(__name__)
 
 # Consumer policy from the kind registry (core/keys.KIND_POLICY records intent).
-_SLOT_COMPOSITE_KINDS = tuple(
-    k for k in VALUE_KEY_TYPES if KIND_POLICY[k].slot_composite
-)
 _MATERIALISED_ORDER_KINDS = tuple(
     k for k in VALUE_KEY_TYPES if KIND_POLICY[k].materialised_order
 )
@@ -559,6 +556,12 @@ _MATERIALISED_ORDER_KINDS = tuple(
 _BUILTIN_BAREARG_AGGS_LOCAL_SLICE: frozenset[str] = BUILTIN_AGGREGATIONS
 
 # sqlglot rewrites log10/log2 into 2-arg LOG(base,x), breaking dialects lacking 2-arg LOG; rewrite back to Anonymous.
+
+
+def _grand_total_value(value: Expression) -> Expression:  # pyright: ignore[reportPrivateImportUsage]
+    """``value`` as an aggregate over the whole population: one row, even when empty."""
+    always = exp.GTE(this=exp.Count(this=exp.Star()), expression=exp.Literal.number(0))
+    return exp.Case(ifs=[exp.If(this=always, true=value)])
 
 
 def _grouped(predicate: Expression) -> Expression:  # pyright: ignore[reportPrivateImportUsage]
@@ -625,28 +628,6 @@ def _shift_preserves_bucket_starts(bucket: "TimeGranularity", shift: str) -> boo
 def _is_host_grain(key) -> bool:
     """True for an ``AggregateKey`` marked ``locus="host"``."""
     return getattr(key, "locus", "target") == "host"
-
-
-def _first_bare_column_name(key) -> Optional[str]:
-    """Return the leaf name of the first bare column reference inside a"""
-
-    if isinstance(key, ColumnKey):
-        return key.leaf
-    if isinstance(key, ColumnSqlKey):
-        return key.column_name
-    if isinstance(key, ArithmeticKey):
-        children = key.operands
-    elif isinstance(key, ScalarCallKey):
-        children = key.args
-    elif isinstance(key, TransformKey):
-        children = [key.input]
-    else:
-        return None
-    for child in children:
-        name = _first_bare_column_name(child)
-        if name is not None:
-            return name
-    return None
 
 
 # --- Transform-input shape classification, shared by the series-regime
@@ -784,7 +765,10 @@ def _cycle_public_aliases_in_projection_order(
             continue
         all_aliases = aliases_by_slot_id.get(sid, [])
         if not all_aliases:
-            continue
+            raise ValueError(
+                f"public slot {sid!r} ({type(slot.key).__name__}) rendered no "
+                f"column; it would be silently dropped from the result",
+            )
         idx = outer_alias_index.setdefault(sid, 0)
         alias = (
             all_aliases[idx] if idx < len(all_aliases) else all_aliases[-1]
@@ -1482,6 +1466,7 @@ class SQLGenerator:
             aliases_by_slot_id,
             has_aggregation,
             group_by_keys,
+            dimension_values,
         ) = self._build_base_select_for_planned(
             planned_query=planned_query,
             bundle=bundle,
@@ -1500,6 +1485,7 @@ class SQLGenerator:
             bundle=bundle,
             aliases_by_slot_id=aliases_by_slot_id,
             regroup_env=regroup_env,
+            dimension_values=dimension_values,
         )
 
         if where_clause is not None:
@@ -1771,7 +1757,7 @@ class SQLGenerator:
         return [
             cslot
             for cslot in planned_query.combined_expression_slots
-            if isinstance(cslot.key, (ArithmeticKey, ScalarCallKey))
+            if isinstance(cslot.key, SLOT_COMPOSITE_KINDS)
             and cslot.id not in aliases_by_slot_id
             and cslot.needs_column
             and cslot.stage is not None
@@ -1870,7 +1856,7 @@ class SQLGenerator:
         source_relation,
         planned_query,
     ) -> tuple:
-        """Materialise projected POST-phase ``ArithmeticKey`` / ``ScalarCallKey``"""
+        """Materialise projected POST-phase composite (``SLOT_COMPOSITE_KINDS``) slots"""
         unmaterialised = self._unmaterialised_post_slots(
             planned_query, aliases_by_slot_id,
         )
@@ -2060,7 +2046,7 @@ class SQLGenerator:
             if (
                 slot.phase == Phase.ROW
                 and slot.is_dimension
-                and isinstance(slot.key, (ScalarCallKey, ArithmeticKey))
+                and isinstance(slot.key, SLOT_COMPOSITE_KINDS)
             ):
                 out[sid] = render_value_key(
                     key=slot.key,
@@ -2169,14 +2155,21 @@ class SQLGenerator:
             bundle=bundle,
         )
 
-        select_columns: list[Expression] = []
+        select_columns: list[Expr] = []
         group_by_keys: Dict[str, Expression] = {}
         has_aggregation = False
         alias_index: Dict[str, int] = {}
         aliases_by_slot_id: Dict[str, List[str]] = {}
+        # Non-dimension composites render once every GROUP BY expression is known.
+        deferred_composites: List[Tuple[int, Any, str]] = []
 
         def _record_alias(sid: str, full_alias: str) -> None:
             aliases_by_slot_id.setdefault(sid, []).append(full_alias)
+
+        def _defer_composite(sid: str, slot, full_alias: str) -> None:
+            deferred_composites.append((len(select_columns), slot, full_alias))
+            select_columns.append(exp.null())
+            _record_alias(sid, full_alias)
 
         for sid in base_render_order:
             slot = slots_by_id[sid]
@@ -2230,20 +2223,15 @@ class SQLGenerator:
                     select_columns.append(col_expr.copy().as_(full_alias))
                     group_by_keys.setdefault(sid, col_expr)
                     _record_alias(sid, full_alias)
-                elif isinstance(key, (ScalarCallKey, ArithmeticKey)) and slot.is_dimension:
+                elif isinstance(key, SLOT_COMPOSITE_KINDS) and slot.is_dimension:
                     dim_expr = computed_dim_expr_by_sid[sid]
                     select_columns.append(dim_expr.copy().as_(full_alias))
                     group_by_keys.setdefault(sid, dim_expr)
                     _record_alias(sid, full_alias)
-                elif isinstance(key, (ScalarCallKey, ArithmeticKey)):
-                    # A ROW-phase composite here is a measure that never aggregates; raise the actionable 'Bare measure
-                    # name' error rather than leaking NotImplementedError.
-                    bare = _first_bare_column_name(key) or full_alias
-                    raise ValueError(
-                        f"'{bare}' needs an aggregation inside an expression. "
-                        f"Wrap it in an aggregation (e.g., 'sum({bare})', 'avg({bare})'). "
-                        f"For COUNT(*), use 'count(*)'."
-                    )
+                elif isinstance(key, SLOT_COMPOSITE_KINDS) or (
+                    isinstance(key, LiteralKey) and not slot.is_dimension
+                ):
+                    _defer_composite(sid, slot, full_alias)
                 else:
                     raise NotImplementedError(
                         f"row-phase key type "
@@ -2254,28 +2242,8 @@ class SQLGenerator:
             elif slot.phase == Phase.AGGREGATE:
                 key = slot.key
                 if not isinstance(key, AggregateKey):
-                    composite = render_value_key(
-                        key=key,
-                        ctx=RenderContext(
-                            dialect=self._dialect,
-                            column_type=host_scope.column_type,
-                            composites=CompositeFacilities(
-                                agg_builder=self._composite_agg_builder(
-                                    slot=slot,
-                                    source_model=source_model,
-                                    source_relation=source_relation,
-                                    bundle=bundle,
-                                    resolved_agg_kwargs=resolved_agg_kwargs,
-                                    scope=host_scope,
-                                ),
-                            ),
-                        ),
-                    )
-                    if contains_aggregate(key):
-                        composite = _wrap_cast_for_type(expr=composite, dt=self._slot_cast_type(slot))
-                        has_aggregation = True
-                    select_columns.append(composite.copy().as_(full_alias))
-                    _record_alias(sid, full_alias)
+                    has_aggregation = has_aggregation or contains_aggregate(key)
+                    _defer_composite(sid, slot, full_alias)
                     continue
                 agg_path = source_anchor_path(key.source)
                 if agg_path:
@@ -2311,6 +2279,35 @@ class SQLGenerator:
                     f"construction.",
                 )
 
+        dimension_values = {slots_by_id[sid].key: gb for sid, gb in group_by_keys.items()}
+        # No dimension and no aggregate: every measure is the single grand-total cell.
+        grand_total = not group_by_keys and not has_aggregation and bool(deferred_composites)
+        for idx, slot, full_alias in deferred_composites:
+            composite = render_value_key(
+                key=slot.key,
+                ctx=RenderContext(
+                    dialect=self._dialect,
+                    column_type=host_scope.column_type,
+                    dimension_values=dimension_values,
+                    composites=CompositeFacilities(
+                        agg_builder=self._composite_agg_builder(
+                            slot=slot,
+                            source_model=source_model,
+                            source_relation=source_relation,
+                            bundle=bundle,
+                            resolved_agg_kwargs=resolved_agg_kwargs,
+                            scope=host_scope,
+                        ),
+                    ),
+                ),
+            )
+            if contains_aggregate(slot.key):
+                composite = _wrap_cast_for_type(expr=composite, dt=self._slot_cast_type(slot))
+            elif grand_total:
+                composite = _grand_total_value(composite)
+            select_columns[idx] = composite.as_(full_alias)
+        has_aggregation = has_aggregation or grand_total
+
         base_select = exp.Select()
         for col in select_columns:
             base_select = base_select.select(col)
@@ -2333,6 +2330,7 @@ class SQLGenerator:
         unmangle_dotted_table_refs(base_select)
         return (
             base_select, aliases_by_slot_id, has_aggregation, group_by_keys,
+            dimension_values,
         )
 
     @staticmethod
@@ -2823,7 +2821,7 @@ class SQLGenerator:
                     f"{member.host_slot_id!r}, which this plan does not carry.",
                 )
             if isinstance(
-                member.ranked_key, (ScalarCallKey, ArithmeticKey, TransformKey),
+                member.ranked_key, (*SLOT_COMPOSITE_KINDS, TransformKey),
             ) or (
                 isinstance(member.ranked_key, ColumnKey)
                 and member.ranked_key.leaf.startswith(REGROUP_LEAF_PREFIX)
@@ -3513,6 +3511,7 @@ class SQLGenerator:
                 aliases_by_slot_id,
                 base_has_agg,
                 base_group_by,
+                base_dimension_values,
             ) = self._build_base_select_for_planned(
                 planned_query=planned_query,
                 bundle=bundle,
@@ -3534,6 +3533,7 @@ class SQLGenerator:
                 skip_filter_ids=routed_ids,
                 aliases_by_slot_id=aliases_by_slot_id,
                 regroup_env=row_regroup_env,
+                dimension_values=base_dimension_values,
             )
             if base_where is not None:
                 base_select = base_select.where(base_where)
@@ -3676,7 +3676,12 @@ class SQLGenerator:
         for sid in planned_query.projection:
             exprs = proj_exprs.get(sid)
             if not exprs:
-                continue
+                if planned_query.transform_layers:
+                    continue  # rendered later in the transform chain
+                raise ValueError(
+                    f"public slot {sid!r} rendered no column at the combined "
+                    f"SELECT; it would be silently dropped from the result",
+                )
             idx = consumed.get(sid, 0)
             if idx >= len(exprs):
                 raise ValueError(
@@ -4512,7 +4517,7 @@ class SQLGenerator:
         # A composite transform input renders inline against operands' already-materialised aliases; the Kahn readiness
         # check guarantees they're in a prior CTE.
 
-        if isinstance(key.input, (ArithmeticKey, ScalarCallKey)):
+        if isinstance(key.input, SLOT_COMPOSITE_KINDS):
             # A composite input that IS a projected computed dimension reads its
             # grouped alias, never re-renders the expression over base columns.
             measure = render_value_key(
@@ -5253,16 +5258,16 @@ class SQLGenerator:
         """The one door a model reaches the SQL through (FROM, join target, semi-join
         hop): a stage relation must be one the statement declared it reads."""
         if model.sql_table:
-            if model.sql_table in self._gen_stage_relations and (
-                model.sql_table not in self._gen_stage_reads
-            ):
-                raise ValueError(
-                    f"stage relation {model.sql_table!r} is emitted by a statement that "
-                    f"does not declare reading it (declared: {sorted(self._gen_stage_reads)})"
-                )
-            return self._to_table(model.sql_table, alias=alias)
+            if model.sql_table in self._gen_stage_relations:
+                if model.sql_table not in self._gen_stage_reads:
+                    raise ValueError(
+                        f"stage relation {model.sql_table!r} is emitted by a statement that "
+                        f"does not declare reading it (declared: {sorted(self._gen_stage_reads)})"
+                    )
+                return self._to_table(model.sql_table, alias=alias)
+            return _stamp_model(self._to_table(model.sql_table, alias=alias), model=model)
         if model.sql:
-            return self._embed_model_sql(sql=model.sql, alias=alias)
+            return _stamp_model(self._embed_model_sql(sql=model.sql, alias=alias), model=model)
         if model.name in self._gen_splice_failures:
             raise self._gen_splice_failures[model.name]
         if model.name in self._gen_splice_chain:
@@ -5827,7 +5832,7 @@ class SQLGenerator:
             inner = inner.where(rendered)
         return exp.Exists(this=inner)
 
-    def _build_where_having_from_planned(  # NOSONAR(S3776) — one cohesive pass over the lowered entries routing each to WHERE / HAVING / POST by phase, with the per-carrier (typed vs Mode-A text) rendering and the HAVING grouped-column guard inline. The complexity is pre-existing; `filters_override` only adds a list selection. Splitting the phase routing from the rendering would thread slot_by_key / first_last_state / where_parts / having_parts through helpers without simplifying anything.
+    def _build_where_having_from_planned(  # NOSONAR(S3776) — one cohesive pass over the lowered entries routing each to WHERE / HAVING / POST by phase, with the per-carrier (typed vs Mode-A text) rendering inline. Splitting the phase routing from the rendering would thread slot_by_key / first_last_state / where_parts / having_parts through helpers without simplifying anything.
         self,
         *,
         planned_query,
@@ -5838,8 +5843,10 @@ class SQLGenerator:
         aliases_by_slot_id: Optional[Dict[str, List[str]]] = None,
         filters_override: "Optional[List[Any]]" = None,
         regroup_env: Optional[Dict[Any, Expression]] = None,
+        dimension_values: Optional[Dict[Any, Expression]] = None,
     ):
-        """``filters_override`` replaces the plan's lowered entries as the"""
+        """``filters_override`` replaces the plan's lowered entries; HAVING renders
+        over the grouped SELECT's ``dimension_values`` (``None``: no HAVING)."""
 
         skip = skip_filter_ids or set()
         slot_by_key: Dict[Any, Any] = {
@@ -5868,35 +5875,24 @@ class SQLGenerator:
                 )
             # An AGGREGATE-phase filter on a LOCAL aggregate renders as HAVING; a cross-model ref raises in the walker
             # (it routes via the per-plan CTE).
-            target_parts = (
-                having_parts if fp.phase == Phase.AGGREGATE else where_parts
-            )
-            if fp.phase == Phase.AGGREGATE and fp.expression is not None:
-                # A HAVING referencing a bare row column not in GROUP BY would emit invalid SQL; reject early.
-                grouped = {
-                    s.key
-                    for s in planned_query.row_slots
-                    if s.id in set(planned_query.projection)
-                }
-                for ck in self._direct_local_column_keys(fp.expression.value_key):
-                    if ck not in grouped:
-                        raise ValueError(
-                            f"Filter references column {ck.leaf!r} in a HAVING "
-                            f"(aggregate) predicate, but it is not in the "
-                            f"query's dimensions / GROUP BY."
-                        )
+            having = fp.phase == Phase.AGGREGATE
+            if having and dimension_values is None:
+                continue
+            target_parts = having_parts if having else where_parts
             if fp.expression is not None:
-                rendered = render_value_key(
-                    key=fp.expression.value_key,
-                    ctx=self._filter_render_context(
-                        source_model=source_model,
-                        source_relation=source_relation,
-                        bundle=bundle,
-                        slot_by_key=slot_by_key,
-                        aliases_by_slot_id=aliases_by_slot_id,
-                        regroup_env=regroup_env,
-                    ),
+                ctx = self._filter_render_context(
+                    source_model=source_model,
+                    source_relation=source_relation,
+                    bundle=bundle,
+                    slot_by_key=slot_by_key,
+                    aliases_by_slot_id=aliases_by_slot_id,
+                    regroup_env=regroup_env,
                 )
+                if having:
+                    ctx = ctx.model_copy(update={
+                        "scope": None, "dimension_values": dimension_values,
+                    })
+                rendered = render_value_key(key=fp.expression.value_key, ctx=ctx)
                 target_parts.append(_grouped(rendered))
             elif fp.text is not None:
                 # Mode-A filter: qualify bare refs with the source relation; a non-trivial derived reference is
@@ -6003,27 +5999,6 @@ class SQLGenerator:
             table_by_slot_id=table_by_slot_id,
             value_by_slot_id=value_by_slot_id,
         )
-
-    @staticmethod
-    def _direct_local_column_keys(key) -> "List[Any]":
-        """Local ``ColumnKey``s that appear as DIRECT (non-aggregated) operands"""
-
-        out: List[Any] = []
-
-        def _walk(k) -> None:
-            if isinstance(k, ColumnKey):
-                if k.path == ():
-                    out.append(k)
-                return
-            if isinstance(k, (AggregateKey, TransformKey, TimeTruncKey)):
-                # Aggregated / windowed inner refs aren't grouped; a
-                # TimeTruncKey IS the grouped slot, not its wrapped column.
-                return
-            for child in k.children():
-                _walk(child)
-
-        _walk(key)
-        return out
 
     def _build_outer_trim_wrap_select(
         self,
@@ -6317,6 +6292,23 @@ def _stage_relation(*, planned, is_root: bool) -> Optional[str]:
     return planned.stage_schema.relation_name
 
 
+_MODEL_STAMP = "slayer_model"
+
+
+def _stamp_model(relation: Expression, *, model) -> Expression:
+    """Mark ``relation`` as reading persisted ``model``."""
+    relation.meta[_MODEL_STAMP] = model.name
+    return relation
+
+
+def read_models(statement: Expression) -> Set[str]:
+    """Names of the models whose relations ``statement`` contains."""
+    return {
+        stamp for node in statement.find_all(exp.Table, exp.Subquery)
+        if (stamp := node.meta.get(_MODEL_STAMP)) is not None
+    }
+
+
 def generate_planned_stages(
     planned_queries,
     *,
@@ -6324,15 +6316,19 @@ def generate_planned_stages(
     dialect: str = "postgres",
     projection_aliases: "Sequence[str]" = (),
     kept_stages: "Optional[Set[str]]" = None,
+    read_set: "Optional[Set[str]]" = None,
 ) -> str:
     """Render a multi-stage DAG (``plan_stages`` output) to one SQL string; spliced
-    stages nothing reaches are pruned, the stage relations emitted land in ``kept_stages``."""
+    stages nothing reaches are pruned, the stage relations emitted land in ``kept_stages``,
+    the models the statement reads in ``read_set``."""
     kept: Set[str] = set()
     statement = _build_planned_stages_ast(
         planned_queries, bundle=bundle, dialect=dialect, kept_stages=kept,
     )
     if kept_stages is not None:
         kept_stages.update(kept)
+    if read_set is not None:
+        read_set.update(read_models(statement))
     # Semi-join pushdown emits a correlated EXISTS; attached unconditionally so SQL never depends on server state.
     if any(plan_has_semi_join_filters(p) for p in emitted_plans(planned_queries, kept_stages=kept)):
         get_dialect(dialect).attach_correlated_setting(statement)

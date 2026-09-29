@@ -676,8 +676,8 @@ class BetweenKey(_FrozenKey, frozen=True):
 
     The planner uses this to mark where ``BETWEEN`` is the right legacy-parity
     rendering (today only ``TimeDimension.date_range``). User DSL filters never
-    produce it — ``col >= a and col <= b`` stays ``ArithmeticKey``. Phase ROW;
-    the renderer emits ``exp.Between``.
+    produce it — ``col >= a and col <= b`` stays ``ArithmeticKey``. Phase is
+    the max of child phases (P8); the renderer emits ``exp.Between``.
     """
 
     column: "ValueKey"
@@ -686,7 +686,7 @@ class BetweenKey(_FrozenKey, frozen=True):
 
     @property
     def phase(self) -> Phase:
-        return Phase.ROW
+        return max(c.phase for c in self.children())
 
     def children(self) -> Tuple["ValueKey", ...]:
         return (self.column, self.low, self.high)
@@ -706,7 +706,8 @@ class InKey(_FrozenKey, frozen=True):
 
     Modelled on ``BetweenKey``: a column LHS and a fixed tuple of ``LiteralKey``
     RHS operands (LiteralKey so equality is type-stable). ``negated`` flips IN vs
-    NOT IN. Phase ROW; the renderer emits ``exp.In`` (wrapped in ``exp.Not``).
+    NOT IN. Phase is the max of child phases (P8); the renderer emits
+    ``exp.In`` (wrapped in ``exp.Not``).
     """
 
     column: "ValueKey"
@@ -729,7 +730,7 @@ class InKey(_FrozenKey, frozen=True):
 
     @property
     def phase(self) -> Phase:
-        return Phase.ROW
+        return max(c.phase for c in self.children())
 
     def children(self) -> Tuple["ValueKey", ...]:
         return (self.column, *self.values)
@@ -876,7 +877,10 @@ VALUE_KEY_TYPES: Tuple[type, ...] = get_args(ValueKey)
 
 class KindPolicy(BaseModel):
     """Consumer-named per-kind policy flags; membership is a conscious
-    classification asserted by tests, not derived from structure."""
+    classification asserted by tests, not derived from structure.
+
+    ``slot_composite``: an operator over child keys, rendered inline from them
+    and staged by them."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -895,10 +899,11 @@ KIND_POLICY: dict[type, KindPolicy] = {
     TransformKey: KindPolicy(slottable=True, materialised_order=True),
     ArithmeticKey: KindPolicy(slot_composite=True, materialised_order=True),
     ScalarCallKey: KindPolicy(slot_composite=True, materialised_order=True),
-    BetweenKey: KindPolicy(),
-    InKey: KindPolicy(),
+    BetweenKey: KindPolicy(slot_composite=True),
+    InKey: KindPolicy(slot_composite=True, materialised_order=True),
     SqlFragmentKey: KindPolicy(),
 }
+SLOT_COMPOSITE_KINDS: Tuple[type, ...] = tuple(k for k, p in KIND_POLICY.items() if p.slot_composite)
 
 
 def _map_value_key(key: _RerootableT, *, map_path) -> _RerootableT:

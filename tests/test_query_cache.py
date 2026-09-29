@@ -120,7 +120,7 @@ def _orders_model(ds: str = "ds") -> SlayerModel:
     )
 
 
-async def _build_engine(tmp_path, *, cache_config=None, ds_name="ds", storage_suffix=""):
+async def _build_engine(tmp_path, *, cache_config=None, ds_name="ds", storage_suffix="", policy=None):
     db = tmp_path / "orders.db"
     if not db.exists():
         _seed_db(db)
@@ -131,7 +131,7 @@ async def _build_engine(tmp_path, *, cache_config=None, ds_name="ds", storage_su
         DatasourceConfig(name=ds_name, type="sqlite", database=str(db))
     )
     await storage.save_model(_orders_model(ds_name))
-    return SlayerQueryEngine(storage=storage, cache_config=cache_config)
+    return SlayerQueryEngine(storage=storage, cache_config=cache_config, policy=policy)
 
 
 def _sum_query() -> SlayerQuery:
@@ -801,9 +801,7 @@ class TestPolicyInteraction:
         engine = await _build_engine(
             tmp_path,
             cache_config=CacheConfig(refresh_keys=[("orders", "MAX(updated_at)")]),
-        )
-        engine.policy = SessionPolicy(
-            ruleset=ColumnFilterRuleset(column="status", value="completed")
+            policy=SessionPolicy(ruleset=ColumnFilterRuleset(column="status", value="completed")),
         )
         calls = _install_spy(monkeypatch)
         await engine.execute(_sum_query(), cache=True)

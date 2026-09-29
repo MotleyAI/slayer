@@ -199,6 +199,7 @@ is the coercion from coarser to finer.
     [enforced: test:tests/test_dev1865_value_parity.py]
     [enforced: test:tests/test_dev1865_stratification.py]
     [enforced: test:tests/test_dev1865_order.py]
+    [enforced: test:tests/test_dev1976_dimension_values.py]
 14. **Filters**: a field-typed filter masks population rows before any
     aggregation; a measure-typed filter masks result cells after all values
     are computed, never changing a surviving cell's values; valid-as-both

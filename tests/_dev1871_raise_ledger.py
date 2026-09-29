@@ -356,6 +356,14 @@ ROWS: Tuple[LedgerRow, ...] = (
     _row(module=_EE, function="type_position_conjunct", exc="PositionTypingError",
          message="This … expression references …, so it is not a field, and measure typing is unavailable because the query has no measure position (distinct_dimension_values=False).",
          category="checker", family="positions", user=True, owner="checker"),
+    _row(module=_EE, function="check_measures_at_query_grain", exc="PositionTypingError",
+         message="'…' needs an aggregation inside an expression. This measure references row-level …, not available at the query grain (not among the query dimensions).\n  at measure …"
+         + SUGGEST + "Wrap it in an aggregation (e.g., 'sum(…)', 'avg(…)'), or add it to the query dimensions. For COUNT(*), use 'count(*)'.",
+         category="checker", family="positions", user=True, owner="checker"),
+    _row(module=_EE, function="check_measures_at_query_grain", exc="PositionTypingError",
+         message="This measure references row-level …, not available at the query grain (not among the query dimensions).\n  at measure …"
+         + SUGGEST + "Add the row-level reference to the query dimensions, or aggregate it.",
+         category="checker", family="positions", user=True, owner="checker"),
     _row(module=_EE, function="check_measure_name_collision", exc="MeasureNameCollidesWithColumnError", message="",
          category="checker", family="names", user=True, owner="checker"),
     _row(module=_EE, function="check_canonical_alias_shadows_column", exc="CanonicalAliasShadowsColumnError", message="",

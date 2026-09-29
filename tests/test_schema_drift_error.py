@@ -1,4 +1,4 @@
-"""Tests for ``SchemaDriftError`` query-time wrap. See DEV-1356.
+"""Tests for ``SchemaDriftError`` query-time wrap.
 
 When ``engine.execute()`` raises a DBAPI error, the engine attempts to
 attribute it to schema drift via ``validate_models``. If drift is found in
@@ -332,7 +332,7 @@ class TestSchemaDriftErrorWrap:
         async def _boom(*args, **kwargs):
             raise RuntimeError("validate_models exploded")
 
-        with patch.object(engine, "validate_models", side_effect=_boom):
+        with patch.object(engine, "_validate_read_set", side_effect=_boom):
             q = SlayerQuery(
                 source_model="orders",
                 measures=[{"formula": "amount:sum", "name": "total"}],
@@ -353,7 +353,9 @@ class TestHealthyPathNoOverhead:
         engine, _ = await _setup(workspace)
         with patch.object(
             engine, "validate_models", side_effect=AssertionError("called!")
-        ) as mock:
+        ) as mock, patch.object(
+            engine, "_validate_read_set", side_effect=AssertionError("called!")
+        ) as scoped:
             q = SlayerQuery(
                 source_model="orders",
                 measures=[{"formula": "amount:sum", "name": "total"}],
@@ -361,6 +363,7 @@ class TestHealthyPathNoOverhead:
             resp = await engine.execute(q)
             assert resp.data is not None
             mock.assert_not_called()
+            scoped.assert_not_called()
 
 
 class TestModelsTouchedComputation:

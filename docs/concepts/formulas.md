@@ -25,6 +25,8 @@ avg(customers.score)  — cross-model: AVG of "score" from the joined "customers
 
 Aggregations are used everywhere measures appear: in `measures`, in arithmetic expressions, in transform function arguments, and in filters. The same call is valid in every position, with the author's text preserved on save. The `first`/`last` disambiguation rules are in [Reference semantics → Aggregation syntax](references.md#aggregation-syntax).
 
+A measure may combine query-dimension values with aggregates (`quantity * count(*)` by `quantity`, `iif(region == 'North', sum(amount), 0)` by `region`), reading each dimension's value per result row; a row-level column that is not a query dimension (`amount + sum(amount)` by `region`) is a typing error.
+
 ### Expression aggregation
 
 An aggregation additionally accepts a same-model scalar **expression** as its
