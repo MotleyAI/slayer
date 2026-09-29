@@ -37,7 +37,7 @@
 ## 5. Architecture and docs
 
 - [x] 5.1 Apply the approved `architecture/system.arc42.md` §3.10 edit: "one canonical `SCALAR_PASSTHROUGH` set" → "one canonical scalar allowlist"; run `uvx --no-build --from living-architecture==0.2.0 la-arch-check`
-- [ ] 5.2 `docs/concepts/references.md`: scalar table + "Date and time functions" section (every unit/part per function, boundary counting + elapsed-units recipe, month-end clamp, ISO `day_of_week`/`week`/`iso_year` and the year+week trap, operand typing and rejection, ISO literals, `interval` spelling, count truncation, SQLite malformed → NULL, clock zone per backend, cache bypass); `docs/concepts/queries.md` allowlist sentence; caching docs; `.claude/skills/slayer-query.md` scalar list; verify every new/changed page is in `zensical.toml` nav
+- [x] 5.2 `docs/concepts/references.md`: scalar table + "Date and time functions" section (every unit/part per function, boundary counting + elapsed-units recipe, month-end clamp, ISO `day_of_week`/`week`/`iso_year` and the year+week trap, operand typing and rejection, ISO literals, `interval` spelling, count truncation, SQLite malformed → NULL, clock zone per backend, cache bypass); `docs/concepts/queries.md` allowlist sentence; caching docs; `.claude/skills/slayer-query.md` scalar list; verify every new/changed page is in `zensical.toml` nav (`.claude/skills/slayer-query.md` was deleted, so there is no skill list to update)
 
 ## 6. Verification
 
