@@ -4,10 +4,9 @@ own join path reaches. Executed oracles on SQLite + DuckDB.
 
 Under ``to_many_handling: "associate"`` a cross-model aggregate over an
 unattributable dimension aggregates over its own home rows, each once (Axioms 3,
-4, 8). A dimension reached only back through the population root needs a
-population row (the presence rule); a home-side dimension does not.
+4, 8); an entity whose path reaches no related row sits in the NULL cell.
 
-Spec: queries/attribution-modes — "Distinct-entity association semantics";
+Spec: queries/attribution-modes — "Distinct-entity association over the virtual model";
 queries/cross-model-aggregates — "Producer filter routing".
 """
 
@@ -27,16 +26,12 @@ from tests._dev1910_fixtures import (
     AMOUNT_SUM,
     APP_SPEND_BY_BAD_POP,
     BAD_POP,
-    CUST_NULL_CELL,
     DICE_SLICE_SOUTH,
     LOCAL_COUPLED_OK,
     LOCAL_DECOUPLED_OK,
-    LOCAL_SPEND_BY_STATUS_NULLSEED,
     LOCAL_SPEND_SUM,
     MIXED_SOUTH_OK,
     MIXED_SOUTH_WITH_C7_BUG,
-    PRESENCE_NULL_CELL,
-    PRESENCE_NULL_CELL_C7_BUG,
     REGION_POP_BY_BAD_POP,
     REGION_POP_SUM,
     RENT_BY_STATUS,
@@ -114,8 +109,8 @@ class TestHostFilterHomeSideDimension:
 
 
 class TestMixedHomeAndPopulationRootDimensions:
-    async def test_c7_absent_from_every_status_cell(self, engine):
-        """By (bad_pop, status): the only South cell is (230, ok)=c3+c5; c7 (no order) in no cell (140, not 195)."""
+    async def test_c7_only_reaches_a_cell_the_population_lacks(self, engine):
+        """By (bad_pop, status): South shows only (230, ok) = c3+c5 = 140; c7 reaches only (230, NULL)."""
         resp = await engine.execute(orders_q(
             dimensions=[BAD_POP, "status"], measures=[SPEND_SUM],
             to_many_handling="associate"))
@@ -127,32 +122,26 @@ class TestMixedHomeAndPopulationRootDimensions:
             MIXED_SOUTH_WITH_C7_BUG)
 
 
-class TestPresenceGuardOnTheBackHop:
-    async def test_null_status_cell_holds_only_the_owner(self, null_engine):
-        """Orders-rooted: NULL-status cell holds only c1 (owner); c7 (no order) never in a manufactured cell."""
+class TestBackHopNullCell:
+    async def test_null_status_cell_holds_the_orderless_entity(self, null_engine):
+        """Orders-rooted: NULL-status cell = c1 (owner) + c7 (no orders) = 155, as customers-rooted."""
         resp = await null_engine.execute(orders_q(
             dimensions=["status"], measures=[SPEND_SUM],
             to_many_handling="associate"))
         spend = status_vals(resp, "orders.csp")
-        assert float(spend[None]) == pytest.approx(PRESENCE_NULL_CELL)
-        assert float(spend[None]) != pytest.approx(PRESENCE_NULL_CELL_C7_BUG)
         for cell, expected in SPEND_BY_STATUS_NULLSEED.items():
             assert float(spend[cell]) == pytest.approx(expected), cell
 
 
-class TestDerivedDimensionCrossingBackIsGuarded:
-    async def test_fanning_derived_dim_guards_the_orderless_entity(
+class TestDerivedDimensionCrossingBack:
+    async def test_fanning_derived_dim_keeps_the_orderless_entity(
             self, null_engine_reverse):
-        """A derived dim whose SQL crosses back (customers.last_status) guards
-        through its dependencies, not its structural key: c7 (no order) stays out
-        of the NULL cell (100, c1 only; not the 155 c7-leak)."""
+        """customers.last_status (crosses back to orders): NULL cell = c1 + c7 = 155."""
         resp = await null_engine_reverse.execute(orders_q(
             dimensions=["customers.last_status"], measures=[SPEND_SUM],
             to_many_handling="associate"))
         spend = {k[0]: v["orders.csp"]
                  for k, v in rows_by(resp, "orders.customers.last_status").items()}
-        assert float(spend[None]) == pytest.approx(PRESENCE_NULL_CELL)
-        assert float(spend[None]) != pytest.approx(PRESENCE_NULL_CELL_C7_BUG)
         for cell, expected in SPEND_BY_STATUS_NULLSEED.items():
             assert float(spend[cell]) == pytest.approx(expected), cell
 
@@ -160,13 +149,12 @@ class TestDerivedDimensionCrossingBackIsGuarded:
 class TestCustomersRootedTwinKeepsItsNullCell:
     async def test_orderless_entity_sits_in_the_null_cell(self, null_engine):
         """Customers-rooted (home == host): the LEFT JOIN keeps orderless c7 in
-        the NULL cell alongside c1 — no presence guard when home == host."""
+        the NULL cell alongside c1."""
         resp = await null_engine.execute(cust_q(
             dimensions=["orders.status"], measures=[LOCAL_SPEND_SUM],
             to_many_handling="associate"))
         spend = status_vals(resp, "customers.sp", root="customers")
-        assert float(spend[None]) == pytest.approx(CUST_NULL_CELL)
-        for cell, expected in LOCAL_SPEND_BY_STATUS_NULLSEED.items():
+        for cell, expected in SPEND_BY_STATUS_NULLSEED.items():
             assert float(spend[cell]) == pytest.approx(expected), cell
 
 

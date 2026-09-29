@@ -21,7 +21,7 @@ from pydantic import BaseModel, ConfigDict
 from slayer.core.enums import BUILTIN_AGGREGATIONS, normalize_aggregation_name
 from slayer.core.errors import IllegalWindowInFilterError, UnknownFunctionError
 from slayer.core.formula import ALL_TRANSFORMS
-from slayer.core.keys import SCALAR_FUNCTIONS
+from slayer.core.keys import DATE_UNIT_ARGS, SCALAR_FUNCTIONS, check_scalar_arity
 from slayer.core.refs import split_agg_suffix
 
 
@@ -47,7 +47,7 @@ class StarSource(_BaseNode):
 
 
 class Literal(_BaseNode):
-    value: Union[Decimal, str, bool, None] = None
+    value: Decimal | str | bool | None = None
 
 
 class TupleLit(_BaseNode):
@@ -61,10 +61,10 @@ class AggCall(_BaseNode):
     # source may also be an aggregation-free scalar expression (``sum(a - b)``),
     # or — for a re-aggregation — a nested AggCall or a grained
     # TransformCall, alone or composed.
-    source: Union[
-        Ref, DottedRef, StarSource, Literal, "ScalarCall", "Arith", "UnaryOp",
-        "AggCall", "TransformCall", "Cmp", "BoolOp",
-    ]
+    source: (
+        Ref | DottedRef | StarSource | Literal | ScalarCall | Arith | UnaryOp
+        | AggCall | TransformCall | Cmp | BoolOp
+    )
     agg: str
     args: Tuple[Any, ...] = ()
     kwargs: Tuple[Tuple[str, Any], ...] = ()
@@ -444,7 +444,14 @@ def parse_expr(text: str) -> ParsedExpr:
             f"Invalid Mode-B expression {text!r}: {e}"
         )
 
-    return _convert(py_ast, agg_map=agg_map, original=text)
+    parsed = _convert(py_ast, agg_map=agg_map, original=text)
+    if any(_is_interval(n) for n in _walk_parsed(parsed)):
+        raise ValueError(
+            f"Invalid Mode-B expression {text!r}: interval(n, unit) is only valid as "
+            f"`x + interval(n, unit)`, `interval(n, unit) + x` or `x - interval(n, unit)`; "
+            f"otherwise use date_add(x, n, unit)."
+        )
+    return parsed
 
 
 def parse_filter_expr(text: str) -> ParsedExpr:
@@ -671,7 +678,7 @@ def _rewrite_comparison_equals(text: str) -> str:
 
 def walk_parsed_refs(
     parsed: ParsedExpr,
-) -> Iterator[Union[Ref, DottedRef, AggCall]]:
+) -> Iterator[Ref | DottedRef | AggCall]:
     """Yield the reference-bearing leaves (``Ref`` / ``DottedRef`` / ``AggCall``)
     of a tree — scope-free name extraction for schema-drift / memory tagging.
 
@@ -733,14 +740,14 @@ def _reject_reserved_expr_token(text: str) -> None:
 
 def _preprocess_colons(
     text: str,
-) -> Tuple[str, Dict[int, Tuple[Union[Ref, DottedRef, StarSource], str]]]:
+) -> Tuple[str, Dict[int, Tuple[Ref | DottedRef | StarSource, str]]]:
     """Replace ``<source>:<agg>`` with placeholder identifiers.
 
     Captures source kind + agg name. Any trailing ``(args)`` is left in
     place so Python's AST parses it naturally as a Call. String literal
     spans are skipped — the literal text is user data, not DSL syntax.
     """
-    agg_map: Dict[int, Tuple[Union[Ref, DottedRef, StarSource], str]] = {}
+    agg_map: Dict[int, Tuple[Ref | DottedRef | StarSource, str]] = {}
     counter = [0]
     literal_spans = [
         # CR review: use the escape-aware matcher so backslash-escaped
@@ -756,7 +763,7 @@ def _preprocess_colons(
             return match.group(0)
         source_str = match.group(1)
         agg_name = match.group(2)
-        source: Union[Ref, DottedRef, StarSource]
+        source: Ref | DottedRef | StarSource
         if source_str == "*":
             source = StarSource()
         elif "." in source_str:
@@ -841,11 +848,13 @@ def _convert(node: ast.AST, *, agg_map: Dict, original: str) -> ParsedExpr:  # N
             return AggCall(source=source, agg=agg)
         if node.id == _STAR_ARG_TOKEN:
             return StarSource()
-        # SQL-cased boolean literals (PR #316): Python's ast only treats
-        # True/False as constants, so `true`/`FALSE`/... arrive as names.
-        # Both are reserved words in every target dialect, never columns.
+        # SQL-cased boolean / null literals: Python's ast only treats True/False/None
+        # as constants, so `true`/`FALSE`/`NULL`/... arrive as names. All are
+        # reserved words in every target dialect, never columns.
         if node.id.lower() in ("true", "false"):
             return Literal(value=node.id.lower() == "true")
+        if node.id.lower() == "null":
+            return Literal(value=None)
         return Ref(name=node.id)
 
     if isinstance(node, ast.Attribute):
@@ -874,10 +883,10 @@ def _convert(node: ast.AST, *, agg_map: Dict, original: str) -> ParsedExpr:  # N
                 f"Invalid Mode-B expression {original!r}: unsupported "
                 f"binary operator {op_type.__name__}."
             )
-        return Arith(
-            op=_BIN_OP_MAP[op_type],
-            left=_convert(node.left, agg_map=agg_map, original=original),
-            right=_convert(node.right, agg_map=agg_map, original=original),
+        left = _convert(node.left, agg_map=agg_map, original=original)
+        right = _convert(node.right, agg_map=agg_map, original=original)
+        return _interval_as_date_add(op=_BIN_OP_MAP[op_type], left=left, right=right) or Arith(
+            op=_BIN_OP_MAP[op_type], left=left, right=right,
         )
 
     if isinstance(node, ast.UnaryOp):
@@ -1225,7 +1234,8 @@ def _convert_call(  # NOSONAR(S3776) — the one call-dispatch ladder (colon pla
                 f"values positionally."
             )
         _reject_bare_star_args(args, kwargs, func_name=func_name, original=original)
-        return ScalarCall(name=func_name.lower(), args=args)
+        name = func_name.lower()
+        return ScalarCall(name=name, args=_date_args(name=name, args=args, original=original))
 
     # Unknown name with an aggregatable first arg → AggCall candidate (parity
     # with ``x:whatever``), validated at binding. A custom aggregation over an
@@ -1247,6 +1257,79 @@ def _convert_call(  # NOSONAR(S3776) — the one call-dispatch ladder (colon pla
             f"aggregation names must be defined on the model."
         ),
     )
+
+
+# Position of the count argument of the date-offset calls.
+_COUNT_ARG = {"date_add": 1, "interval": 0}
+
+
+def _date_args(*, name: str, args: Tuple[Any, ...], original: str) -> Tuple[Any, ...]:
+    """Validate and lower-case a date scalar's unit word; fold a negated numeric count literal."""
+    out = list(args)
+    unit = DATE_UNIT_ARGS.get(name)
+    if unit is not None and unit[0] < len(out):
+        pos, vocab = unit
+        accepted = ", ".join(v.value for v in vocab)
+        what = "part" if name == "date_part" else "unit"
+        arg = out[pos]
+        if not (isinstance(arg, Literal) and isinstance(arg.value, str)):
+            raise ValueError(
+                f"Invalid Mode-B expression {original!r}: the {what} of {name}() must be a "
+                f"string literal, one of: {accepted}."
+            )
+        word = arg.value.lower()
+        if word not in {v.value for v in vocab}:
+            raise ValueError(
+                f"Invalid Mode-B expression {original!r}: unknown {name}() {what} "
+                f"{arg.value!r}; accepted: {accepted}."
+            )
+        out[pos] = Literal(value=word)
+    count_pos = _COUNT_ARG.get(name)
+    if count_pos is not None and count_pos < len(out):
+        out[count_pos] = _folded(out[count_pos])
+    return tuple(out)
+
+
+def _folded(node: Any) -> Any:
+    """``-<numeric literal>`` as one negative literal, so both count spellings intern alike."""
+    if (
+        isinstance(node, UnaryOp) and node.op == "-"
+        and isinstance(node.operand, Literal) and isinstance(node.operand.value, Decimal)
+    ):
+        return Literal(value=-node.operand.value)
+    return node
+
+
+def _is_interval(node: Any) -> bool:
+    return isinstance(node, ScalarCall) and node.name == "interval"
+
+
+def _interval_as_date_add(*, op: str, left: Any, right: Any) -> Optional[ScalarCall]:
+    """``x + interval(n, u)`` / ``interval(n, u) + x`` / ``x - interval(n, u)`` as ``date_add``."""
+    if _is_interval(left) == _is_interval(right) or op not in ("+", "-"):
+        return None
+    if op == "-" and _is_interval(left):
+        return None
+    interval, base = (right, left) if _is_interval(right) else (left, right)
+    if len(interval.args) != 2:
+        raise ValueError(check_scalar_arity(name="interval", argc=len(interval.args)))
+    count, unit = interval.args
+    if op == "-":
+        count = _folded(UnaryOp(op="-", operand=count))
+    return ScalarCall(name="date_add", args=(base, count, unit))
+
+
+def _walk_parsed(node: Any) -> Iterator[Any]:
+    """Every node of a parsed tree, including call args, kwargs and agg sources."""
+    if isinstance(node, tuple):
+        for item in node:
+            yield from _walk_parsed(item)
+        return
+    if not isinstance(node, _BaseNode):
+        return
+    yield node
+    for field in type(node).model_fields:
+        yield from _walk_parsed(getattr(node, field))
 
 
 # ---------------------------------------------------------------------------

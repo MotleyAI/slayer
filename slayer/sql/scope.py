@@ -21,7 +21,7 @@ existing engine-layer expansion/scan helpers (D-G wrap-and-reuse).
 
 from __future__ import annotations
 
-from typing import Callable, Dict, List, Literal, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union
 
 from pydantic import BaseModel, ConfigDict, Field
 from sqlglot import exp
@@ -29,7 +29,7 @@ from sqlglot.errors import ParseError
 
 from slayer.core.enums import DataType
 from slayer.core.errors import ModeASqlParseError, UnknownReferenceError
-from slayer.core.join_walker import terminal_model
+from slayer.core.join_walker import model_column_type, terminal_model
 from slayer.core.keys import (
     REGROUP_LEAF_PREFIX,
     ArithmeticKey,
@@ -125,6 +125,8 @@ class ScopeFrame(BaseModel):
     # regroup producer CTE. Resolved by EXACT membership before ordinary column
     # anchoring; a prefixed leaf that misses this registry is fail-closed.
     attached_columns: Dict[ColumnKey, exp.Expression] = Field(default_factory=dict)
+    #: Temporal types of placeholders substituted for attached aggregates.
+    placeholder_types: Dict[Any, DataType] = Field(default_factory=dict)
 
     # ---- Law 1 -------------------------------------------------------------
     def resolve(self, ref: Ref, *, consumer: "ScopeFrame | None" = None) -> exp.Expression:
@@ -455,6 +457,7 @@ class ScopeFrame(BaseModel):
             # registration and derived expansion apply per leaf.
             return render_row_expression(
                 key=ref, dialect=self.dialect, resolve_column=self._anchor,
+                column_type=self.column_type,
             )
         if isinstance(ref, str):
             prequoted = prequote_reserved_identifiers(
@@ -476,31 +479,10 @@ class ScopeFrame(BaseModel):
         )
 
     def column_type(self, ref: Ref) -> Optional[DataType]:
-        """The declared ``DataType`` of the column ``ref`` names, or ``None``
-        when it is unknown (an anonymous free-SQL string, or a name absent from
-        its model). Used by the filter-CAST policy (DEV-1763); the model lookup
-        mirrors :meth:`_anchor` / :meth:`_model_for` so the type and the
-        rendering agree on which model owns the column."""
-        if isinstance(ref, ColumnSqlKey):
-            model = self._model_for(ref.model)
-            col = next(
-                (c for c in model.columns if c.name == ref.column_name), None,
-            )
-            return col.type if col is not None else None
-        if isinstance(ref, ColumnKey):
-            if not ref.path:
-                model = self.root_model
-            else:
-                # Walk the path — tokens may be edge names (DEV-1853).
-                model = terminal_model(
-                    root=self.root_model, path=ref.path,
-                    models_by_name=self._models_by_name(),
-                )
-            if model is None:
-                return None
-            col = next((c for c in model.columns if c.name == ref.leaf), None)
-            return col.type if col is not None else None
-        return None
+        """The declared ``DataType`` of the column ``ref`` names, or ``None`` when unknown."""
+        if ref in self.placeholder_types:
+            return self.placeholder_types[ref]
+        return model_column_type(model=self.root_model, models_by_name=self._models_by_name())(ref)
 
     def _model_for(self, name: str) -> SlayerModel:
         """Resolve a model name against the scope root, then the bundle.

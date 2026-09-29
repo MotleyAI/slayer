@@ -189,7 +189,7 @@ def _assert_grain_pair(
     )
     if lookup:
         line = on_pred[on_pred.rfind("\n", 0, found.start()) + 1:found.end()]
-        assert re.search(r"INTERVAL|DATEADD|months", line), line
+        assert re.search(r"(?i)INTERVAL|DATE_?ADD|addMonths", line), line
 
 
 def _grain_pair_count(on_pred: str, *, marker: str = "IS NOT DISTINCT FROM") -> int:

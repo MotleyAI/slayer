@@ -25,6 +25,8 @@ avg(customers.score)  — cross-model: AVG of "score" from the joined "customers
 
 Aggregations are used everywhere measures appear: in `measures`, in arithmetic expressions, in transform function arguments, and in filters. The same call is valid in every position, with the author's text preserved on save. The `first`/`last` disambiguation rules are in [Reference semantics → Aggregation syntax](references.md#aggregation-syntax).
 
+A measure may combine query-dimension values with aggregates (`quantity * count(*)` by `quantity`, `iif(region == 'North', sum(amount), 0)` by `region`), reading each dimension's value per result row; a row-level column that is not a query dimension (`amount + sum(amount)` by `region`) is a typing error.
+
 ### Expression aggregation
 
 An aggregation additionally accepts a same-model scalar **expression** as its
@@ -385,7 +387,8 @@ A transform can also sit inside arithmetic or a scalar call beside other aggrega
 
 `consecutive_periods(predicate)` evaluates a predicate at the query grain and
 returns an integer streak length for the current row. False or NULL breaks the
-run and returns 0. The input is a Mode-B predicate or numeric value — a
+run and returns 0. A time bucket missing from the query's rows (after the date
+range and row filters) also breaks the run, so the next true bucket restarts at 1. The input is a Mode-B predicate or numeric value — a
 comparison, a null test (`is None` / `is not None`), `BETWEEN`, `IN`, a boolean
 connective, a nested transform, or a bare value
 (truthy when non-NULL and non-zero) — with a boolean-shaped node legal only at

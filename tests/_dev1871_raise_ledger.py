@@ -127,6 +127,16 @@ ROWS: Tuple[LedgerRow, ...] = (
          + AT + "time dimension …"
          + SUGGEST + "Request the same or a nesting-coarser granularity, or bucket the raw column instead.",
          category="checker", family="time-axis", user=True, owner="checker"),
+    _row(module=_EE, function="_check_date_call", exc="DateOperandTypeError",
+         message="…() needs a DATE or TIMESTAMP operand; `…` is not one."
+         + SUGGEST + "Pass a column declared DATE / TIMESTAMP (set Column.type), min/max/first/last of one, "
+         "a date function, now() / current_date(), or an ISO literal such as '2024-01-31' or "
+         "'2024-01-31 10:00:00'.",
+         category="checker", family="date-operand", user=True, owner="checker"),
+    _row(module=_EE, function="_check_date_call", exc="DateOperandTypeError",
+         message="date_add() count `…` is not numeric."
+         + SUGGEST + "Pass an integer, or a numeric column or expression (it is truncated toward zero).",
+         category="checker", family="date-operand", user=True, owner="checker"),
     _row(module=_EE, function="check_time_transforms_resolved", exc="TimeAxisError",
          message="The transform requires an unambiguous time dimension."
          + AT + "transform …"
@@ -345,6 +355,14 @@ ROWS: Tuple[LedgerRow, ...] = (
          category="checker", family="positions", user=True, owner="checker"),
     _row(module=_EE, function="type_position_conjunct", exc="PositionTypingError",
          message="This … expression references …, so it is not a field, and measure typing is unavailable because the query has no measure position (distinct_dimension_values=False).",
+         category="checker", family="positions", user=True, owner="checker"),
+    _row(module=_EE, function="check_measures_at_query_grain", exc="PositionTypingError",
+         message="'…' needs an aggregation inside an expression. This measure references row-level …, not available at the query grain (not among the query dimensions).\n  at measure …"
+         + SUGGEST + "Wrap it in an aggregation (e.g., 'sum(…)', 'avg(…)'), or add it to the query dimensions. For COUNT(*), use 'count(*)'.",
+         category="checker", family="positions", user=True, owner="checker"),
+    _row(module=_EE, function="check_measures_at_query_grain", exc="PositionTypingError",
+         message="This measure references row-level …, not available at the query grain (not among the query dimensions).\n  at measure …"
+         + SUGGEST + "Add the row-level reference to the query dimensions, or aggregate it.",
          category="checker", family="positions", user=True, owner="checker"),
     _row(module=_EE, function="check_measure_name_collision", exc="MeasureNameCollidesWithColumnError", message="",
          category="checker", family="names", user=True, owner="checker"),

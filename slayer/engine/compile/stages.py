@@ -23,7 +23,6 @@ from typing import (
     Optional,
     Sequence,
     Tuple,
-    Union,
     cast,
 )
 
@@ -31,7 +30,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from slayer.core.enums import DataType, JoinType, RANKED_AGGREGATIONS, TimeGranularity
 from slayer.core.errors import AmbiguousJoinPathError, CircularJoinPathError
-from slayer.core.keys import AggregateKey, Grain, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, PREDICATE_COMPARISON_OPS, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, effective_root_grain, constituent_grain, attached_parameter_grain, substitute_value_keys, substitute_consumer_keys, walk_value_keys, walk_consumer_keys, REGROUP_LEAF_PREFIX, is_cross_model_agg, split_top_level_and, window_kwarg_of, is_row_attach_root, attached_inputs, operand_aggregates, operand_constituents, parameter_row_leaves, source_anchor_path, source_row_leaves, VALUE_KEY_TYPES
+from slayer.core.keys import SLOT_COMPOSITE_KINDS, AggregateKey, Grain, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, PREDICATE_COMPARISON_OPS, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, effective_root_grain, constituent_grain, attached_parameter_grain, substitute_value_keys, substitute_consumer_keys, walk_value_keys, walk_consumer_keys, REGROUP_LEAF_PREFIX, is_cross_model_agg, split_top_level_and, window_kwarg_of, is_row_attach_root, attached_inputs, operand_aggregates, operand_constituents, parameter_row_leaves, source_anchor_path, source_row_leaves, VALUE_KEY_TYPES
 from slayer.core.models import Column, SlayerModel, aggregation_definition, empty_value
 from slayer.engine.reference_closure import (
     aggregate_input_closure,
@@ -54,7 +53,6 @@ from slayer.core.join_walker import (
 )
 from slayer.engine.join_safety import (
     UNREACHABLE_NO_PATH,
-    _back_path,
     attributable_from_root,
     broadcast_reason,
     crossing_local_root_predicate,
@@ -89,6 +87,7 @@ from slayer.engine.elaborate_env import (
     check_cross_model_source_resolves,
     check_input_dependencies_analyzable,
     check_local_producer_inputs_safe,
+    check_measures_at_query_grain,
     check_order_target_has_slot,
     check_parameter_determined,
     check_filter_dependencies_analyzable,
@@ -418,13 +417,9 @@ def _scalar_free_columns(node: ValueKey, out: set) -> None:
     # Asymmetric on purpose: aggregate subtrees are bound, not free.
     if isinstance(node, ColumnKey):
         out.add(node)
-    elif isinstance(node, ArithmeticKey):
-        for op in node.operands:
-            _scalar_free_columns(node=op, out=out)
-    elif isinstance(node, ScalarCallKey):
-        for arg in node.args:
-            if isinstance(arg, (ColumnKey, ArithmeticKey, ScalarCallKey, TransformKey)):
-                _scalar_free_columns(node=arg, out=out)
+    elif isinstance(node, SLOT_COMPOSITE_KINDS):
+        for child in node.children():
+            _scalar_free_columns(node=child, out=out)
     elif isinstance(node, TransformKey):
         _scalar_free_columns(node=node.input, out=out)
 
@@ -520,7 +515,7 @@ def _first_unattributable_arg_leaf(
 
 def _param_row_columns(
     agg: AggregateKey,
-) -> Iterator[Tuple[Optional[str], object, Union[ColumnKey, ColumnSqlKey, TimeTruncKey]]]:
+) -> Iterator[Tuple[Optional[str], object, ColumnKey | ColumnSqlKey | TimeTruncKey]]:
     """``(parameter name or None, parameter value, column row leaf)`` per argument."""
     for name, value in [*((None, a) for a in agg.args), *agg.kwargs]:
         for arg in parameter_row_leaves(value):
@@ -952,7 +947,7 @@ def _synthesize_wrap_attach(
     wrap_key: AggregateKey,
     prebound: PreboundQuery,
     filter_typings: Sequence[ConjunctTyping],
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
     bundle: ResolvedSourceBundle,
     stage_schemas: Dict[str, StageSchema],
     producer_registry: Optional[Dict[Hashable, PlannedQuery]],
@@ -1076,7 +1071,7 @@ def _plan_shifted_attaches(
     prebound: PreboundQuery,
     rewritten: PreboundQuery,
     filter_typings: Sequence[ConjunctTyping],
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
     bundle: ResolvedSourceBundle,
     stage_schemas: Dict[str, StageSchema],
     producer_source_model: Optional[str],
@@ -1820,7 +1815,7 @@ class NoInheritedPopulation(BaseModel):
     reason: str
 
 
-Population = Union[InheritedPopulation, NoInheritedPopulation]
+Population = InheritedPopulation | NoInheritedPopulation
 
 
 def _population_of(filters: Optional[PopulationFilters]) -> Population:
@@ -1896,7 +1891,7 @@ def _dispose_one_conjunct(
 
 def dispose_population_filters(
     *, prebound: PreboundQuery, filter_typings: Sequence[ConjunctTyping],
-    scope: Union[ModelScope, StageSchema], bundle: ResolvedSourceBundle,
+    scope: ModelScope | StageSchema, bundle: ResolvedSourceBundle,
 ) -> Optional[PopulationFilters]:
     """Dispose the population's ROW-phase, FIELD-typed, stratum-0 filter conjuncts
     once at the host root (D1) — inline / semi-join / excluded — recording each
@@ -1984,7 +1979,7 @@ class _ProducerSynthesisContext(BaseModel):
     projected_dim_keys: List[ValueKey]
     projected_td_keys: List[ValueKey]
     base_filters_with_text: List[Tuple[BoundFilter, Optional[str]]]
-    scope: Union[ModelScope, StageSchema]
+    scope: ModelScope | StageSchema
     stage_schemas: Dict[str, StageSchema]
     # Home path per aggregate (Axiom 2), resolved in the elaborator and read
     # here; the source anchor is the fallback for keys with no term.
@@ -2091,7 +2086,6 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
     broadcast: List[Tuple[str, str]] = []
     picked_params: List[PickedParam] = []
     restricted_texts: List[str] = []
-    present_keys: List[ValueKey] = []
     entity_keys_root: List[ValueKey] = []
     associated_measure: Optional[str] = None
     associated_dimensions: List[str] = []
@@ -2102,7 +2096,7 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
         # entity via the association kernel — a home entity absent from the
         # population still counts in the cells its own path reaches.
         agg_rooted = agg_rooted.model_copy(update={"locus": "host"})
-        picked_params, entity_keys_root, present_keys, assoc_pairs = (
+        picked_params, entity_keys_root, assoc_pairs = (
             _association_arm(
                 agg=agg, agg_rooted=agg_rooted, alias=alias, root_model=root_model,
                 target_path=target_path, unattributable=unattributable,
@@ -2249,7 +2243,6 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
     if associate:
         cm_attach_kwargs["kernel"] = AssociationProducerKernel(
             entity_keys=entity_keys_root, picked_params=picked_params,
-            present_keys=present_keys,
         )
     elif window_td_key is not None:
         cm_attach_kwargs["kernel"] = _trailing_window_kernel(
@@ -2412,15 +2405,14 @@ def _association_arm(
     unattributable: List[_UnattributableDim], host_model: SlayerModel,
     models_by_name: Dict[str, SlayerModel], bundle: ResolvedSourceBundle,
 ) -> Tuple[
-    List[PickedParam], List[ValueKey], List[ValueKey],
-    List[Tuple[ValueKey, ValueKey]],
+    List[PickedParam], List[ValueKey], List[Tuple[ValueKey, ValueKey]],
 ]:
     """The home-rooted association arm: eligibility + mode-invariant
     input safety on the rerooted host-locus aggregate (compiled inline at its fanning
     grain, its level-1 dedup removing the fan-out); the kernel entity keys in ROOT
     coordinates and the parameters the entity grain picks, rerooted into the home;
-    the reverse-hop presence guard; and each unattributable dimension rerooted to
-    join back on the host key exactly like ``safe_pairs``."""
+    and each unattributable dimension rerooted to join back on the host key exactly
+    like ``safe_pairs``."""
     check_association_windowed_ranked(
         alias=alias,
         windowed_or_ranked=window_kwarg_of(agg) is not None or (
@@ -2474,12 +2466,7 @@ def _association_arm(
         ))
         for u in unattributable
     ]
-    present_keys = _association_present_keys(
-        unattributable=unattributable, target_path=target_path,
-        root_model=root_model, host_model=host_model, models_by_name=models_by_name,
-        bundle=bundle,
-    )
-    return picked_params, entity_keys_root, present_keys, assoc_pairs
+    return picked_params, entity_keys_root, assoc_pairs
 
 
 def _association_inline_filters(
@@ -2516,68 +2503,6 @@ def _association_inline_filters(
                 if pushed[1] is not None:
                     restricted_texts.append(pushed[1])
     return inherited, restricted_texts
-
-
-def _association_present_keys(
-    *, unattributable: List[_UnattributableDim], target_path: Tuple[str, ...],
-    root_model: SlayerModel, host_model: SlayerModel,
-    models_by_name: Dict[str, SlayerModel], bundle: ResolvedSourceBundle,
-) -> List[ValueKey]:
-    """The reverse hop's host-side join columns in the home-rooted producer's
-    coordinates (path = the reverse path), guarded NOT NULL in level 1 so a
-    dimension the home reaches only back through the population root associates an
-    entity only when a population row carries it (DEV-1910 D3). Empty when home ==
-    host, or when no unattributable dimension reaches back through the reverse hop
-    (a home-side dimension keeps its own NULL cell, as the population computes it)."""
-    if not target_path:
-        return []
-    back = _back_path(
-        host_name=host_model.name,
-        target_path=target_path, models_by_name=models_by_name,
-    )
-    try:
-        first_hop = resolve_hop(
-            current=host_model, token=target_path[0], models_by_name=models_by_name,
-        )
-    except AmbiguousJoinPathError:
-        first_hop = None
-    if first_hop is None:
-        return []
-
-    def _reaches_back(u: _UnattributableDim) -> bool:
-        # The dimension's own structural position (a base column like orders.status
-        # reroots under the reverse path).
-        if any(
-            isinstance(r, (ColumnKey, ColumnSqlKey, TimeTruncKey))
-            and key_host_path(r)[: len(back)] == back
-            for r in walk_value_keys(reroot_from_root(
-                key=u.key, target_path=target_path, root_model=root_model,
-                models_by_name=models_by_name, host_name=host_model.name,
-            ))
-        ):
-            return True
-        # A derived column carries its dependencies in its SQL, not its structural
-        # key: expand the full dependency set so a home-local derived dim whose
-        # definition crosses back is guarded too. An unanalysable closure fails closed.
-        closure = key_closure(
-            key=u.key, anchor_model=host_model, anchor_relation=host_model.name,
-            bundle=bundle,
-        )
-        if closure is None:
-            return True
-        return any(
-            key_host_path(reroot_from_root(
-                key=ColumnKey(path=p, leaf=""), target_path=target_path,
-                root_model=root_model, models_by_name=models_by_name,
-                host_name=host_model.name,
-            ))[: len(back)] == back
-            for p in closure
-        )
-
-    if not any(_reaches_back(u) for u in unattributable):
-        return []
-    return [column_default_key(path=back, leaf=src, base=host_model)
-            for src, _ in first_hop.join_pairs]
 
 
 def _substitute_prebound(
@@ -2643,7 +2568,7 @@ def _non_aggregate_leaf_check(
         return True
     if isinstance(key, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
         return ok(key)
-    if isinstance(key, (ScalarCallKey, ArithmeticKey, InKey)):
+    if isinstance(key, SLOT_COMPOSITE_KINDS):
         return all(_non_aggregate_leaf_check(c, ok=ok) for c in key.children())
     return False
 
@@ -2991,7 +2916,7 @@ def _build_carrier_attach(
     constituent_placeholders: Dict[ValueKey, ValueKey],
     host_model: SlayerModel,
     bundle: ResolvedSourceBundle,
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
     stage_schemas: Dict[str, StageSchema],
     inherited: List[BoundFilter],
     n_date_range: int,
@@ -3302,7 +3227,7 @@ class _LocalRegroupContext(BaseModel):
 
     prebound: PreboundQuery
     bundle: ResolvedSourceBundle
-    scope: Union[ModelScope, StageSchema]
+    scope: ModelScope | StageSchema
     stage_schemas: Dict[str, StageSchema]
     producer_source_model: Optional[str]  # NOSONAR(S8396) — required-nullable: the one caller always decides
     producer_registry: Dict[Hashable, PlannedQuery]
@@ -3501,13 +3426,23 @@ def _rewrite_regrouped_prebound(
     combined_mapping: Mapping[ValueKey, ValueKey],
 ) -> PreboundQuery:
     """Every root replaced by its placeholder: a computed dimension takes the full
-    mapping, a measure only the combined one (its inners desugar COMBINED)."""
+    mapping, a measure the combined one (its inners desugar COMBINED) plus each
+    dimension value's own substitution."""
+    measure_dims = position_classes(
+        prebound.declared_measures, n_grain=prebound.n_dims + prebound.n_time_dimensions,
+    ).dim_keys_for("measure")
+    dim_values: Dict[ValueKey, ValueKey] = {}
+    for d in measure_dims:
+        sub = substitute_value_keys(d, mapping)
+        if sub != d:
+            dim_values[d] = sub
+    measure_mapping = {**dim_values, **combined_mapping}
     return PreboundQuery(
         declared_measures=[
             dm.model_copy(update={"bound": BoundExpr(
                 value_key=substitute_value_keys(
                     dm.bound.value_key,
-                    mapping if dm.is_dimension else combined_mapping,
+                    mapping if dm.is_dimension else measure_mapping,
                 ),
             )})
             for dm in prebound.declared_measures
@@ -3540,7 +3475,7 @@ def _plan_regroups(
     *,
     prebound: PreboundQuery,
     filter_typings: Sequence[ConjunctTyping],
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
     bundle: ResolvedSourceBundle,
     stage_schemas: Dict[str, StageSchema],
     producer_source_model: Optional[str],
@@ -3749,7 +3684,7 @@ def compile_synthesized(
     *,
     source_model: Optional[str],
     bundle: ResolvedSourceBundle,
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
     stage_schemas: Dict[str, StageSchema],
     population: Population,
     producer_registry: Optional[Dict[Hashable, PlannedQuery]] = None,
@@ -3793,8 +3728,8 @@ class _Routed(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    query: Union[SlayerQuery, StrictQueryCarrier]
-    env: Union[ElaboratedStage, ElaboratedProducer]
+    query: SlayerQuery | StrictQueryCarrier
+    env: ElaboratedStage | ElaboratedProducer
     typed_prebound: PreboundQuery
     prebound: PreboundQuery
     attaches: List[RegroupAttachPlan]
@@ -3832,6 +3767,7 @@ def _route_top_level(
         home_paths=_home_paths(env),
         population=population,
     )
+    check_measures_at_query_grain(prebound)
     _assert_total_routing(routed_prebound)
     return _Routed(
         query=env.query, env=env, typed_prebound=prebound, prebound=routed_prebound,
@@ -3867,7 +3803,7 @@ def _route_producer(
     )
 
 
-def _producer_source_model(env: Union[ElaboratedStage, ElaboratedProducer]) -> Optional[str]:
+def _producer_source_model(env: ElaboratedStage | ElaboratedProducer) -> Optional[str]:
     if isinstance(env.query.source_model, str):
         return env.query.source_model
     if isinstance(env.scope, ModelScope) and env.scope.source_model is not None:
@@ -3927,7 +3863,7 @@ def _producer_nesting_rule(
         k
         for dm in prebound.declared_measures
         if not dm.is_dimension
-        and isinstance(dm.bound.value_key, (ArithmeticKey, ScalarCallKey))
+        and isinstance(dm.bound.value_key, SLOT_COMPOSITE_KINDS)
         for k in walk_consumer_keys(dm.bound.value_key)
     }
 
@@ -4403,7 +4339,7 @@ def _plan_src_row_filters(
 
 
 def _source_column_names(
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
 ) -> FrozenSet[str]:
     if isinstance(scope, ModelScope) and scope.source_model is not None:
         return frozenset(c.name for c in scope.source_model.columns)
@@ -4476,7 +4412,7 @@ def _column_respellings(columns) -> Dict[str, Tuple[str, ...]]:
 
 
 def _upstream_respellings(
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
 ) -> Dict[str, Tuple[str, ...]]:
     """Respellings of the columns a stage reads locally (upstream stage / query-backed)."""
     if isinstance(scope, StageSchema):
@@ -4514,7 +4450,7 @@ def _emit_stage_schema(
     models_by_name: Dict[str, SlayerModel],
     originals: Mapping[ValueKey, ValueKey],
     upstream: Mapping[str, Tuple[str, ...]],
-    scope: Union[ModelScope, StageSchema, None] = None,
+    scope: ModelScope | StageSchema | None = None,
 ) -> StageSchema:
     """``public_projection[:n_grain_positions]`` are the declared dimension / time-dimension occurrences."""
     columns: List[StageColumn] = []
@@ -4553,7 +4489,7 @@ def _emit_stage_schema(
 
 def _source_column(
     *, key: ValueKey, root: Optional[SlayerModel], models_by_name: Dict[str, SlayerModel],
-    scope: Union[ModelScope, StageSchema, None],
+    scope: ModelScope | StageSchema | None,
 ):
     """The column a row-level stage output reads (a model column or an upstream stage
     column), for the metadata it carries downstream; ``None`` for anything else."""
@@ -4579,12 +4515,13 @@ def _source_column(
 def _stage_column(
     *, slot: ValueSlot, alias: str, flat: str, respellings: Tuple[str, ...], source=None,
 ) -> StageColumn:
-    # An upstream-bucketed column carries its granularity so a re-binding TimeDimension can type-check the re-bucket.
+    # A bucketed column (bucketed here, or passed through from upstream) carries its granularity
+    # so a re-binding TimeDimension can type-check the re-bucket.
+    row = source if slot.phase == Phase.ROW else None
     upstream_gran = (
         TimeGranularity(slot.key.granularity)
-        if isinstance(slot.key, TimeTruncKey) else None
+        if isinstance(slot.key, TimeTruncKey) else getattr(row, "granularity", None)
     )
-    row = source if slot.phase == Phase.ROW else None
     return StageColumn(
         name=flat,
         sql_alias=flat,

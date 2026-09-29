@@ -18,6 +18,7 @@ from slayer.core.keys import (
     BetweenKey,
     ColumnKey,
     ColumnSqlKey,
+    ColumnTypeFn,
     InKey,
     LiteralKey,
     ScalarCallKey,
@@ -43,11 +44,13 @@ from slayer.sql.render.parse import (  # noqa: F401 — re-exported render surfa
 # module ``row_expr`` so ``ScopeFrame`` can reuse them; re-imported
 # here so this module keeps its full render surface.
 from slayer.sql.render.row_expr import (  # noqa: F401 — re-exported render surface
+    DATE_FUNCTIONS,
     _literal,
     group_is_operands,
     group_unary_operand,
     iif_case_chain,
     render_arithmetic,
+    render_date_call,
     render_scalar_call,
 )
 from slayer.sql.scope import ScopeFrame
@@ -153,6 +156,10 @@ class RenderContext(BaseModel):
     filters: Optional[FilterFacilities] = None
     composites: Optional[CompositeFacilities] = None
     aliases: Optional[AliasFacilities] = None
+    #: Declared column types for date-function operands; defaults to ``scope.column_type``.
+    column_type: Optional[ColumnTypeFn] = None
+    #: Grouped SELECT: each dimension's key → its GROUP BY expression.
+    dimension_values: Optional[Dict[Any, Expression]] = None
 
 
 def _require(*, ctx: RenderContext, facility: str, key: Any) -> Any:
@@ -332,6 +339,9 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
         in ctx.aliases.composite_alias_slot_ids
     ):
         return _render_via_alias(key, ctx)
+    # Aggregate internals render through their builder's own scope, never here.
+    if ctx.dimension_values is not None and key in ctx.dimension_values:
+        return ctx.dimension_values[key].copy()
 
     if isinstance(key, (ColumnKey, SqlFragmentKey)):
         return _require_scope(ctx, key).resolve(key, consumer=ctx.consumer)
@@ -359,7 +369,7 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
         return exp.Star()
 
     if isinstance(key, LiteralKey):
-        return _literal(key.value)
+        return _literal(key.value, dialect=ctx.dialect)
 
     if isinstance(key, TimeTruncKey):
         column = _require_scope(ctx, key).resolve(
@@ -390,9 +400,13 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
         args = [
             render_value_key(key=a, ctx=ctx)
             if isinstance(a, _FrozenKey)
-            else _literal(a)
+            else _literal(a, dialect=ctx.dialect)
             for a in key.args
         ]
+        if key.name in DATE_FUNCTIONS:
+            return render_date_call(
+                key=key, args=args, dialect=ctx.dialect, column_type=_column_types(ctx, key),
+            )
         return render_scalar_call(
             name=key.name, args=args, dialect=ctx.dialect,
         )
@@ -414,7 +428,7 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
             )
         node = exp.In(
             this=render_value_key(key=key.column, ctx=ctx),
-            expressions=[_literal(v.value) for v in key.values],
+            expressions=[_literal(v.value, dialect=ctx.dialect) for v in key.values],
         )
         return exp.Not(this=node) if key.negated else node
 
@@ -448,10 +462,21 @@ def _render_iif_case(*, key: ScalarCallKey, ctx: "RenderContext") -> exp.Case:
     def _part(a):
         return (
             render_value_key(key=a, ctx=ctx)
-            if isinstance(a, _FrozenKey) else _literal(a)
+            if isinstance(a, _FrozenKey) else _literal(a, dialect=ctx.dialect)
         )
 
     return iif_case_chain(key=key, part=_part)
+
+
+def _column_types(ctx: RenderContext, key: ScalarCallKey) -> ColumnTypeFn:
+    if ctx.column_type is not None:
+        return ctx.column_type
+    if ctx.scope is not None:
+        return ctx.scope.column_type
+    raise RenderContextMissingFacilityError(
+        key_kind=type(key).__name__, facility="column_type",
+        detail=f"{key.name}() needs its operands' declared types",
+    )
 
 
 def contains_aggregate(key: ValueKey) -> bool:

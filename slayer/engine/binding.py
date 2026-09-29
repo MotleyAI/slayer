@@ -6,7 +6,7 @@ from __future__ import annotations
 import difflib
 import os
 from decimal import Decimal
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, ConfigDict
 
@@ -36,7 +36,7 @@ from slayer.core.enums import (
 )
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS
-from slayer.core.keys import SCALAR_FUNCTIONS, check_scalar_arity, AggregateKey, ArithmeticKey, ColumnKey, ColumnSqlKey, Grain, InKey, LiteralKey, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, column_path, is_attached_source, normalize_scalar, prepend_value_key, walk_value_keys
+from slayer.core.keys import DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, SCALAR_FUNCTIONS, check_scalar_arity, parse_iso_temporal, value_arg_positions, AggregateKey, ArithmeticKey, ColumnKey, ColumnSqlKey, Grain, InKey, LiteralKey, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, column_path, is_attached_source, normalize_scalar, prepend_value_key, walk_value_keys
 from slayer.core.join_walker import (
     OrientedJoin,
     aggregation_owner,
@@ -121,7 +121,7 @@ def _fmt_measure_chain(chain: Tuple[Tuple[str, str], ...]) -> List[str]:
 def bind_expr(
     parsed: ParsedExpr,
     *,
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
     bundle: ResolvedSourceBundle,
     allow_measures: bool = False,
     dimension_alias_map: Optional[Dict[str, "ValueKey"]] = None,
@@ -166,7 +166,7 @@ def spelled_aggregate_key(
 def bind_time_dimension(
     td: TimeDimension,
     *,
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
     bundle: ResolvedSourceBundle,
 ) -> BoundTimeDimension:
     """Bind a ``TimeDimension`` into a ``BoundTimeDimension``: a ``BoundExpr`` carrying a ``TimeTruncKey`` plus the column facts the checker judges (its type, its recorded bucket granularity — from a ``StageColumn`` or a model ``Column``). The column resolves like a Mode-B identifier ref against a ``ModelScope`` (joins) or a flat ``StageSchema``; the temporal / re-bucketing rules are the checker's (P9)."""
@@ -191,9 +191,9 @@ def bind_time_dimension(
 def _time_dimension_column_facts(
     full: str,
     *,
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
     bundle: ResolvedSourceBundle,
-) -> Tuple[Union[ColumnKey, ColumnSqlKey], Optional[DataType], Optional[TimeGranularity]]:
+) -> Tuple[ColumnKey | ColumnSqlKey, Optional[DataType], Optional[TimeGranularity]]:
     """Resolve a time dimension's column against ``scope`` and read its facts — (bound column key, column type, recorded bucket granularity). Stage arm reads the flat ``StageColumn`` (dotted → illegal-scope, unknown → unknown-reference); model arm walks joins to the terminal ``Column`` and returns its ``granularity``, so a bucketed model column re-buckets under the same rule as a stage column."""
     if isinstance(scope, StageSchema):
         if "." in full:
@@ -248,7 +248,7 @@ def _canonical_if_routed(
     *,
     parsed: ParsedExpr,
     value_key: ValueKey,
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
 ) -> Optional[str]:
     """Full canonical dotted path when a ``DottedRef``'s bound path differs from
     its typed hop path (auto-routed or respelled) — or the canonical name of a
@@ -300,7 +300,7 @@ def _terminal_model_for_path(
 def bind_filter(
     parsed: ParsedExpr,
     *,
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
     bundle: ResolvedSourceBundle,
     alias_map: Optional[Dict[str, "ValueKey"]] = None,
     dimension_alias_map: Optional[Dict[str, "ValueKey"]] = None,
@@ -331,7 +331,7 @@ def bind_filter(
 def _bind(
     parsed: ParsedExpr,
     *,
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
     bundle: ResolvedSourceBundle,
     in_filter: bool,
     alias_map: Optional[Dict[str, "ValueKey"]] = None,
@@ -427,7 +427,7 @@ def _bind(
 def _bind_in(
     parsed: Cmp,
     *,
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
     bundle: ResolvedSourceBundle,
     in_filter: bool,
     alias_map: Optional[Dict[str, "ValueKey"]] = None,
@@ -483,7 +483,7 @@ def _name_suggestion(*, name: str, model: "SlayerModel") -> str | None:
 def _resolve_ref(
     name: str,
     *,
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
     bundle: ResolvedSourceBundle,
     alias_map: Optional[Dict[str, "ValueKey"]] = None,
     measure_ctx: Optional[MeasureResolutionCtx] = None,
@@ -672,7 +672,7 @@ def _strip_self_prefix(
 def _resolve_dotted(
     parts: Tuple[str, ...],
     *,
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
     bundle: ResolvedSourceBundle,
     alias_map: Optional[Dict[str, "ValueKey"]] = None,
     measure_ctx: Optional[MeasureResolutionCtx] = None,
@@ -910,7 +910,7 @@ def _resolve_saved_measure(
 def _resolve_dotted_star(
     parts: Tuple[str, ...],
     *,
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
     bundle: ResolvedSourceBundle,
 ) -> StarKey:
     """Resolve a dotted star (``customers.*``) to a ``StarKey`` whose ``path`` is
@@ -948,7 +948,7 @@ def _resolve_dotted_star(
 
 def _bind_partition_keys(
     value, *,
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
     bundle: ResolvedSourceBundle,
     dim_alias_map: Optional[Dict[str, "ValueKey"]],
     label: str,
@@ -972,7 +972,7 @@ def _bind_partition_keys(
 
 def _bind_expression_agg_source(
     parsed_source: ParsedExpr, *,
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
     bundle: ResolvedSourceBundle,
 ) -> ValueKey:
     """Bind a scalar-expression aggregate source.
@@ -1060,7 +1060,7 @@ def _expression_is_confidently_boolean(key, *, model: Optional[SlayerModel]) -> 
 
 def _reject_non_numeric_expression_agg(
     *, source: ValueKey, agg: str,
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
 ) -> None:
     if agg not in NUMERIC_ONLY_AGGREGATIONS:
         return
@@ -1101,12 +1101,12 @@ def _source_is_reaggregation(node) -> bool:
 
 def _bind_agg_call(
     parsed: AggCall, *,
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
     bundle: ResolvedSourceBundle,
     alias_map: Optional[Dict[str, "ValueKey"]] = None,
     measure_ctx: Optional[MeasureResolutionCtx] = None,
     dim_alias_map: Optional[Dict[str, "ValueKey"]] = None,
-) -> Union[AggregateKey, TransformKey]:
+) -> AggregateKey | TransformKey:
     """Bind an ``AggCall``; ``first`` / ``last`` dispatch by the bound operand's
     type — attached → the series transform, row grain → the ranked aggregation."""
     op = normalize_aggregation_name(parsed.agg)
@@ -1125,7 +1125,7 @@ def _bind_agg_call(
 
 def _bind_agg(
     parsed: AggCall, *,
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
     bundle: ResolvedSourceBundle,
     dim_alias_map: Optional[Dict[str, "ValueKey"]] = None,
 ) -> AggregateKey:
@@ -1410,7 +1410,7 @@ def _column_agg_refusal(*, col, columns, agg: str, custom: bool) -> Optional[str
 
 def _bind_agg_arg(
     parsed: ParsedExpr, *,
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
     bundle: ResolvedSourceBundle,
     dim_alias_map: Optional[Dict[str, "ValueKey"]] = None,
 ):
@@ -1480,7 +1480,7 @@ _TRANSFORM_KWARG_RULES: dict = {
     "percent_rank": frozenset(),
     "dense_rank": frozenset(),
     "ntile": frozenset({"n"}),
-    "consecutive_periods": frozenset({"period"}),
+    "consecutive_periods": frozenset(),
 }
 
 # Positional-param signature (after the value) mapping the i-th positional onto
@@ -1525,7 +1525,7 @@ def _transform_positional_pairs(
 
 def _bind_transform(
     parsed: TransformCall, *,
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
     bundle: ResolvedSourceBundle,
     alias_map: Optional[Dict[str, "ValueKey"]] = None,
     measure_ctx: Optional[MeasureResolutionCtx] = None,
@@ -1543,7 +1543,7 @@ def _bind_transform(
 
 def _bind_transform_input(
     parsed: ParsedExpr, *,
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
     bundle: ResolvedSourceBundle,
     alias_map: Optional[Dict[str, "ValueKey"]],
     measure_ctx: Optional[MeasureResolutionCtx],
@@ -1560,7 +1560,7 @@ def _bind_transform_input(
 def _bind_transform_params(
     *, op: str, inp: ValueKey,
     args: Tuple[ParsedExpr, ...], kwargs: Tuple[Tuple[str, ParsedExpr], ...],
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
     bundle: ResolvedSourceBundle,
     dim_alias_map: Optional[Dict[str, "ValueKey"]],
 ) -> TransformKey:
@@ -1644,12 +1644,13 @@ def _apply_transform_kwarg_defaults(
 
 def _bind_scalar(
     parsed: ScalarCall, *,
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
     bundle: ResolvedSourceBundle,
     in_filter: bool,
     alias_map: Optional[Dict[str, "ValueKey"]] = None,
     measure_ctx: Optional[MeasureResolutionCtx] = None,
     dim_alias_map: Optional[Dict[str, "ValueKey"]] = None,
+    temporal: bool = False,
 ) -> ScalarCallKey:
     if parsed.name not in SCALAR_FUNCTIONS:
         # Defence in depth: direct ParsedExpr construction bypasses the parser.
@@ -1673,17 +1674,44 @@ def _bind_scalar(
                 f"(value, pattern); got {len(parsed.args)}."
             )
         raise ValueError(arity_error)
-    args = tuple(
-        _bind(a, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map, measure_ctx=measure_ctx, dim_alias_map=dim_alias_map)
-        for a in parsed.args
-    )
+    def bind(a: ParsedExpr, *, in_temporal_slot: bool) -> ValueKey:
+        if in_temporal_slot and isinstance(a, Literal) and isinstance(a.value, str):
+            # An ISO string literal in a DATE/TIMESTAMP slot binds as a date value.
+            return LiteralKey(value=parse_iso_temporal(a.value) or a.value)
+        if in_temporal_slot and isinstance(a, ScalarCall):
+            return _bind_scalar(
+                a, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map,
+                measure_ctx=measure_ctx, dim_alias_map=dim_alias_map, temporal=True,
+            )
+        return _bind(
+            a, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map,
+            measure_ctx=measure_ctx, dim_alias_map=dim_alias_map,
+        )
+
+    slots = set(DATE_OPERAND_ARGS.get(parsed.name, ()))
+    if temporal:
+        slots.update(value_arg_positions(parsed.name, len(parsed.args)))
+    args = tuple(bind(a, in_temporal_slot=i in slots) for i, a in enumerate(parsed.args))
+    if parsed.name == "date_add":
+        _check_literal_count(args[DATE_ADD_COUNT_ARG])
     return ScalarCallKey(name=parsed.name, args=args)
+
+
+def _check_literal_count(count: ValueKey) -> None:
+    if not isinstance(count, LiteralKey):
+        return
+    value = count.value
+    if not isinstance(value, Decimal) or value != value.to_integral_value():
+        raise ValueError(
+            f"date_add() / interval() count must be an integer or a numeric expression; "
+            f"got the literal {value!r}."
+        )
 
 
 def _reject_windowed_column_sql(
     refs: Tuple[ValueKey, ...],
     *,
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
     bundle: ResolvedSourceBundle,
     parsed: ParsedExpr,
 ) -> None:
@@ -1720,7 +1748,7 @@ def _reject_windowed_column_sql(
 def _lookup_model(
     *,
     name: str,
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
     bundle: ResolvedSourceBundle,
 ) -> Optional[SlayerModel]:
     if isinstance(scope, ModelScope) and scope.source_model is not None:

@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlglot
 from sqlglot import exp
 
-from slayer.core.enums import TimeGranularity
+from slayer.core.enums import DataType, TimeGranularity
 from slayer.sql.dialects.clickhouse import ClickhouseDialect
 
 
@@ -81,13 +81,13 @@ def test_clickhouse_build_stat_agg_1arg_stddev_samp() -> None:
 # Time arithmetic — INTERVAL-based (sqlglot transpiles to ClickHouse syntax)
 
 
-def test_clickhouse_build_time_offset_expr_day() -> None:
+def test_clickhouse_build_date_add_day() -> None:
     d = ClickhouseDialect()
-    col = sqlglot.parse_one("created_at", dialect="clickhouse")
-    out = d.build_time_offset_expr(col, offset=3, granularity="day")
-    sql = out.sql(dialect="clickhouse").upper()
-    assert "INTERVAL" in sql
-    assert "DAY" in sql
+    col = exp.column("created_at")
+    out = d.build_date_add(
+        expr=col, count=exp.Literal.number(3), unit=TimeGranularity.DAY, operand=DataType.TIMESTAMP,
+    )
+    assert out.sql(dialect="clickhouse") == "addDays(created_at, 3)"
 
 
 def test_clickhouse_build_date_trunc_month() -> None:
@@ -110,5 +110,5 @@ def test_clickhouse_build_date_trunc_week_sunday_shift() -> None:
     # ``DATE_TRUNC`` and ``dateTrunc`` so either is correct on the wire,
     # but sqlglot only emits one form — pin it.
     assert "DATETRUNC('WEEK'" in up
-    assert "+ INTERVAL 1 DAY" in up
-    assert "- INTERVAL 1 DAY" in up
+    assert "ADDDAYS(ORDERED_AT, 1)" in up
+    assert up.endswith(", -1)")

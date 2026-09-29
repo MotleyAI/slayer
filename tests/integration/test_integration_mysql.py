@@ -23,6 +23,15 @@ import uuid
 import pytest
 
 import sqlalchemy as sa
+from tests._dev1737_fixtures import (
+    DateCase,
+    all_models,
+    assert_case,
+    check_server_scenarios,
+    matrix_cases,
+    matrix_query,
+    server_seed_statements,
+)
 from tests._engine_helpers import disposable_engine
 
 from slayer.async_utils import run_sync
@@ -39,6 +48,12 @@ from slayer.engine.ingestion import ingest_datasource
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql import engine_factory
 from slayer.storage.yaml_storage import YAMLStorage
+from tests.integration._consecutive_periods_calendar import (
+    CALENDAR_CASES,
+    assert_calendar_streak,
+    seed_statements,
+    streak_model,
+)
 
 pytest.importorskip("testcontainers.mysql")
 
@@ -193,6 +208,8 @@ def _mysql_env_storage(mysql_container, tmp_path_factory):
                         (6, "pending", 300, 3, "2024-03-10 16:00:00"),
                     ],
                 )
+                for stmt in seed_statements(timestamp_type="DATETIME"):
+                    cur.execute(stmt)
         finally:
             conn.close()
 
@@ -225,6 +242,7 @@ def _mysql_env_storage(mysql_container, tmp_path_factory):
         )
         run_sync(storage.save_model(orders_model))
         run_sync(storage.save_model(customers_model))
+        run_sync(storage.save_model(streak_model("testmysql")))
 
         yield storage
     finally:
@@ -437,6 +455,12 @@ class TestMySQLQueries:
         )
         result = await mysql_env.execute(query=query)
         assert [r["orders.positive_run"] for r in result.data] == [1, 0, 1]
+
+    @pytest.mark.parametrize("column,granularity", CALENDAR_CASES)
+    async def test_consecutive_periods_breaks_on_calendar_gap(
+        self, mysql_env: SlayerQueryEngine, column: str, granularity: str,
+    ) -> None:
+        await assert_calendar_streak(mysql_env, column=column, granularity=granularity)
 
     async def test_change_with_date_range(self, mysql_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
@@ -1440,3 +1464,54 @@ class TestMySQLIngestComments:
         models, _, _ = mysql_ingest_env
         regions = next(m for m in models if m.name == "regions")
         assert regions.description is None
+
+
+# ---------------------------------------------------------------------------
+# Mode-B date functions (the shared oracle matrix + spec scenarios)
+# ---------------------------------------------------------------------------
+
+_DATE_CASES = matrix_cases()
+
+
+@pytest.fixture(scope="module")
+def _mysql_dates_storage(mysql_container, tmp_path_factory):
+    db_name = _create_module_db(mysql_container)
+    try:
+        conn = _admin_connect(mysql_container, dbname=db_name)
+        try:
+            with conn.cursor() as cur:
+                for stmt in server_seed_statements("mysql", today=date.today()):
+                    cur.execute(stmt)
+        finally:
+            conn.close()
+        storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("mysql_dates")))
+        run_sync(storage.save_datasource(_ds_config(mysql_container, db_name)))
+        for model in all_models(data_source="testmysql"):
+            run_sync(storage.save_model(model))
+        yield storage
+    finally:
+        _drop_module_db(mysql_container, db_name)
+
+
+@pytest.fixture
+def mysql_dates(_mysql_dates_storage) -> SlayerQueryEngine:
+    return SlayerQueryEngine(storage=_mysql_dates_storage)
+
+
+@pytest.mark.integration
+class TestMySQLDateFunctions:
+    @pytest.mark.parametrize("case", _DATE_CASES, ids=[c.case_id for c in _DATE_CASES])
+    async def test_matrix(self, mysql_dates: SlayerQueryEngine, case: DateCase) -> None:
+        assert_case((await mysql_dates.execute(matrix_query(case))).data, case)
+
+    async def test_scenarios(self, mysql_dates: SlayerQueryEngine) -> None:
+        await check_server_scenarios(mysql_dates)
+
+    async def test_hourly_time_dimension_keeps_the_hour(self, mysql_dates: SlayerQueryEngine) -> None:
+        resp = await mysql_dates.execute(SlayerQuery.model_validate({
+            "source_model": "dt", "dimensions": ["id"],
+            "time_dimensions": [{"dimension": "t1", "granularity": "hour"}],
+        }))
+        buckets = {int(r["dt.id"]): r["dt.t1"] for r in resp.data}
+        assert str(buckets[1])[:19] == "2024-01-31 23:00:00"
+        assert str(buckets[4])[:19] == "2024-06-02 10:00:00"

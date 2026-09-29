@@ -94,6 +94,7 @@ from slayer.ir.planned import (
     emitted_plans,
     is_spliced,
     plan_has_semi_join_filters,
+    plans_read_clock,
 )
 from slayer.engine.schema_drift import (
     AppliedEntry,
@@ -557,6 +558,8 @@ class _Prepared(BaseModel):
     slack_warnings: List[Any] = PydanticField(default_factory=list)
     population: Optional[str] = None
     population_inferred: bool = False
+    #: The SQL evaluates ``now()`` / ``current_date()``: its result must never be cached.
+    reads_clock: bool = False
 
 
 class _Rendered(BaseModel):
@@ -936,6 +939,7 @@ class SlayerQueryEngine:
             slack_warnings=rendered.warnings,
             population=rendered.population,
             population_inferred=rendered.population_inferred,
+            reads_clock=plans_read_clock(rendered.emitted_list),
         )
 
     async def _plan_and_render(  # NOSONAR S3776 — linear pipeline (localize→infer→bundle→normalize→variables→plan→render); splitting hides the order of operations
@@ -1220,7 +1224,7 @@ class SlayerQueryEngine:
                 population_inferred=prepared.population_inferred,
             )
 
-        use_cache = cache and not dry_run and not explain
+        use_cache = cache and not dry_run and not explain and not prepared.reads_clock
         # Bind the cache once so a concurrent ``cache_config`` reassignment can't
         # split the get / put across two caches.
         cache_obj = self._cache
@@ -1426,9 +1430,10 @@ class SlayerQueryEngine:
 
         return run_sync(_run())
 
-    async def _reexecute_entry(self, entry: _CacheEntry, now: float) -> _CacheEntry:
+    async def _reexecute_entry(self, entry: _CacheEntry, now: float) -> Optional[_CacheEntry]:
         """Re-prepare + re-execute a stale entry, pinning its connection identity via
-        ``override_datasource`` so no config change migrates it; raises if the client is gone."""
+        ``override_datasource`` so no config change migrates it; raises if the client is gone.
+        ``None`` when the query now reads the clock (never cached)."""
         client = self._sql_clients.get(entry.ds_key)
         if client is None:
             raise RuntimeError(
@@ -1448,6 +1453,8 @@ class SlayerQueryEngine:
             prefer_data_source=prefer_ds,
             override_datasource=client.datasource,
         )
+        if prepared.reads_clock:
+            return None
         applicable, refresh_key_values = await self._scan_refresh_key_baselines(
             prepared=prepared, client=client, cache=self._cache
         )
@@ -1554,6 +1561,9 @@ class SlayerQueryEngine:
                 result.errors.append(RefreshError(
                     key=key, phase="re_execute", message=str(exc),
                 ))
+                continue
+            if new_entry is None:
+                await self._cache.delete(key)
                 continue
             new_key = QueryCache.make_key(new_entry.sql, new_entry.ds_fingerprint)
             replaced = await self._cache.commit_replace(

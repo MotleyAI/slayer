@@ -10,7 +10,7 @@ import sqlglot
 from sqlglot import exp
 from sqlglot.expressions.core import Expression
 
-from slayer.core.enums import TimeGranularity
+from slayer.core.enums import DataType, TimeGranularity
 from slayer.sql.dialects import _ALL_DIALECTS, SqlDialect, get_dialect
 from slayer.sql.dialects.base import StatAgg1Name, StatAgg2Name, _build_covar_decomposition
 
@@ -112,8 +112,9 @@ class TestAggregateHooks:
     @pytest.mark.parametrize("offset", [2, -1])
     def test_time_offset(self, name: str, granularity: TimeGranularity, offset: int) -> None:
         d = get_dialect(name)
-        _check(name, f"offset|{granularity.value}|{offset}", lambda: d.build_time_offset_expr(
-            col_expr=_created(), offset=offset, granularity=granularity,
+        _check(name, f"offset|{granularity.value}|{offset}", lambda: d.build_date_add(
+            expr=_created(), count=exp.Literal.number(offset), unit=granularity,
+            operand=DataType.TIMESTAMP,
         ))
 
     def test_date_trunc_tree_is_consistent(self, name: str) -> None:

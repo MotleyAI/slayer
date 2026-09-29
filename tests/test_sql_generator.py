@@ -665,7 +665,7 @@ class TestFields:
     async def test_time_shift_over_week_sunday_uses_one_week_interval(
         self, generator: SQLGenerator, orders_model: SlayerModel
     ) -> None:
-        """A time_shift over a WEEK_SUNDAY time dim (granularity derived from the time dim, not passed explicitly) shifts by one week — exercising ``build_time_offset_expr``'s ``"week_sunday"`` path. Must emit valid date arithmetic, not blow up on the unknown granularity string."""
+        """A time_shift over a WEEK_SUNDAY time dim (granularity derived from the time dim, not passed explicitly) shifts by one week — exercising ``build_date_add``'s ``week_sunday`` path. Must emit valid date arithmetic, not blow up on the unknown granularity string."""
         orders_model.default_time_dimension = "created_at"
         query = SlayerQuery(
             source_model="orders",
@@ -969,12 +969,11 @@ class TestFields:
             query=query,
             model=orders_model,
         )
-        assert "DATETIME(" in sql
-        assert "'-7 days'" in sql
-        assert "'-2 days'" in sql
-        assert "'-3 hours'" in sql
-        assert "'-4 minutes'" in sql
-        assert "'-5 seconds'" in sql
+        # One slayer_date_add call per duration part, applied in written order.
+        norm = _norm(sql).upper()
+        for piece in (", -1, 'WEEK'", ", -2, 'DAY'", ", -3, 'HOUR'", ", -4, 'MINUTE'", ", -5, 'SECOND'"):
+            assert piece in norm, f"missing per-unit date-add call '{piece}'\nsql:\n{sql}"
+        assert "SLAYER_DATE_ADD(" in norm
 
 
     async def test_two_windowed_measures_emit_distinct_ctes(
@@ -2440,11 +2439,8 @@ class TestMultiDialectGeneration:
         assert "shifted_" in sql
         assert "LEFT JOIN" in sql
         # Join should be simple equality (timestamp shift is inside the shifted CTE) Dialect-specific date arithmetic should appear in the shifted CTE's SELECT/GROUP BY
-        sql_upper = sql.upper()
-        if dialect == "sqlite":
-            assert "DATE(" in sql_upper
-        else:
-            assert "INTERVAL" in sql_upper
+        expected = {"sqlite": "SLAYER_DATE_ADD(", "clickhouse": "ADDYEARS(", "snowflake": "DATEADD(YEAR"}
+        assert expected.get(dialect, "INTERVAL") in sql.upper()
 
     @pytest.mark.parametrize("dialect", ["mysql", "clickhouse"])
     async def test_window_measure_multi_unit_interval_dialect_correct(
@@ -2468,8 +2464,12 @@ class TestMultiDialectGeneration:
             f"Multi-unit Postgres-shape INTERVAL literal is invalid on {dialect}.\n"
             f"sql:\n{sql}"
         )
-        # Per-unit INTERVAL clauses must each be present (sqlglot transpiles exp.Interval per dialect: `INTERVAL N UNIT`).
-        for piece in ("INTERVAL 1 YEAR", "INTERVAL 2 MONTH", "INTERVAL 3 DAY"):
+        # One dialect date-add per unit, never a quoted multi-unit literal.
+        pieces = {
+            "mysql": ("INTERVAL -1 YEAR", "INTERVAL -2 MONTH", "INTERVAL -3 DAY"),
+            "clickhouse": ("ADDYEARS(", "ADDMONTHS(", "ADDDAYS("),
+        }[dialect]
+        for piece in pieces:
             assert piece in norm, (
                 f"Expected dialect-correct '{piece}' in {dialect} output.\n"
                 f"sql:\n{sql}"
@@ -2496,8 +2496,9 @@ class TestMultiDialectGeneration:
             f"Quoted single-unit INTERVAL literal is invalid on {dialect}.\n"
             f"sql:\n{sql}"
         )
-        assert "INTERVAL 7 DAY" in norm, (
-            f"Expected dialect-correct 'INTERVAL 7 DAY' in {dialect} output.\n"
+        piece = {"mysql": "INTERVAL -7 DAY", "clickhouse": ", -7"}[dialect]
+        assert piece in norm, (
+            f"Expected dialect-correct '{piece}' in {dialect} output.\n"
             f"sql:\n{sql}"
         )
 
@@ -7777,7 +7778,7 @@ class TestIsolatedFilteredMeasureCTEs:
     async def test_aggregate_and_post_filters_route_independently(
         self, generator: SQLGenerator, claim_amount_model, related_models,
     ) -> None:
-        """A single query carrying BOTH an AGGREGATE-phase host filter (``loss_payment_amt:sum > 1000``) AND a POST-phase host filter (``cumsum(loss_payment_amt:sum) > 0``) routes each independently: the aggregate filter to the outer combined WHERE wrapper; the POST filter to the existing post-transform wrapper. The two predicates live in DIFFERENT scopes — they must not collapse into one outer WHERE that references the cumsum column, nor merge into one HAVING."""
+        """A plain measure filter (``loss_payment_amt:sum > 1000``) beside a transform filter (``cumsum(loss_payment_amt:sum) > 0``): both mask at the chain's final select, so the plain one never shrinks the series cumsum reads (Axiom 14)."""
         claim_amount_model.default_time_dimension = "created_at"
         claim_amount_model.columns.append(
             Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
@@ -7800,25 +7801,18 @@ class TestIsolatedFilteredMeasureCTEs:
         assert "> 1000" in sql, f"AGGREGATE filter '> 1000' missing:\n{sql}"
         assert "> 0" in sql, f"POST filter '> 0' missing:\n{sql}"
         assert "OVER" in sql.upper(), f"Expected windowed SUM ... OVER (...) for cumsum:\n{sql}"
-        # Layer-boundary pin: AGGREGATE in the combined ``base`` CTE WHERE; POST in the chain's final-select WHERE; neither leaks into the other layer.
+        # Layer-boundary pin: neither filter in ``base``; both in the chain's final-select WHERE.
         base_body = _extract_cte_body(sql, r"\bbase\b")
-        assert "> 1000" in base_body, (
-            f"AGGREGATE filter '> 1000' must apply in the combined "
-            f"``base`` CTE WHERE:\n{base_body}"
-        )
-        assert "> 0" not in base_body, (
-            f"POST filter '> 0' leaked into the combined ``base`` CTE — "
-            f"it must stay at the chain's final select:"
-            f"\n{base_body}"
-        )
+        for pred in ("> 1000", "> 0"):
+            assert pred not in base_body, (
+                f"filter {pred!r} leaked into the ``base`` CTE, ahead of the "
+                f"cumsum window:\n{base_body}"
+            )
         filtered_where = post_filter_where(sql)
-        assert "> 0" in filtered_where, (
-            f"POST filter '> 0' must be the WHERE of the chain's final select:\n{sql}"
-        )
-        assert "> 1000" not in filtered_where, (
-            f"AGGREGATE filter '> 1000' leaked into the chain's final-select "
-            f"WHERE:\n{filtered_where}"
-        )
+        for pred in ("> 1000", "> 0"):
+            assert pred in filtered_where, (
+                f"filter {pred!r} must be the WHERE of the chain's final select:\n{sql}"
+            )
         _assert_valid_sql(sql)
 
     async def test_filter_referencing_two_isolated_aggregates(

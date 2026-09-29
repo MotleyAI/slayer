@@ -6,9 +6,13 @@ the same slot. Keys carry only what's needed to decide "are these the same slot?
 
 from __future__ import annotations
 
+import re
+from datetime import date, datetime
 from decimal import Decimal
 from enum import IntEnum
+from types import MappingProxyType
 from typing import (
+    Any,
     Dict,
     FrozenSet,
     Sequence,
@@ -35,8 +39,11 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from slayer.core.enums import (
     AXIS_COLLAPSING_TRANSFORMS,
     DataType,
+    DatePart,
     RANK_FAMILY_TRANSFORMS,
     RANKED_AGGREGATIONS,
+    SUB_DAY_GRANULARITIES,
+    TimeGranularity,
 )
 from slayer.core.format import NumberFormat
 
@@ -46,53 +53,70 @@ from slayer.core.format import NumberFormat
 REGROUP_LEAF_PREFIX = "__regroup__"
 
 
-# Closed scalar-function allowlist (C12): anything outside this set in Mode B
-# raises UnknownFunctionError at binding time. Single source of truth.
-SCALAR_FUNCTIONS: frozenset[str] = frozenset({
-    "nullif", "coalesce", "ifnull",
-    "ln", "log10", "log2", "log", "exp", "sqrt", "pow", "power",
-    "abs", "floor", "ceil", "ceiling", "round", "sign", "trunc", "mod",
-    # Scalar min/max over the arguments (NOT the min:/max: aggregations).
-    "greatest", "least",
-    "lower", "upper", "trim", "ltrim", "rtrim",
-    "replace", "substr", "substring", "instr", "length", "concat",
-    "like",  # emits SQL LIKE operator
-    "iif",  # emits CASE WHEN (CASE surface rewrites to it at parse time)
+class ScalarSpec(BaseModel, frozen=True):
+    """One allowlisted Mode-B scalar: accepted argument counts (``max_args=None``
+    is variadic) and whether its call is literally the same SQL function."""
+
+    min_args: int
+    max_args: Optional[int] = None
+    sql_passthrough: bool = True
+
+
+def _spec(low: int, high: Optional[int], *, sql: bool = True) -> ScalarSpec:
+    return ScalarSpec(min_args=low, max_args=high, sql_passthrough=sql)
+
+
+# The one canonical Mode-B scalar allowlist (C12); every other scalar set derives
+# from it. Arity is enforced because sqlglot silently mis-handles wrong-arity calls.
+SCALAR_SPECS: Mapping[str, ScalarSpec] = MappingProxyType({
+    "nullif": _spec(2, 2), "coalesce": _spec(1, None), "ifnull": _spec(2, 2),
+    "ln": _spec(1, 1), "log10": _spec(1, 1), "log2": _spec(1, 1), "log": _spec(1, 2),
+    "exp": _spec(1, 1), "sqrt": _spec(1, 1), "pow": _spec(2, 2), "power": _spec(2, 2),
+    "abs": _spec(1, 1), "floor": _spec(1, 1), "ceil": _spec(1, 1), "round": _spec(1, 2),
+    "ceiling": _spec(1, 1), "sign": _spec(1, 1),
+    "trunc": _spec(1, 1),  # 2-arg form silently drops digits on SQLite
+    "mod": _spec(2, 2),
+    # Scalar min/max; min two args because 1-arg MAX/MIN parse as the aggregate on SQLite.
+    "greatest": _spec(2, None), "least": _spec(2, None),
+    "lower": _spec(1, 1), "upper": _spec(1, 1), "trim": _spec(1, 1), "length": _spec(1, 1),
+    # Trims take the string only; 2-arg strip-set form deferred (DEV-1793).
+    "ltrim": _spec(1, 1), "rtrim": _spec(1, 1),
+    "replace": _spec(3, 3), "substr": _spec(2, 3), "substring": _spec(2, 3), "instr": _spec(2, 2),
+    "concat": _spec(1, None),
+    "like": _spec(2, 2, sql=False),  # emits the LIKE operator
+    "iif": _spec(3, 3, sql=False),  # emits CASE WHEN
+    "date_part": _spec(2, 2, sql=False),
+    "date_diff": _spec(3, 3, sql=False),
+    "date_add": _spec(3, 3, sql=False),
+    "interval": _spec(2, 2, sql=False),  # parse-time spelling of date_add
+    "current_date": _spec(0, 0, sql=False),
+    "now": _spec(0, 0, sql=False),
 })
 
-
-# Accepted argument counts per allowlisted scalar, as (min, max); max=None means
-# variadic. Enforced because sqlglot silently mis-handles wrong-arity calls.
+SCALAR_FUNCTIONS: frozenset[str] = frozenset(SCALAR_SPECS)
 SCALAR_FUNCTION_ARITY: dict[str, tuple[int, Optional[int]]] = {
-    "nullif": (2, 2),
-    "coalesce": (1, None),
-    "ifnull": (2, 2),
-    "ln": (1, 1), "log10": (1, 1), "log2": (1, 1), "log": (1, 2),
-    "exp": (1, 1), "sqrt": (1, 1),
-    "pow": (2, 2), "power": (2, 2),
-    "abs": (1, 1), "floor": (1, 1), "ceil": (1, 1), "round": (1, 2),
-    "ceiling": (1, 1), "sign": (1, 1),  # ceiling: T-SQL spelling of ceil
-    "trunc": (1, 1),  # 2-arg form silently drops digits on SQLite
-    "mod": (2, 2),
-    # Variadic min two: 1-arg MAX/MIN parse as the aggregate on SQLite.
-    "greatest": (2, None), "least": (2, None),
-    "lower": (1, 1), "upper": (1, 1), "trim": (1, 1), "length": (1, 1),
-    # Trims take the string only; 2-arg strip-set form deferred (DEV-1793).
-    "ltrim": (1, 1), "rtrim": (1, 1),
-    "replace": (3, 3), "substr": (2, 3), "substring": (2, 3), "instr": (2, 2),
-    "concat": (1, None),
-    "like": (2, 2),
-    "iif": (3, 3),
+    name: (spec.min_args, spec.max_args) for name, spec in SCALAR_SPECS.items()
 }
-
-# Checked both ways at import: the table must cover SCALAR_FUNCTIONS exactly.
-_arity_missing = SCALAR_FUNCTIONS - set(SCALAR_FUNCTION_ARITY)
-_arity_unknown = set(SCALAR_FUNCTION_ARITY) - SCALAR_FUNCTIONS
-if _arity_missing or _arity_unknown:  # pragma: no cover — import-time invariant
-    raise RuntimeError(
-        f"SCALAR_FUNCTION_ARITY disagrees with SCALAR_FUNCTIONS: "
-        f"missing={sorted(_arity_missing)}, unknown={sorted(_arity_unknown)}",
-    )
+# Names whose Mode-B call is the same SQL function (OSI carries these verbatim).
+SCALAR_PASSTHROUGH: frozenset[str] = frozenset(
+    name for name, spec in SCALAR_SPECS.items() if spec.sql_passthrough
+)
+# Scalars whose value depends on when the query runs.
+CLOCK_FUNCTIONS: frozenset[str] = frozenset({"current_date", "now"})
+# Date scalars taking a closed unit word: (position of the unit argument, its vocabulary).
+DATE_UNIT_ARGS: Mapping[str, tuple[int, type[DatePart] | type[TimeGranularity]]] = MappingProxyType({
+    "date_part": (0, DatePart),
+    "date_diff": (0, TimeGranularity),
+    "date_add": (2, TimeGranularity),
+    "interval": (1, TimeGranularity),
+})
+# Date scalars' DATE/TIMESTAMP operand positions.
+DATE_OPERAND_ARGS: Mapping[str, tuple[int, ...]] = MappingProxyType({
+    "date_part": (1,), "date_diff": (1, 2), "date_add": (0,),
+})
+DATE_ADD_COUNT_ARG = 1
+if not CLOCK_FUNCTIONS | set(DATE_UNIT_ARGS) <= SCALAR_FUNCTIONS:  # pragma: no cover
+    raise RuntimeError("derived scalar sets must be subsets of SCALAR_SPECS")
 
 
 def check_scalar_arity(*, name: str, argc: int) -> Optional[str]:
@@ -124,20 +148,21 @@ class Phase(IntEnum):
     POST = 2
 
 
-Scalar = Union[Decimal, str, bool, None]
+Scalar = Union[Decimal, str, bool, None, datetime, date]
 
 
 def normalize_scalar(value):
     """Canonicalize a raw scalar before keying.
 
     bool checked before int (bool is-a int); int/float become Decimal (float via
-    str, so it lands on the displayed decimal form). TypeError for anything else.
+    str, so it lands on the displayed decimal form); dates pass through. TypeError
+    for anything else.
     """
     if isinstance(value, bool):
         return value
     if value is None:
         return None
-    if isinstance(value, Decimal):
+    if isinstance(value, (Decimal, date)):
         return value
     if isinstance(value, int):
         return Decimal(value)
@@ -147,7 +172,7 @@ def normalize_scalar(value):
         return value
     raise TypeError(
         f"Cannot normalize scalar of type {type(value).__name__!r}: "
-        f"only int/float/Decimal/str/bool/None are accepted (got {value!r})."
+        f"only int/float/Decimal/str/bool/None/date/datetime are accepted (got {value!r})."
     )
 
 
@@ -216,6 +241,10 @@ def _typed_leaf(v):
         return ("__num__", v)
     if isinstance(v, str):
         return ("__str__", v)
+    if isinstance(v, datetime):
+        return ("__timestamp__", v)
+    if isinstance(v, date):
+        return ("__date__", v)
     return ("__key__", v)
 
 
@@ -264,7 +293,7 @@ class SqlFragmentKey(_FrozenKey, frozen=True):
     ``{r<i>}`` placeholders stand for ``refs[i]`` (absolute column keys). Phase ROW."""
 
     template: str
-    refs: Tuple[Union[ColumnKey, ColumnSqlKey], ...] = ()
+    refs: Tuple[ColumnKey | ColumnSqlKey, ...] = ()
 
     @property
     def phase(self) -> Phase:
@@ -289,7 +318,7 @@ class TimeTruncKey(_FrozenKey, frozen=True):
     Different granularities on the same column are distinct slots.
     """
 
-    column: Union["ColumnKey", "ColumnSqlKey"]
+    column: ColumnKey | ColumnSqlKey
     granularity: str
 
     @property
@@ -307,12 +336,12 @@ class TimeTruncKey(_FrozenKey, frozen=True):
         return self.model_copy(update={"column": column}) if m.changed else self
 
 
-def column_leaf(col: Union["ColumnKey", "ColumnSqlKey"]) -> str:
+def column_leaf(col: ColumnKey | ColumnSqlKey) -> str:
     """Leaf column name of a ``TimeTruncKey.column`` regardless of kind."""
     return getattr(col, "leaf", None) or getattr(col, "column_name")
 
 
-def column_path(col: Union["ColumnKey", "ColumnSqlKey"]) -> Tuple[str, ...]:
+def column_path(col: ColumnKey | ColumnSqlKey) -> Tuple[str, ...]:
     """Join path of a ``TimeTruncKey.column`` regardless of kind."""
     return col.path
 
@@ -339,7 +368,7 @@ class LiteralKey(_LeafKey, frozen=True):
     are distinct). Phase ROW.
     """
 
-    value: Union[Decimal, str, bool, None] = None
+    value: Scalar = None
 
     @property
     def phase(self) -> Phase:
@@ -597,7 +626,7 @@ class ArithmeticKey(_FrozenKey, frozen=True):
         )
 
 
-_ScalarCallArg = Union["ValueKey", Decimal, str, bool, None]
+_ScalarCallArg = Union["ValueKey", Decimal, str, bool, None, datetime, date]
 
 
 def _arg_phase(arg) -> Optional[Phase]:
@@ -647,8 +676,8 @@ class BetweenKey(_FrozenKey, frozen=True):
 
     The planner uses this to mark where ``BETWEEN`` is the right legacy-parity
     rendering (today only ``TimeDimension.date_range``). User DSL filters never
-    produce it — ``col >= a and col <= b`` stays ``ArithmeticKey``. Phase ROW;
-    the renderer emits ``exp.Between``.
+    produce it — ``col >= a and col <= b`` stays ``ArithmeticKey``. Phase is
+    the max of child phases (P8); the renderer emits ``exp.Between``.
     """
 
     column: "ValueKey"
@@ -657,7 +686,7 @@ class BetweenKey(_FrozenKey, frozen=True):
 
     @property
     def phase(self) -> Phase:
-        return Phase.ROW
+        return max(c.phase for c in self.children())
 
     def children(self) -> Tuple["ValueKey", ...]:
         return (self.column, self.low, self.high)
@@ -677,7 +706,8 @@ class InKey(_FrozenKey, frozen=True):
 
     Modelled on ``BetweenKey``: a column LHS and a fixed tuple of ``LiteralKey``
     RHS operands (LiteralKey so equality is type-stable). ``negated`` flips IN vs
-    NOT IN. Phase ROW; the renderer emits ``exp.In`` (wrapped in ``exp.Not``).
+    NOT IN. Phase is the max of child phases (P8); the renderer emits
+    ``exp.In`` (wrapped in ``exp.Not``).
     """
 
     column: "ValueKey"
@@ -700,7 +730,7 @@ class InKey(_FrozenKey, frozen=True):
 
     @property
     def phase(self) -> Phase:
-        return Phase.ROW
+        return max(c.phase for c in self.children())
 
     def children(self) -> Tuple["ValueKey", ...]:
         return (self.column, *self.values)
@@ -847,7 +877,10 @@ VALUE_KEY_TYPES: Tuple[type, ...] = get_args(ValueKey)
 
 class KindPolicy(BaseModel):
     """Consumer-named per-kind policy flags; membership is a conscious
-    classification asserted by tests, not derived from structure."""
+    classification asserted by tests, not derived from structure.
+
+    ``slot_composite``: an operator over child keys, rendered inline from them
+    and staged by them."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -866,10 +899,11 @@ KIND_POLICY: dict[type, KindPolicy] = {
     TransformKey: KindPolicy(slottable=True, materialised_order=True),
     ArithmeticKey: KindPolicy(slot_composite=True, materialised_order=True),
     ScalarCallKey: KindPolicy(slot_composite=True, materialised_order=True),
-    BetweenKey: KindPolicy(),
-    InKey: KindPolicy(),
+    BetweenKey: KindPolicy(slot_composite=True),
+    InKey: KindPolicy(slot_composite=True, materialised_order=True),
     SqlFragmentKey: KindPolicy(),
 }
+SLOT_COMPOSITE_KINDS: Tuple[type, ...] = tuple(k for k, p in KIND_POLICY.items() if p.slot_composite)
 
 
 def _map_value_key(key: _RerootableT, *, map_path) -> _RerootableT:
@@ -1118,8 +1152,8 @@ def join_conditional_branch_types(
     """Result type of a conditional whose branches are ``a`` / ``b``.
 
     ``None`` marks a NULL-literal branch, absorbed by the other. Identical types
-    pass through; a numeric mix widens to ``DOUBLE``; any other mix is a plan-time
-    error (matching what Postgres rejects).
+    pass through; a numeric mix widens to ``DOUBLE``, a DATE/TIMESTAMP mix to
+    ``TIMESTAMP``; any other mix is a plan-time error (matching what Postgres rejects).
     """
     if a is None:
         return b
@@ -1129,11 +1163,105 @@ def join_conditional_branch_types(
         return a
     if a in _NUMERIC_TYPES and b in _NUMERIC_TYPES:
         return DataType.DOUBLE
+    if a in TEMPORAL_TYPES and b in TEMPORAL_TYPES:
+        return DataType.TIMESTAMP
     raise ValueError(
         f"CASE/iif branches have incompatible types {a.value} and {b.value}: "
         f"branches must share a type (numeric types widen to DOUBLE). Cast one "
         f"branch so both match."
     )
+
+
+TEMPORAL_TYPES = frozenset({DataType.DATE, DataType.TIMESTAMP})
+_ISO_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+_ISO_TIMESTAMP_RE = re.compile(r"\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}")
+# Aggregations whose value is one of their inputs, so they keep a temporal type.
+_TEMPORAL_PRESERVING_AGGS = frozenset({"min", "max", "first", "last"})
+# Scalars returning one of their value arguments: name → value-argument positions (None = all).
+_VALUE_ARG_SCALARS: Mapping[str, Optional[Tuple[int, ...]]] = MappingProxyType({
+    "coalesce": None, "ifnull": None, "nullif": None, "greatest": None, "least": None,
+    "iif": (1, 2),
+})
+
+
+def value_arg_positions(name: str, argc: int) -> Tuple[int, ...]:
+    """Argument positions a value-returning scalar (``coalesce``, ``iif``, …) may return; empty otherwise."""
+    if name not in _VALUE_ARG_SCALARS:
+        return ()
+    positions = _VALUE_ARG_SCALARS[name]
+    return tuple(range(argc)) if positions is None else tuple(i for i in positions if i < argc)
+
+
+def parse_iso_temporal(text: str) -> date | datetime | None:
+    """``YYYY-MM-DD`` as a date, ``YYYY-MM-DD HH:MM:SS`` (space or ``T``) as a datetime; ``None`` otherwise."""
+    shape = _ISO_DATE_RE.fullmatch(text) or _ISO_TIMESTAMP_RE.fullmatch(text)
+    if shape is None:
+        return None
+    try:
+        return date.fromisoformat(text) if len(text) == 10 else datetime.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+def _is_null_arg(arg: object) -> bool:
+    return arg is None or (isinstance(arg, LiteralKey) and arg.value is None)
+
+
+# The declared type of a column leaf (``ColumnKey`` / ``ColumnSqlKey``), ``None`` when unknown.
+ColumnTypeFn = Callable[[Any], Optional[DataType]]
+
+
+def temporal_type(key: object, *, column_type: ColumnTypeFn) -> Optional[DataType]:
+    """DATE / TIMESTAMP when ``key`` is provably temporal, else ``None``; column leaves type via ``column_type``."""
+    if isinstance(key, (ColumnKey, ColumnSqlKey)):
+        t = column_type(key)
+        return t if t in TEMPORAL_TYPES else None
+    if isinstance(key, LiteralKey):
+        key = key.value
+    if isinstance(key, datetime):
+        return DataType.TIMESTAMP
+    if isinstance(key, date):
+        return DataType.DATE
+    if isinstance(key, AggregateKey):
+        from_source = key.agg.lower() in _TEMPORAL_PRESERVING_AGGS
+        return temporal_type(key.source, column_type=column_type) if from_source else None
+    if isinstance(key, ScalarCallKey):
+        return _scalar_temporal_type(key, column_type=column_type)
+    return None
+
+
+_CLOCK_TYPES: Mapping[str, DataType] = MappingProxyType({
+    "now": DataType.TIMESTAMP, "current_date": DataType.DATE,
+})
+
+
+def _scalar_temporal_type(key: ScalarCallKey, *, column_type: ColumnTypeFn) -> Optional[DataType]:
+    if key.name in _CLOCK_TYPES:
+        return _CLOCK_TYPES[key.name]
+    if key.name == "date_add" and len(key.args) == 3:
+        base = temporal_type(key.args[0], column_type=column_type)
+        return None if base is None else date_add_type(base, TimeGranularity(unit_word(key.args[2])))
+    values = [key.args[i] for i in value_arg_positions(key.name, len(key.args))]
+    types = [temporal_type(a, column_type=column_type) for a in values if not _is_null_arg(a)]
+    if not types or None in types:
+        return None
+    # NULLIF returns its first argument (or NULL); the second is only compared.
+    if key.name == "nullif" and not _is_null_arg(key.args[0]):
+        return types[0]
+    return DataType.TIMESTAMP if DataType.TIMESTAMP in types else DataType.DATE
+
+
+def unit_word(arg: object) -> str:
+    """The lower-cased unit/part word of a date scalar's unit argument."""
+    value = arg.value if isinstance(arg, LiteralKey) else arg
+    if not isinstance(value, str):
+        raise TypeError(f"A date unit argument must be a string literal, got {value!r}.")
+    return value
+
+
+def date_add_type(base: DataType, unit: TimeGranularity) -> DataType:
+    """``date_add``'s result type: a DATE stays a DATE for day-or-coarser units."""
+    return DataType.DATE if base is DataType.DATE and unit not in SUB_DAY_GRANULARITIES else DataType.TIMESTAMP
 
 
 def conditional_number_format(
@@ -1221,7 +1349,7 @@ def split_top_level_and(vk: ValueKey) -> List[ValueKey]:
 
 
 def rewrite_rank_partition_keys(
-    key: ValueKey, *, rewrite_fn: Callable[[Union[AggregateKey, TransformKey]], Grain],
+    key: ValueKey, *, rewrite_fn: Callable[[AggregateKey | TransformKey], Grain],
 ) -> ValueKey:
     """Replace every rank-family ``TransformKey``'s / partitioned aggregate's ``partition_keys`` via ``rewrite_fn``; identity-preserving, runs before interning. Post-order; ``rewrite_fn`` receives the pre-rebuild node."""
     rebuilt = key.map_children(
