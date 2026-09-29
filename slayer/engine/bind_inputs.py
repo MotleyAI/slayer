@@ -64,6 +64,7 @@ from slayer.engine.binding import bind_expr, bind_filter, bind_time_dimension, s
 from slayer.engine.elaborate_env import (
     check_computed_dim_name_collision,
     check_computed_dimension,
+    check_date_operands,
     check_measure_dedupe_collision,
     check_stage_flatten_collision,
     check_dimension_temporal_axis,
@@ -82,6 +83,8 @@ from slayer.engine.key_metadata import (
     measure_key_format_description,
     measure_key_preserves_native_type,
     measure_key_type,
+    scope_column_type,
+    stage_measure_type,
 )
 from slayer.engine.syntax import (
     AggCall,
@@ -550,6 +553,15 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
             order_specs=order_specs,
         )
 
+    check_date_operands(
+        roots=[
+            *(dm.bound.value_key for dm in declared_measures),
+            *(bf.value_key for bf in bound_filters),
+            *(spec.bound.value_key for spec in order_specs),
+        ],
+        column_type=scope_column_type(scope=scope, bundle=bundle),
+    )
+
     # Any time-needing transform still at time_key=None means no resolvable TD.
     check_time_transforms_resolved(roots=[
         *(dm.bound.value_key for dm in declared_measures),
@@ -725,11 +737,13 @@ def _format_description_for_measure_formula(
 
 
 def _type_for_measure_formula(
-    *, scope: Union[ModelScope, StageSchema], bound,
+    *, scope: Union[ModelScope, StageSchema], bound, bundle: ResolvedSourceBundle,
 ) -> Optional[DataType]:
-    if not isinstance(scope, ModelScope) or scope.source_model is None:
+    if isinstance(scope, StageSchema):
+        return stage_measure_type(bound.value_key, schema=scope)
+    if scope.source_model is None:
         return None
-    return measure_key_type(model=scope.source_model, key=bound.value_key)
+    return measure_key_type(model=scope.source_model, key=bound.value_key, bundle=bundle)
 
 
 def _joined_column_type(
@@ -757,7 +771,10 @@ def _type_for_dimension(
     full_name: str,
     bundle: ResolvedSourceBundle,
 ) -> Optional[DataType]:
-    if not isinstance(scope, ModelScope) or scope.source_model is None:
+    if isinstance(scope, StageSchema):
+        col = scope.get(full_name)
+        return col.type if col is not None else None
+    if scope.source_model is None:
         return None
     if "." in full_name:
         return _joined_column_type(
@@ -942,7 +959,7 @@ def _declared_computed_dimension(
         name=name, bound=bound,
         distinct_dimension_values=query.distinct_dimension_values,
     )
-    dim_type = _type_for_measure_formula(scope=scope, bound=bound)
+    dim_type = _type_for_measure_formula(scope=scope, bound=bound, bundle=bundle)
     return DeclaredMeasure(
         bound=bound,
         declared_name=name,
@@ -1102,7 +1119,7 @@ def _declared_measures_from_query(  # NOSONAR(S3776) — three sequential projec
             explicit_type = m.type or _saved_model_measure_type(
                 scope=scope, bundle=bundle, formula=formula,
             )
-            m_type = explicit_type or _type_for_measure_formula(scope=scope, bound=bound)
+            m_type = explicit_type or _type_for_measure_formula(scope=scope, bound=bound, bundle=bundle)
             declared.append(DeclaredMeasure(
                 bound=bound,
                 declared_name=declared_name,

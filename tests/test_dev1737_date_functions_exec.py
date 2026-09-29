@@ -163,9 +163,13 @@ class TestSpecScenarios:
 
     async def test_clock_relative_sanity(self, orders_engine) -> None:
         got = await _by_id(orders_engine, "date_diff('day', created_at, now())", model="recent")
-        assert got[1] in (0, 1, 2) and got[2] in (39, 40, 41)
+        assert got[1] in (0, 1, 2)
+        assert got[2] in (39, 40, 41)
         today = await _by_id(orders_engine, "current_date()", model="recent")
-        assert abs((as_temporal(today[1]) - datetime.now(timezone.utc).date()).days) <= 1
+        today_value = as_temporal(today[1])
+        assert not isinstance(today_value, datetime)
+        assert isinstance(today_value, date)
+        assert abs((today_value - datetime.now(timezone.utc).date()).days) <= 1
 
     async def test_joined_operand(self, orders_engine) -> None:
         got = await _by_id(orders_engine, "date_diff('day', customers.signup_date, order_date)")
@@ -190,7 +194,7 @@ class TestSpecScenarios:
         resp = await orders_engine.execute(_q(
             dimensions=["id"], measures=[{"formula": "count(*)", "name": "n"}],
             filters=["date_part('year', created_at) = 2024"],
-            order=[{"column": "date_diff('day', created_at, shipped_at)", "direction": "desc"}],
+            order=[{"column": "max(date_diff('day', created_at, shipped_at))", "direction": "desc"}],
         ))
         assert [int(r["orders.id"]) for r in resp.data][-2:] == [1, 3]
 

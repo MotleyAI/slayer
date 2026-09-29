@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 import sqlglot
 from sqlglot import exp
+from sqlglot.expressions.core import Expression
 
 from slayer.sql.dialects import get_dialect
 from slayer.sql.render.value_expr import render_scalar_call
@@ -31,7 +32,7 @@ CASES = [(name, argc, d) for (name, argc) in EXPECTED for d in TIER1]
 
 def _emit(name: str, argc: int, dialect: str) -> str:
     d = get_dialect(dialect)
-    args = [exp.column(c) for c in "abc"[:argc]]
+    args: list[Expression] = [exp.column(c) for c in "abc"[:argc]]
     return render_scalar_call(name=name, args=args, dialect=d).sql(dialect=d.sqlglot_name)
 
 

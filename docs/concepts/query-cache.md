@@ -39,7 +39,7 @@ resp = await engine.execute({"source_model": "orders",
 Reassigning `engine.cache_config = CacheConfig(...)` **clears the cache**.
 
 `cache=True` is ignored (no caching, no error) when `dry_run` or `explain` is
-set.
+set, or when any stage of the query calls `now()` / `current_date()` (a refresh drops such an entry).
 
 ### `CacheConfig`
 

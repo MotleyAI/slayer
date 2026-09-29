@@ -26,12 +26,14 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import date, datetime
 from typing import TYPE_CHECKING, Any, ClassVar
 
 import sqlalchemy as sa
 from sqlglot import exp
+from sqlglot.expressions.core import Expression
 
-from slayer.core.enums import TimeGranularity
+from slayer.core.enums import SUB_DAY_GRANULARITIES, DataType, DatePart, TimeGranularity
 from slayer.sql.dialects.base import (
     DottedAliasManglingMixin,
     SqlDialect,
@@ -67,6 +69,19 @@ if TYPE_CHECKING:
 #     for the characterization pin.
 _DOTTED_ALIAS_RE = re.compile(r"`(\w+(?:\.\w+)+)`", re.ASCII)
 _WEEK_ANCHORS = {TimeGranularity.WEEK: "MONDAY", TimeGranularity.WEEK_SUNDAY: "SUNDAY"}
+
+
+def _date_part_unit(unit: TimeGranularity) -> Expression:
+    """A ``DATE_DIFF`` part; weeks carry their anchor weekday."""
+    weekday = _WEEK_ANCHORS.get(unit)
+    if weekday is not None:
+        return exp.Anonymous(this="WEEK", expressions=[exp.var(weekday)])
+    return exp.var(unit.value.upper())
+
+
+def _interval(count: Expression, unit: TimeGranularity) -> Expression:
+    word = "WEEK" if unit in _WEEK_ANCHORS else unit.value.upper()
+    return exp.Interval(this=count, unit=exp.var(word))
 
 
 # ---------------------------------------------------------------------------
@@ -151,9 +166,9 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
 
     def build_date_trunc(
         self,
-        col_expr: exp.Expression,
+        col_expr: Expression,
         granularity: TimeGranularity,
-    ) -> exp.Expression:
+    ) -> Expression:
         """Anchor both weeks explicitly: BigQuery's bare ``WEEK`` is Sunday-based.
 
         ``DATE_TRUNC(col, WEEK(MONDAY|SUNDAY))`` is an ``exp.Anonymous`` since
@@ -169,6 +184,73 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
             col_expr = exp.Cast(this=col_expr, to=exp.DataType.build("TIMESTAMP"))
         week = exp.Anonymous(this="WEEK", expressions=[exp.var(weekday)])
         return exp.Anonymous(this="DATE_TRUNC", expressions=[col_expr, week])
+
+    def promote_to_timestamp(self, expr: Expression) -> Expression:
+        return exp.Cast(this=expr.copy(), to=exp.DataType.build("TIMESTAMPTZ"))
+
+    def build_temporal_literal(self, *, value: date, dt: DataType) -> Expression:
+        if dt is DataType.DATE:
+            return super().build_temporal_literal(value=value, dt=dt)
+        text = value.isoformat(sep=" ") if isinstance(value, datetime) else value.isoformat()
+        return self.promote_to_timestamp(exp.Literal.string(text))
+
+    def build_current_timestamp(self) -> Expression:
+        return exp.CurrentTimestamp()
+
+    _EXTRACT_FIELDS: ClassVar[dict[DatePart, str]] = {
+        **SqlDialect._EXTRACT_FIELDS,
+        DatePart.WEEK: "ISOWEEK", DatePart.DAY_OF_YEAR: "DAYOFYEAR",
+    }
+
+    def _date_part(self, part: DatePart, expr: Expression) -> Expression:
+        """``EXTRACT``; BigQuery's ``DAYOFWEEK`` is Sunday=1, shifted to ISO Monday=1."""
+        if part is not DatePart.DAY_OF_WEEK:
+            return super()._date_part(part, expr)
+        sunday_based = exp.Extract(this=exp.var("DAYOFWEEK"), expression=expr)
+        return exp.Add(
+            this=exp.Mod(
+                this=exp.Paren(this=exp.Add(this=sunday_based, expression=exp.Literal.number(5))),
+                expression=exp.Literal.number(7),
+            ),
+            expression=exp.Literal.number(1),
+        )
+
+    def build_date_diff(
+        self, *, unit: TimeGranularity, start: Expression, end: Expression, operand: DataType,
+    ) -> Expression:
+        """``DATE_DIFF`` counts date-part boundaries; ``TIMESTAMP_DIFF`` counts elapsed units, so its
+        operands are truncated first (and it has no week/month/quarter/year)."""
+        if unit in SUB_DAY_GRANULARITIES:
+            if operand is DataType.DATE:
+                start, end = self.promote_to_timestamp(start), self.promote_to_timestamp(end)
+
+            def trunc(e: Expression) -> Expression:
+                return exp.Anonymous(this="TIMESTAMP_TRUNC", expressions=[e.copy(), exp.var(unit.value.upper())])
+            return exp.Anonymous(this="TIMESTAMP_DIFF", expressions=[
+                trunc(end), trunc(start), exp.var(unit.value.upper()),
+            ])
+        if operand is DataType.TIMESTAMP:
+            start = exp.Cast(this=start.copy(), to=exp.DataType.build("DATE"))
+            end = exp.Cast(this=end.copy(), to=exp.DataType.build("DATE"))
+        return exp.Anonymous(this="DATE_DIFF", expressions=[end.copy(), start.copy(), _date_part_unit(unit)])
+
+    def build_date_add(
+        self, *, expr: Expression, count: Expression, unit: TimeGranularity, operand: DataType,
+    ) -> Expression:
+        """``DATE_ADD`` keeps a DATE a DATE; timestamps use ``TIMESTAMP_ADD`` up to a day and
+        ``DATETIME_ADD`` (which clamps at month-end) for months."""
+        if operand is DataType.DATE and unit not in SUB_DAY_GRANULARITIES:
+            return exp.Anonymous(this="DATE_ADD", expressions=[expr.copy(), _interval(count.copy(), unit)])
+        base = self.promote_to_timestamp(expr) if operand is DataType.DATE else expr.copy()
+        if unit in (TimeGranularity.WEEK, TimeGranularity.WEEK_SUNDAY):
+            days = exp.Mul(this=exp.Paren(this=count.copy()), expression=exp.Literal.number(7))
+            return exp.Anonymous(this="TIMESTAMP_ADD", expressions=[base, _interval(days, TimeGranularity.DAY)])
+        if unit in SUB_DAY_GRANULARITIES or unit is TimeGranularity.DAY:
+            return exp.Anonymous(this="TIMESTAMP_ADD", expressions=[base, _interval(count.copy(), unit)])
+        moved = exp.Anonymous(this="DATETIME_ADD", expressions=[
+            exp.Cast(this=base, to=exp.DataType.build("DATETIME")), _interval(count.copy(), unit),
+        ])
+        return self.promote_to_timestamp(moved)
 
     def build_engine(
         self,

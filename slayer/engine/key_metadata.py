@@ -7,7 +7,7 @@ decorate live in ``slayer.ir.prebound``.
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import Optional, Tuple, TypeGuard
+from typing import Optional, Tuple, TypeGuard, Union
 
 from slayer.core.enums import (
     AggregationValueClass,
@@ -18,6 +18,7 @@ from slayer.core.format import NumberFormat
 from slayer.core.keys import (
     AggregateKey,
     ColumnKey,
+    ColumnTypeFn,
     ColumnSqlKey,
     LiteralKey,
     ScalarCallKey,
@@ -25,8 +26,11 @@ from slayer.core.keys import (
     TimeTruncKey,
     ValueKey,
     join_conditional_branch_types,
+    temporal_type,
 )
+from slayer.core.join_walker import model_column_type
 from slayer.core.models import SlayerModel
+from slayer.core.scope import ModelScope, StageSchema
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS, expression_source_leaf
 from slayer.engine.introspect_utils import is_exact_numeric_db_type
 from slayer.engine.response_meta import _infer_aggregated_format
@@ -38,6 +42,8 @@ __all__ = [
     "measure_key_format_description",
     "measure_key_preserves_native_type",
     "measure_key_type",
+    "scope_column_type",
+    "stage_measure_type",
 ]
 
 
@@ -132,10 +138,60 @@ def _branch_type(*, model: SlayerModel, key) -> Optional[DataType]:
     return measure_key_type(model=model, key=key)
 
 
+def _model_types(*, model: SlayerModel, bundle) -> ColumnTypeFn:
+    return model_column_type(
+        model=model, models_by_name=bundle.models_by_name if bundle is not None else {},
+    )
+
+
+def stage_column_type(schema: StageSchema) -> ColumnTypeFn:
+    """Types of a stage's flat columns."""
+    def column_type(key: ValueKey) -> Optional[DataType]:
+        col = schema.get(key.leaf) if isinstance(key, ColumnKey) and not key.path else None
+        return col.type if col is not None else None
+    return column_type
+
+
+def scope_column_type(*, scope: Union[ModelScope, StageSchema], bundle) -> ColumnTypeFn:
+    if isinstance(scope, StageSchema):
+        return stage_column_type(scope)
+    if scope.source_model is None:
+        return lambda _key: None
+    return model_column_type(model=scope.source_model, models_by_name=bundle.models_by_name)
+
+
+def date_scalar_type(key: ValueKey, *, column_type: ColumnTypeFn) -> Optional[DataType]:
+    """INT for ``date_part``/``date_diff``, else the key's DATE/TIMESTAMP type (date functions,
+    temporal conditionals, min/max/first/last of a temporal value); ``None`` otherwise."""
+    if isinstance(key, ScalarCallKey) and key.name in ("date_part", "date_diff"):
+        return DataType.INT
+    return temporal_type(key, column_type=column_type)
+
+
+def stage_measure_type(key: ValueKey, *, schema: StageSchema) -> Optional[DataType]:
+    """``type`` for a measure over a stage's flat columns."""
+    column_type = stage_column_type(schema)
+    date_type = date_scalar_type(key, column_type=column_type)
+    if date_type is not None or not isinstance(key, AggregateKey):
+        return date_type
+    source = key.source
+    cls = classify_aggregation(
+        measure_name="*" if isinstance(source, StarKey) else None, aggregation=key.agg,
+    )
+    if cls is AggregationValueClass.COUNT:
+        return DataType.INT
+    if cls is not AggregationValueClass.PRESERVING:
+        return DataType.DOUBLE
+    return column_type(source)
+
+
 def measure_key_type(
-    *, model: SlayerModel, key: ValueKey,
+    *, model: SlayerModel, key: ValueKey, bundle=None,
 ) -> Optional[DataType]:
     """``type`` for a measure slot, from its bound key alone."""
+    date_type = date_scalar_type(key, column_type=_model_types(model=model, bundle=bundle))
+    if date_type is not None:
+        return date_type
     if _is_iif(key):
         # Postgres branch typing: the join over every THEN branch and the final
         # ELSE. Raises on an incompatible mix (DEV-1740).
@@ -200,6 +256,10 @@ def dimension_key_metadata(
     pre-existing: joined refs surface format / description through
     ``response_meta``, which resolves them against the owning model.
     """
+    if not isinstance(key, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
+        date_type = date_scalar_type(key, column_type=_model_types(model=model, bundle=bundle))
+        if date_type is not None:
+            return date_type, None, None
     inner = key.column if isinstance(key, TimeTruncKey) else key
     path = tuple(getattr(inner, "path", ()) or ())
     leaf = getattr(inner, "leaf", None) or getattr(inner, "column_name", None)

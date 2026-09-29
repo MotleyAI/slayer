@@ -36,7 +36,7 @@ from slayer.core.enums import (
 )
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS
-from slayer.core.keys import SCALAR_FUNCTIONS, check_scalar_arity, AggregateKey, ArithmeticKey, ColumnKey, ColumnSqlKey, Grain, InKey, LiteralKey, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, column_path, is_attached_source, normalize_scalar, prepend_value_key, walk_value_keys
+from slayer.core.keys import DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, SCALAR_FUNCTIONS, check_scalar_arity, parse_iso_temporal, value_arg_positions, AggregateKey, ArithmeticKey, ColumnKey, ColumnSqlKey, Grain, InKey, LiteralKey, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, column_path, is_attached_source, normalize_scalar, prepend_value_key, walk_value_keys
 from slayer.core.join_walker import (
     OrientedJoin,
     aggregation_owner,
@@ -1650,6 +1650,7 @@ def _bind_scalar(
     alias_map: Optional[Dict[str, "ValueKey"]] = None,
     measure_ctx: Optional[MeasureResolutionCtx] = None,
     dim_alias_map: Optional[Dict[str, "ValueKey"]] = None,
+    temporal: bool = False,
 ) -> ScalarCallKey:
     if parsed.name not in SCALAR_FUNCTIONS:
         # Defence in depth: direct ParsedExpr construction bypasses the parser.
@@ -1673,11 +1674,38 @@ def _bind_scalar(
                 f"(value, pattern); got {len(parsed.args)}."
             )
         raise ValueError(arity_error)
-    args = tuple(
-        _bind(a, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map, measure_ctx=measure_ctx, dim_alias_map=dim_alias_map)
-        for a in parsed.args
-    )
+    def bind(a: ParsedExpr, *, in_temporal_slot: bool) -> ValueKey:
+        if in_temporal_slot and isinstance(a, Literal) and isinstance(a.value, str):
+            # An ISO string literal in a DATE/TIMESTAMP slot binds as a date value.
+            return LiteralKey(value=parse_iso_temporal(a.value) or a.value)
+        if in_temporal_slot and isinstance(a, ScalarCall):
+            return _bind_scalar(
+                a, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map,
+                measure_ctx=measure_ctx, dim_alias_map=dim_alias_map, temporal=True,
+            )
+        return _bind(
+            a, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map,
+            measure_ctx=measure_ctx, dim_alias_map=dim_alias_map,
+        )
+
+    slots = set(DATE_OPERAND_ARGS.get(parsed.name, ()))
+    if temporal:
+        slots.update(value_arg_positions(parsed.name, len(parsed.args)))
+    args = tuple(bind(a, in_temporal_slot=i in slots) for i, a in enumerate(parsed.args))
+    if parsed.name == "date_add":
+        _check_literal_count(args[DATE_ADD_COUNT_ARG])
     return ScalarCallKey(name=parsed.name, args=args)
+
+
+def _check_literal_count(count: ValueKey) -> None:
+    if not isinstance(count, LiteralKey):
+        return
+    value = count.value
+    if not isinstance(value, Decimal) or value != value.to_integral_value():
+        raise ValueError(
+            f"date_add() / interval() count must be an integer or a numeric expression; "
+            f"got the literal {value!r}."
+        )
 
 
 def _reject_windowed_column_sql(

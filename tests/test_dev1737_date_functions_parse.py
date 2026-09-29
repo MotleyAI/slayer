@@ -57,7 +57,8 @@ class TestAllowlist:
     ])
     def test_wrong_arity_message_names_function(self, name: str, argc: int) -> None:
         msg = check_scalar_arity(name=name, argc=argc)
-        assert msg is not None and name in msg
+        assert msg is not None
+        assert name in msg
 
 
 class TestUnitLiterals:

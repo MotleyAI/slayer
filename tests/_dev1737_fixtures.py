@@ -340,8 +340,8 @@ def assert_value(actual: Any, expected: Any, *, where: str) -> None:
         assert got == expected, f"{where}: expected {expected}, got {actual!r}"
     else:
         assert not isinstance(actual, (str, bool)), f"{where}: expected an integer, got {actual!r}"
-        assert actual is not None and Decimal(str(actual)) == Decimal(expected), (
-            f"{where}: expected {expected}, got {actual!r}")
+        assert actual is not None, f"{where}: expected {expected}, got NULL"
+        assert Decimal(str(actual)) == Decimal(expected), f"{where}: expected {expected}, got {actual!r}"
 
 
 def assert_case(data: list[dict[str, Any]], case: DateCase, *, model: str = "dt") -> None:

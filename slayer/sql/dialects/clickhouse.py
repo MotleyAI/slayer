@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import re
 from collections.abc import Sequence
+from datetime import date, datetime
 from typing import Any
 
 from sqlglot import exp
 from sqlglot.expressions.core import Expression
 
+from slayer.core.enums import SUB_DAY_GRANULARITIES, DataType, DatePart, TimeGranularity
 from slayer.sql.dialects.base import ServerProfile, SqlDialect
 
 _CH_CORRELATED_SETTING = "allow_experimental_correlated_subqueries"
@@ -85,6 +87,21 @@ def _settings_holder(ast: Expression) -> Expression:
         if node.args.get("settings"):
             return node
     return ast
+
+
+_CH_PART_FUNCTIONS = {
+    DatePart.YEAR: "toYear", DatePart.ISO_YEAR: "toISOYear", DatePart.QUARTER: "toQuarter",
+    DatePart.MONTH: "toMonth", DatePart.WEEK: "toISOWeek", DatePart.DAY: "toDayOfMonth",
+    DatePart.DAY_OF_WEEK: "toDayOfWeek", DatePart.DAY_OF_YEAR: "toDayOfYear",
+    DatePart.HOUR: "toHour", DatePart.MINUTE: "toMinute", DatePart.SECOND: "toSecond",
+}
+_CH_ADD_FUNCTIONS = {
+    TimeGranularity.SECOND: "addSeconds", TimeGranularity.MINUTE: "addMinutes",
+    TimeGranularity.HOUR: "addHours", TimeGranularity.DAY: "addDays",
+    TimeGranularity.WEEK: "addWeeks", TimeGranularity.WEEK_SUNDAY: "addWeeks",
+    TimeGranularity.MONTH: "addMonths", TimeGranularity.QUARTER: "addQuarters",
+    TimeGranularity.YEAR: "addYears",
+}
 
 
 class ClickhouseDialect(SqlDialect):
@@ -170,6 +187,47 @@ class ClickhouseDialect(SqlDialect):
     def in_subquery_key(self, key: Expression) -> Expression:
         """``toNullable(key)``: pre-25 ``nullIn`` errors probing a non-Nullable set with a Nullable key."""
         return exp.Anonymous(this="toNullable", expressions=[key.copy()])
+
+    def promote_to_timestamp(self, expr: Expression) -> Expression:
+        return exp.Anonymous(this="toDateTime64", expressions=[expr.copy(), exp.Literal.number(6)])
+
+    def build_temporal_literal(self, *, value: date, dt: DataType) -> Expression:
+        if dt is DataType.DATE:
+            return exp.Anonymous(this="toDate", expressions=[exp.Literal.string(value.isoformat())])
+        text = value.isoformat(sep=" ") if isinstance(value, datetime) else value.isoformat()
+        return self.promote_to_timestamp(exp.Literal.string(text))
+
+    def build_current_date(self) -> Expression:
+        return exp.Anonymous(this="today")
+
+    def build_current_timestamp(self) -> Expression:
+        return exp.Anonymous(this="now")
+
+    def _date_part(self, part: DatePart, expr: Expression) -> Expression:
+        """``to<Part>`` functions; ``toDayOfWeek`` is ISO (Monday=1) in its default mode."""
+        return exp.Anonymous(this=_CH_PART_FUNCTIONS[part], expressions=[expr])
+
+    def build_date_diff(
+        self, *, unit: TimeGranularity, start: Expression, end: Expression, operand: DataType,
+    ) -> Expression:
+        """``dateDiff`` counts unit boundaries crossed; weeks compose from truncation."""
+        if unit in (TimeGranularity.WEEK, TimeGranularity.WEEK_SUNDAY):
+            return super().build_date_diff(unit=unit, start=start, end=end, operand=operand)
+        if unit in SUB_DAY_GRANULARITIES and operand is DataType.DATE:
+            start, end = self.promote_to_timestamp(start), self.promote_to_timestamp(end)
+        else:
+            start, end = start.copy(), end.copy()
+        return exp.Anonymous(this="dateDiff", expressions=[exp.Literal.string(unit.value), start, end])
+
+    def build_date_add(
+        self, *, expr: Expression, count: Expression, unit: TimeGranularity, operand: DataType,
+    ) -> Expression:
+        """``add<Unit>s`` (month-based ones clamp at month-end)."""
+        base = (
+            self.promote_to_timestamp(expr)
+            if unit in SUB_DAY_GRANULARITIES and operand is DataType.DATE else expr.copy()
+        )
+        return exp.Anonymous(this=_CH_ADD_FUNCTIONS[unit], expressions=[base, count.copy()])
 
     def build_median(self, inner: Expression) -> Expression:
         """ClickHouse: ``quantile(0.5)(x)``."""

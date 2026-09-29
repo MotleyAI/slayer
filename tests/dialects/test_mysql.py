@@ -129,26 +129,36 @@ def test_mysql_build_date_trunc_emits_date_trunc() -> None:
     assert isinstance(out, (exp.DateTrunc, exp.Func))
 
 
+@pytest.mark.parametrize("granularity,fmt", [
+    (TimeGranularity.HOUR, "%Y-%m-%d %H:00:00"),
+    (TimeGranularity.MINUTE, "%Y-%m-%d %H:%i:00"),
+    (TimeGranularity.SECOND, "%Y-%m-%d %H:%i:%s"),
+])
+def test_mysql_build_date_trunc_sub_day_keeps_time(granularity: TimeGranularity, fmt: str) -> None:
+    """Sub-day buckets keep the time of day (sqlglot alone collapses them to ``DATE(t)``)."""
+    out = MysqlDialect().build_date_trunc(exp.column("ts"), granularity)
+    assert out.sql(dialect="mysql") == f"CAST(DATE_FORMAT(ts, '{fmt}') AS DATETIME)"
+
+
 def test_mysql_build_date_trunc_week_sunday_shift() -> None:
     """WEEK_SUNDAY shifts MySQL's Monday-week truncation by +1d / -1d."""
     d = MysqlDialect()
     col = sqlglot.parse_one("ordered_at", dialect="mysql")
     out = d.build_date_trunc(col, TimeGranularity.WEEK_SUNDAY)
     up = out.sql(dialect="mysql").upper()
-    assert "+ INTERVAL 1 DAY" in up
-    assert "- INTERVAL 1 DAY" in up
+    assert "DATE_ADD(ORDERED_AT, INTERVAL 1 DAY)" in up
+    assert "INTERVAL -1 DAY)" in up
     # Monday-based inner week truncation (mode 1 / ISO %u).
     assert "WEEK(" in up
 
 
-def test_mysql_build_time_offset_expr_quarter_normalizes_to_3_month() -> None:
+def test_mysql_build_date_add_quarter_is_native() -> None:
     d = MysqlDialect()
-    col = sqlglot.parse_one("created_at", dialect="mysql")
-    out = d.build_time_offset_expr(col, offset=1, granularity="quarter")
-    sql = out.sql(dialect="mysql").upper()
-    assert "INTERVAL" in sql
-    assert "MONTH" in sql
-    assert "3" in sql
+    col = exp.column("created_at")
+    out = d.build_date_add(
+        expr=col, count=exp.Literal.number(1), unit=TimeGranularity.QUARTER, operand=DataType.TIMESTAMP,
+    )
+    assert out.sql(dialect="mysql").upper() == "DATE_ADD(CREATED_AT, INTERVAL 1 QUARTER)"
 
 
 # Outer wrap: MySQL parses ``"..."`` as a string literal, so public aliases are backticked.
@@ -228,7 +238,7 @@ async def test_mysql_time_shift_inner_cte_uses_backticks_not_ansi_quotes() -> No
     )
     # The self-join CTE's ON clause must use backticks on both sides.
     assert (
-        "base.`orders.created_at` - INTERVAL 1 MONTH <=> "
+        "DATE_ADD(base.`orders.created_at`, INTERVAL -1 MONTH) <=> "
         "shifted__time_shift_inner.`orders.created_at`"
     ) in sql, (
         f"Self-join ON clause must use backticked identifiers:\n{sql}"

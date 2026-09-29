@@ -1491,3 +1491,12 @@ class TestMySQLDateFunctions:
 
     async def test_scenarios(self, mysql_dates: SlayerQueryEngine) -> None:
         await check_server_scenarios(mysql_dates)
+
+    async def test_hourly_time_dimension_keeps_the_hour(self, mysql_dates: SlayerQueryEngine) -> None:
+        resp = await mysql_dates.execute(SlayerQuery.model_validate({
+            "source_model": "dt", "dimensions": ["id"],
+            "time_dimensions": [{"dimension": "t1", "granularity": "hour"}],
+        }))
+        buckets = {int(r["dt.id"]): r["dt.t1"] for r in resp.data}
+        assert str(buckets[1])[:19] == "2024-01-31 23:00:00"
+        assert str(buckets[4])[:19] == "2024-06-02 10:00:00"

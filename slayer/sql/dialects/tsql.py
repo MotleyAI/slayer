@@ -4,8 +4,7 @@ T-SQL is the most divergent Tier-1 dialect:
 
 * ``DATETRUNC(unit, col)`` (SQL Server 2022+) instead of ``DATE_TRUNC``
 * Week uses ``iso_week`` to be ``@@DATEFIRST``-independent (Monday-based)
-* ``DATEADD(unit, val, col)`` instead of ``col + INTERVAL N UNIT``
-* ``add_intervals_expr`` chains ``DATEADD`` calls (no INTERVAL)
+* ``DATEADD`` / ``DATEDIFF_BIG`` for date arithmetic (no INTERVAL)
 * ``build_median`` / ``build_percentile`` raise — PERCENTILE_CONT in T-SQL
   is a window function only
 * Statistical aggregate names: STDEV / STDEVP / VAR / VARP via
@@ -29,13 +28,12 @@ from typing import ClassVar, Literal
 from sqlglot import exp
 from sqlglot.expressions.core import Expression
 
-from slayer.core.enums import TimeGranularity
+from slayer.core.enums import SUB_DAY_GRANULARITIES, DataType, DatePart, TimeGranularity
 from slayer.sql.dialects.base import (
     DottedAliasManglingMixin,
     SqlDialect,
     StatAgg1Name,
     StatAgg2Name,
-    TimeUnit,
     _build_covar_decomposition,
 )
 
@@ -63,6 +61,39 @@ _TSQL_STAT_NAMES: dict[str, str] = {
 # or other non-``\w`` characters (``[my table]``) are safe — the
 # non-word character breaks the match.
 _TSQL_DOTTED_ALIAS_RE = re.compile(r"\[(\w+(?:\.\w+)+)\]", re.ASCII)
+
+
+_DATEPART_UNITS = {
+    DatePart.YEAR: "YEAR", DatePart.QUARTER: "QUARTER", DatePart.MONTH: "MONTH",
+    DatePart.WEEK: "ISO_WEEK", DatePart.DAY: "DAY", DatePart.DAY_OF_YEAR: "DAYOFYEAR",
+    DatePart.HOUR: "HOUR", DatePart.MINUTE: "MINUTE", DatePart.SECOND: "SECOND",
+}
+_DATEADD_UNITS = {
+    TimeGranularity.SECOND: "SECOND", TimeGranularity.MINUTE: "MINUTE", TimeGranularity.HOUR: "HOUR",
+    TimeGranularity.DAY: "DAY", TimeGranularity.WEEK: "WEEK", TimeGranularity.WEEK_SUNDAY: "WEEK",
+    TimeGranularity.MONTH: "MONTH", TimeGranularity.QUARTER: "QUARTER", TimeGranularity.YEAR: "YEAR",
+}
+
+
+def _datepart(unit: str, expr: Expression) -> Expression:
+    return exp.Anonymous(this="DATEPART", expressions=[exp.var(unit), expr])
+
+
+def _dateadd(unit: str, count: Expression, expr: Expression) -> Expression:
+    return exp.Anonymous(this="DATEADD", expressions=[exp.var(unit), count, expr])
+
+
+def _days_since_monday(expr: Expression) -> Expression:
+    """0 for Monday … 6 for Sunday, counted from 1900-01-01 (a Monday)."""
+    days = exp.Anonymous(this="DATEDIFF", expressions=[
+        exp.var("DAY"), exp.Cast(this=exp.Literal.string("1900-01-01"), to=exp.DataType.build("DATE")),
+        expr.copy(),
+    ])
+    inner = exp.Mod(this=days, expression=exp.Literal.number(7))
+    return exp.Mod(
+        this=exp.Paren(this=exp.Add(this=exp.Paren(this=inner), expression=exp.Literal.number(7))),
+        expression=exp.Literal.number(7),
+    )
 
 
 class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
@@ -148,56 +179,54 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
             expressions=[exp.Var(this=tsql_gran), col_expr],
         )
 
-    def build_time_offset_expr(
-        self,
-        col_expr: Expression,
-        offset: int,
-        granularity: TimeGranularity | TimeUnit,
+    def rewrite_target_ast(self, tree: Expression) -> Expression:
+        """T-SQL ``SUBSTRING`` requires a length: a 2-arg call reads to the end via ``LEN``."""
+        def _fix(node: Expression) -> Expression:
+            if isinstance(node, exp.Substring) and node.args.get("length") is None:
+                node.set("length", exp.Length(this=node.this.copy()))
+            return node
+        return tree.transform(_fix)
+
+    def build_current_date(self) -> Expression:
+        return exp.Cast(this=exp.Anonymous(this="GETDATE"), to=exp.DataType.build("DATE"))
+
+    def build_current_timestamp(self) -> Expression:
+        return exp.Anonymous(this="SYSDATETIME")
+
+    def _date_part(self, part: DatePart, expr: Expression) -> Expression:
+        """``DATEPART``; weekday from a fixed Monday epoch so ``DATEFIRST`` never matters."""
+        if part is DatePart.DAY_OF_WEEK:
+            return exp.Add(this=exp.Paren(this=_days_since_monday(expr)), expression=exp.Literal.number(1))
+        if part is DatePart.ISO_YEAR:
+            thursday = _dateadd("DAY", exp.Sub(
+                this=exp.Literal.number(3), expression=exp.Paren(this=_days_since_monday(expr)),
+            ), expr.copy())
+            return _datepart("YEAR", thursday)
+        return _datepart(_DATEPART_UNITS[part], expr)
+
+    def build_date_diff(
+        self, *, unit: TimeGranularity, start: Expression, end: Expression, operand: DataType,
     ) -> Expression:
-        """T-SQL: ``DATEADD(unit, val, col)``. INTERVAL is not valid T-SQL syntax.
-        Quarter normalises to ``val * 3`` of MONTH."""
-        unit_map = {
-            "year": "YEAR", "month": "MONTH", "day": "DAY",
-            "quarter": "MONTH", "week": "WEEK",
-            # A one-period shift of a Sunday-week is one week — same
-            # normalization the base ``_granularity_to_unit`` applies (without
-            # it, ``DATEADD(WEEK_SUNDAY, ...)`` is invalid T-SQL).
-            "week_sunday": "WEEK",
-            "hour": "HOUR", "minute": "MINUTE", "second": "SECOND",
-        }
-        granularity = TimeGranularity(granularity)
-        unit = unit_map[granularity.value]
-        val = offset * 3 if granularity == TimeGranularity.QUARTER else offset
-        return exp.Anonymous(
-            this="DATEADD",
-            expressions=[exp.Var(this=unit), exp.Literal.number(val), col_expr],
+        """``DATEDIFF_BIG`` counts boundaries; its ``WEEK`` is Sunday-based regardless of ``DATEFIRST``."""
+        if unit in SUB_DAY_GRANULARITIES and operand is DataType.DATE:
+            start, end = self.promote_to_timestamp(start), self.promote_to_timestamp(end)
+        else:
+            start, end = start.copy(), end.copy()
+        if unit is TimeGranularity.WEEK:
+            # Monday boundaries = Sunday boundaries of the day before.
+            start = _dateadd("DAY", exp.Literal.number(-1), start)
+            end = _dateadd("DAY", exp.Literal.number(-1), end)
+        return exp.Anonymous(this="DATEDIFF_BIG", expressions=[exp.var(_DATEADD_UNITS[unit]), start, end])
+
+    def build_date_add(
+        self, *, expr: Expression, count: Expression, unit: TimeGranularity, operand: DataType,
+    ) -> Expression:
+        """``DATEADD`` (clamps at month-end); a DATE is promoted to DATETIME2 for sub-day units."""
+        base = (
+            self.promote_to_timestamp(expr)
+            if unit in SUB_DAY_GRANULARITIES and operand is DataType.DATE else expr.copy()
         )
-
-    def add_intervals_expr(
-        self,
-        expr: Expression,
-        intervals: list[Expression],
-        sign: int = 1,
-    ) -> Expression:
-        """T-SQL: chain ``DATEADD(unit, ±amount, col)`` calls.
-
-        Each interval in the list is an ``exp.Interval`` from
-        ``duration_interval_exprs``; extract unit name and amount, negate
-        when sign < 0.
-        """
-        result = expr
-        for iv in intervals:
-            if not isinstance(iv, exp.Interval):
-                raise TypeError(
-                    f"Expected exp.Interval in T-SQL DATEADD branch, got {type(iv)}"
-                )
-            unit_str = iv.unit.name.upper()
-            amount = exp.Neg(this=iv.this) if sign < 0 else iv.this
-            result = exp.Anonymous(
-                this="DATEADD",
-                expressions=[exp.Var(this=unit_str), amount, result],
-            )
-        return result
+        return _dateadd(_DATEADD_UNITS[unit], count.copy(), base)
 
     def build_median(self, inner: Expression) -> Expression:
         raise NotImplementedError(

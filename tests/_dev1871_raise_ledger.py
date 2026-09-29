@@ -127,6 +127,16 @@ ROWS: Tuple[LedgerRow, ...] = (
          + AT + "time dimension …"
          + SUGGEST + "Request the same or a nesting-coarser granularity, or bucket the raw column instead.",
          category="checker", family="time-axis", user=True, owner="checker"),
+    _row(module=_EE, function="check_date_operands", exc="DateOperandTypeError",
+         message="…() needs a DATE or TIMESTAMP operand; `…` is not one."
+         + SUGGEST + "Pass a column declared DATE / TIMESTAMP (set Column.type), min/max/first/last of one, "
+         "a date function, now() / current_date(), or an ISO literal such as '2024-01-31' or "
+         "'2024-01-31 10:00:00'.",
+         category="checker", family="date-operand", user=True, owner="checker"),
+    _row(module=_EE, function="check_date_operands", exc="DateOperandTypeError",
+         message="date_add() count `…` is not numeric."
+         + SUGGEST + "Pass an integer, or a numeric column or expression (it is truncated toward zero).",
+         category="checker", family="date-operand", user=True, owner="checker"),
     _row(module=_EE, function="check_time_transforms_resolved", exc="TimeAxisError",
          message="The transform requires an unambiguous time dimension."
          + AT + "transform …"

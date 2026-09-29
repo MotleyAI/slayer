@@ -25,8 +25,8 @@ def test_snowflake_build_date_trunc_week_sunday_shift() -> None:
     out = d.build_date_trunc(col, TimeGranularity.WEEK_SUNDAY)
     up = out.sql(dialect="snowflake").upper()
     assert "DATE_TRUNC('WEEK'" in up
-    assert "+ INTERVAL '1 DAY'" in up
-    assert "- INTERVAL '1 DAY'" in up
+    assert "DATEADD(DAY, 1, ORDERED_AT)" in up
+    assert up.startswith("DATEADD(DAY, -1, ")
 
 
 # Static config (parity with the Tier-2 default tests it replaces)

@@ -15,32 +15,32 @@
 
 ## 2. Scalar spec table and parsing
 
-- [ ] 2.1 `SCALAR_SPECS` / `ScalarSpec` in `slayer/core/keys.py`; derive `SCALAR_FUNCTIONS`, `SCALAR_FUNCTION_ARITY`, `SCALAR_PASSTHROUGH`; `core/formula.py` recognises against `SCALAR_FUNCTIONS`; `osi/expression.py` imports the passthrough subset; verify 1.3/1.4 pass
-- [ ] 2.2 `DatePart` enum in `core/enums.py`; parser unit/part literal validation + lower-casing; `interval` rewrite + stray-`interval` rejection in `engine/syntax.py`; verify 1.1 passes
+- [x] 2.1 `SCALAR_SPECS` / `ScalarSpec` in `slayer/core/keys.py`; derive `SCALAR_FUNCTIONS`, `SCALAR_FUNCTION_ARITY`, `SCALAR_PASSTHROUGH`; `core/formula.py` recognises against `SCALAR_FUNCTIONS`; `osi/expression.py` imports the passthrough subset; verify 1.3/1.4 pass
+- [x] 2.2 `DatePart` enum in `core/enums.py`; parser unit/part literal validation + lower-casing; `interval` rewrite + stray-`interval` rejection in `engine/syntax.py`; verify 1.1 passes
 
 ## 3. Typing
 
-- [ ] 3.1 Extend `Scalar` / `normalize_scalar` with `datetime.date` / `datetime.datetime`; binder converts ISO literals in temporal positions (incl. nested conditionals) and checks literal counts; verify ISO-literal cases of 1.2
-- [ ] 3.2 `temporal_type` in `core`; new `QueryTypeError` subclass raised from `engine/elaborate_env.py` for non-temporal operands and non-numeric counts; verify 1.2 checker cases
-- [ ] 3.3 Result types in `engine/key_metadata.py` (`measure_key_type`, `dimension_key_metadata`) incl. joined and stage-backed columns; verify 1.2 metadata cases
+- [x] 3.1 Extend `Scalar` / `normalize_scalar` with `datetime.date` / `datetime.datetime`; binder converts ISO literals in temporal positions (incl. nested conditionals) and checks literal counts; verify ISO-literal cases of 1.2
+- [x] 3.2 `temporal_type` in `core`; new `QueryTypeError` subclass raised from `engine/elaborate_env.py` for non-temporal operands and non-numeric counts; verify 1.2 checker cases
+- [x] 3.3 Result types in `engine/key_metadata.py` (`measure_key_type`, `dimension_key_metadata`) incl. joined and stage-backed columns; verify 1.2 metadata cases
 
 ## 4. Rendering
 
-- [ ] 4.1 Typed hooks on `SqlDialect` (`build_date_part`, `build_date_diff`, `build_date_add`, `build_current_date`, `build_current_timestamp`, `build_temporal_literal`) with the composed base; `render_scalar_call` / `render_value_key` / `render_row_expression` dispatch date names with operand types from `temporal_type` + `ScopeFrame.column_type`; `_literal` handles date values via the hook; verify 1.5 base (postgres) cases
-- [ ] 4.2 Per-dialect overrides in `slayer/sql/dialects/{sqlite,duckdb,mysql,clickhouse,tsql,snowflake,bigquery}.py`; verify 1.5 passes for every dialect
-- [ ] 4.3 SQLite `slayer_date_add` UDF registered in `register_udfs`; verify 1.7
-- [ ] 4.4 Replace `build_time_offset_expr` and `duration_interval_exprs` with `build_date_add` at every call site (`sql/generator.py` time_shift join-back and window frames, base `week_sunday` truncation; T-SQL/SQLite overrides removed); verify 1.9 and 1.10, re-bless byte-equivalence goldens whose SQL changed
+- [x] 4.1 Typed hooks on `SqlDialect` (`build_date_part`, `build_date_diff`, `build_date_add`, `build_current_date`, `build_current_timestamp`, `build_temporal_literal`) with the composed base; `render_scalar_call` / `render_value_key` / `render_row_expression` dispatch date names with operand types from `temporal_type` + `ScopeFrame.column_type`; `_literal` handles date values via the hook; verify 1.5 base (postgres) cases
+- [x] 4.2 Per-dialect overrides in `slayer/sql/dialects/{sqlite,duckdb,mysql,clickhouse,tsql,snowflake,bigquery}.py`; verify 1.5 passes for every dialect
+- [x] 4.3 SQLite `slayer_date_add` UDF registered in `register_udfs`; verify 1.7
+- [x] 4.4 Replace `build_time_offset_expr` and `duration_interval_exprs` with `build_date_add` at every call site (`sql/generator.py` time_shift join-back and window frames, base `week_sunday` truncation; T-SQL/SQLite overrides removed); verify 1.9 and 1.10, re-bless byte-equivalence goldens whose SQL changed
   - User-approved (pr-tests, 2026-09-28): existing tests pinning the deleted hooks (`build_time_offset_expr`, `duration_interval_exprs`, `add_intervals_expr`) in `tests/dialects/test_{base,sqlite,tsql,postgres,duckdb,mysql,clickhouse,generator_dispatch,generator_delegation,dev1934_dialect_hooks}.py`, `tests/test_sql_generator.py`, `tests/integration/test_integration_sqlserver.py`, and the SQLite SQL-text assertions in `tests/test_time_shift_period_boundary.py`, may be ported to `build_date_add` where their intent survives (delegation, quarter/week normalisation, T-SQL `DATEADD`) or deleted where the 1.10 parity/golden tests supersede them — no per-test stop; list every such edit in the commit message
-- [ ] 4.5 Clock cache bypass (`CLOCK_FUNCTIONS`, `reads_clock` across all emitted stages) in `engine/query_engine.py` / `engine/cache.py`; verify 1.11
-- [ ] 4.6 T-SQL 2-arg `substring` / `substr` emit `SUBSTRING(s, p, LEN(s))` (user-approved in pr-tests); verify `tests/dialects/test_dev1753_scalar_emission.py` and the SQL Server `test_two_arg_substring_executes`
+- [x] 4.5 Clock cache bypass (`CLOCK_FUNCTIONS`, `reads_clock` across all emitted stages) in `engine/query_engine.py` / `engine/cache.py`; verify 1.11
+- [x] 4.6 T-SQL 2-arg `substring` / `substr` emit `SUBSTRING(s, p, LEN(s))` (user-approved in pr-tests); verify `tests/dialects/test_dev1753_scalar_emission.py` and the SQL Server `test_two_arg_substring_executes`
 
 ## 5. Architecture and docs
 
-- [ ] 5.1 Apply the approved `architecture/system.arc42.md` §3.10 edit: "one canonical `SCALAR_PASSTHROUGH` set" → "one canonical scalar allowlist"; run `uvx --no-build --from living-architecture==0.2.0 la-arch-check`
+- [x] 5.1 Apply the approved `architecture/system.arc42.md` §3.10 edit: "one canonical `SCALAR_PASSTHROUGH` set" → "one canonical scalar allowlist"; run `uvx --no-build --from living-architecture==0.2.0 la-arch-check`
 - [ ] 5.2 `docs/concepts/references.md`: scalar table + "Date and time functions" section (every unit/part per function, boundary counting + elapsed-units recipe, month-end clamp, ISO `day_of_week`/`week`/`iso_year` and the year+week trap, operand typing and rejection, ISO literals, `interval` spelling, count truncation, SQLite malformed → NULL, clock zone per backend, cache bypass); `docs/concepts/queries.md` allowlist sentence; caching docs; `.claude/skills/slayer-query.md` scalar list; verify every new/changed page is in `zensical.toml` nav
 
 ## 6. Verification
 
-- [ ] 6.1 `poetry run pytest -m "not integration"` fully green
-- [ ] 6.2 Integration suite with the CI invocation from CLAUDE.md green
-- [ ] 6.3 `poetry run ruff check slayer/ tests/` clean; `poetry run basedpyright` no new errors vs baseline; `npx -y likec4@1.47.0 validate architecture`
+- [x] 6.1 `poetry run pytest -m "not integration"` fully green
+- [x] 6.2 Integration suite with the CI invocation from CLAUDE.md green
+- [x] 6.3 `poetry run ruff check slayer/ tests/` clean; `poetry run basedpyright` no new errors vs baseline; `npx -y likec4@1.47.0 validate architecture`

@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.core.keys import AggregateKey, ArithmeticKey, ColumnKey, LiteralKey, Phase, ScalarCallKey, reroot_value_key, walk_value_keys
+from typing import cast
+
+from slayer.core.keys import AggregateKey, ArithmeticKey, ColumnKey, LiteralKey, Phase, ScalarCallKey, ValueKey, reroot_value_key, walk_value_keys
 from slayer.core.keys import Grain
 from slayer.sql.render.value_expr import contains_aggregate
 
@@ -50,7 +52,7 @@ class TestPhaseJoin:
 
     def test_phase_is_max_of_parts(self) -> None:
         key = _band_over_agg()
-        expected = max(a.phase for a in key.args)
+        expected = max(cast(ValueKey, a).phase for a in key.args)
         assert key.phase == expected
         assert key.phase == Phase.AGGREGATE  # the cond carries an aggregate
 

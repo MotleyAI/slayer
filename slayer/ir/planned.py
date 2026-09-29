@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import functools
 from enum import Enum, IntEnum
-from typing import Dict, List, Literal, Optional, Tuple, Union, Hashable
+from typing import Dict, Hashable, Iterator, List, Literal, Optional, Tuple, Union, cast
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -12,10 +12,13 @@ from slayer.core.enums import DataType
 from slayer.core.errors import MaterialisationStageError
 from slayer.core.format import NumberFormat
 from slayer.core.keys import (
+    CLOCK_FUNCTIONS,
     AggregateKey,
     Phase,
+    ScalarCallKey,
     TransformKey,
     ValueKey,
+    _FrozenKey,
     walk_value_keys,
 )
 from slayer.core.models import SlayerModel
@@ -663,6 +666,45 @@ def _structural_fingerprint(obj) -> Hashable:
     ):
         return obj
     return (type(obj).__name__, repr(obj))
+
+
+# Fields that carry models / schemas, never Mode-B value keys.
+_NON_KEY_FIELDS = frozenset({"stage_bundle", "render_source_model", "stage_schema"})
+
+
+def plan_value_keys(planned) -> Iterator[ValueKey]:
+    """Every root ``ValueKey`` a plan carries, nested producer plans included."""
+    seen: set = set()
+
+    def walk(obj) -> Iterator[ValueKey]:
+        if isinstance(obj, _FrozenKey):
+            yield cast(ValueKey, obj)
+        elif isinstance(obj, BaseModel):
+            if id(obj) in seen:
+                return
+            seen.add(id(obj))
+            for name in type(obj).model_fields:
+                if name not in _NON_KEY_FIELDS:
+                    yield from walk(getattr(obj, name))
+        elif isinstance(obj, (list, tuple, set, frozenset)):
+            for item in obj:
+                yield from walk(item)
+        elif isinstance(obj, dict):
+            for k, v in obj.items():
+                yield from walk(k)
+                yield from walk(v)
+
+    yield from walk(planned)
+
+
+def plans_read_clock(planned_list) -> bool:
+    """Whether any plan evaluates ``now()`` / ``current_date()``."""
+    return any(
+        isinstance(k, ScalarCallKey) and k.name in CLOCK_FUNCTIONS
+        for planned in planned_list
+        for root in plan_value_keys(planned)
+        for k in walk_value_keys(root)
+    )
 
 
 def plan_has_semi_join_filters(planned) -> bool:

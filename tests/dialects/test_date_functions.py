@@ -183,7 +183,8 @@ class TestDialectBranches:
     def test_date_add_on_date_casts_back_to_date(self, dialect: str, unit: TimeGranularity) -> None:
         node = get_dialect(dialect).build_date_add(
             expr=_col(), count=exp.Literal.number(1), unit=unit, operand=DataType.DATE)
-        assert isinstance(node, exp.Cast) and node.to.is_type(exp.DataType.Type.DATE), _sql(node, dialect)
+        assert isinstance(node, exp.Cast), _sql(node, dialect)
+        assert node.to.is_type(exp.DataType.Type.DATE), _sql(node, dialect)
 
     @pytest.mark.parametrize("unit", SUB_DAY)
     def test_tsql_sub_day_add_promotes_date(self, unit: TimeGranularity) -> None:
@@ -214,7 +215,8 @@ def _trunc_function(dialect: str) -> str:
 async def test_computed_count_truncates_toward_zero(dialect: str) -> None:
     computed = await _generate_one("date_add(d1, n, 'day')", dialect)
     literal = await _generate_one("date_add(d1, 3, 'day')", dialect)
-    assert isinstance(computed, str) and isinstance(literal, str)
+    assert isinstance(computed, str)
+    assert isinstance(literal, str)
     fn = _trunc_function(dialect)
     assert f"{fn}(" in computed, computed
     assert f"{fn}(" not in literal, literal

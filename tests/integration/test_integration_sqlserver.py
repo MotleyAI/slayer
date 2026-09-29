@@ -1180,7 +1180,7 @@ async def test_sqlserver_week_uses_iso_week(sqlserver_env: SlayerQueryEngine) ->
 
 @pytest.mark.integration
 async def test_sqlserver_time_shift_uses_dateadd(sqlserver_env: SlayerQueryEngine) -> None:
-    """TsqlDialect.build_time_offset_expr emits ``DATEADD(MONTH, -1, col)``
+    """TsqlDialect.build_date_add emits ``DATEADD(MONTH, -1, col)``
     instead of ``col - INTERVAL 1 MONTH``. INTERVAL is not valid T-SQL."""
     query = SlayerQuery(
         source_model="orders",
@@ -1418,8 +1418,8 @@ class TestSQLServerDateFunctions:
 @pytest.mark.integration
 @pytest.mark.parametrize("fn", ["substring", "substr"])
 async def test_two_arg_substring_executes(sqlserver_env: SlayerQueryEngine, fn: str) -> None:
-    result = await sqlserver_env.execute(query=SlayerQuery(
-        source_model="orders", measures=[{"formula": "*:count", "name": "n"}],
-        filters=[f"{fn}(status, 2) == 'ending'"],
-    ))
+    result = await sqlserver_env.execute(query=SlayerQuery.model_validate({
+        "source_model": "orders", "measures": [{"formula": "*:count", "name": "n"}],
+        "filters": [f"{fn}(status, 2) == 'ending'"],
+    }))
     assert result.data[0]["orders.n"] == 2

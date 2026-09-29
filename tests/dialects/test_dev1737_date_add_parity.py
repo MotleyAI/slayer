@@ -6,7 +6,7 @@ import inspect
 from pathlib import Path
 
 import pytest
-from sqlglot import exp
+from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Column, SlayerModel
@@ -110,7 +110,7 @@ def _span(unit: TimeGranularity, count: int) -> tuple[str, int]:
     raise AssertionError(unit)
 
 
-def _count(node: exp.Expression) -> int:
+def _count(node: Expression) -> int:
     return int(node.sql().strip("()"))
 
 
@@ -147,7 +147,8 @@ async def test_time_shift_uses_date_add(spy, dialect: str, granularity: TimeGran
 async def test_sunday_week_truncation_uses_date_add(spy, dialect: str) -> None:
     calls = spy(dialect)
     await _engine_generate(query=[_query("week_sunday", "v:sum")], model=_ev_model(), dialect=dialect)
-    assert ("days", 1) in calls and ("days", -1) in calls, calls
+    assert ("days", 1) in calls, calls
+    assert ("days", -1) in calls, calls
 
 
 @pytest.mark.parametrize("dialect", TIER1)

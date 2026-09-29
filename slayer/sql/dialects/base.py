@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from datetime import date, datetime
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, Optional, TypeGuard, get_args
 from collections.abc import Callable, Sequence
@@ -23,7 +24,7 @@ from sqlglot import exp
 from sqlglot.expressions.core import Expression
 from sqlglot.dialects.dialect import Dialect as _SqlglotDialect
 
-from slayer.core.enums import DataType, TimeGranularity
+from slayer.core.enums import SUB_DAY_GRANULARITIES, DataType, DatePart, TimeGranularity
 from slayer.core.errors import IdentifierCollisionError, IdentifierLengthError
 from slayer.sql._identifier_fit import (
     SqlLexis,
@@ -41,8 +42,7 @@ if TYPE_CHECKING:
 
 
 # ---------------------------------------------------------------------------
-# Granularity & duration mapping (used by default impls of date_trunc /
-# time-offset / interval helpers)
+# Granularity / unit mapping for the date_trunc and date-function defaults
 # ---------------------------------------------------------------------------
 
 _GRANULARITY_TO_DATE_TRUNC = {
@@ -56,37 +56,28 @@ _GRANULARITY_TO_DATE_TRUNC = {
     TimeGranularity.YEAR: "year",
 }
 
-_WINDOW_UNIT_SQL = {
-    "y": "year",
-    "m": "month",
-    "w": "week",
-    "d": "day",
-    "h": "hour",
-    "min": "minute",
-    "s": "second",
+_INTERVAL_UNITS: dict[TimeGranularity, tuple[str, int]] = {
+    TimeGranularity.SECOND: ("SECOND", 1), TimeGranularity.MINUTE: ("MINUTE", 1),
+    TimeGranularity.HOUR: ("HOUR", 1), TimeGranularity.DAY: ("DAY", 1),
+    TimeGranularity.WEEK: ("WEEK", 1), TimeGranularity.WEEK_SUNDAY: ("WEEK", 1),
+    TimeGranularity.MONTH: ("MONTH", 1), TimeGranularity.QUARTER: ("MONTH", 3),
+    TimeGranularity.YEAR: ("YEAR", 1),
 }
+_UNIT_SECONDS = {TimeGranularity.MINUTE: 60, TimeGranularity.HOUR: 3600}
+SUB_DAY_PARTS = frozenset({DatePart.HOUR, DatePart.MINUTE, DatePart.SECOND})
 
 
-def _granularity_to_unit(granularity: str) -> str:
-    """Map a granularity string to a SQL INTERVAL unit name.
-
-    Quarter has no INTERVAL unit on most dialects — callers normalise to
-    ``MONTH`` with the value multiplied by 3 before invoking the default.
-    Week stays ``WEEK`` (Postgres / MySQL / ClickHouse / BigQuery all
-    accept it). SQLite + T-SQL override the whole method.
-    """
-    return {
-        "year": "YEAR",
-        "month": "MONTH",
-        "day": "DAY",
-        "quarter": "MONTH",  # caller multiplies by 3
-        "week": "WEEK",
-        # A one-period shift of a Sunday-week is just one week.
-        "week_sunday": "WEEK",
-        "hour": "HOUR",
-        "minute": "MINUTE",
-        "second": "SECOND",
-    }.get(granularity, granularity.upper())
+def literal_int(node: Expression) -> Optional[int]:
+    """The value of an integer literal node (``-2`` included), else ``None``."""
+    negative = isinstance(node, exp.Neg)
+    inner = node.this if negative else node
+    if not (isinstance(inner, exp.Literal) and not inner.is_string):
+        return None
+    try:
+        value = int(inner.name)
+    except ValueError:
+        return None
+    return -value if negative else value
 
 
 # ---------------------------------------------------------------------------
@@ -95,9 +86,6 @@ def _granularity_to_unit(granularity: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-TimeUnit = Literal[
-    "second", "minute", "hour", "day", "week", "week_sunday", "month", "quarter", "year",
-]
 StatAgg1Name = Literal["stddev_samp", "stddev_pop", "var_samp", "var_pop"]
 StatAgg2Name = Literal["corr", "covar_samp", "covar_pop"]
 
@@ -378,90 +366,141 @@ class SqlDialect(BaseModel):
             # WEEK_SUNDAY's correctness tracks WEEK's per dialect. BigQuery —
             # whose native WEEK is Sunday — overrides this to emit
             # ``DATE_TRUNC(col, WEEK(SUNDAY))`` directly.
-            shifted = self.build_time_offset_expr(
-                col_expr=col_expr, offset=1, granularity=TimeGranularity.DAY,
+            shifted = self.build_date_add(
+                expr=col_expr, count=exp.Literal.number(1), unit=TimeGranularity.DAY,
+                operand=DataType.TIMESTAMP,
             )
             monday = self.build_date_trunc(
                 col_expr=shifted, granularity=TimeGranularity.WEEK,
             )
-            return self.build_time_offset_expr(
-                col_expr=monday, offset=-1, granularity=TimeGranularity.DAY,
+            return self.build_date_add(
+                expr=monday, count=exp.Literal.number(-1), unit=TimeGranularity.DAY,
+                operand=DataType.TIMESTAMP,
             )
         gran_str = _GRANULARITY_TO_DATE_TRUNC.get(granularity, granularity.value)
         if not isinstance(col_expr, (exp.Column, exp.Cast)):
             col_expr = exp.Cast(this=col_expr, to=exp.DataType.build("TIMESTAMP"))
         return exp.DateTrunc(this=col_expr, unit=exp.Literal.string(gran_str))
 
-    def build_time_offset_expr(
-        self,
-        col_expr: Expression,
-        offset: int,
-        granularity: TimeGranularity | TimeUnit,
-    ) -> Expression:
-        """Default: ``col ± INTERVAL N UNIT`` via ``exp.Add`` / ``exp.Sub``.
+    # ------------------------------------------------------------------
+    # Mode-B date functions (typed operands only, sql P1)
+    # ------------------------------------------------------------------
 
-        Granularity normalization (preserved across every dialect):
-        ``quarter`` becomes ``val * 3`` of ``MONTH``. SQLite additionally
-        normalises ``week`` to ``val * 7`` of ``days`` — that branch lives
-        on ``SqliteDialect`` since other dialects accept ``WEEK`` natively.
-        """
-        granularity = TimeGranularity(granularity)
-        unit = _granularity_to_unit(granularity.value)
-        val = offset * 3 if granularity == TimeGranularity.QUARTER else offset
-        if val >= 0:
-            return exp.Add(
-                this=col_expr,
-                expression=exp.Interval(
-                    this=exp.Literal.number(val),
-                    unit=exp.Var(this=unit),
-                ),
+    def promote_to_timestamp(self, expr: Expression) -> Expression:
+        """A DATE value as the dialect's naive timestamp (midnight)."""
+        return exp.Cast(this=expr.copy(), to=exp.DataType.build("TIMESTAMP"))
+
+    def build_temporal_literal(self, *, value: date, dt: DataType) -> Expression:
+        text = value.isoformat(sep=" ") if isinstance(value, datetime) else value.isoformat()
+        return exp.Cast(this=exp.Literal.string(text), to=exp.DataType.build(dt.value))
+
+    def build_current_date(self) -> Expression:
+        return exp.CurrentDate()
+
+    def build_current_timestamp(self) -> Expression:
+        return exp.Cast(this=exp.CurrentTimestamp(), to=exp.DataType.build("TIMESTAMP"))
+
+    def build_date_part(self, *, part: DatePart, expr: Expression, operand: DataType) -> Expression:
+        """``date_part``: an integer; sub-day parts of a DATE are 0."""
+        if part in SUB_DAY_PARTS and operand is DataType.DATE:
+            return self._date_part(part, self.promote_to_timestamp(expr))
+        return self._date_part(part, expr.copy())
+
+    # Postgres/DuckDB EXTRACT fields.
+    _EXTRACT_FIELDS: ClassVar[dict[DatePart, str]] = {
+        DatePart.YEAR: "YEAR", DatePart.ISO_YEAR: "ISOYEAR", DatePart.QUARTER: "QUARTER",
+        DatePart.MONTH: "MONTH", DatePart.WEEK: "WEEK", DatePart.DAY: "DAY",
+        DatePart.DAY_OF_WEEK: "ISODOW", DatePart.DAY_OF_YEAR: "DOY",
+        DatePart.HOUR: "HOUR", DatePart.MINUTE: "MINUTE", DatePart.SECOND: "SECOND",
+    }
+
+    def _date_part(self, part: DatePart, expr: Expression) -> Expression:
+        """``part`` of ``expr`` (owned by the caller); timestamp parts only for a timestamp."""
+        node: Expression = exp.Extract(this=exp.var(self._EXTRACT_FIELDS[part]), expression=expr)
+        if part is DatePart.SECOND:
+            node = exp.Floor(this=node)
+        return exp.Cast(this=node, to=exp.DataType.build("INT"))
+
+    def build_date_diff(
+        self, *, unit: TimeGranularity, start: Expression, end: Expression, operand: DataType,
+    ) -> Expression:
+        """``unit`` boundaries crossed from ``start`` to ``end`` (both of type ``operand``)."""
+        if unit in (TimeGranularity.YEAR, TimeGranularity.QUARTER, TimeGranularity.MONTH):
+            years = self._part_gap(DatePart.YEAR, start=start, end=end, operand=operand)
+            if unit is TimeGranularity.YEAR:
+                return years
+            sub, per_year = (
+                (DatePart.QUARTER, 4) if unit is TimeGranularity.QUARTER else (DatePart.MONTH, 12)
             )
+            return exp.Add(
+                this=exp.Mul(this=exp.Literal.number(per_year), expression=exp.Paren(this=years)),
+                expression=exp.Paren(this=self._part_gap(sub, start=start, end=end, operand=operand)),
+            )
+        if unit in (TimeGranularity.WEEK, TimeGranularity.WEEK_SUNDAY):
+            gap = self._day_gap(
+                start=self.build_date_trunc(col_expr=start.copy(), granularity=unit),
+                end=self.build_date_trunc(col_expr=end.copy(), granularity=unit),
+            )
+            return self._exact_div(gap, 7)
+        if unit is TimeGranularity.DAY:
+            return self._day_gap(start=start.copy(), end=end.copy())
+        if operand is DataType.DATE:
+            start, end = self.promote_to_timestamp(start), self.promote_to_timestamp(end)
+        gap = self._second_gap(
+            start=self.build_date_trunc(col_expr=start.copy(), granularity=unit),
+            end=self.build_date_trunc(col_expr=end.copy(), granularity=unit),
+        )
+        return gap if unit is TimeGranularity.SECOND else self._exact_div(gap, _UNIT_SECONDS[unit])
+
+    def _part_gap(self, part: DatePart, *, start: Expression, end: Expression, operand: DataType) -> Expression:
         return exp.Sub(
-            this=col_expr,
-            expression=exp.Interval(
-                this=exp.Literal.number(-val),
-                unit=exp.Var(this=unit),
-            ),
+            this=self.build_date_part(part=part, expr=end, operand=operand),
+            expression=self.build_date_part(part=part, expr=start, operand=operand),
         )
 
-    def duration_interval_exprs(
-        self,
-        parts: list[tuple[int, str]],
-        sign: int = 1,  # NOSONAR(S1172) — hook signature; overrides use it
-    ) -> list[Expression]:
-        """Default: one ``exp.Interval`` per (amount, unit) pair.
+    def _day_gap(self, *, start: Expression, end: Expression) -> Expression:
+        """Whole days from ``start``'s date to ``end``'s date; operands are owned by the caller."""
+        return exp.Sub(
+            this=exp.Cast(this=end, to=exp.DataType.build("DATE")),
+            expression=exp.Cast(this=start, to=exp.DataType.build("DATE")),
+        )
 
-        The Add-vs-Sub direction is decided by ``add_intervals_expr`` from
-        its own ``sign`` arg, so the Interval values themselves stay
-        positive at this layer. sqlglot transpiles each single-unit
-        interval per dialect (MySQL/ClickHouse/BigQuery all accept
-        ``INTERVAL N UNIT``).
-        """
-        return [
-            exp.Interval(
-                this=exp.Literal.number(amount),
-                unit=exp.Var(this=_WINDOW_UNIT_SQL[unit].upper()),
-            )
-            for amount, unit in parts
-        ]
+    def _second_gap(self, *, start: Expression, end: Expression) -> Expression:
+        """Whole seconds between two second-aligned timestamps; operands are owned by the caller."""
+        return exp.Cast(
+            this=exp.Extract(this=exp.var("EPOCH"), expression=exp.Paren(this=exp.Sub(this=end, expression=start))),
+            to=exp.DataType.build("BIGINT"),
+        )
 
-    def add_intervals_expr(
-        self,
-        expr: Expression,
-        intervals: list[Expression],
-        sign: int = 1,
+    def _exact_div(self, value: Expression, divisor: int) -> Expression:
+        """``value / divisor`` for an exact multiple, as an integer."""
+        return exp.IntDiv(this=exp.Paren(this=value), expression=exp.Literal.number(divisor))
+
+    def build_date_add(
+        self, *, expr: Expression, count: Expression, unit: TimeGranularity, operand: DataType,
     ) -> Expression:
-        """Default: fold ``exp.Add`` (sign>=0) or ``exp.Sub`` (sign<0) over
-        the interval list."""
-        op_cls = exp.Add if sign >= 0 else exp.Sub
-        result = expr
-        for iv in intervals:
-            result = op_cls(this=result, expression=iv)
-        return result
+        """``expr`` moved by an integer ``count`` of ``unit``s; month-based moves clamp at month-end.
+        A DATE stays a DATE for day-or-coarser units."""
+        interval_unit, per_count = _INTERVAL_UNITS[unit]
+        literal = literal_int(count)
+        if literal is not None:
+            amount = literal * per_count
+            op = exp.Add if amount >= 0 else exp.Sub
+            moved: Expression = op(this=expr.copy(), expression=exp.Interval(
+                this=exp.Literal.number(abs(amount)), unit=exp.var(interval_unit),
+            ))
+        else:
+            moved = exp.Add(this=expr.copy(), expression=exp.Mul(
+                this=exp.Paren(this=count.copy()),
+                expression=exp.Interval(this=exp.Literal.number(per_count), unit=exp.var(interval_unit)),
+            ))
+        if operand is DataType.DATE and unit not in SUB_DAY_GRANULARITIES:
+            return exp.Cast(this=moved, to=exp.DataType.build("DATE"))
+        return moved
 
     def frame_time_operand(self, expr: Expression) -> Expression:
         """The source time column as it must appear in a trailing-window frame
-        comparison. Default: unchanged — the frame bounds (``add_intervals_expr``)
+        comparison. Default: unchanged — the frame bounds (``build_date_add``)
         carry the same time type, so ``expr < bucket_end`` is already exact."""
         return expr
 
