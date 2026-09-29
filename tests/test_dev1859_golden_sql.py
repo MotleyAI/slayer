@@ -110,12 +110,7 @@ async def _generate_one(case, dialect: str):
         return record_raise(exc)
 
 
-ALLOWED_DELTAS: dict[str, str] = {
-    f"param/associate::{d}": (
-        "DEV-1919: the nested parameter's partition key is spelled in producer "
-        "coordinates (alias-only)")
-    for d in DIALECTS
-}
+ALLOWED_DELTAS: dict[str, str] = {}  # PENDING re-bless list; empty in a committed state.
 
 bind_golden_tests(
     namespace=globals(),

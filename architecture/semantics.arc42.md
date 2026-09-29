@@ -46,7 +46,8 @@ is the coercion from coarser to finer.
      — its grain: the explicit `partition_by=`, else the query's dimensions; for a
      transform, its result grain (Axiom 11), where a windowed inner's
      grain always includes the query's time bucket whether or not its `partition_by=`
-     names it. Its value is broadcast onto the home's rows (Axiom 10), which is
+     names it. Its value is broadcast onto the home's rows (Axiom 10; the
+     virtual-model join of Axiom 6), which is
      well-defined only when the home determines every grain member; so in 2.2 the
      constituent stands for its grain members. It contributes no leaf, and its
      interior is never inspected.
@@ -118,7 +119,12 @@ is the coercion from coarser to finer.
    mixing row-level columns with attached values
    [enforced: test:tests/test_dev1859_row_mixed_exec.py]; a transform is itself
    such an attached value, its cells aggregated at its result grain (Axiom 11)
-   [enforced: test:tests/test_dev1832_transform_source.py].
+   [enforced: test:tests/test_dev1832_transform_source.py]. It is a virtual model
+   keyed by its grain: its rows come from its source by the same null-extending
+   joins and row filters as any query, whatever consumes it, and it is read as a
+   field of that model joined one-to-one on the grain, NULL being a grain value
+   like any other — so its value never depends on which dataset roots the query
+   [enforced: test:tests/test_dev1995_virtual_model.py].
 7. **Attributability**: a dimension is attributable to an aggregation iff the
    home dataset determines it — the cells then partition the home rows and sum
    to the total (spec: `queries/semantics` › Attribution by determination).

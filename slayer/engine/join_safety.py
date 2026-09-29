@@ -6,7 +6,7 @@ so one direction may be provably to-one while the other fans out."""
 
 from __future__ import annotations
 
-from typing import Callable, Dict, List, Optional, Sequence, Tuple, TypeVar, Union
+from typing import Callable, Dict, List, Optional, Sequence, Tuple, TypeVar
 
 from pydantic import BaseModel
 
@@ -55,7 +55,7 @@ __all__ = [
 #: An oriented hop, or a declared join read in its declared orientation — both
 #: expose ``cardinality`` and target-side ``join_pairs``, which is all the proof
 #: predicate reads.
-OrientedLike = Union[OrientedJoin, ModelJoin]
+OrientedLike = OrientedJoin | ModelJoin
 
 
 def may_inline_crossing_inputs(crossed_paths: Sequence[tuple]) -> bool:  # NOSONAR(S1172) — crossed_paths is the documented DEV-1688 seam; the cardinality-aware decision reads it, hardcoded False until then.
@@ -263,27 +263,6 @@ def key_host_path(key: ValueKey) -> Tuple[str, ...]:
     return tuple(getattr(key, "path", ()) or ())
 
 
-def _back_path(
-    *, host_name: str, target_path: Tuple[str, ...],
-    models_by_name: Dict[str, SlayerModel],
-) -> Tuple[str, ...]:
-    """Reverse path from the aggregate's root back to the host (per hop, the
-    reverse token: edge name if declared, else source model; then reversed).
-    Falls back to ``(host_name,)`` with no forward path; an ambiguous reverse hop
-    fails closed at walk time."""
-    host_model = models_by_name.get(host_name)
-    host_token = host_model.spelling if host_model is not None else host_name
-    if host_model is None or not target_path:
-        return (host_token,)
-    try:
-        chain = walk(root=host_model, path=target_path, models_by_name=models_by_name)
-    except CircularJoinPathError:
-        return (host_token,)
-    if chain is None:
-        return (host_token,)
-    return tuple(reversed([reverse_token(edge) for edge in chain]))
-
-
 def _common_prefix_len(a: Tuple[str, ...], b: Tuple[str, ...]) -> int:
     """Shared prefix length; token equality is edge identity on canonical paths."""
     n = 0
@@ -301,10 +280,9 @@ def _route_via_common_prefix(
     """The route from the aggregate's root (at ``target_path``) to a
     host-coordinate ``host_path`` (both canonical): step back only to the two paths'
     longest common prefix — the reversed per-hop tokens of ``target_path`` past
-    it — then forward along ``host_path``'s own suffix. When they share nothing
-    this is ``_back_path`` + ``host_path`` (byte-identical to the old round trip);
-    an ambiguous reverse hop propagates from ``walk``, a revisiting one keeps the
-    round trip."""
+    it — then forward along ``host_path``'s own suffix (an empty ``host_path`` gives
+    the reverse path back to the host); an ambiguous reverse hop propagates from
+    ``walk``, a revisiting one keeps the round trip."""
     host_model = models_by_name.get(host_name)
     host_token = host_model.spelling if host_model is not None else host_name
     if host_model is None or not target_path:
@@ -522,7 +500,7 @@ def broadcast_reason(
 
 def assert_partition_key_attributable(
     *, key: ValueKey, pk: ValueKey, label: str,
-    scope: Union[ModelScope, StageSchema], bundle: ResolvedSourceBundle,
+    scope: ModelScope | StageSchema, bundle: ResolvedSourceBundle,
 ) -> None:
     """A partition key whose dependency closure crosses a fanning hop is unattributable; the checker raises. Path-less keys are judged from the host, path-bearing from the aggregate's root."""
     # StageSchema binds flat stage outputs — no join graph, so no fanning closure exists.
@@ -712,7 +690,7 @@ def _path_grain_determined(
 
 
 def crossing_local_root_predicate(
-    *, scope: Union[ModelScope, StageSchema], bundle: ResolvedSourceBundle,
+    *, scope: ModelScope | StageSchema, bundle: ResolvedSourceBundle,
 ) -> Callable[[ValueKey], bool]:
     """Predicate for a LOCAL plain aggregate whose inputs cross a join (desugars onto a HOST-rooted producer); windowed / ranked roots excluded."""
     host_model = scope.source_model if isinstance(scope, ModelScope) else None
