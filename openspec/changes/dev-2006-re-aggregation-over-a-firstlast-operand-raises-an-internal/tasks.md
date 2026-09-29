@@ -1,6 +1,6 @@
 ## 0. Gate
 
-- [ ] 0.1 Before any implementation task (§2 onward): `git fetch` + merge `origin/main` once it contains BOTH DEV-1976 and DEV-1994 (verify with `git log origin/main --oneline --grep=1976` and `--grep=1994` showing their merge commits); re-read their archived specs for any drift against design.md, and re-run this change's tests to confirm they still fail only for this change's reasons
+- [x] 0.1 Before any implementation task (§2 onward): `git fetch` + merge `origin/main` once it contains BOTH DEV-1976 and DEV-1994 (verify with `git log origin/main --oneline --grep=1976` and `--grep=1994` showing their merge commits); re-read their archived specs for any drift against design.md, and re-run this change's tests to confirm they still fail only for this change's reasons
 
 ## 1. Tests (pr-tests stage — all fail before implementation)
 
