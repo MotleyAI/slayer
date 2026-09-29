@@ -393,10 +393,12 @@ Profiling is lazy, never run at ingest (a per-column full scan would dominate
 ingest wall-clock). Samples populate on first `inspect` of a column, and also on:
 `slayer search refresh-samples`, `edit_model` (edited column, or every column on a
 model-level change), `inspect_model` (missing values), `search()` column hits
-(stale values — grouped per model, same-model refreshes serialise while
-cross-model run concurrently; no-op without an engine), and single-entity
-`inspect` at `compact=False`. Legacy models carrying only `sampled` re-profile on
-the next such touch. sql-mode and query-backed models are skipped.
+(stale values — one profiling call per model, models concurrently; no-op without
+an engine), and single-entity `inspect` at `compact=False`. Legacy models carrying
+only `sampled` re-profile on the next such touch. sql-mode and query-backed models
+are skipped by `refresh-samples` and `edit_model`.
+
+A failing profiling query triggers one row-count probe of the model: if the probe fails (or three column queries fail in a row), the model is skipped, and each failure is logged once and cached per engine for an hour (a changed model or column definition retries at once).
 
 ### How sample values surface in search results
 

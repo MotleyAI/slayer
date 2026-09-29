@@ -156,7 +156,8 @@ class _Walker:
         """Route every node of a measure / order / filter root; a row-scope reference
         to a dimension's own value routes nowhere."""
         opaque = self.classes.opaque(position)
-        for n in walk_consumer_positions(vk, dim_keys=self.classes.dim_keys, opaque=opaque):
+        for n in walk_consumer_positions(vk, dim_keys=self.classes.dim_keys_for(position),
+                                         opaque=opaque):
             if opaque is not None and opaque(n.key):
                 continue
             top = n.key is vk

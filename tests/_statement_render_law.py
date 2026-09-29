@@ -124,7 +124,8 @@ def install(mp: pytest.MonkeyPatch) -> list[str]:
         guarded = guard_builder(fn, mark)
         mp.setattr(owner, attr, guarded)
         if inspect.ismodule(owner):
-            for mod_name, mod in list(sys.modules.items()):
+            # copy(), not list(items()): a GC finalizer can import mid-iteration.
+            for mod_name, mod in sys.modules.copy().items():
                 if mod_name.startswith("slayer.") and vars(mod).get(attr) is fn:
                     mp.setattr(mod, attr, guarded)
     mp.setattr(Dialect, "generate", _guarded_generate(Dialect.generate))

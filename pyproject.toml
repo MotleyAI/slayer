@@ -152,7 +152,7 @@ filterwarnings = [
 
 [tool.basedpyright]
 typeCheckingMode = "basic"
-include = ["slayer", "tests", "tools"]
+include = ["slayer", "tests"]
 exclude = ["slayer/flight/_flight_sql_pb2.py"]
 
 [tool.ruff]

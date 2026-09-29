@@ -36,12 +36,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Optional, Sequence, Tuple
 
+from pydantic import BaseModel, ConfigDict
 from sqlglot import exp
+from sqlglot.expressions.core import Expression
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from slayer.sql.dialects.base import SqlDialect
 
-__all__ = ["grain_alias_column", "build_grain_joinback_condition"]
+__all__ = ["AttachedValue", "grain_alias_column", "build_grain_joinback_condition"]
 
 
 def grain_alias_column(*, alias: str, table: str) -> exp.Column:
@@ -56,6 +58,27 @@ def grain_alias_column(*, alias: str, table: str) -> exp.Column:
         this=exp.to_identifier(alias, quoted=True),
         table=exp.to_identifier(table),
     )
+
+
+class AttachedValue(BaseModel):
+    """An attached producer's answer column; a cell the producer lacks reads ``empty_value``."""
+
+    model_config = ConfigDict(frozen=True)
+
+    cte_name: str
+    column_name: str
+    empty_value: int | None
+
+    def column(self) -> exp.Column:
+        return grain_alias_column(alias=self.column_name, table=self.cte_name)
+
+    def value(self) -> Expression:
+        """The value every consumer reads (never the bare column)."""
+        if self.empty_value is None:
+            return self.column()
+        return exp.Coalesce(
+            this=self.column(), expressions=[exp.Literal.number(self.empty_value)],
+        )
 
 
 def build_grain_joinback_condition(

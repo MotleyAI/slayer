@@ -1,11 +1,11 @@
-"""DEV-1615: ``inspect`` (single-entity point-lookup) lazily back-fills
-column sample values on read, exactly like ``inspect_model`` / ``search``.
+"""``inspect`` (single-entity point-lookup) lazily back-fills column sample
+values on read, exactly like ``inspect_model`` / ``search``.
 
-Contract pinned here (settled in the spec interview + Codex passes):
+Contract pinned here:
 
 * ``inspect(reference, entity_type="column", compact=False)`` on a column
   whose persisted sample is missing/stale triggers a live profile via the
-  shared ``ensure_column_sample_fresh`` helper, renders the fresh
+  shared ``ensure_samples_fresh`` owner, renders the fresh
   ``Sample values:`` line, AND persists the refreshed sample for later reads.
 * Coverage is full non-regression vs ``inspect_model``: BOTH categorical
   (distinct-value lists) AND numeric/temporal (min/max ranges) columns.
@@ -29,9 +29,9 @@ from collections.abc import AsyncIterator
 import pytest
 import pytest_asyncio
 
-import slayer.engine.profiling as prof
 import slayer.inspect.model_render as mr
 from slayer.core.enums import DataType
+from slayer.core.query import ModelExtension, SlayerQuery
 from slayer.core.models import (
     Aggregation,
     Column,
@@ -104,18 +104,20 @@ async def inspect_setup(tmp_path) -> AsyncIterator[tuple[InspectService, object]
     yield svc, storage
 
 
-def _count_profile_calls(monkeypatch) -> list:
-    """Monkeypatch ``profile_column`` (the function ``ensure_column_sample_fresh``
-    delegates to) with a counter that still returns ``None`` so nothing
-    persists. Returns the list its names are appended to."""
+def _count_profile_calls(monkeypatch, svc: InspectService) -> list:
+    """Record the profiling queries (top-values or min/max) the service's engine runs."""
     calls: list = []
-    real = prof.profile_column
+    engine = svc._engine
+    assert engine is not None
+    real = engine.execute
 
-    async def counting(*, model, column, engine):  # NOSONAR(S7503)
-        calls.append(column.name)
-        return await real(model=model, column=column, engine=engine)
+    async def counting(*args, **kwargs):
+        q = kwargs.get("query", args[0] if args else None)
+        if isinstance(q, SlayerQuery) and (q.dimensions or isinstance(q.source_model, ModelExtension)):
+            calls.append(q)
+        return await real(*args, **kwargs)
 
-    monkeypatch.setattr("slayer.engine.profiling.profile_column", counting)
+    monkeypatch.setattr(engine, "execute", counting)
     return calls
 
 
@@ -180,7 +182,7 @@ async def test_compact_false_backfills_temporal(inspect_setup) -> None:
 @pytest.mark.asyncio
 async def test_compact_true_does_not_refresh(inspect_setup, monkeypatch) -> None:
     svc, storage = inspect_setup
-    calls = _count_profile_calls(monkeypatch)
+    calls = _count_profile_calls(monkeypatch, svc)
     out = await svc.inspect(
         reference="ds.orders.status", entity_type="column", compact=True,
     )
@@ -195,10 +197,10 @@ async def test_compact_true_does_not_refresh(inspect_setup, monkeypatch) -> None
 async def test_compact_true_does_not_refresh_numeric(
     inspect_setup, monkeypatch,
 ) -> None:
-    """DEV-1615 newly back-fills numeric on compact=False — pin that
+    """Numeric is back-filled on compact=False — pin that
     compact=True still does NOT profile/persist a numeric column either."""
     svc, storage = inspect_setup
-    calls = _count_profile_calls(monkeypatch)
+    calls = _count_profile_calls(monkeypatch, svc)
     out = await svc.inspect(
         reference="ds.orders.amount", entity_type="column", compact=True,
     )
@@ -216,7 +218,7 @@ async def test_compact_true_does_not_refresh_numeric(
 @pytest.mark.asyncio
 async def test_measure_does_not_refresh(inspect_setup, monkeypatch) -> None:
     svc, _ = inspect_setup
-    calls = _count_profile_calls(monkeypatch)
+    calls = _count_profile_calls(monkeypatch, svc)
     out = await svc.inspect(
         reference="ds.orders.aov", entity_type="measure", compact=False,
     )
@@ -227,7 +229,7 @@ async def test_measure_does_not_refresh(inspect_setup, monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_aggregation_does_not_refresh(inspect_setup, monkeypatch) -> None:
     svc, _ = inspect_setup
-    calls = _count_profile_calls(monkeypatch)
+    calls = _count_profile_calls(monkeypatch, svc)
     out = await svc.inspect(
         reference="ds.orders.custom_max", entity_type="aggregation",
         compact=False,
@@ -248,14 +250,13 @@ async def test_engine_none_no_refresh_attempt(inspect_setup, monkeypatch) -> Non
 
     attempts: list = []
 
-    async def spy(*, model, column, engine, storage):  # NOSONAR(S7503)
-        attempts.append(column.name)
-        return column
+    async def spy(**kwargs):  # NOSONAR(S7503)
+        attempts.append(kwargs)
 
     # Count calls at the inspect-service call site: with engine=None the
     # service must not even attempt the helper (the gate is before the call).
     monkeypatch.setattr(
-        "slayer.inspect.service.ensure_column_sample_fresh", spy,
+        "slayer.inspect.service.ensure_samples_fresh", spy,
     )
     out = await svc.inspect(
         reference="ds.orders.status", entity_type="column", compact=False,
@@ -269,38 +270,29 @@ async def test_engine_none_no_refresh_attempt(inspect_setup, monkeypatch) -> Non
 
 
 # ---------------------------------------------------------------------------
-# inspect_model still passes ONLY categorical columns to the helper
+# inspect_model routes every column through one owner call
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_inspect_model_passes_only_categorical_to_helper(
+async def test_inspect_model_passes_all_columns_in_one_call(
     inspect_setup, monkeypatch,
 ) -> None:
-    """Removing the helper's numeric early-return is global, but
-    ``inspect_model`` must remain unaffected: it profiles numeric/temporal via
-    its own batched min/max path and only routes CATEGORICAL columns through
-    ``ensure_column_sample_fresh``."""
+    """``inspect_model`` profiles categorical AND numeric/temporal columns through one owner call."""
     svc, _ = inspect_setup
     seen: list = []
 
-    real = mr.ensure_column_sample_fresh
+    real = mr.ensure_samples_fresh
 
-    async def recording(*, model, column, engine, storage):  # NOSONAR(S7503)
-        seen.append((column.name, column.type))
-        return await real(
-            model=model, column=column, engine=engine, storage=storage,
-        )
+    async def recording(**kwargs):  # NOSONAR(S7503)
+        seen.append([c.name for c in kwargs["columns"]])
+        return await real(**kwargs)
 
-    monkeypatch.setattr(mr, "ensure_column_sample_fresh", recording)
+    monkeypatch.setattr(mr, "ensure_samples_fresh", recording)
     await svc.inspect(reference="ds.orders", entity_type="model", compact=False)
 
-    names = {n for n, _ in seen}
-    # Only the categorical TEXT column reaches the helper.
-    assert "status" in names
-    assert "amount" not in names, "numeric must not route through the helper"
-    assert "order_date" not in names, "temporal must not route through the helper"
-    assert all(t in (DataType.TEXT, DataType.BOOLEAN) for _, t in seen)
+    assert len(seen) == 1
+    assert {"status", "amount", "order_date"} <= set(seen[0])
 
 
 # ---------------------------------------------------------------------------
@@ -317,7 +309,7 @@ async def test_already_cached_does_not_reprofile(inspect_setup, monkeypatch) -> 
         sampled="paid, refunded", sampled_values=["paid", "refunded"],
         distinct_count=2,
     )
-    calls = _count_profile_calls(monkeypatch)
+    calls = _count_profile_calls(monkeypatch, svc)
     out = await svc.inspect(
         reference="ds.orders.status", entity_type="column", compact=False,
     )
@@ -372,7 +364,7 @@ async def test_hidden_column_renders_without_refresh(
     inspect_setup, monkeypatch,
 ) -> None:
     svc, storage = inspect_setup
-    calls = _count_profile_calls(monkeypatch)
+    calls = _count_profile_calls(monkeypatch, svc)
     out = await svc.inspect(
         reference="ds.orders.secret", entity_type="column", compact=False,
     )
@@ -389,20 +381,20 @@ async def test_hidden_column_renders_without_refresh(
 
 @pytest.mark.asyncio
 async def test_profile_failure_renders_cleanly(inspect_setup, monkeypatch) -> None:
-    """The refresh path runs (proving it is wired) but ``profile_column``
-    raises; inspect must swallow it and still return a normal column render."""
+    """The refresh path runs (proving it is wired) but its query raises;
+    inspect must swallow it and still return a normal column render."""
     svc, _ = inspect_setup
     invoked: list = []
 
-    async def boom(*, model, column, engine):  # NOSONAR(S7503)
-        invoked.append(column.name)
+    async def boom(*args, **kwargs):  # NOSONAR(S7503)
+        invoked.append(kwargs.get("query", args[0] if args else None))
         raise RuntimeError("profiling backend exploded")
 
-    monkeypatch.setattr("slayer.engine.profiling.profile_column", boom)
+    monkeypatch.setattr(svc._engine, "execute", boom)
     out = await svc.inspect(
         reference="ds.orders.status", entity_type="column", compact=False,
     )
-    assert invoked == ["status"], "the refresh path must have executed"
+    assert invoked, "the refresh path must have executed"
     # No crash; column still renders (without fresh samples).
     assert "Column: ds.orders.status" in out
 
@@ -429,7 +421,7 @@ async def test_persist_failure_renders_cleanly(inspect_setup, monkeypatch) -> No
 async def test_persist_failure_numeric_renders_cleanly(
     inspect_setup, monkeypatch,
 ) -> None:
-    """Numeric variant of the persist-failure path (DEV-1615 behavior change):
+    """Numeric variant of the persist-failure path:
     a persist failure on a numeric column still renders the in-memory min/max
     range this call."""
     svc, storage = inspect_setup

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
-from typing import Dict, Optional, Tuple
+from typing import Callable, Dict, Optional, Tuple
 
 import pytest
 
@@ -39,6 +39,7 @@ from tests._dev1953_fixtures import (
 
 RANK_UREG = "rank(sum(amount), partition_by=ureg)"
 RANK_BAND = "rank(sum(amount), partition_by=spend_band)"
+PARAM_BAND = "rank(sum(amount, partition_by=[spend_band, city]), partition_by=spend_band)"
 PARAM_UREG = ("weighted_avg(amount, weight=rank(sum(amount, partition_by=[ureg, city]), "
               "partition_by=ureg))")
 DIM_R = {"expression": "rank(sum(amount, partition_by=[city, ureg]), partition_by=ureg)",
@@ -70,17 +71,34 @@ def _ureg_city_ranks() -> Dict[Tuple, int]:
     return rank_within(cell_totals(lambda r: (r[1].upper(), r[2])))
 
 
-def _param_by_ureg() -> Dict[str, Optional[float]]:
-    rank = _ureg_city_ranks()
+def _weighted_avg(group: Callable[[tuple], str],
+                  weight: Callable[[tuple], int]) -> Dict[str, Optional[float]]:
+    """weighted_avg(amount, weight=…) per ``group(row)``."""
     per: Dict[str, list] = defaultdict(list)
     for row in _SALES_ROWS_WIDE:
-        k = (row[1].upper(), row[2])
-        per[k[0]].append((row[4], rank[k]))
+        per[group(row)].append((row[4], weight(row)))
     out = {}
-    for reg, pairs in per.items():
+    for g, pairs in per.items():
         num = [v * w for v, w in pairs if v is not None]
-        out[reg] = sum(num) / sum(w for _v, w in pairs) if num else None
+        out[g] = sum(num) / sum(w for _v, w in pairs) if num else None
     return out
+
+
+def _param_by_ureg() -> Dict[str, Optional[float]]:
+    rank = _ureg_city_ranks()
+    return _weighted_avg(lambda r: r[1].upper(), lambda r: rank[(r[1].upper(), r[2])])
+
+
+def _band_city_ranks() -> Dict[Tuple, int]:
+    band = band_of()
+    return rank_within(cell_totals(lambda r: (band[(r[2], r[1])], r[2])))
+
+
+def _param_by_band() -> Dict[str, Optional[float]]:
+    band = band_of()
+    rank = _band_city_ranks()
+    return _weighted_avg(lambda r: band[(r[2], r[1])],
+                         lambda r: rank[(band[(r[2], r[1])], r[2])])
 
 
 def _dim_cells() -> Dict[Tuple, Optional[float]]:
@@ -228,18 +246,18 @@ class TestAttachCarryingKey:
         keys = [(r["sales.spend_band"], r["sales.city"]) for r in resp.data]
         assert set(keys[:2]) == set(BAND_RANK1)
 
-    # Pins the current planner failure; DEV-1960 flips both to executed values.
-    async def test_measure_fails_closed_in_planner(self, engine):
-        query = sales_q(
-            dimensions=[BAND, "city"], measures=[ModelMeasure(formula=RANK_BAND, name="r")])
-        with pytest.raises(ValueError, match="no routing disposition") as ei:
-            await engine.execute(query)
-        assert not isinstance(ei.value, UnknownReferenceError)
+    async def test_measure(self, engine):
+        resp = await engine.execute(sales_q(
+            dimensions=[BAND, "city"], measures=[ModelMeasure(formula=RANK_BAND, name="r")]))
+        got = {k: v["sales.r"]
+               for k, v in rows_by(resp, "sales.spend_band", "sales.city").items()}
+        assert got == _band_city_ranks()
+        assert {k for k, r in got.items() if r <= 1} == set(BAND_RANK1)
 
-    async def test_parameter_fails_closed_in_planner(self, engine):
-        query = sales_q(
+    async def test_parameter(self, engine):
+        resp = await engine.execute(sales_q(
             dimensions=[BAND],
             measures=[ModelMeasure(
-                formula=f"weighted_avg(amount, weight={RANK_BAND})", name="w")])
-        with pytest.raises(RuntimeError, match="transform partition_key not materialised"):
-            await engine.execute(query)
+                formula=f"weighted_avg(amount, weight={PARAM_BAND})", name="w")]))
+        approx_map(got={r["sales.spend_band"]: r["sales.w"] for r in resp.data},
+                   want=_param_by_band())
