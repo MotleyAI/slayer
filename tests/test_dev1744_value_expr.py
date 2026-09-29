@@ -27,7 +27,7 @@ only form correct for both ``ifnull`` and ``log10``.
 from __future__ import annotations
 
 import os
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Optional
 
@@ -580,6 +580,13 @@ class TestRendersEveryKeyKind:
         # Exact form: a bare "NOT" substring would also match e.g. an
         # IS NOT NULL wrapper that got the predicate wrong.
         assert _sql(out) == "NOT orders.label IN ('a')"
+
+    def test_in_key_with_temporal_literal(self) -> None:
+        out = render_value_key(
+            key=InKey(column=ColumnKey(leaf="label"), values=(LiteralKey(value=date(2024, 1, 31)),)),
+            ctx=_filter_ctx(),
+        )
+        assert _sql(out) == "orders.label IN (CAST('2024-01-31' AS DATE))"
 
     def test_local_aggregate_key(self) -> None:
 

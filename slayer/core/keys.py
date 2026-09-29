@@ -293,7 +293,7 @@ class SqlFragmentKey(_FrozenKey, frozen=True):
     ``{r<i>}`` placeholders stand for ``refs[i]`` (absolute column keys). Phase ROW."""
 
     template: str
-    refs: Tuple[Union[ColumnKey, ColumnSqlKey], ...] = ()
+    refs: Tuple[ColumnKey | ColumnSqlKey, ...] = ()
 
     @property
     def phase(self) -> Phase:
@@ -318,7 +318,7 @@ class TimeTruncKey(_FrozenKey, frozen=True):
     Different granularities on the same column are distinct slots.
     """
 
-    column: Union["ColumnKey", "ColumnSqlKey"]
+    column: ColumnKey | ColumnSqlKey
     granularity: str
 
     @property
@@ -336,12 +336,12 @@ class TimeTruncKey(_FrozenKey, frozen=True):
         return self.model_copy(update={"column": column}) if m.changed else self
 
 
-def column_leaf(col: Union["ColumnKey", "ColumnSqlKey"]) -> str:
+def column_leaf(col: ColumnKey | ColumnSqlKey) -> str:
     """Leaf column name of a ``TimeTruncKey.column`` regardless of kind."""
     return getattr(col, "leaf", None) or getattr(col, "column_name")
 
 
-def column_path(col: Union["ColumnKey", "ColumnSqlKey"]) -> Tuple[str, ...]:
+def column_path(col: ColumnKey | ColumnSqlKey) -> Tuple[str, ...]:
     """Join path of a ``TimeTruncKey.column`` regardless of kind."""
     return col.path
 
@@ -1192,7 +1192,7 @@ def value_arg_positions(name: str, argc: int) -> Tuple[int, ...]:
     return tuple(range(argc)) if positions is None else tuple(i for i in positions if i < argc)
 
 
-def parse_iso_temporal(text: str) -> Union[date, datetime, None]:
+def parse_iso_temporal(text: str) -> date | datetime | None:
     """``YYYY-MM-DD`` as a date, ``YYYY-MM-DD HH:MM:SS`` (space or ``T``) as a datetime; ``None`` otherwise."""
     shape = _ISO_DATE_RE.fullmatch(text) or _ISO_TIMESTAMP_RE.fullmatch(text)
     if shape is None:
@@ -1240,9 +1240,7 @@ def _scalar_temporal_type(key: ScalarCallKey, *, column_type: ColumnTypeFn) -> O
         return _CLOCK_TYPES[key.name]
     if key.name == "date_add" and len(key.args) == 3:
         base = temporal_type(key.args[0], column_type=column_type)
-        if base is DataType.DATE and not is_sub_day_unit(key.args[2]):
-            return DataType.DATE
-        return None if base is None else DataType.TIMESTAMP
+        return None if base is None else date_add_type(base, TimeGranularity(unit_word(key.args[2])))
     values = [key.args[i] for i in value_arg_positions(key.name, len(key.args))]
     types = [temporal_type(a, column_type=column_type) for a in values if not _is_null_arg(a)]
     if not types or None in types:
@@ -1261,8 +1259,9 @@ def unit_word(arg: object) -> str:
     return value
 
 
-def is_sub_day_unit(arg: object) -> bool:
-    return TimeGranularity(unit_word(arg)) in SUB_DAY_GRANULARITIES
+def date_add_type(base: DataType, unit: TimeGranularity) -> DataType:
+    """``date_add``'s result type: a DATE stays a DATE for day-or-coarser units."""
+    return DataType.DATE if base is DataType.DATE and unit not in SUB_DAY_GRANULARITIES else DataType.TIMESTAMP
 
 
 def conditional_number_format(
@@ -1350,7 +1349,7 @@ def split_top_level_and(vk: ValueKey) -> List[ValueKey]:
 
 
 def rewrite_rank_partition_keys(
-    key: ValueKey, *, rewrite_fn: Callable[[Union[AggregateKey, TransformKey]], Grain],
+    key: ValueKey, *, rewrite_fn: Callable[[AggregateKey | TransformKey], Grain],
 ) -> ValueKey:
     """Replace every rank-family ``TransformKey``'s / partitioned aggregate's ``partition_keys`` via ``rewrite_fn``; identity-preserving, runs before interning. Post-order; ``rewrite_fn`` receives the pre-rebuild node."""
     rebuilt = key.map_children(

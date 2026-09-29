@@ -38,7 +38,7 @@ from slayer.core.errors import (
     QueryBackedCycleError,
 )
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
-from slayer.core.keys import BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, SLOT_COMPOSITE_KINDS, TEMPORAL_TYPES, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, ColumnTypeFn, InKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimeTruncKey, TransformKey, column_leaf, column_path, is_boolean_shaped, parameter_row_leaves, shift_offset_of, source_anchor_path, substitute_value_keys, temporal_type, walk_value_keys
+from slayer.core.keys import BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, SLOT_COMPOSITE_KINDS, TEMPORAL_TYPES, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, ColumnTypeFn, InKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimeTruncKey, TransformKey, column_leaf, column_path, date_add_type, is_boolean_shaped, parameter_row_leaves, shift_offset_of, source_anchor_path, substitute_value_keys, temporal_type, walk_value_keys
 from slayer.core.join_walker import aggregation_owner, model_column_type, physical_join_pairs, resolve_hop, terminal_model
 from slayer.core.models import VALUE_PLACEHOLDER, aggregation_definition, rendered_formula, reserved_value_param_message
 from slayer.core.refs import (
@@ -2585,15 +2585,14 @@ class SQLGenerator:
         # Calendar parts apply one by one in written order, clamping like date_add.
         assert wtd_slot is not None
         time_type = src_scope.column_type(wtd_slot.key.column)
-        bucket_end = self._date_offset(
-            _base_col(wtd_alias), count=1, unit=TimeGranularity(plan.window_granularity),
-            operand=time_type,
-        )
-        lower_bound = bucket_end
+        operand = DataType.DATE if time_type is DataType.DATE else DataType.TIMESTAMP
+        unit = TimeGranularity(plan.window_granularity)
+        bucket_end = self._date_offset(_base_col(wtd_alias), count=1, unit=unit, operand=operand)
+        lower_bound, operand = bucket_end, date_add_type(operand, unit)
         for amount, letter in plan.window_parts:
-            lower_bound = self._date_offset(
-                lower_bound, count=-amount, unit=WINDOW_UNIT_GRANULARITY[letter], operand=time_type,
-            )
+            unit = WINDOW_UNIT_GRANULARITY[letter]
+            lower_bound = self._date_offset(lower_bound, count=-amount, unit=unit, operand=operand)
+            operand = date_add_type(operand, unit)
         # The frame bounds are dialect-built timestamps; the source time operand is
         # normalised to the same type by the dialect (identity except SQLite, whose
         # bare-date affinity would leak the exclusive bucket_end row — sql P2).

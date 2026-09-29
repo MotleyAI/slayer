@@ -9,7 +9,7 @@ from __future__ import annotations
 from types import MappingProxyType
 from typing import (
     Callable, Dict, Iterator, List, Literal, Mapping, NamedTuple, NoReturn, Optional,
-    Sequence, Tuple, TypeGuard, Union,
+    Sequence, Tuple, TypeGuard,
 )
 
 from pydantic import BaseModel, ConfigDict
@@ -91,7 +91,7 @@ from slayer.ir.terms import (
 )
 
 def home_dataset(
-    *, scope: Union[ModelScope, StageSchema], model: Optional[SlayerModel],
+    *, scope: ModelScope | StageSchema, model: Optional[SlayerModel],
 ) -> Optional[DatasetT]:
     """The query's root dataset: model-backed for a ModelScope, stage-backed otherwise."""
     if isinstance(scope, StageSchema):

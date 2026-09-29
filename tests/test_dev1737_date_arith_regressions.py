@@ -79,6 +79,20 @@ async def test_one_month_window_ending_at_month_end(backend: str) -> None:
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
+async def test_sub_day_window_part_before_a_day_part_keeps_its_time(backend: str) -> None:
+    rows = [
+        (1, "2024-03-02 09:00:00", "2024-03-02", 10.0),
+        (2, "2024-03-03 09:00:00", "2024-03-03", 100.0),
+    ]
+    got = await _run(backend, rows, {
+        "time_dimensions": [{"dimension": "d", "granularity": "day"}],
+        "measures": [{"formula": "v:sum(window='6h1d')", "name": "x"}],
+    }, width=10)
+    # [03-04 00:00 - 6h - 1d, 03-04 00:00) starts at 03-02 18:00, excluding 03-02.
+    assert got["2024-03-03"] == 100.0
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
 @pytest.mark.parametrize("granularity,dates,width", [
     ("month", ["2024-01-31", "2024-02-29", "2024-04-30", "2024-05-31"], 7),
     ("day", ["2024-02-28", "2024-02-29", "2024-03-02", "2024-03-03"], 10),

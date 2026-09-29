@@ -6,7 +6,7 @@ from __future__ import annotations
 import difflib
 import os
 from decimal import Decimal
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, ConfigDict
 
@@ -121,7 +121,7 @@ def _fmt_measure_chain(chain: Tuple[Tuple[str, str], ...]) -> List[str]:
 def bind_expr(
     parsed: ParsedExpr,
     *,
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
     bundle: ResolvedSourceBundle,
     allow_measures: bool = False,
     dimension_alias_map: Optional[Dict[str, "ValueKey"]] = None,
@@ -166,7 +166,7 @@ def spelled_aggregate_key(
 def bind_time_dimension(
     td: TimeDimension,
     *,
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
     bundle: ResolvedSourceBundle,
 ) -> BoundTimeDimension:
     """Bind a ``TimeDimension`` into a ``BoundTimeDimension``: a ``BoundExpr`` carrying a ``TimeTruncKey`` plus the column facts the checker judges (its type, its recorded bucket granularity — from a ``StageColumn`` or a model ``Column``). The column resolves like a Mode-B identifier ref against a ``ModelScope`` (joins) or a flat ``StageSchema``; the temporal / re-bucketing rules are the checker's (P9)."""
@@ -191,9 +191,9 @@ def bind_time_dimension(
 def _time_dimension_column_facts(
     full: str,
     *,
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
     bundle: ResolvedSourceBundle,
-) -> Tuple[Union[ColumnKey, ColumnSqlKey], Optional[DataType], Optional[TimeGranularity]]:
+) -> Tuple[ColumnKey | ColumnSqlKey, Optional[DataType], Optional[TimeGranularity]]:
     """Resolve a time dimension's column against ``scope`` and read its facts — (bound column key, column type, recorded bucket granularity). Stage arm reads the flat ``StageColumn`` (dotted → illegal-scope, unknown → unknown-reference); model arm walks joins to the terminal ``Column`` and returns its ``granularity``, so a bucketed model column re-buckets under the same rule as a stage column."""
     if isinstance(scope, StageSchema):
         if "." in full:
@@ -248,7 +248,7 @@ def _canonical_if_routed(
     *,
     parsed: ParsedExpr,
     value_key: ValueKey,
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
 ) -> Optional[str]:
     """Full canonical dotted path when a ``DottedRef``'s bound path differs from
     its typed hop path (auto-routed or respelled) — or the canonical name of a
@@ -300,7 +300,7 @@ def _terminal_model_for_path(
 def bind_filter(
     parsed: ParsedExpr,
     *,
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
     bundle: ResolvedSourceBundle,
     alias_map: Optional[Dict[str, "ValueKey"]] = None,
     dimension_alias_map: Optional[Dict[str, "ValueKey"]] = None,
@@ -331,7 +331,7 @@ def bind_filter(
 def _bind(
     parsed: ParsedExpr,
     *,
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
     bundle: ResolvedSourceBundle,
     in_filter: bool,
     alias_map: Optional[Dict[str, "ValueKey"]] = None,
@@ -427,7 +427,7 @@ def _bind(
 def _bind_in(
     parsed: Cmp,
     *,
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
     bundle: ResolvedSourceBundle,
     in_filter: bool,
     alias_map: Optional[Dict[str, "ValueKey"]] = None,
@@ -483,7 +483,7 @@ def _name_suggestion(*, name: str, model: "SlayerModel") -> str | None:
 def _resolve_ref(
     name: str,
     *,
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
     bundle: ResolvedSourceBundle,
     alias_map: Optional[Dict[str, "ValueKey"]] = None,
     measure_ctx: Optional[MeasureResolutionCtx] = None,
@@ -672,7 +672,7 @@ def _strip_self_prefix(
 def _resolve_dotted(
     parts: Tuple[str, ...],
     *,
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
     bundle: ResolvedSourceBundle,
     alias_map: Optional[Dict[str, "ValueKey"]] = None,
     measure_ctx: Optional[MeasureResolutionCtx] = None,
@@ -910,7 +910,7 @@ def _resolve_saved_measure(
 def _resolve_dotted_star(
     parts: Tuple[str, ...],
     *,
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
     bundle: ResolvedSourceBundle,
 ) -> StarKey:
     """Resolve a dotted star (``customers.*``) to a ``StarKey`` whose ``path`` is
@@ -948,7 +948,7 @@ def _resolve_dotted_star(
 
 def _bind_partition_keys(
     value, *,
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
     bundle: ResolvedSourceBundle,
     dim_alias_map: Optional[Dict[str, "ValueKey"]],
     label: str,
@@ -972,7 +972,7 @@ def _bind_partition_keys(
 
 def _bind_expression_agg_source(
     parsed_source: ParsedExpr, *,
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
     bundle: ResolvedSourceBundle,
 ) -> ValueKey:
     """Bind a scalar-expression aggregate source.
@@ -1060,7 +1060,7 @@ def _expression_is_confidently_boolean(key, *, model: Optional[SlayerModel]) -> 
 
 def _reject_non_numeric_expression_agg(
     *, source: ValueKey, agg: str,
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
 ) -> None:
     if agg not in NUMERIC_ONLY_AGGREGATIONS:
         return
@@ -1101,12 +1101,12 @@ def _source_is_reaggregation(node) -> bool:
 
 def _bind_agg_call(
     parsed: AggCall, *,
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
     bundle: ResolvedSourceBundle,
     alias_map: Optional[Dict[str, "ValueKey"]] = None,
     measure_ctx: Optional[MeasureResolutionCtx] = None,
     dim_alias_map: Optional[Dict[str, "ValueKey"]] = None,
-) -> Union[AggregateKey, TransformKey]:
+) -> AggregateKey | TransformKey:
     """Bind an ``AggCall``; ``first`` / ``last`` dispatch by the bound operand's
     type — attached → the series transform, row grain → the ranked aggregation."""
     op = normalize_aggregation_name(parsed.agg)
@@ -1125,7 +1125,7 @@ def _bind_agg_call(
 
 def _bind_agg(
     parsed: AggCall, *,
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
     bundle: ResolvedSourceBundle,
     dim_alias_map: Optional[Dict[str, "ValueKey"]] = None,
 ) -> AggregateKey:
@@ -1410,7 +1410,7 @@ def _column_agg_refusal(*, col, columns, agg: str, custom: bool) -> Optional[str
 
 def _bind_agg_arg(
     parsed: ParsedExpr, *,
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
     bundle: ResolvedSourceBundle,
     dim_alias_map: Optional[Dict[str, "ValueKey"]] = None,
 ):
@@ -1525,7 +1525,7 @@ def _transform_positional_pairs(
 
 def _bind_transform(
     parsed: TransformCall, *,
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
     bundle: ResolvedSourceBundle,
     alias_map: Optional[Dict[str, "ValueKey"]] = None,
     measure_ctx: Optional[MeasureResolutionCtx] = None,
@@ -1543,7 +1543,7 @@ def _bind_transform(
 
 def _bind_transform_input(
     parsed: ParsedExpr, *,
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
     bundle: ResolvedSourceBundle,
     alias_map: Optional[Dict[str, "ValueKey"]],
     measure_ctx: Optional[MeasureResolutionCtx],
@@ -1560,7 +1560,7 @@ def _bind_transform_input(
 def _bind_transform_params(
     *, op: str, inp: ValueKey,
     args: Tuple[ParsedExpr, ...], kwargs: Tuple[Tuple[str, ParsedExpr], ...],
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
     bundle: ResolvedSourceBundle,
     dim_alias_map: Optional[Dict[str, "ValueKey"]],
 ) -> TransformKey:
@@ -1644,7 +1644,7 @@ def _apply_transform_kwarg_defaults(
 
 def _bind_scalar(
     parsed: ScalarCall, *,
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
     bundle: ResolvedSourceBundle,
     in_filter: bool,
     alias_map: Optional[Dict[str, "ValueKey"]] = None,
@@ -1711,7 +1711,7 @@ def _check_literal_count(count: ValueKey) -> None:
 def _reject_windowed_column_sql(
     refs: Tuple[ValueKey, ...],
     *,
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
     bundle: ResolvedSourceBundle,
     parsed: ParsedExpr,
 ) -> None:
@@ -1748,7 +1748,7 @@ def _reject_windowed_column_sql(
 def _lookup_model(
     *,
     name: str,
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
     bundle: ResolvedSourceBundle,
 ) -> Optional[SlayerModel]:
     if isinstance(scope, ModelScope) and scope.source_model is not None:

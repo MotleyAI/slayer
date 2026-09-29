@@ -5,7 +5,7 @@ turns syntax into keys; expression-level binding lives in ``binding``)."""
 from __future__ import annotations
 
 from collections import Counter
-from typing import Callable, Dict, FrozenSet, List, Optional, Tuple, Union
+from typing import Callable, Dict, FrozenSet, List, Optional, Tuple
 
 from slayer.core.enums import DataType
 from slayer.core.errors import (
@@ -346,7 +346,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
     *,
     query: SlayerQuery,
     bundle: ResolvedSourceBundle,
-    scope: Optional[Union[ModelScope, StageSchema]] = None,
+    scope: Optional[ModelScope | StageSchema] = None,
     stage_schemas: Optional[Dict[str, StageSchema]] = None,
 ) -> PreboundQuery:
     """Parse and bind every text surface of a ``SlayerQuery`` (the only door into the parser); returns fully-normalized keys. Model filters excluded (scope-owned)."""
@@ -637,7 +637,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         *[sp.bound.value_key for sp in order_specs],
     ])
 
-    def _validate_partition_keys(key: Union[AggregateKey, TransformKey]) -> Grain:
+    def _validate_partition_keys(key: AggregateKey | TransformKey) -> Grain:
         label = (
             f"transform {key.op!r}" if isinstance(key, TransformKey)
             else f"aggregation {key.agg!r}"
@@ -714,7 +714,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
 
 
 def _format_description_for_dimension(
-    *, scope: Union[ModelScope, StageSchema], full_name: str,
+    *, scope: ModelScope | StageSchema, full_name: str,
 ) -> Tuple[Optional[NumberFormat], Optional[str]]:
     if not isinstance(scope, ModelScope) or scope.source_model is None:
         return None, None
@@ -727,7 +727,7 @@ def _format_description_for_dimension(
 
 
 def _format_description_for_measure_formula(
-    *, scope: Union[ModelScope, StageSchema], bound,
+    *, scope: ModelScope | StageSchema, bound,
 ) -> Tuple[Optional[NumberFormat], Optional[str]]:
     if not isinstance(scope, ModelScope) or scope.source_model is None:
         return None, None
@@ -737,7 +737,7 @@ def _format_description_for_measure_formula(
 
 
 def _type_for_measure_formula(
-    *, scope: Union[ModelScope, StageSchema], bound, bundle: ResolvedSourceBundle,
+    *, scope: ModelScope | StageSchema, bound, bundle: ResolvedSourceBundle,
 ) -> Optional[DataType]:
     if isinstance(scope, StageSchema):
         return stage_measure_type(bound.value_key, schema=scope)
@@ -767,7 +767,7 @@ def _joined_column_type(
 
 def _type_for_dimension(
     *,
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
     full_name: str,
     bundle: ResolvedSourceBundle,
 ) -> Optional[DataType]:
@@ -786,7 +786,7 @@ def _type_for_dimension(
 
 def _opaque_dim_type(
     *,
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
     full_name: str,
     bundle: ResolvedSourceBundle,
 ) -> Optional[DataType]:
@@ -848,7 +848,7 @@ def _route_short_form_saved_measure(
 
 def _resolve_saved_measure_ref(
     *,
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
     bundle: ResolvedSourceBundle,
     formula: str,
 ) -> Optional[Tuple[SlayerModel, "ModelMeasure", str]]:
@@ -901,7 +901,7 @@ def _locate_dotted_saved_measure(
 
 def _saved_model_measure_type(
     *,
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
     bundle: ResolvedSourceBundle,
     formula: str,
 ) -> Optional[DataType]:
@@ -911,7 +911,7 @@ def _saved_model_measure_type(
 
 def _saved_measure_public_name(
     *,
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
     bundle: ResolvedSourceBundle,
     formula: str,
 ) -> Optional[str]:
@@ -922,7 +922,7 @@ def _saved_measure_public_name(
 
 
 def _reject_computed_dim_name_collision(
-    *, name: str, query: SlayerQuery, scope: Union[ModelScope, StageSchema],
+    *, name: str, query: SlayerQuery, scope: ModelScope | StageSchema,
 ) -> None:
     model_collision = None
     if isinstance(scope, ModelScope) and scope.source_model is not None:
@@ -942,7 +942,7 @@ def _declared_computed_dimension(
     d: ComputedDimension,
     *,
     query: SlayerQuery,
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
     bundle: ResolvedSourceBundle,
     dim_alias_map: Optional[Dict[str, ValueKey]] = None,
 ) -> DeclaredMeasure:
@@ -973,7 +973,7 @@ def _declared_computed_dimension(
 def _declared_measures_from_query(  # NOSONAR(S3776) — three sequential projection passes (dimensions incl. computed, time dimensions, measures) building one ordered declared list; each pass is one contract and the order (dims → tds → measures) is the public projection order the function pins.
     *,
     query: SlayerQuery,
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
     bundle: ResolvedSourceBundle,
 ) -> List[DeclaredMeasure]:
     declared: List[DeclaredMeasure] = []
@@ -1183,7 +1183,7 @@ def _canonical_alias_for_formula(
 def _build_date_range_filter(
     *,
     td: TimeDimension,
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
     bundle: ResolvedSourceBundle,
 ) -> BoundFilter:
     """Build a row-phase ``BoundFilter`` from a TimeDimension's ``date_range`` as an inclusive ``BetweenKey``, bound against the bare underlying column (not the TimeTruncKey)."""

@@ -428,7 +428,7 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
             )
         node = exp.In(
             this=render_value_key(key=key.column, ctx=ctx),
-            expressions=[_literal(v.value) for v in key.values],
+            expressions=[_literal(v.value, dialect=ctx.dialect) for v in key.values],
         )
         return exp.Not(this=node) if key.negated else node
 

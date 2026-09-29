@@ -7,7 +7,7 @@ decorate live in ``slayer.ir.prebound``.
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import Optional, Tuple, TypeGuard, Union
+from typing import Optional, Tuple, TypeGuard
 
 from slayer.core.enums import (
     AggregationValueClass,
@@ -152,7 +152,7 @@ def stage_column_type(schema: StageSchema) -> ColumnTypeFn:
     return column_type
 
 
-def scope_column_type(*, scope: Union[ModelScope, StageSchema], bundle) -> ColumnTypeFn:
+def scope_column_type(*, scope: ModelScope | StageSchema, bundle) -> ColumnTypeFn:
     if isinstance(scope, StageSchema):
         return stage_column_type(scope)
     if scope.source_model is None:

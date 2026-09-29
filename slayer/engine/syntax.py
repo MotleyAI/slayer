@@ -47,7 +47,7 @@ class StarSource(_BaseNode):
 
 
 class Literal(_BaseNode):
-    value: Union[Decimal, str, bool, None] = None
+    value: Decimal | str | bool | None = None
 
 
 class TupleLit(_BaseNode):
@@ -61,10 +61,10 @@ class AggCall(_BaseNode):
     # source may also be an aggregation-free scalar expression (``sum(a - b)``),
     # or — for a re-aggregation — a nested AggCall or a grained
     # TransformCall, alone or composed.
-    source: Union[
-        Ref, DottedRef, StarSource, Literal, "ScalarCall", "Arith", "UnaryOp",
-        "AggCall", "TransformCall", "Cmp", "BoolOp",
-    ]
+    source: (
+        Ref | DottedRef | StarSource | Literal | ScalarCall | Arith | UnaryOp
+        | AggCall | TransformCall | Cmp | BoolOp
+    )
     agg: str
     args: Tuple[Any, ...] = ()
     kwargs: Tuple[Tuple[str, Any], ...] = ()
@@ -678,7 +678,7 @@ def _rewrite_comparison_equals(text: str) -> str:
 
 def walk_parsed_refs(
     parsed: ParsedExpr,
-) -> Iterator[Union[Ref, DottedRef, AggCall]]:
+) -> Iterator[Ref | DottedRef | AggCall]:
     """Yield the reference-bearing leaves (``Ref`` / ``DottedRef`` / ``AggCall``)
     of a tree — scope-free name extraction for schema-drift / memory tagging.
 
@@ -740,14 +740,14 @@ def _reject_reserved_expr_token(text: str) -> None:
 
 def _preprocess_colons(
     text: str,
-) -> Tuple[str, Dict[int, Tuple[Union[Ref, DottedRef, StarSource], str]]]:
+) -> Tuple[str, Dict[int, Tuple[Ref | DottedRef | StarSource, str]]]:
     """Replace ``<source>:<agg>`` with placeholder identifiers.
 
     Captures source kind + agg name. Any trailing ``(args)`` is left in
     place so Python's AST parses it naturally as a Call. String literal
     spans are skipped — the literal text is user data, not DSL syntax.
     """
-    agg_map: Dict[int, Tuple[Union[Ref, DottedRef, StarSource], str]] = {}
+    agg_map: Dict[int, Tuple[Ref | DottedRef | StarSource, str]] = {}
     counter = [0]
     literal_spans = [
         # CR review: use the escape-aware matcher so backslash-escaped
@@ -763,7 +763,7 @@ def _preprocess_colons(
             return match.group(0)
         source_str = match.group(1)
         agg_name = match.group(2)
-        source: Union[Ref, DottedRef, StarSource]
+        source: Ref | DottedRef | StarSource
         if source_str == "*":
             source = StarSource()
         elif "." in source_str:

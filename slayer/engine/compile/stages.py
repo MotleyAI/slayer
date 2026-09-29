@@ -517,7 +517,7 @@ def _first_unattributable_arg_leaf(
 
 def _param_row_columns(
     agg: AggregateKey,
-) -> Iterator[Tuple[Optional[str], object, Union[ColumnKey, ColumnSqlKey, TimeTruncKey]]]:
+) -> Iterator[Tuple[Optional[str], object, ColumnKey | ColumnSqlKey | TimeTruncKey]]:
     """``(parameter name or None, parameter value, column row leaf)`` per argument."""
     for name, value in [*((None, a) for a in agg.args), *agg.kwargs]:
         for arg in parameter_row_leaves(value):
@@ -949,7 +949,7 @@ def _synthesize_wrap_attach(
     wrap_key: AggregateKey,
     prebound: PreboundQuery,
     filter_typings: Sequence[ConjunctTyping],
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
     bundle: ResolvedSourceBundle,
     stage_schemas: Dict[str, StageSchema],
     producer_registry: Optional[Dict[Hashable, PlannedQuery]],
@@ -1073,7 +1073,7 @@ def _plan_shifted_attaches(
     prebound: PreboundQuery,
     rewritten: PreboundQuery,
     filter_typings: Sequence[ConjunctTyping],
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
     bundle: ResolvedSourceBundle,
     stage_schemas: Dict[str, StageSchema],
     producer_source_model: Optional[str],
@@ -1893,7 +1893,7 @@ def _dispose_one_conjunct(
 
 def dispose_population_filters(
     *, prebound: PreboundQuery, filter_typings: Sequence[ConjunctTyping],
-    scope: Union[ModelScope, StageSchema], bundle: ResolvedSourceBundle,
+    scope: ModelScope | StageSchema, bundle: ResolvedSourceBundle,
 ) -> Optional[PopulationFilters]:
     """Dispose the population's ROW-phase, FIELD-typed, stratum-0 filter conjuncts
     once at the host root (D1) — inline / semi-join / excluded — recording each
@@ -1981,7 +1981,7 @@ class _ProducerSynthesisContext(BaseModel):
     projected_dim_keys: List[ValueKey]
     projected_td_keys: List[ValueKey]
     base_filters_with_text: List[Tuple[BoundFilter, Optional[str]]]
-    scope: Union[ModelScope, StageSchema]
+    scope: ModelScope | StageSchema
     stage_schemas: Dict[str, StageSchema]
     # Home path per aggregate (Axiom 2), resolved in the elaborator and read
     # here; the source anchor is the fallback for keys with no term.
@@ -2988,7 +2988,7 @@ def _build_carrier_attach(
     constituent_placeholders: Dict[ValueKey, ValueKey],
     host_model: SlayerModel,
     bundle: ResolvedSourceBundle,
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
     stage_schemas: Dict[str, StageSchema],
     inherited: List[BoundFilter],
     n_date_range: int,
@@ -3299,7 +3299,7 @@ class _LocalRegroupContext(BaseModel):
 
     prebound: PreboundQuery
     bundle: ResolvedSourceBundle
-    scope: Union[ModelScope, StageSchema]
+    scope: ModelScope | StageSchema
     stage_schemas: Dict[str, StageSchema]
     producer_source_model: Optional[str]  # NOSONAR(S8396) — required-nullable: the one caller always decides
     producer_registry: Dict[Hashable, PlannedQuery]
@@ -3547,7 +3547,7 @@ def _plan_regroups(
     *,
     prebound: PreboundQuery,
     filter_typings: Sequence[ConjunctTyping],
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
     bundle: ResolvedSourceBundle,
     stage_schemas: Dict[str, StageSchema],
     producer_source_model: Optional[str],
@@ -3756,7 +3756,7 @@ def compile_synthesized(
     *,
     source_model: Optional[str],
     bundle: ResolvedSourceBundle,
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
     stage_schemas: Dict[str, StageSchema],
     population: Population,
     producer_registry: Optional[Dict[Hashable, PlannedQuery]] = None,
@@ -3800,8 +3800,8 @@ class _Routed(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    query: Union[SlayerQuery, StrictQueryCarrier]
-    env: Union[ElaboratedStage, ElaboratedProducer]
+    query: SlayerQuery | StrictQueryCarrier
+    env: ElaboratedStage | ElaboratedProducer
     typed_prebound: PreboundQuery
     prebound: PreboundQuery
     attaches: List[RegroupAttachPlan]
@@ -3875,7 +3875,7 @@ def _route_producer(
     )
 
 
-def _producer_source_model(env: Union[ElaboratedStage, ElaboratedProducer]) -> Optional[str]:
+def _producer_source_model(env: ElaboratedStage | ElaboratedProducer) -> Optional[str]:
     if isinstance(env.query.source_model, str):
         return env.query.source_model
     if isinstance(env.scope, ModelScope) and env.scope.source_model is not None:
@@ -4411,7 +4411,7 @@ def _plan_src_row_filters(
 
 
 def _source_column_names(
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
 ) -> FrozenSet[str]:
     if isinstance(scope, ModelScope) and scope.source_model is not None:
         return frozenset(c.name for c in scope.source_model.columns)
@@ -4484,7 +4484,7 @@ def _column_respellings(columns) -> Dict[str, Tuple[str, ...]]:
 
 
 def _upstream_respellings(
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
 ) -> Dict[str, Tuple[str, ...]]:
     """Respellings of the columns a stage reads locally (upstream stage / query-backed)."""
     if isinstance(scope, StageSchema):
@@ -4522,7 +4522,7 @@ def _emit_stage_schema(
     models_by_name: Dict[str, SlayerModel],
     originals: Mapping[ValueKey, ValueKey],
     upstream: Mapping[str, Tuple[str, ...]],
-    scope: Union[ModelScope, StageSchema, None] = None,
+    scope: ModelScope | StageSchema | None = None,
 ) -> StageSchema:
     """``public_projection[:n_grain_positions]`` are the declared dimension / time-dimension occurrences."""
     columns: List[StageColumn] = []
@@ -4561,7 +4561,7 @@ def _emit_stage_schema(
 
 def _source_column(
     *, key: ValueKey, root: Optional[SlayerModel], models_by_name: Dict[str, SlayerModel],
-    scope: Union[ModelScope, StageSchema, None],
+    scope: ModelScope | StageSchema | None,
 ):
     """The column a row-level stage output reads (a model column or an upstream stage
     column), for the metadata it carries downstream; ``None`` for anything else."""
