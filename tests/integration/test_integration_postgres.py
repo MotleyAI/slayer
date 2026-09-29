@@ -4,6 +4,7 @@ import math as _math
 import statistics
 import tempfile
 import uuid
+from typing import LiteralString, cast
 
 import pytest
 
@@ -14,6 +15,12 @@ from slayer.core.query import ColumnRef, ModelExtension, OrderItem, SlayerQuery,
 from slayer.engine.ingestion import ingest_datasource
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
+from tests.integration._consecutive_periods_calendar import (
+    CALENDAR_CASES,
+    assert_calendar_streak,
+    seed_statements,
+    streak_model,
+)
 
 pytest.importorskip("pytest_postgresql")
 
@@ -103,6 +110,8 @@ def _pg_env_storage(postgresql_proc, tmp_path_factory):
                 (6, "pending", 300, 3, "2024-03-10 16:00:00"),
             ],
         )
+        for stmt in seed_statements():
+            cur.execute(cast(LiteralString, stmt))
         conn.commit()
 
         tmpdir = str(tmp_path_factory.mktemp("pg_env"))
@@ -153,6 +162,7 @@ def _pg_env_storage(postgresql_proc, tmp_path_factory):
         )
         run_sync(storage.save_model(orders_model))
         run_sync(storage.save_model(customers_model))
+        run_sync(storage.save_model(streak_model("testpg")))
 
         yield storage
     finally:
@@ -339,6 +349,12 @@ class TestPostgresQueries:
         # Monthly totals: Jan=300 (>200, true), Feb=200 (==200, false),
         # Mar=375 (>200, true). Trailing run lengths: 1, 0, 1.
         assert [r["orders.positive_run"] for r in result.data] == [1, 0, 1]
+
+    @pytest.mark.parametrize("column,granularity", CALENDAR_CASES)
+    async def test_consecutive_periods_breaks_on_calendar_gap(
+        self, pg_env: SlayerQueryEngine, column: str, granularity: str,
+    ) -> None:
+        await assert_calendar_streak(pg_env, column=column, granularity=granularity)
 
     async def test_change_with_date_range(self, pg_env: SlayerQueryEngine) -> None:
         """change() with date_range should fetch previous period from outside the filtered range."""

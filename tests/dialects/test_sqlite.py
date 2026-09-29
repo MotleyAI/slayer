@@ -131,7 +131,10 @@ def test_sqlite_build_date_trunc_quarter_uses_case_when() -> None:
 # build_date_add — the slayer_date_add UDF (SQLite modifiers overflow past month-end)
 
 
-@pytest.mark.parametrize("count,unit", [(3, "day"), (-1, "week"), (1, "quarter")])
+@pytest.mark.parametrize("count,unit", [
+    (3, "day"), (-1, "week"), (1, "quarter"),
+    *((-1, u) for u in ("second", "minute", "hour", "week_sunday", "month", "year")),
+])
 def test_sqlite_build_date_add_calls_the_udf(count: int, unit: str) -> None:
     d = SqliteDialect()
     col = exp.column("created_at")

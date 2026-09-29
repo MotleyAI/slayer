@@ -387,7 +387,8 @@ A transform can also sit inside arithmetic or a scalar call beside other aggrega
 
 `consecutive_periods(predicate)` evaluates a predicate at the query grain and
 returns an integer streak length for the current row. False or NULL breaks the
-run and returns 0. The input is a Mode-B predicate or numeric value — a
+run and returns 0. A time bucket missing from the query's rows (after the date
+range and row filters) also breaks the run, so the next true bucket restarts at 1. The input is a Mode-B predicate or numeric value — a
 comparison, a null test (`is None` / `is not None`), `BETWEEN`, `IN`, a boolean
 connective, a nested transform, or a bare value
 (truthy when non-NULL and non-zero) — with a boolean-shaped node legal only at
