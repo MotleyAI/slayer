@@ -48,7 +48,8 @@ not the oracle: its plain `=` never matches a NULL grain value.
 ## Risks / Trade-offs
 
 - [Associated NULL cells grow for orders-rooted queries] → documented as BREAKING in
-  the proposal; users wanting the old exclusion filter the dimension to non-NULL.
+  the proposal; users who can drop the NULL cell filter the dimension to non-NULL,
+  which removes the cell rather than restoring its former value.
 - [Hidden consumer-dependence elsewhere] → parity is tested in measure, filter-only,
   order-only and explicit-`partition_by=` positions, single-hop, multi-hop, composite
   and filtered shapes.

@@ -6,7 +6,7 @@ so one direction may be provably to-one while the other fans out."""
 
 from __future__ import annotations
 
-from typing import Callable, Dict, List, Optional, Sequence, Tuple, TypeVar, Union
+from typing import Callable, Dict, List, Optional, Sequence, Tuple, TypeVar
 
 from pydantic import BaseModel
 
@@ -55,7 +55,7 @@ __all__ = [
 #: An oriented hop, or a declared join read in its declared orientation — both
 #: expose ``cardinality`` and target-side ``join_pairs``, which is all the proof
 #: predicate reads.
-OrientedLike = Union[OrientedJoin, ModelJoin]
+OrientedLike = OrientedJoin | ModelJoin
 
 
 def may_inline_crossing_inputs(crossed_paths: Sequence[tuple]) -> bool:  # NOSONAR(S1172) — crossed_paths is the documented DEV-1688 seam; the cardinality-aware decision reads it, hardcoded False until then.
@@ -500,7 +500,7 @@ def broadcast_reason(
 
 def assert_partition_key_attributable(
     *, key: ValueKey, pk: ValueKey, label: str,
-    scope: Union[ModelScope, StageSchema], bundle: ResolvedSourceBundle,
+    scope: ModelScope | StageSchema, bundle: ResolvedSourceBundle,
 ) -> None:
     """A partition key whose dependency closure crosses a fanning hop is unattributable; the checker raises. Path-less keys are judged from the host, path-bearing from the aggregate's root."""
     # StageSchema binds flat stage outputs — no join graph, so no fanning closure exists.
@@ -690,7 +690,7 @@ def _path_grain_determined(
 
 
 def crossing_local_root_predicate(
-    *, scope: Union[ModelScope, StageSchema], bundle: ResolvedSourceBundle,
+    *, scope: ModelScope | StageSchema, bundle: ResolvedSourceBundle,
 ) -> Callable[[ValueKey], bool]:
     """Predicate for a LOCAL plain aggregate whose inputs cross a join (desugars onto a HOST-rooted producer); windowed / ranked roots excluded."""
     host_model = scope.source_model if isinstance(scope, ModelScope) else None

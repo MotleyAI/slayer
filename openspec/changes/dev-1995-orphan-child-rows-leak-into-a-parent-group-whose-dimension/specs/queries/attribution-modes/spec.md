@@ -8,8 +8,9 @@ rule (`queries/semantics` › Aggregates are virtual models). Every other clause
 scenario carries over unchanged to the replacement requirement.
 **Migration**: Replaced by "Distinct-entity association over the virtual model". An
 entity whose join path reaches no related row now sits in the NULL cell whichever end
-of the association roots the query; queries relying on its exclusion filter the
-dimension to non-NULL values explicitly.
+of the association roots the query; queries that can drop the NULL cell filter the
+dimension to non-NULL values, which removes the whole cell rather than restoring its
+former value.
 
 ## ADDED Requirements
 
