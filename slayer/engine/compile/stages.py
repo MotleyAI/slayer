@@ -54,7 +54,6 @@ from slayer.core.join_walker import (
 )
 from slayer.engine.join_safety import (
     UNREACHABLE_NO_PATH,
-    _back_path,
     attributable_from_root,
     broadcast_reason,
     crossing_local_root_predicate,
@@ -2088,7 +2087,6 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
     broadcast: List[Tuple[str, str]] = []
     picked_params: List[PickedParam] = []
     restricted_texts: List[str] = []
-    present_keys: List[ValueKey] = []
     entity_keys_root: List[ValueKey] = []
     associated_measure: Optional[str] = None
     associated_dimensions: List[str] = []
@@ -2099,7 +2097,7 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
         # entity via the association kernel — a home entity absent from the
         # population still counts in the cells its own path reaches.
         agg_rooted = agg_rooted.model_copy(update={"locus": "host"})
-        picked_params, entity_keys_root, present_keys, assoc_pairs = (
+        picked_params, entity_keys_root, assoc_pairs = (
             _association_arm(
                 agg=agg, agg_rooted=agg_rooted, alias=alias, root_model=root_model,
                 target_path=target_path, unattributable=unattributable,
@@ -2246,7 +2244,6 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
     if associate:
         cm_attach_kwargs["kernel"] = AssociationProducerKernel(
             entity_keys=entity_keys_root, picked_params=picked_params,
-            present_keys=present_keys,
         )
     elif window_td_key is not None:
         cm_attach_kwargs["kernel"] = _trailing_window_kernel(
@@ -2409,15 +2406,14 @@ def _association_arm(
     unattributable: List[_UnattributableDim], host_model: SlayerModel,
     models_by_name: Dict[str, SlayerModel], bundle: ResolvedSourceBundle,
 ) -> Tuple[
-    List[PickedParam], List[ValueKey], List[ValueKey],
-    List[Tuple[ValueKey, ValueKey]],
+    List[PickedParam], List[ValueKey], List[Tuple[ValueKey, ValueKey]],
 ]:
     """The home-rooted association arm: eligibility + mode-invariant
     input safety on the rerooted host-locus aggregate (compiled inline at its fanning
     grain, its level-1 dedup removing the fan-out); the kernel entity keys in ROOT
     coordinates and the parameters the entity grain picks, rerooted into the home;
-    the reverse-hop presence guard; and each unattributable dimension rerooted to
-    join back on the host key exactly like ``safe_pairs``."""
+    and each unattributable dimension rerooted to join back on the host key exactly
+    like ``safe_pairs``."""
     check_association_windowed_ranked(
         alias=alias,
         windowed_or_ranked=window_kwarg_of(agg) is not None or (
@@ -2471,12 +2467,7 @@ def _association_arm(
         ))
         for u in unattributable
     ]
-    present_keys = _association_present_keys(
-        unattributable=unattributable, target_path=target_path,
-        root_model=root_model, host_model=host_model, models_by_name=models_by_name,
-        bundle=bundle,
-    )
-    return picked_params, entity_keys_root, present_keys, assoc_pairs
+    return picked_params, entity_keys_root, assoc_pairs
 
 
 def _association_inline_filters(
@@ -2513,68 +2504,6 @@ def _association_inline_filters(
                 if pushed[1] is not None:
                     restricted_texts.append(pushed[1])
     return inherited, restricted_texts
-
-
-def _association_present_keys(
-    *, unattributable: List[_UnattributableDim], target_path: Tuple[str, ...],
-    root_model: SlayerModel, host_model: SlayerModel,
-    models_by_name: Dict[str, SlayerModel], bundle: ResolvedSourceBundle,
-) -> List[ValueKey]:
-    """The reverse hop's host-side join columns in the home-rooted producer's
-    coordinates (path = the reverse path), guarded NOT NULL in level 1 so a
-    dimension the home reaches only back through the population root associates an
-    entity only when a population row carries it (DEV-1910 D3). Empty when home ==
-    host, or when no unattributable dimension reaches back through the reverse hop
-    (a home-side dimension keeps its own NULL cell, as the population computes it)."""
-    if not target_path:
-        return []
-    back = _back_path(
-        host_name=host_model.name,
-        target_path=target_path, models_by_name=models_by_name,
-    )
-    try:
-        first_hop = resolve_hop(
-            current=host_model, token=target_path[0], models_by_name=models_by_name,
-        )
-    except AmbiguousJoinPathError:
-        first_hop = None
-    if first_hop is None:
-        return []
-
-    def _reaches_back(u: _UnattributableDim) -> bool:
-        # The dimension's own structural position (a base column like orders.status
-        # reroots under the reverse path).
-        if any(
-            isinstance(r, (ColumnKey, ColumnSqlKey, TimeTruncKey))
-            and key_host_path(r)[: len(back)] == back
-            for r in walk_value_keys(reroot_from_root(
-                key=u.key, target_path=target_path, root_model=root_model,
-                models_by_name=models_by_name, host_name=host_model.name,
-            ))
-        ):
-            return True
-        # A derived column carries its dependencies in its SQL, not its structural
-        # key: expand the full dependency set so a home-local derived dim whose
-        # definition crosses back is guarded too. An unanalysable closure fails closed.
-        closure = key_closure(
-            key=u.key, anchor_model=host_model, anchor_relation=host_model.name,
-            bundle=bundle,
-        )
-        if closure is None:
-            return True
-        return any(
-            key_host_path(reroot_from_root(
-                key=ColumnKey(path=p, leaf=""), target_path=target_path,
-                root_model=root_model, models_by_name=models_by_name,
-                host_name=host_model.name,
-            ))[: len(back)] == back
-            for p in closure
-        )
-
-    if not any(_reaches_back(u) for u in unattributable):
-        return []
-    return [column_default_key(path=back, leaf=src, base=host_model)
-            for src, _ in first_hop.join_pairs]
 
 
 def _substitute_prebound(
