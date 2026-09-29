@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import AbstractSet, List, Set
 
-from slayer.core.keys import ArithmeticKey, ScalarCallKey
+from slayer.core.keys import SLOT_COMPOSITE_KINDS
 from slayer.ir.planned import PlannedQuery, StageKind, ValueSlot
 
 __all__ = [
@@ -20,8 +20,6 @@ __all__ = [
     "combined_composite_slot_ids",
     "plan_slots",
 ]
-
-_COMPOSITE_KINDS = (ArithmeticKey, ScalarCallKey)
 
 
 def plan_slots(planned_query: PlannedQuery) -> List[ValueSlot]:
@@ -69,7 +67,7 @@ def base_render_order(
 
 
 def combined_composite_slot_ids(planned_query: PlannedQuery) -> Set[str]:
-    """Composite (arithmetic / scalar-call) measure or order slots the planner
+    """Composite (``SLOT_COMPOSITE_KINDS``) measure or order slots the planner
     staged at COMBINED — they render at the combined SELECT reading producer
     columns. A DERIVED composite (one reading a transform) renders in the
     transform chain instead and is not returned here; a computed dimension
@@ -77,7 +75,7 @@ def combined_composite_slot_ids(planned_query: PlannedQuery) -> Set[str]:
     return {
         s.id
         for s in plan_slots(planned_query)
-        if isinstance(s.key, _COMPOSITE_KINDS)
+        if isinstance(s.key, SLOT_COMPOSITE_KINDS)
         and not s.is_dimension
         and s.stage is not None
         and s.stage.kind is StageKind.COMBINED
