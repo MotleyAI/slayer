@@ -19,4 +19,4 @@
 
 ## 3. Review (pr-review)
 
-- [ ] 3.1 Process reviews until every source is green, then archive this change with explicit permission
+- [x] 3.1 Process reviews until every source is green, then archive this change with explicit permission
