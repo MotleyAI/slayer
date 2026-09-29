@@ -22,8 +22,8 @@ EXPECTED: dict[tuple[str, int], dict[str, str]] = {
     ("sign", 1): _same("SIGN(a)"),
     ("ltrim", 1): _same("LTRIM(a)"),
     ("rtrim", 1): _same("RTRIM(a)"),
-    # T-SQL SUBSTRING requires a length; LEN(a) reaches the end of the string.
-    ("substring", 2): {**_same("SUBSTRING(a, b)"), "postgres": "SUBSTRING(a FROM b)", "tsql": "SUBSTRING(a, b, LEN(a))"},
+    # T-SQL SUBSTRING requires a length; DATALENGTH(a) reaches the end, trailing spaces included.
+    ("substring", 2): {**_same("SUBSTRING(a, b)"), "postgres": "SUBSTRING(a FROM b)", "tsql": "SUBSTRING(a, b, DATALENGTH(a))"},
     ("substring", 3): {**_same("SUBSTRING(a, b, c)"), "postgres": "SUBSTRING(a FROM b FOR c)"},
 }
 
@@ -47,4 +47,4 @@ def test_emission_reparses_in_its_dialect(name: str, argc: int, dialect: str) ->
 
 
 def test_tsql_two_arg_substr_gets_a_length() -> None:
-    assert _emit("substr", 2, "tsql") == "SUBSTRING(a, b, LEN(a))"
+    assert _emit("substr", 2, "tsql") == "SUBSTRING(a, b, DATALENGTH(a))"

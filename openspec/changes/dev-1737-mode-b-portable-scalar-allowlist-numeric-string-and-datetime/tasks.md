@@ -32,7 +32,7 @@
 - [x] 4.4 Replace `build_time_offset_expr` and `duration_interval_exprs` with `build_date_add` at every call site (`sql/generator.py` time_shift join-back and window frames, base `week_sunday` truncation; T-SQL/SQLite overrides removed); verify 1.9 and 1.10, re-bless byte-equivalence goldens whose SQL changed
   - User-approved (pr-tests, 2026-09-28): existing tests pinning the deleted hooks (`build_time_offset_expr`, `duration_interval_exprs`, `add_intervals_expr`) in `tests/dialects/test_{base,sqlite,tsql,postgres,duckdb,mysql,clickhouse,generator_dispatch,generator_delegation,dev1934_dialect_hooks}.py`, `tests/test_sql_generator.py`, `tests/integration/test_integration_sqlserver.py`, and the SQLite SQL-text assertions in `tests/test_time_shift_period_boundary.py`, may be ported to `build_date_add` where their intent survives (delegation, quarter/week normalisation, T-SQL `DATEADD`) or deleted where the 1.10 parity/golden tests supersede them — no per-test stop; list every such edit in the commit message
 - [x] 4.5 Clock cache bypass (`CLOCK_FUNCTIONS`, `reads_clock` across all emitted stages) in `engine/query_engine.py` / `engine/cache.py`; verify 1.11
-- [x] 4.6 T-SQL 2-arg `substring` / `substr` emit `SUBSTRING(s, p, LEN(s))` (user-approved in pr-tests); verify `tests/dialects/test_dev1753_scalar_emission.py` and the SQL Server `test_two_arg_substring_executes`
+- [x] 4.6 T-SQL 2-arg `substring` / `substr` emit `SUBSTRING(s, p, DATALENGTH(s))` (user-approved in pr-tests; `LEN` → `DATALENGTH` approved in pr-review, `LEN` drops trailing spaces); verify `tests/dialects/test_dev1753_scalar_emission.py` and the SQL Server `test_two_arg_substring_executes`
 
 ## 5. Architecture and docs
 

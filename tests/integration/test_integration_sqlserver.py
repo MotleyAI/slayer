@@ -1438,3 +1438,17 @@ async def test_two_arg_substring_executes(sqlserver_env: SlayerQueryEngine, fn: 
         "filters": [f"{fn}(status, 2) == 'ending'"],
     }))
     assert result.data[0]["orders.n"] == 2
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("fn", ["substring", "substr"])
+async def test_two_arg_substring_keeps_trailing_spaces(sqlserver_env: SlayerQueryEngine, fn: str) -> None:
+    # T-SQL '=' pads trailing spaces, so a trailing 'x' makes them count.
+    async def count(filters: list[str]) -> int:
+        result = await sqlserver_env.execute(query=SlayerQuery.model_validate({
+            "source_model": "orders", "measures": [{"formula": "*:count", "name": "n"}], "filters": filters,
+        }))
+        return result.data[0]["orders.n"]
+
+    kept = await count([f"concat({fn}(concat(status, '  '), 1), 'x') == concat(status, '  x')"])
+    assert kept == await count([])
