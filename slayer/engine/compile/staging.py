@@ -17,13 +17,11 @@ from typing import Dict, List, Optional, Set, Tuple
 
 from slayer.core.errors import MaterialisationStageError
 from slayer.core.keys import (
-    ArithmeticKey,
-    BetweenKey,
+    SLOT_COMPOSITE_KINDS,
     ColumnKey,
     ColumnSqlKey,
     AggregateKey,
-    InKey,
-    ScalarCallKey,
+    LiteralKey,
     TimeTruncKey,
     TransformKey,
     ValueKey,
@@ -43,9 +41,6 @@ from slayer.ir.planned import (
 )
 
 __all__ = ["stage_slots"]
-
-#: Composite / predicate kinds staged by their operands' stages.
-_COMPOSITE_KINDS = (ArithmeticKey, ScalarCallKey, BetweenKey, InKey)
 
 
 def _placeholder_phases(
@@ -139,11 +134,11 @@ class _SlotStager:
             return self._aggregate_stage(key)
         if is_placeholder(key):
             return self._placeholder_stage(key)
-        if isinstance(key, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
+        if isinstance(key, (ColumnKey, ColumnSqlKey, TimeTruncKey, LiteralKey)):
             return Stage(kind=StageKind.BASE)
         if isinstance(key, TransformKey):
             return Stage(kind=StageKind.DERIVED, level=1 + self._max_transform_level(key))
-        if isinstance(key, _COMPOSITE_KINDS):
+        if isinstance(key, SLOT_COMPOSITE_KINDS):
             return self._composite_stage(slot)
         raise MaterialisationStageError(
             f"value {slot.id!r} of kind {type(key).__name__} has no "
@@ -265,7 +260,7 @@ def _direct_deps(slot: ValueSlot, *, by_key: Dict[ValueKey, ValueSlot]) -> List[
                 seen.add(dep.id)
                 out.append(dep)
             continue
-        if isinstance(key, (TransformKey, *_COMPOSITE_KINDS)):
+        if isinstance(key, (TransformKey, *SLOT_COMPOSITE_KINDS)):
             pending.extend(reversed(list(key.children())))
     return out
 

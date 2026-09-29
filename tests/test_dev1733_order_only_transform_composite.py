@@ -937,20 +937,17 @@ class TestStillGuarded:
         assert isinstance(col, exp.Column), sql
         assert col.table == "orders", sql
 
-    async def test_unslottable_order_expression_raises_not_dropped(
-        self, engine,
-    ) -> None:
-        """An ORDER BY expression with no materialisable slot must raise, not be
-        silently dropped (a top-level ``IN`` predicate is the reachable case)."""
+    async def test_in_predicate_order_expression_slots(self, engine) -> None:
+        """A top-level ``IN`` over an aggregate orders through a hidden slot."""
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             measures=[ModelMeasure(formula="*:count")],
             order=[OrderItem(column="amount:sum in (1, 2)", direction="desc")],
         )
-        with pytest.raises(ValueError) as ei:
-            await _sql(engine, query)
-        assert "not supported" in str(ei.value), ei.value
+        sql = await _sql(engine, query)
+        assert _outer_select_columns(sql) == ["orders.status", "orders._count"], sql
+        _hidden_order_alias(sql)
 
     async def test_comparison_composite_order_still_works(self, engine) -> None:
         """Control: a boolean composite that DOES slot must keep working (guard not over-broad)."""

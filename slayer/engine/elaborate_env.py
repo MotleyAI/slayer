@@ -191,6 +191,39 @@ def type_position_conjunct(
     )
 
 
+def check_measures_at_query_grain(prebound: PreboundQuery) -> None:
+    """Every row-level ref of a declared measure outside aggregations is a dimension value."""
+    if prebound.distinct_dimension_values is False:
+        return
+    dim_keys = position_classes(
+        prebound.declared_measures, n_grain=prebound.n_dims + prebound.n_time_dimensions,
+    ).dim_keys_for("measure")
+    for dm in prebound.declared_measures:
+        if dm.is_dimension:
+            continue
+        root = dm.bound.value_key
+        blockers = _measure_blockers(root, dim_keys)
+        if not blockers:
+            continue
+        names = ", ".join(_key_display(k) for k in blockers)
+        if not any(isinstance(k, (AggregateKey, TransformKey)) for k in walk_value_keys(root)):
+            bare = _key_display(blockers[0])
+            raise PositionTypingError(
+                summary=f"'{bare}' needs an aggregation inside an expression. This measure "
+                f"references row-level {names}, not available at the query grain (not "
+                f"among the query dimensions).",
+                location=f"measure {dm.public_name!r}",
+                suggestion=f"Wrap it in an aggregation (e.g., 'sum({bare})', 'avg({bare})'), "
+                f"or add it to the query dimensions. For COUNT(*), use 'count(*)'.",
+            )
+        raise PositionTypingError(
+            summary=f"This measure references row-level {names}, not available at the "
+            f"query grain (not among the query dimensions).",
+            location=f"measure {dm.public_name!r}",
+            suggestion="Add the row-level reference to the query dimensions, or aggregate it.",
+        )
+
+
 
 
 ConsumerPosition = Literal["dimension", "measure", "order", "field_filter", "measure_filter"]
@@ -272,10 +305,17 @@ class PositionClasses(BaseModel):
     row_aggregates: frozenset
     #: Transforms over a grained aggregate inside a computed dimension.
     row_transform_roots: frozenset
+    #: Grain keys containing a transform.
+    transform_dim_keys: frozenset = frozenset()
 
     @property
     def row_attached(self) -> frozenset:
         return self.row_aggregates | self.row_transform_roots
+
+    def dim_keys_for(self, position: ConsumerPosition) -> frozenset:
+        """A position's dimension values; a transform-bearing dimension is none in a
+        measure until DEV-1963 settles a measure transform's grain."""
+        return self.dim_keys - self.transform_dim_keys if position == "measure" else self.dim_keys
 
     def opaque(self, position: ConsumerPosition) -> Optional[Callable[[ValueKey], bool]]:
         """Keys a position's walk yields but never enters: a dimension's transform
@@ -287,12 +327,12 @@ class PositionClasses(BaseModel):
         return None
 
     def combined_admits(self, node: ConsumerNode, *, position: ConsumerPosition, root: ValueKey) -> bool:
-        """A measure skips partition-key subtrees; a measure-typed filter and an order
-        target skip a dimension's grouped value; an order target that is itself a
-        partitioned aggregate is its only consumer; a field-typed filter reference
+        """A measure skips partition-key subtrees; a measure, a measure-typed filter and
+        an order target skip a dimension's grouped value; an order target that is itself
+        a partitioned aggregate is its only consumer; a field-typed filter reference
         to a dimension's own aggregate is row-scope."""
         if position == "measure":
-            return not (node.own_pk or node.attach_pk)
+            return not (node.own_pk or node.attach_pk or node.dim_key)
         if position == "measure_filter":
             return not node.dim_key
         if position == "order":
@@ -310,9 +350,14 @@ def position_classes(declared_measures: Sequence[DeclaredMeasure], *, n_grain: i
         nodes = dimension_nodes(dm.bound.value_key)
         aggs.update(k for k in nodes if is_grained_aggregate(k))
         troots.update(k for k in nodes if is_dimension_transform_root(k))
+    dim_keys = frozenset(dm.bound.value_key for dm in declared_measures[:n_grain])
     return PositionClasses(
-        dim_keys=frozenset(dm.bound.value_key for dm in declared_measures[:n_grain]),
+        dim_keys=dim_keys,
         row_aggregates=frozenset(aggs), row_transform_roots=frozenset(troots),
+        transform_dim_keys=frozenset(
+            d for d in dim_keys
+            if any(isinstance(k, TransformKey) for k in walk_value_keys(d))
+        ),
     )
 
 
@@ -360,7 +405,7 @@ def check_combined_partition_keys(
         if dm.declared_name is not None
     ]
     for root, position, location in consumers:
-        for n in walk_consumer_positions(root, dim_keys=classes.dim_keys):
+        for n in walk_consumer_positions(root, dim_keys=classes.dim_keys_for(position)):
             if not (is_partitioned_consumer(n.key)
                     and classes.combined_admits(n, position=position, root=root)):
                 continue
