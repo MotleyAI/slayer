@@ -380,7 +380,7 @@ allowlist (`json_extract`, `date_trunc`, `CASE WHEN`, …) belong in
 
 ### Filtering on Computed Columns
 
-Filters can reference names of computed measures — transforms and arithmetic expressions defined in `measures`. These are applied as post-filters on the outer query, after all transforms are computed.
+Filters can reference names of computed measures — transforms and arithmetic expressions defined in `measures`. These are applied as post-filters on the outer query, after all transforms are computed. In a query with any transform, a plain aggregate filter such as `sum(amount) > 200` is applied there too, so it never changes the series a transform reads.
 
 When a query measure is renamed via `{"formula": "agg(col)", "name": "alias"}`, the filter in the same node may reference EITHER form — the raw aggregation formula `agg(col)` OR the user alias `alias`. Both resolve to the user alias, and an aggregation filter is classified as HAVING on the underlying aggregate. Renaming never changes the legal filter form. Two enrichment-time validations apply: (1) a query measure `name` that collides with a source column on the source model is rejected (alias-form filters would otherwise silently bind to the source column); (2) a rename whose canonical alias literally shadows a source column on the same model is also rejected (the aggregation filter would otherwise be ambiguous).
 
