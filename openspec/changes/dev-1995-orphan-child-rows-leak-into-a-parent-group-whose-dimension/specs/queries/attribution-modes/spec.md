@@ -35,7 +35,8 @@ broadcast mode.
 - **WHEN** a query rooted at `orders` with `to_many_handling: "associate"` selects
   `customers.spend:sum` by the orders-level dimension `status`
 - **THEN** each status cell equals the summed spend of the distinct customers having
-  at least one order with that status, by executed values, with unchanged result grain
+  at least one order with that status — the NULL cell also holding every customer with
+  no orders — by executed values, with unchanged result grain
 
 #### Scenario: Local metric over a fanning dimension attributes per cell
 - **WHEN** a query rooted at `customers` with `to_many_handling: "associate"` selects
