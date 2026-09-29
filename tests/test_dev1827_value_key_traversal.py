@@ -297,7 +297,7 @@ class TestKindPolicyRegistry:
 
     def test_materialised_order_membership(self) -> None:
         assert {k for k, p in KIND_POLICY.items() if p.materialised_order} == {
-            AggregateKey, ArithmeticKey, ScalarCallKey, TransformKey,
+            AggregateKey, ArithmeticKey, ScalarCallKey, TransformKey, InKey,
         }
 
     def test_kind_policy_is_frozen(self) -> None:

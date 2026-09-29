@@ -31,7 +31,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from slayer.core.enums import DataType, JoinType, RANKED_AGGREGATIONS, TimeGranularity
 from slayer.core.errors import AmbiguousJoinPathError, CircularJoinPathError
-from slayer.core.keys import AggregateKey, Grain, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, PREDICATE_COMPARISON_OPS, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, effective_root_grain, constituent_grain, attached_parameter_grain, substitute_value_keys, substitute_consumer_keys, walk_value_keys, walk_consumer_keys, REGROUP_LEAF_PREFIX, is_cross_model_agg, split_top_level_and, window_kwarg_of, is_row_attach_root, attached_inputs, operand_aggregates, operand_constituents, parameter_row_leaves, source_anchor_path, source_row_leaves, VALUE_KEY_TYPES
+from slayer.core.keys import SLOT_COMPOSITE_KINDS, AggregateKey, Grain, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, PREDICATE_COMPARISON_OPS, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, effective_root_grain, constituent_grain, attached_parameter_grain, substitute_value_keys, substitute_consumer_keys, walk_value_keys, walk_consumer_keys, REGROUP_LEAF_PREFIX, is_cross_model_agg, split_top_level_and, window_kwarg_of, is_row_attach_root, attached_inputs, operand_aggregates, operand_constituents, parameter_row_leaves, source_anchor_path, source_row_leaves, VALUE_KEY_TYPES
 from slayer.core.models import Column, SlayerModel, aggregation_definition, empty_value
 from slayer.engine.reference_closure import (
     aggregate_input_closure,
@@ -419,13 +419,9 @@ def _scalar_free_columns(node: ValueKey, out: set) -> None:
     # Asymmetric on purpose: aggregate subtrees are bound, not free.
     if isinstance(node, ColumnKey):
         out.add(node)
-    elif isinstance(node, ArithmeticKey):
-        for op in node.operands:
-            _scalar_free_columns(node=op, out=out)
-    elif isinstance(node, ScalarCallKey):
-        for arg in node.args:
-            if isinstance(arg, (ColumnKey, ArithmeticKey, ScalarCallKey, TransformKey)):
-                _scalar_free_columns(node=arg, out=out)
+    elif isinstance(node, SLOT_COMPOSITE_KINDS):
+        for child in node.children():
+            _scalar_free_columns(node=child, out=out)
     elif isinstance(node, TransformKey):
         _scalar_free_columns(node=node.input, out=out)
 
@@ -2644,7 +2640,7 @@ def _non_aggregate_leaf_check(
         return True
     if isinstance(key, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
         return ok(key)
-    if isinstance(key, (ScalarCallKey, ArithmeticKey, InKey)):
+    if isinstance(key, SLOT_COMPOSITE_KINDS):
         return all(_non_aggregate_leaf_check(c, ok=ok) for c in key.children())
     return False
 
@@ -3939,7 +3935,7 @@ def _producer_nesting_rule(
         k
         for dm in prebound.declared_measures
         if not dm.is_dimension
-        and isinstance(dm.bound.value_key, (ArithmeticKey, ScalarCallKey))
+        and isinstance(dm.bound.value_key, SLOT_COMPOSITE_KINDS)
         for k in walk_consumer_keys(dm.bound.value_key)
     }
 

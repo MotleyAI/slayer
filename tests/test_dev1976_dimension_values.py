@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import re
+from decimal import Decimal
 from collections import Counter, defaultdict
 from typing import List, Optional
 
@@ -17,10 +18,25 @@ from slayer.core.errors import (
     TimeAxisError,
     TransformInputError,
 )
-from slayer.core.keys import REGROUP_LEAF_PREFIX, AggregateKey, ValueKey
+from slayer.core.keys import (
+    REGROUP_LEAF_PREFIX,
+    AggregateKey,
+    BetweenKey,
+    ColumnKey,
+    Grain,
+    InKey,
+    LiteralKey,
+    Phase,
+    ScalarCallKey,
+    TransformKey,
+    ValueKey,
+)
 from slayer.core.query import SlayerQuery
+from slayer.engine.compile.stages import _prune_functionally_determined_grain
 from slayer.engine.plan import plan_query
 from slayer.ir.source_bundle import ResolvedSourceBundle
+from slayer.sql import staged_plan
+from slayer.sql.generator import SQLGenerator
 from slayer.sql.scope_check import assert_scope_closed
 
 from tests._dev1847_fixtures import (
@@ -240,6 +256,112 @@ class TestGrandTotalCell:
         resp = await exec_engine.execute(chain_q(
             measures=[_m("1"), _m("customers.id:count", "c")]))
         assert resp.data == [{"corders.m": 1, "corders.c": 3}]
+
+
+# --------------------------------------------------------------------------- #
+# IN over aggregates: phase follows the operands, and no column is dropped.
+# --------------------------------------------------------------------------- #
+IN_P = f"{P} in (90, 140)"
+TOP2 = "rank(amount:sum) in (1, 2)"
+P_HIT = {"North": True, "South": True, "East": False, "Gap": False, "Void": None}
+TOP2_HIT = {"North": False, "South": True, "East": True, "Gap": False, "Void": False}
+
+
+def _truth(resp, key: str = "sales.region") -> dict:
+    src = key.split(".", 1)[0]
+    return {r[key]: (None if r[f"{src}.m"] is None else bool(r[f"{src}.m"])) for r in resp.data}
+
+
+class TestInPredicateOverAggregates:
+    @pytest.mark.parametrize(("dims", "formula", "expected"), [
+        pytest.param(["region"], IN_P, P_HIT, id="partitioned"),
+        pytest.param(["region", RD_P], IN_P, P_HIT, id="partitioned-dimension"),
+        pytest.param(["region"], f"{P} not in (90, 140)",
+                     {k: None if v is None else not v for k, v in P_HIT.items()}, id="not-in"),
+        pytest.param(["region"], f"{R} in (45, 70)", P_HIT, id="reaggregation"),
+        pytest.param(["region"], "amount:sum in (90, 140)", P_HIT, id="plain-aggregate"),
+        pytest.param(["region"], TOP2, TOP2_HIT, id="transform"),
+    ])
+    async def test_measure(self, exec_engine, dims, formula, expected):
+        resp = await exec_engine.execute(sales_q(dimensions=dims, measures=[_m(formula)]))
+        assert _truth(resp) == expected
+
+    async def test_inside_conditional(self, exec_engine):
+        resp = await exec_engine.execute(sales_q(
+            dimensions=["region"], measures=[_m(f"iif({TOP2}, 1, 0)")]))
+        assert _col(resp, "m") == {k: int(bool(v)) for k, v in TOP2_HIT.items()}
+
+    async def test_transform_over_predicate(self, exec_engine):
+        resp = await exec_engine.execute(sales_q(
+            dimensions=["region"], measures=[_m(f"rank({IN_P})")]))
+        assert _col(resp, "m") == {"North": 1, "South": 1, "East": 3, "Gap": 3, "Void": 5}
+
+    async def test_cross_model(self, exec_engine):
+        resp = await exec_engine.execute(chain_q(
+            dimensions=["customers.regions.name"],
+            measures=[_m("customers.id:count in (2, 99)")]))
+        assert _truth(resp, key="corders.customers.regions.name") == {
+            "North": True, "South": False}
+
+
+class TestInPredicatePositionParity:
+    @pytest.mark.parametrize(("formula", "hits", "ordered"), [
+        pytest.param(IN_P, P_HIT, ["North", "South", "East", "Gap", "Void"], id="partitioned"),
+        pytest.param(TOP2, TOP2_HIT, ["East", "South", "Gap", "North", "Void"], id="transform"),
+    ])
+    async def test_measure_filter_order_agree(self, exec_engine, formula, hits, ordered):
+        measured = await exec_engine.execute(sales_q(dimensions=["region"],
+                                                     measures=[_m(formula)]))
+        assert _truth(measured) == hits
+        filtered = await exec_engine.execute(sales_q(
+            dimensions=["region"], measures=[TOT], filters=[formula]))
+        assert {r["sales.region"] for r in filtered.data} == {k for k, v in hits.items() if v}
+        by_order = await exec_engine.execute(sales_q(
+            dimensions=["region"], measures=[TOT],
+            order=[{"column": formula, "direction": "desc"},
+                   {"column": "region", "direction": "asc"}]))
+        assert [r["sales.region"] for r in by_order.data] == ordered
+
+
+class TestPredicatePhase:
+    _COL = ColumnKey(path=(), leaf="amount")
+    _AGG = AggregateKey(source=_COL, agg="sum")
+    _RANK = TransformKey(op="rank", input=_AGG)
+
+    @pytest.mark.parametrize(("operand", "phase"), [
+        pytest.param(_COL, Phase.ROW, id="row"),
+        pytest.param(_AGG, Phase.AGGREGATE, id="aggregate"),
+        pytest.param(_RANK, Phase.POST, id="post"),
+    ])
+    def test_phase_follows_the_operands(self, operand, phase):
+        lit = LiteralKey(value=Decimal(1))
+        assert InKey(column=operand, values=(lit,)).phase == phase
+        assert BetweenKey(column=operand, low=lit, high=lit).phase == phase
+
+
+class TestPredicateGrainPruning:
+    def test_in_over_a_non_grain_column_is_kept(self):
+        region, city = ColumnKey(path=(), leaf="region"), ColumnKey(path=(), leaf="city")
+        p = AggregateKey(source=ColumnKey(path=(), leaf="amount"), agg="sum",
+                         partition_keys=Grain.of({region}))
+        d = ScalarCallKey(name="iif", args=(
+            InKey(column=city, values=(LiteralKey(value="Alpha"),)), p, Decimal(0)))
+        assert d in _prune_functionally_determined_grain(Grain.of({region, d})).keys
+
+
+class TestUnrenderedPublicSlotFailsClosed:
+    async def test_combined_select(self, monkeypatch):
+        monkeypatch.setattr(staged_plan, "combined_composite_slot_ids", lambda _pq: set())
+        query = sales_q(dimensions=["region"], measures=[_m(f"{P} + 1")])
+        with pytest.raises(ValueError, match="silently dropped"):
+            await gen(query, dialect="duckdb")
+
+    async def test_transform_chain(self, monkeypatch):
+        monkeypatch.setattr(SQLGenerator, "_unmaterialised_post_slots",
+                            staticmethod(lambda _pq, _aliases: []))
+        query = sales_q(dimensions=["region"], measures=[_m("rank(amount:sum) + 1")])
+        with pytest.raises(ValueError, match="silently dropped"):
+            await gen(query, dialect="duckdb")
 
 
 class TestComputedPlainDimensionValue:

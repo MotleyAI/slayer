@@ -24,6 +24,7 @@ from slayer.core.keys import (
     LiteralKey,
     Phase,
     REGROUP_LEAF_PREFIX,
+    SLOT_COMPOSITE_KINDS,
     ScalarCallKey,
     StarKey,
     TimeTruncKey,
@@ -359,7 +360,7 @@ def _iter_slot_deps(key: ValueKey):
         return
     if isinstance(key, (StarKey, LiteralKey)):
         return  # never slottable on their own
-    if isinstance(key, (ArithmeticKey, ScalarCallKey, BetweenKey, InKey)):
+    if isinstance(key, SLOT_COMPOSITE_KINDS):
         # Inlined composites: surface their slot-worthy children.
         for child in key.children():
             yield from _iter_slot_deps(child)
@@ -372,7 +373,7 @@ def _iter_slot_deps(key: ValueKey):
 
 def _regroup_substituted_composite_phase(value_key: ValueKey) -> Optional[Phase]:
     """AGGREGATE phase for a composite whose every leaf is a regroup placeholder (reads only ``_cm_`` values, so it renders at the combined SELECT), else None."""
-    if not isinstance(value_key, (ArithmeticKey, ScalarCallKey)):
+    if not isinstance(value_key, SLOT_COMPOSITE_KINDS):
         return None
     deps = list(_iter_slot_deps(value_key))
     if not deps:
@@ -463,7 +464,7 @@ class ProjectionPlanner:
             # itself, so an ORDER BY on a composite had no slot and was silently
             # dropped. Intern the top-level key here (order only — a filter's
             # top-level composite renders inline into WHERE/HAVING).
-            if isinstance(o.bound.value_key, (ArithmeticKey, ScalarCallKey)):
+            if isinstance(o.bound.value_key, SLOT_COMPOSITE_KINDS):
                 self._intern_hidden(registry, o.bound.value_key)
 
         return ProjectionPlan(
@@ -502,10 +503,8 @@ def _canonical_name(key: ValueKey) -> str:  # NOSONAR(S3776) — sequential isin
     if isinstance(key, StarKey):
         return "_star"
     if isinstance(key, BetweenKey):
-        # Defensive: BetweenKey is always inlined into WHERE, never a public slot.
         return f"_between_{_canonical_name(key.column)}"
     if isinstance(key, InKey):
-        # Defensive: InKey is always inlined into WHERE, never a public slot.
         return f"_in_{_canonical_name(key.column)}"
     return "_hidden"
 

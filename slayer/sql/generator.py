@@ -38,7 +38,7 @@ from slayer.core.errors import (
     QueryBackedCycleError,
 )
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
-from slayer.core.keys import BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimeTruncKey, TransformKey, column_leaf, column_path, is_boolean_shaped, parameter_row_leaves, shift_offset_of, source_anchor_path, substitute_value_keys, walk_value_keys
+from slayer.core.keys import BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, SLOT_COMPOSITE_KINDS, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimeTruncKey, TransformKey, column_leaf, column_path, is_boolean_shaped, parameter_row_leaves, shift_offset_of, source_anchor_path, substitute_value_keys, walk_value_keys
 from slayer.core.join_walker import aggregation_owner, physical_join_pairs, resolve_hop, terminal_model
 from slayer.core.models import VALUE_PLACEHOLDER, aggregation_definition, rendered_formula, reserved_value_param_message
 from slayer.core.refs import (
@@ -501,7 +501,7 @@ def _classify_order_scope(
         return OrderScope.CROSS_MODEL_CTE
     if isinstance(slot.key, TransformKey):
         return OrderScope.TRANSFORM_STEP
-    if isinstance(slot.key, (ArithmeticKey, ScalarCallKey)) and _composite_operand_in_isolated_cte(
+    if isinstance(slot.key, SLOT_COMPOSITE_KINDS) and _composite_operand_in_isolated_cte(
         slot,
         slots_by_id=slots_by_id,
         slot_by_key=slot_by_key,
@@ -549,9 +549,6 @@ def _layer_batches_at_level(
 logger = logging.getLogger(__name__)
 
 # Consumer policy from the kind registry (core/keys.KIND_POLICY records intent).
-_SLOT_COMPOSITE_KINDS = tuple(
-    k for k in VALUE_KEY_TYPES if KIND_POLICY[k].slot_composite
-)
 _MATERIALISED_ORDER_KINDS = tuple(
     k for k in VALUE_KEY_TYPES if KIND_POLICY[k].materialised_order
 )
@@ -788,7 +785,10 @@ def _cycle_public_aliases_in_projection_order(
             continue
         all_aliases = aliases_by_slot_id.get(sid, [])
         if not all_aliases:
-            continue
+            raise ValueError(
+                f"public slot {sid!r} ({type(slot.key).__name__}) rendered no "
+                f"column; it would be silently dropped from the result",
+            )
         idx = outer_alias_index.setdefault(sid, 0)
         alias = (
             all_aliases[idx] if idx < len(all_aliases) else all_aliases[-1]
@@ -1773,7 +1773,7 @@ class SQLGenerator:
         return [
             cslot
             for cslot in planned_query.combined_expression_slots
-            if isinstance(cslot.key, (ArithmeticKey, ScalarCallKey))
+            if isinstance(cslot.key, SLOT_COMPOSITE_KINDS)
             and cslot.id not in aliases_by_slot_id
             and cslot.needs_column
             and cslot.stage is not None
@@ -1872,7 +1872,7 @@ class SQLGenerator:
         source_relation,
         planned_query,
     ) -> tuple:
-        """Materialise projected POST-phase ``ArithmeticKey`` / ``ScalarCallKey``"""
+        """Materialise projected POST-phase composite (``SLOT_COMPOSITE_KINDS``) slots"""
         unmaterialised = self._unmaterialised_post_slots(
             planned_query, aliases_by_slot_id,
         )
@@ -2061,7 +2061,7 @@ class SQLGenerator:
             if (
                 slot.phase == Phase.ROW
                 and slot.is_dimension
-                and isinstance(slot.key, _SLOT_COMPOSITE_KINDS)
+                and isinstance(slot.key, SLOT_COMPOSITE_KINDS)
             ):
                 out[sid] = render_value_key(
                     key=slot.key,
@@ -2238,12 +2238,14 @@ class SQLGenerator:
                     select_columns.append(col_expr.copy().as_(full_alias))
                     group_by_keys.setdefault(sid, col_expr)
                     _record_alias(sid, full_alias)
-                elif isinstance(key, _SLOT_COMPOSITE_KINDS) and slot.is_dimension:
+                elif isinstance(key, SLOT_COMPOSITE_KINDS) and slot.is_dimension:
                     dim_expr = computed_dim_expr_by_sid[sid]
                     select_columns.append(dim_expr.copy().as_(full_alias))
                     group_by_keys.setdefault(sid, dim_expr)
                     _record_alias(sid, full_alias)
-                elif isinstance(key, (*_SLOT_COMPOSITE_KINDS, LiteralKey)):
+                elif isinstance(key, SLOT_COMPOSITE_KINDS) or (
+                    isinstance(key, LiteralKey) and not slot.is_dimension
+                ):
                     _defer_composite(sid, slot, full_alias)
                 else:
                     raise NotImplementedError(
@@ -2836,7 +2838,7 @@ class SQLGenerator:
                     f"{member.host_slot_id!r}, which this plan does not carry.",
                 )
             if isinstance(
-                member.ranked_key, (ScalarCallKey, ArithmeticKey, TransformKey),
+                member.ranked_key, (*SLOT_COMPOSITE_KINDS, TransformKey),
             ) or (
                 isinstance(member.ranked_key, ColumnKey)
                 and member.ranked_key.leaf.startswith(REGROUP_LEAF_PREFIX)
@@ -3691,7 +3693,12 @@ class SQLGenerator:
         for sid in planned_query.projection:
             exprs = proj_exprs.get(sid)
             if not exprs:
-                continue
+                if planned_query.transform_layers:
+                    continue  # rendered later in the transform chain
+                raise ValueError(
+                    f"public slot {sid!r} rendered no column at the combined "
+                    f"SELECT; it would be silently dropped from the result",
+                )
             idx = consumed.get(sid, 0)
             if idx >= len(exprs):
                 raise ValueError(
@@ -4527,7 +4534,7 @@ class SQLGenerator:
         # A composite transform input renders inline against operands' already-materialised aliases; the Kahn readiness
         # check guarantees they're in a prior CTE.
 
-        if isinstance(key.input, (ArithmeticKey, ScalarCallKey)):
+        if isinstance(key.input, SLOT_COMPOSITE_KINDS):
             # A composite input that IS a projected computed dimension reads its
             # grouped alias, never re-renders the expression over base columns.
             measure = render_value_key(
