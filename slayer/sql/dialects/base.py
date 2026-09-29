@@ -480,6 +480,17 @@ class SqlDialect(BaseModel):
         """``value / divisor`` for an exact multiple, as an integer."""
         return exp.IntDiv(this=exp.Paren(this=value), expression=exp.Literal.number(divisor))
 
+    def bucket_offset(self, *, bucket: Expression, count: int, unit: TimeGranularity) -> Expression:
+        """A time bucket moved by ``count`` ``unit``s, comparable with ``bucket_comparand`` of a bucket."""
+        return self.build_date_add(
+            expr=self.bucket_comparand(bucket), count=exp.Literal.number(count), unit=unit,
+            operand=DataType.TIMESTAMP,
+        )
+
+    def bucket_comparand(self, bucket: Expression) -> Expression:
+        """A time bucket as compared with a ``bucket_offset``."""
+        return bucket
+
     def build_date_add(
         self, *, expr: Expression, count: Expression, unit: TimeGranularity, operand: DataType,
     ) -> Expression:

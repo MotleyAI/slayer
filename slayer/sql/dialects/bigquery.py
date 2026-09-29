@@ -234,6 +234,10 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
             end = exp.Cast(this=end.copy(), to=exp.DataType.build("DATE"))
         return exp.Anonymous(this="DATE_DIFF", expressions=[end.copy(), start.copy(), _date_part_unit(unit)])
 
+    def bucket_comparand(self, bucket: Expression) -> Expression:
+        """A bucket is DATE, DATETIME or TIMESTAMP, and none of them compare with another."""
+        return self.promote_to_timestamp(bucket)
+
     def build_date_add(
         self, *, expr: Expression, count: Expression, unit: TimeGranularity, operand: DataType,
     ) -> Expression:

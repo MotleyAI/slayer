@@ -1147,17 +1147,16 @@ class SQLGenerator:
         )
 
     def _calendar_offset_bucket(
-        self, *, bucket_expr: Expression, periods: int, shift_granularity: str,
-        bucket_granularity: str, operand: Optional[DataType],
+        self, *, bucket_expr: Expression, periods: int, shift_granularity: str, bucket_granularity: str,
     ) -> Expression:
-        """The bucket ``periods`` steps of ``shift_granularity`` from ``bucket_expr``."""
+        """The bucket ``periods`` steps of ``shift_granularity`` from ``bucket_expr``, as a ``bucket_comparand``."""
         bucket = TimeGranularity(bucket_granularity)
-        shifted = self._date_offset(
-            bucket_expr, count=int(periods), unit=TimeGranularity(shift_granularity), operand=operand,
+        shifted = self._dialect.bucket_offset(
+            bucket=bucket_expr, count=int(periods), unit=TimeGranularity(shift_granularity),
         )
         if _shift_preserves_bucket_starts(bucket=bucket, shift=shift_granularity):
             return shifted
-        return self._build_date_trunc(col_expr=shifted, granularity=bucket)
+        return self._dialect.bucket_comparand(self._build_date_trunc(col_expr=shifted, granularity=bucket))
 
     def _build_date_trunc(self, col_expr: Expression, granularity: TimeGranularity) -> Expression:
         """Build a DATE_TRUNC expression. Dispatches to the dialect strategy"""
@@ -4951,13 +4950,14 @@ class SQLGenerator:
             bucket_expr=grain_alias_column(alias=time_alias, table=chain_tail),
             periods=periods, shift_granularity=shift_granularity,
             bucket_granularity=time_key.granularity,
-            operand=getattr(chain.slots_by_id.get(time_sid), "type", None),
         )
         sjoin_on = build_grain_joinback_condition(
             pairs=[
                 (
-                    lookup_expr if host == time_alias
-                    else grain_alias_column(alias=host, table=chain_tail),
+                    lookup_expr,
+                    self._dialect.bucket_comparand(grain_alias_column(alias=shifted, table=shifted_cte_name)),
+                ) if host == time_alias else (
+                    grain_alias_column(alias=host, table=chain_tail),
                     grain_alias_column(alias=shifted, table=shifted_cte_name),
                 )
                 for host, shifted in pairs
@@ -5112,12 +5112,11 @@ class SQLGenerator:
         continues_run = exp.And(
             this=predicate.copy(),
             expression=exp.EQ(
-                this=exp.column(cp_prev_alias, quoted=True),
+                this=self._dialect.bucket_comparand(exp.column(cp_prev_alias, quoted=True)),
                 expression=self._calendar_offset_bucket(
                     bucket_expr=exp.column(time_alias, quoted=True), periods=-1,
                     shift_granularity=time_key.granularity,
                     bucket_granularity=time_key.granularity,
-                    operand=getattr(slots_by_id.get(time_sid), "type", None),
                 ),
             ),
         )

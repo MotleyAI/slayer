@@ -8,6 +8,7 @@ from slayer.core.enums import DataType
 from slayer.core.models import Column, SlayerModel
 from slayer.core.query import SlayerQuery
 from tests._dev1737_fixtures import BACKENDS, TableSpec, exec_engine
+from tests._engine_helpers import _engine_generate
 
 
 def _ev_model() -> SlayerModel:
@@ -75,3 +76,40 @@ async def test_one_month_window_ending_at_month_end(backend: str) -> None:
     }, width=10)
     assert got["2024-03-30"] == 1110.0
     assert got["2024-03-01"] == 111.0
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+@pytest.mark.parametrize("granularity,dates,width", [
+    ("month", ["2024-01-31", "2024-02-29", "2024-04-30", "2024-05-31"], 7),
+    ("day", ["2024-02-28", "2024-02-29", "2024-03-02", "2024-03-03"], 10),
+])
+async def test_consecutive_periods_over_date_column(
+    backend: str, granularity: str, dates: list[str], width: int,
+) -> None:
+    rows = [(i, f"{d} 09:00:00", d, 1.0) for i, d in enumerate(dates, start=1)]
+    got = await _run(backend, rows, {
+        "time_dimensions": [{"dimension": "d", "granularity": granularity}],
+        "measures": [{"formula": "consecutive_periods(sum(v) > 0)", "name": "x"}],
+    }, width=width)
+    assert [got[d[:width]] for d in dates] == [1, 2, 1, 2]
+
+
+@pytest.mark.parametrize("dim", ["d", "d_expr", "ts"])  # DATE, DATETIME and TIMESTAMP buckets
+@pytest.mark.parametrize("formula,comparison", [
+    ("consecutive_periods(sum(v) > 0)",
+     "CAST(`_cp_prev_ev___x` AS TIMESTAMP) = "
+     "CAST(DATETIME_ADD(CAST(CAST(`ev___{dim}` AS TIMESTAMP) AS DATETIME), INTERVAL -1 MONTH) AS TIMESTAMP)"),
+    ("time_shift(v:sum, -1, 'month')",
+     "CAST(DATETIME_ADD(CAST(CAST(base.`ev___{dim}` AS TIMESTAMP) AS DATETIME), INTERVAL -1 MONTH) AS TIMESTAMP) "
+     "IS NOT DISTINCT FROM CAST(shifted_x.`ev___{dim}` AS TIMESTAMP)"),
+])
+async def test_bigquery_bucket_comparisons_are_timestamps(dim: str, formula: str, comparison: str) -> None:
+    # BigQuery compares none of DATE / DATETIME / TIMESTAMP with another; buckets meet as TIMESTAMP.
+    model = _ev_model()
+    model.columns.append(Column(name="d_expr", sql="DATE(ts)", type=DataType.DATE))
+    sql = await _engine_generate(query=SlayerQuery.model_validate({
+        "source_model": "ev",
+        "time_dimensions": [{"dimension": dim, "granularity": "month"}],
+        "measures": [{"formula": formula, "name": "x"}],
+    }), model=model, dialect="bigquery", validate=False)
+    assert comparison.format(dim=dim) in sql
