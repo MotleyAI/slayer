@@ -100,7 +100,10 @@ is the coercion from coarser to finer.
 4. **The home-dataset axiom**: an aggregation runs over the rows of its home
    dataset, each counted exactly once — never over the row product of a join,
    so no fan-out can multiply its inputs (spec: `queries/semantics` › No double
-   counting). [enforced: test:tests/test_dev1836_producer_execution.py]
+   counting). A cell with no home rows takes the aggregation's **empty value**:
+   0 for the count family, NULL otherwise.
+   [enforced: test:tests/test_dev1836_producer_execution.py]
+   [enforced: test:tests/test_dev1994_empty_value.py]
 5. **Grain and cells**: an aggregate is typed by its grain — its partition_by
    dimension set, defaulting to the query's dimensions; one combination of
    grain values is a cell. [enforced: test:tests/test_dev1871_grain_retype.py]
@@ -152,7 +155,7 @@ is the coercion from coarser to finer.
 10. **Grain-union broadcast**: combining aggregates unions their grains, each
     operand broadcast from its own grain to the union — coarser to finer only;
     the population supplies the row set, a cell an operand lacks contributes
-    NULL, and combining never removes rows (spec: `queries/semantics` ›
+    its empty value (Axiom 4; NULL for a transform), and combining never removes rows (spec: `queries/semantics` ›
     Grain-union broadcasting). [enforced: test:tests/test_dev1739_execution.py]
 11. **Transforms are typed**: a transform consumes an aggregate-valued dataset and
     produces one, consulting only its operand's type (Axiom 9). Its grain is resolved by:
@@ -165,6 +168,8 @@ is the coercion from coarser to finer.
       `partition_by=` partitions the operand's cells and must name operand-grain members.
     - **11.3 Time-ordered.** The axis is the query's active time bucket and must be in
       the operand grain; otherwise the transform fails with the `partition_by=` remedy.
+      Steps along the axis are calendar steps: a bucket absent from the series is a gap,
+      never a neighbour; `lag` / `lead` alone step over present rows.
       **11.3a Preserving** (`cumsum`, `lag`, `lead`, `time_shift`, `change`,
       `change_pct`, `consecutive_periods`): one value per operand cell, result grain =
       operand grain. **11.3b Collapsing** (`first`, `last`): one value per partition,
@@ -180,6 +185,7 @@ is the coercion from coarser to finer.
     [enforced: test:tests/test_dev1832_transform_source.py]
     [enforced: test:tests/test_dev1946_transform_parameter.py]
     [enforced: test:tests/test_dev1953_partition_membership.py]
+    [enforced: test:tests/test_consecutive_periods_calendar.py]
 12. **Population**: the population is the query's quantifier — exactly one
     result row per combination of dimension values among its row-filtered rows
     (raw-row mode is the one documented exception; spec: `queries/semantics` ›
@@ -196,6 +202,7 @@ is the coercion from coarser to finer.
     [enforced: test:tests/test_dev1865_value_parity.py]
     [enforced: test:tests/test_dev1865_stratification.py]
     [enforced: test:tests/test_dev1865_order.py]
+    [enforced: test:tests/test_dev1976_dimension_values.py]
 14. **Filters**: a field-typed filter masks population rows before any
     aggregation; a measure-typed filter masks result cells after all values
     are computed, never changing a surviving cell's values; valid-as-both

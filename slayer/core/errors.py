@@ -85,7 +85,7 @@ class MemoryNotFoundError(SlayerError):
 
 
 class SchemaDriftError(SlayerError):
-    """A query failed and ``validate_models`` blamed schema drift; carries touched models, the filtered ``to_delete`` payload, and the DBAPI cause (as ``__cause__``)."""
+    """A query failed and schema drift in the models it read explains it; carries the drifted models, their ``to_delete`` entries, and the DBAPI cause (as ``__cause__``)."""
 
     def __init__(
         self,

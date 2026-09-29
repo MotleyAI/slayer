@@ -1,11 +1,4 @@
-"""Auto-ingestion: introspect a database and generate SlayerModels with rollup-style joins.
-
-Flow:
-1. Get table names, build FK graph, check for cycles
-2. For each table, build rollup SQL (with LEFT JOINs for referenced tables)
-3. Introspect the rollup query's result columns for types
-4. Generate one Column per non-joined column (v2 unified-columns shape)
-"""
+"""Auto-ingestion: introspect a database and generate SlayerModels with FK joins."""
 
 import asyncio
 import logging
@@ -63,9 +56,7 @@ from slayer.memories.resolver import (
 from slayer.storage.base import StorageBackend
 
 if TYPE_CHECKING:
-    # The runtime import lives inside ``_refresh_datasource_embeddings``
-    # so the search module stays off the cold-start import graph
-    # when the optional embedding extra isn't installed.
+    # Runtime import is lazy: keeps the optional search extra off cold start.
     from slayer.search.service import SearchService
 
 
@@ -83,36 +74,14 @@ class IntrospectedColumn(BaseModel):
     comment: str | None = None
 
 
-# Module-level dedup set for unrecognized SA type warnings (see
-# _sa_type_to_data_type). Keyed by upper-cased class name.
+# Dedup set for unrecognized SA type warnings, keyed by upper-cased class name.
 _logged_unmapped_sa_types: set[str] = set()
 
-# Inspectors that report primary keys correctly, so empty means "no primary
-# key" rather than "ask INFORMATION_SCHEMA" (which BigQuery cannot resolve).
+# Inspectors whose empty PK means "no PK" (not "ask INFORMATION_SCHEMA").
 _PK_AUTHORITATIVE_DIALECTS = frozenset({"sqlite", "bigquery"})
 
-# Database types with no usable equality operator — grouping, DISTINCT or
-# aggregating them fails at the database ("could not identify an equality
-# operator for type point"). These map to ``DataType.UNKNOWN``: stored and
-# displayed, never operated on. To query inside one, define a derived Column
-# whose ``sql`` is a dialect-specific expression — e.g.
-# ``Column(name="status", sql="payload->>'status'", type=TEXT)`` — which is
-# emitted into the generated SQL and groups/filters like any other column.
-#
-# Deliberately a small allow-list of known-bad types rather than "everything
-# unrecognized": comparable-but-unmapped types (uuid, jsonb, bytea, arrays,
-# inet, citext, ...) are common and must keep working as TEXT. Marking one of
-# those opaque would tell an agent that a perfectly groupable column is
-# unusable — a worse failure than the query-time error opacity exists to
-# prevent, which the Data Profile fallback already degrades gracefully.
-# Membership verified against the Postgres catalog: a type is groupable iff it
-# has a *default* btree/hash operator class (that is exactly what GROUP BY and
-# DISTINCT require) —
-#   SELECT EXISTS (SELECT 1 FROM pg_opclass oc JOIN pg_am am ON am.oid = oc.opcmethod
-#                  WHERE oc.opcintype = t.oid AND am.amname IN ('btree','hash')
-#                    AND oc.opcdefault)
-# Note ``tsvector`` / ``tsquery`` ARE groupable and must not be listed here,
-# and ``jsonb`` is groupable while ``json`` is not.
+# Types with no default btree/hash opclass (no GROUP BY / DISTINCT) → UNKNOWN.
+# A small allow-list on purpose: unmapped-but-comparable types stay TEXT.
 _OPAQUE_SA_TYPE_NAMES = frozenset({
     "JSON",  # ``jsonb`` is groupable and deliberately absent
     "XML",
@@ -124,47 +93,36 @@ _OPAQUE_SA_TYPE_NAMES = frozenset({
     "INT4RANGE", "INT8RANGE", "NUMRANGE", "TSRANGE", "TSTZRANGE", "DATERANGE",
 })
 
-# Map SQLAlchemy types to SLayer DataTypes.
-# DEV-1361: integer family → INT, floating family → DOUBLE, NUMERIC/DECIMAL
-# resolved via _sa_type_is_float (scale>0 → DOUBLE, scale=0 → INT).
 _SA_TYPE_MAP = {
-    # Integer family → INT
     "INTEGER": DataType.INT,
     "BIGINT": DataType.INT,
     "SMALLINT": DataType.INT,
     "SERIAL": DataType.INT,
     "BIGSERIAL": DataType.INT,
-    # Floating family → DOUBLE
     "FLOAT": DataType.DOUBLE,
     "REAL": DataType.DOUBLE,
     "DOUBLE": DataType.DOUBLE,
     "DOUBLE_PRECISION": DataType.DOUBLE,
-    # NUMERIC/DECIMAL — refined via _sa_type_is_float in
-    # _sa_type_to_data_type. Default-mapped to DOUBLE here for the rare path
-    # where scale info is unavailable.
+    # Refined by scale in _sa_type_to_data_type; DOUBLE when scale is unknown.
     "NUMERIC": DataType.DOUBLE,
     "DECIMAL": DataType.DOUBLE,
-    # Strings
     "VARCHAR": DataType.TEXT,
     "CHAR": DataType.TEXT,
     "TEXT": DataType.TEXT,
     "STRING": DataType.TEXT,
-    # Boolean
     "BOOLEAN": DataType.BOOLEAN,
     "BOOL": DataType.BOOLEAN,
     "BIT": DataType.BOOLEAN,  # T-SQL (SQL Server) boolean type
-    # Temporal
     "TIMESTAMP": DataType.TIMESTAMP,
     "DATETIME": DataType.TIMESTAMP,
     "TIMESTAMP WITHOUT TIME ZONE": DataType.TIMESTAMP,
     "TIMESTAMP WITH TIME ZONE": DataType.TIMESTAMP,
-    # Snowflake (DEV-1551) — three timestamp variants by timezone semantics.
     "TIMESTAMP_NTZ": DataType.TIMESTAMP,
     "TIMESTAMP_LTZ": DataType.TIMESTAMP,
     "TIMESTAMP_TZ": DataType.TIMESTAMP,
     "DATE": DataType.DATE,
     "TIME": DataType.TIMESTAMP,
-    # ClickHouse adapter integer types → INT
+    # ClickHouse
     "INT8": DataType.INT,
     "INT16": DataType.INT,
     "INT32": DataType.INT,
@@ -177,7 +135,6 @@ _SA_TYPE_MAP = {
     "UINT64": DataType.INT,
     "UINT128": DataType.INT,
     "UINT256": DataType.INT,
-    # ClickHouse adapter float types → DOUBLE
     "FLOAT32": DataType.DOUBLE,
     "FLOAT64": DataType.DOUBLE,
     "DATETIME64": DataType.TIMESTAMP,
@@ -199,26 +156,19 @@ _SA_TYPE_MAP = {
 _NUMERIC_TYPES = {DataType.INT, DataType.DOUBLE}
 _ID_SUFFIXES = ("_id", "_key", "_pk", "_fk")
 
-# Float-like SA type names — these columns get a FLOAT NumberFormat on the emitted Column.
-# NUMERIC/DECIMAL are handled separately via scale inspection in _sa_type_is_float.
+# NUMERIC/DECIMAL are float-like only by scale (see _sa_type_is_float).
 _FLOAT_LIKE_SA_TYPES = frozenset(
     {
         "FLOAT",
         "REAL",
         "DOUBLE",
         "DOUBLE_PRECISION",
-        # ClickHouse adapter (clickhouse-sqlalchemy)
         "FLOAT32",
         "FLOAT64",
-        # T-SQL monetary types (fixed-precision decimal, no integer rounding)
         "MONEY",
         "SMALLMONEY",
     }
 )
-
-# INFORMATION_SCHEMA type maps + ``_safe_get_columns`` / ``_get_columns_fallback``
-# now live in the dependency-free ``introspect_utils`` leaf module (DEV-1578);
-# imported + re-exported at the top of this file for back-compat.
 
 
 def _is_id_column(name: str) -> bool:
@@ -228,13 +178,7 @@ def _is_id_column(name: str) -> bool:
 
 
 def _unwrap_clickhouse_wrappers(sa_type: sa.types.TypeEngine) -> sa.types.TypeEngine:
-    """Recursively peel ClickHouse Nullable(...) / LowCardinality(...) wrappers.
-
-    Returns the innermost non-wrapper type. Handles arbitrary nesting order
-    (e.g. LowCardinality(Nullable(String))). If the wrapper's `.nested_type`
-    attribute is missing (e.g. an upstream rename), returns the wrapper as-is
-    so the caller's normal fallback path runs.
-    """
+    """Peel nested ClickHouse Nullable/LowCardinality wrappers (as-is if no ``nested_type``)."""
     current = sa_type
     for _ in range(_CLICKHOUSE_WRAPPER_MAX_DEPTH):
         if type(current).__name__.upper() not in _CLICKHOUSE_WRAPPER_NAMES:
@@ -248,19 +192,13 @@ def _unwrap_clickhouse_wrappers(sa_type: sa.types.TypeEngine) -> sa.types.TypeEn
 
 def _sa_type_to_data_type(sa_type: sa.types.TypeEngine) -> DataType:
     sa_type = _unwrap_clickhouse_wrappers(sa_type)
-    # mssql.TIMESTAMP is SQL Server's rowversion (8-byte binary counter), not
-    # a temporal type. Its class name collides with sa.TIMESTAMP, so we must
-    # check isinstance before the generic name-based _SA_TYPE_MAP lookup.
+    # mssql.TIMESTAMP is rowversion (binary), and its name collides with sa.TIMESTAMP.
     if isinstance(sa_type, _sqla_mssql.TIMESTAMP):
         return DataType.TEXT
     type_name = type(sa_type).__name__.upper()
     type_str = str(sa_type).split("(")[0].upper().strip()
-    # Types with no equality operator are opaque: querying them fails at the
-    # database, so declare that explicitly instead of pretending they're TEXT.
     if type_name in _OPAQUE_SA_TYPE_NAMES or type_str in _OPAQUE_SA_TYPE_NAMES:
         return DataType.UNKNOWN
-    # DEV-1361: NUMERIC/DECIMAL with scale=0 are integer-shaped → INT.
-    # Anything float-like (scale>0 or unknown) → DOUBLE.
     if is_exact_numeric_db_type(type_name) or is_exact_numeric_db_type(type_str):
         return DataType.DOUBLE if _sa_type_is_float(sa_type) else DataType.INT
     if type_name in _SA_TYPE_MAP:
@@ -281,14 +219,7 @@ def _sa_type_to_data_type(sa_type: sa.types.TypeEngine) -> DataType:
 
 
 def _raw_db_type_str(sa_type: sa.types.TypeEngine) -> str | None:
-    """Best-effort raw database type string for ``Column.db_type``.
-
-    ``str(sa_type)`` renders the dialect-level spelling (``"point"``,
-    ``"jsonb"``, ``"geometry(Point,4326)"``). Some third-party types raise
-    when compiled without a dialect, so fall back to the SA class name and
-    finally to ``None`` — ``db_type`` is metadata, never worth aborting an
-    ingest over.
-    """
+    """Best-effort raw database type string for ``Column.db_type`` (never raises)."""
     try:
         text = str(sa_type).strip()
     except Exception:
@@ -308,12 +239,7 @@ def _sa_type_is_exact_numeric(sa_type: sa.types.TypeEngine) -> bool:
 
 
 def _sa_type_is_float(sa_type: sa.types.TypeEngine) -> bool:
-    """Return True if the SQLAlchemy type is float-like.
-
-    FLOAT/REAL/DOUBLE are always float-like. NUMERIC/DECIMAL are float-like
-    only when their scale is > 0 (or unknown), so NUMERIC(10,0) is treated as
-    integer-like.
-    """
+    """Whether the type is float-like; NUMERIC/DECIMAL only when scale > 0 or unknown."""
     sa_type = _unwrap_clickhouse_wrappers(sa_type)
     type_name = type(sa_type).__name__.upper()
     if type_name in _FLOAT_LIKE_SA_TYPES:
@@ -336,23 +262,16 @@ class RollupGraphError(Exception):
     pass
 
 
-# ---------------------------------------------------------------------------
-# FK graph utilities
-# ---------------------------------------------------------------------------
+# --- FK graph utilities ---
 
 
 def _is_cross_schema_fk(
     fk: dict, schema: str | None, default_schema: str | None = None,
 ) -> bool:
-    """Does this FK point at a table outside the schema being ingested?
-
-    Models are keyed by bare table name, so a cross-schema FK has no model to
-    bind to and would otherwise bind to a same-named local table.
-    """
+    """Does this FK point outside the ingested schema (it would mis-bind by bare name)?"""
     referred_schema = fk.get("referred_schema")
     if referred_schema is None:  # same-schema FK; always None on SQLite
         return False
-    # Ingesting the default schema passes schema=None, so fall back to it.
     effective_schema = schema if schema is not None else default_schema
     # Unknown ingested schema: skip rather than risk binding to the wrong table.
     if effective_schema is None:
@@ -367,17 +286,9 @@ def _get_fk_relationships(
     table_set: set[str],
     schema_name: str | None = None,
 ) -> list[tuple]:
-    """Get FK relationships for a table, filtered to tables in table_set.
+    """``(source_column, target_table, target_column)`` FKs into ``table_set``; ``[]`` on error.
 
-    Returns list of (source_column, target_table, target_column).
-
-    ``schema`` is the (catalog-qualified) token handed to the Inspector;
-    ``schema_name`` is the bare schema name used for the cross-schema check,
-    since FK metadata reports ``referred_schema`` bare (defaults to ``schema``).
-
-    FK lookup is guarded: views carry no FKs and some dialects raise instead of
-    returning ``[]``; this feeds ``_build_fk_graph``, so a raise would abort the
-    whole ingest.
+    ``schema`` is the Inspector token; ``schema_name`` the bare name for the cross-schema check.
     """
     try:
         fks = inspector.get_foreign_keys(table_name, schema=schema)
@@ -465,9 +376,7 @@ def _compute_transitive_closure(graph: dict[str, set[str]], source: str) -> set[
     return reachable
 
 
-# ---------------------------------------------------------------------------
-# Join generation from FK relationships
-# ---------------------------------------------------------------------------
+# --- Join generation from FK relationships ---
 
 
 def _get_fk_constraint_groups(
@@ -477,12 +386,7 @@ def _get_fk_constraint_groups(
     table_set: set[str],
     schema_name: str | None = None,
 ) -> list[tuple[str, list[tuple[str, str]]]]:
-    """``[(referred_table, [(src_col, tgt_col), ...]), ...]``, one entry per FK
-    constraint — so a composite FK stays one grouped join.
-
-    ``schema`` is the Inspector token; ``schema_name`` is the bare name used for
-    the cross-schema check (FK metadata's ``referred_schema`` is bare).
-    """
+    """``[(referred_table, [(src_col, tgt_col), ...])]``, one entry per FK constraint."""
     fks = inspector.get_foreign_keys(table_name, schema=schema)
     result: list[tuple[str, list[tuple[str, str]]]] = []
     for fk in fks:
@@ -502,11 +406,7 @@ def _get_fk_constraint_groups(
 
 
 def _safe_introspect(fn) -> list:
-    """Run a best-effort introspection call, yielding ``[]`` on failure.
-
-    Constraint/index reflection is unsupported or partial on several backends,
-    so a raising call degrades to "no uniqueness evidence" rather than aborting.
-    """
+    """Run a best-effort introspection call, yielding ``[]`` on failure."""
     try:
         return list(fn())
     except Exception as exc:  # noqa: BLE001 — degrade to "no evidence"
@@ -518,12 +418,7 @@ def _safe_introspect(fn) -> list:
 
 
 def _ref_from_token(sa_engine: sa.Engine | None, token: str | None) -> SchemaRef | None:
-    """Rebuild a ``SchemaRef`` from a (possibly catalog-qualified) schema token.
-
-    The introspection helpers below thread the schema as ``ref.token`` string;
-    this splits the catalog back off so the PK / column fallbacks stay
-    catalog-scoped (DEV-1758).
-    """
+    """Rebuild a ``SchemaRef`` from a (possibly catalog-qualified) schema token."""
     if token is None:
         return None
     dialect_name = getattr(getattr(sa_engine, "dialect", None), "name", None)
@@ -546,18 +441,13 @@ def _pk_key_sets(
                 ref=_ref_from_token(sa_engine, schema),
             )
         else:
-            # Only the bare-inspector path needs normalizing;
-            # _safe_get_pk_constraint already guarantees a mapping.
             pk = inspector.get_pk_constraint(table_name=table_name, schema=schema)
             if not isinstance(pk, dict):
                 return []
     except Exception:
         return []
     cols = pk.get("constrained_columns")
-    # A conforming inspector returns a list of column names. Guard the
-    # bare-inspector path (the engine-backed path is normalized upstream): a
-    # bare string would split into characters via ``list()``, producing a bogus
-    # key-set that would flip inferred join cardinality and get persisted.
+    # A bare string would ``list()`` into characters — a bogus key-set.
     if not isinstance(cols, list):
         return []
     return [list(cols)] if cols else []
@@ -578,22 +468,16 @@ def _unique_constraint_key_sets(
 
 
 def _is_partial_index(idx: dict) -> bool:
-    """Does this index carry a filter predicate (a PARTIAL index)?
-
-    A partial unique index constrains only the rows matching its predicate, so
-    it is no evidence of whole-table uniqueness.
-    """
+    """Does this index carry a filter predicate (a PARTIAL index)?"""
     opts = idx.get("dialect_options") or {}
     for key, value in opts.items():
-        # SQLAlchemy names the predicate per dialect: postgresql_where, ...
         if not key.endswith("_where") or value is None:
             continue
         if isinstance(value, str):
             if value.strip():
                 return True
             continue
-        # Never bool() a non-string: ColumnElement.__bool__ raises, and this
-        # runs outside _safe_introspect. Presence alone means "predicate".
+        # Never bool() a non-string: ColumnElement.__bool__ raises.
         return True
     return False
 
@@ -609,8 +493,7 @@ def _unique_index_key_sets(
         if not idx.get("unique") or _is_partial_index(idx):
             continue
         cols = idx.get("column_names") or []
-        # Expression members reflect as None, so any falsy member rejects the
-        # whole set — else unique(email, lower(name)) claims email alone.
+        # Expression members reflect as None; any falsy member rejects the set.
         if cols and all(cols):
             out.append(list(cols))
     return out
@@ -662,11 +545,7 @@ def _get_single_column_unique_names(
     *,
     pk_cols: set[str],
 ) -> set[str]:
-    """Names of columns that ALONE form a UNIQUE constraint / unique index.
-
-    PK columns are excluded (``primary_key`` is the canonical marker), and so
-    are composite key-sets — unique ``(a, b)`` says nothing about ``a`` alone.
-    """
+    """Non-PK columns that ALONE form a UNIQUE constraint / unique index."""
     key_sets = (
         _unique_constraint_key_sets(
             inspector=inspector, table_name=table_name, schema=schema,
@@ -694,13 +573,9 @@ def _generate_joins(
     model_name_by_table: dict[str, str] | None = None,
     schema_name: str | None = None,
 ) -> list[ModelJoin]:
-    """Direct ModelJoins from the source table's own FKs (multi-hop is resolved
-    at query time). A composite FK becomes one grouped join, and cardinality is
-    inferred from key constraints alone.
+    """Direct ModelJoins from the table's own FKs; one grouped join per composite FK.
 
-    ``model_name_by_table`` maps live object names to the model names they were
-    ingested under; a join names the MODEL, and a target with no model is
-    dropped rather than left dangling.
+    Joins name the MODEL (via ``model_name_by_table``); a target with no model is dropped.
     """
     groups = _get_fk_constraint_groups(
         inspector=inspector,
@@ -757,10 +632,7 @@ def _generate_joins(
     return joins
 
 
-# ---------------------------------------------------------------------------
-# INFORMATION_SCHEMA fallbacks (for databases like DuckDB where
-# the SQLAlchemy Inspector's pg_catalog queries may not be supported)
-# ---------------------------------------------------------------------------
+# --- INFORMATION_SCHEMA fallbacks (e.g. DuckDB) ---
 
 
 def _get_pk_constraint_fallback(
@@ -768,13 +640,9 @@ def _get_pk_constraint_fallback(
     table_name: str,
     ref: SchemaRef | None,
 ) -> dict:
-    """Get PK constraint via INFORMATION_SCHEMA when Inspector.get_pk_constraint() fails.
+    """PK constraint via INFORMATION_SCHEMA when the Inspector fails.
 
-    The ``tc``↔``kcu`` join includes ``table_catalog`` (DEV-1758): DuckDB gives
-    same-named tables across attached catalogs the SAME auto-generated
-    constraint name, so a schema-only join duplicates the PK column. The WHERE
-    is scoped to ``ref``'s schema and (where present) catalog. A ``ref=None``
-    request resolves to the connection default on catalog-qualifying dialects.
+    Joins on ``table_catalog`` too: DuckDB reuses constraint names across attached catalogs.
     """
     ref = _resolve_fallback_ref(sa_engine, ref)
     schema = ref.name if ref else None
@@ -808,11 +676,7 @@ def _get_pk_constraint_fallback(
 
 
 def _normalized_pk(result: object) -> dict | None:
-    """The inspector's mapping if it carries a list of column names, else None.
-
-    Callers feed ``constrained_columns`` straight to ``set()``, where ``None``
-    raises and a bare string silently becomes a set of characters.
-    """
+    """The inspector's mapping if it carries a list of column names, else None."""
     if not isinstance(result, dict):
         return None
     columns = result.get("constrained_columns")
@@ -827,14 +691,7 @@ def _safe_get_pk_constraint(
     table_name: str,
     ref: SchemaRef | None,
 ) -> dict:
-    """Get PK constraint, falling back to INFORMATION_SCHEMA on failure.
-
-    ALWAYS returns a mapping — the one place normalizing an inspector that may
-    hand back ``None``. Having no primary key is a normal shape, so a failed
-    lookup yields no columns rather than sinking the whole table. ``ref`` gives
-    the catalog-qualified schema identity (token for the Inspector, schema +
-    catalog for the fallback).
-    """
+    """PK constraint with INFORMATION_SCHEMA fallback; ALWAYS a mapping (no columns on failure)."""
     token = ref.token if ref else None
     if sa_engine.dialect.name in _PK_AUTHORITATIVE_DIALECTS:
         try:
@@ -881,20 +738,12 @@ def _introspect_query_columns_via_inspector(
     joins: list[ModelJoin] | None = None,
     live_name_by_model: dict[str, str] | None = None,
 ) -> list[IntrospectedColumn]:
-    """Introspect columns from a rollup query or plain table.
+    """Introspect the table's columns plus one aliased set per join path.
 
-    Returns a list of :class:`IntrospectedColumn`. ``db_type`` is the raw
-    database type string and is populated when ``DataType`` loses information:
-    opaque (``UNKNOWN``) columns and exact NUMERIC/DECIMAL columns represented
-    by the coarser INT/DOUBLE logical types. ``comment`` is the column's DB
-    comment when the driver surfaces one.
-
-    For rollup queries, uses per-table inspector data since LIMIT 0
-    type inference can be unreliable across databases.
+    ``db_type`` is set only where ``DataType`` is lossy (opaque, exact NUMERIC/DECIMAL).
     """
     results = []
 
-    # Source table columns
     columns = _safe_get_columns(inspector, sa_engine, table_name, ref)
     pk_constraint = _safe_get_pk_constraint(inspector, sa_engine, table_name, ref)
     pk_columns = set(pk_constraint.get("constrained_columns", []))
@@ -921,25 +770,19 @@ def _introspect_query_columns_via_inspector(
             comment=_clean_comment(col.get("comment")),
         ))
 
-    # Build list of (ref_table, dotted_path) from joins — supports diamond joins
-    # where the same table appears via multiple paths
+    # (live table, path) per join — the same table may appear via several paths.
     table_path_pairs: list[tuple] = []
-    # `is not None`, not truthiness: an EMPTY join list means every candidate
-    # join was dropped, which is not the same as "joins were never generated".
+    # An EMPTY join list means every join was dropped — not "never generated".
     if joins is not None:
         lookup = live_name_by_model or {}
         for mj in joins:
-            # The path alias is the MODEL name; introspection needs the live
-            # object name, and sanitization can make the two differ.
             table_path_pairs.append(
                 (lookup.get(mj.target_model, mj.target_model), mj.target_model)
             )
     else:
-        # Fallback: one entry per referenced table
         for ref_table in referenced_tables:
             table_path_pairs.append((ref_table, ref_table))
 
-    # Referenced table columns — emit once per join path
     for ref_table, path in table_path_pairs:
         ref_cols = _safe_get_columns(inspector, sa_engine, ref_table, ref)
         ref_pk = _safe_get_pk_constraint(inspector, sa_engine, ref_table, ref)
@@ -973,9 +816,7 @@ def _introspect_query_columns_via_inspector(
     return results
 
 
-# ---------------------------------------------------------------------------
-# Model generation from introspected columns
-# ---------------------------------------------------------------------------
+# --- Model generation from introspected columns ---
 
 
 def _columns_to_model(
@@ -990,14 +831,7 @@ def _columns_to_model(
     meta: dict[str, Any] | None = None,
     description: str | None = None,
 ) -> SlayerModel:
-    """Generate a SlayerModel from :class:`IntrospectedColumn` entries.
-
-    In v2 every Column is potentially both a dimension and a measure — what it's
-    used as is decided per query. This function emits one Column per non-joined
-    column, with format inferred from the column's data type. ``db_type`` and
-    ``comment`` are carried through verbatim; ``description`` is the table
-    comment, when the database has one.
-    """
+    """Generate a SlayerModel with one Column per non-joined introspected column."""
     cols: list[Column] = []
     unique_set = unique_columns or set()
 
@@ -1005,8 +839,7 @@ def _columns_to_model(
     _FLOAT_FORMAT = NumberFormat(type=NumberFormatType.FLOAT)
 
     for col in columns:
-        # Skip joined columns — they live on the target model and are
-        # resolved via the join graph at query time.
+        # Joined columns live on the target model.
         if "." in col.name:
             continue
 
@@ -1051,25 +884,9 @@ def _sqlite_probe_integer_columns(
     sql_table: str,
     columns: list[IntrospectedColumn],
 ) -> list[IntrospectedColumn]:
-    """DEV-1538: per-column SQLite affinity probe.
+    """SQLite only: widen declared-INT base columns whose stored values aren't integers.
 
-    Walks the :class:`IntrospectedColumn` entries produced by
-    :func:`_introspect_query_columns_via_inspector` and, for every base
-    column (alias without ``.``) that the SA inspector reported as
-    :class:`DataType.INT`, runs
-    :func:`slayer.sql.sqlite_introspect.probe_sqlite_integer_column` against
-    the actual storage classes. Rewrites the entry to the widened
-    :class:`DataType` whenever the probe disagrees with the declared
-    affinity.
-
-    No-op on non-SQLite engines.
-
-    Failure modes:
-    * Non-SQLite engine → input returned verbatim.
-    * Probe returns ``None`` (failure or saturation) → keep the SA-derived
-      INT type, leave the warning already logged by the probe in place.
-    * Joined-column alias (``"."`` in the name) → skipped; joined references
-      inherit their type from the target model's own probe pass.
+    A ``None`` probe verdict keeps the declared INT.
     """
     if sa_engine.dialect.name != "sqlite":
         return columns
@@ -1089,10 +906,6 @@ def _sqlite_probe_integer_columns(
                     schema=schema,
                 )
             except Exception as exc:
-                # Defence-in-depth: the helper catches its own errors but a
-                # caller-level guard keeps ingest from aborting on unexpected
-                # exceptions outside the helper's scope (e.g. import-time
-                # failures on environments missing sqlite_introspect).
                 logger.warning(
                     "probe call raised for %s.%s; keeping declared INT: %s",
                     sql_table,
@@ -1111,12 +924,7 @@ def _sqlite_probe_integer_columns(
 
 
 def _parse_qualified_sql_table(sql_table: str) -> tuple[str | None, str]:
-    """Split ``"schema.table"`` into ``(schema, table)`` or ``(None, table)``.
-
-    Only splits on a single dot — table/schema names containing dots are
-    out of scope for the auto-ingest path (the dotted form would never have
-    survived ``Inspector.get_table_names`` either).
-    """
+    """Split ``"schema.table"`` on the first dot into ``(schema, table)``."""
     if "." in sql_table:
         schema, _, table = sql_table.partition(".")
         return schema or None, table
@@ -1133,16 +941,10 @@ def introspect_table_to_model(
     model_name: str | None = None,
     source_kind: ObjectKind | None = None,
 ) -> SlayerModel:
-    """Introspect a single table (no FK rollup) and return a SlayerModel.
+    """Introspect a single table (no joins) into a SlayerModel.
 
-    This is the building block shared between the auto-ingest path and the
-    dbt hidden-model import. It never builds joins or traverses the FK graph.
-
-    ``source_kind=None`` means "not classified": the dbt/OSI converters don't
-    know the live object's kind. An explicit ``schema`` is emitted verbatim;
-    ``schema=None`` resolves to the catalog-qualified default so probes stay in
-    the current catalog (a bare token lets DuckDB sweep an attached twin), while
-    ``sql_table`` still stays bare for the default.
+    ``schema=None`` probes the catalog-qualified default (a bare token lets DuckDB
+    sweep an attached twin) while ``sql_table`` stays bare.
     """
     ref = (
         schema_ref_from_token(
@@ -1181,9 +983,7 @@ def introspect_table_to_model(
     )
 
 
-# ---------------------------------------------------------------------------
-# Object discovery
-# ---------------------------------------------------------------------------
+# --- Object discovery ---
 
 
 class IngestableObject(BaseModel):
@@ -1229,31 +1029,20 @@ class IngestionScanReport(BaseModel):
 
     models: list[SlayerModel] = Field(default_factory=list)
     skipped: list[SkippedTable] = Field(default_factory=list)
-    # Every recognised internal that produced a model, regardless of
-    # ``surface_internals`` — the idempotent path filters this against storage.
+    # Every recognised internal that produced a model, regardless of ``surface_internals``.
     internal_tables: list[InternalTable] = Field(default_factory=list)
-    # Every object discovered, modelled or not — lets the CLI tell an empty
-    # schema apart from one whose objects were all skipped / already in sync.
+    # Every object discovered, modelled or not.
     objects: list[IngestableObject] = Field(default_factory=list)
-    # BigQuery only: the dataset description (None elsewhere, or when the
-    # datasource already carries a description). See DEV-1809 fill-if-empty.
+    # BigQuery only: the dataset description, when the datasource has none.
     schema_description: str | None = None
-    # DEV-1758: own-catalog schemas present but not in scope this pass — the
-    # source of the idempotent path's "new schema available" hint. Populated
-    # only when exactly one schema was in scope and ``all_schemas`` was off.
+    # Own-catalog schemas out of scope (single-schema, non-``all_schemas`` passes only).
     other_schemas: list[str] = Field(default_factory=list)
-    # Requested schemas dropped from scope with a reason — a foreign attached
-    # catalog or a system/bookkeeping schema — so an explicit request for one is
-    # reported, not silently empty (DEV-1758, Codex review).
+    # Requested schemas dropped from scope, with a reason.
     skipped_schemas: list[SkippedSchema] = Field(default_factory=list)
 
     @property
     def hidden_internals(self) -> list[InternalTable]:
-        """The subset this scan hid — derived so it can't drift from
-        ``internal_tables``. Effective state only for callers that persist
-        ``models`` directly; the idempotent path uses
-        ``_effective_hidden_internals`` instead.
-        """
+        """The subset this scan hid (the idempotent path uses ``_effective_hidden_internals``)."""
         return [t for t in self.internal_tables if t.hidden]
 
 
@@ -1263,13 +1052,7 @@ def _safe_object_names(
     inspector: sa.engine.Inspector,
     schema: str | None,
 ) -> list[str]:
-    """Call an ``Inspector.get_*_names`` accessor, tolerating dialects that
-    lack it.
-
-    ``get_materialized_view_names`` raises ``NotImplementedError`` where
-    unsupported, so it cannot be called bare. Driver errors are tolerated too —
-    broken view discovery must not stop tables ingesting.
-    """
+    """Call an ``Inspector.get_*_names`` accessor; ``[]`` if missing, unimplemented or failing."""
     accessor = getattr(inspector, accessor_name, None)
     if accessor is None:
         return []
@@ -1290,19 +1073,9 @@ def list_ingestable_objects(
     schema: str | None = None,
     include_views: bool = True,
 ) -> list[IngestableObject]:
-    """Discover every ingestable object in ``ref``'s schema, classified by kind.
+    """Discover every ingestable object in ``ref``'s schema (default: connection default).
 
-    ``ref`` carries the catalog-qualified schema token handed to the Inspector
-    (DEV-1758), so DuckDB lists only that schema instead of sweeping every
-    attached catalog. ``ref=None`` resolves to the connection default first, so
-    a bare discovery request is still catalog-scoped; the legacy ``schema=``
-    string is accepted for back-compat.
-
-    Order is deterministic (tables, views, matviews) because collision
-    resolution is order-independent. Deduped across accessors — some dialects
-    return views from ``get_table_names()`` — with the most specific kind
-    winning (matview > view > table, DEV-1750), so a view listed as a table is
-    still stamped ``view``.
+    Deduped across accessors, the most specific kind winning (matview > view > table).
     """
     if ref is None and schema is not None:
         bind = getattr(inspector, "bind", None)
@@ -1354,13 +1127,7 @@ def list_ingestable_objects(
 
 
 def _collision_sort_key(ref: SchemaRef, obj: IngestableObject) -> tuple:
-    """Deterministic winner order among objects claiming one model name (§3.5).
-
-    Priority: an exact name beats a ``__``-sanitized one (a real ``a_b`` beats
-    ``a__b``); the default schema beats a non-default one; then the lower schema
-    name; then the lower object name. Fully order-independent, so a dialect's
-    listing order and the requested-schema order can never repoint a model.
-    """
+    """Order-independent winner order: unsanitized name, default schema, schema, object name."""
     is_sanitized = sanitize_model_name(obj.name) != obj.name
     return (is_sanitized, not ref.is_default, ref.name or "", obj.name)
 
@@ -1372,19 +1139,7 @@ def _resolve_scanned_collisions(
 ) -> tuple[
     dict[str, tuple[SchemaRef, IngestableObject]], list[SkippedTable]
 ]:
-    """Pick one winning object per model name across every scanned schema.
-
-    DEV-1743: ``__`` is a legal model-name character now, so each object's
-    candidate model name is its FAITHFUL live name (``a__b`` stays ``a__b``,
-    distinct from ``a_b``). A genuine collision is therefore two objects sharing
-    one raw name across different schemas — resolved by schema priority.
-    ``sanitize_model_name`` is kept only as the re-ingest fallback-matching
-    spelling (see :func:`ingest_datasource_idempotent`). Returns
-    ``(winners, skipped)``: ``winners`` maps a model name to its winning
-    ``(ref, object)``; ``skipped`` records every loser, its label qualified by
-    schema only when more than one schema was scanned (a single-schema collision
-    keeps a bare label, unchanged).
-    """
+    """Pick one winning ``(ref, object)`` per live name across schemas; losers are skipped."""
     groups: dict[str, list[tuple[SchemaRef, IngestableObject]]] = defaultdict(list)
     for ref, obj in scanned:
         groups[obj.name].append((ref, obj))
@@ -1415,9 +1170,7 @@ def _resolve_scanned_collisions(
     return winners, skipped
 
 
-# ---------------------------------------------------------------------------
-# Main ingestion
-# ---------------------------------------------------------------------------
+# --- Main ingestion ---
 
 
 def _build_one_model(
@@ -1436,18 +1189,9 @@ def _build_one_model(
     live_name_by_model: dict[str, str] | None = None,
     internal_tool: str | None = None,
 ) -> SlayerModel:
-    """Introspect one live object into a model. Raises on failure; the caller
-    isolates per-object.
+    """Introspect one live object into a model; raises on failure.
 
-    ``ref`` owns schema identity: ``ref.qualify`` decides the persisted
-    ``sql_table`` (bare for the default, prefixed otherwise), and ``ref.token``
-    is the catalog-qualified schema handed to the Inspector so DuckDB never
-    sweeps another catalog.
-
-    ``internal_tool`` is the bookkeeping verdict (``None`` when unrecognised or
-    when the caller surfaced internals). When set, the model is built ``hidden``
-    with a ``meta.internal_table`` breadcrumb so an unexplained ``hidden: true``
-    never lands in a persisted YAML.
+    A set ``internal_tool`` builds it ``hidden`` with a ``meta.internal_table`` breadcrumb.
     """
     schema_token = ref.token
     referenced = (
@@ -1503,12 +1247,7 @@ def _build_one_model(
 
 
 def _dispose_quietly(sa_engine: sa.Engine) -> None:
-    """Dispose ``sa_engine``, logging rather than raising on failure.
-
-    Called from ``finally``, so a raise would mask the in-flight exception.
-    Logged at WARNING because a failed dispose leaks the connection, blocking
-    an external ``duckdb.connect(file)`` on the same file.
-    """
+    """Dispose ``sa_engine``, logging rather than raising (called from ``finally``)."""
     try:
         sa_engine.dispose()
     except Exception as exc:  # noqa: BLE001 — teardown must not mask the cause
@@ -1523,11 +1262,7 @@ def _collect_fk_columns(
     table_names: list[str],
     schema: str | None,
 ) -> dict[str, set[str]]:
-    """Map each table to its FK-constrained columns, for rollup exclusion.
-
-    Guarded per table (see ``_get_fk_relationships``): views have no FKs and
-    some dialects raise instead of returning ``[]``.
-    """
+    """Map each table to its FK-constrained columns (per-table failures tolerated)."""
     out: dict[str, set[str]] = defaultdict(set)
     for table_name in table_names:
         try:
@@ -1547,12 +1282,7 @@ def _fetch_bigquery_dataset_description(
     datasource: DatasourceConfig,
     schema: str | None,
 ) -> str | None:
-    """BigQuery only: the dataset description, or None.
-
-    Dataset resolution: explicit ``schema`` arg → the dialect's configured
-    default dataset → ``datasource.schema_name``. No generic Inspector API
-    exists for schema-level comments, so other dialects return None.
-    """
+    """BigQuery only: the dataset description, or None."""
     try:
         if getattr(sa_engine.dialect, "name", None) != "bigquery":
             return None
@@ -1564,8 +1294,7 @@ def _fetch_bigquery_dataset_description(
         if not dataset:
             return None
         with sa_engine.connect() as conn:
-            # The same private client handle sqlalchemy-bigquery itself uses
-            # for table metadata; there is no documented accessor.
+            # Private handle sqlalchemy-bigquery itself uses; no public accessor.
             client = conn.connection._client
             return _clean_comment(client.get_dataset(dataset).description)
     except Exception:
@@ -1575,8 +1304,7 @@ def _fetch_bigquery_dataset_description(
 def _requested_list(
     schema: str | None, schemas: list[str] | None
 ) -> list[str] | None:
-    """Normalise the legacy single ``schema`` and the plural ``schemas`` into
-    one requested list (or ``None`` for an unscoped/default request)."""
+    """Merge legacy ``schema`` and ``schemas`` into one requested list (None = default)."""
     if schemas is not None:
         return list(schemas)
     if schema is not None:
@@ -1593,13 +1321,7 @@ def _scan_one_schema(
     data_source: str,
     surface_internals: bool,
 ) -> tuple[list[SlayerModel], list[SkippedTable], list[InternalTable]]:
-    """Build every winning model for one schema, with that schema's FK graph.
-
-    ``entries`` is the schema's ``(model_name, object)`` winners. Joins resolve
-    within this schema only: ``model_name_by_table`` holds just these winners,
-    so an FK targeting an object that lost its model name elsewhere is dropped
-    rather than repointed cross-schema.
-    """
+    """Build every winning model for one schema; joins resolve within this schema only."""
     schema_token = ref.token
     obj_names = [obj.name for _, obj in entries]
     table_set = set(obj_names)
@@ -1624,8 +1346,7 @@ def _scan_one_schema(
     skipped: list[SkippedTable] = []
     internal_tables: list[InternalTable] = []
     for model_name, obj in entries:
-        # Classified on the live name, not the model name; evaluated even under
-        # ``surface_internals`` so the entry is still recorded.
+        # Classified on the live name; still recorded under ``surface_internals``.
         tool = internal_table_rule(obj.name)
         try:
             models.append(
@@ -1654,8 +1375,7 @@ def _scan_one_schema(
                 SkippedTable(table_name=obj.name, kind=obj.kind, reason=str(exc))
             )
             continue
-        # Recorded only after construction succeeds, so an object never lands
-        # in both ``skipped`` and ``internal_tables``.
+        # Only after success: never in both ``skipped`` and ``internal_tables``.
         if tool is not None:
             internal_tables.append(
                 InternalTable(
@@ -1681,18 +1401,8 @@ def ingest_datasource_report(
 ) -> IngestionScanReport:
     """Introspect ``datasource``, returning models plus everything skipped.
 
-    Scope (DEV-1758): ``all_schemas`` covers every own-catalog schema; a
-    ``schemas`` list (or the legacy single ``schema``) scopes to those; else the
-    persisted ``datasource.schema_name``; else the connection default. Each
-    scanned schema is discovered under its catalog-qualified token so DuckDB
-    never sweeps an attached catalog, and a same-named table across schemas is
-    resolved to one winner (``sql_table`` qualified per schema).
-
-    Discovers views and matviews (``include_views``); an unmodellable object is
-    skipped with a reason rather than aborting. Recognised ELT/migration
-    bookkeeping is modelled ``hidden`` unless ``surface_internals`` — a separate
-    axis from ``include_tables`` / ``exclude_tables`` (which choose what is
-    scanned), so naming an internal in ``include_tables`` still hides it.
+    Scope: ``all_schemas`` → ``schemas``/``schema`` → ``datasource.schema_name`` → default.
+    ELT bookkeeping is modelled ``hidden`` unless ``surface_internals``, even if in ``include_tables``.
     """
     validate_scope_args(schema=schema, schemas=schemas, all_schemas=all_schemas)
     requested = _requested_list(schema, schemas)
@@ -1709,7 +1419,6 @@ def ingest_datasource_report(
         )
         multi_schema = len(scope.schemas) > 1
 
-        # Discover per schema, tagging each object with the schema it came from.
         scanned: list[tuple[SchemaRef, IngestableObject]] = []
         for ref in scope.schemas:
             objs = list_ingestable_objects(
@@ -1727,7 +1436,6 @@ def ingest_datasource_report(
             scanned, multi_schema=multi_schema
         )
 
-        # Group winners by their winning schema, preserving discovery order.
         by_schema: dict[str | None, tuple[SchemaRef, list[tuple[str, IngestableObject]]]] = {}
         for model_name, (ref, obj) in winners.items():
             key = ref.token
@@ -1750,8 +1458,6 @@ def ingest_datasource_report(
             skipped.extend(s)
             internal_tables.extend(i)
 
-        # Fetch while the engine is alive; skipped entirely when the
-        # datasource already carries a description (fill-if-empty).
         schema_description = None
         if not datasource.description:
             first_schema = scope.schemas[0].name if scope.schemas else None
@@ -1769,11 +1475,7 @@ def ingest_datasource_report(
             skipped_schemas=scope.skipped,
         )
     finally:
-        # Deliberate: ``get_engine`` returns a cached, shared engine, and this
-        # dispose churns its pool for concurrent holders — accepted so this
-        # one-shot admin path releases pooled file handles (an undisposed
-        # engine blocks a same-process external ``duckdb.connect(file)``).
-        # In a ``finally`` so a driver error can't leak them.
+        # Disposes the shared cached engine on purpose: releases DuckDB file handles.
         _dispose_quietly(sa_engine)
 
 
@@ -1800,15 +1502,11 @@ def ingest_datasource(
     ).models
 
 
-# ---------------------------------------------------------------------------
-# Idempotent re-ingestion (DEV-1356)
-# ---------------------------------------------------------------------------
+# --- Idempotent re-ingestion ---
 
 
 def _existing_join_signatures(model: SlayerModel) -> set[tuple[str, tuple[tuple[str, str], ...]]]:
-    """Return the set of (target_model, sorted join_pair tuples) signatures
-    for joins already on ``model``. Used to detect new joins.
-    """
+    """``(target_model, sorted join_pairs)`` signatures of ``model``'s joins."""
     out: set[tuple[str, tuple[tuple[str, str], ...]]] = set()
     for j in model.joins:
         sig_pairs = tuple(sorted((p[0], p[1]) for p in j.join_pairs))
@@ -1817,11 +1515,7 @@ def _existing_join_signatures(model: SlayerModel) -> set[tuple[str, tuple[tuple[
 
 
 def _is_auto_default_integer_format(fmt: NumberFormat | None) -> bool:
-    """Return True when ``fmt`` looks like the auto-ingested ``NumberFormat
-    (type=INTEGER)`` default (no custom precision / symbol set). Used by
-    DEV-1538's widening path to decide whether to flip the format alongside
-    the type; user-set custom formats are preserved verbatim.
-    """
+    """Whether ``fmt`` is the auto-ingested plain INTEGER format (no precision/symbol)."""
     if fmt is None:
         return False
     if fmt.type != NumberFormatType.INTEGER:
@@ -1843,14 +1537,7 @@ def _merge_persisted_column_with_probe(
     model_name: str,
     sqlite_widen_enabled: bool,
 ) -> tuple[Column, bool]:
-    """DEV-1538: decide whether a persisted column should be widened based
-    on a freshly-probed type, and return ``(merged_column, did_widen)``.
-
-    The widen branch only fires when ``sqlite_widen_enabled`` is True
-    (SQLite-only auto-heal), the fresh column exists, the persisted column
-    is ``DataType.INT``, and the fresh type is ``DataType.DOUBLE`` or
-    ``DataType.TEXT``. All other cases return ``persisted_col`` unchanged.
-    """
+    """``(merged_column, did_widen)``: widen a persisted INT to a probed DOUBLE/TEXT (SQLite only)."""
     if not (
         sqlite_widen_enabled
         and fresh_col is not None
@@ -1880,18 +1567,9 @@ def _join_sig(j: ModelJoin) -> tuple:
 def _repair_legacy_join_targets(
     persisted: SlayerModel, fresh: SlayerModel,
 ) -> tuple[SlayerModel, bool]:
-    """Rewrite persisted join targets that name the live object, not the model.
+    """Rewrite legacy join targets that name the live object instead of the model.
 
-    Ingests before the sanitizing fix wrote the raw table name, and a model
-    name can never contain ``__`` — so such a target resolves to nothing.
-
-    The repair demands a full signature match (sanitized target AND identical
-    ``join_pairs``) against a fresh join, so it can only ever rename the join
-    the bug produced. Matching on the target alone would repoint a
-    hand-authored join with different pairs, and could collapse two legacy
-    targets (``a__b`` and ``a___b`` both sanitize to ``a_b``) onto one name —
-    tripping the duplicate-target guard below and turning a tolerated store
-    into a failed re-ingest.
+    Requires a full signature match against a fresh join, so hand-authored joins never move.
     """
     fresh_sigs = {_join_sig(j) for j in fresh.joins}
     claimed = {
@@ -1921,13 +1599,9 @@ def _repair_legacy_join_targets(
 def _merge_joins_strict(
     persisted: SlayerModel, fresh: SlayerModel,
 ) -> tuple[list[ModelJoin], list[str], bool]:
-    """Append joins whose signature isn't already present. Raises on the
-    duplicate-target / different-pairs conflict so callers don't end up
-    with two joins pointing at the same target_model.
+    """Append new-signature joins; raises on a same-target/different-pairs conflict.
 
-    An unset ``cardinality`` is filled from the matching fresh join; a
-    user-set one is never overwritten. The third return value flags a
-    metadata-only fill, which still has to trigger a save.
+    Fills only unset ``cardinality``; the third value flags that metadata-only change.
     """
     persisted, target_repaired = _repair_legacy_join_targets(
         persisted=persisted, fresh=fresh
@@ -1977,7 +1651,7 @@ class AdditiveMergeResult(BaseModel):
     #: A metadata-only fill (join cardinality / column unique) that still
     #: has to be saved even when no column or join was added.
     metadata_changed: bool = False
-    #: DEV-1809: existing columns whose empty description was filled from a
+    #: Existing columns whose empty description was filled from a
     #: DB comment, and whether the model-level description was filled.
     described_columns: list[str] = Field(default_factory=list)
     model_described: bool = False
@@ -1990,12 +1664,7 @@ def _merge_one_column(
     model_name: str,
     sqlite_widen_enabled: bool,
 ) -> tuple[Column, bool, bool, bool]:
-    """Merge one persisted column against its fresh counterpart.
-
-    Returns ``(merged, did_widen, unique_filled, described)`` — the probe
-    widening plus the two additive gap-fills (`unique` on, empty description
-    filled from the DB comment).
-    """
+    """Merge one persisted column against its fresh one → ``(merged, did_widen, unique_filled, described)``."""
     merged_col, did_widen = _merge_persisted_column_with_probe(
         persisted_col=persisted_col,
         fresh_col=fresh_col,
@@ -2005,12 +1674,9 @@ def _merge_one_column(
     unique_filled = False
     described = False
     if fresh_col is not None:
-        # Set `unique` additively — never downgrade a user-set flag.
         if fresh_col.unique and not merged_col.unique:
             merged_col = merged_col.model_copy(update={"unique": True})
             unique_filled = True
-        # Fill an EMPTY description from the DB comment; existing
-        # descriptions are never overwritten.
         if fresh_col.description and not merged_col.description:
             merged_col = merged_col.model_copy(
                 update={"description": fresh_col.description}
@@ -2025,25 +1691,10 @@ def _additive_merge_existing(
     fresh: SlayerModel,
     sqlite_widen_enabled: bool = False,
 ) -> AdditiveMergeResult:
-    """Merge a freshly-ingested ``fresh`` model into ``persisted`` additively.
+    """Merge ``fresh`` into ``persisted`` additively: existing entries are never overwritten.
 
-    * Existing columns are preserved verbatim (description / label / format /
-      meta / allowed_aggregations / filter never overwritten).
-    * SQLite-only carve-out (``sqlite_widen_enabled=True``): a
-      fresh column whose type widened from the persisted ``DataType.INT``
-      (i.e. fresh type is ``DOUBLE`` or ``TEXT``) replaces ONLY the persisted
-      type — and the persisted ``format`` IF the persisted format is the
-      auto-ingested ``NumberFormat(INTEGER)`` default. Custom formats are
-      preserved verbatim and an INFO log line is emitted naming the column.
-      Widening never narrows DOUBLE → INT. On non-SQLite datasources the
-      additive contract stays strict — schema drift surfaces via
-      ``slayer validate-models``, not via silent re-ingest overwrites.
-    * Live columns whose names are absent from ``persisted.columns`` are
-      appended from ``fresh.columns``.
-    * Joins with new ``(target_model, join_pairs)`` signatures are appended.
-    * Carve-out: ``source_kind`` is refreshed, not preserved — it describes the
-      live object, and the view→table flip it captures often changes no columns.
-      A ``None`` from a non-classifying path never erases a known value.
+    Exceptions: SQLite INT→DOUBLE/TEXT widening, empty-field gap-fills, and a
+    non-None ``source_kind`` refresh.
     """
     existing_by_name: dict[str, Column] = {c.name: c for c in persisted.columns}
     fresh_by_name: dict[str, Column] = {c.name: c for c in fresh.columns}
@@ -2075,8 +1726,6 @@ def _additive_merge_existing(
     )
     metadata_changed = metadata_changed or joins_metadata_changed
 
-    # In the short-circuit below (not just the update dict), else a view→table
-    # flip that changes nothing else would never reach the refresh.
     kind_changed = (
         fresh.source_kind is not None
         and fresh.source_kind != persisted.source_kind
@@ -2127,15 +1776,10 @@ def _qualifier_repair_allowed(
     default_schema_name: str | None,
     default_objects: set[str] | None,
 ) -> bool:
-    """Decide whether a persisted BARE model may be healed to a fresh QUALIFIED
-    ``sql_table`` (D-3 / §3.6).
+    """May a persisted BARE model be healed to a fresh QUALIFIED ``sql_table``?
 
-    A bare name physically resolves to the default schema, so healing it to a
-    fresh default-qualified twin is always safe. Healing it to a NON-default
-    twin is safe only when the bare name is not itself a default-schema table
-    (otherwise the heal would repoint one physical table at another). If the
-    default-schema membership could not be determined, fail closed — never
-    repoint on a guess.
+    Always for a default-schema twin; for another schema only if the bare name
+    isn't a default-schema table. Unknown membership fails closed.
     """
     if fresh_schema is not None and fresh_schema == default_schema_name:
         return True
@@ -2153,14 +1797,10 @@ async def _process_one_table(
     default_schema_name: str | None = None,
     default_objects: set[str] | None = None,
 ) -> ProcessTableOutcome:
-    """Save / merge one freshly-introspected model, returning the outcome to
-    record. Raises on persistence failure — the caller isolates errors per-model.
+    """Save / merge one fresh model; raises on persistence failure.
 
-    Self-heal (DEV-1758): a persisted model stored BARE before qualification
-    existed is healed to the fresh qualified ``sql_table`` when that is safe (a
-    default twin, or a bare name that is not a default-schema table); an already
-    qualified persisted ``sql_table`` is never rewritten, and a contested bare
-    default model is left alone with a skip.
+    A BARE persisted ``sql_table`` is healed to the qualified one when safe; a
+    qualified one is never rewritten.
     """
     from slayer.engine.schema_drift import ModelAddition  # ALLOW(import-not-top): circular — schema_drift imports ingestion
 
@@ -2180,8 +1820,6 @@ async def _process_one_table(
             )
         )
     if persisted.sql or persisted.source_queries:
-        # User-authored sql / query-backed model with the matching name —
-        # leave it alone.
         return ProcessTableOutcome()
 
     sql_table_change: str | None = None
@@ -2193,10 +1831,7 @@ async def _process_one_table(
         persisted_schema, persisted_obj = split_sql_table(persisted.sql_table)
         fresh_schema, _ = split_sql_table(fresh.sql_table)
         if persisted_schema is not None:
-            # Already qualified — never rewrite the qualifier; a differently
-            # qualified twin is a different physical table, so leave it alone.
-            # Report the skip so this "left alone" outcome is visible, matching
-            # the fail-closed branch below rather than returning silently.
+            # A differently qualified twin is a different physical table.
             return ProcessTableOutcome(
                 skipped=SkippedTable(
                     table_name=persisted.sql_table,
@@ -2229,10 +1864,6 @@ async def _process_one_table(
         fresh=fresh,
         sqlite_widen_enabled=(datasource.type or "").lower() == "sqlite",
     )
-    # ``kind_changed`` / ``metadata_changed`` / ``sql_table_change`` gate the
-    # save too: a view→table flip, a cardinality / unique fill, or a qualifier
-    # repair usually adds no columns or joins, so otherwise the refreshed model
-    # would be discarded.
     if (
         outcome.new_columns
         or outcome.new_joins
@@ -2273,10 +1904,7 @@ def _bare_table_name(sql_table: str) -> str:
 def _sql_table_identity(
     sql_table: str | None, *, default_schema: str | None,
 ) -> tuple[str | None, str] | None:
-    """Normalised ``(schema, object)`` identity of a ``sql_table`` (DEV-1743
-    [C2]): the schema falls back to the datasource default when unqualified, so
-    two spellings that name the SAME live object compare equal — a bare-name
-    match alone is NOT sufficient to adopt a stored spelling."""
+    """``(schema, object)`` identity of a ``sql_table``, unqualified → ``default_schema``."""
     if not sql_table:
         return None
     schema, obj = split_sql_table(sql_table)
@@ -2289,8 +1917,7 @@ async def _stored_sanitized_identity_map(
     datasource: DatasourceConfig,
     default_schema: str | None,
 ) -> tuple[set[str], dict[str, tuple[str | None, str] | None]]:
-    """Stored model names for ``datasource`` plus each one's live-object identity
-    (used by the same-object guard in :func:`_adopt_stored_sanitized_names`)."""
+    """Stored model names for ``datasource`` plus each one's live-object identity."""
     identities = await storage._list_all_model_identities()
     stored_names = {n for d, n in identities if d == datasource.name}
     stored_identity: dict[str, tuple[str | None, str] | None] = {}
@@ -2310,10 +1937,7 @@ def _sanitized_rename_map(
     stored_identity: dict[str, tuple[str | None, str] | None],
     default_schema: str | None,
 ) -> dict[str, str]:
-    """Map each faithful fresh name onto a stored sanitized spelling that models
-    the SAME live object (stored-name-wins). Skips exact stored matches, a name
-    whose sanitized form is itself a distinct live object this run (would collapse
-    two tables), and twins whose live-object identities differ."""
+    """Map each fresh name onto a stored sanitized spelling of the SAME live object."""
     rename_map: dict[str, str] = {}
     for name, fresh in fresh_by_name.items():
         if name in stored_names:
@@ -2338,19 +1962,9 @@ async def _adopt_stored_sanitized_names(
     datasource: DatasourceConfig,
     default_schema: str | None,
 ) -> tuple[dict[str, "SlayerModel"], dict[str, str]]:
-    """DEV-1743 [C2] re-ingest matching pre-pass (D3): stored-name-wins.
+    """Rename fresh ``a__b`` models onto a stored sanitized ``a_b`` of the same object.
 
-    A faithful fresh model (``a__b``) whose live object is ALREADY modelled by a
-    stored model under the sanitized fallback spelling (``a_b``, ``sql_table``
-    pointing at the SAME live object) adopts that stored name — so an old-world
-    store is not duplicated under the newly-legal ``__`` spelling. Exact matches
-    (a stored ``a__b``) are left untouched; a sanitized stored twin pointing at a
-    DIFFERENT object never matches (the identity guard). Renames cascade over
-    every fresh model's ``ModelJoin.target_model`` so joins keep resolving.
-
-    Returns ``(adopted_models, rename_map)`` — the ``original → stored`` name map
-    so the caller can also re-point ``InternalTable.model_name`` entries (else a
-    hidden-internal lookup by the stale faithful name silently drops it).
+    Renames cascade into join targets; returns ``(adopted_models, rename_map)``.
     """
     stored_names, stored_identity = await _stored_sanitized_identity_map(
         storage=storage, datasource=datasource, default_schema=default_schema,
@@ -2385,13 +1999,7 @@ async def _scoped_models_for_validation(
     datasource: DatasourceConfig,
     in_scope_table_names: set[str],
 ) -> list[SlayerModel]:
-    """Build the list of persisted models to feed to ``validate_datasource``.
-
-    sql_table-mode models are included only when their live table is in
-    scope (matches the additive pass). sql-mode and query-backed models are
-    always validated within this datasource — they're not tied to a
-    specific live table name.
-    """
+    """Persisted models to validate: in-scope ``sql_table`` models plus all sql/query-backed ones."""
     identities = await storage._list_all_model_identities()
     ds_model_names = [n for d, n in identities if d == datasource.name]
     scoped: list[SlayerModel] = []
@@ -2413,15 +2021,7 @@ async def _effective_hidden_internals(
     datasource: DatasourceConfig,
     storage: StorageBackend,
 ) -> list[InternalTable]:
-    """Narrow scan-time classifications to models actually hidden after the merge.
-
-    ``_process_one_table`` preserves the persisted ``hidden`` (and skips merging
-    user-authored models entirely), so the scan's verdict can lie both ways — a
-    since-un-hidden internal, or silence under ``--surface-internals`` for one an
-    earlier run hid. Takes ``internal_tables`` (not ``hidden_internals``, empty
-    under ``surface_internals``) and keys on ``model_name``, which differs from
-    ``table_name`` for ``__``-sanitized objects.
-    """
+    """Narrow scan-time internal classifications to models actually hidden in storage."""
     effective: list[InternalTable] = []
     for entry in candidates:
         try:
@@ -2441,13 +2041,7 @@ async def _effective_hidden_internals(
 def _default_schema_membership(
     datasource: DatasourceConfig,
 ) -> tuple[str | None, set[str] | None]:
-    """The default schema's name and the set of object names in it.
-
-    The membership set powers the self-heal cross-schema guard: a bare persisted
-    model may be repointed to a non-default twin only when its bare name is not
-    a default-schema table. ``None`` object-set means the listing failed, so the
-    guard fails closed (never repoint on a guess).
-    """
+    """The default schema's name and its object names (``None`` if listing failed)."""
     sa_engine = engine_factory.get_engine(datasource.resolve_env_vars())
     try:
         inspector = sa.inspect(sa_engine)
@@ -2465,9 +2059,7 @@ def _default_schema_membership(
 
 
 def _schema_hint_message(other_schemas: list[str]) -> str | None:
-    """DEV-1758: offer schemas discovered but not covered this pass. Eligible
-    only when exactly one schema was in scope (``other_schemas`` is empty
-    otherwise), so ``--all-schemas`` / multi-schema runs stay quiet."""
+    """Hint offering schemas discovered but not ingested this pass."""
     if not other_schemas:
         return None
     return (
@@ -2485,8 +2077,7 @@ async def _run_additive_pass(
     default_schema_name: str | None,
     default_objects: set[str] | None,
 ):
-    """Save / merge every freshly-introspected model, isolating per-model
-    failures. Returns ``(additions, errors, merge_skipped)``."""
+    """Save / merge every fresh model → ``(additions, errors, merge_skipped)``."""
     from slayer.engine.schema_drift import IngestionError, ModelAddition  # ALLOW(import-not-top): circular — schema_drift imports ingestion
 
     additions: list[ModelAddition] = []
@@ -2529,22 +2120,10 @@ async def ingest_datasource_idempotent(
     include_views: bool = True,
     surface_internals: bool = False,
 ):
-    """Idempotent re-ingestion.
+    """Idempotent re-ingestion: create missing models, additively merge existing ones.
 
-    Walks the live datasource and, for each in-scope table:
-
-    * Creates a fresh ``sql_table``-mode SlayerModel when none exists.
-    * Appends new columns / joins to an existing ``sql_table``-mode model
-      without ever overwriting existing entries.
-    * Heals a persisted BARE model to the fresh qualified ``sql_table`` when
-      safe, and skips a contested bare default twin (DEV-1758 self-heal).
-    * Skips ``sql``-mode and query-backed models silently — those are
-      user-authored.
-
-    Scope mirrors ``ingest_datasource_report`` (``schema`` / ``schemas`` /
-    ``all_schemas``). After the additive pass, runs ``validate_models`` scoped to
-    the same in-scope set so type drift on existing columns / dropped tables show
-    up in ``to_delete``.
+    User-authored sql/query-backed models are skipped. Then validates the same
+    scope so drift and dropped tables show up in ``to_delete``.
     """
     validate_scope_args(schema=schema, schemas=schemas, all_schemas=all_schemas)
 
@@ -2554,9 +2133,6 @@ async def ingest_datasource_idempotent(
         validate_datasource,
     )
 
-    # ``ingest_datasource_report`` is sync (it drives SQLAlchemy ``Inspector``).
-    # Offload to a thread so a slow / large datasource doesn't block the
-    # event loop while server-facing requests are in flight.
     scan = await asyncio.to_thread(
         ingest_datasource_report,
         datasource=datasource,
@@ -2568,16 +2144,11 @@ async def ingest_datasource_idempotent(
         include_views=include_views,
         surface_internals=surface_internals,
     )
-    # Default-schema membership for the self-heal cross-schema guard (off the
-    # event loop; unknown membership → guard fails closed).
     default_schema_name, default_objects = await asyncio.to_thread(
         _default_schema_membership, datasource
     )
     fresh_models = scan.models
     fresh_by_name = {m.name: m for m in fresh_models}
-    # DEV-1743 [C2] D3: a faithful fresh ``a__b`` whose live object is already
-    # modelled by a stored sanitized ``a_b`` adopts the stored name (no
-    # duplicate), guarded by same-live-object identity.
     fresh_by_name, adopted_renames = await _adopt_stored_sanitized_names(
         fresh_by_name=fresh_by_name,
         storage=storage,
@@ -2585,19 +2156,14 @@ async def ingest_datasource_idempotent(
         default_schema=default_schema_name,
     )
     fresh_models = list(fresh_by_name.values())
-    # A stored-name adoption also renames the model an internal-table entry
-    # points at; re-point them so the hidden-internal re-check (keyed on
-    # ``model_name``) doesn't miss an adopted internal and drop it from the report.
+    # Re-point internal-table entries at adopted names, else the re-check drops them.
     if adopted_renames:
         scan.internal_tables = [
             e.model_copy(update={"model_name": adopted_renames[e.model_name]})
             if e.model_name in adopted_renames else e
             for e in scan.internal_tables
         ]
-    # Keyed on the live object name, not the model name: validation scoping
-    # compares against ``_bare_table_name(m.sql_table)``, so any model whose
-    # name differs from its table (``__``-sanitized or dbt/OSI hidden) would
-    # otherwise drop out of scope.
+    # Live object names, not model names (the two can differ).
     in_scope_table_names: set[str] = {
         _bare_table_name(m.sql_table) for m in fresh_models if m.sql_table
     }
@@ -2610,12 +2176,7 @@ async def ingest_datasource_idempotent(
         default_objects=default_objects,
     )
 
-    # DEV-1809 fill-if-empty for the datasource description (BigQuery dataset
-    # description). The check runs against the freshly-loaded STORED config,
-    # not the caller's object — a stale caller copy must never clobber a
-    # description persisted since it was loaded. Best-effort: a save failure
-    # must not abort the pass (model additions above are already persisted);
-    # ``model_name=""`` is the established datasource-level tag.
+    # Fill-if-empty, checked against the freshly-loaded STORED config, not the caller's copy.
     datasource_described = False
     if scan.schema_description and not datasource.description:
         try:
@@ -2641,30 +2202,12 @@ async def ingest_datasource_idempotent(
         datasource=datasource, models=scoped_models
     )
 
-    # Column sample-value profiling is NOT run at ingest time — it fires a
-    # per-column full-table scan and, on a wide datasource (dozens of tables
-    # × ~10 columns each), would run hundreds of full scans and dominate
-    # ingest wall-clock. Samples are instead refreshed on demand on a cache
-    # miss by the async ``ensure_column_sample_fresh`` helper, invoked from
-    # the read paths that surface samples — ``inspect_model``, the ``inspect``
-    # point-lookup, and ``search()``. Use ``slayer search refresh-samples``
-    # to warm the cache explicitly.
+    # No sample profiling here (a full scan per column); read paths refresh on cache miss.
 
-    # DEV-1386: refresh persisted embeddings for the datasource doc plus
-    # every visible model + its visible children. Best-effort: per-entity
-    # failures are surfaced as IngestionError entries, never aborts
-    # ingestion. When the `advanced_search` extra is not installed,
-    # EmbeddingRetriever returns a single warning and does no work.
     embedding_errors = await _refresh_datasource_embeddings(
         datasource_name=datasource.name, storage=storage,
     )
     for model_name, err in embedding_errors:
-        # DEV-1416: each helper inside ``_refresh_datasource_embeddings``
-        # attaches the canonical entity tag (``<ds>.<model>``,
-        # ``memory:<id>``, or ``""`` for the datasource doc) so a
-        # startup log inspection can distinguish memory failures from
-        # model / datasource-doc failures at a glance — no string
-        # sniffing of free-form warning text.
         errors.append(IngestionError(
             model_name=model_name,
             data_source=datasource.name,
@@ -2691,11 +2234,7 @@ async def ingest_datasource_idempotent(
     )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Friendly-error helper (moved from slayer/mcp/server.py — DEV-1392 so it can
-# be shared by the MCP server and the boot-time orchestrator without the
-# engine → mcp import edge).
-# ─────────────────────────────────────────────────────────────────────────────
+# --- Friendly-error helper (shared with the MCP server) ---
 
 
 def _friendly_db_error(exc: Exception) -> str:
@@ -2723,10 +2262,7 @@ def _friendly_db_error(exc: Exception) -> str:
     return result
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Renderers — moved from slayer/cli.py so `slayer ingest` and the boot-time
-# orchestrator share one source of truth and one output channel (`file=`).
-# ─────────────────────────────────────────────────────────────────────────────
+# --- Renderers (shared by `slayer ingest` and the boot-time orchestrator) ---
 
 
 def _get_schemas(ds: DatasourceConfig) -> list[str]:
@@ -2745,11 +2281,7 @@ def _empty_ingest_message(
     ds: DatasourceConfig,
     retry_hint: str | None = None,
 ) -> str:
-    """Explain an empty ingest and point at the likely fix.
-
-    Says "tables or views" so a views-only schema doesn't read as empty.
-    ``retry_hint`` comes from the caller, keeping this interface-neutral.
-    """
+    """Explain an empty ingest and point at the likely fix."""
     schema_label = f" in schema '{schema_name}'" if schema_name else ""
     lines = [f"No tables or views found{schema_label}."]
     schemas = _get_schemas(ds)
@@ -2764,8 +2296,7 @@ _KIND_LABELS = {"view": " [view]", "materialized_view": " [materialized view]"}
 
 
 def _updated_detail_lines(addition) -> list[str]:
-    """The ``Updated: <model> (...)`` detail fragments for a non-created
-    addition, in display order; empty when nothing changed."""
+    """The ``Updated: <model> (...)`` detail fragments, in display order."""
     described = getattr(addition, "described_columns", []) or []
     widened = getattr(addition, "widened_columns", []) or []
     entries = [
@@ -2823,11 +2354,7 @@ def _print_report_section(
 
 
 def _hidden_internal_line(entry) -> str:
-    """``<table>: <tool>``, appending the model name when it differs.
-
-    The un-hide advice takes the model name, so for a ``__``-sanitized table the
-    table name alone would name something the user cannot act on.
-    """
+    """``<table>: <tool>``, appending the model name (needed to un-hide) when it differs."""
     target = entry.table_name
     if entry.model_name != entry.table_name:
         target = f"{entry.table_name} (model: {entry.model_name})"
@@ -2835,13 +2362,7 @@ def _hidden_internal_line(entry) -> str:
 
 
 def _unhide_hint(data_source: str | None = None) -> str:
-    """The ``edit_model`` invocation that un-hides one recognised internal.
-
-    Qualified with ``data_source`` when known: a bare model name raises
-    ``AmbiguousModelError`` across datasources, and internals collide by
-    construction (``_dlt_loads`` exists in every dlt-loaded database). Shared
-    with the MCP renderer so both surfaces advise the same call.
-    """
+    """The ``edit_model`` call that un-hides an internal (qualified: internals collide across datasources)."""
     if data_source:
         return f'edit_model("<model>", data_source="{data_source}", hidden=false)'
     return 'edit_model("<model>", hidden=false)'
@@ -2852,10 +2373,7 @@ def _print_ingest_drift_and_errors(
 ) -> None:
     """Render the non-addition sections of an ingest.
 
-    Fields are read through ``getattr`` because this takes both an
-    ``IdempotentIngestResult`` and a bare ``IngestionScanReport`` (which has no
-    ``to_delete`` / ``errors``). ``data_source`` qualifies the un-hide hint (see
-    ``_unhide_hint``); it comes from the caller since neither result carries it.
+    ``getattr`` because this also takes a bare ``IngestionScanReport``.
     """
     out = file if file is not None else sys.stdout
     if getattr(result, "datasource_described", False):
@@ -2866,8 +2384,6 @@ def _print_ingest_drift_and_errors(
         line=lambda e: f"{e.tool}: {e.model_name}",
         out=out,
     )
-    # Skips are separate from errors: "can't be modelled" differs in cause and
-    # fix from "failed to persist".
     skipped = getattr(result, "skipped", None) or []
     _print_report_section(
         entries=skipped,
@@ -2878,8 +2394,6 @@ def _print_ingest_drift_and_errors(
         line=lambda e: f"{e.table_name}: {e.reason}",
         out=out,
     )
-    # Requested schemas dropped from scope (foreign catalog / system schema),
-    # so an explicit request for one isn't silently reported as empty.
     skipped_schemas = getattr(result, "skipped_schemas", None) or []
     _print_report_section(
         entries=skipped_schemas,
@@ -2913,9 +2427,7 @@ def _print_ingest_drift_and_errors(
     )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# DEV-1392 — boot-time orchestrator
-# ─────────────────────────────────────────────────────────────────────────────
+# --- Boot-time orchestrator ---
 
 
 class StartupIngestFailure(BaseModel):
@@ -2947,18 +2459,8 @@ async def ingest_all_datasources_idempotent(
 ) -> StartupIngestSummary:
     """Run idempotent auto-ingestion across every configured datasource.
 
-    Sequential. Per-datasource failures are caught and accumulated; the
-    function never raises on a single-datasource error and the server is
-    expected to start regardless. ``storage.list_datasources()`` raising IS
-    propagated — boot should not proceed with broken storage.
-
-    All human-readable output goes through ``stream`` (default ``sys.stderr``)
-    so ``slayer mcp`` stdio remains protocol-safe.
-
-    Drift entries from each per-datasource result are printed and
-    accumulated into ``summary.drift_pending``, but never auto-applied:
-    ``apply_drift_deletes`` is gated behind ``slayer validate-models
-    --force-clean`` and intentionally not reachable from this path.
+    Per-datasource failures are accumulated, never raised; output goes to ``stream``
+    (default stderr, keeping MCP stdio clean). Drift is reported, never applied.
     """
     out = stream if stream is not None else sys.stderr
     summary = StartupIngestSummary()
@@ -3018,13 +2520,7 @@ async def _refresh_models_for_datasource(
     storage: StorageBackend,
     search: "SearchService",
 ) -> tuple[list[tuple[str, str]], list[SlayerModel]]:
-    """Refresh embeddings for every visible model in the datasource.
-
-    Returns ``(warnings, models_in_ds)``. Each warning is tagged with
-    the model's ``<ds>.<name>`` so the orchestrator can route it to the
-    right ``IngestionError.model_name``. ``models_in_ds`` is forwarded
-    to the datasource-doc refresh that follows.
-    """
+    """Refresh every model's embeddings → ``(warnings tagged <ds>.<name>, models_in_ds)``."""
     warnings: list[tuple[str, str]] = []
     models_in_ds: list[SlayerModel] = []
     try:
@@ -3059,12 +2555,7 @@ async def _refresh_datasource_doc(
     search: "SearchService",
     storage: StorageBackend,
 ) -> list[tuple[str, str]]:
-    """Refresh the datasource doc embedding. Warnings are tagged with
-    an empty ``model_name`` since the doc has no specific entity name.
-
-    DEV-1549: ``DatasourceConfig.description`` is threaded through so
-    description text contributes to lexical + embedding recall.
-    """
+    """Refresh the datasource doc embedding; warnings are tagged ``""``."""
     cfg = await storage.get_datasource(datasource_name)
     description = cfg.description if cfg is not None else None
     try:
@@ -3079,13 +2570,7 @@ async def _refresh_datasource_doc(
 async def _entity_ref_exists(
     *, entity: str, storage: StorageBackend,
 ) -> bool | None:
-    """DEV-1428 defense-in-depth cleanup probe. Returns:
-
-    * ``True`` when the canonical ref still resolves.
-    * ``False`` when storage definitively says it does not exist.
-    * ``None`` when the lookup raises (transient infra failure — treat
-      as "ref intact" so we don't drop data).
-    """
+    """Does the canonical ref still resolve? ``None`` on a transient lookup failure."""
     if entity.startswith(_MEMORY_PREFIX):
         memory_id = entity[len(_MEMORY_PREFIX):]
         try:
@@ -3093,8 +2578,7 @@ async def _entity_ref_exists(
         except Exception:  # noqa: BLE001 — transient
             return None
         return row is not None
-    # ``<ds>[.<model>[.<leaf>]]`` shape. Datasource alone is rooted at
-    # ``ds``; deeper paths probe the parent model.
+    # ``<ds>[.<model>[.<leaf>]]``
     try:
         datasources = set(await storage.list_datasources())
     except Exception:  # noqa: BLE001 — transient
@@ -3130,20 +2614,9 @@ async def _refresh_memories_for_datasource(  # NOSONAR(S3776) — straight-line 
     storage: StorageBackend,
     search: "SearchService",
 ) -> list[tuple[str, str]]:
-    """Refresh embeddings for every memory whose canonical entities are
-    rooted at this datasource. Each warning is tagged with
-    ``memory:<id>`` so a startup log inspection can distinguish memory
-    failures from datasource-doc / model failures at a glance.
+    """Re-embed memories rooted at this datasource and strip their definitively stale refs.
 
-    DEV-1428 defense-in-depth: also strip stale refs from every memory
-    rooted at this datasource (refs that resolve to a definitive "not
-    found"; transient lookup failures keep the ref intact). For memories
-    with ``Memory.query`` set, emit an ``IngestionError`` when the query
-    has stale references — the query itself is NOT rewritten.
-
-    A memory linked to entities in datasources A and B is touched in
-    both passes; hash-skip inside ``_apply_pending`` makes the second
-    call a no-op.
+    Warnings are tagged ``memory:<id>``; a stale ``Memory.query`` is reported, not rewritten.
     """
     try:
         memories = await storage.list_memories()
@@ -3155,12 +2628,7 @@ async def _refresh_memories_for_datasource(  # NOSONAR(S3776) — straight-line 
             canonical_id_rooted_at(e, datasource_name)
             for e in memory.entities
         )
-        # DEV-1428: ``memory:<id>`` refs are datasource-agnostic. A
-        # memory carrying only such refs would otherwise never be
-        # touched by any per-datasource pass and could accumulate stale
-        # entries forever. Include those in the cleanup walk; the
-        # embedding refresh remains datasource-rooted so we don't
-        # re-embed every memory on every pass.
+        # ``memory:<id>`` refs are datasource-agnostic: cleaned here, not re-embedded.
         has_memory_refs = any(
             e.startswith(_MEMORY_PREFIX) for e in memory.entities
         )
@@ -3174,8 +2642,7 @@ async def _refresh_memories_for_datasource(  # NOSONAR(S3776) — straight-line 
                 memory_warnings = [str(exc)]
             for w in memory_warnings:
                 warnings.append((tag, w))
-        # DEV-1428 cleanup pass: drop refs that resolve to False
-        # (definitive not-found); keep refs that raise (transient).
+        # Drop definitively missing refs; keep ones whose lookup raised.
         cleaned: list[str] = []
         changed = False
         for entity in memory.entities:
@@ -3192,7 +2659,6 @@ async def _refresh_memories_for_datasource(  # NOSONAR(S3776) — straight-line 
                 await storage._save_memory_row(rewritten)
             except Exception as exc:  # noqa: BLE001 — defensive
                 warnings.append((tag, f"cleanup failed: {exc}"))
-        # DEV-1428: stale Memory.query warning.
         if memory.query is not None and rooted_at_ds:
             try:
                 await extract_entities_from_query(
@@ -3208,16 +2674,9 @@ async def _refresh_memories_for_datasource(  # NOSONAR(S3776) — straight-line 
 async def _refresh_datasource_embeddings(
     *, datasource_name: str, storage: StorageBackend,
 ) -> list[tuple[str, str]]:
-    """Refresh persisted embeddings for everything reachable from this
-    datasource: every visible model + its visible children, the
-    datasource doc itself, and every memory whose canonical entities
-    are rooted at the datasource.
+    """Refresh embeddings for the datasource's models, doc and memories.
 
-    Best-effort: returns ``(model_name, error_text)`` tuples; never
-    raises. ``model_name`` is the canonical entity tag
-    (``<ds>.<model>``, ``memory:<id>``, or ``""`` for the datasource
-    doc) used by ``ingest_datasource_idempotent`` to route per-entity
-    failures to the matching ``IngestionError``.
+    Never raises; returns ``(entity_tag, error_text)`` tuples.
     """
     from slayer.search.service import SearchService  # ALLOW(import-not-top): optional embedding extra off the cold-start path
 

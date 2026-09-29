@@ -500,7 +500,8 @@ async def test_consecutive_periods_partitions_by_dimension(integration_env):
     for row in response.data:
         by_status.setdefault(row["orders.status"], []).append(row["orders.status_run"])
 
-    assert by_status["completed"] == [1, 2]
+    # completed: 2025-01 and 2025-03; the empty February breaks the run.
+    assert by_status["completed"] == [1, 1]
     assert by_status["pending"] == [1, 2]
     assert by_status["cancelled"] == [1]
 

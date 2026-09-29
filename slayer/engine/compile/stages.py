@@ -31,8 +31,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from slayer.core.enums import DataType, JoinType, RANKED_AGGREGATIONS, TimeGranularity
 from slayer.core.errors import AmbiguousJoinPathError, CircularJoinPathError
-from slayer.core.keys import AggregateKey, Grain, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, PREDICATE_COMPARISON_OPS, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, effective_root_grain, constituent_grain, attached_parameter_grain, substitute_value_keys, substitute_consumer_keys, walk_value_keys, walk_consumer_keys, REGROUP_LEAF_PREFIX, is_cross_model_agg, split_top_level_and, window_kwarg_of, is_row_attach_root, attached_inputs, operand_aggregates, operand_constituents, parameter_row_leaves, source_anchor_path, source_row_leaves, VALUE_KEY_TYPES
-from slayer.core.models import Column, SlayerModel
+from slayer.core.keys import SLOT_COMPOSITE_KINDS, AggregateKey, Grain, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, PREDICATE_COMPARISON_OPS, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, effective_root_grain, constituent_grain, attached_parameter_grain, substitute_value_keys, substitute_consumer_keys, walk_value_keys, walk_consumer_keys, REGROUP_LEAF_PREFIX, is_cross_model_agg, split_top_level_and, window_kwarg_of, is_row_attach_root, attached_inputs, operand_aggregates, operand_constituents, parameter_row_leaves, source_anchor_path, source_row_leaves, VALUE_KEY_TYPES
+from slayer.core.models import Column, SlayerModel, aggregation_definition, empty_value
 from slayer.engine.reference_closure import (
     aggregate_input_closure,
     column_default_key,
@@ -45,6 +45,7 @@ from slayer.engine.reference_closure import (
     source_row_leaf_closure,
 )
 from slayer.core.join_walker import (
+    aggregation_owner,
     canonical_token,
     physical_join_pairs,
     resolve_hop,
@@ -88,6 +89,7 @@ from slayer.engine.elaborate_env import (
     check_cross_model_source_resolves,
     check_input_dependencies_analyzable,
     check_local_producer_inputs_safe,
+    check_measures_at_query_grain,
     check_order_target_has_slot,
     check_parameter_determined,
     check_filter_dependencies_analyzable,
@@ -417,13 +419,9 @@ def _scalar_free_columns(node: ValueKey, out: set) -> None:
     # Asymmetric on purpose: aggregate subtrees are bound, not free.
     if isinstance(node, ColumnKey):
         out.add(node)
-    elif isinstance(node, ArithmeticKey):
-        for op in node.operands:
-            _scalar_free_columns(node=op, out=out)
-    elif isinstance(node, ScalarCallKey):
-        for arg in node.args:
-            if isinstance(arg, (ColumnKey, ArithmeticKey, ScalarCallKey, TransformKey)):
-                _scalar_free_columns(node=arg, out=out)
+    elif isinstance(node, SLOT_COMPOSITE_KINDS):
+        for child in node.children():
+            _scalar_free_columns(node=child, out=out)
     elif isinstance(node, TransformKey):
         _scalar_free_columns(node=node.input, out=out)
 
@@ -936,6 +934,16 @@ def _ranked_kernel(
     )
 
 
+def _empty_value(key: ValueKey, *, bundle: ResolvedSourceBundle) -> Optional[int]:
+    """An attached aggregate's empty value, its definition read on the owning model."""
+    if not isinstance(key, AggregateKey):
+        return None
+    owner = aggregation_owner(
+        root=bundle.source_model, source=key.source, models_by_name=bundle.models_by_name,
+    )
+    return empty_value(agg=key.agg, definition=aggregation_definition(owner=owner, agg=key.agg))
+
+
 def _synthesize_wrap_attach(
     *,
     wrap_key: AggregateKey,
@@ -1030,7 +1038,7 @@ def _synthesize_wrap_attach(
         join_pairs=join_pairs,
         substitutions=[RegroupSubstitution(
             placeholder=wrap_key, producer_slot_id=answer_slot,
-            original_key=wrap_key,
+            original_key=wrap_key, empty_value=_empty_value(wrap_key, bundle=bundle),
         )],
         partition_display=[_regroup_grain_name(pk) for pk in ordered_pks],
     )
@@ -2263,7 +2271,7 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
         join_pairs=join_pairs,
         substitutions=[RegroupSubstitution(
             placeholder=placeholder, producer_slot_id=answer_slot,
-            original_key=agg,
+            original_key=agg, empty_value=_empty_value(agg, bundle=bundle),
         )],
         partition_display=[_regroup_grain_name(rr) for rr in ordered_pks],
         producer_root_model=root_name,
@@ -2632,7 +2640,7 @@ def _non_aggregate_leaf_check(
         return True
     if isinstance(key, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
         return ok(key)
-    if isinstance(key, (ScalarCallKey, ArithmeticKey, InKey)):
+    if isinstance(key, SLOT_COMPOSITE_KINDS):
         return all(_non_aggregate_leaf_check(c, ok=ok) for c in key.children())
     return False
 
@@ -2952,7 +2960,7 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
         join_pairs=join_pairs,
         substitutions=[RegroupSubstitution(
             placeholder=placeholder, producer_slot_id=answer_slot,
-            original_key=root,
+            original_key=root, empty_value=_empty_value(root, bundle=bundle),
         )],
         partition_display=[
             _regroup_grain_name(original_by_pk.get(g, g)) for g in ordered_outer
@@ -3024,6 +3032,7 @@ def _build_carrier_attach(
                 fallback=answer_ids[i] if i < len(answer_ids) else None,
             ),
             original_key=c,
+            empty_value=_empty_value(c, bundle=bundle),
         )
         for i, c in enumerate(constituents)
     ]
@@ -3447,6 +3456,7 @@ def _synthesize_local_regroup(
                 else None,
             ),
             original_key=agg,
+            empty_value=_empty_value(agg, bundle=bundle),
         )
         for agg in aggs
     ]
@@ -3488,13 +3498,23 @@ def _rewrite_regrouped_prebound(
     combined_mapping: Mapping[ValueKey, ValueKey],
 ) -> PreboundQuery:
     """Every root replaced by its placeholder: a computed dimension takes the full
-    mapping, a measure only the combined one (its inners desugar COMBINED)."""
+    mapping, a measure the combined one (its inners desugar COMBINED) plus each
+    dimension value's own substitution."""
+    measure_dims = position_classes(
+        prebound.declared_measures, n_grain=prebound.n_dims + prebound.n_time_dimensions,
+    ).dim_keys_for("measure")
+    dim_values: Dict[ValueKey, ValueKey] = {}
+    for d in measure_dims:
+        sub = substitute_value_keys(d, mapping)
+        if sub != d:
+            dim_values[d] = sub
+    measure_mapping = {**dim_values, **combined_mapping}
     return PreboundQuery(
         declared_measures=[
             dm.model_copy(update={"bound": BoundExpr(
                 value_key=substitute_value_keys(
                     dm.bound.value_key,
-                    mapping if dm.is_dimension else combined_mapping,
+                    mapping if dm.is_dimension else measure_mapping,
                 ),
             )})
             for dm in prebound.declared_measures
@@ -3819,6 +3839,7 @@ def _route_top_level(
         home_paths=_home_paths(env),
         population=population,
     )
+    check_measures_at_query_grain(prebound)
     _assert_total_routing(routed_prebound)
     return _Routed(
         query=env.query, env=env, typed_prebound=prebound, prebound=routed_prebound,
@@ -3914,7 +3935,7 @@ def _producer_nesting_rule(
         k
         for dm in prebound.declared_measures
         if not dm.is_dimension
-        and isinstance(dm.bound.value_key, (ArithmeticKey, ScalarCallKey))
+        and isinstance(dm.bound.value_key, SLOT_COMPOSITE_KINDS)
         for k in walk_consumer_keys(dm.bound.value_key)
     }
 

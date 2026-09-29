@@ -24,6 +24,7 @@ Tests cover:
 
 from __future__ import annotations
 
+import inspect
 import tempfile
 from collections.abc import AsyncIterator
 
@@ -40,6 +41,10 @@ from slayer.core.models import (
     SlayerModel,
 )
 from slayer.core.query import SlayerQuery
+from slayer.engine.profiling import ProfileOutcome
+from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.search import graph as _graph_mod
+from slayer.search import service as svc_mod
 from slayer.search.service import SearchHit, SearchService
 from slayer.storage.base import StorageBackend, resolve_storage
 
@@ -94,9 +99,7 @@ async def test_search_service_accepts_compact_kwarg(
 async def test_search_service_compact_default_true(
     storage: StorageBackend,
 ) -> None:
-    """Codex#7 / spec: compact defaults to True everywhere."""
-    import inspect
-
+    """compact defaults to True everywhere."""
     sig = inspect.signature(SearchService.search)
     assert sig.parameters["compact"].default is True
 
@@ -452,25 +455,23 @@ async def test_compact_plus_lazy_column_refresh_keeps_text_empty(
     storage: StorageBackend, monkeypatch,
 ) -> None:
     """Codex#3 (strengthened): force the lazy column-refresh path to
-    actually run (monkeypatch ensure_column_sample_fresh to return a
+    actually run (monkeypatch ensure_samples_fresh to return a
     materially-updated column) and assert compact=True keeps text="" while
     description still reflects the freshly refreshed column."""
-    from slayer.engine.query_engine import SlayerQueryEngine
-    from slayer.search import service as svc_mod
-
     # A real engine satisfies the truthy-engine gate in SearchService.
     engine = SlayerQueryEngine(storage=storage)
     service = SearchService(storage=storage, engine=engine)
 
     refreshed_calls = []
 
-    async def fake_refresh(*, model, column, engine, storage):  # NOSONAR(S7503) — async required to match the monkeypatched call site (`await ensure_column_sample_fresh(...)`)
-        # Return a materially-different column so the production path
-        # treats it as "refreshed" (the identity check is ``is col``).
-        refreshed_calls.append((model.name, column.name))
-        return column.model_copy(update={"description": "FRESH"})
+    async def fake_refresh(*, model, columns, engine, storage, force=False):  # NOSONAR(S7503) — async required to match the monkeypatched call site (`await ensure_samples_fresh(...)`)
+        # Materially-different columns, so the production path treats them as refreshed.
+        refreshed_calls.extend((model.name, c.name) for c in columns)
+        return ProfileOutcome(
+            columns=[c.model_copy(update={"description": "FRESH"}) for c in columns], errors=[],
+        )
 
-    monkeypatch.setattr(svc_mod, "ensure_column_sample_fresh", fake_refresh)
+    monkeypatch.setattr(svc_mod, "ensure_samples_fresh", fake_refresh)
 
     resp = await service.search(question="amount paid net", compact=True)
     column_hits = [h for h in resp.results if h.kind == "column"]
@@ -487,16 +488,15 @@ async def test_verbose_plus_lazy_column_refresh_regenerates_text(
     storage: StorageBackend, monkeypatch,
 ) -> None:
     """Verbose-mode regression pin: refresh DOES regenerate hit.text."""
-    from slayer.engine.query_engine import SlayerQueryEngine
-    from slayer.search import service as svc_mod
-
     engine = SlayerQueryEngine(storage=storage)
     service = SearchService(storage=storage, engine=engine)
 
-    async def fake_refresh(*, model, column, engine, storage):  # NOSONAR(S7503) — async required to match the monkeypatched call site (`await ensure_column_sample_fresh(...)`)
-        return column.model_copy(update={"description": "FRESH"})
+    async def fake_refresh(*, model, columns, engine, storage, force=False):  # NOSONAR(S7503) — async required to match the monkeypatched call site (`await ensure_samples_fresh(...)`)
+        return ProfileOutcome(
+            columns=[c.model_copy(update={"description": "FRESH"}) for c in columns], errors=[],
+        )
 
-    monkeypatch.setattr(svc_mod, "ensure_column_sample_fresh", fake_refresh)
+    monkeypatch.setattr(svc_mod, "ensure_samples_fresh", fake_refresh)
 
     resp = await service.search(question="amount paid", compact=False)
     column_hits = [h for h in resp.results if h.kind == "column"]
@@ -574,7 +574,6 @@ async def test_compact_with_cypher_filter_excludes_non_matching(
 
     # The full-graph engine uses label "ModelColumn"; the naive-fallback
     # parser uses "Column". Both should narrow to column-only hits.
-    from slayer.search import graph as _graph_mod
     column_label = "ModelColumn" if _graph_mod.is_available() else "Column"
     filtered = await service.search(
         question="amount paid",

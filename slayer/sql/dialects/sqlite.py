@@ -479,11 +479,8 @@ class SqliteDialect(SqlDialect):
         offset: int,
         granularity: TimeGranularity | TimeUnit,
     ) -> Expression:
-        """SQLite uses ``DATE(col, 'N units')`` — no INTERVAL syntax.
-
-        Granularity normalization: ``quarter`` → ``val * 3`` of ``months``;
-        ``week`` → ``val * 7`` of ``days`` (SQLite has no week unit).
-        """
+        """SQLite uses ``DATE(col, 'N units')`` — ``DATETIME`` below a day to keep
+        the time; ``quarter`` → 3 months, ``week`` → 7 days."""
         sqlite_units = {
             "year": "years", "month": "months", "day": "days",
             "quarter": "months", "week": "days", "week_sunday": "days",
@@ -493,8 +490,11 @@ class SqliteDialect(SqlDialect):
         sqlite_unit = sqlite_units[granularity.value]
         val = offset * 3 if granularity == TimeGranularity.QUARTER else offset
         sqlite_val = val * 7 if granularity in (TimeGranularity.WEEK, TimeGranularity.WEEK_SUNDAY) else val
+        sub_day = granularity in (
+            TimeGranularity.HOUR, TimeGranularity.MINUTE, TimeGranularity.SECOND,
+        )
         return exp.Anonymous(
-            this="DATE",
+            this="DATETIME" if sub_day else "DATE",
             expressions=[
                 col_expr,
                 exp.Literal.string(f"{sqlite_val} {sqlite_unit}"),

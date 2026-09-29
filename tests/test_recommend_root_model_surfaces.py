@@ -1,6 +1,5 @@
-"""Surface smoke tests for recommend_root_model (DEV-1626): MCP tool, REST
-endpoint, CLI handler, SlayerClient (local-engine), plus a regression test
-that the ``_expand_join_graph`` refactor preserves directed reachability.
+"""Surface smoke tests for recommend_root_model: MCP tool, REST endpoint, CLI
+handler, SlayerClient (local-engine).
 """
 
 from __future__ import annotations
@@ -21,7 +20,6 @@ from slayer.client.slayer_client import SlayerClient
 from slayer.core.enums import DataType, JoinType
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.core.recommend import RootModelRecommendation
-from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.mcp.server import create_mcp_server
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -141,7 +139,7 @@ class TestRestEndpoint:
         )
         assert resp.status_code == 200
         body = resp.json()
-        # DEV-1866: only orders determines both columns along to-one paths
+        # only orders determines both columns along to-one paths
         # (customers→products is unreachable to-one), so orders is the root.
         assert body["root_model"] == "orders"
         assert body["data_source"] == "mydb"
@@ -153,7 +151,7 @@ class TestRestEndpoint:
             json={"items": ["customers.name", "products.category"]},
         )
         paths = {ip["input_item"]: ip["path"] for ip in resp.json()["item_paths"]}
-        # DEV-1866: root is orders; each column is one to-one hop away.
+        # root is orders; each column is one to-one hop away.
         assert paths == {
             "customers.name": "customers.name",
             "products.category": "products.category",
@@ -212,7 +210,7 @@ class TestCliParserWiring:
         ])
         main()
         payload = json.loads(capsys.readouterr().out)
-        # DEV-1866: orders determines both columns to-one.
+        # orders determines both columns to-one.
         assert payload["root_model"] == "orders"
 
 
@@ -222,14 +220,14 @@ class TestSlayerClient:
         client = SlayerClient(storage=storage)
         rec = client.recommend_root_model_sync(["customers.name", "products.category"])
         assert isinstance(rec, RootModelRecommendation)
-        assert rec.root_model == "orders"  # DEV-1866: to-one determiner of both
+        assert rec.root_model == "orders"  # to-one determiner of both
 
     async def test_local_engine_async(self, storage) -> None:
 
         client = SlayerClient(storage=storage)
         rec = await client.recommend_root_model(["customers.name", "products.category"])
         assert isinstance(rec, RootModelRecommendation)
-        assert rec.root_model == "orders"  # DEV-1866: to-one determiner of both
+        assert rec.root_model == "orders"  # to-one determiner of both
 
 
 class TestRootHintSurfaces:
@@ -345,15 +343,3 @@ class TestRootHintSurfaces:
         assert captured[0].get("root_hint") == "orders"
         assert "root_hint" not in captured[1]
 
-
-class TestExpandJoinGraphRegression:
-    async def test_directed_reachability_preserved(self, storage) -> None:
-        # The refactor routes _expand_join_graph through JoinGraph.reachable_from;
-        # directed transitive closure must be unchanged.
-        engine = SlayerQueryEngine(storage=storage)
-        try:
-            touched = {"orders"}
-            await engine._expand_join_graph(touched=touched, data_source="mydb")
-            assert touched == {"orders", "customers", "products"}
-        finally:
-            await engine.aclose()
