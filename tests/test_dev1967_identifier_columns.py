@@ -13,16 +13,14 @@ from slayer.core.models import Column, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.plan import plan_query
 from slayer.engine.profiling import (
-    _collect_dim_profile,
     _is_sample_cached,
-    profile_column,
+    ensure_samples_fresh,
     refresh_table_backed_model_sampled,
 )
 from slayer.facade.catalog import _eligible_aggregations
 from slayer.inspect.model_render import (
     _build_sample_query_args,
     _choose_sample_dims,
-    _collect_measure_profile,
     render_model_inspection,
 )
 from slayer.ir.source_bundle import ResolvedSourceBundle
@@ -65,6 +63,13 @@ def _plan(*, model: SlayerModel, formula: str) -> None:
 
 def _col(*, model: SlayerModel, name: str) -> Column:
     return next(c for c in model.columns if c.name == name)
+
+
+async def _sampled(*, model: SlayerModel, engine, names: tuple[str, ...] | None = None) -> dict[str, str | None]:
+    """Profile ``model`` (or just ``names``) through the owner; ``{column: sampled}``."""
+    cols = [c for c in model.columns if names is None or c.name in names]
+    outcome = await ensure_samples_fresh(model=model, columns=cols, engine=engine, storage=engine.storage)
+    return {c.name: c.sampled for c in outcome.columns}
 
 
 class TestAggregationGate:
@@ -158,29 +163,28 @@ class TestProbingAndProfiling:
         assert "amount" in types
 
     async def test_measure_profile_includes_composite_members(self, engine) -> None:
-        profile = await _collect_measure_profile(model=order_lines(), engine=engine)
-        assert {"order_id", "line_no"} <= set(profile)
+        profile = await _sampled(model=order_lines(), engine=engine)
+        assert all(profile[n] is not None for n in ("order_id", "line_no"))
 
     async def test_measure_profile_skips_sole_primary_key(self, engine) -> None:
-        profile = await _collect_measure_profile(model=orders_model(), engine=engine)
-        assert "id" not in profile
+        profile = await _sampled(model=orders_model(), engine=engine)
+        assert profile["id"] is None
 
     async def test_profile_column_profiles_composite_members(self, engine) -> None:
         model = order_lines()
         for name in ("line_no", "status"):
-            assert await profile_column(model=model, column=_col(model=model, name=name), engine=engine) is not None
+            assert (await _sampled(model=model, engine=engine, names=(name,)))[name] is not None
 
     async def test_profile_column_skips_sole_primary_key(self, engine) -> None:
-        model = orders_model()
-        assert await profile_column(model=model, column=_col(model=model, name="id"), engine=engine) is None
+        assert (await _sampled(model=orders_model(), engine=engine, names=("id",)))["id"] is None
 
     async def test_batched_profile_includes_composite_members(self, engine) -> None:
-        entries = await _collect_dim_profile(model=order_lines(), engine=engine)
-        assert COMPOSITE_MEMBERS <= {e.name for e in entries}
+        profile = await _sampled(model=order_lines(), engine=engine)
+        assert all(profile[n] is not None for n in COMPOSITE_MEMBERS)
 
     async def test_batched_profile_skips_sole_primary_key(self, engine) -> None:
-        entries = await _collect_dim_profile(model=orders_model(), engine=engine)
-        assert "id" not in {e.name for e in entries}
+        profile = await _sampled(model=orders_model(), engine=engine)
+        assert profile["id"] is None
 
     async def test_refresh_samples_composite_members(self, engine) -> None:
         errors = await refresh_table_backed_model_sampled(

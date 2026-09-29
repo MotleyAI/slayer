@@ -270,7 +270,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             400: {"description": "Invalid query payload (e.g. missing source_model/name, mutually exclusive fields, validation error)."},
             422: {
                 "description": (
-                    "Schema drift detected on the touched models — query "
+                    "Schema drift detected on models the query read — it "
                     "could not run against the live schema. Body shape: "
                     "``{\"error\": \"schema_drift\", \"models\": [...], "
                     "\"to_delete\": [ToDeleteEntry], \"original\": str|null}``. "
