@@ -1162,6 +1162,13 @@ def window_kwarg_of(key: ValueKey):
     return None
 
 
+def is_kernel_requiring(key: ValueKey) -> TypeGuard[AggregateKey]:
+    """A ranked (``first``/``last``) or windowed aggregate — rendered only as its own kernel producer's answer."""
+    return isinstance(key, AggregateKey) and (
+        key.agg in RANKED_AGGREGATIONS or window_kwarg_of(key) is not None
+    )
+
+
 def is_local_partitioned_agg(k: ValueKey) -> bool:
     """A LOCAL aggregate with an explicit ``partition_by=`` grain."""
     return (
@@ -1189,11 +1196,7 @@ def is_local_combined_regroup_ref(
         isinstance(k, AggregateKey)
         and not source_anchor_path(k.source)
         and k not in row_agg_set
-        and (
-            k.partition_keys is not None
-            or any(kw == "window" for kw, _ in k.kwargs)
-            or k.agg in RANKED_AGGREGATIONS
-        )
+        and (k.partition_keys is not None or is_kernel_requiring(k))
     )
 
 

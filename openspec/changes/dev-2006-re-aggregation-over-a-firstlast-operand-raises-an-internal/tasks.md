@@ -12,15 +12,15 @@
 
 ## 2. Kernel decision and nesting invariant (D1–D3)
 
-- [ ] 2.1 Add the one typed kernel decision (design D2: association → trailing-window → ranked; explicit inputs incl. the shifted site's own-grain / host-local / kernel-root conditions) and route the three kernel sites (local regroup, cross-model target-rooted, shifted own-grain) through it, deciding BEFORE compile; verify the existing ranked / windowed / shifted / cross-model suites pass unchanged
-- [ ] 2.2 Add `ProducerContext.kernel_answer`, pass it from each kernel site into `compile_synthesized`, and make `_producer_nesting_rule` nest every kernel-requiring root at the producer grain other than the kernel answer; delete the two carve-outs; verify 1.2 and 1.3 pass
+- [x] 2.1 Add the one typed kernel decision (design D2: association → trailing-window → ranked; explicit inputs incl. the shifted site's own-grain / host-local / kernel-root conditions) and route the three kernel sites (local regroup, cross-model target-rooted, shifted own-grain) through it, deciding BEFORE compile; verify the existing ranked / windowed / shifted / cross-model suites pass unchanged
+- [x] 2.2 Add `ProducerContext.kernel_answer`, pass it from each kernel site into `compile_synthesized`, and make `_producer_nesting_rule` nest every kernel-requiring root at the producer grain other than the kernel answer; delete the two carve-outs; verify 1.2 and 1.3 pass
 
 ## 3. Plan-time invariant (D4)
 
-- [ ] 3.1 Carry `kernel_answer` on `_Routed`; in `_emit_planned` assert no kernel-requiring aggregate key (aggregate slots and combined-expression slots, walked) other than it; keep the generator guard unchanged; verify with a unit test that a hand-built violating plan trips the assertion and the full suite stays green
+- [x] 3.1 Carry `kernel_answer` on `_Routed`; in `_emit_planned` assert no kernel-requiring aggregate key (aggregate slots and combined-expression slots, walked) other than it; keep the generator guard unchanged; verify with a unit test that a hand-built violating plan trips the assertion and the full suite stays green
 
 ## 4. Docs, architecture, gates
 
-- [ ] 4.1 `docs/concepts/formulas.md`: one sentence after the re-aggregation paragraph — a `first`/`last` or windowed aggregate is a legal re-aggregation operand (e.g. last balance per account summed per customer); page already in `zensical.toml` nav
-- [ ] 4.2 `architecture/sql.arc42.md` P10: add `[enforced: test:tests/test_dev2006_kernel_operands.py]` after `[review]` (approved exact edit); verify `uvx --no-build --from living-architecture==0.2.0 la-arch-check` passes
-- [ ] 4.3 Full unit suite `poetry run pytest -m "not integration" -n auto` (goldens byte-identical — any diff is a STOP, design D5), the CI integration invocation, `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no baseline growth), `openspec validate dev-2006-re-aggregation-over-a-firstlast-operand-raises-an-internal --strict` — all green
+- [x] 4.1 `docs/concepts/formulas.md`: one sentence after the re-aggregation paragraph — a `first`/`last` or windowed aggregate is a legal re-aggregation operand (e.g. last balance per account summed per customer); page already in `zensical.toml` nav
+- [x] 4.2 `architecture/sql.arc42.md` P10: add `[enforced: test:tests/test_dev2006_kernel_operands.py]` after `[review]` (approved exact edit); verify `uvx --no-build --from living-architecture==0.2.0 la-arch-check` passes
+- [x] 4.3 Full unit suite `poetry run pytest -m "not integration" -n auto` (goldens byte-identical — any diff is a STOP, design D5), the CI integration invocation, `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no baseline growth), `openspec validate dev-2006-re-aggregation-over-a-firstlast-operand-raises-an-internal --strict` — all green
