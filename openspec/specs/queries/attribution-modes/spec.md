@@ -313,5 +313,6 @@ broadcast mode.
 - **WHEN** a query rooted at `orders` under `associate` selects `customers.spend:sum` by
   both a regions-level dimension and `status`, and one South customer has no orders
 - **THEN** every customer with orders is counted once in each of its (region, status)
-  cells, and the orderless customer contributes only to its (South, NULL-status) cell,
-  which the population lacks, by executed values
+  cells, and the orderless customer's value lands only in the virtual model's
+  (South, NULL-status) cell, which the population lacks, so no result row carries it
+  and the row count is unchanged, by executed values
