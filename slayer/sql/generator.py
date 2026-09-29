@@ -5268,16 +5268,16 @@ class SQLGenerator:
         """The one door a model reaches the SQL through (FROM, join target, semi-join
         hop): a stage relation must be one the statement declared it reads."""
         if model.sql_table:
-            if model.sql_table in self._gen_stage_relations and (
-                model.sql_table not in self._gen_stage_reads
-            ):
-                raise ValueError(
-                    f"stage relation {model.sql_table!r} is emitted by a statement that "
-                    f"does not declare reading it (declared: {sorted(self._gen_stage_reads)})"
-                )
-            return self._to_table(model.sql_table, alias=alias)
+            if model.sql_table in self._gen_stage_relations:
+                if model.sql_table not in self._gen_stage_reads:
+                    raise ValueError(
+                        f"stage relation {model.sql_table!r} is emitted by a statement that "
+                        f"does not declare reading it (declared: {sorted(self._gen_stage_reads)})"
+                    )
+                return self._to_table(model.sql_table, alias=alias)
+            return _stamp_model(self._to_table(model.sql_table, alias=alias), model=model)
         if model.sql:
-            return self._embed_model_sql(sql=model.sql, alias=alias)
+            return _stamp_model(self._embed_model_sql(sql=model.sql, alias=alias), model=model)
         if model.name in self._gen_splice_failures:
             raise self._gen_splice_failures[model.name]
         if model.name in self._gen_splice_chain:
@@ -6332,6 +6332,23 @@ def _stage_relation(*, planned, is_root: bool) -> Optional[str]:
     return planned.stage_schema.relation_name
 
 
+_MODEL_STAMP = "slayer_model"
+
+
+def _stamp_model(relation: Expression, *, model) -> Expression:
+    """Mark ``relation`` as reading persisted ``model``."""
+    relation.meta[_MODEL_STAMP] = model.name
+    return relation
+
+
+def read_models(statement: Expression) -> Set[str]:
+    """Names of the models whose relations ``statement`` contains."""
+    return {
+        stamp for node in statement.find_all(exp.Table, exp.Subquery)
+        if (stamp := node.meta.get(_MODEL_STAMP)) is not None
+    }
+
+
 def generate_planned_stages(
     planned_queries,
     *,
@@ -6339,15 +6356,19 @@ def generate_planned_stages(
     dialect: str = "postgres",
     projection_aliases: "Sequence[str]" = (),
     kept_stages: "Optional[Set[str]]" = None,
+    read_set: "Optional[Set[str]]" = None,
 ) -> str:
     """Render a multi-stage DAG (``plan_stages`` output) to one SQL string; spliced
-    stages nothing reaches are pruned, the stage relations emitted land in ``kept_stages``."""
+    stages nothing reaches are pruned, the stage relations emitted land in ``kept_stages``,
+    the models the statement reads in ``read_set``."""
     kept: Set[str] = set()
     statement = _build_planned_stages_ast(
         planned_queries, bundle=bundle, dialect=dialect, kept_stages=kept,
     )
     if kept_stages is not None:
         kept_stages.update(kept)
+    if read_set is not None:
+        read_set.update(read_models(statement))
     # Semi-join pushdown emits a correlated EXISTS; attached unconditionally so SQL never depends on server state.
     if any(plan_has_semi_join_filters(p) for p in emitted_plans(planned_queries, kept_stages=kept)):
         get_dialect(dialect).attach_correlated_setting(statement)

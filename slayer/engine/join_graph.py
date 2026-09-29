@@ -1,19 +1,15 @@
-"""Pure in-memory join-graph routing primitive (DEV-1626, DEV-1853).
+"""Pure in-memory join-graph routing primitive.
 
 ``JoinGraph`` builds an undirected multigraph from a set of models' declared
 joins and answers reachability / route-counting / shortest-path questions.
-Every declared join is a symmetric edge traversable in either direction
-(DEV-1853), so which side declares it is irrelevant here; parallel edges
-between the same pair of models are distinct routes.
+Every declared join is a symmetric edge traversable in either direction, so
+which side declares it is irrelevant here; parallel edges between the same
+pair of models are distinct routes.
 
 Emitted paths are *executable*: a hop is a bare model-name token when exactly
 one edge connects the pair, an edge-name token when parallel edges need
 disambiguation, and no token at all (the pair is unroutable) when parallel
 edges are unnamed — matching what the query-time walker will accept.
-
-The module is dependency-light (only ``slayer.core.models`` for typing) and
-free of storage / async, so it is trivially unit-testable and reusable —
-``SlayerQueryEngine._expand_join_graph`` delegates its reachability here.
 """
 
 from __future__ import annotations
@@ -195,7 +191,7 @@ def min_hops_root(
 ) -> str | None:
     """Pick the root that reaches every ``mentioned`` model over ``graph``.
 
-    Shared selection core (DEV-1626 / DEV-1643): among ``candidates`` that reach
+    Shared selection core: among ``candidates`` that reach
     all mentioned models, minimize total hops summed over the mentioned set,
     prefer a mentioned candidate on ties, then the lexicographically smallest
     name. Returns ``None`` when no candidate reaches every mentioned model. An
