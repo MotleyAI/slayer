@@ -347,11 +347,6 @@ class AssociationProducerKernel(BaseModel):
     entity_keys: List[ValueKey] = Field(default_factory=list)
     null_safe: bool = False
     picked_params: List[PickedParam] = Field(default_factory=list)
-    #: Host-side join columns of the reverse hop (in the home-rooted producer's
-    #: coordinates), guarded ``NOT (<col> IS NULL)`` in level 1 so a home entity
-    #: absent from the population is excluded from a cell it reaches only back
-    #: through the population root (DEV-1910); empty for a home-side dimension.
-    present_keys: List[ValueKey] = Field(default_factory=list)
 
 
 ProducerKernel = Union[

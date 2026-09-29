@@ -1,8 +1,8 @@
-"""DEV-1910 task 2.1 — the reverse hop generalizes to a reverse PATH
-(``_back_token`` → ``_back_path``, a tuple): each hop's reverse token is the
-edge name when declared else the source model; a one-to-one reverse chain
-becomes attributable, an ambiguous reverse hop fails closed, single-hop stays
-byte-identical. Spec: queries/cross-model-aggregates — "Producer filter routing"."""
+"""The reverse hop is a reverse PATH (``_route_via_common_prefix`` with an empty
+host path): each hop's reverse token is the edge name when declared else the
+source model; a one-to-one reverse chain becomes attributable, an ambiguous
+reverse hop fails closed, single-hop stays byte-identical. Spec:
+queries/cross-model-aggregates — "Producer filter routing"."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from slayer.core.errors import AmbiguousJoinPathError
 from slayer.core.keys import ColumnKey
 from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.engine.join_safety import (
-    _back_path,
+    _route_via_common_prefix,
     attributable_from_root,
     broadcast_reason,
     reroot_from_root,
@@ -79,18 +79,18 @@ def _ambiguous_reverse():
 class TestBackPath:
     def test_single_hop_is_byte_identical(self):
         M = _unnamed_two_hop()
-        assert _back_path(host_name="orders",
+        assert _route_via_common_prefix(host_name="orders", host_path=(),
                           target_path=("customers",), models_by_name=M) == ("orders",)
 
     def test_unnamed_two_hop_reverses_both_source_models(self):
         M = _unnamed_two_hop()
-        assert _back_path(host_name="orders",
+        assert _route_via_common_prefix(host_name="orders", host_path=(),
                           target_path=("customers", "regions"),
                           models_by_name=M) == ("customers", "orders")
 
     def test_named_hop_uses_the_edge_name_reversed(self):
         M = _named_two_hop()
-        assert _back_path(host_name="orders",
+        assert _route_via_common_prefix(host_name="orders", host_path=(),
                           target_path=("customers", "regions"),
                           models_by_name=M) == ("home_region", "orders")
 
@@ -98,7 +98,7 @@ class TestBackPath:
         """When the forward walk finds no path (not ambiguity), fall back to the
         host name — today's single-token behaviour."""
         M = _unnamed_two_hop()
-        assert _back_path(host_name="orders",
+        assert _route_via_common_prefix(host_name="orders", host_path=(),
                           target_path=("nonexistent",), models_by_name=M) == ("orders",)
 
 
