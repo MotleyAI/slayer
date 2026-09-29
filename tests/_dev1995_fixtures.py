@@ -138,3 +138,8 @@ ORDER_KEY_STATUS_ORDER = [None, "new", "ok"]
 
 # App-filtered, with c5's NULL-status app order.
 APP_SPEND_BY_STATUS = {"new": 250.0, "ok": 140.0, None: 80.0}
+SPEND_BY_REGION_STATUS = {
+    ("North", "ok"): 280.0, ("North", "new"): 250.0, ("North", None): 100.0,
+    ("South", "ok"): 140.0, ("South", None): 135.0,
+    (None, "new"): 40.0, (None, "ok"): None,
+}

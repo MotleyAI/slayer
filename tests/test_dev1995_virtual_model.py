@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from tests._dev1840_fixtures import make_exec_engine
+from tests._dev1840_fixtures import make_exec_engine, rows_by
 from tests._dev1995_fixtures import (
     APP_SPEND_BY_STATUS,
     COUNT_BY_CITY,
@@ -20,6 +20,7 @@ from tests._dev1995_fixtures import (
     ORPHAN_NULL_REGION_COUNT,
     ORPHAN_NULL_REGION_SUM,
     SPEND_BY_STATUS,
+    SPEND_BY_REGION_STATUS,
     STORE_COUNT_BY_CITY,
     STORE_SUM_BY_CITY,
     SUM_BY_CITY,
@@ -206,3 +207,12 @@ class TestRowFilterNarrowsTheVirtualModel:
         resp = await app_null_engine.execute(q(_orders_assoc(
             measures=[SPEND], filters=["channel = 'app'"])))
         _assert_cells(cells(resp, "orders.status", "orders.c"), APP_SPEND_BY_STATUS)
+
+
+class TestCompositeGrainNullCell:
+    async def test_home_side_and_back_hop_dimensions(self, app_null_engine):
+        """(South, NULL) holds c5's NULL-status order and the orderless c7: 80 + 55."""
+        resp = await app_null_engine.execute(q(_orders_assoc(
+            dimensions=["customers.regions.name", "status"], measures=[SPEND])))
+        by = rows_by(resp, "orders.customers.regions.name", "orders.status")
+        _assert_cells({k: v["orders.c"] for k, v in by.items()}, SPEND_BY_REGION_STATUS)

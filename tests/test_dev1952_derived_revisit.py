@@ -236,7 +236,7 @@ class TestBestEffortConsumersUnchanged:
             root=models["regions"], path=("customers", "regions"),
             models_by_name=models) is False
 
-    def test_back_path_falls_back_to_host(self) -> None:
+    def test_reverse_route_falls_back_to_host(self) -> None:
         models = _chain()
         assert join_safety._route_via_common_prefix(
             host_name="regions", target_path=("customers", "regions"),
