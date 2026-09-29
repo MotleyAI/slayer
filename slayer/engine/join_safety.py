@@ -263,27 +263,6 @@ def key_host_path(key: ValueKey) -> Tuple[str, ...]:
     return tuple(getattr(key, "path", ()) or ())
 
 
-def _back_path(
-    *, host_name: str, target_path: Tuple[str, ...],
-    models_by_name: Dict[str, SlayerModel],
-) -> Tuple[str, ...]:
-    """Reverse path from the aggregate's root back to the host (per hop, the
-    reverse token: edge name if declared, else source model; then reversed).
-    Falls back to ``(host_name,)`` with no forward path; an ambiguous reverse hop
-    fails closed at walk time."""
-    host_model = models_by_name.get(host_name)
-    host_token = host_model.spelling if host_model is not None else host_name
-    if host_model is None or not target_path:
-        return (host_token,)
-    try:
-        chain = walk(root=host_model, path=target_path, models_by_name=models_by_name)
-    except CircularJoinPathError:
-        return (host_token,)
-    if chain is None:
-        return (host_token,)
-    return tuple(reversed([reverse_token(edge) for edge in chain]))
-
-
 def _common_prefix_len(a: Tuple[str, ...], b: Tuple[str, ...]) -> int:
     """Shared prefix length; token equality is edge identity on canonical paths."""
     n = 0
@@ -301,10 +280,9 @@ def _route_via_common_prefix(
     """The route from the aggregate's root (at ``target_path``) to a
     host-coordinate ``host_path`` (both canonical): step back only to the two paths'
     longest common prefix — the reversed per-hop tokens of ``target_path`` past
-    it — then forward along ``host_path``'s own suffix. When they share nothing
-    this is ``_back_path`` + ``host_path`` (byte-identical to the old round trip);
-    an ambiguous reverse hop propagates from ``walk``, a revisiting one keeps the
-    round trip."""
+    it — then forward along ``host_path``'s own suffix (an empty ``host_path`` gives
+    the reverse path back to the host); an ambiguous reverse hop propagates from
+    ``walk``, a revisiting one keeps the round trip."""
     host_model = models_by_name.get(host_name)
     host_token = host_model.spelling if host_model is not None else host_name
     if host_model is None or not target_path:
