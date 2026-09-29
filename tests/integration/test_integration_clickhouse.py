@@ -50,6 +50,12 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql import engine_factory
 from slayer.sql.client import SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
+from tests.integration._consecutive_periods_calendar import (
+    CALENDAR_CASES,
+    assert_calendar_streak,
+    seed_statements,
+    streak_model,
+)
 
 from tests._engine_helpers import disposable_engine
 
@@ -190,6 +196,12 @@ def _clickhouse_env_storage(clickhouse_container, tmp_path_factory):
                         (5, 'cancelled', 75, 3, '2024-03-01 08:00:00'),
                         (6, 'pending', 300, 3, '2024-03-10 16:00:00')
                 """))
+                for stmt in seed_statements(
+                    date_type="Date", timestamp_type="DateTime", int_type="Int32",
+                    text_type="String", float_type="Float64",
+                    table_options="ENGINE = MergeTree() ORDER BY id",
+                ):
+                    conn.execute(sa.text(stmt))
 
         tmpdir = str(tmp_path_factory.mktemp("clickhouse_env"))
         storage = YAMLStorage(base_dir=tmpdir)
@@ -217,6 +229,7 @@ def _clickhouse_env_storage(clickhouse_container, tmp_path_factory):
                 Column(name="region", sql="region", type=DataType.TEXT),
             ],
         )))
+        run_sync(storage.save_model(streak_model("testclickhouse")))
         yield storage
     finally:
         _drop_module_db(clickhouse_container, db_name)
@@ -461,6 +474,12 @@ class TestClickHouseQueries:
         )
         result = await clickhouse_env.execute(query=query)
         assert [r["orders.positive_run"] for r in result.data] == [1, 0, 1]
+
+    @pytest.mark.parametrize("column,granularity", CALENDAR_CASES)
+    async def test_consecutive_periods_breaks_on_calendar_gap(
+        self, clickhouse_env: SlayerQueryEngine, column: str, granularity: str,
+    ) -> None:
+        await assert_calendar_streak(clickhouse_env, column=column, granularity=granularity)
 
     async def test_change_with_date_range(self, clickhouse_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(

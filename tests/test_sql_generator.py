@@ -7777,7 +7777,7 @@ class TestIsolatedFilteredMeasureCTEs:
     async def test_aggregate_and_post_filters_route_independently(
         self, generator: SQLGenerator, claim_amount_model, related_models,
     ) -> None:
-        """A single query carrying BOTH an AGGREGATE-phase host filter (``loss_payment_amt:sum > 1000``) AND a POST-phase host filter (``cumsum(loss_payment_amt:sum) > 0``) routes each independently: the aggregate filter to the outer combined WHERE wrapper; the POST filter to the existing post-transform wrapper. The two predicates live in DIFFERENT scopes — they must not collapse into one outer WHERE that references the cumsum column, nor merge into one HAVING."""
+        """A plain measure filter (``loss_payment_amt:sum > 1000``) beside a transform filter (``cumsum(loss_payment_amt:sum) > 0``): both mask at the chain's final select, so the plain one never shrinks the series cumsum reads (Axiom 14)."""
         claim_amount_model.default_time_dimension = "created_at"
         claim_amount_model.columns.append(
             Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
@@ -7800,25 +7800,18 @@ class TestIsolatedFilteredMeasureCTEs:
         assert "> 1000" in sql, f"AGGREGATE filter '> 1000' missing:\n{sql}"
         assert "> 0" in sql, f"POST filter '> 0' missing:\n{sql}"
         assert "OVER" in sql.upper(), f"Expected windowed SUM ... OVER (...) for cumsum:\n{sql}"
-        # Layer-boundary pin: AGGREGATE in the combined ``base`` CTE WHERE; POST in the chain's final-select WHERE; neither leaks into the other layer.
+        # Layer-boundary pin: neither filter in ``base``; both in the chain's final-select WHERE.
         base_body = _extract_cte_body(sql, r"\bbase\b")
-        assert "> 1000" in base_body, (
-            f"AGGREGATE filter '> 1000' must apply in the combined "
-            f"``base`` CTE WHERE:\n{base_body}"
-        )
-        assert "> 0" not in base_body, (
-            f"POST filter '> 0' leaked into the combined ``base`` CTE — "
-            f"it must stay at the chain's final select:"
-            f"\n{base_body}"
-        )
+        for pred in ("> 1000", "> 0"):
+            assert pred not in base_body, (
+                f"filter {pred!r} leaked into the ``base`` CTE, ahead of the "
+                f"cumsum window:\n{base_body}"
+            )
         filtered_where = post_filter_where(sql)
-        assert "> 0" in filtered_where, (
-            f"POST filter '> 0' must be the WHERE of the chain's final select:\n{sql}"
-        )
-        assert "> 1000" not in filtered_where, (
-            f"AGGREGATE filter '> 1000' leaked into the chain's final-select "
-            f"WHERE:\n{filtered_where}"
-        )
+        for pred in ("> 1000", "> 0"):
+            assert pred in filtered_where, (
+                f"filter {pred!r} must be the WHERE of the chain's final select:\n{sql}"
+            )
         _assert_valid_sql(sql)
 
     async def test_filter_referencing_two_isolated_aggregates(

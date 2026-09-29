@@ -168,6 +168,8 @@ is the coercion from coarser to finer.
       `partition_by=` partitions the operand's cells and must name operand-grain members.
     - **11.3 Time-ordered.** The axis is the query's active time bucket and must be in
       the operand grain; otherwise the transform fails with the `partition_by=` remedy.
+      Steps along the axis are calendar steps: a bucket absent from the series is a gap,
+      never a neighbour; `lag` / `lead` alone step over present rows.
       **11.3a Preserving** (`cumsum`, `lag`, `lead`, `time_shift`, `change`,
       `change_pct`, `consecutive_periods`): one value per operand cell, result grain =
       operand grain. **11.3b Collapsing** (`first`, `last`): one value per partition,
@@ -183,6 +185,7 @@ is the coercion from coarser to finer.
     [enforced: test:tests/test_dev1832_transform_source.py]
     [enforced: test:tests/test_dev1946_transform_parameter.py]
     [enforced: test:tests/test_dev1953_partition_membership.py]
+    [enforced: test:tests/test_consecutive_periods_calendar.py]
 12. **Population**: the population is the query's quantifier — exactly one
     result row per combination of dimension values among its row-filtered rows
     (raw-row mode is the one documented exception; spec: `queries/semantics` ›

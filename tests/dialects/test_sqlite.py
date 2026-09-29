@@ -157,6 +157,28 @@ def test_sqlite_build_time_offset_expr_quarter_normalizes_to_months() -> None:
     assert "'3 months'" in sql
 
 
+@pytest.mark.parametrize(
+    "granularity,expected",
+    [
+        ("second", "DATETIME(ts, '-1 seconds')"),
+        ("minute", "DATETIME(ts, '-1 minutes')"),
+        ("hour", "DATETIME(ts, '-1 hours')"),
+        ("day", "DATE(ts, '-1 days')"),
+        ("week", "DATE(ts, '-7 days')"),
+        ("week_sunday", "DATE(ts, '-7 days')"),
+        ("month", "DATE(ts, '-1 months')"),
+        ("quarter", "DATE(ts, '-3 months')"),
+        ("year", "DATE(ts, '-1 years')"),
+    ],
+)
+def test_sqlite_build_time_offset_expr_exact_render(granularity: str, expected: str) -> None:
+    """Sub-day offsets keep the time of day; day-and-coarser render as ``DATE``."""
+    out = SqliteDialect().build_time_offset_expr(
+        exp.column("ts"), offset=-1, granularity=TimeGranularity(granularity),
+    )
+    assert out.sql(dialect="sqlite") == expected
+
+
 # duration_interval_exprs / add_intervals_expr — SQLite uses DATETIME-modifier strings
 
 

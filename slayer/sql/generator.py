@@ -373,19 +373,25 @@ def _combined_attached_slot_ids(planned_query, slot_id_by_key) -> Set[str]:
 def _lower_positions(planned_query) -> _LoweredPositions:
     """Placement from the planner stage (D5): field → base WHERE; measure →
     HAVING at BASE, the combined outer WHERE at PRODUCER / COMBINED (or reading
-    a combined-attached dual-role value), the outer wrapper at DERIVED. Mode-A
+    a combined-attached dual-role value), the outer wrapper at DERIVED or when
+    any transform is present. Mode-A
     texts render in the base WHERE between the date-range and user masks."""
     slots_by_id = {s.id: s for s in _plan_slots(planned_query)}
     slot_id_by_key = {s.key: s.id for s in slots_by_id.values()}
     combined_attached = _combined_attached_slot_ids(planned_query, slot_id_by_key)
     outer_ids: List[str] = []
+    # A HAVING would shrink the series every transform reads (Axiom 14).
+    has_transform = any(
+        s.stage is not None and s.stage.kind is StageKind.DERIVED
+        for s in slots_by_id.values()
+    )
 
     def _lower_mask(mask) -> _LoweredFilter:
         slot = slots_by_id[mask.slot_id]
         stage_kind = slot.stage.kind if slot.stage is not None else None
         if mask.typing == MaskTyping.FIELD:
             phase = Phase.ROW
-        elif stage_kind is StageKind.DERIVED:
+        elif stage_kind is StageKind.DERIVED or has_transform:
             phase = Phase.POST
         else:
             phase = Phase.AGGREGATE
@@ -1151,6 +1157,20 @@ class SQLGenerator:
         return self._dialect.build_time_offset_expr(
             col_expr=col_expr, offset=offset, granularity=granularity,
         )
+
+    def _calendar_offset_bucket(
+        self, *, bucket_expr: Expression, periods: int,
+        shift_granularity: str, bucket_granularity: str,
+    ) -> Expression:
+        """The bucket ``periods`` steps of ``shift_granularity`` from ``bucket_expr``."""
+        bucket = TimeGranularity(bucket_granularity)
+        shifted = self._build_time_offset_expr(
+            col_expr=bucket_expr, offset=periods,
+            granularity=TimeGranularity(shift_granularity),
+        )
+        if _shift_preserves_bucket_starts(bucket=bucket, shift=shift_granularity):
+            return shifted
+        return self._build_date_trunc(col_expr=shifted, granularity=bucket)
 
     def _duration_interval_exprs(self, duration: str, sign: int = 1) -> list[Expression]:
         """Return per-unit AST nodes that `_add_intervals_expr` will chain."""
@@ -4945,17 +4965,11 @@ class SQLGenerator:
             )
 
         # Consumer-side lookup: total even when the calendar shift is many-to-one.
-        bucket_granularity = TimeGranularity(time_key.granularity)
-        lookup_expr = self._build_time_offset_expr(
-            col_expr=grain_alias_column(alias=time_alias, table=chain_tail),
-            offset=periods, granularity=TimeGranularity(shift_granularity),
+        lookup_expr = self._calendar_offset_bucket(
+            bucket_expr=grain_alias_column(alias=time_alias, table=chain_tail),
+            periods=periods, shift_granularity=shift_granularity,
+            bucket_granularity=time_key.granularity,
         )
-        if not _shift_preserves_bucket_starts(
-            bucket=bucket_granularity, shift=shift_granularity,
-        ):
-            lookup_expr = self._build_date_trunc(
-                col_expr=lookup_expr, granularity=bucket_granularity,
-            )
         sjoin_on = build_grain_joinback_condition(
             pairs=[
                 (
@@ -4995,7 +5009,7 @@ class SQLGenerator:
         render: RenderState,
         chain_tail: str,
     ) -> str:
-        """Emit ``cp_reset_<alias>`` + ``cp_value_<alias>`` CTEs for one"""
+        """Emit ``cp_prev_`` / ``cp_reset_`` / ``cp_value_<alias>`` CTEs for one slot."""
         ctes = chain.ctes
         cte_allocator = chain.cte_allocator
         slots_by_id = chain.slots_by_id
@@ -5062,8 +5076,8 @@ class SQLGenerator:
             slot_alias = cte_allocator.allocate_cte(slot.declared_name)
         full_slot_alias = f"{source_relation}.{slot_alias}"
         cp_reset_alias = f"_cp_reset_{full_slot_alias}"
+        cp_prev_alias = f"_cp_prev_{full_slot_alias}"
 
-        prev_cte = chain_tail
         carry_aliases = self._carry_aliases_in_plan_order(
             aliases_by_slot_id,
         )
@@ -5073,22 +5087,13 @@ class SQLGenerator:
             start="UNBOUNDED", start_side="PRECEDING", end="CURRENT ROW",
         )
 
-        def _running_sum(
-            *, then: int, other: int, partitions: List[str],
-        ) -> exp.Window:
-            """``SUM(CASE WHEN <pred> THEN … ELSE … END) OVER (… ROWS BETWEEN"""
+        def _window(*, this: Expression, partitions: List[str], **extra) -> exp.Window:
             args: Dict[str, Any] = {
-                "this": exp.Sum(this=exp.Case(
-                    ifs=[exp.If(
-                        this=predicate.copy(),
-                        true=exp.Literal.number(then),
-                    )],
-                    default=exp.Literal.number(other),
-                )),
+                "this": this,
                 "order": exp.Order(expressions=[
                     self._window_ordered(exp.column(time_alias, quoted=True)),
                 ]),
-                "spec": running_frame.copy(),
+                **extra,
             }
             if partitions:
                 args["partition_by"] = [
@@ -5096,23 +5101,61 @@ class SQLGenerator:
                 ]
             return exp.Window(**args)
 
+        def _running_sum(
+            *, condition: Expression, then: int, other: int, partitions: List[str],
+        ) -> exp.Window:
+            """``SUM(CASE WHEN <condition> THEN … ELSE … END)`` over the running frame."""
+            return _window(
+                this=exp.Sum(this=exp.Case(
+                    ifs=[exp.If(this=condition, true=exp.Literal.number(then))],
+                    default=exp.Literal.number(other),
+                )),
+                partitions=partitions, spec=running_frame.copy(),
+            )
+
+        # Previous present bucket of the series; a run continues only onto its calendar successor.
+        cp_prev_cte_name = cte_allocator.allocate_cte(f"cp_prev_{slot_alias}")
+        ctes.append(CteEntry(
+            name=cp_prev_cte_name,
+            query=exp.Select().select(
+                *(c.copy() for c in carry_cols),
+                _window(
+                    this=exp.Lag(this=exp.column(time_alias, quoted=True)),
+                    partitions=partition_aliases,
+                ).as_(cp_prev_alias, quoted=True),
+            ).from_(chain_tail),
+            depends_on=[chain_tail],
+        ))
+        continues_run = exp.And(
+            this=predicate.copy(),
+            expression=exp.EQ(
+                this=exp.column(cp_prev_alias, quoted=True),
+                expression=self._calendar_offset_bucket(
+                    bucket_expr=exp.column(time_alias, quoted=True), periods=-1,
+                    shift_granularity=time_key.granularity,
+                    bucket_granularity=time_key.granularity,
+                ),
+            ),
+        )
+
         cp_reset_cte_name = cte_allocator.allocate_cte(f"cp_reset_{slot_alias}")
         ctes.append(CteEntry(
             name=cp_reset_cte_name,
             query=exp.Select().select(
                 *(c.copy() for c in carry_cols),
                 _running_sum(
-                    then=0, other=1, partitions=partition_aliases,
+                    condition=continues_run, then=0, other=1,
+                    partitions=partition_aliases,
                 ).as_(cp_reset_alias, quoted=True),
-            ).from_(prev_cte),
-            depends_on=[prev_cte],
+            ).from_(cp_prev_cte_name),
+            depends_on=[cp_prev_cte_name],
         ))
 
         value_outer_case = exp.Case(
             ifs=[exp.If(
                 this=predicate.copy(),
                 true=_running_sum(
-                    then=1, other=0,
+                    condition=predicate.copy(), then=1, other=0,
                     partitions=partition_aliases + [cp_reset_alias],
                 ),
             )],
