@@ -1452,3 +1452,23 @@ async def test_two_arg_substring_keeps_trailing_spaces(sqlserver_env: SlayerQuer
 
     kept = await count([f"concat({fn}(concat(status, '  '), 1), 'x') == concat(status, '  x')"])
     assert kept == await count([])
+
+
+@pytest.mark.integration
+async def test_length_counts_trailing_spaces(sqlserver_env: SlayerQueryEngine) -> None:
+    result = await sqlserver_env.execute(query=SlayerQuery.model_validate({
+        "source_model": "orders", "measures": [{"formula": "*:count", "name": "n"}],
+        "filters": ["length(concat(status, '  ')) != length(status) + 2"],
+    }))
+    assert result.data[0]["orders.n"] == 0
+
+
+@pytest.mark.integration
+async def test_length_of_a_number(sqlserver_env: SlayerQueryEngine) -> None:
+    async def count(filters: list[str]) -> int:
+        result = await sqlserver_env.execute(query=SlayerQuery.model_validate({
+            "source_model": "orders", "measures": [{"formula": "*:count", "name": "n"}], "filters": filters,
+        }))
+        return result.data[0]["orders.n"]
+
+    assert await count(["length(id) >= 1"]) == await count([])

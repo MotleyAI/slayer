@@ -166,7 +166,7 @@ A bare `aov` or dotted `customers.aov` reuses a saved measure by expanding its f
 
 The allowlisted scalars are rendered as typed SQL and then translated to each
 backend's own spelling, so one formula stays correct across dialects rather
-than being passed through verbatim. `length(x)` emits `LEN(x)` on SQL Server,
+than being passed through verbatim. `length(x)` counts trailing spaces on SQL Server too (`LEN(CAST(x AS NVARCHAR(MAX)) + 'x') - 1`),
 `substr(x, 1, 5)` emits `SUBSTRING(x FROM 1 FOR 5)` on Postgres, and
 `ifnull(x, 0)` emits `COALESCE(x, 0)` on backends without `IFNULL`.
 

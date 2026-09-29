@@ -180,10 +180,17 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
         )
 
     def rewrite_target_ast(self, tree: Expression) -> Expression:
-        """T-SQL ``SUBSTRING`` requires a length: a 2-arg call reads to the end via ``DATALENGTH`` (``LEN`` drops trailing spaces)."""
+        """``LEN`` drops trailing spaces: ``length`` counts an ``NVARCHAR(MAX)`` copy through a
+        sentinel, and a 2-arg ``SUBSTRING`` (which requires a length) reads to the end via ``DATALENGTH``."""
         def _fix(node: Expression) -> Expression:
             if isinstance(node, exp.Substring) and node.args.get("length") is None:
                 node.set("length", exp.Anonymous(this="DATALENGTH", expressions=[node.this.copy()]))
+            if isinstance(node, exp.Length):
+                text = exp.Cast(this=node.this.copy(), to=exp.DataType.build("NVARCHAR(MAX)", dialect="tsql"))
+                padded = exp.Add(this=text, expression=exp.Literal.string("x"))
+                return exp.Paren(this=exp.Sub(
+                    this=exp.Anonymous(this="LEN", expressions=[padded]), expression=exp.Literal.number(1),
+                ))
             return node
         return tree.transform(_fix)
 

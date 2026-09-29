@@ -48,3 +48,8 @@ def test_emission_reparses_in_its_dialect(name: str, argc: int, dialect: str) ->
 
 def test_tsql_two_arg_substr_gets_a_length() -> None:
     assert _emit("substr", 2, "tsql") == "SUBSTRING(a, b, DATALENGTH(a))"
+
+
+def test_tsql_length_counts_trailing_spaces() -> None:
+    # LEN drops trailing spaces; a sentinel character keeps them.
+    assert _emit("length", 1, "tsql") == "(LEN(CAST(a AS NVARCHAR(MAX)) + 'x') - 1)"

@@ -757,9 +757,9 @@ _SCALAR_MATRIX = [
     # R1 today: CONCAT(...) verbatim on every dialect; the operator differs.
     ("concat", (ColumnKey(leaf="label"), LiteralKey(value="x")),
      "orders.label || 'x'", "orders.label + 'x'"),
-    # R1 today: LENGTH(...) on T-SQL, which spells it LEN.
+    # T-SQL LEN drops trailing spaces; an NVARCHAR(MAX) copy plus a sentinel keeps them.
     ("length", (ColumnKey(leaf="label"),),
-     "LENGTH(orders.label)", "LEN(orders.label)"),
+     "LENGTH(orders.label)", "(LEN(CAST(orders.label AS NVARCHAR(MAX)) + 'x') - 1)"),
 ]
 
 
