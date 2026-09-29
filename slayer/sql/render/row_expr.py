@@ -14,19 +14,28 @@ between the ScopeFrame and the generator's spec-builder call sites.
 
 from __future__ import annotations
 
+from datetime import date, datetime
 from decimal import Decimal
-from typing import Any, Callable, Dict, List, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from sqlglot import exp
+from sqlglot.expressions.core import Expression
 
+from slayer.core.enums import DataType, DatePart, TimeGranularity
 from slayer.core.keys import (
+    CLOCK_FUNCTIONS,
+    DATE_ADD_COUNT_ARG,
+    DATE_OPERAND_ARGS,
     ArithmeticKey,
     ColumnKey,
     ColumnSqlKey,
+    ColumnTypeFn,
     LiteralKey,
     ScalarCallKey,
     _FrozenKey,
     check_scalar_arity,
+    temporal_type,
+    unit_word,
 )
 from slayer.sql.dialects.base import SqlDialect
 from slayer.sql.render.parse import rewrite_log_aliases as rewrite_log_alias
@@ -39,8 +48,11 @@ _BINARY_OPS: Dict[str, Any] = {
 }
 
 
-def _literal(value: Any) -> exp.Expression:
+def _literal(value: Any, *, dialect: Optional[SqlDialect] = None) -> Expression:
     """Render a scalar leaf; unsupported types RAISE rather than stringify to a wrong value."""
+    if isinstance(value, date) and dialect is not None:
+        dt = DataType.TIMESTAMP if isinstance(value, datetime) else DataType.DATE
+        return dialect.build_temporal_literal(value=value, dt=dt)
     if value is None:
         return exp.Null()
     if isinstance(value, bool):
@@ -85,8 +97,8 @@ _COMPARISON_PREC = 4
 
 
 def _paren_if_lower_prec(
-    child: exp.Expression, *, parent_prec: int, is_right: bool,
-) -> exp.Expression:
+    child: Expression, *, parent_prec: int, is_right: bool,
+) -> Expression:
     """Parenthesise ``child`` when dropping its parens would change meaning: lower precedence than
     the parent, or an equal-precedence RIGHT child (a LEFT one too at :data:`_COMPARISON_PREC`).
     Even ``+`` / ``*`` aren't associative over floats/decimals, so the tree is preserved."""
@@ -104,7 +116,7 @@ def _paren_if_lower_prec(
     return child
 
 
-def group_unary_operand(operand: exp.Expression, *, op: str) -> exp.Expression:
+def group_unary_operand(operand: Expression, *, op: str) -> Expression:
     """Parenthesise a unary operator's operand when precedence requires it (``-(a + b)`` unwrapped emits ``-a + b``)."""
     if op not in ("not", "-"):
         raise NotImplementedError(
@@ -117,8 +129,8 @@ def group_unary_operand(operand: exp.Expression, *, op: str) -> exp.Expression:
 
 
 def group_is_operands(
-    *, lhs: exp.Expression, rhs: exp.Expression,
-) -> Tuple[exp.Expression, exp.Expression]:
+    *, lhs: Expression, rhs: Expression,
+) -> Tuple[Expression, Expression]:
     """Parenthesise ``IS`` / ``IS NOT`` operands: ``IS`` binds tighter than ``=``, so ungrouped ``(a = 5) is null`` reads as ``a = (5 IS NULL)``."""
     is_prec = _PRECEDENCE[exp.Is]
     return (
@@ -127,7 +139,7 @@ def group_is_operands(
     )
 
 
-def _render_unary(*, op: str, operand: exp.Expression) -> exp.Expression:
+def _render_unary(*, op: str, operand: Expression) -> Expression:
     """Single-operand forms. ``-x`` is a single-operand ``ArithmeticKey``, so dropping the op would turn ``amount > -10`` into ``amount > 10``; the operand gets binary precedence grouping."""
     if op in ("not", "-"):
         grouped = group_unary_operand(operand, op=op)
@@ -138,8 +150,8 @@ def _render_unary(*, op: str, operand: exp.Expression) -> exp.Expression:
 
 
 def _fold_binary(
-    *, node_cls: Any, operands: List[exp.Expression],
-) -> exp.Expression:
+    *, node_cls: Any, operands: List[Expression],
+) -> Expression:
     """Left-fold ``operands``, grouping each side by precedence as it goes."""
     parent_prec = _PRECEDENCE.get(node_cls)
     result = operands[0]
@@ -157,8 +169,8 @@ def _fold_binary(
 
 
 def render_arithmetic(
-    *, op: str, operands: List[exp.Expression],
-) -> exp.Expression:
+    *, op: str, operands: List[Expression],
+) -> Expression:
     """Compose an arithmetic / comparison / boolean operator — the single composer."""
     if not operands:
         raise NotImplementedError(f"Operator {op!r} needs at least one operand.")
@@ -192,13 +204,15 @@ def render_arithmetic(
 
 
 def render_scalar_call(
-    *, name: str, args: List[exp.Expression], dialect: SqlDialect,
-) -> exp.Expression:
+    *, name: str, args: List[Expression], dialect: SqlDialect,
+) -> Expression:
     """The one ScalarCall policy. The log fix-up is load-bearing: ``exp.func("LOG10", x)`` normalises to ``LOG(10, x)``, wrong where ``LOG10`` is native single-arg."""
     arity_error = check_scalar_arity(name=name, argc=len(args))
     if arity_error is not None:
         # Checked before building: sqlglot is inconsistent (3-arg ROUND drops the third, etc.).
         raise NotImplementedError(f"Scalar arity check failed: {arity_error}")
+    if name in DATE_FUNCTIONS:
+        raise RuntimeError(f"Date function {name!r} renders only from its key (render_date_call).")
     if name == "like":
         return exp.Like(this=args[0], expression=args[1])
     if name == "mod":
@@ -208,8 +222,52 @@ def render_scalar_call(
     return rewrite_log_alias(node, dialect=dialect)
 
 
+DATE_FUNCTIONS = frozenset({*DATE_OPERAND_ARGS, *CLOCK_FUNCTIONS})
+
+
+def render_date_call(
+    *, key: ScalarCallKey, args: List[Expression], dialect: SqlDialect, column_type: ColumnTypeFn,
+) -> Expression:
+    """Render a date-function call through the dialect's typed hooks; ``args`` are the rendered arguments."""
+    if key.name == "now":
+        return dialect.build_current_timestamp()
+    if key.name == "current_date":
+        return dialect.build_current_date()
+    types = {pos: _operand_type(key, pos, column_type=column_type) for pos in DATE_OPERAND_ARGS[key.name]}
+    if key.name == "date_part":
+        return dialect.build_date_part(part=DatePart(unit_word(key.args[0])), expr=args[1], operand=types[1])
+    if key.name == "date_diff":
+        start, end = args[1], args[2]
+        operand = types[1]
+        if types[1] is not types[2]:
+            operand = DataType.TIMESTAMP
+            start = dialect.promote_to_timestamp(start) if types[1] is DataType.DATE else start
+            end = dialect.promote_to_timestamp(end) if types[2] is DataType.DATE else end
+        return dialect.build_date_diff(
+            unit=TimeGranularity(unit_word(key.args[0])), start=start, end=end, operand=operand,
+        )
+    count = args[DATE_ADD_COUNT_ARG]
+    if not isinstance(key.args[DATE_ADD_COUNT_ARG], LiteralKey):
+        # One truncation toward zero, identical on every dialect.
+        count = exp.Cast(
+            this=render_scalar_call(name="trunc", args=[count], dialect=dialect),
+            to=exp.DataType.build("INT"),
+        )
+    return dialect.build_date_add(
+        expr=args[0], count=count, unit=TimeGranularity(unit_word(key.args[2])), operand=types[0],
+    )
+
+
+def _operand_type(key: ScalarCallKey, pos: int, *, column_type: ColumnTypeFn) -> DataType:
+    dt = temporal_type(key.args[pos], column_type=column_type)
+    if dt is None:
+        # The checker rejects these at bind; reaching render is a wiring bug.
+        raise RuntimeError(f"{key.name}() operand {pos} has no DATE/TIMESTAMP type at render.")
+    return dt
+
+
 def iif_case_chain(
-    *, key: ScalarCallKey, part: Callable[[Any], exp.Expression],
+    *, key: ScalarCallKey, part: Callable[[Any], Expression],
 ) -> exp.Case:
     """Render an ``iif`` chain as one multi-WHEN CASE, flattening nested ``iif``
     in the otherwise position; ``part`` renders each argument."""
@@ -229,8 +287,9 @@ def render_row_expression(
     *,
     key: Any,
     dialect: SqlDialect,
-    resolve_column: Callable[[Any], exp.Expression],
-) -> exp.Expression:
+    resolve_column: Callable[[Any], Expression],
+    column_type: ColumnTypeFn,
+) -> Expression:
     """Render an aggregation-free row-level ``ValueKey`` tree (an
     ``AggregateKey``'s expression source, DEV-1826) to sqlglot AST.
 
@@ -238,19 +297,19 @@ def render_row_expression(
     shared composers so the expression renders exactly like the same tree in
     any other row-level position.
     """
-    def _part(a: Any) -> exp.Expression:
+    def _part(a: Any) -> Expression:
         # ANY key routes as a key (the tail raise owns unsupported kinds); only
         # true scalars render as literals.
         if isinstance(a, _FrozenKey):
             return render_row_expression(
-                key=a, dialect=dialect, resolve_column=resolve_column,
+                key=a, dialect=dialect, resolve_column=resolve_column, column_type=column_type,
             )
-        return _literal(a)
+        return _literal(a, dialect=dialect)
 
     if isinstance(key, (ColumnKey, ColumnSqlKey)):
         return resolve_column(key)
     if isinstance(key, LiteralKey):
-        return _literal(key.value)
+        return _literal(key.value, dialect=dialect)
     if isinstance(key, ArithmeticKey):
         return render_arithmetic(
             op=key.op.lower(),
@@ -259,9 +318,10 @@ def render_row_expression(
     if isinstance(key, ScalarCallKey):
         if key.name == "iif":
             return iif_case_chain(key=key, part=_part)
-        return render_scalar_call(
-            name=key.name, args=[_part(a) for a in key.args], dialect=dialect,
-        )
+        args = [_part(a) for a in key.args]
+        if key.name in DATE_FUNCTIONS:
+            return render_date_call(key=key, args=args, dialect=dialect, column_type=column_type)
+        return render_scalar_call(name=key.name, args=args, dialect=dialect)
     raise NotImplementedError(
         f"Row-level expression cannot contain {type(key).__name__}.",
     )

@@ -434,9 +434,9 @@ async def test_byte_equivalence_time_shift_postgres(orders_model: SlayerModel) -
 
 async def test_byte_equivalence_time_shift_sqlite(orders_model: SlayerModel) -> None:
     sql = await _gen("sqlite", _TIME_SHIFT_QUERY, orders_model)
-    # SQLite uses DATE(col, 'N months') — no INTERVAL keyword. The join-back
-    # offsets the base's (already truncated) bucket start.
-    assert """DATE(base."orders.created_at", '-1 months')""" in sql
+    # SQLite offsets through the month-end-clamping slayer_date_add UDF — no INTERVAL keyword.
+    # The join-back offsets the base's (already truncated) bucket start.
+    assert """SLAYER_DATE_ADD(base."orders.created_at", -1, 'month')""" in sql
     assert "INTERVAL" not in sql
     assert "STRFTIME('%Y-%m-01'" in sql
 

@@ -4515,12 +4515,13 @@ def _source_column(
 def _stage_column(
     *, slot: ValueSlot, alias: str, flat: str, respellings: Tuple[str, ...], source=None,
 ) -> StageColumn:
-    # An upstream-bucketed column carries its granularity so a re-binding TimeDimension can type-check the re-bucket.
+    # A bucketed column (bucketed here, or passed through from upstream) carries its granularity
+    # so a re-binding TimeDimension can type-check the re-bucket.
+    row = source if slot.phase == Phase.ROW else None
     upstream_gran = (
         TimeGranularity(slot.key.granularity)
-        if isinstance(slot.key, TimeTruncKey) else None
+        if isinstance(slot.key, TimeTruncKey) else getattr(row, "granularity", None)
     )
-    row = source if slot.phase == Phase.ROW else None
     return StageColumn(
         name=flat,
         sql_alias=flat,

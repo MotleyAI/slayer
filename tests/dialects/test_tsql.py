@@ -96,56 +96,29 @@ def test_tsql_build_date_trunc_casts_non_column_to_timestamp() -> None:
     assert "CAST" in out.sql(dialect="tsql").upper()
 
 
-# build_time_offset_expr — DATEADD, no INTERVAL
+# build_date_add — DATEADD, no INTERVAL
 
 
-def test_tsql_build_time_offset_expr_day() -> None:
-    d = TsqlDialect()
-    col = sqlglot.parse_one("created_at", dialect="tsql")
-    out = d.build_time_offset_expr(col, offset=3, granularity="day")
-    sql = out.sql(dialect="tsql").upper()
-    assert "DATEADD" in sql
-    assert "DAY" in sql
-    assert "3" in sql
-    assert "INTERVAL" not in sql
+def _date_add(count: int, unit: str) -> str:
+    col = exp.column("created_at")
+    out = TsqlDialect().build_date_add(
+        expr=col, count=exp.Literal.number(count), unit=TimeGranularity(unit), operand=DataType.TIMESTAMP,
+    )
+    return out.sql(dialect="tsql").upper()
 
 
-def test_tsql_build_time_offset_expr_negative() -> None:
-    """DATEADD takes a signed amount as its second arg — negative values propagate directly into the call."""
-    d = TsqlDialect()
-    col = sqlglot.parse_one("created_at", dialect="tsql")
-    out = d.build_time_offset_expr(col, offset=-2, granularity="month")
-    sql = out.sql(dialect="tsql").upper()
-    assert "DATEADD" in sql
-    assert "-2" in sql or "(-2)" in sql or "-(2)" in sql
+def test_tsql_build_date_add_day() -> None:
+    assert _date_add(3, "day") == "DATEADD(DAY, 3, CREATED_AT)"
 
 
-def test_tsql_build_time_offset_expr_quarter_normalizes_to_3_month() -> None:
-    d = TsqlDialect()
-    col = sqlglot.parse_one("created_at", dialect="tsql")
-    out = d.build_time_offset_expr(col, offset=1, granularity="quarter")
-    sql = out.sql(dialect="tsql").upper()
-    assert "DATEADD" in sql
-    assert "MONTH" in sql
-    assert "3" in sql
+def test_tsql_build_date_add_negative() -> None:
+    """DATEADD takes a signed amount as its second arg."""
+    assert _date_add(-2, "month") == "DATEADD(MONTH, -2, CREATED_AT)"
 
 
-# add_intervals_expr — chains DATEADD calls (no INTERVAL)
-
-
-def test_tsql_add_intervals_expr_uses_dateadd_chain() -> None:
-    d = TsqlDialect()
-    col = sqlglot.parse_one("created_at", dialect="tsql")
-    intervals = [
-        exp.Interval(
-            this=exp.Literal.number(1),
-            unit=exp.Var(this="DAY"),
-        ),
-    ]
-    out = d.add_intervals_expr(col, intervals, sign=-1)
-    sql = out.sql(dialect="tsql").upper()
-    assert "DATEADD" in sql
-    assert "INTERVAL" not in sql  # no INTERVAL keyword in T-SQL
+def test_tsql_build_date_add_quarter_and_week_sunday_are_native_units() -> None:
+    assert _date_add(1, "quarter") == "DATEADD(QUARTER, 1, CREATED_AT)"
+    assert _date_add(-1, "week_sunday") == "DATEADD(WEEK, -1, CREATED_AT)"
 
 
 # Median / percentile — not supported on T-SQL

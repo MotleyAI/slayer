@@ -10,7 +10,7 @@ from __future__ import annotations
 import sqlglot
 from sqlglot import exp
 
-from slayer.core.enums import TimeGranularity
+from slayer.core.enums import DataType, TimeGranularity
 from slayer.sql.dialects.duckdb import DuckdbDialect
 
 
@@ -72,10 +72,10 @@ def test_duckdb_build_covar_2arg_corr_native() -> None:
     assert "CORR" in out.sql(dialect="duckdb").upper()
 
 
-def test_duckdb_build_time_offset_expr_quarter_normalizes_to_3_month() -> None:
+def test_duckdb_build_date_add_quarter_normalizes_to_3_month() -> None:
     d = DuckdbDialect()
-    col = sqlglot.parse_one("created_at", dialect="duckdb")
-    out = d.build_time_offset_expr(col, offset=1, granularity="quarter")
-    sql = out.sql(dialect="duckdb").upper()
-    assert "MONTH" in sql
-    assert "3" in sql
+    col = exp.column("created_at")
+    out = d.build_date_add(
+        expr=col, count=exp.Literal.number(1), unit=TimeGranularity.QUARTER, operand=DataType.TIMESTAMP,
+    )
+    assert out.sql(dialect="duckdb").upper() == "CREATED_AT + INTERVAL 3 MONTH"

@@ -65,6 +65,13 @@ suite with the CI invocation from `.github/workflows/ci.yml` (`-n logical
 --dist loadscope` + its `--ignore`s) — plain `-n auto` races the notebook
 suite's shared on-disk fixtures.
 
+Backends runnable locally: SQLite and DuckDB (in-process); Postgres via `pytest-postgresql`
+(`factories.postgresql_proc(port=None)` spawns a throwaway server from the local
+`/usr/lib/postgresql/<ver>/bin/pg_ctl` — no Docker); MySQL and ClickHouse via
+testcontainers (Docker). SQL Server also needs `ODBC Driver 18` (skips without it);
+BigQuery / Snowflake need credentials, so only emission tests run locally. MySQL /
+ClickHouse / SQL Server run in CI only in their path-gated `integration-<db>.yml` workflows.
+
 ```bash
 poetry run pytest -m "not integration"                        # unit only
 poetry run pytest tests/ -m "integration and not metabase_e2e" -n logical --dist loadscope \
