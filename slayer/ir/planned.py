@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import functools
 from enum import Enum, IntEnum
-from typing import Dict, Hashable, Iterator, List, Literal, Optional, Tuple, Union, cast
+from typing import Dict, Hashable, Iterable, Iterator, List, Literal, Optional, Tuple, Union, cast
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -672,29 +672,31 @@ def _structural_fingerprint(obj) -> Hashable:
 _NON_KEY_FIELDS = frozenset({"stage_bundle", "render_source_model", "stage_schema"})
 
 
+def _plan_children(obj) -> Iterable:
+    if isinstance(obj, BaseModel):
+        return [getattr(obj, n) for n in type(obj).model_fields if n not in _NON_KEY_FIELDS]
+    if isinstance(obj, (list, tuple, set, frozenset)):
+        return obj
+    if isinstance(obj, dict):
+        return [item for pair in obj.items() for item in pair]
+    return ()
+
+
+def _walk_plan_keys(obj, seen: set) -> Iterator[ValueKey]:
+    if isinstance(obj, _FrozenKey):
+        yield cast(ValueKey, obj)
+        return
+    if isinstance(obj, BaseModel):
+        if id(obj) in seen:
+            return
+        seen.add(id(obj))
+    for child in _plan_children(obj):
+        yield from _walk_plan_keys(child, seen)
+
+
 def plan_value_keys(planned) -> Iterator[ValueKey]:
     """Every root ``ValueKey`` a plan carries, nested producer plans included."""
-    seen: set = set()
-
-    def walk(obj) -> Iterator[ValueKey]:
-        if isinstance(obj, _FrozenKey):
-            yield cast(ValueKey, obj)
-        elif isinstance(obj, BaseModel):
-            if id(obj) in seen:
-                return
-            seen.add(id(obj))
-            for name in type(obj).model_fields:
-                if name not in _NON_KEY_FIELDS:
-                    yield from walk(getattr(obj, name))
-        elif isinstance(obj, (list, tuple, set, frozenset)):
-            for item in obj:
-                yield from walk(item)
-        elif isinstance(obj, dict):
-            for k, v in obj.items():
-                yield from walk(k)
-                yield from walk(v)
-
-    yield from walk(planned)
+    yield from _walk_plan_keys(planned, set())
 
 
 def plans_read_clock(planned_list) -> bool:

@@ -25,7 +25,7 @@ from sqlglot.expressions.core import Expression
 from typing import Optional
 
 from slayer.core.enums import DataType, DatePart, TimeGranularity
-from slayer.sql.dialects.base import SqlDialect
+from slayer.sql.dialects.base import SqlDialect, iso_text
 
 
 # ===========================================================================
@@ -372,12 +372,19 @@ _MONTH_STEPS = {"month": 1, "quarter": 3, "year": 12}
 _DAY_STEPS = {"day": 1, "week": 7, "week_sunday": 7}
 
 
-_SQLITE_TEMPORAL_RE = re.compile(r"\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,6})?)?)?")
+_SQLITE_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+_SQLITE_TIME_RE = re.compile(r"[ T]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,6})?)?")
+
+
+def _is_sqlite_temporal_text(value: str) -> bool:
+    if not _SQLITE_DATE_RE.fullmatch(value, 0, 10):
+        return False
+    return len(value) == 10 or _SQLITE_TIME_RE.fullmatch(value, 10) is not None
 
 
 def _parse_sqlite_temporal(value) -> Optional[datetime]:
     """Stored SQLite date text as a datetime; ``None`` when it is not ISO date/timestamp text."""
-    if not isinstance(value, str) or not _SQLITE_TEMPORAL_RE.fullmatch(value):
+    if not isinstance(value, str) or not _is_sqlite_temporal_text(value):
         return None
     try:
         return datetime.fromisoformat(value) if len(value) > 10 else datetime.fromisoformat(value + " 00:00:00")
@@ -527,7 +534,7 @@ class SqliteDialect(SqlDialect):
 
     def build_temporal_literal(self, *, value: date, dt: DataType) -> Expression:
         """SQLite stores dates as text: a plain ISO literal compares and parses like a stored value."""
-        return exp.Literal.string(value.isoformat(sep=" ") if isinstance(value, datetime) else value.isoformat())
+        return exp.Literal.string(iso_text(value))
 
     def build_current_timestamp(self) -> Expression:
         return exp.CurrentTimestamp()

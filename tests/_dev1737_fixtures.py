@@ -455,8 +455,9 @@ async def check_server_scenarios(engine: SlayerQueryEngine) -> None:
     assert await count("date_diff('day', '2024-05-01', created_at) >= 0") == 3
     assert await by_id("date_diff('day', customers.signup_date, order_date)") == {1: 61, 2: 61, 3: 95, 4: 305, 5: None}
     for expr, expected in (
-        ("date_add('2024-03-31', -1, 'month')", date(2024, 2, 29)),
-        ("date_add('2024-01-31 10:15:00', 1, 'month')", datetime(2024, 2, 29, 10, 15)),
+        # Column-anchored: a literal-only dimension hits DEV-2011 (constant GROUP BY on T-SQL).
+        ("date_add(date_add(order_date, 30, 'day'), -1, 'month')", date(2024, 2, 29)),
+        ("date_add(date_add(created_at, -30, 'day'), 1, 'month')", datetime(2024, 2, 29, 5, 30)),
         ("date_add(order_date, 2, 'hour')", datetime(2024, 3, 1, 2, 0)),
         ("date_add(order_date, sla_days, 'day')", date(2024, 3, 3)),
         ("date_part('day_of_week', created_at)", 5),

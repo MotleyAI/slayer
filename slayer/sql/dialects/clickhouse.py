@@ -9,14 +9,14 @@ from __future__ import annotations
 
 import re
 from collections.abc import Sequence
-from datetime import date, datetime
+from datetime import date
 from typing import Any
 
 from sqlglot import exp
 from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import SUB_DAY_GRANULARITIES, DataType, DatePart, TimeGranularity
-from slayer.sql.dialects.base import ServerProfile, SqlDialect
+from slayer.sql.dialects.base import ServerProfile, SqlDialect, iso_text
 
 _CH_CORRELATED_SETTING = "allow_experimental_correlated_subqueries"
 _CORRELATED_MIN_VERSION = (25, 4)
@@ -194,8 +194,7 @@ class ClickhouseDialect(SqlDialect):
     def build_temporal_literal(self, *, value: date, dt: DataType) -> Expression:
         if dt is DataType.DATE:
             return exp.Anonymous(this="toDate", expressions=[exp.Literal.string(value.isoformat())])
-        text = value.isoformat(sep=" ") if isinstance(value, datetime) else value.isoformat()
-        return self.promote_to_timestamp(exp.Literal.string(text))
+        return self.promote_to_timestamp(exp.Literal.string(iso_text(value)))
 
     def build_current_date(self) -> Expression:
         return exp.Anonymous(this="today")

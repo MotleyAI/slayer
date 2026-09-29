@@ -58,7 +58,7 @@ class ScalarSpec(BaseModel, frozen=True):
     is variadic) and whether its call is literally the same SQL function."""
 
     min_args: int
-    max_args: Optional[int]
+    max_args: Optional[int] = None
     sql_passthrough: bool = True
 
 
@@ -1225,25 +1225,31 @@ def temporal_type(key: object, *, column_type: ColumnTypeFn) -> Optional[DataTyp
     if isinstance(key, AggregateKey):
         from_source = key.agg.lower() in _TEMPORAL_PRESERVING_AGGS
         return temporal_type(key.source, column_type=column_type) if from_source else None
-    if not isinstance(key, ScalarCallKey):
-        return None
-    if key.name == "now":
-        return DataType.TIMESTAMP
-    if key.name == "current_date":
-        return DataType.DATE
+    if isinstance(key, ScalarCallKey):
+        return _scalar_temporal_type(key, column_type=column_type)
+    return None
+
+
+_CLOCK_TYPES: Mapping[str, DataType] = MappingProxyType({
+    "now": DataType.TIMESTAMP, "current_date": DataType.DATE,
+})
+
+
+def _scalar_temporal_type(key: ScalarCallKey, *, column_type: ColumnTypeFn) -> Optional[DataType]:
+    if key.name in _CLOCK_TYPES:
+        return _CLOCK_TYPES[key.name]
     if key.name == "date_add" and len(key.args) == 3:
         base = temporal_type(key.args[0], column_type=column_type)
-        if base is None:
-            return None
-        return DataType.DATE if base is DataType.DATE and not is_sub_day_unit(key.args[2]) else DataType.TIMESTAMP
-    # NULLIF returns its first argument (or NULL); the second is only compared.
-    positions = (0,) if key.name == "nullif" else value_arg_positions(key.name, len(key.args))
-    if not positions:
-        return None
-    values = [key.args[i] for i in positions]
+        if base is DataType.DATE and not is_sub_day_unit(key.args[2]):
+            return DataType.DATE
+        return None if base is None else DataType.TIMESTAMP
+    values = [key.args[i] for i in value_arg_positions(key.name, len(key.args))]
     types = [temporal_type(a, column_type=column_type) for a in values if not _is_null_arg(a)]
     if not types or None in types:
         return None
+    # NULLIF returns its first argument (or NULL); the second is only compared.
+    if key.name == "nullif" and not _is_null_arg(key.args[0]):
+        return types[0]
     return DataType.TIMESTAMP if DataType.TIMESTAMP in types else DataType.DATE
 
 

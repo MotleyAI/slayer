@@ -42,8 +42,9 @@ class TestSpecTable:
         assert name not in SCALAR_PASSTHROUGH
 
     def test_specs_are_frozen(self) -> None:
+        spec = SCALAR_SPECS["now"].model_copy()
         with pytest.raises(pydantic.ValidationError):
-            SCALAR_SPECS["now"].min_args = 1  # type: ignore[misc]
+            spec.min_args = 1  # type: ignore[misc]
 
     def test_spec_is_a_pydantic_model(self) -> None:
         assert all(isinstance(s, ScalarSpec) for s in SCALAR_SPECS.values())

@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import date, datetime
+from datetime import date
 from typing import TYPE_CHECKING, Any, ClassVar
 
 import sqlalchemy as sa
@@ -38,6 +38,7 @@ from slayer.sql.dialects.base import (
     DottedAliasManglingMixin,
     SqlDialect,
     _digest,
+    iso_text,
 )
 
 if TYPE_CHECKING:
@@ -191,8 +192,7 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
     def build_temporal_literal(self, *, value: date, dt: DataType) -> Expression:
         if dt is DataType.DATE:
             return super().build_temporal_literal(value=value, dt=dt)
-        text = value.isoformat(sep=" ") if isinstance(value, datetime) else value.isoformat()
-        return self.promote_to_timestamp(exp.Literal.string(text))
+        return self.promote_to_timestamp(exp.Literal.string(iso_text(value)))
 
     def build_current_timestamp(self) -> Expression:
         return exp.CurrentTimestamp()

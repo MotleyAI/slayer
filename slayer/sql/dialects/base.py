@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from datetime import date, datetime
+from datetime import date
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, Optional, TypeGuard, get_args
 from collections.abc import Callable, Sequence
@@ -108,6 +108,11 @@ def is_operator(node: object) -> bool:
 def operand_copy(value: Expression) -> Expression:
     """A copy of ``value`` safe to place as an operator's operand."""
     return exp.Paren(this=value.copy()) if is_operator(value) else value.copy()
+
+
+def iso_text(value: date) -> str:
+    """``YYYY-MM-DD``, or ``YYYY-MM-DD HH:MM:SS[.ffffff]`` for a datetime."""
+    return str(value)
 
 
 def _build_covar_decomposition(
@@ -391,8 +396,7 @@ class SqlDialect(BaseModel):
         return exp.Cast(this=expr.copy(), to=exp.DataType.build("TIMESTAMP"))
 
     def build_temporal_literal(self, *, value: date, dt: DataType) -> Expression:
-        text = value.isoformat(sep=" ") if isinstance(value, datetime) else value.isoformat()
-        return exp.Cast(this=exp.Literal.string(text), to=exp.DataType.build(dt.value))
+        return exp.Cast(this=exp.Literal.string(iso_text(value)), to=exp.DataType.build(dt.value))
 
     def build_current_date(self) -> Expression:
         return exp.CurrentDate()

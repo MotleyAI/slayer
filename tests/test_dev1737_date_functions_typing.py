@@ -163,6 +163,7 @@ class TestOperandRejections:
         ("date_part('year', 2024) = 2024", "2024"),
         ("date_part('year', 'yesterday') = 2024", "yesterday"),
         ("date_part('year', coalesce(shipped_at, 5)) = 2024", "coalesce"),
+        ("date_part('year', nullif(shipped_at, 5)) = 2024", "nullif"),
         ("date_part('year', date_part('year', created_at)) = 1", "date_part"),
     ])
     async def test_non_temporal_operand(self, engine, filt: str, operand: str) -> None:
@@ -181,6 +182,7 @@ class TestOperandRejections:
         ("date_diff('day', '2024-01-01 25:00:00', created_at) > 0", "2024-01-01 25:00:00"),
         ("date_diff('day', '01/02/2024', created_at) > 0", "01/02/2024"),
         ("date_part('year', coalesce(shipped_at, 'soon')) > 0", "soon"),
+        ("date_part('year', nullif(shipped_at, 'soon')) > 0", "soon"),
     ])
     async def test_invalid_literal(self, engine, filt: str, literal: str) -> None:
         with pytest.raises(QueryTypeError) as exc:

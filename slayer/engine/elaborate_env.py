@@ -6,8 +6,9 @@ algebra type error raises here, each invoked at its family's original checkpoint
 
 from __future__ import annotations
 
+from types import MappingProxyType
 from typing import (
-    Callable, Dict, Iterator, List, Literal, NamedTuple, NoReturn, Optional,
+    Callable, Dict, Iterator, List, Literal, Mapping, NamedTuple, NoReturn, Optional,
     Sequence, Tuple, TypeGuard, Union,
 )
 
@@ -906,61 +907,76 @@ def _operand_display(k: object) -> str:
     return str(k)
 
 
-def _count_type(key: object, *, column_type: ColumnTypeFn) -> Optional[DataType]:
-    """A non-numeric type the count provably has, else ``None`` (unknown or numeric)."""
-    temporal = temporal_type(key, column_type=column_type)
-    if temporal is not None:
-        return temporal
+_LITERAL_TYPES: Mapping[type, DataType] = MappingProxyType({
+    bool: DataType.BOOLEAN, str: DataType.TEXT,
+})
+_SCALAR_RESULT_TYPES: Mapping[str, DataType] = MappingProxyType({
+    **{name: DataType.TEXT for name in _TEXT_SCALARS}, "like": DataType.BOOLEAN,
+})
+
+
+def _leaf_count_type(key: object, *, column_type: ColumnTypeFn) -> Optional[DataType]:
     if isinstance(key, (ColumnKey, ColumnSqlKey)):
         return column_type(key)
     if isinstance(key, LiteralKey):
-        return DataType.BOOLEAN if isinstance(key.value, bool) else DataType.TEXT if isinstance(key.value, str) else None
+        return _LITERAL_TYPES.get(type(key.value))
     if isinstance(key, (ArithmeticKey, BetweenKey, InKey)) and is_boolean_shaped(key):
         return DataType.BOOLEAN
+    if isinstance(key, ScalarCallKey):
+        return _SCALAR_RESULT_TYPES.get(key.name)
+    return None
+
+
+def _count_type_operands(key: object) -> Sequence[object]:
     if isinstance(key, AggregateKey):
-        preserving = key.agg.lower() in ("min", "max", "first", "last")
-        return _count_type(key.source, column_type=column_type) if preserving else None
-    if isinstance(key, ScalarCallKey) and key.name in _TEXT_SCALARS:
-        return DataType.TEXT
-    if isinstance(key, ScalarCallKey) and key.name == "like":
-        return DataType.BOOLEAN
+        return [key.source] if key.agg.lower() in ("min", "max", "first", "last") else []
     if isinstance(key, ArithmeticKey):
-        operands: Sequence[object] = key.operands
-    elif isinstance(key, ScalarCallKey):
-        operands = [key.args[i] for i in value_arg_positions(key.name, len(key.args))]
-    else:
-        return None
-    for operand in operands:
+        return key.operands
+    if isinstance(key, ScalarCallKey):
+        return [key.args[i] for i in value_arg_positions(key.name, len(key.args))]
+    return []
+
+
+def _count_type(key: object, *, column_type: ColumnTypeFn) -> Optional[DataType]:
+    """A non-numeric type the count provably has, else ``None`` (unknown or numeric)."""
+    known = temporal_type(key, column_type=column_type) or _leaf_count_type(key, column_type=column_type)
+    if known is not None:
+        return known
+    for operand in _count_type_operands(key):
         found = _count_type(operand, column_type=column_type)
         if found in _NON_NUMERIC_TYPES:
             return found
     return None
 
 
+def _check_date_call(key: ScalarCallKey, *, column_type: ColumnTypeFn) -> None:
+    for pos in DATE_OPERAND_ARGS[key.name]:
+        operand = key.args[pos]
+        if temporal_type(operand, column_type=column_type) is None:
+            raise DateOperandTypeError(
+                summary=f"{key.name}() needs a DATE or TIMESTAMP operand; "
+                f"`{_operand_display(operand)}` is not one.",
+                suggestion="Pass a column declared DATE / TIMESTAMP (set Column.type), "
+                "min/max/first/last of one, a date function, now() / current_date(), "
+                "or an ISO literal such as '2024-01-31' or '2024-01-31 10:00:00'.",
+            )
+    if key.name != "date_add":
+        return
+    count = key.args[DATE_ADD_COUNT_ARG]
+    if _count_type(count, column_type=column_type) in _NON_NUMERIC_TYPES:
+        raise DateOperandTypeError(
+            summary=f"date_add() count `{_operand_display(count)}` is not numeric.",
+            suggestion="Pass an integer, or a numeric column or expression "
+            "(it is truncated toward zero).",
+        )
+
+
 def check_date_operands(*, roots: Sequence[ValueKey], column_type: ColumnTypeFn) -> None:
     """Every date-function operand must be DATE/TIMESTAMP and every ``date_add`` count numeric."""
     for root in roots:
         for key in walk_value_keys(root):
-            if not isinstance(key, ScalarCallKey) or key.name not in DATE_OPERAND_ARGS:
-                continue
-            for pos in DATE_OPERAND_ARGS[key.name]:
-                operand = key.args[pos]
-                if temporal_type(operand, column_type=column_type) is None:
-                    raise DateOperandTypeError(
-                        summary=f"{key.name}() needs a DATE or TIMESTAMP operand; "
-                        f"`{_operand_display(operand)}` is not one.",
-                        suggestion="Pass a column declared DATE / TIMESTAMP (set Column.type), "
-                        "min/max/first/last of one, a date function, now() / current_date(), "
-                        "or an ISO literal such as '2024-01-31' or '2024-01-31 10:00:00'.",
-                    )
-            if key.name == "date_add":
-                count = key.args[DATE_ADD_COUNT_ARG]
-                if _count_type(count, column_type=column_type) in _NON_NUMERIC_TYPES:
-                    raise DateOperandTypeError(
-                        summary=f"date_add() count `{_operand_display(count)}` is not numeric.",
-                        suggestion="Pass an integer, or a numeric column or expression "
-                        "(it is truncated toward zero).",
-                    )
+            if isinstance(key, ScalarCallKey) and key.name in DATE_OPERAND_ARGS:
+                _check_date_call(key, column_type=column_type)
 
 
 def _time_search_children(key: ValueKey) -> List[ValueKey]:
