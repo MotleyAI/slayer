@@ -6,7 +6,7 @@ Defines time points — instants, period literals and relative tokens — and ho
 
 ### Requirement: A time literal is an instant or a period
 
-A string literal compared with a temporal operand, or used as a `date_range` element, SHALL be read as a time point. An **instant** is an ISO date-time with a time part (`YYYY-MM-DD HH:MM[:SS[.fraction]]`, `T` accepted as the separator, an optional `Z` or `±HH:MM` offset). A **period** is a half-open interval `[start, next_start)` written as a period literal — `YYYY` (year), `YYYY-Qn` (quarter, n in 1..4), `YYYY-MM` (month), `YYYY-Www` (ISO-8601 week, Monday-anchored, regardless of any time dimension's granularity), `YYYY-MM-DD` (day) — or as a relative token. A string compared with a temporal operand that is none of these, or a period literal naming a non-existent period (month 13, `2025-02-29`, week 53 of a year with 52 ISO weeks), SHALL fail with a typed error listing the accepted forms.
+A string literal compared with a temporal operand, or used as a `date_range` element, SHALL be read as a time point. An **instant** is an ISO date-time with a time part (`YYYY-MM-DD HH:MM[:SS[.fraction]]`, at most six fractional digits, `T` accepted as the separator; a zone offset is not accepted). A **period** is a half-open interval `[start, next_start)` written as a period literal — `YYYY` (year), `YYYY-Qn` (quarter, n in 1..4), `YYYY-MM` (month), `YYYY-Www` (ISO-8601 week, Monday-anchored, regardless of any time dimension's granularity), `YYYY-MM-DD` (day) — or as a relative token. A string compared with a temporal operand that is none of these, or a period literal naming a non-existent period (month 13, `2025-02-29`, week 53 of a year with 52 ISO weeks), SHALL fail with a typed error listing the accepted forms.
 
 #### Scenario: Period literals expand to half-open ranges
 
@@ -33,9 +33,14 @@ A string literal compared with a temporal operand, or used as a `date_range` ele
 - **WHEN** a filter is `ts <= '2024-12-31 12:00:00'` or `ts = '2024-06-01T10:00:00'`
 - **THEN** it matches exactly the rows the plain comparison against that instant matches
 
+#### Scenario: Zone offsets are rejected
+
+- **WHEN** a TIMESTAMP column is compared with `'2025-01-01 10:00:00Z'` or `'2025-01-01 10:00:00+02:00'`
+- **THEN** the query fails with the typed time-literal error
+
 ### Requirement: Relative tokens resolve against one clock reading
 
-A relative token SHALL be matched case-insensitively with whitespace collapsed, and SHALL denote a period computed from "now", read once per query execution from the engine's clock (the SLayer host's local wall-clock time; arithmetic is naive wall-clock). The grammar is closed: `today`, `yesterday`, `tomorrow`; `this <unit>`, `last <unit>`, `next <unit>` (the current, previous and next unit); `last N <units>` and `next N <units>` (the N whole units immediately before or after the current unit, excluding the current unit); `N <units> ago` and `N <units> from now` (the single unit N steps before or after the current one); `week to date`, `month to date`, `quarter to date`, `year to date` (`[start of the current unit, start of tomorrow)`). `<unit>` is any time granularity (`second`, `minute`, `hour`, `day`, `week`, `week_sunday`, `month`, `quarter`, `year`) with an optional plural `s`; `week` is Monday-anchored and `week_sunday` Sunday-anchored. N is a positive integer.
+A relative token SHALL be matched case-insensitively with whitespace collapsed, and SHALL denote a period computed from "now", read once per query execution from the engine's clock (the SLayer host's local wall-clock time; arithmetic is naive wall-clock). The grammar is closed: `today`, `yesterday`, `tomorrow`; `this <unit>`, `last <unit>`, `next <unit>` (the current, previous and next unit); `last N <units>` and `next N <units>` (the N whole units immediately before or after the current unit, excluding the current unit); `N <units> ago` and `N <units> from now` (the single unit N steps before or after the current one); `week to date`, `month to date`, `quarter to date`, `year to date` (`[start of the current unit, start of tomorrow)`). `<unit>` is any time granularity (`second`, `minute`, `hour`, `day`, `week`, `week_sunday`, `month`, `quarter`, `year`) with an optional plural `s`; `week` is Monday-anchored and `week_sunday` Sunday-anchored. N is a positive integer. The clock SHALL be the engine's own; SQL-side `now()` / `current_date()` (`queries/date-functions`) read the database clock.
 
 #### Scenario: Calendar tokens
 
@@ -72,9 +77,14 @@ A relative token SHALL be matched case-insensitively with whitespace collapsed, 
 - **WHEN** the same query using `last 7 days` is prepared with clocks reading two different days
 - **THEN** the generated SQL differs, so a cached result for one day is never served for the other
 
+#### Scenario: Relative tokens keep the result cache
+
+- **WHEN** `ordered_at >= 'last 7 days'` is executed twice with caching on and a clock reading the same day
+- **THEN** the second run is served from the cache
+
 ### Requirement: Temporal operands and time-literal typing
 
-A temporal operand SHALL be one of: a model or stage column whose recorded type is DATE or TIMESTAMP (base, derived or reached through joins); a granularity call `gran(col)`; or a `min`, `max`, `first` or `last` aggregation (including with `partition_by=` or a window) of a temporal operand. Time-point semantics SHALL apply only to comparisons with a temporal operand. A relative token, or a single-string `in` / `not in`, against an operand that is not temporal SHALL fail with a typed error naming the operand and the remedy (declare the column's type). A plain date or date-time string compared with a non-temporal operand SHALL keep its existing plain-literal meaning. A sub-day point (an instant with a non-midnight time part, or a relative token at `hour`, `minute` or `second`) against a DATE operand SHALL fail with a typed error.
+A temporal operand SHALL be an operand that `queries/date-functions` ("Date operands must be temporal") types DATE or TIMESTAMP — including `min`, `max`, `first` or `last` with `partition_by=` or a window, and with an ISO string literal that is a value argument of a conditional in the operand typed as a date value when the whole operand then types temporal — or a granularity call `gran(col)` on a temporal column as the comparison's direct operand. Time-point semantics SHALL apply only to comparisons with a temporal operand. A relative token, or a single-string `in` / `not in`, against an operand that is not temporal SHALL fail with the date-operand type error date functions raise, naming the operand and the remedy (declare the column's type). A plain date or date-time string compared with a non-temporal operand SHALL keep its existing plain-literal meaning. A sub-day point (an instant with a non-midnight time part, or a relative token at `hour`, `minute` or `second`) against a DATE operand SHALL fail with a typed error.
 
 #### Scenario: Temporal aggregate in a measure filter
 
@@ -100,6 +110,21 @@ A temporal operand SHALL be one of: a model or stage column whose recorded type 
 
 - **WHEN** a filter compares a DATE column with `'last 6 hours'` or `'2025-01-01 10:00:00'`
 - **THEN** the query fails with the typed error stating that the column has day resolution
+
+#### Scenario: Date-function, interval and conditional operands
+
+- **WHEN** the clock reads `2026-09-29 12:00:00` and filters are `date_add(ordered_at, 1, 'day') >= 'last month'`, `ordered_at - interval(1, 'day') < '2025-Q1'` and `coalesce(shipped_at, ordered_at) in '2025-Q1'`
+- **THEN** they match exactly the rows with `ordered_at >= 2026-07-31`, `ordered_at < 2025-01-02`, and `coalesce(shipped_at, ordered_at)` in `[2025-01-01, 2025-04-01)` respectively, by executed values on SQLite and DuckDB
+
+#### Scenario: ISO literal inside a conditional operand
+
+- **WHEN** a filter is `coalesce(shipped_at, '2099-12-31') >= 'last month'`
+- **THEN** unshipped orders match
+
+#### Scenario: Bad date-function operand is named
+
+- **WHEN** a filter is `date_add(status, 1, 'day') >= 'last month'` on a TEXT `status`
+- **THEN** the query fails with the date-operand type error naming `status`
 
 ### Requirement: Comparisons against a period use period semantics
 
@@ -136,12 +161,17 @@ A comparison between a temporal operand `x` and a period `P` SHALL mean: `x >= P
 
 ### Requirement: Sub-day bounds are independent of SQLite timestamp spelling
 
-On SQLite, comparisons between a TIMESTAMP operand and a sub-day time point SHALL return the same rows whether timestamps are stored with a space or a `T` between date and time.
+On SQLite, comparisons between a temporal operand and a time point SHALL return the same rows whether values are stored as date-only ISO text or as ISO timestamps with a space or `T` separator; sub-day comparisons resolve to milliseconds.
 
 #### Scenario: T-separated storage
 
 - **WHEN** a SQLite table stores `2025-03-01T09:30:00` and `2025-03-01T10:30:00`, and the filter is `ts < '2025-03-01 10:00:00'`
 - **THEN** exactly the `09:30` row is matched, the same as with space-separated storage
+
+#### Scenario: Date-only text in a TIMESTAMP column
+
+- **WHEN** a SQLite TIMESTAMP column stores `2025-03-01` and `2025-03-01 00:00:00`, and the filters are `ts = '2025-03-01'` and `ts >= '2025-03-01 00:00:00'`
+- **THEN** both rows match each filter
 
 ### Requirement: A granularity call is a row-level expression in every position
 
@@ -166,6 +196,11 @@ A call `gran(col)` — `gran` a time granularity (case-insensitive) and `col` a 
 
 - **WHEN** a filter contains `month()`, `month(a, b)`, `month(upper(x))` or `month(*)`
 - **THEN** the query fails with the typed error naming the `gran(col)` shape and the valid granularities
+
+#### Scenario: Granularity call against an instant
+
+- **WHEN** filters are `month(created_at) = '2025-03-15 10:00:00'` and `month(created_at) = '2025-03-01 00:00:00'`
+- **THEN** the first matches no rows and the second matches the March rows
 
 ### Requirement: Time bounds from any spelling are frame bounds
 

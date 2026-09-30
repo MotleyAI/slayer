@@ -1186,7 +1186,7 @@ def test_between_lifts_to_date_range(dialect) -> None:
     assert isinstance(result, QueryResult)
     assert result.query.time_dimensions is not None
     td = result.query.time_dimensions[0]
-    assert td.date_range == ["2024-01-01", "2024-12-31"]
+    assert td.date_range == ["2024-01-01 00:00:00", "2024-12-31 00:00:00"]
     assert not result.query.filters
 
 
@@ -1200,7 +1200,7 @@ def test_one_sided_gte_is_verbatim_filter(dialect) -> None:
     assert isinstance(result, QueryResult)
     td = result.query.time_dimensions[0]
     assert td.date_range is None
-    assert result.query.filters == ["ordered_at >= '2024-01-01'"]
+    assert result.query.filters == ["ordered_at >= '2024-01-01 00:00:00'"]
 
 
 def test_one_sided_lte_is_verbatim_filter(dialect) -> None:
@@ -1212,7 +1212,7 @@ def test_one_sided_lte_is_verbatim_filter(dialect) -> None:
     assert isinstance(result, QueryResult)
     td = result.query.time_dimensions[0]
     assert td.date_range is None
-    assert result.query.filters == ["ordered_at <= '2024-12-31'"]
+    assert result.query.filters == ["ordered_at <= '2024-12-31 00:00:00'"]
 
 
 def test_strict_gt_is_verbatim_filter(dialect) -> None:
@@ -1224,7 +1224,7 @@ def test_strict_gt_is_verbatim_filter(dialect) -> None:
     assert isinstance(result, QueryResult)
     td = result.query.time_dimensions[0]
     assert td.date_range is None
-    assert result.query.filters == ["ordered_at > '2024-01-01'"]
+    assert result.query.filters == ["ordered_at > '2024-01-01 00:00:00'"]
 
 
 def test_strict_lt_is_verbatim_filter(dialect) -> None:
@@ -1236,7 +1236,7 @@ def test_strict_lt_is_verbatim_filter(dialect) -> None:
     assert isinstance(result, QueryResult)
     td = result.query.time_dimensions[0]
     assert td.date_range is None
-    assert result.query.filters == ["ordered_at < '2025-01-01'"]
+    assert result.query.filters == ["ordered_at < '2025-01-01 00:00:00'"]
 
 
 def test_paired_inclusive_comparators_do_not_lift(dialect) -> None:
@@ -1249,8 +1249,8 @@ def test_paired_inclusive_comparators_do_not_lift(dialect) -> None:
     td = result.query.time_dimensions[0]
     assert td.date_range is None
     assert result.query.filters == [
-        "ordered_at >= '2024-01-01'",
-        "ordered_at <= '2024-12-31'",
+        "ordered_at >= '2024-01-01 00:00:00'",
+        "ordered_at <= '2024-12-31 00:00:00'",
     ]
 
 
@@ -1265,8 +1265,8 @@ def test_paired_mixed_strictness_stays_verbatim(dialect) -> None:
     td = result.query.time_dimensions[0]
     assert td.date_range is None
     assert result.query.filters == [
-        "ordered_at >= '2024-01-01'",
-        "ordered_at < '2025-01-01'",
+        "ordered_at >= '2024-01-01 00:00:00'",
+        "ordered_at < '2025-01-01 00:00:00'",
     ]
 
 
@@ -1279,7 +1279,7 @@ def test_reversed_operand_comparator_stays_verbatim(dialect) -> None:
     assert isinstance(result, QueryResult)
     td = result.query.time_dimensions[0]
     assert td.date_range is None
-    assert result.query.filters == ["'2024-01-01' <= ordered_at"]
+    assert result.query.filters == ["'2024-01-01 00:00:00' <= ordered_at"]
 
 
 def test_between_plus_comparator_lifts_only_the_between(dialect) -> None:
@@ -1291,8 +1291,8 @@ def test_between_plus_comparator_lifts_only_the_between(dialect) -> None:
     )
     assert isinstance(result, QueryResult)
     td = result.query.time_dimensions[0]
-    assert td.date_range == ["2024-01-01", "2024-12-31"]
-    assert result.query.filters == ["ordered_at >= '2024-06-01'"]
+    assert td.date_range == ["2024-01-01 00:00:00", "2024-12-31 00:00:00"]
+    assert result.query.filters == ["ordered_at >= '2024-06-01 00:00:00'"]
 
 
 def test_non_time_filter_passes_through_verbatim(dialect) -> None:

@@ -10,7 +10,7 @@ In.``
 DEV-1475 lands the support: ``ast.In`` / ``ast.NotIn`` reach
 ``_CMP_OP_MAP``, the parser produces a new ``Tuple`` ParsedExpr node for
 the RHS, the binder folds a ``Cmp(op="in"/"not in", left=ref, right=Tuple)``
-into a new ``InKey`` (modelled on ``BetweenKey``), and the SQL generator
+into a new ``InKey``, and the SQL generator
 emits ``IN (lit, lit, …)`` / ``NOT IN (...)`` through the single
 ``render_value_key`` path (P-G) across all filter render contexts — local
 WHERE/HAVING, POST-phase filters, and cross-model CTE routed filters.

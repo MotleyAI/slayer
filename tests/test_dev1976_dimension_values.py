@@ -21,13 +21,13 @@ from slayer.core.errors import (
 from slayer.core.keys import (
     REGROUP_LEAF_PREFIX,
     AggregateKey,
-    BetweenKey,
     ColumnKey,
     Grain,
     InKey,
     LiteralKey,
     Phase,
     ScalarCallKey,
+    TimePointCmpKey,
     TransformKey,
     ValueKey,
 )
@@ -336,7 +336,7 @@ class TestPredicatePhase:
     def test_phase_follows_the_operands(self, operand, phase):
         lit = LiteralKey(value=Decimal(1))
         assert InKey(column=operand, values=(lit,)).phase == phase
-        assert BetweenKey(column=operand, low=lit, high=lit).phase == phase
+        assert TimePointCmpKey(op=">=", operand=operand, point="2025-Q1").phase == phase
 
 
 class TestPredicateGrainPruning:

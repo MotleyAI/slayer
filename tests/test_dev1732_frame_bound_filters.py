@@ -7,7 +7,7 @@ typed ``date_range``. An explicit filter expressing the same intent
 (``filters=["created_at >= '2025-01-01'"]``) is not a ``date_range``, so it was
 applied inside ``_src`` and silently truncated the window — two spellings of one
 intent giving different numbers. The identical asymmetry existed in the
-``time_shift`` shifted CTE (``_shifted_where_part`` omitted ``BetweenKey`` and
+``time_shift`` shifted CTE (``_shifted_where_part`` omitted the ``date_range`` carrier and
 propagated every other ROW filter).
 
 The rule this module pins:
@@ -30,6 +30,7 @@ Layout:
 """
 
 import tempfile
+from datetime import date, datetime
 from decimal import Decimal
 
 import pytest
@@ -37,7 +38,6 @@ import pytest
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.keys import (
     ArithmeticKey,
-    BetweenKey,
     ColumnKey,
     ColumnSqlKey,
     LiteralKey,
@@ -98,7 +98,7 @@ class TestFrameBoundRecognition:
     @pytest.mark.parametrize("op", [">=", ">", "<=", "<"])
     async def test_relational_bound_on_td_column_is_stripped(self, op: str) -> None:
         """Every relational operator on a query TD's raw column is a frame
-        bound — BOTH directions. `date_range` strips a single ``BetweenKey``
+        bound — BOTH directions. `date_range` strips a single carrier
         node, i.e. both bounds, so equivalence requires stripping both."""
         assert _strip(_cmp(op, CREATED_AT, _lit("2024-06-01"))) is None
 
@@ -107,18 +107,16 @@ class TestFrameBoundRecognition:
         ``created_at >= '2024-06-01'`` and must be treated identically."""
         assert _strip(_cmp("<=", _lit("2024-06-01"), CREATED_AT)) is None
 
-    async def test_between_key_on_td_column_is_stripped(self) -> None:
-        """A ``BetweenKey`` (the ``date_range`` carrier) is subsumed by the same
-        helper, so ``time_shift``'s old ``isinstance(..., BetweenKey)`` special
-        case collapses into one rule."""
-        key = BetweenKey(
-            column=CREATED_AT, low=_lit("2024-06-01"), high=_lit("2024-12-31"),
+    async def test_lowered_date_range_on_td_column_is_stripped(self) -> None:
+        """The ``date_range`` carrier is a half-open pair over typed literals, stripped by the same rule."""
+        key = _and(
+            _cmp(">=", CREATED_AT, _lit(datetime(2024, 6, 1))), _cmp("<", CREATED_AT, _lit(datetime(2025, 1, 1))),
         )
         assert _strip(key) is None
 
-    async def test_between_key_on_non_td_column_is_kept(self) -> None:
-        key = BetweenKey(
-            column=DELIVERY_AT, low=_lit("2024-06-01"), high=_lit("2024-12-31"),
+    async def test_lowered_date_range_on_non_td_column_is_kept(self) -> None:
+        key = _and(
+            _cmp(">=", DELIVERY_AT, _lit(date(2024, 6, 1))), _cmp("<", DELIVERY_AT, _lit(date(2025, 1, 1))),
         )
         assert _strip(key) is key
 
@@ -131,7 +129,7 @@ class TestFrameBoundRecognition:
     async def test_bound_on_derived_time_column_is_stripped_by_identity(self) -> None:
         """A derived (``Column.sql``) temporal column binds to a
         ``ColumnSqlKey``; ``_build_date_range_filter`` binds its
-        ``BetweenKey.column`` through the same path that produces
+        date-range bound column through the same path that produces
         ``TimeTruncKey.column``, so identity matching covers it for free."""
         derived = ColumnSqlKey(path=(), model="orders", column_name="event_at")
         key = _cmp(">=", derived, _lit("2024-06-01"))
@@ -233,12 +231,18 @@ class TestTemporalLiteralWhitelist:
         key = _cmp(">=", CREATED_AT, tree)
         assert _strip(key) is key
 
-    async def test_between_with_non_str_endpoint_is_kept(self) -> None:
-        key = BetweenKey(column=CREATED_AT, low=_lit("2024-06-01"), high=_lit(None))
-        assert _strip(key) is key
+    async def test_null_endpoint_of_a_pair_is_kept(self) -> None:
+        null_bound = _cmp("<", CREATED_AT, _lit(None))
+        key = _and(_cmp(">=", CREATED_AT, _lit(date(2024, 6, 1))), null_bound)
+        assert _strip(key) == null_bound
 
     async def test_string_literal_is_temporal(self) -> None:
         assert is_temporal_literal(_lit("2024-06-01")) is True
+
+    @pytest.mark.parametrize("value", [date(2024, 6, 1), datetime(2024, 6, 1, 10)])
+    async def test_typed_temporal_literal_is_temporal(self, value) -> None:
+        assert is_temporal_literal(_lit(value)) is True
+        assert _strip(_cmp(">=", CREATED_AT, _lit(value))) is None
 
 
 # --------------------------------------------------------------------------- #
@@ -437,7 +441,7 @@ class TestWindowedSrcFrameBounds:
 
     async def test_explicit_upper_bound_is_stripped_from_src(self) -> None:
         """§2.1: BOTH bounds are stripped. ``date_range`` strips a single
-        ``BetweenKey`` node — i.e. both — so equivalence demands the same."""
+        carrier — i.e. both — so equivalence demands the same."""
         sql = await _wm_sql(
             _windowed_query(
                 filters=["created_at <= '2024-12-31'", "status = 'paid'"],
@@ -445,9 +449,9 @@ class TestWindowedSrcFrameBounds:
             _orders(),
         )
         src = _extract_src_body(sql)
-        assert "2024-12-31" not in src, src
+        assert "2025-01-01" not in src, src
         assert "'paid'" in src, src
-        assert "2024-12-31" in _extract_cte_body(sql, r"_base"), sql
+        assert "2025-01-01" in _extract_cte_body(sql, r"_base"), sql
 
     async def test_both_bounds_stripped_from_src_kept_on_base(self) -> None:
         sql = await _wm_sql(
@@ -462,10 +466,10 @@ class TestWindowedSrcFrameBounds:
         src = _extract_src_body(sql)
         base = _extract_cte_body(sql, r"_base")
         assert "2024-06-01" not in src, src
-        assert "2024-12-31" not in src, src
+        assert "2025-01-01" not in src, src
         assert "'paid'" in src, src
         assert "2024-06-01" in base, base
-        assert "2024-12-31" in base, base
+        assert "2025-01-01" in base, base
 
     async def test_literal_on_the_left_is_stripped_from_src(self) -> None:
         sql = await _wm_sql(
@@ -526,18 +530,29 @@ class TestWindowedSrcFrameBounds:
         assert "2024-06-01" in src, src
         assert "2024-07-01" not in src, src
 
-    async def test_equality_on_time_dimension_column_is_kept_in_src(self) -> None:
-        """Same column, two operators, opposite outcomes — the cleanest possible
-        demonstration that the operator, not the column, decides."""
+    async def test_instant_equality_on_time_dimension_column_is_kept_in_src(self) -> None:
+        """Same column, two operators, opposite outcomes: the operator and the
+        literal's kind decide, not the column."""
         sql = await _wm_sql(
             _windowed_query(
-                filters=["created_at == '2024-06-01'", "created_at >= '2024-07-01'"],
+                filters=["created_at == '2024-06-01 00:00:00'", "created_at >= '2024-07-01'"],
             ),
             _orders(),
         )
         src = _extract_src_body(sql)
         assert "2024-06-01" in src, src
         assert "2024-07-01" not in src, src
+
+    async def test_period_equality_on_time_dimension_column_is_stripped_from_src(self) -> None:
+        """A period ``=`` lowers to a half-open range: a frame bound like ``>=`` / ``<``."""
+        sql = await _wm_sql(
+            _windowed_query(filters=["created_at == '2024-06-01'"]),
+            _orders(),
+        )
+        src = _extract_src_body(sql)
+        assert "2024-06-01" not in src, src
+        assert "2024-06-02" not in src, src
+        assert "2024-06-01" in sql and "2024-06-02" in sql, sql
 
     async def test_mode_a_model_filter_is_kept_verbatim_in_src(self) -> None:
         """§2.5: a ``SlayerModel.filters`` entry defines which rows EXIST. There
@@ -872,7 +887,7 @@ class TestTimeShiftFrameBounds:
             _orders(),
         )
         assert "2024-06-01" not in body, body
-        assert "2024-12-31" not in body, body
+        assert "2025-01-01" not in body, body
 
     async def test_mixed_conjunction_keeps_population_predicate(self) -> None:
         body = await _shifted_body(

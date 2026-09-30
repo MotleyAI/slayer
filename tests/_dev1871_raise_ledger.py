@@ -113,11 +113,6 @@ ROWS: Tuple[LedgerRow, ...] = (
          + AT + "order item …"
          + SUGGEST + "…",
          category="checker", family="positions", user=True, owner="checker"),
-    _row(module=_EE, function="check_time_dimension_date_range", exc="TimeAxisError",
-         message="The date_range has a null bound (…); a null bound cannot be expressed as a range."
-         + AT + "time dimension …"
-         + SUGGEST + "Use a one-sided filter (e.g. '>=' / '<=') instead.",
-         category="checker", family="time-axis", user=True, owner="checker"),
     _row(module=_EE, function="check_time_dimension_column", exc="TimeDimensionColumnError",
          message="A time dimension must reference a temporal column (DATE / TIMESTAMP); got column type …."
          + AT + "time dimension …",

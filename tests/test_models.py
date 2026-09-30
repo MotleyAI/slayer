@@ -1500,28 +1500,9 @@ class TestStringCoercion:
 
 
 class TestWholePeriodsOnly:
-    def test_adds_lte_filter_when_none(self) -> None:
-        query = SlayerQuery(
-            source_model="orders",
-            measures=[ModelMeasure(formula="*:count")],
-            time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"),
-                granularity=TimeGranularity.MONTH,
-            )],
-            whole_periods_only=True,
-        )
-        snapped = query.snap_to_whole_periods()
-        assert len(snapped.filters) == 1
-        assert "<=" in snapped.filters[0]
-
-    def test_noop_when_false(self) -> None:
-        query = SlayerQuery(
-            source_model="orders",
-            measures=[ModelMeasure(formula="*:count")],
-            whole_periods_only=False,
-        )
-        snapped = query.snap_to_whole_periods()
-        assert snapped.filters is None
+    def test_no_textual_snap_on_the_query(self) -> None:
+        # Snapping is a typed planning pass, never a filter-text rewrite.
+        assert not hasattr(SlayerQuery, "snap_to_whole_periods")
 
     def test_period_start_quarter(self) -> None:
         start = TimeGranularity.QUARTER.period_start(datetime.date(2024, 5, 15))

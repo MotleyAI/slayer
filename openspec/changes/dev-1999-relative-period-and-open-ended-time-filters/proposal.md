@@ -4,14 +4,15 @@ Callers must compute every date bound themselves: there are no relative ranges (
 
 ## What Changes
 
-- **Time points.** A string literal compared with a temporal operand, or used as a `date_range` element, is a *time point*: an **instant** (ISO date-time with a time part — plain comparison) or a **period** `[start, next_start)` — period literals `YYYY`, `YYYY-Qn`, `YYYY-MM`, `YYYY-Www`, `YYYY-MM-DD`, or relative tokens (`today`, `this|last|next <unit>`, `last N <units>`, `N <units> ago`, `<unit> to date`, …) resolved in Python from an injectable engine clock read once per execution.
+- **Time points.** A string literal compared with a temporal operand, or used as a `date_range` element, is a *time point*: an **instant** (ISO date-time with a time part — plain comparison) or a **period** `[start, next_start)` — period literals `YYYY`, `YYYY-Qn`, `YYYY-MM`, `YYYY-Www`, `YYYY-MM-DD`, or relative tokens (`today`, `this|last|next <unit>`, `last N <units>`, `N <units> ago`, `<unit> to date`, …) resolved in Python from an injectable engine clock read once per execution (SQL-side `now()` / `current_date()` keep reading the database clock).
 - **Period comparison semantics in Mode-B filters** (`x >= P`, `x > P`, `x < P`, `x <= P`, `x = P`, `x != P`, and new single-string `x in P` / `x not in P`) lowered to half-open relational bounds. **BREAKING**: a date-only string compared with a DATE/TIMESTAMP column now means the whole day (`ts <= '2024-12-31'` includes Dec 31 10:00; `ts > '2024-01-01'` excludes all of Jan 1; `ts = '2024-01-01'` matches the whole day).
 - **`date_range`** accepts a single period (string or one-element list) and one-sided ranges (`null` bound); a date-only upper bound covers its whole day. **BREAKING**: `[]`, 3+ elements and `[null, null]` are typed errors (the `MALFORMED_DATE_RANGE` warning is removed); results on TIMESTAMP columns change as above.
 - **`gran(col)`** binds as a row-level time-bucket expression in every position (filters, aggregation sources, computed-dimension sub-expressions); its comparison with a literal lowers to an exact raw-column bound.
+- **One temporal typing, one ISO grammar, shared with the date functions**: a temporal operand is anything `core.keys.temporal_type` types DATE/TIMESTAMP (columns, `min`/`max`/`first`/`last`, date functions, clock calls, conditionals) or a direct `gran(col)`; date-position ISO literals accept the time-point instant grammar.
 - **`whole_periods_only`** is rebuilt as typed bounds: frame bounds on each time dimension's column snap to the earlier bucket boundary, the upper bound clamped to now, so every returned bucket is complete and the current bucket is excluded. **BREAKING**: results change (previously dropped complete periods; now snaps).
 - Lowered time bounds stay **frame bounds**: they never clip trailing windows or `time_shift`; a period `=` / `in` is a frame bound.
 - The **SQL facade** converts date-only literals in the time bounds it emits to instants, so translated SQL keeps its SQL meaning.
-- Typed errors (fail closed) for unparseable time strings against temporal operands, relative tokens against untyped columns, and sub-day points against DATE columns.
+- Typed errors (fail closed) for unparseable time strings and zone offsets against temporal operands, relative tokens against non-temporal operands (the date functions' `DateOperandTypeError`), and sub-day points against DATE operands.
 - New concept page `docs/concepts/time.md` as the single temporal reference.
 
 ## Capabilities
@@ -23,12 +24,13 @@ Callers must compute every date bound themselves: there are no relative ranges (
 - `queries/date-range`: `date_range` elements are time points; single-period and one-sided ranges; null-bound error and wrong-length warning requirements replaced by typed shape errors.
 - `queries/time-dimensions`: a granularity call inside a filter is now recognised (the "not recognised" scenario and the filter sentence in the order-key requirement are replaced).
 - `facade/time-filter-translation`: date-only literals in facade-emitted time bounds are converted to instants.
+- `queries/date-functions`: date-position ISO literals use the time-point instant grammar; a string literal compared with a temporal operand is a time point.
 
 ## Impact
 
-- `slayer/core`: new pure `time_points.py`; `TimeDimension.date_range` type; `SlayerQuery.snap_to_whole_periods` deleted; `keys.py` gains `TimePointCmpKey` (transient, resolved before planning) and `TemporalLiteralKey`, loses `BetweenKey`; `time_bounds.py` accepts `TemporalLiteralKey`.
-- `slayer/engine`: parser (scalar-string `in`), binder (`gran(col)` → `TimeTruncKey`, time-point comparisons → `TimePointCmpKey`), one checker-owned resolution pass in `bind_inputs` (typing, errors, lowering), typed `whole_periods_only`, clock on the engine and `now` on `ResolvedSourceBundle`; `normalization.py` loses `MALFORMED_DATE_RANGE`.
-- `slayer/sql`: `TimeTruncKey` in the row-expression renderer; `TemporalLiteralKey` rendering with a SQLite dialect hook.
+- `slayer/core`: new pure `time_points.py`; `TimeDimension.date_range` type; `SlayerQuery.snap_to_whole_periods` deleted; `keys.py` gains `TimePointCmpKey` (transient, resolved before planning), loses `BetweenKey` and `parse_iso_temporal` (moved into `time_points.py`, the one ISO parser); resolved bounds are `LiteralKey(date|datetime)`, which `time_bounds.py` accepts.
+- `slayer/engine`: parser (scalar-string `in`), binder (`gran(col)` → `TimeTruncKey`, time-point comparisons → `TimePointCmpKey`), one checker-owned resolution pass in `bind_inputs` over `core.keys.temporal_type` (errors, lowering), after `check_date_operands` and before time-key attachment, typed `whole_periods_only`, clock on the engine and `now` on `ResolvedSourceBundle`; `normalization.py` loses `MALFORMED_DATE_RANGE`.
+- `slayer/sql`: `TimeTruncKey` in the row-expression renderer; comparisons against a temporal literal render through one dialect hook (BigQuery and SQLite overrides).
 - `slayer/facade/translator.py`: AST-level instant-ization.
 - Surfaces: REST/MCP `date_range` schema; MCP `query` tool docs.
 - Goldens `dev1745`, `dev1747`, `dev1958` re-blessed; docs across `docs/concepts`, `docs/reference`, `docs/interfaces`, `docs/examples/04_time`.

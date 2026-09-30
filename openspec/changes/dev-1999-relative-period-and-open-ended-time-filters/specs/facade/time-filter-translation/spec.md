@@ -2,7 +2,7 @@
 
 ### Requirement: Translated time bounds keep their SQL meaning
 
-Every time bound the facade emits — a lifted `BETWEEN` or a verbatim relational comparator on a time dimension — SHALL carry each date-only literal as the instant at its midnight (`'2024-12-31'` → `'2024-12-31 00:00:00'`), including typed `DATE '…'` / `TIMESTAMP '…'` literals and either operand order, so the translated query matches exactly the rows the source SQL compares against. The conversion SHALL operate on the parsed SQL tree, never on SQL text.
+Every time bound the facade emits — a lifted `BETWEEN`, or a verbatim `=`, `!=`, `<`, `<=`, `>`, `>=` comparison whose other operand is a DATE or TIMESTAMP column in the catalog, whether or not it is projected — SHALL carry each date-only literal as the instant at its midnight (`'2024-12-31'` → `'2024-12-31 00:00:00'`), including typed `DATE '…'` / `TIMESTAMP '…'` literals and either operand order, so the translated query matches exactly the rows the source SQL compares against. The conversion SHALL operate on the parsed SQL tree, never on SQL text.
 
 #### Scenario: Lifted BETWEEN keeps midnight semantics
 
@@ -18,6 +18,16 @@ Every time bound the facade emits — a lifted `BETWEEN` or a verbatim relationa
 
 - **WHEN** the facade translates `WHERE DATE '2024-01-01' <= ordered_at`
 - **THEN** the emitted filter compares `ordered_at` against the instant `2024-01-01 00:00:00` with the same strictness
+
+#### Scenario: Unprojected timestamp column
+
+- **WHEN** the facade translates `SELECT revenue_sum FROM orders WHERE ordered_at <= '2024-12-31' AND ordered_at != '2024-06-01'` with no time dimension projected
+- **THEN** the filters are `ordered_at <= '2024-12-31 00:00:00'` and `ordered_at != '2024-06-01 00:00:00'`, and the executed result includes a `2024-12-31 00:00` row and excludes a `2024-12-31 10:00` row
+
+#### Scenario: Text columns are untouched
+
+- **WHEN** the facade translates `WHERE status = '2024-12-31'`
+- **THEN** the filter keeps `'2024-12-31'`
 
 ## MODIFIED Requirements
 

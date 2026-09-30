@@ -16,7 +16,7 @@ import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.keys import Grain
-from slayer.core.keys import KIND_POLICY, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, KindPolicy, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimeTruncKey, TransformKey, ValueKey, _FrozenKey, reroot_value_key, substitute_value_keys, walk_value_keys
+from slayer.core.keys import KIND_POLICY, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, ColumnKey, ColumnSqlKey, InKey, KindPolicy, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimeTruncKey, TransformKey, ValueKey, _FrozenKey, reroot_value_key, substitute_value_keys, walk_value_keys
 from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.engine.reference_closure import UnhandledValueKindError, aggregate_input_closure
@@ -63,7 +63,7 @@ TR_FULL = TransformKey(
 )
 AR = ArithmeticKey(op="+", operands=(AMOUNT, LiteralKey(value=Decimal("1"))))
 SC = ScalarCallKey(name="coalesce", args=(CITY, "fallback"))
-BT = BetweenKey(column=TS, low=LiteralKey(value="a"), high=LiteralKey(value="b"))
+TP = TimePointCmpKey(op=">=", operand=TS, point="2025-Q1")
 IK = InKey(
     column=CITY,
     values=(LiteralKey(value="gold"), LiteralKey(value="silver")),
@@ -80,7 +80,7 @@ SAMPLES = {
     TransformKey: TR_FULL,
     ArithmeticKey: AR,
     ScalarCallKey: SC,
-    BetweenKey: BT,
+    TimePointCmpKey: TP,
     InKey: IK,
     SqlFragmentKey: SqlFragmentKey(template="{r0} * {r1}", refs=(CITY, JOINED)),
 }
@@ -196,8 +196,8 @@ class TestChildrenPerKind:
     def test_scalar_call_children_are_key_valued_args_only(self) -> None:
         assert SC.children() == (CITY,)
 
-    def test_between_children(self) -> None:
-        assert BT.children() == (BT.column, BT.low, BT.high)
+    def test_time_point_children_are_the_operand(self) -> None:
+        assert TP.children() == (TS,)
 
     def test_in_children_are_column_then_values(self) -> None:
         assert IK.children() == (CITY,) + IK.values
@@ -236,12 +236,11 @@ class TestMapChildrenContract:
         assert dict(out.kwargs)["weight"] is clones[id(CITY)]
         assert next(iter(out.partition_keys)) is clones[id(REGION)]
 
-    def test_between_replacements_cannot_swap_fields(self) -> None:
-        clones = {id(c): c.model_copy() for c in BT.children()}
-        out = BT.map_children(lambda c: clones[id(c)])
-        assert out.column is clones[id(BT.column)]
-        assert out.low is clones[id(BT.low)]
-        assert out.high is clones[id(BT.high)]
+    def test_time_point_replacement_keeps_the_point(self) -> None:
+        clone = TS.model_copy()
+        out = TP.map_children(lambda c: clone)
+        assert out.operand is clone
+        assert (out.op, out.point, out.literal_on_left) == (TP.op, TP.point, TP.literal_on_left)
 
     def test_multi_member_partition_set_coherence(self) -> None:
         # Two iterations of the SAME frozenset instance agree, so recording
@@ -292,7 +291,7 @@ class TestKindPolicyRegistry:
 
     def test_slot_composite_membership(self) -> None:
         assert {k for k, p in KIND_POLICY.items() if p.slot_composite} == {
-            ArithmeticKey, ScalarCallKey, BetweenKey, InKey,
+            ArithmeticKey, ScalarCallKey, InKey,
         }
 
     def test_materialised_order_membership(self) -> None:
