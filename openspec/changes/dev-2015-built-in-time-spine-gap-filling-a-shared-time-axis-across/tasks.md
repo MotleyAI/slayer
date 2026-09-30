@@ -1,6 +1,6 @@
 ## 0. Preconditions
 
-- [ ] 0.1 Merge `origin/main` after DEV-1999 has landed (never rebase); verify `openspec/specs/queries/time-points/spec.md` exists and the full unit suite is green before any DEV-2015 work
+- [x] 0.1 Merge `origin/main` after DEV-1999 has landed (never rebase); verify `openspec/specs/queries/time-points/spec.md` exists and the full unit suite is green before any DEV-2015 work
 - [x] 0.2 Add the `queries/time-points` delta (custom granularities as `<unit>` in relative tokens — `last fiscal_year`, `last 2 fiscal_years`, `this fiscal_year` — and in `whole_periods_only` snapping), present the exact delta to the user for approval (the plan is frozen after pr-plan), then verify `openspec validate dev-2015-built-in-time-spine-gap-filling-a-shared-time-axis-across --strict` passes
 
 ## 1. Tests first (pr-tests stage)
@@ -15,12 +15,12 @@
 
 ## 2. Granularity type and datasource definitions
 
-- [ ] 2.1 `CustomGranularity` Pydantic model and `DatasourceConfig.granularities` with save-time validation; verify 1.3 validation tests pass
-- [ ] 2.2 Open granularity type (built-in or reference) and a resolved-definition type; replace every `TimeGranularity(...)` construction / dispatch site (query construction, keys, stage schemas, `Column.granularity`, binding, transforms, generator, dialects) with the resolved form; verify the full unit suite stays green
-- [ ] 2.3 Bundle resolution of granularity references per datasource; functional `name(col)` with a non-built-in callee resolved at binding (dimensions, `time_dimensions` strings, order keys, filters); unknown-name typed error; verify the time-dimensions and custom-granularity binding tests pass
-- [ ] 2.4 Custom bucketing via `date_diff` / `date_add` with floor correction; verify the bucketing tests on SQLite and DuckDB
-- [ ] 2.5 One nesting function over resolved definitions (built-ins as its special case) used by re-bucketing, `Column.granularity` and `whole_periods_only`; verify the nesting and column-granularity tests
-- [ ] 2.6 Custom steps for `time_shift` / `change` / `change_pct` / `consecutive_periods` and custom `time_shift` units; verify the transforms delta tests
+- [x] 2.1 `CustomGranularity` Pydantic model and `DatasourceConfig.granularities` with save-time validation; verify 1.3 validation tests pass
+- [x] 2.2 Open granularity type (built-in or reference) and a resolved-definition type; replace every `TimeGranularity(...)` construction / dispatch site (query construction, keys, stage schemas, `Column.granularity`, binding, transforms, generator, dialects) with the resolved form; verify the full unit suite stays green
+- [x] 2.3 Bundle resolution of granularity references per datasource; functional `name(col)` with a non-built-in callee resolved at binding (dimensions, `time_dimensions` strings, order keys, filters); unknown-name typed error; verify the time-dimensions and custom-granularity binding tests pass
+- [x] 2.4 Custom bucketing via `date_diff` / `date_add` with floor correction; verify the bucketing tests on SQLite and DuckDB
+- [x] 2.5 One nesting function over resolved definitions (built-ins as its special case) used by re-bucketing, `Column.granularity` and `whole_periods_only`; verify the nesting and column-granularity tests
+- [x] 2.6 Custom steps for `time_shift` / `change` / `change_pct` / `consecutive_periods` and custom `time_shift` units; verify the transforms delta tests
 
 ## 3. Spine model, wiring and routing
 

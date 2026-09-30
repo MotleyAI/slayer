@@ -24,13 +24,14 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple, TypeVar
+from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple, TypeVar, Union
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
-from slayer.core.enums import DataType, TimeGranularity
+from slayer.core.enums import DataType
 from slayer.core.errors import UnknownReferenceError
 from slayer.core.format import NumberFormat
+from slayer.core.granularity import CustomGranularity, GranularitySpec
 from slayer.core.models import Column, SlayerModel
 
 _T = TypeVar("_T")
@@ -61,7 +62,7 @@ class StageColumn(BaseModel):
     type: Optional[DataType] = None
     # Set only for a column an upstream stage bucketed (a ``TimeTruncKey`` slot);
     # ``None`` means "not truncated", so any granularity re-binds (DEV-1471).
-    granularity: Optional[TimeGranularity] = None
+    granularity: Optional[Union[CustomGranularity, GranularitySpec]] = None
     label: Optional[str] = None
     format: Optional[NumberFormat] = None
     hidden: bool = False

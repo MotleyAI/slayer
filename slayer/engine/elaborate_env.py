@@ -24,6 +24,7 @@ from slayer.core.errors import (
     DimensionTypeError,
     DistinctDimensionValuesError,
     DuplicateMeasureNameError,
+    GranularityShapeError,
     MeasureNameCollidesWithColumnError,
     ModelFilterError,
     NameCollisionError,
@@ -36,9 +37,11 @@ from slayer.core.errors import (
     TimeLiteralError,
     TransformInputError,
     UnanalyzableDependencyError,
+    UnknownGranularityError,
     UnsafeJoinInputError,
 )
 from slayer.core.formula import TIME_TRANSFORMS
+from slayer.core.granularity import CustomGranularity, Granularity, nests_into, unknown_granularity_message
 from slayer.core.window_duration import parse_window_duration
 from slayer.core.keys import (
     DATE_ADD_COUNT_ARG,
@@ -848,12 +851,41 @@ def check_windowed_time_dimension(*, resolved: bool) -> None:
     )
 
 
+def check_granularity_known(
+    *, name: str, granularity: Optional[Granularity], defined: Mapping[str, CustomGranularity], where: str,
+) -> Granularity:
+    """A granularity name must be built-in or defined on the query's datasource."""
+    if granularity is None:
+        raise UnknownGranularityError(
+            summary=unknown_granularity_message(name=name, defined=defined.values(), where=where),
+        )
+    return granularity
+
+
+def check_granularity_call_shape(*, entry: str, column: Optional[str]) -> None:
+    """A datasource-granularity call must take exactly one column reference."""
+    if column is None:
+        raise GranularityShapeError(
+            summary=f"Granularity call {entry!r} must be a single column reference ``gran(col)``.",
+            suggestion="Pass one bare or dotted column, e.g. ``fiscal_year(created_at)``.",
+        )
+
+
+def check_dimension_call_known(*, entry: str, defined: Mapping[str, CustomGranularity]) -> NoReturn:
+    """A single-column dimension call naming no granularity, scalar, transform or built-in aggregation."""
+    raise UnknownGranularityError(
+        summary=unknown_granularity_message(name=entry, defined=defined.values(), where="dimensions"),
+        suggestion="For a time bucket use ``gran(col)``; a custom aggregation used as a "
+        "dimension must carry ``partition_by=``.",
+    )
+
+
 def check_time_dimension_column(
     *,
     name: str,
     column_type: Optional[DataType],
-    upstream_granularity: Optional[TimeGranularity],
-    requested_granularity: TimeGranularity,
+    upstream_granularity: Optional[Granularity],
+    requested_granularity: Granularity,
 ) -> None:
     """A time dimension's column must be temporal (DATE / TIMESTAMP); a bucketed column — stage, query-backed cache, or hand-set ``Column.granularity`` — re-buckets only to the same or a nesting-coarser granularity (closure Axiom 9). One message for all three origins."""
     if column_type not in (DataType.DATE, DataType.TIMESTAMP):
@@ -865,12 +897,12 @@ def check_time_dimension_column(
     if (
         upstream_granularity is not None
         and requested_granularity != upstream_granularity
-        and not upstream_granularity.nests_into(requested_granularity)
+        and not nests_into(upstream_granularity, requested_granularity)
     ):
         raise TimeDimensionColumnError(
-            summary=f"Cannot re-bucket to '{requested_granularity.value}': the "
-            f"column is already bucketed at '{upstream_granularity.value}', which "
-            f"does not nest into '{requested_granularity.value}'.",
+            summary=f"Cannot re-bucket to '{requested_granularity}': the "
+            f"column is already bucketed at '{upstream_granularity}', which "
+            f"does not nest into '{requested_granularity}'.",
             location=f"time dimension {name!r}",
             suggestion="Request the same or a nesting-coarser granularity, or "
             "bucket the raw column instead.",
@@ -984,12 +1016,16 @@ _PLAIN_COMPARISON_OPS = frozenset({"==", "!=", "<", "<=", ">", ">="})
 _MIRRORED = {"==": "==", "!=": "!=", "<": ">", "<=": ">=", ">": "<", ">=": "<="}
 
 
-def resolve_time_points(key: ValueKey, *, column_type: ColumnTypeFn, now: datetime) -> ValueKey:
-    """Lower every time-point comparison in ``key`` to typed relational bounds; a temporal
-    operand compared with a string that is not a time point fails closed."""
-    rebuilt = cast(ValueKey, key.map_children(lambda c: resolve_time_points(c, column_type=column_type, now=now)))
+def resolve_time_points(
+    key: ValueKey, *, column_type: ColumnTypeFn, now: datetime, units: Mapping[str, CustomGranularity],
+) -> ValueKey:
+    """Lower every time-point comparison in ``key`` to typed relational bounds (relative-token
+    units: built-in or ``units``); a temporal operand compared with a non-time-point string fails closed."""
+    rebuilt = cast(ValueKey, key.map_children(
+        lambda c: resolve_time_points(c, column_type=column_type, now=now, units=units),
+    ))
     if isinstance(rebuilt, TimePointCmpKey):
-        return _lower_time_point(rebuilt, column_type=column_type, now=now)
+        return _lower_time_point(rebuilt, column_type=column_type, now=now, units=units)
     if isinstance(rebuilt, ArithmeticKey):
         _check_plain_time_comparison(rebuilt, column_type=column_type)
     return rebuilt
@@ -997,12 +1033,12 @@ def resolve_time_points(key: ValueKey, *, column_type: ColumnTypeFn, now: dateti
 
 def _time_operand(
     operand: ValueKey, *, column_type: ColumnTypeFn,
-) -> Tuple[ValueKey, Optional[DataType], Optional[TimeGranularity]]:
+) -> Tuple[ValueKey, Optional[DataType], Optional[Granularity]]:
     """``(bounded operand, its temporal type, bucket granularity)``: a direct ``gran(col)``
     bounds ``col``; ISO literals in a conditional count as dates when that makes it temporal."""
     if isinstance(operand, TimeTruncKey):
         t = temporal_type(operand.column, column_type=column_type)
-        return operand.column, t, TimeGranularity(operand.granularity)
+        return operand.column, t, operand.granularity
     t = temporal_type(operand, column_type=column_type)
     if t is None:
         typed = type_date_values(operand)
@@ -1034,11 +1070,13 @@ def _raise_not_a_time_point(*, operand: object, text: str) -> NoReturn:
     )
 
 
-def _lower_time_point(key: TimePointCmpKey, *, column_type: ColumnTypeFn, now: datetime) -> ValueKey:
+def _lower_time_point(
+    key: TimePointCmpKey, *, column_type: ColumnTypeFn, now: datetime, units: Mapping[str, CustomGranularity],
+) -> ValueKey:
     target, t, gran = _time_operand(key.operand, column_type=column_type)
     if t is None:
         return _non_temporal_comparison(key)
-    point = resolve_time_point(key.point, now=now)
+    point = resolve_time_point(key.point, now=now, units=units)
     if point is None:
         _raise_not_a_time_point(operand=key.operand, text=key.point)
     op = {"in": "=", "not in": "!="}.get(key.op, key.op)

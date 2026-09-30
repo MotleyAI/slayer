@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from pydantic import BaseModel, ConfigDict, Field
 
 from slayer.core.enums import DataType
+from slayer.core.granularity import CustomGranularity
 from slayer.core.models import (
     Column,
     SlayerModel,
@@ -59,6 +60,8 @@ class ResolvedSourceBundle(BaseModel):
     splice_failures: Dict[str, Exception] = Field(default_factory=dict)
     # The one clock reading every time point in this execution resolves against.
     now: datetime = Field(default_factory=datetime.now)
+    # The datasource's custom granularities, keyed by ``granularity_key``.
+    granularities: Dict[str, CustomGranularity] = Field(default_factory=dict)
 
     def get_referenced_model(self, name: str) -> Optional[SlayerModel]:
         """Linear lookup by name (list is small, O(n) scan is fine)."""

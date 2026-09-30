@@ -347,6 +347,38 @@ class DistinctDimensionValuesError(QueryTypeError):
     """``distinct_dimension_values=False`` (raw rows) conflicts with an aggregation or an empty projection."""
 
 
+class UnknownGranularityError(QueryTypeError):
+    """A granularity name that is neither built-in nor defined on the query's datasource."""
+
+
+class GranularityShapeError(QueryTypeError):
+    """A datasource-granularity call that is not a single column reference ``gran(col)``."""
+
+
+class TimeSpineError(QueryTypeError):
+    """A query shape the time spine cannot take: no lower bound, spine rows counted, the spine column
+    outside a bucketed time dimension or a bound, or a stored model shadowing ``time_spine``."""
+
+
+class GranularityDefinitionError(SlayerError):
+    """A datasource custom-granularity definition breaking a save-time rule."""
+
+    def __init__(self, *, name: str, rule: str) -> None:
+        self.name = name
+        self.rule = rule
+        super().__init__(f"Granularity {name!r}: {rule}.")
+
+
+class ReservedModelNameError(SlayerError):
+    """A user model named after a built-in model."""
+
+    def __init__(self, *, name: str) -> None:
+        self.name = name
+        super().__init__(
+            f"Model name {name!r} is reserved for the built-in time spine model; choose another name."
+        )
+
+
 class DuplicateMeasureNameError(NameCollisionError):
     """Two measures in one query declare the same explicit ``name``."""
 

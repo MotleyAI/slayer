@@ -1,6 +1,6 @@
 """Core enums for SLayer."""
 
-import datetime  # noqa: F401  (kept for downstream imports of TimeGranularity)
+import datetime
 import difflib
 from enum import Enum
 from typing import Any, Literal, Optional
@@ -121,19 +121,10 @@ class TimeGranularity(StrEnum):
         raise ValueError(f"Unexpected granularity: {self}")
 
     def nests_into(self, other: "TimeGranularity") -> bool:
-        """True iff this bucket tiles ``other`` exactly (finer-or-equal, aligned): reflexive plus the transitive closure of second→minute→hour→day, day→week, day→week_sunday, day→month→quarter→year; week/week_sunday tile nothing coarser."""
-        if self == other:
-            return True
-        seen: set["TimeGranularity"] = {self}
-        frontier: list["TimeGranularity"] = [self]
-        while frontier:
-            for parent in _GRANULARITY_PARENTS.get(frontier.pop(), ()):
-                if parent == other:
-                    return True
-                if parent not in seen:
-                    seen.add(parent)
-                    frontier.append(parent)
-        return False
+        """True iff every ``other`` boundary is a boundary of this bucket."""
+        return boundaries_nest(
+            fine=(self, 1, natural_origin(self)), coarse=(other, 1, natural_origin(other)),
+        )
 
 
 GRANULARITY_NAMES: frozenset[str] = frozenset(g.value for g in TimeGranularity)
@@ -160,16 +151,44 @@ SUB_DAY_GRANULARITIES: frozenset[TimeGranularity] = frozenset({
 })
 
 
-_GRANULARITY_PARENTS: dict[TimeGranularity, tuple[TimeGranularity, ...]] = {
-    TimeGranularity.SECOND: (TimeGranularity.MINUTE,),
-    TimeGranularity.MINUTE: (TimeGranularity.HOUR,),
-    TimeGranularity.HOUR: (TimeGranularity.DAY,),
-    TimeGranularity.DAY: (
-        TimeGranularity.WEEK, TimeGranularity.WEEK_SUNDAY, TimeGranularity.MONTH,
-    ),
-    TimeGranularity.MONTH: (TimeGranularity.QUARTER,),
-    TimeGranularity.QUARTER: (TimeGranularity.YEAR,),
+_EPOCH = datetime.datetime(2000, 1, 1)
+_NATURAL_ORIGINS: dict[TimeGranularity, datetime.datetime] = {
+    TimeGranularity.WEEK: datetime.datetime(2000, 1, 3),         # a Monday
+    TimeGranularity.WEEK_SUNDAY: datetime.datetime(2000, 1, 2),  # a Sunday
 }
+UNIT_SECONDS: dict[TimeGranularity, int] = {
+    TimeGranularity.SECOND: 1, TimeGranularity.MINUTE: 60, TimeGranularity.HOUR: 3600,
+    TimeGranularity.DAY: 86400, TimeGranularity.WEEK: 604800, TimeGranularity.WEEK_SUNDAY: 604800,
+}
+UNIT_MONTHS: dict[TimeGranularity, int] = {
+    TimeGranularity.MONTH: 1, TimeGranularity.QUARTER: 3, TimeGranularity.YEAR: 12,
+}
+
+# (base, multiple, origin): boundaries at origin + k × multiple × base.
+GranularityParts = tuple[TimeGranularity, int, datetime.datetime]
+
+
+def natural_origin(unit: TimeGranularity) -> datetime.datetime:
+    """A boundary of ``unit``'s natural alignment."""
+    return _NATURAL_ORIGINS.get(unit, _EPOCH)
+
+
+def boundaries_nest(*, fine: GranularityParts, coarse: GranularityParts) -> bool:
+    """Every ``coarse`` boundary is a ``fine`` boundary, decided arithmetically."""
+    b1, m1, o1 = fine
+    b2, m2, o2 = coarse
+    if b1 in UNIT_MONTHS and b2 in UNIT_MONTHS:
+        l1, l2 = UNIT_MONTHS[b1] * m1, UNIT_MONTHS[b2] * m2
+        months = (o2.year * 12 + o2.month) - (o1.year * 12 + o1.month)
+        same_day = (o1.day, o1.time()) == (o2.day, o2.time())
+        return l2 % l1 == 0 and same_day and months % l1 == 0
+    if b1 not in UNIT_SECONDS:
+        return False
+    l1 = UNIT_SECONDS[b1] * m1
+    offset = int((o2 - o1).total_seconds())
+    if b2 in UNIT_SECONDS:
+        return (UNIT_SECONDS[b2] * m2) % l1 == 0 and offset % l1 == 0
+    return l1 <= UNIT_SECONDS[TimeGranularity.DAY] and offset % l1 == 0
 
 
 class OrderDirection(StrEnum):

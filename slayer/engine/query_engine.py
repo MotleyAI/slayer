@@ -594,7 +594,7 @@ def _granularity_conflict_warnings(
     """One payload per non-nesting ``whole_periods_only`` granularity pair, per stage."""
     return [
         WholePeriodsNonNestingWarningPayload(
-            column=c.column, granularities=[g.value for g in c.granularities], location=location,
+            column=c.column, granularities=[str(g) for g in c.granularities], location=location,
         )
         for planned, location in zip(planned_list, labels)
         for c in planned.granularity_conflicts

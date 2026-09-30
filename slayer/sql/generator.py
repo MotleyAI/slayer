@@ -38,6 +38,7 @@ from slayer.core.errors import (
     QueryBackedCycleError,
 )
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
+from slayer.core.granularity import CustomGranularity, Granularity, granularity_parts
 from slayer.core.keys import BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, SLOT_COMPOSITE_KINDS, TEMPORAL_TYPES, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, ColumnKey, ColumnSqlKey, ColumnTypeFn, InKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimeTruncKey, TransformKey, column_leaf, column_path, date_add_type, is_boolean_shaped, parameter_row_leaves, shift_offset_of, source_anchor_path, substitute_value_keys, temporal_type, walk_value_keys
 from slayer.core.join_walker import aggregation_owner, model_column_type, physical_join_pairs, resolve_hop, terminal_model
 from slayer.core.models import VALUE_PLACEHOLDER, aggregation_definition, rendered_formula, reserved_value_param_message
@@ -189,7 +190,7 @@ class _WindowedEmission(BaseModel):
     aggregate_slot_id: str
     agg: str
     window_parts: List[Tuple[int, str]]
-    window_granularity: str
+    window_granularity: Granularity
     window_time_dimension_slot_id: str
     dimension_slot_ids: List[str]
     other_time_dimension_slot_ids: List[str]
@@ -627,8 +628,11 @@ def _percentile_literal(p: Expression) -> Expression:
     return node.copy()
 
 
-def _shift_preserves_bucket_starts(bucket: "TimeGranularity", shift: str) -> bool:
-    return shift.lower() in _BUCKET_ALIGNED_SHIFT_UNITS.get(str(bucket), frozenset())
+def _shift_preserves_bucket_starts(*, bucket: Granularity, shift: Granularity) -> bool:
+    """A built-in shift that maps every built-in bucket start onto a bucket start (a custom one re-buckets)."""
+    if isinstance(bucket, CustomGranularity) or isinstance(shift, CustomGranularity):
+        return False
+    return shift.value in _BUCKET_ALIGNED_SHIFT_UNITS.get(bucket.value, frozenset())
 
 
 def _is_host_grain(key) -> bool:
@@ -1139,22 +1143,20 @@ class SQLGenerator:
         )
 
     def _calendar_offset_bucket(
-        self, *, bucket_expr: Expression, periods: int, shift_granularity: str, bucket_granularity: str,
+        self, *, bucket_expr: Expression, periods: int, shift_granularity: Granularity,
+        bucket_granularity: Granularity,
     ) -> Expression:
         """The bucket ``periods`` steps of ``shift_granularity`` from ``bucket_expr``, as a ``bucket_comparand``."""
-        bucket = TimeGranularity(bucket_granularity)
-        shifted = self._dialect.bucket_offset(
-            bucket=bucket_expr, count=int(periods), unit=TimeGranularity(shift_granularity),
-        )
-        if _shift_preserves_bucket_starts(bucket=bucket, shift=shift_granularity):
+        shifted = self._dialect.bucket_step(bucket=bucket_expr, count=int(periods), unit=shift_granularity)
+        if _shift_preserves_bucket_starts(bucket=bucket_granularity, shift=shift_granularity):
             return shifted
-        return self._dialect.bucket_comparand(self._build_date_trunc(col_expr=shifted, granularity=bucket))
-
-    def _build_date_trunc(self, col_expr: Expression, granularity: TimeGranularity) -> Expression:
-        """Build a DATE_TRUNC expression. Dispatches to the dialect strategy"""
-        return self._dialect.build_date_trunc(
-            col_expr=col_expr, granularity=granularity,
+        return self._dialect.bucket_comparand(
+            self._build_date_trunc(col_expr=shifted, granularity=bucket_granularity),
         )
+
+    def _build_date_trunc(self, col_expr: Expression, granularity: Granularity) -> Expression:
+        """The bucket of ``col_expr`` at ``granularity``, through the dialect strategy."""
+        return self._dialect.build_bucket(col_expr=col_expr, granularity=granularity)
 
     def _rewrite_log_aliases(self, node: Expression) -> Expression:
         """Thin delegator to the shared log-alias policy in"""
@@ -2216,8 +2218,7 @@ class SQLGenerator:
                         bundle=bundle,
                     )
                     trunc_expr = self._build_date_trunc(
-                        col_expr=col_expr,
-                        granularity=TimeGranularity(key.granularity),
+                        col_expr=col_expr, granularity=key.granularity,
                     )
                     select_columns.append(trunc_expr.copy().as_(full_alias))
                     group_by_keys.setdefault(sid, trunc_expr)
@@ -2450,9 +2451,7 @@ class SQLGenerator:
                 time_column=tslot.key.column, source_model=source_model,
                 source_relation=source_relation, bundle=bundle,
             )
-            trunc = self._build_date_trunc(
-                col_expr=raw, granularity=TimeGranularity(tslot.key.granularity),
-            )
+            trunc = self._build_date_trunc(col_expr=raw, granularity=tslot.key.granularity)
             src_cols.append(trunc.as_(f"_w_td_{idx}"))
             grain_pairs.append(
                 (_src_col(f"_w_td_{idx}"), _base_col(base_alias)),
@@ -2578,8 +2577,8 @@ class SQLGenerator:
         assert wtd_slot is not None
         time_type = src_scope.column_type(wtd_slot.key.column)
         operand = DataType.DATE if time_type is DataType.DATE else DataType.TIMESTAMP
-        unit = TimeGranularity(plan.window_granularity)
-        bucket_end = self._date_offset(_base_col(wtd_alias), count=1, unit=unit, operand=operand)
+        unit, step, _ = granularity_parts(plan.window_granularity)
+        bucket_end = self._date_offset(_base_col(wtd_alias), count=step, unit=unit, operand=operand)
         lower_bound, operand = bucket_end, date_add_type(operand, unit)
         for amount, letter in plan.window_parts:
             unit = WINDOW_UNIT_GRANULARITY[letter]
@@ -2708,9 +2707,7 @@ class SQLGenerator:
                 source_relation=root_relation, bundle=bundle,
             )
             _register(raw, column_path(key.column))
-            return self._build_date_trunc(
-                col_expr=raw, granularity=TimeGranularity(key.granularity),
-            )
+            return self._build_date_trunc(col_expr=raw, granularity=key.granularity)
         if isinstance(key, ColumnKey):
             expr = self._joined_or_local_dim_expr(
                 path=key.path, leaf=key.leaf, source_model=root_model,
@@ -3303,9 +3300,7 @@ class SQLGenerator:
                 time_column=tslot.key.column, source_model=source_model,
                 source_relation=source_relation, bundle=bundle,
             )
-            _emit(tslot, self._build_date_trunc(
-                col_expr=raw, granularity=TimeGranularity(tslot.key.granularity),
-            ))
+            _emit(tslot, self._build_date_trunc(col_expr=raw, granularity=tslot.key.granularity))
         # ROW filters gate the visible grain; the trailing window in the _src join reaches rows before them via
         # plan.where_filter_ids (a strict subset).
         self._resolve_where_filter_joins_via_scope(

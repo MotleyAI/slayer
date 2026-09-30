@@ -10,11 +10,15 @@ from pathlib import Path
 from typing import Any
 from collections.abc import Callable, Iterable
 
-from slayer.core.enums import JoinCardinality, invert_cardinality
+from slayer.core.enums import JoinCardinality, TimeGranularity, invert_cardinality
+from slayer.core.granularity import resolve_granularity, unknown_granularity_message
+from slayer.core.time_spine import TIME_SPINE_MODEL
 from slayer.core.errors import (
     AmbiguousModelError,
     IdCollisionError,
     MemoryNotFoundError,
+    ReservedModelNameError,
+    UnknownGranularityError,
 )
 from slayer.engine.column_dependency import validate_derived_columns
 from slayer.core.join_walker import edges_between
@@ -351,13 +355,29 @@ class StorageBackend(ABC):
         self, model: SlayerModel, *, _validate: bool = True,
     ) -> None:
         """Persist a model: case-collision rejection (filename backends), then derived-column well-formedness (reference arity + cycles) and join-edge validation, before the backend write. ``_validate=False`` (migration write-back only) skips validation. Backends must NOT override this."""
+        if model.name == TIME_SPINE_MODEL:
+            raise ReservedModelNameError(name=model.name)
         if _validate:
             if self._ids_collide_as_filenames:
                 await self._check_model_identity_collision(model)
             await validate_derived_columns(model=model, storage=self)
             await self._validate_join_edges(model)
             await self._validate_aggregations(model)
+            await self._validate_column_granularities(model)
         await self._save_model_impl(model)
+
+    async def _validate_column_granularities(self, model: SlayerModel) -> None:
+        names = [c for c in model.columns if isinstance(c.granularity, str) and not isinstance(c.granularity, TimeGranularity)]
+        if not names:
+            return
+        ds = await self.get_datasource(model.data_source) if model.data_source else None
+        defined = ds.granularity_definitions if ds is not None else {}
+        for column in names:
+            if resolve_granularity(column.granularity, defined=defined) is None:
+                raise UnknownGranularityError(summary=unknown_granularity_message(
+                    name=str(column.granularity), defined=defined.values(),
+                    where=f"column {column.name!r} of model {model.name!r}",
+                ))
 
     async def _validate_aggregations(self, model: SlayerModel) -> None:
         if not model.aggregations:
@@ -736,9 +756,14 @@ class StorageBackend(ABC):
 
     # ---- datasource CRUD ---------------------------------------------------
 
-    @abstractmethod
     async def save_datasource(self, datasource: DatasourceConfig) -> None:
-        """Persist a datasource config (upsert by exact name); filename-backed backends should call ``check_datasource_id_collision`` first."""
+        """Persist a datasource config (upsert by exact name) once its custom granularities pass the save-time rules. Backends must NOT override this."""
+        datasource.check_granularities()
+        await self._save_datasource_impl(datasource)
+
+    @abstractmethod
+    async def _save_datasource_impl(self, datasource: DatasourceConfig) -> None:
+        """Backend-specific durable write; filename-backed backends should call ``check_datasource_id_collision`` first."""
 
     async def check_datasource_id_collision(self, name: str) -> None:
         """Raise :class:`IdCollisionError` when ``name`` case-collides with an existing datasource name or a saved model's ``data_source`` (public so backends call it from ``save_datasource``)."""

@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlglot import exp
 from sqlglot.expressions.core import Expression
 
-from slayer.core.enums import DataType, TimeGranularity
+from slayer.core.enums import DataType
 from slayer.core.errors import RenderContextMissingFacilityError
 from slayer.core.keys import (
     AggregateKey,
@@ -377,10 +377,7 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
             key.column, consumer=ctx.consumer,
         )
         # The dialect owns the per-backend wire form; a literal DATE_TRUNC would name a function SQLite lacks.
-        return ctx.dialect.build_date_trunc(
-            col_expr=column,
-            granularity=TimeGranularity(key.granularity),
-        )
+        return ctx.dialect.build_bucket(col_expr=column, granularity=key.granularity)
 
     if isinstance(key, ArithmeticKey):
         comparison = temporal_comparison(key)

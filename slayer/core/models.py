@@ -26,13 +26,13 @@ from slayer.core.enums import (
     ObjectKind,
     PRIMARY_KEY_AGGREGATIONS,
     RANKED_AGGREGATIONS,
-    TimeGranularity,
     _coerce_legacy_datatype,
     builtin_empty_value,
 )
-from slayer.core.errors import JoinKeyError
+from slayer.core.errors import GranularityDefinitionError, JoinKeyError
 from slayer.core.format import NumberFormat
 from slayer.core.formula import ALL_TRANSFORMS
+from slayer.core.granularity import CustomGranularity, GranularitySpec, definition_error, granularity_key
 from slayer.core.keys import SCALAR_FUNCTIONS
 from slayer.core.refs import IDENTIFIER_RE
 from slayer.sql.dialects import dialect_for_ds_type
@@ -196,10 +196,11 @@ class Column(BaseModel):
     label: str | None = None
     hidden: bool = False
     format: NumberFormat | None = None
-    granularity: TimeGranularity | None = Field(
+    granularity: GranularitySpec | None = Field(
         default=None,
         description=(
-            "Time bucket the column's values are already truncated to. "
+            "Time bucket the column's values are already truncated to: a built-in "
+            "granularity or a custom granularity defined on the model's datasource. "
             "Query-backed models stamp it from the final stage; on a table-backed "
             "column set it by hand only when you are sure the values are bucketed "
             "at that granularity. A finer or non-nesting time dimension over the "
@@ -239,7 +240,7 @@ class Column(BaseModel):
         if self.granularity is not None and self.type not in (DataType.DATE, DataType.TIMESTAMP):
             raise ValueError(
                 f"Column {self.name!r} declares granularity "
-                f"'{self.granularity.value}' but its type is {self.type.value}; "
+                f"'{self.granularity}' but its type is {self.type.value}; "
                 f"a granularity is only valid on a temporal (DATE / TIMESTAMP) column."
             )
         return self
@@ -898,6 +899,13 @@ class DatasourceConfig(BaseModel):
     # BigQuery-specific. A per-end-user OAuth authorized-user grant as JSON;
     # mutually exclusive with ``credentials_json`` (which carries a service account).
     oauth_credentials_json: str | None = Field(default=None, repr=False)
+    granularities: list[CustomGranularity] = Field(
+        default_factory=list,
+        description=(
+            "Custom time granularities: {name, base, multiple, origin}, buckets starting "
+            "at origin + k × multiple × base; usable wherever a built-in granularity is."
+        ),
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -934,6 +942,23 @@ class DatasourceConfig(BaseModel):
                 f"identifier matching [a-z_][a-z0-9_]*, got {v!r}"
             )
         return v
+
+    def check_granularities(self) -> None:
+        """Raise ``GranularityDefinitionError`` for the first entry breaking a save-time rule."""
+        reserved = _reserved_granularity_names()
+        seen: set[str] = set()
+        for g in self.granularities:
+            rule = definition_error(g, reserved=reserved)
+            if rule is None and granularity_key(g.name) in seen:
+                rule = "the name duplicates another entry (names compare case-insensitively)"
+            if rule is not None:
+                raise GranularityDefinitionError(name=g.name, rule=rule)
+            seen.add(granularity_key(g.name))
+
+    @property
+    def granularity_definitions(self) -> dict[str, CustomGranularity]:
+        """The custom granularities keyed by ``granularity_key``."""
+        return {granularity_key(g.name): g for g in self.granularities}
 
     def _get_tsql_connection_string(self) -> str:
         return _SA_URL.create(
@@ -1019,6 +1044,15 @@ class DatasourceConfig(BaseModel):
                 f"{', '.join(unresolved)}"
             )
         return DatasourceConfig(**data)
+
+
+def _reserved_granularity_names() -> dict[str, str]:
+    """Names a custom granularity may not take, lowercased, with the kind they belong to."""
+    out: dict[str, str] = {name: "Mode-B function" for name in SCALAR_FUNCTIONS}
+    out.update({name: "transform" for name in ALL_TRANSFORMS})
+    out.update({name: "aggregation" for name in BUILTIN_AGGREGATIONS})
+    out.update({name: "granularity" for name in GRANULARITY_NAMES})
+    return out
 
 
 def _resolve_env_string(value: str) -> str:

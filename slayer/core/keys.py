@@ -45,6 +45,7 @@ from slayer.core.enums import (
     TimeGranularity,
 )
 from slayer.core.format import NumberFormat
+from slayer.core.granularity import CustomGranularity, Granularity
 from slayer.core.time_points import parse_temporal_value
 
 
@@ -314,12 +315,12 @@ class TimeTruncKey(_FrozenKey, frozen=True):
     """Row-level reference to a time-truncated column, keyed by (column, granularity).
 
     ``column`` is a ``ColumnKey`` (base temporal column) or ``ColumnSqlKey``
-    (derived). ``granularity`` is a ``TimeGranularity`` member's string value.
+    (derived). ``granularity`` is resolved: built-in, or a datasource definition.
     Different granularities on the same column are distinct slots.
     """
 
     column: ColumnKey | ColumnSqlKey
-    granularity: str
+    granularity: Granularity
 
     @property
     def phase(self) -> Phase:
@@ -543,7 +544,8 @@ class TransformKey(_FrozenKey, frozen=True):
     op: str
     input: "ValueKey"
     args: Tuple[Scalar, ...] = ()
-    kwargs: Tuple[Tuple[str, Scalar], ...] = ()
+    # A ``time_shift`` unit resolves to its datasource definition when custom.
+    kwargs: Tuple[Tuple[str, Union[Scalar, CustomGranularity]], ...] = ()
     partition_keys: "Grain" = Field(default_factory=lambda: Grain.EMPTY)
     time_key: Optional["ValueKey"] = None
 
@@ -1405,7 +1407,7 @@ def desugar_change_pct(key: TransformKey) -> ArithmeticKey:
     return ArithmeticKey(op="/", operands=(numerator, guarded_divisor))
 
 
-def shift_offset_of(key: TransformKey) -> Tuple[int, Optional[str]]:
+def shift_offset_of(key: TransformKey) -> Tuple[int, Optional[Granularity]]:
     """A ``time_shift`` key's ``(periods, granularity)``; ``periods`` must be an integer."""
     kwargs = dict(key.kwargs)
     periods = kwargs.get("periods")
@@ -1414,7 +1416,9 @@ def shift_offset_of(key: TransformKey) -> Tuple[int, Optional[str]]:
     if isinstance(periods, bool) or not isinstance(periods, int):
         raise ValueError(f"time_shift periods must be an integer; got {periods!r}")
     granularity = kwargs.get("granularity")
-    return periods, None if granularity is None else str(granularity)
+    if granularity is None or isinstance(granularity, CustomGranularity):
+        return periods, granularity
+    return periods, TimeGranularity(str(granularity).lower())
 
 
 def lower_sugar_transforms(key: ValueKey) -> ValueKey:

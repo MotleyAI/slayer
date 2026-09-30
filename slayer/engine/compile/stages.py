@@ -28,7 +28,7 @@ from typing import (
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from slayer.core.enums import DataType, JoinType, RANKED_AGGREGATIONS, TimeGranularity
+from slayer.core.enums import DataType, JoinType, RANKED_AGGREGATIONS
 from slayer.core.errors import AmbiguousJoinPathError, CircularJoinPathError
 from slayer.core.keys import SLOT_COMPOSITE_KINDS, AggregateKey, Grain, ArithmeticKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, PREDICATE_COMPARISON_OPS, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, effective_root_grain, constituent_grain, attached_parameter_grain, substitute_value_keys, substitute_consumer_keys, walk_value_keys, REGROUP_LEAF_PREFIX, is_cross_model_agg, is_kernel_requiring, split_top_level_and, window_kwarg_of, is_row_attach_root, attached_inputs, operand_aggregates, operand_constituents, parameter_row_leaves, source_anchor_path, source_row_leaves, VALUE_KEY_TYPES
 from slayer.core.models import Column, SlayerModel, aggregation_definition, empty_value
@@ -4476,7 +4476,7 @@ def _stage_column(
     # so a re-binding TimeDimension can type-check the re-bucket.
     row = source if slot.phase == Phase.ROW else None
     upstream_gran = (
-        TimeGranularity(slot.key.granularity)
+        slot.key.granularity
         if isinstance(slot.key, TimeTruncKey) else getattr(row, "granularity", None)
     )
     return StageColumn(

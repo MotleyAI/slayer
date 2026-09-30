@@ -26,6 +26,7 @@ from sqlglot.dialects.dialect import Dialect as _SqlglotDialect
 
 from slayer.core.enums import SUB_DAY_GRANULARITIES, DataType, DatePart, TimeGranularity
 from slayer.core.errors import IdentifierCollisionError, IdentifierLengthError
+from slayer.core.granularity import CustomGranularity, Granularity, granularity_parts
 from slayer.sql._identifier_fit import (
     SqlLexis,
     fit_identifier,
@@ -396,6 +397,42 @@ class SqlDialect(BaseModel):
         if not isinstance(col_expr, (exp.Column, exp.Cast)):
             col_expr = exp.Cast(this=col_expr, to=exp.DataType.build("TIMESTAMP"))
         return exp.DateTrunc(this=col_expr, unit=exp.Literal.string(gran_str))
+
+    def build_bucket(self, *, col_expr: Expression, granularity: Granularity) -> Expression:
+        """The bucket start of ``col_expr`` at ``granularity``: native truncation for a built-in, the
+        last ``origin + k·multiple·base`` boundary at or before it for a custom granularity."""
+        if not isinstance(granularity, CustomGranularity):
+            return self.build_date_trunc(col_expr=col_expr, granularity=granularity)
+        base, multiple, origin = granularity_parts(granularity)
+        ts = self.promote_to_timestamp(col_expr)
+        anchor = self.build_temporal_literal(value=origin, dt=DataType.TIMESTAMP)
+
+        def at(count: Expression) -> Expression:
+            return self.build_date_add(expr=anchor, count=count, unit=base, operand=DataType.TIMESTAMP)
+
+        crossed = self.build_date_diff(unit=base, start=anchor, end=ts, operand=DataType.TIMESTAMP)
+        whole = exp.Case(ifs=[exp.If(
+            this=exp.GT(this=at(crossed), expression=ts.copy()),
+            true=exp.Sub(this=exp.Paren(this=crossed.copy()), expression=exp.Literal.number(1)),
+        )], default=crossed.copy())
+        if multiple == 1:
+            return at(whole)
+        m = exp.Literal.number(multiple)
+        floored = exp.Case(ifs=[exp.If(
+            this=exp.GTE(this=exp.Paren(this=whole.copy()), expression=exp.Literal.number(0)),
+            true=exp.IntDiv(this=exp.Paren(this=whole.copy()), expression=m.copy()),
+        )], default=exp.Neg(this=exp.Paren(this=exp.IntDiv(
+            this=exp.Paren(this=exp.Add(
+                this=exp.Neg(this=exp.Paren(this=whole.copy())), expression=exp.Literal.number(multiple - 1),
+            )),
+            expression=m.copy(),
+        ))))
+        return at(exp.Mul(this=exp.Paren(this=floored), expression=m))
+
+    def bucket_step(self, *, bucket: Expression, count: int, unit: Granularity) -> Expression:
+        """A time bucket moved by ``count`` ``unit`` steps (a custom unit steps ``multiple`` of its base)."""
+        base, multiple, _ = granularity_parts(unit)
+        return self.bucket_offset(bucket=bucket, count=count * multiple, unit=base)
 
     # ------------------------------------------------------------------
     # Mode-B date functions (typed operands only, sql P1)

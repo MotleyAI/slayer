@@ -144,7 +144,7 @@ def time_trunc_result_key(
     source_relation: str,
     path: Tuple[str, ...],
     leaf: str,
-    granularity: str,
+    granularity: object,
     declared_name: str,
 ) -> str:
     """Dotted result key for a joined time-trunc slot, appending ``.<granularity>``

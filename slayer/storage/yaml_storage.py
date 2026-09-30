@@ -471,7 +471,7 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
 
     # ---- datasource CRUD ---------------------------------------------------
 
-    async def save_datasource(self, datasource: DatasourceConfig) -> None:
+    async def _save_datasource_impl(self, datasource: DatasourceConfig) -> None:
         await self.check_datasource_id_collision(datasource.name)
         path = os.path.join(self.datasources_dir, f"{datasource.name}.yaml")
         data = datasource.model_dump(mode="json", exclude_none=True)

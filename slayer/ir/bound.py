@@ -6,8 +6,9 @@ from typing import Optional, Tuple
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from slayer.core.enums import DataType, TimeGranularity
+from slayer.core.enums import DataType
 from slayer.core.format import NumberFormat
+from slayer.core.granularity import Granularity
 from slayer.core.keys import (
     Phase,
     ValueKey,
@@ -53,7 +54,7 @@ class BoundTimeDimension(BaseModel):
 
     bound: BoundExpr
     column_type: Optional[DataType] = None
-    upstream_granularity: Optional[TimeGranularity] = None
+    upstream_granularity: Optional[Granularity] = None
 
 
 def bound_filter_from_key(vk: ValueKey) -> BoundFilter:
@@ -99,4 +100,4 @@ class GranularityConflict(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     column: str
-    granularities: Tuple[TimeGranularity, TimeGranularity]
+    granularities: Tuple[Granularity, Granularity]

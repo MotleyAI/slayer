@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from slayer.core.enums import DataType
 from slayer.core.errors import MaterialisationStageError
 from slayer.core.format import NumberFormat
+from slayer.core.granularity import Granularity
 from slayer.core.keys import (
     CLOCK_FUNCTIONS,
     AggregateKey,
@@ -317,7 +318,7 @@ class TrailingWindowProducerKernel(BaseModel):
     kind: Literal["trailing-window"] = "trailing-window"
     window_raw: str
     window_parts: List[Tuple[int, str]]
-    window_granularity: str
+    window_granularity: Granularity
     bucket_slot_id: SlotId
     #: ROW filters inherited into ``_src`` — frame bounds excluded.
     src_where_filter_ids: List[BoundFilterId] = Field(default_factory=list)
