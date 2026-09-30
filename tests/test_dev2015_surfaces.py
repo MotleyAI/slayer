@@ -8,11 +8,14 @@ import tempfile
 from typing import Any
 
 import pytest
+import yaml
 from fastapi.testclient import TestClient
 
 from slayer import cli
 from slayer.api.server import create_app
-from slayer.core.models import DatasourceConfig
+from slayer.core.enums import DataType
+from slayer.core.errors import DefaultTimeDimensionTypeError
+from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.dbt.converter import DbtToSlayerConverter
 from slayer.dbt.models import DbtMeasure, DbtMetric, DbtProject, DbtSemanticModel
 from slayer.mcp.server import create_mcp_server
@@ -20,7 +23,7 @@ from slayer.search.service import SearchService
 from slayer.storage.yaml_storage import YAMLStorage
 
 from tests._cli_inprocess import run_cli_in_process
-from tests._dev2015_fixtures import GRANULARITIES, GRANULARITY_NAMES, spine_engine, spine_models
+from tests._dev2015_fixtures import GRANULARITIES, GRANULARITY_NAMES, returns_model, spine_engine, spine_models
 
 
 async def _call(server, *, name: str, arguments: dict[str, Any]) -> str:
@@ -107,6 +110,75 @@ class TestSpineListedWithItsWiredModels:
         result = run_cli_in_process(["models", "--storage", base, "show", "time_spine"])
         assert result.returncode == 0, result.stdout + result.stderr
         assert "timestamp" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# A declared default_time_dimension must not name a numeric or boolean column; the reserved name
+# fails the same way on every save surface
+# ---------------------------------------------------------------------------
+
+def _bad_default(name: str = "returns_by_amount") -> SlayerModel:
+    return returns_model(default_time_dimension="amount").model_copy(update={"name": name})
+
+
+def _stored_default(storage: YAMLStorage, name: str) -> Any:
+    model = asyncio.run(storage.get_model(name, data_source="test"))
+    return None if model is None else model.default_time_dimension
+
+
+class TestDeclaredDefaultTimeDimensionType:
+    async def test_storage_save(self) -> None:
+        storage = await _spine_storage(tempfile.mkdtemp())
+        model = _bad_default()
+        with pytest.raises(DefaultTimeDimensionTypeError) as exc:
+            await storage.save_model(model)
+        assert "returns_by_amount" in str(exc.value)
+        assert "amount" in str(exc.value)
+        assert await storage.get_model("returns_by_amount", data_source="test") is None
+
+    async def test_text_and_temporal_columns_accepted(self) -> None:
+        storage = await _spine_storage(tempfile.mkdtemp())
+        for column in (Column(name="day_text"), Column(name="day", type=DataType.DATE)):
+            model = SlayerModel(name=f"by_{column.name}", sql_table="returns", data_source="test",
+                                default_time_dimension=column.name, columns=[column])
+            await storage.save_model(model)
+            stored = await storage.get_model(model.name, data_source="test")
+            assert stored is not None
+            assert stored.default_time_dimension == column.name
+
+    async def test_mcp_edit_model(self) -> None:
+        storage = await _spine_storage(tempfile.mkdtemp())
+        server = create_mcp_server(storage=storage)
+        text = await _call(server, name="edit_model", arguments={
+            "model_name": "returns", "default_time_dimension": "amount",
+        })
+        assert "amount" in text
+        stored = await storage.get_model("returns", data_source="test")
+        assert stored is not None
+        assert stored.default_time_dimension is None
+
+    @pytest.mark.parametrize("name", ["returns_by_amount", "time_spine"])
+    def test_rest_create(self, name) -> None:
+        storage = asyncio.run(_spine_storage(tempfile.mkdtemp()))
+        resp = TestClient(create_app(storage=storage)).post(
+            "/models", json=_bad_default(name).model_dump(mode="json"),
+        )
+        assert resp.status_code == 400, resp.text
+        assert name in resp.json()["detail"]
+        if name != "time_spine":
+            assert _stored_default(storage, name) is None
+
+    @pytest.mark.parametrize("name", ["returns_by_amount", "time_spine"])
+    def test_cli_create(self, name, tmp_path) -> None:
+        base = str(tmp_path / "store")
+        storage = asyncio.run(_spine_storage(base))
+        path = tmp_path / "model.yaml"
+        path.write_text(yaml.safe_dump(_bad_default(name).model_dump(mode="json")))
+        result = run_cli_in_process(["models", "--storage", base, "create", str(path)])
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert name in result.stdout
+        if name != "time_spine":
+            assert _stored_default(storage, name) is None
 
 
 # ---------------------------------------------------------------------------

@@ -10,13 +10,14 @@ from pathlib import Path
 from typing import Any
 from collections.abc import Callable, Iterable
 
-from slayer.core.enums import JoinCardinality, TimeGranularity, invert_cardinality
+from slayer.core.enums import DataType, JoinCardinality, TimeGranularity, invert_cardinality
 from slayer.core.granularity import resolve_granularity, unknown_granularity_message
 from slayer.core.time_spine import TIME_SPINE_MODEL, spine_model
 from slayer.core.errors import (
     AmbiguousModelError,
     IdCollisionError,
     MemoryNotFoundError,
+    DefaultTimeDimensionTypeError,
     ReservedModelNameError,
     UnknownGranularityError,
 )
@@ -342,6 +343,13 @@ def _validate_path_component(value: str, *, kind: str) -> None:
             )
 
 
+def _validate_default_time_dimension(model: SlayerModel) -> None:
+    """A declared default names a date/time or text column (text: the default type, and SQLite's dates)."""
+    column = model.get_column(model.default_time_dimension) if model.default_time_dimension else None
+    if column is not None and column.type in (DataType.INT, DataType.DOUBLE, DataType.BOOLEAN):
+        raise DefaultTimeDimensionTypeError(model=model.name, column=column.name, column_type=column.type)
+
+
 class StorageBackend(ABC):
     """Abstract async storage backend keyed by ``(data_source, name)``. Concrete backends implement the composite-key CRUD; this class supplies shared validation and the priority-aware bare-name resolver."""
 
@@ -364,6 +372,7 @@ class StorageBackend(ABC):
             await self._validate_join_edges(model)
             await self._validate_aggregations(model)
             await self._validate_column_granularities(model)
+            _validate_default_time_dimension(model)
         await self._save_model_impl(model)
 
     async def _validate_column_granularities(self, model: SlayerModel) -> None:

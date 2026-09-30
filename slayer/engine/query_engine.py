@@ -31,6 +31,7 @@ from slayer.core.errors import (
     DerivedColumnCircularError,
     ForcedFilterError,
     ModelSqlValidationError,
+    PopulationInferenceError,
     QueryBackedCycleError,
     SchemaDriftError,
     SlayerError,
@@ -1059,7 +1060,6 @@ class SlayerQueryEngine:
             splice_chain=splice_chain,
             dry_run_placeholders=dry_run_placeholders,
             now=self._clock(),
-            population_spine=is_spine_query(query),
         )
         # ``build_resolved_source_bundle`` raises if unresolved, so it's populated.
         model = bundle.source_model
@@ -1210,55 +1210,55 @@ class SlayerQueryEngine:
         resolve ambiguously to a same-named model in another datasource).
         """
         inferred = query.source_model is None
-        inferred_data_source: Optional[str] = None
-        spine = is_spine_query(query)
-        if spine and prefer_data_source is None:
-            prefer_data_source = await self._stages_datasource(named_queries)
-        if inferred:
-            choice = await (infer_spine_population if spine else infer_population)(
-                query=query, storage=self.storage,
-                data_source=prefer_data_source,
-                sibling_stage_names={d.name for d in stage_displays.values()} - {query.name},
+        stage_names = {*named_queries, *(d.name for d in stage_displays.values())}
+        if prefer_data_source is None and any(map(is_spine_query, [*named_queries.values(), query])):
+            prefer_data_source = await self._spine_list_datasource(
+                queries=[*named_queries.values(), query], stage_names=stage_names,
             )
-            query = query.model_copy(update={"source_model": choice.model_name})
-            inferred_data_source = choice.data_source
-        elif query.source_model_name == TIME_SPINE_MODEL:
-            inferred_data_source = await spine_datasource(
-                query=query, storage=self.storage, data_source=prefer_data_source,
-            )
-
+        query, inferred_data_source = await self._infer_population_of(
+            query=query, data_source=prefer_data_source,
+            sibling_stage_names={d.name for d in stage_displays.values()} - {query.name},
+        )
         rewritten: Dict[str, SlayerQuery] = {}
         for name, stage in named_queries.items():
-            if stage.source_model is None:
-                choice = await infer_population(
-                    query=stage, storage=self.storage,
-                    data_source=prefer_data_source or inferred_data_source,
-                    sibling_stage_names={
-                        d.name for ident, d in stage_displays.items() if ident != name
-                    },
-                )
-                stage = stage.model_copy(update={"source_model": choice.model_name})
-                # Pin bundle resolution to the inferred datasource even when only a
-                # stage (not the main query) was rootless, so the stage's bare model
-                # name can't resolve to a same-named model in another datasource.
-                if inferred_data_source is None:
-                    inferred_data_source = choice.data_source
-            rewritten[name] = stage
+            rewritten[name], stage_data_source = await self._infer_population_of(
+                query=stage, data_source=prefer_data_source or inferred_data_source,
+                sibling_stage_names={d.name for ident, d in stage_displays.items() if ident != name},
+            )
+            # Pin bundle resolution even when only a stage was rootless, so its bare
+            # model name can't resolve to a same-named model in another datasource.
+            inferred_data_source = inferred_data_source or stage_data_source
 
         population = query.source_model_name
-        if spine and population != TIME_SPINE_MODEL:
+        if is_spine_query(query) and population != TIME_SPINE_MODEL:
             population = f"{TIME_SPINE_MODEL} × {population}"
         return query, rewritten, population, inferred, inferred_data_source
 
-    async def _stages_datasource(self, named_queries: Dict[str, SlayerQuery]) -> Optional[str]:
-        """The datasource a query list's model-rooted stages read, when they agree on one."""
-        found: Set[str] = set()
-        for stage in named_queries.values():
-            name = stage.source_model_name
-            model = await self.storage.get_model(name) if name is not None else None
-            if model is not None and model.data_source:
-                found.add(model.data_source)
-        return found.pop() if len(found) == 1 else None
+    async def _infer_population_of(
+        self, *, query: SlayerQuery, data_source: Optional[str], sibling_stage_names: Set[str],
+    ) -> "tuple[SlayerQuery, Optional[str]]":
+        """``query`` with its population filled in, and the datasource that choice pins (if any)."""
+        if query.source_model is None:
+            choice = await (infer_spine_population if is_spine_query(query) else infer_population)(
+                query=query, storage=self.storage, data_source=data_source,
+                sibling_stage_names=sibling_stage_names,
+            )
+            return query.model_copy(update={"source_model": choice.model_name}), choice.data_source
+        if query.source_model_name == TIME_SPINE_MODEL:
+            return query, await spine_datasource(
+                queries=[query], storage=self.storage, data_source=data_source,
+                sibling_stage_names=sibling_stage_names,
+            )
+        return query, None
+
+    async def _spine_list_datasource(self, *, queries: List[SlayerQuery], stage_names: Set[str]) -> Optional[str]:
+        """The one datasource every model a spine-reading query list names lives in, if there is one."""
+        try:
+            return await spine_datasource(
+                queries=queries, storage=self.storage, data_source=None, sibling_stage_names=stage_names,
+            )
+        except PopulationInferenceError:
+            return None
 
     @staticmethod
     def _ds_fingerprint(datasource: DatasourceConfig) -> str:

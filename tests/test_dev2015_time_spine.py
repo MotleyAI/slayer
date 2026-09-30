@@ -34,6 +34,7 @@ from tests._dev2015_fixtures import (
     by_bucket,
     calendar_models,
     m,
+    num,
     spine_engine,
     spine_models,
     spine_query,
@@ -275,6 +276,62 @@ class TestPopulation:
         other = await engine.execute(spine_query(measures=edit(PER_GROUP), date_range=JAN_MAR,
                                                  dimensions=["customers.region"]))
         assert cells(other, by=["region"]) == cells(base, by=["region"])
+
+
+def _monthly_stage(*, measures=None, date_range=JAN_MAR, **extra) -> SlayerQuery:
+    return spine_query(measures=measures or [m("sum(orders.amount)", "o")], date_range=date_range,
+                       name="monthly", **extra)
+
+
+def _over_monthly(**extra) -> SlayerQuery:
+    return SlayerQuery.model_validate({
+        "source_model": "monthly", "measures": [m("sum(o)", "t"), m("count(*)", "c")], **extra,
+    })
+
+
+class TestSpineStages:
+    @pytest.mark.parametrize("extra", [{}, {"source_model": "time_spine"}], ids=["rootless", "explicit-spine"])
+    async def test_a_spine_stage_keeps_every_bucket(self, engine, extra) -> None:
+        resp = await engine.execute([_monthly_stage(**extra), _over_monthly()])
+        assert [(num(value(r, "t")), num(value(r, "c"))) for r in resp.data] == [(220.0, 3.0)]
+
+    async def test_a_per_group_spine_stage(self, engine) -> None:
+        resp = await engine.execute([_monthly_stage(dimensions=["customers.region"]),
+                                     _over_monthly(dimensions=["region"])])
+        assert {value(r, "region"): (num(value(r, "t")), num(value(r, "c"))) for r in resp.data} == {
+            "N": (170.0, 3.0), "S": (50.0, 3.0), "E": (None, 3.0),
+        }
+
+    async def test_a_spine_stage_feeding_a_spine_query(self, engine) -> None:
+        resp = await engine.execute([_monthly_stage(), spine_query(measures=[m("sum(monthly.o)", "t")])])
+        assert by_bucket(resp, ["t"]) == {"2025-01": (150.0,), "2025-02": (70.0,),
+                                          **{k: (None,) for k in MONTHS[2:]}}
+
+    @pytest.mark.parametrize(("extra", "pinned", "count"), [
+        ({}, "time_spine", 3.0), ({"dimensions": ["customers.region"]}, "customers", 9.0),
+    ], ids=["unit", "per-group"])
+    async def test_a_saved_spine_query_read_as_a_source(self, engine, extra, pinned, count) -> None:
+        await engine.create_model_from_query(query=_monthly_stage(**extra), name="saved_monthly")
+        stored = await engine.storage.get_model("saved_monthly", data_source="test")
+        assert [s.source_model for s in stored.source_queries] == [pinned]
+        resp = await engine.execute(_over_monthly(source_model="saved_monthly"))
+        assert [(num(value(r, "t")), num(value(r, "c"))) for r in resp.data] == [(220.0, count)]
+
+    async def test_missing_lower_bound_inside_a_stage(self, engine) -> None:
+        query = [_monthly_stage(date_range=None), _over_monthly()]
+        with pytest.raises(QueryTypeError) as exc:
+            await engine.execute(query, dry_run=True)
+        assert "lower bound" in str(exc.value).lower()
+
+    @pytest.mark.parametrize(("measure", "extra"), [
+        (m("count(*)", "o"), {"source_model": "time_spine"}),
+        (m("min(time_spine.timestamp)", "o"), {}),
+    ], ids=["count-star", "min-timestamp"])
+    async def test_aggregation_over_the_spine_inside_a_stage(self, engine, measure, extra) -> None:
+        query = [_monthly_stage(measures=[measure], **extra), _over_monthly()]
+        with pytest.raises(QueryTypeError) as exc:
+            await engine.execute(query, dry_run=True)
+        assert "time_spine" in str(exc.value)
 
 
 # ---------------------------------------------------------------------------

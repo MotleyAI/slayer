@@ -53,6 +53,6 @@
 
 ## 7. Spine queries as stages
 
-- [ ] 7.1 Executed SQLite/DuckDB tests for the spine-stage scenarios (rootless and `source_model: time_spine`, per-group, spine stage under a spine main query, missing-lower-bound and no-countable-rows inside a stage); verify each fails for the right reason before the fix
-- [ ] 7.2 One "host is a spine factor" rule for every query of a list (per-query spine inference and datasource in `_infer_populations`; the spine-factor marking replaces the root-only `population_spine` flag); verify 7.1 and the full unit suite
+- [x] 7.1 Executed SQLite/DuckDB tests for the spine-stage scenarios (rootless and `source_model: time_spine`, per-group, spine stage under a spine main query, missing-lower-bound and no-countable-rows inside a stage); verify each fails for the right reason before the fix
+- [x] 7.2 One "host is a spine factor" rule for every query of a list (per-query spine inference and datasource in `_infer_populations`; the spine-factor marking replaces the root-only `population_spine` flag); verify 7.1 and the full unit suite
 - [ ] 7.3 Save-time typed rejection of a declared `default_time_dimension` whose column has a known non-temporal type (untyped accepted), on the storage save path shared by every surface; tests on storage, REST, MCP and CLI saves that fail before the fix
