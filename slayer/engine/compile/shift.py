@@ -1,4 +1,4 @@
-"""The time_shift regime classifier and per-leaf shifted-evaluation rule (DEV-1958)."""
+"""The time_shift regime classifier and per-leaf shifted-evaluation rule."""
 
 from __future__ import annotations
 
@@ -16,10 +16,9 @@ from slayer.core.keys import (
     ValueKey,
     constituent_grain,
     is_boolean_shaped,
+    is_kernel_requiring,
     source_anchor_path,
-    window_kwarg_of,
 )
-from slayer.core.enums import RANKED_AGGREGATIONS
 
 __all__ = ["carried_placeholders", "is_placeholder", "_series_mode"]
 
@@ -68,9 +67,7 @@ def _re_evaluated(
     original: ValueKey, *, axis: ValueKey, dim_keys: List[ValueKey],
     td_keys: List[ValueKey], active_bucket: Optional[ValueKey],
 ) -> bool:
-    if isinstance(original, AggregateKey) and (
-        original.agg in RANKED_AGGREGATIONS or window_kwarg_of(original) is not None
-    ):
+    if is_kernel_requiring(original):
         return True
     grain = constituent_grain(
         c=original, projected_dim_keys=dim_keys, projected_td_keys=td_keys,
