@@ -1239,7 +1239,6 @@ probes:
               measures: [{formula: "sum(customers.orders.amount)", name: rev},
                          {formula: "count(customers.orders.id)", name: n_orders},
                          {formula: "count(customers.id)", name: n_customers}]}
-      expect: {known_bug: "cross-model count is NULL, not 0, for a parent with no children", buggy_rows: [[East, null, null, null]]}
     metricflow:
       note: region_count sees region__name, revenue only customer__region__name; no common group-by
       query:
@@ -1645,7 +1644,6 @@ probes:
     slayer:
       query: {dimensions: [customers.name],
               measures: [{formula: "sum(orders.amount)", name: rev}, {formula: "count(orders.id)", name: n}]}
-      expect: {known_bug: "cross-model count is NULL, not 0, for a parent with no children", buggy_rows: [[Frank, null, null]]}
     metricflow:
       query:
         metrics: [revenue, order_count, customer_count]
@@ -1662,24 +1660,24 @@ probes:
 
   - id: Q8c
     row: Q8
-    title: no source_model; dims [customers.regions.name], the orphan order must not join the NULL region
+    title: no source_model; dims [customers.regions.name], the orphan order's NULL region is the NULL cell
     truth_sql: |
+      with k as (select distinct r.name from customers c left join regions r on c.region_id = r.id),
+           v as (select r.name, sum(o.amount) rev from orders o left join customers c on o.customer_id = c.id
+                 left join regions r on c.region_id = r.id group by 1)
+      select k.name, v.rev from k left join v on k.name is not distinct from v.name
+    contrast_sql: |
       select r.name, sum(o.amount) from customers c left join regions r on c.region_id = r.id
       left join orders o on o.customer_id = c.id group by 1
     compare: {keys: [customers.regions.name], values: [rev]}
     slayer:
       query: {dimensions: [customers.regions.name], measures: [{formula: "sum(orders.amount)", name: rev}]}
-      expect: {known_bug: "orphan orders (NULL customer_id) leak into the NULL-region customer group", buggy_rows: [[null, 310]]}
     metricflow:
       query:
         metrics: [revenue]
         group_by: [customer__region__name]
       keys: [customer__region__name]
       values: [revenue]
-      expect:
-        known_bug: 'by design: revenue is always rooted at orders, so the orphan order joins the NULL-region group'
-        buggy_rows:
-        - [null, 310]
 
   - id: Q8-from-orders
     row: Q8
@@ -1782,7 +1780,6 @@ probes:
     slayer:
       query: {source_model: customers, dimensions: [name],
               measures: [{formula: "count(orders.id)", name: n}, {formula: "sum(orders.amount)", name: rev}]}
-      expect: {known_bug: "cross-model count is NULL, not 0, for a parent with no children", buggy_rows: [[Frank, null]]}
     malloy:
       query: |
         run: customers -> { group_by: name; aggregate: n is count(orders.id) }
@@ -2030,8 +2027,13 @@ probes:
 
   - id: B1
     row: Q9
-    title: from customers by region, sum/count(orders) and count(*) (orphan order leaks into NULL region)
+    title: from customers by region, sum/count(orders) and count(*); the orphan order's NULL region is the NULL cell
     truth_sql: |
+      with k as (select r.name, count(c.id) nc from customers c left join regions r on c.region_id = r.id group by 1),
+           v as (select r.name, sum(o.amount) rev, count(o.id) n from orders o left join customers c on o.customer_id = c.id
+                 left join regions r on c.region_id = r.id group by 1)
+      select k.name, v.rev, coalesce(v.n, 0), k.nc from k left join v on k.name is not distinct from v.name
+    contrast_sql: |
       select r.name, sum(o.amount), count(o.id), count(distinct c.id) from customers c
       left join regions r on c.region_id = r.id left join orders o on o.customer_id = c.id group by 1
     compare: {keys: [regions.name], values: [rev, n_orders, n_customers]}
@@ -2039,19 +2041,22 @@ probes:
       query: {source_model: customers, dimensions: [regions.name],
               measures: [{formula: "sum(orders.amount)", name: rev}, {formula: "count(orders.id)", name: n_orders},
                          {formula: "count(*)", name: n_customers}]}
-      expect: {known_bug: "orphan orders (NULL customer_id) leak into the NULL-region customer group", buggy_rows: [[null, 310, 4, 1]]}
 
   - id: B1-assoc
     row: Q9
-    title: same leak with to_many_handling=associate
+    title: same with to_many_handling=associate
     truth_sql: |
+      with k as (select distinct r.name from customers c left join regions r on c.region_id = r.id),
+           v as (select r.name, sum(o.amount) rev from orders o left join customers c on o.customer_id = c.id
+                 left join regions r on c.region_id = r.id group by 1)
+      select k.name, v.rev from k left join v on k.name is not distinct from v.name
+    contrast_sql: |
       select r.name, sum(o.amount) from customers c left join regions r on c.region_id = r.id
       left join orders o on o.customer_id = c.id group by 1
     compare: {keys: [regions.name], values: [rev]}
     slayer:
       query: {source_model: customers, dimensions: [regions.name], measures: [{formula: "sum(orders.amount)", name: rev}]}
       options: {to_many_handling: associate}
-      expect: {known_bug: "orphan orders (NULL customer_id) leak into the NULL-region customer group", buggy_rows: [[null, 310]]}
 
   - id: B1-tier
     row: Q9
@@ -2085,7 +2090,6 @@ probes:
     slayer:
       query: {source_model: customers, dimensions: [name],
               measures: [{formula: "count(orders.*)", name: n}, {formula: "count_distinct(orders.id)", name: nd}]}
-      expect: {known_bug: "cross-model count is NULL, not 0, for a parent with no children", buggy_rows: [[Frank, null, null]]}
 
   - id: B2-coalesce
     row: Q9
@@ -2826,8 +2830,6 @@ probes:
     slayer:
       query: {source_model: orders, time_dimensions: [{dimension: order_date, granularity: month}],
               measures: [{formula: "consecutive_periods(sum(amount) > 100)", name: streak}]}
-      expect: {known_bug: "consecutive_periods counts rows across month gaps",
-               buggy_rows: [["2024-12-01", 4], ["2025-05-01", 8]]}
     malloy:
       note: four stages (lag the month, flag run starts, number the runs, cumulate within a run)
       query: |
@@ -2852,8 +2854,6 @@ probes:
     slayer:
       query: {source_model: orders, time_dimensions: [{dimension: order_date, granularity: month}],
               filters: ["consecutive_periods(sum(amount) > 100) >= 2"], measures: [{formula: "sum(amount)", name: v}]}
-      expect: {known_bug: "consecutive_periods counts rows across month gaps",
-               buggy_rows: [["2024-12-01", 220], ["2025-05-01", 225]]}
 
   - id: Q14-cube-rank
     row: Q14

@@ -124,11 +124,8 @@ compares them directly.
 
 **SLayer**
 
-1. A cross-model `count` returns NULL instead of 0 for a parent with no children.
-   Probes: `Q8b`, `Q9a`, `B2`, `X1`.
-2. Child rows with no parent (orders with a NULL `customer_id`) are added to the parent group whose dimension is
-   NULL. Probes: `Q8c`, `B1`, `B1-assoc`.
-3. `consecutive_periods` counts rows, so a streak continues across empty months. Probes: `Q14c`, `Q14d`.
+None open. Orphan orders (NULL `customer_id`) land in the NULL-region cell by design, since a cross-model aggregate
+is a field of a model keyed on the query grain (`Q8c`, `B1`, `B1-assoc`).
 
 **Malloy**
 
@@ -171,5 +168,4 @@ compares them directly.
 2. A `where` filter without Jinja (`revenue > 100`) binds to the row-level measure column named like the metric and
    filters individual orders before aggregation. Probe: `Q9-mf-raw-where-alias`.
 3. By design: a count metric is NULL, not 0, for a parent with no children, so a metric filter `= 0` matches nothing
-   (`Q10-mf-antijoin-eq0`). Multi-metric queries merge per-metric results with a full outer join, so orphan orders
-   and a customer with a NULL region share one NULL row (`Q8c`, `Q8-mf-union-null`).
+   (`Q10-mf-antijoin-eq0`).
