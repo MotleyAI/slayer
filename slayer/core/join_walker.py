@@ -242,6 +242,20 @@ def physical_join_pairs(
     return [(physical(src, source), physical(tgt, target)) for src, tgt in edge.join_pairs]
 
 
+def _virtual_spine_edges(*, model: SlayerModel, models_by_name: dict[str, SlayerModel]) -> list[OrientedJoin]:
+    """``model``'s product and detached-dataset hops (none without the spine in the universe)."""
+    spine = models_by_name.get(TIME_SPINE_MODEL)
+    if spine is None:
+        return []
+    out = [_product_edge(model)] if model.population_spine else []
+    detached = _detached_names(models_by_name)
+    if is_spine(model):
+        out.extend(_detached_edge(source=model, target=models_by_name[n]) for n in sorted(detached))
+    elif model.name in detached:
+        out.append(_detached_edge(source=model, target=spine))
+    return out
+
+
 def neighbors(
     *, model: SlayerModel, models_by_name: dict[str, SlayerModel]
 ) -> list[OrientedJoin]:
@@ -250,17 +264,9 @@ def neighbors(
     Outgoing declarations first, then edges declared on other models that reach
     ``model`` (inverted). Never raises.
     """
-    out: list[OrientedJoin] = []
     spellings = {n: m.explicit_spelling for n, m in models_by_name.items()}
     spellings[model.name] = model.explicit_spelling
-    if model.population_spine and TIME_SPINE_MODEL in models_by_name:
-        out.append(_product_edge(model))
-    spine = models_by_name.get(TIME_SPINE_MODEL)
-    detached = _detached_names(models_by_name) if spine is not None else frozenset()
-    if spine is not None and is_spine(model):
-        out.extend(_detached_edge(source=model, target=models_by_name[n]) for n in sorted(detached))
-    elif spine is not None and model.name in detached:
-        out.append(_detached_edge(source=model, target=spine))
+    out = _virtual_spine_edges(model=model, models_by_name=models_by_name)
     for j in spine_joins(model, models_by_name=models_by_name):
         out.append(_orient(join=j, declaring=model.name, from_model=model.name,
                            spellings=spellings))

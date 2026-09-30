@@ -354,10 +354,10 @@ class StorageBackend(ABC):
     async def save_model(
         self, model: SlayerModel, *, _validate: bool = True,
     ) -> None:
-        """Persist a model: case-collision rejection (filename backends), then derived-column well-formedness (reference arity + cycles) and join-edge validation, before the backend write. ``_validate=False`` (migration write-back only) skips validation. Backends must NOT override this."""
-        if model.name == TIME_SPINE_MODEL:
-            raise ReservedModelNameError(name=model.name)
+        """Persist a model: reserved-name and case-collision rejection, then derived-column well-formedness (reference arity + cycles) and join-edge validation, before the backend write. ``_validate=False`` (migration write-back only) skips all of it. Backends must NOT override this."""
         if _validate:
+            if model.name == TIME_SPINE_MODEL:
+                raise ReservedModelNameError(name=model.name)
             if self._ids_collide_as_filenames:
                 await self._check_model_identity_collision(model)
             await validate_derived_columns(model=model, storage=self)

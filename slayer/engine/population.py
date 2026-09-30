@@ -127,6 +127,12 @@ def _is_saved_measure_ref(ref: str, *, models_by_name: dict[str, SlayerModel]) -
 
 
 def _parsed_filter_refs(filter_str: str) -> tuple[list[str], bool]:
+    """``(row-valued refs, ok)`` of one masked filter; spine refs are never determination items."""
+    refs, ok = _all_filter_refs(filter_str)
+    return [r for r in refs if not names_spine(r)], ok
+
+
+def _all_filter_refs(filter_str: str) -> tuple[list[str], bool]:
     """``(row-valued refs, ok)`` of one masked filter via the execution filter parser.
 
     Uses ``parse_filter_expr`` (the same parser execution binds with), so SQL operator
@@ -512,12 +518,14 @@ def spine_factor_out(query: SlayerQuery) -> SlayerQuery:
         "time_dimensions": [
             td for td in query.time_dimensions or [] if not names_spine(td.dimension.full_name)
         ] or None,
-        "filters": [
-            f for f in query.filters or []
-            if not any(names_spine(r) for r in _parsed_filter_refs(f)[0])
-        ] or None,
+        "filters": [f for f in query.filters or [] if not _spine_only_filter(f)] or None,
         "measures": None,
     })
+
+
+def _spine_only_filter(filter_str: str) -> bool:
+    refs, ok = _all_filter_refs(filter_str)
+    return ok and bool(refs) and all(names_spine(r) for r in refs)
 
 
 def _qualified_refs(parsed) -> list[str]:

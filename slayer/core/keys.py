@@ -545,7 +545,7 @@ class TransformKey(_FrozenKey, frozen=True):
     input: "ValueKey"
     args: Tuple[Scalar, ...] = ()
     # A ``time_shift`` unit resolves to its datasource definition when custom.
-    kwargs: Tuple[Tuple[str, Union[Scalar, CustomGranularity]], ...] = ()
+    kwargs: Tuple[Tuple[str, Scalar | CustomGranularity], ...] = ()
     partition_keys: "Grain" = Field(default_factory=lambda: Grain.EMPTY)
     time_key: Optional["ValueKey"] = None
 

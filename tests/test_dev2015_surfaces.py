@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from slayer import cli
 from slayer.api.server import create_app
 from slayer.core.models import DatasourceConfig
 from slayer.dbt.converter import DbtToSlayerConverter
@@ -94,6 +95,13 @@ class TestSpineListedWithItsWiredModels:
         assert result.returncode == 0, result.stderr
         assert "time_spine" in result.stdout
 
+    def test_cli_show(self) -> None:
+        base = tempfile.mkdtemp()
+        asyncio.run(_spine_storage(base))
+        result = run_cli_in_process(["models", "--storage", base, "show", "time_spine"])
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "timestamp" in result.stdout
+
 
 # ---------------------------------------------------------------------------
 # Datasource granularities round-trip through every create / edit surface
@@ -162,6 +170,18 @@ class TestGranularitiesRoundTrip:
             "--granularities", json.dumps(GRANULARITIES),
         ])
         assert result.returncode == 0, result.stderr
+        stored = asyncio.run(YAMLStorage(base_dir=base).get_datasource("gds"))
+        assert stored is not None
+        assert [g["name"] for g in _granularity_dump(stored)] == list(GRANULARITY_NAMES)
+
+    def test_cli_create_demo(self, monkeypatch) -> None:
+        base = tempfile.mkdtemp()
+        monkeypatch.setattr(cli, "build_jaffle_shop", lambda **_: False)
+        result = run_cli_in_process([
+            "datasources", "--storage", base, "create", "demo", "--name", "gds",
+            "--granularities", json.dumps(GRANULARITIES),
+        ])
+        assert result.returncode == 0, result.stdout + result.stderr
         stored = asyncio.run(YAMLStorage(base_dir=base).get_datasource("gds"))
         assert stored is not None
         assert [g["name"] for g in _granularity_dump(stored)] == list(GRANULARITY_NAMES)

@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 
 import pytest
+import yaml
 
 from slayer.core.errors import (
     QueryTypeError,
@@ -18,6 +19,8 @@ from slayer.core.policy import JoinFilterRule, JoinFilterRuleset, SessionPolicy
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.client import SlayerSQLClient
+from slayer.storage.migrations import CURRENT_VERSIONS
+from slayer.storage.yaml_storage import YAMLStorage
 
 from tests._dev2015_fixtures import (
     BACKENDS,
@@ -100,6 +103,19 @@ class TestReservedName:
         msg = str(exc.value)
         assert "time_spine" in msg
         assert "rename" in msg.lower()
+
+    async def test_below_version_stored_clash_still_loads(self, tmp_path) -> None:
+        storage = YAMLStorage(base_dir=str(tmp_path))
+        path = tmp_path / "models" / "test" / "time_spine.yaml"
+        path.parent.mkdir(parents=True)
+        path.write_text(yaml.safe_dump({
+            "version": CURRENT_VERSIONS["SlayerModel"] - 1, "name": "time_spine", "sql_table": "cal",
+            "data_source": "test", "columns": [{"name": "day", "type": "date", "primary_key": True}],
+        }))
+        loaded = await storage.get_model("time_spine", data_source="test")
+        assert loaded is not None
+        assert [c.name for c in loaded.columns] == ["day"]
+        assert yaml.safe_load(path.read_text())["version"] == CURRENT_VERSIONS["SlayerModel"]
 
 
 # ---------------------------------------------------------------------------
@@ -337,6 +353,16 @@ class TestFilters:
         resp = await engine.execute(_per_group(filters=["customers.region = 'N'"]))
         assert by_bucket(resp, ["o", "r"], by=["region"]) == {
             k: v for k, v in PER_GROUP_ROWS.items() if k[0] == "N"
+        }
+
+    @pytest.mark.parametrize("filters", [
+        ["time_spine.timestamp >= '2025-01-01'", "time_spine.timestamp < '2025-04-01'", "customers.region = 'N'"],
+        ["time_spine.timestamp >= '2025-01-01' and time_spine.timestamp < '2025-04-01' and customers.region = 'N'"],
+    ], ids=["separate", "one-conjunction"])
+    async def test_bounds_and_a_p_filter(self, engine, filters) -> None:
+        resp = await engine.execute(spine_query(measures=PER_GROUP, date_range=None, filters=filters))
+        assert by_bucket(resp, ["o", "r"]) == {
+            "2025-01": (100.0, None), "2025-02": (70.0, 20.0), "2025-03": (None, None),
         }
 
     async def test_non_bound_spine_filter(self, engine) -> None:

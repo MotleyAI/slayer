@@ -368,10 +368,8 @@ def safe_hops(
     return out
 
 
-def spine_routes(
-    *, dataset: SlayerModel, models_by_name: dict[str, SlayerModel], cap: int = 2,
-) -> list[list[OrientedJoin]]:
-    """Up to ``cap`` minimal routes ``dataset → time_spine`` over provably to-one executable hops."""
+def _hop_distances(*, dataset: SlayerModel, models_by_name: dict[str, SlayerModel]) -> dict[str, int]:
+    """Safe-hop BFS distance from ``dataset`` to every reachable model (the spine is a sink)."""
     dist: dict[str, int] = {dataset.name: 0}
     frontier: deque[str] = deque([dataset.name])
     while frontier:
@@ -383,23 +381,37 @@ def spine_routes(
             if nbr not in dist:
                 dist[nbr] = dist[node] + 1
                 frontier.append(nbr)
+    return dist
+
+
+def _extend_routes(
+    *, model: SlayerModel, chain: list[OrientedJoin], dist: dict[str, int],
+    models_by_name: dict[str, SlayerModel], routes: list[list[OrientedJoin]], cap: int,
+) -> None:
+    """Append to ``routes`` (up to ``cap``) every shortest continuation of ``chain`` reaching the spine."""
+    if len(routes) >= cap:
+        return
+    if is_spine(model):
+        routes.append(chain)
+        return
+    for token, nbr in safe_hops(model=model, models_by_name=models_by_name):
+        if dist.get(nbr) != dist[model.name] + 1 or dist[nbr] > dist[TIME_SPINE_MODEL]:
+            continue
+        edge = resolve_hop(current=model, token=token, models_by_name=models_by_name)
+        if edge is not None:
+            _extend_routes(model=models_by_name[nbr], chain=[*chain, edge], dist=dist,
+                           models_by_name=models_by_name, routes=routes, cap=cap)
+
+
+def spine_routes(
+    *, dataset: SlayerModel, models_by_name: dict[str, SlayerModel], cap: int = 2,
+) -> list[list[OrientedJoin]]:
+    """Up to ``cap`` minimal routes ``dataset → time_spine`` over provably to-one executable hops."""
+    dist = _hop_distances(dataset=dataset, models_by_name=models_by_name)
     if TIME_SPINE_MODEL not in dist:
         return []
     routes: list[list[OrientedJoin]] = []
-
-    def extend(model: SlayerModel, chain: list[OrientedJoin]) -> None:
-        if len(routes) >= cap:
-            return
-        if is_spine(model):
-            routes.append(chain)
-            return
-        for token, nbr in safe_hops(model=model, models_by_name=models_by_name):
-            if dist.get(nbr) == dist[model.name] + 1 and dist[nbr] <= dist[TIME_SPINE_MODEL]:
-                edge = resolve_hop(current=model, token=token, models_by_name=models_by_name)
-                if edge is not None:
-                    extend(models_by_name[nbr], [*chain, edge])
-
-    extend(dataset, [])
+    _extend_routes(model=dataset, chain=[], dist=dist, models_by_name=models_by_name, routes=routes, cap=cap)
     return routes
 
 

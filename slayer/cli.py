@@ -66,6 +66,7 @@ from slayer.storage.type_refinement import (
 )
 
 _STORAGE_DEFAULT = default_storage_path()
+_DATASOURCE_NAME_HELP = "Datasource name"
 _STORAGE_HELP = (
     "Storage path: directory for YAML storage, or .db/.sqlite file for SQLite storage "
     f"(default: {_STORAGE_DEFAULT})"
@@ -568,7 +569,7 @@ examples:
     datasources_show_parser = datasources_subparsers.add_parser(
         "show", help="Show datasource config (passwords masked)"
     )
-    datasources_show_parser.add_argument("name", help="Datasource name")
+    datasources_show_parser.add_argument("name", help=_DATASOURCE_NAME_HELP)
 
     datasources_create_parser = datasources_subparsers.add_parser(
         "create",
@@ -659,10 +660,10 @@ examples:
     )
 
     datasources_delete_parser = datasources_subparsers.add_parser("delete", help="Delete a datasource")
-    datasources_delete_parser.add_argument("name", help="Datasource name")
+    datasources_delete_parser.add_argument("name", help=_DATASOURCE_NAME_HELP)
 
     datasources_test_parser = datasources_subparsers.add_parser("test", help="Test datasource connectivity")
-    datasources_test_parser.add_argument("name", help="Datasource name")
+    datasources_test_parser.add_argument("name", help=_DATASOURCE_NAME_HELP)
 
     # ── memory ────────────────────────────────────────────────────────
     memory_parser = subparsers.add_parser(
@@ -2006,112 +2007,129 @@ def _run_import_osi(args):
     )
 
 
+def _models_list(storage, args) -> None:
+    names = run_sync(storage.list_models())
+    builtins = [m for ds in run_sync(storage.list_datasources()) for m in run_sync(storage.builtin_models(ds))]
+    if not names and not builtins:
+        print("No models found.")
+        return
+    for name in names:
+        model = run_sync(storage.get_model(name))
+        if model and model.hidden:
+            continue
+        desc = f"  — {model.description}" if model and model.description else ""
+        print(f"{name}{desc}")
+    for model in builtins:
+        print(f"{model.name}  — {model.description}")
+
+
+def _models_show(storage, args) -> None:
+    model = run_sync(storage.get_model_or_builtin(args.name))
+    if model is None:
+        print(f"Model '{args.name}' not found.")
+        sys.exit(1)
+    data = model.model_dump(mode="json", exclude_none=True)
+    print(yaml.dump(data, sort_keys=False, default_flow_style=False).rstrip())
+
+
+def _models_create(storage, args) -> None:
+    with open(args.file) as f:
+        data = yaml.safe_load(f)
+    model = SlayerModel.model_validate(data)
+    # Route through engine.save_model so query-backed models get cache
+    # populated (and user-supplied cache fields are rejected).
+    engine = SlayerQueryEngine(storage=storage)
+    try:
+        run_sync(engine.save_model(model))
+    except ValueError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
+    print(f"Created model '{model.name}'.")
+
+
+def _models_delete(storage, args) -> None:
+    if not run_sync(storage.delete_model(args.name)):
+        print(f"Model '{args.name}' not found.")
+        sys.exit(1)
+    print(f"Deleted model '{args.name}'.")
+
+
+_MODELS_COMMANDS = {"list": _models_list, "show": _models_show, "create": _models_create, "delete": _models_delete}
+
+
 def _run_models(args):
     storage = _resolve_storage(args)
-
-    if args.models_command == "list":
-        names = run_sync(storage.list_models())
-        builtins = [m for ds in run_sync(storage.list_datasources()) for m in run_sync(storage.builtin_models(ds))]
-        if not names and not builtins:
-            print("No models found.")
-            return
-        for name in names:
-            model = run_sync(storage.get_model(name))
-            if model and model.hidden:
-                continue
-            desc = f"  — {model.description}" if model and model.description else ""
-            print(f"{name}{desc}")
-        for model in builtins:
-            print(f"{model.name}  — {model.description}")
-
-    elif args.models_command == "show":
-        model = run_sync(storage.get_model(args.name))
-        if model is None:
-            print(f"Model '{args.name}' not found.")
-            sys.exit(1)
-        data = model.model_dump(mode="json", exclude_none=True)
-        print(yaml.dump(data, sort_keys=False, default_flow_style=False).rstrip())
-
-    elif args.models_command == "create":
-        with open(args.file) as f:
-            data = yaml.safe_load(f)
-        model = SlayerModel.model_validate(data)
-        # Route through engine.save_model so query-backed models get cache
-        # populated (and user-supplied cache fields are rejected).
-        engine = SlayerQueryEngine(storage=storage)
-        try:
-            run_sync(engine.save_model(model))
-        except ValueError as e:
-            print(f"Error: {e}")
-            sys.exit(1)
-        print(f"Created model '{model.name}'.")
-
-    elif args.models_command == "delete":
-        deleted = run_sync(storage.delete_model(args.name))
-        if deleted:
-            print(f"Deleted model '{args.name}'.")
-        else:
-            print(f"Model '{args.name}' not found.")
-            sys.exit(1)
-
-    else:
+    handler = _MODELS_COMMANDS.get(args.models_command)
+    if handler is None:
         print("Usage: slayer models {list,show,create,delete}")
         sys.exit(1)
+    handler(storage, args)
+
+
+def _datasources_list(storage, args) -> None:
+    names = run_sync(storage.list_datasources())
+    if not names:
+        print("No datasources found.")
+        return
+    for name in names:
+        ds = run_sync(storage.get_datasource(name))
+        ds_type = ds.type if ds and ds.type else "unknown"
+        print(f"{name}  ({ds_type})")
+
+
+def _datasource_or_exit(storage, name: str):
+    ds = run_sync(storage.get_datasource(name))
+    if ds is None:
+        print(f"Datasource '{name}' not found.")
+        sys.exit(1)
+    return ds
+
+
+def _datasources_show(storage, args) -> None:
+    data = _datasource_or_exit(storage, args.name).model_dump(mode="json", exclude_none=True)
+    for secret_field in ("password", "connection_string", "credentials_json"):
+        if secret_field in data:
+            data[secret_field] = "********"
+    print(yaml.dump(data, sort_keys=False, default_flow_style=False).rstrip())
+
+
+def _datasources_delete(storage, args) -> None:
+    if not run_sync(storage.delete_datasource(args.name)):
+        print(f"Datasource '{args.name}' not found.")
+        sys.exit(1)
+    print(f"Deleted datasource '{args.name}'.")
+
+
+def _datasources_test(storage, args) -> None:
+    ds = _datasource_or_exit(storage, args.name)
+    try:
+        engine = engine_factory.get_engine(ds.resolve_env_vars())
+        with engine.connect() as conn:
+            conn.execute(sa.text("SELECT 1"))
+        # Cached engine — engine_factory owns lifecycle; don't dispose.
+        print(f"OK — connected to '{args.name}' ({ds.type}).")
+    except Exception as e:
+        print(f"FAILED — {e}")
+        sys.exit(1)
+
+
+def _datasources_create(storage, args) -> None:
+    _run_datasources_create(args, storage)
+
+
+_DATASOURCES_COMMANDS = {
+    "list": _datasources_list, "show": _datasources_show, "create": _datasources_create,
+    "delete": _datasources_delete, "test": _datasources_test,
+}
 
 
 def _run_datasources(args):
     storage = _resolve_storage(args)
-
-    if args.datasources_command == "list":
-        names = run_sync(storage.list_datasources())
-        if not names:
-            print("No datasources found.")
-            return
-        for name in names:
-            ds = run_sync(storage.get_datasource(name))
-            ds_type = ds.type if ds and ds.type else "unknown"
-            print(f"{name}  ({ds_type})")
-
-    elif args.datasources_command == "show":
-        ds = run_sync(storage.get_datasource(args.name))
-        if ds is None:
-            print(f"Datasource '{args.name}' not found.")
-            sys.exit(1)
-        data = ds.model_dump(mode="json", exclude_none=True)
-        for secret_field in ("password", "connection_string", "credentials_json"):
-            if secret_field in data:
-                data[secret_field] = "********"
-        print(yaml.dump(data, sort_keys=False, default_flow_style=False).rstrip())
-
-    elif args.datasources_command == "create":
-        _run_datasources_create(args, storage)
-
-    elif args.datasources_command == "delete":
-        deleted = run_sync(storage.delete_datasource(args.name))
-        if deleted:
-            print(f"Deleted datasource '{args.name}'.")
-        else:
-            print(f"Datasource '{args.name}' not found.")
-            sys.exit(1)
-
-    elif args.datasources_command == "test":
-        ds = run_sync(storage.get_datasource(args.name))
-        if ds is None:
-            print(f"Datasource '{args.name}' not found.")
-            sys.exit(1)
-        try:
-            engine = engine_factory.get_engine(ds.resolve_env_vars())
-            with engine.connect() as conn:
-                conn.execute(sa.text("SELECT 1"))
-            # Cached engine — engine_factory owns lifecycle; don't dispose.
-            print(f"OK — connected to '{args.name}' ({ds.type}).")
-        except Exception as e:
-            print(f"FAILED — {e}")
-            sys.exit(1)
-
-    else:
+    handler = _DATASOURCES_COMMANDS.get(args.datasources_command)
+    if handler is None:
         print("Usage: slayer datasources {list,show,create,delete,test}")
         sys.exit(1)
+    handler(storage, args)
 
 
 def _parse_connection_string(url: str) -> tuple[str, str]:
@@ -2333,6 +2351,7 @@ def _run_datasources_create_demo(args, storage):  # NOSONAR S3776 — linear dem
             "type": "duckdb",
             "database": db_path,
             "description": args.description or "Jaffle Shop demo (synthetic data via jafgen)",
+            "granularities": getattr(args, "granularities", None) or [],
         }
     )
 

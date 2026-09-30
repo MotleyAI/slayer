@@ -4525,21 +4525,20 @@ class SQLGenerator:
             if plan.attach_phase == "combined"
             for sub in plan.substitutions
         }
-        out: List[str] = []
-        for sid in planned_query.projection:
-            slot = slots_by_id.get(sid)
-            if slot is None or slot.phase != Phase.ROW:
-                continue
-            key = slot.key
-            if key in combined_placeholders:
-                continue
-            if isinstance(key, TimeTruncKey):
-                if axis_column is not None and key.column != axis_column:
-                    out.append(sid)
-                continue
-            if isinstance(key, (ColumnKey, ColumnSqlKey)) or slot.is_dimension:
-                out.append(sid)
-        return out
+        return [
+            sid for sid in planned_query.projection
+            if (slot := slots_by_id.get(sid)) is not None and slot.phase == Phase.ROW
+            and slot.key not in combined_placeholders
+            and SQLGenerator._in_transform_grain(slot=slot, axis_column=axis_column)
+        ]
+
+    @staticmethod
+    def _in_transform_grain(*, slot, axis_column: object) -> bool:
+        """A row slot's grain membership: a dimension, or a time dimension off the axis's column."""
+        key = slot.key
+        if isinstance(key, TimeTruncKey):
+            return axis_column is not None and key.column != axis_column
+        return isinstance(key, (ColumnKey, ColumnSqlKey)) or slot.is_dimension
 
     def _render_window_transform_sql(  # NOSONAR(S3776) — one per-op dispatch over the window-transform vocabulary, sharing the resolved measure / frame / partition state every arm reads. Each arm is one line; splitting the dispatch scatters that state without simplifying it.
         self,

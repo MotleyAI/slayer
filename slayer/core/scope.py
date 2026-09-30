@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple, TypeVar, Union
+from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple, TypeVar
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
@@ -61,7 +61,7 @@ class StageColumn(BaseModel):
     type: Optional[DataType] = None
     # Set only for a column an upstream stage bucketed (a ``TimeTruncKey`` slot);
     # ``None`` means "not truncated", so any granularity re-binds.
-    granularity: Optional[Union[CustomGranularity, GranularitySpec]] = None
+    granularity: CustomGranularity | GranularitySpec | None = None
     label: Optional[str] = None
     format: Optional[NumberFormat] = None
     hidden: bool = False

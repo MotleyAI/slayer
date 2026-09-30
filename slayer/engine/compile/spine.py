@@ -8,7 +8,10 @@ from typing import List, Optional, Tuple
 
 from slayer.core.enums import UNIT_MONTHS, UNIT_SECONDS, TimeGranularity
 from slayer.core.granularity import Granularity, granularity_parts, nests_into, resolve_granularity
-from slayer.core.keys import AggregateKey, ArithmeticKey, ColumnKey, LiteralKey, TimeTruncKey, ValueKey, source_anchor_path, walk_value_keys
+from slayer.core.keys import (
+    AggregateKey, ArithmeticKey, ColumnKey, LiteralKey, TimeTruncKey, ValueKey, source_anchor_path, split_top_level_and,
+    walk_value_keys,
+)
 from slayer.core.models import SlayerModel
 from slayer.core.refs import key_display
 from slayer.core.time_bounds import is_frame_bound, strip_frame_bounds
@@ -85,12 +88,6 @@ def _bound(conjunct: ArithmeticKey, spine: ColumnKey) -> Tuple[str, datetime]:
     return "upper", value + timedelta(microseconds=1) if op == "<=" else value
 
 
-def _conjuncts(key: ValueKey) -> List[ValueKey]:
-    if isinstance(key, ArithmeticKey) and key.op == "and":
-        return [c for operand in key.operands for c in _conjuncts(operand)]
-    return [key]
-
-
 def series_granularity(granularities: List[Granularity]) -> Granularity:
     """The finest spine granularity nesting into all the others, else the coarsest built-in that does."""
     for g in granularities:
@@ -116,20 +113,33 @@ def plan_spine(
 ) -> SpineFactor:
     """The host's bucket series, after checking every position the spine column appears in."""
     check_spine_raw_rows(raw_rows=not prebound.distinct_dimension_values)
+    spine_tds = _checked_spine_time_dimensions(prebound=prebound, host=host, spine=spine, bundle=bundle)
+    lowers, uppers = _spine_bounds(prebound=prebound, host=host, spine=spine, bundle=bundle)
+    check_spine_lower_bound(has_lower=bool(lowers))
+    granularity = series_granularity([k.granularity for k in spine_tds] or [TimeGranularity.DAY])
+    lower = max(lowers)
+    upper = min(uppers) if uppers else add_units(floor_to(bundle.now, granularity), granularity, 1)
+    return SpineFactor(
+        granularity=granularity, lower=lower, upper=upper,
+        size=_series_size(granularity=granularity, lower=lower, upper=upper),
+    )
+
+
+def _checked_spine_time_dimensions(
+    *, prebound: PreboundQuery, host: SlayerModel, spine: ColumnKey, bundle: ResolvedSourceBundle,
+) -> List[TimeTruncKey]:
+    """The spine time dimensions, after checking the dimension, measure and order positions."""
     n_dims, n_tds = prebound.n_dims, prebound.n_time_dimensions
-    dims = prebound.declared_measures[:n_dims]
-    tds = prebound.declared_measures[n_dims:n_dims + n_tds]
-    measures = prebound.declared_measures[n_dims + n_tds:]
-    for dm in dims:
+    for dm in prebound.declared_measures[:n_dims]:
         key = dm.bound.value_key
         check_spine_plain_use(offender=dm.declared_name if _mentions(key, spine) else None, position="dimension")
-    for dm in measures:
+    for dm in prebound.declared_measures[n_dims + n_tds:]:
         key = dm.bound.value_key
         agg = _spine_aggregate(key, spine=spine, host=host, bundle=bundle)
         check_spine_aggregation(offender=key_display(agg) if agg is not None else None)
         check_spine_plain_use(offender=dm.declared_name if _bare(key, spine) else None, position="measure")
     spine_tds = [
-        dm.bound.value_key for dm in tds
+        dm.bound.value_key for dm in prebound.declared_measures[n_dims:n_dims + n_tds]
         if isinstance(dm.bound.value_key, TimeTruncKey) and dm.bound.value_key.column == spine
     ]
     projected = set(spine_tds)
@@ -139,11 +149,18 @@ def plan_spine(
             offender=key_display(key) if key not in projected and _mentions(key, spine) else None,
             position="order key",
         )
+    return spine_tds
+
+
+def _spine_bounds(
+    *, prebound: PreboundQuery, host: SlayerModel, spine: ColumnKey, bundle: ResolvedSourceBundle,
+) -> Tuple[List[datetime], List[datetime]]:
+    """``(lowers, uppers)`` of the filters' spine frame bounds; any other spine conjunct fails."""
     lowers: List[datetime] = []
     uppers: List[datetime] = []
     texts = list(prebound.bound_filter_texts) + [None] * len(prebound.bound_filters)
     for bf, text in zip(prebound.bound_filters, texts):
-        for conjunct in _conjuncts(bf.value_key):
+        for conjunct in split_top_level_and(bf.value_key):
             if is_frame_bound(key=conjunct, time_columns={spine}):
                 assert isinstance(conjunct, ArithmeticKey)
                 kind, value = _bound(conjunct, spine)
@@ -152,14 +169,7 @@ def plan_spine(
                 check_spine_filter(offender=text or key_display(conjunct))
             agg = _spine_aggregate(conjunct, spine=spine, host=host, bundle=bundle)
             check_spine_aggregation(offender=key_display(agg) if agg is not None else None)
-    check_spine_lower_bound(has_lower=bool(lowers))
-    granularity = series_granularity([k.granularity for k in spine_tds] or [TimeGranularity.DAY])
-    lower = max(lowers)
-    upper = min(uppers) if uppers else add_units(floor_to(bundle.now, granularity), granularity, 1)
-    return SpineFactor(
-        granularity=granularity, lower=lower, upper=upper,
-        size=_series_size(granularity=granularity, lower=lower, upper=upper),
-    )
+    return lowers, uppers
 
 
 def host_mask(key: ValueKey, *, spine: Optional[ColumnKey]) -> Optional[ValueKey]:
@@ -197,7 +207,7 @@ def shifted_spine_bounds(
         return []
     out: List[BoundFilter] = []
     for bf in prebound.bound_filters:
-        for conjunct in _conjuncts(bf.value_key):
+        for conjunct in split_top_level_and(bf.value_key):
             if not is_frame_bound(key=conjunct, time_columns={spine}):
                 continue
             assert isinstance(conjunct, ArithmeticKey)

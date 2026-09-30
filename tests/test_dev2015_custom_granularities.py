@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 from sqlglot import exp
 
-from slayer.core.errors import QueryTypeError, SlayerError, TimeDimensionColumnError
+from slayer.core.errors import DateOperandTypeError, QueryTypeError, SlayerError, TimeDimensionColumnError
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.core.granularity import CustomGranularity
 from slayer.core.query import SlayerQuery
@@ -214,6 +214,14 @@ class TestEveryPosition:
         msg = str(exc.value)
         for name in (*BUILT_IN_GRANULARITIES, *GRANULARITY_NAMES):
             assert name in msg
+
+    async def test_relative_token_against_a_text_column(self, engine) -> None:
+        query = SlayerQuery.model_validate({
+            "source_model": "events", "measures": [m("sum(amount)", "s")], "filters": ["series = 'this fiscal_year'"],
+        })
+        with pytest.raises(DateOperandTypeError) as exc:
+            await engine.execute(query, dry_run=True)
+        assert "series" in str(exc.value)
 
     async def test_name_scoped_to_its_datasource(self, engine) -> None:
         cfg = await engine.storage.get_datasource("test")

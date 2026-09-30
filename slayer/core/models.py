@@ -1068,10 +1068,10 @@ class DatasourceConfig(BaseModel):
 
 def _reserved_granularity_names() -> dict[str, str]:
     """Names a custom granularity may not take, lowercased, with the kind they belong to."""
-    out: dict[str, str] = {name: "Mode-B function" for name in SCALAR_FUNCTIONS}
-    out.update({name: "transform" for name in ALL_TRANSFORMS})
-    out.update({name: "aggregation" for name in BUILTIN_AGGREGATIONS})
-    out.update({name: "granularity" for name in GRANULARITY_NAMES})
+    out: dict[str, str] = dict.fromkeys(SCALAR_FUNCTIONS, "Mode-B function")
+    out.update(dict.fromkeys(ALL_TRANSFORMS, "transform"))
+    out.update(dict.fromkeys(BUILTIN_AGGREGATIONS, "aggregation"))
+    out.update(dict.fromkeys(GRANULARITY_NAMES, "granularity"))
     return out
 
 

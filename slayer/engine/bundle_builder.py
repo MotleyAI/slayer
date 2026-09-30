@@ -33,6 +33,26 @@ logger = logging.getLogger(__name__)
 _PEER_LOAD_CONCURRENCY = 8
 
 
+async def _referenced_models(
+    *, query: SlayerQuery, source_model: SlayerModel, named_queries: Dict[str, SlayerQuery],
+    storage: "StorageBackend", data_source: Optional[str], chain: Tuple[str, ...], spine_clash: bool,
+) -> Tuple[List[SlayerModel], Dict[str, SlayerModel]]:
+    """The root's join component plus query-written targets (the spine unless a stored model clashes with it), and the stored query-backed models among them."""
+    component = await _collect_referenced_models(
+        source_model=source_model, named_queries=named_queries, storage=storage, data_source=data_source,
+    )
+    component.extend(await _query_written_targets(
+        queries=[*named_queries.values(), query], known={m.name for m in component},
+        sibling_names=set(named_queries), storage=storage, data_source=data_source,
+    ))
+    referenced, query_backed = await _split_query_backed(
+        models=[m for m in component if not is_spine(m)], storage=storage, data_source=data_source, chain=chain,
+    )
+    if not spine_clash and data_source is not None:
+        referenced.append(source_model if is_spine(source_model) else spine_model(data_source=data_source))
+    return referenced, query_backed
+
+
 async def build_resolved_source_bundle(
     *,
     query: SlayerQuery,
@@ -58,7 +78,6 @@ async def build_resolved_source_bundle(
     """
     named_queries = named_queries or {}
     stage_displays = stage_displays or {}
-    sibling_names = set(named_queries)
     storage = cast("StorageBackend", _ModelReadCache(storage))
     for q in [*named_queries.values(), query]:
         _reject_chain_source(spec=q.source_model, chain=splice_chain)
@@ -73,23 +92,10 @@ async def build_resolved_source_bundle(
     spine_clash = walk_ds is not None and (
         await storage.get_model(TIME_SPINE_MODEL, data_source=walk_ds)
     ) is not None
-
-    component = await _collect_referenced_models(
-        source_model=source_model,
-        named_queries=named_queries,
-        storage=storage,
-        data_source=walk_ds,
+    referenced_models, query_backed = await _referenced_models(
+        query=query, source_model=source_model, named_queries=named_queries,
+        storage=storage, data_source=walk_ds, chain=splice_chain, spine_clash=spine_clash,
     )
-    component.extend(await _query_written_targets(
-        queries=[*named_queries.values(), query], known={m.name for m in component},
-        sibling_names=sibling_names, storage=storage, data_source=walk_ds,
-    ))
-    referenced_models, query_backed = await _split_query_backed(
-        models=[m for m in component if not is_spine(m)],
-        storage=storage, data_source=walk_ds, chain=splice_chain,
-    )
-    if not spine_clash and walk_ds is not None:
-        referenced_models.append(source_model if is_spine(source_model) else spine_model(data_source=walk_ds))
     if population_spine and not is_spine(source_model):
         source_model = source_model.as_population_factor()
 

@@ -1142,7 +1142,7 @@ def _lower_time_point(
 ) -> ValueKey:
     target, t, gran = _time_operand(key.operand, column_type=column_type)
     if t is None:
-        return _non_temporal_comparison(key)
+        return _non_temporal_comparison(key, units=units)
     point = resolve_time_point(key.point, now=now, units=units)
     if point is None:
         _raise_not_a_time_point(operand=key.operand, text=key.point)
@@ -1191,9 +1191,9 @@ def _raise_sub_day(key: TimePointCmpKey) -> NoReturn:
     )
 
 
-def _non_temporal_comparison(key: TimePointCmpKey) -> ValueKey:
+def _non_temporal_comparison(key: TimePointCmpKey, *, units: Mapping[str, CustomGranularity]) -> ValueKey:
     """A literal time point against a non-temporal operand keeps its plain-string meaning."""
-    if key.op in ("in", "not in") or is_relative_token(key.point):
+    if key.op in ("in", "not in") or is_relative_token(key.point, units=units):
         raise DateOperandTypeError(
             summary=f"'{key.point}' is a time point, but `{_operand_display(key.operand)}` "
             f"is not a DATE or TIMESTAMP operand.",

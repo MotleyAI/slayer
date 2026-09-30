@@ -161,6 +161,26 @@ def _convert_dimension(dim: DbtDimension) -> Column:
     )
 
 
+def _alloc_column_name(base: str, *, taken: set[str]) -> str:
+    """``base`` suffixed with ``_col`` until free of ``taken``, then claimed."""
+    name = base
+    while name in taken:
+        name = f"{name}_col"
+    taken.add(name)
+    return name
+
+
+def _declare_primary_entity(*, sm: DbtSemanticModel, primary_entity: str, cols: list[Column]) -> None:
+    """Mark the column reading ``sm``'s primary entity as PK, adding one when the name is free."""
+    pe_expr = next((e.expr or e.name for e in sm.entities if e.name == primary_entity), primary_entity)
+    pk = _key_column(expr=pe_expr, cols=cols)
+    if pk is None and (name := _free_key_name(expr=pe_expr, cols=cols, taken=set())):
+        pk = Column(name=name, type=DataType.DOUBLE)
+        cols.append(pk)
+    if pk is not None:
+        pk.primary_key = True
+
+
 class DbtToSlayerConverter:
     """Convert a DbtProject into SLayer models."""
 
@@ -356,56 +376,21 @@ class DbtToSlayerConverter:
                 f"namespace per model — rename one side in the dbt project."
             )
 
-        ref_name = sm.model or sm.name
-
-        sql_source: str | None = None
-        sql_table: str | None = None
-        if ref_name in self._regular_models_sql:
-            resolved, warnings = resolve_refs(
-                self._regular_models_sql[ref_name],
-                self._regular_models_sql,
-            )
-            sql_source = resolved
-            for message in warnings:
-                self._warnings.append(ConversionWarning(
-                    model_name=sm.name,
-                    category="sql_inline",
-                    severity="info",
-                    message=message,
-                ))
-        else:
-            sql_table = ref_name
-
-        default_time_dim = None
-        if sm.defaults and sm.defaults.agg_time_dimension:
-            default_time_dim = sm.defaults.agg_time_dimension
+        sql_table, sql_source = self._model_source(sm)
+        default_time_dim = sm.defaults.agg_time_dimension if sm.defaults else None
 
         # Accumulate model-level meta (config.meta + label + any
         # clean-fail raw stashes added during measure conversion).
-        model_meta: dict[str, Any] = {}
-        cfg_meta = _meta_of(sm.config)
-        if cfg_meta:
-            model_meta.update(cfg_meta)
+        model_meta: dict[str, Any] = dict(_meta_of(sm.config) or {})
         if sm.label:
             model_meta.setdefault("label", sm.label)
 
         cols: list[Column] = [_convert_dimension(d) for d in sm.dimensions]
-
         for entity in sm.entities:
             if entity.type in ("primary", "unique"):
                 self._declare_primary_key(sm_name=sm.name, entity=entity, cols=cols)
-
         if sm.primary_entity:
-            pe_expr = next(
-                (e.expr or e.name for e in sm.entities if e.name == sm.primary_entity),
-                sm.primary_entity,
-            )
-            pk = _key_column(expr=pe_expr, cols=cols)
-            if pk is None and (name := _free_key_name(expr=pe_expr, cols=cols, taken=set())):
-                pk = Column(name=name, type=DataType.DOUBLE)
-                cols.append(pk)
-            if pk is not None:
-                pk.primary_key = True
+            _declare_primary_entity(sm=sm, primary_entity=sm.primary_entity, cols=cols)
 
         measure_cols, measures = self._convert_measures(
             dbt_measures=sm.measures,
@@ -430,12 +415,24 @@ class DbtToSlayerConverter:
             sql=sql_source,
             data_source=self.data_source,
             description=sm.description,
-            default_time_dimension=default_time_dim,
+            default_time_dimension=default_time_dim or None,
             columns=cols,
             measures=measures,
             joins=joins,
             meta=model_meta or None,
         )
+
+    def _model_source(self, sm: DbtSemanticModel) -> tuple[str | None, str | None]:
+        """``(sql_table, sql)``: a regular dbt model's refs inlined as SQL, else the physical table."""
+        ref_name = sm.model or sm.name
+        if ref_name not in self._regular_models_sql:
+            return ref_name, None
+        resolved, warnings = resolve_refs(self._regular_models_sql[ref_name], self._regular_models_sql)
+        self._warnings.extend(
+            ConversionWarning(model_name=sm.name, category="sql_inline", severity="info", message=message)
+            for message in warnings
+        )
+        return None, resolved
 
     def _declare_join_keys(
         self, *, sm_name: str, cols: list[Column], measure_names: set,
@@ -550,68 +547,65 @@ class DbtToSlayerConverter:
           value is absent or discrete/approximate flags are set.
         * ``non_additive_dimension`` (semi-additive) → clean-fail.
         """
-        measure_names = {m.name for m in dbt_measures}
         columns: list[Column] = []
         measures: list[ModelMeasure] = []
-        used_column_names = set(existing_column_names)
-
-        def _alloc(base: str) -> str:
-            col_name = base
-            while col_name in measure_names or col_name in used_column_names:
-                col_name = f"{col_name}_col"
-            used_column_names.add(col_name)
-            return col_name
+        taken = set(existing_column_names) | {m.name for m in dbt_measures}
 
         groups: dict[str, list[DbtMeasure]] = defaultdict(list)
         for m in dbt_measures:
             if m.non_additive_dimension is not None:
-                self._fail_measure(
-                    m, sm_name, model_meta,
-                    category="non_additive_dimension", severity="dropped",
-                    message=(
-                        f"Measure '{m.name}' uses a non_additive_dimension "
-                        f"(semi-additive aggregation), which is not exactly expressible."
-                    ),
-                    suggestion=(
-                        "Express as last(balance, <time_col>) / first(...) "
-                        "or a multi-stage query."
-                    ),
-                    raw={"non_additive_dimension": m.non_additive_dimension.model_dump()},
-                )
-                continue
-            if m.agg.lower() == "sum_boolean":
-                expr = m.expr or m.name
-                col_name = _alloc(f"{m.name}_col")
+                self._fail_semi_additive(m, sm_name=sm_name, model_meta=model_meta)
+            elif m.agg.lower() == "sum_boolean":
+                col_name = _alloc_column_name(f"{m.name}_col", taken=taken)
                 columns.append(Column(
                     name=col_name,
-                    sql=f"CASE WHEN ({expr}) THEN 1 ELSE 0 END",
+                    sql=f"CASE WHEN ({m.expr or m.name}) THEN 1 ELSE 0 END",
                     type=DataType.INT,
                     meta=_meta_of(m.config),
                 ))
                 self._emit_model_measure(measures, m, f"{col_name}:sum", sm_name)
-                continue
-            groups[m.expr or m.name].append(m)
+            else:
+                groups[m.expr or m.name].append(m)
 
         for expr_key, group in groups.items():
-            if _is_simple_identifier(expr_key):
-                base_name = expr_key
-            else:
-                base_name = f"{group[0].name}_col"
-            col_name = _alloc(base_name)
-            sql = expr_key if expr_key != col_name else None
+            col_name = _alloc_column_name(
+                expr_key if _is_simple_identifier(expr_key) else f"{group[0].name}_col", taken=taken,
+            )
             columns.append(Column(
                 name=col_name,
-                sql=sql,
+                sql=expr_key if expr_key != col_name else None,
                 type=DataType.DOUBLE,
                 format=_FLOAT_FORMAT,
             ))
-            for m in group:
-                formula = self._measure_formula(m, col_name, sm_name, model_meta)
-                if formula is None:
-                    continue
-                self._emit_model_measure(measures, m, formula, sm_name)
+            self._emit_group_measures(group, col_name=col_name, sm_name=sm_name, model_meta=model_meta,
+                                      measures=measures)
 
         return columns, measures
+
+    def _emit_group_measures(
+        self, group: list[DbtMeasure], *, col_name: str, sm_name: str, model_meta: dict[str, Any],
+        measures: list[ModelMeasure],
+    ) -> None:
+        for m in group:
+            formula = self._measure_formula(m, col_name, sm_name, model_meta)
+            if formula is not None:
+                self._emit_model_measure(measures, m, formula, sm_name)
+
+    def _fail_semi_additive(self, m: DbtMeasure, *, sm_name: str, model_meta: dict[str, Any]) -> None:
+        assert m.non_additive_dimension is not None
+        self._fail_measure(
+            m, sm_name, model_meta,
+            category="non_additive_dimension", severity="dropped",
+            message=(
+                f"Measure '{m.name}' uses a non_additive_dimension "
+                f"(semi-additive aggregation), which is not exactly expressible."
+            ),
+            suggestion=(
+                "Express as last(balance, <time_col>) / first(...) "
+                "or a multi-stage query."
+            ),
+            raw={"non_additive_dimension": m.non_additive_dimension.model_dump()},
+        )
 
     def _measure_formula(
         self, m: DbtMeasure, col_name: str, sm_name: str, model_meta: dict[str, Any]
@@ -896,16 +890,30 @@ class DbtToSlayerConverter:
     def _convert_simple_metric(self, metric: DbtMetric) -> None:
         """A simple metric is a (filtered) re-aggregation of a single measure.
 
-        Without a filter: nothing to do — the underlying measure is already
+        Without a filter (or fill): nothing to do — the underlying measure is already
         addressable as a ModelMeasure. With a filter: push it down into a leaf
         Column carrying the CASE-WHEN ``filter`` and reference it from a
         ModelMeasure.
         """
         tp = metric.type_params
-
-        if self._simple_metric_unsupported(metric, tp):
+        measure_name = self._simple_metric_measure_name(metric, tp)
+        if measure_name is None:
             return
+        mref = tp.measure if tp else None
+        fill = mref.fill_nulls_with if mref else None
+        spine = mref is not None and mref.join_to_timespine
+        if spine:
+            self._note_time_spine(metric)
+        raw_filter = self._combine_filters(metric.filter, mref.filter if mref else None)
+        if raw_filter:
+            self._convert_filtered_simple_metric(metric, measure_name=measure_name, raw_filter=raw_filter, fill=fill)
+        elif fill is not None or spine:
+            self._add_unfiltered_metric(metric, measure_name=measure_name, fill=fill)
 
+    def _simple_metric_measure_name(self, metric: DbtMetric, tp: DbtMetricTypeParams | None) -> str | None:
+        """The measure a simple metric re-aggregates; ``None`` after reporting an unsupported shape."""
+        if self._simple_metric_unsupported(metric, tp):
+            return None
         measure_name = tp.measure_name if tp else None
         if not measure_name:
             self._fail_metric(
@@ -914,18 +922,12 @@ class DbtToSlayerConverter:
                 severity="unconverted",
                 message=f"Simple metric '{metric.name}' has no measure reference.",
             )
-            return
+            return None
+        return measure_name
 
-        mref = tp.measure if tp else None
-        fill = mref.fill_nulls_with if mref else None
-        if mref is not None and mref.join_to_timespine:
-            self._note_time_spine(metric)
-        raw_filter = self._combine_filters(metric.filter, mref.filter if mref else None)
-        if not raw_filter:
-            if fill is not None or (mref is not None and mref.join_to_timespine):
-                self._add_unfiltered_metric(metric, measure_name=measure_name, fill=fill)
-            return  # an unfiltered simple metric's measure is already addressable.
-
+    def _convert_filtered_simple_metric(
+        self, metric: DbtMetric, *, measure_name: str, raw_filter: str, fill: int | None,
+    ) -> None:
         source_sm = self._find_measure_model(measure_name)
         if source_sm is None:
             self._fail_metric(
@@ -948,14 +950,8 @@ class DbtToSlayerConverter:
             return
 
         dbt_measure = next((m for m in source_sm.measures if m.name == measure_name), None)
-        if dbt_measure is None:
-            return
-
         slayer_model = self._models_by_name.get(source_sm.name)
-        if slayer_model is None:
-            return
-
-        if self._metric_name_collides(metric.name, slayer_model):
+        if dbt_measure is None or slayer_model is None or self._metric_name_collides(metric.name, slayer_model):
             return
 
         leaf_ref = self._filtered_leaf_ref(
