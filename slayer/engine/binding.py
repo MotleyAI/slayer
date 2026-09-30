@@ -6,7 +6,7 @@ from __future__ import annotations
 import difflib
 import os
 from decimal import Decimal
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Final, List, Optional, Tuple, TypeGuard
 
 from pydantic import BaseModel, ConfigDict
 
@@ -14,6 +14,7 @@ from slayer.core.errors import (
     AggregationArgumentError,
     AggregationNotAllowedError,
     CircularJoinPathError,
+    GranularityCallError,
     IllegalScopeReferenceError,
     IllegalWindowInFilterError,
     MeasureCycleError,
@@ -26,6 +27,7 @@ from slayer.core.enums import (
     BUILTIN_AGGREGATION_PARAM_ORDER,
     BUILTIN_AGGREGATIONS,
     DEFAULT_AGGREGATIONS_BY_TYPE,
+    GRANULARITY_NAMES,
     NUMERIC_ONLY_AGGREGATIONS,
     PRIMARY_KEY_AGGREGATIONS,
     RANKED_AGGREGATIONS,
@@ -36,7 +38,7 @@ from slayer.core.enums import (
 )
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS
-from slayer.core.keys import DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, SCALAR_FUNCTIONS, check_scalar_arity, parse_iso_temporal, value_arg_positions, AggregateKey, ArithmeticKey, ColumnKey, ColumnSqlKey, Grain, InKey, LiteralKey, ScalarCallKey, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, column_path, is_attached_source, normalize_scalar, prepend_value_key, walk_value_keys
+from slayer.core.keys import DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, SCALAR_FUNCTIONS, check_scalar_arity, type_date_values, AggregateKey, ArithmeticKey, ColumnKey, ColumnSqlKey, Grain, InKey, LiteralKey, ScalarCallKey, StarKey, TimePointCmpKey, TimePointOp, TimeTruncKey, TransformKey, ValueKey, column_leaf, column_path, is_attached_source, normalize_scalar, prepend_value_key, temporal_type, walk_value_keys
 from slayer.core.join_walker import (
     OrientedJoin,
     aggregation_owner,
@@ -52,9 +54,11 @@ from slayer.core.models import (
     reserved_value_param_message,
 )
 from slayer.engine import dimension_routing
+from slayer.engine.key_metadata import scope_column_type
 from slayer.engine.param_binding import bind_aggregation_params
 from slayer.core.query import TimeDimension
 from slayer.core.scope import ModelScope, StageSchema, resolve_generated_column
+from slayer.core.time_points import is_time_point
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.syntax import (
     AggCall,
@@ -395,9 +399,16 @@ def _bind(
         )
 
     if isinstance(parsed, Cmp):
+        time_point = _time_point_comparison(parsed)
+        if time_point is not None:
+            operand, op, point, literal_on_left = time_point
+            return TimePointCmpKey(
+                op=op, point=point, literal_on_left=literal_on_left,
+                operand=_bind(operand, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map, measure_ctx=measure_ctx, dim_alias_map=dim_alias_map),
+            )
         # ``IN`` / ``NOT IN`` fold into a single ``InKey`` (structured
         # column + literal-tuple handle for the generator).
-        if parsed.op in ("in", "not in"):
+        if parsed.op in _MEMBERSHIP_OP:
             return _bind_in(
                 parsed,
                 scope=scope, bundle=bundle, in_filter=in_filter,
@@ -422,6 +433,36 @@ def _bind(
     raise ValueError(
         f"Unsupported ParsedExpr node: {type(parsed).__name__}"
     )
+
+
+_OPERAND_LEFT_OP: Dict[str, TimePointOp] = {
+    "==": "=", "!=": "!=", "<": "<", "<=": "<=", ">": ">", ">=": ">=",
+}
+_MIRRORED_OP: Dict[TimePointOp, TimePointOp] = {"=": "=", "!=": "!=", "<": ">", "<=": ">=", ">": "<", ">=": "<="}
+_NOT_IN: Final = "not in"
+_MEMBERSHIP_OP: Dict[str, TimePointOp] = {"in": "in", _NOT_IN: _NOT_IN}
+
+
+def _is_time_point_literal(node: ParsedExpr) -> TypeGuard[Literal]:
+    return isinstance(node, Literal) and isinstance(node.value, str) and is_time_point(node.value)
+
+
+def _time_point_comparison(parsed: Cmp) -> Optional[Tuple[ParsedExpr, TimePointOp, str, bool]]:
+    """``(operand, operand-left op, point, literal_on_left)`` when ``parsed`` compares a
+    non-literal with a time-point string (or is a single-string ``in``), else ``None``."""
+    left, right = parsed.left, parsed.right
+    if parsed.op in _MEMBERSHIP_OP:
+        if isinstance(right, Literal) and isinstance(right.value, str):
+            return left, _MEMBERSHIP_OP[parsed.op], right.value, False
+        return None
+    op = _OPERAND_LEFT_OP.get(parsed.op)
+    if op is None:
+        return None
+    if _is_time_point_literal(right) and isinstance(right.value, str) and not isinstance(left, Literal):
+        return left, op, right.value, False
+    if _is_time_point_literal(left) and isinstance(left.value, str) and not isinstance(right, Literal):
+        return right, _MIRRORED_OP[op], left.value, True
+    return None
 
 
 def _bind_in(
@@ -466,7 +507,7 @@ def _bind_in(
     return InKey(
         column=column,
         values=values,
-        negated=(parsed.op == "not in"),
+        negated=(parsed.op == _NOT_IN),
     )
 
 
@@ -1060,13 +1101,20 @@ def _expression_is_confidently_boolean(key, *, model: Optional[SlayerModel]) -> 
 
 def _reject_non_numeric_expression_agg(
     *, source: ValueKey, agg: str,
-    scope: ModelScope | StageSchema,
+    scope: ModelScope | StageSchema, bundle: ResolvedSourceBundle,
 ) -> None:
     if agg not in NUMERIC_ONLY_AGGREGATIONS:
         return
     model = (
         scope.source_model if isinstance(scope, ModelScope) else None
     )
+    temporal = temporal_type(source, column_type=scope_column_type(scope=scope, bundle=bundle))
+    if temporal is not None:
+        raise ValueError(
+            f"Aggregation {agg!r} requires a numeric value, but the "
+            f"aggregated expression is non-numeric ({temporal.value}). Use a counting "
+            f"or min/max aggregation, or make the expression numeric (e.g. date_diff)."
+        )
     if _expression_is_confidently_text(source, model=model):
         raise ValueError(
             f"Aggregation {agg!r} requires a numeric value, but the "
@@ -1086,6 +1134,8 @@ def _source_is_reaggregation(node) -> bool:
     AggCall or a grained transform, alone or composed. Such a source is bound
     structurally (its inner AggCalls / TransformCalls become nested keys) whether
     it is a pure re-aggregation or a row-grain mix."""
+    if isinstance(node, AggCall) and node.agg.lower() in GRANULARITY_NAMES:
+        return False  # a granularity call is row-level
     if isinstance(node, (AggCall, TransformCall)):
         return True
     if isinstance(node, (Arith, Cmp)):
@@ -1106,9 +1156,11 @@ def _bind_agg_call(
     alias_map: Optional[Dict[str, "ValueKey"]] = None,
     measure_ctx: Optional[MeasureResolutionCtx] = None,
     dim_alias_map: Optional[Dict[str, "ValueKey"]] = None,
-) -> AggregateKey | TransformKey:
-    """Bind an ``AggCall``; ``first`` / ``last`` dispatch by the bound operand's
+) -> AggregateKey | TransformKey | TimeTruncKey:
+    """Bind an ``AggCall`` (a granularity callee is a row-level bucket); ``first`` / ``last`` dispatch by the bound operand's
     type — attached → the series transform, row grain → the ranked aggregation."""
+    if parsed.agg.lower() in GRANULARITY_NAMES:
+        return _bind_granularity_call(parsed, scope=scope, bundle=bundle)
     op = normalize_aggregation_name(parsed.agg)
     if op in RANKED_AGGREGATIONS:
         operand = _bind_transform_input(
@@ -1121,6 +1173,18 @@ def _bind_agg_call(
                 scope=scope, bundle=bundle, dim_alias_map=dim_alias_map,
             )
     return _bind_agg(parsed, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map)
+
+
+def _bind_granularity_call(
+    parsed: AggCall, *, scope: ModelScope | StageSchema, bundle: ResolvedSourceBundle,
+) -> TimeTruncKey:
+    """``gran(col)`` as the row-level bucket of ``col``."""
+    if parsed.args or parsed.kwargs or not isinstance(parsed.source, (Ref, DottedRef)):
+        raise GranularityCallError.wrong_shape(f"{parsed.agg}(...)")
+    column = _bind(parsed.source, scope=scope, bundle=bundle, in_filter=False)
+    if not isinstance(column, (ColumnKey, ColumnSqlKey)):
+        raise GranularityCallError.wrong_shape(f"{parsed.agg}(...)")
+    return TimeTruncKey(column=column, granularity=parsed.agg.lower())
 
 
 def _bind_agg(
@@ -1209,7 +1273,7 @@ def _bind_agg(
                 f"expression; use a plain column."
             )
         _reject_non_numeric_expression_agg(
-            source=source, agg=effective_agg, scope=scope,
+            source=source, agg=effective_agg, scope=scope, bundle=bundle,
         )
     kwargs = bind_aggregation_params(
         agg=effective_agg, source=source, kwargs=kwargs, bundle=bundle,
@@ -1650,7 +1714,6 @@ def _bind_scalar(
     alias_map: Optional[Dict[str, "ValueKey"]] = None,
     measure_ctx: Optional[MeasureResolutionCtx] = None,
     dim_alias_map: Optional[Dict[str, "ValueKey"]] = None,
-    temporal: bool = False,
 ) -> ScalarCallKey:
     if parsed.name not in SCALAR_FUNCTIONS:
         # Defence in depth: direct ParsedExpr construction bypasses the parser.
@@ -1675,22 +1738,14 @@ def _bind_scalar(
             )
         raise ValueError(arity_error)
     def bind(a: ParsedExpr, *, in_temporal_slot: bool) -> ValueKey:
-        if in_temporal_slot and isinstance(a, Literal) and isinstance(a.value, str):
-            # An ISO string literal in a DATE/TIMESTAMP slot binds as a date value.
-            return LiteralKey(value=parse_iso_temporal(a.value) or a.value)
-        if in_temporal_slot and isinstance(a, ScalarCall):
-            return _bind_scalar(
-                a, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map,
-                measure_ctx=measure_ctx, dim_alias_map=dim_alias_map, temporal=True,
-            )
-        return _bind(
+        key = _bind(
             a, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map,
             measure_ctx=measure_ctx, dim_alias_map=dim_alias_map,
         )
+        # ISO string literals in a DATE/TIMESTAMP slot bind as date values.
+        return type_date_values(key) if in_temporal_slot else key
 
     slots = set(DATE_OPERAND_ARGS.get(parsed.name, ()))
-    if temporal:
-        slots.update(value_arg_positions(parsed.name, len(parsed.args)))
     args = tuple(bind(a, in_temporal_slot=i in slots) for i, a in enumerate(parsed.args))
     if parsed.name == "date_add":
         _check_literal_count(args[DATE_ADD_COUNT_ARG])

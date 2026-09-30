@@ -62,7 +62,7 @@ async def test_stage_date_range_restricts_outer_stage(backend: str) -> None:
     where = _where_text(resp.sql or "", dialect=backend)
     assert "created_at" in where, resp.sql
     assert "2025-02-01" in where, resp.sql
-    assert "2025-03-31" in where, resp.sql
+    assert "2025-04-01" in where, resp.sql
 
 
 @pytest.mark.parametrize("backend", BACKENDS)

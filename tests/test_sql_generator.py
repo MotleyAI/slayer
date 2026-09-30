@@ -331,9 +331,9 @@ class TestTimeDimensions:
             ],
         )
         sql = await _generate(generator, query, orders_model)
-        assert "BETWEEN" in sql
+        assert "BETWEEN" not in sql
         assert "2024-01-01" in sql
-        assert "2024-12-31" in sql
+        assert "2025-01-01" in sql
 
 
 class TestFilters:
@@ -509,7 +509,8 @@ Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
         )
         sql = await _generate(generator, query, orders_model)
         assert ">=" in sql
-        assert "<=" in sql
+        assert "2024-07-01" in sql
+        assert "2024-06-30" not in sql
 
 
 class TestMeasureTypes:
@@ -1478,7 +1479,7 @@ class TestFields:
         )
         sql = await _generate(generator, query, orders_model)
         assert "2024-03-01" in sql
-        assert "2024-03-31" in sql
+        assert "2024-04-01" in sql
         # Shifted CTE uses INTERVAL to shift the time column (not shifted date strings)
         assert "INTERVAL" in sql
 

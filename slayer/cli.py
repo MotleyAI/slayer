@@ -241,6 +241,9 @@ examples:
 
   # Output as JSON
   slayer query @query.json --format json
+
+  # Run a saved query by name, refined with an extra dimension
+  slayer query monthly_revenue --refine '{"dimensions": ["region"]}'
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -261,6 +264,15 @@ examples:
     )
     query_parser.add_argument("--dry-run", action="store_true", help="Generate SQL without executing")
     query_parser.add_argument("--explain", action="store_true", help="Run EXPLAIN ANALYZE on the query")
+    query_parser.add_argument(
+        "--refine",
+        default=None,
+        metavar="JSON|@file",
+        help=(
+            "With a saved query name only: clauses (dimensions, measures, filters, order, "
+            "limit, ...) merged into the saved query's final stage."
+        ),
+    )
     query_parser.add_argument(
         "--variables",
         action="append",
@@ -1344,47 +1356,51 @@ def _print_query_warnings(result) -> None:
         print(f"warning: {w.human_message()}", file=sys.stderr)
 
 
+def _read_at_file(value: str, *, label: str) -> tuple[str, bool]:
+    """``@path`` → ``(file text, True)``; anything else → ``(value, False)``."""
+    if not value.startswith("@"):
+        return value, False
+    filepath = value[1:]
+    try:
+        with open(filepath) as f:
+            return f.read(), True
+    except FileNotFoundError:
+        raise SystemExit(f"{label.capitalize()} file not found: {filepath}") from None
+    except OSError as e:
+        raise SystemExit(f"Error reading {label} file: {e}") from None
+
+
 def _run_query(args):  # NOSONAR S3776 — argparse-driven dispatch; one straight-line function reads better than threaded helpers
-    query_input = args.query_json
     runtime_kwarg = _parse_cli_variables(args)
 
     storage = _resolve_storage(args)
     engine = SlayerQueryEngine(storage=storage)
 
-    if query_input.startswith("@"):
-        filepath = query_input[1:]
-        try:
-            with open(filepath) as f:
-                query_input = f.read()
-        except FileNotFoundError:
-            raise SystemExit(f"Query file not found: {filepath}") from None
-        except OSError as e:
-            raise SystemExit(f"Error reading query file: {e}") from None
-        is_json = True
-    else:
-        # Heuristic: a JSON query starts with '{' or '['; anything else
-        # is treated as a model name for run-by-name dispatch.
-        stripped = query_input.lstrip()
-        is_json = stripped.startswith(("{", "["))
+    query_input, from_file = _read_at_file(args.query_json, label="query")
+    # Heuristic: a JSON query starts with '{' or '['; anything else
+    # is treated as a model name for run-by-name dispatch.
+    is_json = from_file or query_input.lstrip().startswith(("{", "["))
 
+    refine = None
+    if args.refine is not None:
+        if is_json:
+            raise SystemExit("--refine applies only to a saved query name")
+        refine = json.loads(_read_at_file(args.refine, label="refine")[0])
+        if not isinstance(refine, dict):
+            raise SystemExit("--refine must decode to a JSON object.")
+
+    query: Any = query_input
     if is_json:
-        data = json.loads(query_input)
-        if isinstance(data, list) and not data:
+        query = json.loads(query_input)
+        if isinstance(query, list) and not query:
             raise SystemExit("Query list cannot be empty.")
-        result = engine.execute_sync(
-            query=data,
-            variables=runtime_kwarg or None,
-            dry_run=bool(args.dry_run),
-            explain=bool(args.explain),
-        )
-    else:
-        # Run-by-name: the positional arg is a model name.
-        result = engine.execute_sync(
-            query=query_input,
-            variables=runtime_kwarg or None,
-            dry_run=bool(args.dry_run),
-            explain=bool(args.explain),
-        )
+    result = engine.execute_sync(
+        query=query,
+        variables=runtime_kwarg or None,
+        dry_run=bool(args.dry_run),
+        explain=bool(args.explain),
+        refine=refine,
+    )
 
     _print_query_warnings(result)
 

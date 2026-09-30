@@ -11,7 +11,6 @@ from typing import Any, Callable
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
-    BetweenKey,
     ColumnKey,
     ColumnSqlKey,
     InKey,
@@ -19,6 +18,7 @@ from slayer.core.keys import (
     ScalarCallKey,
     SqlFragmentKey,
     StarKey,
+    TimePointCmpKey,
     TimeTruncKey,
     TransformKey,
     ValueKey,
@@ -63,7 +63,7 @@ def auto_name_from_expression(expression: str) -> str:
 
 # The row-level ``ValueKey`` kinds an ``AggregateKey.source`` may take when it
 # is a same-model scalar EXPRESSION rather than a column / star.
-EXPRESSION_SOURCE_KINDS = (ArithmeticKey, ScalarCallKey, LiteralKey)
+EXPRESSION_SOURCE_KINDS = (ArithmeticKey, ScalarCallKey, LiteralKey, TimeTruncKey)
 
 
 # The pinned legacy key spelling: the historical Pydantic
@@ -105,9 +105,9 @@ _LEGACY_KEY_SPELLINGS: dict[type, tuple[str, _LegacyFields]] = {
     ScalarCallKey: ("ScalarCallKey", (
         ("name", attrgetter("name")), ("args", attrgetter("args")),
     )),
-    BetweenKey: ("BetweenKey", (
-        ("column", attrgetter("column")), ("low", attrgetter("low")),
-        ("high", attrgetter("high")),
+    TimePointCmpKey: ("TimePointCmpKey", (
+        ("op", attrgetter("op")), ("operand", attrgetter("operand")),
+        ("point", attrgetter("point")), ("literal_on_left", attrgetter("literal_on_left")),
     )),
     InKey: ("InKey", (
         ("column", attrgetter("column")), ("values", attrgetter("values")),
@@ -172,22 +172,25 @@ def _value_key_display(key: Any) -> str:
             return f"'{key.value}'"
         return str(key.value)
     if isinstance(key, ArithmeticKey):
-        rendered = [_value_key_display(o) for o in key.operands]
-        if len(rendered) == 1:
-            return (
-                f"not {rendered[0]}" if key.op == "not"
-                else f"{key.op}{rendered[0]}"
-            )
-        return f" {key.op} ".join(
-            f"({r})" if isinstance(o, ArithmeticKey) else r
-            for o, r in zip(key.operands, rendered)
-        )
+        return _arithmetic_key_display(key)
     if isinstance(key, ScalarCallKey):
         args = ", ".join(_value_key_display(a) for a in key.args)
         return f"{key.name}({args})"
+    if isinstance(key, TimeTruncKey):
+        return f"{key.granularity}({_value_key_display(key.column)})"
     if type(key) not in _LEGACY_KEY_SPELLINGS:
         return str(key)  # raw scalar arg (e.g. Decimal in nullif/round)
     return legacy_key_str(key)
+
+
+def _arithmetic_key_display(key: ArithmeticKey) -> str:
+    rendered = [_value_key_display(o) for o in key.operands]
+    if len(rendered) == 1:
+        return f"not {rendered[0]}" if key.op == "not" else f"{key.op}{rendered[0]}"
+    return f" {key.op} ".join(
+        f"({r})" if isinstance(o, ArithmeticKey) else r
+        for o, r in zip(key.operands, rendered)
+    )
 
 
 def expression_source_leaf(source: Any) -> str:
@@ -314,9 +317,8 @@ def key_display(key: ValueKey) -> str:
         return _arithmetic_display(key)
     if isinstance(key, ScalarCallKey):
         return _call_display(key.name, [_arg_display(a) for a in key.args])
-    if isinstance(key, BetweenKey):
-        return (f"{key_display(key.column)} between {key_display(key.low)} "
-                f"and {key_display(key.high)}")
+    if isinstance(key, TimePointCmpKey):
+        return f"{key_display(key.operand)} {key.op} {_scalar_display(key.point)}"
     if isinstance(key, InKey):
         values = ", ".join(key_display(v) for v in key.values)
         return f"{key_display(key.column)} {'not in' if key.negated else 'in'} ({values})"

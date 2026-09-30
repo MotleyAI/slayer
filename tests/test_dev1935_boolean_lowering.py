@@ -538,8 +538,6 @@ _NULL_REJECTION_CASES = [
     ("regions.region_events.value is null", True),         # is null -> TRUE
     ("regions.region_events.value is not null", False),    # is not null -> FALSE
     ("regions.region_events.value in (50, 60)", False),    # IN -> UNKNOWN
-    # (BETWEEN is not expressible in the filter DSL — BetweenKey is date-range-only;
-    #  the IN case above covers the same InKey/BetweenKey -> UNKNOWN rule.)
     ("regions.region_events.value >= 50 and regions.region_events.value < 100",
      False),                                               # AND of UNKNOWN -> UNKNOWN
     ("not (regions.region_events.value >= 50)", False),    # NOT UNKNOWN -> UNKNOWN

@@ -731,6 +731,68 @@ class TestMultiStageAndByName:
         assert "pending" not in statuses
 
 
+class TestRefinedByName:
+    REFINE = {"filters": ["status = 'completed'"]}
+
+    async def _engine_with_saved(self, tmp_path) -> SlayerQueryEngine:
+        engine = await _build_engine(tmp_path)
+        await engine.create_model_from_query(
+            query=SlayerQuery(
+                source_model="orders",
+                measures=[ModelMeasure(formula="amount:sum")],
+                dimensions=[ColumnRef(name="status")],
+            ),
+            name="obs",
+        )
+        return engine
+
+    async def test_refined_run_caches_separately(self, tmp_path, monkeypatch):
+        engine = await self._engine_with_saved(tmp_path)
+        plain = await engine.execute("obs", cache=True)
+        refined = await engine.execute("obs", refine=self.REFINE, cache=True)
+        assert engine.cache_size == 2
+        assert len(refined.data) == 1
+        assert len(plain.data) == 2
+
+        calls = _install_spy(monkeypatch)
+        hit = await engine.execute("obs", refine=self.REFINE, cache=True)
+        assert _data_queries(calls) == []
+        assert hit.data == refined.data
+
+    async def test_evict_removes_only_the_refined_entry(self, tmp_path):
+        engine = await self._engine_with_saved(tmp_path)
+        await engine.execute("obs", cache=True)
+        await engine.execute("obs", refine=self.REFINE, cache=True)
+        assert (await engine.evict("obs", refine=self.REFINE)) is True
+        assert engine.cache_size == 1
+        assert (await engine.evict("obs", refine=self.REFINE)) is False
+        assert (await engine.evict("obs")) is True
+        assert engine.cache_size == 0
+
+    async def test_refresh_keeps_the_refinement(self, tmp_path):
+        clk = FakeClock()
+        engine = await self._engine_with_saved(tmp_path)
+        engine._cache = QueryCache(config=CacheConfig(ttl_seconds=100), clock=clk)
+        await engine.execute("obs", refine=self.REFINE, cache=True)
+        _mutate(tmp_path / "orders.db", "INSERT INTO orders VALUES (4, 'completed', 1000.0, '2025-06-01')")
+
+        clk.advance(200)
+        result = await engine.refresh()
+        assert len(result.expired_refreshed) == 1
+        assert engine.cache_size == 1
+        (entry,) = engine._cache._entries.values()
+        fresh = await engine.execute("obs", refine=self.REFINE)
+        assert entry.response.data == fresh.data
+        amount_key = next(k for k in fresh.data[0] if k.endswith("amount_sum"))
+        assert fresh.data[0][amount_key] == pytest.approx(1300.0)
+
+    def test_evict_sync_accepts_refine(self, tmp_path):
+        engine = asyncio.run(self._engine_with_saved(tmp_path))
+        engine.execute_sync("obs", refine=self.REFINE, cache=True)
+        assert engine.evict_sync("obs", refine=self.REFINE) is True
+        assert engine.cache_size == 0
+
+
 class TestEvictAndManagement:
     async def test_evict_and_clear_and_size(self, tmp_path):
         engine = await _build_engine(tmp_path)

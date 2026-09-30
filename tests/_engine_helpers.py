@@ -24,6 +24,7 @@ import re
 import tempfile
 from collections.abc import AsyncGenerator, Callable, Generator
 from contextlib import asynccontextmanager, contextmanager
+from datetime import datetime
 from typing import Optional
 
 import sqlalchemy as sa
@@ -67,6 +68,7 @@ async def build_exec_engine(
     models: list[SlayerModel],
     datasource: str = "test",
     validate: bool = False,
+    clock: Optional[Callable[[], datetime]] = None,
 ) -> SlayerQueryEngine:
     """Storage + query engine over an ALREADY-seeded ``db_path`` (the caller owns
     the file). The single builder the per-DEV fixture roots used to each copy;
@@ -78,7 +80,9 @@ async def build_exec_engine(
     )
     for model in models:
         await storage.save_model(model, _validate=validate)
-    return SlayerQueryEngine(storage=storage)
+    if clock is None:
+        return SlayerQueryEngine(storage=storage)
+    return SlayerQueryEngine(storage=storage, clock=clock)
 
 
 @asynccontextmanager
@@ -89,6 +93,7 @@ async def seeded_exec_engine(
     models: list[SlayerModel],
     datasource: str = "test",
     validate: bool = False,
+    clock: Optional[Callable[[], datetime]] = None,
 ) -> AsyncGenerator[tuple[SlayerQueryEngine, str]]:
     """The one seeded executing-engine context (DEV-1943 §5).
 
@@ -103,7 +108,7 @@ async def seeded_exec_engine(
         ds_config = DatasourceConfig(name=datasource, type=dialect, database=db_path)
         engine = await build_exec_engine(
             db_path, dialect=dialect, models=models,
-            datasource=datasource, validate=validate,
+            datasource=datasource, validate=validate, clock=clock,
         )
         try:
             yield engine, db_path
@@ -171,6 +176,7 @@ async def _engine_generate(
     dialect: str = "postgres",
     extra_models: Optional[list] = None,
     validate: bool = True,
+    clock: Optional[Callable[[], datetime]] = None,
 ) -> str:
     """Build a fresh ``YAMLStorage`` + ``SlayerQueryEngine`` for ``model``,
     run ``query`` with ``dry_run=True``, and return the emitted SQL.
@@ -193,7 +199,7 @@ async def _engine_generate(
         await storage.save_model(model, _validate=validate)
         for extra in extra_models or []:
             await storage.save_model(extra, _validate=validate)
-        engine = SlayerQueryEngine(storage=storage)
+        engine = SlayerQueryEngine(storage=storage) if clock is None else SlayerQueryEngine(storage=storage, clock=clock)
         response = await engine.execute(query, dry_run=True)
         sql = response.sql
         assert sql is not None, "engine.execute(dry_run=True) returned no SQL"

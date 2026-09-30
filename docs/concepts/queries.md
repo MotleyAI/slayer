@@ -17,7 +17,7 @@ A `SlayerQuery` specifies what data to retrieve from a model.
 | `order` | list[OrderItem] | No | Sort specifications |
 | `limit` | int | No | Maximum rows to return |
 | `offset` | int | No | Number of rows to skip |
-| `whole_periods_only` | bool | No | Snap date filters to time bucket boundaries, exclude the current incomplete time bucket |
+| `whole_periods_only` | bool | No | Snap time bounds to bucket boundaries and exclude the current incomplete bucket — see [Time](time.md#whole_periods_only) |
 | `to_many_handling` | str | No | How an aggregate resolves query dimensions [unattributable from its root](#cross-model-measures): `broadcast` (default; repeat the safe-grain value across the cells and warn), `associate` (per-cell value over the distinct associated entities), or `error` (refuse). Semi-join-pushed filters are always applied and never error; the retired `strict` flag is rejected with this remedy. |
 
 You can pass a single query or a **list of queries** to `execute()`. When passing a list, earlier queries are named sub-queries that later queries can reference. The last query in the list is the main one whose results are returned. See [Query Lists](#query-lists) for examples.
@@ -189,9 +189,7 @@ A downstream stage of a multi-stage query may declare a time dimension on any DA
 
 `week` is Monday-anchored (ISO-8601); `week_sunday` is Sunday-anchored (weeks start Sunday, end Saturday) for tools that use Sunday weeks. Both are model granularities you set on a `TimeDimension` — `week_sunday` is the SLayer value, not a wire keyword sent by a BI tool.
 
-`date_range` must be exactly two non-null string bounds and filters inclusively (`[start, end]`); a one-sided range isn't expressible here, so use an explicit comparator filter (`"created_at >= '2024-01-01'"`) for an open-ended bound.
-
-`date_range` and an equivalent explicit filter (`"created_at >= '2024-01-01' and created_at <= '2024-12-31'"`) are interchangeable — including for trailing-window measures and `time_shift`, which still read rows from before the range so the earliest bucket isn't short-changed. See [Time bounds do not clip the window](formulas.md#time-bounds-do-not-clip-the-window) for exactly which predicates count as a time bound.
+`date_range` is one time point (`"2025-Q1"`, `"last month"`) or a `[lower, upper]` pair with either bound `null`, read with the [time-point semantics](time.md#date_range) — so a date-only upper bound covers its whole day.
 
 ## OrderItem
 
@@ -261,7 +259,7 @@ Query results are returned as a `SlayerResponse`:
 | `row_count` | int | Number of rows |
 | `sql` | string | The generated SQL (useful for debugging) |
 | `attributes` | ResponseAttributes | Field metadata split by type: `attributes.dimensions` and `attributes.measures`, each a dict of column alias → FieldMetadata (label, format) |
-| `warnings` | list[SlayerWarning] | Advisories, discriminated by `kind`: input normalizations (`"normalization"`), a [cross-model measure broadcast](#cross-model-measures) (`"broadcast"` — `measure`, `location`, and per-dimension `dimensions[].reason`), a distinct-entity attribution over an unattributable dimension (`"associated"` — `measure`, `location`, `dimensions`; cells overlap and are not additive), a semi-join-pushed filter (`"semi_join_pushed"` — `measure` (`null` for a population-level push), `location`, `filter_text`), and a query run without its statement timeout (`"statement_timeout_skipped"` — `datasource`, `timeout_seconds`, `reason`: `readonly_user` or `timeout_rejected`) |
+| `warnings` | list[SlayerWarning] | Advisories, discriminated by `kind`: input normalizations (`"normalization"`), a [cross-model measure broadcast](#cross-model-measures) (`"broadcast"` — `measure`, `location`, and per-dimension `dimensions[].reason`), a distinct-entity attribution over an unattributable dimension (`"associated"` — `measure`, `location`, `dimensions`; cells overlap and are not additive), a semi-join-pushed filter (`"semi_join_pushed"` — `measure` (`null` for a population-level push), `location`, `filter_text`), a query run without its statement timeout (`"statement_timeout_skipped"` — `datasource`, `timeout_seconds`, `reason`: `readonly_user` or `timeout_rejected`), and [`whole_periods_only`](time.md#whole_periods_only) over non-nesting granularities (`"whole_periods_non_nesting"` — `column`, `granularities`, `location`) |
 
 `columns` — and the key order of each row in `data` — follows the order you
 declared fields in the query: dimensions, then time dimensions, then measures,
@@ -321,6 +319,10 @@ Filter formulas define conditions for the query. They go in the `filters` parame
 The right-hand side of `in` / `not in` must be a non-empty tuple of literal
 values (strings, numbers, or booleans) — references and expressions on the
 RHS are not supported. Both `(...)` and `[...]` syntax are accepted.
+
+A string compared with a DATE / TIMESTAMP expression is a [time point](time.md#time-points):
+`"created_at >= 'last month'"`, `"created_at in '2025-Q1'"` and `"month(created_at) = '2025-03'"`
+all work, and a date-only string means the whole day.
 
 ### Boolean Logic
 
@@ -517,11 +519,30 @@ await engine.execute("monthly_revenue", variables={"region": "EU"})
 
 This loads the model, runs its `source_queries` stages with the merged variables, and returns the final-stage result. Calling `execute(str)` on a non-query-backed model raises a clear error directing the user to wrap it in a `SlayerQuery` instead.
 
-REST equivalent: `POST /query` with `{"name": "<model>", "variables": {...}}`. Run-by-name also accepts `dry_run` and `explain`; query-defining fields (`source_model`, `measures`, `dimensions`, `filters`, `time_dimensions`, `order`, `limit`, `offset`) are not allowed in this body shape.
+REST equivalent: `POST /query` with `{"name": "<model>", "variables": {...}}`. Run-by-name also accepts `dry_run`, `explain` and `refine`; query-defining fields (`source_model`, `measures`, `dimensions`, `filters`, `time_dimensions`, `order`, `limit`, `offset`) are not allowed next to `name` — put them in `refine`.
 
-CLI equivalent: `slayer query <model_name> [--variables k=v ...] [--dry-run] [--explain]` — when the positional argument doesn't look like JSON (doesn't start with `{` or `[`) and isn't a `@file` reference, it's interpreted as a model name.
+CLI equivalent: `slayer query <model_name> [--refine JSON|@file] [--variables k=v ...] [--dry-run] [--explain]` — when the positional argument doesn't look like JSON (doesn't start with `{` or `[`) and isn't a `@file` reference, it's interpreted as a model name.
 
-MCP equivalent: `query(query="<model>", variables={...}, dry_run=True/False, explain=True/False)` — a bare model-name string is run-by-name execution (a non-query-backed name raises the same error as `execute(str)`).
+MCP equivalent: `query(query="<model>", refine={...}, variables={...}, dry_run=True/False, explain=True/False)` — a bare model-name string is run-by-name execution (a non-query-backed name raises the same error as `execute(str)`).
+
+### Refining a saved query
+
+`refine` merges extra clauses into the saved query's **final stage**, which then runs exactly as if you had written that merged stage by hand:
+
+```python
+await engine.execute("monthly_revenue", refine={"dimensions": ["region"]})         # extra group-by
+await engine.execute("monthly_revenue", refine={"filters": ["amount >= 50"]})      # ANDed with the saved filters
+await engine.execute("monthly_revenue", refine={"order": [{"column": "revenue", "direction": "desc"}], "limit": 1})
+```
+
+- `dimensions` and `measures` are appended; an entry identical to a saved one (`region` ≡ `orders.region`) collapses, and a same-named entry that differs raises `RefinementConflictError`.
+- `time_dimensions` merge per (column, granularity): a refinement may add a `date_range` or `label` the saved one lacks, but a different value conflicts — narrow a saved window with a filter on the time column instead.
+- `filters` AND with the saved filters; `order`, `limit`, `offset`, `main_time_dimension`, `whole_periods_only`, `distinct_dimension_values` and `to_many_handling` replace the saved value (`{"limit": null}` clears a saved limit).
+- `source_model`, `name` and `variables` are not refinable; `refine` with a query object or list is an error.
+
+For a multi-stage saved query only the final stage is refined, so it can use only what the earlier stages project: refining `[{"name": "per_customer", ...}, {"source_model": "per_customer", "measures": [{"formula": "avg(revenue)", "name": "avg_revenue"}]}]` with `{"dimensions": ["region"]}` averages per region, provided `per_customer` projects `region`.
+
+Adding a second granularity of a saved time column (`{"time_dimensions": ["year(ordered_at)"]}` on a monthly query) renames the saved key `orders.ordered_at` to `orders.ordered_at.month`, as in any query with two granularities. A saved query's population is fixed when it is saved (see [Population](#population)), so a refinement never changes it.
 
 ---
 
@@ -536,6 +557,8 @@ MCP equivalent: `query(query="<model>", variables={...}, dry_run=True/False, exp
 infers population `customers` (one row per region present among customers, order totals attached, NULL where a region has no orders) — not "regions that happen to have orders". The Python client and REST responses always carry the effective population as `population` and whether it was inferred as `population_inferred`; MCP output reports them only when the population was inferred.
 
 Inference fails closed with a `PopulationInferenceError` naming the candidates when no single model determines everything, several minimal candidates tie, a dimension's join path is ambiguous, or the referenced models don't scope to exactly one datasource. Name `source_model` explicitly (any model — including a bridge that owns none of the queried items) to override inference.
+
+Saving a query-backed model writes each inferred population into its stored stage as `source_model`, so later refinements and model edits never move it.
 
 Inference is routing-aware: a short-form cross-model dimension (bare `regions.name`) is probed per candidate through the same auto-routing binding applies, so it infers the same population as its full dotted path (`customers.regions.name`) — or fails closed identically.
 

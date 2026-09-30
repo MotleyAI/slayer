@@ -16,22 +16,6 @@
                     "endColumn": 63,
                     "lineCount": 1
                 }
-            },
-            {
-                "code": "reportReturnType",
-                "range": {
-                    "startColumn": 15,
-                    "endColumn": 64,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportReturnType",
-                "range": {
-                    "startColumn": 15,
-                    "endColumn": 61,
-                    "lineCount": 1
-                }
             }
         ],
         "./slayer/core/formula.py": [
@@ -1172,14 +1156,6 @@
                 "range": {
                     "startColumn": 18,
                     "endColumn": 28,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportPrivateImportUsage",
-                "range": {
-                    "startColumn": 14,
-                    "endColumn": 24,
                     "lineCount": 1
                 }
             },
@@ -5553,30 +5529,6 @@
             }
         ],
         "./tests/facade/test_translator.py": [
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 18,
-                    "endColumn": 23,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 18,
-                    "endColumn": 23,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 62,
-                    "endColumn": 67,
-                    "lineCount": 1
-                }
-            },
             {
                 "code": "reportAttributeAccessIssue",
                 "range": {
@@ -16616,22 +16568,6 @@
             {
                 "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 33,
-                    "endColumn": 34,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 34,
-                    "endColumn": 35,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
                     "startColumn": 37,
                     "endColumn": 38,
                     "lineCount": 1
@@ -27146,22 +27082,6 @@
                 "range": {
                     "startColumn": 15,
                     "endColumn": 26,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 19,
-                    "endColumn": 34,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportOptionalSubscript",
-                "range": {
-                    "startColumn": 23,
-                    "endColumn": 38,
                     "lineCount": 1
                 }
             },

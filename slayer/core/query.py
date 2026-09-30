@@ -1,10 +1,11 @@
 """Query models for SLayer — the user-facing ``SlayerQuery`` and its helpers."""
 from __future__ import annotations
 
-import datetime
+import json
 import logging
 import math
 import re
+from collections.abc import Callable
 from typing import Annotated, Any, Literal, Union
 
 from pydantic import (
@@ -20,8 +21,8 @@ from pydantic import (
     model_validator,
 )
 
-from slayer.core.enums import BUILTIN_AGGREGATIONS, TimeGranularity, normalize_aggregation_name
-from slayer.core.errors import DistinctDimensionValuesError, GranularityCallError
+from slayer.core.enums import BUILTIN_AGGREGATIONS, GRANULARITY_NAMES, TimeGranularity, normalize_aggregation_name
+from slayer.core.errors import DistinctDimensionValuesError, GranularityCallError, RefinementConflictError
 from slayer.core.models import (
     Column,
     ModelJoin,
@@ -30,6 +31,7 @@ from slayer.core.models import (
     _validate_model_name,
 )
 from slayer.core.refs import auto_name_from_expression
+from slayer.core.time_points import TIME_POINT_FORMS, is_time_point
 from slayer.engine.syntax import AggCall, DottedRef, Ref, parse_expr, walk_parsed_refs
 from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
 from slayer.storage.migrations import CURRENT_VERSIONS, migrate as _migrate_schema
@@ -39,7 +41,6 @@ logger = logging.getLogger(__name__)
 _NAME_PATTERN = re.compile(r"^[a-zA-Z_]\w*$", re.ASCII)
 _VAR_PATTERN = re.compile(r"\{\{|\}\}|\{([a-zA-Z_]\w*)\}|\{([^}]*)\}", re.ASCII)
 
-_GRANULARITY_VALUES = frozenset(g.value for g in TimeGranularity)
 # Leading callee of a whole-string single call ``name( ... )``; used only when
 # ``parse_expr`` rejects the shape (e.g. ``month()``) but the callee still names a
 # granularity, so the wrong-shape error can fire.
@@ -72,17 +73,13 @@ def _time_dimension_from_functional(entry: str) -> dict | None:
     else:
         m = _WHOLE_CALL_RE.match(entry)
         callee = m.group(1) if m else None
-    if callee is None or callee.lower() not in _GRANULARITY_VALUES:
+    if callee is None or callee.lower() not in GRANULARITY_NAMES:
         return None
     if isinstance(node, AggCall) and not node.args and not node.kwargs:
         col = _single_col_of_source(node)
         if col is not None:
             return {"dimension": col, "granularity": callee.lower()}
-    raise GranularityCallError(
-        f"Granularity call {entry!r} must be a single column reference "
-        f"``gran(col)`` (e.g. ``month(created_at)``) for one of: "
-        f"{_granularity_names()}."
-    )
+    raise GranularityCallError.wrong_shape(entry)
 
 
 def granularity_call_parts(entry: str) -> tuple[str, str] | None:
@@ -113,7 +110,7 @@ def _reject_unknown_dimension_call(entry: str) -> None:
     # Normalize aliases (stddev→stddev_samp, variance→var_samp, …) so a bare
     # builtin-alias aggregate keeps its binding-time ``partition_by=`` error.
     if (
-        node.agg.lower() in _GRANULARITY_VALUES
+        node.agg.lower() in GRANULARITY_NAMES
         or normalize_aggregation_name(node.agg) in BUILTIN_AGGREGATIONS
     ):
         return
@@ -734,14 +731,43 @@ def _is_direction(value: Any) -> bool:
     return isinstance(value, str) and value.strip().lower() in _DIRECTION_NORMALIZE
 
 
+def _coerce_date_range(value: Any) -> Any:
+    """A single time-point string is a one-element range."""
+    return [value] if isinstance(value, str) else value
+
+
+def _advertise_string_date_range(schema: dict[str, Any]) -> None:
+    """Advertise the single-string ``date_range`` form the before-validator accepts."""
+    schema["anyOf"] = [{"type": "string"}, *schema.get("anyOf", [])]
+
+
+def _date_range_problem(date_range: list[str | None]) -> str | None:
+    if not 1 <= len(date_range) <= 2:
+        return "must be one time point or a [lower, upper] pair"
+    if all(bound is None for bound in date_range):
+        return "needs at least one non-null bound"
+    bad = next((b for b in date_range if b is not None and not is_time_point(b)), None)
+    return None if bad is None else f"has {bad!r}, which is not {TIME_POINT_FORMS}"
+
+
 class TimeDimension(BaseModel):
-    """Group-by on ``dimension`` truncated to ``granularity``; optional ``date_range`` [start, end] (ISO dates)."""
+    """Group-by on ``dimension`` truncated to ``granularity``; optional ``date_range``: one time point or a ``[lower, upper]`` pair (either may be null)."""
     dimension: Annotated[ColumnRef, BeforeValidator(_coerce_column_ref)] = Field(
         validation_alias=AliasChoices("dimension", "column"),
     )
     granularity: TimeGranularity
-    date_range: list[str] | None = None
+    date_range: Annotated[list[str | None] | None, BeforeValidator(_coerce_date_range)] = Field(
+        default=None, json_schema_extra=_advertise_string_date_range,
+    )
     label: str | None = None
+
+    @model_validator(mode="after")
+    def _check_date_range(self) -> "TimeDimension":
+        if self.date_range is not None and (problem := _date_range_problem(self.date_range)):
+            raise ValueError(
+                f"time dimension {self.dimension.full_name!r}: date_range {self.date_range!r} {problem}."
+            )
+        return self
 
 
 def _advertise_string_time_dimensions(schema: dict[str, Any]) -> None:
@@ -863,6 +889,12 @@ def _coerce_order(v: Any) -> Any:
     for item in v:
         result.extend(_process_order_item(item))
     return result
+
+
+# Field types shared by ``SlayerQuery`` and ``QueryRefinement`` (one coercion each).
+MeasuresField = Annotated[list[ModelMeasure] | None, BeforeValidator(_coerce_measures)]
+DimensionsField = Annotated[list[ColumnRef | ComputedDimension] | None, BeforeValidator(_coerce_dimensions)]
+OrderField = Annotated[list[OrderItem] | None, BeforeValidator(_coerce_order)]
 
 
 class ModelExtension(BaseModel):
@@ -988,9 +1020,7 @@ class SlayerQuery(BaseModel):
             "choice is reported in response metadata)."
         ),
     )
-    measures: Annotated[
-        list[ModelMeasure] | None, BeforeValidator(_coerce_measures)
-    ] = Field(
+    measures: MeasuresField = Field(
         default=None,
         description=(
             "Values to return: aggregation-expression formulas (see the query tool "
@@ -1037,9 +1067,7 @@ class SlayerQuery(BaseModel):
         if v is None:
             return v
         return _validate_model_name(v, "Query")
-    dimensions: Annotated[
-        list[ColumnRef | ComputedDimension] | None, BeforeValidator(_coerce_dimensions)
-    ] = Field(
+    dimensions: DimensionsField = Field(
         default=None,
         description=(
             "Group-by columns — names / dotted paths, or computed expressions "
@@ -1078,7 +1106,7 @@ class SlayerQuery(BaseModel):
             "tool-level variables argument overrides."
         ),
     )
-    order: Annotated[list[OrderItem] | None, BeforeValidator(_coerce_order)] = Field(
+    order: OrderField = Field(
         default=None,
         description=(
             "Sort keys; column is a result column name or an "
@@ -1190,24 +1218,6 @@ class SlayerQuery(BaseModel):
                 suggestion="Add the columns you want to project.",
             )
 
-    def snap_to_whole_periods(self) -> "SlayerQuery":
-        """When ``whole_periods_only``, add a filter per time dimension excluding the current incomplete period."""
-        if not self.whole_periods_only or not self.time_dimensions:
-            return self
-
-        filters = list(self.filters or [])
-        for td in self.time_dimensions:
-            gran = td.granularity
-            dim_name = td.dimension.name
-
-            has_filter = any(dim_name in f for f in filters)
-            if not has_filter:
-                today = datetime.date.today()
-                prev_end = gran.period_end(gran.period_start(today) - datetime.timedelta(days=1))
-                filters.append(f"{dim_name} <= '{prev_end.isoformat()}'")
-
-        return self.model_copy(update={"filters": filters, "whole_periods_only": False})
-
     @property
     def source_model_name(self) -> str | None:
         """The population's model name before resolution (an extension names its base)."""
@@ -1261,3 +1271,160 @@ class SlayerQuery(BaseModel):
             safe_name,
         )
         return self.model_copy(update=updates)
+
+
+def _refinement_field(name: str) -> Any:
+    """``SlayerQuery``'s field ``name`` with a ``None`` default (supplied-ness is ``model_fields_set``)."""
+    info = SlayerQuery.model_fields[name]
+    return Field(default=None, description=info.description, json_schema_extra=info.json_schema_extra)
+
+
+_NON_NULLABLE_SETTINGS = ("whole_periods_only", "distinct_dimension_values", "to_many_handling")
+
+
+class QueryRefinement(BaseModel):
+    """Clauses merged into a saved query's final stage when it runs by name."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    dimensions: DimensionsField = _refinement_field("dimensions")
+    time_dimensions: list[TimeDimension] | None = _refinement_field("time_dimensions")
+    measures: MeasuresField = _refinement_field("measures")
+    filters: list[str] | None = _refinement_field("filters")
+    order: OrderField = _refinement_field("order")
+    limit: int | None = _refinement_field("limit")
+    offset: int | None = _refinement_field("offset")
+    main_time_dimension: str | None = _refinement_field("main_time_dimension")
+    whole_periods_only: bool | None = _refinement_field("whole_periods_only")
+    distinct_dimension_values: bool | None = _refinement_field("distinct_dimension_values")
+    to_many_handling: Literal["broadcast", "associate", "error"] | None = _refinement_field("to_many_handling")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _rewrite_functional(cls, data: Any) -> Any:
+        return _rewrite_functional_granularity(data) if isinstance(data, dict) else data
+
+    @model_validator(mode="after")
+    def _validate_inputs(self) -> "QueryRefinement":
+        for f in self.filters or []:
+            _validate_query_filter_string(f)
+        for name in _NON_NULLABLE_SETTINGS:
+            if name in self.model_fields_set and getattr(self, name) is None:
+                raise ValueError(f"refine.{name} cannot be null; omit it to keep the saved value")
+        return self
+
+
+_ENTRY_CONFLICT_SUGGESTION = "Give the refinement entry another name, or repeat the saved entry exactly."
+_WINDOW_CONFLICT_SUGGESTION = (
+    "Add a filter on the time column instead (filters AND together), or save the window as a "
+    "filter with variables, e.g. `ordered_at >= '{start}'`."
+)
+
+
+def _show(value: Any) -> str:
+    if isinstance(value, BaseModel):
+        value = value.model_dump(mode="json", exclude_none=True)
+    return json.dumps(value)
+
+
+def _canonical_ref(ref: ColumnRef, model_name: str | None) -> ColumnRef:
+    return _strip_column_ref(ref, model_name) if model_name else ref
+
+
+def _union(
+    saved: list | None, refined: list | None, *, field: str, canon: Callable[[Any], Any],
+    identity: Callable[[Any], tuple[str, str]],
+) -> list | None:
+    """``saved`` then the ``refined`` entries not present; same ``(kind, key)`` identity must mean equal ``canon``."""
+    if not refined:
+        return saved
+    merged = list(saved or [])
+    seen: dict[tuple[str, str], Any] = {}
+    for entry in merged:
+        seen.setdefault(identity(entry), entry)
+    for entry in refined:
+        key = identity(entry)
+        prior = seen.get(key)
+        if prior is None:
+            seen[key] = entry
+            merged.append(entry)
+        elif canon(prior) != canon(entry):
+            raise RefinementConflictError(
+                field=field, key=key[1], saved=_show(prior), refined=_show(entry),
+                suggestion=_ENTRY_CONFLICT_SUGGESTION,
+            )
+    return merged
+
+
+def _merge_attribute(*, saved: Any, refined: Any, key: str, attribute: str) -> Any:
+    if refined is None or refined == saved:
+        return saved
+    if saved is None:
+        return refined
+    raise RefinementConflictError(
+        field="time_dimensions", key=key, saved=f"{attribute}={_show(saved)}",
+        refined=f"{attribute}={_show(refined)}", suggestion=_WINDOW_CONFLICT_SUGGESTION,
+    )
+
+
+def _merge_time_dimensions(
+    saved: list[TimeDimension] | None, refined: list[TimeDimension] | None, model_name: str | None,
+) -> list[TimeDimension] | None:
+    """Per (column, granularity): append new keys, merge ``date_range`` / ``label`` of existing ones."""
+    if not refined:
+        return saved
+    merged = list(saved or [])
+    positions: dict[tuple[str, TimeGranularity], int] = {}
+    for i, td in enumerate(merged):
+        positions.setdefault((_canonical_ref(td.dimension, model_name).full_name, td.granularity), i)
+    for td in refined:
+        column = _canonical_ref(td.dimension, model_name).full_name
+        i = positions.get((column, td.granularity))
+        if i is None:
+            positions[(column, td.granularity)] = len(merged)
+            merged.append(td)
+            continue
+        prior, key = merged[i], f"{column}@{td.granularity.value}"
+        update = {
+            attribute: _merge_attribute(
+                saved=getattr(prior, attribute), refined=getattr(td, attribute), key=key, attribute=attribute,
+            )
+            for attribute in ("date_range", "label")
+        }
+        merged[i] = prior.model_copy(update=update)
+    return merged
+
+
+def refine_query(*, saved: SlayerQuery, refinement: QueryRefinement) -> SlayerQuery:
+    """The saved final stage with ``refinement`` merged in, revalidated as a whole."""
+    model_name = saved.source_model_name
+    supplied = refinement.model_fields_set
+    data: dict[str, Any] = {name: getattr(saved, name) for name in saved.model_fields_set | {"version"}}
+
+    def canonical_dimension(dim: ColumnRef | ComputedDimension) -> Any:
+        return dim if isinstance(dim, ComputedDimension) else _canonical_ref(dim, model_name)
+
+    def dimension_identity(dim: ColumnRef | ComputedDimension) -> tuple[str, str]:
+        if isinstance(dim, ComputedDimension):
+            return "computed", dim.name or dim.expression
+        return "column", _canonical_ref(dim, model_name).full_name
+
+    merged_lists = {
+        "dimensions": _union(
+            saved.dimensions, refinement.dimensions, field="dimensions", canon=canonical_dimension,
+            identity=dimension_identity,
+        ),
+        "measures": _union(
+            saved.measures, refinement.measures, field="measures", canon=lambda m: m,
+            identity=lambda m: ("name", m.name) if m.name else ("formula", m.formula),
+        ),
+        "time_dimensions": _merge_time_dimensions(saved.time_dimensions, refinement.time_dimensions, model_name),
+        "filters": _union(saved.filters, refinement.filters, field="filters", canon=str, identity=lambda f: ("filter", f)),
+    }
+    data.update((name, value) for name, value in merged_lists.items() if value is not getattr(saved, name))
+    for name in ("limit", "offset", "main_time_dimension", *_NON_NULLABLE_SETTINGS):
+        if name in supplied:
+            data[name] = getattr(refinement, name)
+    if "order" in supplied:
+        data["order"] = refinement.order or None
+    return SlayerQuery.model_validate(data)
