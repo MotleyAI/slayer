@@ -6,7 +6,7 @@ so one direction may be provably to-one while the other fans out."""
 
 from __future__ import annotations
 
-from typing import Callable, Dict, List, Optional, Sequence, Tuple, TypeVar
+from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple, TypeVar
 
 from pydantic import BaseModel
 
@@ -606,34 +606,37 @@ def undetermined_witness(
 ) -> Optional[ValueKey]:
     """The first sub-key of ``key`` not determined, else ``None`` — determination
     closed under row-level combination (Axiom 2.2); unknown kinds fail closed."""
-    def rec(k: ValueKey, visiting: frozenset = _visiting) -> Optional[ValueKey]:
-        return undetermined_witness(
-            key=k, leaf_determined=leaf_determined, anchor_model=anchor_model,
-            bundle=bundle, is_member=is_member, _visiting=visiting,
-        )
-
     if is_member(key) or isinstance(key, LiteralKey):
         return None
-    if isinstance(key, ColumnKey):
-        return None if leaf_determined(key) else key
-    if isinstance(key, ColumnSqlKey):
-        if leaf_determined(key):
-            return None
-        refs = None if key in _visiting else definition_refs(
-            key=key, anchor_model=anchor_model, bundle=bundle,
+    if isinstance(key, (ColumnKey, ColumnSqlKey)) and leaf_determined(key):
+        return None
+    visiting = _visiting
+    if isinstance(key, ColumnSqlKey) and key not in _visiting:
+        operands = definition_refs(key=key, anchor_model=anchor_model, bundle=bundle)
+        visiting = _visiting | {key}
+    else:
+        operands = _determination_operands(key)
+    if operands is None:
+        return key
+    for operand in operands:
+        witness = undetermined_witness(
+            key=operand, leaf_determined=leaf_determined, anchor_model=anchor_model,
+            bundle=bundle, is_member=is_member, _visiting=visiting,
         )
-        if refs is None:
-            return key
-        return next((w for r in refs if (w := rec(r, _visiting | {key})) is not None), None)
+        if witness is not None:
+            return witness
+    return None
+
+
+def _determination_operands(key: ValueKey) -> Optional[Iterable[ValueKey]]:
+    """The operands whose determination decides ``key``'s, else ``None`` (opaque)."""
     if isinstance(key, TimeTruncKey):
-        return rec(key.column)
+        return (key.column,)
     if isinstance(key, AggregateKey):
-        if key.partition_keys is None:
-            return key
-        return next((w for pk in key.partition_keys if (w := rec(pk)) is not None), None)
+        return key.partition_keys
     if isinstance(key, (*SLOT_COMPOSITE_KINDS, SqlFragmentKey)):
-        return next((w for c in key.children() if (w := rec(c)) is not None), None)
-    return key
+        return key.children()
+    return None
 
 
 def grain_witness(
