@@ -246,6 +246,33 @@ class TestRunByNameCap:
         })
         _assert_untruncated(_json_payload(result), rows=20)
 
+    async def test_refined_query_above_cap(self, tmp_path: Path) -> None:
+        server = await _make_server(tmp_path)
+        result = await _call(server, name="query", arguments={
+            "query": "qb_over",
+            "refine": {"filters": ["id >= 2"], "order": [{"column": "id", "direction": "asc"}]},
+            "format": "json",
+        })
+        payload = _json_payload(result)
+        _assert_truncated(payload)
+        assert [row["nums.id"] for row in payload["data"]] == list(range(2, 22))
+
+    async def test_refined_query_under_cap(self, tmp_path: Path) -> None:
+        server = await _make_server(tmp_path)
+        result = await _call(server, name="query", arguments={
+            "query": "qb_over", "refine": {"filters": ["id >= 10"]}, "format": "json",
+        })
+        _assert_untruncated(_json_payload(result), rows=16)
+
+    async def test_refined_sql_gets_no_pushed_limit(self, tmp_path: Path) -> None:
+        server = await _make_server(tmp_path)
+        result = await _call(server, name="query", arguments={
+            "query": "qb_over", "refine": {"filters": ["id >= 2"]}, "dry_run": True,
+        })
+        assert "SQL:" in result
+        assert ">= 2" in result
+        assert "LIMIT" not in result.upper()
+
 
 class TestMultiStageCap:
     """Requirement: the multi-stage list form is capped by the root stage's limit only."""

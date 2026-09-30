@@ -490,6 +490,7 @@ class TestCliEntryPoint:
                 query_json=json.dumps(
                     _query().model_dump(mode="json", exclude_none=True)
                 ),
+                refine=None,
                 variables=None,
                 variables_json=None,
                 storage=d,

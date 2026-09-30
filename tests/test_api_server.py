@@ -17,6 +17,7 @@ from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
+from tests._saved_query_refinement_fixtures import BY_REGION_MONTH, month, populate_refine_storage, seed_sqlite
 
 
 # `create_app` builds an MCP server (~2 s of FastMCP/pydantic schema gen)
@@ -417,7 +418,7 @@ class TestQueryBackedModelsAPI:
             "source_model": "other",
         })
         assert resp.status_code == 400
-        assert "no other query fields" in resp.text or "may not be set" in resp.text
+        assert "put query clauses in 'refine'" in resp.text
 
     def test_post_query_run_by_name_rejects_whole_periods_only(
         self, client: TestClient
@@ -430,7 +431,7 @@ class TestQueryBackedModelsAPI:
             "whole_periods_only": True,
         })
         assert resp.status_code == 400
-        assert "no other query fields" in resp.text or "may not be set" in resp.text
+        assert "put query clauses in 'refine'" in resp.text
 
     def test_post_query_run_by_name_rejects_strict(
         self, client: TestClient
@@ -442,7 +443,7 @@ class TestQueryBackedModelsAPI:
             "strict": True,
         })
         assert resp.status_code == 400
-        assert "no other query fields" in resp.text or "may not be set" in resp.text
+        assert "put query clauses in 'refine'" in resp.text
 
     def test_post_query_run_by_name_requires_model(
         self, client: TestClient
@@ -455,6 +456,65 @@ class TestQueryBackedModelsAPI:
     ) -> None:
         resp = client.post("/query", json={})
         assert resp.status_code == 400
+
+
+class TestRunByNameRefine:
+    """``POST /query`` with ``refine`` next to ``name`` (spec: queries/saved-query-refinement)."""
+
+    @pytest.fixture
+    def seeded(self, storage: YAMLStorage, tmp_path) -> YAMLStorage:
+        db_path = str(tmp_path / "seed.db")
+        seed_sqlite(db_path)
+        run_sync(populate_refine_storage(storage, db_path=db_path))
+        return storage
+
+    def test_refine_with_name(self, client: TestClient, seeded: YAMLStorage) -> None:
+        resp = client.post("/query", json={"name": "monthly_revenue", "refine": {"dimensions": ["region"]}})
+        assert resp.status_code == 200, resp.text
+        data = resp.json()["data"]
+        assert {(r["orders.region"], month(r["orders.ordered_at"])): r["orders.revenue"] for r in data} == BY_REGION_MONTH
+
+    def test_refine_with_variables(self, client: TestClient, seeded: YAMLStorage) -> None:
+        resp = client.post("/query", json={
+            "name": "revenue_by_status", "refine": {"measures": ["count(*)"]}, "variables": {"status": "refunded"},
+        })
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["data"] == [{"orders.region": "US", "orders.revenue": 40.0, "orders._count": 1}]
+
+    def test_empty_refine_is_plain_run(self, client: TestClient, seeded: YAMLStorage) -> None:
+        plain = client.post("/query", json={"name": "monthly_revenue", "dry_run": True})
+        refined = client.post("/query", json={"name": "monthly_revenue", "refine": {}, "dry_run": True})
+        assert refined.status_code == plain.status_code == 200
+        assert refined.json()["sql"] == plain.json()["sql"]
+
+    def test_refine_without_name(self, client: TestClient, seeded: YAMLStorage) -> None:
+        resp = client.post("/query", json={"source_model": "orders", "refine": {"dimensions": ["region"]}})
+        assert resp.status_code == 400
+        assert "'refine' requires 'name'" in resp.text
+
+    @pytest.mark.parametrize("flat", [{"dimensions": ["region"]}, {"limit": None}, {"source_model": None}])
+    def test_flat_fields_next_to_name(self, client: TestClient, seeded: YAMLStorage, flat: dict) -> None:
+        resp = client.post("/query", json={"name": "monthly_revenue", **flat})
+        assert resp.status_code == 400
+        assert "put query clauses in 'refine'" in resp.text
+
+    def test_conflict_is_400(self, client: TestClient, seeded: YAMLStorage) -> None:
+        resp = client.post("/query", json={
+            "name": "monthly_revenue", "refine": {"measures": [{"formula": "count(*)", "name": "revenue"}]},
+        })
+        assert resp.status_code == 400
+        assert "revenue" in resp.text
+
+    @pytest.mark.parametrize("refine", [{"bogus": 1}, {"source_model": "orders"}, {"limit": "many"}])
+    def test_malformed_refine_is_422(self, client: TestClient, seeded: YAMLStorage, refine: dict) -> None:
+        resp = client.post("/query", json={"name": "monthly_revenue", "refine": refine})
+        assert resp.status_code == 422
+
+    def test_openapi_shows_query_refinement(self, client: TestClient) -> None:
+        schemas = client.get("/openapi.json").json()["components"]["schemas"]
+        assert "QueryRefinement" in schemas
+        assert {"dimensions", "measures", "filters", "limit"} <= set(schemas["QueryRefinement"]["properties"])
+        assert "source_model" not in schemas["QueryRefinement"]["properties"]
 
 
 class TestQueryListBody:

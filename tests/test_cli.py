@@ -1,5 +1,7 @@
 """Tests for CLI helpers."""
 
+import asyncio
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -8,6 +10,8 @@ import yaml
 
 from slayer.cli import _parse_cli_variables, _parse_connection_string, _run_datasources, _run_query
 from slayer.core.models import DatasourceConfig
+from tests._cli_inprocess import run_cli_in_process
+from tests._saved_query_refinement_fixtures import BY_REGION_MONTH, build_refine_storage, month
 
 
 class TestParseConnectionString:
@@ -107,6 +111,7 @@ class TestRunQueryFileLoading:
     def _args(self, query_input: str, tmp_path) -> SimpleNamespace:
         return SimpleNamespace(
             query_json=query_input,
+            refine=None,
             variables=None,
             variables_json=None,
             storage=str(tmp_path / "storage"),
@@ -128,4 +133,49 @@ class TestRunQueryFileLoading:
         somedir.mkdir()
         args = self._args(f"@{somedir}", tmp_path)
         with pytest.raises(SystemExit, match="Error reading query file"):
+            _run_query(args)
+
+
+class TestRunQueryRefine:
+    """``slayer query <saved> --refine JSON|@file`` (spec: queries/saved-query-refinement)."""
+
+    @pytest.fixture
+    def store(self, tmp_path) -> str:
+        asyncio.run(build_refine_storage(str(tmp_path)))
+        return str(tmp_path / "store")
+
+    def _rows(self, store: str, *extra: str) -> list:
+        result = run_cli_in_process(["query", "monthly_revenue", "--storage", store, "--format", "json", *extra])
+        assert result.returncode == 0, result.stderr
+        return json.loads(result.stdout)
+
+    def _assert_by_region(self, rows: list) -> None:
+        assert {(r["orders.region"], month(r["orders.ordered_at"])): r["orders.revenue"] for r in rows} == (
+            BY_REGION_MONTH
+        )
+
+    def test_inline_json(self, store: str) -> None:
+        self._assert_by_region(self._rows(store, "--refine", '{"dimensions": ["region"]}'))
+
+    def test_at_file(self, store: str, tmp_path) -> None:
+        refine_file = tmp_path / "refine.json"
+        refine_file.write_text('{"dimensions": ["region"]}')
+        self._assert_by_region(self._rows(store, "--refine", f"@{refine_file}"))
+
+    def _args(self, query_input: str, store: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            query_json=query_input, refine='{"dimensions": ["region"]}', variables=None,
+            variables_json=None, storage=store, models_dir=None, dry_run=False, explain=False, format="json",
+        )
+
+    def test_rejected_with_json_query(self, store: str) -> None:
+        args = self._args('{"source_model": "orders", "measures": ["count(*)"]}', store)
+        with pytest.raises(SystemExit, match="--refine applies only to a saved query name"):
+            _run_query(args)
+
+    def test_rejected_with_query_file(self, store: str, tmp_path) -> None:
+        query_file = tmp_path / "query.json"
+        query_file.write_text('{"source_model": "orders", "measures": ["count(*)"]}')
+        args = self._args(f"@{query_file}", store)
+        with pytest.raises(SystemExit, match="--refine applies only to a saved query name"):
             _run_query(args)
