@@ -87,29 +87,30 @@ host" → "from its home"; Axiom 7 gains
 ## Test oracles
 
 Fixture `tests/_reagg_outer_grain_fixtures.py` (SQLite + DuckDB): `customers(id, name)` =
-(1 Ann), (2 Bob), (3 Cy — no snapshots); `account_snapshots(id, account_id, customer_id,
+(1 Ann), (2 Bob), (3 Cy — no snapshots), (4 Dee); `account_snapshots(id, account_id, customer_id,
 snapshot_date DATE, balance)` many-to-one → `customers`:
 (1,10,1,2024-01-05,160) (2,10,1,2024-01-20,150) (3,11,1,2024-01-10,30) (4,10,1,2024-02-03,120)
-(5,11,1,2024-02-15,40) (6,11,1,2024-02-25,35) (7,20,2,2024-01-07,500) (8,20,2,2024-02-07,700).
+(5,11,1,2024-02-15,40) (6,11,1,2024-02-25,35) (7,20,2,2024-01-07,500) (8,20,2,2024-02-07,700) (9,30,4,2024-01-12,80) (10,30,4,2024-02-12,60)
+(11,31,4,2024-02-18,25) — Dee's account 31 is February-only, so association differs from broadcast.
 `P = partition_by=[account_snapshots.account_id, id, account_snapshots.snapshot_date]`,
 `Q = partition_by=[account_snapshots.account_id, id]`.
 
 | Shape (rooted at `customers`) | Oracle |
 | -- | -- |
-| `sum(sum(balance, P))` by name, month | Ann Jan 340, Feb 195; Bob 500, 700; Cy (NULL, NULL) |
-| `sum(max(balance, P))` | Ann 190 / 160; Bob 500 / 700 |
-| `sum(last(balance, P))` | Ann 180 / 155; Bob 500 / 700 |
-| `sum(sum(balance, window='60d', Q))` | Ann 340 / 535; Bob 500 / 1200 |
-| `sum(max(balance, Q))` by name, account_id | (Ann,10) 160, (Ann,11) 40, (Bob,20) 700, (Cy,NULL) NULL |
-| `sum(sum(balance, P))` by month only | Jan 840, Feb 895, NULL-month row (Cy) NULL |
-| `sum(max(balance, Q))` by name, month, associate | Ann 200 / 200; Bob 700 / 700 |
-| same, default mode | broadcast Ann 200 / 200, Bob 700 / 700 + warning; outer grain lacks month |
+| `sum(sum(balance, P))` by name, month | Ann Jan 340, Feb 195; Bob 500, 700; Dee 80, 85; Cy (NULL, NULL) |
+| `sum(max(balance, P))` | Ann 190 / 160; Bob 500 / 700; Dee 80 / 85 |
+| `sum(last(balance, P))` | Ann 180 / 155; Bob 500 / 700; Dee 80 / 85 |
+| `sum(sum(balance, window='60d', Q))` | Ann 340 / 535; Bob 500 / 1200; Dee 80 / 165 |
+| `sum(max(balance, Q))` by name, account_id | (Ann,10) 160, (Ann,11) 40, (Bob,20) 700, (Dee,30) 80, (Dee,31) 25, (Cy,NULL) NULL |
+| `sum(sum(balance, P))` by month only | Jan 920, Feb 980, NULL-month row (Cy) NULL |
+| `sum(max(balance, Q))` by name, month, associate | Ann 200 / 200; Bob 700 / 700; Dee 80 / 105 |
+| same, default mode | broadcast Ann 200 / 200, Bob 700 / 700, Dee 105 / 105 + warning; outer grain lacks month |
 | same, error mode | ReaggregationError |
-| `sum(max(balance, Q), partition_by=[account_snapshots.account_id])` by name, account_id | 160 / 40 / 700 |
-| `sum(max(balance, Q), partition_by=[name, account_snapshots.snapshot_date])` by name, month | default/error: PartitionKeyError; associate: 200 / 200 / 700 / 700 |
-| `count(max(balance, Q))` by account_id | NULL→0, 10→1, 11→1, 20→1 |
-| `sum(max(balance, Q))` by name, band (band = max(balance, Q) > 100) | (Ann,hi) 160, (Ann,lo) 40, (Bob,hi) 700 |
-| `sum(max(balance, Q))` keyless | one row, 900 |
+| `sum(max(balance, Q), partition_by=[account_snapshots.account_id])` by name, account_id | 160 / 40 / 700 / 80 / 25 |
+| `sum(max(balance, Q), partition_by=[name, account_snapshots.snapshot_date])` by name, month | default/error: PartitionKeyError; associate: 200 / 200 / 700 / 700 / 80 / 105 |
+| `count(max(balance, Q))` by account_id | NULL→0, 10→1, 11→1, 20→1, 30→1, 31→1 |
+| `sum(max(balance, Q))` by name, band (band = max(balance, Q) > 100) | (Ann,hi) 160, (Ann,lo) 40, (Bob,hi) 700, (Dee,lo) 105 |
+| `sum(max(balance, Q))` keyless | one row, 1005 |
 
 Case 3 on `tests/_dev1847_fixtures.py` sales: `avg(sum(amount, partition_by=city), partition_by=[region])`
 by region → default/error PartitionKeyError; associate North 65, South 85

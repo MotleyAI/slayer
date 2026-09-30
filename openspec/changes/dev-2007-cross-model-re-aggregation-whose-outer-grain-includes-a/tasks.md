@@ -1,9 +1,9 @@
 ## 1. Tests (pr-tests)
 
-- [ ] 1.1 Add `tests/_reagg_outer_grain_fixtures.py` (customers / account_snapshots, SQLite + DuckDB seeding, query helpers; no issue numbers in names) and a smoke test re-deriving every design.md oracle from the raw rows; verify the smoke test passes on HEAD
-- [ ] 1.2 Add `tests/test_reagg_outer_grain_attribution.py` covering every spec scenario with the design.md oracles on SQLite and DuckDB (sum / max / last / windowed inners, plain to-many dim, month-only, associate, default-mode and error-mode pins incl. the stamped outer grain excluding the broadcast dim, explicit case 1 / case 2 / case 3 incl. the sales fixture, positions, count empty value, cardinality invariance, expression-determined band, keyless, depth-3, computed dimension, transform input, aggregate parameter, fanning constituent key still erroring, one outer answer slot, no `__regroup__` leak); verify each fails on HEAD for the intended reason (IndexError / PartitionKeyError / old broadcast) and pins pass
-- [ ] 1.3 Register the new `PartitionKeyError` raise site in `tests/_dev1871_raise_ledger.py` so raise-parity covers it; verify the parity test fails until the checker function exists
-- [ ] 1.4 Codex-review the tests against this plan and resolve findings
+- [x] 1.1 Add `tests/_reagg_outer_grain_fixtures.py` (customers / account_snapshots, SQLite + DuckDB seeding, query helpers; no issue numbers in names) and a smoke test re-deriving every design.md oracle from the raw rows; verify the smoke test passes on HEAD
+- [x] 1.2 Add `tests/test_reagg_outer_grain_attribution.py` covering every spec scenario with the design.md oracles on SQLite and DuckDB (sum / max / last / windowed inners, plain to-many dim, month-only, associate, default-mode and error-mode pins incl. the stamped outer grain excluding the broadcast dim, explicit case 1 / case 2 / case 3 incl. the sales fixture, positions, count empty value, cardinality invariance, expression-determined band, keyless, depth-3, computed dimension, transform input, aggregate parameter, fanning constituent key still erroring, one outer answer slot, no `__regroup__` leak); verify each fails on HEAD for the intended reason (IndexError / PartitionKeyError / old broadcast) and pins pass
+- [x] 1.3 Register the new `PartitionKeyError` raise site in `tests/_dev1871_raise_ledger.py` so raise-parity covers it; verify the parity test fails until the checker function exists
+- [x] 1.4 Codex-review the tests against this plan and resolve findings
 
 ## 2. Implementation (pr-implement)
 
