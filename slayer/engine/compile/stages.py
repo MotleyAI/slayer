@@ -72,6 +72,7 @@ from slayer.core.query import (
 from slayer.sql.naming import canonical_aggregate_alias, flat_name
 from slayer.core.time_bounds import strip_frame_bounds
 from slayer.core.window_duration import parse_window_duration
+from slayer.core.refs import dotted_key_display
 from slayer.core.scope import ModelScope, StageColumn, StageSchema, host_model_name
 from slayer.engine.elaborate_env import (
     check_reserved_regroup_prefix,
@@ -94,6 +95,7 @@ from slayer.engine.elaborate_env import (
     check_raw_rows_no_aggregate_slots,
     check_reaggregation_dims_attributable,
     check_reaggregation_no_window,
+    check_reaggregation_outer_keys_determined,
     check_windowed_time_axis_attributable,
     check_window_duration,
     check_windowed_time_dimension,
@@ -2019,14 +2021,11 @@ class _ProducerSynthesisContext(BaseModel):
 
 
 class _UnattributableDim(NamedTuple):
-    """A requested grain dimension not attributable from the aggregate's root:
-    its display name, broadcast reason, and whether a join path reaches it
-    (fanning) or none does (truly unreachable)."""
+    """A requested grain dimension not attributable from the aggregate's root: its display name and broadcast reason."""
 
     key: ValueKey
     name: str
     reason: str
-    reachable: bool
 
 
 def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-rooted producer synthesis (root / safe-grain / broadcast / inputs / filter-inheritance / recursive plan / attach); the arms share the re-rooting coordinate state.
@@ -2069,8 +2068,7 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
     # reason; attributability/filter routing keep the host-free map unchanged.
     models_with_host = {**models_by_name, host_model.name: host_model}
 
-    # Safe grain S (attributable from R) vs unattributable; each unattributable
-    # dim carries whether it is reachable (fanning) or truly unreachable.
+    # Safe grain S (attributable from R) vs unattributable.
     safe_pairs: List[Tuple[ValueKey, ValueKey]] = []  # (host_key, rerooted_key)
     unattributable: List[_UnattributableDim] = []
     for g in requested:
@@ -2091,14 +2089,12 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
                 models_by_name=models_by_name, host_name=host_model.name,
             )))
         else:
-            reason = key_broadcast_reason(
-                key=g, target_path=target_path, root_model=root_model,
-                models_by_name=models_with_host, bundle=bundle,
-                host_model=host_model, host_name=host_model.name,
-            )
             unattributable.append(_UnattributableDim(
-                key=g, name=_regroup_grain_name(g), reason=reason,
-                reachable=reason != UNREACHABLE_NO_PATH,
+                key=g, name=_regroup_grain_name(g), reason=key_broadcast_reason(
+                    key=g, target_path=target_path, root_model=root_model,
+                    models_by_name=models_with_host, bundle=bundle,
+                    host_model=host_model, host_name=host_model.name,
+                ),
             ))
 
     # One rooting law (Axiom 2.5): re-anchor into the home's coordinates once, a
@@ -2633,6 +2629,28 @@ def _reaggregation_determined(
     )
 
 
+def _reaggregation_broadcast_reason(
+    *, key: ValueKey, host_model: SlayerModel,
+    models_by_name: Dict[str, SlayerModel], bundle: ResolvedSourceBundle,
+) -> str:
+    """Why a broadcast outer dimension is not attributed to the operand dataset."""
+    if key_host_path(key) and grain_member_attributable(
+        key=key, target_path=(), root_model=host_model,
+        models_by_name=models_by_name, bundle=bundle, host_model=host_model,
+        host_name=host_model.name,
+    ):
+        # Reachable to-one but not SEEDED by the operand grain.
+        return (
+            "not determined by the operand grain — add the join's "
+            "entity key to the inner partition_by="
+        )
+    return key_broadcast_reason(
+        key=key, target_path=(), root_model=host_model,
+        models_by_name=models_by_name, bundle=bundle,
+        host_model=host_model, host_name=host_model.name,
+    )
+
+
 def _constituent_alias(c: ValueKey) -> str:
     """A clean stage alias for a re-aggregation constituent: an aggregate's
     canonical alias (else its ``.agg``), a transform's ``.op`` (a transform has no
@@ -2731,7 +2749,7 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
     # to_many_handling, exactly as for model-rooted aggregates.
     mode = prebound.to_many_handling
     attributable: List[ValueKey] = []
-    unattributable: List[_UnattributableDim] = []
+    unattributable: List[ValueKey] = []
     expression_determined: List[ValueKey] = []
     for g in requested:
         if g in union_grain or _reaggregation_determined(
@@ -2746,40 +2764,34 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
             attributable.append(g)
             expression_determined.append(g)
         else:
-            if key_host_path(g) and grain_member_attributable(
-                key=g, target_path=(), root_model=host_model,
-                models_by_name=models_by_name, bundle=bundle, host_model=host_model,
-                host_name=host_model.name,
-            ):
-                # Reachable to-one but not SEEDED by the operand grain.
-                reason = (
-                    "not determined by the operand grain — add the join's "
-                    "entity key to the inner partition_by="
-                )
-            else:
-                reason = key_broadcast_reason(
-                    key=g, target_path=(), root_model=host_model,
-                    models_by_name=models_by_name, bundle=bundle,
-                    host_model=host_model, host_name=host_model.name,
-                )
-            unattributable.append(_UnattributableDim(
-                key=g, name=_regroup_grain_name(g), reason=reason,
-                reachable=reason != UNREACHABLE_NO_PATH,
-            ))
+            unattributable.append(g)
 
-    associate_dims: List[_UnattributableDim] = []
+    # An explicit outer key is judged here only — never against the query root.
+    if root.partition_keys is not None:
+        check_reaggregation_outer_keys_determined(
+            alias=alias, mode=mode,
+            undetermined_keys=[dotted_key_display(g) for g in unattributable],
+            grain_display=_grain_display(union_grain),
+        )
+    associate_dims: List[ValueKey] = []
     broadcast_dims: List[Tuple[str, str]] = []
     if unattributable:
         check_reaggregation_dims_attributable(
             alias=alias, mode=mode,
-            unattributable_names=[u.name for u in unattributable],
+            unattributable_names=[_regroup_grain_name(g) for g in unattributable],
         )
         if mode == "associate":
             associate_dims = unattributable
         else:
-            broadcast_dims = [(u.name, u.reason) for u in unattributable]
+            broadcast_dims = [
+                (_regroup_grain_name(g), _reaggregation_broadcast_reason(
+                    key=g, host_model=host_model, models_by_name=models_by_name,
+                    bundle=bundle,
+                ))
+                for g in unattributable
+            ]
 
-    outer_grain = [*attributable, *[u.key for u in associate_dims]]
+    outer_grain = [*attributable, *associate_dims]
     # Degenerate: operand grain equals the outer grain — the identity, warned.
     degenerate = not broadcast_dims and Grain.of(union_grain) == Grain.of(outer_grain)
 
@@ -2826,7 +2838,15 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
     # attach-carrying grain key becomes an expression over carrier placeholders.
     # Substitute the WHOLE root (source AND params) so an aggregate-valued
     # parameter references its carrier placeholder like the source constituents do.
-    outer_agg = substitute_value_keys(root, constituent_placeholders)
+    original_by_pk: Dict[ValueKey, ValueKey] = {}
+    for g in outer_grain:
+        sub = substitute_value_keys(g, constituent_placeholders)
+        original_by_pk[sub] = g
+    # The settled outer grain rides as the explicit grain, so the outer compile
+    # never re-judges it from the host (Axiom 9).
+    outer_agg = substitute_value_keys(root, constituent_placeholders).model_copy(
+        update={"partition_keys": Grain.of(original_by_pk)},
+    )
     # Each legal parameter is picked once per cell: an aggregate-valued
     # one from its carrier placeholder, a column/expression one from the operand
     # scope; level 2 reads it as ``_base._p<i>``.
@@ -2838,10 +2858,6 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
         )
         for _name, _value in reagg_params
     ]
-    original_by_pk: Dict[ValueKey, ValueKey] = {}
-    for g in outer_grain:
-        sub = substitute_value_keys(g, constituent_placeholders)
-        original_by_pk[sub] = g
     outer_prebound, ordered_outer = _regroup_producer_prebound(
         pks=Grain.of(original_by_pk), aggs=[outer_agg], model=host_model, bundle=bundle,
         # Row filters define the population whose cells the outer aggregate
@@ -2882,7 +2898,10 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
         "regroup_attach_plans": [*outer_plan.regroup_attach_plans, carrier_attach],
     })
 
-    answer_slot = outer_plan.aggregate_slots[0].id
+    answer_slot = _regroup_answer_slot_id(
+        value_slots=[*outer_plan.aggregate_slots, *outer_plan.combined_expression_slots],
+        key=substitute_value_keys(outer_agg, internal_map), fallback=None,
+    )
     grain_ids = list(outer_plan.projection)[: len(ordered_outer)]
     join_pairs: List[Tuple[ValueKey, SlotId]] = []
     for i, g in enumerate(ordered_outer):
@@ -2921,7 +2940,7 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
         broadcast_measure=alias if broadcast_dims else None,
         broadcast_dimensions=broadcast_dims,
         associated_measure=alias if associate_dims else None,
-        associated_dimensions=[u.name for u in associate_dims],
+        associated_dimensions=[_regroup_grain_name(g) for g in associate_dims],
         degenerate_measure=alias if degenerate else None,
         degenerate_operand_grain=degenerate_display,
         degenerate_outer_grain=(

@@ -1508,6 +1508,22 @@ def check_reaggregation_dims_attributable(
     )
 
 
+def check_reaggregation_outer_keys_determined(
+    *, alias: str, mode: str, undetermined_keys: Sequence[str], grain_display: str,
+) -> None:
+    """Explicit outer partition_by keys the operand grain does not determine associate only under 'associate'."""
+    if mode == "associate" or not undetermined_keys:
+        return
+    raise PartitionKeyError(
+        summary=f"The re-aggregation's explicit outer partition_by key(s) "
+        f"{', '.join(undetermined_keys)} are not determined by its operand grain "
+        f"({grain_display}).",
+        location=f"measure {alias!r}",
+        suggestion="Add them to the inner partition_by= so the operand is grained "
+        "by them, or choose to_many_handling='associate'.",
+    )
+
+
 _RAW_ROW_FIX_HINT = (
     "Either remove the measure reference, or set "
     "distinct_dimension_values=True (the default) to keep the "

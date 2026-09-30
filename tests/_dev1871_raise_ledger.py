@@ -280,6 +280,11 @@ ROWS: Tuple[LedgerRow, ...] = (
          + AT + "measure …"
          + SUGGEST + "Add them to the inner partition_by= so the operand is grained by them, or choose 'broadcast'/'associate'.",
          category="checker", family="reaggregation", user=True, owner="checker"),
+    _row(module=_EE, function="check_reaggregation_outer_keys_determined", exc="PartitionKeyError",
+         message="The re-aggregation's explicit outer partition_by key(s) … are not determined by its operand grain (…)."
+         + AT + "measure …"
+         + SUGGEST + "Add them to the inner partition_by= so the operand is grained by them, or choose to_many_handling='associate'.",
+         category="checker", family="reaggregation", user=True, owner="checker"),
     _row(module=_SP, function="_assert_total_routing", exc="ValueError",
          message="Aggregate … in a … received no routing disposition (inline, producer substitution, or explicit rejection) — the planner cannot compile this shape.",
          category="internal", family="internal", user=False, owner="compiler"),
