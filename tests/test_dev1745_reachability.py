@@ -33,12 +33,12 @@ from slayer.core.enums import DataType
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
-    BetweenKey,
     ColumnKey,
     ColumnSqlKey,
     InKey,
     LiteralKey,
     ScalarCallKey,
+    TimePointCmpKey,
 )
 from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.core.query import SlayerQuery
@@ -217,12 +217,8 @@ class TestCompositeKeyKindsAreTotal:
         )
         assert ("customers",) in _paths_for(key)
 
-    def test_between_covers_all_three_operands(self) -> None:
-        key = BetweenKey(
-            column=ColumnKey(path=("customers",), leaf="balance"),
-            low=LiteralKey(value=1),
-            high=LiteralKey(value=2),
-        )
+    def test_time_point_covers_its_operand(self) -> None:
+        key = TimePointCmpKey(op=">=", operand=ColumnKey(path=("customers",), leaf="balance"), point="2025-Q1")
         assert ("customers",) in _paths_for(key)
 
     def test_in_covers_the_tested_value(self) -> None:

@@ -25,7 +25,7 @@ from sqlglot.expressions.core import Expression
 from typing import Optional
 
 from slayer.core.enums import DataType, DatePart, TimeGranularity
-from slayer.sql.dialects.base import SqlDialect, iso_text
+from slayer.sql.dialects.base import COMPARISON_NODES, SqlDialect, TemporalComparisonOp, iso_text
 
 
 # ===========================================================================
@@ -67,6 +67,11 @@ def rewrite_sqlite_json_extract(node: Expression) -> Expression:
 
 def _strftime(fmt: str, col_expr: Expression) -> exp.Anonymous:
     return exp.Anonymous(this="STRFTIME", expressions=[exp.Literal.string(fmt), col_expr.copy()])
+
+
+def _normalised_timestamp(expr: Expression) -> Expression:
+    """``expr`` as ``YYYY-MM-DD HH:MM:SS.SSS`` text, whatever ISO spelling it is stored in."""
+    return exp.Anonymous(this="STRFTIME", expressions=[exp.Literal.string("%Y-%m-%d %H:%M:%f"), expr])
 
 
 def _strftime_int(fmt: str, col_expr: Expression) -> Expression:
@@ -538,6 +543,20 @@ class SqliteDialect(SqlDialect):
 
     def build_current_timestamp(self) -> Expression:
         return exp.CurrentTimestamp()
+
+    def build_temporal_comparison(
+        self, *, op: TemporalComparisonOp, operand: Expression, value: date,
+    ) -> Expression:
+        """A midnight ``>=`` / ``<`` bound compares as date text (sargable); anything else
+        normalises both sides to millisecond ISO text, independent of the stored spelling."""
+        day = value.date() if isinstance(value, datetime) else value
+        midnight = value == day or value == datetime(day.year, day.month, day.day)
+        if op in (">=", "<") and midnight:
+            return COMPARISON_NODES[op](this=operand, expression=exp.Literal.string(day.isoformat()))
+        return COMPARISON_NODES[op](
+            this=_normalised_timestamp(operand),
+            expression=_normalised_timestamp(exp.Literal.string(iso_text(value))),
+        )
 
     def _date_part(self, part: DatePart, expr: Expression) -> Expression:
         """STRFTIME components; ISO week/year via the week's Thursday (no ``%V``/``%G`` before 3.46)."""

@@ -15,7 +15,6 @@ from slayer.core.errors import RenderContextMissingFacilityError
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
-    BetweenKey,
     ColumnKey,
     ColumnSqlKey,
     ColumnTypeFn,
@@ -51,7 +50,9 @@ from slayer.sql.render.row_expr import (  # noqa: F401 — re-exported render su
     iif_case_chain,
     render_arithmetic,
     render_date_call,
+    render_temporal_comparison,
     render_scalar_call,
+    temporal_comparison,
 )
 from slayer.sql.scope import ScopeFrame
 
@@ -382,6 +383,13 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
         )
 
     if isinstance(key, ArithmeticKey):
+        comparison = temporal_comparison(key)
+        if comparison is not None:
+            op, operand, value = comparison
+            rendered = render_value_key(key=operand, ctx=ctx)
+            if ctx.filters is not None and ctx.filters.paren_comparison_operands:
+                rendered = _paren_if_binary(rendered)
+            return render_temporal_comparison(op=op, operand=rendered, value=value, dialect=ctx.dialect)
         op = key.op.lower()
         operands = [render_value_key(key=o, ctx=ctx) for o in key.operands]
         if (
@@ -409,13 +417,6 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
             )
         return render_scalar_call(
             name=key.name, args=args, dialect=ctx.dialect,
-        )
-
-    if isinstance(key, BetweenKey):
-        return exp.Between(
-            this=render_value_key(key=key.column, ctx=ctx),
-            low=render_value_key(key=key.low, ctx=ctx),
-            high=render_value_key(key=key.high, ctx=ctx),
         )
 
     if isinstance(key, InKey):

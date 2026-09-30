@@ -6,10 +6,11 @@ algebra type error raises here, each invoked at its family's original checkpoint
 
 from __future__ import annotations
 
+from datetime import datetime
 from types import MappingProxyType
 from typing import (
     Callable, Dict, Iterator, List, Literal, Mapping, NamedTuple, NoReturn, Optional,
-    Sequence, Tuple, TypeGuard,
+    Sequence, Tuple, TypeGuard, cast,
 )
 
 from pydantic import BaseModel, ConfigDict
@@ -32,6 +33,7 @@ from slayer.core.errors import (
     ReaggregationError,
     TimeAxisError,
     TimeDimensionColumnError,
+    TimeLiteralError,
     TransformInputError,
     UnanalyzableDependencyError,
     UnsafeJoinInputError,
@@ -53,18 +55,19 @@ from slayer.core.keys import (
     is_reaggregation_key,
     split_top_level_and,
     ArithmeticKey,
-    BetweenKey,
     ColumnKey,
     ColumnSqlKey,
     Grain,
     InKey,
     LiteralKey,
     ScalarCallKey,
+    TimePointCmpKey,
     TimeTruncKey,
     TransformKey,
     ValueKey,
     regroup_root_grain,
     temporal_type,
+    type_date_values,
     value_arg_positions,
     source_anchor_path,
     transform_operand_grain,
@@ -73,6 +76,9 @@ from slayer.core.keys import (
 from slayer.core.models import SlayerModel
 from slayer.core.refs import dotted_key_display
 from slayer.core.scope import ModelScope, StageSchema
+from slayer.core.time_points import (
+    TIME_POINT_FORMS, Instant, add_units, ceil_to, floor_to, is_relative_token, resolve_time_point,
+)
 from slayer.sql.sql_expr import has_window_function
 from slayer.sql.sql_predicate import parse_sql_predicate
 from slayer.ir.planned import MaskTyping, ModeAFilter
@@ -842,17 +848,6 @@ def check_windowed_time_dimension(*, resolved: bool) -> None:
     )
 
 
-def check_time_dimension_date_range(*, full_name: str, date_range) -> None:
-    """A null date_range bound is inexpressible as a range — fail loudly rather than emit ``BETWEEN x AND NULL``."""
-    if any(bound is None for bound in date_range):
-        raise TimeAxisError(
-            summary=f"The date_range has a null bound ({date_range!r}); a null "
-            f"bound cannot be expressed as a range.",
-            location=f"time dimension {full_name!r}",
-            suggestion="Use a one-sided filter (e.g. '>=' / '<=') instead.",
-        )
-
-
 def check_time_dimension_column(
     *,
     name: str,
@@ -920,7 +915,7 @@ def _leaf_count_type(key: object, *, column_type: ColumnTypeFn) -> Optional[Data
         return column_type(key)
     if isinstance(key, LiteralKey):
         return _LITERAL_TYPES.get(type(key.value))
-    if isinstance(key, (ArithmeticKey, BetweenKey, InKey)) and is_boolean_shaped(key):
+    if isinstance(key, (ArithmeticKey, TimePointCmpKey, InKey)) and is_boolean_shaped(key):
         return DataType.BOOLEAN
     if isinstance(key, ScalarCallKey):
         return _SCALAR_RESULT_TYPES.get(key.name)
@@ -979,6 +974,128 @@ def check_date_operands(*, roots: Sequence[ValueKey], column_type: ColumnTypeFn)
                 _check_date_call(key, column_type=column_type)
 
 
+_PLAIN_COMPARISON_OPS = frozenset({"==", "!=", "<", "<=", ">", ">="})
+_MIRRORED = {"==": "==", "!=": "!=", "<": ">", "<=": ">=", ">": "<", ">=": "<="}
+
+
+def resolve_time_points(key: ValueKey, *, column_type: ColumnTypeFn, now: datetime) -> ValueKey:
+    """Lower every time-point comparison in ``key`` to typed relational bounds; a temporal
+    operand compared with a string that is not a time point fails closed."""
+    rebuilt = cast(ValueKey, key.map_children(lambda c: resolve_time_points(c, column_type=column_type, now=now)))
+    if isinstance(rebuilt, TimePointCmpKey):
+        return _lower_time_point(rebuilt, column_type=column_type, now=now)
+    if isinstance(rebuilt, ArithmeticKey):
+        _check_plain_time_comparison(rebuilt, column_type=column_type)
+    return rebuilt
+
+
+def _time_operand(
+    operand: ValueKey, *, column_type: ColumnTypeFn,
+) -> Tuple[ValueKey, Optional[DataType], Optional[TimeGranularity]]:
+    """``(bounded operand, its temporal type, bucket granularity)``: a direct ``gran(col)``
+    bounds ``col``; ISO literals in a conditional count as dates when that makes it temporal."""
+    if isinstance(operand, TimeTruncKey):
+        t = temporal_type(operand.column, column_type=column_type)
+        return operand.column, t, TimeGranularity(operand.granularity)
+    t = temporal_type(operand, column_type=column_type)
+    if t is None:
+        typed = type_date_values(operand)
+        typed_t = temporal_type(typed, column_type=column_type)
+        if typed_t is not None:
+            return typed, typed_t, None
+    return operand, t, None
+
+
+def _check_plain_time_comparison(key: ArithmeticKey, *, column_type: ColumnTypeFn) -> None:
+    if key.op not in _PLAIN_COMPARISON_OPS or len(key.operands) != 2:
+        return
+    left, right = key.operands
+    if isinstance(right, LiteralKey) and isinstance(right.value, str) and not isinstance(left, LiteralKey):
+        operand, text = left, right.value
+    elif isinstance(left, LiteralKey) and isinstance(left.value, str) and not isinstance(right, LiteralKey):
+        operand, text = right, left.value
+    else:
+        return
+    if _time_operand(operand, column_type=column_type)[1] is not None:
+        _raise_not_a_time_point(operand=operand, text=text)
+
+
+def _raise_not_a_time_point(*, operand: object, text: str) -> NoReturn:
+    raise TimeLiteralError(
+        summary=f"'{text}' is not a time point.",
+        location=f"comparison with `{_operand_display(operand)}`",
+        suggestion=f"Write {TIME_POINT_FORMS}.",
+    )
+
+
+def _lower_time_point(key: TimePointCmpKey, *, column_type: ColumnTypeFn, now: datetime) -> ValueKey:
+    target, t, gran = _time_operand(key.operand, column_type=column_type)
+    if t is None:
+        return _non_temporal_comparison(key)
+    point = resolve_time_point(key.point, now=now)
+    if point is None:
+        _raise_not_a_time_point(operand=key.operand, text=key.point)
+    op = {"in": "=", "not in": "!="}.get(key.op, key.op)
+    if isinstance(point, Instant):
+        if gran is None:
+            return ArithmeticKey(op=_arith_op(op), operands=(target, _bound(point.value, t=t, key=key)))
+        lo, hi = ceil_to(point.value, gran), add_units(floor_to(point.value, gran), gran, 1)
+    elif gran is None:
+        if point.sub_day and t is DataType.DATE:
+            _raise_sub_day(key)
+        lo, hi = point.start, point.next_start
+    else:
+        lo, hi = ceil_to(point.start, gran), ceil_to(point.next_start, gran)
+    low, high = _bound(lo, t=t, key=key), _bound(hi, t=t, key=key)
+    if op == "=":
+        return ArithmeticKey(op="and", operands=(
+            ArithmeticKey(op=">=", operands=(target, low)), ArithmeticKey(op="<", operands=(target, high)),
+        ))
+    if op == "!=":
+        return ArithmeticKey(op="or", operands=(
+            ArithmeticKey(op="<", operands=(target, low)), ArithmeticKey(op=">=", operands=(target, high)),
+        ))
+    rel_op, value = {">=": (">=", low), ">": (">=", high), "<": ("<", low), "<=": ("<", high)}[op]
+    return ArithmeticKey(op=rel_op, operands=(target, value))
+
+
+def _arith_op(op: str) -> str:
+    return "==" if op == "=" else op
+
+
+def _bound(value: datetime, *, t: DataType, key: TimePointCmpKey) -> LiteralKey:
+    """``value`` as a literal of the operand's type; a DATE operand takes only midnight."""
+    if t is not DataType.DATE:
+        return LiteralKey(value=value)
+    if value != floor_to(value, TimeGranularity.DAY):
+        _raise_sub_day(key)
+    return LiteralKey(value=value.date())
+
+
+def _raise_sub_day(key: TimePointCmpKey) -> NoReturn:
+    raise TimeLiteralError(
+        summary=f"`{_operand_display(key.operand)}` has day resolution (DATE), "
+        f"so the sub-day time point '{key.point}' cannot bound it.",
+        suggestion="Use a day-or-coarser time point, or compare a TIMESTAMP column.",
+    )
+
+
+def _non_temporal_comparison(key: TimePointCmpKey) -> ValueKey:
+    """A literal time point against a non-temporal operand keeps its plain-string meaning."""
+    if key.op in ("in", "not in") or is_relative_token(key.point):
+        raise DateOperandTypeError(
+            summary=f"'{key.point}' is a time point, but `{_operand_display(key.operand)}` "
+            f"is not a DATE or TIMESTAMP operand.",
+            suggestion="Declare the column's type as DATE or TIMESTAMP (set Column.type), "
+            "or compare it with a plain value.",
+        )
+    op = _arith_op(key.op)
+    literal = LiteralKey(value=key.point)
+    if key.literal_on_left:
+        return ArithmeticKey(op=_MIRRORED[op], operands=(literal, key.operand))
+    return ArithmeticKey(op=op, operands=(key.operand, literal))
+
+
 def _time_search_children(key: ValueKey) -> List[ValueKey]:
     if isinstance(key, AggregateKey):
         # A transform constituent lives in the source (or a composite parameter);
@@ -998,11 +1115,11 @@ def _time_search_children(key: ValueKey) -> List[ValueKey]:
         return [
             a for a in key.args
             if isinstance(
-                a, (AggregateKey, TransformKey, ArithmeticKey, ScalarCallKey, BetweenKey, InKey),
+                a, (AggregateKey, TransformKey, ArithmeticKey, ScalarCallKey, TimePointCmpKey, InKey),
             )
         ]
-    if isinstance(key, BetweenKey):
-        return [key.column, key.low, key.high]
+    if isinstance(key, TimePointCmpKey):
+        return [key.operand]
     if isinstance(key, InKey):
         return [key.column]
     return []
@@ -1388,6 +1505,22 @@ def check_reaggregation_dims_attributable(
         location=f"measure {alias!r}",
         suggestion="Add them to the inner partition_by= so the operand is grained "
         "by them, or choose 'broadcast'/'associate'.",
+    )
+
+
+def check_reaggregation_outer_keys_determined(
+    *, alias: str, mode: str, undetermined_keys: Sequence[str], grain_display: str,
+) -> None:
+    """Explicit outer partition_by keys the operand grain does not determine associate only under 'associate'."""
+    if mode == "associate" or not undetermined_keys:
+        return
+    raise PartitionKeyError(
+        summary=f"The re-aggregation's explicit outer partition_by key(s) "
+        f"{', '.join(undetermined_keys)} are not determined by its operand grain "
+        f"({grain_display}).",
+        location=f"measure {alias!r}",
+        suggestion="Add them to the inner partition_by= so the operand is grained "
+        "by them, or choose to_many_handling='associate'.",
     )
 
 

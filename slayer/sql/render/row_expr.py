@@ -1,4 +1,4 @@
-"""Scope-free row-level expression composers (DEV-1826).
+"""Scope-free row-level expression composers.
 
 The pure ``ValueKey`` → sqlglot composers that need NO ``RenderContext`` /
 ``ScopeFrame``: literals, arithmetic/comparison/boolean operators, scalar
@@ -14,7 +14,7 @@ between the ScopeFrame and the generator's spec-builder call sites.
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date
 from decimal import Decimal
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -32,12 +32,13 @@ from slayer.core.keys import (
     ColumnTypeFn,
     LiteralKey,
     ScalarCallKey,
+    TimeTruncKey,
     _FrozenKey,
     check_scalar_arity,
     temporal_type,
     unit_word,
 )
-from slayer.sql.dialects.base import SqlDialect
+from slayer.sql.dialects.base import SqlDialect, TemporalComparisonOp, temporal_type_of
 from slayer.sql.render.parse import rewrite_log_aliases as rewrite_log_alias
 
 _BINARY_OPS: Dict[str, Any] = {
@@ -51,8 +52,7 @@ _BINARY_OPS: Dict[str, Any] = {
 def _literal(value: Any, *, dialect: Optional[SqlDialect] = None) -> Expression:
     """Render a scalar leaf; unsupported types RAISE rather than stringify to a wrong value."""
     if isinstance(value, date) and dialect is not None:
-        dt = DataType.TIMESTAMP if isinstance(value, datetime) else DataType.DATE
-        return dialect.build_temporal_literal(value=value, dt=dt)
+        return dialect.build_temporal_literal(value=value, dt=temporal_type_of(value))
     if value is None:
         return exp.Null()
     if isinstance(value, bool):
@@ -203,6 +203,40 @@ def render_arithmetic(
     return _fold_binary(node_cls=node_cls, operands=operands)
 
 
+_TEMPORAL_COMPARISON_OPS: Dict[str, TemporalComparisonOp] = {
+    "=": "=", "==": "=", "!=": "!=", "<>": "!=", "<": "<", "<=": "<=", ">": ">", ">=": ">=",
+}
+_MIRRORED: Dict[TemporalComparisonOp, TemporalComparisonOp] = {
+    "=": "=", "!=": "!=", "<": ">", "<=": ">=", ">": "<", ">=": "<=",
+}
+
+
+def _temporal_value(key: Any) -> Optional[date]:
+    return key.value if isinstance(key, LiteralKey) and isinstance(key.value, date) else None
+
+
+def temporal_comparison(key: ArithmeticKey) -> Optional[Tuple[TemporalComparisonOp, Any, date]]:
+    """``(operand-left op, operand, value)`` when ``key`` compares an expression with a date/datetime literal."""
+    op = _TEMPORAL_COMPARISON_OPS.get(key.op.lower())
+    if op is None or len(key.operands) != 2:
+        return None
+    left, right = key.operands
+    left_value, right_value = _temporal_value(left), _temporal_value(right)
+    if right_value is not None and left_value is None:
+        return op, left, right_value
+    if left_value is not None and right_value is None:
+        return _MIRRORED[op], right, left_value
+    return None
+
+
+def render_temporal_comparison(
+    *, op: TemporalComparisonOp, operand: Expression, value: date, dialect: SqlDialect,
+) -> Expression:
+    """A comparison against a temporal literal, through the dialect's one hook."""
+    grouped = _paren_if_lower_prec(operand, parent_prec=_COMPARISON_PREC, is_right=False)
+    return dialect.build_temporal_comparison(op=op, operand=grouped, value=value)
+
+
 def render_scalar_call(
     *, name: str, args: List[Expression], dialect: SqlDialect,
 ) -> Expression:
@@ -291,7 +325,7 @@ def render_row_expression(
     column_type: ColumnTypeFn,
 ) -> Expression:
     """Render an aggregation-free row-level ``ValueKey`` tree (an
-    ``AggregateKey``'s expression source, DEV-1826) to sqlglot AST.
+    ``AggregateKey``'s expression source) to sqlglot AST.
 
     Column-like leaves resolve through ``resolve_column``; composites reuse the
     shared composers so the expression renders exactly like the same tree in
@@ -311,9 +345,17 @@ def render_row_expression(
     if isinstance(key, LiteralKey):
         return _literal(key.value, dialect=dialect)
     if isinstance(key, ArithmeticKey):
+        comparison = temporal_comparison(key)
+        if comparison is not None:
+            op, operand, value = comparison
+            return render_temporal_comparison(op=op, operand=_part(operand), value=value, dialect=dialect)
         return render_arithmetic(
             op=key.op.lower(),
             operands=[_part(o) for o in key.operands],
+        )
+    if isinstance(key, TimeTruncKey):
+        return dialect.build_date_trunc(
+            col_expr=_part(key.column), granularity=TimeGranularity(key.granularity),
         )
     if isinstance(key, ScalarCallKey):
         if key.name == "iif":

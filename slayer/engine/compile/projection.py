@@ -16,7 +16,6 @@ from slayer.engine.elaborate_env import (
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
-    BetweenKey,
     ColumnKey,
     ColumnSqlKey,
     InKey,
@@ -502,8 +501,6 @@ def _canonical_name(key: ValueKey) -> str:  # NOSONAR(S3776) — sequential isin
         return f"_lit_{key.value}"
     if isinstance(key, StarKey):
         return "_star"
-    if isinstance(key, BetweenKey):
-        return f"_between_{_canonical_name(key.column)}"
     if isinstance(key, InKey):
         return f"_in_{_canonical_name(key.column)}"
     return "_hidden"

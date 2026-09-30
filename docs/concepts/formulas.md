@@ -139,41 +139,7 @@ bare windowed measure and for one inside an order-only composite
 
 #### Time bounds do not clip the window
 
-A trailing window has to read rows from *before* the earliest bucket you asked
-for — otherwise that bucket silently under-counts. So a **time bound narrows
-which buckets come back, not which rows the window may reach**. These two
-queries return identical numbers:
-
-```json
-{"time_dimensions": [{"dimension": "created_at", "granularity": "month",
-                      "date_range": ["2025-01-01", "2025-12-31"]}]}
-```
-```json
-{"time_dimensions": [{"dimension": "created_at", "granularity": "month"}],
- "filters": ["created_at >= '2025-01-01' and created_at <= '2025-12-31'"]}
-```
-
-A bound counts as a *frame* bound when it compares a **time dimension's own
-column** against a **literal** using `<`, `<=`, `>`, or `>=`. Everything else is
-an ordinary row filter and does restrict the window's input, including:
-
-- other operators on that column — `created_at == '2025-01-01'`, `IN (…)`,
-  `IS NOT NULL`;
-- a bound on a time column that is not one of the query's time dimensions;
-- a comparison against another column rather than a literal;
-- a bound wrapped in `or` or `not`, which cannot be separated out safely;
-- `filters` declared on the **model** — those define which rows exist at all, so
-  a model scoped to `created_at >= '2024-01-01'` does clip the window there.
-
-Mixed filters are split, so only the time part is set aside:
-`"created_at >= '2025-01-01' and status = 'paid'"` restricts the window's input
-to paid rows while still reaching back before January.
-
-The same rule applies to [`time_shift`](#transform-functions) — the earliest
-visible bucket still gets its prior-period value under either spelling.
-
-If you genuinely want to clip the underlying rows, apply the bound in an inner
-stage of a multi-stage query so the windowed stage never sees the raw column.
+A time bound narrows which buckets come back, not which rows a trailing window or `time_shift` may read — see [Time bounds do not clip the window](time.md#time-bounds-do-not-clip-the-window).
 
 A windowed measure (`sum(spend, window=…)`, `sum(customers.revenue, window=…)`)
 works when the query's active time dimension is *attributable* from the
@@ -261,12 +227,13 @@ Wrapping a partitioned aggregate in another aggregation re-aggregates its
 row-weighted average would be wrong, and is exactly what this shape avoids).
 The operand may compose several attached aggregates (their grains union), and
 `partition_by=` may name a computed dimension — including one carrying an
-attached aggregate itself. The outer aggregation's parameters (`weight=` and friends) are typed by the operand grain — a cell of the operand dataset (`weighted_avg(sum(amount, partition_by=[city, region]), weight=count(id, partition_by=[city, region]))`), a grained transform over such cells, or a column that grain determines; anything else is a typed error naming the `partition_by=` remedy.
+attached aggregate itself. A `first`/`last` or windowed aggregate is a legal operand too — `sum(last(balance, partition_by=[account_id, customer_id]))` by `customer_id` sums each account's latest balance per customer. The outer aggregation's parameters (`weight=` and friends) are typed by the operand grain — a cell of the operand dataset (`weighted_avg(sum(amount, partition_by=[city, region]), weight=count(id, partition_by=[city, region]))`), a grained transform over such cells, or a column that grain determines; anything else is a typed error naming the `partition_by=` remedy.
 An outer dimension not determined by the operand's
 grain resolves per `to_many_handling` (broadcast + warning by default), and an
 operand grain equal to the outer grain is the identity plus a degenerate
 warning naming the `partition_by=` remedy.
 The outer `partition_by=` follows the combined-position rule above: only inside a computed dimension may it be finer than the query dimensions, where the re-aggregation is computed at that grain and broadcast onto its rows.
+An outer dimension or explicit outer `partition_by=` key that the operand's grain determines is attributed even when the query root reaches it only across a to-many join (e.g. a joined model's time bucket); an explicit outer key the grain does not determine is an error outside `associate` mode.
 
 ---
 

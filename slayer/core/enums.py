@@ -136,6 +136,9 @@ class TimeGranularity(StrEnum):
         return False
 
 
+GRANULARITY_NAMES: frozenset[str] = frozenset(g.value for g in TimeGranularity)
+
+
 class DatePart(StrEnum):
     """A ``date_part`` extraction; ``week``/``iso_year``/``day_of_week`` follow ISO-8601 (Mon=1…Sun=7)."""
 

@@ -383,13 +383,7 @@ class TestSlayerModel:
         model-validation time.
         """
         with pytest.raises(ValueError, match="reserved"):
-            SlayerModel(
-                name="orders",
-                sql_table="t",
-                data_source="test",
-                columns=[Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
-                measures=[ModelMeasure(name="cumsum", formula="revenue:sum")],
-            )
+            ModelMeasure(name="cumsum", formula="revenue:sum")
 
     def test_model_measure_formula_with_raw_over_raises(self) -> None:
         """DEV-1336: a ``ModelMeasure`` formula containing raw `OVER (...)` SQL
@@ -587,28 +581,31 @@ class TestWithinListDuplicateNames:
     """
 
     def test_duplicate_column_names_rejected(self) -> None:
+        columns = [
+            Column(name="revenue", sql="amount", type=DataType.DOUBLE),
+            Column(name="revenue", sql="net_amount", type=DataType.DOUBLE),
+        ]
         with pytest.raises(ValueError, match="duplicate.*column|column.*duplicate"):
             SlayerModel(
                 name="orders",
                 sql_table="t",
                 data_source="test",
-                columns=[
-                    Column(name="revenue", sql="amount", type=DataType.DOUBLE),
-                    Column(name="revenue", sql="net_amount", type=DataType.DOUBLE),
-                ],
+                columns=columns,
             )
 
     def test_duplicate_measure_names_rejected(self) -> None:
+        columns = [Column(name="amount", sql="amount", type=DataType.DOUBLE)]
+        measures = [
+            ModelMeasure(name="aov", formula="amount:sum / *:count"),
+            ModelMeasure(name="aov", formula="amount:avg"),
+        ]
         with pytest.raises(ValueError, match="duplicate.*measure|measure.*duplicate"):
             SlayerModel(
                 name="orders",
                 sql_table="t",
                 data_source="test",
-                columns=[Column(name="amount", sql="amount", type=DataType.DOUBLE)],
-                measures=[
-                    ModelMeasure(name="aov", formula="amount:sum / *:count"),
-                    ModelMeasure(name="aov", formula="amount:avg"),
-                ],
+                columns=columns,
+                measures=measures,
             )
 
     def test_unnamed_model_measure_rejected(self) -> None:
@@ -619,13 +616,15 @@ class TestWithinListDuplicateNames:
         ``SlayerQuery.measures`` may still be unnamed — only model-level
         measures are required to be named.)
         """
+        columns = [Column(name="amount", sql="amount", type=DataType.DOUBLE)]
+        measures = [ModelMeasure(formula="amount:sum")]
         with pytest.raises(ValueError, match="must have a name"):
             SlayerModel(
                 name="orders",
                 sql_table="t",
                 data_source="test",
-                columns=[Column(name="amount", sql="amount", type=DataType.DOUBLE)],
-                measures=[ModelMeasure(formula="amount:sum")],
+                columns=columns,
+                measures=measures,
             )
 
     def test_unique_names_accepted(self) -> None:
@@ -668,7 +667,8 @@ class TestSourceModeExclusivity:
             data_source="ds",
             source_queries=[SlayerQuery(source_model="orders")],
         )
-        assert m.source_queries is not None and len(m.source_queries) == 1
+        assert m.source_queries is not None
+        assert len(m.source_queries) == 1
 
     def test_rejects_no_source(self) -> None:
         with pytest.raises(ValueError, match="exactly one source.*none specified"):
@@ -681,30 +681,33 @@ class TestSourceModeExclusivity:
             )
 
     def test_rejects_sql_table_plus_source_queries(self) -> None:
+        source_queries = [SlayerQuery(source_model="orders")]
         with pytest.raises(ValueError, match="exactly one source"):
             SlayerModel(
                 name="orders",
                 sql_table="t",
-                source_queries=[SlayerQuery(source_model="orders")],
+                source_queries=source_queries,
                 data_source="ds",
             )
 
     def test_rejects_sql_plus_source_queries(self) -> None:
+        source_queries = [SlayerQuery(source_model="orders")]
         with pytest.raises(ValueError, match="exactly one source"):
             SlayerModel(
                 name="orders",
                 sql="SELECT 1",
-                source_queries=[SlayerQuery(source_model="orders")],
+                source_queries=source_queries,
                 data_source="ds",
             )
 
     def test_rejects_all_three(self) -> None:
+        source_queries = [SlayerQuery(source_model="orders")]
         with pytest.raises(ValueError, match="exactly one source"):
             SlayerModel(
                 name="orders",
                 sql_table="t",
                 sql="SELECT 1",
-                source_queries=[SlayerQuery(source_model="orders")],
+                source_queries=source_queries,
                 data_source="ds",
             )
 
@@ -757,14 +760,15 @@ class TestSourceQueryStages:
         assert m.source_queries is not None
 
     def test_unnamed_non_final_stage_rejected(self) -> None:
+        source_queries = [
+            SlayerQuery(source_model="orders"),
+            SlayerQuery(source_model="orders"),
+        ]
         with pytest.raises(ValueError, match="non-final stage at index 0.*must have a 'name'"):
             SlayerModel(
                 name="saved",
                 data_source="ds",
-                source_queries=[
-                    SlayerQuery(source_model="orders"),
-                    SlayerQuery(source_model="orders"),
-                ],
+                source_queries=source_queries,
             )
 
     def test_named_non_final_stage_with_unnamed_final_accepted(self) -> None:
@@ -776,17 +780,19 @@ class TestSourceQueryStages:
                 SlayerQuery(source_model="stage1"),
             ],
         )
-        assert m.source_queries is not None and len(m.source_queries) == 2
+        assert m.source_queries is not None
+        assert len(m.source_queries) == 2
 
     def test_duplicate_stage_names_rejected(self) -> None:
+        source_queries = [
+            SlayerQuery(name="dup", source_model="orders"),
+            SlayerQuery(name="dup", source_model="orders"),
+        ]
         with pytest.raises(ValueError, match="duplicate stage name"):
             SlayerModel(
                 name="saved",
                 data_source="ds",
-                source_queries=[
-                    SlayerQuery(name="dup", source_model="orders"),
-                    SlayerQuery(name="dup", source_model="orders"),
-                ],
+                source_queries=source_queries,
             )
 
     def test_dicts_parsed_to_slayer_query(self) -> None:
@@ -869,19 +875,20 @@ class TestAllowedAggregationsBuildTimeValidation:
     """
 
     def test_pk_column_with_disallowed_aggregation_in_whitelist_rejected(self) -> None:
+        columns = [
+            Column(
+                name="id",
+                type=DataType.DOUBLE,
+                primary_key=True,
+                allowed_aggregations=["sum"],
+            ),
+        ]
         with pytest.raises(ValueError, match="primary[- ]key|count"):
             SlayerModel(
                 name="orders",
                 sql_table="t",
                 data_source="test",
-                columns=[
-                    Column(
-                        name="id",
-                        type=DataType.DOUBLE,
-                        primary_key=True,
-                        allowed_aggregations=["sum"],
-                    ),
-                ],
+                columns=columns,
             )
 
     def test_pk_column_with_count_only_whitelist_accepted(self) -> None:
@@ -901,18 +908,19 @@ class TestAllowedAggregationsBuildTimeValidation:
         assert model.columns[0].allowed_aggregations == ["count", "count_distinct"]
 
     def test_string_column_with_sum_in_whitelist_rejected(self) -> None:
+        columns = [
+            Column(
+                name="status",
+                type=DataType.TEXT,
+                allowed_aggregations=["sum"],
+            ),
+        ]
         with pytest.raises(ValueError, match="not applicable|string"):
             SlayerModel(
                 name="orders",
                 sql_table="t",
                 data_source="test",
-                columns=[
-                    Column(
-                        name="status",
-                        type=DataType.TEXT,
-                        allowed_aggregations=["sum"],
-                    ),
-                ],
+                columns=columns,
             )
 
     def test_string_column_with_min_max_in_whitelist_accepted(self) -> None:
@@ -988,18 +996,19 @@ class TestAllowedAggregationsBuildTimeValidation:
 
     def test_unknown_aggregation_in_whitelist_still_rejected(self) -> None:
         """Existing behavior — keep it."""
+        columns = [
+            Column(
+                name="revenue",
+                type=DataType.DOUBLE,
+                allowed_aggregations=["bogus_agg"],
+            ),
+        ]
         with pytest.raises(ValueError, match="not a built-in aggregation"):
             SlayerModel(
                 name="orders",
                 sql_table="t",
                 data_source="test",
-                columns=[
-                    Column(
-                        name="revenue",
-                        type=DataType.DOUBLE,
-                        allowed_aggregations=["bogus_agg"],
-                    ),
-                ],
+                columns=columns,
             )
 
     def test_builtin_override_still_type_gated(self) -> None:
@@ -1008,43 +1017,47 @@ class TestAllowedAggregationsBuildTimeValidation:
         semantics regardless of the override formula. Only truly novel custom
         names bypass the type-default gate.
         """
+        aggregations = [
+            Aggregation(name="sum", formula="STRING_AGG({value}, ',')"),
+        ]
+        columns = [
+            Column(
+                name="status",
+                type=DataType.TEXT,
+                allowed_aggregations=["sum"],
+            ),
+        ]
         with pytest.raises(ValueError, match="not applicable|string"):
             SlayerModel(
                 name="orders",
                 sql_table="t",
                 data_source="test",
-                aggregations=[
-                    Aggregation(name="sum", formula="STRING_AGG({value}, ',')"),
-                ],
-                columns=[
-                    Column(
-                        name="status",
-                        type=DataType.TEXT,
-                        allowed_aggregations=["sum"],
-                    ),
-                ],
+                aggregations=aggregations,
+                columns=columns,
             )
 
     def test_pk_column_with_custom_agg_rejected(self) -> None:
         """Even custom aggregations cannot be whitelisted on a PK column —
         the PK rule (count/count_distinct only) is absolute.
         """
+        aggregations = [
+            Aggregation(name="custom_sum", formula="SUM({value})"),
+        ]
+        columns = [
+            Column(
+                name="id",
+                type=DataType.DOUBLE,
+                primary_key=True,
+                allowed_aggregations=["custom_sum"],
+            ),
+        ]
         with pytest.raises(ValueError, match="primary[- ]key|count"):
             SlayerModel(
                 name="orders",
                 sql_table="t",
                 data_source="test",
-                aggregations=[
-                    Aggregation(name="custom_sum", formula="SUM({value})"),
-                ],
-                columns=[
-                    Column(
-                        name="id",
-                        type=DataType.DOUBLE,
-                        primary_key=True,
-                        allowed_aggregations=["custom_sum"],
-                    ),
-                ],
+                aggregations=aggregations,
+                columns=columns,
             )
 
 
@@ -1500,28 +1513,9 @@ class TestStringCoercion:
 
 
 class TestWholePeriodsOnly:
-    def test_adds_lte_filter_when_none(self) -> None:
-        query = SlayerQuery(
-            source_model="orders",
-            measures=[ModelMeasure(formula="*:count")],
-            time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"),
-                granularity=TimeGranularity.MONTH,
-            )],
-            whole_periods_only=True,
-        )
-        snapped = query.snap_to_whole_periods()
-        assert len(snapped.filters) == 1
-        assert "<=" in snapped.filters[0]
-
-    def test_noop_when_false(self) -> None:
-        query = SlayerQuery(
-            source_model="orders",
-            measures=[ModelMeasure(formula="*:count")],
-            whole_periods_only=False,
-        )
-        snapped = query.snap_to_whole_periods()
-        assert snapped.filters is None
+    def test_no_textual_snap_on_the_query(self) -> None:
+        # Snapping is a typed planning pass, never a filter-text rewrite.
+        assert not hasattr(SlayerQuery, "snap_to_whole_periods")
 
     def test_period_start_quarter(self) -> None:
         start = TimeGranularity.QUARTER.period_start(datetime.date(2024, 5, 15))

@@ -1,4 +1,4 @@
-"""Stage 6 (DEV-1450) — slack normalization layer.
+"""Slack normalization layer.
 
 Rewrites tolerant-but-unambiguous agent input to canonical form before the
 typed pipeline sees it, returning every rewrite as a typed
@@ -12,17 +12,14 @@ Active rules:
   existing ``_auto_move_fields_to_dimensions`` heuristic but emits a
   structured warning.
 
-- ``MALFORMED_DATE_RANGE`` (report-only): a ``date_range`` the planner
-  would silently ignore gets a structured warning naming the drop.
-
 - ``STALE_PATH_SPELLING`` (stage boundary): a flat name written against a
   non-canonical path spelling binds to its canonical upstream column; recorded
   at binding, surfaced via :func:`stale_spelling_warnings`.
 
-Retired rules: ``FUNC_STYLE_AGG`` (DEV-1826 — the parser accepts the
-functional aggregation spelling natively as a first-class equivalent of
-colon syntax, so there is nothing to rewrite or warn about) and
-``DOT_PATH_IN_SQL`` (DEV-1743 — Mode-A free SQL is dotted-canonical).
+Retired rules: ``FUNC_STYLE_AGG`` (the parser accepts the functional
+aggregation spelling natively as a first-class equivalent of colon syntax),
+``DOT_PATH_IN_SQL`` (Mode-A free SQL is dotted-canonical) and
+``MALFORMED_DATE_RANGE`` (a malformed ``date_range`` is a construction error).
 
 Each rule emits a ``SlayerNormalizationWarning`` via ``warnings.warn(...)``
 AND appends a ``NormalizationWarning`` payload to the returned result,
@@ -149,7 +146,7 @@ def normalize_query(
 
     Returns the (possibly rewritten) query and the structured warnings.
     Formula TEXT is never rewritten — both aggregation spellings are
-    first-class parser input (DEV-1826).
+    first-class parser input.
     """
     all_warnings: List[NormalizationWarning] = []
 
@@ -157,49 +154,7 @@ def normalize_query(
     query, ws = _apply_misplaced_measure(query, model=model)
     all_warnings.extend(ws)
 
-    # Rule 2: MALFORMED_DATE_RANGE.
-    all_warnings.extend(_apply_malformed_date_range(query))
-
     return NormalizationResult(query=query, warnings=all_warnings)
-
-
-def _apply_malformed_date_range(
-    query: SlayerQuery,
-) -> List[NormalizationWarning]:
-    """Warn when a ``time_dimensions[i].date_range`` is present but is not the
-    two-element ``[start, end]`` the planner requires.
-
-    The planner's silent ``continue`` on such a range is deliberate and stays
-    exactly as it is — this rule changes NO behaviour, it only stops the drop
-    from being invisible. The trigger is the planner's own drop condition
-    (``date_range is not None and len(date_range) != 2``), so the warning fires
-    if and only if the range is actually ignored: ``[]``, one element, or three
-    or more. An absent ``date_range`` is legitimately optional and never warns.
-
-    Reports, but does not rewrite: there is no unambiguous canonical form to
-    rewrite a malformed range TO, and inventing one would change results.
-    """
-    emitted: List[NormalizationWarning] = []
-    for i, td in enumerate(query.time_dimensions or []):
-        date_range = getattr(td, "date_range", None)
-        if date_range is None or len(date_range) == 2:
-            continue
-        payload = NormalizationWarning(
-            rule_id="MALFORMED_DATE_RANGE",
-            original=f"time_dimensions[{i}].date_range={list(date_range)!r}",
-            normalized="(ignored — no date filter emitted)",
-            location=f"time_dimensions[{i}].date_range",
-            # Reports but does NOT rewrite (planner silently no-ops the range);
-            # the message must not claim a transform (DEV-1783).
-            rewritten=False,
-            # No rule_doc_url: docs/agent_input_slack.md does not exist, and a
-            # link to a missing page is worse than no link.
-        )
-        emitted.append(payload)
-        _warnings_module.warn(
-            SlayerNormalizationWarning(payload), stacklevel=2,
-        )
-    return emitted
 
 
 

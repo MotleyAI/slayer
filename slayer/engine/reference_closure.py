@@ -24,7 +24,6 @@ from sqlglot import exp
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
-    BetweenKey,
     ColumnKey,
     ColumnSqlKey,
     InKey,
@@ -32,6 +31,7 @@ from slayer.core.keys import (
     ScalarCallKey,
     SqlFragmentKey,
     StarKey,
+    TimePointCmpKey,
     TimeTruncKey,
     TransformKey,
     ValueKey,
@@ -240,8 +240,8 @@ def _child_keys(node, *, descend_aggregates: bool = True) -> List:
         return list(node.args)
     if isinstance(node, InKey):
         return [node.column, *node.values]
-    if isinstance(node, BetweenKey):
-        return [node.column, node.low, node.high]
+    if isinstance(node, TimePointCmpKey):
+        return [node.operand]
     if isinstance(node, SqlFragmentKey):
         return list(node.refs)
     raise UnhandledValueKindError(node)

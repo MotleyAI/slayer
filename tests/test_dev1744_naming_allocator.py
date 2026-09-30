@@ -27,8 +27,9 @@ from slayer.core.keys import (
     AggregateKey,
     ColumnKey,
     ColumnSqlKey,
+    InKey,
+    LiteralKey,
     StarKey,
-    TimeTruncKey,
 )
 from slayer.core.models import (
     Column,
@@ -731,8 +732,8 @@ _MISSING_LEAF_KEY = AggregateKey(
     source=ColumnKey(leaf="x"), agg="sum",
 ).model_copy(
     update={
-        "source": TimeTruncKey(
-            column=ColumnKey(leaf="created_at"), granularity="month",
+        "source": InKey(
+            column=ColumnKey(leaf="created_at"), values=(LiteralKey(value="a"),),
         ),
     },
 )

@@ -18,8 +18,8 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
 
 from pydantic import BaseModel, ConfigDict
 
-from slayer.core.enums import BUILTIN_AGGREGATIONS, normalize_aggregation_name
-from slayer.core.errors import IllegalWindowInFilterError, UnknownFunctionError
+from slayer.core.enums import BUILTIN_AGGREGATIONS, GRANULARITY_NAMES, normalize_aggregation_name
+from slayer.core.errors import GranularityCallError, IllegalWindowInFilterError, UnknownFunctionError
 from slayer.core.formula import ALL_TRANSFORMS
 from slayer.core.keys import DATE_UNIT_ARGS, SCALAR_FUNCTIONS, check_scalar_arity
 from slayer.core.refs import split_agg_suffix
@@ -923,15 +923,22 @@ def _convert(node: ast.AST, *, agg_map: Dict, original: str) -> ParsedExpr:  # N
                 f"Invalid Mode-B expression {original!r}: unsupported "
                 f"comparison operator {op_type.__name__}."
             )
-        # ``IN`` / ``NOT IN`` carry a literal-only tuple RHS; scalar,
-        # empty, and non-literal RHS are rejected (signed numerics admitted).
+        # ``IN`` / ``NOT IN`` carry a literal-only tuple RHS, or a single string
+        # (a time-point membership); empty and non-literal RHS are rejected.
         if op_type in (ast.In, ast.NotIn):
             rhs_node = node.comparators[0]
+            if isinstance(rhs_node, ast.Constant) and isinstance(rhs_node.value, str):
+                return Cmp(
+                    op=_CMP_OP_MAP[op_type],
+                    left=_convert(node.left, agg_map=agg_map, original=original),
+                    right=Literal(value=rhs_node.value),
+                )
             if not isinstance(rhs_node, (ast.Tuple, ast.List)):
                 raise ValueError(
                     f"Invalid Mode-B expression {original!r}: the right-"
                     f"hand side of ``in`` / ``not in`` must be a tuple/"
-                    f"list literal (e.g. ``status in ('a', 'b')``); got "
+                    f"list literal (e.g. ``status in ('a', 'b')``) or a "
+                    f"time-point string (``created_at in '2025-Q1'``); got "
                     f"{type(rhs_node).__name__}."
                 )
             if not rhs_node.elts:
@@ -1246,6 +1253,8 @@ def _convert_call(  # NOSONAR(S3776) — the one call-dispatch ladder (colon pla
         source = _validated_agg_source(args[0], func_name=func_name, original=original)
         return AggCall(source=source, agg=func_name, args=args[1:], kwargs=kwargs)
 
+    if func_name.lower() in GRANULARITY_NAMES:
+        raise GranularityCallError.wrong_shape(original)
     raise UnknownFunctionError(
         name=func_name,
         location=original,

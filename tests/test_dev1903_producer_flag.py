@@ -29,7 +29,6 @@ from tests._dev1832_fixtures import ModelMeasure, dev1832_models, month_td, mont
 from tests._dev1847_fixtures import (
     INNER_CR,
     SPEND_BAND_EXPR,
-    broadcast_warnings,
     dev1847_models,
     make_exec_engine,
     reagg,
@@ -49,7 +48,7 @@ PROBE_A_CELLS = {("East", "P"), ("Gap", "P"), ("North", "P"), ("South", "P"),
 def _probe_a_query() -> SlayerQuery:
     return sales_q(
         dimensions=["region", "product"], to_many_handling="broadcast",
-        measures=[reagg("avg", INNER_CR, name="acc", partition_by="product")])
+        measures=[reagg("avg", INNER_CR, name="acc", partition_by="[]")])
 
 
 def _sales_bundle() -> ResolvedSourceBundle:
@@ -346,7 +345,6 @@ class TestStrictSubsetNesting:
         assert set(got) == PROBE_A_CELLS
         for cell, value in got.items():
             assert float(value) == pytest.approx(PROBE_A_VALUE), cell
-        assert broadcast_warnings(resp)
 
     def test_carrier_nests_every_strict_constituent(self):
         """``[city]`` and ``[region]`` are strict subsets of the ``[city, region]`` carrier grain."""

@@ -45,13 +45,13 @@ from slayer.core.keys import (
     SCALAR_PASSTHROUGH,
     AggregateKey,
     ArithmeticKey,
-    BetweenKey,
     ColumnKey,
     ColumnSqlKey,
     InKey,
     LiteralKey,
     ScalarCallKey,
     StarKey,
+    TimePointCmpKey,
     TimeTruncKey,
     TransformKey,
 )
@@ -544,17 +544,16 @@ class TestRendersEveryKeyKind:
         )
         assert _sql(out) == "orders.amount > 5"
 
-    def test_between_key(self) -> None:
+    def test_temporal_bound(self) -> None:
 
         out = render_value_key(
-            key=BetweenKey(
-                column=ColumnKey(leaf="amount"),
-                low=LiteralKey(value=Decimal(1)),
-                high=LiteralKey(value=Decimal(9)),
+            key=ArithmeticKey(
+                op=">=",
+                operands=(ColumnKey(leaf="amount"), LiteralKey(value=date(2024, 1, 1))),
             ),
             ctx=_filter_ctx(),
         )
-        assert _sql(out) == "orders.amount BETWEEN 1 AND 9"
+        assert _sql(out) == "orders.amount >= CAST('2024-01-01' AS DATE)"
 
     def test_in_key(self) -> None:
 
@@ -908,10 +907,9 @@ class TestPGSameConstructSameSql:
         ("in_predicate", InKey(
             column=ColumnKey(leaf="label"), values=(LiteralKey(value="a"),),
         )),
-        ("between_predicate", BetweenKey(
-            column=ColumnKey(leaf="amount"),
-            low=LiteralKey(value=Decimal(1)),
-            high=LiteralKey(value=Decimal(2)),
+        ("temporal_bound", ArithmeticKey(
+            op="<",
+            operands=(ColumnKey(leaf="amount"), LiteralKey(value=datetime(2024, 1, 1, 10))),
         )),
     ]
 
@@ -1437,11 +1435,9 @@ def _mutation_cases():
             ScalarCallKey(name="lower", args=(other,)),
         ),
         (
-            "BetweenKey.low",
-            BetweenKey(column=col, low=LiteralKey(value=Decimal(1)),
-                       high=LiteralKey(value=Decimal(9))),
-            BetweenKey(column=col, low=LiteralKey(value=Decimal(2)),
-                       high=LiteralKey(value=Decimal(9))),
+            "TimePointCmpKey.point",
+            TimePointCmpKey(op=">=", operand=col, point="2025-Q1"),
+            TimePointCmpKey(op=">=", operand=col, point="2025-Q2"),
         ),
         (
             "InKey.values",

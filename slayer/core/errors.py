@@ -6,6 +6,8 @@ from __future__ import annotations
 from enum import Enum
 from typing import TYPE_CHECKING, Any, List, Sequence, Tuple
 
+from slayer.core.enums import TimeGranularity
+
 if TYPE_CHECKING:
     from slayer.core.join_walker import OrientedJoin  # noqa: F401
     from slayer.engine.schema_drift import ToDeleteEntry  # noqa: F401
@@ -335,6 +337,10 @@ class PositionTypingError(QueryTypeError):
 
 class DateOperandTypeError(QueryTypeError):
     """A date function operand that is not DATE/TIMESTAMP, or a ``date_add`` count that is not numeric."""
+
+
+class TimeLiteralError(QueryTypeError):
+    """A string compared with a temporal operand that is not a time point, or a sub-day point against a DATE operand."""
 
 
 class DistinctDimensionValuesError(QueryTypeError):
@@ -711,6 +717,15 @@ class ForcedFilterError(SlayerError):
 
 class GranularityCallError(SlayerError, ValueError):
     """A functional ``gran(col)`` query entry is malformed or unresolvable: wrong-shape granularity call, an unknown ``name(col)`` dimension, a bare ``time_dimensions`` string, a same-column+granularity metadata conflict, or an order key with no matching projected time dimension."""
+
+    @classmethod
+    def wrong_shape(cls, entry: str) -> "GranularityCallError":
+        """A granularity callee with any argument shape other than one column reference."""
+        return cls(
+            f"Granularity call {entry!r} must be a single column reference "
+            f"``gran(col)`` (e.g. ``month(created_at)``) for one of: "
+            f"{', '.join(g.value for g in TimeGranularity)}."
+        )
 
 
 class UnresolvableOrderColumnError(SlayerError, ValueError):

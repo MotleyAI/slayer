@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, cast
 
 from slayer.core.errors import QueryBackedCycleError
@@ -42,13 +43,15 @@ async def build_resolved_source_bundle(
     stage_displays: Optional[Dict[str, StageDisplay]] = None,
     splice_chain: Tuple[str, ...] = (),
     dry_run_placeholders: bool = False,
+    now: Optional[datetime] = None,
 ) -> ResolvedSourceBundle:
     """Eagerly assemble the :class:`ResolvedSourceBundle` for one execution (P11).
 
     Storage is consulted here and only here; the binder then reads the bundle
     purely. Variable precedence (highest first): runtime > query (stage) >
     outer > source-model defaults. Stored query-backed models are collected as
-    splice placeholders, never as referenced models.
+    splice placeholders, never as referenced models. ``now`` is the execution's
+    clock reading (default: the host clock).
     """
     named_queries = named_queries or {}
     stage_displays = stage_displays or {}
@@ -107,6 +110,7 @@ async def build_resolved_source_bundle(
         splice_chain=tuple(splice_chain),
         runtime_variables=dict(runtime_variables or {}),
         dry_run_placeholders=dry_run_placeholders,
+        now=datetime.now() if now is None else now,
     )
 
 

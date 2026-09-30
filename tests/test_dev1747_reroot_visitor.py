@@ -27,13 +27,13 @@ import pytest
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
-    BetweenKey,
     ColumnKey,
     ColumnSqlKey,
     InKey,
     LiteralKey,
     ScalarCallKey,
     StarKey,
+    TimePointCmpKey,
     TimeTruncKey,
     TransformKey,
     SqlFragmentKey,
@@ -222,17 +222,15 @@ class TestCompositeKinds:
         assert out.args[0] == ColumnKey(path=(), leaf="tier")
         assert out.args[1] == "unknown"
 
-    def test_between_members(self) -> None:
+    def test_time_point_members(self) -> None:
         out = reroot_value_key(
-            BetweenKey(
-                column=ColumnKey(path=("customers",), leaf="signup_at"),
-                low=LiteralKey(value="2024-01-01"),
-                high=LiteralKey(value="2024-12-31"),
+            TimePointCmpKey(
+                op="<=", operand=ColumnKey(path=("customers",), leaf="signup_at"), point="2024-12-31",
             ),
             target_path=TARGET,
         )
-        assert out.column == ColumnKey(path=(), leaf="signup_at")
-        assert out.low == LiteralKey(value="2024-01-01")
+        assert out.operand == ColumnKey(path=(), leaf="signup_at")
+        assert out.point == "2024-12-31"
 
     def test_in_members(self) -> None:
         out = reroot_value_key(
@@ -269,15 +267,15 @@ class TestCompositeKinds:
                             column=ColumnKey(path=("customers",), leaf="tier"),
                             values=(LiteralKey(value="gold"),),
                         ),
-                        BetweenKey(
-                            column=TimeTruncKey(
+                        TimePointCmpKey(
+                            op=">=",
+                            operand=TimeTruncKey(
                                 column=ColumnKey(
                                     path=("customers",), leaf="signup_at",
                                 ),
                                 granularity="day",
                             ),
-                            low=LiteralKey(value="a"),
-                            high=LiteralKey(value="b"),
+                            point="2025-Q1",
                         ),
                     ),
                 ),
@@ -290,12 +288,12 @@ class TestCompositeKinds:
         assert isinstance(call, ScalarCallKey)
         assert transform.input.source == ColumnKey(path=("regions",), leaf="pop")
         assert transform.partition_keys == Grain.of({ColumnKey(path=(), leaf="tier")})
-        in_key, between_key = call.args
+        in_key, time_point = call.args
         assert isinstance(in_key, InKey)
-        assert isinstance(between_key, BetweenKey)
-        assert isinstance(between_key.column, TimeTruncKey)
+        assert isinstance(time_point, TimePointCmpKey)
+        assert isinstance(time_point.operand, TimeTruncKey)
         assert in_key.column == ColumnKey(path=(), leaf="tier")
-        assert between_key.column.column == ColumnKey(path=(), leaf="signup_at")
+        assert time_point.operand.column == ColumnKey(path=(), leaf="signup_at")
 
 
 # ---------------------------------------------------------------------------
@@ -341,10 +339,8 @@ class TestTotalityAndFailClosed:
             ScalarCallKey: ScalarCallKey(
                 name="coalesce", args=(ColumnKey(path=("customers",), leaf="tier"),),
             ),
-            BetweenKey: BetweenKey(
-                column=ColumnKey(path=("customers",), leaf="signup_at"),
-                low=LiteralKey(value="a"),
-                high=LiteralKey(value="b"),
+            TimePointCmpKey: TimePointCmpKey(
+                op=">=", operand=ColumnKey(path=("customers",), leaf="signup_at"), point="2025-Q1",
             ),
             InKey: InKey(
                 column=ColumnKey(path=("customers",), leaf="tier"),

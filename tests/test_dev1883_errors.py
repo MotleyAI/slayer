@@ -96,25 +96,33 @@ class TestNonRegression:
         with pytest.raises(ValueError, match="partition_by"):
             await exec_engine.execute(query)
 
-    async def test_granularity_in_filter_keeps_unknown_aggregation_error(
-        self, exec_engine,
+    @pytest.mark.parametrize(("bound", "expected"), [
+        ("2024-01-01", {"paid": 2, "open": 2}),
+        ("2024-01-15", {"paid": 1, "open": 2}),  # lowers to created_at >= 2024-02-01
+    ])
+    async def test_granularity_in_filter_is_recognised(
+        self, exec_engine, bound, expected,
     ) -> None:
         query = fx.q(
             source_model="orders",
             dimensions=["status"],
             measures=[{"formula": "*:count"}],
-            filters=["month(created_at) >= '2024-01-01'"],
+            filters=[f"month(created_at) >= '{bound}'"],
         )
-        with pytest.raises(ValueError, match="Unknown aggregation 'month'"):
-            await exec_engine.execute(query)
+        resp = await exec_engine.execute(query)
+        assert {r["orders.status"]: r["orders._count"] for r in resp.data} == expected
 
-    async def test_granularity_in_measure_keeps_unknown_aggregation_error(
+    async def test_granularity_in_measure_is_treated_like_any_row_level_scalar(
         self, exec_engine,
     ) -> None:
-        query = fx.q(
-            source_model="orders",
-            dimensions=["status"],
-            measures=[{"formula": "month(created_at)"}],
-        )
-        with pytest.raises(ValueError, match="Unknown aggregation 'month'"):
-            await exec_engine.execute(query)
+        """Position parity: a bare ``gran(col)`` measure gets the same treatment as another row-level temporal scalar."""
+        async def outcome(formula: str):
+            query = fx.q(source_model="orders", dimensions=["status"], measures=[{"formula": formula, "name": "v"}])
+            try:
+                resp = await exec_engine.execute(query)
+            except Exception as exc:  # noqa: BLE001 — the raised class is the compared outcome
+                assert "Unknown aggregation" not in str(exc), exc
+                return type(exc)
+            return sorted(r["orders.status"] for r in resp.data)
+
+        assert await outcome("month(created_at)") == await outcome("date_add(created_at, 0, 'day')")

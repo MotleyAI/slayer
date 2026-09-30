@@ -11,7 +11,6 @@ from typing import Any, Callable
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
-    BetweenKey,
     ColumnKey,
     ColumnSqlKey,
     InKey,
@@ -19,6 +18,7 @@ from slayer.core.keys import (
     ScalarCallKey,
     SqlFragmentKey,
     StarKey,
+    TimePointCmpKey,
     TimeTruncKey,
     TransformKey,
     ValueKey,
@@ -62,11 +62,11 @@ def auto_name_from_expression(expression: str) -> str:
 
 
 # The row-level ``ValueKey`` kinds an ``AggregateKey.source`` may take when it
-# is a same-model scalar EXPRESSION (DEV-1826) rather than a column / star.
-EXPRESSION_SOURCE_KINDS = (ArithmeticKey, ScalarCallKey, LiteralKey)
+# is a same-model scalar EXPRESSION rather than a column / star.
+EXPRESSION_SOURCE_KINDS = (ArithmeticKey, ScalarCallKey, LiteralKey, TimeTruncKey)
 
 
-# The pinned legacy key spelling (DEV-1871 D6): the historical Pydantic
+# The pinned legacy key spelling: the historical Pydantic
 # str/repr of every key kind, frozen as literals so emitted SQL aliases never
 # move when Python field/class names do. Goldens pin the exact tokens.
 _LegacyFields = tuple[tuple[str, Callable[[Any], Any]], ...]
@@ -105,9 +105,9 @@ _LEGACY_KEY_SPELLINGS: dict[type, tuple[str, _LegacyFields]] = {
     ScalarCallKey: ("ScalarCallKey", (
         ("name", attrgetter("name")), ("args", attrgetter("args")),
     )),
-    BetweenKey: ("BetweenKey", (
-        ("column", attrgetter("column")), ("low", attrgetter("low")),
-        ("high", attrgetter("high")),
+    TimePointCmpKey: ("TimePointCmpKey", (
+        ("op", attrgetter("op")), ("operand", attrgetter("operand")),
+        ("point", attrgetter("point")), ("literal_on_left", attrgetter("literal_on_left")),
     )),
     InKey: ("InKey", (
         ("column", attrgetter("column")), ("values", attrgetter("values")),
@@ -185,6 +185,8 @@ def _value_key_display(key: Any) -> str:
     if isinstance(key, ScalarCallKey):
         args = ", ".join(_value_key_display(a) for a in key.args)
         return f"{key.name}({args})"
+    if isinstance(key, TimeTruncKey):
+        return f"{key.granularity}({_value_key_display(key.column)})"
     if type(key) not in _LEGACY_KEY_SPELLINGS:
         return str(key)  # raw scalar arg (e.g. Decimal in nullif/round)
     return legacy_key_str(key)
@@ -339,7 +341,7 @@ def _time_aware_key_display(key: ValueKey) -> str:
 
 
 def _transform_key_canonical_str(value: TransformKey) -> str:
-    """Canonical fragment for a transform-valued parameter (DEV-1946; alias/identity
+    """Canonical fragment for a transform-valued parameter (alias/identity
     only — render reads the picked column). Op, its scalar kwargs, the input
     fragment, its rank partition keys, and the resolved time key — every time key
     carrying its granularity (a bucketed ``cumsum`` differs from an unbucketed one)."""

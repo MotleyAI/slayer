@@ -16,13 +16,13 @@ import pytest
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
-    BetweenKey,
     ColumnKey,
     ColumnSqlKey,
     InKey,
     LiteralKey,
     ScalarCallKey,
     StarKey,
+    TimePointCmpKey,
     TimeTruncKey,
     TransformKey,
     ValueKey,
@@ -66,9 +66,9 @@ class TestDirectAndNestedHits:
         tree = TransformKey(op="cumsum", input=AGG)
         assert substitute_value_keys(tree, MAPPING).input == PLACEHOLDER
 
-    def test_nested_in_between_and_in(self) -> None:
-        bt = BetweenKey(column=AGG, low=LiteralKey(value="a"), high=LiteralKey(value="b"))
-        assert substitute_value_keys(bt, MAPPING).column == PLACEHOLDER
+    def test_nested_in_time_point_and_in(self) -> None:
+        tp = TimePointCmpKey(op=">=", operand=AGG, point="last month")
+        assert substitute_value_keys(tp, MAPPING).operand == PLACEHOLDER
         ik = InKey(column=AGG, values=(LiteralKey(value="gold"),))
         assert substitute_value_keys(ik, MAPPING).column == PLACEHOLDER
 
@@ -114,9 +114,7 @@ class TestTotality:
             TransformKey: TransformKey(op="cumsum", input=AGG),
             ArithmeticKey: ArithmeticKey(op="+", operands=(CITY, AMOUNT)),
             ScalarCallKey: ScalarCallKey(name="coalesce", args=(CITY, "x")),
-            BetweenKey: BetweenKey(
-                column=CITY, low=LiteralKey(value="a"), high=LiteralKey(value="b"),
-            ),
+            TimePointCmpKey: TimePointCmpKey(op="=", operand=CITY, point="2025-Q1"),
             InKey: InKey(column=CITY, values=(LiteralKey(value="gold"),)),
             SqlFragmentKey: SqlFragmentKey(template="{r0} * 2", refs=(CITY,)),
         }
