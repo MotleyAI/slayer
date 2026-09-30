@@ -223,7 +223,8 @@ def approx_cells(got: Dict[Any, Any], expected: Dict[Any, Any]) -> None:
         if want is None:
             assert got[k] is None, (k, got[k])
         else:
-            assert got[k] is not None and float(got[k]) == pytest.approx(want), (k, got[k])
+            assert got[k] is not None, (k, got[k])
+            assert float(got[k]) == pytest.approx(want), (k, got[k])
 
 
 def warnings_of(resp, kind: str) -> list:

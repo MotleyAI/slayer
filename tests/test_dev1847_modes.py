@@ -112,8 +112,9 @@ class TestExplicitOuterKeyUnattributable:
             measures=[reagg("avg", INNER_CR, name="acc", partition_by="product")])
 
     async def test_default_refuses(self, exec_engine):
+        query = self._pq("broadcast")
         with pytest.raises(PartitionKeyError) as ei:
-            await exec_engine.execute(self._pq("broadcast"))
+            await exec_engine.execute(query)
         msg = str(ei.value)
         assert "product" in msg
         assert "operand grain" in msg

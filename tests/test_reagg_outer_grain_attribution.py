@@ -176,8 +176,9 @@ class TestUngrainedUndeterminedDimension:
         assert "snapshot_date" in w.human_message()
 
     async def test_error_mode_refuses(self, engine):
+        q = _by_month(f"sum({MAX_Q})", to_many_handling="error")
         with pytest.raises(ReaggregationError, match="snapshot_date"):
-            await engine.execute(_by_month(f"sum({MAX_Q})", to_many_handling="error"))
+            await engine.execute(q)
 
 
 class TestExplicitOuterKeys:
@@ -188,8 +189,9 @@ class TestExplicitOuterKeys:
 
     @pytest.mark.parametrize("mode", ["broadcast", "error"])
     async def test_undetermined_fanning_key_errors(self, engine, mode):
+        q = _by_month(EXPLICIT_UNDETERMINED, to_many_handling=mode)
         with pytest.raises(PartitionKeyError) as ei:
-            await engine.execute(_by_month(EXPLICIT_UNDETERMINED, to_many_handling=mode))
+            await engine.execute(q)
         _assert_undetermined_key_error(
             ei.value, key="account_snapshots.snapshot_date", grain_member="account_id")
 
@@ -200,11 +202,12 @@ class TestExplicitOuterKeys:
 
     @pytest.mark.parametrize("mode", ["broadcast", "error"])
     async def test_undetermined_to_one_key_errors(self, sales_engine, mode):
+        q = sales_q(
+            dimensions=["region"], to_many_handling=mode,
+            measures=[reagg("avg", "sum(amount, partition_by=city)", name="acr",
+                            partition_by="[region]")])
         with pytest.raises(PartitionKeyError) as ei:
-            await sales_engine.execute(sales_q(
-                dimensions=["region"], to_many_handling=mode,
-                measures=[reagg("avg", "sum(amount, partition_by=city)", name="acr",
-                                partition_by="[region]")]))
+            await sales_engine.execute(q)
         _assert_undetermined_key_error(ei.value, key="region", grain_member="city")
 
     async def test_undetermined_to_one_key_associates(self, sales_engine):
@@ -275,10 +278,10 @@ class TestOtherConsumerShapes:
 
     @pytest.mark.parametrize("mode", MODES)
     async def test_fanning_constituent_key_still_errors(self, engine, mode):
+        q = query(dimensions=["name"], to_many_handling=mode,
+                  measures=[m(f"sum(count(name, partition_by=[id, {ACCOUNT}]))")])
         with pytest.raises(PartitionKeyError, match="account_snapshots.account_id") as ei:
-            await engine.execute(query(
-                dimensions=["name"], to_many_handling=mode,
-                measures=[m(f"sum(count(name, partition_by=[id, {ACCOUNT}]))")]))
+            await engine.execute(q)
         assert "__regroup__" not in str(ei.value)
 
 
@@ -335,5 +338,6 @@ class TestPlanStructure:
     ])
     async def test_no_placeholder_in_emitted_sql(self, engine, formula):
         resp = await engine.execute(_by_month(formula, to_many_handling="associate"))
-        assert resp.sql and "__regroup__" not in resp.sql
+        assert resp.sql
+        assert "__regroup__" not in resp.sql
         _clean(resp)

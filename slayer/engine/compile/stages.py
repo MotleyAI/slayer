@@ -72,6 +72,7 @@ from slayer.core.query import (
 from slayer.sql.naming import canonical_aggregate_alias, flat_name
 from slayer.core.time_bounds import strip_frame_bounds
 from slayer.core.window_duration import parse_window_duration
+from slayer.core.refs import dotted_key_display
 from slayer.core.scope import ModelScope, StageColumn, StageSchema, host_model_name
 from slayer.engine.elaborate_env import (
     check_reserved_regroup_prefix,
@@ -94,6 +95,7 @@ from slayer.engine.elaborate_env import (
     check_raw_rows_no_aggregate_slots,
     check_reaggregation_dims_attributable,
     check_reaggregation_no_window,
+    check_reaggregation_outer_keys_determined,
     check_windowed_time_axis_attributable,
     check_window_duration,
     check_windowed_time_dimension,
@@ -2769,6 +2771,13 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
                 reachable=reason != UNREACHABLE_NO_PATH,
             ))
 
+    # An explicit outer key is judged here only — never against the query root.
+    if root.partition_keys is not None:
+        check_reaggregation_outer_keys_determined(
+            alias=alias, mode=mode,
+            undetermined_keys=[dotted_key_display(u.key) for u in unattributable],
+            grain_display=_grain_display(union_grain),
+        )
     associate_dims: List[_UnattributableDim] = []
     broadcast_dims: List[Tuple[str, str]] = []
     if unattributable:
@@ -2828,7 +2837,15 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
     # attach-carrying grain key becomes an expression over carrier placeholders.
     # Substitute the WHOLE root (source AND params) so an aggregate-valued
     # parameter references its carrier placeholder like the source constituents do.
-    outer_agg = substitute_value_keys(root, constituent_placeholders)
+    original_by_pk: Dict[ValueKey, ValueKey] = {}
+    for g in outer_grain:
+        sub = substitute_value_keys(g, constituent_placeholders)
+        original_by_pk[sub] = g
+    # The settled outer grain rides as the explicit grain, so the outer compile
+    # never re-judges it from the host (Axiom 9).
+    outer_agg = substitute_value_keys(root, constituent_placeholders).model_copy(
+        update={"partition_keys": Grain.of(original_by_pk)},
+    )
     # Each legal parameter is picked once per cell: an aggregate-valued
     # one from its carrier placeholder, a column/expression one from the operand
     # scope; level 2 reads it as ``_base._p<i>``.
@@ -2840,10 +2857,6 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
         )
         for _name, _value in reagg_params
     ]
-    original_by_pk: Dict[ValueKey, ValueKey] = {}
-    for g in outer_grain:
-        sub = substitute_value_keys(g, constituent_placeholders)
-        original_by_pk[sub] = g
     outer_prebound, ordered_outer = _regroup_producer_prebound(
         pks=Grain.of(original_by_pk), aggs=[outer_agg], model=host_model, bundle=bundle,
         # Row filters define the population whose cells the outer aggregate
@@ -2884,7 +2897,10 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
         "regroup_attach_plans": [*outer_plan.regroup_attach_plans, carrier_attach],
     })
 
-    answer_slot = outer_plan.aggregate_slots[0].id
+    answer_slot = _regroup_answer_slot_id(
+        value_slots=[*outer_plan.aggregate_slots, *outer_plan.combined_expression_slots],
+        key=substitute_value_keys(outer_agg, internal_map), fallback=None,
+    )
     grain_ids = list(outer_plan.projection)[: len(ordered_outer)]
     join_pairs: List[Tuple[ValueKey, SlotId]] = []
     for i, g in enumerate(ordered_outer):
