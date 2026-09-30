@@ -7,7 +7,7 @@ SLayer has two distinct expression layers and the rules for what each one accept
 | Mode | Fields | Parser | Accepts | Rejects |
 |---|---|---|---|---|
 | **A — SQL** | `Column.sql`, `Column.filter`, each entry of `SlayerModel.filters` | sqlglot | Any valid SQL expression for the underlying dialect — function calls (`json_extract`, `coalesce`, `nullif`, `lower`, `length`, …), arithmetic, `CASE WHEN`, string literals, comparison and boolean operators in SQL spelling (`=`, `<>`, `IS NULL`, `AND`, `OR`, `NOT`, `IN`, `LIKE`). Bare names and dotted join paths (`customers.regions.name`). | Aggregations (`sum(revenue)`); SLayer transform calls (`cumsum`, `change`, `rank`, …); references to `ModelMeasure` formulas; raw `OVER (...)` window functions inside `Column.filter` / `SlayerModel.filters` (allowed only in `Column.sql`); the legacy `__`-delimited split-alias qualifier (`customers__regions.name`) — now a hard error (`LegacyDunderAliasError`). |
-| **B — DSL** | `ModelMeasure.formula`, `SlayerQuery.measures`, `SlayerQuery.filters`, `SlayerQuery.dimensions`, `SlayerQuery.time_dimensions`, `SlayerQuery.order`, `SlayerQuery.main_time_dimension` | Python AST formula parser | Bare names that resolve to a `Column` or `ModelMeasure` on the model; single-dot dotted paths through joins (`customers.regions.name`, `sum(customers.revenue)`); aggregations (`sum(revenue)`, `count(*)`, `percentile(price, p=0.9)`, parametric forms), including same-model expression sources (`sum(amount - cost)`); transform calls (`cumsum(sum(revenue))`, `rank(sum(revenue), partition_by=region)`); arithmetic / boolean / comparison operators; the SQL `\|\|` concat operator (folded into `concat(...)`); pattern matching via the `like(value, pattern)` scalar (emits the SQL `LIKE` operator — wrap in `not (...)` for `NOT LIKE`); a closed allowlist of scalar functions (matched case-insensitively) — null handling (`nullif`, `coalesce`, `ifnull`), math (`ln`, `log10`, `log2`, `log`, `exp`, `sqrt`, `pow`, `power`, `abs`, `floor`, `ceil`, `ceiling`, `round`, `sign`, `trunc`, `mod`), scalar min/max (`greatest`, `least`), string hygiene (`lower`, `upper`, `trim`, `ltrim`, `rtrim`, `replace`, `substr`, `substring`, `instr`, `length`, `concat`) and `like`, each with a declared argument count that is validated (`coalesce`, `concat`, `greatest` and `least` are variadic; `trunc` takes exactly one argument); `{variable}` placeholders (filters only). | identifiers using the reserved `__slayer_` prefix; raw SQL function calls outside that allowlist (`json_extract`, `date_trunc`, …), and any allowlisted call with the wrong number of arguments; raw `OVER (...)`; bare names that don't resolve to a Column / ModelMeasure / custom aggregation / query alias; `NULL` inside an `in` / `not in` list (use `is null` / `is not null` instead — see below). |
+| **B — DSL** | `ModelMeasure.formula`, `SlayerQuery.measures`, `SlayerQuery.filters`, `SlayerQuery.dimensions`, `SlayerQuery.time_dimensions`, `SlayerQuery.order`, `SlayerQuery.main_time_dimension` | Python AST formula parser | Bare names that resolve to a `Column` or `ModelMeasure` on the model; single-dot dotted paths through joins (`customers.regions.name`, `sum(customers.revenue)`); aggregations (`sum(revenue)`, `count(*)`, `percentile(price, p=0.9)`, parametric forms), including same-model expression sources (`sum(amount - cost)`); transform calls (`cumsum(sum(revenue))`, `rank(sum(revenue), partition_by=region)`); arithmetic / boolean / comparison operators; the SQL `\|\|` concat operator (folded into `concat(...)`); pattern matching via the `like(value, pattern)` scalar (emits the SQL `LIKE` operator — wrap in `not (...)` for `NOT LIKE`); a closed allowlist of scalar functions (matched case-insensitively) — null handling (`nullif`, `coalesce`, `ifnull`), math (`ln`, `log10`, `log2`, `log`, `exp`, `sqrt`, `pow`, `power`, `abs`, `floor`, `ceil`, `ceiling`, `round`, `sign`, `trunc`, `mod`), scalar min/max (`greatest`, `least`), string hygiene (`lower`, `upper`, `trim`, `ltrim`, `rtrim`, `replace`, `substr`, `substring`, `instr`, `length`, `concat`), `like`, and [date functions](#date-and-time-functions) (`date_part`, `date_diff`, `date_add`, `current_date`, `now`), each with a declared argument count that is validated (`coalesce`, `concat`, `greatest` and `least` are variadic; `trunc` takes exactly one argument); `{variable}` placeholders (filters only). | identifiers using the reserved `__slayer_` prefix; raw SQL function calls outside that allowlist (`json_extract`, `date_trunc`, …), and any allowlisted call with the wrong number of arguments; raw `OVER (...)`; bare names that don't resolve to a Column / ModelMeasure / custom aggregation / query alias; `NULL` inside an `in` / `not in` list (use `is null` / `is not null` instead — see below). |
 
 ## Identifier resolution
 
@@ -166,7 +166,7 @@ A bare `aov` or dotted `customers.aov` reuses a saved measure by expanding its f
 
 The allowlisted scalars are rendered as typed SQL and then translated to each
 backend's own spelling, so one formula stays correct across dialects rather
-than being passed through verbatim. `length(x)` emits `LEN(x)` on SQL Server,
+than being passed through verbatim. `length(x)` counts trailing spaces on SQL Server too (`LEN(CAST(x AS NVARCHAR(MAX)) + 'x') - 1`),
 `substr(x, 1, 5)` emits `SUBSTRING(x FROM 1 FOR 5)` on Postgres, and
 `ifnull(x, 0)` emits `COALESCE(x, 0)` on backends without `IFNULL`.
 
@@ -218,6 +218,54 @@ Five consequences worth knowing:
   `ceil` and `substring` is `substr`; both spellings are accepted so a formula
   written against either SQL convention binds, and both emit the target's own
   form.
+
+## Date and time functions
+
+Five portable functions cover extraction, differences, arithmetic and the clock. Each renders
+to the same result on every supported backend, and the part/unit is a string literal (matched
+case-insensitively):
+
+| Function | Returns | Part / unit |
+|---|---|---|
+| `date_part(part, ts)` | INT | `year`, `iso_year`, `quarter`, `month`, `week`, `day`, `day_of_week`, `day_of_year`, `hour`, `minute`, `second` |
+| `date_diff(unit, start, end)` | INT | `second`, `minute`, `hour`, `day`, `week`, `week_sunday`, `month`, `quarter`, `year` |
+| `date_add(ts, n, unit)` | DATE or TIMESTAMP | same units as `date_diff` |
+| `current_date()` / `now()` | DATE / TIMESTAMP | — |
+
+```json
+{
+  "source_model": "orders",
+  "dimensions": [{"expression": "date_part('day_of_week', created_at)", "name": "dow"}],
+  "measures": [{"formula": "avg(date_diff('day', created_at, coalesce(shipped_at, now())))", "name": "age_days"}],
+  "filters": ["created_at >= date_add(current_date(), -30, 'day')"]
+}
+```
+
+* **ISO weeks.** `day_of_week` is Monday = 1 … Sunday = 7; `week` is the ISO-8601 week and
+  `iso_year` the year that week belongs to, so `2024-12-30` is week 1 of 2025. Pair `week`
+  with `iso_year`, never with `year`. Sub-day parts of a DATE are 0.
+* **`date_diff` counts calendar boundaries crossed**, not elapsed units:
+  `date_diff('month', '2024-01-31', '2024-02-01')` is 1 and `date_diff('day', '2024-03-01 23:59:00', '2024-03-02 00:01:00')`
+  is 1. It is negative when `end` precedes `start`. `week` boundaries are Mondays, `week_sunday`
+  Sundays. For whole elapsed units, compare a boundary count with `date_add`, e.g.
+  `date_add(start, date_diff('month', start, end), 'month') > end` means the last month is incomplete.
+* **`date_add` clamps at month-end**: `date_add('2024-01-31', 1, 'month')` is `2024-02-29`. A DATE
+  stays a DATE for day-or-coarser units; the time of day is kept. A literal count must be an
+  integer; a computed count (`date_add(order_date, sla_days, 'day')`) is truncated toward zero.
+* **`interval` spelling.** `ts + interval(n, unit)`, `interval(n, unit) + ts` and
+  `ts - interval(n, unit)` are exactly `date_add` (chains apply left to right); `interval`
+  anywhere else is rejected.
+* **Typed operands.** Date operands must be DATE / TIMESTAMP: a column declared with that
+  `type`, `min`/`max`/`first`/`last` of one, a date function, the clock, an ISO literal, or
+  `coalesce` / `ifnull` / `nullif` / `greatest` / `least` / `iif` / `CASE` over those. Anything else
+  (a TEXT column, arithmetic, a number) is a type error — declare the column's `type`.
+* **ISO literals.** In a date position `'2024-01-31'` is a DATE and `'2024-01-31 10:00:00'` (or
+  with `T`) a TIMESTAMP; `{variable}` placeholders work there. Elsewhere strings are unchanged.
+* **Backend notes.** The clock reads the database: UTC on SQLite, the session time zone
+  elsewhere. On SQLite a stored date that is not ISO text yields `NULL`, and date arithmetic
+  runs through the registered `slayer_date_add` function, so dry-run SQL needs a SLayer
+  connection. Queries using `now()` / `current_date()` are never served from, or stored in, the
+  [result cache](query-cache.md).
 
 ## `NULL` inside an `in` list
 

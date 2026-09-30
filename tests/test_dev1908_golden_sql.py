@@ -70,7 +70,7 @@ async def _generate_one(case, dialect: str):
         return record_raise(exc)
 
 
-ALLOWED_DELTAS: dict[str, str] = {}
+ALLOWED_DELTAS: dict[str, str] = {}  # PENDING re-bless list; empty in a committed state.
 
 bind_golden_tests(
     namespace=globals(),

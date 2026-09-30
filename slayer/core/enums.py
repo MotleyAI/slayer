@@ -136,6 +136,27 @@ class TimeGranularity(StrEnum):
         return False
 
 
+class DatePart(StrEnum):
+    """A ``date_part`` extraction; ``week``/``iso_year``/``day_of_week`` follow ISO-8601 (Mon=1…Sun=7)."""
+
+    YEAR = "year"
+    ISO_YEAR = "iso_year"
+    QUARTER = "quarter"
+    MONTH = "month"
+    WEEK = "week"
+    DAY = "day"
+    DAY_OF_WEEK = "day_of_week"
+    DAY_OF_YEAR = "day_of_year"
+    HOUR = "hour"
+    MINUTE = "minute"
+    SECOND = "second"
+
+
+SUB_DAY_GRANULARITIES: frozenset[TimeGranularity] = frozenset({
+    TimeGranularity.SECOND, TimeGranularity.MINUTE, TimeGranularity.HOUR,
+})
+
+
 _GRANULARITY_PARENTS: dict[TimeGranularity, tuple[TimeGranularity, ...]] = {
     TimeGranularity.SECOND: (TimeGranularity.MINUTE,),
     TimeGranularity.MINUTE: (TimeGranularity.HOUR,),

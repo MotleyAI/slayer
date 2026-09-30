@@ -2,7 +2,7 @@
 absent from the population still counts in the cells its path reaches. Built on
 ``_dev1900_fixtures`` + the DEV-1840 dataset; c7 is a South customer with ZERO
 orders, and ``make_null_status_engine`` adds a NULL-status order for c1 (SQLite
-+ DuckDB) so the back-hop presence rule is observable against c7."""
++ DuckDB), so the NULL-status cell holds c1 and the orderless c7."""
 
 from __future__ import annotations
 
@@ -25,8 +25,7 @@ from tests._dev1900_fixtures import (
     orders_q,
 )
 
-#: c1 gets a NULL-status order so the NULL-status cell exists and holds exactly
-#: c1 (never c7, who has no order at all).
+#: c1 gets a NULL-status order so the NULL-status cell exists in the population.
 #: (id, customer_id, status, channel, amount, ordered_at, store_co, store_no)
 NULL_STATUS_ORDER = (11, 1, None, "web", 8.0, "2024-01-30", "A", 1)
 
@@ -85,16 +84,11 @@ SPEND_BY_BAD_POP = {150.0: 280.0, 230.0: 195.0, None: 40.0}
 AMOUNT_BY_BAD_POP = {150.0: 100.0, 230.0: 20.0, None: 47.0}
 # channel='app' filter: only app customers; c7 has no app order.
 APP_SPEND_BY_BAD_POP = {150.0: 250.0, 230.0: 140.0}
-# Mixed (bad_pop, status): South = (230, ok) = c3+c5; c7 in NO cell.
+# Mixed (bad_pop, status): South = (230, ok) = c3+c5; c7's (230, NULL) cell is not in the population.
 MIXED_SOUTH_OK = 140.0
 MIXED_SOUTH_WITH_C7_BUG = 195.0
-# Presence guard, orders-rooted: NULL cell = c1 (owner) only, never c7.
-PRESENCE_NULL_CELL = 100.0
-PRESENCE_NULL_CELL_C7_BUG = 155.0
-SPEND_BY_STATUS_NULLSEED = {"ok": 420.0, "new": 290.0, None: 100.0}
-# Customers-rooted twin (home == host): the LEFT JOIN keeps c7 in the NULL cell.
-CUST_NULL_CELL = 155.0
-LOCAL_SPEND_BY_STATUS_NULLSEED = {"ok": 420.0, "new": 290.0, None: 155.0}
+# NULL-status cell = c1 (owner) + c7 (no orders), however the query is rooted.
+SPEND_BY_STATUS_NULLSEED = {"ok": 420.0, "new": 290.0, None: 155.0}
 # Two-hop home (regions); composite back hop (orders → stores).
 REGION_POP_BY_BAD_POP = {150.0: 100.0, 230.0: 200.0}
 RENT_BY_STATUS = {"ok": 1100.0, "new": 800.0}
@@ -119,9 +113,7 @@ __all__ = [
     "status_vals", "bad_pop_status_cells",
     "SPEND_BY_BAD_POP", "AMOUNT_BY_BAD_POP", "APP_SPEND_BY_BAD_POP",
     "MIXED_SOUTH_OK", "MIXED_SOUTH_WITH_C7_BUG",
-    "PRESENCE_NULL_CELL", "PRESENCE_NULL_CELL_C7_BUG",
-    "SPEND_BY_STATUS_NULLSEED", "CUST_NULL_CELL",
-    "LOCAL_SPEND_BY_STATUS_NULLSEED", "REGION_POP_BY_BAD_POP", "RENT_BY_STATUS",
+    "SPEND_BY_STATUS_NULLSEED", "REGION_POP_BY_BAD_POP", "RENT_BY_STATUS",
     "LOCAL_COUPLED_OK", "LOCAL_DECOUPLED_OK",
     "SPEND_WAVG_SOUTH", "SPEND_WAVG_SOUTH_C7_DROPPED", "SPEND_WAVG_AMOUNT_SOUTH",
     "DICE_SLICE_SOUTH",

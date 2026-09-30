@@ -11,7 +11,9 @@ from unittest.mock import patch
 
 import pytest
 import sqlglot
+from sqlglot import exp
 
+from slayer.core.enums import TimeGranularity
 from slayer.sql.dialects.mysql import MysqlDialect
 from slayer.sql.dialects.postgres import PostgresDialect
 from slayer.sql.dialects.sqlite import SqliteDialect
@@ -102,43 +104,19 @@ def test_sqlgenerator_dialect_attribute_used_by_sqlglot_emission() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_duration_interval_exprs_delegates_to_dialect_hook() -> None:
-    """``SQLGenerator._duration_interval_exprs`` must dispatch through
-    ``self._dialect.duration_interval_exprs`` — never an inline
-    ``if self.dialect == 'sqlite':`` branch."""
+def test_date_offset_delegates_to_dialect_hook() -> None:
+    """``SQLGenerator._date_offset`` must dispatch through ``self._dialect.build_date_add``
+    (T-SQL emits ``DATEADD``, SQLite its UDF) — never an inline dialect branch."""
     gen = SQLGenerator(dialect="postgres")
-    sentinel = ["<<intervals>>"]
+    base = exp.column("created_at")
     with patch.object(
         type(gen._dialect),
-        "duration_interval_exprs",
-        autospec=True,
-        return_value=sentinel,
-    ) as spy:
-        out = gen._duration_interval_exprs("90d", sign=-1)
-    assert spy.called, (
-        "_duration_interval_exprs must dispatch through "
-        "self._dialect.duration_interval_exprs. DEV-1716 §3c."
-    )
-    assert out is sentinel, "Delegate must return the hook's output verbatim."
-
-
-def test_add_intervals_expr_delegates_to_dialect_hook() -> None:
-    """``SQLGenerator._add_intervals_expr`` must dispatch through
-    ``self._dialect.add_intervals_expr`` (T-SQL overrides it to emit
-    ``DATEADD`` instead of ``± INTERVAL``)."""
-    gen = SQLGenerator(dialect="postgres")
-    base = sqlglot.parse_one("created_at", dialect="postgres")
-    with patch.object(
-        type(gen._dialect),
-        "add_intervals_expr",
+        "build_date_add",
         autospec=True,
         return_value="<<added>>",
     ) as spy:
-        out = gen._add_intervals_expr(base, [], sign=1)
-    assert spy.called, (
-        "_add_intervals_expr must dispatch through "
-        "self._dialect.add_intervals_expr. DEV-1716 §3c."
-    )
+        out = gen._date_offset(base, count=-1, unit=TimeGranularity.MONTH, operand=None)
+    assert spy.called, "_date_offset must dispatch through self._dialect.build_date_add."
     assert out == "<<added>>", "Delegate must return the hook's output verbatim."
 
 

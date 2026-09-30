@@ -268,8 +268,8 @@ plus `$GCP_PROJECT_ID` for billing). The `bigquery://` driver requires the
 ## Adding a new dialect
 
 1. Add the mapping to `slayer/engine/query_engine.py:_dialect_for_type()`.
-2. If the dialect doesn't accept Postgres-style `INTERVAL` for date arithmetic,
-   add a branch in `_build_time_offset_expr` in `slayer/sql/generator.py`.
+2. Override the date hooks on the dialect class (`build_date_add`, `build_date_part`,
+   `build_date_diff`, …) where the Postgres-shaped defaults don't apply.
 3. Add parameterized tests in `TestMultiDialectGeneration` in
    `tests/test_sql_generator.py`.
 4. For median/percentile, decide whether the native syntax already works

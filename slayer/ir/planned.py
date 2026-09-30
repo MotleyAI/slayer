@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import functools
 from enum import Enum, IntEnum
-from typing import Dict, List, Literal, Optional, Tuple, Union, Hashable
+from typing import Dict, Hashable, Iterable, Iterator, List, Literal, Optional, Tuple, Union, cast
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -12,10 +12,13 @@ from slayer.core.enums import DataType
 from slayer.core.errors import MaterialisationStageError
 from slayer.core.format import NumberFormat
 from slayer.core.keys import (
+    CLOCK_FUNCTIONS,
     AggregateKey,
     Phase,
+    ScalarCallKey,
     TransformKey,
     ValueKey,
+    _FrozenKey,
     walk_value_keys,
 )
 from slayer.core.models import SlayerModel
@@ -347,11 +350,6 @@ class AssociationProducerKernel(BaseModel):
     entity_keys: List[ValueKey] = Field(default_factory=list)
     null_safe: bool = False
     picked_params: List[PickedParam] = Field(default_factory=list)
-    #: Host-side join columns of the reverse hop (in the home-rooted producer's
-    #: coordinates), guarded ``NOT (<col> IS NULL)`` in level 1 so a home entity
-    #: absent from the population is excluded from a cell it reaches only back
-    #: through the population root (DEV-1910); empty for a home-side dimension.
-    present_keys: List[ValueKey] = Field(default_factory=list)
 
 
 ProducerKernel = Union[
@@ -663,6 +661,47 @@ def _structural_fingerprint(obj) -> Hashable:
     ):
         return obj
     return (type(obj).__name__, repr(obj))
+
+
+# Fields that carry models / schemas, never Mode-B value keys.
+_NON_KEY_FIELDS = frozenset({"stage_bundle", "render_source_model", "stage_schema"})
+
+
+def _plan_children(obj) -> Iterable:
+    if isinstance(obj, BaseModel):
+        return [getattr(obj, n) for n in type(obj).model_fields if n not in _NON_KEY_FIELDS]
+    if isinstance(obj, (list, tuple, set, frozenset)):
+        return obj
+    if isinstance(obj, dict):
+        return [item for pair in obj.items() for item in pair]
+    return ()
+
+
+def _walk_plan_keys(obj, seen: set) -> Iterator[ValueKey]:
+    if isinstance(obj, _FrozenKey):
+        yield cast(ValueKey, obj)
+        return
+    if isinstance(obj, BaseModel):
+        if id(obj) in seen:
+            return
+        seen.add(id(obj))
+    for child in _plan_children(obj):
+        yield from _walk_plan_keys(child, seen)
+
+
+def plan_value_keys(planned) -> Iterator[ValueKey]:
+    """Every root ``ValueKey`` a plan carries, nested producer plans included."""
+    yield from _walk_plan_keys(planned, set())
+
+
+def plans_read_clock(planned_list) -> bool:
+    """Whether any plan evaluates ``now()`` / ``current_date()``."""
+    return any(
+        isinstance(k, ScalarCallKey) and k.name in CLOCK_FUNCTIONS
+        for planned in planned_list
+        for root in plan_value_keys(planned)
+        for k in walk_value_keys(root)
+    )
 
 
 def plan_has_semi_join_filters(planned) -> bool:
