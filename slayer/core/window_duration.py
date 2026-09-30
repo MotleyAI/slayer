@@ -13,7 +13,15 @@ from __future__ import annotations
 
 import re
 
+from slayer.core.enums import TimeGranularity
 from slayer.core.errors import WindowDurationError
+
+#: Duration unit → the calendar unit its part moves by.
+WINDOW_UNIT_GRANULARITY: dict[str, TimeGranularity] = {
+    "y": TimeGranularity.YEAR, "m": TimeGranularity.MONTH, "w": TimeGranularity.WEEK,
+    "d": TimeGranularity.DAY, "h": TimeGranularity.HOUR, "min": TimeGranularity.MINUTE,
+    "s": TimeGranularity.SECOND,
+}
 
 # ``min`` must precede the single-char alternation so ``7min`` parses the whole
 # ``min`` unit rather than a bare ``m`` followed by a stray ``in``.

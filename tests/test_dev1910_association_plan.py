@@ -1,8 +1,8 @@
 """DEV-1910 — plan shapes for the home-rooted association producer (design
-decisions 2–6): home root, root-coordinate entity keys, back-hop presence guard,
-reachable-unsafe conjunct as a kept bound filter, nested attached-parameter producer.
+decisions 2–6): home root, root-coordinate entity keys, reachable-unsafe conjunct
+as a kept bound filter, nested attached-parameter producer.
 
-Spec: queries/attribution-modes — "Distinct-entity association semantics";
+Spec: queries/attribution-modes — "Distinct-entity association over the virtual model";
 queries/cross-model-aggregates — "Producer filter routing".
 """
 
@@ -15,9 +15,7 @@ from slayer.ir.source_bundle import ResolvedSourceBundle
 
 from tests._dev1840_fixtures import bundle, dev1840_models
 from tests._dev1841_fixtures import ModelMeasure, assoc_q
-from tests._dev1900_fixtures import (
-    BAD_POP, dev1900_models, orders_q, unparseable_derived_models,
-)
+from tests._dev1900_fixtures import dev1900_models, orders_q
 
 CM = ModelMeasure(formula="customers.spend:sum", name="cm")
 HEADLINE = ("customers.spend:weighted_avg("
@@ -38,11 +36,6 @@ def _assoc(planned):
 def _akernel(att) -> AssociationProducerKernel:
     assert isinstance(att.kernel, AssociationProducerKernel)
     return att.kernel
-
-
-def _present(att):
-    return {(getattr(k, "path", None), getattr(k, "leaf", None))
-            for k in _akernel(att).present_keys}
 
 
 def _rerooted_paths(att, leaf: str):
@@ -78,45 +71,6 @@ class TestReachableConjunctIsInlined:
         assert any("basic" in t for t in att.association_restricted_filter_texts)
 
 
-class TestPresenceKeys:
-    def test_population_root_dimension_guards_the_back_hop(self):
-        """status is reached only back through the population root — present_keys
-        is the host-side join column of the reverse hop (orders.customer_id)."""
-        att = _assoc(plan_query(
-            query=assoc_q(dimensions=["status"], measures=[CM]), bundle=bundle()))
-        assert _present(att) == {(("orders",), "customer_id")}
-
-    def test_home_side_dimension_has_no_presence_key(self):
-        """bad_pop is home-side (forward from the customers home) — no presence
-        guard: the region with no events keeps its NULL cell."""
-        att = _assoc(plan_query(
-            query=orders_q(dimensions=[BAD_POP], measures=[CM],
-                           to_many_handling="associate"),
-            bundle=_bundle1900()))
-        assert _akernel(att).present_keys == []
-
-    def test_unanalysable_derived_dimension_fails_closed_to_a_guard(self):
-        """A derived dim whose SQL cannot be analysed (closure None) guards the back hop rather than risk a leak."""
-        models = unparseable_derived_models()
-        att = _assoc(plan_query(
-            query=orders_q(dimensions=["customers.regions.unparseable"], measures=[CM],
-                           to_many_handling="associate"),
-            bundle=ResolvedSourceBundle(
-                dialect="postgres",
-                source_model=models[0], referenced_models=models[1:])))
-        assert _present(att) == {(("orders",), "customer_id")}
-
-    def test_composite_back_hop_guards_every_column(self):
-        """A composite reverse hop (orders → stores) guards BOTH host-side join
-        columns (all-components rule)."""
-        att = _assoc(plan_query(
-            query=assoc_q(dimensions=["status"],
-                          measures=[ModelMeasure(formula="stores.rent:sum", name="r")]),
-            bundle=bundle()))
-        assert _present(att) == {
-            (("orders",), "store_co"), (("orders",), "store_no")}
-
-
 class TestTwoHopHome:
     def test_roots_at_regions_with_the_two_hop_reverse_path(self):
         """A metric homed two hops away roots at regions; status reroots through
@@ -133,17 +87,15 @@ class TestTwoHopHome:
 
 class TestSerialization:
     def test_new_fields_survive_a_pydantic_round_trip(self):
-        """Task 3.1: present_keys (kernel) and association_restricted_filter_texts
-        (attach) round-trip through model_dump / model_validate."""
+        """association_restricted_filter_texts (attach) round-trips through
+        model_dump / model_validate."""
         att = _assoc(plan_query(
             query=assoc_q(dimensions=["status"], measures=[CM],
                           filters=["customers.plans.level = 'basic'"]),
             bundle=bundle(dev1840_models(strong_plans=False))))
         restored = RegroupAttachPlan.model_validate(att.model_dump())
-        assert _akernel(restored).present_keys == _akernel(att).present_keys
         assert (restored.association_restricted_filter_texts
                 == att.association_restricted_filter_texts)
-        assert _akernel(restored).present_keys  # status guards the back hop
         assert restored.association_restricted_filter_texts  # the basic conjunct
 
 

@@ -13,11 +13,11 @@ from __future__ import annotations
 
 import pytest
 import sqlglot
+from sqlglot import exp
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Aggregation, AggregationParam, Column, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
-from slayer.sql.dialects.base import TimeUnit
 from slayer.sql.generator import AggRenderSpec, SQLGenerator
 
 from tests._engine_helpers import _engine_generate, orders_agg_sql
@@ -545,14 +545,14 @@ class TestTsqlDialect:
     # --- time offset ---
 
     def test_build_time_offset_year(self, gen: SQLGenerator) -> None:
-        col = sqlglot.parse_one("created_at", dialect="tsql")
-        sql = gen._build_time_offset_expr(col, -1, "year").sql(dialect="tsql")
+        col = exp.column("created_at")
+        sql = gen._date_offset(col, count=-1, unit=TimeGranularity("year"), operand=DataType.TIMESTAMP).sql(dialect="tsql")
         assert "DATEADD" in sql.upper()
         assert "YEAR" in sql.upper()
 
     def test_build_time_offset_month(self, gen: SQLGenerator) -> None:
-        col = sqlglot.parse_one("created_at", dialect="tsql")
-        sql = gen._build_time_offset_expr(col, -1, "month").sql(dialect="tsql")
+        col = exp.column("created_at")
+        sql = gen._date_offset(col, count=-1, unit=TimeGranularity("month"), operand=DataType.TIMESTAMP).sql(dialect="tsql")
         assert "DATEADD" in sql.upper()
         assert "MONTH" in sql.upper()
 
@@ -561,15 +561,15 @@ class TestTsqlDialect:
         dimension must emit ``DATEADD(WEEK, ...)`` — a one-period Sunday-week
         shift is one week (DEV-1572). Without the ``week_sunday`` normalization
         in the T-SQL unit map, ``DATEADD(WEEK_SUNDAY, ...)`` is invalid T-SQL."""
-        col = sqlglot.parse_one("created_at", dialect="tsql")
-        sql = gen._build_time_offset_expr(col, -1, "week_sunday").sql(dialect="tsql")
+        col = exp.column("created_at")
+        sql = gen._date_offset(col, count=-1, unit=TimeGranularity("week_sunday"), operand=DataType.TIMESTAMP).sql(dialect="tsql")
         assert "DATEADD" in sql.upper()
         assert "WEEK_SUNDAY" not in sql.upper(), sql
         assert "WEEK" in sql.upper()
 
     def test_build_time_offset_positive(self, gen: SQLGenerator) -> None:
-        col = sqlglot.parse_one("created_at", dialect="tsql")
-        sql = gen._build_time_offset_expr(col, 3, "day").sql(dialect="tsql")
+        col = exp.column("created_at")
+        sql = gen._date_offset(col, count=3, unit=TimeGranularity("day"), operand=DataType.TIMESTAMP).sql(dialect="tsql")
         assert "DATEADD" in sql.upper()
         assert "DAY" in sql.upper()
         assert "3" in sql
@@ -577,10 +577,10 @@ class TestTsqlDialect:
         assert "INTERVAL" not in sql.upper()
 
     @pytest.mark.parametrize("gran", ["year", "month", "day", "week"])
-    def test_build_time_offset_no_interval_keyword(self, gen: SQLGenerator, gran: TimeUnit) -> None:
+    def test_build_time_offset_no_interval_keyword(self, gen: SQLGenerator, gran: str) -> None:
         """T-SQL must never emit INTERVAL (invalid syntax) for time offsets."""
-        col = sqlglot.parse_one("created_at", dialect="tsql")
-        sql = gen._build_time_offset_expr(col, -1, gran).sql(dialect="tsql")
+        col = exp.column("created_at")
+        sql = gen._date_offset(col, count=-1, unit=TimeGranularity(gran), operand=DataType.TIMESTAMP).sql(dialect="tsql")
         assert "INTERVAL" not in sql.upper(), (
             f"INTERVAL is invalid T-SQL syntax for granularity {gran!r}: {sql}"
         )

@@ -79,6 +79,16 @@ class TestRefsAndLiterals:
     def test_none(self):
         assert parse_expr("None") == Literal(value=None)
 
+    @pytest.mark.parametrize("spelling", ["NULL", "null", "Null"])
+    def test_sql_null(self, spelling):
+        assert parse_expr(spelling) == Literal(value=None)
+
+    def test_sql_null_in_case_measure(self):
+        result = parse_expr("max(CASE WHEN amount > 10 THEN amount ELSE NULL END)")
+        assert isinstance(result, AggCall)
+        assert isinstance(result.source, ScalarCall)
+        assert result.source.args[2] == Literal(value=None)
+
 
 # ---------------------------------------------------------------------------
 # Aggregations (colon syntax)

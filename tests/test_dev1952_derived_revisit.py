@@ -236,15 +236,14 @@ class TestBestEffortConsumersUnchanged:
             root=models["regions"], path=("customers", "regions"),
             models_by_name=models) is False
 
-    def test_back_path_falls_back_to_host(self) -> None:
+    def test_reverse_route_falls_back_to_host(self) -> None:
         models = _chain()
-        assert join_safety._back_path(
+        assert join_safety._route_via_common_prefix(
             host_name="regions", target_path=("customers", "regions"),
-            models_by_name=models) == ("regions",)
+            host_path=(), models_by_name=models) == ("regions",)
 
     def test_route_via_common_prefix_falls_back_to_round_trip(self) -> None:
-        # DEV-1908's determination route walks the aggregate path from the host
-        # like ``_back_path``; a revisit keeps the round-trip fallback, never raises.
+        # A revisit keeps the round-trip fallback, never raises.
         models = _chain()
         assert join_safety._route_via_common_prefix(
             host_name="regions", target_path=("customers", "regions"),

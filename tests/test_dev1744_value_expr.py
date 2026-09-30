@@ -27,7 +27,7 @@ only form correct for both ``ifnull`` and ``log10``.
 from __future__ import annotations
 
 import os
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Optional
 
@@ -36,13 +36,13 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import BUILTIN_AGGREGATIONS, DataType, TimeGranularity
-from slayer.core.formula import SCALAR_PASSTHROUGH
 from slayer.core.errors import (
     RenderContextMissingFacilityError,
     UnknownReferenceError,
 )
 from slayer.core.keys import (
     SCALAR_FUNCTIONS,
+    SCALAR_PASSTHROUGH,
     AggregateKey,
     ArithmeticKey,
     BetweenKey,
@@ -581,6 +581,13 @@ class TestRendersEveryKeyKind:
         # IS NOT NULL wrapper that got the predicate wrong.
         assert _sql(out) == "NOT orders.label IN ('a')"
 
+    def test_in_key_with_temporal_literal(self) -> None:
+        out = render_value_key(
+            key=InKey(column=ColumnKey(leaf="label"), values=(LiteralKey(value=date(2024, 1, 31)),)),
+            ctx=_filter_ctx(),
+        )
+        assert _sql(out) == "orders.label IN (CAST('2024-01-31' AS DATE))"
+
     def test_local_aggregate_key(self) -> None:
 
         out = render_value_key(
@@ -750,9 +757,9 @@ _SCALAR_MATRIX = [
     # R1 today: CONCAT(...) verbatim on every dialect; the operator differs.
     ("concat", (ColumnKey(leaf="label"), LiteralKey(value="x")),
      "orders.label || 'x'", "orders.label + 'x'"),
-    # R1 today: LENGTH(...) on T-SQL, which spells it LEN.
+    # T-SQL LEN drops trailing spaces; an NVARCHAR(MAX) copy plus a sentinel keeps them.
     ("length", (ColumnKey(leaf="label"),),
-     "LENGTH(orders.label)", "LEN(orders.label)"),
+     "LENGTH(orders.label)", "(LEN(CAST(orders.label AS NVARCHAR(MAX)) + 'x') - 1)"),
 ]
 
 
@@ -1863,11 +1870,13 @@ class TestParserAndBinderScalarSetsAgree:
     def test_no_parser_only_names_remain(self) -> None:
         assert SCALAR_PASSTHROUGH - SCALAR_FUNCTIONS == set()
 
-    def test_binder_only_names_are_like_and_iif(self) -> None:
-        """``like`` is the LIKE-operator rewrite target and ``iif`` the
-        CASE-rewrite target (DEV-1740); neither is a legacy-formula
-        pass-through name."""
-        assert SCALAR_FUNCTIONS - SCALAR_PASSTHROUGH == {"like", "iif"}
+    def test_binder_only_names_are_like_iif_and_date_functions(self) -> None:
+        """Names whose Mode-B call is not the same SQL function: the LIKE and
+        CASE rewrite targets, and the dialect-rendered date functions."""
+        assert SCALAR_FUNCTIONS - SCALAR_PASSTHROUGH == {
+            "like", "iif", "date_part", "date_diff", "date_add", "interval",
+            "current_date", "now",
+        }
 
 
 class TestArityIsRejectedAtBindTime:

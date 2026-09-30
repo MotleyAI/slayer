@@ -665,7 +665,7 @@ class TestFields:
     async def test_time_shift_over_week_sunday_uses_one_week_interval(
         self, generator: SQLGenerator, orders_model: SlayerModel
     ) -> None:
-        """A time_shift over a WEEK_SUNDAY time dim (granularity derived from the time dim, not passed explicitly) shifts by one week — exercising ``build_time_offset_expr``'s ``"week_sunday"`` path. Must emit valid date arithmetic, not blow up on the unknown granularity string."""
+        """A time_shift over a WEEK_SUNDAY time dim (granularity derived from the time dim, not passed explicitly) shifts by one week — exercising ``build_date_add``'s ``week_sunday`` path. Must emit valid date arithmetic, not blow up on the unknown granularity string."""
         orders_model.default_time_dimension = "created_at"
         query = SlayerQuery(
             source_model="orders",
@@ -969,12 +969,11 @@ class TestFields:
             query=query,
             model=orders_model,
         )
-        assert "DATETIME(" in sql
-        assert "'-7 days'" in sql
-        assert "'-2 days'" in sql
-        assert "'-3 hours'" in sql
-        assert "'-4 minutes'" in sql
-        assert "'-5 seconds'" in sql
+        # One slayer_date_add call per duration part, applied in written order.
+        norm = _norm(sql).upper()
+        for piece in (", -1, 'WEEK'", ", -2, 'DAY'", ", -3, 'HOUR'", ", -4, 'MINUTE'", ", -5, 'SECOND'"):
+            assert piece in norm, f"missing per-unit date-add call '{piece}'\nsql:\n{sql}"
+        assert "SLAYER_DATE_ADD(" in norm
 
 
     async def test_two_windowed_measures_emit_distinct_ctes(
@@ -2440,11 +2439,8 @@ class TestMultiDialectGeneration:
         assert "shifted_" in sql
         assert "LEFT JOIN" in sql
         # Join should be simple equality (timestamp shift is inside the shifted CTE) Dialect-specific date arithmetic should appear in the shifted CTE's SELECT/GROUP BY
-        sql_upper = sql.upper()
-        if dialect == "sqlite":
-            assert "DATE(" in sql_upper
-        else:
-            assert "INTERVAL" in sql_upper
+        expected = {"sqlite": "SLAYER_DATE_ADD(", "clickhouse": "ADDYEARS(", "snowflake": "DATEADD(YEAR"}
+        assert expected.get(dialect, "INTERVAL") in sql.upper()
 
     @pytest.mark.parametrize("dialect", ["mysql", "clickhouse"])
     async def test_window_measure_multi_unit_interval_dialect_correct(
@@ -2468,8 +2464,12 @@ class TestMultiDialectGeneration:
             f"Multi-unit Postgres-shape INTERVAL literal is invalid on {dialect}.\n"
             f"sql:\n{sql}"
         )
-        # Per-unit INTERVAL clauses must each be present (sqlglot transpiles exp.Interval per dialect: `INTERVAL N UNIT`).
-        for piece in ("INTERVAL 1 YEAR", "INTERVAL 2 MONTH", "INTERVAL 3 DAY"):
+        # One dialect date-add per unit, never a quoted multi-unit literal.
+        pieces = {
+            "mysql": ("INTERVAL -1 YEAR", "INTERVAL -2 MONTH", "INTERVAL -3 DAY"),
+            "clickhouse": ("ADDYEARS(", "ADDMONTHS(", "ADDDAYS("),
+        }[dialect]
+        for piece in pieces:
             assert piece in norm, (
                 f"Expected dialect-correct '{piece}' in {dialect} output.\n"
                 f"sql:\n{sql}"
@@ -2496,8 +2496,9 @@ class TestMultiDialectGeneration:
             f"Quoted single-unit INTERVAL literal is invalid on {dialect}.\n"
             f"sql:\n{sql}"
         )
-        assert "INTERVAL 7 DAY" in norm, (
-            f"Expected dialect-correct 'INTERVAL 7 DAY' in {dialect} output.\n"
+        piece = {"mysql": "INTERVAL -7 DAY", "clickhouse": ", -7"}[dialect]
+        assert piece in norm, (
+            f"Expected dialect-correct '{piece}' in {dialect} output.\n"
             f"sql:\n{sql}"
         )
 

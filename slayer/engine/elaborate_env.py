@@ -6,9 +6,10 @@ algebra type error raises here, each invoked at its family's original checkpoint
 
 from __future__ import annotations
 
+from types import MappingProxyType
 from typing import (
-    Callable, Dict, Iterator, List, Literal, NamedTuple, NoReturn, Optional,
-    Sequence, Tuple, TypeGuard, Union,
+    Callable, Dict, Iterator, List, Literal, Mapping, NamedTuple, NoReturn, Optional,
+    Sequence, Tuple, TypeGuard,
 )
 
 from pydantic import BaseModel, ConfigDict
@@ -18,6 +19,7 @@ from slayer.core.errors import (
     AssociationError,
     CanonicalAliasShadowsColumnError,
     ComputedDimensionError,
+    DateOperandTypeError,
     DimensionTypeError,
     DistinctDimensionValuesError,
     DuplicateMeasureNameError,
@@ -37,7 +39,10 @@ from slayer.core.errors import (
 from slayer.core.formula import TIME_TRANSFORMS
 from slayer.core.window_duration import parse_window_duration
 from slayer.core.keys import (
+    DATE_ADD_COUNT_ARG,
+    DATE_OPERAND_ARGS,
     AggregateKey,
+    ColumnTypeFn,
     ConsumerNode,
     walk_consumer_positions,
     attached_inputs,
@@ -53,11 +58,14 @@ from slayer.core.keys import (
     ColumnSqlKey,
     Grain,
     InKey,
+    LiteralKey,
     ScalarCallKey,
     TimeTruncKey,
     TransformKey,
     ValueKey,
     regroup_root_grain,
+    temporal_type,
+    value_arg_positions,
     source_anchor_path,
     transform_operand_grain,
     walk_value_keys,
@@ -83,7 +91,7 @@ from slayer.ir.terms import (
 )
 
 def home_dataset(
-    *, scope: Union[ModelScope, StageSchema], model: Optional[SlayerModel],
+    *, scope: ModelScope | StageSchema, model: Optional[SlayerModel],
 ) -> Optional[DatasetT]:
     """The query's root dataset: model-backed for a ModelScope, stage-backed otherwise."""
     if isinstance(scope, StageSchema):
@@ -872,6 +880,103 @@ def check_time_dimension_column(
             suggestion="Request the same or a nesting-coarser granularity, or "
             "bucket the raw column instead.",
         )
+
+
+# Allowlisted scalars whose result is never numeric.
+_TEXT_SCALARS = frozenset({
+    "lower", "upper", "trim", "ltrim", "rtrim", "replace", "substr", "substring", "concat",
+})
+_NON_NUMERIC_TYPES = frozenset({
+    DataType.TEXT, DataType.BOOLEAN, DataType.DATE, DataType.TIMESTAMP, DataType.UNKNOWN,
+})
+
+
+def _operand_display(k: object) -> str:
+    if isinstance(k, LiteralKey):
+        k = k.value
+    if isinstance(k, str):
+        return f"'{k}'"
+    if isinstance(k, ScalarCallKey):
+        return f"{k.name}({', '.join(_operand_display(a) for a in k.args)})"
+    if isinstance(k, ArithmeticKey):
+        if len(k.operands) == 1:
+            return f"{k.op}{_operand_display(k.operands[0])}"
+        return f" {k.op} ".join(_operand_display(o) for o in k.operands)
+    if isinstance(k, (AggregateKey, TransformKey, ColumnKey, ColumnSqlKey, TimeTruncKey)):
+        return _key_display(k)
+    return str(k)
+
+
+_LITERAL_TYPES: Mapping[type, DataType] = MappingProxyType({
+    bool: DataType.BOOLEAN, str: DataType.TEXT,
+})
+_SCALAR_RESULT_TYPES: Mapping[str, DataType] = MappingProxyType({
+    **{name: DataType.TEXT for name in _TEXT_SCALARS}, "like": DataType.BOOLEAN,
+})
+
+
+def _leaf_count_type(key: object, *, column_type: ColumnTypeFn) -> Optional[DataType]:
+    if isinstance(key, (ColumnKey, ColumnSqlKey)):
+        return column_type(key)
+    if isinstance(key, LiteralKey):
+        return _LITERAL_TYPES.get(type(key.value))
+    if isinstance(key, (ArithmeticKey, BetweenKey, InKey)) and is_boolean_shaped(key):
+        return DataType.BOOLEAN
+    if isinstance(key, ScalarCallKey):
+        return _SCALAR_RESULT_TYPES.get(key.name)
+    return None
+
+
+def _count_type_operands(key: object) -> Sequence[object]:
+    if isinstance(key, AggregateKey):
+        return [key.source] if key.agg.lower() in ("min", "max", "first", "last") else []
+    if isinstance(key, ArithmeticKey):
+        return key.operands
+    if isinstance(key, ScalarCallKey):
+        return [key.args[i] for i in value_arg_positions(key.name, len(key.args))]
+    return []
+
+
+def _count_type(key: object, *, column_type: ColumnTypeFn) -> Optional[DataType]:
+    """A non-numeric type the count provably has, else ``None`` (unknown or numeric)."""
+    known = temporal_type(key, column_type=column_type) or _leaf_count_type(key, column_type=column_type)
+    if known is not None:
+        return known
+    for operand in _count_type_operands(key):
+        found = _count_type(operand, column_type=column_type)
+        if found in _NON_NUMERIC_TYPES:
+            return found
+    return None
+
+
+def _check_date_call(key: ScalarCallKey, *, column_type: ColumnTypeFn) -> None:
+    for pos in DATE_OPERAND_ARGS[key.name]:
+        operand = key.args[pos]
+        if temporal_type(operand, column_type=column_type) is None:
+            raise DateOperandTypeError(
+                summary=f"{key.name}() needs a DATE or TIMESTAMP operand; "
+                f"`{_operand_display(operand)}` is not one.",
+                suggestion="Pass a column declared DATE / TIMESTAMP (set Column.type), "
+                "min/max/first/last of one, a date function, now() / current_date(), "
+                "or an ISO literal such as '2024-01-31' or '2024-01-31 10:00:00'.",
+            )
+    if key.name != "date_add":
+        return
+    count = key.args[DATE_ADD_COUNT_ARG]
+    if _count_type(count, column_type=column_type) in _NON_NUMERIC_TYPES:
+        raise DateOperandTypeError(
+            summary=f"date_add() count `{_operand_display(count)}` is not numeric.",
+            suggestion="Pass an integer, or a numeric column or expression "
+            "(it is truncated toward zero).",
+        )
+
+
+def check_date_operands(*, roots: Sequence[ValueKey], column_type: ColumnTypeFn) -> None:
+    """Every date-function operand must be DATE/TIMESTAMP and every ``date_add`` count numeric."""
+    for root in roots:
+        for key in walk_value_keys(root):
+            if isinstance(key, ScalarCallKey) and key.name in DATE_OPERAND_ARGS:
+                _check_date_call(key, column_type=column_type)
 
 
 def _time_search_children(key: ValueKey) -> List[ValueKey]:

@@ -241,12 +241,11 @@ class TestMultiDialectGeneration:
         # Join should be simple equality (timestamp shift is inside the shifted CTE)
         # Dialect-specific date arithmetic should appear in the shifted CTE's SELECT/GROUP BY
         sql_upper = sql.upper()
-        if dialect == "sqlite":
-            assert "DATE(" in sql_upper
-        elif dialect == "tsql":
-            assert "DATEADD" in sql_upper
-        else:
-            assert "INTERVAL" in sql_upper
+        expected = {
+            "sqlite": "SLAYER_DATE_ADD(", "tsql": "DATEADD", "clickhouse": "ADDYEARS(",
+            "snowflake": "DATEADD(YEAR", "bigquery": "DATETIME_ADD(",
+        }
+        assert expected.get(dialect, "INTERVAL") in sql_upper
 
     @pytest.mark.parametrize("dialect", ["mysql", "clickhouse"])
     async def test_window_measure_multi_unit_interval_dialect_correct(
@@ -278,9 +277,12 @@ class TestMultiDialectGeneration:
             f"Multi-unit Postgres-shape INTERVAL literal is invalid on {dialect}.\n"
             f"sql:\n{sql}"
         )
-        # Per-unit INTERVAL clauses must each be present, still one-unit-per-clause
-        # (never a single combined literal): `INTERVAL N UNIT` on MySQL + ClickHouse.
-        for piece in ("INTERVAL 1 YEAR", "INTERVAL 2 MONTH", "INTERVAL 3 DAY"):
+        # One dialect date-add per unit, never a single combined literal.
+        pieces = {
+            "mysql": ("INTERVAL -1 YEAR", "INTERVAL -2 MONTH", "INTERVAL -3 DAY"),
+            "clickhouse": ("ADDYEARS(", "ADDMONTHS(", "ADDDAYS("),
+        }[dialect]
+        for piece in pieces:
             assert piece in norm, (
                 f"Expected dialect-correct '{piece}' in {dialect} output.\n"
                 f"sql:\n{sql}"
@@ -311,8 +313,9 @@ class TestMultiDialectGeneration:
             f"Quoted single-unit INTERVAL literal is invalid on {dialect}.\n"
             f"sql:\n{sql}"
         )
-        assert "INTERVAL 7 DAY" in norm, (
-            f"Expected dialect-correct \"INTERVAL 7 DAY\" in {dialect} output.\n"
+        piece = {"mysql": "INTERVAL -7 DAY", "clickhouse": ", -7"}[dialect]
+        assert piece in norm, (
+            f"Expected dialect-correct {piece!r} in {dialect} output.\n"
             f"sql:\n{sql}"
         )
 
