@@ -48,6 +48,7 @@ from slayer.core.query import (
     granularity_call_parts,
 )
 from slayer.core.refs import (
+    dotted_key_display,
     AGG_REF_RE,
     auto_name_from_expression,
     canonical_agg_name,
@@ -98,6 +99,7 @@ from slayer.engine.syntax import (
     parse_filter_expr,
 )
 from slayer.ir.bound import (
+    GranularityConflict,
     BoundExpr,
     BoundFilter,
     DeclaredMeasure,
@@ -484,8 +486,9 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         bound_filters=bound_filters,
         order_specs=order_specs,
     )
+    granularity_conflicts: List[GranularityConflict] = []
     if query.whole_periods_only:
-        bound_filters, bound_filter_texts, n_date_range = _snap_whole_periods(
+        bound_filters, bound_filter_texts, n_date_range, granularity_conflicts = _snap_whole_periods(
             bound_filters=bound_filters, bound_filter_texts=bound_filter_texts,
             n_date_range=n_date_range, now=bundle.now,
             td_keys=[
@@ -661,6 +664,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         offset=query.offset,
         distinct_dimension_values=query.distinct_dimension_values,
         to_many_handling=query.to_many_handling,
+        granularity_conflicts=granularity_conflicts,
     )
 
 
@@ -1218,13 +1222,22 @@ def _snap_whole_periods(
     td_keys: List[ValueKey],
     column_type,
     now: datetime,
-) -> Tuple[List[BoundFilter], List[Optional[str]], int]:
+) -> Tuple[List[BoundFilter], List[Optional[str]], int, List[GranularityConflict]]:
     """``whole_periods_only``: snap every frame bound on a time-dimension column down to the
-    earliest bucket boundary, the upper bound clamped to now (added when absent)."""
+    earliest bucket boundary, the upper bound clamped to now (added when absent); report
+    granularity pairs on one column that do not nest."""
     grans_by_column: Dict[ValueKey, List[TimeGranularity]] = {}
     for td_key in td_keys:
         if isinstance(td_key, TimeTruncKey):
-            grans_by_column.setdefault(td_key.column, []).append(TimeGranularity(td_key.granularity))
+            grans = grans_by_column.setdefault(td_key.column, [])
+            if TimeGranularity(td_key.granularity) not in grans:
+                grans.append(TimeGranularity(td_key.granularity))
+    conflicts = [
+        GranularityConflict(column=dotted_key_display(column), granularities=(a, b))
+        for column, grans in grans_by_column.items()
+        for i, a in enumerate(grans) for b in grans[i + 1:]
+        if not (a.nests_into(b) or b.nests_into(a))
+    ]
     upper_seen: set = set()
     snapped = []
     for bf in bound_filters:
@@ -1249,6 +1262,7 @@ def _snap_whole_periods(
         [*snapped[:n_date_range], *added, *snapped[n_date_range:]],
         [*bound_filter_texts[:n_date_range], *([None] * len(added)), *bound_filter_texts[n_date_range:]],
         n_date_range + len(added),
+        conflicts,
     )
 
 

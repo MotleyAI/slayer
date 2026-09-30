@@ -21,7 +21,7 @@ from pydantic import (
 )
 
 from slayer.async_utils import run_sync
-from slayer.core.enums import DEFAULT_AGGREGATIONS_BY_TYPE, RANKED_AGGREGATIONS, JoinCardinality, TimeGranularity
+from slayer.core.enums import DEFAULT_AGGREGATIONS_BY_TYPE, RANKED_AGGREGATIONS, JoinCardinality
 from slayer.core.errors import (
     AggregationArgumentError,
     AmbiguousModelError,
@@ -588,29 +588,17 @@ class _Rendered(BaseModel):
     population_inferred: bool = False
 
 
-def _whole_periods_warnings(
-    *, queries: List[SlayerQuery], displays: "Dict[str, StageDisplay]",
+def _granularity_conflict_warnings(
+    *, planned_list, labels: List[str],
 ) -> List[WholePeriodsNonNestingWarningPayload]:
-    """One payload per non-nesting granularity pair on one column under ``whole_periods_only``."""
-    out: List[WholePeriodsNonNestingWarningPayload] = []
-    for q in queries:
-        if not q.whole_periods_only:
-            continue
-        by_column: Dict[str, List[TimeGranularity]] = {}
-        for td in q.time_dimensions or []:
-            grans = by_column.setdefault(td.dimension.full_name, [])
-            if td.granularity not in grans:
-                grans.append(td.granularity)
-        location = displays[q.name].label if q.name in displays else "query"
-        for column, grans in by_column.items():
-            out.extend(
-                WholePeriodsNonNestingWarningPayload(
-                    column=column, granularities=[a.value, b.value], location=location,
-                )
-                for i, a in enumerate(grans) for b in grans[i + 1:]
-                if not (a.nests_into(b) or b.nests_into(a))
-            )
-    return out
+    """One payload per non-nesting ``whole_periods_only`` granularity pair, per stage."""
+    return [
+        WholePeriodsNonNestingWarningPayload(
+            column=c.column, granularities=[g.value for g in c.granularities], location=location,
+        )
+        for planned, location in zip(planned_list, labels)
+        for c in planned.granularity_conflicts
+    ]
 
 
 def _plan_label(*, planned: PlannedQuery, index: int, root: Optional[SlayerQuery]) -> str:
@@ -1152,9 +1140,7 @@ class SlayerQueryEngine:
         warnings.extend(_collect_associated_warnings(planned_list=plans, labels=labels))
         warnings.extend(_collect_semi_join_pushed_warnings(planned_list=plans, labels=labels))
         warnings.extend(_collect_degenerate_warnings(planned_list=plans, labels=labels))
-        warnings.extend(_whole_periods_warnings(
-            queries=[*normed_named.values(), query], displays=stage_displays,
-        ))
+        warnings.extend(_granularity_conflict_warnings(planned_list=plans, labels=labels))
         warnings.extend(stale_spelling_warnings(list(dict.fromkeys([
             *(s for p in plans for s in p.stale_spellings), *render_stale_spellings,
         ]))))

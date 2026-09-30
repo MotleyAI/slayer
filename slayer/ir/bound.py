@@ -91,3 +91,12 @@ class OrderSpec(BaseModel):
 
     bound: BoundExpr
     direction: str = "asc"
+
+
+class GranularityConflict(BaseModel):
+    """Two ``whole_periods_only`` granularities on one column that do not nest into each other."""
+
+    model_config = ConfigDict(frozen=True)
+
+    column: str
+    granularities: Tuple[TimeGranularity, TimeGranularity]

@@ -35,6 +35,7 @@ from decimal import Decimal
 import pytest
 
 from slayer.core.enums import DataType
+from slayer.core.errors import DateOperandTypeError
 from slayer.core.keys import InKey, LiteralKey
 from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.core.query import SlayerQuery
@@ -148,11 +149,18 @@ class TestParserGuards:
         with pytest.raises(ValueError, match="empty"):
             parse_filter_expr("status in ()")
 
-    def test_scalar_rhs_rejected(self):
-        # ``col in 'a'`` is a Python-AST Compare with a scalar comparator
-        # (not a Tuple) — must surface a clear ValueError instead of crashing.
-        with pytest.raises(ValueError, match="tuple|list"):
-            parse_filter_expr("status in 'a'")
+    def test_scalar_rhs_is_a_time_point_membership(self):
+        # ``col in 'a'`` is a single-string time-point membership: it parses, and the
+        # checker rejects it against a non-temporal column with the typed error.
+        assert parse_filter_expr("status in 'a'") == Cmp(
+            op="in", left=Ref(name="status"), right=Literal(value="a"),
+        )
+        engine, _ = _make_engine_with_orders()
+        query = SlayerQuery.model_validate({
+            "source_model": "orders", "measures": [{"formula": "*:count"}], "filters": ["status in 'a'"],
+        })
+        with pytest.raises(DateOperandTypeError, match="status"):
+            engine.execute_sync(query=query, dry_run=True)
 
     def test_non_literal_in_rhs_rejected(self):
         # ``status in (other_col, 'b')`` — the RHS may not reference a

@@ -30,7 +30,7 @@ from slayer.core.errors import AmbiguousJoinPathError
 from slayer.core.join_walker import resolve_hop
 from slayer.core.keys import TimeTruncKey
 from slayer.core.models import SlayerModel
-from slayer.ir.bound import BoundFilter, DeclaredMeasure, OrderSpec
+from slayer.ir.bound import BoundFilter, DeclaredMeasure, GranularityConflict, OrderSpec
 
 __all__ = [
     "PreboundQuery",
@@ -90,6 +90,7 @@ class PreboundQuery(BaseModel):
     # How aggregates resolve query dimensions unattributable from their root;
     # threaded onto nested producer prebounds so every plan resolves alike.
     to_many_handling: Literal["broadcast", "associate", "error"] = "broadcast"
+    granularity_conflicts: List[GranularityConflict] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _filter_texts_are_parallel(self) -> "PreboundQuery":

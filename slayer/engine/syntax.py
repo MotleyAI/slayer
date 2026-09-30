@@ -23,7 +23,6 @@ from slayer.core.errors import GranularityCallError, IllegalWindowInFilterError,
 from slayer.core.formula import ALL_TRANSFORMS
 from slayer.core.keys import DATE_UNIT_ARGS, SCALAR_FUNCTIONS, check_scalar_arity
 from slayer.core.refs import split_agg_suffix
-from slayer.core.time_points import is_time_point
 
 
 # ---------------------------------------------------------------------------
@@ -928,10 +927,7 @@ def _convert(node: ast.AST, *, agg_map: Dict, original: str) -> ParsedExpr:  # N
         # (a time-point membership); empty and non-literal RHS are rejected.
         if op_type in (ast.In, ast.NotIn):
             rhs_node = node.comparators[0]
-            if (
-                isinstance(rhs_node, ast.Constant) and isinstance(rhs_node.value, str)
-                and is_time_point(rhs_node.value)
-            ):
+            if isinstance(rhs_node, ast.Constant) and isinstance(rhs_node.value, str):
                 return Cmp(
                     op=_CMP_OP_MAP[op_type],
                     left=_convert(node.left, agg_map=agg_map, original=original),
