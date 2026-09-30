@@ -1,4 +1,4 @@
-"""DEV-1549: models_summary compact-by-default.
+"""models_summary compact-by-default.
 
 Tests cover:
 * MCP tool ``models_summary(compact: bool = True)``.

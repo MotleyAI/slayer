@@ -1,4 +1,4 @@
-"""DEV-1838 stage 2 — typed producer kernels on ``RegroupAttachPlan`` (D4).
+"""Typed producer kernels on ``RegroupAttachPlan`` (D4).
 
 Unit pins for kernel synthesis: which attach carries which kernel, the
 trailing-window field mapping (ex-``WindowedAggregatePlan`` homes per the

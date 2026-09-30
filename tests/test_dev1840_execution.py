@@ -1,4 +1,4 @@
-"""DEV-1840 task 1.4 — executed semi-join pushdown values (SQLite + DuckDB).
+"""Executed semi-join pushdown values (SQLite + DuckDB).
 
 Spec: openspec …/specs/queries/cross-model-aggregates — "Producer filter
 inheritance". Every oracle is hand-computed in ``tests/_dev1840_fixtures.py``;

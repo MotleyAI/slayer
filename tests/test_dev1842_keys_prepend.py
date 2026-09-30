@@ -1,4 +1,4 @@
-"""DEV-1842 task 1.9 — the generic path-map visitor in both directions.
+"""The generic path-map visitor in both directions.
 
 ``reroot_value_key`` becomes one total, fail-closed visitor parameterised by a
 per-path transform; ``strip`` (existing, byte-identical) and the new ``prepend``

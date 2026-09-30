@@ -1,7 +1,7 @@
 """Shared test helpers for engine-driven SQL-shape assertions.
 
-Used by tests migrated off the legacy ``slayer.engine.enrichment`` pipeline
-(DEV-1484 Stage C). Naming intentionally underscored so pytest skips it
+Used by tests migrated off the legacy ``slayer.engine.enrichment`` pipeline.
+Naming intentionally underscored so pytest skips it
 during test discovery while still allowing ``from tests._engine_helpers
 import ...`` from individual test modules.
 
@@ -98,7 +98,7 @@ async def seeded_exec_engine(
     clock: Optional[Callable[[], datetime]] = None,
     datasource_fields: Optional[Mapping[str, Any]] = None,
 ) -> AsyncGenerator[tuple[SlayerQueryEngine, str]]:
-    """The one seeded executing-engine context (DEV-1943 §5).
+    """The one seeded executing-engine context.
 
     Seeds a temp db (``seed(db_path)``), registers ``models`` against a
     ``dialect``-typed datasource, and yields ``(engine, db_path)``. On exit it
@@ -124,7 +124,7 @@ async def seeded_exec_engine(
 async def make_seeded_sqlite_engine(
     *, base_dir: str, db_path: str, models: list[SlayerModel], datasource: str = "test"
 ) -> SlayerQueryEngine:
-    """Storage + engine bound to a seeded SQLite file (DEV-1815).
+    """Storage + engine bound to a seeded SQLite file.
 
     Consolidates the byte-identical ``make_sqlite_engine`` helpers previously
     duplicated across the per-DEV fixture modules; they now delegate here.
@@ -152,7 +152,7 @@ def models_bundle(models_by_name: dict[str, SlayerModel], *, dialect: str = "pos
 def _assert_valid_sql(sql: str, dialect: str = "postgres") -> None:
     """Assert generated SQL is structurally valid (parses, no nested WITH).
 
-    DEV-1713 removed the BigQuery ``TypeError`` carve-out: finalised BigQuery
+    The BigQuery ``TypeError`` carve-out is gone: finalised BigQuery
     naming/mangling no longer emits the dotted-alias shapes sqlglot choked on,
     so a ``TypeError`` here is now a real failure for every dialect.
     """
@@ -192,7 +192,7 @@ async def _engine_generate(
     of additional ``SlayerModel`` instances to register in the same store
     (e.g. join targets sharing ``model.data_source``).
 
-    ``validate=False`` skips save-time DEV-1410 derived-column cycle
+    ``validate=False`` skips save-time derived-column cycle
     detection for the few migrated tests that feed intentionally-shaped
     models the cycle validator would otherwise reject. ``datasource_fields``
     adds extra ``DatasourceConfig`` fields.
@@ -251,7 +251,7 @@ def _join_aliases(sql: str, *, dialect: str = "postgres") -> set[str]:
     yields ``customers``; ``LEFT JOIN regions AS customers__regions``
     yields ``customers__regions``.
 
-    DEV-1732: shared out of ``tests/test_sql_generator.py`` so the
+    Shared out of ``tests/test_sql_generator.py`` so the
     frame-bound tests assert against real JOIN nodes rather than alias
     substrings in predicate text.
     """

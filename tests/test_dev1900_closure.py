@@ -1,4 +1,4 @@
-"""DEV-1900 — the one dependency closure (engine.arc42 principle 10).
+"""The one dependency closure (engine.arc42 principle 10).
 
 Unit tests for ``slayer.engine.reference_closure``: a fragment's / key's
 dependency closure is its own join path plus every path the definition of any

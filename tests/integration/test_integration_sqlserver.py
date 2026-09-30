@@ -1,6 +1,6 @@
 """Integration tests using a real SQL Server database via testcontainers.
 
-DEV-1564: SQL Server is the biggest gap in the existing CI matrix
+SQL Server is the biggest gap in the existing CI matrix
 (no pytest suite at all before this file). Mirror of
 test_integration_postgres.py focused on T-SQL specifics:
 
@@ -311,7 +311,7 @@ class TestSQLServerQueries:
         assert result.data[0]["orders._count"] == 6
 
     async def test_dev1933_regex_literal_extension_column(self, sqlserver_env: SlayerQueryEngine) -> None:
-        """DEV-1933: an ad-hoc column holding a ``(?:...)`` regex literal and a ``%``
+        """An ad-hoc column holding a ``(?:...)`` regex literal and a ``%``
         LIKE pattern executes verbatim; text() misread ``:too`` as a bind parameter."""
         query = SlayerQuery(
             source_model=ModelExtension(
@@ -950,7 +950,7 @@ class TestSQLServerMedianPercentileRaises:
 
 
 # ---------------------------------------------------------------------------
-# Statistical aggregations (DEV-1317 cross-dialect parity)
+# Statistical aggregations (cross-dialect parity)
 # ---------------------------------------------------------------------------
 
 
@@ -1118,7 +1118,7 @@ class TestSQLServerStatAggregations:
 
 
 # ---------------------------------------------------------------------------
-# log10 round-trip (DEV-1337 — T-SQL has native LOG10)
+# log10 round-trip (T-SQL has native LOG10)
 # ---------------------------------------------------------------------------
 
 
@@ -1228,7 +1228,7 @@ async def test_sqlserver_time_shift_uses_dateadd(sqlserver_env: SlayerQueryEngin
 
 
 # ---------------------------------------------------------------------------
-# Window-in-filter raises (DEV-1369 parity)
+# Window-in-filter raises
 # ---------------------------------------------------------------------------
 
 
@@ -1293,7 +1293,7 @@ async def test_filter_on_windowed_column_sqlserver_raises(planets_sqlserver_env)
 
 
 # ---------------------------------------------------------------------------
-# Cross-model derived Column.sql (DEV-1333)
+# Cross-model derived Column.sql
 # ---------------------------------------------------------------------------
 
 

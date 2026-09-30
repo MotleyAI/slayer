@@ -1,12 +1,12 @@
-"""DEV-1835 guard surface (design D7) — both directions.
+"""Guard surface (design D7) — both directions.
 
-Deleted: the DEV-1837 windowed/ranked coexistence arm, DEV-1504 G4/G5/G6/G7 +
+Deleted: the windowed/ranked coexistence arm, G4/G5/G6/G7 +
 the post-projection mixed-filter twin, ``time_shift``-over-ranked, and the
-residual DEV-1839 windowed/first-last union-grain guard — asserted absent from
+residual windowed/first-last union-grain guard — asserted absent from
 the package sources. Preserved verbatim: G8 (duration syntax), G2 (time
 resolution), and the ranked no-ranking-column error.
-Resolved: G3 (windowed cross-model) is now a precise DEV-1836 attributability
-error naming the unreachable time dimension, no longer a DEV-1504 deferral.
+Resolved: G3 (windowed cross-model) is now a precise attributability
+error naming the unreachable time dimension, no longer a deferral.
 
 Scenario coverage map (spec: openspec …/specs/queries/computed-dimensions):
   The lifted windowed/ranked guard leaves no residue . TestDeletedGuardResidue
@@ -129,7 +129,7 @@ class TestRepointedGuards:
     async def test_g3_windowed_cross_model_needs_attributable_time_dimension(
         self,
     ) -> None:
-        # DEV-1836 resolves the former blanket G3 deferral into a precise
+        # The former blanket G3 deferral resolves into a precise
         # attributability error: the active time dimension is a host column,
         # unreachable from the customers root.
         query = q(

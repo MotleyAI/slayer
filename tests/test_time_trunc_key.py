@@ -1,4 +1,4 @@
-"""Stage 7b.3a (DEV-1450) — TimeTruncKey identity and interning.
+"""TimeTruncKey identity and interning.
 
 Pins the structural-identity contract for the new ``TimeTruncKey`` in
 ``slayer.core.keys``:
@@ -124,7 +124,7 @@ class TestTimeTruncKeyImmutability:
 
 
 class TestTimeTruncKeyWithColumnSqlKey:
-    """DEV-1450 follow-up #4a: ``TimeTruncKey.column`` is widened to accept
+    """``TimeTruncKey.column`` is widened to accept
     ``ColumnSqlKey`` so a derived (``Column.sql`` set) temporal column can be
     a time dimension. Identity is structural over the (derived-column, grain)
     pair, exactly like the base-column case."""

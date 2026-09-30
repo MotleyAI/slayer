@@ -1,4 +1,4 @@
-"""DEV-1856 — unit tests for the pure route resolver
+"""Unit tests for the pure route resolver
 ``slayer/engine/dimension_routing.py``: ``short_form_route_or_none`` (executable
 hop-token path for a uniquely-routable target, else ``None``, never raises),
 ``route_dotted_target`` (same but raises ``UnresolvableDimensionJoinError`` with a
@@ -75,7 +75,7 @@ class TestUniqueRoute:
         assert route == ["B", "C", "D"]
 
     def test_route_through_reverse_declared_hop(self) -> None:
-        """B–C declared on C (reverse from A's side, DEV-1853): still one route,
+        """B–C declared on C (reverse from A's side): still one route,
         same model-name tokens."""
         d = _model("D", [_pk(), _t("name")])
         c = _model(

@@ -152,7 +152,7 @@ def time_trunc_result_key(
     declared_name: str,
 ) -> str:
     """Dotted result key for a joined time-trunc slot, appending ``.<granularity>``
-    when a same-column collision suffixed its declared name (DEV-1883). Shared by
+    when a same-column collision suffixed its declared name. Shared by
     the response-metadata and SQL-alias paths so the two never diverge."""
     base = result_key(source_relation=source_relation, path=path, leaf=leaf)
     suffix = f".{granularity}"
@@ -253,7 +253,7 @@ def canonical_aggregate_alias(  # NOSONAR(S3776) — sequential dispatch over th
         key.source, "column_name", None,
     )
     if leaf is None and isinstance(key.source, EXPRESSION_SOURCE_KINDS):
-        # DEV-1826 expression source: derived leaf via the shared sanitizer
+        # Expression source: derived leaf via the shared sanitizer
         # (``sum(amount - cost)`` → ``amount_cost``), then the ordinary
         # canonical/parametric/partition machinery below applies unchanged.
         leaf = expression_source_leaf(key.source)

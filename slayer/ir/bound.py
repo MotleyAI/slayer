@@ -31,7 +31,7 @@ class BoundFilter(BaseModel):
 class BoundExpr(BaseModel):
     """A bound expression — its leaves are resolved ``ValueKey``s. ``routed_dotted``
     is the full routed dotted path when the whole field is a short-form
-    ``DottedRef`` that auto-routed (DEV-1856), else ``None`` — the naming layer
+    ``DottedRef`` that auto-routed, else ``None`` — the naming layer
     surfaces a routed dimension under this full path, not the short form typed."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)

@@ -1,4 +1,4 @@
-"""Stage 2 (DEV-1450) — typed scope and stage-schema for the new pipeline.
+"""Typed scope and stage-schema for the new pipeline.
 
 Two scope kinds, never confused (P5):
 
@@ -14,10 +14,9 @@ Two scope kinds, never confused (P5):
 ``public_alias`` (result-key piece), plus the per-column metadata that
 downstream stages need.
 
-Per I2 of the DEV-1450 execution plan, ``ModelScope.source_model`` is
-``Optional`` from day one so a future anchor-less mode is a type-additive
-change. DEV-1450's binder will assert ``source_model is not None`` at
-use sites — the type-level optionality is the extension point.
+``ModelScope.source_model`` is ``Optional`` from day one so a future anchor-less
+mode is a type-additive change. The binder asserts ``source_model is not None``
+at use sites — the type-level optionality is the extension point.
 """
 
 from __future__ import annotations
@@ -48,7 +47,7 @@ class StageColumn(BaseModel):
     the result-key piece returned to the user — set only for non-hidden
     columns.
 
-    ``format`` (DEV-1452 Stage B decision #8) is the typed ``NumberFormat``
+    ``format`` is the typed ``NumberFormat``
     inherited from the source ``ModelMeasure`` / ``Column`` or computed
     by ``_infer_aggregated_format``. ``description`` propagates the source
     column's documentation through the typed plan.
@@ -61,7 +60,7 @@ class StageColumn(BaseModel):
     public_alias: Optional[str] = None
     type: Optional[DataType] = None
     # Set only for a column an upstream stage bucketed (a ``TimeTruncKey`` slot);
-    # ``None`` means "not truncated", so any granularity re-binds (DEV-1471).
+    # ``None`` means "not truncated", so any granularity re-binds.
     granularity: Optional[Union[CustomGranularity, GranularitySpec]] = None
     label: Optional[str] = None
     format: Optional[NumberFormat] = None
@@ -165,7 +164,7 @@ class ModelScope(BaseModel):
     ``__``-bearing refs are flat-only and reject unless they exact-match
     a column literally named that way on the model.
 
-    I2: ``source_model`` is ``Optional`` from day one. DEV-1450's binder
+    I2: ``source_model`` is ``Optional`` from day one. The binder
     asserts ``source_model is not None`` at use sites so behavior is
     unchanged. A future anchor-less mode uses ``source_model=None`` and
     a different binder branch (DatasourceScope-style binding). Keeping

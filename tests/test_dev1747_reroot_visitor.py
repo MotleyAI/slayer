@@ -1,4 +1,4 @@
-"""DEV-1747 §5.4 — the total reroot visitor over the ValueKey union.
+"""The total reroot visitor over the ValueKey union.
 
 Rerooting was once done by SERIALIZING typed keys back to formula text and
 re-parsing them into a nested ``SlayerQuery``. That was replaced with typed
@@ -14,9 +14,6 @@ The reroot rule is prefix-strip-with-residual, identical to the one
 ``reroot_aggregate_key`` already applies to ``AggregateKey``: a ``path``
 starting with ``target_path`` drops that prefix and keeps the residual hops;
 any other ``path``, and any scalar, is returned unchanged.
-
-Refs: DEV-1747 (§5.4), DEV-1707 (the symmetric ``reroot_aggregate_key`` this
-generalises), DEV-1742 P-E.
 """
 from __future__ import annotations
 

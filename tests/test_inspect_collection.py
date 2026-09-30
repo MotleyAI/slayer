@@ -1,4 +1,4 @@
-"""DEV-1667: ``inspect`` null-reference collection views.
+"""``inspect`` null-reference collection views.
 
 A null/omitted ``reference`` (``None`` or ``[]``) with ``entity_type`` in
 ``{model, datasource}`` renders the *collection* at that kind:
@@ -16,7 +16,7 @@ A null/omitted ``reference`` (``None`` or ``[]``) with ``entity_type`` in
 
 ``[]`` is normalized to ``None`` (no more "reference list must not be empty").
 Null/``[]`` with ``{column, measure, aggregation, memory}`` → ``ValueError``.
-Non-null ``str`` / ``list[str]`` keep their DEV-1588 / DEV-1612 behaviour.
+Non-null ``str`` / ``list[str]`` keep their existing behaviour.
 
 The collection path is DB-free (no engine needed).
 """
@@ -181,7 +181,7 @@ class TestModelCollectionCompactMarkdown:
     async def test_oneliner_per_model(self, two_ds: YAMLStorage) -> None:
         out = await _svc(two_ds).inspect(reference=None, entity_type="model")
         assert "- `orders` (3 cols; joins: `customers`)" in out
-        # DEV-1853: reverse-reachable joins show in Markdown like in JSON.
+        # Reverse-reachable joins show in Markdown like in JSON.
         assert "- `customers` (1 cols; joins: `orders`)" in out
         assert "- `events` (2 cols; joins: _(none)_)" in out
 
@@ -479,7 +479,7 @@ class TestKindGuard:
         self, two_ds: YAMLStorage, kind: str
     ) -> None:
         # [] must produce the SAME collection-unsupported error as None — NOT
-        # the old DEV-1612 "reference list must not be empty" message.
+        # the old "reference list must not be empty" message.
         svc = _svc(two_ds)
         with pytest.raises(ValueError, match="[Cc]ollection view") as exc:
             await svc.inspect(reference=[], entity_type=kind)
@@ -666,7 +666,7 @@ class TestCliCollection:
             _run_inspect(args=args, storage=cli_storage)
         assert exc.value.code == 1
         # Must fail with the collection-unsupported message, NOT the old
-        # DEV-1612 empty-list rejection (so it can't pass for the wrong reason).
+        # empty-list rejection (so it can't pass for the wrong reason).
         out = buf.getvalue()
         assert "Collection view" in out
         assert "must not be empty" not in out
@@ -750,7 +750,7 @@ class TestSlayerClientCollection:
 
 
 # ===========================================================================
-# DEV-1667 follow-ups from the test-plan Codex review
+# Follow-ups from the test-plan Codex review
 # ===========================================================================
 
 _BLOCK_SEP = "\n\n---\n\n"

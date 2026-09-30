@@ -1,7 +1,7 @@
-"""DEV-1825 — ``substitute_value_keys``: the total, fail-closed structural
+"""``substitute_value_keys``: the total, fail-closed structural
 rewriter the regroup desugar substitutes placeholders with.
 
-Mirrors the ``reroot_value_key`` totality contract (DEV-1747): every
+Mirrors the ``reroot_value_key`` totality contract: every
 ``ValueKey`` union member has an explicit case, an unhandled kind RAISES, and
 a matched subtree is replaced ATOMICALLY (its children are never recursed —
 "by key identity, never text").

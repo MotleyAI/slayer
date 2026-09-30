@@ -1,4 +1,4 @@
-"""DEV-1763 — the P-G call-site migration: the five render families route
+"""The P-G call-site migration: the five render families route
 through ``render_value_key`` with byte-identical SQL.
 
 Behavioural unit tests for the renderer surface the migration added: the
@@ -9,11 +9,9 @@ mode with table qualification, the ``Optional`` scope fail-closed rule, and
 ``ScopeFrame.column_type``.
 
 The transitional migration pins (per-family raising sentinels + the static
-state-1 inventory) were deleted with the legacy renderers in PR 6 (DEV-1749):
+state-1 inventory) were deleted with the legacy renderers:
 once a symbol no longer exists, any reference to it fails the suite outright, so
 symbol-absence tests are the parity ballast P-J forbids.
-
-Refs: DEV-1763, DEV-1742 §5.1 / P-G / P-J, DEV-1749 (deletion consumer).
 """
 
 from __future__ import annotations

@@ -179,7 +179,7 @@ examples:
     _add_storage_arg(serve_parser)
 
     # ── flight-serve ──────────────────────────────────────────────────
-    # DEV-1390: Arrow Flight SQL endpoint, wire-compatible with the
+    # Arrow Flight SQL endpoint, wire-compatible with the
     # dbt Semantic Layer JDBC driver.
     add_flight_serve_subparser(subparsers)
     # Storage flag is shared with the rest of the subcommands.
@@ -187,7 +187,7 @@ examples:
     _add_storage_arg(flight_parser)
 
     # ── pg-serve ──────────────────────────────────────────────────────
-    # DEV-1486: Postgres wire-protocol endpoint, BI-tool compatible.
+    # Postgres wire-protocol endpoint, BI-tool compatible.
     add_pg_serve_subparser(subparsers)
     pg_parser = subparsers._name_parser_map["pg-serve"]
     _add_storage_arg(pg_parser)
@@ -738,7 +738,7 @@ examples:
     # ── storage ──────────────────────────────────────────────────────
     storage_parser = subparsers.add_parser(
         "storage",
-        help="Storage maintenance (DEV-1361: migrate-types refines DOUBLE→INT for legacy models)",
+        help="Storage maintenance (migrate-types refines DOUBLE→INT for legacy models)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     storage_subparsers = storage_parser.add_subparsers(dest="subcommand")
@@ -765,12 +765,12 @@ examples:
     )
     _add_storage_arg(migrate_types_parser)
 
-    # ── inspect (DEV-1588) ───────────────────────────────────────────
+    # ── inspect ───────────────────────────────────────────
     inspect_parser = subparsers.add_parser(
         "inspect",
         help=(
             "Inspect one entity by reference and kind, or several of the same "
-            "kind at once (pass multiple references) (DEV-1588, DEV-1612)"
+            "kind at once (pass multiple references)"
         ),
     )
     inspect_parser.add_argument(
@@ -836,10 +836,10 @@ examples:
     )
     _add_storage_arg(inspect_parser)
 
-    # ── search (DEV-1375) ────────────────────────────────────────────
+    # ── search ────────────────────────────────────────────
     search_parser = subparsers.add_parser(
         "search",
-        help="Semantic search over memories + canonical entities (DEV-1375)",
+        help="Semantic search over memories + canonical entities",
         epilog="""\
 examples:
   # Two-channel search by entity overlap + tantivy full-text
@@ -911,7 +911,7 @@ examples:
         action="store_true",
         default=False,
         help=(
-            "Opt out of compact rendering (DEV-1549). Default is "
+            "Opt out of compact rendering. Default is "
             "compact: memory hits surface ``description`` (or a "
             "first-paragraph fallback from ``learning``) and an "
             "empty ``text``; entity hits surface ``entity.description`` "
@@ -938,7 +938,7 @@ examples:
         help="Model name(s) to refresh (repeatable; default: all in scope).",
     )
 
-    # DEV-1658: the standalone `slayer help` subcommand is removed. SLayer's
+    # The standalone `slayer help` subcommand is removed. SLayer's
     # concepts ship as help memories — read them with
     # `slayer inspect memory:help.intro --type memory` (see the epilog above).
 
@@ -989,16 +989,16 @@ examples:
 
 
 def _run_inspect(*, args, storage) -> None:
-    """Run ``slayer inspect`` — a single-entity point-lookup (DEV-1588)."""
-    # DEV-1658: ensure the help.* memories exist so `inspect memory:help.intro`
+    """Run ``slayer inspect`` — a single-entity point-lookup."""
+    # Ensure the help.* memories exist so `inspect memory:help.intro`
     # works on a fresh store (idempotent / warm no-op).
     run_sync(seed_help_memories(storage=storage))
     service = InspectService(
         storage=storage, engine=SlayerQueryEngine(storage=storage),
     )
     # argparse ``nargs="*"`` always yields a list; map zero positionals to
-    # ``None`` (the collection sentinel, DEV-1667) and a single positional back
-    # to a bare str so single-id output stays byte-for-byte (DEV-1612). A direct
+    # ``None`` (the collection sentinel) and a single positional back
+    # to a bare str so single-id output stays byte-for-byte. A direct
     # str (older callers / tests) is passed through unchanged.
     reference = args.reference
     if isinstance(reference, list):
@@ -1102,7 +1102,7 @@ def _run_search_refresh_samples(*, args, storage) -> None:
 def _print_search_response_text(response) -> None:
     """Pretty-print a ``SearchResponse`` for the default text format.
 
-    DEV-1549: under compact mode ``hit.text`` is empty and the preview
+    Under compact mode ``hit.text`` is empty and the preview
     lives in ``hit.description``; under ``--verbose`` (compact=False)
     ``hit.text`` carries the full body and is what the caller wants to
     see. Prefer ``text`` when non-empty so ``--verbose`` actually shows
@@ -1131,7 +1131,7 @@ def _print_search_response_text(response) -> None:
 def _run_search_query(args, storage) -> None:
     """``slayer search [...]`` — call the SearchService and emit JSON or
     pretty text."""
-    # DEV-1658: seed help.* memories so concept searches surface them on a
+    # Seed help.* memories so concept searches surface them on a
     # fresh store. Only on the query path — NOT `search refresh-samples`.
     run_sync(seed_help_memories(storage=storage))
     service = SearchService(storage=storage)
@@ -1168,7 +1168,7 @@ def _run_storage(args) -> None:
 
 
 def _run_storage_migrate_types(args) -> None:
-    """DEV-1361: refine DOUBLE → INT on every base column whose live SQL
+    """Refine DOUBLE → INT on every base column whose live SQL
     type is integer. Iterates models in storage, calls
     ``refine_dict_with_live_schema`` per model, optionally writes the
     refined v5 dict back. Hard-fails if a datasource is unreachable.
@@ -1210,7 +1210,7 @@ def _resolve_datasource_for_cli_refinement(
     Returns the ``DatasourceConfig`` when present, ``None`` when missing
     and the model is SQLite-INT-only (best-effort skip — prints a stderr
     skip notice). Raises ``ValueError`` when the model has DOUBLE base
-    columns and the DS is missing (DEV-1361 hard-fail contract).
+    columns and the DS is missing (hard-fail contract).
     """
     ds = run_sync(inner.get_datasource(ds_name))
     if ds is not None:
@@ -1258,7 +1258,7 @@ def _refine_one_model_for_cli(
     dict has refineable DOUBLE base columns AND the datasource entry is
     missing, raises ``ValueError`` rather than silently reporting "nothing
     to refine" for a model the CLI never had enough information to inspect.
-    DEV-1538 SQLite-INT widening is best-effort: a missing datasource for
+    SQLite-INT widening is best-effort: a missing datasource for
     an INT-only model logs a skip notice and returns False. Models with no
     refineable or widenable columns (text-only, query-backed, sql-mode,
     already-narrowed) skip silently and don't require a live datasource.
@@ -1695,7 +1695,7 @@ def _collect_all_models(args, storage) -> list:
 
 def _collect_join_safety_findings(args, storage) -> list:
     """Joins whose arity is neither declared m:1/1:1 nor structurally proven —
-    metrics crossing them broadcast (DEV-1836)."""
+    metrics crossing them broadcast."""
     findings = audit_join_safety(models=_collect_all_models(args=args, storage=storage))
     if getattr(args, "model", None):
         findings = [f for f in findings if f.model == args.model]
@@ -1857,7 +1857,7 @@ def _run_import_dbt(args):
             sys.exit(1)
         sa_engine = engine_factory.get_engine(ds.resolve_env_vars())
 
-    # DEV-1595: pass the datasource dialect (best-effort) so the converter can
+    # Pass the datasource dialect (best-effort) so the converter can
     # emit percentile/median caveats for dialects that lack them (MySQL/T-SQL).
     target_dialect = ds.type if ds is not None else None
 
@@ -1882,7 +1882,7 @@ def _run_import_dbt(args):
             f"({len(model.columns)} columns, {len(model.measures)} measures)"
         )
 
-    # DEV-1595: grouped, category-keyed conversion report + a severity tally.
+    # Grouped, category-keyed conversion report + a severity tally.
     if result.unconverted_metrics or result.warnings:
         print("\nConversion report:")
         print(result.render_report())
@@ -2146,7 +2146,7 @@ def _parse_connection_string(url: str) -> tuple[str, str]:
             )
         return ds_type, stem
 
-    # DEV-1551: Snowflake connection_name sentinel URL has no path segment —
+    # Snowflake connection_name sentinel URL has no path segment —
     # all routing lives in the query string + the TOML profile. Use the
     # connection_name itself as the derived datasource name fallback so
     # ``slayer datasources create "snowflake://?connection_name=default"``

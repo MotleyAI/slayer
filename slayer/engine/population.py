@@ -1,4 +1,4 @@
-"""Dimension-determined population inference (DEV-1866).
+"""Dimension-determined population inference.
 
 The population of a rootless query is the model with the fewest routed join hops
 that determines every queried dimension along provably to-one paths, read from

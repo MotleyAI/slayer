@@ -363,7 +363,7 @@ async def test_cross_model_last_with_target_filter_ranks_filtered_rows() -> None
 
 
 async def test_cross_model_last_over_column_filter_masks_the_newest_row() -> None:
-    """DEV-1832: a ``Column.filter`` masks the value; it never restricts the
+    """A ``Column.filter`` masks the value; it never restricts the
     ranking. ``customers.active_amount:last`` ranks customers by ``signup_at`` and
     the newest (id 3, 2023-09-01) is ``inactive``, so its masked value is NULL —
     the older active 100.0 is not reached (a row-restricting WHERE belongs in the

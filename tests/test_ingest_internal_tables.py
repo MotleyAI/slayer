@@ -293,7 +293,7 @@ class TestMatchesTheLiveObjectName:
     def test_dunder_internal_keeps_its_faithful_name(
         self, workspace: Path
     ) -> None:
-        """DEV-1743: the internal-table rule matches the live object name, and the
+        """The internal-table rule matches the live object name, and the
         model keeps that faithful ``__`` name (no sanitization); the report carries
         both, now equal."""
         _, ds = _ds(
@@ -360,7 +360,7 @@ class TestSkipAndHideAreDisjoint:
     def test_distinct_dunder_internals_are_both_hidden_not_skipped(
         self, workspace: Path
     ) -> None:
-        """DEV-1743: ``_dlt_loads_x`` and ``_dlt_loads__x`` no longer collapse, so
+        """``_dlt_loads_x`` and ``_dlt_loads__x`` no longer collapse, so
         both are distinct hidden internals — neither is skipped, and skip/hide
         stay disjoint (nothing skipped)."""
         _, ds = _ds(
@@ -640,7 +640,7 @@ class TestIdempotencyAndReporting:
     async def test_dunder_internal_model_uses_faithful_name(
         self, workspace: Path
     ) -> None:
-        """DEV-1743: a ``__``-named internal table keeps its faithful model name
+        """A ``__``-named internal table keeps its faithful model name
         (no sanitization), so table_name == model_name in the report."""
         _, ds = _ds(
             workspace,
@@ -1017,7 +1017,7 @@ class TestDatasourcesCreateReporting:
 
     def test_skipped_section_printed(self, workspace: Path, capsys) -> None:
         """The report form closes the pre-existing gap where this path swallowed
-        skips entirely. DEV-1743: ``__`` is no longer a skip cause, so the skip
+        skips entirely. ``__`` is no longer a skip cause, so the skip
         is driven by the reserved ``__slayer_`` prefix instead."""
         db_path, _ = _ds(
             workspace,
@@ -1352,7 +1352,7 @@ class TestMcpIngestReporting:
     async def test_report_uses_the_faithful_dunder_name(
         self, workspace: Path
     ) -> None:
-        """DEV-1743: a ``__``-named internal table keeps its faithful model name,
+        """A ``__``-named internal table keeps its faithful model name,
         so the report shows the bare name with no ``(model: …)`` annotation (the
         model no longer differs from the live object)."""
         _, ds = _ds(
@@ -1424,7 +1424,7 @@ class TestMcpIngestReporting:
     async def test_skipped_objects_are_reported_too(
         self, workspace: Path
     ) -> None:
-        """Skips are reported here too. DEV-1743: ``__`` no longer causes a skip,
+        """Skips are reported here too. ``__`` no longer causes a skip,
         so the reserved ``__slayer_`` prefix drives the skip instead."""
         _, ds = _ds(
             workspace,

@@ -179,7 +179,7 @@ _C0_RE = re.compile(r"[\x00-\x1f]")
 def _escape_string_value(
     value: str, escape: Literal["sql", "python"], *, backslash_escapes: bool
 ) -> str:
-    """Escape a string value for the target layer (DEV-1727): ``"sql"`` is dialect-aware via
+    """Escape a string value for the target layer: ``"sql"`` is dialect-aware via
     ``backslash_escapes`` (double quote deliberately left untouched); ``"python"`` backslash-escapes
     quotes and encodes C0 controls (SQL quote-doubling would concatenate in the Mode-B AST parser)."""
     if escape == "sql":
@@ -199,13 +199,13 @@ def _render_list_value(
     *,
     backslash_escapes: bool,
 ) -> str:
-    """Render a ``list``/``tuple`` into an ``IN``-list body (DEV-1730): template writes
+    """Render a ``list``/``tuple`` into an ``IN``-list body: template writes
     the parens (``col IN ({var})``), string elements auto-quoted. ``escape="python"``
     appends a trailing comma to force 1-tuple parsing; empty list raises (``IN ()`` invalid)."""
     if len(value) == 0:
         raise ValueError(
             f"Variable '{name}' cannot be an empty list; 'IN ()' is invalid SQL. "
-            f"For 'no filter' semantics, use a sentinel default (see DEV-1730)."
+            f"For 'no filter' semantics, use a sentinel default."
         )
     rendered: list[str] = []
     for element in value:
@@ -655,9 +655,9 @@ def _order_formula_candidate(v: str) -> str | None:
     call-style text, or an expression containing an aggregation), else
     ``None``; shared by ``_capture_raw_formula`` and ``_coerce_order_column``
     so they can't drift. The author's spelling is preserved — resolution
-    happens at binding via the native parser (DEV-1826). Bare-alias
+    happens at binding via the native parser. Bare-alias
     arithmetic (``rev / cnt``) is deliberately NOT a candidate — it falls
-    through to ColumnRef validation and fails fast (DEV-1733)."""
+    through to ColumnRef validation and fails fast."""
     if ":" in v or _FUNCSTYLE_CALL_PATTERN.match(v):
         return v
     if _is_valid_column_ref_name(v):
@@ -761,7 +761,7 @@ def _advertise_string_time_dimensions(schema: dict[str, Any]) -> None:
     """Add the functional ``gran(col)`` string alternative to each ``time_dimensions``
     item in the derived JSON/MCP input schema, without widening the field's Python
     type (strings are coerced by the model before-validator). A callable
-    ``json_schema_extra`` works on the pydantic >=2.0 floor (DEV-1883)."""
+    ``json_schema_extra`` works on the pydantic >=2.0 floor."""
     for option in schema.get("anyOf", [schema]):
         if option.get("type") == "array" and "items" in option:
             option["items"] = {"anyOf": [option["items"], {"type": "string"}]}

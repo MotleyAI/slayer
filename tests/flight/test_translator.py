@@ -4,7 +4,7 @@ Most translator coverage lives in tests/facade/test_translator.py (the shared
 SQL → SlayerQuery pipeline). This file pins behaviours that are specific to
 the Flight shim's `_shared_translate(..., allow_column_cast=False)` call:
 
-* DEV-1566 ``CAST(<col> AS <type>)`` projection is rejected at translate
+* ``CAST(<col> AS <type>)`` projection is rejected at translate
   time (Codex round 1 — Flight has no value-coercion pass and would crash
   inside ``pa.Table.from_pylist`` if the projection were admitted).
 * The time-grain ``CAST(DATE_TRUNC(...) AS DATE)`` Metabase fingerprint is
@@ -38,7 +38,7 @@ def _catalog() -> FacadeCatalog:
     return build_catalog(models_by_datasource={"jaffle": [orders]})
 
 
-# --- DEV-1566 gate: Flight rejects CAST(<col> AS <type>) projections ---------
+# --- Gate: Flight rejects CAST(<col> AS <type>) projections ---------
 
 
 @pytest.mark.parametrize(

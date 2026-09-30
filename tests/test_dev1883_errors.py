@@ -1,4 +1,4 @@
-"""DEV-1883 — granularity-call error surface in dimensions, plus non-regression.
+"""Granularity-call error surface in dimensions, plus non-regression.
 
 Spec: openspec/changes/dev-1883-support-functional-time-granularity-form-monthcol-in-query/
 specs/queries/time-dimensions (Granularity error surface in dimensions).

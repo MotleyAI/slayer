@@ -66,9 +66,9 @@ __all__ = [
 OrientedLike = OrientedJoin | ModelJoin
 
 
-def may_inline_crossing_inputs(crossed_paths: Sequence[tuple]) -> bool:  # NOSONAR(S1172) — crossed_paths is the documented DEV-1688 seam; the cardinality-aware decision reads it, hardcoded False until then.
+def may_inline_crossing_inputs(crossed_paths: Sequence[tuple]) -> bool:  # NOSONAR(S1172) — crossed_paths is the documented seam; the cardinality-aware decision reads it, hardcoded False until then.
     """Whether a crossing-input local aggregate may stay inline in the host base.
-    Hardcoded ``False`` (always a producer); the DEV-1688 seam that will flip."""
+    Hardcoded ``False`` (always a producer); the seam that will flip."""
     return False
 
 

@@ -1,8 +1,8 @@
-"""DEV-1856 — pure route resolver for short-form dotted-dimension auto-routing.
+"""Pure route resolver for short-form dotted-dimension auto-routing.
 
 A short-form dotted ref names only ``Target.column``; this module resolves the
 join route from the query root to ``Target`` over the datasource's bidirectional
-multigraph (DEV-1853). Trichotomy from :meth:`JoinGraph.count_simple_paths`:
+multigraph. Trichotomy from :meth:`JoinGraph.count_simple_paths`:
 unreachable, unique route, or ambiguous (>=2 routes). Ambiguity resolves iff
 exactly one route is fan-out-free — every hop provably many-to-one on its
 traversal orientation — judged on a *directed* safe-hop set (:func:`_safe_hops`),

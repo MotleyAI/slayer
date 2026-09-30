@@ -1,4 +1,4 @@
-"""DEV-1883 — fail-closed guards for equivalent time dimensions (Option A).
+"""Fail-closed guards for equivalent time dimensions (Option A).
 
 Two same-column buckets are now legal, so equivalence decided by column-name text
 leaves two silent-wrong holes; both fail closed here until DEV-1925 resolves by bound

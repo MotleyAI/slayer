@@ -1,6 +1,6 @@
 """Integration tests using a real MySQL database via testcontainers.
 
-DEV-1564: mirror of test_integration_postgres.py, exercising the MySQL
+Mirror of test_integration_postgres.py, exercising the MySQL
 dialect's variance-decomposition path for corr/covar_*, the MySQL-specific
 ``VAR_SAMP``/``VAR_POP`` Anonymous overrides, and the NotImplementedError
 emitted for median/percentile.
@@ -273,7 +273,7 @@ class TestMySQLQueries:
         assert result.data[0]["orders._count"] == 6
 
     async def test_dev1933_regex_literal_extension_column(self, mysql_env: SlayerQueryEngine) -> None:
-        """DEV-1933: an ad-hoc column holding a ``(?:...)`` regex literal and a ``%``
+        """An ad-hoc column holding a ``(?:...)`` regex literal and a ``%``
         LIKE pattern executes verbatim; text() misread ``:too`` as a bind parameter."""
         query = SlayerQuery(
             source_model=ModelExtension(
@@ -343,7 +343,7 @@ class TestMySQLQueries:
         assert result.data[0]["orders._count"] == 3
 
     async def test_trunc_executes(self, mysql_env: SlayerQueryEngine) -> None:
-        """DEV-1753: MySQL has no single-arg TRUNCATE — ``trunc(x)`` must reach
+        """MySQL has no single-arg TRUNCATE — ``trunc(x)`` must reach
         the server as ``TRUNCATE(x, 0)`` (bare ``TRUNCATE(x)`` is a syntax
         error). Truncates toward zero: ``trunc(total / 40.0)`` is 2.5 -> 2 only
         for total = 100."""
@@ -938,7 +938,7 @@ class TestMySQLMedianPercentileRaises:
 
 
 # ---------------------------------------------------------------------------
-# Statistical aggregations (DEV-1317 cross-dialect parity)
+# Statistical aggregations (cross-dialect parity)
 # ---------------------------------------------------------------------------
 
 
@@ -1134,7 +1134,7 @@ class TestMySQLStatAggregations:
 
 
 # ---------------------------------------------------------------------------
-# log10 round-trip (DEV-1337 — MySQL has native log10)
+# log10 round-trip (MySQL has native log10)
 # ---------------------------------------------------------------------------
 
 
@@ -1203,7 +1203,7 @@ async def test_log10_round_trip_mysql(mysql_log10_env: SlayerQueryEngine) -> Non
 
 
 # ---------------------------------------------------------------------------
-# Window-in-filter raises (DEV-1369 parity)
+# Window-in-filter raises
 # ---------------------------------------------------------------------------
 
 
@@ -1274,7 +1274,7 @@ async def test_filter_on_windowed_column_mysql_raises(planets_mysql_env) -> None
 
 
 # ---------------------------------------------------------------------------
-# Cross-model derived Column.sql (DEV-1333)
+# Cross-model derived Column.sql
 # ---------------------------------------------------------------------------
 
 
@@ -1359,8 +1359,8 @@ async def test_integration_mysql_cross_model_derived_columnsql(
 
 
 # ---------------------------------------------------------------------------
-# DEV-1727 — dialect-aware Mode-A {var} escaping (MySQL is a Tier-1 backslash
-# dialect: the naive '' quote-doubling from DEV-1625 mis-parses a
+# Dialect-aware Mode-A {var} escaping (MySQL is a Tier-1 backslash
+# dialect: the naive '' quote-doubling mis-parses a
 # backslash-bearing value; the hardened escaping must round-trip end-to-end).
 # ---------------------------------------------------------------------------
 

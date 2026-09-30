@@ -1,4 +1,4 @@
-"""DEV-1868 W1 — cross-model first/last × partition_by, executed values in every
+"""Cross-model first/last × partition_by, executed values in every
 position (spec: queries/partitioned-aggregates, cross-model ranked requirement).
 """
 

@@ -1,4 +1,4 @@
-"""DEV-1595: strengthen MetricFlow ingestion.
+"""Strengthen MetricFlow ingestion.
 
 Covers the importer-side behaviors of the plan:
   Part 1  correctness fixes (percentile p=, ratio nullif guard)
@@ -1210,7 +1210,7 @@ def test_percentile_on_unsupported_dialect_emits_caveat(dialect: str) -> None:
                for e in _all_report_entries(result))
 
 
-# ───────── DEV-1595 review follow-ups: filtered special aggs / derived input filters ─────────
+# ───────── Filtered special aggs / derived input filters ─────────
 
 
 def test_filtered_percentile_metric_preserves_p() -> None:
@@ -1267,7 +1267,7 @@ def test_filtered_sum_boolean_metric_builds_case_int_column() -> None:
 
 def test_derived_input_filter_pushes_down() -> None:
     """A per-input filter on a derived metric's single-aggregate input pushes
-    into that input's leaf column (DEV-1595 Part 3.5)."""
+    into that input's leaf column."""
     project = DbtProject(
         semantic_models=[
             DbtSemanticModel(

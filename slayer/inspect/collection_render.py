@@ -1,4 +1,4 @@
-"""DEV-1667: shared renderers for the ``inspect`` collection views.
+"""Shared renderers for the ``inspect`` collection views.
 
 A null/omitted ``reference`` on ``inspect`` renders the *collection* at an
 ``entity_type``. These pure renderers are the single code path shared by the
@@ -24,7 +24,7 @@ from slayer.inspect.model_render import (
 )
 
 # markdown rule separating per-datasource blocks in compact=False collections
-# (same rule the DEV-1612 batch view uses between per-id blocks).
+# (same rule the batch view uses between per-id blocks).
 BLOCK_SEP = "\n\n---\n\n"
 
 _NO_DATASOURCES = (

@@ -12,7 +12,7 @@ model. Constructs that cannot be expressed exactly (conversion metrics,
 windowed / grain-to-date cumulatives, semi-additive measures, …) are *failed
 cleanly*: routed to the structured ``ConversionResult`` report with a precise
 reason + workaround, and the raw construct is stashed into the owning entity's
-``meta`` so the dropped semantics are retained, never silently lost. (DEV-1595.)
+``meta`` so the dropped semantics are retained, never silently lost.
 """
 
 import logging
@@ -51,7 +51,7 @@ from slayer.dbt.models import (
 )
 from slayer.dbt.sql_resolver import resolve_refs
 from slayer.engine.ingestion import introspect_table_to_model
-# DEV-1643: the conversion-report types are shared with the OSI importer. They
+# The conversion-report types are shared with the OSI importer. They
 # live in the neutral ``slayer.ingest_report`` module and are re-exported here so
 # existing ``from slayer.dbt.converter import ConversionResult`` imports keep
 # working against the same class objects.
@@ -66,7 +66,7 @@ _AGG_MAP: dict[str, str] = {
     "avg": "avg",
     "count": "count",
     "count_distinct": "count_distinct",
-    # DEV-1595: SLayer-added dialect-aware approximate-distinct. Not in
+    # SLayer-added dialect-aware approximate-distinct. Not in
     # MetricFlow's AggregationType enum — mapped defensively for non-canonical
     # / legacy inputs (e.g. dbt-to-cube's countDistinctApprox).
     "count_distinct_approx": "count_distinct_approx",
@@ -176,7 +176,7 @@ class DbtToSlayerConverter:
         self.data_source = data_source
         self.sa_engine = sa_engine
         self.include_hidden_models = include_hidden_models
-        # DEV-1595: when set to a dialect that lacks percentile/median
+        # When set to a dialect that lacks percentile/median
         # (mysql / tsql), the converter emits info caveats for those measures.
         self.target_dialect = target_dialect
         self.entity_registry = EntityRegistry()
@@ -226,7 +226,7 @@ class DbtToSlayerConverter:
 
     def _prune_dangling_measures(self) -> None:
         """Drop+report any ``ModelMeasure`` whose formula references a name that
-        does not resolve on its model (DEV-1595 robust validation pass).
+        does not resolve on its model (robust validation pass).
 
         A derived / ratio metric whose input metric was itself clean-failed
         (measure-less, time-spine gap-fill, unreachable filter, filtered-leaf
@@ -327,7 +327,7 @@ class DbtToSlayerConverter:
             model.description = rm.description
 
         # Curated dbt descriptions win over freshly introspected DB comments;
-        # DB comments fill only the gaps (DEV-1809 — creation-time overlay,
+        # DB comments fill only the gaps (creation-time overlay,
         # no persisted user edits exist yet).
         col_descriptions = {c.name: c.description for c in rm.columns if c.description}
         if col_descriptions:
@@ -380,7 +380,7 @@ class DbtToSlayerConverter:
         if sm.defaults and sm.defaults.agg_time_dimension:
             default_time_dim = sm.defaults.agg_time_dimension
 
-        # DEV-1595: accumulate model-level meta (config.meta + label + any
+        # Accumulate model-level meta (config.meta + label + any
         # clean-fail raw stashes added during measure conversion).
         model_meta: dict[str, Any] = {}
         cfg_meta = _meta_of(sm.config)
@@ -542,7 +542,7 @@ class DbtToSlayerConverter:
 
         Each unique measure expression yields a single ``Column``; each dbt
         measure yields one ``ModelMeasure`` whose formula is ``<col>:<agg>``.
-        Special handling (DEV-1595):
+        Special handling:
 
         * ``sum_boolean`` → a dedicated ``CASE WHEN (<expr>) THEN 1 ELSE 0 END``
           ``INT`` column aggregated with ``:sum`` (cross-DB safe; null bool → 0).
@@ -988,8 +988,8 @@ class DbtToSlayerConverter:
         """A derived metric expresses a formula over other metrics/measures.
 
         Input references are substituted in the ``expr``; an ``offset_window``
-        on a single-aggregate input is lowered to a ``time_shift`` call
-        (DEV-1595). Inexpressible shapes (offset_to_grain, offset on a
+        on a single-aggregate input is lowered to a ``time_shift`` call.
+        Inexpressible shapes (offset_to_grain, offset on a
         multi-aggregate input, custom granularity, metric-level filter on a
         derived expr) clean-fail.
         """
@@ -1204,7 +1204,7 @@ class DbtToSlayerConverter:
         """A ratio metric is numerator / denominator over two measures/metrics.
 
         The denominator is NULL-guarded (``nullif(den, 0)``). Metric-level and
-        per-input filters push down independently into each leaf (DEV-1595).
+        per-input filters push down independently into each leaf.
         """
         tp = metric.type_params
         if not tp:

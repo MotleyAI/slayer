@@ -257,7 +257,7 @@ RANK_FAMILY_TRANSFORMS = {"rank", "percent_rank", "dense_rank", "ntile"}
 
 # Time-ordered transforms that reduce along the axis: one value per partition
 # (Axiom 11.3b). As an aggregation-source constituent they collapse to an exact
-# per-partition pick (DEV-1832 D4c).
+# per-partition pick.
 AXIS_COLLAPSING_TRANSFORMS = frozenset({"first", "last"})
 
 # ``classify_aggregation`` buckets each aggregation by result-vs-source relation;
@@ -290,7 +290,7 @@ PRESERVING_AGGREGATIONS: frozenset[str] = frozenset({
 
 class AggregationValueClass(StrEnum):
     """How an aggregation's result relates to its source column, for slot-type
-    and display-format inference (DEV-1788)."""
+    and display-format inference."""
 
     COUNT = "count"                            # INT type, INTEGER format
     PRESERVING = "preserving"                  # source type & format
@@ -321,7 +321,7 @@ def classify_aggregation(
 AGGREGATION_ALIASES: dict[str, str] = {
     "countd": "count_distinct",
     "countdistinct": "count_distinct",  # also matches "countDistinct" once lowercased
-    # DEV-1595: approximate-distinct spellings agents / dbt-to-cube emit.
+    # Approximate-distinct spellings agents / dbt-to-cube emit.
     "approx_count_distinct": "count_distinct_approx",
     "countdistinctapprox": "count_distinct_approx",  # matches "countDistinctApprox" lowercased
     "stddev": "stddev_samp",
@@ -392,7 +392,7 @@ _NUMERIC_AGGREGATIONS: frozenset[str] = frozenset({
 
 DEFAULT_AGGREGATIONS_BY_TYPE: dict[DataType, frozenset[str]] = {
     # INT and DOUBLE share the same numeric aggregation set — the type
-    # narrowing is for CAST emission, not for what's aggregable. (DEV-1361.)
+    # narrowing is for CAST emission, not for what's aggregable.
     DataType.INT: _NUMERIC_AGGREGATIONS,
     DataType.DOUBLE: _NUMERIC_AGGREGATIONS,
     DataType.TEXT: frozenset({

@@ -1,4 +1,4 @@
-"""DEV-1871 — time-transform traversal reaches an InKey nested in scalar-call args."""
+"""Time-transform traversal reaches an InKey nested in scalar-call args."""
 
 from __future__ import annotations
 
