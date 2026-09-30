@@ -62,11 +62,11 @@ def auto_name_from_expression(expression: str) -> str:
 
 
 # The row-level ``ValueKey`` kinds an ``AggregateKey.source`` may take when it
-# is a same-model scalar EXPRESSION (DEV-1826) rather than a column / star.
+# is a same-model scalar EXPRESSION rather than a column / star.
 EXPRESSION_SOURCE_KINDS = (ArithmeticKey, ScalarCallKey, LiteralKey)
 
 
-# The pinned legacy key spelling (DEV-1871 D6): the historical Pydantic
+# The pinned legacy key spelling: the historical Pydantic
 # str/repr of every key kind, frozen as literals so emitted SQL aliases never
 # move when Python field/class names do. Goldens pin the exact tokens.
 _LegacyFields = tuple[tuple[str, Callable[[Any], Any]], ...]
@@ -234,13 +234,95 @@ def _partition_key_display(key: Any) -> str:
 
 def dotted_key_display(pk: ValueKey) -> str:
     """Human-readable dotted path for a key in error messages."""
-    if isinstance(pk, ColumnKey):
-        return ".".join([*pk.path, pk.leaf])
-    if isinstance(pk, ColumnSqlKey):
-        return ".".join([*pk.path, pk.column_name])
     if isinstance(pk, TimeTruncKey):
         return dotted_key_display(pk.column)
-    return str(pk)
+    return key_display(pk)
+
+
+def _scalar_display(value: Any) -> str:
+    if isinstance(value, str):
+        return f"'{value}'"
+    if value is None:
+        return "NULL"
+    if isinstance(value, Decimal):
+        return _decimal_to_plain_str(value)
+    return str(value)
+
+
+def _arg_display(value: Any) -> str:
+    return key_display(value) if type(value) in _LEGACY_KEY_SPELLINGS else _scalar_display(value)
+
+
+def _grain_display_list(keys: Any) -> str:
+    return "[" + ", ".join(sorted(key_display(k) for k in keys)) + "]"
+
+
+def _call_display(name: str, args: list[str]) -> str:
+    return f"{name}({', '.join(args)})"
+
+
+def _aggregate_display(key: AggregateKey) -> str:
+    args = [key_display(key.source), *(_arg_display(a) for a in key.args)]
+    args.extend(f"{k}={_arg_display(v)}" for k, v in key.kwargs)
+    if key.partition_keys is not None:
+        args.append(f"partition_by={_grain_display_list(key.partition_keys)}")
+    return _call_display(key.agg, args)
+
+
+def _transform_display(key: TransformKey) -> str:
+    args = [key_display(key.input), *(_scalar_display(a) for a in key.args)]
+    args.extend(f"{k}={_scalar_display(v)}" for k, v in key.kwargs)
+    if key.partition_keys:
+        args.append(f"partition_by={_grain_display_list(key.partition_keys)}")
+    return _call_display(key.op, args)
+
+
+def _arithmetic_display(key: ArithmeticKey) -> str:
+    rendered = [
+        f"({key_display(o)})" if isinstance(o, ArithmeticKey) else key_display(o)
+        for o in key.operands
+    ]
+    if len(rendered) == 1:
+        return f"not {rendered[0]}" if key.op == "not" else f"{key.op}{rendered[0]}"
+    return f" {key.op} ".join(rendered)
+
+
+def _fragment_display(key: SqlFragmentKey) -> str:
+    text = key.template
+    for i, ref in enumerate(key.refs):
+        text = text.replace(f"{{r{i}}}", key_display(ref))
+    return text
+
+
+def key_display(key: ValueKey) -> str:
+    """User-facing formula text of any key kind (diagnostics only, never identity)."""
+    if isinstance(key, ColumnKey):
+        return ".".join((*key.path, key.leaf))
+    if isinstance(key, ColumnSqlKey):
+        return ".".join((*key.path, key.column_name))
+    if isinstance(key, TimeTruncKey):
+        return f"{key.granularity}({key_display(key.column)})"
+    if isinstance(key, StarKey):
+        return ".".join((*key.path, "*"))
+    if isinstance(key, LiteralKey):
+        return _scalar_display(key.value)
+    if isinstance(key, AggregateKey):
+        return _aggregate_display(key)
+    if isinstance(key, TransformKey):
+        return _transform_display(key)
+    if isinstance(key, ArithmeticKey):
+        return _arithmetic_display(key)
+    if isinstance(key, ScalarCallKey):
+        return _call_display(key.name, [_arg_display(a) for a in key.args])
+    if isinstance(key, BetweenKey):
+        return (f"{key_display(key.column)} between {key_display(key.low)} "
+                f"and {key_display(key.high)}")
+    if isinstance(key, InKey):
+        values = ", ".join(key_display(v) for v in key.values)
+        return f"{key_display(key.column)} {'not in' if key.negated else 'in'} ({values})"
+    if isinstance(key, SqlFragmentKey):
+        return _fragment_display(key)
+    raise TypeError(f"key_display has no rule for {type(key).__name__}")
 
 
 def partition_by_suffix(partition_keys) -> str:
@@ -339,7 +421,7 @@ def _time_aware_key_display(key: ValueKey) -> str:
 
 
 def _transform_key_canonical_str(value: TransformKey) -> str:
-    """Canonical fragment for a transform-valued parameter (DEV-1946; alias/identity
+    """Canonical fragment for a transform-valued parameter (alias/identity
     only — render reads the picked column). Op, its scalar kwargs, the input
     fragment, its rank partition keys, and the resolved time key — every time key
     carrying its granularity (a bucketed ``cumsum`` differs from an unbucketed one)."""
