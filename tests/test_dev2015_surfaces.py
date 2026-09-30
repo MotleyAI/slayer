@@ -88,6 +88,12 @@ class TestSpineListedWithItsWiredModels:
         assert model.status_code == 200
         assert [c["name"] for c in model.json()["columns"]] == ["timestamp"]
 
+    def test_rest_unknown_datasource_has_no_spine(self) -> None:
+        storage = asyncio.run(_spine_storage(tempfile.mkdtemp()))
+        client = TestClient(create_app(storage=storage))
+        assert client.get("/models", params={"data_source": "missing"}).json() == []
+        assert client.get("/models/time_spine", params={"data_source": "missing"}).status_code == 404
+
     def test_cli_listing(self) -> None:
         base = tempfile.mkdtemp()
         asyncio.run(_spine_storage(base))
