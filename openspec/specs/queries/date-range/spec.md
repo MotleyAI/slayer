@@ -7,61 +7,9 @@ with a warning for wrong-length ranges.
 
 ## Requirements
 
-### Requirement: A two-bound date_range renders an inclusive range filter
-
-A `date_range` of two non-null string bounds SHALL filter rows to the inclusive range
-`[start, end]` on the time dimension's underlying raw column.
-
-#### Scenario: Both bounds present
-
-- **WHEN** a query's time dimension has `date_range: ['2024-01-01', '2024-12-31']`
-- **THEN** the executed query returns only rows whose raw column value lies between
-  the two bounds inclusive
-
-### Requirement: A null date_range bound is a hard error
-
-Planning a query whose time dimension has a two-element `date_range` containing a
-null bound SHALL raise a `ValueError` naming the time dimension and the received
-range, and suggesting a one-sided filter as the supported spelling. The planner MUST
-NOT emit a comparison against NULL. The check MUST apply to every query shape,
-including models whose planning does not use a plain single-model scope.
-
-#### Scenario: Missing upper bound
-
-- **WHEN** a query is planned with `date_range: ['2024-01-01', None]`
-- **THEN** planning raises a `ValueError` whose message names the time dimension
-
-#### Scenario: Missing lower bound
-
-- **WHEN** a query is planned with `date_range: [None, '2024-12-31']`
-- **THEN** planning raises a `ValueError`
-
-#### Scenario: Both bounds missing
-
-- **WHEN** a query is planned with `date_range: [None, None]`
-- **THEN** planning raises a `ValueError`
-
-#### Scenario: Multi-stage models fail loudly too
-
-- **WHEN** a query against a multi-stage (`source_queries`) model is planned with a
-  time dimension whose `date_range` contains a null bound
-- **THEN** planning raises a `ValueError` rather than silently ignoring the range
-
-### Requirement: A wrong-length date_range warns and emits no filter
-
-A `date_range` that is present but not two elements (`[]`, one element, three or more)
-SHALL be ignored — no date filter is emitted — and SHALL surface a
-`MALFORMED_DATE_RANGE` normalization warning. This preserves the ratified DEV-1745
-silent-no-op behavior while keeping the drop visible.
-
-#### Scenario: Single-element range is ignored with a warning
-
-- **WHEN** a query is planned with `date_range: ['2024-01-01']`
-- **THEN** no date filter is applied and a `MALFORMED_DATE_RANGE` warning is emitted
-
 ### Requirement: A date_range on a stage time dimension filters the stage's rows
 
-A two-bound `date_range` on a downstream stage's time dimension SHALL filter that stage's input rows to the inclusive range `[start, end]` on the stage column, before the stage's own aggregation, exactly as a model-scope `date_range` filters a model's rows. The range MUST NOT be silently dropped, and it MUST NOT alter the upstream stage's own computation.
+A `date_range` on a downstream stage's time dimension SHALL filter that stage's input rows on the stage column — with the same time-point meaning as a model-scope `date_range` — before the stage's own aggregation, exactly as a model-scope `date_range` filters a model's rows. The range MUST NOT be silently dropped, and it MUST NOT alter the upstream stage's own computation.
 
 #### Scenario: Stage date_range restricts the outer stage
 
@@ -72,3 +20,76 @@ A two-bound `date_range` on a downstream stage's time dimension SHALL filter tha
 
 - **WHEN** the outer stage re-buckets a monthly column at `year` with a `date_range` inside one year
 - **THEN** the result is that year's total over the months inside the range only
+
+### Requirement: date_range bounds are time points
+
+A time dimension's `date_range` SHALL be a single time point (a string, or a one-element list) or a two-element list `[lower, upper]` whose elements are time points or `null`. A single period `P` SHALL restrict the time dimension's raw column to `[start(P), next_start(P))`. A two-element range SHALL restrict it to `x >= start(lower)` and, for the upper bound, `x < next_start(upper)` when it is a period or `x <= upper` when it is an instant; a `null` bound is open and adds no restriction on that side. A lower bound after the upper bound SHALL yield an empty result. The restriction SHALL apply identically on model and stage time dimensions and SHALL be a frame bound (it does not clip trailing windows or `time_shift`).
+
+#### Scenario: Date-only upper bound covers its whole day
+
+- **WHEN** a TIMESTAMP column holds rows at `2024-06-01 00:00`, `2024-12-31 00:00` and `2024-12-31 10:00`, and the time dimension has `date_range: ['2024-01-01', '2024-12-31']`
+- **THEN** all three rows are counted, identically on SQLite and DuckDB
+
+#### Scenario: Single period
+
+- **WHEN** a time dimension has `date_range: "2025-Q1"` or `date_range: ["last month"]`
+- **THEN** rows are restricted to that quarter, respectively to last month
+
+#### Scenario: Period bounds
+
+- **WHEN** a time dimension has `date_range: ["2025-01-15", "2025-03"]`
+- **THEN** rows are restricted to `[2025-01-15, 2025-04-01)`
+
+#### Scenario: Relative bounds
+
+- **WHEN** the clock reads `2026-09-29 12:00:00` and a time dimension has `date_range: ["12 months ago", "last month"]`
+- **THEN** rows are restricted to `[2025-09-01, 2026-09-01)`
+
+#### Scenario: Instant upper bound is inclusive
+
+- **WHEN** a time dimension has `date_range: ["2024-01-01", "2024-01-10 00:00:00"]` and a row sits at `2024-01-10 00:00:00`
+- **THEN** that row is included and a row at `2024-01-10 00:00:01` is not
+
+#### Scenario: Open upper bound
+
+- **WHEN** a time dimension has `date_range: ["2024-01-01", null]`
+- **THEN** rows from `2024-01-01` onward are included with no upper restriction, by executed values on SQLite and DuckDB
+
+#### Scenario: Open lower bound
+
+- **WHEN** a time dimension has `date_range: [null, "2024-12-31"]`
+- **THEN** every row before `2025-01-01` is included
+
+#### Scenario: Reversed bounds
+
+- **WHEN** a time dimension has `date_range: ["2025-06", "2025-01"]`
+- **THEN** the query executes and returns no rows
+
+#### Scenario: Multi-stage models accept one-sided ranges
+
+- **WHEN** a query against a multi-stage (`source_queries`) model has a time dimension with `date_range: ["2024-01-01", null]`
+- **THEN** the range restricts the rows rather than failing or being ignored
+
+### Requirement: Malformed date_range shapes are rejected at construction
+
+Constructing a query SHALL fail with a typed error naming the time dimension and the received value when its `date_range` is an empty list, has three or more elements, is `[null, null]`, or has an element that is not a time point by syntax (neither an instant, a period literal nor a relative token). Checks that depend on the column's type (such as a sub-day bound on a DATE column) SHALL fail at planning with the typed time-literal error.
+
+#### Scenario: Empty and over-long ranges
+
+- **WHEN** a query is constructed with `date_range: []` or `date_range: ['2024-01-01', '2024-02-01', '2024-03-01']`
+- **THEN** construction fails with the typed error naming the time dimension
+
+#### Scenario: Both bounds missing
+
+- **WHEN** a query is constructed with `date_range: [None, None]`
+- **THEN** construction fails with the typed error
+
+#### Scenario: Unparseable bound
+
+- **WHEN** a query is constructed with `date_range: ['last fortnight', None]`
+- **THEN** construction fails with the typed error listing the accepted time-point forms
+
+#### Scenario: Sub-day bound on a DATE column
+
+- **WHEN** a query on a DATE time dimension has `date_range: ["2025-01-01 10:00:00", null]`
+- **THEN** planning fails with the typed time-literal error

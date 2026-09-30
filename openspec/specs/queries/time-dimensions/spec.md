@@ -110,25 +110,6 @@ A dimension entry whose callee is a granularity but whose shape is not a single 
 - WHEN a query has a dimension entry `sum(price)`
 - THEN it fails at binding with the existing error stating aggregates in dimension expressions must declare `partition_by=`
 
-### Requirement: Functional granularity form as an order key
-
-An order entry `gran(col)` SHALL sort by the bucketed value of the query's time dimension on `col` at granularity `gran` when that time dimension is projected. When no time dimension on `col` is projected, or the projected granularity differs, the query SHALL fail with an error naming the remedy. Granularity calls inside Mode-B filter expressions are out of scope and SHALL keep their existing unknown-function behaviour.
-
-#### Scenario: order by projected bucket
-
-- WHEN a query projects `month(created_at)` (functional or explicit) and orders by `"month(created_at)"`
-- THEN rows sort by the month bucket, identically to ordering by the time dimension's column name
-
-#### Scenario: order without matching time dimension
-
-- WHEN a query orders by `"month(created_at)"` but projects no time dimension on `created_at`, or projects it at a different granularity
-- THEN the query fails with an error naming the missing or mismatched time dimension and the remedy
-
-#### Scenario: granularity call in a filter is not recognised
-
-- WHEN a query filter contains `month(created_at) >= '2024-01-01'`
-- THEN the query fails with the existing unknown-function error for `month`
-
 ### Requirement: Result keys disambiguate same-column time dimensions
 
 When two or more projected time dimensions share the same source column at different granularities, each of their result keys SHALL be the usual column key with the granularity appended (`orders.created_at.month`, `orders.created_at.year`). A time dimension whose column no other projected time dimension shares SHALL keep its existing granularity-free key. Exact-duplicate time dimensions (same column, granularity, date range, and label) SHALL be deduplicated at construction; time dimensions sharing column and granularity but differing in date range or label SHALL be rejected at construction. Time dimensions whose columns are spelled differently but resolve to the same bucket (the same bound time-truncation identity), disagreeing in date range or label, SHALL be rejected at binding — backstopping the construction-time text check for spellings that only prove equivalent once resolved.
@@ -295,3 +276,22 @@ When a stage of a multi-stage query binds against a sibling stage through a mode
 
 - **WHEN** a named stage buckets `created_at` at `month`, and a later stage joins it and declares a time dimension on the dotted sibling column at `day`
 - **THEN** planning fails with the typed re-bucketing error, and the same shape at `month` binds
+
+### Requirement: Functional granularity order key
+
+An order entry `gran(col)` SHALL sort by the bucketed value of the query's time dimension on `col` at granularity `gran` when that time dimension is projected. When no time dimension on `col` is projected, or the projected granularity differs, the query SHALL fail with an error naming the remedy. A granularity call used inside a filter or another expression is a row-level expression (see `queries/time-points`).
+
+#### Scenario: order by projected bucket
+
+- WHEN a query projects `month(created_at)` (functional or explicit) and orders by `"month(created_at)"`
+- THEN rows sort by the month bucket, identically to ordering by the time dimension's column name
+
+#### Scenario: order without matching time dimension
+
+- WHEN a query orders by `"month(created_at)"` but projects no time dimension on `created_at`, or projects it at a different granularity
+- THEN the query fails with an error naming the missing or mismatched time dimension and the remedy
+
+#### Scenario: granularity call in a filter is recognised
+
+- WHEN a query filter contains `month(created_at) >= '2024-01-01'`
+- THEN the query executes and restricts rows to `created_at >= 2024-01-01`
