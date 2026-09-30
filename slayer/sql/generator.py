@@ -2441,6 +2441,7 @@ class SQLGenerator:
 
         for idx, sid in enumerate(plan.dimension_slot_ids):
             dslot = slots_by_id.get(sid)
+            assert dslot is not None
             base_alias = _alias_of(sid)
             expr = render_value_key(
                 key=dslot.key,
@@ -2455,6 +2456,7 @@ class SQLGenerator:
         # Non-window time dimensions are equality-joined so the trailing window doesn't fan out across their values.
         for idx, sid in enumerate(plan.other_time_dimension_slot_ids):
             tslot = slots_by_id.get(sid)
+            assert tslot is not None
             base_alias = _alias_of(sid)
             src_scope.resolve(tslot.key.column)
             raw = self._raw_time_col_expr_for_planned(
@@ -4436,7 +4438,7 @@ class SQLGenerator:
 
     def _hop_join(
         self, *, edge, prev_model, next_model, current_alias: str, next_alias: str,
-    ) -> Tuple[Expression, exp.Condition, str]:
+    ) -> Tuple[Expression, Optional[exp.Condition], str]:
         """``(join_expr, on_expr, join_type)`` for one oriented hop."""
         join_on_parts = [
             # _to_ident quotes mixed-case keys; table qualifiers are internal aliases.

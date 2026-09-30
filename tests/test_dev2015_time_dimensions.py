@@ -57,8 +57,9 @@ class TestUnknownCalleeAtBinding:
 
     @pytest.mark.parametrize("entry", ["fiscal_year()", "fiscal_year(order_date, amount)", "fiscal_year(upper(id))"])
     async def test_wrong_shape_datasource_callee(self, engine, entry) -> None:
+        query = _q(dimensions=[entry])
         with pytest.raises(QueryTypeError) as exc:
-            await engine.execute(_q(dimensions=[entry]), dry_run=True)
+            await engine.execute(query, dry_run=True)
         msg = str(exc.value)
         assert "fiscal_year" in msg
         assert "(col" in msg or "gran(" in msg

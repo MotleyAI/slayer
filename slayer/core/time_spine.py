@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from typing import Mapping, Optional
+from typing import Mapping, Optional, Sequence
 
 from slayer.core.enums import DataType, JoinCardinality, JoinType
 from slayer.core.models import Column, ModelJoin, SlayerModel
@@ -13,13 +13,16 @@ TIME_SPINE_MODEL = "time_spine"
 TIME_SPINE_COLUMN = "timestamp"
 
 
-def spine_model(*, data_source: str) -> SlayerModel:
-    """The virtual ``time_spine`` model; never stored, its rows are rendered as a bucket series."""
+def spine_model(*, data_source: str, wired: Sequence[SlayerModel] = ()) -> SlayerModel:
+    """The virtual ``time_spine`` model; never stored, its rows are rendered as a bucket series.
+    ``wired`` models are named in its description with their axes."""
+    axes = [f"{m.name} via {j.join_pairs[0][0]}" for m in wired if (j := axis_join(m)) is not None]
     return SlayerModel(
         name=TIME_SPINE_MODEL, data_source=data_source, sql_table=TIME_SPINE_MODEL,
         description=(
             "Built-in time spine: every instant. Group by time_spine.timestamp at a granularity "
             "(with a lower bound) to get every bucket in range, each fact attributed through its axis."
+            + (f" Wired: {', '.join(axes)}." if axes else "")
         ),
         columns=[Column(name=TIME_SPINE_COLUMN, type=DataType.TIMESTAMP, primary_key=True)],
     )

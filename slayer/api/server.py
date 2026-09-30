@@ -412,6 +412,12 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             if model.description:
                 entry["description"] = model.description
             result.append(entry)
+        datasources = [data_source] if data_source is not None else await storage.list_datasources()
+        for ds_name in datasources:
+            result.extend(
+                {"name": m.name, "data_source": ds_name, "description": m.description}
+                for m in await storage.builtin_models(ds_name)
+            )
         return result
 
     @app.get(
@@ -431,7 +437,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
         data_source: str | None = None,
     ) -> dict[str, Any]:
         try:
-            model = await storage.get_model(name, data_source=data_source)
+            model = await storage.get_model_or_builtin(name, data_source=data_source)
         except AmbiguousModelError as exc:
             raise HTTPException(
                 status_code=409,

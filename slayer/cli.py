@@ -589,6 +589,13 @@ examples:
         "--description", default=None, help="Human-readable description"
     )
     datasources_create_parser.add_argument(
+        "--granularities", default=None, type=json.loads,
+        help=(
+            "Custom time granularities as a JSON list of {name, base, multiple, origin}, "
+            'e.g. \'[{"name": "fiscal_year", "base": "year", "origin": "2000-04-01"}]\''
+        ),
+    )
+    datasources_create_parser.add_argument(
         "--ingest",
         action="store_true",
         help="Run auto-ingestion immediately after creating the datasource",
@@ -2004,7 +2011,8 @@ def _run_models(args):
 
     if args.models_command == "list":
         names = run_sync(storage.list_models())
-        if not names:
+        builtins = [m for ds in run_sync(storage.list_datasources()) for m in run_sync(storage.builtin_models(ds))]
+        if not names and not builtins:
             print("No models found.")
             return
         for name in names:
@@ -2013,6 +2021,8 @@ def _run_models(args):
                 continue
             desc = f"  — {model.description}" if model and model.description else ""
             print(f"{name}{desc}")
+        for model in builtins:
+            print(f"{model.name}  — {model.description}")
 
     elif args.models_command == "show":
         model = run_sync(storage.get_model(args.name))
@@ -2233,6 +2243,7 @@ def _run_datasources_create(args, storage):
             "connection_string": args.connection_string,
             "description": args.description,
             "schema_name": persisted_schema,
+            "granularities": getattr(args, "granularities", None) or [],
         }
     )
 

@@ -852,9 +852,8 @@ class DbtToSlayerConverter:
     def _simple_metric_unsupported(
         self, metric: DbtMetric, tp: DbtMetricTypeParams | None
     ) -> bool:
-        """Route the unsupported simple-metric shapes (measure-less aggregation
-        via ``metric_aggregation_params``, time-spine gap filling) to the
-        report; return ``True`` when one fired."""
+        """Route the unsupported simple-metric shape (measure-less aggregation via
+        ``metric_aggregation_params``) to the report; return ``True`` when it fired."""
         if tp is None:
             return False
         if tp.metric_aggregation_params is not None:
@@ -870,22 +869,29 @@ class DbtToSlayerConverter:
                 raw={"metric_aggregation_params": tp.metric_aggregation_params.model_dump()},
             )
             return True
-        mref = tp.measure
-        if mref and (mref.join_to_timespine or mref.fill_nulls_with is not None):
-            self._fail_metric(
-                metric,
-                category="timespine_gap_fill",
-                severity="dropped",
-                message=(
-                    f"Metric '{metric.name}' uses join_to_timespine / fill_nulls_with; "
-                    f"SLayer has no time-spine gap filling."
-                ),
-                suggestion="Remove join_to_timespine / fill_nulls_with.",
-                raw={"join_to_timespine": mref.join_to_timespine,
-                     "fill_nulls_with": mref.fill_nulls_with},
-            )
-            return True
         return False
+
+    def _note_time_spine(self, metric: DbtMetric) -> None:
+        """``join_to_timespine`` has no metric-level form: gap filling is querying the spine."""
+        self._warnings.append(ConversionWarning(
+            metric_name=metric.name,
+            category="timespine_gap_fill",
+            severity="info",
+            message=(
+                f"Metric '{metric.name}' joins the time spine in dbt; in SLayer group it by "
+                f"time_spine.timestamp (with a date_range) to get every bucket, empty ones included."
+            ),
+        ))
+
+    def _fill_of(self, metric_name: str) -> int | None:
+        """A simple metric's ``fill_nulls_with`` value."""
+        mtc = next((m for m in self.project.metrics if m.name == metric_name), None)
+        mref = mtc.type_params.measure if mtc is not None and mtc.type_params is not None else None
+        return mref.fill_nulls_with if mref is not None else None
+
+    @staticmethod
+    def _with_fill(formula: str, fill: int | None) -> str:
+        return formula if fill is None else f"coalesce({formula}, {fill})"
 
     def _convert_simple_metric(self, metric: DbtMetric) -> None:
         """A simple metric is a (filtered) re-aggregation of a single measure.
@@ -911,9 +917,14 @@ class DbtToSlayerConverter:
             return
 
         mref = tp.measure if tp else None
+        fill = mref.fill_nulls_with if mref else None
+        if mref is not None and mref.join_to_timespine:
+            self._note_time_spine(metric)
         raw_filter = self._combine_filters(metric.filter, mref.filter if mref else None)
         if not raw_filter:
-            return  # unfiltered simple metric — the measure is already addressable.
+            if fill is not None or (mref is not None and mref.join_to_timespine):
+                self._add_unfiltered_metric(metric, measure_name=measure_name, fill=fill)
+            return  # an unfiltered simple metric's measure is already addressable.
 
         source_sm = self._find_measure_model(measure_name)
         if source_sm is None:
@@ -956,7 +967,22 @@ class DbtToSlayerConverter:
         )
         if leaf_ref is None:
             return  # clean-failed (e.g. filtered percentile without a value)
-        self._add_model_measure(slayer_model=slayer_model, metric=metric, formula=leaf_ref)
+        self._add_model_measure(slayer_model=slayer_model, metric=metric, formula=self._with_fill(leaf_ref, fill))
+
+    def _add_unfiltered_metric(self, metric: DbtMetric, *, measure_name: str, fill: int | None) -> None:
+        """A simple metric materialized under its own name: its measure's aggregate, filled."""
+        source_sm = self._find_measure_model(measure_name)
+        slayer_model = self._models_by_name.get(source_sm.name) if source_sm is not None else None
+        base = next(
+            (m.formula for m in slayer_model.measures if m.name == measure_name), None,
+        ) if slayer_model is not None else None
+        if slayer_model is None or base is None:
+            self._fail_metric(
+                metric, category="simple_metric", severity="unconverted",
+                message=f"Cannot find measure '{measure_name}' in any semantic model.",
+            )
+            return
+        self._add_model_measure(slayer_model=slayer_model, metric=metric, formula=self._with_fill(base, fill))
 
     def _convert_derived_metric(self, metric: DbtMetric) -> None:
         """A derived metric expresses a formula over other metrics/measures.
@@ -1165,13 +1191,14 @@ class DbtToSlayerConverter:
         slayer_model = self._models_by_name.get(source_sm.name)
         if slayer_model is None:
             return None
-        return self._filtered_leaf_ref(
+        ref = self._filtered_leaf_ref(
             metric=metric,
             slayer_model=slayer_model,
             source_sm=source_sm,
             dbt_measure=dbt_measure,
             raw_filter=raw_filter,
         )
+        return None if ref is None else self._with_fill(ref, self._fill_of(m_input.name))
 
     def _convert_ratio_metric(self, metric: DbtMetric) -> None:
         """A ratio metric is numerator / denominator over two measures/metrics.
@@ -1644,14 +1671,11 @@ class DbtToSlayerConverter:
         self, mtc: DbtMetric
     ) -> tuple[DbtSemanticModel, DbtMeasure, str | None] | None:
         """Resolve a *simple* metric input to its filtered leaf, accumulating
-        the metric's own filter. Unsupported shapes (measure-less, time-spine)
-        return ``None`` so the push-down clean-fails rather than resurrecting
-        them as plain aggregates."""
+        the metric's own filter. A measure-less shape returns ``None`` so the
+        push-down clean-fails rather than resurrecting it as a plain aggregate."""
         tp = mtc.type_params
         mref = tp.measure
         if tp.metric_aggregation_params is not None:
-            return None
-        if mref and (mref.join_to_timespine or mref.fill_nulls_with is not None):
             return None
         inner = self._resolve_input_to_leaf_filtered(tp.measure_name)
         if inner is None:
@@ -1750,10 +1774,9 @@ class DbtToSlayerConverter:
         reference collapses to the backing measure).
 
         It is plain only when it carries no filter at all — neither
-        ``metric.filter`` NOR ``type_params.measure.filter`` — and no time-spine
-        gap fill. A filter on either side means it was materialized as a
-        filtered ModelMeasure under the metric's own name, and a time-spine
-        metric is clean-failed; in both cases the reference must stay the
+        ``metric.filter`` NOR ``type_params.measure.filter`` — and no
+        ``join_to_timespine`` / ``fill_nulls_with``. Any of those materializes a
+        ModelMeasure under the metric's own name, so the reference must stay the
         metric name, not the unfiltered base measure.
         """
         tp = m.type_params

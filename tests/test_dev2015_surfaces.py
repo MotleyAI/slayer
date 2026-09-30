@@ -57,7 +57,8 @@ class TestSpineListedWithItsWiredModels:
             assert "timestamp" in text, tool
             assert "built-in" in text.lower(), tool
             for model, axis in (("orders", "order_date"), ("returns", "return_date")):
-                assert model in text and axis in text, (tool, model)
+                assert model in text, (tool, model)
+                assert axis in text, (tool, model)
 
     async def test_search_finds_the_spine(self) -> None:
         storage = await _spine_storage(tempfile.mkdtemp())
@@ -124,7 +125,8 @@ class TestGranularitiesRoundTrip:
         })
         assert "month" in text
         stored = await storage.get_datasource("gds")
-        assert stored is not None and _granularity_dump(stored) == []
+        assert stored is not None
+        assert _granularity_dump(stored) == []
 
     def test_rest_create(self) -> None:
         storage = YAMLStorage(base_dir=tempfile.mkdtemp())
@@ -189,7 +191,8 @@ class TestDbtImporter:
         assert measure is not None
         assert measure.formula.replace(" ", "") in {"amount:sum", "sum(amount)"}
         notes = [e for e in (*result.unconverted_metrics, *result.warnings) if e.metric_name == "gap_filled_rev"]
-        assert notes and all(e.severity == "info" for e in notes)
+        assert notes
+        assert all(e.severity == "info" for e in notes)
         assert "time_spine" in result.render_report()
 
 

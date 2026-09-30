@@ -12,7 +12,7 @@ from collections.abc import Callable, Iterable
 
 from slayer.core.enums import JoinCardinality, TimeGranularity, invert_cardinality
 from slayer.core.granularity import resolve_granularity, unknown_granularity_message
-from slayer.core.time_spine import TIME_SPINE_MODEL
+from slayer.core.time_spine import TIME_SPINE_MODEL, spine_model
 from slayer.core.errors import (
     AmbiguousModelError,
     IdCollisionError,
@@ -367,15 +367,15 @@ class StorageBackend(ABC):
         await self._save_model_impl(model)
 
     async def _validate_column_granularities(self, model: SlayerModel) -> None:
-        names = [c for c in model.columns if isinstance(c.granularity, str) and not isinstance(c.granularity, TimeGranularity)]
-        if not names:
+        named = [(c, c.granularity) for c in model.columns if c.granularity is not None and not isinstance(c.granularity, TimeGranularity)]
+        if not named:
             return
         ds = await self.get_datasource(model.data_source) if model.data_source else None
         defined = ds.granularity_definitions if ds is not None else {}
-        for column in names:
-            if resolve_granularity(column.granularity, defined=defined) is None:
+        for column, granularity in named:
+            if resolve_granularity(granularity, defined=defined) is None:
                 raise UnknownGranularityError(summary=unknown_granularity_message(
-                    name=str(column.granularity), defined=defined.values(),
+                    name=str(granularity), defined=defined.values(),
                     where=f"column {column.name!r} of model {model.name!r}",
                 ))
 
@@ -467,6 +467,23 @@ class StorageBackend(ABC):
                 existing_id=collide,
                 data_source=model.data_source,
             )
+
+    async def builtin_models(self, data_source: str) -> list[SlayerModel]:
+        """The datasource's built-in models: the time spine (with its wiring), unless a stored model shadows it."""
+        if await self.get_model(TIME_SPINE_MODEL, data_source=data_source) is not None:
+            return []
+        peers = [m for n in await self.list_models(data_source) if (m := await self.get_model(n, data_source=data_source))]
+        return [spine_model(data_source=data_source, wired=peers)]
+
+    async def get_model_or_builtin(self, name: str, data_source: str | None = None) -> SlayerModel | None:
+        """``get_model``, falling back to a built-in model of the datasource (the only one when unnamed)."""
+        model = await self.get_model(name, data_source=data_source)
+        if model is not None or name != TIME_SPINE_MODEL:
+            return model
+        datasources = [data_source] if data_source is not None else await self.list_datasources()
+        if len(datasources) != 1:
+            return None
+        return next(iter(await self.builtin_models(datasources[0])), None)
 
     @abstractmethod
     async def _save_model_impl(self, model: SlayerModel) -> None:

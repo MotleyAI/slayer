@@ -21,6 +21,9 @@ read those first.
 3. **Count rows with `count(*)`**, never by counting a primary-key column.
 4. **Never write joins yourself.** Reference joined data by dotted path
    (`customers.regions.name`) and let the engine route it.
+5. **Fill time gaps with `time_spine`.** A time dimension on `time_spine.timestamp`
+   (with a lower `date_range` bound) returns every bucket, empty ones included, and
+   lines several facts up on one time axis.
 
 ## Deep dives
 

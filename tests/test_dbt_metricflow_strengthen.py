@@ -168,7 +168,8 @@ def test_sum_boolean_wraps_case_when() -> None:
     col = _column_for(result, m.formula)
     assert col.sql is not None
     norm = col.sql.upper().replace(" ", "")
-    assert "CASEWHEN" in norm and "THEN1ELSE0END" in norm
+    assert "CASEWHEN" in norm
+    assert "THEN1ELSE0END" in norm
     assert "IS_PAID" in col.sql.upper()
     assert col.type == DataType.INT
 
@@ -206,7 +207,8 @@ def test_offset_window_maps_to_time_shift() -> None:
     growth = _measure(result, "revenue_growth")
     norm = growth.formula.replace(" ", "")
     assert "time_shift(" in growth.formula
-    assert "-1" in norm and "month" in norm.lower()
+    assert "-1" in norm
+    assert "month" in norm.lower()
 
 
 def test_offset_to_grain_clean_fails() -> None:
@@ -266,7 +268,8 @@ def test_metric_level_filter_pushes_into_leaf_column() -> None:
     m = _measure(result, "us_revenue")
     col = _column_for(result, m.formula)
     assert col.filter is not None
-    assert "region" in col.filter and "US" in col.filter
+    assert "region" in col.filter
+    assert "US" in col.filter
 
 
 def test_ratio_per_input_filters_push_down_independently() -> None:
@@ -328,7 +331,8 @@ def test_filter_accepts_list_intersection() -> None:
     m = _measure(result, "scoped_revenue")
     col = _column_for(result, m.formula)
     assert col.filter is not None
-    assert "region" in col.filter and "status" in col.filter
+    assert "region" in col.filter
+    assert "status" in col.filter
     assert " AND " in col.filter.upper() or "AND" in col.filter.upper()
 
 
@@ -586,7 +590,8 @@ def test_render_report_groups_by_category() -> None:
     result = _convert(project)
     report = result.render_report()
     assert isinstance(report, str)
-    assert "conv" in report and "weird" in report
+    assert "conv" in report
+    assert "weird" in report
     # Grouped by category: each failing entry's category appears as a heading.
     cats = {getattr(e, "category", None) for e in _all_report_entries(result)}
     cats.discard(None)
@@ -624,7 +629,9 @@ def test_offset_window_plural_granularity_normalized() -> None:
     result = _convert(project)
     f = _measure(result, "rev_2w").formula.replace(" ", "").lower()
     assert "time_shift(" in _measure(result, "rev_2w").formula
-    assert "-2" in f and "week" in f and "weeks" not in f
+    assert "-2" in f
+    assert "week" in f
+    assert "weeks" not in f
 
 
 def test_offset_window_custom_granularity_clean_fails() -> None:
@@ -678,7 +685,8 @@ def test_same_measure_different_filters_make_distinct_columns() -> None:
     us_col = _column_for(result, _measure(result, "us_rev").formula)
     eu_col = _column_for(result, _measure(result, "eu_rev").formula)
     assert us_col.name != eu_col.name
-    assert "US" in (us_col.filter or "") and "EU" in (eu_col.filter or "")
+    assert "US" in (us_col.filter or "")
+    assert "EU" in (eu_col.filter or "")
 
 
 def test_same_measure_same_filter_reuses_one_column() -> None:
@@ -737,7 +745,8 @@ def test_cross_model_filter_pushes_down_when_join_reachable() -> None:
     m = _measure(result, "us_revenue", model="orders")
     col = _column_for(result, m.formula, model="orders")
     assert col.filter is not None
-    assert "region" in col.filter and "US" in col.filter
+    assert "region" in col.filter
+    assert "US" in col.filter
 
 
 def test_cross_model_filter_unreachable_clean_fails() -> None:
@@ -861,7 +870,8 @@ def test_derived_ref_to_measure_filtered_simple_metric_keeps_filter() -> None:
     # And web_revenue itself materialized with a channel filter.
     web = _measure(result, "web_revenue")
     col = _column_for(result, web.formula)
-    assert col.filter is not None and "channel" in col.filter
+    assert col.filter is not None
+    assert "channel" in col.filter
 
 
 def test_filtered_simple_metric_over_non_additive_measure_clean_fails() -> None:
@@ -956,8 +966,10 @@ def test_input_filter_intersects_referenced_metric_filter() -> None:
     m = _measure(result, "us_web_revenue")
     col = _column_for(result, m.formula)
     assert col.filter is not None
-    assert "region" in col.filter and "US" in col.filter
-    assert "channel" in col.filter and "web" in col.filter
+    assert "region" in col.filter
+    assert "US" in col.filter
+    assert "channel" in col.filter
+    assert "web" in col.filter
 
 
 def test_cross_model_filter_ambiguous_multi_owner_entity_clean_fails() -> None:
@@ -1140,7 +1152,8 @@ def test_metric_filter_and_input_filter_intersect() -> None:
     cols = [c for c in _model(result).columns if c.filter]
     # numerator leaf: BOTH the metric-level (region) and input-level (channel) filters
     num = [c for c in cols if "channel" in (c.filter or "")]
-    assert num and "region" in (num[0].filter or "")
+    assert num
+    assert "region" in (num[0].filter or "")
     # denominator leaf: only the metric-level filter
     den = [c for c in cols if "region" in (c.filter or "") and "channel" not in (c.filter or "")]
     assert den
@@ -1220,7 +1233,8 @@ def test_filtered_percentile_metric_preserves_p() -> None:
     m = _measure(result, "us_latency_p95")
     assert m.formula.endswith(":percentile(p=0.95)")
     col = _column_for(result, m.formula)
-    assert col.filter is not None and "region" in col.filter
+    assert col.filter is not None
+    assert "region" in col.filter
 
 
 def test_filtered_sum_boolean_metric_builds_case_int_column() -> None:
@@ -1245,8 +1259,10 @@ def test_filtered_sum_boolean_metric_builds_case_int_column() -> None:
     col = _column_for(result, m.formula)
     assert col.type == DataType.INT
     norm = (col.sql or "").upper().replace(" ", "")
-    assert "CASEWHEN" in norm and "THEN1ELSE0END" in norm
-    assert col.filter is not None and "region" in col.filter
+    assert "CASEWHEN" in norm
+    assert "THEN1ELSE0END" in norm
+    assert col.filter is not None
+    assert "region" in col.filter
 
 
 def test_derived_input_filter_pushes_down() -> None:
@@ -1349,4 +1365,6 @@ def test_offset_window_object_form_parses() -> None:
     )
     result = _convert(project)
     f = _measure(result, "rev_obj_offset").formula.replace(" ", "").lower()
-    assert "time_shift(" in f and "-1" in f and "month" in f
+    assert "time_shift(" in f
+    assert "-1" in f
+    assert "month" in f

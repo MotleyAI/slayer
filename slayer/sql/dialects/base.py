@@ -26,7 +26,7 @@ from sqlglot.dialects.dialect import Dialect as _SqlglotDialect
 
 from slayer.core.enums import SUB_DAY_GRANULARITIES, DataType, DatePart, TimeGranularity
 from slayer.core.errors import IdentifierCollisionError, IdentifierLengthError
-from slayer.core.granularity import CustomGranularity, Granularity, granularity_parts
+from slayer.core.granularity import CustomGranularity, Granularity, granularity_parts, nests_into
 from slayer.sql._identifier_fit import (
     SqlLexis,
     fit_identifier,
@@ -411,23 +411,29 @@ class SqlDialect(BaseModel):
             return self.build_date_add(expr=anchor, count=count, unit=base, operand=DataType.TIMESTAMP)
 
         crossed = self.build_date_diff(unit=base, start=anchor, end=ts, operand=DataType.TIMESTAMP)
-        whole = exp.Case(ifs=[exp.If(
+        # Boundaries crossed equal whole periods unless the origin is off the base's own boundaries.
+        whole = crossed if nests_into(base, granularity) else exp.Case(ifs=[exp.If(
             this=exp.GT(this=at(crossed), expression=ts.copy()),
             true=exp.Sub(this=exp.Paren(this=crossed.copy()), expression=exp.Literal.number(1)),
         )], default=crossed.copy())
         if multiple == 1:
             return at(whole)
         m = exp.Literal.number(multiple)
+
+        def natural_div(value: Expression) -> Expression:
+            return self.natural_div(exp.Paren(this=value), divisor=m.copy())
+
         floored = exp.Case(ifs=[exp.If(
             this=exp.GTE(this=exp.Paren(this=whole.copy()), expression=exp.Literal.number(0)),
-            true=exp.IntDiv(this=exp.Paren(this=whole.copy()), expression=m.copy()),
-        )], default=exp.Neg(this=exp.Paren(this=exp.IntDiv(
-            this=exp.Paren(this=exp.Add(
-                this=exp.Neg(this=exp.Paren(this=whole.copy())), expression=exp.Literal.number(multiple - 1),
-            )),
-            expression=m.copy(),
-        ))))
+            true=natural_div(whole.copy()),
+        )], default=exp.Neg(this=exp.Paren(this=natural_div(exp.Add(
+            this=exp.Neg(this=exp.Paren(this=whole.copy())), expression=exp.Literal.number(multiple - 1),
+        )))))
         return at(exp.Mul(this=exp.Paren(this=floored), expression=m))
+
+    def natural_div(self, value: Expression, *, divisor: Expression) -> Expression:
+        """``value // divisor`` for non-negative integers."""
+        return exp.IntDiv(this=value, expression=divisor)
 
     def build_integer_sequence(self, *, size: int) -> exp.Select:
         """``SELECT i`` over the integers ``0 .. size - 1``; default: a recursive CTE."""

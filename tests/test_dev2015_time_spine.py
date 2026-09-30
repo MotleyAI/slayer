@@ -94,8 +94,9 @@ class TestReservedName:
         clash = SlayerModel(name="time_spine", sql_table="customers", data_source="test",
                             columns=[Column(name="timestamp", type=DataType.DATE, primary_key=True)])
         await engine.storage._save_model_impl(clash)
+        query = spine_query(measures=TWO_FACTS)
         with pytest.raises(QueryTypeError) as exc:
-            await engine.execute(spine_query(measures=TWO_FACTS), dry_run=True)
+            await engine.execute(query, dry_run=True)
         msg = str(exc.value)
         assert "time_spine" in msg
         assert "rename" in msg.lower()
@@ -116,10 +117,11 @@ class TestAxes:
         async with spine_engine(backend, models=spine_models(shipments="two_dates")) as eng:
             resp = await eng.execute(spine_query(measures=[m("sum(shipments.weight)", "w")]))
             assert by_bucket(resp, ["w"]) == {k: (7.0,) for k in MONTHS}
-            assert [w.measure for w in broadcast_warnings(resp)] and "w" in broadcast_warnings(resp)[0].measure
+            assert [w.measure for w in broadcast_warnings(resp)]
+            assert "w" in broadcast_warnings(resp)[0].measure
+            strict = spine_query(measures=[m("sum(shipments.weight)", "w")], to_many_handling="error")
             with pytest.raises((SlayerError, ValueError)):
-                await eng.execute(spine_query(measures=[m("sum(shipments.weight)", "w")],
-                                              to_many_handling="error"))
+                await eng.execute(strict)
 
     async def test_stage_with_one_temporal_column_is_wired(self, engine) -> None:
         firsts = SlayerQuery.model_validate({
@@ -186,8 +188,9 @@ class TestRouting:
     @pytest.mark.parametrize("backend", BACKENDS)
     async def test_equal_length_routes_fail_loudly(self, backend) -> None:
         async with spine_engine(backend, models=spine_models(shipments="two_parents")) as eng:
+            query = spine_query(measures=[m("count(shipments.id)", "c")])
             with pytest.raises(UnresolvableDimensionJoinError) as exc:
-                await eng.execute(spine_query(measures=[m("count(shipments.id)", "c")]))
+                await eng.execute(query)
             assert "shipments.orders" in str(exc.value)
             assert "shipments.returns" in str(exc.value)
             # Only a query needing that route raises.
@@ -265,8 +268,9 @@ class TestPopulation:
 class TestBounds:
     @pytest.mark.parametrize("date_range", [None, [None, "2025-03-31"]], ids=["none", "upper-only"])
     async def test_missing_lower_bound(self, engine, date_range) -> None:
+        query = spine_query(measures=TWO_FACTS, date_range=date_range)
         with pytest.raises(QueryTypeError) as exc:
-            await engine.execute(spine_query(measures=TWO_FACTS, date_range=date_range), dry_run=True)
+            await engine.execute(query, dry_run=True)
         assert "lower bound" in str(exc.value).lower()
 
     async def test_bound_filters_bound_the_spine(self, engine) -> None:
@@ -336,10 +340,9 @@ class TestFilters:
         }
 
     async def test_non_bound_spine_filter(self, engine) -> None:
+        query = spine_query(measures=TWO_FACTS, filters=["date_part('day_of_week', time_spine.timestamp) = 1"])
         with pytest.raises(QueryTypeError) as exc:
-            await engine.execute(spine_query(
-                measures=TWO_FACTS, filters=["date_part('day_of_week', time_spine.timestamp) = 1"],
-            ), dry_run=True)
+            await engine.execute(query, dry_run=True)
         msg = str(exc.value)
         assert "day_of_week" in msg
         assert "time dimension" in msg.lower() or "time_dimensions" in msg
@@ -355,8 +358,9 @@ class TestNoCountableRows:
         (m("min(time_spine.timestamp)", "t"), {}),
     ], ids=["count-star", "min-timestamp"])
     async def test_aggregation_over_the_spine(self, engine, measure, extra) -> None:
+        query = spine_query(measures=[measure], **extra)
         with pytest.raises(QueryTypeError) as exc:
-            await engine.execute(spine_query(measures=[measure], **extra), dry_run=True)
+            await engine.execute(query, dry_run=True)
         assert "time_spine" in str(exc.value)
 
     @pytest.mark.parametrize("extra", [
@@ -372,8 +376,9 @@ class TestNoCountableRows:
         query = {"time_dimensions": [spine_td()] if tds is None else tds, **extra}
         if not query["time_dimensions"]:
             query["filters"] = ["time_spine.timestamp >= '2025-01-01'"]
+        parsed = SlayerQuery.model_validate(query)
         with pytest.raises(QueryTypeError) as exc:
-            await engine.execute(SlayerQuery.model_validate(query), dry_run=True)
+            await engine.execute(parsed, dry_run=True)
         msg = str(exc.value)
         assert "time_spine" in msg
         assert "granularity" in msg.lower() or "time dimension" in msg.lower()
@@ -418,10 +423,13 @@ class TestDenseSeries:
 
 class TestRebucketing:
     async def test_monthly_model_on_a_daily_spine(self, engine) -> None:
+        daily = spine_query(measures=[m("sum(monthly.rev)", "rev")], granularity="day")
         with pytest.raises(TimeDimensionColumnError) as exc:
-            await engine.execute(spine_query(measures=[m("sum(monthly.rev)", "rev")], granularity="day"), dry_run=True)
+            await engine.execute(daily, dry_run=True)
         msg = str(exc.value)
-        assert "order_date" in msg and "month" in msg and "day" in msg
+        assert "order_date" in msg
+        assert "month" in msg
+        assert "day" in msg
         resp = await engine.execute(spine_query(measures=[m("sum(monthly.rev)", "rev")], granularity="quarter"))
         assert by_bucket(resp, ["rev"]) == {"2025-01": (220.0,), "2025-04": (None,)}
 
@@ -433,10 +441,10 @@ class TestRebucketing:
 def _region_policy() -> SessionPolicy:
     return SessionPolicy(ruleset=JoinFilterRuleset(
         table="customers", column="region", value="N",
-        joins=[
-            JoinFilterRule(target_table="orders", join_path=["orders.customer_id = customers.id"]),
-            JoinFilterRule(target_table="returns", join_path=["returns.customer_id = customers.id"]),
-        ],
+        joins=(
+            JoinFilterRule(target_table="orders", join_path=("orders.customer_id = customers.id",)),
+            JoinFilterRule(target_table="returns", join_path=("returns.customer_id = customers.id",)),
+        ),
     ))
 
 

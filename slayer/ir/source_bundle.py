@@ -202,7 +202,7 @@ def model_from_stage_schema(
                 name=c.name,
                 sql=column_sql.get(c.name),
                 type=c.type or DataType.DOUBLE,
-                granularity=c.granularity,
+                granularity=c.granularity.name if isinstance(c.granularity, CustomGranularity) else c.granularity,
                 label=c.label,
                 format=c.format,
                 description=c.description,

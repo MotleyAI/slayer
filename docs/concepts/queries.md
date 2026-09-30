@@ -539,6 +539,8 @@ infers population `customers` (one row per region present among customers, order
 
 Inference fails closed with a `PopulationInferenceError` naming the candidates when no single model determines everything, several minimal candidates tie, a dimension's join path is ambiguous, or the referenced models don't scope to exactly one datasource. Name `source_model` explicitly (any model — including a bridge that owns none of the queried items) to override inference.
 
+A time dimension on `time_spine.timestamp` makes the population `time_spine × P`, P inferred from the remaining dimensions and filters — see [Time spine](time.md#time-spine).
+
 Inference is routing-aware: a short-form cross-model dimension (bare `regions.name`) is probed per candidate through the same auto-routing binding applies, so it infers the same population as its full dotted path (`customers.regions.name`) — or fails closed identically.
 
 ## Choosing a root model

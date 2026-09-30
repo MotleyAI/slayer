@@ -48,8 +48,8 @@ dotted paths allowed). They never reference measures or transforms.
 
 ## Other fields
 
-`default_time_dimension` names the fallback time axis for transforms and
-`first`/`last`. `hidden: true` excludes the model from discovery while keeping it
+`default_time_dimension` (else the only date/time column) names the fallback time
+axis for transforms and `first`/`last`, and the model's `time_spine` axis. `hidden: true` excludes the model from discovery while keeping it
 queryable by name.
 
 ## Result keys and query-backed models

@@ -7,10 +7,13 @@ from datetime import datetime
 from typing import Any
 
 import pytest
+from sqlglot import exp
 
 from slayer.core.errors import QueryTypeError, SlayerError, TimeDimensionColumnError
 from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.core.granularity import CustomGranularity
 from slayer.core.query import SlayerQuery
+from slayer.sql.dialects import get_dialect
 from slayer.storage.yaml_storage import YAMLStorage
 
 from tests._dev2015_fixtures import (
@@ -101,8 +104,9 @@ class TestDefinitions:
     ], ids=lambda v: v if isinstance(v, str) else v["name"])
     async def test_invalid_definitions_rejected(self, entry, rule) -> None:
         storage = YAMLStorage(base_dir=tempfile.mkdtemp())
+        ds = _ds([entry])
         with pytest.raises(SlayerError) as exc:
-            await storage.save_datasource(_ds([entry]))
+            await storage.save_datasource(ds)
         msg = str(exc.value)
         assert entry["name"] in msg
         assert rule in msg.lower()
@@ -110,9 +114,9 @@ class TestDefinitions:
 
     async def test_duplicate_names_rejected_case_insensitively(self) -> None:
         storage = YAMLStorage(base_dir=tempfile.mkdtemp())
+        ds = _ds([{"name": "fiscal_year", "base": "year"}, {"name": "Fiscal_Year", "base": "year"}])
         with pytest.raises(SlayerError) as exc:
-            await storage.save_datasource(_ds([{"name": "fiscal_year", "base": "year"},
-                                               {"name": "Fiscal_Year", "base": "year"}]))
+            await storage.save_datasource(ds)
         assert "fiscal_year" in str(exc.value).lower()
         assert await storage.get_datasource("gds") is None
 
@@ -217,11 +221,12 @@ class TestEveryPosition:
         await engine.storage.save_datasource(DatasourceConfig(name="other", type=cfg.type, database=cfg.database))
         other = cg_orders_model().model_copy(update={"name": "orders2", "data_source": "other"})
         await engine.storage.save_model(other)
+        query = SlayerQuery.model_validate({
+            "source_model": "orders2", "measures": [m("sum(amount)", "s")],
+            "time_dimensions": [{"dimension": "order_date", "granularity": "fiscal_year"}],
+        })
         with pytest.raises(QueryTypeError) as exc:
-            await engine.execute(SlayerQuery.model_validate({
-                "source_model": "orders2", "measures": [m("sum(amount)", "s")],
-                "time_dimensions": [{"dimension": "order_date", "granularity": "fiscal_year"}],
-            }), dry_run=True)
+            await engine.execute(query, dry_run=True)
         assert "fiscal_year" in str(exc.value)
         assert "month" in str(exc.value)
 
@@ -243,12 +248,14 @@ class TestNesting:
             "time_dimensions": [{"dimension": "order_date", "granularity": "fiscal_year"}],
         }))
         assert _series(resp, column="order_date") == FY_ROWS
+        weekly = SlayerQuery.model_validate({
+            "source_model": "o_week", "measures": [m("sum(rev)", "s")],
+            "time_dimensions": [{"dimension": "order_date", "granularity": "fiscal_year"}],
+        })
         with pytest.raises(TimeDimensionColumnError) as exc:
-            await engine.execute(SlayerQuery.model_validate({
-                "source_model": "o_week", "measures": [m("sum(rev)", "s")],
-                "time_dimensions": [{"dimension": "order_date", "granularity": "fiscal_year"}],
-            }), dry_run=True)
-        assert "week" in str(exc.value) and "fiscal_year" in str(exc.value)
+            await engine.execute(weekly, dry_run=True)
+        assert "week" in str(exc.value)
+        assert "fiscal_year" in str(exc.value)
 
     async def test_the_fiscal_year_does_not_nest_into_the_calendar_year(self, engine) -> None:
         stage = SlayerQuery.model_validate({
@@ -261,7 +268,8 @@ class TestNesting:
         })
         with pytest.raises(TimeDimensionColumnError) as exc:
             await engine.execute([stage, main], dry_run=True)
-        assert "fiscal_year" in str(exc.value) and "year" in str(exc.value).replace("fiscal_year", "")
+        assert "fiscal_year" in str(exc.value)
+        assert "year" in str(exc.value).replace("fiscal_year", "")
 
     @pytest.mark.parametrize(("stored", "requested", "ok"), [
         ("quarter_hour", "hour", True),
@@ -280,7 +288,8 @@ class TestNesting:
         else:
             with pytest.raises(TimeDimensionColumnError) as exc:
                 await engine.execute(query, dry_run=True)
-            assert stored in str(exc.value) and requested in str(exc.value)
+            assert stored in str(exc.value)
+            assert requested in str(exc.value)
 
     @pytest.mark.parametrize(("stored", "requested", "ok"), [
         ("week", "sprint", True),          # 14 days = 2 weeks, Monday origin
@@ -334,11 +343,12 @@ class TestColumnGranularity:
             "time_dimensions": [{"dimension": "order_date", "granularity": "fiscal_year"}],
         }))
         assert _series(resp, column="order_date") == FY_ROWS
+        monthly = SlayerQuery.model_validate({
+            "source_model": "orders_fy", "measures": [m("sum(amount)", "s")],
+            "time_dimensions": [{"dimension": "order_date", "granularity": "month"}],
+        })
         with pytest.raises(TimeDimensionColumnError):
-            await engine.execute(SlayerQuery.model_validate({
-                "source_model": "orders_fy", "measures": [m("sum(amount)", "s")],
-                "time_dimensions": [{"dimension": "order_date", "granularity": "month"}],
-            }), dry_run=True)
+            await engine.execute(monthly, dry_run=True)
 
     async def test_undefined_custom_value(self, engine) -> None:
         cfg = await engine.storage.get_datasource("test")
@@ -353,8 +363,14 @@ class TestColumnGranularity:
         assert "fiscal_year" in str(exc.value)
         assert await engine.storage.get_model("orders2", data_source="other") is None
         await engine.storage.save_model(model, _validate=False)
+        query = SlayerQuery.model_validate({"source_model": "orders2", "measures": [m("sum(amount)", "s")]})
         with pytest.raises(QueryTypeError) as exc:
-            await engine.execute(SlayerQuery.model_validate({
-                "source_model": "orders2", "measures": [m("sum(amount)", "s")],
-            }), dry_run=True)
+            await engine.execute(query, dry_run=True)
         assert "fiscal_year" in str(exc.value)
+
+
+@pytest.mark.parametrize("dialect", ["mysql", "snowflake"])
+def test_bucket_index_floors_where_an_integer_cast_rounds(dialect: str) -> None:
+    quarter_hour = CustomGranularity.model_validate({"name": "quarter_hour", "base": "minute", "multiple": 15})
+    bucket = get_dialect(dialect).build_bucket(col_expr=exp.column("t"), granularity=quarter_hour)
+    assert bucket.find(exp.Floor) is not None

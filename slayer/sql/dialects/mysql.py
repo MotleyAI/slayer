@@ -57,6 +57,10 @@ class MysqlDialect(SqlDialect):
             return node
         return tree.transform(_fix)
 
+    def natural_div(self, value: Expression, *, divisor: Expression) -> Expression:
+        """``FLOOR``: an integer ``CAST`` rounds here."""
+        return exp.Floor(this=exp.Div(this=value, expression=divisor))
+
     def attach_sequence_setting(self, statement: Expression, *, size: int) -> None:
         """Lift the recursion cap for the recursive integer sequence (default 1000)."""
         statement.set("hint", exp.Hint(expressions=[exp.Anonymous(this="SET_VAR", expressions=[

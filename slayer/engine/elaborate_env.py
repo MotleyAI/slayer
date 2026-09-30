@@ -1073,7 +1073,7 @@ def check_date_operands(*, roots: Sequence[ValueKey], column_type: ColumnTypeFn)
     keys = [key for root in roots for key in walk_value_keys(root)]
     for key in keys:  # innermost first: a ``gran(col)`` inside a date function names its column
         if isinstance(key, TimeTruncKey):
-            _require_temporal(key.granularity, key.column, column_type=column_type)
+            _require_temporal(str(key.granularity), key.column, column_type=column_type)
     for key in keys:
         if isinstance(key, ScalarCallKey) and key.name in DATE_OPERAND_ARGS:
             _check_date_call(key, column_type=column_type)

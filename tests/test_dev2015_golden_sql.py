@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from slayer.core.query import SlayerQuery
+
 from tests._dev2015_fixtures import DS_GRANULARITIES, JAN_MAR, TWO_FACTS, cg_orders_model, m, spine_models, spine_td
 from tests._engine_helpers import _engine_generate
 from tests._golden_harness import bind_golden_tests, record_raise
@@ -42,7 +44,7 @@ async def _generate_one(query: dict[str, Any], dialect: str):
     models = [cg_orders_model()] if query.get("source_model") == "orders" else spine_models()
     try:
         return await _engine_generate(
-            query=query, model=models[0], extra_models=models[1:], dialect=dialect, validate=False,
+            query=SlayerQuery.model_validate(query), model=models[0], extra_models=models[1:], dialect=dialect, validate=False,
             clock=PinnedClock(), datasource_fields=DS_GRANULARITIES,
         )
     except Exception as exc:  # noqa: BLE001 — the exception itself is contract

@@ -439,7 +439,7 @@ async def _lookup_model_or_leaf_canonical(
     storage: StorageBackend,
 ) -> LookupResult:
     """Render a ``<ds>.<model>[.<leaf>]`` canonical, or report it hidden / missing."""
-    model = await storage.get_model(model_name, data_source=ds)
+    model = await storage.get_model_or_builtin(model_name, data_source=ds)
     if model is None:
         return LookupMissing()
     if model.hidden:
@@ -1174,6 +1174,8 @@ class SearchService:
             m = await self._storage.get_model(name, data_source=ds)
             if m is not None:
                 models.append(m)
+        for ds_name in datasources:
+            models.extend(await self._storage.builtin_models(ds_name))
         descriptions: dict[str, str | None] = {}
         for ds_name in datasources:
             cfg = await self._storage.get_datasource(ds_name)
