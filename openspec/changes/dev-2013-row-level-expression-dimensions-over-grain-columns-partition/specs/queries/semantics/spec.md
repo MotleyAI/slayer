@@ -67,6 +67,8 @@ through arithmetic, comparison, scalar functions or conditionals — a literal b
 determined by every grain, a time bucket when the grain determines its column, and an
 embedded aggregate when the grain determines its `partition_by=` members — is itself
 attributable, whatever its spelling.
+A derived column is determined when the grain determines every column its definition
+reads (value and filter), recursively — exactly as its inline expression would be.
 Unattributable dimensions resolve per `to_many_handling` exactly as for
 model-rooted aggregates: broadcast with a self-announcing warning naming the
 dimension and the remedy, per-cell association, or a clear error. Adding a
@@ -206,6 +208,13 @@ column's values.
   it, and the `partition_by=` remedy; under `to_many_handling: "error"` the query fails
   naming `is_p`
 
+#### Scenario: Derived column over grain members partitions like its inline spelling
+- **WHEN** the model declares a derived column `city_upper` defined as `UPPER(city)` and a
+  query over dimensions `[region, city_upper]` selects
+  `avg(sum(amount, partition_by=[city, region]))`
+- **THEN** each row carries the average of exactly its own city cells, identical to the
+  query over `[region, upper(city)]`, by executed values on SQLite and DuckDB, with no warning
+
 ### Requirement: Aggregation parameters are typed by the home dataset's grain
 Every parameter of an aggregation — a keyword or positional parameter (`weight=`,
 `other=`, a custom aggregation's declared parameters) and a parameter supplied by the
@@ -215,7 +224,7 @@ determines `P` — `P` is a grain member, an aggregate each of whose `partition_
 members `G` determines (a cell value of the same dataset), or a column reached from a
 grain member over provably to-one join hops (per Axiom 1, Determination), determination
 being closed under row-level combination. A parameter naming a
-derived column is determined only when `G` determines every dependency of that column's
+derived column is determined iff `G` determines every dependency of that column's
 definition, recursively — a derived parameter whose definition crosses a hop `G` does
 not pin is not determined, however its own path is reached. A legal parameter is evaluated once per
 cell of `D` and the aggregation reads that value; the origin of `D`'s rows — a model's
@@ -281,6 +290,14 @@ every consumer position.
   defined as `pop * 2` on `regions`, and the operand grain pins `regions` by its entity key
 - **THEN** the query executes with each region cell weighted by twice its population, by
   hand-computed executed values on SQLite and DuckDB
+
+#### Scenario: Derived parameter over grain members is determined
+- **WHEN** a query over `[region]` selects
+  `weighted_avg(sum(amount, partition_by=[city, region]), weight=city_len)`, with
+  `city_len` a derived column defined as `LENGTH(city)`
+- **THEN** it executes with each city cell weighted by its name length, by hand-computed
+  executed values on SQLite and DuckDB; the same query with `weight=prod_flag` (a derived
+  column reading `product`) fails with the typed parameter error
 
 #### Scenario: NULL parameter values follow SQL aggregate semantics
 - **WHEN** a legal parameter is NULL for some cells (e.g. a to-one lookup with no match)

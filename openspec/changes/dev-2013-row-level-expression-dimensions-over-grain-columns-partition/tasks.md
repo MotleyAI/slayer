@@ -43,12 +43,21 @@ exact name — the arc42 tags point at it). Verify: each new test fails on the p
 - [ ] 1.9 `key_display` unit tests for every `KIND_POLICY` kind (time bucket keeps its
   granularity; BETWEEN, IN, SQL fragment, embedded aggregate render as formula text);
   `dotted_key_display` never returns a Pydantic repr
+- [ ] 1.10 Derived-column spelling (test-local `sales` variant with `city_upper = UPPER(city)`,
+  `city_len = LENGTH(city)`, `prod_flag = CASE WHEN product = 'P' THEN 1 ELSE 0 END`):
+  `[region, city_upper]` gives the same rows and values as `[region, upper(city)]`, with no warning;
+  `weight=city_len` → North 390/9, South 70, East 57.5, Gap 8, Void NULL; `prod_flag`
+  still broadcasts as a dimension (naming `prod_flag`) and still refuses as a weight;
+  combinator units: a `ColumnSqlKey` reading only grain members is determined, one whose
+  value or `Column.filter` reads a non-member (`q_amount`) is not, and an unanalysable
+  definition fails closed
 
 ## 2. Implementation (pr-implement)
 
 - [ ] 2.1 Witness-form determination combinator in `slayer/engine/join_safety.py`;
-  `grain_determines` as its boolean wrapper (membership short-circuit at every node) —
-  verify 1.8
+  `grain_determines` as its boolean wrapper (membership short-circuit at every node);
+  `ColumnSqlKey` leaf: path-pinned, else its definition's columns all determined —
+  verify 1.8, 1.10
 - [ ] 2.2 `_synthesize_reaggregation_producer`: attributable ⇔ `grain_determines`; delete
   `_grain_expression_determined`, `_non_aggregate_leaf_check`, `_reaggregation_determined`,
   the `expression_determined` list/loop and the `g in union_grain` pre-check — verify 1.1,

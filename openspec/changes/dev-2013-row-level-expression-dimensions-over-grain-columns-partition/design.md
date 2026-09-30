@@ -36,7 +36,10 @@ disabled) produced every expected value and kept the full unit suite green, incl
 
 1. **One combinator, witness form** (`join_safety`). It returns the first undetermined
    sub-key (a witness) or `None`:
-   literal → determined; `ColumnKey`/`ColumnSqlKey` → the caller's leaf rule; `TimeTruncKey`
+   literal → determined; `ColumnKey` → the caller's leaf rule; `ColumnSqlKey` → the caller's
+   leaf rule, else every column its definition reads (value and `Column.filter`, anchored at
+   the column's owner) through the combinator, recursively — an unanalysable definition is
+   its own witness (a derived column is judged like its inline spelling); `TimeTruncKey`
    → its column; `SLOT_COMPOSITE_KINDS` and `SqlFragmentKey` → every child; `AggregateKey`
    → `partition_keys is not None` and every partition key (recursively); any other kind
    (`StarKey`, `TransformKey`, unknown) → itself as witness (fail closed, P13).

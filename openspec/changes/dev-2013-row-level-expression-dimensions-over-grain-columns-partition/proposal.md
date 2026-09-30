@@ -14,7 +14,8 @@ spelling partitions.
 ## What Changes
 
 - Determination becomes closed under row-level combination through ONE combinator:
-  literals are determined, time buckets through their column, composites (arithmetic,
+  literals are determined, time buckets through their column, a derived column when every
+  column its definition reads is, composites (arithmetic,
   comparison, scalar calls, conditionals, BETWEEN, IN) and bound parameter fragments iff
   every child is, embedded aggregates iff their `partition_by=` members are; any other
   kind fails closed.
