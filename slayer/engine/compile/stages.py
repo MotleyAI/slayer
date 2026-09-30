@@ -144,7 +144,9 @@ from slayer.engine.compile.projection import (
     _canonical_name,
     _iter_slot_deps,
 )
-from slayer.engine.compile.spine import check_axis_rebucket, host_mask, plan_spine, shifted_spine_bounds, spine_column
+from slayer.engine.compile.spine import (
+    check_axis_rebucket, check_off_spine_order_keys, host_mask, plan_spine, shifted_spine_bounds, spine_column,
+)
 from slayer.engine.compile.shift import carried_placeholders
 from slayer.engine.compile.staging import stage_slots
 from slayer.engine.key_metadata import (
@@ -4079,6 +4081,8 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
         plan_spine(prebound=typed_prebound, host=render_source_model, spine=spine, bundle=bundle)
         if spine is not None and render_source_model is not None else None
     )
+    if spine is None:
+        check_off_spine_order_keys(typed_prebound)
     for i, (bf, ct) in enumerate(zip(bound_filters, filter_typings)):
         key = _drop_conjuncts(value_key=bf.value_key, drop=pushed_set)
         key = host_mask(key, spine=spine) if key is not None else None

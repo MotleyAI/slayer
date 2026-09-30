@@ -172,6 +172,14 @@ def _spine_bounds(
     return lowers, uppers
 
 
+def check_off_spine_order_keys(prebound: PreboundQuery) -> None:
+    """Outside a spine population no bucket of the spine is projected, so no order key may read it."""
+    for spec in prebound.order_specs:
+        key = spec.bound.value_key
+        reads = any(isinstance(k, ColumnKey) and TIME_SPINE_MODEL in k.path for k in walk_value_keys(key))
+        check_spine_plain_use(offender=key_display(key) if reads else None, position="order key")
+
+
 def host_mask(key: ValueKey, *, spine: Optional[ColumnKey]) -> Optional[ValueKey]:
     """A host filter without its spine bounds (they decide bucket existence, not host rows)."""
     return key if spine is None else strip_frame_bounds(key=key, time_columns={spine})

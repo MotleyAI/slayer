@@ -409,6 +409,15 @@ class TestNoCountableRows:
         assert "time_spine" in msg
         assert "granularity" in msg.lower() or "time dimension" in msg.lower()
 
+    async def test_spine_order_key_outside_a_spine_query(self, engine) -> None:
+        query = SlayerQuery.model_validate({
+            "source_model": "orders", "measures": [m("sum(amount)", "s")], "dimensions": ["customer_id"],
+            "order": [{"column": "time_spine.timestamp", "direction": "asc"}],
+        })
+        with pytest.raises(QueryTypeError) as exc:
+            await engine.execute(query, dry_run=True)
+        assert "time_spine" in str(exc.value)
+
 
 # ---------------------------------------------------------------------------
 # Transforms and windows over the dense series
