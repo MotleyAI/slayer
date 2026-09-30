@@ -59,8 +59,9 @@ slayer query '{"source_model": "orders", "measures": ["count(*)"], "dimensions":
 # From a file
 slayer query @query.json
 
-# Run a saved query-backed model by name
+# Run a saved query-backed model by name, optionally refined
 slayer query monthly_revenue
+slayer query monthly_revenue --refine '{"dimensions": ["region"]}'
 
 # Pass runtime variables (always overrides query.variables / model.query_variables)
 slayer query monthly_revenue --variables region=US --variables threshold=100
@@ -88,6 +89,7 @@ The positional argument is interpreted as:
 | `--format` | `table` | Output format: `table` or `json` |
 | `--dry-run` | | Generate SQL without executing |
 | `--explain` | | Run EXPLAIN ANALYZE on the query |
+| `--refine` | | Model-name form only: JSON (or `@file`) clauses merged into the saved query's final stage |
 | `--variables KEY=VALUE` | | Runtime variable, repeatable. Overrides `query.variables` and `model.query_variables`. |
 | `--variables-json '{...}'` | | Runtime variables from a JSON object. Mutually exclusive with `--variables`. |
 

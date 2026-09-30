@@ -51,7 +51,7 @@ curl -X POST http://localhost:5143/query \
   }'
 ```
 
-**Run-by-name** — for query-backed models, provide `name` and (optionally) `variables`, `dry_run`, and `explain`. Query-defining fields (`source_model`, `measures`, `dimensions`, `filters`, `time_dimensions`, `order`, `limit`, `offset`) are not allowed in this body shape.
+**Run-by-name** — for query-backed models, provide `name` and (optionally) `variables`, `dry_run`, `explain` and `refine` (clauses merged into the saved query's final stage, e.g. `"refine": {"dimensions": ["region"]}` — see [Refining a saved query](../concepts/queries.md#refining-a-saved-query)). Query-defining fields (`source_model`, `measures`, `dimensions`, `filters`, `time_dimensions`, `order`, `limit`, `offset`) are not allowed next to `name`.
 
 ```bash
 curl -X POST http://localhost:5143/query \

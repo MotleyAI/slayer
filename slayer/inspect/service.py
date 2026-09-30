@@ -26,9 +26,11 @@ from slayer.inspect.collection_render import (
 from slayer.inspect.model_render import (
     _TRUNCATION_MARKER,
     _truncate_description,
+    load_visible_models,
     model_skeleton_fields,
     render_model_inspection,
     render_model_skeleton,
+    saved_queries_index,
 )
 from slayer.memories.resolver import resolve_entity
 from slayer.search.render import (
@@ -297,15 +299,8 @@ class InspectService:
     # Collection views (null / [] reference)
 
     async def _load_visible_models(self, ds_name: str) -> list[SlayerModel]:
-        """Visible, name-sorted models of one datasource; unloadable models are skipped."""
-        models: list[SlayerModel] = []
-        for name in await self._storage.list_models(data_source=ds_name):
-            try:
-                m = await self._storage.get_model(name, data_source=ds_name)
-            except Exception:  # noqa: BLE001 — one bad model must not sink the DS
-                continue
-            if m is not None and not m.hidden:
-                models.append(m)
+        """Visible, name-sorted models of one datasource, built-in models included."""
+        models = await load_visible_models(self._storage, ds_name)
         models.extend(await self._storage.builtin_models(ds_name))
         models.sort(key=lambda m: m.name)
         return models
@@ -606,8 +601,9 @@ class InspectService:
                 })
             return self._markdown_with_warnings(trunc_desc or "", warnings)
 
-        models =await self._load_visible_models(ds_name)
+        models = await self._load_visible_models(ds_name)
         granularities = [g.model_dump(mode="json") for g in (cfg.granularities if cfg is not None else [])]
+        saved = saved_queries_index(models, max_chars=descriptions_max_chars)
 
         if fmt == "json":
             return json.dumps({
@@ -617,7 +613,7 @@ class InspectService:
                 "granularities": granularities,
                 "models": [
                     model_skeleton_fields(
-                        model=m, max_chars=descriptions_max_chars,
+                        model=m, max_chars=descriptions_max_chars, saved_queries=saved.get(m.name),
                     )
                     for m in models
                 ],
@@ -635,7 +631,7 @@ class InspectService:
             md_lines.append(f"\n## `{m.name}`")
             md_lines.append(
                 render_model_skeleton(
-                    model=m, max_chars=descriptions_max_chars,
+                    model=m, max_chars=descriptions_max_chars, saved_queries=saved.get(m.name),
                 )
             )
         return self._markdown_with_warnings("\n".join(md_lines), warnings)
@@ -676,9 +672,12 @@ class InspectService:
             ))
         if compact:
             # DB-free skeleton; short-circuits the full renderer's DB work.
+            saved_queries = saved_queries_index(
+                await self._load_visible_models(ds_name), max_chars=descriptions_max_chars,
+            ).get(model.name)
             if fmt == "json":
                 payload = dict(model_skeleton_fields(
-                    model=model, max_chars=descriptions_max_chars,
+                    model=model, max_chars=descriptions_max_chars, saved_queries=saved_queries,
                 ))
                 payload["canonical_id"] = canonical
                 payload["entity_type"] = "model"
@@ -687,7 +686,7 @@ class InspectService:
                     canonical, False, json.dumps(payload, indent=2, default=str),
                 )
             body = render_model_skeleton(
-                model=model, max_chars=descriptions_max_chars,
+                model=model, max_chars=descriptions_max_chars, saved_queries=saved_queries,
             )
             return _OneResult(canonical, False, self._markdown_with_warnings(
                 f"# `{model.name}`\n{body}", warnings,

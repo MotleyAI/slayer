@@ -20,13 +20,14 @@ from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 from tests import _dev1836_fixtures as fx
 from tests._engine_helpers import build_exec_engine
+from tests._saved_query_refinement_fixtures import BY_REGION_MONTH, build_refine_storage, month
 
 RETIRED_ARGS = {
     "source_model", "measures", "dimensions", "filters", "time_dimensions",
     "order", "limit", "offset", "whole_periods_only", "strict",
     "distinct_dimension_values",
 }
-UNIFIED_ARGS = {"query", "variables", "show_sql", "dry_run", "explain", "format"}
+UNIFIED_ARGS = {"query", "variables", "refine", "show_sql", "dry_run", "explain", "format"}
 
 
 def _is_object_shaped(schema: dict) -> bool:
@@ -391,3 +392,48 @@ class TestExecutionWrappers:
         assert "Dimension attributes:" in out
         # The populated block ends the output (the label is its last line).
         assert out.rstrip().endswith("Order Status")
+
+
+@pytest.fixture
+async def refine_server(tmp_path):
+    """MCP server over the saved-query refinement fixtures."""
+    return create_mcp_server(storage=await build_refine_storage(str(tmp_path)))
+
+
+class TestRunByNameRefine:
+    """``query(query="<saved>", refine={...})`` (spec: mcp/query-tool)."""
+
+    async def test_refine_schema_is_object_shaped(self, refine_server) -> None:
+        tools = {t.name: t for t in await refine_server.list_tools()}
+        assert _is_object_shaped(tools["query"].inputSchema["properties"]["refine"])
+        assert "refine" in (tools["query"].description or "")
+
+    async def test_refined_run(self, refine_server) -> None:
+        out = await _call(refine_server, query="monthly_revenue", refine={"dimensions": ["region"]}, format="json")
+        assert {(r["orders.region"], month(r["orders.ordered_at"])): r["orders.revenue"] for r in _rows(out)} == (
+            BY_REGION_MONTH
+        )
+
+    async def test_refine_with_variables(self, refine_server) -> None:
+        out = await _call(
+            refine_server, query="revenue_by_status", refine={"measures": ["count(*)"]},
+            variables={"status": "refunded"}, format="json",
+        )
+        assert _rows(out) == [{"orders.region": "US", "orders.revenue": 40.0, "orders._count": 1}]
+
+    @pytest.mark.parametrize("query", [
+        {"source_model": "orders", "measures": ["count(*)"]},
+        [{"name": "a", "source_model": "orders", "dimensions": ["region"]}, {"source_model": "a", "dimensions": ["region"]}],
+    ], ids=["object", "list"])
+    async def test_refine_with_non_name_errors(self, refine_server, query: Any) -> None:
+        with pytest.raises(ToolError, match="refine applies only to a saved query run by name"):
+            await _call(refine_server, query=query, refine={"dimensions": ["region"]})
+
+    async def test_empty_refine_with_non_name_errors(self, refine_server) -> None:
+        with pytest.raises(ToolError, match="refine applies only to a saved query run by name"):
+            await _call(refine_server, query={"source_model": "orders", "measures": ["count(*)"]}, refine={})
+
+    async def test_conflict_surfaces_as_error(self, refine_server) -> None:
+        with pytest.raises(ToolError, match="revenue"):
+            await _call(refine_server, query="monthly_revenue",
+                        refine={"measures": [{"formula": "count(*)", "name": "revenue"}]})

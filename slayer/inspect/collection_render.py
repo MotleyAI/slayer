@@ -21,6 +21,7 @@ from slayer.inspect.model_render import (
     _markdown_table,
     _truncate_description,
     model_skeleton_fields,
+    saved_queries_index,
 )
 
 # markdown rule separating per-datasource blocks in compact=False collections
@@ -349,11 +350,14 @@ def datasource_skeleton_fields(
 ) -> dict[str, Any]:
     """The datasource compact=False JSON per-DS element: name + description +
     per-model skeletons."""
+    saved = saved_queries_index(models, max_chars=descriptions_max_chars)
     return {
         "name": name,
         "description": _truncate_description(description, descriptions_max_chars),
         "models": [
-            model_skeleton_fields(model=m, max_chars=descriptions_max_chars)
+            model_skeleton_fields(
+                model=m, max_chars=descriptions_max_chars, saved_queries=saved.get(m.name),
+            )
             for m in models
         ],
     }

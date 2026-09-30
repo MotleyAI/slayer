@@ -439,6 +439,22 @@ class UnknownReferenceError(SlayerError, ValueError):
         ))
 
 
+class RefinementConflictError(SlayerError):
+    """A saved-query refinement gives an entry of the saved final stage a different value."""
+
+    def __init__(self, *, field: str, key: str, saved: str, refined: str, suggestion: str) -> None:
+        self.field = field
+        self.key = key
+        self.saved = saved
+        self.refined = refined
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__,
+            summary=f"The refinement redefines {field} entry {key!r} of the saved query.",
+            extras=[("saved", saved), ("refinement", refined)],
+            suggestion=suggestion,
+        ))
+
+
 class ModeASqlParseError(SlayerError, ValueError):
     """A free-SQL (Mode-A) fragment could not be parsed — now a loud failure (it used to fail soft, silently dropping joins); carries the fragment and its ``location``."""
 

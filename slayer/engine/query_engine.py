@@ -9,7 +9,7 @@ import decimal
 import logging
 import warnings as _warnings_module
 from datetime import datetime
-from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Tuple, TypeVar
 
 import sqlalchemy as sa
 from sqlglot import exp
@@ -55,8 +55,10 @@ from slayer.core.models import (
     join_key_error,
 )
 from slayer.core.query import (
+    QueryRefinement,
     SlayerQuery,
     extract_variable_refs,
+    refine_query,
     render_probe_text,
 )
 from slayer.engine.population import (
@@ -159,6 +161,30 @@ from slayer.storage.base import StorageBackend
 import slayer.engine.bundle_builder
 
 logger = logging.getLogger(__name__)
+
+
+_QueryT = TypeVar("_QueryT")
+
+REFINE_REQUIRES_NAME = (
+    "refine applies only to a saved query run by name; put these clauses in the query object instead"
+)
+
+
+class SavedQueryRun(BaseModel):
+    """A run-by-name input: a query-backed model's name and an optional refinement of its final stage."""
+
+    name: str
+    refinement: QueryRefinement | None = None
+
+
+def resolve_run_input(query: _QueryT, refine: "QueryRefinement | dict | None") -> "_QueryT | SavedQueryRun":
+    """Pack a saved-query name with its refinement; an empty refinement of a name is none."""
+    if refine is None:
+        return SavedQueryRun(name=query) if isinstance(query, str) else query
+    if not isinstance(query, str):
+        raise ValueError(REFINE_REQUIRES_NAME)
+    refinement = QueryRefinement.model_validate(refine) if isinstance(refine, dict) else refine
+    return SavedQueryRun(name=query, refinement=refinement if refinement.model_fields_set else None)
 
 
 class _ResolvedItem(BaseModel):
@@ -807,10 +833,12 @@ class SlayerQueryEngine:
         explain: bool = False,
         data_source: Optional[str] = None,
         cache: bool = False,
+        refine: "QueryRefinement | dict | None" = None,
     ) -> SlayerResponse:
         runtime_kwarg = variables or {}
+        run_input = resolve_run_input(query, refine)
         main_query, named_queries, prefer_data_source, splice_chain = await self._normalize_input(
-            query, runtime_kwarg=runtime_kwarg, prefer_data_source=data_source
+            run_input, runtime_kwarg=runtime_kwarg, prefer_data_source=data_source
         )
         response = await self._execute_pipeline(
             query=main_query,
@@ -821,7 +849,7 @@ class SlayerQueryEngine:
             explain=explain,
             prefer_data_source=prefer_data_source,
             cache=cache,
-            original_input=query,
+            original_input=run_input,
             original_data_source=data_source,
         )
         # The one Python-warnings emission: after the response is built (under
@@ -831,7 +859,7 @@ class SlayerQueryEngine:
 
     async def _normalize_input(  # NOSONAR S3776 — public dispatch over str/dict/list/SlayerQuery; splitting hides the input-shape contract
         self,
-        query: "SlayerQuery | dict | list[SlayerQuery | dict] | str",
+        query: "SlayerQuery | dict | list[SlayerQuery | dict] | str | SavedQueryRun",
         *,
         runtime_kwarg: Dict[str, Any],
         prefer_data_source: Optional[str],
@@ -840,8 +868,10 @@ class SlayerQueryEngine:
         splice_chain)``; running a query-backed model by name seeds the chain with it."""
         # Run-by-name: ``execute("model_name", ...)`` runs the backing query.
         if isinstance(query, str):
+            query = SavedQueryRun(name=query)
+        if isinstance(query, SavedQueryRun):
             return await self._normalize_by_name(
-                name=query,
+                run=query,
                 runtime_kwarg=runtime_kwarg,
                 prefer_data_source=prefer_data_source,
             )
@@ -874,11 +904,12 @@ class SlayerQueryEngine:
     async def _normalize_by_name(
         self,
         *,
-        name: str,
+        run: SavedQueryRun,
         runtime_kwarg: Dict[str, Any],
         prefer_data_source: Optional[str],
     ) -> "tuple[SlayerQuery, Dict[str, SlayerQuery], Optional[str], Tuple[str, ...]]":
         """Normalize a run-by-name input into the shared prepare tuple (``prefer_data_source`` pins the lookup)."""
+        name = run.name
         model = await self.storage.get_model(name, data_source=prefer_data_source)
         if model is None:
             raise ValueError(f"Model '{name}' not found")
@@ -887,8 +918,16 @@ class SlayerQueryEngine:
                 f"Model '{name}' is not query-backed; pass a SlayerQuery "
                 f"with source_model='{name}'."
             )
+        prefer_data_source = model.data_source or prefer_data_source
+        if run.refinement is not None:
+            # Legacy unpinned stages pin from the unrefined stage, so a refinement never moves the source.
+            model = await self._pin_populations(model=model, prefer_data_source=prefer_data_source)
+            *earlier, final = model.source_queries or []
+            model = model.model_copy(update={
+                "source_queries": [*earlier, refine_query(saved=final, refinement=run.refinement)],
+            })
         main_query, named_queries = self._stages_of_model(model=model, runtime_kwarg=runtime_kwarg)
-        return main_query, named_queries, model.data_source or prefer_data_source, (model.name,)
+        return main_query, named_queries, prefer_data_source, (model.name,)
 
     @staticmethod
     def _stages_of_model(
@@ -1438,11 +1477,12 @@ class SlayerQueryEngine:
         variables: Optional[Dict[str, Any]] = None,
         *,
         data_source: Optional[str] = None,
+        refine: "QueryRefinement | dict | None" = None,
     ) -> bool:
         """Remove one cached entry, recomputing its key DB-free; ``True`` if present."""
         runtime_kwarg = variables or {}
         main_query, named_queries, prefer_ds, splice_chain = await self._normalize_input(
-            query, runtime_kwarg=runtime_kwarg, prefer_data_source=data_source
+            resolve_run_input(query, refine), runtime_kwarg=runtime_kwarg, prefer_data_source=data_source
         )
         prepared = await self._prepare_pipeline(
             query=main_query,
@@ -1460,12 +1500,13 @@ class SlayerQueryEngine:
         variables: Optional[Dict[str, Any]] = None,
         *,
         data_source: Optional[str] = None,
+        refine: "QueryRefinement | dict | None" = None,
     ) -> bool:
         """Synchronous wrapper for :meth:`evict`."""
 
         async def _run() -> bool:
             try:
-                return await self.evict(query, variables=variables, data_source=data_source)
+                return await self.evict(query, variables=variables, data_source=data_source, refine=refine)
             finally:
                 await self.aclose()
 
@@ -1866,6 +1907,7 @@ class SlayerQueryEngine:
         explain: bool = False,
         data_source: Optional[str] = None,
         cache: bool = False,
+        refine: "QueryRefinement | dict | None" = None,
     ) -> SlayerResponse:
         """Synchronous wrapper for execute(); disposes per-call async engines in ``finally``."""
 
@@ -1873,7 +1915,7 @@ class SlayerQueryEngine:
             try:
                 return await self.execute(
                     query, variables=variables, dry_run=dry_run,
-                    explain=explain, data_source=data_source, cache=cache,
+                    explain=explain, data_source=data_source, cache=cache, refine=refine,
                 )
             finally:
                 await self.aclose()
@@ -2833,6 +2875,7 @@ class SlayerQueryEngine:
         """Dry-run-validate a query-backed model → copy with cache fields populated (undefaulted ``{var}`` → ``"0"``)."""
         if not (model.source_queries or []):
             return model
+        model = await self._pin_populations(model=model, prefer_data_source=None)
         virtual = await self._expand_query_backed_model(model=model)
         return model.model_copy(update={
             "columns": list(virtual.columns),
@@ -2842,6 +2885,37 @@ class SlayerQueryEngine:
             # before expanding the model.
             "data_source": virtual.data_source,
         })
+
+    async def _pin_populations(self, *, model: SlayerModel, prefer_data_source: Optional[str]) -> SlayerModel:
+        """``model`` with each rootless stage's inferred population written as its ``source_model``."""
+        stages = list(model.source_queries or [])
+        if all(stage.source_model is not None for stage in stages):
+            return model
+        ordered = topologically_order_stages(stages)
+        localized, displays = localize_stages(ordered)
+        root, named, *_ = await self._infer_populations(
+            query=localized[-1], named_queries={q.name: q for q in localized[:-1] if q.name},
+            prefer_data_source=prefer_data_source, stage_displays=displays,
+        )
+        inferred = {id(ordered[-1]): root.source_model_name}
+        inferred.update(
+            (id(stage), named[loc.name].source_model_name)
+            for stage, loc in zip(ordered, localized[:-1]) if loc.name is not None
+        )
+        stage_names = {stage.name for stage in stages if stage.name}
+        pinned: List[SlayerQuery] = []
+        for stage in stages:
+            if stage.source_model is None:
+                population = inferred[id(stage)]
+                if population in stage_names:
+                    raise ValueError(
+                        f"Stage {stage.name or '(final)'!r} of saved query {model.name!r} reads model "
+                        f"{population!r}, which is also a stage name in that query; rename the stage "
+                        f"{population!r} so the population can be saved."
+                    )
+                stage = stage.model_copy(update={"source_model": population})
+            pinned.append(stage)
+        return model.model_copy(update={"source_queries": pinned})
 
     async def _resolve_datasource(self, model: SlayerModel) -> DatasourceConfig:
         ds_name = model.data_source

@@ -67,6 +67,9 @@ slayer query '{"source_model": "orders", "measures": ["count(*)"]}' --dry-run
 
 # Show execution plan
 slayer query @query.json --explain
+
+# Run a saved query by name, refined
+slayer query monthly_revenue --refine '{"dimensions": ["region"]}'
 ```
 
 | Flag | Default | Description |
@@ -75,6 +78,7 @@ slayer query @query.json --explain
 | `--format` | `table` | Output format: `table` or `json` |
 | `--dry-run` | | Generate SQL without executing |
 | `--explain` | | Run EXPLAIN ANALYZE on the query |
+| `--refine` | | Model-name form only: JSON (or `@file`) clauses merged into the saved query's final stage |
 
 ### `slayer ingest`
 

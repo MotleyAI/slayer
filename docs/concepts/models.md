@@ -421,12 +421,18 @@ This saves the query structure in `model.source_queries`, saves any defaults in 
 
 `create_model_from_query` accepts a single `SlayerQuery` or a list of stages; for multi-stage queries, every non-final stage must have a `name` so it can be referenced. Stages form a DAG: any stage may use a *prior* named sibling as `source_model` or as `joins.target_model`. Forward and self references are rejected.
 
-### Two ways to use a saved query
+### Three ways to use a saved query
 
 Run the backing query directly by name — returns the final-stage result:
 
 ```python
 await engine.execute("monthly_revenue", variables={"region": "US"})
+```
+
+Run it by name with extra clauses merged into its final stage (see [Refining a saved query](queries.md#refining-a-saved-query)):
+
+```python
+await engine.execute("monthly_revenue", refine={"dimensions": ["region"]})
 ```
 
 Or use the saved result as a model in another query:
