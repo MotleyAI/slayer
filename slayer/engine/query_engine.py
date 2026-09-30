@@ -1230,6 +1230,8 @@ class SlayerQueryEngine:
             inferred_data_source = inferred_data_source or stage_data_source
 
         population = query.source_model_name
+        if population in stage_displays:
+            population = stage_displays[population].name
         if is_spine_query(query) and population != TIME_SPINE_MODEL:
             population = f"{TIME_SPINE_MODEL} × {population}"
         return query, rewritten, population, inferred, inferred_data_source
