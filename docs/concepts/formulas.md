@@ -25,6 +25,8 @@ avg(customers.score)  — cross-model: AVG of "score" from the joined "customers
 
 Aggregations are used everywhere measures appear: in `measures`, in arithmetic expressions, in transform function arguments, and in filters. The same call is valid in every position, with the author's text preserved on save. The `first`/`last` disambiguation rules are in [Reference semantics → Aggregation syntax](references.md#aggregation-syntax).
 
+A measure may combine query-dimension values with aggregates (`quantity * count(*)` by `quantity`, `iif(region == 'North', sum(amount), 0)` by `region`), reading each dimension's value per result row; a row-level column that is not a query dimension (`amount + sum(amount)` by `region`) is a typing error.
+
 ### Expression aggregation
 
 An aggregation additionally accepts a same-model scalar **expression** as its
@@ -95,8 +97,9 @@ the query granularity (overlapping windows), equal to it (equivalent to normal
 `sum`/`avg` for that bucket), or smaller than it (only the trailing part of each
 bucket is included).
 
-An empty trailing interval yields 0 for the `count` family and NULL for every other
-aggregation; `first`/`last` pick the earliest/latest interval row by their ranking time
+An aggregate over no rows — an empty trailing interval, or a parent with no rows across a
+join (`count(orders.id)` for a customer without orders) — yields 0 for the `count` family and
+NULL for every other aggregation, including custom and formula-overridden ones; `first`/`last` pick the earliest/latest interval row by their ranking time
 column; and reference-bearing parameters (a column, an attached aggregate, a
 definition-default column) are read on each interval row while literals pass through.
 
@@ -258,12 +261,14 @@ Wrapping a partitioned aggregate in another aggregation re-aggregates its
 row-weighted average would be wrong, and is exactly what this shape avoids).
 The operand may compose several attached aggregates (their grains union), and
 `partition_by=` may name a computed dimension — including one carrying an
-attached aggregate itself. The outer aggregation's parameters (`weight=` and friends) are typed by the operand grain — a cell of the operand dataset (`weighted_avg(sum(amount, partition_by=[city, region]), weight=count(id, partition_by=[city, region]))`), a grained transform over such cells, or a column that grain determines; anything else is a typed error naming the `partition_by=` remedy.
+attached aggregate itself. A `first`/`last` or windowed aggregate is a legal operand too — `sum(last(balance, partition_by=[account_id, customer_id]))` by `customer_id` sums each account's latest balance per customer. The outer aggregation's parameters (`weight=` and friends) are typed by the operand grain — a cell of the operand dataset (`weighted_avg(sum(amount, partition_by=[city, region]), weight=count(id, partition_by=[city, region]))`), a grained transform over such cells, or a column that grain determines; anything else is a typed error naming the `partition_by=` remedy.
+An outer dimension that is a row-level expression over fields the operand grain determines (`city == 'Alpha'` over `[city, region]` cells) partitions the cells exactly.
 An outer dimension not determined by the operand's
 grain resolves per `to_many_handling` (broadcast + warning by default), and an
 operand grain equal to the outer grain is the identity plus a degenerate
 warning naming the `partition_by=` remedy.
 The outer `partition_by=` follows the combined-position rule above: only inside a computed dimension may it be finer than the query dimensions, where the re-aggregation is computed at that grain and broadcast onto its rows.
+An outer dimension or explicit outer `partition_by=` key that the operand's grain determines is attributed even when the query root reaches it only across a to-many join (e.g. a joined model's time bucket); an explicit outer key the grain does not determine is an error outside `associate` mode.
 
 ---
 
@@ -384,7 +389,8 @@ A transform can also sit inside arithmetic or a scalar call beside other aggrega
 
 `consecutive_periods(predicate)` evaluates a predicate at the query grain and
 returns an integer streak length for the current row. False or NULL breaks the
-run and returns 0. The input is a Mode-B predicate or numeric value — a
+run and returns 0. A time bucket missing from the query's rows (after the date
+range and row filters) also breaks the run, so the next true bucket restarts at 1. The input is a Mode-B predicate or numeric value — a
 comparison, a null test (`is None` / `is not None`), `BETWEEN`, `IN`, a boolean
 connective, a nested transform, or a bare value
 (truthy when non-NULL and non-zero) — with a boolean-shaped node legal only at

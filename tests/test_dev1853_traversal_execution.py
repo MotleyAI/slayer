@@ -1,4 +1,4 @@
-"""DEV-1853 — end-to-end reverse traversal over forward-only declarations.
+"""End-to-end reverse traversal over forward-only declarations.
 
 A query rooted at the declared target resolves paths over the inverted edge:
 LEFT keeps the root side whole, INNER restricts to matched pairs, oriented
@@ -176,7 +176,7 @@ class TestOrientedCardinalityValues:
         self, fwd_engine,
     ) -> None:
         # orders.status is unattributable from a customer (reverse fan-out).
-        # DEV-1841: default broadcasts the distinct-customer total; associate
+        # Default broadcasts the distinct-customer total; associate
         # dedups each customer's spend once per status, never join-multiplied.
         kw = dict(source_model="customers", dimensions=["orders.status"],
                   measures=[{"formula": "spend:sum", "name": "s"}])
@@ -229,13 +229,6 @@ class TestReverseClosure:
                 measures=[{"formula": "orders.total_amount", "name": "t"}]))
             got = {r["customers.name"]: r["customers.t"] for r in resp.data}
             assert got == CHAIN_AMOUNT_BY_NAME
-
-    async def test_drift_touched_set_expands_in_reverse(self, fwd_engine) -> None:
-        # Schema-drift attribution reaches declaring models from the target
-        # side of their edges.
-        touched = {"regions"}
-        await fwd_engine._expand_join_graph(touched=touched, data_source="test")
-        assert {"customers", "orders"} <= touched
 
     async def test_mode_a_column_over_a_reverse_fanning_path_rejected(self) -> None:
         # A Mode-A derived column across the reverse one_to_many hop is a set per

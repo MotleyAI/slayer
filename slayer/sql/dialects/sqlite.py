@@ -15,14 +15,17 @@ delegates to them through the ``SqlDialect`` interface.
 from __future__ import annotations
 
 import math
+import re
+from calendar import monthrange
+from datetime import date, datetime, timedelta
 
 from sqlglot import exp
 from sqlglot.expressions.core import Expression
 
 from typing import Optional
 
-from slayer.core.enums import DataType, TimeGranularity
-from slayer.sql.dialects.base import SqlDialect, TimeUnit
+from slayer.core.enums import DataType, DatePart, TimeGranularity
+from slayer.sql.dialects.base import SqlDialect, iso_text
 
 
 # ===========================================================================
@@ -64,6 +67,24 @@ def rewrite_sqlite_json_extract(node: Expression) -> Expression:
 
 def _strftime(fmt: str, col_expr: Expression) -> exp.Anonymous:
     return exp.Anonymous(this="STRFTIME", expressions=[exp.Literal.string(fmt), col_expr.copy()])
+
+
+def _strftime_int(fmt: str, col_expr: Expression) -> Expression:
+    return exp.Cast(this=_strftime(fmt, col_expr), to=exp.DataType.build("INTEGER"))
+
+
+def _days_since_monday(col_expr: Expression) -> Expression:
+    """0 for Monday … 6 for Sunday (``%w`` counts from Sunday)."""
+    return exp.Mod(
+        this=exp.Paren(this=exp.Add(this=_strftime_int("%w", col_expr), expression=exp.Literal.number(6))),
+        expression=exp.Literal.number(7),
+    )
+
+
+_STRFTIME_PARTS = {
+    DatePart.YEAR: "%Y", DatePart.MONTH: "%m", DatePart.DAY: "%d", DatePart.DAY_OF_YEAR: "%j",
+    DatePart.HOUR: "%H", DatePart.MINUTE: "%M", DatePart.SECOND: "%S",
+}
 
 
 def _to_anonymous(je: exp.JSONExtract) -> exp.Anonymous:
@@ -346,6 +367,53 @@ def _pow(x, n):
     return math.pow(x, n)
 
 
+_SUB_DAY_DELTAS = {"second": "seconds", "minute": "minutes", "hour": "hours"}
+_MONTH_STEPS = {"month": 1, "quarter": 3, "year": 12}
+_DAY_STEPS = {"day": 1, "week": 7, "week_sunday": 7}
+
+
+_SQLITE_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+_SQLITE_TIME_RE = re.compile(r"[ T]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,6})?)?")
+
+
+def _is_sqlite_temporal_text(value: str) -> bool:
+    if not _SQLITE_DATE_RE.fullmatch(value, 0, 10):
+        return False
+    return len(value) == 10 or _SQLITE_TIME_RE.fullmatch(value, 10) is not None
+
+
+def _parse_sqlite_temporal(value) -> Optional[datetime]:
+    """Stored SQLite date text as a datetime; ``None`` when it is not ISO date/timestamp text."""
+    if not isinstance(value, str) or not _is_sqlite_temporal_text(value):
+        return None
+    try:
+        return datetime.fromisoformat(value) if len(value) > 10 else datetime.fromisoformat(value + " 00:00:00")
+    except ValueError:
+        return None
+
+
+def _slayer_date_add(ts, n, unit):
+    """``ts`` moved by ``n`` ``unit``s, month-based moves clamped at month-end; NULL on NULL / malformed input."""
+    moment = _parse_sqlite_temporal(ts)
+    if moment is None or not isinstance(n, (int, float)) or int(n) != n:
+        return None
+    count = int(n)
+    try:
+        if unit in _SUB_DAY_DELTAS:
+            moved = moment + timedelta(**{_SUB_DAY_DELTAS[unit]: count})
+        elif unit in _DAY_STEPS:
+            moved = moment + timedelta(days=count * _DAY_STEPS[unit])
+        else:
+            total = moment.month - 1 + count * _MONTH_STEPS[unit]
+            year, month = moment.year + total // 12, total % 12 + 1
+            moved = moment.replace(year=year, month=month, day=min(moment.day, monthrange(year, month)[1]))
+    except (OverflowError, ValueError):
+        return None
+    if len(ts) == 10 and unit not in _SUB_DAY_DELTAS:
+        return moved.date().isoformat()
+    return moved.isoformat(sep=" ")
+
+
 def register_sqlite_udfs(dbapi_connection) -> None:
     """Register all SLayer SQLite UDFs on a freshly-opened DBAPI connection.
 
@@ -366,6 +434,7 @@ def register_sqlite_udfs(dbapi_connection) -> None:
     dbapi_connection.create_function("sqrt", 1, _sqrt)
     dbapi_connection.create_function("pow", 2, _pow)
     dbapi_connection.create_function("power", 2, _pow)
+    dbapi_connection.create_function("slayer_date_add", 3, _slayer_date_add)
 
     # --- Aggregate UDFs ---------------------------------------------------
     dbapi_connection.create_aggregate("median", 1, _MedianAgg)
@@ -387,22 +456,9 @@ def register_sqlite_udfs(dbapi_connection) -> None:
 
 
 # ===========================================================================
-# SqliteDialect — overrides for STRFTIME date_trunc, DATETIME-modifier
-# time arithmetic, percentile UDF call shape, JSON rewrite, UDF registration.
+# SqliteDialect — overrides for STRFTIME date parts / truncation, the
+# slayer_date_add UDF, percentile UDF call shape, JSON rewrite, UDF registration.
 # ===========================================================================
-
-
-# DATETIME-modifier unit names (SQLite has no INTERVAL syntax). ``week``
-# is folded into ``days`` because SQLite has no week unit either.
-_WINDOW_UNIT_SQLITE = {
-    "y": "years",
-    "m": "months",
-    "w": "days",
-    "d": "days",
-    "h": "hours",
-    "min": "minutes",
-    "s": "seconds",
-}
 
 
 class SqliteDialect(SqlDialect):
@@ -473,63 +529,57 @@ class SqliteDialect(SqlDialect):
         }
         return _strftime(fmt_map[granularity], col_expr)
 
-    def build_time_offset_expr(
-        self,
-        col_expr: Expression,
-        offset: int,
-        granularity: TimeGranularity | TimeUnit,
-    ) -> Expression:
-        """SQLite uses ``DATE(col, 'N units')`` — no INTERVAL syntax.
+    def promote_to_timestamp(self, expr: Expression) -> Expression:
+        return exp.Anonymous(this="DATETIME", expressions=[expr.copy()])
 
-        Granularity normalization: ``quarter`` → ``val * 3`` of ``months``;
-        ``week`` → ``val * 7`` of ``days`` (SQLite has no week unit).
-        """
-        sqlite_units = {
-            "year": "years", "month": "months", "day": "days",
-            "quarter": "months", "week": "days", "week_sunday": "days",
-            "hour": "hours", "minute": "minutes", "second": "seconds",
-        }
-        granularity = TimeGranularity(granularity)
-        sqlite_unit = sqlite_units[granularity.value]
-        val = offset * 3 if granularity == TimeGranularity.QUARTER else offset
-        sqlite_val = val * 7 if granularity in (TimeGranularity.WEEK, TimeGranularity.WEEK_SUNDAY) else val
-        return exp.Anonymous(
-            this="DATE",
-            expressions=[
-                col_expr,
-                exp.Literal.string(f"{sqlite_val} {sqlite_unit}"),
-            ],
-        )
+    def build_temporal_literal(self, *, value: date, dt: DataType) -> Expression:
+        """SQLite stores dates as text: a plain ISO literal compares and parses like a stored value."""
+        return exp.Literal.string(iso_text(value))
 
-    def duration_interval_exprs(
-        self,
-        parts: list[tuple[int, str]],
-        sign: int = 1,
-    ) -> list[Expression]:
-        """SQLite uses DATETIME-modifier string literals with sign baked in.
-        Week is converted to ``N*7 days`` (no native week unit)."""
-        prefix = "+" if sign >= 0 else "-"
-        return [
-            exp.Literal.string(
-                f"{prefix}{(amount * 7 if unit == 'w' else amount)} "
-                f"{_WINDOW_UNIT_SQLITE[unit]}"
+    def build_current_timestamp(self) -> Expression:
+        return exp.CurrentTimestamp()
+
+    def _date_part(self, part: DatePart, expr: Expression) -> Expression:
+        """STRFTIME components; ISO week/year via the week's Thursday (no ``%V``/``%G`` before 3.46)."""
+        if part is DatePart.QUARTER:
+            return exp.IntDiv(this=exp.Paren(this=exp.Add(
+                this=_strftime_int("%m", expr), expression=exp.Literal.number(2),
+            )), expression=exp.Literal.number(3))
+        if part is DatePart.DAY_OF_WEEK:
+            return exp.Add(this=exp.Paren(this=_days_since_monday(expr)), expression=exp.Literal.number(1))
+        if part in (DatePart.WEEK, DatePart.ISO_YEAR):
+            # Thursday of the ISO week: its year is the ISO year, its day-of-year fixes the week.
+            thursday = exp.Anonymous(this="DATE", expressions=[expr, exp.DPipe(
+                this=exp.Paren(this=exp.Sub(
+                    this=exp.Literal.number(3), expression=exp.Paren(this=_days_since_monday(expr)),
+                )),
+                expression=exp.Literal.string(" days"),
+            )])
+            if part is DatePart.ISO_YEAR:
+                return _strftime_int("%Y", thursday)
+            return exp.Add(
+                this=exp.IntDiv(this=exp.Paren(this=exp.Sub(
+                    this=_strftime_int("%j", thursday), expression=exp.Literal.number(1),
+                )), expression=exp.Literal.number(7)),
+                expression=exp.Literal.number(1),
             )
-            for amount, unit in parts
-        ]
+        return _strftime_int(_STRFTIME_PARTS[part], expr)
 
-    def add_intervals_expr(
-        self,
-        expr: Expression,
-        intervals: list[Expression],
-        sign: int = 1,
+    def _day_gap(self, *, start: Expression, end: Expression) -> Expression:
+        def julian(e: Expression) -> Expression:
+            return exp.Anonymous(this="JULIANDAY", expressions=[exp.Anonymous(this="DATE", expressions=[e])])
+        return exp.Cast(this=exp.Sub(this=julian(end), expression=julian(start)), to=exp.DataType.build("INTEGER"))
+
+    def _second_gap(self, *, start: Expression, end: Expression) -> Expression:
+        return exp.Sub(this=_strftime_int("%s", end), expression=_strftime_int("%s", start))
+
+    def build_date_add(
+        self, *, expr: Expression, count: Expression, unit: TimeGranularity, operand: DataType,
     ) -> Expression:
-        """SQLite wraps as ``DATETIME(expr, mod1, mod2, ...)``.
-
-        The sign is already baked into each modifier by
-        ``duration_interval_exprs`` — the ``sign`` arg is intentionally
-        ignored here.
-        """
-        return exp.Anonymous(this="DATETIME", expressions=[expr, *intervals])
+        """The ``slayer_date_add`` UDF: SQLite's own modifiers overflow past month-end."""
+        return exp.Anonymous(this="slayer_date_add", expressions=[
+            expr.copy(), count.copy(), exp.Literal.string(unit.value),
+        ])
 
     def frame_time_operand(self, expr: Expression) -> Expression:
         """Under numeric affinity a bare-date column (``'2025-02-01'``) string-sorts

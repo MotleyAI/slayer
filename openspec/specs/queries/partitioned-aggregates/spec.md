@@ -254,14 +254,14 @@ attributes at the declared grain by distinct-entity association (per
   correct executed values and no warning
 
 ### Requirement: Combined-consumer partition keys are query dimensions
-Every explicit partition key of a partitioned aggregate consumed in a combined position — as a non-dimension measure, inside an arithmetic / scalar-call composite or transform used as a measure, as a raw ORDER BY target, or as a filter-only reference — SHALL be a query dimension or a time dimension's source column (rewritten to its truncated bucket), for local and cross-model aggregates alike. A violation SHALL fail at plan time with a clear error naming the offending key and the remedy, never with an internal join-back failure. A partitioned aggregate consumed only inside computed dimensions or as a re-aggregation operand keeps the finer-grain exemption (its partition set declares an internal producer grain; the outer aggregation is the combined consumer and carries the rule). A filter or ORDER BY reference to a computed dimension's own aggregate is a row-scope reference, legal at any partition grain: such a filter restricts the aggregated population per base row at the partition grain, and MAY therefore change surviving groups' aggregate values — unlike a combined-scope partitioned-aggregate filter, which only prunes result rows. Whether a filter conjunct or order target is a combined consumer SHALL be decided by its position typing (field vs measure) — a measure-typed conjunct that also references a computed dimension's own aggregate is a combined consumer of that aggregate. The rule SHALL apply identically to the explicit outer partition keys of a re-aggregation: a re-aggregation consumed only inside computed dimensions keeps the finer-grain exemption, and one consumed in any combined position carries the rule; the error SHALL name the consuming position (measure, filter or order), never a dimension.
+Every explicit partition key of a partitioned aggregate consumed in a combined position — as a non-dimension measure, inside an arithmetic / scalar-call composite or transform used as a measure, as a raw ORDER BY target, or as a filter-only reference — SHALL be a query dimension or a time dimension's source column (rewritten to its truncated bucket), for local and cross-model aggregates alike. A violation SHALL fail at plan time with a clear error naming the offending key and the remedy, never with an internal join-back failure. A partitioned aggregate consumed only inside computed dimensions or as a re-aggregation operand keeps the finer-grain exemption (its partition set declares an internal producer grain; the outer aggregation is the combined consumer and carries the rule). A filter or ORDER BY reference to a computed dimension's own aggregate is a row-scope reference, legal at any partition grain: such a filter restricts the aggregated population per base row at the partition grain, and MAY therefore change surviving groups' aggregate values — unlike a combined-scope partitioned-aggregate filter, which only prunes result rows. Whether a filter conjunct or order target is a combined consumer SHALL be decided by its position typing (field vs measure) — a measure-typed conjunct that also references a computed dimension's own aggregate is a combined consumer of that aggregate. A sub-expression equal to a computed dimension's entire expression is instead that dimension's value in every position, measures included — except a transform-bearing computed dimension in measure position, which keeps its query-grain evaluation — (per `queries/positions` › A dimension value reads the dimension's grouped value in every position), and is not a combined consumer of its partition keys; an aggregate nested inside a computed dimension's band or transform remains a combined consumer wherever else it is referenced. The rule SHALL apply identically to the explicit outer partition keys of a re-aggregation: a re-aggregation consumed only inside computed dimensions keeps the finer-grain exemption, and one consumed in any combined position carries the rule; the error SHALL name the consuming position (measure, filter or order), never a dimension.
 
 #### Scenario: Keyless dual-role measure fails cleanly, local and cross-model alike
-- WHEN the same partitioned aggregate — local or cross-model — is consumed by a computed dimension and selected as a measure while a partition key is not among the query dimensions
+- WHEN the same partitioned aggregate — local or cross-model — is consumed inside a computed dimension's band or transform and selected as a measure while a partition key is not among the query dimensions
 - THEN the query fails at plan time with the same clear error in both variants, naming the key and the remedy (add it to dimensions/time_dimensions), never with an internal error
 
 #### Scenario: Keyless raw ORDER BY target fails cleanly
-- WHEN `order` names the raw partitioned aggregate alongside a computed dimension using it and a partition key is not a query dimension
+- WHEN `order` names the raw partitioned aggregate alongside a computed dimension banding or transforming it and a partition key is not a query dimension
 - THEN the query fails at plan time with the same clear partition-key error as the measure role, local and cross-model alike
 
 #### Scenario: Composite and transform consumers are combined positions
@@ -285,12 +285,16 @@ Every explicit partition key of a partitioned aggregate consumed in a combined p
 - THEN the query executes, the re-aggregation is computed per `(city, region)` cell and broadcast onto its rows, and `amount:sum` by `(region, x)` is correct by executed values
 
 #### Scenario: Re-aggregation outer keys carry the rule in every combined position
-- WHEN the re-aggregation `avg(sum(amount, partition_by=[city, region, product]), partition_by=[city, region])` over dimensions `[region]` (with or without a computed dimension using it) is consumed as a measure, as a raw ORDER BY target, inside an arithmetic measure, inside a transform used as a measure, or in a measure-typed filter conjunct (including one produced by splitting an AND filter)
+- WHEN the re-aggregation `avg(sum(amount, partition_by=[city, region, product]), partition_by=[city, region])` over dimensions `[region]` (with or without a computed dimension banding it) is consumed as a measure, as a raw ORDER BY target, inside an arithmetic measure, inside a transform used as a measure, or in a measure-typed filter conjunct (including one produced by splitting an AND filter)
 - THEN the query fails at plan time with the partition-key error naming `city` and the consuming position, never with an internal error
 
 #### Scenario: Cross-model re-aggregation outer key carries the rule
 - WHEN a cross-model re-aggregation declares an outer partition key that is not a query dimension and is consumed as a measure
 - THEN the query fails at plan time with the partition-key error naming that key
+
+#### Scenario: An aggregate equal to a whole computed dimension is that dimension's value
+- WHEN a query over dimensions `[region, x]` declares `x` = `amount:sum(partition_by=[city, region])` and consumes `amount:sum(partition_by=[city, region])` as a measure, as an order target, or in the measure-typed filter `amount:sum(partition_by=[city, region]) < amount:sum`
+- THEN the query executes with each position reading `x`, while the same consumers beside a dimension that only bands that aggregate still fail with the partition-key error naming `city`
 
 ### Requirement: Re-aggregation consumes attached operands as datasets
 A partitioned aggregate, an explicitly grained transform, or a composite of them
@@ -322,9 +326,9 @@ aggregation SHALL support the plain scalar aggregation family —
 `sum`, `avg`, `min`, `max`, `count`, `count_distinct`, `median`,
 parametric aggregations, and model-defined custom aggregations; `count` counts
 the operand's cells with a non-null value and `count_distinct` its distinct
-values. The outer aggregation MAY declare its own `partition_by=`, resolved by
-the same attributability and mode rules as its default (query-grain) form, and
-its value behaves as a normal attached value in every consumer context —
+values. The outer aggregation MAY declare its own `partition_by=`, its keys judged
+against the operand dataset per › A re-aggregation's outer grain is judged against
+its operand dataset, and its value behaves as a normal attached value in every consumer context —
 measure, arithmetic or transform input, ORDER BY target, filter-only reference,
 and computed dimension (with an explicit outer grain, per the dimension
 grain-self-containment rule). `first`/`last` over an aggregated first argument
@@ -1204,3 +1208,169 @@ Values below are on the sales graph with `ureg` declared as the computed dimensi
 #### Scenario: Attach-carrying computed dimension in measure and parameter positions fails closed
 - **WHEN** a query over `[spend_band, city]` selects `rank(sum(amount), partition_by=spend_band)`, or a query over `[spend_band]` selects `weighted_avg(amount, weight=rank(sum(amount), partition_by=spend_band))`
 - **THEN** the key binds to the dimension's value and planning fails with a planner error, never an unknown-reference error (target behaviour, DEV-1960: both execute like `sum(amount, partition_by=spend_band)`)
+
+### Requirement: Re-aggregation over ranked and windowed operands
+A partitioned or bare `first`/`last` aggregation and a windowed aggregation SHALL be legal re-aggregation operands and compute like any other operand, per `queries/semantics` › Second-order aggregation over attached values: each ranked operand picks the value at the earliest/latest ranking timestamp per operand cell — honouring an explicit ranking column, else the model's resolved default — and each windowed operand evaluates its trailing window per operand cell, before the outer aggregation consumes the cells. This SHALL hold for every outer aggregation of the plain scalar family, for operands combining several ranked, windowed and plain constituents (each keeping its own ranking key or window), for local and cross-model operands, with or without a query time dimension, in every consumer position (measure, measure-typed filter, order key, arithmetic, transform input, computed dimension with an explicit outer grain, aggregation parameter, nested re-aggregation), and under every `to_many_handling` mode with the usual attributability rules. A ranked or windowed operand SHALL never fail with an internal error; a shape outside this requirement fails with a typed error.
+
+The scenarios use the snapshot fixture: `account_snapshots(account_id, customer_id, snapshot_date, recorded_at, balance)` with default time dimension `snapshot_date`, many-to-one to `customers(id, name)`, holding account 10 (customer 100) balances 100 / 150 / 160 on 2025-01-05 / 01-25 / 02-10; account 11 (customer 100) 50 on 01-10 (recorded 02-01) and 70 on 01-28 (recorded 01-29); account 12 (customer 200) 30 on 01-15; account 13 (customer 200) 40 on 01-20 and NULL on 02-05; customers 100 `A`, 200 `B`, 300 `C` (no snapshots); every other `recorded_at` equals `snapshot_date`.
+
+#### Scenario: Semi-additive last balance summed per customer
+- **WHEN** a query over `account_snapshots` groups by `customer_id` and selects `sum(last(balance, snapshot_date, partition_by=[account_id, customer_id]))`
+- **THEN** by executed values on SQLite and DuckDB customer 100 holds 230 and customer 200 holds 30, never an internal error
+
+#### Scenario: Implicit and explicit ranking columns
+- **WHEN** the same query omits the ranking column, and again names `recorded_at`
+- **THEN** the implicit form returns 230 / 30 and the `recorded_at` form returns 210 / 30
+
+#### Scenario: Outer aggregation family over ranked operands
+- **WHEN** the query selects `avg`, `count` and `sum` over `last(balance, partition_by=[account_id, customer_id])`, and `sum` over the matching `first`
+- **THEN** `avg` is 115 / 30, `count` is 2 / 1 (a NULL latest value is not counted), and `sum(first(...))` is 150 / 70
+
+#### Scenario: Several ranked constituents in one operand
+- **WHEN** the query selects `sum(last(balance, partition_by=[account_id, customer_id]) - first(balance, partition_by=[account_id, customer_id]))`, and separately an operand combining a `last` ranked by `snapshot_date` with a `last` ranked by `recorded_at`
+- **THEN** the difference is 80 / 0, and each `last` in the second operand keeps its own ranking column, by executed values
+
+#### Scenario: Ranked and plain constituents mixed
+- **WHEN** the query selects `sum(last(balance, partition_by=[account_id, customer_id]) + max(balance, partition_by=[account_id, customer_id]))`
+- **THEN** customer 100 holds 460 and customer 200 holds 60
+
+#### Scenario: Ranked operand bucketed by the query time dimension
+- **WHEN** the query adds a month time dimension on `snapshot_date` and selects `sum(last(balance, partition_by=[account_id, customer_id, snapshot_date]))`, with the ranking column explicit and implicit
+- **THEN** both return (100, Jan) 220, (100, Feb) 160, (200, Jan) 70 and (200, Feb) NULL
+
+#### Scenario: Windowed operands
+- **WHEN** a query by `customer_id` and month selects `sum(sum(balance, window='30d'))`, `sum(sum(balance, window='30d', partition_by=[account_id, customer_id]))`, and an operand combining two windowed inners of different durations
+- **THEN** each executes with hand-computed values — the first two equal to the single-stage windowed measure `sum(balance, window='30d')` by the same grain — and each windowed inner keeps its own window
+
+#### Scenario: Every consumer position
+- **WHEN** `sum(last(balance, partition_by=[account_id, customer_id]))` is consumed as a measure, as the measure-typed filter `> 100`, as a descending order key, inside `/ count(*)`, as a `cumsum` input over month (with the bucketed inner), inside a computed dimension `CASE WHEN sum(last(...), partition_by=[customer_id]) > 100 …`, as the `weight=` of `weighted_avg`, with an explicit outer `partition_by=`, and inside `max(...)` with no dimensions
+- **THEN** every position computes by executed values (the filter keeps customer 100; the nested form returns 230) and none raises
+
+#### Scenario: Structural twins share one producer
+- **WHEN** the same ranked operand appears twice in one query
+- **THEN** it is computed once and both consumers read the same values
+
+#### Scenario: Cross-model ranked operand
+- **WHEN** a query rooted at `customers` groups by `name` and selects `sum(last(account_snapshots.balance, partition_by=[account_snapshots.account_id, id]))` and `count` over the same operand
+- **THEN** `sum` is A 230, B 30, C NULL and `count` is A 2, B 1, C 0
+
+#### Scenario: Attributability modes over a ranked operand
+- **WHEN** a query by `customer_id` selects `sum(last(balance, partition_by=[account_id]))`, whose operand grain does not determine `customer_id`
+- **THEN** `broadcast` repeats 260 with its warning, `associate` returns 230 / 30 with its warning, and `error` fails with the typed re-aggregation attributability error
+
+#### Scenario: Associated ranked picks stay a typed refusal
+- **WHEN** a cross-model `first`/`last` must itself be resolved by distinct-entity association
+- **THEN** the query fails with the existing typed association error, never an internal error
+
+### Requirement: A re-aggregation's outer grain is judged against its operand dataset
+A re-aggregation's home is its operand dataset (per `queries/semantics` › Second-order
+aggregation over attached values), so every member of its outer grain — each explicit
+outer `partition_by=` key, else each query dimension of its default grain — SHALL be
+judged once, against the operand dataset's grain, by the determination rule: a grain
+member, or a field reached from a grain member over provably to-one join hops. A member
+the operand grain determines SHALL be attributed — the outer aggregation partitions the
+operand cells by it with exact values — even when the query's root model reaches it only
+across a fanning or unproven join hop (a joined to-many model's column or time bucket).
+A member the operand grain does not determine SHALL resolve by how it was stated: a
+default (query-dimension) member per `to_many_handling` exactly as today (broadcast with
+a self-announcing warning, per-cell association, or the re-aggregation error); an
+explicit `partition_by=` key by per-cell association under `"associate"`, and otherwise
+a typed partition-key error naming the key, the operand grain, and the remedy (add it to
+the inner `partition_by=`, or choose `"associate"`) — an explicit grain is never
+silently broadcast. The re-aggregation's own outer keys SHALL NOT be judged against the
+query's root model; each constituent's and parameter's own partition keys keep their
+existing attributability rules. A query that the operand dataset makes well-typed SHALL
+never fail with an internal error. Adding the re-aggregated measure MUST NOT change the
+result row count or any other column's values, and a population cell with no operand
+cells takes the outer aggregation's empty value (0 for the count family, NULL otherwise).
+
+#### Scenario: Joined to-many time bucket determined by the operand grain
+- **WHEN** a query rooted at `customers` (joined many-to-one from `account_snapshots`)
+  over dimension `name` and a month time dimension on `account_snapshots.snapshot_date`
+  selects `sum(<inner>)` where `<inner>` is `sum`, `max` or `last` of
+  `account_snapshots.balance` with
+  `partition_by=[account_snapshots.account_id, id, account_snapshots.snapshot_date]`
+- **THEN** it executes on SQLite and DuckDB with each `(name, month)` value equal to the
+  sum over that customer's `(account, month)` cells of the inner value — by
+  hand-computed values, and for `sum` and `max` equal to the same query rooted at
+  `account_snapshots` — and a customer with no snapshots keeps its row with a NULL
+  month and a NULL value, never an internal error
+
+#### Scenario: Windowed inner contributes the bucket to the operand grain
+- **WHEN** the same query selects
+  `sum(sum(account_snapshots.balance, window='60d', partition_by=[account_snapshots.account_id, id]))`
+- **THEN** each `(name, month)` value is the sum over that customer's accounts of the
+  trailing 60-day total ending in that month, by hand-computed values on SQLite and
+  DuckDB
+
+#### Scenario: Plain to-many column in the outer grain
+- **WHEN** a query rooted at `customers` over dimensions
+  `[name, account_snapshots.account_id]` selects
+  `sum(max(account_snapshots.balance, partition_by=[account_snapshots.account_id, id]))`
+- **THEN** each `(name, account)` row carries that account's maximum balance, a customer
+  with no accounts keeps its NULL row, and the row set equals the query without the
+  measure
+
+#### Scenario: Outer grain holding only the joined bucket
+- **WHEN** the time-bucket query drops `name` and keeps only the month
+- **THEN** each month carries the sum over all `(account, customer, month)` cells in it,
+  and the row set equals that of `account_snapshots.balance:sum` over the same month
+
+#### Scenario: Associated default dimension
+- **WHEN** the inner is `max(account_snapshots.balance, partition_by=[account_snapshots.account_id, id])`
+  (no bucket) and the query over `name` and the month runs under
+  `to_many_handling: "associate"`
+- **THEN** each `(name, month)` value re-aggregates the customer's account cells
+  associated with that month, with the associated-dimension warning, never an internal
+  error
+
+#### Scenario: Ungrained undetermined dimension resolves per mode unchanged
+- **WHEN** the same query runs under the default mode and under `"error"`
+- **THEN** the default broadcasts the per-customer value across the months with the
+  broadcast warning naming the month (the outer grain excluding it), and `"error"` fails
+  with the re-aggregation attributability error, both exactly as before this change
+
+#### Scenario: Explicit outer key determined by the operand grain
+- **WHEN** a query over `[name, account_snapshots.account_id]` selects
+  `sum(max(account_snapshots.balance, partition_by=[account_snapshots.account_id, id]), partition_by=[account_snapshots.account_id])`
+- **THEN** it executes with each row carrying its account's value, never a partition-key
+  error, though the query root reaches the key only across a fanning hop
+
+#### Scenario: Explicit outer key the operand grain does not determine
+- **WHEN** a query over `region` selects
+  `avg(sum(amount, partition_by=city), partition_by=[region])` (a key the query root
+  reaches over to-one hops), or a query over `name` and the month selects
+  `sum(max(account_snapshots.balance, partition_by=[account_snapshots.account_id, id]), partition_by=[name, account_snapshots.snapshot_date])`
+  (a key the query root reaches only across a fanning hop)
+- **THEN** under the default mode and `"error"` each fails at plan time with the typed
+  partition-key error naming the key, the operand grain and the remedy, and under
+  `"associate"` each executes by per-cell association with hand-computed values
+
+#### Scenario: Positions and outer operators
+- **WHEN** the plain to-many re-aggregation above is consumed as an ORDER BY key, inside
+  an arithmetic measure, as a filter conjunct alongside the same projected measure, or
+  with `count` as the outer operator over dimension `account_snapshots.account_id` alone
+- **THEN** each executes by executed values, the arithmetic and order agree with the
+  plain measure, and the customer without accounts carries 0 under `count`
+
+#### Scenario: Other consumer shapes of an operand-determined outer key
+- **WHEN** the re-aggregation with an operand-determined, fanning-reached outer key is
+  nested one level deeper (a depth-three re-aggregation), used inside a computed
+  dimension with an explicit outer grain, used as a transform input, or passed as an
+  aggregate parameter of another aggregation
+- **THEN** each executes by executed values, while a constituent whose own
+  `partition_by=` crosses a fanning hop from its home still fails with the
+  partition-key error in every mode
+
+#### Scenario: Outer grain determined through an attached-aggregate expression
+- **WHEN** a query over `[name, band]` with
+  `band = CASE WHEN max(account_snapshots.balance, partition_by=[account_snapshots.account_id, id]) > 100 THEN 'hi' ELSE 'lo' END`
+  selects `sum(max(account_snapshots.balance, partition_by=[account_snapshots.account_id, id]))`
+- **THEN** each `(name, band)` row carries the sum of that customer's account maxima in
+  the band, by hand-computed values, with no reserved placeholder name in the result or
+  any message
+
+#### Scenario: Keyless outer grain
+- **WHEN** a query rooted at `customers` with no dimensions selects
+  `sum(max(account_snapshots.balance, partition_by=[account_snapshots.account_id, id]))`
+- **THEN** it returns exactly one row carrying the sum over all account cells

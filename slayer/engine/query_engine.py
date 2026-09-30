@@ -43,7 +43,6 @@ from slayer.engine.cardinality import (
     compute_verdict,
     declares_solo_unique,
 )
-from slayer.core.join_walker import neighbors
 from slayer.core.policy import SessionPolicy
 from slayer.core.format import format_number
 from slayer.core.models import (
@@ -55,7 +54,6 @@ from slayer.core.models import (
     join_key_error,
 )
 from slayer.core.query import (
-    ModelExtension,
     SlayerQuery,
     extract_variable_refs,
     render_probe_text,
@@ -94,12 +92,15 @@ from slayer.ir.planned import (
     _iter_plans_with_producers,
     _walk_regroup_attaches,
     emitted_plans,
+    is_spliced,
     plan_has_semi_join_filters,
+    plans_read_clock,
 )
 from slayer.engine.schema_drift import (
     AppliedEntry,
     ApplyDriftResult,
     ApplyError,
+    LiveSnapshotCache,
     ToDeleteEntry,
     validate_datasource,
 )
@@ -144,6 +145,7 @@ from slayer.sql.generator import (
     _finish_statement,
     _user_authored_exemptions,
     generate_planned_stages,
+    read_models,
 )
 from slayer.sql.session_policy import ScopedTable, apply_session_policy
 from slayer.sql.stage_wrapper import build_flat_rename_wrapper
@@ -550,11 +552,14 @@ class _Prepared(BaseModel):
     resolved_data_source: Optional[str] = None
     attributes: Any
     expected_columns: List[str]
-    touched: set
+    # The persisted models the statement reads (drift-attribution scope).
+    touched: Set[str]
     model: SlayerModel
     slack_warnings: List[Any] = PydanticField(default_factory=list)
     population: Optional[str] = None
     population_inferred: bool = False
+    #: The SQL evaluates ``now()`` / ``current_date()``: its result must never be cached.
+    reads_clock: bool = False
 
 
 class _Rendered(BaseModel):
@@ -571,6 +576,8 @@ class _Rendered(BaseModel):
     # The stages the SQL emits (a spliced stage nothing reads is pruned).
     emitted_list: List[PlannedQuery]
     model: SlayerModel
+    # Models whose relations the final statement contains, plus the spliced ones.
+    reads: Set[str] = PydanticField(default_factory=set)
     warnings: List[Any] = PydanticField(default_factory=list)
     population: Optional[str] = None
     population_inferred: bool = False
@@ -617,10 +624,16 @@ class SlayerQueryEngine:
         self._cache = QueryCache(config=cache_config or CacheConfig())
         # Keyed so same-name Snowflake datasources (differing warehouse/role) get distinct clients.
         self._sql_clients: dict[EngineCacheKey, SlayerSQLClient] = {}
-        # Engine-global forced-filter policy; tenant-scopes every generated SQL.
-        self.policy = policy
+        self._policy = policy
         # Column-presence facts; an unconfirmable ``None`` is re-probed, never cached.
         self._column_presence_cache: dict[tuple, bool] = {}
+        # Live-schema facts reused by query-time drift attribution.
+        self._drift_snapshots = LiveSnapshotCache()
+
+    @property
+    def policy(self) -> Optional[SessionPolicy]:
+        """Engine-global forced-filter policy; read-only, so engine-scoped caches are policy-scoped."""
+        return self._policy
 
     @property
     def cache_config(self) -> CacheConfig:
@@ -736,6 +749,7 @@ class SlayerQueryEngine:
 
     async def aclose(self) -> None:
         """Dispose cached clients' async engines (avoids leaking connections); keep the clients."""
+        self._drift_snapshots.clear()
         for client in self._sql_clients.values():
             await client.aclose()
 
@@ -758,6 +772,7 @@ class SlayerQueryEngine:
                     )
         finally:
             self._sql_clients.clear()
+            self._drift_snapshots.clear()
 
     async def execute(
         self,
@@ -912,13 +927,6 @@ class SlayerQueryEngine:
             sql=sql, dialect=dialect,
         )
 
-        # Models whose schema a query-time DBAPI error could be attributed to.
-        touched = self._touched_models_for_plan(
-            bundle=rendered.bundle,
-            planned_list=planned_list,
-            original_source_model=rendered.bundle.source_model,
-        )
-
         return _Prepared(
             sql=sql,
             dialect=dialect,
@@ -926,11 +934,12 @@ class SlayerQueryEngine:
             resolved_data_source=datasource.name,
             attributes=attributes,
             expected_columns=list(expected_columns),
-            touched=touched,
+            touched=rendered.reads,
             model=rendered.model,
             slack_warnings=rendered.warnings,
             population=rendered.population,
             population_inferred=rendered.population_inferred,
+            reads_clock=plans_read_clock(rendered.emitted_list),
         )
 
     async def _plan_and_render(  # NOSONAR S3776 — linear pipeline (localize→infer→bundle→normalize→variables→plan→render); splitting hides the order of operations
@@ -1077,11 +1086,13 @@ class SlayerQueryEngine:
         kept: Set[str] = set()
         sql: Optional[str] = None
         statement: Optional[Any] = None
+        reads: Set[str] = set(bundle.splice_chain)
         with collect_stale_spellings() as render_stale_spellings:
             if as_statement:
                 statement = _build_planned_stages_ast(
                     planned_list, bundle=bundle, dialect=dialect, kept_stages=kept,
                 )
+                reads |= read_models(statement)
             else:
                 sql = generate_planned_stages(
                     planned_queries=planned_list, bundle=bundle, dialect=dialect,
@@ -1089,10 +1100,15 @@ class SlayerQueryEngine:
                     # fit; the read side decodes against the same set.
                     projection_aliases=projection_result_keys(root_planned=planned_list[-1]),
                     kept_stages=kept,
+                    read_set=reads,
                 )
 
         # Warnings come from the stages the SQL emits (a spliced stage nothing reads is pruned).
         plans = emitted_plans(planned_list, kept_stages=kept)
+        reads |= {
+            p.stage_schema.display.model for p in plans
+            if is_spliced(p) and p.stage_schema is not None and p.stage_schema.display is not None
+        }
         emitted_ids = {id(p) for p in plans}
         labels = [
             _plan_label(planned=p, index=i, root=query if p is planned_list[-1] else None)
@@ -1110,7 +1126,7 @@ class SlayerQueryEngine:
         ]))))
         return _Rendered(
             sql=sql, statement=statement, dialect=dialect, datasource=datasource, bundle=bundle,
-            planned_list=planned_list, emitted_list=plans, model=model, warnings=warnings,
+            planned_list=planned_list, emitted_list=plans, model=model, reads=reads, warnings=warnings,
             population=population, population_inferred=population_inferred,
         )
 
@@ -1208,7 +1224,7 @@ class SlayerQueryEngine:
                 population_inferred=prepared.population_inferred,
             )
 
-        use_cache = cache and not dry_run and not explain
+        use_cache = cache and not dry_run and not explain and not prepared.reads_clock
         # Bind the cache once so a concurrent ``cache_config`` reassignment can't
         # split the get / put across two caches.
         cache_obj = self._cache
@@ -1237,7 +1253,7 @@ class SlayerQueryEngine:
                 explained = await client.execute(sql=explain_sql)
             except Exception as exc:
                 await self._maybe_raise_schema_drift(
-                    err=exc, model=prepared.model, touched_models=prepared.touched
+                    err=exc, datasource=prepared.datasource, read_set=prepared.touched
                 )
                 raise
             return SlayerResponse(
@@ -1288,7 +1304,7 @@ class SlayerQueryEngine:
             result = await client.execute(sql=prepared.sql)
         except Exception as exc:
             await self._maybe_raise_schema_drift(
-                err=exc, model=prepared.model, touched_models=prepared.touched
+                err=exc, datasource=prepared.datasource, read_set=prepared.touched
             )
             raise
         # Pass canonical aliases so length-fitted keys are restored.
@@ -1414,9 +1430,10 @@ class SlayerQueryEngine:
 
         return run_sync(_run())
 
-    async def _reexecute_entry(self, entry: _CacheEntry, now: float) -> _CacheEntry:
+    async def _reexecute_entry(self, entry: _CacheEntry, now: float) -> Optional[_CacheEntry]:
         """Re-prepare + re-execute a stale entry, pinning its connection identity via
-        ``override_datasource`` so no config change migrates it; raises if the client is gone."""
+        ``override_datasource`` so no config change migrates it; raises if the client is gone.
+        ``None`` when the query now reads the clock (never cached)."""
         client = self._sql_clients.get(entry.ds_key)
         if client is None:
             raise RuntimeError(
@@ -1436,6 +1453,8 @@ class SlayerQueryEngine:
             prefer_data_source=prefer_ds,
             override_datasource=client.datasource,
         )
+        if prepared.reads_clock:
+            return None
         applicable, refresh_key_values = await self._scan_refresh_key_baselines(
             prepared=prepared, client=client, cache=self._cache
         )
@@ -1543,6 +1562,9 @@ class SlayerQueryEngine:
                     key=key, phase="re_execute", message=str(exc),
                 ))
                 continue
+            if new_entry is None:
+                await self._cache.delete(key)
+                continue
             new_key = QueryCache.make_key(new_entry.sql, new_entry.ds_fingerprint)
             replaced = await self._cache.commit_replace(
                 old_key=key, expected=entry, new_key=new_key, new_entry=new_entry,
@@ -1593,129 +1615,45 @@ class SlayerQueryEngine:
         out = norm.query if norm.query is not None else query
         return out, list(norm.warnings)
 
-    def _touched_models_for_plan(
-        self,
-        *,
-        bundle: ResolvedSourceBundle,
-        planned_list: "list[PlannedQuery]",
-        original_source_model: Optional[SlayerModel],
-    ) -> "set[str]":
-        """Names of every model this query touched, for schema-drift attribution."""
-        touched: set[str] = {m.name for m in bundle.referenced_models}
-        for pq in planned_list:
-            for attach in _walk_regroup_attaches(pq):
-                if attach.producer_root_model:
-                    touched.add(attach.producer_root_model)
-        if original_source_model is not None and original_source_model.source_queries:
-            touched.add(original_source_model.name)
-            touched |= self._collect_query_backed_base_names(original_source_model)
-        return touched
-
-    @staticmethod
-    def _collect_query_backed_base_names(model: SlayerModel) -> "set[str]":
-        """Base model names referenced by a query-backed model's stages (sources + joins)."""
-        out: set[str] = set()
-        if not model.source_queries:
-            return out
-        stages: list[SlayerQuery] = list(model.source_queries)
-        stage_names = {s.name for s in stages if s.name}
-        for stage in stages:
-            sm = stage.source_model
-            joins: list = []
-            if isinstance(sm, str) and sm not in stage_names:
-                out.add(sm)
-            elif isinstance(sm, SlayerModel):
-                out.add(sm.name)
-                joins = sm.joins
-            elif isinstance(sm, ModelExtension):
-                joins = sm.joins or []
-            out.update(j.target_model for j in joins)
-        return out
-
-    async def _load_join_graph_models(
-        self, *, names: "set[str]", data_source: Optional[str]
-    ) -> "Dict[str, SlayerModel]":
-        """Best-effort model load: an unlistable datasource falls back to ``names``."""
-        if data_source is not None:
-            try:
-                names |= set(await self.storage.list_models(data_source))
-            except Exception:
-                pass
-        models_by_name: Dict[str, SlayerModel] = {}
-        for name in names:
-            try:
-                m = await self.storage.get_model(name, data_source=data_source)
-            except Exception:
-                m = None
+    async def _validate_read_set(
+        self, *, datasource: DatasourceConfig, read_set: "Set[str]",
+    ) -> "List[ToDeleteEntry]":
+        """Drift entries for the read persisted models of ``datasource``, over reused live facts."""
+        identities = await self.storage._list_all_model_identities()
+        available = {n for d, n in identities if d == datasource.name}
+        models: List[SlayerModel] = []
+        for name in sorted(read_set & available):
+            m = await self.storage.get_model(name, data_source=datasource.name)
             if m is not None:
-                models_by_name[m.name] = m
-        return models_by_name
-
-    async def _expand_join_graph(
-        self, *, touched: "set[str]", data_source: Optional[str]
-    ) -> None:
-        """Add join-connected models to ``touched`` — either traversal
-        direction."""
-        models_by_name = await self._load_join_graph_models(
-            names=set(touched), data_source=data_source
-        )
-        frontier = list(touched)
-        visited: set[str] = set()
-        while frontier:
-            name = frontier.pop()
-            if name in visited:
-                continue
-            visited.add(name)
-            m = models_by_name.get(name)
-            if m is None:
-                continue
-            for edge in neighbors(model=m, models_by_name=models_by_name):
-                if edge.target_model not in touched:
-                    touched.add(edge.target_model)
-                    frontier.append(edge.target_model)
+                models.append(m)
+        async with self._drift_snapshots.acquire(datasource) as snapshot:
+            return await validate_datasource(
+                datasource=datasource,
+                models=models,
+                sql_clients=self._sql_clients,
+                available_in_ds=available,
+                snapshot=snapshot,
+            )
 
     async def _maybe_raise_schema_drift(
         self,
         *,
         err: BaseException,
-        model: SlayerModel,
-        touched_models: "set[str]",
+        datasource: DatasourceConfig,
+        read_set: "Set[str]",
     ) -> None:
-        """Raise ``SchemaDriftError`` if ``err`` is attributable to drift in the touched
-        models; else return so the caller re-raises. ``validate_models`` errors are swallowed."""
-
+        """Raise ``SchemaDriftError`` if ``err`` is attributable to drift in the read
+        models; else return so the caller re-raises. Attribution errors are swallowed."""
         try:
-            touched = set(touched_models)
-            await self._expand_join_graph(
-                touched=touched, data_source=model.data_source or None
-            )
-            # Cross-DS joins are rejected at resolve time, so attribution only
-            # needs the parent's data_source.
-            data_sources: set[str] = {model.data_source} if model.data_source else set()
-
-            collected: List[Any] = []
-            for ds_name in data_sources or {None}:
-                try:
-                    entries = await self.validate_models(data_source=ds_name)
-                except Exception as inner:
-                    logger.debug(
-                        "validate_models attribution failed for ds=%r: %s",
-                        ds_name,
-                        inner,
-                    )
-                    continue
-                collected.extend(entries)
+            entries = await self._validate_read_set(datasource=datasource, read_set=read_set)
             # An "invalid_sql" entry is not drift evidence — it restates the
             # query failure itself, so the original error must propagate.
             filtered = [
-                e
-                for e in collected
-                if getattr(e, "model_name", None) in touched
-                and getattr(e, "cause", "schema_drift") != "invalid_sql"
+                e for e in entries if getattr(e, "cause", "schema_drift") != "invalid_sql"
             ]
             if filtered:
                 raise SchemaDriftError(
-                    models=sorted(touched),
+                    models=sorted({e.model_name for e in filtered}),
                     to_delete=filtered,
                     original=err,
                 )

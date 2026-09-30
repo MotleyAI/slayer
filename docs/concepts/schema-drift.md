@@ -12,9 +12,11 @@ SLayer surfaces drift as a first-class concept across three behaviours:
 2. **Idempotent re-ingestion** — additive only; never overwrites
    user-customised entries. Returns a combined report of what was added
    plus what `validate_models` says still needs deleting.
-3. **`SchemaDriftError`** — query-time wrap that runs `validate_models`
-   when a query fails and surfaces the structured drift payload instead
-   of the raw DBAPI message.
+3. **`SchemaDriftError`** — query-time wrap that checks for drift when a
+   query fails and surfaces the structured drift payload instead of the
+   raw DBAPI message. It checks only the models the failed statement read,
+   reuses live-schema facts for up to 60 seconds, and its `models` lists
+   the drifted models.
 
 Use `validate_models` to inspect drift; use `slayer validate-models
 --force-clean` (CLI only) to apply the deletes.
@@ -39,6 +41,9 @@ Drift is computed per source mode:
   Treated as a *cascade target*: when validation against the underlying
   datasource produces a column or model drop, any query-backed model that
   transitively references the dropped thing gets a whole-model drop.
+
+A model whose listed table cannot be read, or whose datasource cannot be
+connected to, gets no verdict rather than a drop.
 
 ## Cascade rules
 

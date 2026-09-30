@@ -25,12 +25,14 @@ from typing import Dict, Iterable, Iterator, Optional, Sequence
 
 from pydantic import BaseModel, ConfigDict
 
-from slayer.core.enums import JoinCardinality, JoinType, invert_cardinality
+from slayer.core.enums import DataType, JoinCardinality, JoinType, invert_cardinality
 from slayer.core.errors import AmbiguousJoinPathError, CircularJoinPathError
+from slayer.core.keys import ColumnKey, ColumnSqlKey, ColumnTypeFn, ValueKey, source_anchor_path
 from slayer.core.models import ModelJoin, SlayerModel, join_key_error
 
 __all__ = [
     "OrientedJoin",
+    "aggregation_owner",
     "canonical_path",
     "canonical_token",
     "edges_between",
@@ -410,3 +412,31 @@ def terminal_model(
     if chain is None:
         return None
     return models.get(chain[-1].target_model) if chain else root
+
+
+def model_column_type(*, model: SlayerModel, models_by_name: dict[str, SlayerModel]) -> ColumnTypeFn:
+    """Declared types of column leaves rooted at ``model``; ``None`` for anything unresolvable."""
+    def column_type(key: ValueKey) -> Optional[DataType]:
+        if isinstance(key, ColumnSqlKey):
+            owner = model if key.model == model.name else models_by_name.get(key.model)
+            leaf = key.column_name
+        elif isinstance(key, ColumnKey):
+            owner = terminal_model(root=model, path=key.path, models_by_name=models_by_name)
+            leaf = key.leaf
+        else:
+            return None
+        col = owner.get_column(leaf) if owner is not None else None
+        return col.type if col is not None else None
+    return column_type
+
+
+def aggregation_owner(
+    *, root: SlayerModel | None, source: ValueKey, models_by_name: dict[str, SlayerModel],
+) -> SlayerModel | None:
+    """The model declaring ``source``'s aggregation: ``root`` walked along the source
+    anchor; ``None`` with no root or an unresolvable hop."""
+    if root is None:
+        return None
+    return terminal_model(
+        root=root, path=source_anchor_path(source), models_by_name=models_by_name,
+    )

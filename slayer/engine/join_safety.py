@@ -6,7 +6,7 @@ so one direction may be provably to-one while the other fans out."""
 
 from __future__ import annotations
 
-from typing import Callable, Dict, List, Optional, Sequence, Tuple, TypeVar, Union
+from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple, TypeVar
 
 from pydantic import BaseModel
 
@@ -14,10 +14,13 @@ from slayer.core.enums import JoinCardinality, RANKED_AGGREGATIONS, invert_cardi
 from slayer.core.errors import AmbiguousJoinPathError, CircularJoinPathError
 from slayer.core.join_walker import OrientedJoin, resolve_hop, reverse_token, walk
 from slayer.core.keys import (
+    SLOT_COMPOSITE_KINDS,
     AggregateKey,
     ColumnKey,
     ColumnSqlKey,
     Grain,
+    LiteralKey,
+    SqlFragmentKey,
     StarKey,
     TimeTruncKey,
     ValueKey,
@@ -28,10 +31,12 @@ from slayer.core.keys import (
     window_kwarg_of,
 )
 from slayer.core.models import ModelJoin, SlayerModel, join_key_error
+from slayer.core.refs import key_display
 from slayer.core.scope import ModelScope, StageSchema
 from slayer.engine.reference_closure import (
     aggregate_input_closure,
     column_default_key,
+    definition_refs,
     key_closure,
 )
 from slayer.engine.elaborate_env import check_partition_key_attributable
@@ -55,7 +60,7 @@ __all__ = [
 #: An oriented hop, or a declared join read in its declared orientation — both
 #: expose ``cardinality`` and target-side ``join_pairs``, which is all the proof
 #: predicate reads.
-OrientedLike = Union[OrientedJoin, ModelJoin]
+OrientedLike = OrientedJoin | ModelJoin
 
 
 def may_inline_crossing_inputs(crossed_paths: Sequence[tuple]) -> bool:  # NOSONAR(S1172) — crossed_paths is the documented DEV-1688 seam; the cardinality-aware decision reads it, hardcoded False until then.
@@ -263,27 +268,6 @@ def key_host_path(key: ValueKey) -> Tuple[str, ...]:
     return tuple(getattr(key, "path", ()) or ())
 
 
-def _back_path(
-    *, host_name: str, target_path: Tuple[str, ...],
-    models_by_name: Dict[str, SlayerModel],
-) -> Tuple[str, ...]:
-    """Reverse path from the aggregate's root back to the host (per hop, the
-    reverse token: edge name if declared, else source model; then reversed).
-    Falls back to ``(host_name,)`` with no forward path; an ambiguous reverse hop
-    fails closed at walk time."""
-    host_model = models_by_name.get(host_name)
-    host_token = host_model.spelling if host_model is not None else host_name
-    if host_model is None or not target_path:
-        return (host_token,)
-    try:
-        chain = walk(root=host_model, path=target_path, models_by_name=models_by_name)
-    except CircularJoinPathError:
-        return (host_token,)
-    if chain is None:
-        return (host_token,)
-    return tuple(reversed([reverse_token(edge) for edge in chain]))
-
-
 def _common_prefix_len(a: Tuple[str, ...], b: Tuple[str, ...]) -> int:
     """Shared prefix length; token equality is edge identity on canonical paths."""
     n = 0
@@ -301,10 +285,9 @@ def _route_via_common_prefix(
     """The route from the aggregate's root (at ``target_path``) to a
     host-coordinate ``host_path`` (both canonical): step back only to the two paths'
     longest common prefix — the reversed per-hop tokens of ``target_path`` past
-    it — then forward along ``host_path``'s own suffix. When they share nothing
-    this is ``_back_path`` + ``host_path`` (byte-identical to the old round trip);
-    an ambiguous reverse hop propagates from ``walk``, a revisiting one keeps the
-    round trip."""
+    it — then forward along ``host_path``'s own suffix (an empty ``host_path`` gives
+    the reverse path back to the host); an ambiguous reverse hop propagates from
+    ``walk``, a revisiting one keeps the round trip."""
     host_model = models_by_name.get(host_name)
     host_token = host_model.spelling if host_model is not None else host_name
     if host_model is None or not target_path:
@@ -441,6 +424,7 @@ def _reroot_leaf_via_host(
 
 
 _RerootableT = TypeVar("_RerootableT", bound=ValueKey)
+_PATH_LEAVES = (ColumnKey, ColumnSqlKey, StarKey)
 
 
 def reroot_from_root(
@@ -459,14 +443,11 @@ def reroot_from_root(
         )
         if rerooted is not None:
             mapping[r] = rerooted
-    # Strip the target prefix from under-target refs FIRST; off-side refs
-    # (the via-host mapping) never start with the target prefix so they survive
-    # unchanged, then get substituted. Doing it the other way round would let a
-    # direction-agnostic edge-name back-token (== the target token) be stripped.
-    key = reroot_value_key(key, target_path=tp)
-    if mapping:
-        key = substitute_value_keys(key, mapping)
-    return key
+        elif isinstance(r, _PATH_LEAVES):
+            mapping[r] = reroot_value_key(r, target_path=tp)
+    # One pass, each host leaf mapped once: a stripped leaf equal to a host key
+    # is never re-mapped, a via-host leaf never stripped.
+    return substitute_value_keys(key, mapping)
 
 
 UNREACHABLE_NO_PATH = "unreachable from the aggregate's root (no join path from it)"
@@ -524,7 +505,7 @@ def broadcast_reason(
 
 def assert_partition_key_attributable(
     *, key: ValueKey, pk: ValueKey, label: str,
-    scope: Union[ModelScope, StageSchema], bundle: ResolvedSourceBundle,
+    scope: ModelScope | StageSchema, bundle: ResolvedSourceBundle,
 ) -> None:
     """A partition key whose dependency closure crosses a fanning hop is unattributable; the checker raises. Path-less keys are judged from the host, path-bearing from the aggregate's root."""
     # StageSchema binds flat stage outputs — no join graph, so no fanning closure exists.
@@ -617,30 +598,79 @@ def _grain_leaf_name(key: ValueKey) -> Optional[str]:
     return None
 
 
+def undetermined_witness(
+    *, key: ValueKey, leaf_determined: Callable[[ValueKey], bool],
+    anchor_model: SlayerModel, bundle: ResolvedSourceBundle,
+    is_member: Callable[[ValueKey], bool] = lambda _k: False,
+    _visiting: frozenset = frozenset(),
+) -> Optional[ValueKey]:
+    """The first sub-key of ``key`` not determined, else ``None`` — determination
+    closed under row-level combination (Axiom 2.2); unknown kinds fail closed."""
+    if is_member(key) or isinstance(key, LiteralKey):
+        return None
+    if isinstance(key, (ColumnKey, ColumnSqlKey)) and leaf_determined(key):
+        return None
+    visiting = _visiting
+    if isinstance(key, ColumnSqlKey) and key not in _visiting:
+        operands = definition_refs(key=key, anchor_model=anchor_model, bundle=bundle)
+        visiting = _visiting | {key}
+    else:
+        operands = _determination_operands(key)
+    if operands is None:
+        return key
+    for operand in operands:
+        witness = undetermined_witness(
+            key=operand, leaf_determined=leaf_determined, anchor_model=anchor_model,
+            bundle=bundle, is_member=is_member, _visiting=visiting,
+        )
+        if witness is not None:
+            return witness
+    return None
+
+
+def _determination_operands(key: ValueKey) -> Optional[Iterable[ValueKey]]:
+    """The operands whose determination decides ``key``'s, else ``None`` (opaque)."""
+    if isinstance(key, TimeTruncKey):
+        return (key.column,)
+    if isinstance(key, AggregateKey):
+        return key.partition_keys
+    if isinstance(key, (*SLOT_COMPOSITE_KINDS, SqlFragmentKey)):
+        return key.children()
+    return None
+
+
+def grain_witness(
+    *, key: ValueKey, grain: Grain, host_model: SlayerModel,
+    models_by_name: Dict[str, SlayerModel], bundle: ResolvedSourceBundle,
+) -> Optional[ValueKey]:
+    """The first sub-key of ``key`` the dataset grain does not determine (Axiom 1), else ``None``."""
+    return undetermined_witness(
+        key=key, is_member=grain.__contains__, anchor_model=host_model, bundle=bundle,
+        leaf_determined=lambda leaf: _column_pinned(
+            key=leaf, grain=grain, host_model=host_model,
+            models_by_name=models_by_name, bundle=bundle,
+        ),
+    )
+
+
 def grain_determines(
     *, key: ValueKey, grain: Grain, host_model: SlayerModel,
     models_by_name: Dict[str, SlayerModel],
     bundle: ResolvedSourceBundle,
 ) -> bool:
-    """Does a dataset grain determine ``key`` (Axiom 1)? True iff ``key`` is a
-    grain member, an aggregate whose ``partition_by=`` grain ⊆ the grain, or a
-    column whose every dependency-closure path is reached over provably
-    to-one hops from a model the grain pins. A fanning or unanalysable closure is
-    not determined."""
-    if key in grain:
-        return True
-    if isinstance(key, AggregateKey):
-        # Recursive: each partition key must itself be determined — a member, a
-        # to-one column, or a nested aggregate whose grain is determined; an
-        # expression key only as an exact member.
-        return key.partition_keys is not None and all(
-            grain_determines(
-                key=pk, grain=grain, host_model=host_model,
-                models_by_name=models_by_name, bundle=bundle,
-            )
-            for pk in key.partition_keys)
-    if not isinstance(key, (ColumnKey, ColumnSqlKey)):
-        return False
+    """Does a dataset grain determine ``key``? (see ``grain_witness``)"""
+    return grain_witness(
+        key=key, grain=grain, host_model=host_model,
+        models_by_name=models_by_name, bundle=bundle,
+    ) is None
+
+
+def _column_pinned(
+    *, key: ValueKey, grain: Grain, host_model: SlayerModel,
+    models_by_name: Dict[str, SlayerModel], bundle: ResolvedSourceBundle,
+) -> bool:
+    """Every dependency-closure path of a column is pinned by the grain over
+    provably to-one hops; an unanalysable closure is not."""
     closure = key_closure(
         key=key, anchor_model=host_model, anchor_relation=host_model.name,
         bundle=bundle,
@@ -655,6 +685,33 @@ def grain_determines(
             path=p, grain=grain, host_model=host_model, models_by_name=models_by_name,
         )
         for p in _effective_dependency_paths(closure, key_host_path(key))
+    )
+
+
+CANNOT_BE_ANALYSED = "cannot be analysed for determination by the operand grain"
+
+
+def determination_broadcast_reason(
+    *, witness: ValueKey, host_model: SlayerModel,
+    models_by_name: Dict[str, SlayerModel], bundle: ResolvedSourceBundle,
+) -> str:
+    """Why a dimension the operand grain does not determine broadcasts, from its witness."""
+    if not isinstance(witness, (ColumnKey, ColumnSqlKey)) or key_closure(
+        key=witness, anchor_model=host_model, anchor_relation=host_model.name,
+        bundle=bundle,
+    ) is None:
+        return CANNOT_BE_ANALYSED
+    if key_attributable_from_root(
+        key=witness, target_path=(), root_model=host_model, models_by_name=models_by_name,
+        bundle=bundle, host_model=host_model, host_name=host_model.name,
+    ):
+        return (
+            f"not determined by the operand grain — add {key_display(witness)} "
+            f"(or its model's key) to the inner partition_by="
+        )
+    return key_broadcast_reason(
+        key=witness, target_path=(), root_model=host_model, models_by_name=models_by_name,
+        bundle=bundle, host_model=host_model, host_name=host_model.name,
     )
 
 
@@ -714,7 +771,7 @@ def _path_grain_determined(
 
 
 def crossing_local_root_predicate(
-    *, scope: Union[ModelScope, StageSchema], bundle: ResolvedSourceBundle,
+    *, scope: ModelScope | StageSchema, bundle: ResolvedSourceBundle,
 ) -> Callable[[ValueKey], bool]:
     """Predicate for a LOCAL plain aggregate whose inputs cross a join (desugars onto a HOST-rooted producer); windowed / ranked roots excluded."""
     host_model = scope.source_model if isinstance(scope, ModelScope) else None

@@ -7,7 +7,7 @@ from typing import Dict, List, Literal, Optional, Sequence, Tuple, Union
 
 from pydantic import BaseModel, ConfigDict
 
-from slayer.core.enums import RANKED_AGGREGATIONS, DataType
+from slayer.core.enums import DataType
 from slayer.core.keys import (
     AggregateKey,
     ConsumerNode,
@@ -15,11 +15,11 @@ from slayer.core.keys import (
     ValueKey,
     attached_inputs,
     is_cross_model_agg,
+    is_kernel_requiring,
     is_reaggregation_key,
     is_row_attach_root,
     source_anchor_path,
     walk_consumer_positions,
-    window_kwarg_of,
 )
 from slayer.core.scope import ModelScope, StageSchema
 from slayer.engine.compile.shift import _series_mode
@@ -63,9 +63,8 @@ class RootDisposition(BaseModel):
 
 def _is_bare_windowed_or_ranked(k: ValueKey) -> bool:
     return (
-        isinstance(k, AggregateKey) and k.partition_keys is None
+        is_kernel_requiring(k) and k.partition_keys is None
         and not source_anchor_path(k.source)
-        and (window_kwarg_of(k) is not None or k.agg in RANKED_AGGREGATIONS)
     )
 
 
@@ -115,8 +114,7 @@ class _Walker:
         if (
             host is None or not isinstance(k, AggregateKey) or is_reaggregation_key(k)
             or is_cross_model_agg(k) or k.locus == "host" or k.partition_keys is not None
-            or self.crossing(k) or k.agg in RANKED_AGGREGATIONS
-            or window_kwarg_of(k) is not None
+            or self.crossing(k) or is_kernel_requiring(k)
         ):
             return False
         return any(
@@ -156,7 +154,8 @@ class _Walker:
         """Route every node of a measure / order / filter root; a row-scope reference
         to a dimension's own value routes nowhere."""
         opaque = self.classes.opaque(position)
-        for n in walk_consumer_positions(vk, dim_keys=self.classes.dim_keys, opaque=opaque):
+        for n in walk_consumer_positions(vk, dim_keys=self.classes.dim_keys_for(position),
+                                         opaque=opaque):
             if opaque is not None and opaque(n.key):
                 continue
             top = n.key is vk

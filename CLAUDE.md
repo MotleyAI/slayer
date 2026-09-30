@@ -16,7 +16,7 @@ references), `docs/examples/`, `docs/cube/cube_import.md`, `docs/database-suppor
 ## Structure
 
 The package map and per-node docs live in `architecture/`: package→node claims in
-`architecture/index.yaml` (enforced by `tools/arch_check.py`), node descriptions in
+`architecture/index.yaml` (enforced by `la-arch-check` from MotleyAI/living-architecture), node descriptions in
 `architecture/*.arc42.md`, cross-cutting principles in `architecture/system.arc42.md` §3,
 and the enforcement-bundle commands in §4.
 
@@ -37,6 +37,8 @@ poetry run pytest tests/test_sql_generator.py -v     # one file
 poetry run slayer serve                              # REST API server
 poetry run slayer mcp                                # MCP server
 poetry run ruff check slayer/ tests/                 # lint
+uvx --no-build --from living-architecture==0.2.0 la-arch-check     # architecture check (CI's pin)
+uvx --no-build --from living-architecture==0.2.0 la-arch-diagrams  # regenerate arc42 diagrams
 ```
 
 ## Key Conventions
@@ -62,6 +64,13 @@ in the default `-m "not integration"` suite — do NOT mark them
 suite with the CI invocation from `.github/workflows/ci.yml` (`-n logical
 --dist loadscope` + its `--ignore`s) — plain `-n auto` races the notebook
 suite's shared on-disk fixtures.
+
+Backends runnable locally: SQLite and DuckDB (in-process); Postgres via `pytest-postgresql`
+(`factories.postgresql_proc(port=None)` spawns a throwaway server from the local
+`/usr/lib/postgresql/<ver>/bin/pg_ctl` — no Docker); MySQL and ClickHouse via
+testcontainers (Docker). SQL Server also needs `ODBC Driver 18` (skips without it);
+BigQuery / Snowflake need credentials, so only emission tests run locally. MySQL /
+ClickHouse / SQL Server run in CI only in their path-gated `integration-<db>.yml` workflows.
 
 ```bash
 poetry run pytest -m "not integration"                        # unit only

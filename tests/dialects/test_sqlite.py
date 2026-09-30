@@ -7,7 +7,7 @@ from sqlglot import exp
 
 import pytest
 
-from slayer.core.enums import TimeGranularity
+from slayer.core.enums import DataType, TimeGranularity
 from slayer.sql.dialects import sqlite as sqlite_mod
 from slayer.sql.dialects.sqlite import (
     SqliteDialect,
@@ -72,13 +72,13 @@ def test_sqlite_build_date_trunc_week_uses_weekday_modifier() -> None:
 
 
 def test_sqlite_build_date_trunc_week_sunday_emission() -> None:
-    """WEEK_SUNDAY composes SQLite's day offsets around its Monday-week truncation."""
+    """WEEK_SUNDAY composes the date-add primitive around SQLite's Monday-week truncation."""
     d = SqliteDialect()
     col = sqlglot.parse_one("ordered_at", dialect="sqlite")
     out = d.build_date_trunc(col, TimeGranularity.WEEK_SUNDAY)
     sql = out.sql(dialect="sqlite")
     assert sql == (
-        "DATE(DATE(DATE(ordered_at, '1 days'), 'weekday 0', '-6 days'), '-1 days')"
+        "SLAYER_DATE_ADD(DATE(SLAYER_DATE_ADD(ordered_at, 1, 'day'), 'weekday 0', '-6 days'), -1, 'day')"
     )
 
 
@@ -106,6 +106,7 @@ def test_sqlite_build_date_trunc_week_sunday_executes_to_sunday(
     ).sql(dialect="sqlite")
 
     with transaction(":memory:") as con:
+        d.register_udfs(con)
         con.execute("CREATE TABLE t(ts TEXT)")
         con.execute("INSERT INTO t VALUES (?)", (input_date,))
         (got,) = con.execute(f"SELECT {expr} FROM t").fetchone()
@@ -127,73 +128,20 @@ def test_sqlite_build_date_trunc_quarter_uses_case_when() -> None:
     assert "10-01" in sql
 
 
-# build_time_offset_expr — DATE(col, 'N units')
+# build_date_add — the slayer_date_add UDF (SQLite modifiers overflow past month-end)
 
 
-def test_sqlite_build_time_offset_expr_positive_day() -> None:
+@pytest.mark.parametrize("count,unit", [
+    (3, "day"), (-1, "week"), (1, "quarter"),
+    *((-1, u) for u in ("second", "minute", "hour", "week_sunday", "month", "year")),
+])
+def test_sqlite_build_date_add_calls_the_udf(count: int, unit: str) -> None:
     d = SqliteDialect()
-    col = sqlglot.parse_one("created_at", dialect="sqlite")
-    out = d.build_time_offset_expr(col, offset=3, granularity="day")
-    sql = out.sql(dialect="sqlite")
-    assert "DATE(" in sql.upper()
-    assert "'3 days'" in sql
-
-
-def test_sqlite_build_time_offset_expr_negative_week_normalizes_to_days() -> None:
-    """SQLite has no week unit — week→7*days."""
-    d = SqliteDialect()
-    col = sqlglot.parse_one("created_at", dialect="sqlite")
-    out = d.build_time_offset_expr(col, offset=-1, granularity="week")
-    sql = out.sql(dialect="sqlite")
-    assert "'-7 days'" in sql
-
-
-def test_sqlite_build_time_offset_expr_quarter_normalizes_to_months() -> None:
-    """Quarter→3*month."""
-    d = SqliteDialect()
-    col = sqlglot.parse_one("created_at", dialect="sqlite")
-    out = d.build_time_offset_expr(col, offset=1, granularity="quarter")
-    sql = out.sql(dialect="sqlite")
-    assert "'3 months'" in sql
-
-
-# duration_interval_exprs / add_intervals_expr — SQLite uses DATETIME-modifier strings
-
-
-def test_sqlite_duration_interval_exprs_emits_modifier_strings() -> None:
-    """Duration parts become DATETIME-modifier literals like ``'+2 days'``."""
-    d = SqliteDialect()
-    out = d.duration_interval_exprs([(2, "d"), (3, "h")], sign=1)
-    assert len(out) == 2
-    # Every entry is a string literal, NOT an exp.Interval
-    assert all(isinstance(n, exp.Literal) for n in out)
-    sql_parts = [n.sql(dialect="sqlite") for n in out]
-    assert "'+2 days'" in sql_parts
-    assert "'+3 hours'" in sql_parts
-
-
-def test_sqlite_duration_interval_exprs_negative_sign_baked_in() -> None:
-    d = SqliteDialect()
-    out = d.duration_interval_exprs([(1, "d")], sign=-1)
-    assert out[0].sql(dialect="sqlite") == "'-1 days'"
-
-
-def test_sqlite_duration_interval_exprs_week_normalizes_to_days() -> None:
-    """SQLite has no week unit — weeks→N*7 days, sign baked in."""
-    d = SqliteDialect()
-    out = d.duration_interval_exprs([(2, "w")], sign=1)
-    assert out[0].sql(dialect="sqlite") == "'+14 days'"
-
-
-def test_sqlite_add_intervals_expr_wraps_in_datetime_call() -> None:
-    """SQLite wraps as ``DATETIME(expr, mod1, ...)`` and ignores ``sign``."""
-    d = SqliteDialect()
-    col = sqlglot.parse_one("created_at", dialect="sqlite")
-    modifiers = d.duration_interval_exprs([(1, "d")], sign=-1)
-    out = d.add_intervals_expr(col, modifiers, sign=-1)
-    sql = out.sql(dialect="sqlite")
-    assert "DATETIME(" in sql.upper()
-    assert "'-1 days'" in sql
+    col = exp.column("created_at")
+    out = d.build_date_add(
+        expr=col, count=exp.Literal.number(count), unit=TimeGranularity(unit), operand=DataType.DATE,
+    )
+    assert out.sql(dialect="sqlite") == f"SLAYER_DATE_ADD(created_at, {count}, '{unit}')"
 
 
 # build_percentile — scientific notation must survive (Codex finding #3)

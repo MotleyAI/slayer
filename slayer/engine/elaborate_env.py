@@ -6,9 +6,10 @@ algebra type error raises here, each invoked at its family's original checkpoint
 
 from __future__ import annotations
 
+from types import MappingProxyType
 from typing import (
-    Callable, Dict, Iterator, List, Literal, NamedTuple, NoReturn, Optional,
-    Sequence, Tuple, TypeGuard, Union,
+    Callable, Dict, Iterator, List, Literal, Mapping, NamedTuple, NoReturn, Optional,
+    Sequence, Tuple, TypeGuard,
 )
 
 from pydantic import BaseModel, ConfigDict
@@ -18,6 +19,7 @@ from slayer.core.errors import (
     AssociationError,
     CanonicalAliasShadowsColumnError,
     ComputedDimensionError,
+    DateOperandTypeError,
     DimensionTypeError,
     DistinctDimensionValuesError,
     DuplicateMeasureNameError,
@@ -37,7 +39,10 @@ from slayer.core.errors import (
 from slayer.core.formula import TIME_TRANSFORMS
 from slayer.core.window_duration import parse_window_duration
 from slayer.core.keys import (
+    DATE_ADD_COUNT_ARG,
+    DATE_OPERAND_ARGS,
     AggregateKey,
+    ColumnTypeFn,
     ConsumerNode,
     walk_consumer_positions,
     attached_inputs,
@@ -53,11 +58,14 @@ from slayer.core.keys import (
     ColumnSqlKey,
     Grain,
     InKey,
+    LiteralKey,
     ScalarCallKey,
     TimeTruncKey,
     TransformKey,
     ValueKey,
     regroup_root_grain,
+    temporal_type,
+    value_arg_positions,
     source_anchor_path,
     transform_operand_grain,
     walk_value_keys,
@@ -83,7 +91,7 @@ from slayer.ir.terms import (
 )
 
 def home_dataset(
-    *, scope: Union[ModelScope, StageSchema], model: Optional[SlayerModel],
+    *, scope: ModelScope | StageSchema, model: Optional[SlayerModel],
 ) -> Optional[DatasetT]:
     """The query's root dataset: model-backed for a ModelScope, stage-backed otherwise."""
     if isinstance(scope, StageSchema):
@@ -191,6 +199,39 @@ def type_position_conjunct(
     )
 
 
+def check_measures_at_query_grain(prebound: PreboundQuery) -> None:
+    """Every row-level ref of a declared measure outside aggregations is a dimension value."""
+    if prebound.distinct_dimension_values is False:
+        return
+    dim_keys = position_classes(
+        prebound.declared_measures, n_grain=prebound.n_dims + prebound.n_time_dimensions,
+    ).dim_keys_for("measure")
+    for dm in prebound.declared_measures:
+        if dm.is_dimension:
+            continue
+        root = dm.bound.value_key
+        blockers = _measure_blockers(root, dim_keys)
+        if not blockers:
+            continue
+        names = ", ".join(_key_display(k) for k in blockers)
+        if not any(isinstance(k, (AggregateKey, TransformKey)) for k in walk_value_keys(root)):
+            bare = _key_display(blockers[0])
+            raise PositionTypingError(
+                summary=f"'{bare}' needs an aggregation inside an expression. This measure "
+                f"references row-level {names}, not available at the query grain (not "
+                f"among the query dimensions).",
+                location=f"measure {dm.public_name!r}",
+                suggestion=f"Wrap it in an aggregation (e.g., 'sum({bare})', 'avg({bare})'), "
+                f"or add it to the query dimensions. For COUNT(*), use 'count(*)'.",
+            )
+        raise PositionTypingError(
+            summary=f"This measure references row-level {names}, not available at the "
+            f"query grain (not among the query dimensions).",
+            location=f"measure {dm.public_name!r}",
+            suggestion="Add the row-level reference to the query dimensions, or aggregate it.",
+        )
+
+
 
 
 ConsumerPosition = Literal["dimension", "measure", "order", "field_filter", "measure_filter"]
@@ -272,10 +313,17 @@ class PositionClasses(BaseModel):
     row_aggregates: frozenset
     #: Transforms over a grained aggregate inside a computed dimension.
     row_transform_roots: frozenset
+    #: Grain keys containing a transform.
+    transform_dim_keys: frozenset = frozenset()
 
     @property
     def row_attached(self) -> frozenset:
         return self.row_aggregates | self.row_transform_roots
+
+    def dim_keys_for(self, position: ConsumerPosition) -> frozenset:
+        """A position's dimension values; a transform-bearing dimension is none in a
+        measure until DEV-1963 settles a measure transform's grain."""
+        return self.dim_keys - self.transform_dim_keys if position == "measure" else self.dim_keys
 
     def opaque(self, position: ConsumerPosition) -> Optional[Callable[[ValueKey], bool]]:
         """Keys a position's walk yields but never enters: a dimension's transform
@@ -287,12 +335,12 @@ class PositionClasses(BaseModel):
         return None
 
     def combined_admits(self, node: ConsumerNode, *, position: ConsumerPosition, root: ValueKey) -> bool:
-        """A measure skips partition-key subtrees; a measure-typed filter and an order
-        target skip a dimension's grouped value; an order target that is itself a
-        partitioned aggregate is its only consumer; a field-typed filter reference
+        """A measure skips partition-key subtrees; a measure, a measure-typed filter and
+        an order target skip a dimension's grouped value; an order target that is itself
+        a partitioned aggregate is its only consumer; a field-typed filter reference
         to a dimension's own aggregate is row-scope."""
         if position == "measure":
-            return not (node.own_pk or node.attach_pk)
+            return not (node.own_pk or node.attach_pk or node.dim_key)
         if position == "measure_filter":
             return not node.dim_key
         if position == "order":
@@ -310,9 +358,14 @@ def position_classes(declared_measures: Sequence[DeclaredMeasure], *, n_grain: i
         nodes = dimension_nodes(dm.bound.value_key)
         aggs.update(k for k in nodes if is_grained_aggregate(k))
         troots.update(k for k in nodes if is_dimension_transform_root(k))
+    dim_keys = frozenset(dm.bound.value_key for dm in declared_measures[:n_grain])
     return PositionClasses(
-        dim_keys=frozenset(dm.bound.value_key for dm in declared_measures[:n_grain]),
+        dim_keys=dim_keys,
         row_aggregates=frozenset(aggs), row_transform_roots=frozenset(troots),
+        transform_dim_keys=frozenset(
+            d for d in dim_keys
+            if any(isinstance(k, TransformKey) for k in walk_value_keys(d))
+        ),
     )
 
 
@@ -360,7 +413,7 @@ def check_combined_partition_keys(
         if dm.declared_name is not None
     ]
     for root, position, location in consumers:
-        for n in walk_consumer_positions(root, dim_keys=classes.dim_keys):
+        for n in walk_consumer_positions(root, dim_keys=classes.dim_keys_for(position)):
             if not (is_partitioned_consumer(n.key)
                     and classes.combined_admits(n, position=position, root=root)):
                 continue
@@ -829,6 +882,103 @@ def check_time_dimension_column(
         )
 
 
+# Allowlisted scalars whose result is never numeric.
+_TEXT_SCALARS = frozenset({
+    "lower", "upper", "trim", "ltrim", "rtrim", "replace", "substr", "substring", "concat",
+})
+_NON_NUMERIC_TYPES = frozenset({
+    DataType.TEXT, DataType.BOOLEAN, DataType.DATE, DataType.TIMESTAMP, DataType.UNKNOWN,
+})
+
+
+def _operand_display(k: object) -> str:
+    if isinstance(k, LiteralKey):
+        k = k.value
+    if isinstance(k, str):
+        return f"'{k}'"
+    if isinstance(k, ScalarCallKey):
+        return f"{k.name}({', '.join(_operand_display(a) for a in k.args)})"
+    if isinstance(k, ArithmeticKey):
+        if len(k.operands) == 1:
+            return f"{k.op}{_operand_display(k.operands[0])}"
+        return f" {k.op} ".join(_operand_display(o) for o in k.operands)
+    if isinstance(k, (AggregateKey, TransformKey, ColumnKey, ColumnSqlKey, TimeTruncKey)):
+        return _key_display(k)
+    return str(k)
+
+
+_LITERAL_TYPES: Mapping[type, DataType] = MappingProxyType({
+    bool: DataType.BOOLEAN, str: DataType.TEXT,
+})
+_SCALAR_RESULT_TYPES: Mapping[str, DataType] = MappingProxyType({
+    **{name: DataType.TEXT for name in _TEXT_SCALARS}, "like": DataType.BOOLEAN,
+})
+
+
+def _leaf_count_type(key: object, *, column_type: ColumnTypeFn) -> Optional[DataType]:
+    if isinstance(key, (ColumnKey, ColumnSqlKey)):
+        return column_type(key)
+    if isinstance(key, LiteralKey):
+        return _LITERAL_TYPES.get(type(key.value))
+    if isinstance(key, (ArithmeticKey, BetweenKey, InKey)) and is_boolean_shaped(key):
+        return DataType.BOOLEAN
+    if isinstance(key, ScalarCallKey):
+        return _SCALAR_RESULT_TYPES.get(key.name)
+    return None
+
+
+def _count_type_operands(key: object) -> Sequence[object]:
+    if isinstance(key, AggregateKey):
+        return [key.source] if key.agg.lower() in ("min", "max", "first", "last") else []
+    if isinstance(key, ArithmeticKey):
+        return key.operands
+    if isinstance(key, ScalarCallKey):
+        return [key.args[i] for i in value_arg_positions(key.name, len(key.args))]
+    return []
+
+
+def _count_type(key: object, *, column_type: ColumnTypeFn) -> Optional[DataType]:
+    """A non-numeric type the count provably has, else ``None`` (unknown or numeric)."""
+    known = temporal_type(key, column_type=column_type) or _leaf_count_type(key, column_type=column_type)
+    if known is not None:
+        return known
+    for operand in _count_type_operands(key):
+        found = _count_type(operand, column_type=column_type)
+        if found in _NON_NUMERIC_TYPES:
+            return found
+    return None
+
+
+def _check_date_call(key: ScalarCallKey, *, column_type: ColumnTypeFn) -> None:
+    for pos in DATE_OPERAND_ARGS[key.name]:
+        operand = key.args[pos]
+        if temporal_type(operand, column_type=column_type) is None:
+            raise DateOperandTypeError(
+                summary=f"{key.name}() needs a DATE or TIMESTAMP operand; "
+                f"`{_operand_display(operand)}` is not one.",
+                suggestion="Pass a column declared DATE / TIMESTAMP (set Column.type), "
+                "min/max/first/last of one, a date function, now() / current_date(), "
+                "or an ISO literal such as '2024-01-31' or '2024-01-31 10:00:00'.",
+            )
+    if key.name != "date_add":
+        return
+    count = key.args[DATE_ADD_COUNT_ARG]
+    if _count_type(count, column_type=column_type) in _NON_NUMERIC_TYPES:
+        raise DateOperandTypeError(
+            summary=f"date_add() count `{_operand_display(count)}` is not numeric.",
+            suggestion="Pass an integer, or a numeric column or expression "
+            "(it is truncated toward zero).",
+        )
+
+
+def check_date_operands(*, roots: Sequence[ValueKey], column_type: ColumnTypeFn) -> None:
+    """Every date-function operand must be DATE/TIMESTAMP and every ``date_add`` count numeric."""
+    for root in roots:
+        for key in walk_value_keys(root):
+            if isinstance(key, ScalarCallKey) and key.name in DATE_OPERAND_ARGS:
+                _check_date_call(key, column_type=column_type)
+
+
 def _time_search_children(key: ValueKey) -> List[ValueKey]:
     if isinstance(key, AggregateKey):
         # A transform constituent lives in the source (or a composite parameter);
@@ -1238,6 +1388,22 @@ def check_reaggregation_dims_attributable(
         location=f"measure {alias!r}",
         suggestion="Add them to the inner partition_by= so the operand is grained "
         "by them, or choose 'broadcast'/'associate'.",
+    )
+
+
+def check_reaggregation_outer_keys_determined(
+    *, alias: str, mode: str, undetermined_keys: Sequence[str], grain_display: str,
+) -> None:
+    """Explicit outer partition_by keys the operand grain does not determine associate only under 'associate'."""
+    if mode == "associate" or not undetermined_keys:
+        return
+    raise PartitionKeyError(
+        summary=f"The re-aggregation's explicit outer partition_by key(s) "
+        f"{', '.join(undetermined_keys)} are not determined by its operand grain "
+        f"({grain_display}).",
+        location=f"measure {alias!r}",
+        suggestion="Add them to the inner partition_by= so the operand is grained "
+        "by them, or choose to_many_handling='associate'.",
     )
 
 

@@ -13,21 +13,24 @@ runtime quirks beyond the data-shaped Tier-2 set:
 * Cursor type-code mapping for ``snowflake-connector-python``'s
   ``FieldType`` enum (FIXED/REAL/TEXT/DATE/TIMESTAMP/VARIANT/...).
 
-SQL generation quirks (DATE_TRUNC, DATEADD, MEDIAN, PERCENTILE_CONT,
-STDDEV_*, VAR_*, CORR, COVAR_*) all match the Postgres-shaped base —
-sqlglot's snowflake dialect transpiles correctly. The only divergence
-from the base is ``log2_native=False`` (Snowflake has no native LOG2).
+SQL generation mostly matches the Postgres-shaped base; divergences are
+``log2_native=False``, ISO date-part names, ``DATEADD``, and ``DATEDIFF`` for
+second gaps.
 """
 
 from __future__ import annotations
 
 import re as _re
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 from urllib.parse import quote
 
 import sqlalchemy as sa
 import sqlalchemy.engine.url as _sa_url
 
+from sqlglot import exp
+from sqlglot.expressions.core import Expression
+
+from slayer.core.enums import DataType, DatePart, TimeGranularity
 from slayer.sql.dialects.base import SqlDialect
 
 if TYPE_CHECKING:
@@ -193,6 +196,23 @@ class SnowflakeDialect(SqlDialect):
     log2_native: bool = False
     max_identifier_bytes: int | None = 255
     approx_count_distinct_native: bool = True
+
+    _EXTRACT_FIELDS: ClassVar[dict[DatePart, str]] = {
+        **SqlDialect._EXTRACT_FIELDS,
+        DatePart.ISO_YEAR: "YEAROFWEEKISO", DatePart.WEEK: "WEEKISO",
+        DatePart.DAY_OF_WEEK: "DAYOFWEEKISO", DatePart.DAY_OF_YEAR: "DAYOFYEAR",
+    }
+
+    def _second_gap(self, *, start: Expression, end: Expression) -> Expression:
+        """No interval type: ``DATEDIFF`` of second-aligned timestamps is exact."""
+        return exp.Anonymous(this="DATEDIFF", expressions=[exp.var("SECOND"), start, end])
+
+    def build_date_add(
+        self, *, expr: Expression, count: Expression, unit: TimeGranularity, operand: DataType,
+    ) -> Expression:
+        """``DATEADD`` clamps at month-end, keeps a DATE a DATE for day-or-coarser units."""
+        word = "WEEK" if unit is TimeGranularity.WEEK_SUNDAY else unit.value.upper()
+        return exp.Anonymous(this="DATEADD", expressions=[exp.var(word), count.copy(), expr.copy()])
 
     # ------------------------------------------------------------------
     # Connection URL / engine

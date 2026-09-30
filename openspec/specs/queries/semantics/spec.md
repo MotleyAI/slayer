@@ -330,7 +330,8 @@ metric by association while slicing broadcasts, and `to_many_handling: "associat
 reconciles the two. Associate-mode resolution SHALL warn that the cells' entity
 populations may overlap across the named dimensions and are not additive. Explicit
 `partition_by=` is requested grain and SHALL NOT warn — broadcasting and associating
-alike.
+alike. Warnings and errors SHALL name a dimension by its query name — a named
+dimension's `name`, else its canonical dotted path — never an internal alias.
 
 #### Scenario: Implicit broadcast warns, explicit grain does not
 - **WHEN** one query broadcasts a metric over an unattributable dimension and another
@@ -347,6 +348,14 @@ alike.
   implicitly (no explicit `partition_by=`)
 - **THEN** the response carries a warning naming the metric and the dimensions whose
   cells are not additive, and the same event surfaces as a Python-level warning
+
+#### Scenario: Diagnostics name dimensions by their query name
+- **WHEN** a re-aggregation broadcasts over the joined dimension `customers.regions.name`
+  (e.g. `avg(sum(amount, partition_by=amount))` rooted at `corders`), and another over a
+  named computed dimension `is_p` defined as `product == 'P'`, and each query also runs
+  under `to_many_handling: "error"`
+- **THEN** the broadcast warnings and the errors name `customers.regions.name` and
+  `is_p` — never a `__`-joined path or a generated `grain_…` alias
 
 ### Requirement: Dice–slice correspondence under associate
 Under `to_many_handling: "associate"`, filtering the population to `d = v` SHALL yield
@@ -387,7 +396,14 @@ entity-key grain field additionally determines all of its own model's columns).
 A grain field does not determine its own model's other columns when the grain
 does not fix that model's key — a foreign key does not identify the many-side
 row — and an expression grain field (time bucket, computed dimension) determines
-only itself.
+only itself — as a grain member it pins nothing further. Determination is closed
+under row-level combination (Axiom 2.2): a dimension combining determined operands
+through arithmetic, comparison, scalar functions or conditionals — a literal being
+determined by every grain, a time bucket when the grain determines its column, and an
+embedded aggregate when the grain determines its `partition_by=` members — is itself
+attributable, whatever its spelling.
+A derived column is determined when the grain determines every column its definition
+reads (value and filter), recursively — exactly as its inline expression would be.
 Unattributable dimensions resolve per `to_many_handling` exactly as for
 model-rooted aggregates: broadcast with a self-announcing warning naming the
 dimension and the remedy, per-cell association, or a clear error. Adding a
@@ -497,15 +513,53 @@ column's values.
   degenerate-re-aggregation warning naming both grains and the
   `partition_by=` remedy
 
+#### Scenario: Row-level expression over grain members partitions exactly
+- **WHEN** a query over dimensions `[region, city == 'Alpha']` selects
+  `avg(sum(amount, partition_by=[city, region]))` under each `to_many_handling` mode
+- **THEN** each `(region, city == 'Alpha')` row carries the average of exactly its own
+  city cells — `(North, true)` 30, `(North, false)` 60, `(South, true)` 40,
+  `(South, false)` 100, `(East, false)` 60, Gap's NULL-city cell 12, `(Gap, false)` 8,
+  `(Void, false)` NULL — by executed values on SQLite and DuckDB, with no broadcast or
+  association warning and no error
+
+#### Scenario: Expression over a to-one-determined dimension matches its plain spelling
+- **WHEN** the operand is `sum(amount, partition_by=customer_id)` rooted at `corders` and
+  the query dimension is `customers.regions.name == 'North'`
+- **THEN** the `true` cell carries 35 and the `false` cell 100 — the values the plain
+  `customers.regions.name` dimension gives North and South — by executed values, with no
+  warning
+
+#### Scenario: Aggregate-carrying expression dimension grained by a determined key
+- **WHEN** the same operand is grouped by the dimension
+  `sum(amount, partition_by=customers.regions.name) > 80`
+- **THEN** the `false` cell carries 35 and the `true` cell 100, by executed values, with no
+  warning — identical to grouping by the bare aggregate dimension
+
+#### Scenario: Expression over an undetermined column still resolves per mode
+- **WHEN** a query over dimensions `[region, is_p]`, with `is_p` defined as
+  `product == 'P'`, selects `avg(sum(amount, partition_by=[city, region]))`
+- **THEN** under the default mode each region's value repeats across `is_p` and the
+  broadcast warning names `is_p`, the reason that the operand grain does not determine
+  it, and the `partition_by=` remedy; under `to_many_handling: "error"` the query fails
+  naming `is_p`
+
+#### Scenario: Derived column over grain members partitions like its inline spelling
+- **WHEN** the model declares a derived column `city_upper` defined as `UPPER(city)` and a
+  query over dimensions `[region, city_upper]` selects
+  `avg(sum(amount, partition_by=[city, region]))`
+- **THEN** each row carries the average of exactly its own city cells, identical to the
+  query over `[region, upper(city)]`, by executed values on SQLite and DuckDB, with no warning
+
 ### Requirement: Aggregation parameters are typed by the home dataset's grain
 Every parameter of an aggregation — a keyword or positional parameter (`weight=`,
 `other=`, a custom aggregation's declared parameters) and a parameter supplied by the
 aggregation definition's default — SHALL be typed against the dataset the aggregation
 runs over: with `D` that dataset and `G` its grain, a parameter `P` is legal iff `G`
-determines `P` — `P` is a grain member, an aggregate whose `partition_by=` grain is a
-subset of `G` (a cell value of the same dataset), or a column reached from a grain
-member over provably to-one join hops (per Axiom 1, Determination). A parameter naming a
-derived column is determined only when `G` determines every dependency of that column's
+determines `P` — `P` is a grain member, an aggregate each of whose `partition_by=`
+members `G` determines (a cell value of the same dataset), or a column reached from a
+grain member over provably to-one join hops (per Axiom 1, Determination), determination
+being closed under row-level combination. A parameter naming a
+derived column is determined iff `G` determines every dependency of that column's
 definition, recursively — a derived parameter whose definition crosses a hop `G` does
 not pin is not determined, however its own path is reached. A legal parameter is evaluated once per
 cell of `D` and the aggregation reads that value; the origin of `D`'s rows — a model's
@@ -572,11 +626,27 @@ every consumer position.
 - **THEN** the query executes with each region cell weighted by twice its population, by
   hand-computed executed values on SQLite and DuckDB
 
+#### Scenario: Derived parameter over grain members is determined
+- **WHEN** a query over `[region]` selects
+  `weighted_avg(sum(amount, partition_by=[city, region]), weight=city_len)`, with
+  `city_len` a derived column defined as `LENGTH(city)`
+- **THEN** it executes with each city cell weighted by its name length, by hand-computed
+  executed values on SQLite and DuckDB; the same query with `weight=prod_flag` (a derived
+  column reading `product`) fails with the typed parameter error
+
 #### Scenario: NULL parameter values follow SQL aggregate semantics
 - **WHEN** a legal parameter is NULL for some cells (e.g. a to-one lookup with no match)
 - **THEN** those cells contribute exactly as the underlying SQL aggregate treats NULL
   inputs (a NULL weight contributes nothing to `weighted_avg`), by executed values on
   SQLite and DuckDB
+
+#### Scenario: Attached parameter grained by an expression over home-determined columns
+- **WHEN** a cross-model aggregate rooted at `corders` and homed on `customers` carries an
+  attached parameter whose `partition_by=` names a computed dimension `rid10` defined as
+  `customers.region_id * 10`
+- **THEN** the query executes, by executed values on SQLite and DuckDB, with values
+  identical to the same query with `partition_by=[customers.region_id]` — never a
+  parameter-grain error
 
 ### Requirement: Row-grain aggregation sources
 An aggregation whose source operand combines row-level column references with
@@ -916,3 +986,50 @@ applies exactly as for a single-column source rooted at the home.
   (`hr.back.spend * 1`)
 - **THEN** the query is refused with the circular-join error when it is bound — never
   a reference emitted verbatim into the SQL, and never a later or different failure
+
+### Requirement: Aggregates are virtual models
+An aggregate SHALL behave as a virtual model keyed by its grain: its rows are computed
+from its source by the same joins as any query — a to-one hop that finds no related row
+null-extends, never drops the row — and by the query's row filters, whatever consumes
+it. In an expression its value SHALL be read as a field of that model, joined
+one-to-one on the grain, NULL being a grain value like any other: a NULL grain cell
+receives the virtual model's NULL row, and a virtual-model row with no matching result
+cell contributes nothing. Consequently a source row whose path to a grain dimension is
+broken (an orphan or a dangling reference) counts in the NULL cell of that dimension,
+exactly as it does when the same aggregate is materialised on its own; and the value
+never depends on which dataset roots the query.
+
+#### Scenario: Orphan child rows count in the NULL grain cell
+- **WHEN** a query rooted at `customers` selects `sum(orders.amount)` and
+  `count(orders.id)` by `regions.name`, one customer has no region, and one order has no
+  customer
+- **THEN** the NULL-region cell holds the region-less customer's orders plus the
+  customerless order (47 / 2 on the reference dataset), identically under `broadcast`,
+  `associate` and `error` and with the population inferred, by executed values on
+  SQLite and DuckDB
+
+#### Scenario: Attached value equals the materialised aggregate
+- **WHEN** the same aggregate is saved as a query-backed model grouped by the same grain
+- **THEN** every result cell of the attached aggregate, the NULL cell included, equals
+  that model's row for the cell's grain value, for the query rooted at the population
+  and at the aggregate's source alike, by executed values
+
+#### Scenario: A dangling or partial reference counts like an orphan
+- **WHEN** a child row's foreign key names no existing parent, or a composite foreign
+  key is partially NULL, and the aggregate is grouped by a parent-level dimension
+- **THEN** the row counts in the NULL cell of that dimension exactly as in the
+  materialised aggregate, by executed values
+
+#### Scenario: Multi-hop grain through a broken hop
+- **WHEN** a query rooted at `regions` selects `sum(customers.orders.amount)` by `name`,
+  and one region's name is NULL
+- **THEN** the NULL-name cell equals the materialised aggregate's NULL row — that
+  region's orders together with every order whose path to a region is broken — by
+  executed values
+
+#### Scenario: A row filter narrows the virtual model's rows
+- **WHEN** a query rooted at `orders` under `associate` selects `customers.spend:sum` by
+  `status` with the row filter `channel = 'app'`, and one customer has no orders
+- **THEN** the orderless customer fails the filter on its null-extended row and counts
+  in no cell, and every cell equals the hand-computed aggregate over the customers
+  associated with app orders, by executed values

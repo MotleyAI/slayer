@@ -127,6 +127,16 @@ ROWS: Tuple[LedgerRow, ...] = (
          + AT + "time dimension …"
          + SUGGEST + "Request the same or a nesting-coarser granularity, or bucket the raw column instead.",
          category="checker", family="time-axis", user=True, owner="checker"),
+    _row(module=_EE, function="_check_date_call", exc="DateOperandTypeError",
+         message="…() needs a DATE or TIMESTAMP operand; `…` is not one."
+         + SUGGEST + "Pass a column declared DATE / TIMESTAMP (set Column.type), min/max/first/last of one, "
+         "a date function, now() / current_date(), or an ISO literal such as '2024-01-31' or "
+         "'2024-01-31 10:00:00'.",
+         category="checker", family="date-operand", user=True, owner="checker"),
+    _row(module=_EE, function="_check_date_call", exc="DateOperandTypeError",
+         message="date_add() count `…` is not numeric."
+         + SUGGEST + "Pass an integer, or a numeric column or expression (it is truncated toward zero).",
+         category="checker", family="date-operand", user=True, owner="checker"),
     _row(module=_EE, function="check_time_transforms_resolved", exc="TimeAxisError",
          message="The transform requires an unambiguous time dimension."
          + AT + "transform …"
@@ -148,7 +158,7 @@ ROWS: Tuple[LedgerRow, ...] = (
          + SUGGEST + "Add it to the inner aggregate's partition_by=, or partition by one of: ….",
          category="checker", family="local-partitioned", user=True, owner="checker"),
     _row(module=_SP, function="_assert_attach_covers_producer_grain", exc="ValueError",
-         message="Regroup attach join keys do not match the producer's grouping grain; the join must cover the complete grain or it changes cardinality (DEV-1824).",
+         message="Regroup attach join keys do not match the producer's grouping grain; the join must cover the complete grain or it changes cardinality.",
          category="internal", family="internal", user=False, owner="compiler"),
     _row(module=_EE, function="check_partition_key_attributable", exc="PartitionKeyError",
          message="The partition_by column '…' …; every partition key must be attributable from the aggregate's root."
@@ -258,6 +268,11 @@ ROWS: Tuple[LedgerRow, ...] = (
          + AT + "measure …"
          + SUGGEST + "Add them to the inner partition_by= so the operand is grained by them, or choose 'broadcast'/'associate'.",
          category="checker", family="reaggregation", user=True, owner="checker"),
+    _row(module=_EE, function="check_reaggregation_outer_keys_determined", exc="PartitionKeyError",
+         message="The re-aggregation's explicit outer partition_by key(s) … are not determined by its operand grain (…)."
+         + AT + "measure …"
+         + SUGGEST + "Add them to the inner partition_by= so the operand is grained by them, or choose to_many_handling='associate'.",
+         category="checker", family="reaggregation", user=True, owner="checker"),
     _row(module=_SP, function="_assert_total_routing", exc="ValueError",
          message="Aggregate … in a … received no routing disposition (inline, producer substitution, or explicit rejection) — the planner cannot compile this shape.",
          category="internal", family="internal", user=False, owner="compiler"),
@@ -345,6 +360,14 @@ ROWS: Tuple[LedgerRow, ...] = (
          category="checker", family="positions", user=True, owner="checker"),
     _row(module=_EE, function="type_position_conjunct", exc="PositionTypingError",
          message="This … expression references …, so it is not a field, and measure typing is unavailable because the query has no measure position (distinct_dimension_values=False).",
+         category="checker", family="positions", user=True, owner="checker"),
+    _row(module=_EE, function="check_measures_at_query_grain", exc="PositionTypingError",
+         message="'…' needs an aggregation inside an expression. This measure references row-level …, not available at the query grain (not among the query dimensions).\n  at measure …"
+         + SUGGEST + "Wrap it in an aggregation (e.g., 'sum(…)', 'avg(…)'), or add it to the query dimensions. For COUNT(*), use 'count(*)'.",
+         category="checker", family="positions", user=True, owner="checker"),
+    _row(module=_EE, function="check_measures_at_query_grain", exc="PositionTypingError",
+         message="This measure references row-level …, not available at the query grain (not among the query dimensions).\n  at measure …"
+         + SUGGEST + "Add the row-level reference to the query dimensions, or aggregate it.",
          category="checker", family="positions", user=True, owner="checker"),
     _row(module=_EE, function="check_measure_name_collision", exc="MeasureNameCollidesWithColumnError", message="",
          category="checker", family="names", user=True, owner="checker"),

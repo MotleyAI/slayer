@@ -136,6 +136,27 @@ class TimeGranularity(StrEnum):
         return False
 
 
+class DatePart(StrEnum):
+    """A ``date_part`` extraction; ``week``/``iso_year``/``day_of_week`` follow ISO-8601 (Mon=1…Sun=7)."""
+
+    YEAR = "year"
+    ISO_YEAR = "iso_year"
+    QUARTER = "quarter"
+    MONTH = "month"
+    WEEK = "week"
+    DAY = "day"
+    DAY_OF_WEEK = "day_of_week"
+    DAY_OF_YEAR = "day_of_year"
+    HOUR = "hour"
+    MINUTE = "minute"
+    SECOND = "second"
+
+
+SUB_DAY_GRANULARITIES: frozenset[TimeGranularity] = frozenset({
+    TimeGranularity.SECOND, TimeGranularity.MINUTE, TimeGranularity.HOUR,
+})
+
+
 _GRANULARITY_PARENTS: dict[TimeGranularity, tuple[TimeGranularity, ...]] = {
     TimeGranularity.SECOND: (TimeGranularity.MINUTE,),
     TimeGranularity.MINUTE: (TimeGranularity.HOUR,),
@@ -224,6 +245,11 @@ AXIS_COLLAPSING_TRANSFORMS = frozenset({"first", "last"})
 INTEGER_AGGREGATIONS: frozenset[str] = frozenset({
     "count", "count_distinct", "count_distinct_approx",
 })
+
+
+def builtin_empty_value(aggregation: str) -> Optional[int]:
+    """A built-in aggregation's value over no rows: 0 for the count family, else NULL."""
+    return 0 if aggregation in INTEGER_AGGREGATIONS else None
 # Result is a float in the SAME units as the source (display format inherited).
 FLOAT_SOURCE_UNIT_AGGREGATIONS: frozenset[str] = frozenset({
     "avg", "weighted_avg", "median", "percentile",
