@@ -153,6 +153,10 @@ class TestMeasures:
         merged = merge(saved(measures=[REVENUE]), measures=[{"formula": "sum(amount)", "name": "rev2"}])
         assert [m.name for m in merged.measures or []] == ["revenue", "rev2"]
 
+    def test_unnamed_formula_spelling_a_saved_name_is_a_new_measure(self) -> None:
+        merged = merge(saved(measures=[REVENUE]), measures=["revenue"])
+        assert [(m.name, m.formula) for m in merged.measures or []] == [("revenue", "sum(amount)"), (None, "revenue")]
+
     def test_same_name_different_formula_conflicts(self) -> None:
         message = conflict(saved(measures=[REVENUE]), measures=[{"formula": "count(*)", "name": "revenue"}])
         for part in ("measures", "revenue", "sum(amount)", "count(*)"):

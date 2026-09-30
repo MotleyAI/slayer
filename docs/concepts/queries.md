@@ -519,11 +519,30 @@ await engine.execute("monthly_revenue", variables={"region": "EU"})
 
 This loads the model, runs its `source_queries` stages with the merged variables, and returns the final-stage result. Calling `execute(str)` on a non-query-backed model raises a clear error directing the user to wrap it in a `SlayerQuery` instead.
 
-REST equivalent: `POST /query` with `{"name": "<model>", "variables": {...}}`. Run-by-name also accepts `dry_run` and `explain`; query-defining fields (`source_model`, `measures`, `dimensions`, `filters`, `time_dimensions`, `order`, `limit`, `offset`) are not allowed in this body shape.
+REST equivalent: `POST /query` with `{"name": "<model>", "variables": {...}}`. Run-by-name also accepts `dry_run`, `explain` and `refine`; query-defining fields (`source_model`, `measures`, `dimensions`, `filters`, `time_dimensions`, `order`, `limit`, `offset`) are not allowed next to `name` — put them in `refine`.
 
-CLI equivalent: `slayer query <model_name> [--variables k=v ...] [--dry-run] [--explain]` — when the positional argument doesn't look like JSON (doesn't start with `{` or `[`) and isn't a `@file` reference, it's interpreted as a model name.
+CLI equivalent: `slayer query <model_name> [--refine JSON|@file] [--variables k=v ...] [--dry-run] [--explain]` — when the positional argument doesn't look like JSON (doesn't start with `{` or `[`) and isn't a `@file` reference, it's interpreted as a model name.
 
-MCP equivalent: `query(query="<model>", variables={...}, dry_run=True/False, explain=True/False)` — a bare model-name string is run-by-name execution (a non-query-backed name raises the same error as `execute(str)`).
+MCP equivalent: `query(query="<model>", refine={...}, variables={...}, dry_run=True/False, explain=True/False)` — a bare model-name string is run-by-name execution (a non-query-backed name raises the same error as `execute(str)`).
+
+### Refining a saved query
+
+`refine` merges extra clauses into the saved query's **final stage**, which then runs exactly as if you had written that merged stage by hand:
+
+```python
+await engine.execute("monthly_revenue", refine={"dimensions": ["region"]})         # extra group-by
+await engine.execute("monthly_revenue", refine={"filters": ["amount >= 50"]})      # ANDed with the saved filters
+await engine.execute("monthly_revenue", refine={"order": [{"column": "revenue", "direction": "desc"}], "limit": 1})
+```
+
+- `dimensions` and `measures` are appended; an entry identical to a saved one (`region` ≡ `orders.region`) collapses, and a same-named entry that differs raises `RefinementConflictError`.
+- `time_dimensions` merge per (column, granularity): a refinement may add a `date_range` or `label` the saved one lacks, but a different value conflicts — narrow a saved window with a filter on the time column instead.
+- `filters` AND with the saved filters; `order`, `limit`, `offset`, `main_time_dimension`, `whole_periods_only`, `distinct_dimension_values` and `to_many_handling` replace the saved value (`{"limit": null}` clears a saved limit).
+- `source_model`, `name` and `variables` are not refinable; `refine` with a query object or list is an error.
+
+For a multi-stage saved query only the final stage is refined, so it can use only what the earlier stages project: refining `[{"name": "per_customer", ...}, {"source_model": "per_customer", "measures": [{"formula": "avg(revenue)", "name": "avg_revenue"}]}]` with `{"dimensions": ["region"]}` averages per region, provided `per_customer` projects `region`.
+
+Adding a second granularity of a saved time column (`{"time_dimensions": ["year(ordered_at)"]}` on a monthly query) renames the saved key `orders.ordered_at` to `orders.ordered_at.month`, as in any query with two granularities. A saved query's population is fixed when it is saved (see [Population](#population)), so a refinement never changes it.
 
 ---
 
@@ -538,6 +557,8 @@ MCP equivalent: `query(query="<model>", variables={...}, dry_run=True/False, exp
 infers population `customers` (one row per region present among customers, order totals attached, NULL where a region has no orders) — not "regions that happen to have orders". The Python client and REST responses always carry the effective population as `population` and whether it was inferred as `population_inferred`; MCP output reports them only when the population was inferred.
 
 Inference fails closed with a `PopulationInferenceError` naming the candidates when no single model determines everything, several minimal candidates tie, a dimension's join path is ambiguous, or the referenced models don't scope to exactly one datasource. Name `source_model` explicitly (any model — including a bridge that owns none of the queried items) to override inference.
+
+Saving a query-backed model writes each inferred population into its stored stage as `source_model`, so later refinements and model edits never move it.
 
 Inference is routing-aware: a short-form cross-model dimension (bare `regions.name`) is probed per candidate through the same auto-routing binding applies, so it infers the same population as its full dotted path (`customers.regions.name`) — or fails closed identically.
 

@@ -16,7 +16,7 @@ from slayer.inspect.service import InspectService
 from slayer.mcp.server import create_mcp_server
 from slayer.search.service import SearchService
 from slayer.storage.yaml_storage import YAMLStorage
-from tests._saved_query_refinement_fixtures import DESCRIPTIONS, build_refine_storage
+from tests._saved_query_refinement_fixtures import DESCRIPTIONS, build_refine_storage, call_tool_json
 
 EXTRA_DESCRIPTIONS = {
     "ext_revenue": "Doubled revenue over an extended orders model",
@@ -126,14 +126,15 @@ class TestModelViews:
 
     async def test_inspect_model_tool(self, storage: YAMLStorage) -> None:
         server = create_mcp_server(storage=storage)
-        blocks, _ = await server.call_tool(
-            name="inspect_model", arguments={"model_name": "orders", "format": "json", "sections": ["columns"]},
+        payload = await call_tool_json(
+            server, name="inspect_model", arguments={"model_name": "orders", "format": "json", "sections": ["columns"]},
         )
-        assert "saved_queries" not in json.loads(blocks[0].text)
-        blocks, _ = await server.call_tool(
-            name="inspect_model", arguments={"model_name": "orders", "format": "json", "sections": ["saved_queries"]},
+        assert "saved_queries" not in payload
+        payload = await call_tool_json(
+            server, name="inspect_model",
+            arguments={"model_name": "orders", "format": "json", "sections": ["saved_queries"]},
         )
-        assert _listed(json.loads(blocks[0].text)) == ON_ORDERS
+        assert _listed(payload) == ON_ORDERS
 
 
 class TestSectionSelection:

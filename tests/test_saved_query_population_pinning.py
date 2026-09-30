@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import AsyncIterator
 from typing import Any, Dict, List
 
@@ -16,6 +15,7 @@ from slayer.mcp.server import create_mcp_server
 from slayer.storage.sqlite_conn import transaction
 from tests._dev1994_fixtures import dev1994_engine
 from tests._engine_helpers import seeded_exec_engine
+from tests._saved_query_refinement_fixtures import call_tool_json
 
 REVENUE = {"formula": "sum(orders.amount)", "name": "revenue"}
 # Rootless: infers ``customers``; with an ``orders.status`` filter it would infer ``orders``.
@@ -23,7 +23,7 @@ BY_CUSTOMER: Dict[str, Any] = {"dimensions": ["customers.name"], "measures": [RE
 OK_FILTER = {"filters": ["orders.status = 'ok'"]}
 N = {"formula": "count(*)", "name": "n"}
 # The final stage infers model ``orders``, which a sibling stage is named.
-COLLIDING: List[Dict[str, Any]] = [
+COLLIDING: List[Any] = [
     {"name": "orders", "source_model": "customers", "dimensions": ["name"], "measures": [N]},
     {"dimensions": ["customers.name", "products.title"], "measures": [N]},
 ]
@@ -109,10 +109,10 @@ class TestPinnedOnSave:
             query={"source_model": "orders", "measures": [N]}, name="edited",
         )
         server = create_mcp_server(storage=engine.storage)
-        blocks, _ = await server.call_tool(
-            name="edit_model", arguments={"model_name": "edited", "source_queries": [BY_CUSTOMER]},
+        payload = await call_tool_json(
+            server, name="edit_model", arguments={"model_name": "edited", "source_queries": [BY_CUSTOMER]},
         )
-        assert json.loads(blocks[0].text)["success"] is True
+        assert payload["success"] is True
         (stage,) = await stored_stages(engine, "edited")
         assert stage.source_model == "customers"
 

@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, cast
 
 import pytest
 
@@ -147,6 +148,12 @@ async def refine_engine(dialect: str) -> AsyncGenerator[Tuple[SlayerQueryEngine,
     async with seeded_exec_engine(dialect=dialect, seed=seed, models=[orders_model()]) as (engine, db_path):
         await save_saved_queries(engine)
         yield engine, db_path
+
+
+async def call_tool_json(server: Any, *, name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """JSON payload of an MCP tool call (FastMCP annotates the pre-conversion result type)."""
+    blocks, _ = cast(Any, await server.call_tool(name=name, arguments=arguments))
+    return json.loads(blocks[0].text)
 
 
 def month(value: Any) -> str:

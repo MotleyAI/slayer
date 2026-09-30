@@ -64,8 +64,9 @@ client.query_sync([
     {"source_model": "by_customer", "measures": [{"formula": "avg(amount_sum)"}]},
 ])
 
-# Run-by-name (query-backed model)
+# Run-by-name (query-backed model), optionally refined
 client.query_sync("rev_by_region")
+client.query_sync("rev_by_region", refine={"dimensions": ["status"]})
 
 # Raw rows — opt out of the dim-only auto-dedup. Per-stage in DAG queries.
 client.query_sync({

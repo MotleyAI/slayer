@@ -492,6 +492,11 @@ class TestRunByNameRefine:
         assert resp.status_code == 400
         assert "'refine' requires 'name'" in resp.text
 
+    def test_null_refine_without_name(self, client: TestClient, seeded: YAMLStorage) -> None:
+        resp = client.post("/query", json={"source_model": "orders", "measures": ["count(*)"], "refine": None})
+        assert resp.status_code == 400
+        assert "'refine' requires 'name'" in resp.text
+
     @pytest.mark.parametrize("flat", [{"dimensions": ["region"]}, {"limit": None}, {"source_model": None}])
     def test_flat_fields_next_to_name(self, client: TestClient, seeded: YAMLStorage, flat: dict) -> None:
         resp = client.post("/query", json={"name": "monthly_revenue", **flat})

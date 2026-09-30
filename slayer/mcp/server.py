@@ -26,7 +26,7 @@ from slayer.core.models import (
     ModelMeasure,
     SlayerModel,
 )
-from slayer.core.query import SlayerQuery
+from slayer.core.query import QueryRefinement, SlayerQuery
 from slayer.core.recommend import render_recommendation_markdown
 from slayer.core.warnings import ResponseTruncationWarning
 from slayer import async_utils
@@ -448,6 +448,7 @@ To connect a new database: create_datasource → describe_datasource (verify + l
     async def query(
         query: str | SlayerQuery | list[SlayerQuery],
         variables: dict[str, Any] | None = None,
+        refine: QueryRefinement | None = None,
         show_sql: bool = False,
         dry_run: bool = False,
         explain: bool = False,
@@ -459,6 +460,8 @@ To connect a new database: create_datasource → describe_datasource (verify + l
 
         - **Model name** (string) — run a query-backed saved model by name, e.g. ``"monthly_revenue"``
           (honors ``variables``; every other setting comes from the stored query).
+          ``refine`` merges extra dimensions, measures, filters, order or limit into the saved query's
+          final stage, e.g. ``query(query="monthly_revenue", refine={"dimensions": ["region"]})``.
         - **Query object** (dict) — a single query; per-field documentation is on the SlayerQuery schema.
         - **Multi-stage list** (list of query objects) — a DAG of stages. Every entry except the last
           MUST carry a ``name``; the last entry is the root whose rows are returned. Stages reference
@@ -570,6 +573,9 @@ To connect a new database: create_datasource → describe_datasource (verify + l
             variables: Values for {placeholder} substitutions in filters / model SQL. Also
                 settable per query object; precedence: runtime (top-level) > named-stage >
                 outer-query > model.query_variables.
+            refine: Model-name form only — clauses (dimensions, time_dimensions, measures, filters,
+                order, limit, offset, main_time_dimension, whole_periods_only,
+                distinct_dimension_values, to_many_handling) merged into the saved query's final stage.
             show_sql: When true, include the generated SQL in the response for debugging.
             dry_run: When true, generate and return the SQL without executing it.
             explain: When true, run EXPLAIN ANALYZE and return the query plan.
@@ -595,6 +601,7 @@ To connect a new database: create_datasource → describe_datasource (verify + l
                 variables=variables,
                 dry_run=dry_run,
                 explain=explain,
+                refine=refine,
             )
             if dry_run:
                 return f"SQL:\n{result.sql}"
@@ -724,11 +731,11 @@ To connect a new database: create_datasource → describe_datasource (verify + l
             format: Output format — ``"markdown"`` (default) or ``"json"``.
                 Case-insensitive.
             sections: Subset of ``["columns", "measures", "aggregations",
-                "joins", "samples", "learnings"]``. Default (``None``
-                or empty list) renders all six. Unknown names are ignored
+                "joins", "samples", "learnings", "saved_queries"]``. Default (``None``
+                or empty list) renders all seven. Unknown names are ignored
                 with a warning line at the end of the response. A non-empty
                 list of *only* unknown names resolves to no sections (not
-                all six) — "all sections" is reserved for ``None``/``[]`` so
+                all seven) — "all sections" is reserved for ``None``/``[]`` so
                 a typo can't silently trigger the full expensive payload.
             descriptions_max_chars: When set, every description field (model,
                 column, measure, aggregation) longer than this is truncated

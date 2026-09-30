@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Iterable
 from typing import Any
 
 from sqlalchemy.exc import DatabaseError, OperationalError
@@ -55,7 +56,7 @@ def _is_unsupported_grouping_error(exc: BaseException) -> bool:
 
 # Dropped sections: these collapse to a names-only CSV, the omittable ones vanish.
 _INSPECT_SECTIONS_NAMES_ONLY = ("columns", "measures", "aggregations", "joins")
-_INSPECT_SECTIONS_OMITTABLE = ("samples", "learnings")
+_INSPECT_SECTIONS_OMITTABLE = ("samples", "learnings", "saved_queries")
 _VALID_INSPECT_SECTIONS = _INSPECT_SECTIONS_NAMES_ONLY + _INSPECT_SECTIONS_OMITTABLE
 _TRUNCATION_MARKER = " ... [truncated]"
 _NONE_PLACEHOLDER = "_(none)_"
@@ -411,9 +412,44 @@ def _source_type_for(model: SlayerModel) -> str:
     return "unknown"
 
 
+async def load_visible_models(storage: StorageBackend, ds_name: str | None) -> list[SlayerModel]:
+    """Visible, name-sorted models of one datasource; unloadable models are skipped."""
+    models: list[SlayerModel] = []
+    for name in await storage.list_models(data_source=ds_name):
+        try:
+            m = await storage.get_model(name, data_source=ds_name)
+        except Exception:  # noqa: BLE001 — one bad model must not sink the DS
+            continue
+        if m is not None and not m.hidden:
+            models.append(m)
+    models.sort(key=lambda m: m.name)
+    return models
+
+
+def saved_queries_index(
+    models: Iterable[SlayerModel], *, max_chars: int | None,
+) -> dict[str, list[dict[str, Any]]]:
+    """Model name → the visible saved queries (``name``, ``description``) any of whose stages read it."""
+    index: dict[str, list[dict[str, Any]]] = {}
+    for m in models:
+        if m.hidden or not m.source_queries:
+            continue
+        # Stage names are query-local, so a source naming one is not a model.
+        local = {s.name for s in m.source_queries if s.name} | {m.name}
+        for target in dict.fromkeys(s.source_model_name for s in m.source_queries):
+            if target is not None and target not in local:
+                index.setdefault(target, []).append(
+                    {"name": m.name, "description": _truncate_description(m.description, max_chars)},
+                )
+    return index
+
+
 # Model schema skeleton
 def model_skeleton_fields(
-    *, model: SlayerModel, max_chars: int | None = None,
+    *,
+    model: SlayerModel,
+    max_chars: int | None = None,
+    saved_queries: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Cheap, DB-free structured skeleton of a model.
 
@@ -423,7 +459,7 @@ def model_skeleton_fields(
         f"{model.data_source}.{model.name}" if model.data_source else model.name
     )
     mv = extract_model_variables(model)
-    return {
+    fields: dict[str, Any] = {
         "name": model.name,
         "canonical_id": canonical_id,
         "description": _truncate_description(model.description, max_chars),
@@ -433,6 +469,9 @@ def model_skeleton_fields(
         "joins_to": sorted({j.target_model for j in model.joins}),
         "variables": {"required": mv.required, "optional": mv.optional},
     }
+    if saved_queries:
+        fields["saved_queries"] = saved_queries
+    return fields
 
 
 def _skeleton_csv(names: list[str]) -> str:
@@ -440,10 +479,13 @@ def _skeleton_csv(names: list[str]) -> str:
 
 
 def render_model_skeleton(
-    *, model: SlayerModel, max_chars: int | None = None,
+    *,
+    model: SlayerModel,
+    max_chars: int | None = None,
+    saved_queries: list[dict[str, Any]] | None = None,
 ) -> str:
     """Heading-less, DB-free markdown schema skeleton; the caller prepends the heading."""
-    fields = model_skeleton_fields(model=model, max_chars=max_chars)
+    fields = model_skeleton_fields(model=model, max_chars=max_chars, saved_queries=saved_queries)
     lines: list[str] = []
     if fields["description"]:
         lines.append(fields["description"])
@@ -454,6 +496,15 @@ def render_model_skeleton(
     var_line = _render_variables_line(fields["variables"])
     if var_line:
         lines.append(var_line)
+    if saved_queries:
+        lines.append(f"Saved queries: {', '.join(q['name'] for q in saved_queries)}")
+    return "\n".join(lines)
+
+
+def _saved_queries_markdown(saved_queries: list[dict[str, Any]]) -> str:
+    lines = [f"## Saved queries ({len(saved_queries)})", ""]
+    for q in saved_queries:
+        lines.append(f"- `{q['name']}` — {q['description']}" if q["description"] else f"- `{q['name']}`")
     return "\n".join(lines)
 
 
@@ -800,6 +851,13 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
                 )
             out_sections.append("\n".join(lines))
 
+    saved_queries: list[dict[str, Any]] = []
+    if "saved_queries" in included_set:
+        peers = await load_visible_models(storage, model.data_source)
+        saved_queries = saved_queries_index(peers, max_chars=descriptions_max_chars).get(model.name, [])
+        if saved_queries:
+            out_sections.append(_saved_queries_markdown(saved_queries))
+
     footer = _render_inspect_footer(
         included=included,
         names_only=names_only_sections,
@@ -949,6 +1007,9 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
                     }
                     for memory in relevant_learnings
                 ]
+
+        if saved_queries:
+            payload["saved_queries"] = saved_queries
 
         # Top-level gating-state arrays (only when non-empty)
         if names_only_sections:
