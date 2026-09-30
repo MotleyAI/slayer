@@ -1,0 +1,8 @@
+# Raw tables are created from ../dataset.sql by the runner before `dbt run`.
+sources:
+  - name: raw
+    schema: main
+    tables:
+      - name: regions
+      - name: customers
+      - name: orders

@@ -1,0 +1,8 @@
+# number_agg without multi_stage. The runner loads it alone on top of ../model: a validation error fails the whole schema.
+cubes:
+  - name: orders_agg
+    extends: orders
+    measures:
+      - name: max_amount_agg
+        sql: "MAX({CUBE}.amount)"
+        type: number_agg

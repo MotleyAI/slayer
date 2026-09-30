@@ -169,7 +169,7 @@ Constructs that cannot be expressed exactly are **failed cleanly** — never con
 
 | dbt construct | Why | Workaround |
 | --- | --- | --- |
-| Cumulative `window` (rolling) | Query-grain-dependent re-aggregation | Use `cumsum(measure)` for an unbounded total |
+| Cumulative `window` (rolling) | Query-grain-dependent re-aggregation | Query with `window=` (e.g. `sum(measure, window='30d')`), or `cumsum(measure)` for an unbounded total |
 | Cumulative `grain_to_date` | Reset-at-grain can't bake into a saved measure | `cumsum(measure)` + put the grain dimension in the query |
 | Cumulative `period_agg` ≠ `first` | Only the default running total is exact | Use the default `period_agg` |
 | Derived input `offset_to_grain` | No truncate-to-grain shift transform | Use `cumsum(...)` + grain dimension |
@@ -271,7 +271,7 @@ This lets you promote a silently imported table to first-class visibility once y
 ## Limitations
 
 - **Non-additive dimensions** (`non_additive_dimension`): not converted. Use `last(balance, time_col)` for snapshot measures, or multi-stage queries for complex patterns.
-- **Rolling-window cumulative**: SLayer's `cumsum()` is unbounded; trailing windows are not supported.
+- **Rolling-window cumulative**: not converted; express the trailing window at query time with `window=` (e.g. `sum(measure, window='30d')`).
 - **Grain-to-date cumulative**: not supported.
 - **Conversion metrics**: not supported.
 - **Per-measure `agg_time_dimension`**: SLayer has one `default_time_dimension` per model. Specify at query time.

@@ -1,0 +1,13 @@
+# Base cubes mirroring dataset.sql: plain dimensions, base measures and joins only.
+cubes:
+  - name: regions
+    sql_table: regions
+    joins:
+      - name: customers
+        sql: "{CUBE}.id = {customers.region_id}"
+        relationship: one_to_many
+    dimensions:
+      - {name: id, sql: id, type: number, primary_key: true, public: true}
+      - {name: name, sql: name, type: string}
+    measures:
+      - {name: count, type: count}

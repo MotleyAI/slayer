@@ -1,0 +1,25 @@
+cubes:
+  - name: customers
+    sql_table: customers
+    joins:
+      - name: regions
+        sql: "{CUBE}.region_id = {regions.id}"
+        relationship: many_to_one
+      - name: orders
+        sql: "{CUBE}.id = {orders.customer_id}"
+        relationship: one_to_many
+    dimensions:
+      - {name: id, sql: id, type: number, primary_key: true, public: true}
+      - {name: name, sql: name, type: string}
+      - {name: region_id, sql: region_id, type: number}
+      - {name: city, sql: city, type: string}
+      - {name: tier, sql: tier, type: string}
+      - {name: credit, sql: credit, type: number}
+      - {name: discount, sql: discount, type: number}
+    measures:
+      - {name: count, type: count}
+      - {name: credit_sum, sql: credit, type: sum}
+      - {name: credit_avg, sql: credit, type: avg}
+      - {name: city_count, sql: city, type: count_distinct}
+      # A raw SQL aggregate: Cube cannot see inside it, yet still dedupes it across a fan-out.
+      - {name: credit_raw_sum, sql: "SUM({CUBE}.credit)", type: number}

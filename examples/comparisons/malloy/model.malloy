@@ -1,0 +1,38 @@
+// Malloy sources over dataset.sql; every probe's query is appended to this file.
+
+source: regions is duckdb.table('regions') extend {
+  primary_key: id
+}
+
+source: orders_base is duckdb.table('orders') extend {
+  primary_key: id
+  measure:
+    revenue is amount.sum()
+    order_count is count()
+}
+
+source: customers_base is duckdb.table('customers') extend {
+  primary_key: id
+  join_one: regions with region_id
+}
+
+// customers -> orders is join_many (orders has a primary key, the #1762 path).
+source: customers is customers_base extend {
+  join_many: orders is orders_base on orders.customer_id = id
+  measure: customer_count is count()
+}
+
+source: orders is orders_base extend {
+  join_one: customers is customers_base with customer_id
+  dimension:
+    region is customers.regions.name
+    city is customers.city
+  measure: aov is revenue / order_count
+}
+
+source: orders_flat is duckdb.table('orders_flat') extend {
+  primary_key: id
+  measure:
+    revenue is amount.sum()
+    order_count is count()
+}

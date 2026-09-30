@@ -1,0 +1,13 @@
+name: customers
+data_source: probe
+sql_table: customers
+columns:
+  - {name: id, type: number, primary_key: true}
+  - {name: name, type: string}
+  - {name: region_id, type: number}
+  - {name: city, type: string}
+  - {name: tier, type: string}
+  - {name: credit, type: number}
+  - {name: discount, type: number}
+joins:
+  - {target_model: regions, join_pairs: [[region_id, id]], cardinality: many_to_one}

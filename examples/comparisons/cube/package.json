@@ -1,0 +1,10 @@
+{
+  "name": "slayer-cube-probes",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Cube Core server for the semantic-layer probe suite",
+  "dependencies": {
+    "@cubejs-backend/duckdb-driver": "1.7.46",
+    "@cubejs-backend/server": "1.7.46"
+  }
+}
