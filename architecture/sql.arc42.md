@@ -85,6 +85,7 @@ flowchart TD
     back by a null-safe LEFT JOIN on its complete grain — an absent row reading
     as the aggregate's empty value (semantics Axiom 4) — and substituted into
     expressions by structural identity, never text. [review]
+    [enforced: test:tests/test_dev2006_kernel_operands.py]
 11. **One flat WITH, partitioned by stage**: every statement renders through
     one pipeline with one allocator, each value materialising in the relation
     its planner-assigned stage names; a producer's internal WITH hoists to the
