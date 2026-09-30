@@ -14,10 +14,13 @@ from slayer.core.enums import JoinCardinality, RANKED_AGGREGATIONS, invert_cardi
 from slayer.core.errors import AmbiguousJoinPathError, CircularJoinPathError
 from slayer.core.join_walker import OrientedJoin, resolve_hop, reverse_token, walk
 from slayer.core.keys import (
+    SLOT_COMPOSITE_KINDS,
     AggregateKey,
     ColumnKey,
     ColumnSqlKey,
     Grain,
+    LiteralKey,
+    SqlFragmentKey,
     StarKey,
     TimeTruncKey,
     ValueKey,
@@ -28,10 +31,12 @@ from slayer.core.keys import (
     window_kwarg_of,
 )
 from slayer.core.models import ModelJoin, SlayerModel, join_key_error
+from slayer.core.refs import key_display
 from slayer.core.scope import ModelScope, StageSchema
 from slayer.engine.reference_closure import (
     aggregate_input_closure,
     column_default_key,
+    definition_refs,
     key_closure,
 )
 from slayer.engine.elaborate_env import check_partition_key_attributable
@@ -593,30 +598,76 @@ def _grain_leaf_name(key: ValueKey) -> Optional[str]:
     return None
 
 
+def undetermined_witness(
+    *, key: ValueKey, leaf_determined: Callable[[ValueKey], bool],
+    anchor_model: SlayerModel, bundle: ResolvedSourceBundle,
+    is_member: Callable[[ValueKey], bool] = lambda _k: False,
+    _visiting: frozenset = frozenset(),
+) -> Optional[ValueKey]:
+    """The first sub-key of ``key`` not determined, else ``None`` — determination
+    closed under row-level combination (Axiom 2.2); unknown kinds fail closed."""
+    def rec(k: ValueKey, visiting: frozenset = _visiting) -> Optional[ValueKey]:
+        return undetermined_witness(
+            key=k, leaf_determined=leaf_determined, anchor_model=anchor_model,
+            bundle=bundle, is_member=is_member, _visiting=visiting,
+        )
+
+    if is_member(key) or isinstance(key, LiteralKey):
+        return None
+    if isinstance(key, ColumnKey):
+        return None if leaf_determined(key) else key
+    if isinstance(key, ColumnSqlKey):
+        if leaf_determined(key):
+            return None
+        refs = None if key in _visiting else definition_refs(
+            key=key, anchor_model=anchor_model, bundle=bundle,
+        )
+        if refs is None:
+            return key
+        return next((w for r in refs if (w := rec(r, _visiting | {key})) is not None), None)
+    if isinstance(key, TimeTruncKey):
+        return rec(key.column)
+    if isinstance(key, AggregateKey):
+        if key.partition_keys is None:
+            return key
+        return next((w for pk in key.partition_keys if (w := rec(pk)) is not None), None)
+    if isinstance(key, (*SLOT_COMPOSITE_KINDS, SqlFragmentKey)):
+        return next((w for c in key.children() if (w := rec(c)) is not None), None)
+    return key
+
+
+def grain_witness(
+    *, key: ValueKey, grain: Grain, host_model: SlayerModel,
+    models_by_name: Dict[str, SlayerModel], bundle: ResolvedSourceBundle,
+) -> Optional[ValueKey]:
+    """The first sub-key of ``key`` the dataset grain does not determine (Axiom 1), else ``None``."""
+    return undetermined_witness(
+        key=key, is_member=grain.__contains__, anchor_model=host_model, bundle=bundle,
+        leaf_determined=lambda leaf: _column_pinned(
+            key=leaf, grain=grain, host_model=host_model,
+            models_by_name=models_by_name, bundle=bundle,
+        ),
+    )
+
+
 def grain_determines(
     *, key: ValueKey, grain: Grain, host_model: SlayerModel,
     models_by_name: Dict[str, SlayerModel],
     bundle: ResolvedSourceBundle,
 ) -> bool:
-    """Does a dataset grain determine ``key`` (Axiom 1)? True iff ``key`` is a
-    grain member, an aggregate whose ``partition_by=`` grain ⊆ the grain, or a
-    column whose every dependency-closure path is reached over provably
-    to-one hops from a model the grain pins. A fanning or unanalysable closure is
-    not determined."""
-    if key in grain:
-        return True
-    if isinstance(key, AggregateKey):
-        # Recursive: each partition key must itself be determined — a member, a
-        # to-one column, or a nested aggregate whose grain is determined; an
-        # expression key only as an exact member.
-        return key.partition_keys is not None and all(
-            grain_determines(
-                key=pk, grain=grain, host_model=host_model,
-                models_by_name=models_by_name, bundle=bundle,
-            )
-            for pk in key.partition_keys)
-    if not isinstance(key, (ColumnKey, ColumnSqlKey)):
-        return False
+    """Does a dataset grain determine ``key``? (see ``grain_witness``)"""
+    return grain_witness(
+        key=key, grain=grain, host_model=host_model,
+        models_by_name=models_by_name, bundle=bundle,
+    ) is None
+
+
+def _column_pinned(
+    *, key: ValueKey, grain: Grain, host_model: SlayerModel,
+    models_by_name: Dict[str, SlayerModel], bundle: ResolvedSourceBundle,
+) -> bool:
+    """Every dependency-closure path of a column is pinned by the grain over
+    provably to-one hops; an unanalysable closure is not."""
     closure = key_closure(
         key=key, anchor_model=host_model, anchor_relation=host_model.name,
         bundle=bundle,
@@ -631,6 +682,33 @@ def grain_determines(
             path=p, grain=grain, host_model=host_model, models_by_name=models_by_name,
         )
         for p in _effective_dependency_paths(closure, key_host_path(key))
+    )
+
+
+CANNOT_BE_ANALYSED = "cannot be analysed for determination by the operand grain"
+
+
+def determination_broadcast_reason(
+    *, witness: ValueKey, host_model: SlayerModel,
+    models_by_name: Dict[str, SlayerModel], bundle: ResolvedSourceBundle,
+) -> str:
+    """Why a dimension the operand grain does not determine broadcasts, from its witness."""
+    if not isinstance(witness, (ColumnKey, ColumnSqlKey)) or key_closure(
+        key=witness, anchor_model=host_model, anchor_relation=host_model.name,
+        bundle=bundle,
+    ) is None:
+        return CANNOT_BE_ANALYSED
+    if key_attributable_from_root(
+        key=witness, target_path=(), root_model=host_model, models_by_name=models_by_name,
+        bundle=bundle, host_model=host_model, host_name=host_model.name,
+    ):
+        return (
+            f"not determined by the operand grain — add {key_display(witness)} "
+            f"(or its model's key) to the inner partition_by="
+        )
+    return key_broadcast_reason(
+        key=witness, target_path=(), root_model=host_model, models_by_name=models_by_name,
+        bundle=bundle, host_model=host_model, host_name=host_model.name,
     )
 
 

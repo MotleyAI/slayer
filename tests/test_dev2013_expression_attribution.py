@@ -436,11 +436,11 @@ class TestBroadcastReasons:
         assert "customers.regions.name" in d.reason
 
     async def test_fanning_witness_names_the_hop(self, fanning_engine):
-        resp = await fanning_engine.execute(SlayerQuery(
-            source_model="customers",
-            dimensions=["tier", _dim("last_status == 'ok'", "lok")],
-            measures=[ModelMeasure(
-                formula="avg(sum(spend, partition_by=[tier, region_id]))", name="a")]))
+        resp = await fanning_engine.execute(SlayerQuery.model_validate({
+            "source_model": "customers",
+            "dimensions": ["tier", _dim("last_status == 'ok'", "lok")],
+            "measures": [{"formula": "avg(sum(spend, partition_by=[tier, region_id]))",
+                          "name": "a"}]}))
         (w,) = broadcast_warnings(resp)
         (d,) = w.dimensions
         assert d.dimension == "lok"
