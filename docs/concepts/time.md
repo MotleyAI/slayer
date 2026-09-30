@@ -60,7 +60,7 @@ A time dimension's `date_range` is one time point, or a `[lower, upper]` pair wh
 {"dimension": "created_at", "granularity": "month", "date_range": ["2024-01-01", null]}
 ```
 
-A pair means `x >= lower` and `x <= upper` in the comparison semantics above, so a date-only upper bound covers its whole day; write an instant (`'2024-12-31 00:00:00'`) for a midnight-inclusive end. `[]`, three or more elements, `[null, null]` and unparseable bounds are rejected when the query is built.
+A pair means `x >= lower` and `x <= upper` in the comparison semantics above, so a date-only upper bound covers its whole day; write an instant (`'2024-12-31 00:00:00'`) for a midnight-inclusive end. `[]`, three or more elements, `[null, null]` and unparseable bounds are rejected when the query is built; a relative unit the datasource does not define (`last fortnight`) fails when the query is planned.
 
 ## Time bounds do not clip the window
 

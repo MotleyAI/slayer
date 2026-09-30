@@ -17,6 +17,9 @@ from __future__ import annotations
 
 import pytest
 
+from slayer.core.enums import DataType
+from slayer.core.models import Column
+
 from tests._dev1835_fixtures import ModelMeasure, month_td, q
 from tests._dev1739_fixtures import dev1739_models
 from tests._engine_helpers import _engine_generate
@@ -108,7 +111,11 @@ class TestPreservedGuardsVerbatim:
 
     async def test_ranked_no_ranking_column(self) -> None:
         models = dev1739_models()
-        models[0] = models[0].model_copy(update={"default_time_dimension": None})
+        # A second temporal column leaves no sole-column default either.
+        models[0] = models[0].model_copy(update={
+            "default_time_dimension": None,
+            "columns": [*models[0].columns, Column(name="updated_at", sql="ordered_at", type=DataType.TIMESTAMP)],
+        })
         query = q(
             dimensions=["region"],
             measures=[ModelMeasure(formula="amount:last", name="l")],

@@ -15,7 +15,7 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from tests._dev1737_fixtures import seed_backend
 from tests._dev2015_fixtures import BACKENDS, DS_GRANULARITIES, bucket_key, cg_engine, m, value
 from tests._engine_helpers import seeded_exec_engine
-from tests._time_points_fixtures import CUSTOMERS, EV, PinnedClock, all_models, ids, ids_in, tp_engine
+from tests._time_points_fixtures import CUSTOMERS, EV, PinnedClock, all_models, ids, ids_in, ids_with_range, tp_engine
 
 D = datetime
 FAR_PAST, FAR_FUTURE = D(1900, 1, 1), D(2100, 1, 1)
@@ -49,11 +49,21 @@ class TestCustomUnits:
         assert await ids(engine, f"ts >= '{token}'") == ids_in(start, FAR_FUTURE)
         assert await ids(engine, f"ts <= '{token}'") == ids_in(FAR_PAST, end)
 
+    @pytest.mark.parametrize(("token", "start", "end"), [
+        ("last fiscal_year", D(2025, 4, 1), D(2026, 4, 1)),
+        ("last 2 quarter_hours", D(2026, 9, 29, 11, 30), D(2026, 9, 29, 12)),
+    ])
+    async def test_date_range_takes_custom_units(self, engine, token, start, end) -> None:
+        assert await ids_with_range(engine, token) == ids_in(start, end)
+        assert await ids_with_range(engine, [token, None]) == ids_in(start, FAR_FUTURE)
+
     @pytest.mark.parametrize("backend", BACKENDS)
     async def test_unit_outside_its_datasource(self, backend) -> None:
         async with tp_engine(backend) as eng:
             with pytest.raises(TimeLiteralError):
                 await ids(eng, "ts >= 'last fiscal_year'")
+            with pytest.raises(TimeLiteralError):
+                await ids_with_range(eng, ["last fiscal_year", None])
 
     async def test_sub_day_custom_unit_against_a_date_column(self, engine) -> None:
         with pytest.raises(TimeLiteralError) as exc:

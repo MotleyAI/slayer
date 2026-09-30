@@ -62,6 +62,13 @@ class TestBounds:
     async def test_open_lower_bound(self, engine) -> None:
         assert await ids_with_range(engine, [None, "2024-12-31"]) == ids_where(lambda t: t < D(2025, 1, 1))
 
+    async def test_unknown_relative_unit_fails_at_binding(self, engine) -> None:
+        # The unit may be a datasource granularity, so it is checked at binding.
+        with pytest.raises(TimeLiteralError) as ei:
+            await ids_with_range(engine, ["last fortnight", None])
+        for form in ("YYYY-Qn", "YYYY-MM", "last N"):
+            assert form in str(ei.value)
+
     async def test_reversed_bounds_return_no_rows(self, engine) -> None:
         assert await ids_with_range(engine, ["2025-06", "2025-01"]) == set()
 
@@ -136,7 +143,7 @@ class TestConstruction:
         assert "ts" in msg, msg
         assert "date_range" in msg, msg
 
-    @pytest.mark.parametrize("date_range", [["last fortnight", None], "2025/01/01", ["2025-13", "2025-Q1"]])
+    @pytest.mark.parametrize("date_range", ["2025/01/01", ["2025-13", "2025-Q1"]])
     def test_unparseable_bound_lists_forms(self, date_range) -> None:
         payload = {"source_model": "ev", "time_dimensions": [_td(date_range)]}
         with pytest.raises(pydantic.ValidationError) as ei:

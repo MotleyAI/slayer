@@ -6,6 +6,9 @@ from __future__ import annotations
 
 import pytest
 
+from slayer.core.enums import DataType
+from slayer.core.models import Column
+
 from tests._dev1836_fixtures import (
     AMOUNT_BY_TIER,
     ModelMeasure,
@@ -102,8 +105,13 @@ class TestDimensionPosition:
 
 class TestRanklessTargetStaysTyped:
     async def test_no_ranking_column_is_a_clear_error(self, exec_engine) -> None:
-        # customers has no default_time_dimension: the typed ranking-time error
-        # (not a deferral) names the remedy.
+        # customers has no default_time_dimension and, with a second temporal
+        # column, no sole-column default: the typed ranking-time error names the remedy.
+        customers = await exec_engine.storage.get_model("customers")
+        assert customers is not None
+        await exec_engine.storage.save_model(customers.model_copy(update={"columns": [
+            *customers.columns, Column(name="signup_copy", sql="signup_at", type=DataType.TIMESTAMP),
+        ]}))
         query = q(
             dimensions=["customers.tier"],
             measures=[ModelMeasure(

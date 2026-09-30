@@ -48,5 +48,5 @@
 - [x] 6.1 MCP / REST / CLI datasource create/edit accept `granularities`; `inspect` / `inspect_model` / search / model listings show the spine and its wiring and the datasource granularities; verify the surface tests
 - [x] 6.2 dbt importer: `fill_nulls_with` → `coalesce(<agg>, v)`, `join_to_timespine` accepted with an ingest-report note; verify importer tests
 - [x] 6.3 Docs: `docs/concepts/time.md` Time spine + Custom granularities sections, `queries.md` Population, `models.md` effective default time dimension, datasource configuration `granularities`, agent help content, MCP `query` tool docs; `zensical.toml` nav if a page is added; verify docs build and grep for stale statements ("no time-spine gap filling", granularity lists)
-- [ ] 6.4 Apply exactly the arc42 edits approved in design.md D12 (Axiom 15, Axiom 12 cross-reference; the enforcing test file must exist — any other wording or tag needs a fresh user OK); run `la-arch-check` (pinned) and verify green
-- [ ] 6.5 Full unit suite, integration suite (CI invocation), `ruff check`, `basedpyright` (no baseline growth), `la-arch-check`; verify all green
+- [x] 6.4 Apply exactly the arc42 edits approved in design.md D12 (Axiom 15, Axiom 12 cross-reference; the enforcing test file must exist — any other wording or tag needs a fresh user OK); run `la-arch-check` (pinned) and verify green
+- [x] 6.5 Full unit suite, integration suite (CI invocation), `ruff check`, `basedpyright` (no baseline growth), `la-arch-check`; verify all green

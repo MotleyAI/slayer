@@ -32,7 +32,7 @@ from slayer.core.models import (
     _validate_model_name,
 )
 from slayer.core.refs import auto_name_from_expression
-from slayer.core.time_points import TIME_POINT_FORMS, is_time_point
+from slayer.core.time_points import TIME_POINT_FORMS, is_time_point_shape
 from slayer.engine.syntax import AggCall, DottedRef, Ref, parse_expr, walk_parsed_refs
 from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
 from slayer.storage.migrations import CURRENT_VERSIONS, migrate as _migrate_schema
@@ -731,7 +731,7 @@ def _date_range_problem(date_range: list[str | None]) -> str | None:
         return "must be one time point or a [lower, upper] pair"
     if all(bound is None for bound in date_range):
         return "needs at least one non-null bound"
-    bad = next((b for b in date_range if b is not None and not is_time_point(b)), None)
+    bad = next((b for b in date_range if b is not None and not is_time_point_shape(b)), None)
     return None if bad is None else f"has {bad!r}, which is not {TIME_POINT_FORMS}"
 
 

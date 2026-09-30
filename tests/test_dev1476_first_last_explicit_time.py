@@ -752,7 +752,8 @@ class TestGateUsesSharedArgSelection:
         assert explicit_ranking_time_arg(self._scalar_first_arg_key()) is None
 
     def test_scalar_first_arg_gate_requires_default_time(self) -> None:
-        orders = _u_orders()  # no default_time_dimension
+        # no default_time_dimension, and two temporal columns: no sole-column default
+        orders = _u_orders(extra=[Column(name="updated_at", sql="created_at", type=DataType.TIMESTAMP)])
         bundle = _u_bundle(orders)
         key = self._scalar_first_arg_key()
         with pytest.raises(ValueError, match="ranking time"):

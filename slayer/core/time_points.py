@@ -147,6 +147,12 @@ def is_time_point(text: str, *, units: Units = _NO_UNITS) -> bool:
     return _parse(text, units=units) is not None
 
 
+def is_time_point_shape(text: str) -> bool:
+    """``is_time_point`` with any identifier as a relative token's unit (checked at binding)."""
+    token = " ".join(text.lower().split())
+    return _parse(text) is not None or any(r.fullmatch(token) for r in (_CALENDAR_RE, _LAST_NEXT_N_RE, _AGO_RE))
+
+
 def is_relative_token(text: str) -> bool:
     """Whether ``text`` is a relative token (its meaning depends on the clock)."""
     return isinstance(_parse(text), _Relative)
