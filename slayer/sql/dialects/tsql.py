@@ -194,6 +194,14 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
             return node
         return tree.transform(_fix)
 
+    def build_integer_sequence(self, *, size: int) -> exp.Select:
+        return exp.select(exp.column("value").as_("i")).from_(exp.Table(
+            this=exp.Anonymous(this="GENERATE_SERIES", expressions=[
+                exp.Literal.number(0), exp.Literal.number(size - 1),
+            ]),
+            alias=exp.TableAlias(this=exp.to_identifier("_seq")),
+        ))
+
     def build_current_date(self) -> Expression:
         return exp.Cast(this=exp.Anonymous(this="GETDATE"), to=exp.DataType.build("DATE"))
 

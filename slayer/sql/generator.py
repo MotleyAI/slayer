@@ -39,6 +39,7 @@ from slayer.core.errors import (
 )
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.granularity import CustomGranularity, Granularity, granularity_parts
+from slayer.core.time_spine import TIME_SPINE_COLUMN, is_spine
 from slayer.core.keys import BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, SLOT_COMPOSITE_KINDS, TEMPORAL_TYPES, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, ColumnKey, ColumnSqlKey, ColumnTypeFn, InKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimeTruncKey, TransformKey, column_leaf, column_path, date_add_type, is_boolean_shaped, parameter_row_leaves, shift_offset_of, source_anchor_path, substitute_value_keys, temporal_type, walk_value_keys
 from slayer.core.join_walker import aggregation_owner, model_column_type, physical_join_pairs, resolve_hop, terminal_model
 from slayer.core.models import VALUE_PLACEHOLDER, aggregation_definition, rendered_formula, reserved_value_param_message
@@ -56,6 +57,7 @@ from slayer.sql.column_expansion import (
 from slayer.ir.planned import (
     MaskTyping,
     RankedGrainMember,
+    SpineFactor,
     StageKind,
     ValueSlot,
     emitted_plans,
@@ -925,6 +927,10 @@ class SQLGenerator:
         self._gen_placeholder_types: List[Dict[Any, DataType]] = []
         #: Multi-stage statement state: every stage relation, the current
         #: statement's declared reads and its in-flight splice chain.
+        # Spine factors of the plans being rendered; the innermost reads its spine relation.
+        self._gen_spines: List[SpineFactor] = []
+        # CTEs a rendered spine series reads (a recursive integer sequence), awaiting ``_base``.
+        self._gen_spine_ctes: List[CteEntry] = []
         self._gen_stage_relations: FrozenSet[str] = frozenset()
         self._gen_stage_reads: FrozenSet[str] = frozenset()
         self._gen_splice_chain: Tuple[str, ...] = ()
@@ -1400,6 +1406,8 @@ class SQLGenerator:
         }
         self._gen_placeholder_types.append(placeholders)
         self._gen_column_types.append(lambda key: placeholders.get(key) or model_types(key))
+        if planned_query.spine is not None:
+            self._gen_spines.append(planned_query.spine)
         try:
             return self._generate_from_planned_body(
                 planned_query, bundle=bundle, as_cte_body=as_cte_body,
@@ -1408,6 +1416,8 @@ class SQLGenerator:
         finally:
             self._gen_column_types.pop()
             self._gen_placeholder_types.pop()
+            if planned_query.spine is not None:
+                self._gen_spines.pop()
 
     def _placeholder_types(self) -> Dict[Any, DataType]:
         return dict(self._gen_placeholder_types[-1]) if self._gen_placeholder_types else {}
@@ -2475,7 +2485,7 @@ class SQLGenerator:
         # rows (0, not 1, on an empty interval) — the star never enters resolve.
         # The custom-aggregation definition lives on the source's owning model,
         # which a parameter may widen the home above (D4) — resolve it there.
-        formula = rendered_formula(agg=key.agg, definition=self._resolve_aggregation_def(
+        definition = self._resolve_aggregation_def(
             key=key,
             source_model=(
                 self._walk_join_path_model(
@@ -2484,7 +2494,8 @@ class SQLGenerator:
                 ) or source_model
             ),
             src_leaf="_w_value",
-        ))
+        )
+        formula = rendered_formula(agg=key.agg, definition=definition)
         if isinstance(key.source, StarKey):
             # ``*`` is only legal with count (as in the plain path); any other
             # aggregation over the star would silently become ``<agg>(1)``.
@@ -2664,6 +2675,12 @@ class SQLGenerator:
             ),
         )
         agg_expr, _ = self._build_agg(level2_spec)
+        if definition is not None and definition.formula is not None:
+            # A defined aggregation's empty value is NULL (semantics Axiom 4), whatever its formula yields.
+            agg_expr = exp.Case(ifs=[exp.If(
+                this=exp.EQ(this=exp.Count(this=_src_col("_w_time")), expression=exp.Literal.number(0)),
+                true=exp.Null(),
+            )], default=agg_expr)
         agg_expr = _wrap_cast_for_type(
             expr=agg_expr, dt=self._slot_cast_type(agg_slot),
         )
@@ -3011,11 +3028,17 @@ class SQLGenerator:
                 )]
                 for s in slots_by_id.values()
             }
-            grain_base = self._build_windowed_grain_base(
-                planned_query=planned_query, plan=plan, slots_by_id=slots_by_id,
-                aliases_by_slot_id=aliases_by_slot_id, source_model=source_model,
-                source_relation=source_relation, bundle=bundle,
-                regroup_env=regroup_env, regroup_join_specs=regroup_join_specs,
+            grain_base = (
+                self._window_endpoints_base(
+                    kernel=kernel, plan=plan, slots_by_id=slots_by_id,
+                    aliases_by_slot_id=aliases_by_slot_id,
+                )
+                if kernel.endpoints is not None else self._build_windowed_grain_base(
+                    planned_query=planned_query, plan=plan, slots_by_id=slots_by_id,
+                    aliases_by_slot_id=aliases_by_slot_id, source_model=source_model,
+                    source_relation=source_relation, bundle=bundle,
+                    regroup_env=regroup_env, regroup_join_specs=regroup_join_specs,
+                )
             )
             base_subq = exp.Subquery(
                 this=grain_base,
@@ -3266,6 +3289,22 @@ class SQLGenerator:
         for alias in grain_aliases:
             outer = outer.group_by(_base_col(alias))
         return outer
+
+    def _window_endpoints_base(self, *, kernel, plan, slots_by_id, aliases_by_slot_id) -> exp.Select:
+        """The windowed producer's cells: the population's, each named as the producer's grain column."""
+        endpoints = kernel.endpoints
+        inner = self._build_from_planned(endpoints, bundle=endpoints.stage_bundle, reuse_allocator=True)
+        outputs = inner.named_selects
+        grain_sids = [
+            *plan.dimension_slot_ids, *plan.other_time_dimension_slot_ids, plan.window_time_dimension_slot_id,
+        ]
+        cols = [
+            exp.column(outputs[kernel.endpoint_keys.index(slots_by_id[sid].key)], table="_e", quoted=True).as_(
+                exp.to_identifier(aliases_by_slot_id[sid][0], quoted=True),
+            )
+            for sid in grain_sids
+        ]
+        return exp.select(*cols).from_(exp.Subquery(this=inner, alias=exp.to_identifier("_e")))
 
     def _build_windowed_grain_base(
         self, *, planned_query, plan, slots_by_id, aliases_by_slot_id,
@@ -3741,14 +3780,18 @@ class SQLGenerator:
                 )
                 combined_select = combined_select.where(_grouped(rendered))
 
+        spine_ctes = self._take_spine_ctes()
         if planned_query.transform_layers:
             return self._render_steps_and_post(
                 prelude_nodes=[
                     *row_regroup_ctes,
+                    *(Node(name=e.name, phase="base", query=e.query, depends_on=[], recursive=e.recursive)
+                      for e in spine_ctes),
                     Node(
                         name="_base", phase="base", query=base_select,
                         depends_on=[
                             *[e.name for e in row_regroup_ctes], *reused_cm_ctes,
+                            *[e.name for e in spine_ctes],
                         ],
                         schema_by_slot=dict(aliases_by_slot_id),
                     ),
@@ -3778,10 +3821,12 @@ class SQLGenerator:
         # WITH dependencies are declared, not discovered by scanning the statement; the assembler emits a stable
         # topological order with declaration order as tiebreak.
         cte_entries = [
+            *spine_ctes,
             CteEntry(
                 name="_base", query=base_select,
                 depends_on=[
                     *[e.name for e in row_regroup_ctes], *reused_cm_ctes,
+                    *[e.name for e in spine_ctes],
                 ],
             ),
             *row_regroup_ctes,
@@ -4410,6 +4455,8 @@ class SQLGenerator:
             )
         ]
         join_expr = self._emit_relation(model=next_model, alias=next_alias)
+        if not join_on_parts:
+            return join_expr, None, "CROSS"  # the population's product with its spine
         on_expr = exp.and_(*join_on_parts) if len(join_on_parts) > 1 else join_on_parts[0]
         # Root-relative join type: LEFT keeps the querying root whole in the traversal
         # direction, INNER is symmetric; RIGHT is never emitted.
@@ -4467,8 +4514,9 @@ class SQLGenerator:
         return exp.Ordered(**args)
 
     @staticmethod
-    def _transform_grain_slot_ids(*, planned_query, slots_by_id) -> List[str]:
-        """The transform auto-grain: every projected"""
+    def _transform_grain_slot_ids(*, planned_query, slots_by_id, axis: object = None) -> List[str]:
+        """The transform auto-grain: every projected row dimension, and every time dimension off the axis's column."""
+        axis_column = axis.column if isinstance(axis, TimeTruncKey) else None
         combined_placeholders = {
             sub.placeholder
             for plan in planned_query.regroup_attach_plans
@@ -4481,7 +4529,11 @@ class SQLGenerator:
             if slot is None or slot.phase != Phase.ROW:
                 continue
             key = slot.key
-            if isinstance(key, TimeTruncKey) or key in combined_placeholders:
+            if key in combined_placeholders:
+                continue
+            if isinstance(key, TimeTruncKey):
+                if axis_column is not None and key.column != axis_column:
+                    out.append(sid)
                 continue
             if isinstance(key, (ColumnKey, ColumnSqlKey)) or slot.is_dimension:
                 out.append(sid)
@@ -4567,7 +4619,7 @@ class SQLGenerator:
         else:
             partition_aliases = []
             for sid in self._transform_grain_slot_ids(
-                planned_query=planned_query, slots_by_id=slots_by_id,
+                planned_query=planned_query, slots_by_id=slots_by_id, axis=key.time_key,
             ):
                 alias = available_alias_by_slot_id.get(sid)
                 if alias is not None:
@@ -5020,7 +5072,7 @@ class SQLGenerator:
 
         partition_aliases: list[str] = []
         for sid in self._transform_grain_slot_ids(
-            planned_query=planned_query, slots_by_id=slots_by_id,
+            planned_query=planned_query, slots_by_id=slots_by_id, axis=key.time_key,
         ):
             alias = available_alias_by_slot_id.get(sid)
             if alias is not None:
@@ -5271,6 +5323,8 @@ class SQLGenerator:
     def _emit_relation(self, *, model, alias: str) -> Expression:
         """The one door a model reaches the SQL through (FROM, join target, semi-join
         hop): a stage relation must be one the statement declared it reads."""
+        if is_spine(model):
+            return self._spine_relation(alias=alias)
         if model.sql_table:
             if model.sql_table in self._gen_stage_relations:
                 if model.sql_table not in self._gen_stage_reads:
@@ -5291,6 +5345,51 @@ class SQLGenerator:
             f"Model {model.name!r} has neither sql_table nor sql: a query-backed "
             f"model reaches the renderer only as its spliced stages."
         )
+
+    def _spine_relation(self, *, alias: str) -> Expression:
+        """The spine as its bucket series: one row per bucket overlapping the bounds."""
+        if not self._gen_spines:
+            raise ValueError("time_spine reached the renderer outside a spine population")
+        factor = self._gen_spines[-1]
+        d = self._dialect
+        base, multiple, _ = granularity_parts(factor.granularity)
+        first = d.build_bucket(
+            col_expr=d.build_temporal_literal(value=factor.lower, dt=DataType.TIMESTAMP),
+            granularity=factor.granularity,
+        )
+
+        def at(count: Expression) -> Expression:
+            return d.build_date_add(expr=first, count=count, unit=base, operand=DataType.TIMESTAMP)
+
+        def steps(n: Expression) -> Expression:
+            return n if multiple == 1 else exp.Mul(this=exp.Paren(this=n), expression=exp.Literal.number(multiple))
+
+        i = exp.column("i", table="_seq")
+        start = at(steps(i))
+        end = at(steps(exp.Add(this=i.copy(), expression=exp.Literal.number(1))))
+        sequence = d.build_integer_sequence(size=factor.size)
+        allocator = self._gen_allocator or self._new_allocator()
+        limit = d.max_identifier_bytes
+        rename_embedded_ctes(sequence, allocate=lambda name: allocator.allocate_cte(
+            fit_identifier(name=f"_w_{name}", limit=limit),
+        ))
+        with_node = sequence.args.get("with_")
+        if with_node is not None:
+            for cte in with_node.expressions:
+                self._gen_spine_ctes.append(cte_entry(cte=cte, name=cte.alias_or_name, depends_on=[]))
+            with_node.pop()
+        series = exp.select(start.as_(exp.to_identifier(TIME_SPINE_COLUMN, quoted=True))).from_(
+            exp.Subquery(this=sequence, alias=exp.to_identifier("_seq")),
+        ).where(exp.and_(
+            d.build_temporal_comparison(op="<", operand=start.copy(), value=factor.upper),
+            d.build_temporal_comparison(op=">", operand=end, value=factor.lower),
+        ))
+        return exp.Subquery(this=series, alias=exp.to_identifier(alias))
+
+    def _take_spine_ctes(self) -> List[CteEntry]:
+        """The sequence CTEs the base just rendered reads."""
+        taken, self._gen_spine_ctes = self._gen_spine_ctes, []
+        return taken
 
     def _dim_column_expr_from_planned(
         self, *, source_model, source_relation: str, leaf: str,
@@ -6339,6 +6438,9 @@ def generate_planned_stages(
         kept_stages.update(kept)
     if read_set is not None:
         read_set.update(read_models(statement))
+    spine_sizes = [p.spine.size for p in planned_queries if p.spine is not None]
+    if spine_sizes:
+        get_dialect(dialect).attach_sequence_setting(statement, size=max(spine_sizes))
     # Semi-join pushdown emits a correlated EXISTS; attached unconditionally so SQL never depends on server state.
     if any(plan_has_semi_join_filters(p) for p in emitted_plans(planned_queries, kept_stages=kept)):
         get_dialect(dialect).attach_correlated_setting(statement)

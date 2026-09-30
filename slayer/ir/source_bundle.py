@@ -62,6 +62,8 @@ class ResolvedSourceBundle(BaseModel):
     now: datetime = Field(default_factory=datetime.now)
     # The datasource's custom granularities, keyed by ``granularity_key``.
     granularities: Dict[str, CustomGranularity] = Field(default_factory=dict)
+    # A stored model shadows the built-in ``time_spine``.
+    spine_clash: bool = False
 
     def get_referenced_model(self, name: str) -> Optional[SlayerModel]:
         """Linear lookup by name (list is small, O(n) scan is fine)."""
@@ -70,9 +72,15 @@ class ResolvedSourceBundle(BaseModel):
                 return m
         return None
 
+    def factor_free(self, model: SlayerModel) -> SlayerModel:
+        """``model`` as stored: a spine population's P factor without its product hop."""
+        return model.as_population_factor(False) if model.population_spine else model
+
     def rerooted(self, new_source: SlayerModel) -> "ResolvedSourceBundle":
         """Re-root at ``new_source``, keeping the former source in the universe
-        (a reverse hop can target it — the map must not shrink)."""
+        (a reverse hop can target it — the map must not shrink); a producer never
+        sees a spine population's product hop."""
+        new_source = self.factor_free(new_source)
         refs = self.referenced_models
         old = self.source_model
         if old is not None and self.get_referenced_model(old.name) is None:

@@ -61,8 +61,11 @@ from slayer.core.query import (
 )
 from slayer.engine.population import (
     infer_population,
+    infer_spine_population,
+    spine_datasource,
     to_one_reachable,
 )
+from slayer.core.time_spine import TIME_SPINE_MODEL, is_spine_query
 from slayer.core.scope import StageDisplay, collect_stale_spellings
 from slayer.core.warnings import (
     AnySlayerWarning,
@@ -1017,6 +1020,7 @@ class SlayerQueryEngine:
             splice_chain=splice_chain,
             dry_run_placeholders=dry_run_placeholders,
             now=self._clock(),
+            population_spine=is_spine_query(query),
         )
         # ``build_resolved_source_bundle`` raises if unresolved, so it's populated.
         model = bundle.source_model
@@ -1168,14 +1172,21 @@ class SlayerQueryEngine:
         """
         inferred = query.source_model is None
         inferred_data_source: Optional[str] = None
+        spine = is_spine_query(query)
+        if spine and prefer_data_source is None:
+            prefer_data_source = await self._stages_datasource(named_queries)
         if inferred:
-            choice = await infer_population(
+            choice = await (infer_spine_population if spine else infer_population)(
                 query=query, storage=self.storage,
                 data_source=prefer_data_source,
                 sibling_stage_names={d.name for d in stage_displays.values()} - {query.name},
             )
             query = query.model_copy(update={"source_model": choice.model_name})
             inferred_data_source = choice.data_source
+        elif query.source_model_name == TIME_SPINE_MODEL:
+            inferred_data_source = await spine_datasource(
+                query=query, storage=self.storage, data_source=prefer_data_source,
+            )
 
         rewritten: Dict[str, SlayerQuery] = {}
         for name, stage in named_queries.items():
@@ -1195,10 +1206,20 @@ class SlayerQueryEngine:
                     inferred_data_source = choice.data_source
             rewritten[name] = stage
 
-        return (
-            query, rewritten, query.source_model_name,
-            inferred, inferred_data_source,
-        )
+        population = query.source_model_name
+        if spine and population != TIME_SPINE_MODEL:
+            population = f"{TIME_SPINE_MODEL} × {population}"
+        return query, rewritten, population, inferred, inferred_data_source
+
+    async def _stages_datasource(self, named_queries: Dict[str, SlayerQuery]) -> Optional[str]:
+        """The datasource a query list's model-rooted stages read, when they agree on one."""
+        found: Set[str] = set()
+        for stage in named_queries.values():
+            name = stage.source_model_name
+            model = await self.storage.get_model(name) if name is not None else None
+            if model is not None and model.data_source:
+                found.add(model.data_source)
+        return found.pop() if len(found) == 1 else None
 
     @staticmethod
     def _ds_fingerprint(datasource: DatasourceConfig) -> str:
@@ -2607,7 +2628,7 @@ class SlayerQueryEngine:
             data_source=inner_source_model.data_source,
             sql=wrapped_sql,
             column_sql={n: fit_map.get(n, n) for n in expected},
-            default_time_dimension=inner_source_model.default_time_dimension,
+            default_time_dimension=inner_source_model.effective_default_time_dimension,
         )
 
     async def create_model_from_query(

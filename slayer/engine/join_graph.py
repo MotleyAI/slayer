@@ -17,6 +17,7 @@ from __future__ import annotations
 from collections import deque
 
 from slayer.core.models import SlayerModel
+from slayer.core.time_spine import TIME_SPINE_MODEL, spine_joins
 
 
 class JoinGraph:
@@ -24,9 +25,11 @@ class JoinGraph:
 
     def __init__(
         self, *, nodes: set[str], edges: list[tuple[str, str, str | None]],
-        spellings: dict[str, str] | None = None,
+        spellings: dict[str, str] | None = None, sinks: frozenset[str] = frozenset(),
     ) -> None:
         self._nodes: set[str] = set(nodes)
+        # Nodes a route may start or end at but never pass through.
+        self._sinks = sinks
         # A query stage's user spelling, where it differs from its node name.
         self._spellings: dict[str, str] = dict(spellings or {})
         # Each edge is ``(model_a, model_b, name)`` — undirected; parallel
@@ -44,14 +47,21 @@ class JoinGraph:
         in the model set becomes one undirected edge (edges to unknown targets
         are skipped).
         """
-        names = {m.name for m in models}
+        by_name = {m.name: m for m in models}
         edges: list[tuple[str, str, str | None]] = []
         for m in models:
-            for j in m.joins:
-                if j.target_model in names:
+            for j in spine_joins(m, models_by_name=by_name):
+                if j.target_model in by_name:
                     edges.append((m.name, j.target_model, j.name))
         spellings = {m.name: m.explicit_spelling for m in models if m.explicit_spelling}
-        return cls(nodes=names, edges=edges, spellings=spellings)
+        return cls(
+            nodes=set(by_name), edges=edges, spellings=spellings,
+            sinks=frozenset({TIME_SPINE_MODEL}) & frozenset(by_name),
+        )
+
+    def _passes(self, node: str, *, root: str) -> bool:
+        """Whether a route may continue through ``node``."""
+        return node == root or node not in self._sinks
 
     def _incident(self, node: str):
         """Yield ``(neighbor, edge_index, name)`` for every edge on ``node``."""
@@ -66,6 +76,8 @@ class JoinGraph:
         frontier: deque[str] = deque([root])
         while frontier:
             node = frontier.popleft()
+            if not self._passes(node, root=root):
+                continue
             for nbr, _idx, _name in self._incident(node):
                 if nbr not in seen:
                     seen.add(nbr)
@@ -85,7 +97,7 @@ class JoinGraph:
         ``1`` (trivial empty route)."""
         if root == target:
             return 1
-        relevant = self.reachable_from(target)
+        relevant = self.reachable_from(target) | {target}
         if root not in relevant:
             return 0
 
@@ -102,7 +114,7 @@ class JoinGraph:
                 if nbr == target:
                     count += 1
                     continue
-                if nbr in visited or nbr not in relevant:
+                if nbr in visited or nbr not in relevant or not self._passes(nbr, root=root):
                     continue
                 visited.add(nbr)
                 dfs(nbr)
@@ -148,6 +160,19 @@ class JoinGraph:
         out.sort()
         return out
 
+    def _distances(self, root: str) -> dict[str, int]:
+        dist: dict[str, int] = {root: 0}
+        frontier: deque[str] = deque([root])
+        while frontier:
+            node = frontier.popleft()
+            if not self._passes(node, root=root):
+                continue
+            for nbr, _token in self._executable_tokens(node):
+                if nbr not in dist:
+                    dist[nbr] = dist[node] + 1
+                    frontier.append(nbr)
+        return dist
+
     def shortest_path(self, root: str, target: str) -> list[str] | None:
         """Executable hop-token sequence ``root → target`` (excluding ``root``),
         or ``None`` when no unambiguous executable route exists.
@@ -159,14 +184,7 @@ class JoinGraph:
         reports unreachable rather than emitting a path that would fail."""
         if root == target:
             return []
-        dist: dict[str, int] = {root: 0}
-        frontier: deque[str] = deque([root])
-        while frontier:
-            node = frontier.popleft()
-            for nbr, _token in self._executable_tokens(node):
-                if nbr not in dist:
-                    dist[nbr] = dist[node] + 1
-                    frontier.append(nbr)
+        dist = self._distances(root)
         if target not in dist:
             return None
 
@@ -179,6 +197,7 @@ class JoinGraph:
                 cands = [
                     best[u] + [token]
                     for u in nodes_by_dist.get(d - 1, [])
+                    if self._passes(u, root=root)
                     for nbr, token in self._executable_tokens(u)
                     if nbr == v
                 ]

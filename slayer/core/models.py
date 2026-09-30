@@ -701,6 +701,8 @@ class SlayerModel(BaseModel):
     source_model_origin: SourceModelOrigin | None = Field(default=None, exclude=True)
     # Runtime-only (never persisted): a query stage's user spelling in join paths.
     _spelling: str | None = PrivateAttr(default=None)  # NOSONAR(S5890) — pydantic PrivateAttr descriptor; the attribute holds str | None
+    # Runtime-only: this model is the P factor of a ``time_spine × P`` population.
+    _population_spine: bool = PrivateAttr(default=False)
 
     @field_validator("filters")
     @classmethod
@@ -850,9 +852,27 @@ class SlayerModel(BaseModel):
         return out
 
     @property
+    def population_spine(self) -> bool:
+        """This model is the P factor of a spine population (its spine hop is the product)."""
+        return self._population_spine
+
+    def as_population_factor(self, factor: bool = True) -> "SlayerModel":
+        out = self.model_copy()
+        out._population_spine = factor
+        return out
+
+    @property
     def awaits_columns(self) -> bool:
         """Query-backed with its output columns not yet populated."""
         return bool(self.source_queries) and not self.columns
+
+    @property
+    def effective_default_time_dimension(self) -> str | None:
+        """The declared ``default_time_dimension``, else the model's only DATE / TIMESTAMP column."""
+        if self.default_time_dimension:
+            return self.default_time_dimension
+        temporal = [c.name for c in self.columns if c.type in (DataType.DATE, DataType.TIMESTAMP)]
+        return temporal[0] if len(temporal) == 1 else None
 
     def get_column(self, name: str) -> Column | None:
         for c in self.columns:

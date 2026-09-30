@@ -29,6 +29,7 @@ from slayer.core.enums import DataType, JoinCardinality, JoinType, invert_cardin
 from slayer.core.errors import AmbiguousJoinPathError, CircularJoinPathError
 from slayer.core.keys import ColumnKey, ColumnSqlKey, ColumnTypeFn, ValueKey, source_anchor_path
 from slayer.core.models import ModelJoin, SlayerModel, join_key_error
+from slayer.core.time_spine import PRODUCT_JOIN_TYPE, TIME_SPINE_MODEL, axis_join, is_spine, spine_joins
 
 __all__ = [
     "OrientedJoin",
@@ -36,6 +37,7 @@ __all__ = [
     "canonical_path",
     "canonical_token",
     "edges_between",
+    "is_product_edge",
     "neighbors",
     "observe_traversals",
     "physical_join_pairs",
@@ -152,23 +154,71 @@ def _orient(
     )
 
 
+def _product_edge(model: SlayerModel) -> OrientedJoin:
+    """A population factor's hop to the spine: the product, each factor row fanning to every instant."""
+    return OrientedJoin(
+        source_model=model.name, target_model=TIME_SPINE_MODEL, join_pairs=[],
+        join_type=PRODUCT_JOIN_TYPE, cardinality=JoinCardinality.ONE_TO_MANY,
+        name=TIME_SPINE_MODEL, declaring_model=model.name,
+        source_spelling=model.explicit_spelling,
+    )
+
+
+def _detached_names(models_by_name: dict[str, SlayerModel]) -> frozenset[str]:
+    """Datasets whose declared joins reach no axis: the spine meets them only as a product."""
+    parent = {n: n for n in models_by_name if n != TIME_SPINE_MODEL}
+
+    def root(n: str) -> str:
+        while parent[n] != n:
+            parent[n] = parent[parent[n]]
+            n = parent[n]
+        return n
+
+    for m in models_by_name.values():
+        for j in m.joins:
+            if m.name in parent and j.target_model in parent:
+                parent[root(m.name)] = root(j.target_model)
+    wired = {root(n) for n, m in models_by_name.items() if n in parent and axis_join(m) is not None}
+    return frozenset(n for n in parent if root(n) not in wired)
+
+
+def _detached_edge(*, source: SlayerModel, target: SlayerModel) -> OrientedJoin:
+    """The spine and a dataset without any route to it, meeting only as a product."""
+    return OrientedJoin(
+        source_model=source.name, target_model=target.name, join_pairs=[],
+        join_type=PRODUCT_JOIN_TYPE, cardinality=JoinCardinality.MANY_TO_MANY,
+        name=None, declaring_model=TIME_SPINE_MODEL,
+        source_spelling=source.explicit_spelling, target_spelling=target.explicit_spelling,
+    )
+
+
+def is_product_edge(edge: OrientedJoin) -> bool:
+    """The population's hop to the spine (never an axis edge)."""
+    return edge.target_model == TIME_SPINE_MODEL and not edge.join_pairs
+
+
+def _declared_toward(model: SlayerModel, target: str, *, spine: bool) -> list[ModelJoin]:
+    joins = spine_joins(model, models_by_name={TIME_SPINE_MODEL: model}) if spine else model.joins
+    return [j for j in joins if j.target_model == target]
+
+
 def edges_between(*, source: SlayerModel, target: SlayerModel) -> list[OrientedJoin]:
     """Every edge connecting ``source`` and ``target``, oriented source→target.
 
-    Inspects both models' declarations, so the answer is independent of which
-    side stores the join. Never raises — parallel edges surface as a length-≥2
-    list for the caller to reject.
+    Inspects both models' declarations (and the spine's virtual edges), so the answer
+    is independent of which side stores the join. Never raises — parallel edges
+    surface as a length-≥2 list for the caller to reject.
     """
     out: list[OrientedJoin] = []
     spellings = {m.name: m.explicit_spelling for m in (source, target)}
-    for j in source.joins:
-        if j.target_model == target.name:
-            out.append(_orient(join=j, declaring=source.name, from_model=source.name,
-                               spellings=spellings))
-    for j in target.joins:
-        if j.target_model == source.name:
-            out.append(_orient(join=j, declaring=target.name, from_model=source.name,
-                               spellings=spellings))
+    if source.population_spine and is_spine(target):
+        out.append(_product_edge(source))
+    for j in _declared_toward(source, target.name, spine=is_spine(target)):
+        out.append(_orient(join=j, declaring=source.name, from_model=source.name,
+                           spellings=spellings))
+    for j in _declared_toward(target, source.name, spine=is_spine(source)):
+        out.append(_orient(join=j, declaring=target.name, from_model=source.name,
+                           spellings=spellings))
     _observe((e.target_model for e in out), strict=False)
     return out
 
@@ -203,13 +253,21 @@ def neighbors(
     out: list[OrientedJoin] = []
     spellings = {n: m.explicit_spelling for n, m in models_by_name.items()}
     spellings[model.name] = model.explicit_spelling
-    for j in model.joins:
+    if model.population_spine and TIME_SPINE_MODEL in models_by_name:
+        out.append(_product_edge(model))
+    spine = models_by_name.get(TIME_SPINE_MODEL)
+    detached = _detached_names(models_by_name) if spine is not None else frozenset()
+    if spine is not None and is_spine(model):
+        out.extend(_detached_edge(source=model, target=models_by_name[n]) for n in sorted(detached))
+    elif spine is not None and model.name in detached:
+        out.append(_detached_edge(source=model, target=spine))
+    for j in spine_joins(model, models_by_name=models_by_name):
         out.append(_orient(join=j, declaring=model.name, from_model=model.name,
                            spellings=spellings))
     for other in models_by_name.values():
         if other.name == model.name:
             continue
-        for j in other.joins:
+        for j in spine_joins(other, models_by_name=models_by_name):
             if j.target_model == model.name:
                 out.append(_orient(join=j, declaring=other.name, from_model=model.name,
                                    spellings=spellings))
@@ -261,6 +319,8 @@ def walk(
     visited = {root.name}
     chain: list[OrientedJoin] = []
     for token in path:
+        if chain and is_spine(current):
+            return None  # a path may end at the spine, never cross it
         edge = resolve_hop(current=current, token=token, models_by_name=models_by_name)
         if edge is None:
             return None

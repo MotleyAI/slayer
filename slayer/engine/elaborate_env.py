@@ -35,6 +35,7 @@ from slayer.core.errors import (
     TimeAxisError,
     TimeDimensionColumnError,
     TimeLiteralError,
+    TimeSpineError,
     TransformInputError,
     UnanalyzableDependencyError,
     UnknownGranularityError,
@@ -849,6 +850,72 @@ def check_windowed_time_dimension(*, resolved: bool) -> None:
         suggestion="Add a single time_dimensions entry, or set main_time_dimension "
         "to select among multiple time dimensions.",
     )
+
+
+_SPINE_REMEDY = (
+    "Use time_spine.timestamp only as a time dimension with a granularity "
+    "(time_dimensions=[{dimension: time_spine.timestamp, granularity: month, date_range: [...]}]) "
+    "or inside a date_range / bound filter; for other date logic use the fact's own time column."
+)
+
+
+def check_spine_clash(*, clash: bool) -> None:
+    """A stored model named ``time_spine`` shadows the built-in spine."""
+    if clash:
+        raise TimeSpineError(
+            summary="A stored model is named 'time_spine', the built-in time spine's reserved name.",
+            suggestion="Rename the stored model; the built-in time_spine cannot be shadowed.",
+        )
+
+
+def check_spine_raw_rows(*, raw_rows: bool) -> None:
+    """A spine population has no rows to return one by one."""
+    if raw_rows:
+        raise TimeSpineError(
+            summary="A time_spine query cannot set distinct_dimension_values=false: the spine has no rows.",
+            suggestion=_SPINE_REMEDY,
+        )
+
+
+def check_spine_aggregation(*, offender: Optional[str]) -> None:
+    """No aggregation is homed on the spine: it has no countable rows."""
+    if offender is not None:
+        raise TimeSpineError(
+            summary=f"`{offender}` aggregates over time_spine, which has no countable rows.",
+            location=offender,
+            suggestion="Aggregate a fact's own columns; group by time_spine.timestamp as a time dimension.",
+        )
+
+
+def check_spine_plain_use(*, offender: Optional[str], position: str) -> None:
+    """The spine column appears only bucketed by a granularity, or in a bound."""
+    if offender is not None:
+        raise TimeSpineError(
+            summary=f"time_spine.timestamp in {position} `{offender}` is not a bucketed time dimension.",
+            location=offender,
+            suggestion=_SPINE_REMEDY,
+        )
+
+
+def check_spine_filter(*, offender: Optional[str]) -> None:
+    """A filter on the spine column must be a frame bound."""
+    if offender is not None:
+        raise TimeSpineError(
+            summary=f"Filter `{offender}` on time_spine.timestamp is not a lower or upper bound.",
+            location=offender,
+            suggestion="Filter the fact's own time column instead, or add it as a time dimension "
+            "(time_dimensions) on that column.",
+        )
+
+
+def check_spine_lower_bound(*, has_lower: bool) -> None:
+    """A spine query bounds the spine from below."""
+    if not has_lower:
+        raise TimeSpineError(
+            summary="A time_spine query needs a lower bound on time_spine.timestamp.",
+            suggestion="Add a lower bound: a date_range on the spine time dimension, or a filter "
+            "time_spine.timestamp >= '<time point>'.",
+        )
 
 
 def check_granularity_known(

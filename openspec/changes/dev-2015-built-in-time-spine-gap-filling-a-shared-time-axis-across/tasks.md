@@ -24,24 +24,24 @@
 
 ## 3. Spine model, wiring and routing
 
-- [ ] 3.1 Effective default time dimension (declared, else sole temporal column; propagated or sole for query-backed models and stages) feeding transforms and `first`/`last`; verify the axis-inference tests
-- [ ] 3.2 Bundle synthesis of `time_spine` and axis edges per datasource; reserved-name rejection on save and fail-closed clash at query time; verify the listing and reserved-name tests
-- [ ] 3.3 Sink rule in the join graph traversal (spine edge only as first/last hop) for every router; verify existing cross-fact queries are unchanged with spine edges present
-- [ ] 3.4 Nearest-axis spine routing over executable to-one hop tokens with the equal-route error; verify the routing tests
+- [x] 3.1 Effective default time dimension (declared, else sole temporal column; propagated or sole for query-backed models and stages) feeding transforms and `first`/`last`; verify the axis-inference tests
+- [x] 3.2 Bundle synthesis of `time_spine` and axis edges per datasource; reserved-name rejection on save and fail-closed clash at query time; verify the listing and reserved-name tests
+- [x] 3.3 Sink rule in the join graph traversal (spine edge only as first/last hop) for every router; verify existing cross-fact queries are unchanged with spine edges present
+- [x] 3.4 Nearest-axis spine routing over executable to-one hop tokens with the equal-route error; verify the routing tests
 
 ## 4. Population, bounds and checks
 
-- [ ] 4.1 Spine factor in population inference (spine TDs and spine frame bounds are not determination items; unit P; reporting `time_spine × P`); verify the population delta tests
-- [ ] 4.2 Bound extraction from DEV-1999's frame-bound predicate, missing-lower-bound error, implied `this <finest granularity>` upper bound from the engine clock; verify the bounds tests
-- [ ] 4.3 Checker errors: spine aggregation, plain / raw-rows spine column, non-bound spine filter, re-bucketing through a wired axis column; verify the error tests
-- [ ] 4.4 IR: spine factor on the planned query (granularities, bounds) beside P; verify planning of every spine test produces it
+- [x] 4.1 Spine factor in population inference (spine TDs and spine frame bounds are not determination items; unit P; reporting `time_spine × P`); verify the population delta tests
+- [x] 4.2 Bound extraction from DEV-1999's frame-bound predicate, missing-lower-bound error, implied `this <finest granularity>` upper bound from the engine clock; verify the bounds tests
+- [x] 4.3 Checker errors: spine aggregation, plain / raw-rows spine column, non-bound spine filter, re-bucketing through a wired axis column; verify the error tests
+- [x] 4.4 IR: spine factor on the planned query (granularities, bounds) beside P; verify planning of every spine test produces it
 
 ## 5. SQL emission
 
 - [ ] 5.1 Integer-sequence dialect hook for every Tier-1 dialect and the Tier-2 default; verify golden SQL and the integration generation tests
-- [ ] 5.2 Bucket-series emission with the overlap filter, crossed with distinct P; producers joined on complete grain with promoted comparands; spine bounds lowered onto fact axes and stripped from window / shift frames; verify the executed spine tests on SQLite and DuckDB
-- [ ] 5.3 Windowed producer evaluated at the population's cells (local and cross-model); verify the trailing-window delta tests and the existing trailing-window suite
-- [ ] 5.4 RLS and cache behaviour for spine queries; verify the RLS and cache tests
+- [x] 5.2 Bucket-series emission with the overlap filter, crossed with distinct P; producers joined on complete grain with promoted comparands; spine bounds lowered onto fact axes and stripped from window / shift frames; verify the executed spine tests on SQLite and DuckDB
+- [x] 5.3 Windowed producer evaluated at the population's cells (local and cross-model); verify the trailing-window delta tests and the existing trailing-window suite
+- [x] 5.4 RLS and cache behaviour for spine queries; verify the RLS and cache tests
 
 ## 6. Surfaces, importers, docs, architecture
 

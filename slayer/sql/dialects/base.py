@@ -429,6 +429,23 @@ class SqlDialect(BaseModel):
         ))))
         return at(exp.Mul(this=exp.Paren(this=floored), expression=m))
 
+    def build_integer_sequence(self, *, size: int) -> exp.Select:
+        """``SELECT i`` over the integers ``0 .. size - 1``; default: a recursive CTE."""
+        seq = exp.to_identifier("_seq")
+        step = exp.select(exp.Add(this=exp.column("i"), expression=exp.Literal.number(1))).from_(
+            exp.Table(this=seq.copy()),
+        ).where(exp.LT(this=exp.column("i"), expression=exp.Literal.number(size - 1)))
+        cte = exp.CTE(
+            this=exp.union(exp.select(exp.Literal.number(0).as_("i")), step, distinct=False),
+            alias=exp.TableAlias(this=seq.copy(), columns=[exp.to_identifier("i")]),
+        )
+        out = exp.select(exp.column("i")).from_(exp.Table(this=seq.copy()))
+        out.set("with_", exp.With(expressions=[cte], recursive=True))
+        return out
+
+    def attach_sequence_setting(self, statement: Expression, *, size: int) -> None:  # NOSONAR(S1172) — no-op hook default
+        """Statement-level setting a generated integer sequence of ``size`` rows needs."""
+
     def bucket_step(self, *, bucket: Expression, count: int, unit: Granularity) -> Expression:
         """A time bucket moved by ``count`` ``unit`` steps (a custom unit steps ``multiple`` of its base)."""
         base, multiple, _ = granularity_parts(unit)

@@ -367,6 +367,7 @@ class TestNoCountableRows:
         {"order": [{"column": "day(time_spine.timestamp)"}], "measures": TWO_FACTS},
     ], ids=["plain-dimension", "raw-rows", "computed-dimension-operand", "unprojected-order-key"])
     async def test_spine_column_only_as_a_bucketed_time_dimension(self, engine, extra) -> None:
+        extra = dict(extra)  # the parametrized dict is shared across backends
         tds = extra.pop("time_dimensions", None)
         query = {"time_dimensions": [spine_td()] if tds is None else tds, **extra}
         if not query["time_dimensions"]:

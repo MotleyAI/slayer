@@ -14,10 +14,10 @@ from slayer.core.enums import DataType, JoinCardinality
 from slayer.core.errors import UnresolvableDimensionJoinError
 from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.engine.dimension_routing import (
-    _safe_hops,
     route_dotted_target,
     short_form_route_or_none,
 )
+from slayer.engine.join_safety import safe_hops as _safe_hops
 
 
 def _pk() -> Column:

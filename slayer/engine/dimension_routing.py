@@ -20,10 +20,11 @@ from collections import deque
 from typing import Optional, Tuple
 
 from slayer.core.errors import UnresolvableDimensionJoinError
-from slayer.core.join_walker import neighbors
+from slayer.core.join_walker import reverse_token
 from slayer.core.models import SlayerModel
+from slayer.core.time_spine import is_spine
 from slayer.engine.join_graph import JoinGraph
-from slayer.engine.join_safety import provably_to_one
+from slayer.engine.join_safety import safe_hops, spine_route_error, spine_routes
 
 __all__ = [
     "resolve_route",
@@ -31,68 +32,6 @@ __all__ = [
     "short_form_route_or_none",
     "route_dotted_target",
 ]
-
-
-def _safe_hops_for_neighbor(
-    *, nbr: str, edges: list, target: SlayerModel, name_counts: dict[str, int],
-    stage_spellings: set,
-) -> list[Tuple[str, str]]:
-    """Executable to-one hop tokens from a model to one neighbour: its bare
-    spelling for a lone unshadowed edge (a model name is shadowed by a stage
-    spelling too), else one entry per uniquely-named parallel edge; each kept
-    only if provably many-to-one on its orientation."""
-    token = target.spelling
-    shadowed = token in name_counts or (
-        target.explicit_spelling is None and token in stage_spellings
-    )
-    if len(edges) == 1 and not shadowed:
-        return (
-            [(token, nbr)]
-            if provably_to_one(edge=edges[0], target_model=target)
-            else []
-        )
-    return [
-        (e.name, nbr)
-        for e in edges
-        if e.name is not None
-        and name_counts[e.name] == 1
-        and provably_to_one(edge=e, target_model=target)
-    ]
-
-
-def _safe_hops(
-    *, model: SlayerModel, models_by_name: dict[str, SlayerModel]
-) -> list[Tuple[str, str]]:
-    """Oriented provably-to-one executable hops off ``model`` as ``(token,
-    target_model)``. Token resolution mirrors ``resolve_hop`` /
-    ``JoinGraph._executable_tokens``: a single unshadowed edge yields the bare
-    neighbour name, parallel edges yield one entry per uniquely-named edge, and
-    an unnamed parallel hop is dropped. Each candidate is then kept only if it is
-    provably many-to-one on its traversal orientation."""
-    incident = neighbors(model=model, models_by_name=models_by_name)
-    name_counts: dict[str, int] = {}
-    for e in incident:
-        if e.name is not None:
-            name_counts[e.name] = name_counts.get(e.name, 0) + 1
-    by_nbr: dict[str, list] = {}
-    for e in incident:
-        by_nbr.setdefault(e.target_model, []).append(e)
-    stage_spellings = {
-        models_by_name[n].explicit_spelling for n in by_nbr
-        if n in models_by_name and models_by_name[n].explicit_spelling
-    }
-    out: list[Tuple[str, str]] = []
-    for nbr, edges in by_nbr.items():
-        target = models_by_name.get(nbr)
-        if target is None:
-            continue
-        out.extend(
-            _safe_hops_for_neighbor(
-                nbr=nbr, edges=edges, target=target, name_counts=name_counts,
-                stage_spellings=stage_spellings,
-            )
-        )
-    return out
 
 
 def _safe_routes(
@@ -112,7 +51,7 @@ def _safe_routes(
         model = models_by_name.get(current)
         if model is None:
             return
-        for token, nbr in _safe_hops(model=model, models_by_name=models_by_name):
+        for token, nbr in safe_hops(model=model, models_by_name=models_by_name):
             if len(routes) >= cap:
                 return
             if nbr == target_model:
@@ -137,7 +76,7 @@ def _safe_bfs_dist(
         model = models_by_name.get(node)
         if model is None:
             continue
-        for _, nbr in _safe_hops(model=model, models_by_name=models_by_name):
+        for _, nbr in safe_hops(model=model, models_by_name=models_by_name):
             if nbr not in dist:
                 dist[nbr] = dist[node] + 1
                 frontier.append(nbr)
@@ -161,7 +100,7 @@ def _shortest_safe_route(
                 [*best[u], token]
                 for u in nodes_by_dist.get(d - 1, [])
                 if u in best
-                for token, nbr in _safe_hops(
+                for token, nbr in safe_hops(
                     model=models_by_name[u], models_by_name=models_by_name
                 )
                 if nbr == v
@@ -177,6 +116,14 @@ def resolve_route(
     """``(route, status)`` where status is ``"ok"`` / ``"ambiguous"`` /
     ``"unreachable"``. A unique full-graph route resolves (even if it fans out);
     among two or more routes, the sole fan-out-free one resolves."""
+    if is_spine(root):
+        dataset = models_by_name.get(target_model)
+        routes = spine_routes(dataset=dataset, models_by_name=models_by_name) if dataset is not None else []
+        if not routes:
+            return None, "unreachable"
+        if len(routes) > 1:
+            return None, "ambiguous"
+        return [reverse_token(e) for e in reversed(routes[0])], "ok"
     graph = JoinGraph.build_from_models(list(models_by_name.values()))
     n = graph.count_simple_paths(root=root.name, target=target_model, cap=2)
     if n == 0:
@@ -226,6 +173,11 @@ def route_dotted_target(
     if status == "ok":
         assert route is not None
         return route
+    if status == "ambiguous" and is_spine(root):
+        raise spine_route_error(
+            dataset=target_model, leaf=leaf,
+            routes=spine_routes(dataset=models_by_name[target_model], models_by_name=models_by_name),
+        )
     suggested: Optional[str] = None
     if status == "ambiguous":
         base = _shortest_safe_route(

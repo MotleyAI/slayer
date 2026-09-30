@@ -87,14 +87,25 @@ def _build_predicate(
     return exp.EQ(this=col, expression=exp.convert(value))
 
 
+def _generates_numbers(table: exp.Table) -> bool:
+    """A table function over numeric literals only (the time spine's integer sequence): no stored rows."""
+    call = table.this
+    if not isinstance(call, exp.Func):
+        return False
+    literals = list(call.find_all(exp.Literal))
+    return bool(literals) and all(not lit.is_string for lit in literals) and not any(
+        isinstance(n, (exp.Column, exp.Identifier, exp.Table)) for n in call.find_all(exp.Column, exp.Table)
+    )
+
+
 def _physical_tables(ast: Expression) -> list:
     """The physical ``exp.Table`` nodes in ``ast``, snapshotted before any mutation."""
     physical = []
     for scope in traverse_scope(ast):
         for table in scope.tables:
             source = scope.sources.get(table.alias_or_name)
-            if isinstance(source, Scope):
-                continue  # resolves to a CTE / derived table — leave alone
+            if isinstance(source, Scope) or _generates_numbers(table):
+                continue  # a CTE / derived table, or a stored-row-free number series
             physical.append(table)
     return physical
 

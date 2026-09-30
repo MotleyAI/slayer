@@ -7,6 +7,7 @@ multi-stage DAG through it, splicing the stored query-backed models its stages r
 
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, Hashable, List, NoReturn, Optional, Set, Tuple, Union
 
 from pydantic import BaseModel, Field
@@ -15,6 +16,7 @@ from slayer.core.errors import QueryBackedCycleError
 from slayer.core.join_walker import observe_traversals
 from slayer.core.models import SlayerModel
 from slayer.core.query import ModelExtension, SlayerQuery, extract_placeholder_names
+from slayer.core.time_spine import is_spine_query
 from slayer.core.scope import (
     ModelScope,
     StageDisplay,
@@ -177,6 +179,8 @@ class _StagePlanner:
         """Plan ``query`` after every query-backed model it names or reads is spliced."""
         for name in self._explicit_demands(query, chain=chain):
             self.ensure(name, chain=chain, explicit=True)
+        for name in self._spine_demands(query):
+            self.ensure(name, chain=chain, explicit=False)
         while True:
             planned, failure, seen, stamped = self._attempt(
                 query, stage_model=stage_model, single=single and not self.state.schemas,
@@ -283,7 +287,10 @@ class _StagePlanner:
             for i, p in enumerate(self.state.planned) if p.stage_schema is not None
         }
         reads = stage_sibling_reads(query=query, siblings=set(self.state.schemas))
-        reads |= {n for n, strict in seen.items() if strict and n in self.state.spliced}
+        reads |= {
+            n for n, strict in seen.items()
+            if strict and (n in self.state.spliced or n in self.state.schemas)
+        }
         # A read of a model still in flight, or one that failed to splice, stays in the
         # universe in stored form so its emission raises the cause.
         if raw:
@@ -322,6 +329,20 @@ class _StagePlanner:
                 names.append(spec.source_name)
             names.extend(j.target_model for j in spec.joins or [])
         return [n for n in dict.fromkeys(names) if n in chain or n in self.bundle.query_backed]
+
+    def _spine_demands(self, query: SlayerQuery) -> List[str]:
+        """Query-backed models a spine query names: the spine reaches them through their axes,
+        known only once spliced."""
+        if not is_spine_query(query):
+            return []
+        texts = [
+            *(m.formula for m in query.measures or []), *(query.filters or []),
+            *(getattr(d, "expression", None) or getattr(d, "full_name", "") for d in query.dimensions or []),
+        ]
+        return [
+            n for n in self.bundle.query_backed
+            if any(re.search(rf"(?<![\w.]){re.escape(n)}\.", t) for t in texts)
+        ]
 
     def ensure(self, name: str, *, chain: Tuple[str, ...], explicit: bool) -> bool:
         """Splice query-backed model ``name`` under ``chain``; ``False`` if it stays a placeholder."""
@@ -434,9 +455,9 @@ class _StagePlanner:
         spec = follow_sibling_chain(spec=stages[-1].source_model, named_queries=private)
         base_name = spec.source_name if isinstance(spec, ModelExtension) else spec
         if isinstance(spec, SlayerModel):
-            return spec.default_time_dimension
+            return spec.effective_default_time_dimension
         base = self.bundle.models_by_name.get(base_name) if isinstance(base_name, str) else None
-        return base.default_time_dimension if base is not None else None
+        return base.effective_default_time_dimension if base is not None else None
 
     def _chain_variables(self, chain: Tuple[str, ...]) -> Dict[str, Any]:
         """The enclosing query-backed models' variables, outer ones overriding inner."""

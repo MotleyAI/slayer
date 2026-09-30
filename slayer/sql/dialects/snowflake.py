@@ -207,6 +207,18 @@ class SnowflakeDialect(SqlDialect):
         """No interval type: ``DATEDIFF`` of second-aligned timestamps is exact."""
         return exp.Anonymous(this="DATEDIFF", expressions=[exp.var("SECOND"), start, end])
 
+    def build_integer_sequence(self, *, size: int) -> exp.Select:
+        generator = exp.Anonymous(this="GENERATOR", expressions=[
+            exp.Kwarg(this=exp.var("ROWCOUNT"), expression=exp.Literal.number(size)),
+        ])
+        row = exp.Window(
+            this=exp.RowNumber(),
+            order=exp.Order(expressions=[exp.Ordered(this=exp.Anonymous(this="SEQ4", expressions=[]))]),
+        )
+        return exp.select(exp.Sub(this=row, expression=exp.Literal.number(1)).as_("i")).from_(
+            exp.Table(this=exp.Anonymous(this="TABLE", expressions=[generator])),
+        )
+
     def build_date_add(
         self, *, expr: Expression, count: Expression, unit: TimeGranularity, operand: DataType,
     ) -> Expression:

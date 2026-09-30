@@ -18,6 +18,7 @@ from slayer.core.errors import (
 )
 from slayer.core.format import NumberFormat
 from slayer.core.formula import TIME_TRANSFORMS
+from slayer.core.time_spine import is_spine, is_spine_query, names_spine
 from slayer.core.join_walker import canonical_path, resolve_hop, terminal_model, walk
 from slayer.core.keys import (
     AggregateKey,
@@ -75,6 +76,8 @@ from slayer.engine.elaborate_env import (
     check_granularity_call_shape,
     check_granularity_known,
     check_measure_dedupe_collision,
+    check_spine_clash,
+    check_spine_plain_use,
     check_stage_flatten_collision,
     check_dimension_temporal_axis,
     check_opaque_grouping_dim,
@@ -301,6 +304,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         scope = resolve_scope(
             query=query, bundle=bundle, stage_schemas=stage_schemas,
         )
+    check_spine_clash(clash=bundle.spine_clash and is_spine_query(query))
     _check_column_granularities(bundle=bundle)
     query = _resolve_granularity_calls(query, bundle=bundle)
 
@@ -408,6 +412,13 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
                     None,
                 )
                 if matching_td is None:
+                    check_spine_plain_use(
+                        offender=o.raw_formula if names_spine(_col) or (
+                            isinstance(scope, ModelScope) and scope.source_model is not None
+                            and is_spine(scope.source_model) and "." not in _col
+                        ) else None,
+                        position="order key",
+                    )
                     raise GranularityCallError(
                         f"Order key {_gran}({_col}) has no matching projected time "
                         f"dimension. Project a time_dimension on {_col!r} at {_gran} "
@@ -1456,7 +1467,7 @@ def _resolve_main_time_dimension(
             suggestion=None,
         )
 
-    default = model.default_time_dimension if model is not None else None
+    default = model.effective_default_time_dimension if model is not None else None
     if default:
         return _host_local_default_td(tds=tds, default=default)
     return None

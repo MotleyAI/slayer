@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 import functools
 from enum import Enum, IntEnum
 from typing import Dict, Hashable, Iterable, Iterator, List, Literal, Optional, Tuple, Union, cast
@@ -188,6 +190,19 @@ class MaskTyping(str, Enum):
     MEASURE = "measure"
 
 
+class SpineFactor(BaseModel):
+    """The spine factor of a ``time_spine × P`` population: the bucket series its host reads —
+    ``size`` steps of ``granularity`` from the bucket of ``lower``, kept where they overlap
+    ``[lower, upper)``."""
+
+    model_config = ConfigDict(frozen=True)
+
+    granularity: Granularity
+    lower: datetime
+    upper: datetime
+    size: int = Field(ge=1)
+
+
 class MaskEntry(BaseModel):
     """One typed filter conjunct compiled to a hidden slot; the value masks, is never returned.
 
@@ -329,6 +344,11 @@ class TrailingWindowProducerKernel(BaseModel):
     #: Reference-bearing parameters (column / attached-aggregate / column-naming
     #: default) read per interval row as ``_src._w_p<i>``; literals never lift.
     picked_params: List[PickedParam] = Field(default_factory=list)
+    #: The population's cells at this producer's grain (a host-rooted plan): the
+    #: window is evaluated at each, home rows in its interval or not.
+    endpoints: Optional["PlannedQuery"] = None
+    #: The producer's grain keys in ``endpoints``' column order.
+    endpoint_keys: List[ValueKey] = Field(default_factory=list)
 
 
 class AssociationProducerKernel(BaseModel):
@@ -456,6 +476,8 @@ class PlannedQuery(BaseModel):
     empty_base_plan: Optional[EmptyBaseGrainPlan] = None
     # Filters pushed into this (producer) plan as correlated EXISTS semi-joins.
     semi_join_filters: List[SemiJoinFilter] = Field(default_factory=list)
+    # The host of a spine population renders its spine as this bucket series.
+    spine: Optional[SpineFactor] = None
 
     @model_validator(mode="after")
     def _projection_is_public_and_well_formed(self) -> "PlannedQuery":
@@ -627,6 +649,7 @@ def _validate_stage_order(pq: "PlannedQuery") -> None:
 
 # ``producer_plan`` forward-references ``PlannedQuery``.
 RegroupAttachPlan.model_rebuild()
+TrailingWindowProducerKernel.model_rebuild()
 
 
 def regroup_producer_identity(attach: RegroupAttachPlan) -> Hashable:
