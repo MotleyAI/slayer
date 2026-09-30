@@ -28,7 +28,7 @@ import sqlglot
 import sqlglot.expressions as exp
 from pydantic import BaseModel
 
-from slayer.core.formula import SCALAR_PASSTHROUGH
+from slayer.core.keys import SCALAR_PASSTHROUGH
 
 # Dialects whose expressions are SQL and can be fed to sqlglot / Column.sql.
 SQL_DIALECTS = frozenset({"ANSI_SQL", "SNOWFLAKE", "DATABRICKS"})

@@ -28,6 +28,7 @@ from slayer.core.enums import (
     RANK_FAMILY_TRANSFORMS,
     normalize_aggregation_name,
 )
+from slayer.core.keys import SCALAR_FUNCTIONS
 from slayer.core.refs import (
     AGG_REF_RE as _AGG_REF_RE,
     IDENT_OR_PATH_RE as _IDENT_OR_PATH_RE,
@@ -51,27 +52,6 @@ TIMELESS_TRANSFORMS = {"rank", "percent_rank", "dense_rank", "ntile"}
 
 ALL_TRANSFORMS = TIME_TRANSFORMS | TIMELESS_TRANSFORMS
 
-# Canonical Mode B scalar-function allowlist. Consulted uniformly by every
-# Mode B surface — top-level ``ModelMeasure.formula`` calls, inside-arithmetic
-# calls, and ``SlayerQuery.filters`` — case-insensitively. Pass-through to
-# emitted SQL; sqlglot handles per-dialect spelling. Extending: add to this
-# set only — never create parallel allowlists.
-SCALAR_PASSTHROUGH = frozenset({
-    # NULL handling
-    "coalesce", "nullif", "ifnull",
-    # Math
-    "round", "abs", "ceil", "ceiling", "floor",
-    "power", "pow", "sqrt", "exp",
-    "ln", "log", "log10", "log2",
-    "mod", "sign", "trunc",
-    # Min/max scalar (NOT the agg forms — those are min:/max:)
-    "greatest", "least",
-    # String
-    "lower", "upper", "trim", "ltrim", "rtrim",
-    "replace", "substr", "substring",
-    "instr", "length", "concat",
-})
-
 CallCategory = Literal["transform", "scalar", "unknown"]
 
 
@@ -79,14 +59,14 @@ def _classify_call_name(name: str) -> CallCategory:
     """Categorize a Mode B function-call identifier."""
     if name in ALL_TRANSFORMS:
         return "transform"
-    if name.lower() in SCALAR_PASSTHROUGH:
+    if name.lower() in SCALAR_FUNCTIONS:
         return "scalar"
     return "unknown"
 
 
 def _validate_scalar_call(node: ast.Call, original: str) -> None:
     """Arity check for top-level scalar calls. ``round`` / ``abs`` have specific
-    shapes worth catching early; other scalars in ``SCALAR_PASSTHROUGH`` have
+    shapes worth catching early; other scalars in ``SCALAR_FUNCTIONS`` have
     variable arity (``coalesce``, ``greatest``, …) and are validated by sqlglot
     at SQL-emission time."""
     name = node.func.id.lower()
@@ -656,7 +636,7 @@ def _parse_node(
         func_name = node.func.id
         category = _classify_call_name(func_name)
         if category == "scalar":
-            # Pass-through SCALAR_PASSTHROUGH call. Route through
+            # Allowlisted scalar call. Route through
             # _parse_mixed_arithmetic so inner aggregated refs and nested
             # transforms are registered/extracted.
             _validate_scalar_call(node, original)
@@ -665,7 +645,7 @@ def _parse_node(
             raise ValueError(
                 f"Unknown function '{func_name}' in formula {original!r}. "
                 f"Supported scalar functions: "
-                f"{', '.join(sorted(SCALAR_PASSTHROUGH))}. "
+                f"{', '.join(sorted(SCALAR_FUNCTIONS))}. "
                 f"Transforms: {', '.join(sorted(ALL_TRANSFORMS))}."
             )
 
@@ -795,11 +775,11 @@ def _replace_calls_in_arith(
         # inside-arithmetic accepted anything).
         if isinstance(node.func, ast.Name):
             name = node.func.id
-            if name not in ALL_TRANSFORMS and name.lower() not in SCALAR_PASSTHROUGH:
+            if name not in ALL_TRANSFORMS and name.lower() not in SCALAR_FUNCTIONS:
                 raise ValueError(
                     f"Unknown function {name!r} in formula {kwargs['original']!r}. "
                     f"Supported scalar functions: "
-                    f"{', '.join(sorted(SCALAR_PASSTHROUGH))}. "
+                    f"{', '.join(sorted(SCALAR_FUNCTIONS))}. "
                     f"Transforms: {', '.join(sorted(ALL_TRANSFORMS))}."
                 )
         node.args = [_replace_calls_in_arith(a, **kwargs) for a in node.args]

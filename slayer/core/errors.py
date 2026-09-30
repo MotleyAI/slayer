@@ -333,6 +333,10 @@ class PositionTypingError(QueryTypeError):
     """A filter conjunct / order target is valid as neither field nor measure."""
 
 
+class DateOperandTypeError(QueryTypeError):
+    """A date function operand that is not DATE/TIMESTAMP, or a ``date_add`` count that is not numeric."""
+
+
 class DistinctDimensionValuesError(QueryTypeError):
     """``distinct_dimension_values=False`` (raw rows) conflicts with an aggregation or an empty projection."""
 

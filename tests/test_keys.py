@@ -342,7 +342,7 @@ class TestScalarFunctionsAllowlist:
 
     def test_excludes_unknown(self):
         assert "regexp_match" not in SCALAR_FUNCTIONS
-        assert "date_part" not in SCALAR_FUNCTIONS
+        assert "date_trunc" not in SCALAR_FUNCTIONS
         assert "json_extract" not in SCALAR_FUNCTIONS
 
     def test_is_frozen(self):

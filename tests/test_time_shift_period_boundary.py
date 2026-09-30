@@ -115,7 +115,7 @@ def test_aligned_shift_truncates_once():
                      {"formula": "time_shift(cost:sum, -1, 'month')", "name": "prev"}],
         "time_dimensions": [{"dimension": "created_at", "granularity": "month"}],
     }, dry_run=True)
-    shifted = [ln for ln in resp.sql.splitlines() if "months" in ln.lower()]
+    shifted = [ln for ln in resp.sql.splitlines() if "'month')" in ln.lower()]
     assert shifted, resp.sql
     assert all(ln.count("STRFTIME") == 0 for ln in shifted), resp.sql
 
@@ -132,6 +132,6 @@ def test_unaligned_shift_still_rebuckets():
                      {"formula": "time_shift(cost:sum, -1, 'day')", "name": "prev"}],
         "time_dimensions": [{"dimension": "created_at", "granularity": "month"}],
     }, dry_run=True)
-    shifted = [ln for ln in resp.sql.splitlines() if "days" in ln.lower()]
+    shifted = [ln for ln in resp.sql.splitlines() if "'day')" in ln.lower()]
     assert shifted, resp.sql
     assert any(ln.count("STRFTIME") == 1 for ln in shifted), resp.sql

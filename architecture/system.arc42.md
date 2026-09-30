@@ -120,7 +120,7 @@ All code, old and new, MUST obey these.
    [enforced: test:tests/test_dev1954_canonical_paths.py]
 10. **Two expression layers**: Mode A free SQL (`Column.sql`, model `filters`)
     vs Mode B Python-AST DSL (formulas, query fields, scalar allowlist only) —
-    one canonical `SCALAR_PASSTHROUGH` set, extended never forked. [review]
+    one canonical scalar allowlist, extended never forked. [review]
 11. **Versioned persistence**: models/queries/datasource configs carry
     `version`; migrations run automatically on load. [review]
 12. **Pydantic v2 for all models; never dataclasses.** [review]

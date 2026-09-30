@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import sqlglot
 from sqlglot import exp
+from sqlglot.expressions.core import Expression
 from sqlglot.dialects.dialect import Dialect
 
 import pytest
 
-from slayer.core.enums import TimeGranularity
+from slayer.core.enums import DataType, TimeGranularity
 from slayer.sql.dialects import (
     _ALL_DIALECTS,
     ClickhouseDialect,
@@ -73,70 +74,35 @@ def test_default_build_date_trunc_idempotent_on_already_cast() -> None:
     assert sql.upper().count("CAST") == 1
 
 
-# build_time_offset_expr — default impl uses INTERVAL
+# build_date_add — default impl uses INTERVAL
 
 
-def test_default_build_time_offset_expr_uses_interval_add() -> None:
-    d = SqlDialect()
-    col = sqlglot.parse_one("created_at", dialect="postgres")
-    out = d.build_time_offset_expr(col, offset=3, granularity="day")
-    sql = out.sql(dialect=d.sqlglot_name)
-    assert "INTERVAL" in sql.upper()
-    assert "DAY" in sql.upper()
+def _date_add(count: int, unit: TimeGranularity) -> Expression:
+    col = exp.column("created_at")
+    return SqlDialect().build_date_add(
+        expr=col, count=exp.Literal.number(count), unit=unit, operand=DataType.TIMESTAMP,
+    )
 
 
-def test_default_build_time_offset_expr_negative_uses_subtract() -> None:
-    d = SqlDialect()
-    col = sqlglot.parse_one("created_at", dialect="postgres")
-    out = d.build_time_offset_expr(col, offset=-2, granularity="month")
-    sql = out.sql(dialect=d.sqlglot_name)
-    assert "INTERVAL" in sql.upper()
-    # the magnitude is positive, sign is in the operator
-    assert "MONTH" in sql.upper()
-
-
-def test_default_build_time_offset_expr_quarter_normalizes_to_3_month() -> None:
-    """Quarter→3*month normalization is preserved across every dialect (today's ``generator.py:1037``)."""
-    d = SqlDialect()
-    col = sqlglot.parse_one("created_at", dialect="postgres")
-    out = d.build_time_offset_expr(col, offset=1, granularity="quarter")
-    sql = out.sql(dialect=d.sqlglot_name).upper()
-    assert "MONTH" in sql
-    # The literal value should reflect quarter * 3
-    assert "3" in sql
-
-
-# duration_interval_exprs / add_intervals_expr — default impl uses INTERVAL nodes
-
-
-def test_default_duration_interval_exprs_returns_interval_per_part() -> None:
-    """The default impl yields one ``exp.Interval`` per parsed (amount, unit) pair."""
-    d = SqlDialect()
-    # parts = [(2, 'd'), (3, 'h')] — Postgres-shaped chained intervals
-    out = d.duration_interval_exprs([(2, "d"), (3, "h")], sign=1)
-    assert len(out) == 2
-    assert all(isinstance(n, exp.Interval) for n in out)
-
-
-def test_default_add_intervals_expr_chains_exp_add_for_positive_sign() -> None:
-    """Positive sign folds with ``exp.Add`` (col + interval [+ interval ...])."""
-    d = SqlDialect()
-    col = sqlglot.parse_one("created_at", dialect="postgres")
-    iv = exp.Interval(this=exp.Literal.number(1), unit=exp.Var(this="DAY"))
-    out = d.add_intervals_expr(col, [iv], sign=1)
+def test_default_build_date_add_uses_interval_add() -> None:
+    out = _date_add(3, TimeGranularity.DAY)
     assert isinstance(out, exp.Add)
     sql = out.sql(dialect="postgres").upper()
     assert "INTERVAL" in sql
     assert "DAY" in sql
 
 
-def test_default_add_intervals_expr_uses_exp_sub_for_negative_sign() -> None:
-    """Negative sign folds with ``exp.Sub`` (col - interval)."""
-    d = SqlDialect()
-    col = sqlglot.parse_one("created_at", dialect="postgres")
-    iv = exp.Interval(this=exp.Literal.number(1), unit=exp.Var(this="DAY"))
-    out = d.add_intervals_expr(col, [iv], sign=-1)
+def test_default_build_date_add_negative_uses_subtract() -> None:
+    out = _date_add(-2, TimeGranularity.MONTH)
     assert isinstance(out, exp.Sub)
+    # the magnitude is positive, sign is in the operator
+    assert "INTERVAL '2 MONTH'" in out.sql(dialect="postgres").upper()
+
+
+def test_default_build_date_add_quarter_normalizes_to_3_month() -> None:
+    """Quarter→3*month normalization is preserved across every dialect."""
+    sql = _date_add(1, TimeGranularity.QUARTER).sql(dialect="postgres").upper()
+    assert "INTERVAL '3 MONTH'" in sql
 
 
 # build_median / build_percentile — default impl is PERCENTILE_CONT WITHIN GROUP

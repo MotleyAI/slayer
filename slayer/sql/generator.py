@@ -38,14 +38,14 @@ from slayer.core.errors import (
     QueryBackedCycleError,
 )
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
-from slayer.core.keys import BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, SLOT_COMPOSITE_KINDS, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimeTruncKey, TransformKey, column_leaf, column_path, is_boolean_shaped, parameter_row_leaves, shift_offset_of, source_anchor_path, substitute_value_keys, walk_value_keys
-from slayer.core.join_walker import aggregation_owner, physical_join_pairs, resolve_hop, terminal_model
+from slayer.core.keys import BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, SLOT_COMPOSITE_KINDS, TEMPORAL_TYPES, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, ColumnTypeFn, InKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimeTruncKey, TransformKey, column_leaf, column_path, date_add_type, is_boolean_shaped, parameter_row_leaves, shift_offset_of, source_anchor_path, substitute_value_keys, temporal_type, walk_value_keys
+from slayer.core.join_walker import aggregation_owner, model_column_type, physical_join_pairs, resolve_hop, terminal_model
 from slayer.core.models import VALUE_PLACEHOLDER, aggregation_definition, rendered_formula, reserved_value_param_message
 from slayer.core.refs import (
     EXPRESSION_SOURCE_KINDS as _EXPRESSION_SOURCE_KINDS,
     expression_source_leaf,
 )
-from slayer.core.window_duration import parse_window_duration as _parse_window_duration
+from slayer.core.window_duration import WINDOW_UNIT_GRANULARITY
 from slayer.sql.column_expansion import (
     is_trivial_base,
     collect_root_scope_joined_paths,
@@ -66,7 +66,7 @@ from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql._identifier_fit import fit_identifier, overlimit_tokens
 from slayer.sql import staged_plan
 from slayer.sql.dialects import SqlDialect, get_dialect
-from slayer.sql.dialects.base import TimeUnit, is_stat_agg1, is_stat_agg2
+from slayer.sql.dialects.base import is_stat_agg1, is_stat_agg2
 from slayer.sql.naming import (
     OUTER_WRAP_ALIAS,
     AliasAllocator,
@@ -725,26 +725,6 @@ def _walk_cp_predicate(*, op: str, key, expect: str) -> None:
             _walk_cp_predicate(op=op, key=sub, expect="value")
 
 
-_WINDOW_UNIT_SQL = {
-    "y": "year",
-    "m": "month",
-    "w": "week",
-    "d": "day",
-    "h": "hour",
-    "min": "minute",
-    "s": "second",
-}
-_WINDOW_UNIT_SQLITE = {
-    "y": "years",
-    "m": "months",
-    "w": "days",
-    "d": "days",
-    "h": "hours",
-    "min": "minutes",
-    "s": "seconds",
-}
-
-
 def _effective_src_filters(*, lowered_filters, plan) -> list:
     """The lowered filter entries as the windowed ``_src`` scope sees them"""
     rewrites = getattr(plan, "src_filter_rewrites", None)
@@ -944,6 +924,9 @@ class SQLGenerator:
         #: {cte name -> declared deps}, one per statement being rendered, so a
         #: later split recovers a hoisted producer's edges (never AST-scanned).
         self._gen_dep_stack: List[Dict[str, List[str]]] = []
+        #: Column-type resolvers of the planned queries being rendered (innermost last).
+        self._gen_column_types: List[ColumnTypeFn] = []
+        self._gen_placeholder_types: List[Dict[Any, DataType]] = []
         #: Multi-stage statement state: every stage relation, the current
         #: statement's declared reads and its in-flight splice chain.
         self._gen_stage_relations: FrozenSet[str] = frozenset()
@@ -1004,6 +987,7 @@ class SQLGenerator:
             dialect=self._dialect,
             allocator=allocator,
             attached_columns=dict(attached_columns or {}),
+            placeholder_types=self._placeholder_types(),
         )
 
     def _alias_render_ctx(
@@ -1013,6 +997,7 @@ class SQLGenerator:
         """RenderContext carrying only the plain slot-alias facilities."""
         return RenderContext(
             dialect=self._dialect,
+            column_type=self._gen_column_types[-1],
             aliases=AliasFacilities(
                 slot_id_by_key=slot_id_by_key,
                 available_alias_by_slot_id=available_alias_by_slot_id,
@@ -1037,6 +1022,7 @@ class SQLGenerator:
         """RenderContext for the outer-wrapper composite/filter render pass."""
         return RenderContext(
             dialect=self._dialect,
+            column_type=self._gen_column_types[-1],
             aliases=self._outer_wrapper_alias_facilities(
                 slot_by_key=slot_by_key,
                 cross_model_agg_slot_to_cm=cross_model_agg_slot_to_cm,
@@ -1151,56 +1137,26 @@ class SQLGenerator:
 
 
 
-    def _build_time_offset_expr(self, col_expr: Expression, offset: int,
-                                granularity: TimeGranularity | TimeUnit) -> Expression:
-        """Apply a time offset to a column expression (dialect-aware)."""
-        return self._dialect.build_time_offset_expr(
-            col_expr=col_expr, offset=offset, granularity=granularity,
+    def _date_offset(
+        self, expr: Expression, *, count: int, unit: TimeGranularity, operand: Optional[DataType],
+    ) -> Expression:
+        """``expr`` moved by ``count`` ``unit``s through the dialect's one date-arithmetic primitive."""
+        typed = DataType.TIMESTAMP if operand is None or operand not in TEMPORAL_TYPES else operand
+        return self._dialect.build_date_add(
+            expr=expr, count=exp.Literal.number(count), unit=unit, operand=typed,
         )
 
     def _calendar_offset_bucket(
-        self, *, bucket_expr: Expression, periods: int,
-        shift_granularity: str, bucket_granularity: str,
+        self, *, bucket_expr: Expression, periods: int, shift_granularity: str, bucket_granularity: str,
     ) -> Expression:
-        """The bucket ``periods`` steps of ``shift_granularity`` from ``bucket_expr``."""
+        """The bucket ``periods`` steps of ``shift_granularity`` from ``bucket_expr``, as a ``bucket_comparand``."""
         bucket = TimeGranularity(bucket_granularity)
-        shifted = self._build_time_offset_expr(
-            col_expr=bucket_expr, offset=periods,
-            granularity=TimeGranularity(shift_granularity),
+        shifted = self._dialect.bucket_offset(
+            bucket=bucket_expr, count=int(periods), unit=TimeGranularity(shift_granularity),
         )
         if _shift_preserves_bucket_starts(bucket=bucket, shift=shift_granularity):
             return shifted
-        return self._build_date_trunc(col_expr=shifted, granularity=bucket)
-
-    def _duration_interval_exprs(self, duration: str, sign: int = 1) -> list[Expression]:
-        """Return per-unit AST nodes that `_add_intervals_expr` will chain."""
-        parts = _parse_window_duration(duration)
-        return self._dialect.duration_interval_exprs(parts=parts, sign=sign)
-
-    def _granularity_interval_expr(self, granularity: TimeGranularity, sign: int = 1) -> list[Expression]:
-        if granularity == TimeGranularity.QUARTER:
-            duration = "3m"
-        elif granularity in (TimeGranularity.WEEK, TimeGranularity.WEEK_SUNDAY):
-            # A WEEK_SUNDAY shift spans one calendar week, same as WEEK (only the anchor differs).
-            duration = "1w"
-        else:
-            unit_to_duration = {
-                TimeGranularity.YEAR: "1y",
-                TimeGranularity.MONTH: "1m",
-                TimeGranularity.DAY: "1d",
-                TimeGranularity.HOUR: "1h",
-                TimeGranularity.MINUTE: "1min",
-                TimeGranularity.SECOND: "1s",
-            }
-            duration = unit_to_duration[granularity]
-        return self._duration_interval_exprs(duration, sign=sign)
-
-    def _add_intervals_expr(self, expr: Expression, intervals: list[Expression],
-                            sign: int = 1) -> Expression:
-        """Compose `expr ± interval [± interval ...]` as AST."""
-        return self._dialect.add_intervals_expr(
-            expr=expr, intervals=intervals, sign=sign,
-        )
+        return self._dialect.bucket_comparand(self._build_date_trunc(col_expr=shifted, granularity=bucket))
 
     def _build_date_trunc(self, col_expr: Expression, granularity: TimeGranularity) -> Expression:
         """Build a DATE_TRUNC expression. Dispatches to the dialect strategy"""
@@ -1432,7 +1388,37 @@ class SQLGenerator:
                     f"(a model_copy that skips validation is the usual cause)",
                 )
 
-    def _generate_from_planned_impl(  # NOSONAR(S3776) — top-level dispatch over cross-model / transform-chain / plain branches plus the conditional outer-trim wrap. Each branch is a coherent compilation strategy; extracting would scatter the shared planned_query / slots_by_id / aliases_by_slot_id state across helpers without simplifying anything.
+    def _generate_from_planned_impl(
+        self, planned_query, *, bundle, as_cte_body: bool = False, producer_kernel=None,
+    ) -> exp.Select:
+        """Compose one planned query with its root's column types in reach of alias-mode renders."""
+        source_model = bundle.source_model
+        if source_model is None:
+            raise ValueError(
+                "generate_from_planned requires bundle.source_model to be set",
+            )
+        model_types = model_column_type(model=source_model, models_by_name=bundle.models_by_name)
+        placeholders = {
+            sub.placeholder: dt
+            for attach in planned_query.regroup_attach_plans
+            for sub in attach.substitutions
+            if (dt := temporal_type(sub.original_key, column_type=model_types)) is not None
+        }
+        self._gen_placeholder_types.append(placeholders)
+        self._gen_column_types.append(lambda key: placeholders.get(key) or model_types(key))
+        try:
+            return self._generate_from_planned_body(
+                planned_query, bundle=bundle, as_cte_body=as_cte_body,
+                producer_kernel=producer_kernel,
+            )
+        finally:
+            self._gen_column_types.pop()
+            self._gen_placeholder_types.pop()
+
+    def _placeholder_types(self) -> Dict[Any, DataType]:
+        return dict(self._gen_placeholder_types[-1]) if self._gen_placeholder_types else {}
+
+    def _generate_from_planned_body(  # NOSONAR(S3776) — top-level dispatch over cross-model / transform-chain / plain branches plus the conditional outer-trim wrap. Each branch is a coherent compilation strategy; extracting would scatter the shared planned_query / slots_by_id / aliases_by_slot_id state across helpers without simplifying anything.
         self,
         planned_query,
         *,
@@ -1443,10 +1429,6 @@ class SQLGenerator:
         """Compose a typed ``PlannedQuery`` as one statement AST."""
 
         source_model = bundle.source_model
-        if source_model is None:
-            raise ValueError(
-                "generate_from_planned requires bundle.source_model to be set",
-            )
         source_relation = planned_query.source_relation
 
         _row_attaches = [
@@ -2068,6 +2050,7 @@ class SQLGenerator:
             dialect=self._dialect,
             allocator=allocator,
             attached_columns=dict(attached_columns or {}),
+            placeholder_types=self._placeholder_types(),
         )
 
     def _render_computed_dims_via_scope(
@@ -2322,6 +2305,7 @@ class SQLGenerator:
                 key=slot.key,
                 ctx=RenderContext(
                     dialect=self._dialect,
+                    column_type=host_scope.column_type,
                     dimension_values=dimension_values,
                     composites=CompositeFacilities(
                         agg_builder=self._composite_agg_builder(
@@ -2598,21 +2582,17 @@ class SQLGenerator:
 
         # Trailing-window range: _src._w_time in [bucket_end - window, bucket_end), bucket_end being the host bucket's
         # exclusive upper edge.
-        frame_time = _base_col(wtd_alias)
-        bucket_end = self._add_intervals_expr(
-            frame_time,
-            self._granularity_interval_expr(
-                TimeGranularity(plan.window_granularity), sign=1,
-            ),
-            sign=1,
-        )
-        lower_bound = self._add_intervals_expr(
-            bucket_end,
-            self._dialect.duration_interval_exprs(
-                parts=[tuple(p) for p in plan.window_parts], sign=-1,
-            ),
-            sign=-1,
-        )
+        # Calendar parts apply one by one in written order, clamping like date_add.
+        assert wtd_slot is not None
+        time_type = src_scope.column_type(wtd_slot.key.column)
+        operand = DataType.DATE if time_type is DataType.DATE else DataType.TIMESTAMP
+        unit = TimeGranularity(plan.window_granularity)
+        bucket_end = self._date_offset(_base_col(wtd_alias), count=1, unit=unit, operand=operand)
+        lower_bound, operand = bucket_end, date_add_type(operand, unit)
+        for amount, letter in plan.window_parts:
+            unit = WINDOW_UNIT_GRANULARITY[letter]
+            lower_bound = self._date_offset(lower_bound, count=-amount, unit=unit, operand=operand)
+            operand = date_add_type(operand, unit)
         # The frame bounds are dialect-built timestamps; the source time operand is
         # normalised to the same type by the dialect (identity except SQLite, whose
         # bare-date affinity would leak the exclusive bucket_end row — sql P2).
@@ -4960,8 +4940,10 @@ class SQLGenerator:
         sjoin_on = build_grain_joinback_condition(
             pairs=[
                 (
-                    lookup_expr if host == time_alias
-                    else grain_alias_column(alias=host, table=chain_tail),
+                    lookup_expr,
+                    self._dialect.bucket_comparand(grain_alias_column(alias=shifted, table=shifted_cte_name)),
+                ) if host == time_alias else (
+                    grain_alias_column(alias=host, table=chain_tail),
                     grain_alias_column(alias=shifted, table=shifted_cte_name),
                 )
                 for host, shifted in pairs
@@ -5116,7 +5098,7 @@ class SQLGenerator:
         continues_run = exp.And(
             this=predicate.copy(),
             expression=exp.EQ(
-                this=exp.column(cp_prev_alias, quoted=True),
+                this=self._dialect.bucket_comparand(exp.column(cp_prev_alias, quoted=True)),
                 expression=self._calendar_offset_bucket(
                     bucket_expr=exp.column(time_alias, quoted=True), periods=-1,
                     shift_granularity=time_key.granularity,

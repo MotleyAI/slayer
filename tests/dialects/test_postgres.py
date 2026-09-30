@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlglot
 from sqlglot import exp
 
-from slayer.core.enums import TimeGranularity
+from slayer.core.enums import DataType, TimeGranularity
 from slayer.sql.dialects.postgres import PostgresDialect
 from slayer.sql.generator import SQLGenerator
 
@@ -66,26 +66,24 @@ def test_postgres_build_date_trunc_week_sunday_shift() -> None:
     assert "- INTERVAL '1 DAY'" in up
 
 
-# build_time_offset_expr — INTERVAL N UNIT
+# build_date_add — INTERVAL N UNIT
 
 
-def test_postgres_build_time_offset_expr_day() -> None:
-    d = PostgresDialect()
-    col = sqlglot.parse_one("created_at", dialect="postgres")
-    out = d.build_time_offset_expr(col, offset=3, granularity="day")
-    sql = out.sql(dialect="postgres").upper()
-    assert "INTERVAL" in sql
-    assert "DAY" in sql
+def _date_add(count: int, unit: str) -> str:
+    col = exp.column("created_at")
+    out = PostgresDialect().build_date_add(
+        expr=col, count=exp.Literal.number(count), unit=TimeGranularity(unit), operand=DataType.TIMESTAMP,
+    )
+    return out.sql(dialect="postgres").upper()
 
 
-def test_postgres_build_time_offset_expr_quarter_normalizes_to_3_month() -> None:
+def test_postgres_build_date_add_day() -> None:
+    assert _date_add(3, "day") == "CREATED_AT + INTERVAL '3 DAY'"
+
+
+def test_postgres_build_date_add_quarter_normalizes_to_3_month() -> None:
     """Postgres uses ``INTERVAL '3 month'`` for quarter."""
-    d = PostgresDialect()
-    col = sqlglot.parse_one("created_at", dialect="postgres")
-    out = d.build_time_offset_expr(col, offset=1, granularity="quarter")
-    sql = out.sql(dialect="postgres").upper()
-    assert "MONTH" in sql
-    assert "3" in sql
+    assert _date_add(1, "quarter") == "CREATED_AT + INTERVAL '3 MONTH'"
 
 
 # build_median / build_percentile — PERCENTILE_CONT
