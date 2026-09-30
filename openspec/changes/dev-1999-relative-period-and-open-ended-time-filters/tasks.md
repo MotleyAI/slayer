@@ -27,7 +27,7 @@
 
 - [x] 4.1 Engine `clock` parameter; read once in `execute` into `ResolvedSourceBundle.now`, carried through reroot, stages, splices, dry-run and cache refresh; verify 1.7 passes
 - [x] 4.2 Binder: `gran(col)` → `TimeTruncKey` in `_bind` (wrong shapes → `GranularityCallError`); time-point comparisons and `date_range` → `TimePointCmpKey`; verify binding unit tests
-- [ ] 4.3 Checker: the resolution function over `core.keys.temporal_type` (non-temporal → `DateOperandTypeError`; other typing errors new `QueryTypeError` subclasses, lowering incl. `gran(col)` exact bounds, non-temporal fallback); `bind_inputs` runs the pass over every bound expression; compile fails closed on an unresolved key; add raise-ledger rows; ordered after `check_date_operands`, before a fail-closed `map_children` rewrite of `_attach_time_keys`; verify 1.3–1.5 pass
+- [x] 4.3 Checker: the resolution function over `core.keys.temporal_type` (non-temporal → `DateOperandTypeError`; other typing errors new `QueryTypeError` subclasses, lowering incl. `gran(col)` exact bounds, non-temporal fallback); `bind_inputs` runs the pass over every bound expression; compile fails closed on an unresolved key; add raise-ledger rows; ordered after `check_date_operands`, before a fail-closed `map_children` rewrite of `_attach_time_keys`; verify 1.3–1.5 pass
 - [x] 4.4 Typed `whole_periods_only` pass (earliest floor per column, clamp to now, non-nesting warning); verify 1.6 passes
 
 ## 5. SQL rendering
@@ -47,4 +47,4 @@
 
 ## 8. Gates
 
-- [ ] 8.1 Full non-integration suite green (`poetry run pytest -m "not integration"`), `poetry run ruff check slayer/ tests/`, basedpyright no new errors vs baseline, `la-arch-check`
+- [x] 8.1 Full non-integration suite green (`poetry run pytest -m "not integration"`), `poetry run ruff check slayer/ tests/`, basedpyright no new errors vs baseline, `la-arch-check`

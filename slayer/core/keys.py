@@ -1215,6 +1215,8 @@ def temporal_type(key: object, *, column_type: ColumnTypeFn) -> Optional[DataTyp
     if isinstance(key, (ColumnKey, ColumnSqlKey)):
         t = column_type(key)
         return t if t in TEMPORAL_TYPES else None
+    if isinstance(key, TimeTruncKey):
+        return temporal_type(key.column, column_type=column_type)
     if isinstance(key, LiteralKey):
         key = key.value
     if isinstance(key, datetime):
