@@ -1,4 +1,4 @@
-"""DEV-1900 — the one dependency closure (engine.arc42 principle 10).
+"""The one dependency closure (engine.arc42 principle 10).
 
 A reference's *dependency closure* is its own join path plus every join path the
 definition of any derived column it names crosses, recursively. Every planner
@@ -38,15 +38,19 @@ from slayer.core.keys import (
     source_row_leaves,
 )
 from slayer.core.errors import (
+    AmbiguousJoinPathError,
     CircularJoinPathError,
     SlayerError,
 )
+from slayer.core.join_walker import canonical_path, walk
 from slayer.core.models import Column, SlayerModel
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.column_expansion import (
     ColumnCycleError,
     expand_derived_refs_sync,
     is_trivial_base,
+    reference_sites,
+    root_scope_column_ids,
 )
 
 Path = Tuple[str, ...]
@@ -170,7 +174,7 @@ def fragment_null_propagates(
     *, column: Column, model: SlayerModel, anchor_relation: str,
     bundle: ResolvedSourceBundle,
 ) -> bool:
-    """Is a derived column NULL whenever its owner row is (DEV-1935 D5)? True for
+    """Is a derived column NULL whenever its owner row is? True for
     a bare column, arithmetic or comparison over ≥1 column once derived references
     are expanded; a function call, CASE, literal-only or unparseable definition
     is data-dependent."""
@@ -268,13 +272,61 @@ def _definition_fragments(col) -> List[str]:
     ]
 
 
+def _definition_ref(
+    *, key: ColumnSqlKey, owner: SlayerModel, col: Column, quals: Path, leaf: str,
+    bundle: ResolvedSourceBundle,
+) -> Optional[ValueKey]:
+    """One definition reference as an anchor-relative column key, else ``None``."""
+    hops = quals[1:] if quals[:1] == (owner.name,) else quals
+    models = {**bundle.models_by_name, owner.name: owner}
+    try:
+        chain = walk(root=owner, path=hops, models_by_name=models)
+    except (AmbiguousJoinPathError, CircularJoinPathError):
+        return None
+    if chain is None:
+        return None
+    target = models.get(chain[-1].target_model) if chain else owner
+    path = (*key.path, *canonical_path(chain))
+    if target is owner and leaf == col.name:
+        return ColumnKey(path=path, leaf=leaf)  # a filter reading its own physical column
+    if target is None or target.get_column(leaf) is None:
+        return None
+    return column_default_key(path=path, leaf=leaf, base=target)
+
+
+def definition_refs(
+    *, key: ColumnSqlKey, anchor_model: SlayerModel, bundle: ResolvedSourceBundle,
+) -> Optional[List[ValueKey]]:
+    """The column keys a derived column's value and ``Column.filter`` read, at
+    anchor-relative paths; ``None`` when the definition cannot be analysed."""
+    owner = _terminal_model(key, anchor_model=anchor_model, bundle=bundle)
+    col = owner.get_column(key.column_name) if owner is not None else None
+    if owner is None or col is None:
+        return None
+    out: List[ValueKey] = (
+        [ColumnKey(path=key.path, leaf=col.name)] if is_trivial_base(column=col) else []
+    )
+    for sql in _definition_fragments(col):
+        parsed = _parse_filter_sql_any_dialect(sql)
+        if parsed is None:
+            return None
+        for _node, quals, leaf in reference_sites(parsed, root_scope_column_ids(parsed=parsed)):
+            ref = _definition_ref(
+                key=key, owner=owner, col=col, quals=tuple(quals), leaf=leaf, bundle=bundle,
+            )
+            if ref is None:
+                return None
+            out.append(ref)
+    return out
+
+
 def _column_key_closure(
     node, *, anchor_model: SlayerModel, anchor_relation: str,
     bundle: ResolvedSourceBundle, cache: "Optional[dict]" = None,
 ) -> Optional[List[Path]]:
     """Own path prefixes of a ``ColumnSqlKey``/``ColumnKey`` plus the fragment
     closure of its definition — the value's ``sql`` (when non-trivial) AND its
-    ``Column.filter`` (DEV-1832), each anchored at the column's owner. Tri-state
+    ``Column.filter``, each anchored at the column's owner. Tri-state
     ``None`` propagates (a dependency that cannot be analysed)."""
     path = tuple(getattr(node, "path", ()) or ())
     out: List[Path] = list(_prefixes(path))
@@ -420,7 +472,7 @@ def aggregate_input_closure(
     """The dependency closure of an aggregate's inputs — its source (when
     ``include_source``), positional/keyword arguments, and non-overridden
     definition defaults — recursively through derived definitions. A source
-    column's ``Column.filter`` rides its ``ColumnSqlKey`` source (DEV-1832), so
+    column's ``Column.filter`` rides its ``ColumnSqlKey`` source, so
     the source closure covers it. ``None`` when any dependency cannot be analysed
     (fail closed, short-circuiting on the first unanalysable component); ``()``
     when purely local. Attached constituents (aggregates, transforms) are opaque:

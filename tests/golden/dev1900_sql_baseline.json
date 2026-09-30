@@ -57,31 +57,31 @@
   },
   "fanning/dim_error_mode::bigquery": {
     "error": "SlayerError",
-    "message": "error mode: metric 'amt' would broadcast across unattributable dimension(s) customers__regions__bad_pop (crosses a fanning or unproven join hop to region_events); declare join cardinality, a covering unique key, switch to to_many_handling='associate', or remove the dimension."
+    "message": "error mode: metric 'amt' would broadcast across unattributable dimension(s) customers.regions.bad_pop (crosses a fanning or unproven join hop to region_events); declare join cardinality, a covering unique key, switch to to_many_handling='associate', or remove the dimension."
   },
   "fanning/dim_error_mode::duckdb": {
     "error": "SlayerError",
-    "message": "error mode: metric 'amt' would broadcast across unattributable dimension(s) customers__regions__bad_pop (crosses a fanning or unproven join hop to region_events); declare join cardinality, a covering unique key, switch to to_many_handling='associate', or remove the dimension."
+    "message": "error mode: metric 'amt' would broadcast across unattributable dimension(s) customers.regions.bad_pop (crosses a fanning or unproven join hop to region_events); declare join cardinality, a covering unique key, switch to to_many_handling='associate', or remove the dimension."
   },
   "fanning/dim_error_mode::mysql": {
     "error": "SlayerError",
-    "message": "error mode: metric 'amt' would broadcast across unattributable dimension(s) customers__regions__bad_pop (crosses a fanning or unproven join hop to region_events); declare join cardinality, a covering unique key, switch to to_many_handling='associate', or remove the dimension."
+    "message": "error mode: metric 'amt' would broadcast across unattributable dimension(s) customers.regions.bad_pop (crosses a fanning or unproven join hop to region_events); declare join cardinality, a covering unique key, switch to to_many_handling='associate', or remove the dimension."
   },
   "fanning/dim_error_mode::postgres": {
     "error": "SlayerError",
-    "message": "error mode: metric 'amt' would broadcast across unattributable dimension(s) customers__regions__bad_pop (crosses a fanning or unproven join hop to region_events); declare join cardinality, a covering unique key, switch to to_many_handling='associate', or remove the dimension."
+    "message": "error mode: metric 'amt' would broadcast across unattributable dimension(s) customers.regions.bad_pop (crosses a fanning or unproven join hop to region_events); declare join cardinality, a covering unique key, switch to to_many_handling='associate', or remove the dimension."
   },
   "fanning/dim_error_mode::snowflake": {
     "error": "SlayerError",
-    "message": "error mode: metric 'amt' would broadcast across unattributable dimension(s) customers__regions__bad_pop (crosses a fanning or unproven join hop to region_events); declare join cardinality, a covering unique key, switch to to_many_handling='associate', or remove the dimension."
+    "message": "error mode: metric 'amt' would broadcast across unattributable dimension(s) customers.regions.bad_pop (crosses a fanning or unproven join hop to region_events); declare join cardinality, a covering unique key, switch to to_many_handling='associate', or remove the dimension."
   },
   "fanning/dim_error_mode::sqlite": {
     "error": "SlayerError",
-    "message": "error mode: metric 'amt' would broadcast across unattributable dimension(s) customers__regions__bad_pop (crosses a fanning or unproven join hop to region_events); declare join cardinality, a covering unique key, switch to to_many_handling='associate', or remove the dimension."
+    "message": "error mode: metric 'amt' would broadcast across unattributable dimension(s) customers.regions.bad_pop (crosses a fanning or unproven join hop to region_events); declare join cardinality, a covering unique key, switch to to_many_handling='associate', or remove the dimension."
   },
   "fanning/dim_error_mode::tsql": {
     "error": "SlayerError",
-    "message": "error mode: metric 'amt' would broadcast across unattributable dimension(s) customers__regions__bad_pop (crosses a fanning or unproven join hop to region_events); declare join cardinality, a covering unique key, switch to to_many_handling='associate', or remove the dimension."
+    "message": "error mode: metric 'amt' would broadcast across unattributable dimension(s) customers.regions.bad_pop (crosses a fanning or unproven join hop to region_events); declare join cardinality, a covering unique key, switch to to_many_handling='associate', or remove the dimension."
   },
   "fanning/local_kwarg::bigquery": {
     "error": "UnsafeJoinInputError",
@@ -120,31 +120,31 @@
   "fanning/pop_filter_derived::tsql": "SELECT\n  CAST(SUM(orders.amount) AS FLOAT) AS [orders___amt]\nFROM orders AS orders\nWHERE\n  EXISTS(\n    SELECT\n      1\n    FROM customers AS customers\n    INNER JOIN regions AS customers__regions\n      ON customers.region_id = customers__regions.id\n    INNER JOIN region_events AS customers__regions__region_events\n      ON customers__regions.id = customers__regions__region_events.region_id\n    WHERE\n      orders.customer_id = customers.id\n      AND CAST(customers__regions.pop + customers__regions__region_events.value AS FLOAT) > 0\n  )",
   "fanning/reagg_param::bigquery": {
     "error": "ParameterGrainError",
-    "message": "ParameterGrainError: Parameter 'weight' is not determined by the operand grain (customers__regions__id); the aggregation reads one value per cell of that grain.\n  at measure 'w'\n  suggestion: Aggregate the parameter to that grain, or add its determining keys to the operand's partition_by=."
+    "message": "ParameterGrainError: Parameter 'weight' is not determined by the operand grain (customers.regions.id); the aggregation reads one value per cell of that grain.\n  at measure 'w'\n  suggestion: Aggregate the parameter to that grain, or add its determining keys to the operand's partition_by=."
   },
   "fanning/reagg_param::duckdb": {
     "error": "ParameterGrainError",
-    "message": "ParameterGrainError: Parameter 'weight' is not determined by the operand grain (customers__regions__id); the aggregation reads one value per cell of that grain.\n  at measure 'w'\n  suggestion: Aggregate the parameter to that grain, or add its determining keys to the operand's partition_by=."
+    "message": "ParameterGrainError: Parameter 'weight' is not determined by the operand grain (customers.regions.id); the aggregation reads one value per cell of that grain.\n  at measure 'w'\n  suggestion: Aggregate the parameter to that grain, or add its determining keys to the operand's partition_by=."
   },
   "fanning/reagg_param::mysql": {
     "error": "ParameterGrainError",
-    "message": "ParameterGrainError: Parameter 'weight' is not determined by the operand grain (customers__regions__id); the aggregation reads one value per cell of that grain.\n  at measure 'w'\n  suggestion: Aggregate the parameter to that grain, or add its determining keys to the operand's partition_by=."
+    "message": "ParameterGrainError: Parameter 'weight' is not determined by the operand grain (customers.regions.id); the aggregation reads one value per cell of that grain.\n  at measure 'w'\n  suggestion: Aggregate the parameter to that grain, or add its determining keys to the operand's partition_by=."
   },
   "fanning/reagg_param::postgres": {
     "error": "ParameterGrainError",
-    "message": "ParameterGrainError: Parameter 'weight' is not determined by the operand grain (customers__regions__id); the aggregation reads one value per cell of that grain.\n  at measure 'w'\n  suggestion: Aggregate the parameter to that grain, or add its determining keys to the operand's partition_by=."
+    "message": "ParameterGrainError: Parameter 'weight' is not determined by the operand grain (customers.regions.id); the aggregation reads one value per cell of that grain.\n  at measure 'w'\n  suggestion: Aggregate the parameter to that grain, or add its determining keys to the operand's partition_by=."
   },
   "fanning/reagg_param::snowflake": {
     "error": "ParameterGrainError",
-    "message": "ParameterGrainError: Parameter 'weight' is not determined by the operand grain (customers__regions__id); the aggregation reads one value per cell of that grain.\n  at measure 'w'\n  suggestion: Aggregate the parameter to that grain, or add its determining keys to the operand's partition_by=."
+    "message": "ParameterGrainError: Parameter 'weight' is not determined by the operand grain (customers.regions.id); the aggregation reads one value per cell of that grain.\n  at measure 'w'\n  suggestion: Aggregate the parameter to that grain, or add its determining keys to the operand's partition_by=."
   },
   "fanning/reagg_param::sqlite": {
     "error": "ParameterGrainError",
-    "message": "ParameterGrainError: Parameter 'weight' is not determined by the operand grain (customers__regions__id); the aggregation reads one value per cell of that grain.\n  at measure 'w'\n  suggestion: Aggregate the parameter to that grain, or add its determining keys to the operand's partition_by=."
+    "message": "ParameterGrainError: Parameter 'weight' is not determined by the operand grain (customers.regions.id); the aggregation reads one value per cell of that grain.\n  at measure 'w'\n  suggestion: Aggregate the parameter to that grain, or add its determining keys to the operand's partition_by=."
   },
   "fanning/reagg_param::tsql": {
     "error": "ParameterGrainError",
-    "message": "ParameterGrainError: Parameter 'weight' is not determined by the operand grain (customers__regions__id); the aggregation reads one value per cell of that grain.\n  at measure 'w'\n  suggestion: Aggregate the parameter to that grain, or add its determining keys to the operand's partition_by=."
+    "message": "ParameterGrainError: Parameter 'weight' is not determined by the operand grain (customers.regions.id); the aggregation reads one value per cell of that grain.\n  at measure 'w'\n  suggestion: Aggregate the parameter to that grain, or add its determining keys to the operand's partition_by=."
   },
   "positive/assoc_region_name::bigquery": "WITH _base AS (\n  SELECT\n    customers__regions.name AS `orders___customers___regions___name`,\n    CAST(SUM(orders.amount) AS FLOAT64) AS `orders___amt`\n  FROM orders AS orders\n  LEFT JOIN customers AS customers\n    ON orders.customer_id = customers.id\n  LEFT JOIN regions AS customers__regions\n    ON customers.region_id = customers__regions.id\n  GROUP BY\n    customers__regions.name\n), _cm_orders__customers__spend_sum AS (\n  SELECT\n    regions.name AS `customers___regions___name`,\n    CAST(SUM(customers.spend) AS FLOAT64) AS `customers___spend_sum`\n  FROM customers AS customers\n  LEFT JOIN regions AS regions\n    ON customers.region_id = regions.id\n  GROUP BY\n    regions.name\n)\nSELECT\n  _base.`orders___customers___regions___name`,\n  _base.`orders___amt`,\n  _cm_orders__customers__spend_sum.`customers___spend_sum` AS `orders___csp`\nFROM _base\nLEFT JOIN _cm_orders__customers__spend_sum\n  ON _base.`orders___customers___regions___name` IS NOT DISTINCT FROM _cm_orders__customers__spend_sum.`customers___regions___name`",
   "positive/assoc_region_name::duckdb": "WITH _base AS (\n  SELECT\n    customers__regions.name AS \"orders.customers.regions.name\",\n    CAST(SUM(orders.amount) AS DOUBLE) AS \"orders.amt\"\n  FROM orders AS orders\n  LEFT JOIN customers AS customers\n    ON orders.customer_id = customers.id\n  LEFT JOIN regions AS customers__regions\n    ON customers.region_id = customers__regions.id\n  GROUP BY\n    customers__regions.name\n), _cm_orders__customers__spend_sum AS (\n  SELECT\n    regions.name AS \"customers.regions.name\",\n    CAST(SUM(customers.spend) AS DOUBLE) AS \"customers.spend_sum\"\n  FROM customers AS customers\n  LEFT JOIN regions AS regions\n    ON customers.region_id = regions.id\n  GROUP BY\n    regions.name\n)\nSELECT\n  _base.\"orders.customers.regions.name\",\n  _base.\"orders.amt\",\n  _cm_orders__customers__spend_sum.\"customers.spend_sum\" AS \"orders.csp\"\nFROM _base\nLEFT JOIN _cm_orders__customers__spend_sum\n  ON _base.\"orders.customers.regions.name\" IS NOT DISTINCT FROM _cm_orders__customers__spend_sum.\"customers.regions.name\"",

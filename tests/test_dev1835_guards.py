@@ -134,5 +134,5 @@ class TestRepointedGuards:
         with pytest.raises(ValueError, match=r"attributable from") as ei:
             await _gen(query)
         msg = str(ei.value)
-        assert "ordered_at_month" in msg
+        assert "month(ordered_at)" in msg
         assert "DEV-1504" not in msg

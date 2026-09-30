@@ -361,6 +361,16 @@ class TestGranularityCalls:
             await ids(engine, filt)
         assert f"month() needs a DATE or TIMESTAMP operand; `{column}` is not one" in str(ei.value)
 
+    @pytest.mark.parametrize(("formula", "kind"), [
+        ("sum(month(ts))", "TIMESTAMP"),
+        ("avg(month(d))", "DATE"),
+        ("sum(date_add(ts, 1, 'day'))", "TIMESTAMP"),
+    ])
+    async def test_numeric_aggregation_of_temporal_expression_rejected(self, engine, formula, kind) -> None:
+        query = SlayerQuery.model_validate({"source_model": "ev", "measures": [{"formula": formula, "name": "m"}]})
+        with pytest.raises(ValueError, match=rf"requires a numeric value.*non-numeric \({kind}\)"):
+            await engine.execute(query)
+
     async def test_non_temporal_operand_rejected_in_measure(self, engine) -> None:
         query = SlayerQuery.model_validate({
             "source_model": "ev", "measures": [{"formula": "count_distinct(month(code))", "name": "m"}],

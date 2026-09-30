@@ -38,7 +38,7 @@ from slayer.core.enums import (
 )
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS
-from slayer.core.keys import DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, SCALAR_FUNCTIONS, check_scalar_arity, type_date_values, AggregateKey, ArithmeticKey, ColumnKey, ColumnSqlKey, Grain, InKey, LiteralKey, ScalarCallKey, StarKey, TimePointCmpKey, TimePointOp, TimeTruncKey, TransformKey, ValueKey, column_leaf, column_path, is_attached_source, normalize_scalar, prepend_value_key, walk_value_keys
+from slayer.core.keys import DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, SCALAR_FUNCTIONS, check_scalar_arity, type_date_values, AggregateKey, ArithmeticKey, ColumnKey, ColumnSqlKey, Grain, InKey, LiteralKey, ScalarCallKey, StarKey, TimePointCmpKey, TimePointOp, TimeTruncKey, TransformKey, ValueKey, column_leaf, column_path, is_attached_source, normalize_scalar, prepend_value_key, temporal_type, walk_value_keys
 from slayer.core.join_walker import (
     OrientedJoin,
     aggregation_owner,
@@ -54,6 +54,7 @@ from slayer.core.models import (
     reserved_value_param_message,
 )
 from slayer.engine import dimension_routing
+from slayer.engine.key_metadata import scope_column_type
 from slayer.engine.param_binding import bind_aggregation_params
 from slayer.core.query import TimeDimension
 from slayer.core.scope import ModelScope, StageSchema, resolve_generated_column
@@ -1100,13 +1101,20 @@ def _expression_is_confidently_boolean(key, *, model: Optional[SlayerModel]) -> 
 
 def _reject_non_numeric_expression_agg(
     *, source: ValueKey, agg: str,
-    scope: ModelScope | StageSchema,
+    scope: ModelScope | StageSchema, bundle: ResolvedSourceBundle,
 ) -> None:
     if agg not in NUMERIC_ONLY_AGGREGATIONS:
         return
     model = (
         scope.source_model if isinstance(scope, ModelScope) else None
     )
+    temporal = temporal_type(source, column_type=scope_column_type(scope=scope, bundle=bundle))
+    if temporal is not None:
+        raise ValueError(
+            f"Aggregation {agg!r} requires a numeric value, but the "
+            f"aggregated expression is non-numeric ({temporal.value}). Use a counting "
+            f"or min/max aggregation, or make the expression numeric (e.g. date_diff)."
+        )
     if _expression_is_confidently_text(source, model=model):
         raise ValueError(
             f"Aggregation {agg!r} requires a numeric value, but the "
@@ -1265,7 +1273,7 @@ def _bind_agg(
                 f"expression; use a plain column."
             )
         _reject_non_numeric_expression_agg(
-            source=source, agg=effective_agg, scope=scope,
+            source=source, agg=effective_agg, scope=scope, bundle=bundle,
         )
     kwargs = bind_aggregation_params(
         agg=effective_agg, source=source, kwargs=kwargs, bundle=bundle,
