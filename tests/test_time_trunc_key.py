@@ -22,6 +22,8 @@ conversion + main-TD resolution in 7b.3c.
 
 from __future__ import annotations
 
+from typing import get_args
+
 import pytest
 from pydantic import ValidationError
 
@@ -38,7 +40,7 @@ from slayer.core.keys import (
 class TestTimeTruncKeyConstruction:
     def test_constructs_from_columnkey_and_granularity_string(self) -> None:
         col = ColumnKey(leaf="ordered_at")
-        k = TimeTruncKey(column=col, granularity="month")
+        k = TimeTruncKey(column=col, granularity=TimeGranularity.MONTH)
         assert k.column == col
         assert k.granularity == "month"
 
@@ -46,45 +48,45 @@ class TestTimeTruncKeyConstruction:
         """TimeGranularity is a StrEnum, so its members are valid strings.
         Accept the enum value directly."""
         col = ColumnKey(leaf="ordered_at")
-        k = TimeTruncKey(
-            column=col, granularity=TimeGranularity.MONTH.value
+        k = TimeTruncKey.model_validate(
+            {"column": col, "granularity": TimeGranularity.MONTH.value}
         )
         assert k.granularity == "month"
 
     def test_preserves_columnkey_path_for_cross_model(self) -> None:
         col = ColumnKey(path=("customers",), leaf="signup_at")
-        k = TimeTruncKey(column=col, granularity="day")
+        k = TimeTruncKey(column=col, granularity=TimeGranularity.DAY)
         assert k.column.path == ("customers",)
         assert k.column.leaf == "signup_at"
 
 
 class TestTimeTruncKeyIdentity:
     def test_same_column_and_granularity_intern_equal(self) -> None:
-        a = TimeTruncKey(column=ColumnKey(leaf="ordered_at"), granularity="month")
-        b = TimeTruncKey(column=ColumnKey(leaf="ordered_at"), granularity="month")
+        a = TimeTruncKey(column=ColumnKey(leaf="ordered_at"), granularity=TimeGranularity.MONTH)
+        b = TimeTruncKey(column=ColumnKey(leaf="ordered_at"), granularity=TimeGranularity.MONTH)
         assert a == b
         assert hash(a) == hash(b)
 
     def test_different_granularities_on_same_column_distinct(self) -> None:
         col = ColumnKey(leaf="ordered_at")
-        a = TimeTruncKey(column=col, granularity="day")
-        b = TimeTruncKey(column=col, granularity="month")
+        a = TimeTruncKey(column=col, granularity=TimeGranularity.DAY)
+        b = TimeTruncKey(column=col, granularity=TimeGranularity.MONTH)
         assert a != b
         assert hash(a) != hash(b)
 
     def test_different_columns_with_same_granularity_distinct(self) -> None:
-        a = TimeTruncKey(column=ColumnKey(leaf="ordered_at"), granularity="month")
-        b = TimeTruncKey(column=ColumnKey(leaf="shipped_at"), granularity="month")
+        a = TimeTruncKey(column=ColumnKey(leaf="ordered_at"), granularity=TimeGranularity.MONTH)
+        b = TimeTruncKey(column=ColumnKey(leaf="shipped_at"), granularity=TimeGranularity.MONTH)
         assert a != b
 
     def test_cross_model_paths_with_same_leaf_distinct(self) -> None:
         a = TimeTruncKey(
             column=ColumnKey(path=("customers",), leaf="signup_at"),
-            granularity="month",
+            granularity=TimeGranularity.MONTH,
         )
         b = TimeTruncKey(
             column=ColumnKey(leaf="signup_at"),
-            granularity="month",
+            granularity=TimeGranularity.MONTH,
         )
         assert a != b
 
@@ -93,28 +95,28 @@ class TestTimeTruncKeyIdentity:
         same column must not collide as ValueKey identities — they end
         up as separate slots in the ValueRegistry."""
         col = ColumnKey(leaf="ordered_at")
-        k_trunc = TimeTruncKey(column=col, granularity="month")
+        k_trunc = TimeTruncKey(column=col, granularity=TimeGranularity.MONTH)
         # Cannot be == across types; that would imply slot collision.
         assert col != k_trunc
         # Hashes may collide by chance but the registry uses dict-key
         # equality, so the strict check is __eq__.
 
     def test_usable_as_dict_key(self) -> None:
-        k = TimeTruncKey(column=ColumnKey(leaf="ordered_at"), granularity="month")
+        k = TimeTruncKey(column=ColumnKey(leaf="ordered_at"), granularity=TimeGranularity.MONTH)
         d = {k: "slot_1"}
-        same = TimeTruncKey(column=ColumnKey(leaf="ordered_at"), granularity="month")
+        same = TimeTruncKey(column=ColumnKey(leaf="ordered_at"), granularity=TimeGranularity.MONTH)
         assert d[same] == "slot_1"
 
 
 class TestTimeTruncKeyPhase:
     def test_phase_is_row(self) -> None:
-        k = TimeTruncKey(column=ColumnKey(leaf="ordered_at"), granularity="month")
+        k = TimeTruncKey(column=ColumnKey(leaf="ordered_at"), granularity=TimeGranularity.MONTH)
         assert k.phase == Phase.ROW
 
 
 class TestTimeTruncKeyImmutability:
     def test_is_frozen(self) -> None:
-        k = TimeTruncKey(column=ColumnKey(leaf="ordered_at"), granularity="month")
+        k = TimeTruncKey(column=ColumnKey(leaf="ordered_at"), granularity=TimeGranularity.MONTH)
         # TimeTruncKey is a frozen Pydantic v2 model — mutation raises
         # ValidationError, not the generic Exception.
         with pytest.raises(ValidationError):
@@ -129,7 +131,7 @@ class TestTimeTruncKeyWithColumnSqlKey:
 
     def test_constructs_from_columnsqlkey(self) -> None:
         col = ColumnSqlKey(model="orders", column_name="effective_at")
-        k = TimeTruncKey(column=col, granularity="month")
+        k = TimeTruncKey(column=col, granularity=TimeGranularity.MONTH)
         assert k.column == col
         assert k.granularity == "month"
         assert k.phase == Phase.ROW
@@ -138,47 +140,47 @@ class TestTimeTruncKeyWithColumnSqlKey:
         col = ColumnSqlKey(
             path=("customers",), model="customers", column_name="effective_at",
         )
-        k = TimeTruncKey(column=col, granularity="day")
+        k = TimeTruncKey(column=col, granularity=TimeGranularity.DAY)
         assert k.column.path == ("customers",)
         assert k.column.column_name == "effective_at"
 
     def test_same_derived_column_and_grain_intern_equal(self) -> None:
         a = TimeTruncKey(
             column=ColumnSqlKey(model="orders", column_name="effective_at"),
-            granularity="month",
+            granularity=TimeGranularity.MONTH,
         )
         b = TimeTruncKey(
             column=ColumnSqlKey(model="orders", column_name="effective_at"),
-            granularity="month",
+            granularity=TimeGranularity.MONTH,
         )
         assert a == b
         assert hash(a) == hash(b)
 
     def test_different_grain_on_derived_column_distinct(self) -> None:
         col = ColumnSqlKey(model="orders", column_name="effective_at")
-        a = TimeTruncKey(column=col, granularity="day")
-        b = TimeTruncKey(column=col, granularity="month")
+        a = TimeTruncKey(column=col, granularity=TimeGranularity.DAY)
+        b = TimeTruncKey(column=col, granularity=TimeGranularity.MONTH)
         assert a != b
 
     def test_base_and_derived_columns_distinct(self) -> None:
         a = TimeTruncKey(
-            column=ColumnKey(leaf="effective_at"), granularity="month",
+            column=ColumnKey(leaf="effective_at"), granularity=TimeGranularity.MONTH,
         )
         b = TimeTruncKey(
             column=ColumnSqlKey(model="orders", column_name="effective_at"),
-            granularity="month",
+            granularity=TimeGranularity.MONTH,
         )
         assert a != b
 
     def test_usable_as_dict_key(self) -> None:
         k = TimeTruncKey(
             column=ColumnSqlKey(model="orders", column_name="effective_at"),
-            granularity="month",
+            granularity=TimeGranularity.MONTH,
         )
         d = {k: "slot_1"}
         same = TimeTruncKey(
             column=ColumnSqlKey(model="orders", column_name="effective_at"),
-            granularity="month",
+            granularity=TimeGranularity.MONTH,
         )
         assert d[same] == "slot_1"
 
@@ -187,7 +189,5 @@ class TestValueKeyUnionMembership:
     def test_timetrunckey_in_valuekey_union(self) -> None:
         """ValueKey is a Union; the new key is part of it so binders and
         planners that dispatch on ValueKey see it."""
-        from typing import get_args
-
         members = get_args(ValueKey)
         assert TimeTruncKey in members

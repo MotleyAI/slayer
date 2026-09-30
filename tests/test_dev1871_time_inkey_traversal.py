@@ -6,6 +6,7 @@ from decimal import Decimal
 
 import pytest
 
+from slayer.core.enums import TimeGranularity
 from slayer.core.keys import (
     ColumnKey,
     InKey,
@@ -17,7 +18,7 @@ from slayer.core.keys import (
 from slayer.engine.bind_inputs import _attach_time_keys
 from slayer.engine.elaborate_env import check_time_transforms_resolved
 
-_TD = TimeTruncKey(column=ColumnKey(leaf="ordered_at"), granularity="month")
+_TD = TimeTruncKey(column=ColumnKey(leaf="ordered_at"), granularity=TimeGranularity.MONTH)
 
 
 def _in_scalar_call() -> ScalarCallKey:

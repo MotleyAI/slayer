@@ -40,7 +40,7 @@ REGION = ColumnKey(path=(), leaf="region")
 AMOUNT = ColumnKey(path=(), leaf="amount")
 TS = ColumnKey(path=(), leaf="created_at")
 JOINED = ColumnKey(path=("customers",), leaf="balance")
-TT = TimeTruncKey(column=TS, granularity="month")
+TT = TimeTruncKey(column=TS, granularity=TimeGranularity.MONTH)
 AGG = AggregateKey(source=AMOUNT, agg="sum")
 CHANGE_TR = TransformKey(op="change", input=AGG, time_key=TT)
 RANK_TR = TransformKey(op="rank", input=AGG, partition_keys=Grain.of({CITY}))
@@ -653,7 +653,7 @@ class TestJoinDiscoveryExpressionSources:
         # B1: the trunc's crossing lives on its wrapped column.
         joined_tt = TimeTruncKey(
             column=ColumnKey(path=("customers",), leaf="balance"),
-            granularity="month",
+            granularity=TimeGranularity.MONTH,
         )
         key = AggregateKey(
             source=ArithmeticKey(op="+", operands=(joined_tt, AMOUNT)),

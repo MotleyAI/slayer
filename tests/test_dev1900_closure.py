@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import pytest
 
+from slayer.core.enums import TimeGranularity
 from slayer.core.keys import ColumnKey, ColumnSqlKey, StarKey, TimeTruncKey
 from slayer.core.models import SlayerModel
 from slayer.ir.source_bundle import ResolvedSourceBundle
@@ -116,7 +117,7 @@ class TestKeyClosure:
         assert got == ()
 
     def test_time_trunc_delegates_to_its_column(self):
-        key = TimeTruncKey(column=_regions_sqlkey("bad_pop"), granularity="month")
+        key = TimeTruncKey(column=_regions_sqlkey("bad_pop"), granularity=TimeGranularity.MONTH)
         got = self._key(key)
         assert got is not None
         assert CROSS in got

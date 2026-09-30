@@ -7,6 +7,7 @@ import re
 
 import pytest
 
+from slayer.core.enums import TimeGranularity
 from slayer.core.keys import ColumnKey, Grain, TimeTruncKey, TransformKey
 from slayer.core.models import ModelMeasure
 from slayer.core.scope import ModelScope
@@ -145,7 +146,7 @@ class TestTraversal:
         keyed = key.model_copy(update={
             "partition_keys": Grain.of([ColumnKey(path=(), leaf="store")]),
             "time_key": TimeTruncKey(
-                column=ColumnKey(path=(), leaf="ordered_at"), granularity="month"),
+                column=ColumnKey(path=(), leaf="ordered_at"), granularity=TimeGranularity.MONTH),
         })
         check_transform_inputs(roots=[keyed], projected_grain_keys=frozenset())
 

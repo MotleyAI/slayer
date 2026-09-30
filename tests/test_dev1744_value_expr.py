@@ -471,7 +471,7 @@ class TestRendersEveryKeyKind:
         """Exact per-dialect SQL — a substring check would accept a truncation
         at the wrong granularity or over the wrong column."""
         key = TimeTruncKey(
-            column=ColumnKey(leaf="created_at"), granularity="month",
+            column=ColumnKey(leaf="created_at"), granularity=TimeGranularity.MONTH,
         )
         out = render_value_key(key=key, ctx=_filter_ctx("postgres"))
         assert _sql(out, "postgres") == "DATE_TRUNC('MONTH', orders.created_at)"
@@ -487,7 +487,7 @@ class TestRendersEveryKeyKind:
         defect this module exists to remove.
         """
         key = TimeTruncKey(
-            column=ColumnKey(leaf="created_at"), granularity="month",
+            column=ColumnKey(leaf="created_at"), granularity=TimeGranularity.MONTH,
         )
         out = _sql(render_value_key(key=key, ctx=_filter_ctx(dialect)), dialect)
         if dialect == "sqlite":
@@ -502,7 +502,7 @@ class TestRendersEveryKeyKind:
         ``DATE_TRUNC('WEEK_SUNDAY', col)``, which no dialect accepts.
         """
         key = TimeTruncKey(
-            column=ColumnKey(leaf="created_at"), granularity="week_sunday",
+            column=ColumnKey(leaf="created_at"), granularity=TimeGranularity.WEEK_SUNDAY,
         )
         out = _sql(render_value_key(key=key, ctx=_filter_ctx("postgres")), "postgres")
         assert "WEEK_SUNDAY" not in out.upper(), out
@@ -1373,13 +1373,13 @@ def _mutation_cases():
         ),
         (
             "TimeTruncKey.granularity",
-            TimeTruncKey(column=col, granularity="month"),
-            TimeTruncKey(column=col, granularity="year"),
+            TimeTruncKey(column=col, granularity=TimeGranularity.MONTH),
+            TimeTruncKey(column=col, granularity=TimeGranularity.YEAR),
         ),
         (
             "TimeTruncKey.column",
-            TimeTruncKey(column=col, granularity="month"),
-            TimeTruncKey(column=other, granularity="month"),
+            TimeTruncKey(column=col, granularity=TimeGranularity.MONTH),
+            TimeTruncKey(column=other, granularity=TimeGranularity.MONTH),
         ),
         ("StarKey.path", StarKey(), StarKey(path=("customers",))),
         (

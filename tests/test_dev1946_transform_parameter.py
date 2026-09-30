@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import pytest
 
+from slayer.core.enums import TimeGranularity
 from slayer.core.errors import SlayerError, TimeAxisError
 from slayer.core.keys import AggregateKey, ColumnKey, Grain, TimeTruncKey, TransformKey
 from slayer.core.refs import agg_kwarg_canonical_str
@@ -541,8 +542,8 @@ class TestBindLevel:
         inner = AggregateKey(source=ColumnKey(leaf="amount"), agg="sum",
                              partition_keys=Grain.of([ColumnKey(leaf="region")]))
 
-        def _ranked(gran: str) -> TransformKey:
+        def _ranked(gran: TimeGranularity) -> TransformKey:
             return TransformKey(op="rank", input=inner, partition_keys=Grain.of([
                 TimeTruncKey(column=ColumnKey(leaf="ordered_at"), granularity=gran)]))
 
-        assert agg_kwarg_canonical_str(_ranked("month")) != agg_kwarg_canonical_str(_ranked("year"))
+        assert agg_kwarg_canonical_str(_ranked(TimeGranularity.MONTH)) != agg_kwarg_canonical_str(_ranked(TimeGranularity.YEAR))

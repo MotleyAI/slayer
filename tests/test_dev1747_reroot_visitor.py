@@ -24,6 +24,7 @@ from decimal import Decimal
 
 import pytest
 
+from slayer.core.enums import TimeGranularity
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
@@ -102,12 +103,12 @@ class TestLeafKinds:
         out = reroot_value_key(
             TimeTruncKey(
                 column=ColumnKey(path=("customers",), leaf="signup_at"),
-                granularity="month",
+                granularity=TimeGranularity.MONTH,
             ),
             target_path=TARGET,
         )
         assert out == TimeTruncKey(
-            column=ColumnKey(path=(), leaf="signup_at"), granularity="month",
+            column=ColumnKey(path=(), leaf="signup_at"), granularity=TimeGranularity.MONTH,
         )
 
     def test_time_trunc_key_over_derived_column(self) -> None:
@@ -116,7 +117,7 @@ class TestLeafKinds:
                 column=ColumnSqlKey(
                     path=("customers",), model="customers", column_name="signup_d",
                 ),
-                granularity="day",
+                granularity=TimeGranularity.DAY,
             ),
             target_path=TARGET,
         )
@@ -164,7 +165,7 @@ class TestCompositeKinds:
                 partition_keys=Grain.of({ColumnKey(path=("customers",), leaf="tier")}),
                 time_key=TimeTruncKey(
                     column=ColumnKey(path=("customers",), leaf="signup_at"),
-                    granularity="month",
+                    granularity=TimeGranularity.MONTH,
                 ),
             ),
             target_path=TARGET,
@@ -273,7 +274,7 @@ class TestCompositeKinds:
                                 column=ColumnKey(
                                     path=("customers",), leaf="signup_at",
                                 ),
-                                granularity="day",
+                                granularity=TimeGranularity.DAY,
                             ),
                             point="2025-Q1",
                         ),
@@ -316,7 +317,7 @@ class TestTotalityAndFailClosed:
             ),
             TimeTruncKey: TimeTruncKey(
                 column=ColumnKey(path=("customers",), leaf="signup_at"),
-                granularity="day",
+                granularity=TimeGranularity.DAY,
             ),
             StarKey: StarKey(path=("customers",)),
             LiteralKey: LiteralKey(value="x"),

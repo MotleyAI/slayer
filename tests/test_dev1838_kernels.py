@@ -353,7 +353,7 @@ class TestKernelModel:
     def test_trailing_window_kernel_round_trips(self) -> None:
         kern = TrailingWindowProducerKernel(
             window_raw="90d", window_parts=[(90, "d")],
-            window_granularity="month", bucket_slot_id="s1",
+            window_granularity=TimeGranularity.MONTH, bucket_slot_id="s1",
         )
         payload = {"producer_plan": {"source_relation": "orders"},
                    "alias_hint": "w", "kernel": kern.model_dump()}

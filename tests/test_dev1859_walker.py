@@ -8,6 +8,7 @@ grain-refining row-level leaves".
 
 from __future__ import annotations
 
+from slayer.core.enums import TimeGranularity
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
@@ -53,7 +54,7 @@ class TestSharedRowLeafWalker:
         key = TransformKey(
             op="rank", input=AGG,
             time_key=TimeTruncKey(column=ColumnKey(leaf="ordered_at"),
-                                  granularity="month"))
+                                  granularity=TimeGranularity.MONTH))
         assert _walk(key) is None
 
     def test_composite_returns_first_unexempt_leaf(self):

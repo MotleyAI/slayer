@@ -213,7 +213,7 @@ class TestOptionalScopeFailsClosed:
             ("column", ColumnKey(leaf="amount")),
             ("derived", ColumnSqlKey(model="orders", column_name="net")),
             ("time_trunc", TimeTruncKey(
-                column=ColumnKey(leaf="created_at"), granularity="month")),
+                column=ColumnKey(leaf="created_at"), granularity=TimeGranularity.MONTH)),
             ("aggregate", AggregateKey(source=ColumnKey(leaf="amount"), agg="sum")),
             ("nested_in_arithmetic", ArithmeticKey(
                 op="+",
@@ -523,7 +523,7 @@ _SLOTTED_KINDS = {
     "column": ColumnKey(leaf="amount"),
     "derived": ColumnSqlKey(model="orders", column_name="net"),
     "time_trunc": TimeTruncKey(
-        column=ColumnKey(leaf="created_at"), granularity="month"),
+        column=ColumnKey(leaf="created_at"), granularity=TimeGranularity.MONTH),
     "aggregate": AggregateKey(source=ColumnKey(leaf="amount"), agg="sum"),
     "transform": TransformKey(
         op="cumsum",
