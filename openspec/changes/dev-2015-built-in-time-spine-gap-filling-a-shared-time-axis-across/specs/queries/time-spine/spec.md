@@ -27,7 +27,7 @@ Every datasource SHALL expose a model named `time_spine` with exactly one column
 
 ### Requirement: A dataset's axis joins the spine to-one
 
-A dataset's axis SHALL be its declared `default_time_dimension`, else its only column of type `time` or `date`; a dataset with neither has no axis. For a query-backed model or a query stage, the axis SHALL be the propagated `default_time_dimension` of its source when that column survives in its schema, else its only temporal column. A dataset with an axis SHALL behave as if it declared a many-to-one join from its axis to `time_spine.timestamp` by equality; a DATE axis value denotes the instant at midnight of that day. The same effective default SHALL serve as the model's default time dimension for the transform time-axis tie-break and the `first` / `last` fallback ranking column. Saving a model whose declared `default_time_dimension` names a column of a known type other than `time` or `date` SHALL be rejected with a typed error naming the model and the column; a column with no type is accepted.
+A dataset's axis SHALL be its declared `default_time_dimension`, else its only column of type `time` or `date`; a dataset with neither has no axis. For a query-backed model or a query stage, the axis SHALL be the propagated `default_time_dimension` of its source when that column survives in its schema, else its only temporal column. A dataset with an axis SHALL behave as if it declared a many-to-one join from its axis to `time_spine.timestamp` by equality; a DATE axis value denotes the instant at midnight of that day. The same effective default SHALL serve as the model's default time dimension for the transform time-axis tie-break and the `first` / `last` fallback ranking column. Saving a model whose declared `default_time_dimension` names a column whose type is not `time` or `date` SHALL be rejected with a typed error naming the model and the column.
 
 #### Scenario: Declared and sole-column axes are both wired
 
@@ -52,7 +52,7 @@ A dataset's axis SHALL be its declared `default_time_dimension`, else its only c
 #### Scenario: Non-temporal declared default rejected on save
 
 - **WHEN** a user saves `returns` declaring `default_time_dimension: amount`, a number column
-- **THEN** the save fails with a typed error naming `returns` and `amount`, and nothing is stored; the same declaration on a column with no type is accepted
+- **THEN** the save fails with a typed error naming `returns` and `amount`, and nothing is stored; a text column (the default type) is rejected the same way, and a `date` column is accepted
 
 ### Requirement: Spine routes are nearest-axis and the spine is never crossed
 

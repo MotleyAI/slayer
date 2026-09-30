@@ -113,7 +113,7 @@ class TestSpineListedWithItsWiredModels:
 
 
 # ---------------------------------------------------------------------------
-# A declared default_time_dimension must not name a numeric or boolean column; the reserved name
+# A declared default_time_dimension must name a date or time column; the reserved name
 # fails the same way on every save surface
 # ---------------------------------------------------------------------------
 
@@ -136,15 +136,19 @@ class TestDeclaredDefaultTimeDimensionType:
         assert "amount" in str(exc.value)
         assert await storage.get_model("returns_by_amount", data_source="test") is None
 
-    async def test_text_and_temporal_columns_accepted(self) -> None:
+    async def test_text_rejected_and_temporal_accepted(self) -> None:
         storage = await _spine_storage(tempfile.mkdtemp())
-        for column in (Column(name="day_text"), Column(name="day", type=DataType.DATE)):
-            model = SlayerModel(name=f"by_{column.name}", sql_table="returns", data_source="test",
-                                default_time_dimension=column.name, columns=[column])
+        text = SlayerModel(name="by_text", sql_table="returns", data_source="test",
+                           default_time_dimension="day_text", columns=[Column(name="day_text")])
+        with pytest.raises(DefaultTimeDimensionTypeError):
+            await storage.save_model(text)
+        for column_type in (DataType.DATE, DataType.TIMESTAMP):
+            model = SlayerModel(name=f"by_{column_type.value.lower()}", sql_table="returns", data_source="test",
+                                default_time_dimension="day", columns=[Column(name="day", type=column_type)])
             await storage.save_model(model)
             stored = await storage.get_model(model.name, data_source="test")
             assert stored is not None
-            assert stored.default_time_dimension == column.name
+            assert stored.default_time_dimension == "day"
 
     async def test_mcp_edit_model(self) -> None:
         storage = await _spine_storage(tempfile.mkdtemp())

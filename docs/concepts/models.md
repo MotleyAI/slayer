@@ -33,7 +33,7 @@ A query then asks for `sum(revenue)` (aggregate the `revenue` column), `aov` (th
 | `aggregations` | list[Aggregation] | No | Custom aggregation operators |
 | `joins` | list[ModelJoin] | No | LEFT JOIN relationships to other models |
 | `filters` | list[str] | No | Model-level WHERE filters (always applied) |
-| `default_time_dimension` | string | No | Default time dim for time-dependent formulas; when unset, a model's only DATE / TIMESTAMP column serves, and it is the model's [time spine](time.md#time-spine) axis; saving a model whose declared default names a numeric or boolean column fails |
+| `default_time_dimension` | string | No | Default time dim for time-dependent formulas; when unset, a model's only DATE / TIMESTAMP column serves, and it is the model's [time spine](time.md#time-spine) axis; saving a model whose declared default isn't a DATE / TIMESTAMP column fails |
 | `query_variables` | dict | No | Defaults for `{var}` placeholders (query-backed models only) |
 | `backing_query_sql` | string | No | Engine-managed cache of the rendered backing query |
 | `description` | string | No | Helps agents and users understand the model |
