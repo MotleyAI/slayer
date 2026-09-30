@@ -84,6 +84,22 @@ class TestVerbatimComparators:
         assert not q.time_dimensions
         assert q.filters == expected
 
+    @pytest.mark.parametrize(("where", "expected"), [
+        ("ordered_at BETWEEN DATE '2024-01-01' AND DATE '2024-12-31'",
+         ["(ordered_at >= '2024-01-01 00:00:00' AND ordered_at <= '2024-12-31 00:00:00')"]),
+        ("ordered_at NOT BETWEEN '2024-01-01' AND '2024-12-31'",
+         ["NOT (ordered_at >= '2024-01-01 00:00:00' AND ordered_at <= '2024-12-31 00:00:00')"]),
+        ("revenue BETWEEN 1 AND 5", ["(revenue >= 1 AND revenue <= 5)"]),
+    ])
+    def test_unlifted_between_expands(self, dialect, where, expected) -> None:
+        q = _translate("SELECT revenue_sum FROM orders WHERE " + where, dialect)
+        assert not q.time_dimensions
+        assert q.filters == expected
+
+    def test_nested_bound(self, dialect) -> None:
+        q = _translate("SELECT revenue_sum FROM orders WHERE ordered_at <= '2024-12-31' OR revenue > 5", dialect)
+        assert q.filters == ["ordered_at <= '2024-12-31 00:00:00' OR revenue > 5"]
+
     def test_text_column_untouched(self, dialect) -> None:
         q = _translate("SELECT revenue_sum FROM orders WHERE status = '2024-12-31'", dialect)
         assert q.filters == ["status = '2024-12-31'"]
@@ -138,3 +154,11 @@ class TestExecutedMidnightSemantics:
     async def test_unprojected_timestamp_bound(self, tmp_path) -> None:
         where = "ordered_at <= '2024-12-31' AND ordered_at != '2024-06-01'"
         assert await _revenue(tmp_path, where, column=None) == pytest.approx(3.0)  # ids 1, 2; not the 10:00 row
+
+    @pytest.mark.parametrize(("where", "expected"), [
+        ("ordered_at BETWEEN '2024-01-01' AND '2024-12-31'", 3.0),
+        ("ordered_at NOT BETWEEN '2024-01-01' AND '2024-12-31'", 12.0),
+        ("ordered_at <= '2024-12-31' OR revenue > 5", 11.0),
+    ])
+    async def test_unprojected_between_and_nested_bounds(self, tmp_path, where, expected) -> None:
+        assert await _revenue(tmp_path, where, column=None) == pytest.approx(expected)

@@ -125,7 +125,7 @@ ROWS: Tuple[LedgerRow, ...] = (
          + AT + "time dimension …"
          + SUGGEST + "Request the same or a nesting-coarser granularity, or bucket the raw column instead.",
          category="checker", family="time-axis", user=True, owner="checker"),
-    _row(module=_EE, function="_check_date_call", exc="DateOperandTypeError",
+    _row(module=_EE, function="_require_temporal", exc="DateOperandTypeError",
          message="…() needs a DATE or TIMESTAMP operand; `…` is not one."
          + SUGGEST + "Pass a column declared DATE / TIMESTAMP (set Column.type), min/max/first/last of one, "
          "a date function, now() / current_date(), or an ISO literal such as '2024-01-31' or "
@@ -170,7 +170,7 @@ ROWS: Tuple[LedgerRow, ...] = (
          + SUGGEST + "Add it to the inner aggregate's partition_by=, or partition by one of: ….",
          category="checker", family="local-partitioned", user=True, owner="checker"),
     _row(module=_SP, function="_assert_attach_covers_producer_grain", exc="ValueError",
-         message="Regroup attach join keys do not match the producer's grouping grain; the join must cover the complete grain or it changes cardinality (DEV-1824).",
+         message="Regroup attach join keys do not match the producer's grouping grain; the join must cover the complete grain or it changes cardinality.",
          category="internal", family="internal", user=False, owner="compiler"),
     _row(module=_EE, function="check_partition_key_attributable", exc="PartitionKeyError",
          message="The partition_by column '…' …; every partition key must be attributable from the aggregate's root."
