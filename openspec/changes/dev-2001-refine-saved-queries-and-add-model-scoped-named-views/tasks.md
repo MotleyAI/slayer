@@ -28,9 +28,9 @@
 
 ## 5. Docs and architecture
 
-- [ ] 5.1 Apply the approved `architecture/engine.arc42.md` P8 wording (pinning exception) and run `la-arch-check`
+- [x] 5.1 Apply the approved `architecture/engine.arc42.md` P8 wording (pinning exception) and run `la-arch-check`
 - [x] 5.2 `docs/concepts/queries.md` "Refining a saved query" subsection (rules in short, R1/R3/R5 and multi-stage examples, R6 key-rename note, population pinning); `docs/concepts/models.md` "Three ways to use a saved query"; one sentence each in the run-by-name reference/interface pages (REST, MCP, CLI, Python client); one sentence in `slayer/memories/help_content/01_models.md`
 
 ## 6. Verification
 
-- [ ] 6.1 Full non-integration suite, `ruff check slayer/ tests/`, `basedpyright` (no baseline growth), `la-arch-check`, and `openspec validate dev-2001-refine-saved-queries-and-add-model-scoped-named-views --strict` all green
+- [x] 6.1 Full non-integration suite, `ruff check slayer/ tests/`, `basedpyright` (no baseline growth), `la-arch-check`, and `openspec validate dev-2001-refine-saved-queries-and-add-model-scoped-named-views --strict` all green
