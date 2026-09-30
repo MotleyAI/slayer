@@ -6,7 +6,7 @@ from __future__ import annotations
 import difflib
 import os
 from decimal import Decimal
-from typing import Dict, Final, List, Optional, Tuple, TypeGuard
+from typing import Dict, Final, List, Mapping, Optional, Tuple, TypeGuard
 
 from pydantic import BaseModel, ConfigDict
 
@@ -27,16 +27,15 @@ from slayer.core.enums import (
     BUILTIN_AGGREGATION_PARAM_ORDER,
     BUILTIN_AGGREGATIONS,
     DEFAULT_AGGREGATIONS_BY_TYPE,
-    GRANULARITY_NAMES,
     NUMERIC_ONLY_AGGREGATIONS,
     PRIMARY_KEY_AGGREGATIONS,
     RANKED_AGGREGATIONS,
     DataType,
-    TimeGranularity,
     format_unknown_aggregation,
     normalize_aggregation_name,
 )
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
+from slayer.core.granularity import CustomGranularity, Granularity, resolve_granularity
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS
 from slayer.core.keys import DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, SCALAR_FUNCTIONS, check_scalar_arity, type_date_values, AggregateKey, ArithmeticKey, ColumnKey, ColumnSqlKey, Grain, InKey, LiteralKey, ScalarCallKey, StarKey, TimePointCmpKey, TimePointOp, TimeTruncKey, TransformKey, ValueKey, column_leaf, column_path, is_attached_source, normalize_scalar, prepend_value_key, temporal_type, walk_value_keys
 from slayer.core.join_walker import (
@@ -172,15 +171,17 @@ def bind_time_dimension(
     *,
     scope: ModelScope | StageSchema,
     bundle: ResolvedSourceBundle,
+    granularity: Optional[Granularity] = None,
 ) -> BoundTimeDimension:
     """Bind a ``TimeDimension`` into a ``BoundTimeDimension``: a ``BoundExpr`` carrying a ``TimeTruncKey`` plus the column facts the checker judges (its type, its recorded bucket granularity — from a ``StageColumn`` or a model ``Column``). The column resolves like a Mode-B identifier ref against a ``ModelScope`` (joins) or a flat ``StageSchema``; the temporal / re-bucketing rules are the checker's (P9)."""
     full = td.dimension.full_name
     bound_col, column_type, upstream_granularity = _time_dimension_column_facts(
         full, scope=scope, bundle=bundle,
     )
-    time_key = TimeTruncKey(
-        column=bound_col, granularity=str(td.granularity.value),
-    )
+    resolved = granularity or resolve_granularity(td.granularity, defined=bundle.granularities)
+    if resolved is None:
+        raise ValueError(f"time dimension {full!r}: unknown granularity {td.granularity!r}")
+    time_key = TimeTruncKey(column=bound_col, granularity=resolved)
     routed = _canonical_if_routed(
         parsed=DottedRef(parts=tuple(full.split("."))) if "." in full else Ref(name=full),
         value_key=bound_col, scope=scope,
@@ -197,7 +198,7 @@ def _time_dimension_column_facts(
     *,
     scope: ModelScope | StageSchema,
     bundle: ResolvedSourceBundle,
-) -> Tuple[ColumnKey | ColumnSqlKey, Optional[DataType], Optional[TimeGranularity]]:
+) -> Tuple[ColumnKey | ColumnSqlKey, Optional[DataType], Optional[Granularity]]:
     """Resolve a time dimension's column against ``scope`` and read its facts — (bound column key, column type, recorded bucket granularity). Stage arm reads the flat ``StageColumn`` (dotted → illegal-scope, unknown → unknown-reference); model arm walks joins to the terminal ``Column`` and returns its ``granularity``, so a bucketed model column re-buckets under the same rule as a stage column."""
     if isinstance(scope, StageSchema):
         if "." in full:
@@ -207,7 +208,11 @@ def _time_dimension_column_facts(
         assert isinstance(bound_col, ColumnKey)  # a stage ref is always a flat ColumnKey
         stage_col = scope.get(bound_col.leaf)
         assert stage_col is not None  # _resolve_ref already validated existence
-        return bound_col, stage_col.type, stage_col.granularity
+        upstream = (
+            None if stage_col.granularity is None
+            else resolve_granularity(stage_col.granularity, defined=bundle.granularities)
+        )
+        return bound_col, stage_col.type, upstream
 
     assert isinstance(scope, ModelScope)
     if scope.source_model is None:
@@ -241,11 +246,10 @@ def _time_dimension_column_facts(
     col = next(
         (c for c in terminal.columns if c.name == column_leaf(bound_col)), None,
     )
-    return (
-        bound_col,
-        (col.type if col is not None else None),
-        (col.granularity if col is not None else None),
-    )
+    upstream = None
+    if col is not None and col.granularity is not None:
+        upstream = resolve_granularity(col.granularity, defined=bundle.granularities)
+    return bound_col, (col.type if col is not None else None), upstream
 
 
 def _canonical_if_routed(
@@ -399,7 +403,7 @@ def _bind(
         )
 
     if isinstance(parsed, Cmp):
-        time_point = _time_point_comparison(parsed)
+        time_point = _time_point_comparison(parsed, units=bundle.granularities)
         if time_point is not None:
             operand, op, point, literal_on_left = time_point
             return TimePointCmpKey(
@@ -443,11 +447,13 @@ _NOT_IN: Final = "not in"
 _MEMBERSHIP_OP: Dict[str, TimePointOp] = {"in": "in", _NOT_IN: _NOT_IN}
 
 
-def _is_time_point_literal(node: ParsedExpr) -> TypeGuard[Literal]:
-    return isinstance(node, Literal) and isinstance(node.value, str) and is_time_point(node.value)
+def _is_time_point_literal(node: ParsedExpr, *, units: Mapping[str, CustomGranularity]) -> TypeGuard[Literal]:
+    return isinstance(node, Literal) and isinstance(node.value, str) and is_time_point(node.value, units=units)
 
 
-def _time_point_comparison(parsed: Cmp) -> Optional[Tuple[ParsedExpr, TimePointOp, str, bool]]:
+def _time_point_comparison(
+    parsed: Cmp, *, units: Mapping[str, CustomGranularity],
+) -> Optional[Tuple[ParsedExpr, TimePointOp, str, bool]]:
     """``(operand, operand-left op, point, literal_on_left)`` when ``parsed`` compares a
     non-literal with a time-point string (or is a single-string ``in``), else ``None``."""
     left, right = parsed.left, parsed.right
@@ -458,9 +464,9 @@ def _time_point_comparison(parsed: Cmp) -> Optional[Tuple[ParsedExpr, TimePointO
     op = _OPERAND_LEFT_OP.get(parsed.op)
     if op is None:
         return None
-    if _is_time_point_literal(right) and isinstance(right.value, str) and not isinstance(left, Literal):
+    if _is_time_point_literal(right, units=units) and isinstance(right.value, str) and not isinstance(left, Literal):
         return left, op, right.value, False
-    if _is_time_point_literal(left) and isinstance(left.value, str) and not isinstance(right, Literal):
+    if _is_time_point_literal(left, units=units) and isinstance(left.value, str) and not isinstance(right, Literal):
         return right, _MIRRORED_OP[op], left.value, True
     return None
 
@@ -1129,23 +1135,28 @@ def _reject_non_numeric_expression_agg(
         )
 
 
-def _source_is_reaggregation(node) -> bool:
+def _callee_granularity(name: str, *, bundle: Optional[ResolvedSourceBundle]) -> Optional[Granularity]:
+    """The granularity a call's callee names (built-in or the datasource's), else ``None``."""
+    return resolve_granularity(name, defined=bundle.granularities if bundle is not None else {})
+
+
+def _source_is_reaggregation(node, *, bundle: Optional[ResolvedSourceBundle] = None) -> bool:
     """Whether a parsed aggregation source carries an attached value — a nested
     AggCall or a grained transform, alone or composed. Such a source is bound
     structurally (its inner AggCalls / TransformCalls become nested keys) whether
     it is a pure re-aggregation or a row-grain mix."""
-    if isinstance(node, AggCall) and node.agg.lower() in GRANULARITY_NAMES:
+    if isinstance(node, AggCall) and _callee_granularity(node.agg, bundle=bundle) is not None:
         return False  # a granularity call is row-level
     if isinstance(node, (AggCall, TransformCall)):
         return True
     if isinstance(node, (Arith, Cmp)):
-        return _source_is_reaggregation(node.left) or _source_is_reaggregation(node.right)
+        return _source_is_reaggregation(node.left, bundle=bundle) or _source_is_reaggregation(node.right, bundle=bundle)
     if isinstance(node, ScalarCall):
-        return any(_source_is_reaggregation(a) for a in node.args)
+        return any(_source_is_reaggregation(a, bundle=bundle) for a in node.args)
     if isinstance(node, UnaryOp):
-        return _source_is_reaggregation(node.operand)
+        return _source_is_reaggregation(node.operand, bundle=bundle)
     if isinstance(node, BoolOp):
-        return any(_source_is_reaggregation(o) for o in node.operands)
+        return any(_source_is_reaggregation(o, bundle=bundle) for o in node.operands)
     return False
 
 
@@ -1159,8 +1170,9 @@ def _bind_agg_call(
 ) -> AggregateKey | TransformKey | TimeTruncKey:
     """Bind an ``AggCall`` (a granularity callee is a row-level bucket); ``first`` / ``last`` dispatch by the bound operand's
     type — attached → the series transform, row grain → the ranked aggregation."""
-    if parsed.agg.lower() in GRANULARITY_NAMES:
-        return _bind_granularity_call(parsed, scope=scope, bundle=bundle)
+    granularity = _callee_granularity(parsed.agg, bundle=bundle)
+    if granularity is not None:
+        return _bind_granularity_call(parsed, scope=scope, bundle=bundle, granularity=granularity)
     op = normalize_aggregation_name(parsed.agg)
     if op in RANKED_AGGREGATIONS:
         operand = _bind_transform_input(
@@ -1177,6 +1189,7 @@ def _bind_agg_call(
 
 def _bind_granularity_call(
     parsed: AggCall, *, scope: ModelScope | StageSchema, bundle: ResolvedSourceBundle,
+    granularity: Granularity,
 ) -> TimeTruncKey:
     """``gran(col)`` as the row-level bucket of ``col``."""
     if parsed.args or parsed.kwargs or not isinstance(parsed.source, (Ref, DottedRef)):
@@ -1184,7 +1197,7 @@ def _bind_granularity_call(
     column = _bind(parsed.source, scope=scope, bundle=bundle, in_filter=False)
     if not isinstance(column, (ColumnKey, ColumnSqlKey)):
         raise GranularityCallError.wrong_shape(f"{parsed.agg}(...)")
-    return TimeTruncKey(column=column, granularity=parsed.agg.lower())
+    return TimeTruncKey(column=column, granularity=granularity)
 
 
 def _bind_agg(
@@ -1193,7 +1206,7 @@ def _bind_agg(
     bundle: ResolvedSourceBundle,
     dim_alias_map: Optional[Dict[str, "ValueKey"]] = None,
 ) -> AggregateKey:
-    if _source_is_reaggregation(parsed.source):
+    if _source_is_reaggregation(parsed.source, bundle=bundle):
         # Re-aggregation: bind the operand subtree — inner AggCalls
         # become AggregateKeys — so the outer key carries a nested-aggregate
         # source (axiom 6). Discovery/planning lift it to a producer-over-producer.

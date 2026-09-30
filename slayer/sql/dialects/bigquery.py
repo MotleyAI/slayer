@@ -188,6 +188,14 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
         week = exp.Anonymous(this="WEEK", expressions=[exp.var(weekday)])
         return exp.Anonymous(this="DATE_TRUNC", expressions=[col_expr, week])
 
+    def build_integer_sequence(self, *, size: int) -> exp.Select:
+        return exp.select(exp.column("i")).from_(exp.Unnest(
+            expressions=[exp.Anonymous(this="GENERATE_ARRAY", expressions=[
+                exp.Literal.number(0), exp.Literal.number(size - 1),
+            ])],
+            alias=exp.TableAlias(columns=[exp.to_identifier("i")]),
+        ))
+
     def promote_to_timestamp(self, expr: Expression) -> Expression:
         return exp.Cast(this=expr.copy(), to=exp.DataType.build("TIMESTAMPTZ"))
 

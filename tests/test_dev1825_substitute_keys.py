@@ -1,7 +1,7 @@
-"""DEV-1825 — ``substitute_value_keys``: the total, fail-closed structural
+"""``substitute_value_keys``: the total, fail-closed structural
 rewriter the regroup desugar substitutes placeholders with.
 
-Mirrors the ``reroot_value_key`` totality contract (DEV-1747): every
+Mirrors the ``reroot_value_key`` totality contract: every
 ``ValueKey`` union member has an explicit case, an unhandled kind RAISES, and
 a matched subtree is replaced ATOMICALLY (its children are never recursed —
 "by key identity, never text").
@@ -13,6 +13,7 @@ from typing import get_args
 
 import pytest
 
+from slayer.core.enums import TimeGranularity
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
@@ -76,7 +77,7 @@ class TestDirectAndNestedHits:
         # TimeTruncKey.column is typed ColumnKey/ColumnSqlKey — a column-to-
         # column mapping must reach through it.
         other = ColumnKey(path=(), leaf="shipped_at")
-        tt = TimeTruncKey(column=ColumnKey(path=(), leaf="ordered_at"), granularity="month")
+        tt = TimeTruncKey(column=ColumnKey(path=(), leaf="ordered_at"), granularity=TimeGranularity.MONTH)
         out = substitute_value_keys(tt, {ColumnKey(path=(), leaf="ordered_at"): other})
         assert out.column == other
 
@@ -106,7 +107,7 @@ class TestTotality:
             ColumnKey: CITY,
             ColumnSqlKey: ColumnSqlKey(path=(), model="orders", column_name="margin"),
             TimeTruncKey: TimeTruncKey(
-                column=ColumnKey(path=(), leaf="ordered_at"), granularity="month",
+                column=ColumnKey(path=(), leaf="ordered_at"), granularity=TimeGranularity.MONTH,
             ),
             StarKey: StarKey(),
             LiteralKey: LiteralKey(value=Decimal("1")),

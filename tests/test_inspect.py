@@ -1,4 +1,4 @@
-"""DEV-1588: ``inspect`` — single-entity point-lookup primitive.
+"""``inspect`` — single-entity point-lookup primitive.
 
 These tests pin the contract of :class:`slayer.inspect.service.InspectService`
 (the shared core behind the MCP ``inspect`` tool + REST/CLI/SlayerClient
@@ -249,7 +249,7 @@ class TestCompact:
     async def test_model_compact_is_skeleton(
         self, svc: InspectService
     ) -> None:
-        # DEV-1588 follow-up: model compact is a cheap schema *skeleton* (names
+        # Model compact is a cheap schema *skeleton* (names
         # only, zero DB), NOT description-only and NOT the full renderer.
         out = await svc.inspect(
             reference="mydb.orders", entity_type="model", compact=True,
@@ -405,7 +405,7 @@ class TestEntityTypeMismatch:
     async def test_dotted_leaf_does_not_resolve_to_unrelated_model(
         self, storage: YAMLStorage
     ) -> None:
-        # DEV-1588 review: a model literally named like the leaf must NOT be
+        # A model literally named like the leaf must NOT be
         # returned for `inspect("mydb.orders.amount", "model")` — the dotted
         # leaf is a kind mismatch, not a bare-name fallback.
         await storage.save_model(SlayerModel(
@@ -758,7 +758,7 @@ class TestJsonShapes:
     async def test_column_json_compact_omits_text(
         self, svc: InspectService
     ) -> None:
-        # DEV-1588 follow-up: ``text`` is present iff non-empty, so compact
+        # ``text`` is present iff non-empty, so compact
         # JSON drops the key entirely (a consumer never sees ``text: ""``).
         out = await svc.inspect(
             reference="mydb.orders.amount", entity_type="column",
@@ -893,7 +893,7 @@ class TestHiddenStaysOutOfSearch:
 
 
 # ---------------------------------------------------------------------------
-# DEV-1588 follow-up: model/datasource compact skeleton
+# Model/datasource compact skeleton
 # ---------------------------------------------------------------------------
 
 
@@ -1163,7 +1163,7 @@ class TestDatasourceCompactFalseSkeletons:
         assert p["description"] == "Primary analytics warehouse."
         assert "text" not in p
         names = [m["name"] for m in p["models"]]
-        assert names == ["customers", "orders"]   # sorted by name
+        assert names == ["customers", "orders", "time_spine"]   # sorted by name
         orders = next(m for m in p["models"] if m["name"] == "orders")
         assert orders["canonical_id"] == "mydb.orders"
         assert orders["column_names"] == ["id", "amount", "customer_id", "big"]
@@ -1205,7 +1205,7 @@ class TestDatasourceCompactFalseSkeletons:
             reference="emptyds", entity_type="datasource",
             format="json", compact=False,
         )
-        assert json.loads(outj)["models"] == []
+        assert [m["name"] for m in json.loads(outj)["models"]] == ["time_spine"]
         outmd = await svc.inspect(
             reference="emptyds", entity_type="datasource", compact=False,
         )
@@ -1410,7 +1410,7 @@ class TestSkeletonZeroDB:
 
 
 # ---------------------------------------------------------------------------
-# Ambiguous bare model name (DEV-1588 follow-up — Codex review)
+# Ambiguous bare model name
 # ---------------------------------------------------------------------------
 
 

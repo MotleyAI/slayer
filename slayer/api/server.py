@@ -47,14 +47,14 @@ class QueryRequest(BaseModel):
     measures: list[str | dict[str, Any]] | None = None
     dimensions: list[str | dict[str, Any]] | None = None
     # A string entry is the functional ``gran(col)`` form, coerced downstream by
-    # ``SlayerQuery`` (DEV-1883).
+    # ``SlayerQuery``.
     time_dimensions: list[str | dict[str, Any]] | None = None
     filters: list[str] | None = None
     order: list[dict[str, Any]] | None = None
     limit: int | None = None
     offset: int | None = None
     whole_periods_only: bool | None = None
-    # DEV-1543: opt out of the dim-only auto-dedup GROUP BY. Default
+    # Opt out of the dim-only auto-dedup GROUP BY. Default
     # (``None`` here) keeps the v3 SlayerQuery default (``True``). Set
     # ``False`` to emit raw rows.
     distinct_dimension_values: bool | None = None
@@ -106,10 +106,10 @@ class QueryResponse(BaseModel):
     columns: list[str]
     sql: str | None = None
     attributes: AttributesResponse | None = None
-    # DEV-1866: the effective population model and whether it was inferred.
+    # The effective population model and whether it was inferred.
     population: str | None = None
     population_inferred: bool = False
-    # DEV-1745 (W5/D2): advisories about the query itself — slack-normalization
+    # Advisories about the query itself — slack-normalization
     # rewrites and filters that were dropped as unreachable. One list, each
     # entry tagged with a ``kind`` discriminator the consumer switches on.
     warnings: list[dict[str, Any]] = []
@@ -119,7 +119,7 @@ class IngestRequest(BaseModel):
     datasource: str
     include_tables: list[str] | None = None
     exclude_tables: list[str] | None = None
-    # DEV-1758 scope: legacy single ``schema_name``, a plural ``schemas`` list,
+    # Scope: legacy single ``schema_name``, a plural ``schemas`` list,
     # or ``all_schemas``. At most one may be set — the validator returns 422.
     schema_name: str | None = None
     schemas: list[str] | None = None
@@ -168,12 +168,12 @@ class SaveMemoryRequest(BaseModel):
     entity extraction (the query is then persisted alongside the
     learning).
 
-    DEV-1428: optional ``id`` lets callers pin the memory's canonical id
+    Optional ``id`` lets callers pin the memory's canonical id
     (e.g. for knowledge-base ingestion that wants stable string ids
     like ``kb.policy.42``). Bad charset → 400. Omit → auto-allocated
     int-shaped id.
 
-    DEV-1549: optional ``description`` is a short compact preview
+    Optional ``description`` is a short compact preview
     surfaced by ``search(compact=True)`` and ``inspect_model``. Hard
     cap of 500 chars; over-cap returns HTTP 400.
     """
@@ -185,13 +185,13 @@ class SaveMemoryRequest(BaseModel):
 
 
 class SearchRequest(BaseModel):
-    """Body for ``POST /search`` (DEV-1375). Mirrors the MCP / CLI /
+    """Body for ``POST /search``. Mirrors the MCP / CLI /
     SlayerClient surfaces.
 
     All retrieval inputs are optional. Empty input falls back to a
     recency listing capped at ``max_results`` hits.
 
-    DEV-1549: ``compact`` defaults to ``True`` everywhere. Compact
+    ``compact`` defaults to ``True`` everywhere. Compact
     memory hits surface ``description`` (with a first-paragraph
     fallback from ``learning``) and empty ``text``; compact entity
     hits surface ``entity.description`` and empty ``text``. Set
@@ -210,15 +210,15 @@ class SearchRequest(BaseModel):
 
 
 class InspectRequest(BaseModel):
-    """Body for ``POST /inspect`` (DEV-1588). Mirrors the MCP / CLI /
+    """Body for ``POST /inspect``. Mirrors the MCP / CLI /
     SlayerClient ``inspect`` surfaces — a point-lookup of one entity, or a
-    homogeneous-kind batch when ``reference`` is a list (DEV-1612)."""
+    homogeneous-kind batch when ``reference`` is a list."""
 
     model_config = ConfigDict(extra="forbid")
 
-    # DEV-1612: a list is a homogeneous-kind batch (one ``entity_type`` for
+    # A list is a homogeneous-kind batch (one ``entity_type`` for
     # every id). A single str keeps single-id behaviour byte-for-byte.
-    # DEV-1667: ``None`` / omitted (or ``[]``) renders the whole collection at
+    # ``None`` / omitted (or ``[]``) renders the whole collection at
     # ``entity_type`` (model / datasource only).
     reference: str | list[str] | None = None
     entity_type: str
@@ -242,7 +242,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
     *,
     ingest_on_startup: bool = False,
 ) -> FastAPI:
-    # DEV-1658: seed conceptual-help memories once here; the embedded MCP
+    # Seed conceptual-help memories once here; the embedded MCP
     # server below is created with _seed_help=False so the pass never fires
     # twice (mirrors the ingest_on_startup single-orchestration rule).
     run_sync(seed_help_memories(storage=storage))
@@ -334,7 +334,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                     detail="'refine' requires 'name' (a saved query-backed model).",
                 )
             else:
-                # DEV-1866: a rootless query (no name, no source_model) is valid —
+                # A rootless query (no name, no source_model) is valid —
                 # the engine infers the population. The query must still project
                 # something, which SlayerQuery validation enforces downstream.
                 payload = request.model_dump(exclude_none=True)
@@ -411,6 +411,12 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             if model.description:
                 entry["description"] = model.description
             result.append(entry)
+        datasources = [data_source] if data_source is not None else await storage.list_datasources()
+        for ds_name in datasources:
+            result.extend(
+                {"name": m.name, "data_source": ds_name, "description": m.description}
+                for m in await storage.builtin_models(ds_name)
+            )
         return result
 
     @app.get(
@@ -430,7 +436,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
         data_source: str | None = None,
     ) -> dict[str, Any]:
         try:
-            model = await storage.get_model(name, data_source=data_source)
+            model = await storage.get_model_or_builtin(name, data_source=data_source)
         except AmbiguousModelError as exc:
             raise HTTPException(
                 status_code=409,
@@ -714,7 +720,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             )
         return result.model_dump(mode="json")
 
-    # ---------- DEV-1357 v2: Memory endpoints ------------------------------
+    # ---------- Memory endpoints ------------------------------
 
     memory_service = MemoryService(storage=storage)
 
@@ -757,9 +763,9 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             raise HTTPException(status_code=400, detail=str(exc))
         return response.model_dump(mode="json")
 
-    # ---------- DEV-1375: semantic search -----------------------------
+    # ---------- Semantic search -----------------------------
 
-    # DEV-1516: pass the engine so the search service's post-fusion
+    # Pass the engine so the search service's post-fusion
     # column-hit hook can auto-refresh stale categorical columns.
     search_service = SearchService(storage=storage, engine=engine)
 

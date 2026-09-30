@@ -99,10 +99,11 @@ class TestModelsSummary:
         result = await _call(mcp_server, name="models_summary", arguments={"datasource_name": "nope"})
         assert "not found" in result
 
-    async def test_empty_when_datasource_has_no_models(self, mcp_server, storage: YAMLStorage) -> None:
+    async def test_only_the_spine_when_datasource_has_no_models(self, mcp_server, storage: YAMLStorage) -> None:
         await storage.save_datasource(DatasourceConfig(name="mydb", type="postgres", host="h"))
         result = await _call(mcp_server, name="models_summary", arguments={"datasource_name": "mydb"})
-        assert "has no models" in result
+        assert result.startswith("# Datasource: `mydb` — 1 model(s)")
+        assert "## `time_spine`" in result
 
     async def test_filters_by_datasource(self, mcp_server, storage: YAMLStorage) -> None:
         """Only models whose ``data_source`` matches the arg appear in the output."""
@@ -131,7 +132,7 @@ Column(name="revenue", sql="amount", description="USD", type=DataType.DOUBLE),
         result = await _call(mcp_server, name="models_summary", arguments={
             "datasource_name": "mydb", "compact": False,
         })
-        assert result.startswith("# Datasource: `mydb` — 1 model(s)")
+        assert result.startswith("# Datasource: `mydb` — 2 model(s)")
         assert "## `orders`" in result
         assert "Orders fact table." in result
         assert "**Columns (2):**" in result
@@ -271,7 +272,7 @@ Column(name="revenue", sql="amount", label="Revenue", description="USD total", t
         assert "| products |" in result
         assert "kind" not in result
 
-    # --- meta rendering (DEV-1332) ---
+    # --- meta rendering ---
 
     async def test_inspect_renders_meta_on_columns(self, mcp_server, storage: YAMLStorage) -> None:
         """Column.meta surfaces in both markdown and JSON inspect_model output."""
@@ -755,7 +756,7 @@ class TestInspectModelSectionGating:
         assert "## Columns (3)\n\n|" not in result
         # samples and learnings are fully omitted (no heading at all)
         assert "## Sample" not in result
-        # Reachable-via-joins section was removed entirely in DEV-1560 — it
+        # Reachable-via-joins section was removed entirely — it
         # must never appear regardless of input.
         assert "## Reachable" not in result
         # Footer summarises what was dropped — caller can re-call with a
@@ -774,7 +775,7 @@ class TestInspectModelSectionGating:
         )
         assert result.find("## Columns (3)") < result.find("## Measures (2)")
 
-    # ---- DEV-1560: reachable_fields surface fully removed ----
+    # ---- reachable_fields surface fully removed ----
 
     async def test_old_reachable_fields_token_is_unknown(self, mcp_server, storage: YAMLStorage) -> None:
         """Removed ``reachable_fields`` token flows through the unknown-section
@@ -2025,7 +2026,7 @@ class TestEditModel:
         })
         assert "mutually exclusive" in result or "Specify at most one" in result
 
-    # --- meta round-trip pins (DEV-1332) ---
+    # --- meta round-trip pins ---
 
     async def test_edit_persists_measure_meta_create_path(
         self, mcp_server, storage: YAMLStorage,
@@ -2894,7 +2895,7 @@ class TestFormatTable:
         assert "showing first 10" in result
 
 
-# DEV-1658: the `help` MCP tool was removed. Conceptual help now ships as
+# The `help` MCP tool was removed. Conceptual help now ships as
 # seeded `memory:help.*` memories read via `inspect(entity_type="memory")`;
 # see tests/test_help_seed.py.
 
@@ -3016,7 +3017,7 @@ async def _register_live_ds(storage: YAMLStorage, db_path: str) -> None:
 
 
 class TestSaveTimeSqlValidationMcp:
-    """DEV-1843 — the MCP create/edit doors reroute through ``engine.save_model``
+    """The MCP create/edit doors reroute through ``engine.save_model``
     so a raw-sql model with backend-invalid SQL is rejected before it persists."""
 
     async def test_create_sql_mode_valid_persists(

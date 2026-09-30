@@ -1,4 +1,4 @@
-"""DEV-1667: shared renderers for the ``inspect`` collection views.
+"""Shared renderers for the ``inspect`` collection views.
 
 A null/omitted ``reference`` on ``inspect`` renders the *collection* at an
 ``entity_type``. These pure renderers are the single code path shared by the
@@ -16,6 +16,7 @@ from typing import Any
 
 from slayer.core.join_walker import neighbors
 from slayer.core.models import SlayerModel
+from slayer.core.time_spine import TIME_SPINE_MODEL, is_spine
 from slayer.inspect.model_render import (
     _markdown_table,
     _truncate_description,
@@ -24,7 +25,7 @@ from slayer.inspect.model_render import (
 )
 
 # markdown rule separating per-datasource blocks in compact=False collections
-# (same rule the DEV-1612 batch view uses between per-id blocks).
+# (same rule the batch view uses between per-id blocks).
 BLOCK_SEP = "\n\n---\n\n"
 
 _NO_DATASOURCES = (
@@ -40,14 +41,17 @@ def _visible_column_count(model: SlayerModel) -> int:
 def _join_targets(
     model: SlayerModel, all_models: list[SlayerModel] | None = None
 ) -> list[str]:
-    """Every model reachable in one hop, in either direction (DEV-1853). With
-    ``all_models`` (the datasource collection) reverse-reachable neighbours are
-    included; without it, only declared forward targets."""
+    """Every model reachable in one hop, in either direction; with ``all_models``
+    reverse-reachable neighbours are included, else only declared forward targets.
+    The spine's virtual edges are left out (its description names its wiring)."""
+    if is_spine(model):
+        return []
     models_by_name = {m.name: m for m in (all_models or [model])}
     models_by_name.setdefault(model.name, model)
     return sorted({
         h.target_model
         for h in neighbors(model=model, models_by_name=models_by_name)
+        if h.target_model != TIME_SPINE_MODEL
     })
 
 

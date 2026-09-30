@@ -1,4 +1,4 @@
-"""DEV-1827 — the total ValueKey traversal protocol (children / map_children).
+"""The total ValueKey traversal protocol (children / map_children).
 
 Generic walkers/rewriters route through ``children()`` / ``map_children()``,
 so a new union member flows through them by construction; a kind without the
@@ -40,7 +40,7 @@ REGION = ColumnKey(path=(), leaf="region")
 AMOUNT = ColumnKey(path=(), leaf="amount")
 TS = ColumnKey(path=(), leaf="created_at")
 JOINED = ColumnKey(path=("customers",), leaf="balance")
-TT = TimeTruncKey(column=TS, granularity="month")
+TT = TimeTruncKey(column=TS, granularity=TimeGranularity.MONTH)
 AGG = AggregateKey(source=AMOUNT, agg="sum")
 CHANGE_TR = TransformKey(op="change", input=AGG, time_key=TT)
 RANK_TR = TransformKey(op="rank", input=AGG, partition_keys=Grain.of({CITY}))
@@ -135,7 +135,7 @@ class TestProtocolTotality:
         missing = set(get_args(ValueKey)) - set(SAMPLES)
         assert not missing, (
             f"ValueKey grew {sorted(m.__name__ for m in missing)}; add a sample "
-            f"here and children/map_children overrides (DEV-1827 totality)."
+            f"here and children/map_children overrides (totality)."
         )
 
     def test_every_member_overrides_both_methods(self) -> None:
@@ -433,7 +433,7 @@ class TestKindDispatchVisitorsRaise:
         assert "'x'" in sql
 
 
-# Base-aux slot collection retired in DEV-1800: the slot-dep traversal contract
+# Base-aux slot collection retired: the slot-dep traversal contract
 # it exercised (aggregate terminal, TimeTruncKey is the slot, opaque kind raises)
 # is now owned by ``_iter_slot_deps`` and pinned in
 # ``tests/test_dev1800_materialisation_stage.py::TestTraversalContract``.
@@ -444,7 +444,7 @@ class TestKindDispatchVisitorsRaise:
 # ---------------------------------------------------------------------------
 class TestLowerSugarTraversal:
     def test_change_under_in_inside_scalar_call_is_lowered(self) -> None:
-        # The pre-DEV-1827 recurse tuple omitted InKey, so this change
+        # The old recurse tuple omitted InKey, so this change
         # silently escaped lowering (the latent bug this change fixes).
         key = ScalarCallKey(
             name="coalesce",
@@ -653,7 +653,7 @@ class TestJoinDiscoveryExpressionSources:
         # B1: the trunc's crossing lives on its wrapped column.
         joined_tt = TimeTruncKey(
             column=ColumnKey(path=("customers",), leaf="balance"),
-            granularity="month",
+            granularity=TimeGranularity.MONTH,
         )
         key = AggregateKey(
             source=ArithmeticKey(op="+", operands=(joined_tt, AMOUNT)),
@@ -694,7 +694,7 @@ def _status_orders_model() -> SlayerModel:
 
 class TestHavingValidationWiring:
     async def test_ungrouped_bare_column_beside_aggregate_splits_by_typing(self) -> None:
-        # DEV-1865: the AND splits per conjunct — measure half → HAVING,
+        # The AND splits per conjunct — measure half → HAVING,
         # ungrouped field half → WHERE — instead of the old HAVING rejection.
         query = SlayerQuery(
             source_model="orders",

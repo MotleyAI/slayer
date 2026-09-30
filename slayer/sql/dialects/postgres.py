@@ -45,6 +45,14 @@ class PostgresDialect(SqlDialect):
     max_identifier_bytes: int | None = 63
     statement_timeout_best_effort: bool = True
 
+    def build_integer_sequence(self, *, size: int) -> exp.Select:
+        return exp.select(exp.column("i")).from_(exp.Table(
+            this=exp.Anonymous(this="GENERATE_SERIES", expressions=[
+                exp.Literal.number(0), exp.Literal.number(size - 1),
+            ]),
+            alias=exp.TableAlias(this=exp.to_identifier("_seq"), columns=[exp.to_identifier("i")]),
+        ))
+
     def statement_timeout_sql(self, timeout_seconds: int) -> str | None:
         """Transaction-local, so it never outlives the call on a pooled connection."""
         return f"SET LOCAL statement_timeout = {timeout_seconds * 1000}"

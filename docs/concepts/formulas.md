@@ -461,7 +461,7 @@ This returns monthly revenue with extra columns showing the first and last month
 
 Both `first()` and `last()` require a time dimension with granularity in the query (same resolution as `time_shift`).
 
-Not to be confused with the [`first`/`last` aggregation types](models.md#the-last-aggregation-type), which are per-group aggregates returning the earliest/latest *record's* value within each bucket.
+Not to be confused with the [`first`/`last` aggregation types](models.md#the-first-and-last-aggregations), which are per-group aggregates returning the earliest/latest *record's* value within each bucket.
 
 ---
 

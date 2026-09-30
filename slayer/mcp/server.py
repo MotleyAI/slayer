@@ -26,6 +26,7 @@ from slayer.core.models import (
     ModelMeasure,
     SlayerModel,
 )
+from slayer.core.granularity import CustomGranularity
 from slayer.core.query import QueryRefinement, SlayerQuery
 from slayer.core.recommend import render_recommendation_markdown
 from slayer.core.warnings import ResponseTruncationWarning
@@ -561,7 +562,7 @@ To connect a new database: create_datasource → describe_datasource (verify + l
 
         Query-object fields taking the functional time-granularity form
         ``gran(col)`` — ``gran`` one of second, minute, hour, day, week,
-        week_sunday, month, quarter, year:
+        week_sunday, month, quarter, year, or a datasource's custom granularity:
             dimensions: group-by columns; a granularity call such as
                 ``month(created_at)`` buckets that timestamp, equivalent to a
                 ``time_dimensions`` entry (and orderable as ``month(created_at)``).
@@ -670,6 +671,7 @@ To connect a new database: create_datasource → describe_datasource (verify + l
                 continue
             if m is not None and not m.hidden:
                 matched.append(m)
+        matched.extend(await storage.builtin_models(datasource_name))
         matched.sort(key=lambda m: m.name)
 
         # Rendering delegates to the shared renderer (also used by
@@ -743,7 +745,7 @@ To connect a new database: create_datasource → describe_datasource (verify + l
                 (default) means no truncation.
         """
         try:
-            model = await storage.get_model(model_name, data_source=data_source)
+            model = await storage.get_model_or_builtin(model_name, data_source=data_source)
         except AmbiguousModelError as exc:
             return _ambiguous_with_mcp_hint(exc)
         if model is None:
@@ -1403,6 +1405,7 @@ To connect a new database: create_datasource → describe_datasource (verify + l
         schemas: str = "",
         all_schemas: bool = False,
         auto_ingest: bool = True,
+        granularities: list[CustomGranularity] | None = None,
     ) -> str:
         """Create a database connection, verify it, and auto-ingest models. Use ${ENV_VAR} syntax in credentials to reference environment variables.
 
@@ -1419,6 +1422,7 @@ To connect a new database: create_datasource → describe_datasource (verify + l
             schemas: Comma-separated schemas to ingest. Mutually exclusive with schema_name / all_schemas.
             all_schemas: Ingest every non-system schema. Mutually exclusive with schema_name / schemas.
             auto_ingest: Automatically ingest models from the database schema (default: true). Set to false to skip.
+            granularities: Custom time granularities, each {name, base, multiple, origin}: buckets start at origin + k × multiple × base (e.g. {name: "fiscal_year", base: "year", origin: "2000-04-01"}); usable wherever a built-in granularity is.
 
         Example: create_datasource(name="mydb", type="postgres", host="localhost", port=5432, database="app", username="user", password="pass")
         """
@@ -1446,7 +1450,7 @@ To connect a new database: create_datasource → describe_datasource (verify + l
             connection_string=connection_string,
             schema_name=schema_name,
         )
-        ds = DatasourceConfig.model_validate(data)
+        ds = DatasourceConfig.model_validate({**data, "granularities": granularities or []})
         existed = await storage.get_datasource(name) is not None
         try:
             await storage.save_datasource(ds)
@@ -1607,22 +1611,31 @@ To connect a new database: create_datasource → describe_datasource (verify + l
     async def edit_datasource(
         name: str,
         description: str | None = None,
+        granularities: list[CustomGranularity] | None = None,
     ) -> str:
         """Update a datasource's metadata.
 
         Args:
             name: Datasource name to update.
             description: New description for the datasource.
+            granularities: Replace the custom time granularities: each {name, base, multiple, origin}, buckets starting at origin + k × multiple × base.
         """
         ds = await storage.get_datasource(name)
         if ds is None:
             return f"Datasource '{name}' not found."
 
         old_description = ds.description
+        update: dict[str, Any] = {}
         if description is not None:
-            ds.description = description
+            update["description"] = description
+        if granularities is not None:
+            update["granularities"] = granularities
+        ds = ds.model_copy(update=update)
 
-        await storage.save_datasource(ds)
+        try:
+            await storage.save_datasource(ds)
+        except ValueError as exc:
+            return f"Cannot update datasource '{name}': {exc}"
 
         # The embedding text includes the description, so refresh it inline on
         # a description change. Post-save and best-effort — warn and report

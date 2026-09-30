@@ -26,6 +26,7 @@ from typing import (
     Mapping,
     NamedTuple,
     Optional,
+    Self,
     Tuple,
     TypeVar,
     Union,
@@ -45,6 +46,7 @@ from slayer.core.enums import (
     TimeGranularity,
 )
 from slayer.core.format import NumberFormat
+from slayer.core.granularity import CustomGranularity, Granularity
 from slayer.core.time_points import parse_temporal_value
 
 
@@ -211,7 +213,7 @@ class _ChildMapper:
     def __call__(self, value):
         if not isinstance(value, _FrozenKey):
             return value
-        new = self._fn(value)
+        new = self._fn(cast("ValueKey", value))  # every concrete _FrozenKey is a ValueKey member
         if new is not value:
             self.changed = True
         return new
@@ -225,7 +227,7 @@ class _LeafKey(_FrozenKey, frozen=True):
 
     def map_children(
         self, fn: Callable[["ValueKey"], "ValueKey"],
-    ) -> "_LeafKey":
+    ) -> Self:
         return self
 
 
@@ -314,12 +316,12 @@ class TimeTruncKey(_FrozenKey, frozen=True):
     """Row-level reference to a time-truncated column, keyed by (column, granularity).
 
     ``column`` is a ``ColumnKey`` (base temporal column) or ``ColumnSqlKey``
-    (derived). ``granularity`` is a ``TimeGranularity`` member's string value.
+    (derived). ``granularity`` is resolved: built-in, or a datasource definition.
     Different granularities on the same column are distinct slots.
     """
 
     column: ColumnKey | ColumnSqlKey
-    granularity: str
+    granularity: Granularity
 
     @property
     def phase(self) -> Phase:
@@ -453,7 +455,7 @@ class AggregateKey(_FrozenKey, frozen=True):
         return Phase.AGGREGATE
 
     def children(self) -> Tuple["ValueKey", ...]:
-        embedded = [
+        embedded: List["ValueKey"] = [
             c
             for c in (self.source, *self.args, *(v for _, v in self.kwargs))
             if isinstance(c, _FrozenKey)
@@ -543,7 +545,8 @@ class TransformKey(_FrozenKey, frozen=True):
     op: str
     input: "ValueKey"
     args: Tuple[Scalar, ...] = ()
-    kwargs: Tuple[Tuple[str, Scalar], ...] = ()
+    # A ``time_shift`` unit resolves to its datasource definition when custom.
+    kwargs: Tuple[Tuple[str, Scalar | CustomGranularity], ...] = ()
     partition_keys: "Grain" = Field(default_factory=lambda: Grain.EMPTY)
     time_key: Optional["ValueKey"] = None
 
@@ -1134,7 +1137,7 @@ def substitute_value_keys(
             f"only value keys and scalars are substitutable."
         )
     if key in mapping:
-        return cast(_RerootableT, mapping[key])
+        return cast(_RerootableT, mapping[cast("ValueKey", key)])
     return cast(
         _RerootableT,
         key.map_children(lambda c: substitute_value_keys(c, mapping)),
@@ -1405,7 +1408,7 @@ def desugar_change_pct(key: TransformKey) -> ArithmeticKey:
     return ArithmeticKey(op="/", operands=(numerator, guarded_divisor))
 
 
-def shift_offset_of(key: TransformKey) -> Tuple[int, Optional[str]]:
+def shift_offset_of(key: TransformKey) -> Tuple[int, Optional[Granularity]]:
     """A ``time_shift`` key's ``(periods, granularity)``; ``periods`` must be an integer."""
     kwargs = dict(key.kwargs)
     periods = kwargs.get("periods")
@@ -1414,7 +1417,9 @@ def shift_offset_of(key: TransformKey) -> Tuple[int, Optional[str]]:
     if isinstance(periods, bool) or not isinstance(periods, int):
         raise ValueError(f"time_shift periods must be an integer; got {periods!r}")
     granularity = kwargs.get("granularity")
-    return periods, None if granularity is None else str(granularity)
+    if granularity is None or isinstance(granularity, CustomGranularity):
+        return periods, granularity
+    return periods, TimeGranularity(str(granularity).lower())
 
 
 def lower_sugar_transforms(key: ValueKey) -> ValueKey:

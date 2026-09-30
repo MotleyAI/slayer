@@ -26,6 +26,7 @@ from sqlglot.dialects.dialect import Dialect as _SqlglotDialect
 
 from slayer.core.enums import SUB_DAY_GRANULARITIES, DataType, DatePart, TimeGranularity
 from slayer.core.errors import IdentifierCollisionError, IdentifierLengthError
+from slayer.core.granularity import CustomGranularity, Granularity, granularity_parts, nests_into
 from slayer.sql._identifier_fit import (
     SqlLexis,
     fit_identifier,
@@ -396,6 +397,65 @@ class SqlDialect(BaseModel):
         if not isinstance(col_expr, (exp.Column, exp.Cast)):
             col_expr = exp.Cast(this=col_expr, to=exp.DataType.build("TIMESTAMP"))
         return exp.DateTrunc(this=col_expr, unit=exp.Literal.string(gran_str))
+
+    def build_bucket(self, *, col_expr: Expression, granularity: Granularity) -> Expression:
+        """The bucket start of ``col_expr`` at ``granularity``: native truncation for a built-in, the
+        last ``origin + k·multiple·base`` boundary at or before it for a custom granularity."""
+        if not isinstance(granularity, CustomGranularity):
+            return self.build_date_trunc(col_expr=col_expr, granularity=granularity)
+        base, multiple, origin = granularity_parts(granularity)
+        ts = self.promote_to_timestamp(col_expr)
+        anchor = self.build_temporal_literal(value=origin, dt=DataType.TIMESTAMP)
+
+        def at(count: Expression) -> Expression:
+            return self.build_date_add(expr=anchor, count=count, unit=base, operand=DataType.TIMESTAMP)
+
+        crossed = self.build_date_diff(unit=base, start=anchor, end=ts, operand=DataType.TIMESTAMP)
+        # Boundaries crossed equal whole periods unless the origin is off the base's own boundaries.
+        whole = crossed if nests_into(base, granularity) else exp.Case(ifs=[exp.If(
+            this=exp.GT(this=at(crossed), expression=ts.copy()),
+            true=exp.Sub(this=exp.Paren(this=crossed.copy()), expression=exp.Literal.number(1)),
+        )], default=crossed.copy())
+        if multiple == 1:
+            return at(whole)
+        m = exp.Literal.number(multiple)
+
+        def natural_div(value: Expression) -> Expression:
+            return self.natural_div(exp.Paren(this=value), divisor=m.copy())
+
+        floored = exp.Case(ifs=[exp.If(
+            this=exp.GTE(this=exp.Paren(this=whole.copy()), expression=exp.Literal.number(0)),
+            true=natural_div(whole.copy()),
+        )], default=exp.Neg(this=exp.Paren(this=natural_div(exp.Add(
+            this=exp.Neg(this=exp.Paren(this=whole.copy())), expression=exp.Literal.number(multiple - 1),
+        )))))
+        return at(exp.Mul(this=exp.Paren(this=floored), expression=m))
+
+    def natural_div(self, value: Expression, *, divisor: Expression) -> Expression:
+        """``value // divisor`` for non-negative integers."""
+        return exp.IntDiv(this=value, expression=divisor)
+
+    def build_integer_sequence(self, *, size: int) -> exp.Select:
+        """``SELECT i`` over the integers ``0 .. size - 1``; default: a recursive CTE."""
+        seq = exp.to_identifier("_seq")
+        step = exp.select(exp.Add(this=exp.column("i"), expression=exp.Literal.number(1))).from_(
+            exp.Table(this=seq.copy()),
+        ).where(exp.LT(this=exp.column("i"), expression=exp.Literal.number(size - 1)))
+        cte = exp.CTE(
+            this=exp.union(exp.select(exp.Literal.number(0).as_("i")), step, distinct=False),
+            alias=exp.TableAlias(this=seq.copy(), columns=[exp.to_identifier("i")]),
+        )
+        out = exp.select(exp.column("i")).from_(exp.Table(this=seq.copy()))
+        out.set("with_", exp.With(expressions=[cte], recursive=True))
+        return out
+
+    def attach_sequence_setting(self, statement: Expression, *, size: int) -> None:  # NOSONAR(S1172) — no-op hook default
+        """Statement-level setting a generated integer sequence of ``size`` rows needs."""
+
+    def bucket_step(self, *, bucket: Expression, count: int, unit: Granularity) -> Expression:
+        """A time bucket moved by ``count`` ``unit`` steps (a custom unit steps ``multiple`` of its base)."""
+        base, multiple, _ = granularity_parts(unit)
+        return self.bucket_offset(bucket=bucket, count=count * multiple, unit=base)
 
     # ------------------------------------------------------------------
     # Mode-B date functions (typed operands only, sql P1)

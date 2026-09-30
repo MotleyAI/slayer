@@ -33,7 +33,7 @@ A query then asks for `sum(revenue)` (aggregate the `revenue` column), `aov` (th
 | `aggregations` | list[Aggregation] | No | Custom aggregation operators |
 | `joins` | list[ModelJoin] | No | LEFT JOIN relationships to other models |
 | `filters` | list[str] | No | Model-level WHERE filters (always applied) |
-| `default_time_dimension` | string | No | Default time dim for time-dependent formulas |
+| `default_time_dimension` | string | No | Default time dim for time-dependent formulas; when unset, a model's only DATE / TIMESTAMP column serves, and it is the model's [time spine](time.md#time-spine) axis |
 | `query_variables` | dict | No | Defaults for `{var}` placeholders (query-backed models only) |
 | `backing_query_sql` | string | No | Engine-managed cache of the rendered backing query |
 | `description` | string | No | Helps agents and users understand the model |
@@ -172,7 +172,7 @@ Cycles in the reference graph (e.g., `c1.sql = "c2 + 1"` and `c2.sql = "c1 - 1"`
 
 A column's `sql` may contain a window function (`row_number() over (...)`, `dense_rank() over (...)`, etc.). The column behaves like any other column when used in `dimensions` / SELECT.
 
-> **Filtering on a windowed column is rejected.** A query filter naming a `Column` whose `sql` contains a window function (e.g. `{"filters": ["rn <= 3"]}` against a column whose `sql` is `row_number() over (...)`) raises with a clear message. Use `{"filters": ["rank(<measure>) <= 3"]}` (see [formulas.md](formulas.md#rank)) — the rank-family transforms cover the top-N case in pure DSL — or factor the column into a multi-stage `source_queries` model.
+> **Filtering on a windowed column is rejected.** A query filter naming a `Column` whose `sql` contains a window function (e.g. `{"filters": ["rn <= 3"]}` against a column whose `sql` is `row_number() over (...)`) raises with a clear message. Use `{"filters": ["rank(<measure>) <= 3"]}` (see [formulas.md](formulas.md#rank-family-transforms)) — the rank-family transforms cover the top-N case in pure DSL — or factor the column into a multi-stage `source_queries` model.
 
 ### SQL expression conventions
 
@@ -290,7 +290,7 @@ columns:
 
 `last(balance, updated_at)` gives the most recent balance per group; `first(balance, updated_at)` the earliest. When grouped by month, each month returns the latest (or earliest) record's balance in that month. If no time column is specified, ordering resolves via: query's `main_time_dimension` → first time/date dimension in the query → first time dimension in filters → model's `default_time_dimension`. Whichever column wins is an input of the aggregation: if it, or a derived definition it names, crosses a join hop that is not provably to-one from the aggregation's root, the query fails with the input-safety error exactly as an explicit ranking argument would.
 
-Not to be confused with the [`last()` formula function](formulas.md#last-function) — a window-function transform that broadcasts a value across all rows. Same name, different layer.
+Not to be confused with the [`last()` formula function](formulas.md#first-and-last-functions) — a window-function transform that broadcasts a value across all rows. Same name, different layer.
 
 ## Custom aggregations
 

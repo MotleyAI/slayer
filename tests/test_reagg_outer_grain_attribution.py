@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import pytest
 
+from slayer.core.enums import TimeGranularity
 from slayer.core.errors import PartitionKeyError, ReaggregationError
 from slayer.core.keys import AggregateKey, ColumnKey, Grain, TimeTruncKey
 from slayer.engine.plan import plan_query
@@ -55,7 +56,7 @@ ACCOUNT = "account_snapshots.account_id"
 NAME_KEY = ColumnKey(leaf="name")
 ACCOUNT_KEY = ColumnKey(path=("account_snapshots",), leaf="account_id")
 MONTH_KEY = TimeTruncKey(
-    column=ColumnKey(path=("account_snapshots",), leaf="snapshot_date"), granularity="month")
+    column=ColumnKey(path=("account_snapshots",), leaf="snapshot_date"), granularity=TimeGranularity.MONTH)
 BY_NAME_MONTH = ("name", "snapshot_date")
 BY_NAME_ACCOUNT = ("name", "account_id")
 SUM_MAX_Q_BY_OUTER_ACCOUNT = f"sum({MAX_Q}, partition_by=[{ACCOUNT}])"

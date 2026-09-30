@@ -57,6 +57,16 @@ class MysqlDialect(SqlDialect):
             return node
         return tree.transform(_fix)
 
+    def natural_div(self, value: Expression, *, divisor: Expression) -> Expression:
+        """``FLOOR``: an integer ``CAST`` rounds here."""
+        return exp.Floor(this=exp.Div(this=value, expression=divisor))
+
+    def attach_sequence_setting(self, statement: Expression, *, size: int) -> None:
+        """Lift the recursion cap for the recursive integer sequence (default 1000)."""
+        statement.set("hint", exp.Hint(expressions=[exp.Anonymous(this="SET_VAR", expressions=[
+            exp.EQ(this=exp.var("cte_max_recursion_depth"), expression=exp.Literal.number(size + 1)),
+        ])]))
+
     def build_date_trunc(self, col_expr: Expression, granularity: TimeGranularity) -> Expression:
         """Sub-day units via ``DATE_FORMAT``: sqlglot renders them all as ``DATE(t)``."""
         fmt = _SUB_DAY_TRUNC_FORMATS.get(granularity)

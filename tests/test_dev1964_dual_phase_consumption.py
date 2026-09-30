@@ -415,7 +415,7 @@ class TestSynthesizedGrainNames:
         assert with_later[a] == with_earlier[a]
 
     def test_time_bucket_spelled_like_a_column(self):
-        bucket = TimeTruncKey(column=ColumnKey(leaf="city"), granularity="month")
+        bucket = TimeTruncKey(column=ColumnKey(leaf="city"), granularity=TimeGranularity.MONTH)
         names = _grain_names([bucket, ColumnKey(leaf="city_month")])
         assert names[ColumnKey(leaf="city_month")] == "city_month"
         assert len(set(names.values())) == 2

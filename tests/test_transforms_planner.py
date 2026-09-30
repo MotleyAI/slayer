@@ -332,7 +332,7 @@ class TestIterSlotDepsTransformAux:
         inner = AggregateKey(source=ColumnKey(path=(), leaf="amount"), agg="sum")
         tt = TimeTruncKey(
             column=ColumnKey(path=(), leaf="created_at"),
-            granularity="month",
+            granularity=TimeGranularity.MONTH,
         )
         tk = TransformKey(op="cumsum", input=inner, time_key=tt)
         deps = list(_iter_slot_deps(tk))

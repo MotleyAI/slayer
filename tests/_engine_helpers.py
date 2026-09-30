@@ -1,7 +1,7 @@
 """Shared test helpers for engine-driven SQL-shape assertions.
 
-Used by tests migrated off the legacy ``slayer.engine.enrichment`` pipeline
-(DEV-1484 Stage C). Naming intentionally underscored so pytest skips it
+Used by tests migrated off the legacy ``slayer.engine.enrichment`` pipeline.
+Naming intentionally underscored so pytest skips it
 during test discovery while still allowing ``from tests._engine_helpers
 import ...`` from individual test modules.
 
@@ -22,10 +22,10 @@ from __future__ import annotations
 import os
 import re
 import tempfile
-from collections.abc import AsyncGenerator, Callable, Generator
+from collections.abc import AsyncGenerator, Callable, Generator, Mapping
 from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
 import sqlalchemy as sa
 import sqlglot
@@ -69,15 +69,17 @@ async def build_exec_engine(
     datasource: str = "test",
     validate: bool = False,
     clock: Optional[Callable[[], datetime]] = None,
+    datasource_fields: Optional[Mapping[str, Any]] = None,
 ) -> SlayerQueryEngine:
     """Storage + query engine over an ALREADY-seeded ``db_path`` (the caller owns
     the file). The single builder the per-DEV fixture roots used to each copy;
     ``seeded_exec_engine`` is the disposing full-lifecycle wrapper around it. Use
-    this directly only when you manage the tempdir / db yourself."""
+    this directly only when you manage the tempdir / db yourself. ``datasource_fields``
+    adds extra ``DatasourceConfig`` fields."""
     storage = YAMLStorage(base_dir=os.path.join(os.path.dirname(db_path), "store"))
-    await storage.save_datasource(
-        DatasourceConfig(name=datasource, type=dialect, database=db_path),
-    )
+    await storage.save_datasource(DatasourceConfig.model_validate(
+        {"name": datasource, "type": dialect, "database": db_path, **(datasource_fields or {})},
+    ))
     for model in models:
         await storage.save_model(model, _validate=validate)
     if clock is None:
@@ -94,8 +96,9 @@ async def seeded_exec_engine(
     datasource: str = "test",
     validate: bool = False,
     clock: Optional[Callable[[], datetime]] = None,
+    datasource_fields: Optional[Mapping[str, Any]] = None,
 ) -> AsyncGenerator[tuple[SlayerQueryEngine, str]]:
-    """The one seeded executing-engine context (DEV-1943 §5).
+    """The one seeded executing-engine context.
 
     Seeds a temp db (``seed(db_path)``), registers ``models`` against a
     ``dialect``-typed datasource, and yields ``(engine, db_path)``. On exit it
@@ -109,6 +112,7 @@ async def seeded_exec_engine(
         engine = await build_exec_engine(
             db_path, dialect=dialect, models=models,
             datasource=datasource, validate=validate, clock=clock,
+            datasource_fields=datasource_fields,
         )
         try:
             yield engine, db_path
@@ -120,7 +124,7 @@ async def seeded_exec_engine(
 async def make_seeded_sqlite_engine(
     *, base_dir: str, db_path: str, models: list[SlayerModel], datasource: str = "test"
 ) -> SlayerQueryEngine:
-    """Storage + engine bound to a seeded SQLite file (DEV-1815).
+    """Storage + engine bound to a seeded SQLite file.
 
     Consolidates the byte-identical ``make_sqlite_engine`` helpers previously
     duplicated across the per-DEV fixture modules; they now delegate here.
@@ -148,7 +152,7 @@ def models_bundle(models_by_name: dict[str, SlayerModel], *, dialect: str = "pos
 def _assert_valid_sql(sql: str, dialect: str = "postgres") -> None:
     """Assert generated SQL is structurally valid (parses, no nested WITH).
 
-    DEV-1713 removed the BigQuery ``TypeError`` carve-out: finalised BigQuery
+    The BigQuery ``TypeError`` carve-out is gone: finalised BigQuery
     naming/mangling no longer emits the dotted-alias shapes sqlglot choked on,
     so a ``TypeError`` here is now a real failure for every dialect.
     """
@@ -177,6 +181,7 @@ async def _engine_generate(
     extra_models: Optional[list] = None,
     validate: bool = True,
     clock: Optional[Callable[[], datetime]] = None,
+    datasource_fields: Optional[Mapping[str, Any]] = None,
 ) -> str:
     """Build a fresh ``YAMLStorage`` + ``SlayerQueryEngine`` for ``model``,
     run ``query`` with ``dry_run=True``, and return the emitted SQL.
@@ -187,15 +192,16 @@ async def _engine_generate(
     of additional ``SlayerModel`` instances to register in the same store
     (e.g. join targets sharing ``model.data_source``).
 
-    ``validate=False`` skips save-time DEV-1410 derived-column cycle
+    ``validate=False`` skips save-time derived-column cycle
     detection for the few migrated tests that feed intentionally-shaped
-    models the cycle validator would otherwise reject.
+    models the cycle validator would otherwise reject. ``datasource_fields``
+    adds extra ``DatasourceConfig`` fields.
     """
     with tempfile.TemporaryDirectory() as d:
         storage = YAMLStorage(base_dir=d)
-        await storage.save_datasource(
-            DatasourceConfig(name=model.data_source, type=dialect)
-        )
+        await storage.save_datasource(DatasourceConfig.model_validate(
+            {"name": model.data_source, "type": dialect, **(datasource_fields or {})},
+        ))
         await storage.save_model(model, _validate=validate)
         for extra in extra_models or []:
             await storage.save_model(extra, _validate=validate)
@@ -245,7 +251,7 @@ def _join_aliases(sql: str, *, dialect: str = "postgres") -> set[str]:
     yields ``customers``; ``LEFT JOIN regions AS customers__regions``
     yields ``customers__regions``.
 
-    DEV-1732: shared out of ``tests/test_sql_generator.py`` so the
+    Shared out of ``tests/test_sql_generator.py`` so the
     frame-bound tests assert against real JOIN nodes rather than alias
     substrings in predicate text.
     """

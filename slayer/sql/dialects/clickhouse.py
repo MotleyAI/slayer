@@ -188,6 +188,11 @@ class ClickhouseDialect(SqlDialect):
         """``toNullable(key)``: pre-25 ``nullIn`` errors probing a non-Nullable set with a Nullable key."""
         return exp.Anonymous(this="toNullable", expressions=[key.copy()])
 
+    def build_integer_sequence(self, *, size: int) -> exp.Select:
+        return exp.select(exp.column("number").as_("i")).from_(exp.Table(
+            this=exp.Anonymous(this="numbers", expressions=[exp.Literal.number(size)]),
+        ))
+
     def promote_to_timestamp(self, expr: Expression) -> Expression:
         return exp.Anonymous(this="toDateTime64", expressions=[expr.copy(), exp.Literal.number(6)])
 

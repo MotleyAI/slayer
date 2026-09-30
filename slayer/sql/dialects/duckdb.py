@@ -7,6 +7,8 @@ log10 / log2.
 
 from __future__ import annotations
 
+from sqlglot import exp
+
 from slayer.sql.dialects.base import SqlDialect
 
 
@@ -19,3 +21,9 @@ class DuckdbDialect(SqlDialect):
     log2_native: bool = True
     max_identifier_bytes: int | None = 256  # safe documented ceiling
     approx_count_distinct_native: bool = True
+
+    def build_integer_sequence(self, *, size: int) -> exp.Select:
+        return exp.select(exp.column("i")).from_(exp.Table(
+            this=exp.Anonymous(this="RANGE", expressions=[exp.Literal.number(0), exp.Literal.number(size)]),
+            alias=exp.TableAlias(this=exp.to_identifier("_seq"), columns=[exp.to_identifier("i")]),
+        ))

@@ -170,6 +170,7 @@ Statement-level timeout is enforced via
 | `credentials_json` | string | No | BigQuery service-account key JSON |
 | `oauth_credentials_json` | string | No | BigQuery OAuth authorized-user grant JSON |
 | `schema_name` | string | No | Default schema name |
+| `granularities` | list | No | [Custom granularities](../concepts/time.md#custom-granularities) `{name, base, multiple, origin}` |
 
 !!! note
     Both `username` and `user` field names are accepted. The `user` alias is automatically mapped to `username` for compatibility with common database tooling conventions.

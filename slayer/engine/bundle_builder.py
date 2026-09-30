@@ -11,6 +11,7 @@ from slayer.core.errors import QueryBackedCycleError
 from slayer.core.models import SlayerModel
 from slayer.core.query import ModelExtension, SlayerQuery, SourceSpec
 from slayer.core.scope import StageDisplay
+from slayer.core.time_spine import TIME_SPINE_MODEL, is_spine, spine_joins, spine_model
 from slayer.ir.source_bundle import (
     ResolvedSourceBundle,
     apply_extension_overlay,
@@ -32,6 +33,26 @@ logger = logging.getLogger(__name__)
 _PEER_LOAD_CONCURRENCY = 8
 
 
+async def _referenced_models(
+    *, query: SlayerQuery, source_model: SlayerModel, named_queries: Dict[str, SlayerQuery],
+    storage: "StorageBackend", data_source: Optional[str], chain: Tuple[str, ...], spine_clash: bool,
+) -> Tuple[List[SlayerModel], Dict[str, SlayerModel]]:
+    """The root's join component plus query-written targets (the spine unless a stored model clashes with it), and the stored query-backed models among them."""
+    component = await _collect_referenced_models(
+        source_model=source_model, named_queries=named_queries, storage=storage, data_source=data_source,
+    )
+    component.extend(await _query_written_targets(
+        queries=[*named_queries.values(), query], known={m.name for m in component},
+        sibling_names=set(named_queries), storage=storage, data_source=data_source,
+    ))
+    referenced, query_backed = await _split_query_backed(
+        models=[m for m in component if not is_spine(m)], storage=storage, data_source=data_source, chain=chain,
+    )
+    if not spine_clash and data_source is not None:
+        referenced.append(source_model if is_spine(source_model) else spine_model(data_source=data_source))
+    return referenced, query_backed
+
+
 async def build_resolved_source_bundle(
     *,
     query: SlayerQuery,
@@ -44,6 +65,7 @@ async def build_resolved_source_bundle(
     splice_chain: Tuple[str, ...] = (),
     dry_run_placeholders: bool = False,
     now: Optional[datetime] = None,
+    population_spine: bool = False,
 ) -> ResolvedSourceBundle:
     """Eagerly assemble the :class:`ResolvedSourceBundle` for one execution (P11).
 
@@ -51,11 +73,11 @@ async def build_resolved_source_bundle(
     purely. Variable precedence (highest first): runtime > query (stage) >
     outer > source-model defaults. Stored query-backed models are collected as
     splice placeholders, never as referenced models. ``now`` is the execution's
-    clock reading (default: the host clock).
+    clock reading (default: the host clock). ``population_spine`` marks a model
+    root as the P factor of a ``time_spine × P`` population.
     """
     named_queries = named_queries or {}
     stage_displays = stage_displays or {}
-    sibling_names = set(named_queries)
     storage = cast("StorageBackend", _ModelReadCache(storage))
     for q in [*named_queries.values(), query]:
         _reject_chain_source(spec=q.source_model, chain=splice_chain)
@@ -67,20 +89,15 @@ async def build_resolved_source_bundle(
     # Joins never cross datasource boundaries: scope the walk by the source
     # model's own data_source, falling back to the hint only when it carries none.
     walk_ds = source_model.data_source or data_source or None
-
-    component = await _collect_referenced_models(
-        source_model=source_model,
-        named_queries=named_queries,
-        storage=storage,
-        data_source=walk_ds,
+    spine_clash = walk_ds is not None and (
+        await storage.get_model(TIME_SPINE_MODEL, data_source=walk_ds)
+    ) is not None
+    referenced_models, query_backed = await _referenced_models(
+        query=query, source_model=source_model, named_queries=named_queries,
+        storage=storage, data_source=walk_ds, chain=splice_chain, spine_clash=spine_clash,
     )
-    component.extend(await _query_written_targets(
-        queries=[*named_queries.values(), query], known={m.name for m in component},
-        sibling_names=sibling_names, storage=storage, data_source=walk_ds,
-    ))
-    referenced_models, query_backed = await _split_query_backed(
-        models=component, storage=storage, data_source=walk_ds, chain=splice_chain,
-    )
+    if population_spine and not is_spine(source_model):
+        source_model = source_model.as_population_factor()
 
     stage_source_models = await _stage_source_models(
         named_queries=named_queries, stage_displays=stage_displays,
@@ -111,6 +128,8 @@ async def build_resolved_source_bundle(
         runtime_variables=dict(runtime_variables or {}),
         dry_run_placeholders=dry_run_placeholders,
         now=datetime.now() if now is None else now,
+        granularities=ds.granularity_definitions if ds else {},
+        spine_clash=spine_clash,
     )
 
 
@@ -405,12 +424,14 @@ async def _collect_referenced_models(
         preseeded=preseeded, ds=ds, storage=storage,
     )
     incoming: Dict[str, List[str]] = {}
+    universe = {**all_models, TIME_SPINE_MODEL: source_model} if is_spine(source_model) else all_models
     for m in all_models.values():
-        for join in m.joins:
+        for join in spine_joins(m, models_by_name=universe):
             incoming.setdefault(join.target_model, []).append(m.name)
     collected = await _bfs_connected_component(
-        seeds=list(preseeded), all_models=all_models, incoming=incoming,
-        storage=storage, ds=ds,
+        # The spine reaches every dataset (a query-backed one's axis is known only once spliced).
+        seeds=list(all_models if is_spine(source_model) else preseeded),
+        all_models=all_models, incoming=incoming, storage=storage, ds=ds,
     )
     ordered = [source_model]
     ordered.extend(m for n, m in collected.items() if n != source_model.name)
@@ -426,6 +447,8 @@ async def _resolve_source_spec(
     """Resolve any ``source_model`` spec to a concrete ``SlayerModel`` (read-only)."""
     if isinstance(spec, SlayerModel):
         return spec
+    if spec == TIME_SPINE_MODEL and data_source is not None:
+        return spine_model(data_source=data_source)
     if isinstance(spec, ModelExtension):
         base = await storage.get_model(spec.source_name, data_source=data_source)
         if base is None:

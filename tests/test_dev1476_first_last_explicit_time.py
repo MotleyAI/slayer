@@ -363,7 +363,7 @@ async def test_cross_model_last_with_target_filter_ranks_filtered_rows() -> None
 
 
 async def test_cross_model_last_over_column_filter_masks_the_newest_row() -> None:
-    """DEV-1832: a ``Column.filter`` masks the value; it never restricts the
+    """A ``Column.filter`` masks the value; it never restricts the
     ranking. ``customers.active_amount:last`` ranks customers by ``signup_at`` and
     the newest (id 3, 2023-09-01) is ``inactive``, so its masked value is NULL —
     the older active 100.0 is not reached (a row-restricting WHERE belongs in the
@@ -752,7 +752,8 @@ class TestGateUsesSharedArgSelection:
         assert explicit_ranking_time_arg(self._scalar_first_arg_key()) is None
 
     def test_scalar_first_arg_gate_requires_default_time(self) -> None:
-        orders = _u_orders()  # no default_time_dimension
+        # no default_time_dimension, and two temporal columns: no sole-column default
+        orders = _u_orders(extra=[Column(name="updated_at", sql="created_at", type=DataType.TIMESTAMP)])
         bundle = _u_bundle(orders)
         key = self._scalar_first_arg_key()
         with pytest.raises(ValueError, match="ranking time"):

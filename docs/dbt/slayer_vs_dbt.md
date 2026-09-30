@@ -70,7 +70,7 @@ Entity-based sequential event tracking (e.g., "users who visited then purchased 
 
 ### Other clean-fails
 
-`offset_to_grain`, an `offset_window` on a multi-aggregate (ratio/derived) input, non-standard granularities, discrete/approximate percentile flags, `join_to_timespine` / `fill_nulls_with` gap-filling, and measure-less simple metrics (`metric_aggregation_params`) are all failed cleanly with a documented workaround — see the [clean-fail table](dbt_import.md#clean-fail-and-unsupported).
+`offset_to_grain`, an `offset_window` on a multi-aggregate (ratio/derived) input, non-standard granularities, discrete/approximate percentile flags, and measure-less simple metrics (`metric_aggregation_params`) are all failed cleanly with a documented workaround — see the [clean-fail table](dbt_import.md#clean-fail-and-unsupported).
 
 ---
 

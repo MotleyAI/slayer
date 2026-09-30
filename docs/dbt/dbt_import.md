@@ -178,7 +178,6 @@ Constructs that cannot be expressed exactly are **failed cleanly** — never con
 | `non_additive_dimension` (semi-additive) | Not exactly expressible | `last(balance, <time>)` / `first(...)`, or a multi-stage query |
 | Discrete / approximate percentile flags | Only continuous-exact `PERCENTILE_CONT` is supported | Drop `use_discrete_percentile` / `use_approximate_percentile` |
 | Conversion metrics (funnel) | Sequential-event SQL unsupported | Express the funnel as a multi-stage query |
-| `join_to_timespine` / `fill_nulls_with` | No time-spine gap-filling | Remove the gap-fill request |
 | Measure-less simple metric (`metric_aggregation_params`) | Unsupported shape | Define an explicit measure |
 | Cross-model filter on an unreachable model | No join from the source model | Add the required join, or filter locally |
 | Transform-name shadowing | A measure/metric named after a transform (`cumsum`, `lag`, `lead`, `change`, `change_pct`, `time_shift`, `rank`, `percent_rank`, `dense_rank`, `ntile`, `first`, `last`) would shadow it | Rename the dbt measure/metric |

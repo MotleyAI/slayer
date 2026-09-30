@@ -1,12 +1,12 @@
-"""DEV-1835 guard surface (design D7) — both directions.
+"""Guard surface (design D7) — both directions.
 
-Deleted: the DEV-1837 windowed/ranked coexistence arm, DEV-1504 G4/G5/G6/G7 +
+Deleted: the windowed/ranked coexistence arm, G4/G5/G6/G7 +
 the post-projection mixed-filter twin, ``time_shift``-over-ranked, and the
-residual DEV-1839 windowed/first-last union-grain guard — asserted absent from
+residual windowed/first-last union-grain guard — asserted absent from
 the package sources. Preserved verbatim: G8 (duration syntax), G2 (time
 resolution), and the ranked no-ranking-column error.
-Resolved: G3 (windowed cross-model) is now a precise DEV-1836 attributability
-error naming the unreachable time dimension, no longer a DEV-1504 deferral.
+Resolved: G3 (windowed cross-model) is now a precise attributability
+error naming the unreachable time dimension, no longer a deferral.
 
 Scenario coverage map (spec: openspec …/specs/queries/computed-dimensions):
   The lifted windowed/ranked guard leaves no residue . TestDeletedGuardResidue
@@ -16,6 +16,9 @@ Scenario coverage map (spec: openspec …/specs/queries/computed-dimensions):
 from __future__ import annotations
 
 import pytest
+
+from slayer.core.enums import DataType
+from slayer.core.models import Column
 
 from tests._dev1835_fixtures import ModelMeasure, month_td, q
 from tests._dev1739_fixtures import dev1739_models
@@ -108,7 +111,11 @@ class TestPreservedGuardsVerbatim:
 
     async def test_ranked_no_ranking_column(self) -> None:
         models = dev1739_models()
-        models[0] = models[0].model_copy(update={"default_time_dimension": None})
+        # A second temporal column leaves no sole-column default either.
+        models[0] = models[0].model_copy(update={
+            "default_time_dimension": None,
+            "columns": [*models[0].columns, Column(name="updated_at", sql="ordered_at", type=DataType.TIMESTAMP)],
+        })
         query = q(
             dimensions=["region"],
             measures=[ModelMeasure(formula="amount:last", name="l")],
@@ -122,7 +129,7 @@ class TestRepointedGuards:
     async def test_g3_windowed_cross_model_needs_attributable_time_dimension(
         self,
     ) -> None:
-        # DEV-1836 resolves the former blanket G3 deferral into a precise
+        # The former blanket G3 deferral resolves into a precise
         # attributability error: the active time dimension is a host column,
         # unreachable from the customers root.
         query = q(

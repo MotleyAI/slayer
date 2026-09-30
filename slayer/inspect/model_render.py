@@ -901,7 +901,7 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
                     ),
                     "primary_key": c.primary_key,
                     "unique": c.unique,
-                    **({"granularity": c.granularity.value} if c.granularity is not None else {}),
+                    **({"granularity": str(c.granularity)} if c.granularity is not None else {}),
                     **({"sql": c.sql} if show_sql else {}),
                     "allowed_aggregations": c.allowed_aggregations,
                     **({"filter": c.filter} if show_sql else {}),

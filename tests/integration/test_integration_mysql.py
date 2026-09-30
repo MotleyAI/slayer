@@ -1,6 +1,6 @@
 """Integration tests using a real MySQL database via testcontainers.
 
-DEV-1564: mirror of test_integration_postgres.py, exercising the MySQL
+Mirror of test_integration_postgres.py, exercising the MySQL
 dialect's variance-decomposition path for corr/covar_*, the MySQL-specific
 ``VAR_SAMP``/``VAR_POP`` Anonymous overrides, and the NotImplementedError
 emitted for median/percentile.
@@ -48,6 +48,13 @@ from slayer.engine.ingestion import ingest_datasource
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql import engine_factory
 from slayer.storage.yaml_storage import YAMLStorage
+from tests.integration._dev2015_server import (
+    check_all,
+    server_models,
+    server_models_ts,
+    server_statements,
+    with_granularities,
+)
 from tests.integration._consecutive_periods_calendar import (
     CALENDAR_CASES,
     assert_calendar_streak,
@@ -266,7 +273,7 @@ class TestMySQLQueries:
         assert result.data[0]["orders._count"] == 6
 
     async def test_dev1933_regex_literal_extension_column(self, mysql_env: SlayerQueryEngine) -> None:
-        """DEV-1933: an ad-hoc column holding a ``(?:...)`` regex literal and a ``%``
+        """An ad-hoc column holding a ``(?:...)`` regex literal and a ``%``
         LIKE pattern executes verbatim; text() misread ``:too`` as a bind parameter."""
         query = SlayerQuery(
             source_model=ModelExtension(
@@ -336,7 +343,7 @@ class TestMySQLQueries:
         assert result.data[0]["orders._count"] == 3
 
     async def test_trunc_executes(self, mysql_env: SlayerQueryEngine) -> None:
-        """DEV-1753: MySQL has no single-arg TRUNCATE — ``trunc(x)`` must reach
+        """MySQL has no single-arg TRUNCATE — ``trunc(x)`` must reach
         the server as ``TRUNCATE(x, 0)`` (bare ``TRUNCATE(x)`` is a syntax
         error). Truncates toward zero: ``trunc(total / 40.0)`` is 2.5 -> 2 only
         for total = 100."""
@@ -931,7 +938,7 @@ class TestMySQLMedianPercentileRaises:
 
 
 # ---------------------------------------------------------------------------
-# Statistical aggregations (DEV-1317 cross-dialect parity)
+# Statistical aggregations (cross-dialect parity)
 # ---------------------------------------------------------------------------
 
 
@@ -1127,7 +1134,7 @@ class TestMySQLStatAggregations:
 
 
 # ---------------------------------------------------------------------------
-# log10 round-trip (DEV-1337 — MySQL has native log10)
+# log10 round-trip (MySQL has native log10)
 # ---------------------------------------------------------------------------
 
 
@@ -1196,7 +1203,7 @@ async def test_log10_round_trip_mysql(mysql_log10_env: SlayerQueryEngine) -> Non
 
 
 # ---------------------------------------------------------------------------
-# Window-in-filter raises (DEV-1369 parity)
+# Window-in-filter raises
 # ---------------------------------------------------------------------------
 
 
@@ -1267,7 +1274,7 @@ async def test_filter_on_windowed_column_mysql_raises(planets_mysql_env) -> None
 
 
 # ---------------------------------------------------------------------------
-# Cross-model derived Column.sql (DEV-1333)
+# Cross-model derived Column.sql
 # ---------------------------------------------------------------------------
 
 
@@ -1352,8 +1359,8 @@ async def test_integration_mysql_cross_model_derived_columnsql(
 
 
 # ---------------------------------------------------------------------------
-# DEV-1727 — dialect-aware Mode-A {var} escaping (MySQL is a Tier-1 backslash
-# dialect: the naive '' quote-doubling from DEV-1625 mis-parses a
+# Dialect-aware Mode-A {var} escaping (MySQL is a Tier-1 backslash
+# dialect: the naive '' quote-doubling mis-parses a
 # backslash-bearing value; the hardened escaping must round-trip end-to-end).
 # ---------------------------------------------------------------------------
 
@@ -1515,3 +1522,35 @@ class TestMySQLDateFunctions:
         buckets = {int(r["dt.id"]): r["dt.t1"] for r in resp.data}
         assert str(buckets[1])[:19] == "2024-01-31 23:00:00"
         assert str(buckets[4])[:19] == "2024-06-02 10:00:00"
+
+
+# ---------------------------------------------------------------------------
+# Time spine and custom granularities
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def _mysql_spine_storage(mysql_container, tmp_path_factory):
+    db_name = _create_module_db(mysql_container)
+    try:
+        conn = _admin_connect(mysql_container, dbname=db_name)
+        try:
+            with conn.cursor() as cur:
+                for stmt in server_statements("mysql"):
+                    cur.execute(stmt)
+        finally:
+            conn.close()
+        storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("mysql_spine")))
+        base = _ds_config(mysql_container, db_name)
+        for name, models in (("my", server_models(data_source="my")), ("my_ts", server_models_ts(data_source="my_ts"))):
+            run_sync(storage.save_datasource(with_granularities(base, name=name)))
+            for model in models:
+                run_sync(storage.save_model(model))
+        yield storage
+    finally:
+        _drop_module_db(mysql_container, db_name)
+
+
+@pytest.mark.integration
+class TestMySQLTimeSpine:
+    async def test_scenarios(self, _mysql_spine_storage) -> None:
+        await check_all(SlayerQueryEngine(storage=_mysql_spine_storage), data_source="my", ts_data_source="my_ts")
