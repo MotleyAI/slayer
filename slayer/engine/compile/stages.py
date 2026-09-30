@@ -2024,16 +2024,15 @@ class _ProducerSynthesisContext(BaseModel):
         return self.home_paths.get(agg, source_anchor_path(agg.source))
 
     def dim_display(self, key: ValueKey) -> str:
-        return _dimension_names(self.prebound).get(key) or key_display(key)
+        return _query_dim_display(self.prebound, key)
 
 
-def _dimension_names(prebound: PreboundQuery) -> Dict[ValueKey, str]:
-    """Each grain key's first explicitly declared query name."""
-    names: Dict[ValueKey, str] = {}
+def _query_dim_display(prebound: PreboundQuery, key: ValueKey) -> str:
+    """A key's query name: its first explicitly declared dimension name, else its formula text."""
     for dm in prebound.declared_measures[: prebound.n_dims + prebound.n_time_dimensions]:
-        if dm.name_is_explicit:
-            names.setdefault(dm.bound.value_key, dm.declared_name)
-    return names
+        if dm.name_is_explicit and dm.bound.value_key == key:
+            return dm.declared_name
+    return key_display(key)
 
 
 class _UnattributableDim(NamedTuple):
@@ -3212,7 +3211,7 @@ def _canonical_producer_aggs(
 def _assert_local_regroup_safe(
     *, producer_aggs: Sequence[ValueKey], producer_model: SlayerModel,
     bundle: ResolvedSourceBundle, active_td: Optional[ValueKey],
-    alias_map: Dict[ValueKey, str],
+    alias_map: Dict[ValueKey, str], display: Callable[[ValueKey], str],
 ) -> None:
     """Per-role crossing-input safety for every answer, and a PRESENT windowed axis
     attributable from the producer root (decision 12); a missing axis is left to
@@ -3229,7 +3228,7 @@ def _assert_local_regroup_safe(
     check_windowed_time_axis_attributable(
         alias=alias_map.get(first) if isinstance(first, AggregateKey) else None,
         root_name=producer_model.name,
-        active_td_name=key_display(active_td),
+        active_td_name=display(active_td),
         attributable=key_attributable_from_root(
             key=active_td, target_path=(), root_model=producer_model,
             models_by_name=bundle.models_by_name, bundle=bundle,
@@ -3294,6 +3293,7 @@ def _synthesize_local_regroup(
         _assert_local_regroup_safe(
             producer_aggs=producer_aggs, producer_model=producer_model, bundle=bundle,
             active_td=prebound.main_time_key if windowed else None, alias_map=alias_map,
+            display=functools.partial(_query_dim_display, prebound),
         )
     producer_prebound, ordered_pks = _regroup_producer_prebound(
         pks=pks, aggs=producer_aggs, model=producer_model, bundle=bundle,
