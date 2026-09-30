@@ -27,7 +27,7 @@ Every datasource SHALL expose a model named `time_spine` with exactly one column
 
 ### Requirement: A dataset's axis joins the spine to-one
 
-A dataset's axis SHALL be its declared `default_time_dimension`, else its only column of type `time` or `date`; a dataset with neither has no axis. For a query-backed model or a query stage, the axis SHALL be the propagated `default_time_dimension` of its source when that column survives in its schema, else its only temporal column. A dataset with an axis SHALL behave as if it declared a many-to-one join from its axis to `time_spine.timestamp` by equality; a DATE axis value denotes the instant at midnight of that day. The same effective default SHALL serve as the model's default time dimension for the transform time-axis tie-break and the `first` / `last` fallback ranking column.
+A dataset's axis SHALL be its declared `default_time_dimension`, else its only column of type `time` or `date`; a dataset with neither has no axis. For a query-backed model or a query stage, the axis SHALL be the propagated `default_time_dimension` of its source when that column survives in its schema, else its only temporal column. A dataset with an axis SHALL behave as if it declared a many-to-one join from its axis to `time_spine.timestamp` by equality; a DATE axis value denotes the instant at midnight of that day. The same effective default SHALL serve as the model's default time dimension for the transform time-axis tie-break and the `first` / `last` fallback ranking column. Saving a model whose declared `default_time_dimension` names a column of a known type other than `time` or `date` SHALL be rejected with a typed error naming the model and the column; a column with no type is accepted.
 
 #### Scenario: Declared and sole-column axes are both wired
 
@@ -48,6 +48,11 @@ A dataset's axis SHALL be its declared `default_time_dimension`, else its only c
 
 - **WHEN** `customers` gains a `signed_up_at` column, a query rooted at `returns` has time dimensions `returns.return_date` and `customers.signed_up_at` at month with no `main_time_dimension` and selects `cumsum(sum(returns.amount))`, and another query rooted at `returns` selects `last(returns.amount)` with no time dimension
 - **THEN** the running total orders by `return_date` months, and `last` is 5 (the latest `return_date`), exactly as with a declared `default_time_dimension: return_date`
+
+#### Scenario: Non-temporal declared default rejected on save
+
+- **WHEN** a user saves `returns` declaring `default_time_dimension: amount`, a number column
+- **THEN** the save fails with a typed error naming `returns` and `amount`, and nothing is stored; the same declaration on a column with no type is accepted
 
 ### Requirement: Spine routes are nearest-axis and the spine is never crossed
 
@@ -75,7 +80,7 @@ A dataset SHALL reach the spine by its nearest axis along a chain of provably to
 
 ### Requirement: A spine query's population is the spine times P
 
-A query with one or more time dimensions on `time_spine.timestamp` SHALL have population `time_spine × P`, where P is the population of its remaining determination items — its other dimensions and time dimensions and the field-typed filters not on the spine column — inferred by the dimension-determined default, or the model named by `source_model`, or the one-row unit when there are no remaining items (`source_model: time_spine` also denotes the unit). The result SHALL have one row per combination of a spine bucket in range and a distinct value combination of P's dimensions among P's filtered rows; adding or removing a measure SHALL never change this row set.
+A query with one or more time dimensions on `time_spine.timestamp` SHALL have population `time_spine × P`, where P is the population of its remaining determination items — its other dimensions and time dimensions and the field-typed filters not on the spine column — inferred by the dimension-determined default, or the model named by `source_model`, or the one-row unit when there are no remaining items (`source_model: time_spine` also denotes the unit). The result SHALL have one row per combination of a spine bucket in range and a distinct value combination of P's dimensions among P's filtered rows; adding or removing a measure SHALL never change this row set. This SHALL hold for every query of a query list alike: the main query and each named stage.
 
 #### Scenario: Every month in range, both facts on one axis
 
@@ -102,13 +107,28 @@ A query with one or more time dimensions on `time_spine.timestamp` SHALL have po
 - **WHEN** `sum(returns.amount)` is removed from, or `avg(orders.amount)` added to, any spine query above
 - **THEN** the row set is unchanged
 
+#### Scenario: A spine stage keeps every bucket
+
+- **WHEN** a query list's stage `monthly` groups by the spine month with `date_range: ["2025-01-01", "2025-03-31"]` and selects `sum(orders.amount)` named `o`, once without `source_model` and once with `source_model: time_spine`, and the main query over `monthly` selects `sum(o)` and `count(*)`
+- **THEN** both variants read 220 and 3: the stage has one row per month Jan–Mar, March included
+
+#### Scenario: A per-group spine stage
+
+- **WHEN** the stage `monthly` also groups by `customers.region`, and the main query over it groups by `region` and selects `sum(o)` and `count(*)`
+- **THEN** the rows are N (170, 3), S (50, 3), E (NULL, 3)
+
+#### Scenario: A spine stage feeding a spine query
+
+- **WHEN** the main query over the stage `monthly` groups by months Jan–Jun and selects `sum(monthly.o)`
+- **THEN** the stage's axis is its month column and the rows are Jan 150, Feb 70, then NULL for Mar–Jun
+
 ### Requirement: Spine bounds decide which buckets exist
 
 A spine query SHALL bound `time_spine.timestamp` from below with a frame bound (a `date_range` or a conjunctive comparison of the spine column against a time point); without one it SHALL fail with a typed error whose remedy names adding a lower bound. Without a stated upper bound the query SHALL be bounded by the period containing now, at the finest granularity among its spine time dimensions — the `this <granularity>` time point, read from the engine clock. A bucket SHALL exist iff its interval overlaps the bounded interval. Spine bounds SHALL restrict each fact's rows through its axis (a fact row counts only if its axis instant satisfies them) and SHALL remain frame bounds: trailing windows and `time_shift` read rows before the lower bound.
 
 #### Scenario: No lower bound
 
-- **WHEN** a spine-month query has no `date_range` and no bound filter on `time_spine.timestamp`
+- **WHEN** a spine-month query, or a spine-month stage of a query list, has no `date_range` and no bound filter on `time_spine.timestamp`
 - **THEN** it fails with the typed missing-lower-bound error before any SQL runs
 
 #### Scenario: Mid-bucket lower bound keeps the bucket, not the rows
@@ -166,7 +186,7 @@ An aggregation whose home is `time_spine` (any aggregation over `time_spine.time
 
 #### Scenario: Aggregation over the spine
 
-- **WHEN** a spine-month query selects `count(*)` with `source_model: time_spine`, or `min(time_spine.timestamp)`
+- **WHEN** a spine-month query, or a spine-month stage of a query list, selects `count(*)` with `source_model: time_spine`, or `min(time_spine.timestamp)`
 - **THEN** it fails with the typed no-countable-rows error
 
 #### Scenario: Plain spine dimension

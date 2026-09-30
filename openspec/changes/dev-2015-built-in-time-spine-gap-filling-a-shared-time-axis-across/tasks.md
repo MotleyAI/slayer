@@ -50,3 +50,9 @@
 - [x] 6.3 Docs: `docs/concepts/time.md` Time spine + Custom granularities sections, `queries.md` Population, `models.md` effective default time dimension, datasource configuration `granularities`, agent help content, MCP `query` tool docs; `zensical.toml` nav if a page is added; verify docs build and grep for stale statements ("no time-spine gap filling", granularity lists)
 - [x] 6.4 Apply exactly the arc42 edits approved in design.md D12 (Axiom 15, Axiom 12 cross-reference; the enforcing test file must exist — any other wording or tag needs a fresh user OK); run `la-arch-check` (pinned) and verify green
 - [x] 6.5 Full unit suite, integration suite (CI invocation), `ruff check`, `basedpyright` (no baseline growth), `la-arch-check`; verify all green
+
+## 7. Spine queries as stages
+
+- [ ] 7.1 Executed SQLite/DuckDB tests for the spine-stage scenarios (rootless and `source_model: time_spine`, per-group, spine stage under a spine main query, missing-lower-bound and no-countable-rows inside a stage); verify each fails for the right reason before the fix
+- [ ] 7.2 One "host is a spine factor" rule for every query of a list (per-query spine inference and datasource in `_infer_populations`; the spine-factor marking replaces the root-only `population_spine` flag); verify 7.1 and the full unit suite
+- [ ] 7.3 Save-time typed rejection of a declared `default_time_dimension` whose column has a known non-temporal type (untyped accepted), on the storage save path shared by every surface; tests on storage, REST, MCP and CLI saves that fail before the fix
