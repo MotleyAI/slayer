@@ -705,7 +705,7 @@ class TestInspectModelSectionGating:
         # Footer present
         assert "> Sections shown: columns." in result
         assert "> Names-only: measures, aggregations, joins." in result
-        assert "> Omitted: samples, learnings." in result
+        assert "> Omitted: samples, learnings, saved_queries." in result
         assert "Re-call inspect_model" in result
 
     async def test_omitted_sections_with_no_entities_render_nothing(self, mcp_server, storage: YAMLStorage) -> None:
@@ -733,7 +733,7 @@ class TestInspectModelSectionGating:
             arguments={"model_name": "rich", "sections": ["columns", "fish"]},
         )
         assert "> Warning: ignored unknown sections: 'fish'." in result
-        assert "Valid: columns, measures, aggregations, joins, samples, learnings." in result
+        assert "Valid: columns, measures, aggregations, joins, samples, learnings, saved_queries." in result
         # Valid section still rendered
         assert "## Columns (3)" in result
 
@@ -762,7 +762,7 @@ class TestInspectModelSectionGating:
         # corrected sections= list.
         assert "Sections shown: (none)" in result
         assert "Names-only: columns, measures, aggregations, joins" in result
-        assert "Omitted: samples, learnings" in result
+        assert "Omitted: samples, learnings, saved_queries" in result
         assert "Re-call inspect_model with `sections=[...]`" in result
 
     async def test_canonical_order_regardless_of_input(self, mcp_server, storage: YAMLStorage) -> None:
@@ -786,7 +786,7 @@ class TestInspectModelSectionGating:
         )
         assert (
             "> Warning: ignored unknown sections: 'reachable_fields'. "
-            "Valid: columns, measures, aggregations, joins, samples, learnings."
+            "Valid: columns, measures, aggregations, joins, samples, learnings, saved_queries."
         ) in result_md
         assert "## Reachable" not in result_md
         # Unknown-branch wins over a silent-drop fallback to the full Columns table.
@@ -794,7 +794,7 @@ class TestInspectModelSectionGating:
         assert "## Columns (3 — names only)" in result_md
         assert "> Sections shown: (none)" in result_md
         assert "> Names-only: columns, measures, aggregations, joins." in result_md
-        assert "> Omitted: samples, learnings." in result_md
+        assert "> Omitted: samples, learnings, saved_queries." in result_md
 
         result_json = await _call(
             mcp_server, name="inspect_model",
@@ -810,7 +810,7 @@ class TestInspectModelSectionGating:
         assert "reachable_measures" not in parsed
         assert "columns" not in parsed  # full key absent ⇒ unknown-branch not bypassed
         assert parsed["names_only_sections"] == ["columns", "measures", "aggregations", "joins"]
-        assert parsed["omitted_sections"] == ["samples", "learnings"]
+        assert parsed["omitted_sections"] == ["samples", "learnings", "saved_queries"]
 
     async def test_old_reachable_fields_token_with_other_sections(self, mcp_server, storage: YAMLStorage) -> None:
         """A mix of ``reachable_fields`` + ``columns`` renders columns fully and
@@ -1046,7 +1046,7 @@ class TestInspectModelJsonGating:
         assert "sample_data_error" not in parsed
         # Top-level state arrays
         assert parsed["names_only_sections"] == ["measures", "aggregations", "joins"]
-        assert parsed["omitted_sections"] == ["samples", "learnings"]
+        assert parsed["omitted_sections"] == ["samples", "learnings", "saved_queries"]
         assert "unknown_sections" not in parsed
 
     async def test_json_unknown_sections_array(self, mcp_server, storage: YAMLStorage) -> None:
@@ -1137,7 +1137,7 @@ class TestInspectModelHelpers:
 
     def test_resolve_inspect_sections_none(self) -> None:
         resolved, unknown = _resolve_inspect_sections(None)
-        assert resolved == ["columns", "measures", "aggregations", "joins", "samples", "learnings"]
+        assert resolved == ["columns", "measures", "aggregations", "joins", "samples", "learnings", "saved_queries"]
         assert unknown == []
 
     def test_resolve_inspect_sections_empty(self) -> None:
@@ -1151,6 +1151,7 @@ class TestInspectModelHelpers:
             "joins",
             "samples",
             "learnings",
+            "saved_queries",
         ]
         assert unknown == []
 

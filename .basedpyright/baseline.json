@@ -16,22 +16,6 @@
                     "endColumn": 63,
                     "lineCount": 1
                 }
-            },
-            {
-                "code": "reportReturnType",
-                "range": {
-                    "startColumn": 15,
-                    "endColumn": 64,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportReturnType",
-                "range": {
-                    "startColumn": 15,
-                    "endColumn": 61,
-                    "lineCount": 1
-                }
             }
         ],
         "./slayer/core/formula.py": [

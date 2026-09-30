@@ -61,3 +61,5 @@ Result columns are `model.column`: `sum(revenue)` → `orders.revenue_sum`,
 model (`create_model` with `query=`) makes it query-backed: its stages are stored
 SlayerQuery dicts, dotted paths flatten into `__` column names (`stores.name` →
 `stores__name`), and the cached columns refresh only when the model is saved again.
+Run one by name with `query(query="monthly_revenue", refine={"dimensions": ["region"]})` to
+merge extra dimensions, measures, filters, order or limit into its final stage.

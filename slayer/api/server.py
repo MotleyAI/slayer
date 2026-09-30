@@ -18,7 +18,7 @@ from slayer.core.errors import (
 )
 from slayer.core.format import NumberFormat
 from slayer.core.models import DatasourceConfig, SlayerModel
-from slayer.core.query import SlayerQuery, SourceSpec
+from slayer.core.query import QueryRefinement, SlayerQuery, SourceSpec
 from slayer.async_utils import run_sync
 from slayer.engine import ingestion as engine_ingestion
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -65,6 +65,11 @@ class QueryRequest(BaseModel):
     dry_run: bool | None = None
     explain: bool | None = None
     variables: dict[str, Any] | None = None
+    # Run-by-name only: clauses merged into the saved query's final stage.
+    refine: QueryRefinement | None = None
+
+
+_RUN_BY_NAME_FIELDS = frozenset({"name", "variables", "dry_run", "explain", "refine"})
 
 
 class QueryListRequest(BaseModel):
@@ -301,29 +306,17 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                     dry_run=dry_run,
                     explain=explain,
                 )
-            # Run-by-name: ``{"name": "<model>", "variables": {...}}``
-            # routes through ``engine.execute(str)`` so the model's stored
-            # backing query runs directly. Cannot be combined with
-            # ``source_model`` or other query fields.
+            # Run-by-name: ``{"name": "<model>", "refine": {...}, "variables": {...}}``
+            # runs the model's stored backing query, ``refine`` merged into its
+            # final stage. Any other query field (even ``null``) is rejected.
             elif request.name is not None:
-                disallowed = [
-                    f for f in (
-                        request.source_model, request.measures, request.dimensions,
-                        request.time_dimensions, request.filters, request.order,
-                        request.limit, request.offset, request.whole_periods_only,
-                        request.distinct_dimension_values, request.to_many_handling,
-                    ) if f is not None
-                ]
-                # Run-by-name skips SlayerQuery validation, so a stray extra
-                # field (e.g. the retired ``strict``) would slip through — reject
-                # it here instead of silently dropping it.
-                if disallowed or request.model_extra:
+                if request.model_fields_set - _RUN_BY_NAME_FIELDS or request.model_extra:
                     raise HTTPException(
                         status_code=400,
                         detail=(
-                            "When 'name' is supplied for run-by-name, no other "
-                            "query fields may be set (only 'variables', 'dry_run', "
-                            "'explain' are allowed)."
+                            "When 'name' is supplied for run-by-name, put query clauses in "
+                            "'refine' (only 'variables', 'dry_run', 'explain' and 'refine' "
+                            "are allowed)."
                         ),
                     )
                 dry_run = bool(request.dry_run)
@@ -333,6 +326,12 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                     variables=request.variables or {},
                     dry_run=dry_run,
                     explain=explain,
+                    refine=request.refine,
+                )
+            elif "refine" in request.model_fields_set:
+                raise HTTPException(
+                    status_code=400,
+                    detail="'refine' requires 'name' (a saved query-backed model).",
                 )
             else:
                 # DEV-1866: a rootless query (no name, no source_model) is valid —

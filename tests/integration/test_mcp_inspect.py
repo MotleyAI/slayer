@@ -343,7 +343,7 @@ class TestInspectModelSectionGatingIntegration:
         assert "> Sections shown: columns." in result
         # ``learnings`` joined the omittable section list when DEV-1357
         # landed; ``reachable_fields`` was removed in DEV-1560.
-        assert "> Omitted: samples, learnings." in result
+        assert "> Omitted: samples, learnings, saved_queries." in result
 
     async def test_descriptions_max_chars_truncates_in_columns_table(self, env) -> None:
         """descriptions_max_chars trims long descriptions and appends the marker."""
