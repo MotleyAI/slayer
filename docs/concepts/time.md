@@ -48,7 +48,7 @@ A temporal operand is anything typed DATE or TIMESTAMP: a declared column (base,
 
 ## Granularity calls
 
-`gran(col)` — `month(created_at)`, `week(ts)`, … — is the time bucket of `col`, usable anywhere a row-level expression is: filters, aggregation sources (`count_distinct(month(created_at))`), computed dimensions and arithmetic. Compared with a time point it filters `col` exactly: `month(created_at) >= '2024-03-15'` means `created_at >= 2024-04-01`.
+`gran(col)` — `month(created_at)`, `week(ts)`, … — is the time bucket of the DATE / TIMESTAMP column `col`, usable anywhere a row-level expression is: filters, aggregation sources (`count_distinct(month(created_at))`), computed dimensions and arithmetic. Compared with a time point it filters `col` exactly: `month(created_at) >= '2024-03-15'` means `created_at >= 2024-04-01`.
 
 ## `date_range`
 

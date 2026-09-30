@@ -1283,27 +1283,29 @@ def _as_instant(node: Expression) -> Expression:
     return exp.Literal.string(f"{text} 00:00:00" if _DATE_ONLY_RE.fullmatch(text) else text)
 
 
-def _instantize_time_bounds(
-    conj: Expression, temporal_columns: AbstractSet[str],
-    *, strip_prefix: tuple[str, str] | None, alias_map: dict[str, str] | None,
-) -> Expression:
-    """Carry date-only literals compared with a DATE / TIMESTAMP column as midnight instants,
-    so the SLayer time-point reading of the translated filter keeps the SQL meaning."""
-    def temporal(node: Expression) -> bool:
-        return isinstance(node, exp.Column) and _column_to_dotted(
-            node, strip_prefix=strip_prefix, alias_map=alias_map,
-        ) in temporal_columns
+def _instantized_time_bound(node: Expression, temporal: Callable[[Expression], bool]) -> Expression | None:
+    """``node`` with its date-only literals as midnight instants when it is a time bound
+    (a DATE / TIMESTAMP column compared with a temporal literal); else ``None``."""
+    if isinstance(node, exp.Between) and temporal(node.this):
+        return exp.Between(this=node.this, low=_as_instant(node.args["low"]), high=_as_instant(node.args["high"]))
+    if type(node) in _TIME_BOUND_OPS:
+        if temporal(node.this) and _temporal_literal_text(node.expression) is not None:
+            return type(node)(this=node.this, expression=_as_instant(node.expression))
+        if temporal(node.expression) and _temporal_literal_text(node.this) is not None:
+            return type(node)(this=_as_instant(node.this), expression=node.expression)
+    return None
 
-    if isinstance(conj, exp.Between) and temporal(conj.this):
-        return exp.Between(
-            this=conj.this, low=_as_instant(conj.args["low"]), high=_as_instant(conj.args["high"]),
-        )
-    if type(conj) in _TIME_BOUND_OPS:
-        if temporal(conj.this) and _temporal_literal_text(conj.expression) is not None:
-            return type(conj)(this=conj.this, expression=_as_instant(conj.expression))
-        if temporal(conj.expression) and _temporal_literal_text(conj.this) is not None:
-            return type(conj)(this=_as_instant(conj.this), expression=conj.expression)
-    return conj
+
+def _expand_between(node: Expression) -> Expression:
+    """Every ``x BETWEEN lo AND hi`` as ``(x >= lo AND x <= hi)``: the filter DSL has no ``BETWEEN``."""
+    def expand(n: Expression) -> Expression:
+        if not isinstance(n, exp.Between):
+            return n
+        return exp.Paren(this=exp.And(
+            this=exp.GTE(this=n.this, expression=n.args["low"]),
+            expression=exp.LTE(this=n.this.copy(), expression=n.args["high"]),
+        ))
+    return node.transform(expand)
 
 
 def _classify_where_conjunct(
@@ -1329,9 +1331,12 @@ def _classify_where_conjunct(
     SlayerQuery.filters, not as the original 3-part-qualified form that
     the DSL parser would reject.
     """
-    instantized = _instantize_time_bounds(
-        conj, temporal_columns, strip_prefix=strip_prefix, alias_map=alias_map,
-    )
+    def temporal(node: Expression) -> bool:
+        return isinstance(node, exp.Column) and _column_to_dotted(
+            node, strip_prefix=strip_prefix, alias_map=alias_map,
+        ) in temporal_columns
+
+    instantized = conj.transform(lambda n: _instantized_time_bound(n, temporal) or n)
     if isinstance(instantized, exp.Between):
         lifted = _lift_time_between(
             instantized, time_dim_names, strip_prefix=strip_prefix, alias_map=alias_map,
@@ -1339,14 +1344,11 @@ def _classify_where_conjunct(
         if lifted is not None:
             return lifted, None
     normalised = _normalise_predicate_columns(
-        conj, strip_prefix=strip_prefix, alias_map=alias_map,
+        _expand_between(instantized), strip_prefix=strip_prefix, alias_map=alias_map,
     )
-    if instantized is not conj:
-        normalised_bound = _normalise_predicate_columns(
-            instantized, strip_prefix=strip_prefix, alias_map=alias_map,
-        )
-        op = _TIME_BOUND_OPS[type(normalised_bound)]
-        return None, f"{normalised_bound.this.sql()} {op} {normalised_bound.expression.sql()}"
+    op = _TIME_BOUND_OPS.get(type(normalised))
+    if op is not None and _instantized_time_bound(conj, temporal) is not None:
+        return None, f"{normalised.this.sql()} {op} {normalised.expression.sql()}"
     return None, _rewrite_neq(normalised.sql())
 
 

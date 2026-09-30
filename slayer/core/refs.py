@@ -172,16 +172,7 @@ def _value_key_display(key: Any) -> str:
             return f"'{key.value}'"
         return str(key.value)
     if isinstance(key, ArithmeticKey):
-        rendered = [_value_key_display(o) for o in key.operands]
-        if len(rendered) == 1:
-            return (
-                f"not {rendered[0]}" if key.op == "not"
-                else f"{key.op}{rendered[0]}"
-            )
-        return f" {key.op} ".join(
-            f"({r})" if isinstance(o, ArithmeticKey) else r
-            for o, r in zip(key.operands, rendered)
-        )
+        return _arithmetic_key_display(key)
     if isinstance(key, ScalarCallKey):
         args = ", ".join(_value_key_display(a) for a in key.args)
         return f"{key.name}({args})"
@@ -190,6 +181,16 @@ def _value_key_display(key: Any) -> str:
     if type(key) not in _LEGACY_KEY_SPELLINGS:
         return str(key)  # raw scalar arg (e.g. Decimal in nullif/round)
     return legacy_key_str(key)
+
+
+def _arithmetic_key_display(key: ArithmeticKey) -> str:
+    rendered = [_value_key_display(o) for o in key.operands]
+    if len(rendered) == 1:
+        return f"not {rendered[0]}" if key.op == "not" else f"{key.op}{rendered[0]}"
+    return f" {key.op} ".join(
+        f"({r})" if isinstance(o, ArithmeticKey) else r
+        for o, r in zip(key.operands, rendered)
+    )
 
 
 def expression_source_leaf(source: Any) -> str:

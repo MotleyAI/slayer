@@ -944,17 +944,20 @@ def _count_type(key: object, *, column_type: ColumnTypeFn) -> Optional[DataType]
     return None
 
 
+def _require_temporal(fn: str, operand: object, *, column_type: ColumnTypeFn) -> None:
+    if temporal_type(operand, column_type=column_type) is None:
+        raise DateOperandTypeError(
+            summary=f"{fn}() needs a DATE or TIMESTAMP operand; "
+            f"`{_operand_display(operand)}` is not one.",
+            suggestion="Pass a column declared DATE / TIMESTAMP (set Column.type), "
+            "min/max/first/last of one, a date function, now() / current_date(), "
+            "or an ISO literal such as '2024-01-31' or '2024-01-31 10:00:00'.",
+        )
+
+
 def _check_date_call(key: ScalarCallKey, *, column_type: ColumnTypeFn) -> None:
     for pos in DATE_OPERAND_ARGS[key.name]:
-        operand = key.args[pos]
-        if temporal_type(operand, column_type=column_type) is None:
-            raise DateOperandTypeError(
-                summary=f"{key.name}() needs a DATE or TIMESTAMP operand; "
-                f"`{_operand_display(operand)}` is not one.",
-                suggestion="Pass a column declared DATE / TIMESTAMP (set Column.type), "
-                "min/max/first/last of one, a date function, now() / current_date(), "
-                "or an ISO literal such as '2024-01-31' or '2024-01-31 10:00:00'.",
-            )
+        _require_temporal(key.name, key.args[pos], column_type=column_type)
     if key.name != "date_add":
         return
     count = key.args[DATE_ADD_COUNT_ARG]
@@ -967,11 +970,14 @@ def _check_date_call(key: ScalarCallKey, *, column_type: ColumnTypeFn) -> None:
 
 
 def check_date_operands(*, roots: Sequence[ValueKey], column_type: ColumnTypeFn) -> None:
-    """Every date-function operand must be DATE/TIMESTAMP and every ``date_add`` count numeric."""
-    for root in roots:
-        for key in walk_value_keys(root):
-            if isinstance(key, ScalarCallKey) and key.name in DATE_OPERAND_ARGS:
-                _check_date_call(key, column_type=column_type)
+    """Every date-function and ``gran(col)`` operand must be DATE/TIMESTAMP and every ``date_add`` count numeric."""
+    keys = [key for root in roots for key in walk_value_keys(root)]
+    for key in keys:  # innermost first: a ``gran(col)`` inside a date function names its column
+        if isinstance(key, TimeTruncKey):
+            _require_temporal(key.granularity, key.column, column_type=column_type)
+    for key in keys:
+        if isinstance(key, ScalarCallKey) and key.name in DATE_OPERAND_ARGS:
+            _check_date_call(key, column_type=column_type)
 
 
 _PLAIN_COMPARISON_OPS = frozenset({"==", "!=", "<", "<=", ">", ">="})

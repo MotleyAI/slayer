@@ -125,7 +125,7 @@ ROWS: Tuple[LedgerRow, ...] = (
          + AT + "time dimension …"
          + SUGGEST + "Request the same or a nesting-coarser granularity, or bucket the raw column instead.",
          category="checker", family="time-axis", user=True, owner="checker"),
-    _row(module=_EE, function="_check_date_call", exc="DateOperandTypeError",
+    _row(module=_EE, function="_require_temporal", exc="DateOperandTypeError",
          message="…() needs a DATE or TIMESTAMP operand; `…` is not one."
          + SUGGEST + "Pass a column declared DATE / TIMESTAMP (set Column.type), min/max/first/last of one, "
          "a date function, now() / current_date(), or an ISO literal such as '2024-01-31' or "

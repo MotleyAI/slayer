@@ -351,6 +351,23 @@ class TestGranularityCalls:
         got = await ids(engine, "date_diff('day', month(ts), ts) = 0")
         assert got == ids_where(lambda t: t.day == 1)
 
+    @pytest.mark.parametrize(("filt", "column"), [
+        ("month(code) = '2025-03'", "code"),
+        ("month(code) = month(ts)", "code"),
+        ("date_diff('day', month(raw_ts), ts) = 0", "raw_ts"),
+    ])
+    async def test_non_temporal_operand_rejected(self, engine, filt, column) -> None:
+        with pytest.raises(DateOperandTypeError) as ei:
+            await ids(engine, filt)
+        assert f"month() needs a DATE or TIMESTAMP operand; `{column}` is not one" in str(ei.value)
+
+    async def test_non_temporal_operand_rejected_in_measure(self, engine) -> None:
+        query = SlayerQuery.model_validate({
+            "source_model": "ev", "measures": [{"formula": "count_distinct(month(code))", "name": "m"}],
+        })
+        with pytest.raises(DateOperandTypeError):
+            await engine.execute(query)
+
     @pytest.mark.parametrize("filt", [
         "month() >= '2024-01-01'",
         "month(ts, d) >= '2024-01-01'",

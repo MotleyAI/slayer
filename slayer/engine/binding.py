@@ -6,7 +6,7 @@ from __future__ import annotations
 import difflib
 import os
 from decimal import Decimal
-from typing import Dict, List, Optional, Tuple, TypeGuard
+from typing import Dict, Final, List, Optional, Tuple, TypeGuard
 
 from pydantic import BaseModel, ConfigDict
 
@@ -407,7 +407,7 @@ def _bind(
             )
         # ``IN`` / ``NOT IN`` fold into a single ``InKey`` (structured
         # column + literal-tuple handle for the generator).
-        if parsed.op in ("in", "not in"):
+        if parsed.op in _MEMBERSHIP_OP:
             return _bind_in(
                 parsed,
                 scope=scope, bundle=bundle, in_filter=in_filter,
@@ -438,7 +438,8 @@ _OPERAND_LEFT_OP: Dict[str, TimePointOp] = {
     "==": "=", "!=": "!=", "<": "<", "<=": "<=", ">": ">", ">=": ">=",
 }
 _MIRRORED_OP: Dict[TimePointOp, TimePointOp] = {"=": "=", "!=": "!=", "<": ">", "<=": ">=", ">": "<", ">=": "<="}
-_MEMBERSHIP_OP: Dict[str, TimePointOp] = {"in": "in", "not in": "not in"}
+_NOT_IN: Final = "not in"
+_MEMBERSHIP_OP: Dict[str, TimePointOp] = {"in": "in", _NOT_IN: _NOT_IN}
 
 
 def _is_time_point_literal(node: ParsedExpr) -> TypeGuard[Literal]:
@@ -505,7 +506,7 @@ def _bind_in(
     return InKey(
         column=column,
         values=values,
-        negated=(parsed.op == "not in"),
+        negated=(parsed.op == _NOT_IN),
     )
 
 

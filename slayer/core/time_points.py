@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from datetime import date, datetime, timedelta
-from typing import Literal, Optional, Union
+from typing import Literal
 
 from pydantic import BaseModel
 
@@ -39,7 +39,7 @@ class Period(BaseModel, frozen=True):
     sub_day: bool = False
 
 
-TimePoint = Union[Instant, Period]
+TimePoint = Instant | Period
 
 
 class _Relative(BaseModel, frozen=True):
@@ -72,7 +72,7 @@ def _day_period(day: date) -> Period:
     return Period(start=start, next_start=start + timedelta(days=1))
 
 
-def _parse_literal(text: str) -> Optional[TimePoint]:
+def _parse_literal(text: str) -> TimePoint | None:
     """A period literal or an instant; ``None`` when ``text`` is neither or names no real period."""
     try:
         if m := _INSTANT_RE.fullmatch(text):
@@ -98,7 +98,7 @@ def _parse_literal(text: str) -> Optional[TimePoint]:
     return None
 
 
-def _parse_relative(text: str) -> Optional[_Relative]:
+def _parse_relative(text: str) -> _Relative | None:
     token = " ".join(text.lower().split())
     if token in _DAY_WORDS:
         return _Relative(kind="span", unit=TimeGranularity.DAY, offset=_DAY_WORDS[token])
@@ -116,7 +116,7 @@ def _parse_relative(text: str) -> Optional[_Relative]:
     return None
 
 
-def _parse(text: str) -> Optional[Union[TimePoint, _Relative]]:
+def _parse(text: str) -> TimePoint | _Relative | None:
     return _parse_literal(text.strip()) or _parse_relative(text)
 
 
@@ -130,7 +130,7 @@ def is_relative_token(text: str) -> bool:
     return isinstance(_parse(text), _Relative)
 
 
-def resolve_time_point(text: str, *, now: datetime) -> Optional[TimePoint]:
+def resolve_time_point(text: str, *, now: datetime) -> TimePoint | None:
     """``text`` as an ``Instant`` or a resolved ``Period`` against ``now``; ``None`` when not a time point."""
     parsed = _parse(text)
     if not isinstance(parsed, _Relative):
