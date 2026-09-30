@@ -1145,7 +1145,7 @@ class TestRest:
         client.post("/ingest", json={"datasource": "ds"})
 
         listed = {m["name"] for m in client.get("/models").json()}
-        assert listed == {"orders"}
+        assert listed == {"orders", "time_spine"}
 
 
 # ---------------------------------------------------------------------------

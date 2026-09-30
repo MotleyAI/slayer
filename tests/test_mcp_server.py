@@ -99,10 +99,11 @@ class TestModelsSummary:
         result = await _call(mcp_server, name="models_summary", arguments={"datasource_name": "nope"})
         assert "not found" in result
 
-    async def test_empty_when_datasource_has_no_models(self, mcp_server, storage: YAMLStorage) -> None:
+    async def test_only_the_spine_when_datasource_has_no_models(self, mcp_server, storage: YAMLStorage) -> None:
         await storage.save_datasource(DatasourceConfig(name="mydb", type="postgres", host="h"))
         result = await _call(mcp_server, name="models_summary", arguments={"datasource_name": "mydb"})
-        assert "has no models" in result
+        assert result.startswith("# Datasource: `mydb` — 1 model(s)")
+        assert "## `time_spine`" in result
 
     async def test_filters_by_datasource(self, mcp_server, storage: YAMLStorage) -> None:
         """Only models whose ``data_source`` matches the arg appear in the output."""
@@ -131,7 +132,7 @@ Column(name="revenue", sql="amount", description="USD", type=DataType.DOUBLE),
         result = await _call(mcp_server, name="models_summary", arguments={
             "datasource_name": "mydb", "compact": False,
         })
-        assert result.startswith("# Datasource: `mydb` — 1 model(s)")
+        assert result.startswith("# Datasource: `mydb` — 2 model(s)")
         assert "## `orders`" in result
         assert "Orders fact table." in result
         assert "**Columns (2):**" in result

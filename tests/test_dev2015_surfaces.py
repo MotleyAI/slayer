@@ -60,6 +60,19 @@ class TestSpineListedWithItsWiredModels:
                 assert model in text, (tool, model)
                 assert axis in text, (tool, model)
 
+    async def test_listing_marks_it_built_in_and_points_at_inspect(self) -> None:
+        storage = await _spine_storage(tempfile.mkdtemp())
+        server = create_mcp_server(storage=storage)
+        summary = await _call(server, name="models_summary", arguments={"datasource_name": "test"})
+        spine_block = summary[summary.index("## `time_spine`"):]
+        assert "Built-in virtual model" in spine_block
+        assert "inspect(reference='test.time_spine', entity_type='model')" in spine_block
+        assert "order_date" not in spine_block
+        detail = await _call(server, name="inspect", arguments={
+            "entity_type": "model", "reference": "test.time_spine", "compact": False,
+        })
+        assert "orders via order_date" in detail
+
     async def test_search_finds_the_spine(self) -> None:
         storage = await _spine_storage(tempfile.mkdtemp())
         response = await SearchService(storage=storage).search(question="time spine calendar", max_results=20)

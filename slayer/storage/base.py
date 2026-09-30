@@ -468,10 +468,13 @@ class StorageBackend(ABC):
                 data_source=model.data_source,
             )
 
-    async def builtin_models(self, data_source: str) -> list[SlayerModel]:
-        """The datasource's built-in models: the time spine (with its wiring), unless a stored model shadows it."""
+    async def builtin_models(self, data_source: str, *, detailed: bool = False) -> list[SlayerModel]:
+        """The datasource's built-in models (the time spine, unless a stored model shadows it);
+        ``detailed`` describes its wiring, else its description points at ``inspect``."""
         if await self.get_model(TIME_SPINE_MODEL, data_source=data_source) is not None:
             return []
+        if not detailed:
+            return [spine_model(data_source=data_source)]
         peers = [m for n in await self.list_models(data_source) if (m := await self.get_model(n, data_source=data_source))]
         return [spine_model(data_source=data_source, wired=peers)]
 
@@ -483,7 +486,7 @@ class StorageBackend(ABC):
         datasources = [data_source] if data_source is not None else await self.list_datasources()
         if len(datasources) != 1:
             return None
-        return next(iter(await self.builtin_models(datasources[0])), None)
+        return next(iter(await self.builtin_models(datasources[0], detailed=True)), None)
 
     @abstractmethod
     async def _save_model_impl(self, model: SlayerModel) -> None:

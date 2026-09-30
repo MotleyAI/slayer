@@ -13,17 +13,30 @@ TIME_SPINE_MODEL = "time_spine"
 TIME_SPINE_COLUMN = "timestamp"
 
 
-def spine_model(*, data_source: str, wired: Sequence[SlayerModel] = ()) -> SlayerModel:
+def spine_model(*, data_source: str, wired: Optional[Sequence[SlayerModel]] = None) -> SlayerModel:
     """The virtual ``time_spine`` model; never stored, its rows are rendered as a bucket series.
-    ``wired`` models are named in its description with their axes."""
-    axes = [f"{m.name} via {j.join_pairs[0][0]}" for m in wired if (j := axis_join(m)) is not None]
+    With ``wired`` (the datasource's models) its description is the full one naming each axis;
+    without, a listing summary pointing at it."""
+    status = (
+        f"Built-in virtual model (not stored; every datasource has one): every instant. Group by "
+        f"{TIME_SPINE_MODEL}.{TIME_SPINE_COLUMN} at a granularity to get every bucket in range, empty ones included."
+    )
+    if wired is None:
+        details = (
+            f" For the models wired to it and its rules: "
+            f"inspect(reference='{data_source}.{TIME_SPINE_MODEL}', entity_type='model')."
+        )
+    else:
+        axes = [f"{m.name} via {j.join_pairs[0][0]}" for m in wired if (j := axis_join(m)) is not None]
+        details = (
+            " Needs a lower bound (a date_range or a >= filter on the timestamp); the upper bound defaults to "
+            "the current bucket. Each model is attributed through its axis — its default_time_dimension, "
+            "else its only date/time column; it has no countable rows, and coalesce(<measure>, 0) fills empty "
+            "buckets." + (f" Wired: {', '.join(axes)}." if axes else " No model is wired to it yet.")
+        )
     return SlayerModel(
         name=TIME_SPINE_MODEL, data_source=data_source, sql_table=TIME_SPINE_MODEL,
-        description=(
-            "Built-in time spine: every instant. Group by time_spine.timestamp at a granularity "
-            "(with a lower bound) to get every bucket in range, each fact attributed through its axis."
-            + (f" Wired: {', '.join(axes)}." if axes else "")
-        ),
+        description=status + details,
         columns=[Column(name=TIME_SPINE_COLUMN, type=DataType.TIMESTAMP, primary_key=True)],
     )
 

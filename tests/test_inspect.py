@@ -1163,7 +1163,7 @@ class TestDatasourceCompactFalseSkeletons:
         assert p["description"] == "Primary analytics warehouse."
         assert "text" not in p
         names = [m["name"] for m in p["models"]]
-        assert names == ["customers", "orders"]   # sorted by name
+        assert names == ["customers", "orders", "time_spine"]   # sorted by name
         orders = next(m for m in p["models"] if m["name"] == "orders")
         assert orders["canonical_id"] == "mydb.orders"
         assert orders["column_names"] == ["id", "amount", "customer_id", "big"]
@@ -1205,7 +1205,7 @@ class TestDatasourceCompactFalseSkeletons:
             reference="emptyds", entity_type="datasource",
             format="json", compact=False,
         )
-        assert json.loads(outj)["models"] == []
+        assert [m["name"] for m in json.loads(outj)["models"]] == ["time_spine"]
         outmd = await svc.inspect(
             reference="emptyds", entity_type="datasource", compact=False,
         )
