@@ -57,6 +57,7 @@ QueryInput = (
     | str
 )
 Refinement = QueryRefinement | Mapping[str, Any] | None
+Variables = Mapping[str, Any] | None
 
 
 class SlayerClient:
@@ -129,10 +130,22 @@ class SlayerClient:
         )
 
     @staticmethod
+    def _dump_stage(*, index: int, item: Any) -> dict[str, Any]:
+        if isinstance(item, SlayerQuery):
+            return item.model_dump(mode="json", exclude_none=True)
+        if isinstance(item, ABCMapping):
+            return SlayerClient._validated_dump(item)
+        raise TypeError(
+            f"query[{index}] must be SlayerQuery or Mapping; got "
+            f"{type(item).__name__}"
+        )
+
+    @staticmethod
     def _build_query_body(
         query: QueryInput,
         *,
         refine: Refinement = None,
+        variables: Variables = None,
         dry_run: bool = False,
         explain: bool = False,
     ) -> dict[str, Any]:
@@ -150,20 +163,10 @@ class SlayerClient:
             query, (bytes, bytearray)
         ):
             # bytes are Sequences too; route them to the else-branch below.
-            serialised: list[dict[str, Any]] = []
-            for i, item in enumerate(query):
-                if isinstance(item, SlayerQuery):
-                    serialised.append(
-                        item.model_dump(mode="json", exclude_none=True)
-                    )
-                elif isinstance(item, ABCMapping):
-                    serialised.append(SlayerClient._validated_dump(item))
-                else:
-                    raise TypeError(
-                        f"query[{i}] must be SlayerQuery or Mapping; got "
-                        f"{type(item).__name__}"
-                    )
-            body = {"queries": serialised}
+            body = {"queries": [
+                SlayerClient._dump_stage(index=i, item=item)
+                for i, item in enumerate(query)
+            ]}
         elif isinstance(query, ABCMapping):
             body = SlayerClient._validated_dump(query)
         else:
@@ -171,6 +174,9 @@ class SlayerClient:
                 "query must be SlayerQuery, Mapping, Sequence, or str; got "
                 f"{type(query).__name__}"
             )
+        if variables:
+            # Runtime wins over a single query's own ``variables``, as in ``engine.execute``.
+            body["variables"] = {**body.get("variables", {}), **variables}
         if dry_run:
             body["dry_run"] = True
         if explain:
@@ -199,6 +205,10 @@ class SlayerClient:
     @staticmethod
     def _normalize_refine(refine: Refinement) -> QueryRefinement | dict | None:
         return dict(refine) if isinstance(refine, ABCMapping) else refine
+
+    @staticmethod
+    def _normalize_variables(variables: Variables) -> dict[str, Any] | None:
+        return dict(variables) if variables else None
 
     @staticmethod
     def _parse_response(result: dict) -> SlayerResponse:
@@ -233,33 +243,40 @@ class SlayerClient:
         query: QueryInput,
         *,
         refine: Refinement = None,
+        variables: Variables = None,
         dry_run: bool = False,
         explain: bool = False,
     ) -> SlayerResponse:
         """Execute a query. Accepts ``SlayerQuery`` / ``dict`` / list-DAG /
-        ``str`` (run-by-name, optionally ``refine``-d) — the same union as ``engine.execute``."""
+        ``str`` (run-by-name, optionally ``refine``-d) — the same union as ``engine.execute``;
+        ``variables`` are runtime placeholder values."""
         if self._engine is not None:
             return await self._engine.execute(
                 query=self._normalize_for_engine(query),
+                variables=self._normalize_variables(variables),
                 dry_run=dry_run,
                 explain=explain,
                 refine=self._normalize_refine(refine),
             )
         body = self._build_query_body(
-            query, refine=refine, dry_run=dry_run, explain=explain
+            query, refine=refine, variables=variables, dry_run=dry_run, explain=explain
         )
         result = await self._request(method="POST", path="/query", json=body)
         return self._parse_response(result)
 
-    async def sql(self, query: QueryInput, *, refine: Refinement = None) -> str:
+    async def sql(
+        self, query: QueryInput, *, refine: Refinement = None, variables: Variables = None,
+    ) -> str:
         """Generate SQL for a query without executing it (same input union)."""
-        sql = (await self.query(query=query, refine=refine, dry_run=True)).sql
+        sql = (await self.query(query=query, refine=refine, variables=variables, dry_run=True)).sql
         assert sql is not None  # a dry run always renders SQL
         return sql
 
-    async def explain(self, query: QueryInput, *, refine: Refinement = None) -> SlayerResponse:
+    async def explain(
+        self, query: QueryInput, *, refine: Refinement = None, variables: Variables = None,
+    ) -> SlayerResponse:
         """Run EXPLAIN ANALYZE on a query (same input union)."""
-        return await self.query(query=query, refine=refine, explain=True)
+        return await self.query(query=query, refine=refine, variables=variables, explain=True)
 
     async def list_models(self, data_source: str | None = None) -> list[str]:
         if self._storage is not None:
@@ -490,32 +507,38 @@ class SlayerClient:
         query: QueryInput,
         *,
         refine: Refinement = None,
+        variables: Variables = None,
         dry_run: bool = False,
         explain: bool = False,
     ) -> SlayerResponse:
-        """Execute a query synchronously (same input union as ``query``)."""
+        """Execute a query synchronously (same arguments as ``query``)."""
         if self._engine is not None:
             return self._engine.execute_sync(
                 query=self._normalize_for_engine(query),
+                variables=self._normalize_variables(variables),
                 dry_run=dry_run,
                 explain=explain,
                 refine=self._normalize_refine(refine),
             )
         body = self._build_query_body(
-            query, refine=refine, dry_run=dry_run, explain=explain
+            query, refine=refine, variables=variables, dry_run=dry_run, explain=explain
         )
         result = self._request_sync(method="POST", path="/query", json=body)
         return self._parse_response(result)
 
-    def sql_sync(self, query: QueryInput, *, refine: Refinement = None) -> str:
+    def sql_sync(
+        self, query: QueryInput, *, refine: Refinement = None, variables: Variables = None,
+    ) -> str:
         """Generate SQL synchronously (same input union)."""
-        sql = self.query_sync(query=query, refine=refine, dry_run=True).sql
+        sql = self.query_sync(query=query, refine=refine, variables=variables, dry_run=True).sql
         assert sql is not None  # a dry run always renders SQL
         return sql
 
-    def explain_sync(self, query: QueryInput, *, refine: Refinement = None) -> SlayerResponse:
+    def explain_sync(
+        self, query: QueryInput, *, refine: Refinement = None, variables: Variables = None,
+    ) -> SlayerResponse:
         """Run EXPLAIN ANALYZE synchronously (same input union)."""
-        return self.query_sync(query=query, refine=refine, explain=True)
+        return self.query_sync(query=query, refine=refine, variables=variables, explain=True)
 
     def inspect_sync(
         self,
@@ -584,13 +607,13 @@ class SlayerClient:
             items, data_source=data_source, root_hint=root_hint
         ))
 
-    def query_df(self, query: QueryInput, *, refine: Refinement = None):
+    def query_df(self, query: QueryInput, *, refine: Refinement = None, variables: Variables = None):
         """Execute a query and return a pandas DataFrame (sync; same input union)."""
         try:
             import pandas as pd  # ALLOW(import-not-top): heavy optional dep, only this method needs it
         except ImportError as e:
             raise ImportError("DataFrame support requires pandas: pip install motley-slayer[client]") from e
-        result = self.query_sync(query=query, refine=refine)
+        result = self.query_sync(query=query, refine=refine, variables=variables)
         return pd.DataFrame(result.data)
 
     def list_models_sync(self) -> list[str]:

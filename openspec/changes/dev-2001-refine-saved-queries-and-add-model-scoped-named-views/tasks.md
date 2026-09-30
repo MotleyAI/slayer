@@ -25,6 +25,7 @@
 - [x] 4.3 CLI `--refine JSON|@file`; CLI tests pass
 - [x] 4.4 Client `refine=None` on `query`, `query_sync`, `sql`, `explain`, `query_df` (and their sync twins); client tests pass
 - [x] 4.5 Inspect reverse-index helper, `saved_queries` section registration, full/compact/skeleton rendering; 1.6 passes
+- [x] 4.6 Client `variables=` on `query`, `query_sync`, `sql`, `explain`, `query_df` (and their sync twins), in-process and over HTTP (runtime wins over a single query's own `variables`); `data_source` stays on DEV-1438; client tests pass
 
 ## 5. Docs and architecture
 

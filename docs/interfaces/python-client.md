@@ -57,6 +57,8 @@ df = client.query_df(query)
 - A **list of dicts or `SlayerQuery`** — a multi-stage DAG. Earlier stages are named sub-queries; the last entry is the root. Order doesn't matter (the engine auto-sorts). See [Query Lists](../concepts/queries.md#query-lists).
 - A **string** — runs the backing query of a query-backed model by name.
 
+Each also takes `variables=` — runtime values for `{placeholders}`, overriding saved defaults.
+
 ```python
 # Multi-stage DAG
 client.query_sync([
@@ -67,6 +69,7 @@ client.query_sync([
 # Run-by-name (query-backed model), optionally refined
 client.query_sync("rev_by_region")
 client.query_sync("rev_by_region", refine={"dimensions": ["status"]})
+client.query_sync("rev_by_status", variables={"status": "refunded"})
 ```
 
 ### Other Methods
