@@ -412,8 +412,7 @@ def _assert_attach_covers_producer_grain(
     if joined_slot_ids != producer_grain_slot_ids:
         raise ValueError(
             "Regroup attach join keys do not match the producer's grouping grain; "
-            "the join must cover the complete grain or it changes cardinality "
-            "(DEV-1824)."
+            "the join must cover the complete grain or it changes cardinality."
         )
 
 

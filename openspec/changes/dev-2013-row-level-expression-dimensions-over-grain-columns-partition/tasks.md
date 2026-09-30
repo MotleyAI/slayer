@@ -66,11 +66,11 @@ exact name — the arc42 tags point at it). Verify: each new test fails on the p
   `_home_determines_grain_member` over the combinator — verify 1.3, 1.7
 - [x] 2.4 Public total `key_display` in `slayer/core/refs.py`; `dotted_key_display` falls
   back to it — verify 1.9
-- [ ] 2.5 Diagnostic display map (first declared name, else `key_display`) at every
+- [x] 2.5 Diagnostic display map (first declared name, else `key_display`) at every
   user-facing site in `stages.py`; `_regroup_grain_name` internal-only; witness-derived
   broadcast reason — verify 1.4, 1.5, 1.6. Existing tests asserting old spellings/reasons:
   list them for user OK before any expected-string update
-- [ ] 2.6 Remove non-forward issue references and now-unused imports in touched code;
+- [x] 2.6 Remove non-forward issue references and now-unused imports in touched code;
   `poetry run ruff check slayer/ tests/` clean
 
 ## 3. Docs, architecture, gates

@@ -301,7 +301,7 @@ def key_display(key: ValueKey) -> str:
     if isinstance(key, ColumnSqlKey):
         return ".".join((*key.path, key.column_name))
     if isinstance(key, TimeTruncKey):
-        return f"{key_display(key.column)} ({key.granularity})"
+        return f"{key.granularity}({key_display(key.column)})"
     if isinstance(key, StarKey):
         return ".".join((*key.path, "*"))
     if isinstance(key, LiteralKey):
