@@ -79,8 +79,8 @@ exact name — the arc42 tags point at it). Verify: each new test fails on the p
   is a row-level expression over fields the operand grain determines (`city == 'Alpha'`
   over `[city, region]` cells) partitions the cells exactly." before "An outer dimension
   not determined by…"
-- [ ] 3.2 `architecture/semantics.arc42.md` (approved tag-only edits): append
+- [x] 3.2 `architecture/semantics.arc42.md` (approved tag-only edits): append
   `[enforced: test:tests/test_dev2013_expression_attribution.py]` to Axiom 2's tag list and
   to Axiom 7 — verify `la-arch-check` green
-- [ ] 3.3 Full unit suite (`poetry run pytest -m "not integration"`), integration suite with
+- [x] 3.3 Full unit suite (`poetry run pytest -m "not integration"`), integration suite with
   the CI invocation, `poetry run basedpyright` no new errors vs baseline, lint clean

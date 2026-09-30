@@ -92,6 +92,7 @@ is the coercion from coarser to finer.
    [enforced: test:tests/test_dev1945_ranking_key_safety.py]
    [enforced: test:tests/test_dev1931_default_home.py]
    [enforced: test:tests/test_dev1908_default_cancellation.py]
+   [enforced: test:tests/test_dev2013_expression_attribution.py]
 3. **Association**: any join path — to-one or not — defines which rows belong
    together; everything that crosses a non-determining path is defined in terms
    of it. [review] Association is derivable from forward join declarations
@@ -129,6 +130,7 @@ is the coercion from coarser to finer.
    home dataset determines it — the cells then partition the home rows and sum
    to the total (spec: `queries/semantics` › Attribution by determination).
    [enforced: test:tests/test_dev1836_producer_execution.py]
+   [enforced: test:tests/test_dev2013_expression_attribution.py]
 8. **Mode axis**: an unattributable dimension resolves per the query-level
    `to_many_handling` mode — broadcast (the default: the value repeats across
    the dimension's cells, with a self-announcing warning; spec:
