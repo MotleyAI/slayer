@@ -2,20 +2,18 @@
 on SQLite + DuckDB against ``tests/_dev1846_fixtures.py`` (every expectation
 hand-computed there). Covers the lifted shapes, the ``ValueError`` typing
 contract for still-unsupported inputs, the uniform fail-closed gate, and the
-planner ``_iter_slot_deps`` recursion (bottom). A top-level ``BETWEEN`` is not
-reachable via the Mode-B DSL, so it is covered structurally rather than
-end-to-end.
+planner ``_iter_slot_deps`` recursion (bottom), covered structurally.
 """
 
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal
 
 import pytest
 
 from slayer.core.keys import (
     ArithmeticKey,
-    BetweenKey,
     ColumnKey,
     InKey,
     LiteralKey,
@@ -418,9 +416,10 @@ class TestIterSlotDepsRecursion:
     STATUS = ColumnKey(path=(), leaf="status")
     QTY = ColumnKey(path=(), leaf="qty")
     INK = InKey(column=STATUS, values=(LiteralKey(value="a"), LiteralKey(value="b")))
-    BET = BetweenKey(
-        column=QTY, low=LiteralKey(value=Decimal(1)), high=LiteralKey(value=Decimal(10)),
-    )
+    BOUND = ArithmeticKey(op="and", operands=(
+        ArithmeticKey(op=">=", operands=(QTY, LiteralKey(value=date(2024, 1, 1)))),
+        ArithmeticKey(op="<", operands=(QTY, LiteralKey(value=date(2025, 1, 1)))),
+    ))
     _ONE = LiteralKey(value=Decimal(1))
     _ZERO = LiteralKey(value=Decimal(0))
 
@@ -430,21 +429,21 @@ class TestIterSlotDepsRecursion:
     def test_top_level_in_surfaces_column(self) -> None:
         assert self.STATUS in self._deps(self.INK)
 
-    def test_top_level_between_surfaces_column(self) -> None:
-        assert self.QTY in self._deps(self.BET)
+    def test_top_level_bound_surfaces_column(self) -> None:
+        assert self.QTY in self._deps(self.BOUND)
 
     def test_in_nested_under_scalar_call_surfaces_column(self) -> None:
         key = ScalarCallKey(name="iif", args=(self.INK, self._ONE, self._ZERO))
         assert self.STATUS in self._deps(key)
 
-    def test_between_nested_under_scalar_call_surfaces_column(self) -> None:
-        key = ScalarCallKey(name="iif", args=(self.BET, self._ONE, self._ZERO))
+    def test_bound_nested_under_scalar_call_surfaces_column(self) -> None:
+        key = ScalarCallKey(name="iif", args=(self.BOUND, self._ONE, self._ZERO))
         assert self.QTY in self._deps(key)
 
     def test_in_nested_under_arithmetic_surfaces_column(self) -> None:
         key = ArithmeticKey(op="and", operands=(self.INK, self.INK))
         assert self.STATUS in self._deps(key)
 
-    def test_between_nested_under_arithmetic_surfaces_column(self) -> None:
-        key = ArithmeticKey(op="and", operands=(self.BET, self.BET))
+    def test_bound_nested_under_arithmetic_surfaces_column(self) -> None:
+        key = ArithmeticKey(op="or", operands=(self.BOUND, self.BOUND))
         assert self.QTY in self._deps(key)

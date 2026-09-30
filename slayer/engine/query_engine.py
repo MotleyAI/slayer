@@ -8,7 +8,8 @@ import copy
 import decimal
 import logging
 import warnings as _warnings_module
-from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
+from datetime import datetime
+from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Tuple
 
 import sqlalchemy as sa
 from sqlglot import exp
@@ -71,6 +72,8 @@ from slayer.core.warnings import (
     BroadcastGrainWarningPayload,
     NormalizationWarning,
     SemiJoinPushedWarningPayload,
+    SlayerWholePeriodsWarning,
+    WholePeriodsNonNestingWarningPayload,
 )
 from slayer.core.recommend import (
     CandidateCoverage,
@@ -494,6 +497,8 @@ def _emit_python_warnings(response) -> None:
                 ),
                 stacklevel=3,
             )
+        elif isinstance(w, WholePeriodsNonNestingWarningPayload):
+            _warnings_module.warn(SlayerWholePeriodsWarning(w), stacklevel=3)
 
 
 class SlayerResponse(BaseModel):
@@ -583,6 +588,19 @@ class _Rendered(BaseModel):
     population_inferred: bool = False
 
 
+def _granularity_conflict_warnings(
+    *, planned_list, labels: List[str],
+) -> List[WholePeriodsNonNestingWarningPayload]:
+    """One payload per non-nesting ``whole_periods_only`` granularity pair, per stage."""
+    return [
+        WholePeriodsNonNestingWarningPayload(
+            column=c.column, granularities=[g.value for g in c.granularities], location=location,
+        )
+        for planned, location in zip(planned_list, labels)
+        for c in planned.granularity_conflicts
+    ]
+
+
 def _plan_label(*, planned: PlannedQuery, index: int, root: Optional[SlayerQuery]) -> str:
     """A planned stage's user-facing pointer (``root`` given for the root plan)."""
     if root is not None:
@@ -618,8 +636,11 @@ class SlayerQueryEngine:
         *,
         policy: Optional[SessionPolicy] = None,
         cache_config: Optional[CacheConfig] = None,
+        clock: Callable[[], datetime] = datetime.now,
     ):
         self.storage = storage
+        # Read once per execution; relative time points resolve against it.
+        self._clock = clock
         # Per-engine, opt-in query result cache (defaults to cache-indefinitely).
         self._cache = QueryCache(config=cache_config or CacheConfig())
         # Keyed so same-name Snowflake datasources (differing warehouse/role) get distinct clients.
@@ -984,9 +1005,6 @@ class SlayerQueryEngine:
             for name, q in named_queries.items()
         }
 
-        if query.whole_periods_only:
-            query = query.snap_to_whole_periods()
-
         # Build the resolved bundle once — the only storage consult; the binder
         # then reads from the bundle purely.
         bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
@@ -998,6 +1016,7 @@ class SlayerQueryEngine:
             stage_displays=stage_displays,
             splice_chain=splice_chain,
             dry_run_placeholders=dry_run_placeholders,
+            now=self._clock(),
         )
         # ``build_resolved_source_bundle`` raises if unresolved, so it's populated.
         model = bundle.source_model
@@ -1121,6 +1140,7 @@ class SlayerQueryEngine:
         warnings.extend(_collect_associated_warnings(planned_list=plans, labels=labels))
         warnings.extend(_collect_semi_join_pushed_warnings(planned_list=plans, labels=labels))
         warnings.extend(_collect_degenerate_warnings(planned_list=plans, labels=labels))
+        warnings.extend(_granularity_conflict_warnings(planned_list=plans, labels=labels))
         warnings.extend(stale_spelling_warnings(list(dict.fromkeys([
             *(s for p in plans for s in p.stale_spellings), *render_stale_spellings,
         ]))))
@@ -1744,6 +1764,7 @@ class SlayerQueryEngine:
                 data_source=model.data_source or None,
                 runtime_variables={},
                 named_queries={},
+                now=self._clock(),
             )
             dialect = self._dialect_for_type(datasource.type)
             bundle = bundle.model_copy(update={"dialect": dialect})

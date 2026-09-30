@@ -70,10 +70,12 @@ def plan_query(
         stage_schemas=stage_schemas,
         prebound=prebound,
     )
-    return compile_query(
+    planned = compile_query(
         elaborated=elaborated,
         producer_registry=producer_registry,
     )
+    conflicts = elaborated.prebound.granularity_conflicts
+    return planned.model_copy(update={"granularity_conflicts": conflicts}) if conflicts else planned
 
 
 def _stage_scope_and_bundle(

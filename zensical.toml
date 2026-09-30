@@ -29,6 +29,7 @@ nav = [
     { "Models" = "concepts/models.md" },
     { "Queries" = "concepts/queries.md" },
     { "Formulas" = "concepts/formulas.md" },
+    { "Time" = "concepts/time.md" },
     { "References (SQL vs DSL)" = "concepts/references.md" },
     { "Auto-Ingestion" = "concepts/ingestion.md" },
     { "Schema Drift" = "concepts/schema-drift.md" },

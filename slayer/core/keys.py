@@ -6,7 +6,6 @@ the same slot. Keys carry only what's needed to decide "are these the same slot?
 
 from __future__ import annotations
 
-import re
 from datetime import date, datetime
 from decimal import Decimal
 from enum import IntEnum
@@ -46,6 +45,7 @@ from slayer.core.enums import (
     TimeGranularity,
 )
 from slayer.core.format import NumberFormat
+from slayer.core.time_points import parse_temporal_value
 
 
 # Regroup-consumed aggregates are substituted by a ColumnKey with this leaf
@@ -396,7 +396,7 @@ class LiteralKey(_LeafKey, frozen=True):
 # the source may itself be an ``AggregateKey`` (or a composite of them — carried
 # by the Arithmetic/ScalarCall operands, which already admit any ValueKey).
 _AggregateSource = Union[
-    ColumnKey, ColumnSqlKey, StarKey,
+    ColumnKey, ColumnSqlKey, StarKey, TimeTruncKey,
     "ArithmeticKey", "ScalarCallKey", "LiteralKey", "AggregateKey", "TransformKey",
 ]
 # Positional and kwarg arg values share one union: `last(created_at)` binds an
@@ -671,40 +671,39 @@ class ScalarCallKey(_FrozenKey, frozen=True):
         )
 
 
-class BetweenKey(_FrozenKey, frozen=True):
-    """Typed identity for a ``col BETWEEN low AND high`` predicate.
+TimePointOp = Literal["=", "!=", "<", "<=", ">", ">=", "in", "not in"]
 
-    The planner uses this to mark where ``BETWEEN`` is the right legacy-parity
-    rendering (today only ``TimeDimension.date_range``). User DSL filters never
-    produce it — ``col >= a and col <= b`` stays ``ArithmeticKey``. Phase is
-    the max of child phases (P8); the renderer emits ``exp.Between``.
+
+class TimePointCmpKey(_FrozenKey, frozen=True):
+    """Transient ``operand <op> '<point>'`` against a time-point string, resolved away by the checker before planning.
+
+    ``op`` is operand-left; a literal-left spelling is stored mirrored with ``literal_on_left`` set.
     """
 
-    column: "ValueKey"
-    low: "ValueKey"
-    high: "ValueKey"
+    op: TimePointOp
+    operand: "ValueKey"
+    point: str
+    literal_on_left: bool = False
 
     @property
     def phase(self) -> Phase:
-        return max(c.phase for c in self.children())
+        return self.operand.phase
 
     def children(self) -> Tuple["ValueKey", ...]:
-        return (self.column, self.low, self.high)
+        return (self.operand,)
 
     def map_children(
         self, fn: Callable[["ValueKey"], "ValueKey"],
-    ) -> "BetweenKey":
+    ) -> "TimePointCmpKey":
         m = _ChildMapper(fn)
-        update = {
-            "column": m(self.column), "low": m(self.low), "high": m(self.high),
-        }
-        return self.model_copy(update=update) if m.changed else self
+        operand = m(self.operand)
+        return self.model_copy(update={"operand": operand}) if m.changed else self
 
 
 class InKey(_FrozenKey, frozen=True):
     """Typed identity for a ``col IN (lit, …)`` / ``NOT IN`` predicate.
 
-    Modelled on ``BetweenKey``: a column LHS and a fixed tuple of ``LiteralKey``
+    A column LHS and a fixed tuple of ``LiteralKey``
     RHS operands (LiteralKey so equality is type-stable). ``negated`` flips IN vs
     NOT IN. Phase is the max of child phases (P8); the renderer emits
     ``exp.In`` (wrapped in ``exp.Not``).
@@ -756,7 +755,7 @@ ValueKey = Union[
     TransformKey,
     ArithmeticKey,
     ScalarCallKey,
-    BetweenKey,
+    TimePointCmpKey,
     InKey,
     SqlFragmentKey,
 ]
@@ -863,7 +862,7 @@ class Grain(BaseModel):
 TransformKey.model_rebuild()
 ArithmeticKey.model_rebuild()
 ScalarCallKey.model_rebuild()
-BetweenKey.model_rebuild()
+TimePointCmpKey.model_rebuild()
 InKey.model_rebuild()
 TimeTruncKey.model_rebuild()
 # AggregateKey.source forward-references the expression composites.
@@ -899,7 +898,7 @@ KIND_POLICY: dict[type, KindPolicy] = {
     TransformKey: KindPolicy(slottable=True, materialised_order=True),
     ArithmeticKey: KindPolicy(slot_composite=True, materialised_order=True),
     ScalarCallKey: KindPolicy(slot_composite=True, materialised_order=True),
-    BetweenKey: KindPolicy(slot_composite=True),
+    TimePointCmpKey: KindPolicy(),
     InKey: KindPolicy(slot_composite=True, materialised_order=True),
     SqlFragmentKey: KindPolicy(),
 }
@@ -1173,8 +1172,6 @@ def join_conditional_branch_types(
 
 
 TEMPORAL_TYPES = frozenset({DataType.DATE, DataType.TIMESTAMP})
-_ISO_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
-_ISO_TIMESTAMP_RE = re.compile(r"\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}")
 # Aggregations whose value is one of their inputs, so they keep a temporal type.
 _TEMPORAL_PRESERVING_AGGS = frozenset({"min", "max", "first", "last"})
 # Scalars returning one of their value arguments: name → value-argument positions (None = all).
@@ -1192,15 +1189,17 @@ def value_arg_positions(name: str, argc: int) -> Tuple[int, ...]:
     return tuple(range(argc)) if positions is None else tuple(i for i in positions if i < argc)
 
 
-def parse_iso_temporal(text: str) -> date | datetime | None:
-    """``YYYY-MM-DD`` as a date, ``YYYY-MM-DD HH:MM:SS`` (space or ``T``) as a datetime; ``None`` otherwise."""
-    shape = _ISO_DATE_RE.fullmatch(text) or _ISO_TIMESTAMP_RE.fullmatch(text)
-    if shape is None:
-        return None
-    try:
-        return date.fromisoformat(text) if len(text) == 10 else datetime.fromisoformat(text)
-    except ValueError:
-        return None
+def type_date_values(key: object) -> Any:
+    """``key`` with ISO string literals in date-value position — itself, or a conditional's
+    value arguments, recursively — typed as ``date`` / ``datetime`` literals."""
+    if isinstance(key, LiteralKey) and isinstance(key.value, str):
+        value = parse_temporal_value(key.value)
+        return key if value is None else LiteralKey(value=value)
+    if isinstance(key, ScalarCallKey):
+        positions = value_arg_positions(key.name, len(key.args))
+        args = tuple(type_date_values(a) if i in positions else a for i, a in enumerate(key.args))
+        return key.model_copy(update={"args": args}) if args != key.args else key
+    return key
 
 
 def _is_null_arg(arg: object) -> bool:
@@ -1216,6 +1215,8 @@ def temporal_type(key: object, *, column_type: ColumnTypeFn) -> Optional[DataTyp
     if isinstance(key, (ColumnKey, ColumnSqlKey)):
         t = column_type(key)
         return t if t in TEMPORAL_TYPES else None
+    if isinstance(key, TimeTruncKey):
+        return temporal_type(key.column, column_type=column_type)
     if isinstance(key, LiteralKey):
         key = key.value
     if isinstance(key, datetime):
@@ -1331,14 +1332,14 @@ BOOL_CONNECTIVE_OPS = frozenset({"and", "or", "not"})
 
 def is_boolean_shaped(key: "ValueKey") -> bool:
     """Whether ``key`` renders as a SQL predicate (truth value) rather than a
-    numeric/text value: a comparison, a null test, BETWEEN, IN, or an
-    ``and`` / ``or`` / ``not`` connective."""
+    numeric/text value: a comparison, a null test, IN, or an ``and`` /
+    ``or`` / ``not`` connective."""
     if isinstance(key, ArithmeticKey):
         return (
             key.op in PREDICATE_COMPARISON_OPS
             or key.op in BOOL_CONNECTIVE_OPS
         )
-    return isinstance(key, (BetweenKey, InKey))
+    return isinstance(key, (TimePointCmpKey, InKey))
 
 
 def split_top_level_and(vk: ValueKey) -> List[ValueKey]:

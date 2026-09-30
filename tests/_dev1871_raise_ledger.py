@@ -57,6 +57,9 @@ AT = "\n  at "
 SUGGEST = "\n  suggestion: "
 
 ROWS: Tuple[LedgerRow, ...] = (
+    _row(module=_CI, function="compile_query", exc="RuntimeError",
+         message="An unresolved time-point comparison reached compilation.",
+         category="internal", family="internal", user=False, owner="compiler"),
     _row(module=_CI, function="compile_query", exc="ValueError",
          message="compile_query needs an environment produced by elaborate_query (its compile inputs are unset).",
          category="internal", family="internal", user=False, owner="compiler"),
@@ -113,11 +116,6 @@ ROWS: Tuple[LedgerRow, ...] = (
          + AT + "order item …"
          + SUGGEST + "…",
          category="checker", family="positions", user=True, owner="checker"),
-    _row(module=_EE, function="check_time_dimension_date_range", exc="TimeAxisError",
-         message="The date_range has a null bound (…); a null bound cannot be expressed as a range."
-         + AT + "time dimension …"
-         + SUGGEST + "Use a one-sided filter (e.g. '>=' / '<=') instead.",
-         category="checker", family="time-axis", user=True, owner="checker"),
     _row(module=_EE, function="check_time_dimension_column", exc="TimeDimensionColumnError",
          message="A time dimension must reference a temporal column (DATE / TIMESTAMP); got column type …."
          + AT + "time dimension …",
@@ -127,7 +125,7 @@ ROWS: Tuple[LedgerRow, ...] = (
          + AT + "time dimension …"
          + SUGGEST + "Request the same or a nesting-coarser granularity, or bucket the raw column instead.",
          category="checker", family="time-axis", user=True, owner="checker"),
-    _row(module=_EE, function="_check_date_call", exc="DateOperandTypeError",
+    _row(module=_EE, function="_require_temporal", exc="DateOperandTypeError",
          message="…() needs a DATE or TIMESTAMP operand; `…` is not one."
          + SUGGEST + "Pass a column declared DATE / TIMESTAMP (set Column.type), min/max/first/last of one, "
          "a date function, now() / current_date(), or an ISO literal such as '2024-01-31' or "
@@ -136,6 +134,20 @@ ROWS: Tuple[LedgerRow, ...] = (
     _row(module=_EE, function="_check_date_call", exc="DateOperandTypeError",
          message="date_add() count `…` is not numeric."
          + SUGGEST + "Pass an integer, or a numeric column or expression (it is truncated toward zero).",
+         category="checker", family="date-operand", user=True, owner="checker"),
+    _row(module=_EE, function="_raise_not_a_time_point", exc="TimeLiteralError",
+         message="'…' is not a time point."
+         + AT + "comparison with `…`"
+         + SUGGEST + "Write ….",
+         category="checker", family="time-literal", user=True, owner="checker"),
+    _row(module=_EE, function="_raise_sub_day", exc="TimeLiteralError",
+         message="`…` has day resolution (DATE), so the sub-day time point '…' cannot bound it."
+         + SUGGEST + "Use a day-or-coarser time point, or compare a TIMESTAMP column.",
+         category="checker", family="time-literal", user=True, owner="checker"),
+    _row(module=_EE, function="_non_temporal_comparison", exc="DateOperandTypeError",
+         message="'…' is a time point, but `…` is not a DATE or TIMESTAMP operand."
+         + SUGGEST + "Declare the column's type as DATE or TIMESTAMP (set Column.type), "
+         "or compare it with a plain value.",
          category="checker", family="date-operand", user=True, owner="checker"),
     _row(module=_EE, function="check_time_transforms_resolved", exc="TimeAxisError",
          message="The transform requires an unambiguous time dimension."

@@ -35,8 +35,10 @@ from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import SUB_DAY_GRANULARITIES, DataType, DatePart, TimeGranularity
 from slayer.sql.dialects.base import (
+    COMPARISON_NODES,
     DottedAliasManglingMixin,
     SqlDialect,
+    TemporalComparisonOp,
     _digest,
     iso_text,
 )
@@ -196,6 +198,12 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
 
     def build_current_timestamp(self) -> Expression:
         return exp.CurrentTimestamp()
+
+    def build_temporal_comparison(
+        self, *, op: TemporalComparisonOp, operand: Expression, value: date,
+    ) -> Expression:
+        """ISO text coerces to the operand's own type (DATE, DATETIME or TIMESTAMP)."""
+        return COMPARISON_NODES[op](this=operand, expression=exp.Literal.string(iso_text(value)))
 
     _EXTRACT_FIELDS: ClassVar[dict[DatePart, str]] = {
         **SqlDialect._EXTRACT_FIELDS,

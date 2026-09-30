@@ -17,7 +17,7 @@ A `SlayerQuery` specifies what data to retrieve from a model.
 | `order` | list[OrderItem] | No | Sort specifications |
 | `limit` | int | No | Maximum rows to return |
 | `offset` | int | No | Number of rows to skip |
-| `whole_periods_only` | bool | No | Snap date filters to time bucket boundaries, exclude the current incomplete time bucket |
+| `whole_periods_only` | bool | No | Snap time bounds to bucket boundaries and exclude the current incomplete bucket — see [Time](time.md#whole_periods_only) |
 | `to_many_handling` | str | No | How an aggregate resolves query dimensions [unattributable from its root](#cross-model-measures): `broadcast` (default; repeat the safe-grain value across the cells and warn), `associate` (per-cell value over the distinct associated entities), or `error` (refuse). Semi-join-pushed filters are always applied and never error; the retired `strict` flag is rejected with this remedy. |
 
 You can pass a single query or a **list of queries** to `execute()`. When passing a list, earlier queries are named sub-queries that later queries can reference. The last query in the list is the main one whose results are returned. See [Query Lists](#query-lists) for examples.
@@ -189,9 +189,7 @@ A downstream stage of a multi-stage query may declare a time dimension on any DA
 
 `week` is Monday-anchored (ISO-8601); `week_sunday` is Sunday-anchored (weeks start Sunday, end Saturday) for tools that use Sunday weeks. Both are model granularities you set on a `TimeDimension` — `week_sunday` is the SLayer value, not a wire keyword sent by a BI tool.
 
-`date_range` must be exactly two non-null string bounds and filters inclusively (`[start, end]`); a one-sided range isn't expressible here, so use an explicit comparator filter (`"created_at >= '2024-01-01'"`) for an open-ended bound.
-
-`date_range` and an equivalent explicit filter (`"created_at >= '2024-01-01' and created_at <= '2024-12-31'"`) are interchangeable — including for trailing-window measures and `time_shift`, which still read rows from before the range so the earliest bucket isn't short-changed. See [Time bounds do not clip the window](formulas.md#time-bounds-do-not-clip-the-window) for exactly which predicates count as a time bound.
+`date_range` is one time point (`"2025-Q1"`, `"last month"`) or a `[lower, upper]` pair with either bound `null`, read with the [time-point semantics](time.md#date_range) — so a date-only upper bound covers its whole day.
 
 ## OrderItem
 
@@ -261,7 +259,7 @@ Query results are returned as a `SlayerResponse`:
 | `row_count` | int | Number of rows |
 | `sql` | string | The generated SQL (useful for debugging) |
 | `attributes` | ResponseAttributes | Field metadata split by type: `attributes.dimensions` and `attributes.measures`, each a dict of column alias → FieldMetadata (label, format) |
-| `warnings` | list[SlayerWarning] | Advisories, discriminated by `kind`: input normalizations (`"normalization"`), a [cross-model measure broadcast](#cross-model-measures) (`"broadcast"` — `measure`, `location`, and per-dimension `dimensions[].reason`), a distinct-entity attribution over an unattributable dimension (`"associated"` — `measure`, `location`, `dimensions`; cells overlap and are not additive), a semi-join-pushed filter (`"semi_join_pushed"` — `measure` (`null` for a population-level push), `location`, `filter_text`), and a query run without its statement timeout (`"statement_timeout_skipped"` — `datasource`, `timeout_seconds`, `reason`: `readonly_user` or `timeout_rejected`) |
+| `warnings` | list[SlayerWarning] | Advisories, discriminated by `kind`: input normalizations (`"normalization"`), a [cross-model measure broadcast](#cross-model-measures) (`"broadcast"` — `measure`, `location`, and per-dimension `dimensions[].reason`), a distinct-entity attribution over an unattributable dimension (`"associated"` — `measure`, `location`, `dimensions`; cells overlap and are not additive), a semi-join-pushed filter (`"semi_join_pushed"` — `measure` (`null` for a population-level push), `location`, `filter_text`), a query run without its statement timeout (`"statement_timeout_skipped"` — `datasource`, `timeout_seconds`, `reason`: `readonly_user` or `timeout_rejected`), and [`whole_periods_only`](time.md#whole_periods_only) over non-nesting granularities (`"whole_periods_non_nesting"` — `column`, `granularities`, `location`) |
 
 `columns` — and the key order of each row in `data` — follows the order you
 declared fields in the query: dimensions, then time dimensions, then measures,
@@ -321,6 +319,10 @@ Filter formulas define conditions for the query. They go in the `filters` parame
 The right-hand side of `in` / `not in` must be a non-empty tuple of literal
 values (strings, numbers, or booleans) — references and expressions on the
 RHS are not supported. Both `(...)` and `[...]` syntax are accepted.
+
+A string compared with a DATE / TIMESTAMP expression is a [time point](time.md#time-points):
+`"created_at >= 'last month'"`, `"created_at in '2025-Q1'"` and `"month(created_at) = '2025-03'"`
+all work, and a date-only string means the whole day.
 
 ### Boolean Logic
 

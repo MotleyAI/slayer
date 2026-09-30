@@ -39,7 +39,7 @@ DATA_START_DATE = "2023-01-01"
 DATA_END_DATE = "2024-12-31"
 
 # Typical query date range (subset of data range, ~7 months)
-QUERY_DATE_RANGE = ["2024-06-01", "2024-12-31"]
+QUERY_DATE_RANGE: list[str | None] = ["2024-06-01", "2024-12-31"]
 
 # ---------------------------------------------------------------------------
 # Database indexes — applied after seeding for realistic query performance

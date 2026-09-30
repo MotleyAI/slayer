@@ -112,12 +112,12 @@ claude mcp list
 | `measures` | list | Aggregated values: column-aggregations, arithmetic, transforms. E.g. `["count(*)", {"formula": "sum(revenue) / count(*)", "name": "aov", "label": "Average Order Value"}, "cumsum(sum(revenue))"]`. Each entry has an optional `label` for human-readable display. Supports nesting: `"change(cumsum(sum(revenue)))"`. Bare names resolve to saved `ModelMeasure` formulas on the model. |
 | `dimensions` | list | Dimension names, e.g. `["status"]`. When using the engine directly, dimensions accept an optional `label` via `{"name": "status", "label": "Order Status"}`. |
 | `filters` | list[str] | Filter formula strings, e.g. `["status = 'active'", "amount > 100"]`. Supports operators (`=`, `<>`, `>`, `>=`, `<`, `<=`, `IN`, `IS NULL`, `IS NOT NULL`, `LIKE`, `NOT LIKE`), boolean logic (`AND`, `OR`, `NOT`), and inline transform expressions (`"change(revenue) > 0"`). Filters on measures are automatically routed to HAVING. |
-| `time_dimensions` | list[dict] | Time grouping. Each entry supports an optional `label` for display. |
+| `time_dimensions` | list[dict] | Time grouping. Each entry supports an optional `label` for display and a [`date_range`](../concepts/time.md#date_range): one time point or a `[lower, upper]` pair. |
 | `main_time_dimension` | string | Name of the time dimension transforms (`change` / `lag` / …) key off, overriding auto-detection when a query has multiple time dimensions. |
 | `order` | list[dict] | Sorting, e.g. `[{"column": "count", "direction": "desc"}]` |
 | `limit` | int | Max rows, trusted verbatim; without it the response is capped at 20 rows with a truncation notice |
 | `offset` | int | Skip rows |
-| `whole_periods_only` | bool | Snap date filters to time bucket boundaries, exclude the current incomplete time bucket |
+| `whole_periods_only` | bool | Snap time bounds to bucket boundaries and exclude the current incomplete bucket — see [Time](../concepts/time.md#whole_periods_only) |
 | `distinct_dimension_values` | bool | Default `true` — auto-dedup dim-only queries (`GROUP BY <dim/td aliases>`). Set `false` to emit raw rows (no top-level `GROUP BY`); rejects any measure reference in `measures` / `filters` / `order`. |
 | `to_many_handling` | str | Default `"broadcast"` — how an aggregate resolves query dimensions [unattributable from its root](../concepts/queries.md#cross-model-measures): `broadcast` (repeat and warn), `associate` (per-cell value over the distinct associated entities), or `error` (refuse). A query-object field; the retired `strict` flag is rejected with this remedy. |
 | `variables` | dict | Per-stage `{var}` values, scoped to this stage; overridden by the top-level `variables` arg (see precedence above). |

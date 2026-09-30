@@ -19,7 +19,7 @@ class SlayerWarning(BaseModel):
 
 
 class NormalizationWarning(SlayerWarning):
-    """One slack-normalization event — a rewrite or a report-only advisory (``rewritten=False``, e.g. ``MALFORMED_DATE_RANGE``). ``rule_id`` names the rule; ``location`` points into the input."""
+    """One slack-normalization event — a rewrite or a report-only advisory (``rewritten=False``). ``rule_id`` names the rule; ``location`` points into the input."""
 
     kind: Literal["normalization"] = "normalization"
     rule_id: str
@@ -27,7 +27,7 @@ class NormalizationWarning(SlayerWarning):
     normalized: str
     location: str
     rule_doc_url: Optional[str] = None
-    # Report-only rules (MALFORMED_DATE_RANGE): the message must not claim a
+    # Report-only rules: the message must not claim a
     # transform that never happened.
     rewritten: bool = True
 
@@ -165,6 +165,25 @@ class StatementTimeoutSkippedWarning(SlayerWarning):
         return f"{head}: the database rejected the timeout statement"
 
 
+class WholePeriodsNonNestingWarningPayload(SlayerWarning):
+    """``whole_periods_only`` over time dimensions on one ``column`` whose ``granularities`` do not nest into each other."""
+
+    kind: Literal["whole_periods_non_nesting"] = "whole_periods_non_nesting"
+    column: str
+    granularities: list[str]
+    location: str
+    hint: str = (
+        "whole_periods_only snaps to the earlier bucket boundary, so edge buckets of "
+        "one granularity may be partial"
+    )
+
+    def human_message(self) -> str:
+        return (
+            f"granularities {' and '.join(self.granularities)} on {self.column!r} "
+            f"(at {self.location}) do not nest — {self.hint}"
+        )
+
+
 # Discriminated union, not the bare base: a ``List[SlayerWarning]`` would validate
 # down to the base type and drop subclass fields. Keyed on ``kind``, each round-trips.
 AnySlayerWarning = Annotated[
@@ -176,6 +195,7 @@ AnySlayerWarning = Annotated[
         SemiJoinPushedWarningPayload,
         ResponseTruncationWarning,
         StatementTimeoutSkippedWarning,
+        WholePeriodsNonNestingWarningPayload,
     ],
     Field(discriminator="kind"),
 ]
@@ -186,6 +206,17 @@ class SlayerNormalizationWarning(UserWarning):
 
     def __init__(self, payload: NormalizationWarning) -> None:
         super().__init__(payload)  # arg mirrors param; __str__ is the one wording (pytest-xdist degrades to str() for the unserializable payload)
+        self.payload = payload
+
+    def __str__(self) -> str:
+        return self.payload.human_message()
+
+
+class SlayerWholePeriodsWarning(UserWarning):
+    """Carrier ``UserWarning`` for a ``WholePeriodsNonNestingWarningPayload`` — one wording on both channels."""
+
+    def __init__(self, payload: WholePeriodsNonNestingWarningPayload) -> None:
+        super().__init__(payload)
         self.payload = payload
 
     def __str__(self) -> str:

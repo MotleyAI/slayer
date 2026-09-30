@@ -1,7 +1,6 @@
 """Query models for SLayer — the user-facing ``SlayerQuery`` and its helpers."""
 from __future__ import annotations
 
-import datetime
 import logging
 import math
 import re
@@ -20,7 +19,7 @@ from pydantic import (
     model_validator,
 )
 
-from slayer.core.enums import BUILTIN_AGGREGATIONS, TimeGranularity, normalize_aggregation_name
+from slayer.core.enums import BUILTIN_AGGREGATIONS, GRANULARITY_NAMES, TimeGranularity, normalize_aggregation_name
 from slayer.core.errors import DistinctDimensionValuesError, GranularityCallError
 from slayer.core.models import (
     Column,
@@ -30,6 +29,7 @@ from slayer.core.models import (
     _validate_model_name,
 )
 from slayer.core.refs import auto_name_from_expression
+from slayer.core.time_points import TIME_POINT_FORMS, is_time_point
 from slayer.engine.syntax import AggCall, DottedRef, Ref, parse_expr, walk_parsed_refs
 from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
 from slayer.storage.migrations import CURRENT_VERSIONS, migrate as _migrate_schema
@@ -39,7 +39,6 @@ logger = logging.getLogger(__name__)
 _NAME_PATTERN = re.compile(r"^[a-zA-Z_]\w*$", re.ASCII)
 _VAR_PATTERN = re.compile(r"\{\{|\}\}|\{([a-zA-Z_]\w*)\}|\{([^}]*)\}", re.ASCII)
 
-_GRANULARITY_VALUES = frozenset(g.value for g in TimeGranularity)
 # Leading callee of a whole-string single call ``name( ... )``; used only when
 # ``parse_expr`` rejects the shape (e.g. ``month()``) but the callee still names a
 # granularity, so the wrong-shape error can fire.
@@ -72,17 +71,13 @@ def _time_dimension_from_functional(entry: str) -> dict | None:
     else:
         m = _WHOLE_CALL_RE.match(entry)
         callee = m.group(1) if m else None
-    if callee is None or callee.lower() not in _GRANULARITY_VALUES:
+    if callee is None or callee.lower() not in GRANULARITY_NAMES:
         return None
     if isinstance(node, AggCall) and not node.args and not node.kwargs:
         col = _single_col_of_source(node)
         if col is not None:
             return {"dimension": col, "granularity": callee.lower()}
-    raise GranularityCallError(
-        f"Granularity call {entry!r} must be a single column reference "
-        f"``gran(col)`` (e.g. ``month(created_at)``) for one of: "
-        f"{_granularity_names()}."
-    )
+    raise GranularityCallError.wrong_shape(entry)
 
 
 def granularity_call_parts(entry: str) -> tuple[str, str] | None:
@@ -113,7 +108,7 @@ def _reject_unknown_dimension_call(entry: str) -> None:
     # Normalize aliases (stddev→stddev_samp, variance→var_samp, …) so a bare
     # builtin-alias aggregate keeps its binding-time ``partition_by=`` error.
     if (
-        node.agg.lower() in _GRANULARITY_VALUES
+        node.agg.lower() in GRANULARITY_NAMES
         or normalize_aggregation_name(node.agg) in BUILTIN_AGGREGATIONS
     ):
         return
@@ -734,14 +729,43 @@ def _is_direction(value: Any) -> bool:
     return isinstance(value, str) and value.strip().lower() in _DIRECTION_NORMALIZE
 
 
+def _coerce_date_range(value: Any) -> Any:
+    """A single time-point string is a one-element range."""
+    return [value] if isinstance(value, str) else value
+
+
+def _advertise_string_date_range(schema: dict[str, Any]) -> None:
+    """Advertise the single-string ``date_range`` form the before-validator accepts."""
+    schema["anyOf"] = [{"type": "string"}, *schema.get("anyOf", [])]
+
+
+def _date_range_problem(date_range: list[str | None]) -> str | None:
+    if not 1 <= len(date_range) <= 2:
+        return "must be one time point or a [lower, upper] pair"
+    if all(bound is None for bound in date_range):
+        return "needs at least one non-null bound"
+    bad = next((b for b in date_range if b is not None and not is_time_point(b)), None)
+    return None if bad is None else f"has {bad!r}, which is not {TIME_POINT_FORMS}"
+
+
 class TimeDimension(BaseModel):
-    """Group-by on ``dimension`` truncated to ``granularity``; optional ``date_range`` [start, end] (ISO dates)."""
+    """Group-by on ``dimension`` truncated to ``granularity``; optional ``date_range``: one time point or a ``[lower, upper]`` pair (either may be null)."""
     dimension: Annotated[ColumnRef, BeforeValidator(_coerce_column_ref)] = Field(
         validation_alias=AliasChoices("dimension", "column"),
     )
     granularity: TimeGranularity
-    date_range: list[str] | None = None
+    date_range: Annotated[list[str | None] | None, BeforeValidator(_coerce_date_range)] = Field(
+        default=None, json_schema_extra=_advertise_string_date_range,
+    )
     label: str | None = None
+
+    @model_validator(mode="after")
+    def _check_date_range(self) -> "TimeDimension":
+        if self.date_range is not None and (problem := _date_range_problem(self.date_range)):
+            raise ValueError(
+                f"time dimension {self.dimension.full_name!r}: date_range {self.date_range!r} {problem}."
+            )
+        return self
 
 
 def _advertise_string_time_dimensions(schema: dict[str, Any]) -> None:
@@ -1189,24 +1213,6 @@ class SlayerQuery(BaseModel):
                 "are no columns to SELECT.",
                 suggestion="Add the columns you want to project.",
             )
-
-    def snap_to_whole_periods(self) -> "SlayerQuery":
-        """When ``whole_periods_only``, add a filter per time dimension excluding the current incomplete period."""
-        if not self.whole_periods_only or not self.time_dimensions:
-            return self
-
-        filters = list(self.filters or [])
-        for td in self.time_dimensions:
-            gran = td.granularity
-            dim_name = td.dimension.name
-
-            has_filter = any(dim_name in f for f in filters)
-            if not has_filter:
-                today = datetime.date.today()
-                prev_end = gran.period_end(gran.period_start(today) - datetime.timedelta(days=1))
-                filters.append(f"{dim_name} <= '{prev_end.isoformat()}'")
-
-        return self.model_copy(update={"filters": filters, "whole_periods_only": False})
 
     @property
     def source_model_name(self) -> str | None:

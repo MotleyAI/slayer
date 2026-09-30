@@ -38,7 +38,7 @@ from slayer.core.errors import (
     QueryBackedCycleError,
 )
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
-from slayer.core.keys import BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, SLOT_COMPOSITE_KINDS, TEMPORAL_TYPES, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, ColumnTypeFn, InKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimeTruncKey, TransformKey, column_leaf, column_path, date_add_type, is_boolean_shaped, parameter_row_leaves, shift_offset_of, source_anchor_path, substitute_value_keys, temporal_type, walk_value_keys
+from slayer.core.keys import BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, SLOT_COMPOSITE_KINDS, TEMPORAL_TYPES, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, ColumnKey, ColumnSqlKey, ColumnTypeFn, InKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimeTruncKey, TransformKey, column_leaf, column_path, date_add_type, is_boolean_shaped, parameter_row_leaves, shift_offset_of, source_anchor_path, substitute_value_keys, temporal_type, walk_value_keys
 from slayer.core.join_walker import aggregation_owner, model_column_type, physical_join_pairs, resolve_hop, terminal_model
 from slayer.core.models import VALUE_PLACEHOLDER, aggregation_definition, rendered_formula, reserved_value_param_message
 from slayer.core.refs import (
@@ -649,7 +649,7 @@ _STRING_VALUED_SCALARS = frozenset({
 # Real ValueKey args (a ScalarCallKey / iif may also carry raw scalar literals).
 _COMPOUND_VALUE_KEYS = (
     ColumnKey, ColumnSqlKey, TimeTruncKey, StarKey,
-    AggregateKey, TransformKey, ArithmeticKey, ScalarCallKey, BetweenKey, InKey,
+    AggregateKey, TransformKey, ArithmeticKey, ScalarCallKey, InKey,
 )
 
 
@@ -699,14 +699,6 @@ def _walk_cp_scalar_call(*, op: str, key) -> None:
             _walk_cp_predicate(op=op, key=a, expect="value")
 
 
-def _cp_value_operands(key) -> list:
-    """Value-position sub-keys of a BETWEEN / IN predicate (its column, bounds,
-    and IN set) — each must be value-shaped, never a nested boolean."""
-    if isinstance(key, BetweenKey):
-        return [key.column, key.low, key.high]
-    return [key.column, *key.values]  # InKey
-
-
 def _walk_cp_predicate(*, op: str, key, expect: str) -> None:
     """Recursively check the boolean-vs-value contract. ``expect`` is 'bool'
     (must be boolean-shaped), 'value' (must not be), or 'either' (predicate top
@@ -720,8 +712,8 @@ def _walk_cp_predicate(*, op: str, key, expect: str) -> None:
             _walk_cp_predicate(op=op, key=o, expect=child_expect)
     elif isinstance(key, ScalarCallKey):
         _walk_cp_scalar_call(op=op, key=key)
-    elif isinstance(key, (BetweenKey, InKey)):
-        for sub in _cp_value_operands(key):
+    elif isinstance(key, InKey):
+        for sub in (key.column, *key.values):
             _walk_cp_predicate(op=op, key=sub, expect="value")
 
 
@@ -5502,10 +5494,6 @@ class SQLGenerator:
             elif isinstance(k, ScalarCallKey):
                 for a in k.args:
                     _walk(a)
-            elif isinstance(k, BetweenKey):
-                _walk(k.column)
-                _walk(k.low)
-                _walk(k.high)
             elif isinstance(k, InKey):
                 _walk(k.column)
 

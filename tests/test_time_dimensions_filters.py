@@ -11,25 +11,22 @@ Two pieces:
 
 2. ``plan_query`` converts each ``TimeDimension.date_range = [start,
    end]`` into a row-phase ``BoundFilter`` on the bare underlying
-   column (``column >= start AND column <= end``, matching legacy
-   ``BETWEEN start AND end`` semantics). The filter binds against the
-   raw ``ColumnKey``, NOT the ``TimeTruncKey`` — so the generator slice
-   7b.11 can render the shifted self-join CTE on raw data while the
-   outer projection applies the date filter.
-
-``snap_to_whole_periods`` ownership stays with
-``SlayerQuery.snap_to_whole_periods`` (already called pre-normalization
-in ``query_engine._execute_pipeline``); the planner consumes already-
-snapped queries and never re-snaps.
+   column (``column >= start(start) AND column < next_start(end)``). The
+   filter binds against the raw ``ColumnKey``, NOT the ``TimeTruncKey`` —
+   so the shifted self-join CTE reads raw data while the outer projection
+   applies the date filter.
 """
 
 from __future__ import annotations
 
+from datetime import date, datetime
+
+import pydantic
 import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.errors import AmbiguousReferenceError, UnknownReferenceError
-from slayer.core.keys import ArithmeticKey, BetweenKey, ColumnKey, LiteralKey, Phase, walk_value_keys
+from slayer.core.keys import ArithmeticKey, ColumnKey, LiteralKey, Phase, walk_value_keys
 from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.ir.source_bundle import ResolvedSourceBundle
@@ -441,26 +438,24 @@ def _plan_filters(planned):
     return _lower_positions(planned).filters
 
 
-def _find_date_range_filter_on(*, planned, leaf: str) -> BetweenKey:
-    """Find the auto-generated date_range filter for a given column leaf.
-
-    The planner emits exactly one filter per TD with a date_range; its
-    top-level shape is ``BetweenKey(column=ColumnKey, low=LiteralKey,
-    high=LiteralKey)`` (DEV-1450 stage 7b.9 — closes the parity gap
-    with legacy ``BETWEEN``).
-    """
+def _find_date_range_filter_on(*, planned, leaf: str) -> tuple[ArithmeticKey, ArithmeticKey]:
+    """The ``(>= lower, < upper)`` comparisons of the one date_range filter on ``leaf``."""
     for f in _plan_filters(planned):
         if f.expression is None:
             continue
         key = f.expression.value_key
+        if not (isinstance(key, ArithmeticKey) and key.op == "and" and len(key.operands) == 2):
+            continue
+        lower, upper = key.operands
         if (
-            isinstance(key, BetweenKey)
-            and isinstance(key.column, ColumnKey)
-            and key.column.leaf == leaf
+            isinstance(lower, ArithmeticKey) and isinstance(upper, ArithmeticKey)
+            and (lower.op, upper.op) == (">=", "<")
+            and isinstance(lower.operands[0], ColumnKey) and lower.operands[0].leaf == leaf
+            and upper.operands[0] == lower.operands[0]
         ):
-            return key
+            return lower, upper
     raise AssertionError(
-        f"no BetweenKey filter found over column {leaf!r}; "
+        f"no date_range bound pair found over column {leaf!r}; "
         f"filters present: "
         f"{[type(f.expression.value_key).__name__ if f.expression else None for f in _plan_filters(planned)]}"
     )
@@ -479,17 +474,28 @@ class TestDateRangeFilter:
             ],
         )
         planned = plan_query(query=q, bundle=_bundle_local())
-        bk = _find_date_range_filter_on(planned=planned, leaf="created_at")
-        # The BetweenKey targets the BARE underlying column, not the
-        # TimeTruncKey — so generator slice 7b.11 can apply the filter on
-        # the outer projection while the shifted self-join CTE reads raw.
-        assert bk.column == ColumnKey(path=(), leaf="created_at")
-        # Literal bounds match the date_range strings verbatim — they
-        # flow through ``normalize_scalar`` which leaves strings alone.
-        assert isinstance(bk.low, LiteralKey)
-        assert bk.low.value == "2024-01-01"
-        assert isinstance(bk.high, LiteralKey)
-        assert bk.high.value == "2024-03-01"
+        lower, upper = _find_date_range_filter_on(planned=planned, leaf="created_at")
+        # The bound targets the BARE underlying column, not the TimeTruncKey.
+        assert lower.operands[0] == ColumnKey(path=(), leaf="created_at")
+        # TIMESTAMP operand: datetime literals; the day-period upper bound is exclusive.
+        assert lower.operands[1] == LiteralKey(value=datetime(2024, 1, 1))
+        assert upper.operands[1] == LiteralKey(value=datetime(2024, 3, 2))
+
+    def test_date_operand_gets_date_literals(self) -> None:
+        q = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[
+                TimeDimension(
+                    dimension=ColumnRef(name="reviewed_at"),
+                    granularity=TimeGranularity.MONTH,
+                    date_range=["2024-01-01", "2024-03"],
+                ),
+            ],
+        )
+        planned = plan_query(query=q, bundle=_bundle_local())
+        lower, upper = _find_date_range_filter_on(planned=planned, leaf="reviewed_at")
+        assert lower.operands[1] == LiteralKey(value=date(2024, 1, 1))
+        assert upper.operands[1] == LiteralKey(value=date(2024, 4, 1))
 
     def test_date_range_filter_is_row_phase(self) -> None:
         q = SlayerQuery(
@@ -532,12 +538,12 @@ class TestDateRangeFilter:
             ],
         )
         planned = plan_query(query=q, bundle=_bundle_joined())
-        bk = _find_date_range_filter_on(
+        lower, _upper = _find_date_range_filter_on(
             planned=planned, leaf="signed_up_at",
         )
         # Joined TD: path carries the join hop on the underlying column.
         expected_col = ColumnKey(path=("customers",), leaf="signed_up_at")
-        assert bk.column == expected_col
+        assert lower.operands[0] == expected_col
 
     def test_user_filter_and_date_range_coexist(self) -> None:
         # A user-supplied filter and the auto-generated date_range filter
@@ -560,10 +566,11 @@ class TestDateRangeFilter:
             f for f in _plan_filters(planned) if f.phase == Phase.ROW
         ]
         assert len(row_filters) == 2
-        # date_range filter first (BetweenKey shape).
+        # date_range filter first (the half-open pair).
         first = row_filters[0]
         assert first.expression is not None
-        assert isinstance(first.expression.value_key, BetweenKey)
+        assert isinstance(first.expression.value_key, ArithmeticKey)
+        assert first.expression.value_key.op == "and"
         # user filter last (ArithmeticKey > 0 shape).
         last = row_filters[-1]
         assert last.expression is not None
@@ -603,23 +610,16 @@ class TestDateRangeFilter:
         )
         assert and_created is not and_reviewed
 
-    def test_malformed_date_range_empty_emits_no_filter(self) -> None:
-        # Legacy: `if td.date_range and len(td.date_range) == 2` —
-        # malformed entries silently no-op. Match that.
-        q = SlayerQuery(
-            source_model="orders",
-            time_dimensions=[
-                TimeDimension(
-                    dimension=ColumnRef(name="created_at"),
-                    granularity=TimeGranularity.MONTH,
-                    date_range=[],
-                ),
-            ],
-        )
-        planned = plan_query(query=q, bundle=_bundle_local())
-        assert _plan_filters(planned) == []
+    def test_empty_date_range_is_rejected_at_construction(self) -> None:
+        dimension = ColumnRef(name="created_at")
+        with pytest.raises(pydantic.ValidationError):
+            TimeDimension(
+                dimension=dimension,
+                granularity=TimeGranularity.MONTH,
+                date_range=[],
+            )
 
-    def test_malformed_date_range_single_element_emits_no_filter(self) -> None:
+    def test_single_element_date_range_emits_one_period_filter(self) -> None:
         q = SlayerQuery(
             source_model="orders",
             time_dimensions=[
@@ -631,7 +631,8 @@ class TestDateRangeFilter:
             ],
         )
         planned = plan_query(query=q, bundle=_bundle_local())
-        assert _plan_filters(planned) == []
+        [fp] = _plan_filters(planned)
+        assert fp.phase == Phase.ROW
 
     def test_date_range_filter_carries_expression(self) -> None:
         # The lowered entry's expression payload must be populated so the
@@ -650,7 +651,7 @@ class TestDateRangeFilter:
         assert len(_plan_filters(planned)) == 1
         fp = _plan_filters(planned)[0]
         assert fp.expression is not None
-        assert isinstance(fp.expression.value_key, BetweenKey)
+        assert isinstance(fp.expression.value_key, ArithmeticKey)
 
 
 # ---------------------------------------------------------------------------

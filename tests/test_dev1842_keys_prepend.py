@@ -24,13 +24,13 @@ from slayer.core import keys as K
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
-    BetweenKey,
     ColumnKey,
     ColumnSqlKey,
     InKey,
     LiteralKey,
     ScalarCallKey,
     StarKey,
+    TimePointCmpKey,
     TimeTruncKey,
     TransformKey,
     ValueKey,
@@ -68,9 +68,8 @@ def _samples() -> dict:
         ScalarCallKey: ScalarCallKey(
             name="coalesce", args=(ColumnKey(path=(), leaf="tier"),),
         ),
-        BetweenKey: BetweenKey(
-            column=ColumnKey(path=(), leaf="signup_at"),
-            low=LiteralKey(value="a"), high=LiteralKey(value="b"),
+        TimePointCmpKey: TimePointCmpKey(
+            op=">=", operand=ColumnKey(path=(), leaf="signup_at"), point="2025-Q1",
         ),
         InKey: InKey(
             column=ColumnKey(path=(), leaf="tier"),
@@ -185,14 +184,13 @@ class TestPrependCompositeKinds:
         assert out.partition_keys == Grain.of({ColumnKey(path=("customers",), leaf="tier")})
         assert out.time_key.column == ColumnKey(path=("customers",), leaf="signup_at")
 
-    def test_arithmetic_scalarcall_between_in(self) -> None:
+    def test_arithmetic_scalarcall_time_point_in(self) -> None:
         out = K.prepend_value_key(
             ArithmeticKey(op="/", operands=(
                 ScalarCallKey(name="coalesce", args=(
                     InKey(column=ColumnKey(path=(), leaf="tier"),
                           values=(LiteralKey(value="gold"),)),
-                    BetweenKey(column=ColumnKey(path=(), leaf="signup_at"),
-                               low=LiteralKey(value="a"), high=LiteralKey(value="b")),
+                    TimePointCmpKey(op=">=", operand=ColumnKey(path=(), leaf="signup_at"), point="2025-Q1"),
                 )),
                 ColumnKey(path=("regions",), leaf="pop"),
             )),
@@ -201,11 +199,11 @@ class TestPrependCompositeKinds:
         call, col = out.operands
         assert col == ColumnKey(path=("customers", "regions"), leaf="pop")
         assert isinstance(call, ScalarCallKey)
-        in_key, between = call.args
+        in_key, time_point = call.args
         assert isinstance(in_key, InKey)
-        assert isinstance(between, BetweenKey)
+        assert isinstance(time_point, TimePointCmpKey)
         assert in_key.column == ColumnKey(path=("customers",), leaf="tier")
-        assert between.column == ColumnKey(path=("customers",), leaf="signup_at")
+        assert time_point.operand == ColumnKey(path=("customers",), leaf="signup_at")
 
 
 class TestPrependTotalityAndFailClosed:
