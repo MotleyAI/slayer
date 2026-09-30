@@ -22,10 +22,10 @@ from __future__ import annotations
 import os
 import re
 import tempfile
-from collections.abc import AsyncGenerator, Callable, Generator
+from collections.abc import AsyncGenerator, Callable, Generator, Mapping
 from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
 import sqlalchemy as sa
 import sqlglot
@@ -69,15 +69,17 @@ async def build_exec_engine(
     datasource: str = "test",
     validate: bool = False,
     clock: Optional[Callable[[], datetime]] = None,
+    datasource_fields: Optional[Mapping[str, Any]] = None,
 ) -> SlayerQueryEngine:
     """Storage + query engine over an ALREADY-seeded ``db_path`` (the caller owns
     the file). The single builder the per-DEV fixture roots used to each copy;
     ``seeded_exec_engine`` is the disposing full-lifecycle wrapper around it. Use
-    this directly only when you manage the tempdir / db yourself."""
+    this directly only when you manage the tempdir / db yourself. ``datasource_fields``
+    adds extra ``DatasourceConfig`` fields."""
     storage = YAMLStorage(base_dir=os.path.join(os.path.dirname(db_path), "store"))
-    await storage.save_datasource(
-        DatasourceConfig(name=datasource, type=dialect, database=db_path),
-    )
+    await storage.save_datasource(DatasourceConfig.model_validate(
+        {"name": datasource, "type": dialect, "database": db_path, **(datasource_fields or {})},
+    ))
     for model in models:
         await storage.save_model(model, _validate=validate)
     if clock is None:
@@ -94,6 +96,7 @@ async def seeded_exec_engine(
     datasource: str = "test",
     validate: bool = False,
     clock: Optional[Callable[[], datetime]] = None,
+    datasource_fields: Optional[Mapping[str, Any]] = None,
 ) -> AsyncGenerator[tuple[SlayerQueryEngine, str]]:
     """The one seeded executing-engine context (DEV-1943 §5).
 
@@ -109,6 +112,7 @@ async def seeded_exec_engine(
         engine = await build_exec_engine(
             db_path, dialect=dialect, models=models,
             datasource=datasource, validate=validate, clock=clock,
+            datasource_fields=datasource_fields,
         )
         try:
             yield engine, db_path
@@ -177,6 +181,7 @@ async def _engine_generate(
     extra_models: Optional[list] = None,
     validate: bool = True,
     clock: Optional[Callable[[], datetime]] = None,
+    datasource_fields: Optional[Mapping[str, Any]] = None,
 ) -> str:
     """Build a fresh ``YAMLStorage`` + ``SlayerQueryEngine`` for ``model``,
     run ``query`` with ``dry_run=True``, and return the emitted SQL.
@@ -189,13 +194,14 @@ async def _engine_generate(
 
     ``validate=False`` skips save-time DEV-1410 derived-column cycle
     detection for the few migrated tests that feed intentionally-shaped
-    models the cycle validator would otherwise reject.
+    models the cycle validator would otherwise reject. ``datasource_fields``
+    adds extra ``DatasourceConfig`` fields.
     """
     with tempfile.TemporaryDirectory() as d:
         storage = YAMLStorage(base_dir=d)
-        await storage.save_datasource(
-            DatasourceConfig(name=model.data_source, type=dialect)
-        )
+        await storage.save_datasource(DatasourceConfig.model_validate(
+            {"name": model.data_source, "type": dialect, **(datasource_fields or {})},
+        ))
         await storage.save_model(model, _validate=validate)
         for extra in extra_models or []:
             await storage.save_model(extra, _validate=validate)

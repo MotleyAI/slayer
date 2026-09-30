@@ -78,6 +78,13 @@ from slayer.engine.ingestion import ingest_datasource
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql import engine_factory
 from slayer.storage.yaml_storage import YAMLStorage
+from tests.integration._dev2015_server import (
+    check_all,
+    server_models,
+    server_models_ts,
+    server_statements,
+    with_granularities,
+)
 from tests.integration._consecutive_periods_calendar import (
     CALENDAR_CASES,
     assert_calendar_streak,
@@ -1472,3 +1479,32 @@ async def test_length_of_a_number(sqlserver_env: SlayerQueryEngine) -> None:
         return result.data[0]["orders.n"]
 
     assert await count(["length(id) >= 1"]) == await count([])
+
+
+# ---------------------------------------------------------------------------
+# Time spine and custom granularities
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def _sqlserver_spine_storage(sqlserver_container, tmp_path_factory):
+    db_name = _create_module_db(sqlserver_container)
+    try:
+        with disposable_engine(_db_url(sqlserver_container, db_name)) as engine:
+            with engine.begin() as conn:
+                for stmt in server_statements("tsql"):
+                    conn.execute(sa.text(stmt))
+        storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("sqlserver_spine")))
+        base = _ds_config(sqlserver_container, db_name)
+        for name, models in (("ms", server_models(data_source="ms")), ("ms_ts", server_models_ts(data_source="ms_ts"))):
+            run_sync(storage.save_datasource(with_granularities(base, name=name)))
+            for model in models:
+                run_sync(storage.save_model(model))
+        yield storage
+    finally:
+        _drop_module_db(sqlserver_container, db_name)
+
+
+@pytest.mark.integration
+class TestSQLServerTimeSpine:
+    async def test_scenarios(self, _sqlserver_spine_storage) -> None:
+        await check_all(SlayerQueryEngine(storage=_sqlserver_spine_storage), data_source="ms", ts_data_source="ms_ts")

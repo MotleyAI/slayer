@@ -890,9 +890,8 @@ def test_filtered_simple_metric_over_non_additive_measure_clean_fails() -> None:
                for e in _all_report_entries(result))
 
 
-def test_derived_input_filter_over_timespine_metric_clean_fails() -> None:
-    """A per-input filter over a time-spine (unsupported) simple metric must
-    clean-fail in the push-down, not resurrect it as a plain aggregate."""
+def test_derived_input_filter_over_fill_nulls_metric_converts() -> None:
+    """A per-input filter over a ``fill_nulls_with`` metric pushes into the aggregate the fill wraps."""
     project = DbtProject(
         semantic_models=[
             DbtSemanticModel(name="orders", model="orders",
@@ -917,9 +916,9 @@ def test_derived_input_filter_over_timespine_metric_clean_fails() -> None:
         ],
     )
     result = _convert(project)
-    assert all(m.name != "us_gap_rev" for m in _model(result).measures)
-    assert any("us_gap_rev" in (e.metric_name or e.message)
-               for e in _all_report_entries(result))
+    measure = next(m for m in _model(result).measures if m.name == "us_gap_rev")
+    assert measure.formula.replace(" ", "").startswith("coalesce(")
+    assert any(c.filter and "region" in c.filter and "US" in c.filter for c in _model(result).columns)
 
 
 def test_input_filter_intersects_referenced_metric_filter() -> None:
@@ -1011,18 +1010,18 @@ def test_derived_input_referencing_unsupported_simple_clean_fails() -> None:
                              measures=[DbtMeasure(name="revenue", agg="sum", expr="amount")]),
         ],
         metrics=[
-            # Unsupported: time-spine gap fill → not materialized.
+            # Unsupported: measure-less simple metric → not materialized.
             DbtMetric.model_validate({
-                "name": "gap_filled_rev",
+                "name": "agg_only",
                 "type": "simple",
-                "type_params": {"measure": {"name": "revenue", "fill_nulls_with": 0}},
+                "type_params": {"metric_aggregation_params": {"semantic_model": "orders", "agg": "sum"}},
             }),
             DbtMetric(
                 name="rev_minus_gap",
                 type="derived",
                 type_params=DbtMetricTypeParams(
-                    expr="gap_filled_rev - 1",
-                    metrics=[DbtMetricInput(name="gap_filled_rev")],
+                    expr="agg_only - 1",
+                    metrics=[DbtMetricInput(name="agg_only")],
                 ),
             ),
         ],
@@ -1033,7 +1032,7 @@ def test_derived_input_referencing_unsupported_simple_clean_fails() -> None:
                for e in _all_report_entries(result))
 
 
-# ───────────────── Part 4 — measure-less / timespine clean-fails ─────────────────
+# ───────────────── Part 4 — measure-less clean-fails ─────────────────
 
 
 def test_measure_less_simple_metric_clean_fails() -> None:
@@ -1053,26 +1052,6 @@ def test_measure_less_simple_metric_clean_fails() -> None:
     result = _convert(project)
     assert all(m.name != "agg_only" for m in _model(result).measures)
     assert any("agg_only" in (e.metric_name or e.message)
-               for e in _all_report_entries(result))
-
-
-@pytest.mark.parametrize("field,value", [("join_to_timespine", True), ("fill_nulls_with", 0)])
-def test_timespine_gap_fill_clean_fails(field: str, value) -> None:
-    metric = DbtMetric.model_validate({
-        "name": "gap_filled_rev",
-        "type": "simple",
-        "type_params": {"measure": {"name": "revenue", field: value}},
-    })
-    project = DbtProject(
-        semantic_models=[
-            DbtSemanticModel(name="orders", model="orders",
-                             measures=[DbtMeasure(name="revenue", agg="sum", expr="amount")]),
-        ],
-        metrics=[metric],
-    )
-    result = _convert(project)
-    assert all(m.name != "gap_filled_rev" for m in _model(result).measures)
-    assert any("gap_filled_rev" in (e.metric_name or e.message)
                for e in _all_report_entries(result))
 
 

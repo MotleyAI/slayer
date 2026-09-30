@@ -56,9 +56,10 @@ class TestWrongShapeGranularityCalls:
 
 
 class TestUnknownSingleColumnCall:
-    def test_typo_names_granularities_and_partition_by_hedge(self) -> None:
-        with pytest.raises(pydantic.ValidationError) as ei:
-            _q(["mnth(created_at)"])
+    async def test_typo_names_granularities_and_partition_by_hedge(self, exec_engine) -> None:
+        query = _q(["mnth(created_at)"])  # accepted at construction; the callee resolves at binding
+        with pytest.raises(errors.QueryTypeError) as ei:
+            await exec_engine.execute(query, dry_run=True)
         msg = str(ei.value)
         for gran in GRANULARITIES:
             assert gran in msg, f"error must name granularity {gran!r}: {msg}"

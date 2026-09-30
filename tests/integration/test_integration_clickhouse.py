@@ -51,6 +51,13 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql import engine_factory
 from slayer.sql.client import SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
+from tests.integration._dev2015_server import (
+    check_all,
+    server_models,
+    server_models_ts,
+    server_statements,
+    with_granularities,
+)
 from tests.integration._consecutive_periods_calendar import (
     CALENDAR_CASES,
     assert_calendar_streak,
@@ -1806,3 +1813,32 @@ class TestClickHouseDateFunctions:
 
     async def test_scenarios(self, clickhouse_dates: SlayerQueryEngine) -> None:
         await check_server_scenarios(clickhouse_dates)
+
+
+# ---------------------------------------------------------------------------
+# Time spine and custom granularities
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def _clickhouse_spine_storage(clickhouse_container, tmp_path_factory):
+    db_name = _create_module_db(clickhouse_container)
+    try:
+        with disposable_engine(_ds_url_for_db(clickhouse_container, db_name)) as engine:
+            with engine.begin() as conn:
+                for stmt in server_statements("clickhouse"):
+                    conn.execute(sa.text(stmt))
+        storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("clickhouse_spine")))
+        base = _ds_config(clickhouse_container, db_name)
+        for name, models in (("ch", server_models(data_source="ch")), ("ch_ts", server_models_ts(data_source="ch_ts"))):
+            run_sync(storage.save_datasource(with_granularities(base, name=name)))
+            for model in models:
+                run_sync(storage.save_model(model))
+        yield storage
+    finally:
+        _drop_module_db(clickhouse_container, db_name)
+
+
+@pytest.mark.integration
+class TestClickHouseTimeSpine:
+    async def test_scenarios(self, _clickhouse_spine_storage) -> None:
+        await check_all(SlayerQueryEngine(storage=_clickhouse_spine_storage), data_source="ch", ts_data_source="ch_ts")
