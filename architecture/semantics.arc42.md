@@ -130,6 +130,7 @@ is the coercion from coarser to finer.
    home dataset determines it — the cells then partition the home rows and sum
    to the total (spec: `queries/semantics` › Attribution by determination).
    [enforced: test:tests/test_dev1836_producer_execution.py]
+   [enforced: test:tests/test_reagg_outer_grain_attribution.py]
    [enforced: test:tests/test_dev2013_expression_attribution.py]
 8. **Mode axis**: an unattributable dimension resolves per the query-level
    `to_many_handling` mode — broadcast (the default: the value repeats across
@@ -143,7 +144,7 @@ is the coercion from coarser to finer.
    naming a dimension unattributable only from a further (cross-model) root is an
    error outside associate mode
    [enforced: test:tests/test_dev1841_association_errors.py], but one whose own
-   dependency closure (engine P10) crosses a fanning hop from its host is a
+   dependency closure (engine P10) crosses a fanning hop from its home is a
    mode-invariant input-safety error — raised in every mode, associate included,
    since it can never be counted without multiplying rows (Axiom 2.8).
    [enforced: test:tests/test_dev1911_fanning_partition_key.py]

@@ -36,6 +36,7 @@ from slayer.core.keys import (
     normalize_scalar,
     normalize_transform_constituents,
     attached_operand_keys,
+    is_reaggregation_key,
     rewrite_rank_partition_keys,
     walk_value_keys,
     window_kwarg_of,
@@ -645,10 +646,12 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         lenient = isinstance(key, AggregateKey) or key in _reagg_operand_keys
         new_pks = []
         for pk in key.partition_keys or ():
-            # A partition key over a join must be attributable from the root; else a hard error.
-            assert_partition_key_attributable(
-                key=key, pk=pk, label=label, scope=scope, bundle=bundle,
-            )
+            # A partition key over a join must be attributable from the root; a
+            # re-aggregation's outer keys are judged against its operand grain instead.
+            if not is_reaggregation_key(key):
+                assert_partition_key_attributable(
+                    key=key, pk=pk, label=label, scope=scope, bundle=bundle,
+                )
             is_query_dim = pk in _dim_key_set or pk in _td_key_set
             bucket = _td_by_source.get(pk)
             check_partition_key_resolves(

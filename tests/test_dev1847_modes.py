@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.core.errors import SlayerError
+from slayer.core.errors import PartitionKeyError, SlayerError
 
 from tests._dev1847_fixtures import (
     ASSOCIATE_AVG_CITY_BY_REGION,
@@ -101,8 +101,8 @@ class TestErrorMode:
 
 
 class TestExplicitOuterKeyUnattributable:
-    """Task 1.3 — the outer aggregation's OWN explicit partition key, when a
-    query dimension unattributable to the operand dataset, resolves per mode."""
+    """Task 1.3 — the outer aggregation's OWN explicit partition key, when
+    unattributable to the operand dataset, errors outside associate mode."""
 
     def _pq(self, mode):
         # product is a query dimension but not a function of the [city,region]
@@ -111,10 +111,14 @@ class TestExplicitOuterKeyUnattributable:
             dimensions=["region", "product"], to_many_handling=mode,
             measures=[reagg("avg", INNER_CR, name="acc", partition_by="product")])
 
-    async def test_default_broadcasts_and_warns(self, exec_engine):
-        resp = await exec_engine.execute(self._pq("broadcast"))
-        (w,) = broadcast_warnings(resp)
-        assert any(d.dimension == "product" for d in w.dimensions)
+    async def test_default_refuses(self, exec_engine):
+        query = self._pq("broadcast")
+        with pytest.raises(PartitionKeyError) as ei:
+            await exec_engine.execute(query)
+        msg = str(ei.value)
+        assert "product" in msg
+        assert "operand grain" in msg
+        assert "associate" in msg
 
     async def test_error_mode_refuses(self, exec_engine):
         query = self._pq("error")
