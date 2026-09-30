@@ -227,6 +227,17 @@ class TestPositions:
         v = col(resp.columns, "v")
         assert [r[v] for r in resp.data if r[v] is not None] == [700.0, 160.0, 80.0, 40.0, 25.0]
 
+    async def test_order_only_key(self, engine):
+        resp = await engine.execute(query(
+            dimensions=["name"], time_dimensions=[MONTH_TD],
+            measures=[m("account_snapshots.balance:sum", "b")],
+            order=[{"column": f"sum(max(account_snapshots.balance, {P}))", "direction": "desc"}]))
+        n, t = col(resp.columns, "name"), col(resp.columns, "snapshot_date")
+        order = [(r[n], str(r[t])[:7]) for r in resp.data]
+        assert order == [("Bob", "2024-02"), ("Bob", "2024-01"), ("Ann", "2024-01"),
+                         ("Ann", "2024-02"), ("Dee", "2024-02"), ("Dee", "2024-01"), ("Cy", "None")]
+        _clean(resp)
+
     async def test_arithmetic(self, engine):
         resp = await engine.execute(_by_account(m(f"sum({MAX_Q})"), m(f"sum({MAX_Q}) * 2", "w")))
         plain = cells(resp, keys=BY_NAME_ACCOUNT)
