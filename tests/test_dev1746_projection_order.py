@@ -12,7 +12,7 @@ from slayer.core.enums import TimeGranularity
 from slayer.core.keys import TransformKey
 from slayer.core.models import ModelMeasure
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
-from slayer.ir.planned import PlannedQuery, ValueSlot
+from slayer.ir.planned import PlannedQuery, ValueSlot, TrailingWindowProducerKernel
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.plan import plan_query
@@ -119,7 +119,9 @@ def _expected_projection_aliases(query: SlayerQuery) -> List[str]:
             f"hidden slot {sid} appeared in PlannedQuery.projection — the "
             f"public projection must contain only public slots."
         )
-        out.append(slot.public_aliases[0] if slot.public_aliases else slot.public_name)
+        name = slot.public_aliases[0] if slot.public_aliases else slot.public_name
+        assert name is not None
+        out.append(name)
     return out
 
 
@@ -274,16 +276,16 @@ class TestB7DeclarationOrderProjection:
     async def test_combined_order_by_suppresses_the_tsql_nulls_emulation(
         self, direction: str,
     ) -> None:
-        """The combined ORDER BY must go through ``_ordered`` to pin ``nulls_first`` and suppress the T-SQL NULLS-emulation CASE wrapper (whose alias mis-resolves); the wrapper appears on ASC only."""
+        """The combined ORDER BY must go through the dialect's ``build_ordered`` to pin ``nulls_first`` and suppress the T-SQL NULLS-emulation CASE wrapper (whose alias mis-resolves); the wrapper appears on ASC only."""
         query = SlayerQuery(
             source_model="orders_x",
             dimensions=[ColumnRef(name="customers_v2.status")],
             measures=[ModelMeasure(
                 formula="customers_v2.lifetime_value:sum", name="ltv",
             )],
-            order=[OrderItem(
-                column="customers_v2.lifetime_value:sum", direction=direction,
-            )],
+            order=[OrderItem.model_validate({
+                "column": "customers_v2.lifetime_value:sum", "direction": direction,
+            })],
         )
         sql = await _gen(query, dialect="tsql")
         assert "CASE WHEN" not in sql.upper(), (
@@ -297,7 +299,7 @@ class TestB7DeclarationOrderProjection:
             source_model="orders_x",
             dimensions=[ColumnRef(name="status")],
             measures=[ModelMeasure(formula="*:count", name="n")],
-            order=[OrderItem(column="amount:sum", direction="desc")],
+            order=[OrderItem.model_validate({"column": "amount:sum", "direction": "desc"})],
         )
         sql = await _gen(query, dialect="postgres")
         emitted = _alias_suffixes(outer_select_aliases(sql))
@@ -314,7 +316,7 @@ class TestB7DeclarationOrderProjection:
             source_model="orders",
             dimensions=[ColumnRef(name="customers.tier")],
             measures=[ModelMeasure(formula="*:count", name="n")],
-            order=[OrderItem(column="customers.spend:sum", direction="desc")],
+            order=[OrderItem.model_validate({"column": "customers.spend:sum", "direction": "desc"})],
         )
         resp = await exec_engine.execute(query)
         assert _alias_suffixes(list(resp.columns)) == ["tier", "n"], resp.columns
@@ -440,6 +442,7 @@ class TestWindowedGrainInvariant:
                 "would degenerate to a CROSS JOIN and multiply rows."
             )
             grain_slot_ids = {sid for _, sid in attach.join_pairs}
+            assert isinstance(attach.kernel, TrailingWindowProducerKernel)
             assert attach.kernel.bucket_slot_id in grain_slot_ids, (
                 f"the window time dimension {attach.kernel.bucket_slot_id} "
                 f"is not part of the grain {grain_slot_ids}."

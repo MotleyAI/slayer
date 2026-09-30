@@ -89,7 +89,7 @@ from slayer.sql.render.cte_assembly import (
     reachable_cte_entries,
     rename_embedded_ctes,
 )
-from slayer.sql.render.nodes import Node, fusion_blockers
+from slayer.sql.render.nodes import Node, NodePhase, fusion_blockers
 from slayer.sql.render.joins import (
     AttachedValue,
     build_grain_joinback_condition,
@@ -1126,15 +1126,6 @@ class SQLGenerator:
                 out.append(alias)
         return out
 
-    def _ordered(
-        self, order_col: Expression, *, ascending: bool,
-        nulls: str = "default",
-    ) -> exp.Ordered:
-        """Build an ``exp.Ordered`` node via the dialect strategy."""
-        return self._dialect.build_ordered(
-            order_col, descending=not ascending, nulls=nulls,
-        )
-
 
 
 
@@ -1220,17 +1211,7 @@ class SQLGenerator:
             raise ValueError("_build_agg requires a 'spec'.")
         agg_name = spec.aggregation
         if not agg_name:
-            if spec.sql:
-                return self._resolve_sql(
-                    sql=spec.sql,
-                    name=spec.name,
-                    model_name=spec.model_name,
-                    type=spec.column_type,
-                ), False
-            return exp.Column(
-                this=exp.to_identifier(spec.name),
-                table=exp.to_identifier(spec.model_name),
-            ), False
+            return self._spec_value(spec), False
 
         if not is_builtin_agg(agg_name) or spec.formula:
             return self._build_formula_agg(spec, agg_name), True
@@ -1249,20 +1230,7 @@ class SQLGenerator:
                 col_expr=self._resolve_value_ast(spec),
             ), True
 
-        if agg_name == "count" and spec.sql is None:
-            inner = exp.Star()
-        elif spec.sql:
-            inner = self._resolve_sql(
-                sql=spec.sql,
-                name=spec.name,
-                model_name=spec.model_name,
-                type=spec.column_type,
-            )
-        else:
-            inner = exp.Column(
-                this=exp.to_identifier(spec.name),
-                table=exp.to_identifier(spec.model_name),
-            )
+        inner = exp.Star() if agg_name == "count" and spec.sql is None else self._spec_value(spec)
 
         if dispatch == DISPATCH_DISTINCT:
             return exp.Count(this=exp.Distinct(expressions=[inner])), True
@@ -1270,7 +1238,15 @@ class SQLGenerator:
         if agg_name == "median":
             return self._build_median(inner), True
 
+        if entry.node_class is None:
+            raise ValueError(f"Aggregation {agg_name!r} has no SQL node to render.")
         return entry.node_class(this=inner), True
+
+    def _spec_value(self, spec: AggRenderSpec) -> Expression:
+        """The spec's row value: its SQL expression, else its column."""
+        if spec.sql:
+            return self._resolve_sql(sql=spec.sql, name=spec.name, model_name=spec.model_name, type=spec.column_type)
+        return exp.Column(this=exp.to_identifier(spec.name), table=exp.to_identifier(spec.model_name))
 
     def _build_formula_agg(self, spec: AggRenderSpec, agg_name: str) -> Expression:
         """Build SQL for formula-based aggregations (weighted_avg, custom)."""
@@ -1660,7 +1636,7 @@ class SQLGenerator:
         prelude_nodes: List["CteEntry"],
         tail_select: exp.Select,
         tail_schema: Dict[str, List[str]],
-        tail_phase: str,
+        tail_phase: NodePhase,
         planned_query,
         bundle,
         source_model,
@@ -1750,7 +1726,7 @@ class SQLGenerator:
         step_name = cte_allocator.allocate_cte(f"step{step_num}")
         prev_cte = chain_tail
         carry_aliases = self._carry_aliases_in_plan_order(aliases_by_slot_id)
-        step_parts = [exp.column(a, quoted=True) for a in carry_aliases]
+        step_parts: List[Expr] = [exp.column(a, quoted=True) for a in carry_aliases]
         for map_key, slot in slot_entries:
             names = list(slot.public_aliases) or [slot.declared_name]
             rendered = render(slot)
@@ -2435,7 +2411,7 @@ class SQLGenerator:
             al = aliases_by_slot_id.get(sid) or []
             return al[0] if al else sid
 
-        src_cols: List[Expression] = []
+        src_cols: List[Expr] = []
         grain_pairs: List[Tuple[Expression, Expression]] = []
         grain_aliases: List[str] = []
 
@@ -2471,6 +2447,7 @@ class SQLGenerator:
             grain_aliases.append(base_alias)
 
         wtd_slot = slots_by_id.get(plan.window_time_dimension_slot_id)
+        assert wtd_slot is not None
         wtd_alias = _alias_of(plan.window_time_dimension_slot_id)
         src_scope.resolve(wtd_slot.key.column)
         raw_time = self._raw_time_col_expr_for_planned(
@@ -2516,6 +2493,7 @@ class SQLGenerator:
                 )
             src_cols.append(exp.Literal.number("1").as_("_w_value"))
         else:
+            assert not isinstance(key.source, (AggregateKey, TransformKey))  # sources are row-level here
             src_cols.append(src_scope.resolve(key.source).as_("_w_value"))
 
         # Reference-bearing parameters read per interval row (D4): each _w_p<i> is
@@ -3095,7 +3073,7 @@ class SQLGenerator:
         )
         ctx = RenderContext(scope=scope, dialect=self._dialect)
 
-        inner_cols: List[Expression] = []
+        inner_cols: List[Expr] = []
         group: List[Expression] = []
         for slot, alias in zip(grain_slots, grain_aliases):
             expr = render_value_key(key=slot.key, ctx=ctx)
@@ -3319,7 +3297,7 @@ class SQLGenerator:
             model=source_model, relation=source_relation,
             bundle=bundle, allocator=allocator, attached_columns=regroup_env,
         )
-        cols: List[Expression] = []
+        cols: List[Expr] = []
         group: List[Expression] = []
 
         def _emit(slot, expr: Expression) -> None:
@@ -5225,12 +5203,10 @@ class SQLGenerator:
         owner_path: Tuple[str, ...] = (),
     ) -> Expression:
         """Enter a Mode-A PREDICATE through the door and hand back its AST."""
-        frame = scope or self._mode_a_scope(
-            source_model=source_model,
-            source_relation=source_relation,
-            bundle=bundle,
-        )
-        return frame.enter_predicate(sql, location=location, owner_path=tuple(owner_path))
+        if scope is None:
+            assert source_relation is not None, "a Mode-A predicate needs a scope or a source relation"
+            scope = self._mode_a_scope(source_model=source_model, source_relation=source_relation, bundle=bundle)
+        return scope.enter_predicate(sql, location=location, owner_path=tuple(owner_path))
 
     def _expand_derived_row_dims(  # NOSONAR(S3776) — one cohesive per-slot pass expanding derived ROW/TIME dimensions and registering the joins they cross.
         self, *, base_render_order, slots_by_id, source_relation: str,

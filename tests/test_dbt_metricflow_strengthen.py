@@ -188,7 +188,7 @@ def test_offset_window_maps_to_time_shift() -> None:
         ],
         metrics=[
             DbtMetric(name="revenue_metric", type="simple",
-                      type_params=DbtMetricTypeParams(measure="revenue")),
+                      type_params=DbtMetricTypeParams.model_validate({"measure": "revenue"})),
             DbtMetric(
                 name="revenue_growth",
                 type="derived",
@@ -222,7 +222,7 @@ def test_offset_to_grain_clean_fails() -> None:
         ],
         metrics=[
             DbtMetric(name="revenue_metric", type="simple",
-                      type_params=DbtMetricTypeParams(measure="revenue")),
+                      type_params=DbtMetricTypeParams.model_validate({"measure": "revenue"})),
             DbtMetric(
                 name="rev_vs_month_start",
                 type="derived",
@@ -259,7 +259,7 @@ def test_metric_level_filter_pushes_into_leaf_column() -> None:
             DbtMetric(
                 name="us_revenue",
                 type="simple",
-                type_params=DbtMetricTypeParams(measure="revenue"),
+                type_params=DbtMetricTypeParams.model_validate({"measure": "revenue"}),
                 filter="{{ Dimension('orders__region') }} = 'US'",
             ),
         ],
@@ -491,7 +491,7 @@ def test_unbounded_cumulative_still_cumsum() -> None:
                              measures=[DbtMeasure(name="revenue", agg="sum", expr="amount")]),
         ],
         metrics=[DbtMetric(name="running_revenue", type="cumulative",
-                           type_params=DbtMetricTypeParams(measure="revenue"))],
+                           type_params=DbtMetricTypeParams.model_validate({"measure": "revenue"}))],
     )
     result = _convert(project)
     assert _measure(result, "running_revenue").formula == "cumsum(revenue)"
@@ -593,8 +593,7 @@ def test_render_report_groups_by_category() -> None:
     assert "conv" in report
     assert "weird" in report
     # Grouped by category: each failing entry's category appears as a heading.
-    cats = {getattr(e, "category", None) for e in _all_report_entries(result)}
-    cats.discard(None)
+    cats = {e.category for e in _all_report_entries(result) if e.category}
     assert cats, "entries must carry categories"
     for cat in cats:
         assert cat in report
@@ -611,7 +610,7 @@ def test_offset_window_plural_granularity_normalized() -> None:
         ],
         metrics=[
             DbtMetric(name="revenue_metric", type="simple",
-                      type_params=DbtMetricTypeParams(measure="revenue")),
+                      type_params=DbtMetricTypeParams.model_validate({"measure": "revenue"})),
             DbtMetric(
                 name="rev_2w",
                 type="derived",
@@ -642,7 +641,7 @@ def test_offset_window_custom_granularity_clean_fails() -> None:
         ],
         metrics=[
             DbtMetric(name="revenue_metric", type="simple",
-                      type_params=DbtMetricTypeParams(measure="revenue")),
+                      type_params=DbtMetricTypeParams.model_validate({"measure": "revenue"})),
             DbtMetric(
                 name="rev_fortnight",
                 type="derived",
@@ -674,10 +673,10 @@ def test_same_measure_different_filters_make_distinct_columns() -> None:
         ],
         metrics=[
             DbtMetric(name="us_rev", type="simple",
-                      type_params=DbtMetricTypeParams(measure="revenue"),
+                      type_params=DbtMetricTypeParams.model_validate({"measure": "revenue"}),
                       filter="{{ Dimension('orders__region') }} = 'US'"),
             DbtMetric(name="eu_rev", type="simple",
-                      type_params=DbtMetricTypeParams(measure="revenue"),
+                      type_params=DbtMetricTypeParams.model_validate({"measure": "revenue"}),
                       filter="{{ Dimension('orders__region') }} = 'EU'"),
         ],
     )
@@ -697,10 +696,10 @@ def test_same_measure_same_filter_reuses_one_column() -> None:
         ],
         metrics=[
             DbtMetric(name="us_rev_a", type="simple",
-                      type_params=DbtMetricTypeParams(measure="revenue"),
+                      type_params=DbtMetricTypeParams.model_validate({"measure": "revenue"}),
                       filter="{{ Dimension('orders__region') }} = 'US'"),
             DbtMetric(name="us_rev_b", type="simple",
-                      type_params=DbtMetricTypeParams(measure="revenue"),
+                      type_params=DbtMetricTypeParams.model_validate({"measure": "revenue"}),
                       filter="{{ Dimension('orders__region') }} = 'US'"),
         ],
     )
@@ -738,7 +737,7 @@ def test_cross_model_filter_pushes_down_when_join_reachable() -> None:
     metric = DbtMetric(
         name="us_revenue",
         type="simple",
-        type_params=DbtMetricTypeParams(measure="revenue"),
+        type_params=DbtMetricTypeParams.model_validate({"measure": "revenue"}),
         filter="{{ Dimension('customer__region') }} = 'US'",
     )
     result = _convert(_orders_customers_project(metric))
@@ -754,7 +753,7 @@ def test_cross_model_filter_unreachable_clean_fails() -> None:
     metric = DbtMetric(
         name="zone_revenue",
         type="simple",
-        type_params=DbtMetricTypeParams(measure="revenue"),
+        type_params=DbtMetricTypeParams.model_validate({"measure": "revenue"}),
         filter="{{ Dimension('warehouse__zone') }} = 'A'",
     )
     result = _convert(_orders_customers_project(metric))
@@ -796,7 +795,7 @@ def test_cross_model_filter_multi_hop_clean_fails() -> None:
             DbtMetric(
                 name="zone_a_revenue",
                 type="simple",
-                type_params=DbtMetricTypeParams(measure="revenue"),
+                type_params=DbtMetricTypeParams.model_validate({"measure": "revenue"}),
                 filter="{{ Dimension('region__zone') }} = 'A'",
             ),
         ],
@@ -826,7 +825,7 @@ def test_cross_model_filter_foreign_entity_without_owner_clean_fails() -> None:
             DbtMetric(
                 name="vendor_x_revenue",
                 type="simple",
-                type_params=DbtMetricTypeParams(measure="revenue"),
+                type_params=DbtMetricTypeParams.model_validate({"measure": "revenue"}),
                 filter="{{ Dimension('vendor__tier') }} = 'X'",
             ),
         ],
@@ -889,7 +888,7 @@ def test_filtered_simple_metric_over_non_additive_measure_clean_fails() -> None:
         metrics=[
             DbtMetric(
                 name="us_balance", type="simple",
-                type_params=DbtMetricTypeParams(measure="balance"),
+                type_params=DbtMetricTypeParams.model_validate({"measure": "balance"}),
                 filter="{{ Dimension('orders__region') }} = 'US'",
             ),
         ],
@@ -975,7 +974,7 @@ def test_input_filter_intersects_referenced_metric_filter() -> None:
         metrics=[
             DbtMetric(
                 name="us_revenue", type="simple",
-                type_params=DbtMetricTypeParams(measure="revenue"),
+                type_params=DbtMetricTypeParams.model_validate({"measure": "revenue"}),
                 filter="{{ Dimension('orders__region') }} = 'US'",
             ),
             DbtMetric(
@@ -1031,7 +1030,7 @@ def test_cross_model_filter_ambiguous_multi_owner_entity_clean_fails() -> None:
             DbtMetric(
                 name="tier_x_revenue",
                 type="simple",
-                type_params=DbtMetricTypeParams(measure="revenue"),
+                type_params=DbtMetricTypeParams.model_validate({"measure": "revenue"}),
                 filter="{{ Dimension('party__tier') }} = 'X'",
             ),
         ],
@@ -1254,7 +1253,7 @@ def test_filtered_percentile_metric_preserves_p() -> None:
         ],
         metrics=[
             DbtMetric(name="us_latency_p95", type="simple",
-                      type_params=DbtMetricTypeParams(measure="latency_p95"),
+                      type_params=DbtMetricTypeParams.model_validate({"measure": "latency_p95"}),
                       filter="{{ Dimension('orders__region') }} = 'US'"),
         ],
     )
@@ -1278,7 +1277,7 @@ def test_filtered_sum_boolean_metric_builds_case_int_column() -> None:
         ],
         metrics=[
             DbtMetric(name="us_paid_orders", type="simple",
-                      type_params=DbtMetricTypeParams(measure="paid_orders"),
+                      type_params=DbtMetricTypeParams.model_validate({"measure": "paid_orders"}),
                       filter="{{ Dimension('orders__region') }} = 'US'"),
         ],
     )
@@ -1309,9 +1308,9 @@ def test_derived_input_filter_pushes_down() -> None:
         ],
         metrics=[
             DbtMetric(name="rev_metric", type="simple",
-                      type_params=DbtMetricTypeParams(measure="revenue")),
+                      type_params=DbtMetricTypeParams.model_validate({"measure": "revenue"})),
             DbtMetric(name="cost_metric", type="simple",
-                      type_params=DbtMetricTypeParams(measure="cost")),
+                      type_params=DbtMetricTypeParams.model_validate({"measure": "cost"})),
             DbtMetric(
                 name="us_rev_minus_cost",
                 type="derived",
@@ -1375,7 +1374,7 @@ def test_offset_window_object_form_parses() -> None:
         ],
         metrics=[
             DbtMetric(name="revenue_metric", type="simple",
-                      type_params=DbtMetricTypeParams(measure="revenue")),
+                      type_params=DbtMetricTypeParams.model_validate({"measure": "revenue"})),
             DbtMetric(
                 name="rev_obj_offset",
                 type="derived",

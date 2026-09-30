@@ -26,6 +26,7 @@ from typing import (
     Mapping,
     NamedTuple,
     Optional,
+    Self,
     Tuple,
     TypeVar,
     Union,
@@ -212,7 +213,7 @@ class _ChildMapper:
     def __call__(self, value):
         if not isinstance(value, _FrozenKey):
             return value
-        new = self._fn(value)
+        new = self._fn(cast("ValueKey", value))  # every concrete _FrozenKey is a ValueKey member
         if new is not value:
             self.changed = True
         return new
@@ -226,7 +227,7 @@ class _LeafKey(_FrozenKey, frozen=True):
 
     def map_children(
         self, fn: Callable[["ValueKey"], "ValueKey"],
-    ) -> "_LeafKey":
+    ) -> Self:
         return self
 
 
@@ -454,7 +455,7 @@ class AggregateKey(_FrozenKey, frozen=True):
         return Phase.AGGREGATE
 
     def children(self) -> Tuple["ValueKey", ...]:
-        embedded = [
+        embedded: List["ValueKey"] = [
             c
             for c in (self.source, *self.args, *(v for _, v in self.kwargs))
             if isinstance(c, _FrozenKey)
@@ -1136,7 +1137,7 @@ def substitute_value_keys(
             f"only value keys and scalars are substitutable."
         )
     if key in mapping:
-        return cast(_RerootableT, mapping[key])
+        return cast(_RerootableT, mapping[cast("ValueKey", key)])
     return cast(
         _RerootableT,
         key.map_children(lambda c: substitute_value_keys(c, mapping)),

@@ -470,7 +470,7 @@ class StorageBackend(ABC):
 
     async def builtin_models(self, data_source: str, *, detailed: bool = False) -> list[SlayerModel]:
         """The datasource's built-in models (the time spine, unless a stored model shadows it);
-        ``detailed`` describes its wiring, else its description points at ``inspect``. None for an unknown datasource."""
+        ``detailed`` describes its wiring, else its description points at ``inspect``. Empty for an unknown datasource."""
         if await self.get_datasource(data_source) is None:
             return []
         if await self.get_model(TIME_SPINE_MODEL, data_source=data_source) is not None:
