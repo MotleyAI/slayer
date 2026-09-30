@@ -296,6 +296,15 @@ class TestOnlyWithAName:
         with pytest.raises(ValueError, match=ONLY_BY_NAME):
             await engine.execute(query, refine={"dimensions": ["region"]})
 
+    @pytest.mark.parametrize("query", [
+        MONTHLY_REVENUE,
+        SlayerQuery.model_validate(MONTHLY_REVENUE),
+        AVG_CUSTOMER_REVENUE,
+    ], ids=["dict", "query", "list"])
+    async def test_execute_rejects_empty_refine_with_non_name(self, engine: SlayerQueryEngine, query: Any) -> None:
+        with pytest.raises(ValueError, match=ONLY_BY_NAME):
+            await engine.execute(query, refine={})
+
     async def test_evict_rejects_non_name(self, engine: SlayerQueryEngine) -> None:
         with pytest.raises(ValueError, match=ONLY_BY_NAME):
             await engine.evict(MONTHLY_REVENUE, refine={"dimensions": ["region"]})

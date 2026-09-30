@@ -791,6 +791,15 @@ class TestRefine:
             client.query_sync(query, refine=REFINE)
         assert cap.last_body is None
 
+    def test_http_rejects_empty_refine_with_non_name(
+        self,
+        http_client_with_capture: tuple[SlayerClient, _CapturedRequests],
+    ) -> None:
+        client, cap = http_client_with_capture
+        with pytest.raises(ValueError, match=ONLY_BY_NAME):
+            client.query_sync({"source_model": "orders"}, refine={})
+        assert cap.last_body is None
+
     async def test_local_forwards_to_engine(self, tmp_path) -> None:
         client = SlayerClient(storage=await build_refine_storage(str(tmp_path)))
         resp = await client.query("monthly_revenue", refine=REFINE)

@@ -429,6 +429,10 @@ class TestRunByNameRefine:
         with pytest.raises(ToolError, match="refine applies only to a saved query run by name"):
             await _call(refine_server, query=query, refine={"dimensions": ["region"]})
 
+    async def test_empty_refine_with_non_name_errors(self, refine_server) -> None:
+        with pytest.raises(ToolError, match="refine applies only to a saved query run by name"):
+            await _call(refine_server, query={"source_model": "orders", "measures": ["count(*)"]}, refine={})
+
     async def test_conflict_surfaces_as_error(self, refine_server) -> None:
         with pytest.raises(ToolError, match="revenue"):
             await _call(refine_server, query="monthly_revenue",

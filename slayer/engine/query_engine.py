@@ -175,15 +175,13 @@ class SavedQueryRun(BaseModel):
 
 
 def resolve_run_input(query: _QueryT, refine: "QueryRefinement | dict | None") -> "_QueryT | SavedQueryRun":
-    """Pack a saved-query name with its refinement; an empty refinement is none."""
-    refinement = QueryRefinement.model_validate(refine) if isinstance(refine, dict) else refine
-    if refinement is not None and not refinement.model_fields_set:
-        refinement = None
-    if isinstance(query, str):
-        return SavedQueryRun(name=query, refinement=refinement)
-    if refinement is not None:
+    """Pack a saved-query name with its refinement; an empty refinement of a name is none."""
+    if refine is None:
+        return SavedQueryRun(name=query) if isinstance(query, str) else query
+    if not isinstance(query, str):
         raise ValueError(REFINE_REQUIRES_NAME)
-    return query
+    refinement = QueryRefinement.model_validate(refine) if isinstance(refine, dict) else refine
+    return SavedQueryRun(name=query, refinement=refinement if refinement.model_fields_set else None)
 
 
 class _ResolvedItem(BaseModel):

@@ -1386,6 +1386,8 @@ def _run_query(args):  # NOSONAR S3776 — argparse-driven dispatch; one straigh
         if is_json:
             raise SystemExit("--refine applies only to a saved query name")
         refine = json.loads(_read_at_file(args.refine, label="refine")[0])
+        if not isinstance(refine, dict):
+            raise SystemExit("--refine must decode to a JSON object.")
 
     query: Any = query_input
     if is_json:

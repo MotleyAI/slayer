@@ -173,6 +173,13 @@ class TestRunQueryRefine:
         with pytest.raises(SystemExit, match="--refine applies only to a saved query name"):
             _run_query(args)
 
+    @pytest.mark.parametrize("refine", ["[1]", "null", '"x"'])
+    def test_non_object_rejected(self, store: str, refine: str) -> None:
+        args = self._args("monthly_revenue", store)
+        args.refine = refine
+        with pytest.raises(SystemExit, match="--refine must decode to a JSON object"):
+            _run_query(args)
+
     def test_rejected_with_query_file(self, store: str, tmp_path) -> None:
         query_file = tmp_path / "query.json"
         query_file.write_text('{"source_model": "orders", "measures": ["count(*)"]}')
