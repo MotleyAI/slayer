@@ -45,6 +45,8 @@ Here is a complete example query for “monthly revenue for the last year by reg
 
 What would it take to define this in the semantic layer you’re currently using?
 
+Time *bounds* are natural too: nobody should compute dates by hand to ask for "last quarter". A `date_range` or filter takes periods and relative tokens directly — `"date_range": "last 3 months"`, `"date_range": ["2025-Q1", null]`, `"filters": ["created_at in 'this year'", "month(shipped_at) = month(created_at)"]` — each a half-open range resolved once per query, so trailing windows and `time_shift` still reach back past it; see [Time](../../concepts/time.md) for the full grammar.
+
 ---
 
 See the [companion notebook](time_nb.ipynb) for runnable code demonstrating all time-related transforms.

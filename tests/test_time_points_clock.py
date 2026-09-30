@@ -30,7 +30,7 @@ def _recent_model() -> SlayerModel:
     )
 
 
-def _stages() -> list[SlayerQuery]:
+def _stages() -> list[SlayerQuery | dict]:
     inner = SlayerQuery.model_validate({
         "name": "inner", "source_model": "recent",
         "time_dimensions": [{"dimension": "ts", "granularity": "month", "date_range": [None, "last month"]}],
@@ -75,8 +75,11 @@ async def test_new_day_yields_new_sql() -> None:
         first = (await engine.execute(query, dry_run=True)).sql
         clock.now = NOW + timedelta(days=1)
         second = (await engine.execute(query, dry_run=True)).sql
-    assert first and second and first != second
-    assert "2026-09-22" in first and "2026-09-23" in second
+    assert first
+    assert second
+    assert first != second
+    assert "2026-09-22" in first
+    assert "2026-09-23" in second
 
 
 async def test_cache_never_serves_another_days_result() -> None:

@@ -5,9 +5,10 @@ turns syntax into keys; expression-level binding lives in ``binding``)."""
 from __future__ import annotations
 
 from collections import Counter
-from typing import Callable, Dict, FrozenSet, List, Optional, Tuple
+from datetime import date, datetime
+from typing import Callable, Dict, FrozenSet, List, Optional, Tuple, cast
 
-from slayer.core.enums import DataType
+from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.errors import (
     AmbiguousJoinPathError,
     AmbiguousReferenceError,
@@ -21,19 +22,17 @@ from slayer.core.join_walker import canonical_path, resolve_hop, terminal_model,
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
-    BetweenKey,
     ColumnKey,
     ColumnSqlKey,
     Grain,
-    InKey,
     LiteralKey,
-    ScalarCallKey,
+    Phase,
+    TimePointCmpKey,
     TimeTruncKey,
     TransformKey,
     ValueKey,
     lower_collapsing_constituents,
     lower_sugar_transforms,
-    normalize_scalar,
     normalize_transform_constituents,
     attached_operand_keys,
     rewrite_rank_partition_keys,
@@ -53,6 +52,8 @@ from slayer.core.refs import (
     auto_name_from_expression,
     canonical_agg_name,
 )
+from slayer.core.time_bounds import is_frame_bound
+from slayer.core.time_points import floor_to
 from slayer.core.scope import (
     ModelScope,
     StageSchema,
@@ -73,10 +74,10 @@ from slayer.engine.elaborate_env import (
     check_raw_rows_filter_measure_ref,
     check_raw_rows_order_measure_ref,
     check_time_dimension_column,
-    check_time_dimension_date_range,
     check_transform_inputs,
     check_transform_partition_keys_in_operand_grain,
     check_time_transforms_resolved,
+    resolve_time_points,
 )
 from slayer.engine.join_safety import assert_partition_key_attributable
 from slayer.engine.key_metadata import (
@@ -117,79 +118,16 @@ __all__ = [
 _TIME_NEEDING_TRANSFORM_OPS = TIME_TRANSFORMS
 
 
-def _attach_time_to_transform(key: TransformKey, *, td_key: TimeTruncKey) -> ValueKey:
-    new_input = _attach_time_keys(key.input, td_key=td_key)
-    out = key
-    if new_input is not key.input:
-        out = out.model_copy(update={"input": new_input})
-    if out.op in _TIME_NEEDING_TRANSFORM_OPS and out.time_key is None:
-        out = out.model_copy(update={"time_key": td_key})
-    return out
-
-
-def _attach_time_to_arithmetic(key: ArithmeticKey, *, td_key: TimeTruncKey) -> ValueKey:
-    new_ops = tuple(
-        _attach_time_keys(o, td_key=td_key) for o in key.operands
-    )
-    if all(a is b for a, b in zip(new_ops, key.operands)):
-        return key
-    return ArithmeticKey(op=key.op, operands=new_ops)
-
-
-def _attach_time_to_scalar_call(key: ScalarCallKey, *, td_key: TimeTruncKey) -> ValueKey:
-    new_args = tuple(
-        _attach_time_keys(a, td_key=td_key)
-        if isinstance(
-            a, (AggregateKey, TransformKey, ArithmeticKey, ScalarCallKey, BetweenKey, InKey),
-        )
-        else a
-        for a in key.args
-    )
-    if all(a is b for a, b in zip(new_args, key.args)):
-        return key
-    return ScalarCallKey(name=key.name, args=new_args)
-
-
-def _attach_time_to_between(key: BetweenKey, *, td_key: TimeTruncKey) -> ValueKey:
-    nc = _attach_time_keys(key.column, td_key=td_key)
-    nl = _attach_time_keys(key.low, td_key=td_key)
-    nh = _attach_time_keys(key.high, td_key=td_key)
-    if nc is key.column and nl is key.low and nh is key.high:
-        return key
-    return BetweenKey(column=nc, low=nl, high=nh)
-
-
-def _attach_time_to_in(key: InKey, *, td_key: TimeTruncKey) -> ValueKey:
-    # Only the LHS column can carry a transform; values are literals.
-    nc = _attach_time_keys(key.column, td_key=td_key)
-    if nc is key.column:
-        return key
-    return InKey(column=nc, values=key.values, negated=key.negated)
-
-
-def _attach_time_to_aggregate(key: AggregateKey, *, td_key: TimeTruncKey) -> ValueKey:
-    # An aggregated transform constituent gets the query's bucket too — descend
-    # source, args and kwargs (identity-preserving, like ``map_children``).
-    return key.map_children(lambda c: _attach_time_keys(c, td_key=td_key))
-
-
-def _attach_time_keys(
-    key: ValueKey, *, td_key: TimeTruncKey,
-) -> ValueKey:
+def _attach_time_keys(key: ValueKey, *, td_key: TimeTruncKey) -> ValueKey:
     """Set ``time_key=td_key`` on every time-needing TransformKey with a null one (identity-preserving)."""
-    if isinstance(key, AggregateKey):
-        return _attach_time_to_aggregate(key, td_key=td_key)
-    if isinstance(key, TransformKey):
-        return _attach_time_to_transform(key, td_key=td_key)
-    if isinstance(key, ArithmeticKey):
-        return _attach_time_to_arithmetic(key, td_key=td_key)
-    if isinstance(key, ScalarCallKey):
-        return _attach_time_to_scalar_call(key, td_key=td_key)
-    if isinstance(key, BetweenKey):
-        return _attach_time_to_between(key, td_key=td_key)
-    if isinstance(key, InKey):
-        return _attach_time_to_in(key, td_key=td_key)
-    return key
+    rebuilt = cast(ValueKey, key.map_children(lambda c: _attach_time_keys(c, td_key=td_key)))
+    if (
+        isinstance(rebuilt, TransformKey)
+        and rebuilt.op in _TIME_NEEDING_TRANSFORM_OPS
+        and rebuilt.time_key is None
+    ):
+        return rebuilt.model_copy(update={"time_key": td_key})
+    return rebuilt
 
 
 def _iter_expr_children(node):
@@ -402,14 +340,11 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
     # Parallel original filter text (None for date_range bounds), for semi-join push entries.
     bound_filter_texts: List[Optional[str]] = []
 
-    # 1. date_range filters (one per TD with a 2-element date_range)
+    # 1. date_range filters (one per TD with a date_range)
     for i, td in enumerate(query.time_dimensions or []):
         with stale_spelling_position(f"time_dimensions[{i}]"):
-            if not td.date_range or len(td.date_range) != 2:
+            if not td.date_range:
                 continue
-            check_time_dimension_date_range(
-                full_name=td.dimension.full_name, date_range=td.date_range,
-            )
             # A stage date_range filters the stage's rows on its bare column, exactly
             # as a model-scope range filters a model's rows.
             bf = _build_date_range_filter(td=td, scope=scope, bundle=bundle)
@@ -533,6 +468,34 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
                 )
             order_specs.append(OrderSpec(bound=bo, direction=o.direction))
 
+    column_type = scope_column_type(scope=scope, bundle=bundle)
+    check_date_operands(
+        roots=[
+            *(dm.bound.value_key for dm in declared_measures),
+            *(bf.value_key for bf in bound_filters),
+            *(spec.bound.value_key for spec in order_specs),
+        ],
+        column_type=column_type,
+    )
+    # Every time point resolves against the execution's one clock reading.
+    declared_measures, bound_filters, order_specs = _map_bound_keys(
+        lambda vk: resolve_time_points(vk, column_type=column_type, now=bundle.now),
+        declared_measures=declared_measures,
+        bound_filters=bound_filters,
+        order_specs=order_specs,
+    )
+    if query.whole_periods_only:
+        bound_filters, bound_filter_texts, n_date_range = _snap_whole_periods(
+            bound_filters=bound_filters, bound_filter_texts=bound_filter_texts,
+            n_date_range=n_date_range, now=bundle.now,
+            td_keys=[
+                dm.bound.value_key for dm in partition_declared_measures(
+                    declared_measures=declared_measures, n_dims=n_dims, n_time_dimensions=n_tds,
+                )[1]
+            ],
+            column_type=column_type,
+        )
+
     # Attach the active TD as time_key on every time-needing TransformKey the binder
     # left at None — the stage's own bucket is the axis on a StageSchema.
     active_td_key: Optional[TimeTruncKey] = None
@@ -552,15 +515,6 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
             bound_filters=bound_filters,
             order_specs=order_specs,
         )
-
-    check_date_operands(
-        roots=[
-            *(dm.bound.value_key for dm in declared_measures),
-            *(bf.value_key for bf in bound_filters),
-            *(spec.bound.value_key for spec in order_specs),
-        ],
-        column_type=scope_column_type(scope=scope, bundle=bundle),
-    )
 
     # Any time-needing transform still at time_key=None means no resolvable TD.
     check_time_transforms_resolved(roots=[
@@ -1186,29 +1140,115 @@ def _build_date_range_filter(
     scope: ModelScope | StageSchema,
     bundle: ResolvedSourceBundle,
 ) -> BoundFilter:
-    """Build a row-phase ``BoundFilter`` from a TimeDimension's ``date_range`` as an inclusive ``BetweenKey``, bound against the bare underlying column (not the TimeTruncKey)."""
+    """A TimeDimension's ``date_range`` as one row-phase filter on its bare column: a single
+    point is ``col = P``; a pair is ``col >= lower`` and/or ``col <= upper`` (a null bound is open)."""
     full = td.dimension.full_name
-    parsed = parse_expr(full)
-    bound_col_expr = bind_expr(parsed=parsed, scope=scope, bundle=bundle)
-    col_key = bound_col_expr.value_key
-    # A derived (Column.sql) temporal column binds to a ColumnSqlKey; BetweenKey accepts both kinds.
+    col_key = bind_expr(parsed=parse_expr(full), scope=scope, bundle=bundle).value_key
     assert isinstance(col_key, (ColumnKey, ColumnSqlKey)), (
         f"date_range filter for TimeDimension {full!r} expected a "
         f"column reference; got {type(col_key).__name__}."
     )
-
     date_range = td.date_range
-    assert date_range is not None  # caller builds this only for 2-element date_ranges
-    start, end = date_range[0], date_range[1]
-    predicate = BetweenKey(
-        column=col_key,
-        low=LiteralKey(value=normalize_scalar(start)),
-        high=LiteralKey(value=normalize_scalar(end)),
-    )
+    assert date_range  # the caller builds this only for a present date_range
+    if len(date_range) == 1:
+        assert date_range[0] is not None  # construction rejects a lone null
+        comparisons = [TimePointCmpKey(op="=", operand=col_key, point=date_range[0])]
+    else:
+        lower, upper = date_range
+        comparisons = [
+            *([] if lower is None else [TimePointCmpKey(op=">=", operand=col_key, point=lower)]),
+            *([] if upper is None else [TimePointCmpKey(op="<=", operand=col_key, point=upper)]),
+        ]
+    predicate = comparisons[0] if len(comparisons) == 1 else ArithmeticKey(op="and", operands=tuple(comparisons))
     refs = tuple(walk_value_keys(predicate))
-    phase = max((k.phase for k in refs), default=predicate.phase)
-    return BoundFilter(
-        value_key=predicate, phase=phase, referenced_keys=refs,
+    return BoundFilter(value_key=predicate, phase=Phase.ROW, referenced_keys=refs)
+
+
+_LOWER_OPS = frozenset({">=", ">"})
+_UPPER_OPS = frozenset({"<", "<="})
+_MIRROR = {"<": ">", "<=": ">=", ">": "<", ">=": "<="}
+
+
+def _as_datetime(value: date) -> datetime:
+    return value if isinstance(value, datetime) else datetime(value.year, value.month, value.day)
+
+
+def _snapped_value(
+    value: datetime, *, grans: List[TimeGranularity], is_date: bool,
+) -> date:
+    """The earliest bucket boundary at or before ``value`` over ``grans``, in the operand's type."""
+    snapped = min(floor_to(value, g) for g in grans)
+    return floor_to(snapped, TimeGranularity.DAY).date() if is_date else snapped
+
+
+def _snap_frame_bound(
+    cj: ValueKey, *, grans_by_column: Dict[ValueKey, List[TimeGranularity]],
+    column_type, now: datetime, upper_seen: set,
+) -> ValueKey:
+    """A frame-bound conjunct on a time-dimension column snapped to a bucket boundary; others untouched."""
+    if isinstance(cj, ArithmeticKey) and cj.op == "and":
+        return cj.map_children(lambda c: _snap_frame_bound(
+            c, grans_by_column=grans_by_column, column_type=column_type, now=now, upper_seen=upper_seen,
+        ))
+    if not is_frame_bound(key=cj, time_columns=grans_by_column.keys()):
+        return cj
+    assert isinstance(cj, ArithmeticKey)
+    column, literal = cj.operands
+    op = cj.op
+    if column not in grans_by_column:
+        column, literal, op = literal, column, _MIRROR[op]
+    assert isinstance(literal, LiteralKey) and isinstance(literal.value, date)
+    value = _as_datetime(literal.value)
+    if op in _UPPER_OPS:
+        upper_seen.add(column)
+        value = min(value, now)
+    snapped = _snapped_value(
+        value, grans=grans_by_column[column], is_date=column_type(column) is DataType.DATE,
+    )
+    return ArithmeticKey(
+        op=">=" if op in _LOWER_OPS else "<", operands=(column, LiteralKey(value=snapped)),
+    )
+
+
+def _snap_whole_periods(
+    *,
+    bound_filters: List[BoundFilter],
+    bound_filter_texts: List[Optional[str]],
+    n_date_range: int,
+    td_keys: List[ValueKey],
+    column_type,
+    now: datetime,
+) -> Tuple[List[BoundFilter], List[Optional[str]], int]:
+    """``whole_periods_only``: snap every frame bound on a time-dimension column down to the
+    earliest bucket boundary, the upper bound clamped to now (added when absent)."""
+    grans_by_column: Dict[ValueKey, List[TimeGranularity]] = {}
+    for td_key in td_keys:
+        if isinstance(td_key, TimeTruncKey):
+            grans_by_column.setdefault(td_key.column, []).append(TimeGranularity(td_key.granularity))
+    upper_seen: set = set()
+    snapped = []
+    for bf in bound_filters:
+        if bf.phase != Phase.ROW:
+            snapped.append(bf)
+            continue
+        vk = _snap_frame_bound(
+            bf.value_key, grans_by_column=grans_by_column, column_type=column_type,
+            now=now, upper_seen=upper_seen,
+        )
+        snapped.append(bf if vk is bf.value_key else BoundFilter(
+            value_key=vk, phase=bf.phase, referenced_keys=tuple(walk_value_keys(vk)),
+        ))
+    added = []
+    for column, grans in grans_by_column.items():
+        if column in upper_seen:
+            continue
+        upper = _snapped_value(now, grans=grans, is_date=column_type(column) is DataType.DATE)
+        vk = ArithmeticKey(op="<", operands=(column, LiteralKey(value=upper)))
+        added.append(BoundFilter(value_key=vk, phase=Phase.ROW, referenced_keys=tuple(walk_value_keys(vk))))
+    return (
+        [*snapped[:n_date_range], *added, *snapped[n_date_range:]],
+        [*bound_filter_texts[:n_date_range], *([None] * len(added)), *bound_filter_texts[n_date_range:]],
+        n_date_range + len(added),
     )
 
 

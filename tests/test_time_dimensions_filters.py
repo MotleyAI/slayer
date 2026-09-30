@@ -611,9 +611,10 @@ class TestDateRangeFilter:
         assert and_created is not and_reviewed
 
     def test_empty_date_range_is_rejected_at_construction(self) -> None:
+        dimension = ColumnRef(name="created_at")
         with pytest.raises(pydantic.ValidationError):
             TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension=dimension,
                 granularity=TimeGranularity.MONTH,
                 date_range=[],
             )

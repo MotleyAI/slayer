@@ -14,36 +14,36 @@
 
 ## 2. Core time points
 
-- [ ] 2.1 Add `slayer/core/time_points.py` (parse instants/periods/relative tokens, resolve against `now`, `start`/`next_start`/`floor_g`/`ceil_g`), incl. `parse_temporal_value` replacing `core.keys.parse_iso_temporal` at its call sites; verify 1.2 passes
-- [ ] 2.2 Add transient `TimePointCmpKey` (`KIND_POLICY` entry without flags, boolean-shaped) to `slayer/core/keys.py`, and the shared core helper that types ISO literals at conditional value-argument positions (adopted by `_bind_scalar`), with `children`/`map_children`, register them in every total walker, delete `BetweenKey` and its dispatch arms; verify the totality tests pass
-- [ ] 2.3 Extend `time_bounds.is_temporal_literal` to accept `LiteralKey(date|datetime)`; verify frame-bound unit tests pass
+- [x] 2.1 Add `slayer/core/time_points.py` (parse instants/periods/relative tokens, resolve against `now`, `start`/`next_start`/`floor_g`/`ceil_g`), incl. `parse_temporal_value` replacing `core.keys.parse_iso_temporal` at its call sites; verify 1.2 passes
+- [x] 2.2 Add transient `TimePointCmpKey` (`KIND_POLICY` entry without flags, boolean-shaped) to `slayer/core/keys.py`, and the shared core helper that types ISO literals at conditional value-argument positions (adopted by `_bind_scalar`), with `children`/`map_children`, register them in every total walker, delete `BetweenKey` and its dispatch arms; verify the totality tests pass
+- [x] 2.3 Extend `time_bounds.is_temporal_literal` to accept `LiteralKey(date|datetime)`; verify frame-bound unit tests pass
 
 ## 3. Query input
 
-- [ ] 3.1 Change `TimeDimension.date_range` to `str | list[str | None] | None` with construction checks (shape + time-point syntax) and schema advertisement; delete `SlayerQuery.snap_to_whole_periods`; remove `MALFORMED_DATE_RANGE`; verify construction tests pass
-- [ ] 3.2 Parser: single-string RHS of `in`/`not in` → distinct node; verify parser tests and tuple-`in` regressions pass
+- [x] 3.1 Change `TimeDimension.date_range` to `str | list[str | None] | None` with construction checks (shape + time-point syntax) and schema advertisement; delete `SlayerQuery.snap_to_whole_periods`; remove `MALFORMED_DATE_RANGE`; verify construction tests pass
+- [x] 3.2 Parser: single-string RHS of `in`/`not in` → distinct node; verify parser tests and tuple-`in` regressions pass
 
 ## 4. Binding and resolution
 
-- [ ] 4.1 Engine `clock` parameter; read once in `execute` into `ResolvedSourceBundle.now`, carried through reroot, stages, splices, dry-run and cache refresh; verify 1.7 passes
-- [ ] 4.2 Binder: `gran(col)` → `TimeTruncKey` in `_bind` (wrong shapes → `GranularityCallError`); time-point comparisons and `date_range` → `TimePointCmpKey`; verify binding unit tests
+- [x] 4.1 Engine `clock` parameter; read once in `execute` into `ResolvedSourceBundle.now`, carried through reroot, stages, splices, dry-run and cache refresh; verify 1.7 passes
+- [x] 4.2 Binder: `gran(col)` → `TimeTruncKey` in `_bind` (wrong shapes → `GranularityCallError`); time-point comparisons and `date_range` → `TimePointCmpKey`; verify binding unit tests
 - [ ] 4.3 Checker: the resolution function over `core.keys.temporal_type` (non-temporal → `DateOperandTypeError`; other typing errors new `QueryTypeError` subclasses, lowering incl. `gran(col)` exact bounds, non-temporal fallback); `bind_inputs` runs the pass over every bound expression; compile fails closed on an unresolved key; add raise-ledger rows; ordered after `check_date_operands`, before a fail-closed `map_children` rewrite of `_attach_time_keys`; verify 1.3–1.5 pass
-- [ ] 4.4 Typed `whole_periods_only` pass (earliest floor per column, clamp to now, non-nesting warning); verify 1.6 passes
+- [x] 4.4 Typed `whole_periods_only` pass (earliest floor per column, clamp to now, non-nesting warning); verify 1.6 passes
 
 ## 5. SQL rendering
 
-- [ ] 5.1 Render comparisons against `LiteralKey(date|datetime)` via one dialect hook (default `build_temporal_literal`; BigQuery ISO text; SQLite midnight `>=`/`<` text, else `STRFTIME` normalisation) from both renderers; `TimeTruncKey` arm in `row_expr.py`; verify 1.8 dialect tests and SQLite `T`-storage tests pass
-- [ ] 5.2 Re-bless goldens `dev1745`, `dev1747`, `dev1958` and review each diff is BETWEEN → half-open only
+- [x] 5.1 Render comparisons against `LiteralKey(date|datetime)` via one dialect hook (default `build_temporal_literal`; BigQuery ISO text; SQLite midnight `>=`/`<` text, else `STRFTIME` normalisation) from both renderers; `TimeTruncKey` arm in `row_expr.py`; verify 1.8 dialect tests and SQLite `T`-storage tests pass
+- [x] 5.2 Re-bless goldens `dev1745`, `dev1747`, `dev1958` and review each diff is BETWEEN → half-open only
 
 ## 6. Facade
 
-- [ ] 6.1 AST-level instant-ization of date-only (and typed DATE/TIMESTAMP) literals in lifted `BETWEEN` and verbatim comparators; any catalog DATE/TIMESTAMP column operand, projected or not, incl. `=` / `!=`; verify facade tests pass
+- [x] 6.1 AST-level instant-ization of date-only (and typed DATE/TIMESTAMP) literals in lifted `BETWEEN` and verbatim comparators; any catalog DATE/TIMESTAMP column operand, projected or not, incl. `=` / `!=`; verify facade tests pass
 
 ## 7. Docs and surfaces
 
-- [ ] 7.1 New `docs/concepts/time.md` (single temporal reference, frame-bound section moved from `formulas.md`) linked in `zensical.toml` nav; cross-link the date-functions section of `docs/concepts/references.md` (ISO grammar stated once; host clock vs database clock); `queries.md`, `formulas.md`, `docs/reference/mcp.md`, `docs/interfaces/mcp.md`, `docs/reference/rest-api.md` reduced to pointers; verify every docs page is in the nav
-- [ ] 7.2 MCP `query` tool docstring: compact time-point summary (forms, grammar, `last N` excludes current, one-sided/single-period `date_range`); verify the MCP docs test lists the forms
-- [ ] 7.3 `docs/examples/04_time/time.md` shows the new forms; update and re-execute `time_nb.ipynb` if its cells are affected
+- [x] 7.1 New `docs/concepts/time.md` (single temporal reference, frame-bound section moved from `formulas.md`) linked in `zensical.toml` nav; cross-link the date-functions section of `docs/concepts/references.md` (ISO grammar stated once; host clock vs database clock); `queries.md`, `formulas.md`, `docs/reference/mcp.md`, `docs/interfaces/mcp.md`, `docs/reference/rest-api.md` reduced to pointers; verify every docs page is in the nav
+- [x] 7.2 MCP `query` tool docstring: compact time-point summary (forms, grammar, `last N` excludes current, one-sided/single-period `date_range`); verify the MCP docs test lists the forms
+- [x] 7.3 `docs/examples/04_time/time.md` shows the new forms; update and re-execute `time_nb.ipynb` if its cells are affected
 
 ## 8. Gates
 

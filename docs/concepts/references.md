@@ -259,10 +259,12 @@ case-insensitively):
   `type`, `min`/`max`/`first`/`last` of one, a date function, the clock, an ISO literal, or
   `coalesce` / `ifnull` / `nullif` / `greatest` / `least` / `iif` / `CASE` over those. Anything else
   (a TEXT column, arithmetic, a number) is a type error — declare the column's `type`.
-* **ISO literals.** In a date position `'2024-01-31'` is a DATE and `'2024-01-31 10:00:00'` (or
-  with `T`) a TIMESTAMP; `{variable}` placeholders work there. Elsewhere strings are unchanged.
-* **Backend notes.** The clock reads the database: UTC on SQLite, the session time zone
-  elsewhere. On SQLite a stored date that is not ISO text yields `NULL`, and date arithmetic
+* **ISO literals.** In a date position `'2024-01-31'` is a DATE and an [instant](time.md#time-points)
+  (`'2024-01-31 10:00'`, with a space or `T`) a TIMESTAMP; `{variable}` placeholders work there.
+  Elsewhere a string compared with a temporal operand is a [time point](time.md#time-points).
+* **Backend notes.** `now()` / `current_date()` read the database clock (UTC on SQLite, the
+  session time zone elsewhere); relative time points such as `'last month'` read the SLayer
+  host clock instead. On SQLite a stored date that is not ISO text yields `NULL`, and date arithmetic
   runs through the registered `slayer_date_add` function, so dry-run SQL needs a SLayer
   connection. Queries using `now()` / `current_date()` are never served from, or stored in, the
   [result cache](query-cache.md).

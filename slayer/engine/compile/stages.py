@@ -30,7 +30,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from slayer.core.enums import DataType, JoinType, RANKED_AGGREGATIONS, TimeGranularity
 from slayer.core.errors import AmbiguousJoinPathError, CircularJoinPathError
-from slayer.core.keys import SLOT_COMPOSITE_KINDS, AggregateKey, Grain, ArithmeticKey, BetweenKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, PREDICATE_COMPARISON_OPS, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, effective_root_grain, constituent_grain, attached_parameter_grain, substitute_value_keys, substitute_consumer_keys, walk_value_keys, REGROUP_LEAF_PREFIX, is_cross_model_agg, is_kernel_requiring, split_top_level_and, window_kwarg_of, is_row_attach_root, attached_inputs, operand_aggregates, operand_constituents, parameter_row_leaves, source_anchor_path, source_row_leaves, VALUE_KEY_TYPES
+from slayer.core.keys import SLOT_COMPOSITE_KINDS, AggregateKey, Grain, ArithmeticKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, PREDICATE_COMPARISON_OPS, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, effective_root_grain, constituent_grain, attached_parameter_grain, substitute_value_keys, substitute_consumer_keys, walk_value_keys, REGROUP_LEAF_PREFIX, is_cross_model_agg, is_kernel_requiring, split_top_level_and, window_kwarg_of, is_row_attach_root, attached_inputs, operand_aggregates, operand_constituents, parameter_row_leaves, source_anchor_path, source_row_leaves, VALUE_KEY_TYPES
 from slayer.core.models import Column, SlayerModel, aggregation_definition, empty_value
 from slayer.engine.reference_closure import (
     aggregate_input_closure,
@@ -1586,7 +1586,7 @@ def _operand_null(k: Any, *, h: Tuple[str, ...], srcs: _NullSources) -> bool:
     a predicate is null iff UNKNOWN; a ScalarCall / Star is data-dependent."""
     if isinstance(k, (ColumnKey, ColumnSqlKey, TimeTruncKey, StarKey)):
         return any(_is_prefix(h, p) for p in srcs.get(k, frozenset()))
-    if isinstance(k, (InKey, BetweenKey)) or (
+    if isinstance(k, InKey) or (
         isinstance(k, ArithmeticKey) and k.op.lower() in _PREDICATE_OPS
     ):
         return _pred_value(k, h=h, srcs=srcs) == _U
@@ -1622,8 +1622,6 @@ def _pred_value(cj: ValueKey, *, h: Tuple[str, ...], srcs: _NullSources) -> str:
     """Three-valued (T/F/U/D) value of predicate ``cj`` under ``h``-NULL."""
     if isinstance(cj, InKey):
         return _unknown_if_null((cj.column,), h=h, srcs=srcs)
-    if isinstance(cj, BetweenKey):
-        return _unknown_if_null((cj.column, cj.low, cj.high), h=h, srcs=srcs)
     if not isinstance(cj, ArithmeticKey):
         return _D
     op = cj.op.lower()

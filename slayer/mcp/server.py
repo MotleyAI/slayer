@@ -539,6 +539,16 @@ To connect a new database: create_datasource → describe_datasource (verify + l
         case-folding can't unify go in the IN-set. Apply only the transformations
         (TRIM/ROUND/CAST/dedup) the question or a governing definition requires.
 
+        Time points — a string compared with a DATE/TIMESTAMP expression or a ``gran(col)`` call
+        is a time point: an instant ``'2025-03-01 10:00:00'`` compares as written; a period is a
+        half-open range — ``'2025'``, ``'2025-Q1'``, ``'2025-03'``, ``'2025-W05'`` (ISO week),
+        ``'2025-03-01'`` (a date-only string means the whole day), or a relative token read from
+        the host clock: ``'today'``, ``'this|last|next month'`` (any granularity), ``'last 7 days'``
+        (excludes the current day), ``'3 months ago'``, ``'year to date'``. ``ts >= P`` starts at
+        P, ``ts <= P`` ends with P, ``ts = P`` / ``ts in '2025-Q1'`` is inside P. A time
+        dimension's ``date_range`` is one period (``"last month"``) or ``[lower, upper]`` with
+        either bound null (one-sided).
+
         Verify — run the exact final query and read the result (show_sql=true when unsure): row
         count plausible; no dimension-only GROUP BY when you wanted per-record rows
         (distinct_dimension_values: false); sort column + direction as asked; each aggregate's

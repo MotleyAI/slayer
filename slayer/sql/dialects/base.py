@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from datetime import date
+from datetime import date, datetime
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, Optional, TypeGuard, get_args
 from collections.abc import Callable, Sequence
@@ -113,6 +113,16 @@ def operand_copy(value: Expression) -> Expression:
 def iso_text(value: date) -> str:
     """``YYYY-MM-DD``, or ``YYYY-MM-DD HH:MM:SS[.ffffff]`` for a datetime."""
     return str(value)
+
+
+TemporalComparisonOp = Literal["=", "!=", "<", "<=", ">", ">="]
+COMPARISON_NODES: dict[str, Any] = {
+    "=": exp.EQ, "!=": exp.NEQ, "<": exp.LT, "<=": exp.LTE, ">": exp.GT, ">=": exp.GTE,
+}
+
+
+def temporal_type_of(value: date) -> DataType:
+    return DataType.TIMESTAMP if isinstance(value, datetime) else DataType.DATE
 
 
 def _build_covar_decomposition(
@@ -397,6 +407,13 @@ class SqlDialect(BaseModel):
 
     def build_temporal_literal(self, *, value: date, dt: DataType) -> Expression:
         return exp.Cast(this=exp.Literal.string(iso_text(value)), to=exp.DataType.build(dt.value))
+
+    def build_temporal_comparison(
+        self, *, op: TemporalComparisonOp, operand: Expression, value: date,
+    ) -> Expression:
+        """``operand <op> value`` for a DATE / TIMESTAMP ``value`` (the operand's type)."""
+        literal = self.build_temporal_literal(value=value, dt=temporal_type_of(value))
+        return COMPARISON_NODES[op](this=operand, expression=literal)
 
     def build_current_date(self) -> Expression:
         return exp.CurrentDate()

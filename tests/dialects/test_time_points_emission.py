@@ -49,9 +49,11 @@ def _flat(sql: str) -> str:
 @pytest.mark.parametrize("dialect", TIER1)
 async def test_lowered_bounds_render(dialect) -> None:
     sql = await _sql(dialect, date_range="2025-Q1", filters=["ts > 'last 6 hours'", "month(ts) = month(shipped_at)"])
-    assert "2025-01-01" in sql and "2025-04-01" in sql, sql
+    assert "2025-01-01" in sql, sql
+    assert "2025-04-01" in sql, sql
     assert "2026-09-29 12:00:00" in sql, sql  # > last 6 hours ⇔ >= next_start
-    assert "last 6 hours" not in sql and "2025-Q1" not in sql, sql
+    assert "last 6 hours" not in sql, sql
+    assert "2025-Q1" not in sql, sql
     assert "BETWEEN" not in sql.upper(), sql
     assert "shipped_at" in sql, sql
 
@@ -105,7 +107,8 @@ async def test_granularity_call_literal_comparison_is_a_raw_column_bound(dialect
 async def test_bigquery_bounds_are_plain_iso_text(filt, measures) -> None:
     sql = _flat(await _sql("bigquery", filters=[filt], measures=measures))
     assert re.search(r">=\s*'2025-01-01( 00:00:00)?'", sql), sql
-    assert "CAST('2025-01-01" not in sql and "TIMESTAMP('2025-01-01" not in sql, sql
+    assert "CAST('2025-01-01" not in sql, sql
+    assert "TIMESTAMP('2025-01-01" not in sql, sql
 
 
 async def test_sqlite_midnight_half_open_bounds_stay_plain_text() -> None:

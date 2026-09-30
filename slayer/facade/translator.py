@@ -14,11 +14,12 @@ from __future__ import annotations
 import logging
 import re
 from contextvars import ContextVar
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Sequence, Set as AbstractSet
 
 import sqlglot
 import sqlglot.errors
 import sqlglot.expressions as exp
+from sqlglot.expressions.core import Expression
 from pydantic import BaseModel, ConfigDict
 
 from slayer.core.enums import DataType, JoinCardinality, JoinType, TimeGranularity
@@ -1263,9 +1264,52 @@ def _try_aggregate_alias_filter(
     )
 
 
+_DATE_ONLY_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+_TIME_BOUND_OPS: dict[type, str] = {**_COMPARATOR_SQL, exp.NEQ: "!="}
+
+
+def _temporal_literal_text(node: Expression) -> str | None:
+    """The text of a string literal or a typed ``DATE '…'`` / ``TIMESTAMP '…'`` literal."""
+    if isinstance(node, exp.Cast) and node.to.this in (exp.DataType.Type.DATE, exp.DataType.Type.TIMESTAMP):
+        node = node.this
+    return str(node.this) if isinstance(node, exp.Literal) and node.is_string else None
+
+
+def _as_instant(node: Expression) -> Expression:
+    """A date-only temporal literal as the string literal of its midnight instant; else unchanged."""
+    text = _temporal_literal_text(node)
+    if text is None:
+        return node
+    return exp.Literal.string(f"{text} 00:00:00" if _DATE_ONLY_RE.fullmatch(text) else text)
+
+
+def _instantize_time_bounds(
+    conj: Expression, temporal_columns: AbstractSet[str],
+    *, strip_prefix: tuple[str, str] | None, alias_map: dict[str, str] | None,
+) -> Expression:
+    """Carry date-only literals compared with a DATE / TIMESTAMP column as midnight instants,
+    so the SLayer time-point reading of the translated filter keeps the SQL meaning."""
+    def temporal(node: Expression) -> bool:
+        return isinstance(node, exp.Column) and _column_to_dotted(
+            node, strip_prefix=strip_prefix, alias_map=alias_map,
+        ) in temporal_columns
+
+    if isinstance(conj, exp.Between) and temporal(conj.this):
+        return exp.Between(
+            this=conj.this, low=_as_instant(conj.args["low"]), high=_as_instant(conj.args["high"]),
+        )
+    if type(conj) in _TIME_BOUND_OPS:
+        if temporal(conj.this) and _temporal_literal_text(conj.expression) is not None:
+            return type(conj)(this=conj.this, expression=_as_instant(conj.expression))
+        if temporal(conj.expression) and _temporal_literal_text(conj.this) is not None:
+            return type(conj)(this=_as_instant(conj.this), expression=conj.expression)
+    return conj
+
+
 def _classify_where_conjunct(
-    conj: exp.Expression, time_dim_names: set[str],
+    conj: Expression, time_dim_names: set[str],
     *,
+    temporal_columns: AbstractSet[str] = frozenset(),
     strip_prefix: tuple[str, str] | None = None,
     alias_map: dict[str, str] | None = None,
 ) -> tuple[tuple[str, str, str] | None, str | None]:
@@ -1285,15 +1329,24 @@ def _classify_where_conjunct(
     SlayerQuery.filters, not as the original 3-part-qualified form that
     the DSL parser would reject.
     """
-    if isinstance(conj, exp.Between):
+    instantized = _instantize_time_bounds(
+        conj, temporal_columns, strip_prefix=strip_prefix, alias_map=alias_map,
+    )
+    if isinstance(instantized, exp.Between):
         lifted = _lift_time_between(
-            conj, time_dim_names, strip_prefix=strip_prefix, alias_map=alias_map,
+            instantized, time_dim_names, strip_prefix=strip_prefix, alias_map=alias_map,
         )
         if lifted is not None:
             return lifted, None
     normalised = _normalise_predicate_columns(
         conj, strip_prefix=strip_prefix, alias_map=alias_map,
     )
+    if instantized is not conj:
+        normalised_bound = _normalise_predicate_columns(
+            instantized, strip_prefix=strip_prefix, alias_map=alias_map,
+        )
+        op = _TIME_BOUND_OPS[type(normalised_bound)]
+        return None, f"{normalised_bound.this.sql()} {op} {normalised_bound.expression.sql()}"
     return None, _rewrite_neq(normalised.sql())
 
 
@@ -1397,11 +1450,12 @@ def _apply_where(
     items_by_projected_name: dict[str, "_ProjectionItem"],
     filters_out: list[str],
     *,
+    temporal_columns: AbstractSet[str] = frozenset(),
     strip_prefix: tuple[str, str] | None = None,
     alias_map: dict[str, str] | None = None,
 ) -> None:
     """Walk the WHERE chain; route aggregate-alias refs to colon-form
-    filters (DEV-1568), lift time-dim filters, append verbatim rest."""
+    filters, lift time-dim filters, append verbatim rest."""
     if where is None:
         return
     time_dim_names = set(time_dims_built.keys())
@@ -1413,7 +1467,8 @@ def _apply_where(
             filters_out.append(colon_form)
             continue
         lifted, verbatim = _classify_where_conjunct(
-            conj, time_dim_names, strip_prefix=strip_prefix, alias_map=alias_map,
+            conj, time_dim_names, temporal_columns=temporal_columns | time_dim_names,
+            strip_prefix=strip_prefix, alias_map=alias_map,
         )
         if lifted is not None:
             name, lo, hi = lifted
@@ -2798,6 +2853,10 @@ def _translate_slayer_select(
     _apply_where(
         parsed.args.get("where"), plan.time_dim_by_name,
         item_by_projected_name, filters,
+        temporal_columns={
+            d.name for d in (*table.dimensions, *overlays.extra_dims_by_name.values())
+            if d.data_type in (DataType.DATE, DataType.TIMESTAMP)
+        },
         strip_prefix=strip_prefix, alias_map=overlays.alias_map,
     )
     _apply_having(

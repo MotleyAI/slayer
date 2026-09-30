@@ -1,4 +1,4 @@
-"""Frame-bound predicate analysis for trailing-window / shifted CTEs (DEV-1732).
+"""Frame-bound predicate analysis for trailing-window / shifted CTEs.
 
 Some CTEs must read rows from OUTSIDE the query's visible time frame:
 
@@ -8,9 +8,8 @@ Some CTEs must read rows from OUTSIDE the query's visible time frame:
 * a ``time_shift`` shifted CTE — the shifted value for the earliest visible
   bucket comes from a bucket outside the frame.
 
-``TimeDimension.date_range`` has always been excluded from those CTEs for that
-reason. This module generalises the exclusion from that one carrier to the
-*semantic class* it belongs to, so the two spellings of one intent agree:
+This module identifies that *semantic class*, so every spelling of one intent
+(``date_range``, a time-point comparison, ``gran(col)`` against a point) agrees:
 
     A ROW-phase filter conjunct that is a relational bound, with a temporal
     literal, on the raw column of one of the query's time dimensions is a FRAME
@@ -24,9 +23,10 @@ other — the same placement rationale as :mod:`slayer.core.window_duration`.
 
 from __future__ import annotations
 
+from datetime import date
 from typing import AbstractSet, Optional
 
-from slayer.core.keys import ArithmeticKey, BetweenKey, LiteralKey, ValueKey
+from slayer.core.keys import ArithmeticKey, LiteralKey, ValueKey
 
 __all__ = [
     "RELATIONAL_OPS",
@@ -47,32 +47,13 @@ _AND = "and"
 def is_temporal_literal(key: object) -> bool:
     """Is ``key`` a literal usable as a frame-bound endpoint?
 
-    A **bare** ``LiteralKey`` holding a non-``None`` ``str`` — nothing else.
-    "Bare" means the operand IS the literal, not an expression tree that merely
-    contains one: ``ArithmeticKey('+', (LiteralKey(1), LiteralKey(2)))`` does not
-    qualify. (``isinstance`` is deliberate — ``LiteralKey`` has no subclasses,
-    and an exact ``type(...) is`` check would be unidiomatic here.)
-
-    Deliberately a whitelist of one shape rather than "contains no column
-    reference", which would also admit dynamic expressions (a zero-argument
-    scalar call, say) and quietly treat them as frame bounds.
-
-    Mirrors ``BetweenKey``, whose ``low``/``high`` are
-    ``LiteralKey(value=normalize_scalar(...))`` and are strings for dates — so
-    the explicit spelling is recognised on exactly the same terms as the
-    ``date_range`` one.
-
-    Two cases the strictness matters for:
-
-    * ``created_at < None`` binds to ``LiteralKey(value=None)``. ``col < NULL``
-      matches nothing; stripping it would turn an empty result into the full
-      population.
-    * ``created_at >= 5`` binds to ``LiteralKey(value=Decimal(5))`` — a
-      type-invalid comparison, not a frame bound.
-
-    ``bool`` is excluded for free: ``isinstance(True, str)`` is ``False``.
+    A **bare** ``LiteralKey`` holding a ``str``, ``date`` or ``datetime`` (a
+    resolved time point) — not an expression tree that merely contains one, and
+    not a dynamic expression such as a zero-argument scalar call.
+    ``created_at < None`` (matches nothing) and ``created_at >= 5`` (type-invalid)
+    are therefore never frame bounds; ``bool`` is excluded for free.
     """
-    return isinstance(key, LiteralKey) and isinstance(key.value, str)
+    return isinstance(key, LiteralKey) and isinstance(key.value, (str, date))
 
 
 def is_frame_bound(*, key: object, time_columns: AbstractSet[ValueKey]) -> bool:
@@ -86,12 +67,6 @@ def is_frame_bound(*, key: object, time_columns: AbstractSet[ValueKey]) -> bool:
     Both operand orders count — ``'2024-06-01' <= created_at`` says the same
     thing as ``created_at >= '2024-06-01'``.
     """
-    if isinstance(key, BetweenKey):
-        return (
-            key.column in time_columns
-            and is_temporal_literal(key.low)
-            and is_temporal_literal(key.high)
-        )
     if not isinstance(key, ArithmeticKey) or key.op not in RELATIONAL_OPS:
         return False
     if len(key.operands) != 2:
@@ -121,7 +96,7 @@ def strip_frame_bounds(
 
     ``or`` and ``not`` are never descended into — no sound split exists under a
     disjunction or a negation, and keeping the predicate whole preserves the
-    pre-DEV-1732 result, which is the safe direction to err in.
+    unstripped result, which is the safe direction to err in.
     """
     if not time_columns:
         return key

@@ -48,7 +48,8 @@ class TestBounds:
 
     async def test_instant_upper_bound_is_inclusive(self, engine) -> None:
         got = await ids_with_range(engine, ["2024-01-01", "2024-01-10 00:00:00"])
-        assert 36 in got and 37 not in got
+        assert 36 in got
+        assert 37 not in got
         assert got == ids_where(lambda t: D(2024, 1, 1) <= t <= D(2024, 1, 10))
 
     async def test_instant_lower_bound_is_inclusive(self, engine) -> None:
@@ -128,16 +129,18 @@ class TestConstruction:
         [], ["2024-01-01", "2024-02-01", "2024-03-01"], [None, None],
     ])
     def test_malformed_shapes_rejected(self, date_range) -> None:
+        payload = {"source_model": "ev", "time_dimensions": [_td(date_range)]}
         with pytest.raises(pydantic.ValidationError) as ei:
-            SlayerQuery.model_validate({"source_model": "ev", "time_dimensions": [_td(date_range)]})
+            SlayerQuery.model_validate(payload)
         msg = str(ei.value)
         assert "ts" in msg, msg
         assert "date_range" in msg, msg
 
     @pytest.mark.parametrize("date_range", [["last fortnight", None], "2025/01/01", ["2025-13", "2025-Q1"]])
     def test_unparseable_bound_lists_forms(self, date_range) -> None:
+        payload = {"source_model": "ev", "time_dimensions": [_td(date_range)]}
         with pytest.raises(pydantic.ValidationError) as ei:
-            SlayerQuery.model_validate({"source_model": "ev", "time_dimensions": [_td(date_range)]})
+            SlayerQuery.model_validate(payload)
         msg = str(ei.value)
         for form in ("YYYY-Qn", "YYYY-MM", "last N"):
             assert form in msg, msg
@@ -154,4 +157,5 @@ class TestConstruction:
     def test_schema_advertises_string_and_null_bounds(self) -> None:
         schema = TimeDimension.model_json_schema()
         text = str(schema["properties"]["date_range"])
-        assert "'string'" in text and "'null'" in text, text
+        assert "'string'" in text, text
+        assert "'null'" in text, text

@@ -75,7 +75,8 @@ class TestInstants:
 
     def test_values_are_naive(self) -> None:
         point = resolve_time_point("2024-06-01 10:00:00", now=NOW)
-        assert isinstance(point, Instant) and point.value.tzinfo is None
+        assert isinstance(point, Instant)
+        assert point.value.tzinfo is None
 
     def test_midnight_instant_is_not_a_day_period(self) -> None:
         assert isinstance(resolve_time_point("2024-06-01 00:00:00", now=NOW), Instant)
@@ -233,7 +234,8 @@ class TestParseTemporalValue:
     ])
     def test_day_is_date_instant_is_datetime(self, text, value) -> None:
         got = parse_temporal_value(text)
-        assert got == value and type(got) is type(value)
+        assert got == value
+        assert type(got) is type(value)
 
     @pytest.mark.parametrize("text", ["2024-02-30", "2025-Q1", "last month", "2024-01-31 10:15:00Z", "x"])
     def test_not_a_date_value(self, text) -> None:

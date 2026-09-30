@@ -552,7 +552,8 @@ class TestWindowedSrcFrameBounds:
         src = _extract_src_body(sql)
         assert "2024-06-01" not in src, src
         assert "2024-06-02" not in src, src
-        assert "2024-06-01" in sql and "2024-06-02" in sql, sql
+        assert "2024-06-01" in sql, sql
+        assert "2024-06-02" in sql, sql
 
     async def test_mode_a_model_filter_is_kept_verbatim_in_src(self) -> None:
         """§2.5: a ``SlayerModel.filters`` entry defines which rows EXIST. There

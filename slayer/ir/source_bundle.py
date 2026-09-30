@@ -4,6 +4,7 @@ The orchestrator builds this once at execute start; the binder reads it purely.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -56,6 +57,8 @@ class ResolvedSourceBundle(BaseModel):
     dry_run_placeholders: bool = False
     # Query-backed models this stage reads that could not be spliced, with the cause.
     splice_failures: Dict[str, Exception] = Field(default_factory=dict)
+    # The one clock reading every time point in this execution resolves against.
+    now: datetime = Field(default_factory=datetime.now)
 
     def get_referenced_model(self, name: str) -> Optional[SlayerModel]:
         """Linear lookup by name (list is small, O(n) scan is fine)."""

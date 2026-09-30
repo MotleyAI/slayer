@@ -177,8 +177,9 @@ def test_command_fallback_warning_suppressed_during_translate(dialect, caplog) -
     ],
 )
 def test_dml_ddl_rejected_read_only(sql: str, dialect) -> None:
+    catalog = _catalog()
     with pytest.raises(TranslationError) as exc_info:
-        translate(sql=sql, catalog=_catalog(), dialect=dialect)
+        translate(sql=sql, catalog=catalog, dialect=dialect)
     assert READ_ONLY_MESSAGE in str(exc_info.value)
 
 
@@ -188,8 +189,10 @@ def test_select_star_browse_mode_expands_to_columns(dialect) -> None:
         sql="SELECT * FROM orders", catalog=_catalog(), dialect=dialect,
         expand_star_in_browse_mode=True,
     )
+    assert isinstance(result, QueryResult)
     assert result.query.measures is None
-    assert result.query.dimensions is not None and len(result.query.dimensions) > 0
+    assert result.query.dimensions is not None
+    assert len(result.query.dimensions) > 0
 
 
 def test_select_star_browse_mode_skips_fanout_paths(dialect) -> None:
@@ -206,8 +209,9 @@ def test_select_star_browse_mode_skips_fanout_paths(dialect) -> None:
 
 def test_select_star_default_strict_for_flight(dialect) -> None:
     """With ``expand_star_in_browse_mode=False`` (Flight default), ``SELECT *`` rejects."""
+    catalog = _catalog()
     with pytest.raises(TranslationError) as exc_info:
-        translate(sql="SELECT * FROM orders", catalog=_catalog(), dialect=dialect)
+        translate(sql="SELECT * FROM orders", catalog=catalog, dialect=dialect)
     assert "SELECT *" in str(exc_info.value)
 
 
@@ -217,9 +221,10 @@ def test_select_star_with_aggregate_rejected(dialect) -> None:
         "SELECT *, COUNT(*) FROM orders",
         "SELECT * FROM orders GROUP BY status",
     ):
+        catalog = _catalog()
         with pytest.raises(TranslationError) as exc_info:
             translate(
-                sql=sql, catalog=_catalog(), dialect=dialect,
+                sql=sql, catalog=catalog, dialect=dialect,
                 expand_star_in_browse_mode=True,
             )
         assert "SELECT *" in str(exc_info.value)
@@ -227,8 +232,9 @@ def test_select_star_with_aggregate_rejected(dialect) -> None:
 
 
 def test_parse_error_translates(dialect) -> None:
+    catalog = _catalog()
     with pytest.raises(TranslationError) as exc_info:
-        translate(sql="SELECT FROM WHERE", catalog=_catalog(), dialect=dialect)
+        translate(sql="SELECT FROM WHERE", catalog=catalog, dialect=dialect)
     assert "parse error" in str(exc_info.value).lower()
 
 
@@ -555,22 +561,25 @@ def test_bare_name_unique_match(dialect) -> None:
 
 
 def test_bare_name_ambiguous_errors(dialect) -> None:
+    catalog = _multi_schema_catalog()
     with pytest.raises(TranslationError) as exc_info:
-        translate(sql="SELECT x FROM shared", catalog=_multi_schema_catalog(), dialect=dialect)
+        translate(sql="SELECT x FROM shared", catalog=catalog, dialect=dialect)
     assert "Ambiguous" in str(exc_info.value)
     assert "dsA.shared" in str(exc_info.value)
     assert "dsB.shared" in str(exc_info.value)
 
 
 def test_bare_name_unknown_errors(dialect) -> None:
+    catalog = _catalog()
     with pytest.raises(TranslationError) as exc_info:
-        translate(sql="SELECT 1 FROM nope", catalog=_catalog(), dialect=dialect)
+        translate(sql="SELECT 1 FROM nope", catalog=catalog, dialect=dialect)
     assert "Unknown table" in str(exc_info.value)
 
 
 def test_unknown_catalog_errors(dialect) -> None:
+    catalog = _catalog()
     with pytest.raises(TranslationError) as exc_info:
-        translate(sql="SELECT id FROM elsewhere.jaffle.orders", catalog=_catalog(), dialect=dialect)
+        translate(sql="SELECT id FROM elsewhere.jaffle.orders", catalog=catalog, dialect=dialect)
     assert "Unknown catalog" in str(exc_info.value)
 
 
@@ -597,7 +606,8 @@ def test_simple_metric_and_dimension(dialect) -> None:
     )
     assert isinstance(result, QueryResult)
     assert result.query.source_model == "orders"
-    assert result.query.measures is not None and len(result.query.measures) == 1
+    assert result.query.measures is not None
+    assert len(result.query.measures) == 1
     assert result.query.measures[0].formula == "revenue:sum"
     assert result.query.dimensions is not None
     assert [d.full_name for d in result.query.dimensions] == ["status"]
@@ -636,8 +646,9 @@ def test_cross_model_dotted_dimension(dialect) -> None:
 
 
 def test_unknown_projection_item_errors(dialect) -> None:
+    catalog = _catalog()
     with pytest.raises(TranslationError) as exc_info:
-        translate(sql="SELECT bogus FROM orders", catalog=_catalog(), dialect=dialect)
+        translate(sql="SELECT bogus FROM orders", catalog=catalog, dialect=dialect)
     assert "Unknown projection item" in str(exc_info.value)
 
 
@@ -720,29 +731,33 @@ def test_aggregate_alias_renames_projection(dialect) -> None:
 
 def test_aggregate_ineligible_for_column_errors(dialect) -> None:
     # SUM is not in TEXT's default aggregation set.
+    catalog = _catalog()
     with pytest.raises(TranslationError) as exc_info:
-        translate(sql="SELECT SUM(status) FROM orders", catalog=_catalog(), dialect=dialect)
+        translate(sql="SELECT SUM(status) FROM orders", catalog=catalog, dialect=dialect)
     assert "status:sum" in str(exc_info.value)
 
 
 def test_aggregate_over_saved_measure_errors_with_followup(dialect) -> None:
+    catalog = _catalog()
     with pytest.raises(TranslationError) as exc_info:
-        translate(sql="SELECT SUM(aov) FROM orders", catalog=_catalog(), dialect=dialect)
+        translate(sql="SELECT SUM(aov) FROM orders", catalog=catalog, dialect=dialect)
     assert AGG_OVER_MEASURE_MESSAGE in str(exc_info.value)
 
 
 def test_aggregate_over_expression_errors_with_followup(dialect) -> None:
+    catalog = _catalog()
     with pytest.raises(TranslationError) as exc_info:
-        translate(sql="SELECT SUM(revenue + revenue) FROM orders", catalog=_catalog(), dialect=dialect)
+        translate(sql="SELECT SUM(revenue + revenue) FROM orders", catalog=catalog, dialect=dialect)
     assert AGG_OVER_MEASURE_MESSAGE in str(exc_info.value)
 
 
 def test_count_of_expression_is_not_row_count(dialect) -> None:
     # COUNT(<expression>) must NOT be mis-mapped to *:count (row count).
+    catalog = _catalog()
     with pytest.raises(TranslationError) as exc_info:
         translate(
             sql="SELECT COUNT(CASE WHEN status = 'x' THEN 1 END) FROM orders",
-            catalog=_catalog(), dialect=dialect,
+            catalog=catalog, dialect=dialect,
         )
     assert AGG_OVER_MEASURE_MESSAGE in str(exc_info.value)
 
@@ -874,11 +889,12 @@ def test_where_on_aggregate_alias_count_distinct_resolves(dialect) -> None:
 
 def test_where_aggregate_alias_against_non_literal_raises(dialect) -> None:
     """An aggregate-alias compared to a non-literal must raise, not emit broken SQL."""
+    catalog = _catalog()
     with pytest.raises(TranslationError):
         translate(
             sql='SELECT status, COUNT(*) AS "count", SUM(revenue) AS "rev" '
                 'FROM orders WHERE "count" > "rev" GROUP BY status',
-            catalog=_catalog(), dialect=dialect,
+            catalog=catalog, dialect=dialect,
         )
 
 
@@ -930,11 +946,12 @@ def test_double_quoted_qualified_column_in_where_unquotes(dialect) -> None:
 
 def test_having_aggregate_alias_against_non_literal_raises(dialect) -> None:
     """HAVING symmetry of the WHERE raise rule. Covers Codex #1."""
+    catalog = _catalog()
     with pytest.raises(TranslationError):
         translate(
             sql='SELECT status, COUNT(*) AS "count", SUM(revenue) AS "rev" '
                 'FROM orders GROUP BY status HAVING "count" > "rev"',
-            catalog=_catalog(), dialect=dialect,
+            catalog=catalog, dialect=dialect,
         )
 
 
@@ -1030,8 +1047,9 @@ def test_metabase_aliased_cast_time_trunc_group_by_validates(dialect) -> None:
 
 
 def test_time_grain_on_non_time_column_errors(dialect) -> None:
+    catalog = _catalog()
     with pytest.raises(TranslationError) as exc_info:
-        translate(sql="SELECT month(status) FROM orders", catalog=_catalog(), dialect=dialect)
+        translate(sql="SELECT month(status) FROM orders", catalog=catalog, dialect=dialect)
     assert "not a time column" in str(exc_info.value)
 
 
@@ -1061,6 +1079,7 @@ def test_metabase_sunday_week_wrapper_recognised(dialect) -> None:
 def test_one_day_offset_on_non_week_is_preserved(dialect) -> None:
     """The day-offset unwrap is WEEK-only; a month trunc with a +1 day offset is
     user intent, not a Sunday-week wrapper, and is rejected."""
+    catalog = _catalog()
     with pytest.raises(TranslationError):
         translate(
             sql=(
@@ -1068,7 +1087,7 @@ def test_one_day_offset_on_non_week_is_preserved(dialect) -> None:
                 '("orders"."ordered_at" + INTERVAL \'1 day\')), '
                 'COUNT(*) FROM "orders"'
             ),
-            catalog=_catalog(), dialect=dialect,
+            catalog=catalog, dialect=dialect,
         )
 
 
@@ -1076,6 +1095,7 @@ def test_sunday_week_wrapper_two_day_offset_rejected(dialect) -> None:
     """The Sunday-week detector matches only a one-day shift on each leg; a
     two-day shift on either leg must keep raising."""
     # Inner +2 day (outer -1 day intact) — inner leg is not one day.
+    catalog_ = _catalog()
     with pytest.raises(TranslationError):
         translate(
             sql=(
@@ -1087,9 +1107,10 @@ def test_sunday_week_wrapper_two_day_offset_rejected(dialect) -> None:
                 '("orders"."ordered_at" + INTERVAL \'2 day\')) AS DATE) '
                 '+ INTERVAL \'-1 day\') AS DATE)'
             ),
-            catalog=_catalog(), dialect=dialect,
+            catalog=catalog_, dialect=dialect,
         )
     # Inner +1 day intact, outer -2 day — outer leg is not one day.
+    catalog = _catalog()
     with pytest.raises(TranslationError):
         translate(
             sql=(
@@ -1101,7 +1122,7 @@ def test_sunday_week_wrapper_two_day_offset_rejected(dialect) -> None:
                 '("orders"."ordered_at" + INTERVAL \'1 day\')) AS DATE) '
                 '+ INTERVAL \'-2 day\') AS DATE)'
             ),
-            catalog=_catalog(), dialect=dialect,
+            catalog=catalog, dialect=dialect,
         )
 
 
@@ -1111,6 +1132,7 @@ def test_partial_sunday_week_wrapper_is_rejected(dialect) -> None:
     """The Sunday-week unwrap requires both the outer ``-1 day`` and inner ``+1 day``
     shifts together; half a wrapper is user intent and must not collapse to ``WEEK(col)``."""
     # Inner +1 day alone — no outer wrapper. Not Sunday-week; reject.
+    catalog_ = _catalog()
     with pytest.raises(TranslationError):
         translate(
             sql=(
@@ -1118,9 +1140,10 @@ def test_partial_sunday_week_wrapper_is_rejected(dialect) -> None:
                 '("orders"."ordered_at" + INTERVAL \'1 day\')), '
                 'COUNT(*) FROM "orders"'
             ),
-            catalog=_catalog(), dialect=dialect,
+            catalog=catalog_, dialect=dialect,
         )
     # Inner -1 day alone — also not Sunday-week (wrong direction).
+    catalog = _catalog()
     with pytest.raises(TranslationError):
         translate(
             sql=(
@@ -1128,13 +1151,14 @@ def test_partial_sunday_week_wrapper_is_rejected(dialect) -> None:
                 '("orders"."ordered_at" - INTERVAL \'1 day\')), '
                 'COUNT(*) FROM "orders"'
             ),
-            catalog=_catalog(), dialect=dialect,
+            catalog=catalog, dialect=dialect,
         )
 
 
 def test_outer_week_day_offset_direction_aware(dialect) -> None:
     """Direction matters on the outer wrapper: a ``+1 day`` outer offset is not
     Metabase's shape and must not collapse to a plain WEEK grain."""
+    catalog = _catalog()
     with pytest.raises(TranslationError):
         translate(
             sql=(
@@ -1142,7 +1166,7 @@ def test_outer_week_day_offset_direction_aware(dialect) -> None:
                 '("orders"."ordered_at" + INTERVAL \'1 day\')) + INTERVAL \'1 day\'), '
                 'COUNT(*) FROM "orders"'
             ),
-            catalog=_catalog(), dialect=dialect,
+            catalog=catalog, dialect=dialect,
         )
 
 
@@ -1352,10 +1376,11 @@ def test_group_by_omission_is_lenient(dialect) -> None:
 
 
 def test_group_by_extra_item_errors_strict(dialect) -> None:
+    catalog = _catalog()
     with pytest.raises(TranslationError) as exc_info:
         translate(
             sql="SELECT revenue_sum, status FROM orders GROUP BY status, customers.region",
-            catalog=_catalog(), dialect=dialect,
+            catalog=catalog, dialect=dialect,
         )
     assert "customers.region" in str(exc_info.value)
     assert "not in the projection" in str(exc_info.value)
@@ -1373,10 +1398,11 @@ def test_order_by_by_projected_metric_name(dialect) -> None:
 
 
 def test_order_by_unknown_column_errors(dialect) -> None:
+    catalog = _catalog()
     with pytest.raises(TranslationError) as exc_info:
         translate(
             sql="SELECT revenue_sum, status FROM orders ORDER BY missing ASC",
-            catalog=_catalog(), dialect=dialect,
+            catalog=catalog, dialect=dialect,
         )
     assert "not in the projection" in str(exc_info.value)
 
@@ -1450,10 +1476,11 @@ def test_cast_joined_column_projection(dialect) -> None:
 @pytest.mark.parametrize("type_name", ["UUID", "JSON", "ARRAY<INT>", "STRUCT<x INT>"])
 def test_cast_unsupported_target_type_raises(type_name: str, dialect) -> None:
     """Cast targets not in the SLayer DataType mapping raise 'Unsupported projection expression'."""
+    catalog = _catalog()
     with pytest.raises(TranslationError) as exc_info:
         translate(
             sql=f"SELECT CAST(revenue AS {type_name}) FROM orders",
-            catalog=_catalog(), dialect=dialect,
+            catalog=catalog, dialect=dialect,
         )
     assert "Unsupported projection expression" in str(exc_info.value)
 
@@ -1479,20 +1506,22 @@ def test_cast_unsupported_target_type_raises(type_name: str, dialect) -> None:
 )
 def test_cast_rejected_coercions_raise(col: str, target: str, dialect) -> None:
     """Pairs outside the §5 allowlist surface a strict, named error message."""
+    catalog = _catalog()
     with pytest.raises(TranslationError) as exc_info:
         translate(
             sql=f"SELECT CAST({col} AS {target}) FROM orders",
-            catalog=_catalog(), dialect=dialect,
+            catalog=catalog, dialect=dialect,
         )
     assert "Unsupported CAST" in str(exc_info.value)
 
 
 def test_cast_rejected_error_message_pins_full_contract(dialect) -> None:
     """The rejected-coercion error names source, target, offending SQL, and docs link."""
+    catalog = _catalog()
     with pytest.raises(TranslationError) as exc_info:
         translate(
             sql="SELECT CAST(status AS INT) FROM orders",
-            catalog=_catalog(), dialect=dialect,
+            catalog=catalog, dialect=dialect,
         )
     msg = str(exc_info.value)
     assert "Unsupported CAST" in msg
@@ -1550,19 +1579,21 @@ def test_cast_admitted_coercions_parametrised(
 
 def test_cast_try_cast_rejected(dialect) -> None:
     """TRY_CAST parses to exp.TryCast, not exp.Cast, and is out of scope."""
+    catalog = _catalog()
     with pytest.raises(TranslationError):
         translate(
             sql="SELECT TRY_CAST(status AS INT) FROM orders",
-            catalog=_catalog(), dialect=dialect,
+            catalog=catalog, dialect=dialect,
         )
 
 
 def test_cast_aggregate_inner_rejected(dialect) -> None:
     """CAST(<aggregate> AS T) is explicitly out of scope (Column only)."""
+    catalog = _catalog()
     with pytest.raises(TranslationError):
         translate(
             sql="SELECT CAST(SUM(revenue) AS DOUBLE) FROM orders",
-            catalog=_catalog(), dialect=dialect,
+            catalog=catalog, dialect=dialect,
         )
 
 
@@ -1581,13 +1612,14 @@ def test_cast_time_grain_compat_unchanged(dialect) -> None:
 def test_cast_order_by_unaliased_rejected(dialect) -> None:
     """ORDER BY CAST(<col> AS <T>) is rejected — the engine sorts by the bare
     column's natural type, not the casted type's (silently wrong)."""
+    catalog = _catalog()
     with pytest.raises(TranslationError) as exc_info:
         translate(
             sql=(
                 "SELECT CAST(id AS TEXT) FROM orders "
                 "ORDER BY CAST(id AS TEXT) ASC"
             ),
-            catalog=_catalog(), dialect=dialect,
+            catalog=catalog, dialect=dialect,
         )
     assert "ORDER BY" in str(exc_info.value)
     assert "not in the projection list" in str(exc_info.value)
@@ -1596,13 +1628,14 @@ def test_cast_order_by_unaliased_rejected(dialect) -> None:
 def test_cast_group_by_unaliased_rejected(dialect) -> None:
     """GROUP BY CAST(<col> AS <T>) is rejected — the engine groups by the bare
     column, so lossy pairs (TIMESTAMP→DATE) produce duplicate rows."""
+    catalog = _catalog()
     with pytest.raises(TranslationError):
         translate(
             sql=(
                 "SELECT CAST(ordered_at AS DATE) FROM orders "
                 "GROUP BY CAST(ordered_at AS DATE)"
             ),
-            catalog=_catalog(), dialect=dialect,
+            catalog=catalog, dialect=dialect,
         )
 
 
@@ -1733,36 +1766,39 @@ def test_cast_parameterised_type_form_works() -> None:
 def test_cast_non_column_non_aggregate_inner_rejected(dialect) -> None:
     """The CAST detector requires body.this == exp.Column; non-column inners
     (SUBSTRING, arithmetic) fall through to the fallback."""
+    catalog = _catalog()
     with pytest.raises(TranslationError) as exc_info:
         translate(
             sql="SELECT CAST(SUBSTRING(status, 1, 1) AS TEXT) FROM orders",
-            catalog=_catalog(), dialect=dialect,
+            catalog=catalog, dialect=dialect,
         )
     assert "Unsupported CAST" not in str(exc_info.value)
 
 
 def test_cast_qualified_ref_order_by_unaliased_rejected(dialect) -> None:
     """Same rejection for qualified (joined) CAST refs in ORDER BY."""
+    catalog = _catalog()
     with pytest.raises(TranslationError) as exc_info:
         translate(
             sql=(
                 "SELECT CAST(customers.region AS TEXT) FROM orders "
                 "ORDER BY CAST(customers.region AS TEXT) ASC"
             ),
-            catalog=_catalog(), dialect=dialect,
+            catalog=catalog, dialect=dialect,
         )
     assert "not in the projection list" in str(exc_info.value)
 
 
 def test_cast_qualified_ref_group_by_unaliased_rejected(dialect) -> None:
     """Codex round 2: same rejection for qualified-ref GROUP BY CAST."""
+    catalog = _catalog()
     with pytest.raises(TranslationError):
         translate(
             sql=(
                 "SELECT CAST(customers.region AS TEXT) FROM orders "
                 "GROUP BY CAST(customers.region AS TEXT)"
             ),
-            catalog=_catalog(), dialect=dialect,
+            catalog=catalog, dialect=dialect,
         )
 
 
@@ -1783,13 +1819,14 @@ def test_cast_aliased_projection_order_by_via_alias_works(dialect) -> None:
 
 def test_cast_aliased_projection_group_by_unaliased_rejected(dialect) -> None:
     """An aliased CAST projection + GROUP BY repeating the CAST shape is still rejected."""
+    catalog = _catalog()
     with pytest.raises(TranslationError):
         translate(
             sql=(
                 "SELECT CAST(delivered_at AS TIMESTAMP) AS ts FROM orders "
                 "GROUP BY CAST(delivered_at AS TIMESTAMP)"
             ),
-            catalog=_catalog(), dialect=dialect,
+            catalog=catalog, dialect=dialect,
         )
 
 
@@ -1815,12 +1852,13 @@ def test_cast_alias_order_by_lossy_pair_rejected(
 ) -> None:
     """CAST(<col> AS TEXT) AS x ... ORDER BY x is rejected at ORDER BY resolution —
     the engine sorts by the bare column's natural type, not lex order."""
+    catalog = _catalog()
     with pytest.raises(TranslationError) as exc_info:
         translate(
             sql=(
                 f"SELECT CAST({col} AS {target}) AS x FROM orders ORDER BY x"
             ),
-            catalog=_catalog(), dialect=dialect,
+            catalog=catalog, dialect=dialect,
         )
     msg = str(exc_info.value)
     assert "ORDER BY on CAST projection" in msg
@@ -1841,13 +1879,14 @@ def test_cast_alias_group_by_lossy_pair_rejected(
     dialect,
 ) -> None:
     """Many-to-one pairs (TIMESTAMP→DATE, INT→DOUBLE) are rejected in GROUP BY alias paths."""
+    catalog = _catalog()
     with pytest.raises(TranslationError) as exc_info:
         translate(
             sql=(
                 f"SELECT CAST({col} AS {target}) AS d, COUNT(*) FROM orders "
                 f"GROUP BY d"
             ),
-            catalog=_catalog(), dialect=dialect,
+            catalog=catalog, dialect=dialect,
         )
     msg = str(exc_info.value)
     assert "GROUP BY on CAST projection" in msg
@@ -1919,8 +1958,9 @@ def test_cast_implicit_grouping_lossy_pair_rejected(
 ) -> None:
     """SLayer auto-groups projected dims when GROUP BY is omitted, so lossy CAST
     pairs are rejected on the implicit-grouping path too, not just explicit GROUP BY."""
+    catalog = _catalog()
     with pytest.raises(TranslationError) as exc_info:
-        translate(sql=sql, catalog=_catalog(), dialect=dialect)
+        translate(sql=sql, catalog=catalog, dialect=dialect)
     msg = str(exc_info.value)
     assert "GROUP BY on CAST projection" in msg
     assert "lossy pair" in msg
@@ -1969,10 +2009,11 @@ def test_cast_order_by_bare_column_does_not_shadow_cast_projection(dialect) -> N
 def test_cast_order_by_bare_column_without_bare_projection_fails_cleanly(dialect) -> None:
     """When the bare column is NOT projected, ``ORDER BY <bare col>`` surfaces
     ``not in the projection list``, not the lossy-CAST rejection."""
+    catalog = _catalog()
     with pytest.raises(TranslationError) as exc_info:
         translate(
             sql="SELECT CAST(id AS TEXT) AS x, status FROM orders ORDER BY id",
-            catalog=_catalog(), dialect=dialect,
+            catalog=catalog, dialect=dialect,
         )
     msg = str(exc_info.value)
     assert "not in the projection list" in msg
@@ -2014,10 +2055,11 @@ def test_cast_metric_projection_overrides_wire_type(dialect) -> None:
 def test_allow_column_cast_false_rejects_cast_projection() -> None:
     """With allow_column_cast=False, the CAST branch is skipped and raises
     'Unsupported projection expression'."""
+    catalog = _catalog()
     with pytest.raises(TranslationError) as exc_info:
         translate(
             sql="SELECT CAST(delivered_at AS TIMESTAMP) FROM orders",
-            catalog=_catalog(), dialect=None, allow_column_cast=False,
+            catalog=catalog, dialect=None, allow_column_cast=False,
         )
     assert "Unsupported projection expression" in str(exc_info.value)
 
@@ -2186,8 +2228,9 @@ def test_left_join_subquery_aggregate_on_joined_col_blocked_by_dev_1567(dialect)
     sql = _metabase_join_sql(
         projection='AVG("Stores"."tax_rate") AS "avg"',
     )
+    catalog = _join_catalog()
     with pytest.raises(TranslationError) as exc_info:
-        translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+        translate(sql=sql, catalog=catalog, dialect=dialect)
     msg = str(exc_info.value)
     assert "Cross-model metric" in msg
     assert "flat SELECT" in msg
@@ -2232,8 +2275,9 @@ def test_left_join_subquery_having_on_joined_aggregate_blocked_by_dev_1567(diale
         group_by='"public"."orders"."status"',
         having='AVG("Stores"."tax_rate") > 0.05',
     )
+    catalog = _join_catalog()
     with pytest.raises(TranslationError) as exc_info:
-        translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+        translate(sql=sql, catalog=catalog, dialect=dialect)
     assert "Cross-model metric" in str(exc_info.value)
 
 
@@ -2347,7 +2391,8 @@ def test_left_join_dynamic_when_parent_has_no_join_to_target(dialect, caplog) ->
     assert isinstance(result.query.source_model, ModelExtension)
     ext = result.query.source_model
     assert ext.source_name == "orders"
-    assert ext.joins is not None and len(ext.joins) == 1
+    assert ext.joins is not None
+    assert len(ext.joins) == 1
     j = ext.joins[0]
     assert j.target_model == "stores"
     assert j.join_pairs == [["store_id", "id"]]
@@ -2414,8 +2459,9 @@ def test_two_left_joins_rejected_phase1(dialect) -> None:
         'LEFT JOIN (SELECT * FROM "public"."customers") AS "Customers" '
         '  ON "public"."orders"."customer_id" = "Customers"."id"'
     )
+    catalog = _join_catalog()
     with pytest.raises(TranslationError) as exc_info:
-        translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+        translate(sql=sql, catalog=catalog, dialect=dialect)
     assert "one LEFT JOIN" in str(exc_info.value) or "Multiple" in str(exc_info.value)
 
 
@@ -2435,8 +2481,9 @@ def test_non_left_join_kinds_rejected(join_kind: str, dialect) -> None:
         f'FROM "public"."orders" '
         f'{join_sql}'
     )
+    catalog = _join_catalog()
     with pytest.raises(TranslationError) as exc_info:
-        translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+        translate(sql=sql, catalog=catalog, dialect=dialect)
     assert "LEFT JOIN" in str(exc_info.value)
 
 
@@ -2448,8 +2495,9 @@ def test_bare_table_right_side_rejected(dialect) -> None:
         'LEFT JOIN "public"."stores" AS "Stores" '
         '  ON "public"."orders"."store_id" = "Stores"."id"'
     )
+    catalog = _join_catalog()
     with pytest.raises(TranslationError) as exc_info:
-        translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+        translate(sql=sql, catalog=catalog, dialect=dialect)
     assert "subquery" in str(exc_info.value).lower()
 
 
@@ -2462,8 +2510,9 @@ def test_subquery_with_inner_where_rejected(dialect) -> None:
         ') AS "Stores" '
         '  ON "public"."orders"."store_id" = "Stores"."id"'
     )
+    catalog = _join_catalog()
     with pytest.raises(TranslationError) as exc_info:
-        translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+        translate(sql=sql, catalog=catalog, dialect=dialect)
     assert "subquery" in str(exc_info.value).lower()
 
 
@@ -2476,8 +2525,9 @@ def test_subquery_with_inner_join_rejected(dialect) -> None:
         ') AS "Stores" '
         '  ON "public"."orders"."store_id" = "Stores"."id"'
     )
+    catalog = _join_catalog()
     with pytest.raises(TranslationError) as exc_info:
-        translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+        translate(sql=sql, catalog=catalog, dialect=dialect)
     assert "subquery" in str(exc_info.value).lower()
 
 
@@ -2490,8 +2540,9 @@ def test_subquery_with_inner_group_by_rejected(dialect) -> None:
         ') AS "Stores" '
         '  ON "public"."orders"."store_id" = "Stores"."id"'
     )
+    catalog = _join_catalog()
     with pytest.raises(TranslationError) as exc_info:
-        translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+        translate(sql=sql, catalog=catalog, dialect=dialect)
     assert "subquery" in str(exc_info.value).lower()
 
 
@@ -2505,8 +2556,9 @@ def test_subquery_with_inner_having_rejected(dialect) -> None:
         ') AS "Stores" '
         '  ON "public"."orders"."store_id" = "Stores"."id"'
     )
+    catalog = _join_catalog()
     with pytest.raises(TranslationError) as exc_info:
-        translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+        translate(sql=sql, catalog=catalog, dialect=dialect)
     assert "subquery" in str(exc_info.value).lower()
 
 
@@ -2519,8 +2571,9 @@ def test_subquery_with_inner_cte_rejected(dialect) -> None:
         ') AS "Stores" '
         '  ON "public"."orders"."store_id" = "Stores"."id"'
     )
+    catalog = _join_catalog()
     with pytest.raises(TranslationError) as exc_info:
-        translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+        translate(sql=sql, catalog=catalog, dialect=dialect)
     assert "subquery" in str(exc_info.value).lower()
 
 
@@ -2533,8 +2586,9 @@ def test_subquery_with_comma_join_rejected(dialect) -> None:
         ') AS "Stores" '
         '  ON "public"."orders"."store_id" = "Stores"."id"'
     )
+    catalog = _join_catalog()
     with pytest.raises(TranslationError) as exc_info:
-        translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+        translate(sql=sql, catalog=catalog, dialect=dialect)
     assert "subquery" in str(exc_info.value).lower()
 
 
@@ -2548,8 +2602,9 @@ def test_subquery_with_inner_distinct_rejected(dialect) -> None:
         ') AS "Stores" '
         '  ON "public"."orders"."store_id" = "Stores"."id"'
     )
+    catalog = _join_catalog()
     with pytest.raises(TranslationError) as exc_info:
-        translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+        translate(sql=sql, catalog=catalog, dialect=dialect)
     assert "subquery" in str(exc_info.value).lower()
 
 
@@ -2563,8 +2618,9 @@ def test_subquery_with_inner_limit_rejected(dialect) -> None:
         ') AS "Stores" '
         '  ON "public"."orders"."store_id" = "Stores"."id"'
     )
+    catalog = _join_catalog()
     with pytest.raises(TranslationError) as exc_info:
-        translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+        translate(sql=sql, catalog=catalog, dialect=dialect)
     assert "subquery" in str(exc_info.value).lower()
 
 
@@ -2578,8 +2634,9 @@ def test_subquery_with_inner_offset_rejected(dialect) -> None:
         ') AS "Stores" '
         '  ON "public"."orders"."store_id" = "Stores"."id"'
     )
+    catalog = _join_catalog()
     with pytest.raises(TranslationError) as exc_info:
-        translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+        translate(sql=sql, catalog=catalog, dialect=dialect)
     assert "subquery" in str(exc_info.value).lower()
 
 
@@ -2591,8 +2648,9 @@ def test_subquery_without_from_rejected(dialect) -> None:
         'LEFT JOIN (SELECT 1 AS "id") AS "Stores" '
         '  ON "public"."orders"."store_id" = "Stores"."id"'
     )
+    catalog = _join_catalog()
     with pytest.raises(TranslationError) as exc_info:
-        translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+        translate(sql=sql, catalog=catalog, dialect=dialect)
     assert "subquery" in str(exc_info.value).lower()
 
 
@@ -2606,8 +2664,9 @@ def test_subquery_with_set_op_rejected(dialect) -> None:
         ') AS "Stores" '
         '  ON "public"."orders"."store_id" = "Stores"."id"'
     )
+    catalog = _join_catalog()
     with pytest.raises(TranslationError) as exc_info:
-        translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+        translate(sql=sql, catalog=catalog, dialect=dialect)
     assert "subquery" in str(exc_info.value).lower()
 
 
@@ -2619,8 +2678,9 @@ def test_on_clause_composite_rejected(dialect) -> None:
             'AND "public"."orders"."id" = "Stores"."id"'
         ),
     )
+    catalog = _join_catalog()
     with pytest.raises(TranslationError) as exc_info:
-        translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+        translate(sql=sql, catalog=catalog, dialect=dialect)
     assert "ON" in str(exc_info.value)
 
 
@@ -2632,8 +2692,9 @@ def test_on_clause_or_rejected(dialect) -> None:
             'OR "public"."orders"."id" = "Stores"."id"'
         ),
     )
+    catalog = _join_catalog()
     with pytest.raises(TranslationError) as exc_info:
-        translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+        translate(sql=sql, catalog=catalog, dialect=dialect)
     assert "ON" in str(exc_info.value)
 
 
@@ -2642,8 +2703,9 @@ def test_on_clause_function_call_rejected(dialect) -> None:
         projection='"Stores"."name"',
         on_clause='COALESCE("public"."orders"."store_id", 0) = "Stores"."id"',
     )
+    catalog = _join_catalog()
     with pytest.raises(TranslationError) as exc_info:
-        translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+        translate(sql=sql, catalog=catalog, dialect=dialect)
     assert "ON" in str(exc_info.value)
 
 
@@ -2652,8 +2714,9 @@ def test_on_clause_non_equality_rejected(dialect) -> None:
         projection='"Stores"."name"',
         on_clause='"public"."orders"."store_id" > "Stores"."id"',
     )
+    catalog = _join_catalog()
     with pytest.raises(TranslationError) as exc_info:
-        translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+        translate(sql=sql, catalog=catalog, dialect=dialect)
     assert "ON" in str(exc_info.value)
 
 
@@ -2663,8 +2726,9 @@ def test_on_clause_both_sides_same_qualifier_rejected(dialect) -> None:
         projection='"Stores"."name"',
         on_clause='"Stores"."id" = "Stores"."tax_rate"',
     )
+    catalog = _join_catalog()
     with pytest.raises(TranslationError) as exc_info:
-        translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+        translate(sql=sql, catalog=catalog, dialect=dialect)
     assert "ON" in str(exc_info.value)
 
 
@@ -2673,8 +2737,9 @@ def test_on_clause_unknown_source_column_rejected(dialect) -> None:
         projection='"Stores"."name"',
         on_clause='"public"."orders"."missing_col" = "Stores"."id"',
     )
+    catalog = _join_catalog()
     with pytest.raises(TranslationError) as exc_info:
-        translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+        translate(sql=sql, catalog=catalog, dialect=dialect)
     assert "missing_col" in str(exc_info.value)
 
 
@@ -2683,8 +2748,9 @@ def test_on_clause_unknown_target_column_rejected(dialect) -> None:
         projection='"Stores"."name"',
         on_clause='"public"."orders"."store_id" = "Stores"."missing_col"',
     )
+    catalog = _join_catalog()
     with pytest.raises(TranslationError) as exc_info:
-        translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+        translate(sql=sql, catalog=catalog, dialect=dialect)
     assert "missing_col" in str(exc_info.value)
 
 
@@ -2695,8 +2761,9 @@ def test_left_join_target_model_unknown_errors(dialect) -> None:
         'LEFT JOIN (SELECT * FROM "public"."not_a_model") AS "X" '
         '  ON "public"."orders"."store_id" = "X"."id"'
     )
+    catalog = _join_catalog()
     with pytest.raises(TranslationError) as exc_info:
-        translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+        translate(sql=sql, catalog=catalog, dialect=dialect)
     assert "not_a_model" in str(exc_info.value)
 
 
