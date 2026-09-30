@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 from sqlglot import exp
 
+from slayer.core.enums import TimeGranularity, boundaries_nest
 from slayer.core.errors import DateOperandTypeError, QueryTypeError, SlayerError, TimeDimensionColumnError
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.core.granularity import CustomGranularity
@@ -298,6 +299,15 @@ class TestNesting:
                 await engine.execute(query, dry_run=True)
             assert stored in str(exc.value)
             assert requested in str(exc.value)
+
+    @pytest.mark.parametrize(("base", "multiple", "ok"), [
+        (TimeGranularity.MINUTE, 15, True),
+        (TimeGranularity.HOUR, 5, False),     # 5h does not tile a day, so later month starts miss
+        (TimeGranularity.MINUTE, 7, False),
+    ])
+    def test_fixed_into_month_needs_a_day_divisor(self, base, multiple, ok) -> None:
+        origin = datetime(2000, 1, 1)
+        assert boundaries_nest(fine=(base, multiple, origin), coarse=(TimeGranularity.MONTH, 1, origin)) is ok
 
     @pytest.mark.parametrize(("stored", "requested", "ok"), [
         ("week", "sprint", True),          # 14 days = 2 weeks, Monday origin

@@ -188,7 +188,7 @@ def boundaries_nest(*, fine: GranularityParts, coarse: GranularityParts) -> bool
     offset = int((o2 - o1).total_seconds())
     if b2 in UNIT_SECONDS:
         return (UNIT_SECONDS[b2] * m2) % l1 == 0 and offset % l1 == 0
-    return l1 <= UNIT_SECONDS[TimeGranularity.DAY] and offset % l1 == 0
+    return UNIT_SECONDS[TimeGranularity.DAY] % l1 == 0 and offset % l1 == 0
 
 
 class OrderDirection(StrEnum):

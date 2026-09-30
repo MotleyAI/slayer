@@ -1172,29 +1172,39 @@ class DbtToSlayerConverter:
                 suggestion="Filter a simple-aggregate input, or use a multi-stage model.",
             )
             return None
+        return self._pushed_input_ref(
+            metric, input_name=m_input.name, raw_filter=m_input.filter or "", leaf=leaf, kind="Derived",
+        )
+
+    def _pushed_input_ref(
+        self, metric: DbtMetric, *, input_name: str, raw_filter: str,
+        leaf: tuple[DbtSemanticModel, DbtMeasure, str | None],
+        kind: str, slayer_model: SlayerModel | None = None,
+    ) -> str | None:
+        """A filtered input pushed into its leaf, filled like the input metric; ``None`` on clean-fail."""
         source_sm, dbt_measure, chain_filter = leaf
-        # Intersect the input's filter with any filter the referenced simple
-        # metric already carries, so the referenced metric's filter isn't lost.
-        raw_filter = self._combine_filters(chain_filter, m_input.filter)
-        ok, reason = self._filter_reachable(raw_filter, source_sm)
+        # Intersect with any filter the referenced simple metric already carries,
+        # so the referenced metric's filter isn't lost.
+        combined = self._combine_filters(chain_filter, raw_filter) or raw_filter
+        ok, reason = self._filter_reachable(combined, source_sm)
         if not ok:
             self._fail_metric(
                 metric, category="cross_model_filter", severity="dropped",
-                message=f"Derived metric '{metric.name}': {reason}.",
+                message=f"{kind} metric '{metric.name}': {reason}.",
                 suggestion=_JOIN_REACHABILITY_SUGGESTION,
             )
             return None
-        slayer_model = self._models_by_name.get(source_sm.name)
-        if slayer_model is None:
+        target = slayer_model or self._models_by_name.get(source_sm.name)
+        if target is None:
             return None
         ref = self._filtered_leaf_ref(
             metric=metric,
-            slayer_model=slayer_model,
+            slayer_model=target,
             source_sm=source_sm,
             dbt_measure=dbt_measure,
-            raw_filter=raw_filter,
+            raw_filter=combined,
         )
-        return None if ref is None else self._with_fill(ref, self._fill_of(m_input.name))
+        return None if ref is None else self._with_fill(ref, self._fill_of(input_name))
 
     def _convert_ratio_metric(self, metric: DbtMetric) -> None:
         """A ratio metric is numerator / denominator over two measures/metrics.
@@ -1271,25 +1281,9 @@ class DbtToSlayerConverter:
             )
             return None
 
-        source_sm, dbt_measure, chain_filter = leaf
-        # Intersect with any filter the referenced simple metric already carries
-        # so it isn't silently dropped.
-        raw_filter = self._combine_filters(chain_filter, raw_filter)
-        ok, reason = self._filter_reachable(raw_filter, source_sm)
-        if not ok:
-            self._fail_metric(
-                metric, category="cross_model_filter", severity="dropped",
-                message=f"Ratio metric '{metric.name}': {reason}.",
-                suggestion=_JOIN_REACHABILITY_SUGGESTION,
-            )
-            return None
-
-        return self._filtered_leaf_ref(
-            metric=metric,
+        return self._pushed_input_ref(
+            metric, input_name=side.name, raw_filter=raw_filter, leaf=leaf, kind="Ratio",
             slayer_model=slayer_model,
-            source_sm=source_sm,
-            dbt_measure=dbt_measure,
-            raw_filter=raw_filter,
         )
 
     def _convert_cumulative_metric(self, metric: DbtMetric) -> None:
@@ -1670,9 +1664,9 @@ class DbtToSlayerConverter:
         the metric's own filter. A measure-less shape returns ``None`` so the
         push-down clean-fails rather than resurrecting it as a plain aggregate."""
         tp = mtc.type_params
-        mref = tp.measure
-        if tp.metric_aggregation_params is not None:
+        if tp is None or tp.measure_name is None or tp.metric_aggregation_params is not None:
             return None
+        mref = tp.measure
         inner = self._resolve_input_to_leaf_filtered(tp.measure_name)
         if inner is None:
             return None
@@ -1758,8 +1752,9 @@ class DbtToSlayerConverter:
         for m in self.project.metrics:
             if m.name != metric_name:
                 continue
-            if m.type and m.type.lower() == "simple" and self._simple_metric_is_plain(m):
-                return self._resolve_measure_to_name(m.type_params.measure_name)
+            tp = m.type_params
+            if m.type and m.type.lower() == "simple" and self._simple_metric_is_plain(m) and tp and tp.measure_name:
+                return self._resolve_measure_to_name(tp.measure_name)
             return metric_name
         return self._resolve_measure_to_name(metric_name)
 

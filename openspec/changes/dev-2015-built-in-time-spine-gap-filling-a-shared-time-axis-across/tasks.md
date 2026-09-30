@@ -10,7 +10,7 @@
 - [x] 1.3 `queries/custom-granularities` tests (definition round-trip across storage/REST/MCP/CLI/inspect, every validation error, fiscal/billing/sprint/quarter-hour bucketing incl. before-origin, functional form + order key + filter, spine at a custom grain, unknown-name and datasource-scoping errors, nesting cases); verify they fail before implementation
 - [x] 1.4 Modified-capability tests: population (spine factors out, spine-only unit, product reporting), time-dimensions (datasource callee, unknown callee at binding for dimensions and `time_dimensions` strings), column-granularity (custom value round-trip and re-bucketing, undefined name on save), transforms (fiscal-year shift and change, custom unit on a month axis, sprint streaks), trailing-window (window at a cell without home rows, two homes + partition + `last` + sibling invariance); verify they fail before implementation
 - [x] 1.5 Law-style tests: sibling-measure / population invariance and grain-union broadcast over spine populations (extend the existing law harness instances), NULL-axis rows excluded, DATE and TIMESTAMP axes, model filters on an axis column; verify they fail or pass as expected pre-implementation
-- [ ] 1.6 Golden SQL baselines for the two-fact and per-group spine queries and a custom-grain query (postgres, sqlite, duckdb, tsql, bigquery), and integration tests for spine generation, two facts and custom buckets on PostgreSQL (`pytest-postgresql`), MySQL, ClickHouse, SQL Server (testcontainers), plus the 35,040-row quarter-hour year on SQLite/DuckDB/PostgreSQL
+- [x] 1.6 Golden SQL baselines for the two-fact and per-group spine queries and a custom-grain query (postgres, sqlite, duckdb, tsql, bigquery), and integration tests for spine generation, two facts and custom buckets on PostgreSQL (`pytest-postgresql`), MySQL, ClickHouse, SQL Server (testcontainers), plus the 35,040-row quarter-hour year on SQLite/DuckDB/PostgreSQL
 - [x] 1.7 Codex review of the test suite against this change; fold findings, then verify the suite is red only on DEV-2015 behaviour
 
 ## 2. Granularity type and datasource definitions
@@ -38,7 +38,7 @@
 
 ## 5. SQL emission
 
-- [ ] 5.1 Integer-sequence dialect hook for every Tier-1 dialect and the Tier-2 default; verify golden SQL and the integration generation tests
+- [x] 5.1 Integer-sequence dialect hook for every Tier-1 dialect and the Tier-2 default; verify golden SQL and the integration generation tests
 - [x] 5.2 Bucket-series emission with the overlap filter, crossed with distinct P; producers joined on complete grain with promoted comparands; spine bounds lowered onto fact axes and stripped from window / shift frames; verify the executed spine tests on SQLite and DuckDB
 - [x] 5.3 Windowed producer evaluated at the population's cells (local and cross-model); verify the trailing-window delta tests and the existing trailing-window suite
 - [x] 5.4 RLS and cache behaviour for spine queries; verify the RLS and cache tests

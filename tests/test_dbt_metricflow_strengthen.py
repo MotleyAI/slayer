@@ -931,6 +931,35 @@ def test_derived_input_filter_over_fill_nulls_metric_converts() -> None:
     assert any(c.filter and "region" in c.filter and "US" in c.filter for c in _model(result).columns)
 
 
+def test_ratio_input_filter_over_fill_nulls_metric_keeps_the_fill() -> None:
+    project = DbtProject(
+        semantic_models=[
+            DbtSemanticModel(name="orders", model="orders",
+                             measures=[DbtMeasure(name="revenue", agg="sum", expr="amount"),
+                                       DbtMeasure(name="order_count", agg="count", expr="id")]),
+        ],
+        metrics=[
+            DbtMetric.model_validate({
+                "name": "gap_filled_rev", "type": "simple",
+                "type_params": {"measure": {"name": "revenue", "fill_nulls_with": 0}},
+            }),
+            DbtMetric(name="orders_n", type="simple",
+                      type_params=DbtMetricTypeParams.model_validate({"measure": "order_count"})),
+            DbtMetric(
+                name="us_rev_per_order",
+                type="ratio",
+                type_params=DbtMetricTypeParams(
+                    numerator=DbtMetricInput(name="gap_filled_rev", filter="{{ Dimension('orders__region') }} = 'US'"),
+                    denominator=DbtMetricInput(name="orders_n"),
+                ),
+            ),
+        ],
+    )
+    result = _convert(project)
+    measure = next(m for m in _model(result).measures if m.name == "us_rev_per_order")
+    assert "coalesce(" in measure.formula.replace(" ", "")
+
+
 def test_input_filter_intersects_referenced_metric_filter() -> None:
     """When a derived input adds a filter on top of an already-filtered simple
     metric, BOTH filters must apply to the leaf — the referenced metric's filter
