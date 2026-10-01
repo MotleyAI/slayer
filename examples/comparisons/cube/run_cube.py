@@ -286,8 +286,11 @@ class CubeServer:
         sql = (sql_body.get("sql") or {}).get("sql", [None])[0] if "error" not in sql_body else None
         if "error" in body:
             return Result(error=str(body["error"]), sql=sql)
-        data = [r for res in body["results"] for r in res["data"]] if multi else body["data"]
-        columns = list(data[0]) if data else annotated_columns(body["results"][0] if multi else body)
+        if multi:
+            data, annotated = [r for res in body["results"] for r in res["data"]], body["results"][0]
+        else:
+            data, annotated = body["data"], body
+        columns = list(data[0]) if data else annotated_columns(annotated)
         return Result(columns=columns, rows=[[r.get(c) for c in columns] for r in data], sql=sql)
 
     def sql(self, query: str) -> Result:
@@ -351,6 +354,17 @@ def _known_bug_outcome(ex: CubeExpect, got: List[List[Any]], ok: bool, why: str,
     return Outcome(status=FAIL, detail=f"neither truth nor the known buggy value: {why}")
 
 
+def _truth_outcome(p: Probe, ex: CubeExpect, got: List[List[Any]], ok: bool, why: str, lacks: bool, truth: Dict) -> Outcome:
+    if not ok:
+        return Outcome(status=FAIL, detail=why)
+    if ex.sql_lacks is not None and not lacks:
+        return Outcome(status=FAIL, detail=f"{why}, but the SQL contains {ex.sql_lacks!r}")
+    n_keys = len(p.cube.keys if p.cube and p.cube.keys is not None else p.compare.keys)
+    if p.contrast_sql and rows_match(got, [list(r) for r in truth[(p.id, "contrast")]], p.compare, n_keys)[0]:
+        return Outcome(status=FAIL, detail="result also equals contrast_sql; the probe shows nothing")
+    return Outcome(status=PASS, detail=why)
+
+
 def evaluate(p: Probe, expect: Expect, res: Result, truth: Dict) -> Outcome:
     block = p.cube
     assert block is not None
@@ -374,15 +388,7 @@ def evaluate(p: Probe, expect: Expect, res: Result, truth: Dict) -> Outcome:
 
     if ex.known_bug:
         return _known_bug_outcome(ex, got, ok, why, lacks, p.compare.tolerance)
-    if not ok:
-        return Outcome(status=FAIL, detail=why)
-    if ex.sql_lacks is not None and not lacks:
-        return Outcome(status=FAIL, detail=f"{why}, but the SQL contains {ex.sql_lacks!r}")
-    if p.contrast_sql:
-        contrast = [list(r) for r in truth[(p.id, "contrast")]]
-        if rows_match(got, contrast, p.compare, len(keys))[0]:
-            return Outcome(status=FAIL, detail="result also equals contrast_sql; the probe shows nothing")
-    return Outcome(status=PASS, detail=why)
+    return _truth_outcome(p, ex, got, ok, why, lacks, truth)
 
 
 def row_order(r: str) -> tuple:

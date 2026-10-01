@@ -99,11 +99,14 @@ function flatten(rows, nest) {
   return out;
 }
 
+class ProbeConfigError extends Error {}
+
 // flatten()'s columns, from the result schema so an empty result still has them.
 function flatColumns(explore, nest) {
   const parent = explore.allFields.filter(f => f.name !== nest).map(f => f.name);
-  const child = explore.allFields.find(f => f.name === nest).allFields.map(f => `${nest}.${f.name}`);
-  return [...parent, ...child];
+  const nested = explore.allFields.find(f => f.name === nest);
+  if (!nested?.allFields) throw new ProbeConfigError(`flatten: no nested field '${nest}' in the result`);
+  return [...parent, ...nested.allFields.map(f => `${nest}.${f.name}`)];
 }
 
 async function runProbe(runtime, model, block) {
@@ -117,20 +120,17 @@ async function runProbe(runtime, model, block) {
   try {
     // run() returns 10 rows unless told otherwise; the query's own limit still applies.
     const result = await q.run({rowLimit: 100000});
-    let rows = result.data.toObject();
+    const rows = result.data.toObject();
     // Field names come from the result schema, so an empty result still has columns.
-    let columns = result.resultExplore.allFields.map(f => f.name);
-    if (block.flatten) {
-      rows = flatten(rows, block.flatten);
-      columns = flatColumns(result.resultExplore, block.flatten);
-    }
-    return {rows, columns, warnings, sql};
+    if (!block.flatten) return {rows, columns: result.resultExplore.allFields.map(f => f.name), warnings, sql};
+    return {rows: flatten(rows, block.flatten), columns: flatColumns(result.resultExplore, block.flatten), warnings, sql};
   } catch (e) {
-    return {dbError: e.message, warnings, sql};
+    return e instanceof ProbeConfigError ? {configError: e.message, warnings, sql} : {dbError: e.message, warnings, sql};
   }
 }
 
 function errorText(out) {
+  if (out.configError) return out.configError;
   if (out.compileErrors) return out.compileErrors.map(p => `[${p.code}] ${p.message}`).join('; ');
   if (out.dbError) return out.dbError;
   return '';
@@ -140,21 +140,28 @@ function firstLine(s) {
   return s.trim().split('\n')[0].slice(0, 160);
 }
 
+function compileErrorOutcome(ex, out, err) {
+  if (!out.compileErrors) return [FAIL, `expected compile error ${ex.compile_error}, got ${err ? 'db error ' + firstLine(err) : 'a result'}`];
+  const hit = out.compileErrors.some(e => e.code === ex.compile_error || e.message.includes(ex.compile_error));
+  return hit ? [PASS, `compile error as expected: ${firstLine(err)}`] : [FAIL, `wrong compile error: ${firstLine(err)}`];
+}
+
+function dbErrorOutcome(ex, out, err) {
+  if (!out.dbError) return [FAIL, `expected db error ${ex.db_error}, got ${err ? firstLine(err) : 'a result'}`];
+  return out.dbError.includes(ex.db_error) ? [PASS, `db error as expected: ${firstLine(err)}`] : [FAIL, `wrong db error: ${firstLine(err)}`];
+}
+
+function buggyErrorOutcome(ex, err) {
+  if (err.includes(ex.buggy_error)) return [KNOWN, `${ex.known_bug} (${firstLine(err)})`];
+  if (err) return [FAIL, `different error: ${firstLine(err)}`];
+  return [FIXED, `no longer fails with '${ex.buggy_error}': returns rows; update the expectation`];
+}
+
 function errorOutcome(ex, out, err) {
-  if (ex.compile_error) {
-    if (!out.compileErrors) return [FAIL, `expected compile error ${ex.compile_error}, got ${err ? 'db error ' + firstLine(err) : 'a result'}`];
-    const hit = out.compileErrors.some(e => e.code === ex.compile_error || e.message.includes(ex.compile_error));
-    return hit ? [PASS, `compile error as expected: ${firstLine(err)}`] : [FAIL, `wrong compile error: ${firstLine(err)}`];
-  }
-  if (ex.db_error) {
-    if (!out.dbError) return [FAIL, `expected db error ${ex.db_error}, got ${err ? firstLine(err) : 'a result'}`];
-    return out.dbError.includes(ex.db_error) ? [PASS, `db error as expected: ${firstLine(err)}`] : [FAIL, `wrong db error: ${firstLine(err)}`];
-  }
-  if (ex.known_bug && ex.buggy_error) {
-    if (err.includes(ex.buggy_error)) return [KNOWN, `${ex.known_bug} (${firstLine(err)})`];
-    if (err) return [FAIL, `different error: ${firstLine(err)}`];
-    return [FIXED, `no longer fails with '${ex.buggy_error}': returns rows; update the expectation`];
-  }
+  if (out.configError) return [FAIL, `probe config: ${out.configError}`];
+  if (ex.compile_error) return compileErrorOutcome(ex, out, err);
+  if (ex.db_error) return dbErrorOutcome(ex, out, err);
+  if (ex.known_bug && ex.buggy_error) return buggyErrorOutcome(ex, err);
   return err ? [FAIL, `unexpected error: ${firstLine(err)}`] : null;
 }
 

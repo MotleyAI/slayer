@@ -289,6 +289,20 @@ def _known_bug_outcome(ex: SlayerExpect, got: List[List[Any]], ok: bool, why: st
     return Outcome(status=FAIL, detail=f"neither truth nor the known buggy value: {why}")
 
 
+def _truth_outcome(
+    p: Probe, ex: SlayerExpect, got: List[List[Any]], ok: bool, why: str, kinds: List[str], truth: Dict
+) -> Outcome:
+    if not ok:
+        return Outcome(status=FAIL, detail=f"{why}; warnings={kinds}")
+    n_keys = len(p.slayer.keys if p.slayer and p.slayer.keys is not None else p.compare.keys)
+    if p.contrast_sql and rows_match(got, [list(r) for r in truth[(p.id, "contrast")]], p.compare, n_keys)[0]:
+        return Outcome(status=FAIL, detail="result also equals contrast_sql; the probe shows nothing")
+    if ex.warning and ex.warning not in kinds:
+        return Outcome(status=FAIL, detail=f"{why}, but warning {ex.warning!r} missing (got {kinds})")
+    suffix = f" + warning {ex.warning}" if ex.warning else ""
+    return Outcome(status=PASS, detail=f"{why}{suffix}")
+
+
 def evaluate(p: Probe, resp: Optional[SlayerResponse], err: Optional[Exception], truth: Dict) -> Outcome:
     block = p.slayer
     assert block is not None
@@ -314,16 +328,7 @@ def evaluate(p: Probe, resp: Optional[SlayerResponse], err: Optional[Exception],
 
     if ex.known_bug:
         return _known_bug_outcome(ex, got, ok, why, p.compare.tolerance)
-    if not ok:
-        return Outcome(status=FAIL, detail=f"{why}; warnings={kinds}")
-    if p.contrast_sql:
-        contrast = [list(r) for r in truth[(p.id, "contrast")]]
-        if rows_match(got, contrast, p.compare, len(keys))[0]:
-            return Outcome(status=FAIL, detail="result also equals contrast_sql; the probe shows nothing")
-    if ex.warning and ex.warning not in kinds:
-        return Outcome(status=FAIL, detail=f"{why}, but warning {ex.warning!r} missing (got {kinds})")
-    suffix = f" + warning {ex.warning}" if ex.warning else ""
-    return Outcome(status=PASS, detail=f"{why}{suffix}")
+    return _truth_outcome(p, ex, got, ok, why, kinds, truth)
 
 
 def print_summary(results: List[Tuple[Probe, Outcome]]) -> None:
