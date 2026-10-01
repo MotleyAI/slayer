@@ -1,7 +1,7 @@
 """Unawaited-coroutine law: an async call whose result is dropped is a silently skipped call.
 
-Two gates: basedpyright's ``reportUnusedCoroutine`` over the whole repo (static, catches
-untested code; a serial CI step, too memory-hungry for an xdist worker), and pyproject
+Two gates: the CI ``type-check`` job's basedpyright ratchet, whose baseline must never
+hold a ``reportUnusedCoroutine`` entry (static, catches untested code), and pyproject
 ``filterwarnings`` turning the runtime "never awaited" warning into a test failure.
 """
 
@@ -13,8 +13,10 @@ import sys
 import tomllib
 from pathlib import Path
 
+import yaml
+
 REPO = Path(__file__).resolve().parent.parent
-CONFIG = REPO / "pyrightconfig.unawaited.json"
+BASELINE = REPO / ".basedpyright" / "baseline.json"
 CI = REPO / ".github" / "workflows" / "ci.yml"
 
 _UNAWAITED_TEST = """
@@ -28,12 +30,13 @@ def test_forgets_to_await():
 
 
 def test_static_gate_is_wired() -> None:
-    config = json.loads(CONFIG.read_text())
-    assert config["reportUnusedCoroutine"] == "error"
-    assert {"slayer", "tests", "examples"} <= set(config["include"])
-    run = "poetry run basedpyright -p pyrightconfig.unawaited.json --baselinefile .basedpyright/no-baseline.json"
-    assert run in CI.read_text(), "the CI step running the static gate is gone"
-    assert not (REPO / ".basedpyright" / "no-baseline.json").exists(), "the static gate must grandfather nothing"
+    steps = yaml.safe_load(CI.read_text())["jobs"]["type-check"]["steps"]
+    assert "poetry run basedpyright" in [step.get("run") for step in steps], "the CI type-check job is gone"
+    baselined = [
+        path for path, errors in json.loads(BASELINE.read_text())["files"].items()
+        for e in errors if e.get("code") == "reportUnusedCoroutine"
+    ]
+    assert not baselined, f"unawaited coroutines must be fixed, never baselined: {baselined}"
 
 
 def test_runtime_gate_fails_an_unawaited_run(tmp_path: Path) -> None:

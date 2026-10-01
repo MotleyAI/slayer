@@ -155,6 +155,8 @@ filterwarnings = [
 
 [tool.basedpyright]
 typeCheckingMode = "basic"
+# The oldest supported Python: flags newer-only stdlib APIs, and pins results across interpreters.
+pythonVersion = "3.11"
 include = ["slayer", "tests"]
 exclude = ["slayer/flight/_flight_sql_pb2.py"]
 

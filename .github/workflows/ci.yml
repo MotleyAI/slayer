@@ -13,6 +13,33 @@ on:
     branches: ['**']
 
 jobs:
+  # Full basedpyright check against the committed ratchet baseline; parallel, as it needs ~3 GB.
+  type-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Poetry
+        run: pip install poetry
+
+      # Same key as the lint-and-test 3.11 leg, so the two share the venv cache.
+      - name: Cache Poetry virtualenv
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pypoetry/virtualenvs
+          key: venv-${{ runner.os }}-py3.11-${{ hashFiles('poetry.lock') }}
+
+      - name: Install dependencies
+        run: poetry install -E all --with dev
+
+      - name: Type-check (no new errors vs .basedpyright/baseline.json)
+        run: poetry run basedpyright
+
   lint-and-test:
     runs-on: ubuntu-latest
     strategy:
@@ -84,11 +111,6 @@ jobs:
 
       - name: Lint with ruff
         run: poetry run ruff check slayer/ tests/
-
-      # A dropped async call result is a silently skipped call. Serial, outside
-      # pytest: the analysis needs ~2.5 GB. A missing baseline grandfathers nothing.
-      - name: Check for unawaited coroutines
-        run: poetry run basedpyright -p pyrightconfig.unawaited.json --baselinefile .basedpyright/no-baseline.json
 
       - name: Install uv
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
