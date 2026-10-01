@@ -148,6 +148,9 @@ asyncio_mode = "auto"
 filterwarnings = [
     "error:unclosed database:ResourceWarning",
     "error:Exception ignored while finalizing database connection:pytest.PytestUnraisableExceptionWarning",
+    # An unawaited coroutine is a silently skipped call; it warns from the finalizer, hence both filters.
+    "error:coroutine .* was never awaited:RuntimeWarning",
+    "error:Exception ignored .*coroutine:pytest.PytestUnraisableExceptionWarning",
 ]
 
 [tool.basedpyright]

@@ -1,0 +1,6 @@
+{
+  "include": ["slayer", "tests", "examples"],
+  "exclude": ["slayer/flight/_flight_sql_pb2.py", "**/node_modules", "**/.venv"],
+  "typeCheckingMode": "off",
+  "reportUnusedCoroutine": "error"
+}

@@ -51,6 +51,7 @@ treated as unverifiable and never flagged.
 
 ```bash
 poetry run ruff check slayer/ tests/
+poetry run basedpyright -p pyrightconfig.unawaited.json --baselinefile .basedpyright/no-baseline.json  # unawaited coroutines
 ```
 
 ## Project Structure

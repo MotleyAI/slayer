@@ -85,6 +85,11 @@ jobs:
       - name: Lint with ruff
         run: poetry run ruff check slayer/ tests/
 
+      # A dropped async call result is a silently skipped call. Serial, outside
+      # pytest: the analysis needs ~2.5 GB. A missing baseline grandfathers nothing.
+      - name: Check for unawaited coroutines
+        run: poetry run basedpyright -p pyrightconfig.unawaited.json --baselinefile .basedpyright/no-baseline.json
+
       - name: Install uv
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
 

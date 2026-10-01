@@ -89,6 +89,7 @@ ALWAYS run the linter at the end of every task and fix any issues before finishi
 ```bash
 poetry run ruff check slayer/ tests/          # check
 poetry run ruff check --fix slayer/ tests/    # auto-fix
+poetry run basedpyright -p pyrightconfig.unawaited.json --baselinefile .basedpyright/no-baseline.json  # unawaited coroutines (CI gate)
 ```
 
 ## Documentation Requirements
