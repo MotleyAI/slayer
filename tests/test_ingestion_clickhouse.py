@@ -195,7 +195,6 @@ def _introspect_columns(columns, referenced_tables=()):
         inspector=inspector,
         table_name="t",
         ref=None,
-        rollup_sql=None,
         referenced_tables=set(referenced_tables),
         fk_columns_by_table={},
     )

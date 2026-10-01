@@ -151,6 +151,25 @@ class TestAxes:
             await engine.execute(strict, dry_run=True)
         assert "time spine" in str(exc.value)
 
+    async def test_a_dataset_with_no_to_one_route_broadcasts(self, engine) -> None:
+        # customers shares a component with the facts, but every hop toward them fans.
+        query = spine_query(measures=[m("count(customers.id)", "c")], date_range=JAN_MAR)
+        resp = await engine.execute(query)
+        assert by_bucket(resp, ["c"]) == {k: (3.0,) for k in MONTHS[:3]}
+        assert [w.measure for w in broadcast_warnings(resp)] == ["c"]
+        strict = query.model_copy(update={"to_many_handling": "error"})
+        with pytest.raises(SlayerError) as exc:
+            await engine.execute(strict, dry_run=True)
+        assert "metric 'c' would broadcast" in str(exc.value)
+        assert "time_spine" in str(exc.value)
+
+    async def test_only_the_routeless_measure_broadcasts_beside_a_fact(self, engine) -> None:
+        resp = await engine.execute(spine_query(
+            measures=[m("sum(orders.amount)", "o"), m("count(customers.id)", "c")], date_range=JAN_MAR,
+        ))
+        assert by_bucket(resp, ["o", "c"]) == {k: (TWO_FACT_ROWS[k][0], 3.0) for k in MONTHS[:3]}
+        assert [w.measure for w in broadcast_warnings(resp)] == ["c"]
+
     async def test_stage_with_one_temporal_column_is_wired(self, engine) -> None:
         firsts = SlayerQuery.model_validate({
             "name": "firsts", "source_model": "orders", "dimensions": ["customer_id"],

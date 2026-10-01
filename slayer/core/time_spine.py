@@ -45,12 +45,16 @@ def is_spine(model: SlayerModel) -> bool:
     return model.name == TIME_SPINE_MODEL
 
 
+def axis_column(model: SlayerModel) -> Optional[str]:
+    """``model``'s axis, a P factor's included: its default time column, else its sole one."""
+    axis = None if is_spine(model) else model.effective_default_time_dimension
+    return axis if axis is not None and model.get_column(axis) is not None else None
+
+
 def axis_join(model: SlayerModel) -> Optional[ModelJoin]:
     """``model``'s virtual many-to-one edge from its axis to the spine, when it has an axis."""
-    if is_spine(model) or model.population_spine:
-        return None
-    axis = model.effective_default_time_dimension
-    if axis is None or model.get_column(axis) is None:
+    axis = None if model.population_spine else axis_column(model)
+    if axis is None:
         return None
     return ModelJoin(
         target_model=TIME_SPINE_MODEL, join_pairs=[[axis, TIME_SPINE_COLUMN]],

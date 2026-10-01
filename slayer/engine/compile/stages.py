@@ -50,6 +50,7 @@ from slayer.core.join_walker import (
     physical_join_pairs,
     resolve_hop,
     reverse_token,
+    unique_key_sets,
     walk,
 )
 from slayer.engine.join_safety import (
@@ -67,7 +68,6 @@ from slayer.engine.join_safety import (
     reroot_from_root,
     shared_join_key_reroot,
     undetermined_witness,
-    _unique_key_sets,
     safe_reachable,
 )
 from slayer.core.query import (
@@ -2457,7 +2457,7 @@ def _check_attached_params_determined(
     an ungrained aggregate types at the query grain and is determined by
     construction. A grained transform resolves to its
     result grain first, so this predicate needs no transform arm."""
-    key_sets = _unique_key_sets(root_model)
+    key_sets = unique_key_sets(root_model)
     grain_display = _grain_display(Grain.of(
         column_default_key(path=target_path, leaf=col, base=root_model)
         for col in key_sets[0]
@@ -2502,7 +2502,7 @@ def _association_arm(
         alias=alias,
         windowed_or_ranked=is_kernel_requiring(agg),
     )
-    key_sets = _unique_key_sets(root_model)
+    key_sets = unique_key_sets(root_model)
     check_association_root_unique_key(
         alias=alias, root_name=root_model.name, has_unique_key=bool(key_sets),
     )

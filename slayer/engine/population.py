@@ -18,12 +18,11 @@ from slayer.core.errors import (
     PopulationErrorReason,
     PopulationInferenceError,
 )
-from slayer.core.join_walker import neighbors, resolve_hop
+from slayer.core.join_walker import neighbors, provably_to_one, resolve_hop
 from slayer.core.models import SlayerModel
 from slayer.core.query import ComputedDimension, SlayerQuery, render_probe_text
 from slayer.core.time_spine import TIME_SPINE_MODEL, mentions_spine, names_spine
 from slayer.engine.dimension_routing import resolve_route, safe_route_reachable
-from slayer.engine.join_safety import provably_to_one
 from slayer.engine.syntax import (
     AggCall,
     DottedRef,

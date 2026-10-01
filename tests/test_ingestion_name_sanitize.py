@@ -547,7 +547,6 @@ class TestEmptyJoinListIsNotNoJoinList:
                 inspector=inspector,
                 table_name="refs_it",
                 ref=None,
-                rollup_sql=None,
                 referenced_tables={"a__b"},
                 fk_columns_by_table={"refs_it": {"x"}},
                 joins=joins,
