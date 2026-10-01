@@ -59,7 +59,7 @@ Prerequisites: Poetry, Node 22 or later, and npm.
 poetry install -E all
 poetry run python examples/comparisons/slayer/run_slayer.py [--row Q4] [--id Q10] [--verbose]
 
-(cd examples/comparisons/malloy && npm ci && node run_malloy.mjs [--row Q4] [--id Q10] [--verbose])
+(cd examples/comparisons/malloy && npm ci --ignore-scripts && node run_malloy.mjs [--row Q4] [--id Q10] [--verbose])
 
 (cd examples/comparisons/cube && npm ci)
 poetry run python examples/comparisons/cube/run_cube.py [--planner tesseract|legacy|both] [--row Q4] [--id Q10] [--verbose]

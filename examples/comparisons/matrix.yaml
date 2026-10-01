@@ -1,6 +1,6 @@
-# The feature matrix on docs/comparisons/semantic_layers.md. Strings are inline markdown (`code`, **bold**,
+# The feature matrix on motley.ai/semantic-layer-comparison. Strings are inline markdown (`code`, **bold**,
 # [links](url)). verdict: yes | partial | no | unknown. After editing, run
-# python examples/comparisons/update_comparison_doc.py to re-render the page.
+# python examples/comparisons/export_matrix.py to regenerate matrix.json for the website.
 groups:
 - name: Query semantics
   note: "grains, transforms, joins, filters and composition"
@@ -153,7 +153,7 @@ rows:
   cube:
     verdict: partial
     text: Stacked nested SQL queries
-    caveat: "Each layer is hand-written SQL SQL over the semantic result, without its guarantees."
+    caveat: "Each layer is hand-written SQL over the semantic result, without its guarantees."
   metricflow:
     verdict: 'no'
     text: Each composition layer is a model-declared metric.

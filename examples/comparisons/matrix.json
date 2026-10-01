@@ -987,7 +987,7 @@
     "cube": {
      "verdict": "partial",
      "text": "Stacked nested SQL queries",
-     "caveat": "Each layer is hand-written SQL SQL over the semantic result, without its guarantees."
+     "caveat": "Each layer is hand-written SQL over the semantic result, without its guarantees."
     },
     "metricflow": {
      "verdict": "no",

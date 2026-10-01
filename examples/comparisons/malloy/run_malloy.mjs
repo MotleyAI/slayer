@@ -62,12 +62,17 @@ function sortKey(row, nkeys) {
   }));
 }
 
+function compareStr(a, b) {
+  if (a < b) return -1;
+  return a > b ? 1 : 0;
+}
+
 function rowsMatch(got, exp, cmp, nkeys) {
   if (got.length !== exp.length) return [false, `${got.length} rows, expected ${exp.length}`];
   if (!cmp.ordered) {
-    const by = r => sortKey(r, nkeys);
-    got = [...got].sort((x, y) => (by(x) < by(y) ? -1 : by(x) > by(y) ? 1 : 0));
-    exp = [...exp].sort((x, y) => (by(x) < by(y) ? -1 : by(x) > by(y) ? 1 : 0));
+    const byKey = (x, y) => compareStr(sortKey(x, nkeys), sortKey(y, nkeys));
+    got = [...got].sort(byKey);
+    exp = [...exp].sort(byKey);
   }
   for (let i = 0; i < got.length; i++) {
     const g = got[i], e = exp[i];
@@ -94,6 +99,13 @@ function flatten(rows, nest) {
   return out;
 }
 
+// flatten()'s columns, from the result schema so an empty result still has them.
+function flatColumns(explore, nest) {
+  const parent = explore.allFields.filter(f => f.name !== nest).map(f => f.name);
+  const child = explore.allFields.find(f => f.name === nest).allFields.map(f => `${nest}.${f.name}`);
+  return [...parent, ...child];
+}
+
 async function runProbe(runtime, model, block) {
   const q = runtime.loadQuery(`${model}\n${block.query}`);
   const problems = await q.validate();
@@ -106,8 +118,13 @@ async function runProbe(runtime, model, block) {
     // run() returns 10 rows unless told otherwise; the query's own limit still applies.
     const result = await q.run({rowLimit: 100000});
     let rows = result.data.toObject();
-    if (block.flatten) rows = flatten(rows, block.flatten);
-    return {rows, warnings, sql};
+    // Field names come from the result schema, so an empty result still has columns.
+    let columns = result.resultExplore.allFields.map(f => f.name);
+    if (block.flatten) {
+      rows = flatten(rows, block.flatten);
+      columns = flatColumns(result.resultExplore, block.flatten);
+    }
+    return {rows, columns, warnings, sql};
   } catch (e) {
     return {dbError: e.message, warnings, sql};
   }
@@ -123,15 +140,7 @@ function firstLine(s) {
   return s.trim().split('\n')[0].slice(0, 160);
 }
 
-function evaluate(p, out, truth) {
-  const block = p.malloy;
-  const expect = block.expect ?? 'match';
-  const ex = typeof expect === 'string' ? {} : expect;
-  const cmp = {tolerance: 1e-6, ordered: false, columns_exact: false, keys: [], values: [], ...(p.compare ?? {})};
-  const keys = block.keys ?? cmp.keys;
-  const values = block.values ?? cmp.values;
-  const err = errorText(out);
-
+function errorOutcome(ex, out, err) {
   if (ex.compile_error) {
     if (!out.compileErrors) return [FAIL, `expected compile error ${ex.compile_error}, got ${err ? 'db error ' + firstLine(err) : 'a result'}`];
     const hit = out.compileErrors.some(e => e.code === ex.compile_error || e.message.includes(ex.compile_error));
@@ -143,27 +152,46 @@ function evaluate(p, out, truth) {
   }
   if (ex.known_bug && ex.buggy_error) {
     if (err.includes(ex.buggy_error)) return [KNOWN, `${ex.known_bug} (${firstLine(err)})`];
-    if (out.dbError) return [FAIL, `different db error: ${firstLine(err)}`];
-    return [FIXED, `no longer fails with '${ex.buggy_error}': ${err ? firstLine(err) : 'returns rows'}; update the expectation`];
+    if (err) return [FAIL, `different error: ${firstLine(err)}`];
+    return [FIXED, `no longer fails with '${ex.buggy_error}': returns rows; update the expectation`];
   }
-  if (err) return [FAIL, `unexpected error: ${firstLine(err)}`];
+  return err ? [FAIL, `unexpected error: ${firstLine(err)}`] : null;
+}
+
+function columnOutcome(out, cols, cmp) {
+  if (!out.columns) return null;
+  const missing = cols.filter(c => !out.columns.includes(c));
+  if (missing.length) return [FAIL, `columns ${JSON.stringify(missing)} not in ${JSON.stringify(out.columns)}`];
+  if (cmp.columns_exact && JSON.stringify(out.columns) !== JSON.stringify(cols)) {
+    return [FAIL, `columns ${JSON.stringify(out.columns)} != ${JSON.stringify(cols)}`];
+  }
+  return null;
+}
+
+function knownBugOutcome(ex, got, ok, why, tol) {
+  if (ok) return [FIXED, `now matches truth (${why}); update the expectation`];
+  let sig = (ex.buggy_rows ?? []).every(b => hasRow(got, b, tol));
+  if (ex.buggy_row_count !== undefined) sig = sig && got.length === ex.buggy_row_count;
+  return sig ? [KNOWN, `${ex.known_bug} (${why})`] : [FAIL, `neither truth nor the known buggy value: ${why}`];
+}
+
+function evaluate(p, out, truth) {
+  const block = p.malloy;
+  const ex = typeof block.expect === 'object' ? block.expect : {};
+  const cmp = {tolerance: 1e-6, ordered: false, columns_exact: false, keys: [], values: [], ...p.compare};
+  const keys = block.keys ?? cmp.keys;
+  const values = block.values ?? cmp.values;
+  const failed = errorOutcome(ex, out, errorText(out));
+  if (failed) return failed;
 
   const cols = [...keys, ...values];
-  const missing = cols.filter(c => out.rows.length && !(c in out.rows[0]));
-  if (missing.length) return [FAIL, `columns ${JSON.stringify(missing)} not in ${JSON.stringify(Object.keys(out.rows[0]))}`];
-  if (cmp.columns_exact && out.rows.length && JSON.stringify(Object.keys(out.rows[0])) !== JSON.stringify(cols)) {
-    return [FAIL, `columns ${JSON.stringify(Object.keys(out.rows[0]))} != ${JSON.stringify(cols)}`];
-  }
+  const badColumns = columnOutcome(out, cols, cmp);
+  if (badColumns) return badColumns;
   const got = out.rows.map(r => cols.map(c => r[c]));
   const [ok, why] = p.truth_sql ? rowsMatch(got, truth.truth, cmp, keys.length) : [true, 'no truth_sql'];
   const codes = out.warnings.map(w => w.code);
 
-  if (ex.known_bug) {
-    if (ok) return [FIXED, `now matches truth (${why}); update the expectation`];
-    let sig = (ex.buggy_rows ?? []).every(b => hasRow(got, b, cmp.tolerance));
-    if (ex.buggy_row_count !== undefined) sig = sig && got.length === ex.buggy_row_count;
-    return sig ? [KNOWN, `${ex.known_bug} (${why})`] : [FAIL, `neither truth nor the known buggy value: ${why}`];
-  }
+  if (ex.known_bug) return knownBugOutcome(ex, got, ok, why, cmp.tolerance);
   if (!ok) return [FAIL, `${why}; warnings=${JSON.stringify(codes)}`];
   if (p.contrast_sql && rowsMatch(got, truth.contrast, cmp, keys.length)[0]) {
     return [FAIL, 'result also equals contrast_sql; the probe shows nothing'];
@@ -179,13 +207,32 @@ function rowOrder(r) {
 function printSummary(results) {
   const rows = [...new Set(results.map(([p]) => p.row))].sort((a, b) => {
     const [x, y] = [rowOrder(a), rowOrder(b)];
-    return x[0] === y[0] ? x[1] - y[1] : x[0] < y[0] ? -1 : 1;
+    if (x[0] !== y[0]) return compareStr(x[0], y[0]);
+    return x[1] - y[1];
   });
   const line = (label, counts, tail = '') => console.log(label.padEnd(6) + counts.map(c => String(c).padStart(11)).join('') + tail);
   console.log('\nSummary (Malloy)');
   line('row', STATUSES);
   for (const r of rows) line(r, STATUSES.map(s => results.filter(([p, st]) => p.row === r && st === s).length));
   line('total', STATUSES.map(s => results.filter(([, st]) => st === s).length), `   (${results.length} probes)`);
+}
+
+function printVerbose(out, truth) {
+  if (out.sql) console.log(`    sql: ${out.sql.replaceAll('\n', '\n         ')}`);
+  if (out.columns) console.log(`    columns: ${JSON.stringify(out.columns)}`);
+  if (out.rows) console.log(`    rows: ${JSON.stringify(out.rows)}`);
+  if (out.warnings?.length) console.log(`    warnings: ${JSON.stringify(out.warnings.map(w => w.code))}`);
+  if (errorText(out)) console.log(`    error: ${errorText(out)}`);
+  if (truth.truth) console.log(`    truth: ${JSON.stringify(truth.truth)}`);
+}
+
+async function truthRows(connection, p) {
+  const truth = {};
+  for (const kind of ['truth', 'contrast']) {
+    const sql = p[`${kind}_sql`];
+    if (sql) truth[kind] = (await connection.runSQL(sql, {rowLimit: 100000})).rows.map(r => Object.values(r)); // NOSONAR(S9382) — one connection, queried in order
+  }
+  return truth;
 }
 
 async function main() {
@@ -197,27 +244,17 @@ async function main() {
   const results = [];
   try {
     for (const stmt of sqlStatements(fs.readFileSync(path.join(ROOT, 'dataset.sql'), 'utf8'))) {
-      await connection.runSQL(stmt);
+      await connection.runSQL(stmt); // NOSONAR(S9382) — dataset statements must run in order
     }
     const runtime = new SingleConnectionRuntime({connection});
     const model = fs.readFileSync(path.join(HERE, 'model.malloy'), 'utf8');
     for (const p of probes) {
-      const truth = {};
-      for (const kind of ['truth', 'contrast']) {
-        const sql = p[`${kind}_sql`];
-        if (sql) truth[kind] = (await connection.runSQL(sql, {rowLimit: 100000})).rows.map(r => Object.values(r));
-      }
-      const out = await runProbe(runtime, model, p.malloy);
+      const truth = await truthRows(connection, p); // NOSONAR(S9382) — probes run one at a time on one connection
+      const out = await runProbe(runtime, model, p.malloy); // NOSONAR(S9382) — probes run one at a time on one connection
       const [status, detail] = evaluate(p, out, truth);
       results.push([p, status]);
       console.log(`${status.padEnd(9)} ${p.id.padEnd(22)} ${p.row.padEnd(4)} ${p.title.slice(0, 60).padEnd(60)}  ${detail}`);
-      if (args.verbose) {
-        if (out.sql) console.log(`    sql: ${out.sql.replace(/\n/g, '\n         ')}`);
-        if (out.rows) console.log(`    rows: ${JSON.stringify(out.rows)}`);
-        if (out.warnings?.length) console.log(`    warnings: ${JSON.stringify(out.warnings.map(w => w.code))}`);
-        if (errorText(out)) console.log(`    error: ${errorText(out)}`);
-        if (truth.truth) console.log(`    truth: ${JSON.stringify(truth.truth)}`);
-      }
+      if (args.verbose) printVerbose(out, truth);
     }
   } finally {
     await connection.close();

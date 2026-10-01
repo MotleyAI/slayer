@@ -2,6 +2,7 @@
 
 import argparse
 import asyncio
+import contextlib
 import datetime as dt
 import decimal
 import math
@@ -10,7 +11,7 @@ import sys
 import tempfile
 import warnings
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Tuple, Union
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import duckdb
 import yaml
@@ -62,12 +63,12 @@ class SlayerExpect(BaseModel):
 class SetupModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str
-    query: Union[Dict[str, Any], List[Dict[str, Any]]]
+    query: Dict[str, Any] | List[Dict[str, Any]]
 
 
 class SlayerBlock(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    query: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None
+    query: Dict[str, Any] | List[Dict[str, Any]] | None = None
     run_by_name: Optional[str] = None
     refine: Optional[Dict[str, Any]] = None
     options: Dict[str, Any] = Field(default_factory=dict)
@@ -76,7 +77,7 @@ class SlayerBlock(BaseModel):
     create_model_from_query: Optional[SetupModel] = None
     keys: Optional[List[str]] = None
     values: Optional[List[str]] = None
-    expect: Union[Literal["match"], SlayerExpect] = "match"
+    expect: Literal["match"] | SlayerExpect = "match"
     note: Optional[str] = None
 
     @model_validator(mode="after")
@@ -226,9 +227,11 @@ def run_query(engine: SlayerQueryEngine, block: SlayerBlock) -> Tuple[Optional[S
     handling = block.options.get("to_many_handling")
     extras = [SlayerModel.model_validate(yaml.safe_load((HERE / "extra_models" / f).read_text()))
               for f in block.extra_models]
+    saved: List[SlayerModel] = []
     try:
         for model in extras:
             run_sync(engine.save_model(model))
+            saved.append(model)
         if block.create_model_from_query:
             engine.create_model_from_query_sync(
                 query=block.create_model_from_query.query, name=block.create_model_from_query.name
@@ -243,32 +246,56 @@ def run_query(engine: SlayerQueryEngine, block: SlayerBlock) -> Tuple[Optional[S
     except Exception as e:  # noqa: BLE001 - a probe's error is data
         return None, e
     finally:
-        for model in extras:
-            run_sync(engine.delete_model_by_name(model_name=model.name, data_source=model.data_source))
+        for model in saved:
+            # A failed cleanup must not mask the probe's own outcome.
+            with contextlib.suppress(Exception):
+                run_sync(engine.delete_model_by_name(model_name=model.name, data_source=model.data_source))
 
 
 def first_line(e: Exception) -> str:
     return f"{type(e).__name__}: {str(e).strip().splitlines()[0][:160]}"
 
 
+def _matches(expected: str, err: Exception) -> bool:
+    return expected == type(err).__name__ or expected in str(err)
+
+
+def _error_outcome(ex: SlayerExpect, resp: Optional[SlayerResponse], err: Optional[Exception]) -> Optional[Outcome]:
+    if ex.error:
+        if err is None:
+            assert resp is not None
+            return Outcome(status=FAIL, detail=f"expected error {ex.error!r}, got {resp.row_count} rows")
+        if _matches(ex.error, err):
+            return Outcome(status=PASS, detail=f"errors as expected: {first_line(err)}")
+        return Outcome(status=FAIL, detail=f"wrong error: {first_line(err)}")
+    if err is None:
+        return None
+    if ex.known_bug and ex.buggy_error:
+        if _matches(ex.buggy_error, err):
+            return Outcome(status=KNOWN, detail=f"{ex.known_bug} ({first_line(err)})")
+        return Outcome(status=FAIL, detail=f"neither truth nor the known buggy error: {first_line(err)}")
+    return Outcome(status=FAIL, detail=f"unexpected error: {first_line(err)}")
+
+
+def _known_bug_outcome(ex: SlayerExpect, got: List[List[Any]], ok: bool, why: str, tol: float) -> Outcome:
+    if ok:
+        return Outcome(status=FIXED, detail=f"now matches truth ({why}); update the expectation")
+    # An error signature needs the error; a result can't reproduce it.
+    sig = not ex.buggy_error and all(has_row(got, b, tol) for b in ex.buggy_rows)
+    if ex.buggy_row_count is not None:
+        sig = sig and len(got) == ex.buggy_row_count
+    if sig:
+        return Outcome(status=KNOWN, detail=f"{ex.known_bug} ({why})")
+    return Outcome(status=FAIL, detail=f"neither truth nor the known buggy value: {why}")
+
+
 def evaluate(p: Probe, resp: Optional[SlayerResponse], err: Optional[Exception], truth: Dict) -> Outcome:
     block = p.slayer
     assert block is not None
-    expect = block.expect
-    exp_obj = expect if isinstance(expect, SlayerExpect) else SlayerExpect()
-
-    if exp_obj.error:
-        if err is None:
-            return Outcome(status=FAIL, detail=f"expected error {exp_obj.error!r}, got {resp.row_count} rows")
-        if exp_obj.error == type(err).__name__ or exp_obj.error in str(err):
-            return Outcome(status=PASS, detail=f"errors as expected: {first_line(err)}")
-        return Outcome(status=FAIL, detail=f"wrong error: {first_line(err)}")
-    if err is not None and exp_obj.known_bug and exp_obj.buggy_error:
-        if exp_obj.buggy_error == type(err).__name__ or exp_obj.buggy_error in str(err):
-            return Outcome(status=KNOWN, detail=f"{exp_obj.known_bug} ({first_line(err)})")
-        return Outcome(status=FAIL, detail=f"neither truth nor the known buggy error: {first_line(err)}")
-    if err is not None:
-        return Outcome(status=FAIL, detail=f"unexpected error: {first_line(err)}")
+    ex = block.expect if isinstance(block.expect, SlayerExpect) else SlayerExpect()
+    failed = _error_outcome(ex, resp, err)
+    if failed:
+        return failed
 
     assert resp is not None
     keys = block.keys if block.keys is not None else p.compare.keys
@@ -285,25 +312,17 @@ def evaluate(p: Probe, resp: Optional[SlayerResponse], err: Optional[Exception],
     exp_rows = [list(r) for r in truth.get((p.id, "truth"), [])]
     ok, why = rows_match(got, exp_rows, p.compare, len(keys)) if p.truth_sql else (True, "no truth_sql")
 
-    if exp_obj.known_bug:
-        if ok:
-            return Outcome(status=FIXED, detail=f"now matches truth ({why}); update the expectation")
-        # An error signature needs the error; a result can't reproduce it.
-        sig = not exp_obj.buggy_error and all(has_row(got, b, p.compare.tolerance) for b in exp_obj.buggy_rows)
-        if exp_obj.buggy_row_count is not None:
-            sig = sig and len(got) == exp_obj.buggy_row_count
-        if sig:
-            return Outcome(status=KNOWN, detail=f"{exp_obj.known_bug} ({why})")
-        return Outcome(status=FAIL, detail=f"neither truth nor the known buggy value: {why}")
+    if ex.known_bug:
+        return _known_bug_outcome(ex, got, ok, why, p.compare.tolerance)
     if not ok:
         return Outcome(status=FAIL, detail=f"{why}; warnings={kinds}")
     if p.contrast_sql:
         contrast = [list(r) for r in truth[(p.id, "contrast")]]
         if rows_match(got, contrast, p.compare, len(keys))[0]:
             return Outcome(status=FAIL, detail="result also equals contrast_sql; the probe shows nothing")
-    if exp_obj.warning and exp_obj.warning not in kinds:
-        return Outcome(status=FAIL, detail=f"{why}, but warning {exp_obj.warning!r} missing (got {kinds})")
-    suffix = f" + warning {exp_obj.warning}" if exp_obj.warning else ""
+    if ex.warning and ex.warning not in kinds:
+        return Outcome(status=FAIL, detail=f"{why}, but warning {ex.warning!r} missing (got {kinds})")
+    suffix = f" + warning {ex.warning}" if ex.warning else ""
     return Outcome(status=PASS, detail=f"{why}{suffix}")
 
 
@@ -316,6 +335,29 @@ def print_summary(results: List[Tuple[Probe, Outcome]]) -> None:
         print(f"{r:<6}" + "".join(f"{c:>11}" for c in counts))
     totals = [sum(1 for _, o in results if o.status == s) for s in STATUSES]
     print(f"{'total':<6}" + "".join(f"{c:>11}" for c in totals) + f"   ({len(results)} probes)")
+
+
+def print_verbose(p: Probe, resp: Optional[SlayerResponse], err: Optional[Exception], truth: Dict) -> None:
+    if resp is not None:
+        print(f"    sql: {resp.sql}\n    columns: {resp.columns}\n    data: {resp.data}")
+        print(f"    warnings: {[w.kind for w in resp.warnings]}")
+    if err is not None:
+        print(f"    error: {err}")
+    if (p.id, "truth") in truth:
+        print(f"    truth: {truth[(p.id, 'truth')]}")
+
+
+def run_probe(
+    p: Probe, engine: SlayerQueryEngine, by_policy: Dict[str, SlayerQueryEngine], truth: Dict, verbose: bool
+) -> Outcome:
+    assert p.slayer is not None
+    policy = p.slayer.options.get("policy")
+    resp, err = run_query(by_policy[policy] if policy else engine, p.slayer)
+    outcome = evaluate(p, resp, err, truth)
+    print(f"{outcome.status:<9} {p.id:<22} {p.row:<4} {p.title[:60]:<60}  {outcome.detail}")
+    if verbose:
+        print_verbose(p, resp, err, truth)
+    return outcome
 
 
 def main() -> int:
@@ -336,22 +378,7 @@ def main() -> int:
         seed(db_path)
         truth = compute_truth(db_path, probes)
         engine, by_policy = asyncio.run(build_engines(db_path, Path(tmp) / "store", policies))
-        results: List[Tuple[Probe, Outcome]] = []
-        for p in probes:
-            assert p.slayer is not None
-            policy = p.slayer.options.get("policy")
-            resp, err = run_query(by_policy[policy] if policy else engine, p.slayer)
-            outcome = evaluate(p, resp, err, truth)
-            results.append((p, outcome))
-            print(f"{outcome.status:<9} {p.id:<22} {p.row:<4} {p.title[:60]:<60}  {outcome.detail}")
-            if args.verbose:
-                if resp is not None:
-                    print(f"    sql: {resp.sql}\n    columns: {resp.columns}\n    data: {resp.data}")
-                    print(f"    warnings: {[w.kind for w in resp.warnings]}")
-                if err is not None:
-                    print(f"    error: {err}")
-                if (p.id, "truth") in truth:
-                    print(f"    truth: {truth[(p.id, 'truth')]}")
+        results = [(p, run_probe(p, engine, by_policy, truth, args.verbose)) for p in probes]
     print_summary(results)
     return 1 if any(o.status == FAIL for _, o in results) else 0
 

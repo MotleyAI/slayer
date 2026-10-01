@@ -222,6 +222,15 @@ class CubeServer:
                 ["node", str(SERVER)], cwd=self.workdir, env=self.env, stdout=log, stderr=subprocess.STDOUT,
                 start_new_session=True,
             )
+        try:
+            self._wait_ready()
+        except BaseException:
+            self.__exit__()  # __exit__ does not run when __enter__ raises
+            raise
+        return self
+
+    def _wait_ready(self) -> None:
+        assert self.proc is not None
         deadline = time.time() + 90
         while time.time() < deadline:
             if self.proc.poll() is not None:
@@ -230,13 +239,12 @@ class CubeServer:
                 with urllib.request.urlopen(f"http://localhost:{self.port}/readyz", timeout=2) as r:
                     if r.status == 200:
                         break
-            except (urllib.error.URLError, OSError):
+            except OSError:
                 pass
             time.sleep(0.5)
         else:
             raise SystemExit(f"Cube not ready after 90s:\n{self.log.read_text()[-2000:]}")
         wait_port(self.sql_port, free=False)
-        return self
 
     def __exit__(self, *exc: Any) -> None:
         if self.proc is None or self.proc.poll() is not None:
@@ -260,7 +268,12 @@ class CubeServer:
                 with urllib.request.urlopen(url, timeout=60) as r:
                     body = json.loads(r.read())
             except urllib.error.HTTPError as e:
-                body = json.loads(e.read())
+                try:
+                    body = json.loads(e.read())
+                except json.JSONDecodeError:
+                    return {"error": f"HTTP {e.code} {e.reason}"}
+            except (OSError, json.JSONDecodeError) as e:
+                return {"error": f"{type(e).__name__}: {e}"}
             if not isinstance(body, dict) or body.get("error") != "Continue wait" or time.time() > deadline:
                 return body
             time.sleep(0.2)
@@ -274,7 +287,7 @@ class CubeServer:
         if "error" in body:
             return Result(error=str(body["error"]), sql=sql)
         data = [r for res in body["results"] for r in res["data"]] if multi else body["data"]
-        columns = list(data[0]) if data else []
+        columns = list(data[0]) if data else annotated_columns(body["results"][0] if multi else body)
         return Result(columns=columns, rows=[[r.get(c) for c in columns] for r in data], sql=sql)
 
     def sql(self, query: str) -> Result:
@@ -288,6 +301,12 @@ class CubeServer:
             return Result(error=f"{type(e).__name__}: {e}", sql=query)
 
 
+def annotated_columns(body: Dict[str, Any]) -> List[str]:
+    """Result column names from a /load response's annotation (what an empty result still reports)."""
+    ann = body.get("annotation") or {}
+    return [name for kind in ("dimensions", "timeDimensions", "measures") for name in ann.get(kind, {})]
+
+
 def wait_port(port: int, free: bool, timeout: float = 30) -> None:
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -299,12 +318,8 @@ def wait_port(port: int, free: bool, timeout: float = 30) -> None:
     raise SystemExit(f"port {port} still {'busy' if free else 'closed'} after {timeout}s")
 
 
-def evaluate(p: Probe, expect: Expect, res: Result, truth: Dict) -> Outcome:
-    block = p.cube
-    assert block is not None
-    ex = expect if isinstance(expect, CubeExpect) else CubeExpect()
+def _error_outcome(ex: CubeExpect, res: Result) -> Optional[Outcome]:
     err = res.error or ""
-
     if ex.error:
         if not res.error:
             return Outcome(status=FAIL, detail=f"expected error {ex.error!r}, got {len(res.rows)} rows")
@@ -319,14 +334,38 @@ def evaluate(p: Probe, expect: Expect, res: Result, truth: Dict) -> Outcome:
         return Outcome(status=FIXED, detail=f"no longer fails with {ex.buggy_error!r}; update the expectation")
     if res.error:
         return Outcome(status=FAIL, detail=f"unexpected error: {first_line(err)}")
+    return None
+
+
+def _known_bug_outcome(ex: CubeExpect, got: List[List[Any]], ok: bool, why: str, lacks: bool, tol: float) -> Outcome:
+    if ok and not lacks:
+        return Outcome(status=FIXED, detail=f"now matches truth ({why}); update the expectation")
+    sig = all(has_row(got, b, tol) for b in ex.buggy_rows)
+    if ex.buggy_row_count is not None:
+        sig = sig and len(got) == ex.buggy_row_count
+    if ex.sql_lacks is not None:
+        sig = sig and lacks
+        why = f"{why}; SQL has no {ex.sql_lacks}"
+    if sig:
+        return Outcome(status=KNOWN, detail=f"{ex.known_bug} ({why})")
+    return Outcome(status=FAIL, detail=f"neither truth nor the known buggy value: {why}")
+
+
+def evaluate(p: Probe, expect: Expect, res: Result, truth: Dict) -> Outcome:
+    block = p.cube
+    assert block is not None
+    ex = expect if isinstance(expect, CubeExpect) else CubeExpect()
+    failed = _error_outcome(ex, res)
+    if failed:
+        return failed
 
     keys = block.keys if block.keys is not None else p.compare.keys
     values = block.values if block.values is not None else p.compare.values
     try:
-        cols = [resolve(c, res.columns) for c in keys + values] if res.rows else []
+        cols = [resolve(c, res.columns) for c in keys + values]
     except KeyError as e:
         return Outcome(status=FAIL, detail=str(e))
-    if p.compare.columns_exact and res.rows and res.columns != cols:
+    if p.compare.columns_exact and res.columns != cols:
         return Outcome(status=FAIL, detail=f"columns {res.columns} != {cols}")
     got = [[r[res.columns.index(c)] for c in cols] for r in res.rows]
     exp_rows = [list(r) for r in truth.get((p.id, "truth"), [])]
@@ -334,17 +373,7 @@ def evaluate(p: Probe, expect: Expect, res: Result, truth: Dict) -> Outcome:
     lacks = ex.sql_lacks is not None and res.sql is not None and ex.sql_lacks not in res.sql
 
     if ex.known_bug:
-        if ok and not lacks:
-            return Outcome(status=FIXED, detail=f"now matches truth ({why}); update the expectation")
-        sig = all(has_row(got, b, p.compare.tolerance) for b in ex.buggy_rows)
-        if ex.buggy_row_count is not None:
-            sig = sig and len(got) == ex.buggy_row_count
-        if ex.sql_lacks is not None:
-            sig = sig and lacks
-            why = f"{why}; SQL has no {ex.sql_lacks}"
-        if sig:
-            return Outcome(status=KNOWN, detail=f"{ex.known_bug} ({why})")
-        return Outcome(status=FAIL, detail=f"neither truth nor the known buggy value: {why}")
+        return _known_bug_outcome(ex, got, ok, why, lacks, p.compare.tolerance)
     if not ok:
         return Outcome(status=FAIL, detail=why)
     if ex.sql_lacks is not None and not lacks:
@@ -372,6 +401,14 @@ def print_summary(title: str, results: List[Tuple[Probe, Outcome]]) -> None:
     print(f"{'total':<6}" + "".join(f"{c:>11}" for c in totals) + f"   ({len(results)} probes)")
 
 
+def print_verbose(p: Probe, res: Result, truth: Dict) -> None:
+    print(f"    sql: {res.sql}\n    columns: {res.columns}\n    rows: {res.rows}")
+    if res.error:
+        print(f"    error: {res.error[:2000]}")
+    if (p.id, "truth") in truth:
+        print(f"    truth: {truth[(p.id, 'truth')]}")
+
+
 def run_planner(
     planner: str, probes: List[Probe], truth: Dict, tmp: Path, db_path: Path, args: argparse.Namespace
 ) -> List[Tuple[Probe, Outcome]]:
@@ -386,19 +423,19 @@ def run_planner(
         print(f"--- schema: model/{''.join(' + ' + f for f in schema_files)}")
         with CubeServer(tmp, db_path, planner, list(schema_files), args.port, args.sql_port) as server:
             for p in group:
-                block = p.cube
-                assert block is not None
-                res = server.rest(block.rest) if block.rest is not None else server.sql(block.sql or "")
-                outcome = evaluate(p, block.planner_expect.get(planner, block.expect), res, truth)
-                results[p.id] = outcome
-                print(f"{outcome.status:<9} {p.id:<24} {p.row:<4} {p.title[:60]:<60}  {outcome.detail}")
-                if args.verbose:
-                    print(f"    sql: {res.sql}\n    columns: {res.columns}\n    rows: {res.rows}")
-                    if res.error:
-                        print(f"    error: {res.error[:2000]}")
-                    if (p.id, "truth") in truth:
-                        print(f"    truth: {truth[(p.id, 'truth')]}")
+                results[p.id] = run_probe(server, p, planner, truth, args.verbose)
     return [(p, results[p.id]) for p in probes if p.id in results]
+
+
+def run_probe(server: CubeServer, p: Probe, planner: str, truth: Dict, verbose: bool) -> Outcome:
+    block = p.cube
+    assert block is not None
+    res = server.rest(block.rest) if block.rest is not None else server.sql(block.sql or "")
+    outcome = evaluate(p, block.planner_expect.get(planner, block.expect), res, truth)
+    print(f"{outcome.status:<9} {p.id:<24} {p.row:<4} {p.title[:60]:<60}  {outcome.detail}")
+    if verbose:
+        print_verbose(p, res, truth)
+    return outcome
 
 
 def main() -> int:

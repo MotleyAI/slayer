@@ -11,7 +11,7 @@ import json
 import re
 import sys
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Set
 
 import yaml
 
@@ -26,10 +26,18 @@ TOOLS = [("slayer", "SLayer"), ("malloy", "Malloy"), ("cube", "Cube Core"), ("me
 ENGINES = {"slayer": "SLayer", "malloy": "Malloy", "cube": "Cube", "metricflow": "MetricFlow"}
 RANK = {"yes": 3, "partial": 2, "no": 1, "unknown": 0}
 ORIGINS = {"SLayer", "Malloy", "Cube", "MetricFlow", "all"}
+SAFE_URL = re.compile(r"(https?://|/|#)")
+
+
+def _link(m: re.Match) -> str:
+    url = html.unescape(m.group(2))
+    if not SAFE_URL.match(url):
+        return m.group(0)
+    return f'<a href="{html.escape(url)}">{m.group(1)}</a>'
 
 
 def inline(text: str) -> str:
-    """Inline markdown (`code`, **bold**, *italic*, [text](url)) to HTML."""
+    """Inline markdown (`code`, **bold**, *italic*, [text](url)) to HTML; only http(s) and site-relative links."""
     out = []
     for part in re.split(r"(`[^`]*`)", text):
         if part.startswith("`") and part.endswith("`") and len(part) > 1:
@@ -40,15 +48,17 @@ def inline(text: str) -> str:
         p = re.sub(r"(?<![\w*])\*(?!\s)(.+?)(?<!\s)\*(?![\w*])", r"<i>\1</i>", p)
         out.append(p)
     joined = "".join(out)
-    return re.sub(r"\[([^\]]+)\]\(([^)\s]+)\)", lambda m: f'<a href="{html.escape(m.group(2))}">{m.group(1)}</a>', joined)
+    return re.sub(r"\[([^\]]+)\]\(([^)\s]+)\)", _link, joined)
 
 
-def load_probes() -> Dict[str, List[Dict[str, str]]]:
+def load_probes(row_ids: Set[str]) -> Dict[str, List[Dict[str, str]]]:
     """Each matrix row's probes as {engine, id, url}, linking the probe's line in probes.yaml."""
     text = PROBES.read_text()
-    lines = {m.group(1): text[:m.start()].count("\n") + 1 for m in re.finditer(r"^  - id: (\S+)$", text, re.M)}
+    lines = {m.group(1): text[:m.start()].count("\n") + 1 for m in re.finditer(r"^ {2}- id: (\S+)$", text, re.M)}
     by_row: Dict[str, List[Dict[str, str]]] = {}
     for p in yaml.safe_load(text)["probes"]:
+        if p["row"] not in row_ids:
+            sys.exit(f"probe {p['id']}: row {p['row']} is not in matrix.yaml")
         for key, engine in ENGINES.items():
             if key in p:
                 by_row.setdefault(p["row"], []).append(
@@ -80,7 +90,7 @@ def validate(matrix: Dict[str, Any]) -> None:
 def export() -> str:
     matrix = yaml.safe_load(MATRIX.read_text())
     validate(matrix)
-    by_row = load_probes()
+    by_row = load_probes({r["id"] for r in matrix["rows"]})
     rows = []
     for r in matrix["rows"]:
         best = max(RANK[r[key]["verdict"]] for key, _ in TOOLS)

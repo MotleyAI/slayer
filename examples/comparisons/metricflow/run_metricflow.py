@@ -204,12 +204,8 @@ def first_line(s: str) -> str:
     return " ".join(s.split())[:200]
 
 
-def evaluate(p: Probe, res: Result, truth: Dict) -> Outcome:
-    block = p.metricflow
-    assert block is not None
-    ex = block.expect if isinstance(block.expect, MfExpect) else MfExpect()
+def _error_outcome(ex: MfExpect, res: Result) -> Optional[Outcome]:
     err = res.error or ""
-
     if ex.error:
         if not res.error:
             return Outcome(status=FAIL, detail=f"expected error {ex.error!r}, got {len(res.rows)} rows")
@@ -218,6 +214,27 @@ def evaluate(p: Probe, res: Result, truth: Dict) -> Outcome:
         return Outcome(status=PASS, detail=f"errors as expected: {first_line(ex.error)}")
     if res.error:
         return Outcome(status=FAIL, detail=f"unexpected error: {first_line(err)}")
+    return None
+
+
+def _known_bug_outcome(ex: MfExpect, got: List[List[Any]], ok: bool, why: str, tol: float) -> Outcome:
+    if ok:
+        return Outcome(status=FIXED, detail=f"now matches truth ({why}); update the expectation")
+    sig = all(has_row(got, b, tol) for b in ex.buggy_rows)
+    if ex.buggy_row_count is not None:
+        sig = sig and len(got) == ex.buggy_row_count
+    if sig:
+        return Outcome(status=KNOWN, detail=f"{ex.known_bug} ({why})")
+    return Outcome(status=FAIL, detail=f"neither truth nor the known buggy value: {why}")
+
+
+def evaluate(p: Probe, res: Result, truth: Dict) -> Outcome:
+    block = p.metricflow
+    assert block is not None
+    ex = block.expect if isinstance(block.expect, MfExpect) else MfExpect()
+    failed = _error_outcome(ex, res)
+    if failed:
+        return failed
 
     keys = block.keys if block.keys is not None else p.compare.keys
     values = block.values if block.values is not None else p.compare.values
@@ -231,14 +248,7 @@ def evaluate(p: Probe, res: Result, truth: Dict) -> Outcome:
     ok, why = rows_match(got, exp_rows, p.compare, len(keys)) if p.truth_sql else (True, "no truth_sql")
 
     if ex.known_bug:
-        if ok:
-            return Outcome(status=FIXED, detail=f"now matches truth ({why}); update the expectation")
-        sig = all(has_row(got, b, p.compare.tolerance) for b in ex.buggy_rows)
-        if ex.buggy_row_count is not None:
-            sig = sig and len(got) == ex.buggy_row_count
-        if sig:
-            return Outcome(status=KNOWN, detail=f"{ex.known_bug} ({why})")
-        return Outcome(status=FAIL, detail=f"neither truth nor the known buggy value: {why}")
+        return _known_bug_outcome(ex, got, ok, why, p.compare.tolerance)
     if not ok:
         return Outcome(status=FAIL, detail=why)
     if p.contrast_sql:
@@ -264,6 +274,21 @@ def print_summary(title: str, results: List[Tuple[Probe, Outcome]]) -> None:
     print(f"{'total':<6}" + "".join(f"{c:>11}" for c in totals) + f"   ({len(results)} probes)")
 
 
+def run_probe(mf: Any, p: Probe, truth: Dict, verbose: bool) -> Outcome:
+    assert p.metricflow is not None
+    res = run_query(mf, p.metricflow.query)
+    outcome = evaluate(p, res, truth)
+    tag = " [model]" if p.metricflow.model_declared else ""
+    print(f"{outcome.status:<9} {p.id:<28} {p.row:<4} {(p.title + tag)[:64]:<64}  {outcome.detail}")
+    if verbose:
+        print(f"    sql: {res.sql}\n    columns: {res.columns}\n    rows: {res.rows}")
+        if res.error:
+            print(f"    error: {res.error[:2000]}")
+        if (p.id, "truth") in truth:
+            print(f"    truth: {truth[(p.id, 'truth')]}")
+    return outcome
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--row", help="only probes of this matrix row, e.g. Q4")
@@ -279,26 +304,13 @@ def main() -> int:
     ]
     vers = ", ".join(f"{n} {version(n)}" for n in ("metricflow", "dbt-metricflow", "dbt-core", "dbt-duckdb", "duckdb"))
     print(f"=== MetricFlow ({vers}) ===")
-    results: List[Tuple[Probe, Outcome]] = []
     with tempfile.TemporaryDirectory(prefix="metricflow-probes-") as tmp_name:
         tmp = Path(tmp_name)
         db_path = tmp / "probe.duckdb"
         seed(db_path)
         truth = compute_truth(db_path, probes)
         mf = build_engine(tmp, db_path)
-        for p in probes:
-            assert p.metricflow is not None
-            res = run_query(mf, p.metricflow.query)
-            outcome = evaluate(p, res, truth)
-            results.append((p, outcome))
-            tag = " [model]" if p.metricflow.model_declared else ""
-            print(f"{outcome.status:<9} {p.id:<28} {p.row:<4} {(p.title + tag)[:64]:<64}  {outcome.detail}")
-            if args.verbose:
-                print(f"    sql: {res.sql}\n    columns: {res.columns}\n    rows: {res.rows}")
-                if res.error:
-                    print(f"    error: {res.error[:2000]}")
-                if (p.id, "truth") in truth:
-                    print(f"    truth: {truth[(p.id, 'truth')]}")
+        results = [(p, run_probe(mf, p, truth, args.verbose)) for p in probes]
     declared = {p.id for p in probes if p.metricflow and p.metricflow.model_declared}
     print_summary("Summary (MetricFlow, query-only)", [(p, o) for p, o in results if p.id not in declared])
     print_summary("Summary (MetricFlow, model-declared)", [(p, o) for p, o in results if p.id in declared])
