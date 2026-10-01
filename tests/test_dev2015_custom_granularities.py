@@ -10,10 +10,16 @@ import pytest
 from sqlglot import exp
 
 from slayer.core.enums import TimeGranularity, boundaries_nest
-from slayer.core.errors import DateOperandTypeError, QueryTypeError, SlayerError, TimeDimensionColumnError
+from slayer.core.errors import (
+    DateOperandTypeError,
+    QueryTypeError,
+    RefinementConflictError,
+    SlayerError,
+    TimeDimensionColumnError,
+)
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.core.granularity import CustomGranularity
-from slayer.core.query import SlayerQuery
+from slayer.core.query import QueryRefinement, SlayerQuery, refine_query
 from slayer.sql.dialects import get_dialect
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -223,6 +229,22 @@ class TestEveryPosition:
         with pytest.raises(DateOperandTypeError) as exc:
             await engine.execute(query, dry_run=True)
         assert "series" in str(exc.value)
+
+    async def test_refining_a_saved_query(self, engine) -> None:
+        await engine.create_model_from_query(query=SlayerQuery.model_validate({
+            "source_model": "orders", "measures": [m("sum(amount)", "s")],
+            "time_dimensions": [{"dimension": "order_date", "granularity": "fiscal_year"}],
+        }), name="fy")
+        window = {"time_dimensions": [{"dimension": "order_date", "granularity": "FISCAL_YEAR",
+                                       "date_range": ["2024-04-01", "2025-03-31"]}]}
+        resp = await engine.execute("fy", refine=window)
+        assert [float(value(r, "s")) for r in resp.data] == [50.0]
+        saved = SlayerQuery.model_validate({"source_model": "orders", **window})
+        moved = QueryRefinement.model_validate(
+            {"time_dimensions": [{**window["time_dimensions"][0], "date_range": ["2025-04-01", None]}]})
+        with pytest.raises(RefinementConflictError) as exc:
+            refine_query(saved=saved, refinement=moved)
+        assert "order_date@FISCAL_YEAR" in str(exc.value)
 
     async def test_name_scoped_to_its_datasource(self, engine) -> None:
         cfg = await engine.storage.get_datasource("test")

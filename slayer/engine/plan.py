@@ -8,7 +8,7 @@ multi-stage DAG through it, splicing the stored query-backed models its stages r
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, Hashable, List, NoReturn, Optional, Set, Tuple, Union
+from typing import Any, Dict, Hashable, List, NoReturn, Optional, Set, Tuple
 
 from pydantic import BaseModel, Field
 
@@ -16,7 +16,7 @@ from slayer.core.errors import QueryBackedCycleError
 from slayer.core.join_walker import observe_traversals
 from slayer.core.models import SlayerModel
 from slayer.core.query import ModelExtension, SlayerQuery, extract_placeholder_names
-from slayer.core.time_spine import is_spine_query
+from slayer.core.time_spine import is_spine_query, query_host
 from slayer.core.scope import (
     ModelScope,
     StageDisplay,
@@ -59,7 +59,7 @@ def plan_query(
     *,
     query: SlayerQuery,
     bundle: ResolvedSourceBundle,
-    scope: Optional[Union[ModelScope, StageSchema]] = None,
+    scope: ModelScope | StageSchema | None = None,
     stage_schemas: Optional[Dict[str, StageSchema]] = None,
     prebound: Optional[PreboundQuery] = None,
     producer_registry: Optional[Dict[Hashable, PlannedQuery]] = None,
@@ -87,7 +87,7 @@ def _stage_scope_and_bundle(
     stage_schemas: Dict[str, StageSchema],
     data_source: str,
     stage_model: Optional[SlayerModel],
-) -> "Tuple[Union[ModelScope, StageSchema], ResolvedSourceBundle]":
+) -> "Tuple[ModelScope | StageSchema, ResolvedSourceBundle]":
     """Resolve one DAG stage's ``(scope, per-stage bundle)``; each stage binds against its OWN source, with sibling synthetic models threaded in."""
     src = query.source_model
     sibling_names = set(stage_schemas)
@@ -261,7 +261,7 @@ class _StagePlanner:
 
     def _universe(
         self, query: SlayerQuery, *, stage_model: Optional[SlayerModel], single: bool,
-    ) -> "Tuple[Union[ModelScope, StageSchema, None], ResolvedSourceBundle]":
+    ) -> "Tuple[ModelScope | StageSchema | None, ResolvedSourceBundle]":
         base = self.bundle.model_copy(update={"stage_displays": dict(self.state.displays)})
         if single:
             return None, base
@@ -414,6 +414,7 @@ class _StagePlanner:
         if base_name not in private and base_name not in self.bundle.query_backed \
                 and base_name not in chain:
             source = self._resolve_stage_model(stage.source_model)
+            source = query_host(source, query=stage) if source is not None else None
         norm = normalize_query(stage, model=source)
         stage = norm.query if norm.query is not None else stage
         variables = {

@@ -99,6 +99,8 @@ Every datasource has a built-in, never-stored model `time_spine` with one column
 
 The population is `time_spine × P` (P the population of the remaining dimensions, or `source_model`); the spine needs a lower frame bound (the upper defaults to the current bucket), a filter on it must be a frame bound, it has no countable rows (no aggregation over it, no raw-rows query), a model reaches it by its nearest axis over to-one hops (equal-length routes are a typed error), and wrap a measure in `coalesce(..., 0)` to fill empty buckets.
 
+A stage of a multi-stage query, or a saved query, can be a spine query too; later stages then see one row per bucket.
+
 ## Custom granularities
 
 A datasource's `granularities` list defines named buckets `{name, base, multiple, origin}` — e.g. `{"name": "fiscal_year", "base": "month", "multiple": 12, "origin": "2024-04-01"}` or `{"name": "quarter_hour", "base": "minute", "multiple": 15}` — usable wherever a built-in granularity is (time dimensions, `fiscal_year(order_date)`, `Column.granularity`, transform units), each bucket starting at `origin + k × multiple × base`.

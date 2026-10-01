@@ -88,3 +88,8 @@ def is_spine_query(query: SlayerQuery) -> bool:
     return query.source_model_name == TIME_SPINE_MODEL or any(
         names_spine(td.dimension.full_name) for td in query.time_dimensions or []
     ) or any(mentions_spine(t) for t in [*dims, *(query.filters or [])])
+
+
+def query_host(model: SlayerModel, *, query: SlayerQuery) -> SlayerModel:
+    """``model`` as ``query``'s host: a spine query's P is the factor of ``time_spine × P``."""
+    return model.as_population_factor() if is_spine_query(query) and not is_spine(model) else model

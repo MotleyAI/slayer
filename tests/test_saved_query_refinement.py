@@ -42,7 +42,7 @@ def dim_names(q: SlayerQuery) -> list[str | None]:
 
 
 def td_keys(q: SlayerQuery) -> list[tuple[str, str]]:
-    return [(td.dimension.full_name, td.granularity.value) for td in q.time_dimensions or []]
+    return [(td.dimension.full_name, str(td.granularity)) for td in q.time_dimensions or []]
 
 
 def only_td(q: SlayerQuery) -> TimeDimension:
@@ -76,13 +76,13 @@ class TestQueryRefinementModel:
     def test_functional_granularity_in_dimensions_becomes_time_dimension(self) -> None:
         r = QueryRefinement.model_validate({"dimensions": ["region", "year(ordered_at)"]})
         assert [d.name for d in r.dimensions or []] == ["region"]
-        assert [(td.dimension.name, td.granularity.value) for td in r.time_dimensions or []] == [
+        assert [(td.dimension.name, str(td.granularity)) for td in r.time_dimensions or []] == [
             ("ordered_at", "year"),
         ]
 
     def test_time_dimension_string_form(self) -> None:
         r = QueryRefinement.model_validate({"time_dimensions": ["year(ordered_at)"]})
-        assert [(td.dimension.name, td.granularity.value) for td in r.time_dimensions or []] == [
+        assert [(td.dimension.name, str(td.granularity)) for td in r.time_dimensions or []] == [
             ("ordered_at", "year"),
         ]
 

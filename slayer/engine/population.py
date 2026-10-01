@@ -566,15 +566,26 @@ async def infer_spine_population(
         )
     return PopulationChoice(
         model_name=TIME_SPINE_MODEL,
-        data_source=await spine_datasource(query=query, storage=storage, data_source=data_source),
+        data_source=await spine_datasource(
+            queries=[query], storage=storage, data_source=data_source, sibling_stage_names=sibling_stage_names,
+        ),
     )
 
 
-async def spine_datasource(*, query: SlayerQuery, storage: StorageBackend, data_source: str | None) -> str:
-    """The datasource of a spine-rooted query: pinned, else the one holding its measures' models."""
+async def spine_datasource(
+    *,
+    queries: list[SlayerQuery],
+    storage: StorageBackend,
+    data_source: str | None,
+    sibling_stage_names: set[str] | None = None,
+) -> str:
+    """The datasource of spine-rooted queries: pinned, else the one holding every model they name."""
     if data_source is not None:
         return data_source
-    anchors = _measure_anchor_names(query)
+    anchors: set[str] = set()
+    for q in queries:
+        anchors |= _anchor_names(q) | _measure_anchor_names(q) | {q.source_model_name or TIME_SPINE_MODEL}
+    anchors -= {TIME_SPINE_MODEL, *(sibling_stage_names or ())}
     if not anchors:
         datasources = await storage.list_datasources()
         if len(datasources) == 1:

@@ -11,7 +11,7 @@ from slayer.core.errors import QueryBackedCycleError
 from slayer.core.models import SlayerModel
 from slayer.core.query import ModelExtension, SlayerQuery, SourceSpec
 from slayer.core.scope import StageDisplay
-from slayer.core.time_spine import TIME_SPINE_MODEL, is_spine, spine_joins, spine_model
+from slayer.core.time_spine import TIME_SPINE_MODEL, is_spine, query_host, spine_joins, spine_model
 from slayer.ir.source_bundle import (
     ResolvedSourceBundle,
     apply_extension_overlay,
@@ -65,7 +65,6 @@ async def build_resolved_source_bundle(
     splice_chain: Tuple[str, ...] = (),
     dry_run_placeholders: bool = False,
     now: Optional[datetime] = None,
-    population_spine: bool = False,
 ) -> ResolvedSourceBundle:
     """Eagerly assemble the :class:`ResolvedSourceBundle` for one execution (P11).
 
@@ -73,8 +72,7 @@ async def build_resolved_source_bundle(
     purely. Variable precedence (highest first): runtime > query (stage) >
     outer > source-model defaults. Stored query-backed models are collected as
     splice placeholders, never as referenced models. ``now`` is the execution's
-    clock reading (default: the host clock). ``population_spine`` marks a model
-    root as the P factor of a ``time_spine × P`` population.
+    clock reading (default: the host clock).
     """
     named_queries = named_queries or {}
     stage_displays = stage_displays or {}
@@ -96,8 +94,7 @@ async def build_resolved_source_bundle(
         query=query, source_model=source_model, named_queries=named_queries,
         storage=storage, data_source=walk_ds, chain=splice_chain, spine_clash=spine_clash,
     )
-    if population_spine and not is_spine(source_model):
-        source_model = source_model.as_population_factor()
+    source_model = query_host(source_model, query=query)
 
     stage_source_models = await _stage_source_models(
         named_queries=named_queries, stage_displays=stage_displays,
@@ -176,7 +173,7 @@ async def _stage_source_models(
         # MUST resolve; a failure is a genuine error (a skip would fall back to the root source).
         resolved = await _resolve_source_spec(nq.source_model, storage=storage, data_source=data_source)
         if not resolved.source_queries:
-            out[nm] = resolved
+            out[nm] = query_host(resolved, query=nq)
         elif spec_adds_measures(nq.source_model):
             label = stage_displays[nm].label if nm in stage_displays else f"stage {nm!r}"
             raise ValueError(

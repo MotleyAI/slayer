@@ -379,6 +379,18 @@ class ReservedModelNameError(SlayerError):
         )
 
 
+class DefaultTimeDimensionTypeError(SlayerError):
+    """A model's declared ``default_time_dimension`` names a column of a non-temporal type."""
+
+    def __init__(self, *, model: str, column: str, column_type: str) -> None:
+        self.model = model
+        self.column = column
+        super().__init__(
+            f"Model {model!r}: default_time_dimension {column!r} has type {column_type}; "
+            f"it must name a date or time column."
+        )
+
+
 class DuplicateMeasureNameError(NameCollisionError):
     """Two measures in one query declare the same explicit ``name``."""
 

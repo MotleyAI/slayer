@@ -41,7 +41,7 @@ A string literal compared with a temporal operand, or used as a `date_range` ele
 
 ### Requirement: Relative tokens resolve against one clock reading
 
-A relative token SHALL be matched case-insensitively with whitespace collapsed, and SHALL denote a period computed from "now", read once per query execution from the engine's clock (the SLayer host's local wall-clock time; arithmetic is naive wall-clock). The grammar is closed: `today`, `yesterday`, `tomorrow`; `this <unit>`, `last <unit>`, `next <unit>` (the current, previous and next unit); `last N <units>` and `next N <units>` (the N whole units immediately before or after the current unit, excluding the current unit); `N <units> ago` and `N <units> from now` (the single unit N steps before or after the current one); `week to date`, `month to date`, `quarter to date`, `year to date` (`[start of the current unit, start of tomorrow)`). `<unit>` is any time granularity (`second`, `minute`, `hour`, `day`, `week`, `week_sunday`, `month`, `quarter`, `year`) with an optional plural `s`; `week` is Monday-anchored and `week_sunday` Sunday-anchored. N is a positive integer. The clock SHALL be the engine's own; SQL-side `now()` / `current_date()` (`queries/date-functions`) read the database clock.
+A relative token SHALL be matched case-insensitively with whitespace collapsed, and SHALL denote a period computed from "now", read once per query execution from the engine's clock (the SLayer host's local wall-clock time; arithmetic is naive wall-clock). The grammar is closed: `today`, `yesterday`, `tomorrow`; `this <unit>`, `last <unit>`, `next <unit>` (the current, previous and next unit); `last N <units>` and `next N <units>` (the N whole units immediately before or after the current unit, excluding the current unit); `N <units> ago` and `N <units> from now` (the single unit N steps before or after the current one); `week to date`, `month to date`, `quarter to date`, `year to date` (`[start of the current unit, start of tomorrow)`). `<unit>` is any time granularity (`second`, `minute`, `hour`, `day`, `week`, `week_sunday`, `month`, `quarter`, `year`) or a custom granularity defined on the query's datasource (`queries/custom-granularities`), with an optional plural `s`; `week` is Monday-anchored and `week_sunday` Sunday-anchored. A custom unit's current unit is the custom bucket containing now, its steps are the adjacent custom buckets, and it is a sub-day unit when its base is `hour`, `minute` or `second`; a custom unit resolves against the datasource the query runs against, and a name that datasource does not define is not a unit. N is a positive integer. The clock SHALL be the engine's own; SQL-side `now()` / `current_date()` (`queries/date-functions`) read the database clock.
 
 #### Scenario: Calendar tokens
 
@@ -82,6 +82,21 @@ A relative token SHALL be matched case-insensitively with whitespace collapsed, 
 
 - **WHEN** `ordered_at >= 'last 7 days'` is executed twice with caching on and a clock reading the same day
 - **THEN** the second run is served from the cache
+
+#### Scenario: Custom-granularity units
+
+- **WHEN** the clock reads `2026-09-29 12:00:00`, the datasource defines `fiscal_year = {base: year, origin: 2000-04-01}` and `quarter_hour = {base: minute, multiple: 15}`, and filters on a TIMESTAMP column use `this fiscal_year`, `last fiscal_year`, `last 2 fiscal_years`, `1 fiscal_year ago` and `last 2 quarter_hours`
+- **THEN** they resolve to `[2026-04-01, 2027-04-01)`, `[2025-04-01, 2026-04-01)`, `[2024-04-01, 2026-04-01)`, `[2025-04-01, 2026-04-01)` and `[2026-09-29 11:30:00, 2026-09-29 12:00:00)`, by executed values on SQLite and DuckDB
+
+#### Scenario: Custom unit outside its datasource
+
+- **WHEN** a query against a datasource that defines no granularities filters `ordered_at >= 'last fiscal_year'`
+- **THEN** the query fails with the typed time-literal error listing the accepted forms
+
+#### Scenario: Sub-day custom unit against a DATE column
+
+- **WHEN** a filter compares a DATE column with `'last 2 quarter_hours'`
+- **THEN** the query fails with the typed error stating that the column has day resolution
 
 ### Requirement: Temporal operands and time-literal typing
 
@@ -224,7 +239,7 @@ A time bound on a time dimension's column SHALL narrow the visible buckets witho
 
 ### Requirement: whole_periods_only snaps frame bounds to earlier bucket boundaries
 
-With `whole_periods_only`, for each column carrying time dimensions (model or stage), every frame bound on that column SHALL snap to the latest bucket boundary at or before it, where the effective upper bound is the earlier of the stated exclusive upper bound and now (now when no upper bound is stated). The boundary SHALL be the earliest among the floors at each granularity of that column's time dimensions. Bounds under `or` / `not`, and bounds on other columns, SHALL be untouched. When two time dimensions on one column have granularities of which neither nests into the other (`week` with `month`), a structured warning SHALL name the pair.
+With `whole_periods_only`, for each column carrying time dimensions (model or stage), every frame bound on that column SHALL snap to the latest bucket boundary at or before it, where the effective upper bound is the earlier of the stated exclusive upper bound and now (now when no upper bound is stated). The boundary SHALL be the earliest among the floors at each granularity of that column's time dimensions, built-in or custom (`queries/custom-granularities`). Bounds under `or` / `not`, and bounds on other columns, SHALL be untouched. When two time dimensions on one column have granularities of which neither nests into the other (`week` with `month`; nesting per `queries/custom-granularities`), a structured warning SHALL name the pair.
 
 #### Scenario: Snapping at month granularity
 
@@ -260,6 +275,16 @@ With `whole_periods_only`, for each column carrying time dimensions (model or st
 
 - **WHEN** a monthly query with `sum(revenue, window='90d')` and `whole_periods_only` has `date_range: "last 3 months"`
 - **THEN** it returns the three complete months, and the earliest month's window reaches before its start
+
+#### Scenario: Snapping to custom boundaries
+
+- **WHEN** the clock reads `2026-09-29 12:00:00`, `whole_periods_only` is set, and a `fiscal_year` (April origin) time dimension on `order_date` over rows 2024-03-15 (10), 2024-04-02 (20), 2025-03-31 (30), 2025-04-01 (40) has `date_range: ["2024-05-01", "2025-12-31"]`
+- **THEN** the bounds snap to 2024-04-01 and 2025-04-01 and the only row is 2024-04-01: 50
+
+#### Scenario: Month with a mid-month custom granularity warns
+
+- **WHEN** a query with `whole_periods_only` has `month` and `billing_month` (`{base: month, origin: 2000-01-15}`) time dimensions on one column
+- **THEN** it executes and returns a structured warning naming the two granularities
 
 ### Requirement: Time bounds render on every Tier-1 dialect
 

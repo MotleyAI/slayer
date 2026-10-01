@@ -131,7 +131,6 @@ jobs:
     # would fail otherwise and we'd rather not nag external contributors.
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-latest
-    needs: lint-and-test
     steps:
       - uses: actions/checkout@v4
 
@@ -157,6 +156,13 @@ jobs:
       - name: Install Poetry
         if: steps.gate.outputs.skip != 'true'
         run: pip install poetry
+
+      - name: Cache Poetry virtualenv
+        if: steps.gate.outputs.skip != 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pypoetry/virtualenvs
+          key: venv-${{ runner.os }}-py3.11-bigquery-${{ hashFiles('poetry.lock') }}
 
       - name: Install dependencies (with bigquery extra)
         if: steps.gate.outputs.skip != 'true'
@@ -221,7 +227,6 @@ jobs:
     # job would fail otherwise and we'd rather not nag external contributors.
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-latest
-    needs: lint-and-test
     steps:
       - uses: actions/checkout@v4
 
@@ -246,6 +251,13 @@ jobs:
       - name: Install Poetry
         if: steps.gate.outputs.skip != 'true'
         run: pip install poetry
+
+      - name: Cache Poetry virtualenv
+        if: steps.gate.outputs.skip != 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pypoetry/virtualenvs
+          key: venv-${{ runner.os }}-py3.11-snowflake-${{ hashFiles('poetry.lock') }}
 
       - name: Install dependencies (with snowflake extra)
         if: steps.gate.outputs.skip != 'true'

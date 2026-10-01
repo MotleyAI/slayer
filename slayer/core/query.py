@@ -25,7 +25,7 @@ from slayer.core.enums import BUILTIN_AGGREGATIONS, GRANULARITY_NAMES, TimeGranu
 from slayer.core.formula import ALL_TRANSFORMS
 from slayer.core.keys import SCALAR_FUNCTIONS
 from slayer.core.errors import DistinctDimensionValuesError, GranularityCallError, RefinementConflictError
-from slayer.core.granularity import GranularitySpec
+from slayer.core.granularity import GranularitySpec, granularity_key
 from slayer.core.models import (
     Column,
     ModelJoin,
@@ -1377,17 +1377,17 @@ def _merge_time_dimensions(
     if not refined:
         return saved
     merged = list(saved or [])
-    positions: dict[tuple[str, TimeGranularity], int] = {}
+    positions: dict[tuple[str, str], int] = {}
     for i, td in enumerate(merged):
-        positions.setdefault((_canonical_ref(td.dimension, model_name).full_name, td.granularity), i)
+        positions.setdefault((_canonical_ref(td.dimension, model_name).full_name, granularity_key(td.granularity)), i)
     for td in refined:
-        column = _canonical_ref(td.dimension, model_name).full_name
-        i = positions.get((column, td.granularity))
+        slot = (_canonical_ref(td.dimension, model_name).full_name, granularity_key(td.granularity))
+        i = positions.get(slot)
         if i is None:
-            positions[(column, td.granularity)] = len(merged)
+            positions[slot] = len(merged)
             merged.append(td)
             continue
-        prior, key = merged[i], f"{column}@{td.granularity.value}"
+        prior, key = merged[i], f"{slot[0]}@{td.granularity}"
         update = {
             attribute: _merge_attribute(
                 saved=getattr(prior, attribute), refined=getattr(td, attribute), key=key, attribute=attribute,
