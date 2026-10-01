@@ -18,12 +18,10 @@ from slayer.core.models import (
     DatasourceConfig,
     ModelJoin,
     SlayerModel,
+    is_key_set_unique,
     sanitize_model_name,
 )
-from slayer.engine.cardinality import (
-    infer_structural_cardinality,
-    is_key_set_unique,
-)
+from slayer.engine.cardinality import infer_structural_cardinality
 from slayer.engine.internal_tables import internal_table_rule
 from slayer.engine.introspect_utils import (  # noqa: F401  (re-exported for back-compat)
     _CLICKHOUSE_WRAPPER_MAX_DEPTH,
@@ -727,92 +725,60 @@ def _safe_get_table_comment(
         return None
 
 
+def _introspected_column(col: dict[str, Any], *, name: str, primary_key: bool) -> IntrospectedColumn:
+    """One inspector column; ``db_type`` only where ``DataType`` is lossy (opaque, exact NUMERIC/DECIMAL)."""
+    col_type = col["type"]
+    db_type: str | None = None
+    if isinstance(col_type, DataType):
+        data_type = col_type
+        is_float = col.get("is_float", False)
+        db_type = col.get("db_type")
+    else:
+        data_type = _sa_type_to_data_type(col_type)
+        is_float = _sa_type_is_float(col_type)
+        if data_type.is_opaque or _sa_type_is_exact_numeric(col_type):
+            db_type = _raw_db_type_str(_unwrap_clickhouse_wrappers(col_type))
+    return IntrospectedColumn(
+        name=name, type=data_type, primary_key=primary_key, is_float=is_float,
+        db_type=db_type, comment=_clean_comment(col.get("comment")),
+    )
+
+
 def _introspect_query_columns_via_inspector(
     sa_engine: sa.Engine,
     inspector: sa.engine.Inspector,
     table_name: str,
     ref: SchemaRef | None,
-    rollup_sql: str | None,
     referenced_tables: set[str],
     fk_columns_by_table: dict[str, set[str]],
     joins: list[ModelJoin] | None = None,
     live_name_by_model: dict[str, str] | None = None,
 ) -> list[IntrospectedColumn]:
-    """Introspect the table's columns plus one aliased set per join path.
-
-    ``db_type`` is set only where ``DataType`` is lossy (opaque, exact NUMERIC/DECIMAL).
-    """
-    results = []
-
-    columns = _safe_get_columns(inspector, sa_engine, table_name, ref)
+    """Introspect the table's columns plus one aliased set per join path."""
     pk_constraint = _safe_get_pk_constraint(inspector, sa_engine, table_name, ref)
     pk_columns = set(pk_constraint.get("constrained_columns", []))
-
-    for col in columns:
-        col_name = col["name"]
-        col_type = col["type"]
-        db_type: str | None = None
-        if isinstance(col_type, DataType):
-            data_type = col_type
-            is_float = col.get("is_float", False)
-            db_type = col.get("db_type")
-        else:
-            data_type = _sa_type_to_data_type(col_type)
-            is_float = _sa_type_is_float(col_type)
-            if data_type.is_opaque or _sa_type_is_exact_numeric(col_type):
-                db_type = _raw_db_type_str(_unwrap_clickhouse_wrappers(col_type))
-        results.append(IntrospectedColumn(
-            name=col_name,
-            type=data_type,
-            primary_key=col_name in pk_columns,
-            is_float=is_float,
-            db_type=db_type,
-            comment=_clean_comment(col.get("comment")),
-        ))
+    results = [
+        _introspected_column(col, name=col["name"], primary_key=col["name"] in pk_columns)
+        for col in _safe_get_columns(inspector, sa_engine, table_name, ref)
+    ]
 
     # (live table, path) per join — the same table may appear via several paths.
-    table_path_pairs: list[tuple] = []
     # An EMPTY join list means every join was dropped — not "never generated".
     if joins is not None:
         lookup = live_name_by_model or {}
-        for mj in joins:
-            table_path_pairs.append(
-                (lookup.get(mj.target_model, mj.target_model), mj.target_model)
-            )
+        table_path_pairs = [(lookup.get(mj.target_model, mj.target_model), mj.target_model) for mj in joins]
     else:
-        for ref_table in referenced_tables:
-            table_path_pairs.append((ref_table, ref_table))
+        table_path_pairs = [(t, t) for t in referenced_tables]
 
     for ref_table, path in table_path_pairs:
-        ref_cols = _safe_get_columns(inspector, sa_engine, ref_table, ref)
         ref_pk = _safe_get_pk_constraint(inspector, sa_engine, ref_table, ref)
         ref_pk_cols = set(ref_pk.get("constrained_columns", []))
         ref_fk_cols = fk_columns_by_table.get(ref_table, set())
-
-        for col in ref_cols:
-            if col["name"] in ref_fk_cols:
-                continue
-            alias = f"{path}.{col['name']}"
-            col_type = col["type"]
-            ref_db_type: str | None = None
-            if isinstance(col_type, DataType):
-                data_type = col_type
-                is_float = col.get("is_float", False)
-                ref_db_type = col.get("db_type")
-            else:
-                data_type = _sa_type_to_data_type(col_type)
-                is_float = _sa_type_is_float(col_type)
-                if data_type.is_opaque or _sa_type_is_exact_numeric(col_type):
-                    ref_db_type = _raw_db_type_str(_unwrap_clickhouse_wrappers(col_type))
-            results.append(IntrospectedColumn(
-                name=alias,
-                type=data_type,
-                primary_key=col["name"] in ref_pk_cols,
-                is_float=is_float,
-                db_type=ref_db_type,
-                comment=_clean_comment(col.get("comment")),
-            ))
-
+        results.extend(
+            _introspected_column(col, name=f"{path}.{col['name']}", primary_key=col["name"] in ref_pk_cols)
+            for col in _safe_get_columns(inspector, sa_engine, ref_table, ref)
+            if col["name"] not in ref_fk_cols
+        )
     return results
 
 
@@ -958,7 +924,6 @@ def introspect_table_to_model(
         inspector=inspector,
         table_name=table_name,
         ref=ref,
-        rollup_sql=None,
         referenced_tables=set(),
         fk_columns_by_table={},
     )
@@ -1217,7 +1182,6 @@ def _build_one_model(
         inspector=inspector,
         table_name=obj.name,
         ref=ref,
-        rollup_sql=None,
         referenced_tables=referenced,
         fk_columns_by_table=fk_columns_by_table,
         joins=model_joins,

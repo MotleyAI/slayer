@@ -366,6 +366,26 @@ class TestNesting:
             with pytest.raises(TimeDimensionColumnError):
                 await engine.execute(query, dry_run=True)
 
+    @pytest.mark.parametrize("backend", BACKENDS)
+    async def test_a_five_hour_grain_does_not_nest_into_the_month(self, backend) -> None:
+        five_hours = {"name": "five_hours", "base": "hour", "multiple": 5}
+        async with cg_engine(backend, datasource_fields={"granularities": [*GRANULARITIES, five_hours]}) as eng:
+            for stored in ("five_hours", "quarter_hour"):
+                await _save(eng, bucketed_model(name=f"ev_{stored}", source="events", column="ts",
+                                                granularity=stored))
+            ok = await eng.execute(SlayerQuery.model_validate({
+                "source_model": "ev_quarter_hour", "measures": [m("sum(rev)", "s")],
+                "time_dimensions": [{"dimension": "ts", "granularity": "month"}],
+            }))
+            assert sum(float(value(r, "s")) for r in ok.data) == pytest.approx(23.0)
+            query = SlayerQuery.model_validate({
+                "source_model": "ev_five_hours", "measures": [m("sum(rev)", "s")],
+                "time_dimensions": [{"dimension": "ts", "granularity": "month"}],
+            })
+            with pytest.raises(TimeDimensionColumnError) as exc:
+                await eng.execute(query, dry_run=True)
+            assert "five_hours" in str(exc.value)
+
 
 # ---------------------------------------------------------------------------
 # Column.granularity accepts a datasource granularity

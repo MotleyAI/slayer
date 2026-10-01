@@ -1,4 +1,4 @@
-"""DEV-1836 task 1.1 — the join-arity safety predicate (design D1).
+"""The join-arity safety predicate.
 
 Spec: openspec …/specs/models/join-cardinality — "Provable many-to-one arity",
 "Composite keys prove arity only when fully covered". Pure unit tests over
@@ -9,12 +9,9 @@ file fails on import (the right reason).
 from __future__ import annotations
 
 from slayer.core.enums import DataType, JoinCardinality
+from slayer.core.join_walker import provably_to_one
 from slayer.core.models import Column, ModelJoin, SlayerModel
-from slayer.engine.join_safety import (
-    may_inline_crossing_inputs,
-    provably_to_one,
-    safe_reachable,
-)
+from slayer.engine.join_safety import may_inline_crossing_inputs, safe_reachable
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.plan import plan_query
 
@@ -130,7 +127,7 @@ class TestDeclaredCardinality:
         assert provably_to_one(edge=join, target_model=segments_model())
 
     def test_declared_one_to_many_is_unsafe(self) -> None:
-        # DEV-1853: the fixture no longer declares a reverse edge — same shape inline.
+        # The fixture declares no reverse edge — same shape inline.
         join = _join(
             "orders", [["id", "customer_id"]],
             cardinality=JoinCardinality.ONE_TO_MANY,
@@ -146,8 +143,7 @@ class TestDeclaredCardinality:
 
 
 class TestInvertedCardinalityEdges:
-    """A declared join read in its inverted-cardinality shape (DEV-1853: the
-    label a stored mirror used to carry); the predicate reads it as-is."""
+    """A declared join read in its inverted-cardinality shape; the predicate reads it as-is."""
 
     def test_inverted_many_to_one_reverse_edge_is_unsafe(self) -> None:
         # Forward m:1 inverts to 1:N — the reverse-orientation shape.
@@ -203,7 +199,7 @@ class TestSafeReachable:
 
 
 class TestInvertedOrientationsStayProven:
-    """DEV-1853 repealed F1's no-synthesized-traversal rule: every declared
+    """Every declared
     edge traverses both ways, but proof is per orientation — an inverted
     to-one hop is a fan-out orientation and stays unsafe."""
 
@@ -224,21 +220,20 @@ class TestInvertedOrientationsStayProven:
 
 
 class TestMayInlineSeam:
-    """The DEV-1688 seam, relocated here from the retired isolation classifier
-    (DEV-1838 2.5). ``ScopeFrame.may_inline`` guards individual values at the
+    """The crossing-input inlining seam. ``ScopeFrame.may_inline`` guards individual values at the
     projection boundary and is pinned separately (``test_scope``); this seam
     guards whole aggregates at plan time."""
 
     def test_inlining_a_crossing_input_is_refused(self) -> None:
         """Hardcoded ``False``: a crossing input desugars onto a producer,
         always. Inlining one is only safe when the crossed join is provably
-        1:N-free for the aggregate — the DEV-1688 cardinality work."""
+        1:N-free for the aggregate."""
         assert may_inline_crossing_inputs([("customers",)]) is False
         assert may_inline_crossing_inputs([]) is False
 
     def test_the_seam_is_load_bearing(self, monkeypatch) -> None:
         """Flipping the seam must change the verdict — otherwise it is
-        decorative, which is exactly what DEV-1688 must not inherit. With it
+        decorative. With it
         returning ``True`` a crossing-input local aggregate stays inline
         instead of desugaring onto a host-rooted producer."""
         host = orders_model()

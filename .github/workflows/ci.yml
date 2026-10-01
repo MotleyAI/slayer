@@ -92,7 +92,7 @@ jobs:
         run: uvx --no-build --from living-architecture==0.2.0 la-arch-check
 
       - name: Run unit tests
-        timeout-minutes: 15
+        timeout-minutes: 20
         # -n logical uses ALL the runner's vCPUs for ~16.5k CPU-bound tests
         # (plain -n auto picks only physical cores via psutil — half). Clears the
         # 3.14 timeout; --durations logs the slowest tests per matrix leg.

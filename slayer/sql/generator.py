@@ -1382,18 +1382,28 @@ class SQLGenerator:
         }
         self._gen_placeholder_types.append(placeholders)
         self._gen_column_types.append(lambda key: placeholders.get(key) or model_types(key))
+        # The outermost spine render declares every sequence CTE rendered within it (nested producers included).
+        owns_spine = planned_query.spine is not None and not self._gen_spines
+        outer_spine_ctes = self._gen_spine_ctes
         if planned_query.spine is not None:
             self._gen_spines.append(planned_query.spine)
+        if owns_spine:
+            self._gen_spine_ctes = []
         try:
-            return self._generate_from_planned_body(
+            out = self._generate_from_planned_body(
                 planned_query, bundle=bundle, as_cte_body=as_cte_body,
                 producer_kernel=producer_kernel,
             )
+            if owns_spine and self._gen_spine_ctes:
+                raise ValueError("a spine sequence CTE was rendered but never declared")
+            return out
         finally:
             self._gen_column_types.pop()
             self._gen_placeholder_types.pop()
             if planned_query.spine is not None:
                 self._gen_spines.pop()
+            if owns_spine:
+                self._gen_spine_ctes = outer_spine_ctes
 
     def _placeholder_types(self) -> Dict[Any, DataType]:
         return dict(self._gen_placeholder_types[-1]) if self._gen_placeholder_types else {}
@@ -1410,6 +1420,7 @@ class SQLGenerator:
 
         source_model = bundle.source_model
         source_relation = planned_query.source_relation
+        spine_mark = len(self._gen_spine_ctes)
 
         _row_attaches = [
             r for r in planned_query.regroup_attach_plans
@@ -1437,7 +1448,7 @@ class SQLGenerator:
 
         if _combined_attaches:
             return self._render_with_combined_attaches(
-                planned_query=planned_query, bundle=bundle,
+                planned_query=planned_query, bundle=bundle, spine_mark=spine_mark,
             )
 
         slots_by_id = {
@@ -1508,6 +1519,7 @@ class SQLGenerator:
 
         if having_clause is not None:
             base_select = base_select.having(having_clause)
+        prelude = [*self._take_spine_ctes(since=spine_mark), *regroup_ctes]
 
         # With no blocker the pipeline collapses to one SELECT; the only blocker here is materialised hidden
         # order/filter slots, forcing an outer trim wrap.
@@ -1541,9 +1553,9 @@ class SQLGenerator:
                     bundle=bundle,
                     aliases_by_slot_id=aliases_by_slot_id,
                 )
-            if regroup_ctes:
+            if prelude:
                 final_select = self._assemble_with_chain(
-                    entries=regroup_ctes, final=final_select,
+                    entries=prelude, final=final_select,
                     external_names=self._external_cte_names(),
                 )
             return final_select
@@ -1551,7 +1563,7 @@ class SQLGenerator:
         # Chain bodies stay exp.Select end-to-end: render-to-text-and-reparse would mis-split the dotted
         # <relation>.<alias> names on dot-path dialects.
         return self._render_steps_and_post(
-            prelude_nodes=regroup_ctes,
+            prelude_nodes=prelude,
             tail_select=base_select,
             tail_schema=aliases_by_slot_id,
             tail_phase="base",
@@ -3361,6 +3373,7 @@ class SQLGenerator:
         *,
         planned_query,
         bundle,
+        spine_mark: int,
     ) -> exp.Select:
         """Render a ``PlannedQuery`` that carries one or more COMBINED"""
 
@@ -3760,7 +3773,7 @@ class SQLGenerator:
                 )
                 combined_select = combined_select.where(_grouped(rendered))
 
-        spine_ctes = self._take_spine_ctes()
+        spine_ctes = self._take_spine_ctes(since=spine_mark)
         if planned_query.transform_layers:
             return self._render_steps_and_post(
                 prelude_nodes=[
@@ -5363,9 +5376,9 @@ class SQLGenerator:
         ))
         return exp.Subquery(this=series, alias=exp.to_identifier(alias))
 
-    def _take_spine_ctes(self) -> List[CteEntry]:
-        """The sequence CTEs the base just rendered reads."""
-        taken, self._gen_spine_ctes = self._gen_spine_ctes, []
+    def _take_spine_ctes(self, *, since: int) -> List[CteEntry]:
+        """The sequence CTEs recorded since ``since``: the ones this render reads."""
+        taken, self._gen_spine_ctes = self._gen_spine_ctes[since:], self._gen_spine_ctes[:since]
         return taken
 
     def _dim_column_expr_from_planned(

@@ -180,6 +180,10 @@ def check_off_spine_order_keys(prebound: PreboundQuery) -> None:
         check_spine_plain_use(offender=key_display(key) if reads else None, position="order key")
 
 
+def is_spine_bound(key: ValueKey, *, spine: Optional[ColumnKey]) -> bool:
+    return spine is not None and is_frame_bound(key=key, time_columns={spine})
+
+
 def host_mask(key: ValueKey, *, spine: Optional[ColumnKey]) -> Optional[ValueKey]:
     """A host filter without its spine bounds (they decide bucket existence, not host rows)."""
     return key if spine is None else strip_frame_bounds(key=key, time_columns={spine})

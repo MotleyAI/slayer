@@ -286,6 +286,18 @@ def is_identifier(*, column: Column, columns: list[Column]) -> bool:
     return column.primary_key and sum(1 for c in columns if c.primary_key) == 1
 
 
+def is_key_set_unique(
+    *, key_columns: list[str], unique_key_sets: list[list[str]]
+) -> bool:
+    """Is the ``key_columns`` tuple unique given the known unique key-sets?
+
+    Unique iff some key-set is a non-empty SUBSET: unique ``(a)`` makes
+    ``(a, b)`` unique, but unique ``(a, b)`` says nothing about ``(a)``.
+    """
+    key_set = set(key_columns)
+    return any(uks and set(uks) <= key_set for uks in unique_key_sets)
+
+
 def _check_allowed_aggregation(
     *, column: Column, agg_name: str, identifier: bool,
     custom_agg_names: AbstractSet[str], valid_names: AbstractSet[str],

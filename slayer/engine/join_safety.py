@@ -6,15 +6,25 @@ so one direction may be provably to-one while the other fans out."""
 
 from __future__ import annotations
 
+from collections import deque
 from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple, TypeVar
 
 from pydantic import BaseModel
 
 from slayer.core.enums import JoinCardinality, RANKED_AGGREGATIONS, invert_cardinality
-from collections import deque
-
 from slayer.core.errors import AmbiguousJoinPathError, CircularJoinPathError, UnresolvableDimensionJoinError
-from slayer.core.join_walker import OrientedJoin, canonical_path, is_product_edge, neighbors, resolve_hop, reverse_token, walk
+from slayer.core.join_walker import (
+    OrientedJoin,
+    OrientedLike,
+    canonical_path,
+    is_product_edge,
+    neighbors,
+    provably_to_one,
+    resolve_hop,
+    reverse_token,
+    unique_key_sets,
+    walk,
+)
 from slayer.core.time_spine import TIME_SPINE_COLUMN, TIME_SPINE_MODEL, is_spine
 from slayer.core.keys import (
     SLOT_COMPOSITE_KINDS,
@@ -48,11 +58,9 @@ from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.cardinality import (
     CardinalityVerdict,
     JoinCardinalityReport,
-    is_key_set_unique,
 )
 
 __all__ = [
-    "provably_to_one",
     "provably_fans",
     "safe_reachable",
     "may_inline_crossing_inputs",
@@ -60,40 +68,11 @@ __all__ = [
     "JoinSafetyFinding",
 ]
 
-#: An oriented hop, or a declared join read in its declared orientation — both
-#: expose ``cardinality`` and target-side ``join_pairs``, which is all the proof
-#: predicate reads.
-OrientedLike = OrientedJoin | ModelJoin
-
 
 def may_inline_crossing_inputs(crossed_paths: Sequence[tuple]) -> bool:  # NOSONAR(S1172) — crossed_paths is the documented seam; the cardinality-aware decision reads it, hardcoded False until then.
     """Whether a crossing-input local aggregate may stay inline in the host base.
     Hardcoded ``False`` (always a producer); the seam that will flip."""
     return False
-
-
-def _unique_key_sets(model: SlayerModel) -> list[list[str]]:
-    # Column names: composite PK as one set, then each solo-unique singleton.
-    sets: list[list[str]] = []
-    pk = [c.name for c in model.columns if c.primary_key]
-    if pk:
-        sets.append(pk)
-    for c in model.columns:
-        if c.unique:
-            sets.append([c.name])
-    return sets
-
-
-def provably_to_one(*, edge: OrientedLike, target_model: SlayerModel) -> bool:
-    """Is ``edge`` provably many-to-one onto ``target_model`` in its orientation?
-    True iff the oriented cardinality is m:1/1:1, or the traversal-target columns
-    fully cover a unique key-set of ``target_model``."""
-    if edge.cardinality in (JoinCardinality.MANY_TO_ONE, JoinCardinality.ONE_TO_ONE):
-        return True
-    return is_key_set_unique(
-        key_columns=[pair[1] for pair in edge.join_pairs],
-        unique_key_sets=_unique_key_sets(target_model),
-    )
 
 
 def provably_fans(*, edge: OrientedLike, target_model: SlayerModel) -> bool:
@@ -912,7 +891,7 @@ def _grain_leaves(*, grain: Grain, at: Tuple[str, ...]) -> set:
 def _entity_seeded(*, grain: Grain, model: SlayerModel, at: Tuple[str, ...]) -> bool:
     """The grain pins ``model`` at ``at`` iff its leaves there cover a unique key set."""
     here = _grain_leaves(grain=grain, at=at)
-    return any(ks and set(ks) <= here for ks in _unique_key_sets(model))
+    return any(ks and set(ks) <= here for ks in unique_key_sets(model))
 
 
 def _hop_pins(

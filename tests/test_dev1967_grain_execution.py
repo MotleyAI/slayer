@@ -7,7 +7,7 @@ import pytest
 from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.core.enums import DataType
 from slayer.core.query import SlayerQuery
-from slayer.engine.join_safety import provably_to_one
+from slayer.core.join_walker import provably_to_one
 from tests._dev1836_fixtures import (
     AMOUNT_BY_TIER,
     AMOUNT_TOTAL,

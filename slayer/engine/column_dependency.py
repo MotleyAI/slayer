@@ -25,9 +25,9 @@ from slayer.core.errors import (
     DerivedColumnCircularError,
     DerivedColumnFanningError,
 )
-from slayer.core.join_walker import resolve_hop, walk
+from slayer.core.join_walker import provably_to_one, resolve_hop, walk
 from slayer.core.models import Column, SlayerModel
-from slayer.engine.join_safety import provably_fans, provably_to_one
+from slayer.engine.join_safety import provably_fans
 from slayer.sql.column_expansion import (
     is_trivial_base,
     reference_sites,

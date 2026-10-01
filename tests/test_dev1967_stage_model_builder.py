@@ -8,7 +8,7 @@ from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.core.scope import StageColumn, StageSchema
-from slayer.engine.join_safety import provably_to_one
+from slayer.core.join_walker import provably_to_one
 from slayer.ir.source_bundle import model_from_stage_schema
 
 MONEY = NumberFormat(type=NumberFormatType.CURRENCY, precision=2)
