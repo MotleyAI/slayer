@@ -49,9 +49,6 @@ nav = [
     { "Flight SQL" = "interfaces/flight-sql.md" },
     { "SQL API" = "interfaces/pg-facade.md" },
   ]},
-  { "Comparisons" = [
-    { "SLayer, Malloy, Cube and MetricFlow" = "comparisons/semantic_layers.md" },
-  ]},
   { "dbt" = [
     { "SLayer vs dbt" = "dbt/slayer_vs_dbt.md" },
     { "Importing dbt definitions" = "dbt/dbt_import.md" },
