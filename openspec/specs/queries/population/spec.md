@@ -47,7 +47,10 @@ never references inside an aggregation) plus the field references of field-typed
 resolving to saved measures, order entries, and model-level filters SHALL
 contribute nothing to inference. Filter references SHALL be read after
 substituting source-independent variables; a reference introduced only by a
-variable value does not participate.
+variable value does not participate. Time dimensions on `time_spine.timestamp`
+and frame-bound filters on it SHALL NOT be determination items: they factor out
+of the population as its spine factor (`queries/time-spine`), and this rule
+infers only the factor P from the remaining items.
 
 #### Scenario: Canonical default picks the coarse side
 
@@ -109,6 +112,14 @@ variable value does not participate.
 - **THEN** the same inference rule applies and the result has one row per row of
   the inferred population
 
+#### Scenario: Spine time dimensions factor out
+
+- **WHEN** a query without `source_model` groups by `customers.region` and a month
+  time dimension on `time_spine.timestamp`, with orders and returns each joined
+  many-to-one to customers and each wired to the spine
+- **THEN** P is `customers` (not `orders` or `returns`, which also determine the
+  spine), and the population is `time_spine × customers`
+
 ### Requirement: Inference fails closed
 
 Inference SHALL raise a typed population-inference error — with a stable message
@@ -117,7 +128,9 @@ single answer is forced: several viable candidates tie at the minimum (named), n
 candidate is viable (per-candidate reasons), the query has no dimensions and no
 field-typed filters (dedicated message, no candidate list), a determination item's
 join path is ambiguous from every otherwise-viable candidate, or datasource scoping
-finds zero or several candidate datasources (named). A stage query omitting
+finds zero or several candidate datasources (named). A query whose only
+dimensions and field-typed filters are on the spine SHALL NOT raise the
+nothing-to-infer error: its P is the one-row unit. A stage query omitting
 `source_model` whose determination items are anchored at sibling stage names SHALL
 fail closed with a diagnostic naming the sibling.
 
@@ -132,6 +145,12 @@ fail closed with a diagnostic naming the sibling.
   field-typed filters)
 - **THEN** a dedicated error says there is nothing to infer a population from,
   without listing every model
+
+#### Scenario: Spine-only query has the unit as P
+
+- **WHEN** a query without `source_model` has only a spine time dimension with a
+  `date_range` and measures
+- **THEN** no inference error is raised and the population is `time_spine`
 
 #### Scenario: Sibling-anchored stage refs
 
@@ -182,7 +201,11 @@ them.
 
 Every successful model-rooted query response SHALL report the effective population
 model name, and whether it was inferred, uniformly across normal execution,
-dry-run, explain, cache hits, refresh, and the Python client's response model.
+dry-run, explain, cache hits, refresh, and the Python client's response model. A
+spine population SHALL be reported as `time_spine × <P>` when P is a model and as
+`time_spine` when P is the unit; the inferred flag SHALL be true iff P was
+inferred (a spine-only query counts as inferred unless it named
+`source_model: time_spine`).
 
 #### Scenario: Inferred population reported
 
@@ -193,6 +216,13 @@ dry-run, explain, cache hits, refresh, and the Python client's response model.
 
 - **WHEN** a query named its population explicitly
 - **THEN** the response carries that model name with the inferred flag false
+
+#### Scenario: Spine population reported
+
+- **WHEN** a query groups by `customers.region` and a spine month without
+  `source_model`, and another names `source_model: customers` for the same shape
+- **THEN** both report population `time_spine × customers`, the first with the
+  inferred flag true and the second false
 
 ### Requirement: Root-less queries reach every query surface
 
