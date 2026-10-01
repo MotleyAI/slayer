@@ -8,7 +8,10 @@
 #                 tolerance (default 1e-6), ordered (default false), columns_exact (output has only keys+values)
 #   slayer:       query (dict, or list of stages) or run_by_name (a saved query) + refine, options {to_many_handling,
 #                 policy}, extra_models (files in slayer/extra_models/), create_model_from_query, keys/values overrides,
-#                 expect: match | {error} | {warning} | {known_bug, buggy_rows, buggy_row_count, buggy_error}
+#                 expect: match | {error} | {warning} | {known_bug, buggy_rows, buggy_row_count, buggy_error};
+#                 or steps (MCP tool calls {tool, args} and {sql} edits on a private database copy; "{db_path}" in
+#                 args is that copy) with setup: models | datasource | empty, and expect: match (last step a json
+#                 query) | {error} | {contains: [...]} (substrings of the last step's output)
 #   malloy:       query (appended to malloy/model.malloy), flatten (nest name), keys/values overrides,
 #                 expect: match | {compile_error} | {db_error} | {warning} | {known_bug, buggy_rows, buggy_error, buggy_row_count}
 #   cube:         rest (a /load query) or sql (SQL API), planners (default [tesseract, legacy]), model_declared,
@@ -4425,3 +4428,160 @@ probes:
     slayer:
       query: {source_model: orders, filters: ["order_date + interval(7, 'day') > '2025-06-25'"],
               measures: [{formula: "sum(amount)", name: v}]}
+
+  # ------------------------------------------------------------------ C26-C31: MCP sessions (SLayer)
+  # Each runs MCP tool calls on its own copy of the database; `setup` is what its storage starts with.
+  - id: C26-mcp-connect-and-ask
+    row: C26
+    title: "from an empty store to an answer through MCP alone: create_datasource, then query"
+    truth_sql: select status, count(*) from orders group by 1
+    compare: {keys: [status], values: [n]}
+    slayer:
+      setup: empty
+      steps:
+        - {tool: create_datasource, args: {name: probe, type: duckdb, database: "{db_path}"}}
+        - tool: query
+          args: {format: json, query: {source_model: orders, dimensions: [status], measures: [{formula: "count(*)", name: n}]}}
+
+  - id: C26-mcp-help
+    row: C26
+    title: the server ships its own conceptual help, read through inspect
+    slayer:
+      steps:
+        - {tool: inspect, args: {reference: "memory:help.intro", entity_type: memory, compact: false}}
+      expect: {contains: ["Choose the population deliberately"]}
+
+  - id: C27-memory-recalled-by-draft-query
+    row: C27
+    title: a note saved against orders.status comes back for a later query that uses status
+    slayer:
+      steps:
+        - tool: save_memory
+          args: {learning: "status 'bad' marks a cancelled order; leave it out of revenue", linked_entities: [orders.status]}
+        - tool: search
+          args: {query: {source_model: orders, dimensions: [status], measures: ["sum(amount)"]}}
+      expect: {contains: ["marks a cancelled order"]}
+
+  - id: C27-memory-in-inspect
+    row: C27
+    title: the same note shows up when inspecting the orders model
+    slayer:
+      steps:
+        - tool: save_memory
+          args: {learning: "status 'bad' marks a cancelled order; leave it out of revenue", linked_entities: [orders.status]}
+        - {tool: inspect, args: {reference: probe.orders, entity_type: model, compact: false}}
+      expect: {contains: ["marks a cancelled order"]}
+
+  - id: C27-example-query
+    row: C27
+    title: a saved example query is found by a question and returned with its query
+    slayer:
+      steps:
+        - tool: save_memory
+          args:
+            learning: Fulfilled revenue counts only orders with status ok.
+            linked_entities: {source_model: orders, measures: [{formula: "sum(amount)"}], filters: ["status = 'ok'"]}
+        - {tool: search, args: {question: "fulfilled revenue", max_results: 3}}
+      expect: {contains: ["Fulfilled revenue counts only", "status = 'ok'"]}
+
+  - id: C28-search-finds-column
+    row: C28
+    title: a plain-language question ranks the right column first among 3 hits
+    slayer:
+      steps:
+        - {tool: search, args: {question: "which city does a customer live in", max_results: 3}}
+      expect: {contains: ["probe.customers.city"]}
+
+  - id: C28-search-memories-and-columns
+    row: C28
+    title: one search returns the matching column and the note about it together
+    slayer:
+      steps:
+        - tool: save_memory
+          args: {learning: "tier is the loyalty tier, from gold (best) to bronze", linked_entities: [customers.tier]}
+        - {tool: search, args: {question: "loyalty tier", max_results: 3}}
+      expect: {contains: ["probe.customers.tier", "from gold (best) to bronze"]}
+
+  - id: C29-ingest-fk-joins
+    row: C29
+    title: ingested models join through the foreign keys, two hops from orders to regions
+    truth_sql: |
+      select r.name, sum(o.amount) from orders o
+      left join customers c on o.customer_id = c.id left join regions r on c.region_id = r.id group by 1
+    compare: {keys: [customers.regions.name], values: [revenue]}
+    slayer:
+      setup: datasource
+      steps:
+        - {tool: ingest_datasource_models, args: {datasource_name: probe}}
+        - tool: query
+          args: {format: json, query: {source_model: orders, dimensions: [customers.regions.name],
+                                       measures: [{formula: "sum(amount)", name: revenue}]}}
+
+  - id: C29-ingest-comments
+    row: C29
+    title: a database column comment becomes the ingested column's description
+    slayer:
+      setup: datasource
+      steps:
+        - {sql: "COMMENT ON COLUMN orders.status IS 'ok = fulfilled, bad = cancelled'"}
+        - {tool: ingest_datasource_models, args: {datasource_name: probe}}
+        - {tool: inspect, args: {reference: probe.orders.status, entity_type: column}}
+      expect: {contains: ["ok = fulfilled, bad = cancelled"]}
+
+  - id: C30-edit-column-then-query
+    row: C30
+    title: a column added through edit_model is queryable in the next call
+    truth_sql: select status, sum(amount * 0.8) from orders group by 1
+    compare: {keys: [status], values: [net]}
+    slayer:
+      steps:
+        - {tool: edit_model, args: {model_name: orders, columns: [{name: net_amount, sql: "amount * 0.8", type: number}]}}
+        - tool: query
+          args: {format: json, query: {source_model: orders, dimensions: [status], measures: [{formula: "sum(net_amount)", name: net}]}}
+
+  - id: C30-saved-measure-then-query
+    row: C30
+    title: a named measure added through edit_model composes in the next query
+    truth_sql: |
+      select date_trunc('month', order_date), sum(amount) / count(*) from orders
+      where order_date between date '2025-01-01' and date '2025-03-31' group by 1
+    compare: {keys: [order_date], values: [aov]}
+    slayer:
+      steps:
+        - {tool: edit_model, args: {model_name: orders, measures: [{name: aov, formula: "sum(amount) / count(*)"}]}}
+        - tool: query
+          args: {format: json, query: {source_model: orders, measures: [{formula: aov, name: aov}],
+                                       time_dimensions: [{dimension: order_date, granularity: month,
+                                                          date_range: ["2025-01-01", "2025-03-31"]}]}}
+
+  - id: C31-drift-query-error
+    row: C31
+    title: after a column rename in the database, the query error names the drifted model
+    slayer:
+      steps:
+        - {sql: "ALTER TABLE events RENAME COLUMN amount TO value"}
+        - tool: query
+          args: {format: json, query: {source_model: events, measures: ["sum(amount)"]}}
+      expect: {error: "Schema drift detected on models ['events']"}
+
+  - id: C31-validate-models
+    row: C31
+    title: validate_models returns the edit_model call that removes the missing column
+    slayer:
+      steps:
+        - {sql: "ALTER TABLE events RENAME COLUMN amount TO value"}
+        - {tool: validate_models, args: {data_source: probe}}
+      expect: {contains: ['"tool": "edit_model"', '"model_name": "events"', "Live column 'amount' not found"]}
+
+  - id: C31-reingest-keeps-edits
+    row: C31
+    title: re-ingesting picks up a new database column and keeps a hand-added one
+    truth_sql: select 'web', sum(amount * 2) from events
+    compare: {keys: [channel], values: [v]}
+    slayer:
+      steps:
+        - {tool: edit_model, args: {model_name: events, columns: [{name: amount_x2, sql: "amount * 2", type: number}]}}
+        - {sql: "ALTER TABLE events ADD COLUMN channel VARCHAR DEFAULT 'web'"}
+        - {tool: ingest_datasource_models, args: {datasource_name: probe}}
+        - tool: query
+          args: {format: json, query: {source_model: events, dimensions: [channel], measures: [{formula: "sum(amount_x2)", name: v}]}}

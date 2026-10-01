@@ -4,13 +4,15 @@
 --   order 20 is an orphan (NULL customer_id); no orders in 2024-04..11 or 2025-04 (month gaps);
 --   returns: 2024-06 has returns but no orders, return 3 is an orphan, Eve returns once;
 --   events carry sub-hour timestamps for quarter-hour buckets.
+-- Foreign keys are declared, as auto-ingestion reads them (DuckDB then refuses to alter a referenced table).
 CREATE TABLE regions (id INTEGER PRIMARY KEY, name VARCHAR);
 CREATE TABLE customers (
-  id INTEGER PRIMARY KEY, name VARCHAR, region_id INTEGER, city VARCHAR,
+  id INTEGER PRIMARY KEY, name VARCHAR, region_id INTEGER REFERENCES regions (id), city VARCHAR,
   tier VARCHAR, credit DOUBLE, discount DOUBLE
 );
 CREATE TABLE orders (
-  id INTEGER PRIMARY KEY, customer_id INTEGER, amount DOUBLE, status VARCHAR, order_date DATE
+  id INTEGER PRIMARY KEY, customer_id INTEGER REFERENCES customers (id), amount DOUBLE, status VARCHAR,
+  order_date DATE
 );
 
 INSERT INTO regions VALUES (1, 'North'), (2, 'South'), (3, 'East');
@@ -47,7 +49,7 @@ INSERT INTO orders VALUES
   (20, NULL, 30, 'ok', DATE '2025-06-10');
 
 CREATE TABLE returns (
-  id INTEGER PRIMARY KEY, customer_id INTEGER, amount DOUBLE, return_date DATE
+  id INTEGER PRIMARY KEY, customer_id INTEGER REFERENCES customers (id), amount DOUBLE, return_date DATE
 );
 
 INSERT INTO returns VALUES

@@ -390,7 +390,7 @@ rows:
   origin: SLayer
   slayer:
     verdict: 'yes'
-    text: "MCP with help, search and memories; REST; CLI; Python."
+    text: "MCP, REST, CLI and Python."
     caveat: Queries are schema-validated JSON.
   malloy:
     verdict: 'yes'
@@ -398,12 +398,11 @@ rows:
   cube:
     verdict: 'yes'
     text: "REST (JSON), GraphQL and a Postgres-wire SQL API"
-    caveat: "No MCP server in Cube Core (it's a Cloud feature)."
   metricflow:
     verdict: partial
     how: "`mf` CLI and the in-process Python `MetricFlowEngine`."
-    caveat: No MCP server or network API in open source; those are dbt platform features.
-  comment: "JSON (SLayer, Cube), a text language (Malloy), or CLI and Python arguments (MetricFlow)."
+    caveat: No network API in open source; it's a dbt platform feature.
+  comment: "JSON (SLayer, Cube), a text language (Malloy), or CLI and Python arguments (MetricFlow). MCP servers are C26."
 - id: Q20
   group: Query semantics
   name: "Relative & typed filters"
@@ -606,7 +605,7 @@ rows:
   origin: Malloy
   slayer:
     verdict: 'yes'
-    text: "YAML/JSON; auto-ingest with FK joins; dbt, Cube and OSI importers; drift detection."
+    text: "YAML/JSON; dbt, Cube and OSI importers."
   malloy:
     verdict: 'yes'
     text: "A typed language with `import` and `extend`."
@@ -956,3 +955,131 @@ rows:
     verdict: 'yes'
     text: "Writes an Open Semantic Interchange document (verified); cumulative and conversion metrics can't be represented."
   comment: OSI has been renamed Apache Ossie.
+- id: C26
+  group: Beyond query semantics
+  name: Built-in MCP server
+  intent: "An agent connects a database, explores it, edits models and queries over MCP, with nothing extra to deploy."
+  origin: SLayer
+  slayer:
+    verdict: 'yes'
+    how: "`slayer mcp` (stdio) · `slayer serve` (SSE)"
+    caveat: "Datasource, ingestion, model-editing, query, search and memory tools, plus built-in help; from an empty store to an answer over MCP alone (probe-verified)."
+  malloy:
+    verdict: 'yes'
+    text: "Publisher MCP: `get_context`, `execute_query`, `compile_model`, `reload_package`, docs search; skills as prompts."
+    caveat: "No tool writes models: the agent edits `.malloy` files on disk, then reloads."
+  cube:
+    verdict: 'no'
+    text: No MCP server in Core.
+    caveat: "Cube's MCP server is hosted by Cube Cloud (`cubecloud.dev/mcp`)."
+  metricflow:
+    verdict: 'no'
+    text: "No MCP server; the open-source dbt-mcp's semantic-layer tools call the dbt platform API."
+    caveat: "Without a platform account, dbt-mcp offers only CLI, codegen and LSP tools."
+  comment: "SLayer and Malloy ship one; SLayer's can also create and change models."
+- id: C27
+  group: Beyond query semantics
+  name: Agent memories
+  intent: "An agent saves what it learned about the data; later agents get it back when they touch the same columns."
+  origin: SLayer
+  slayer:
+    verdict: 'yes'
+    how: "`save_memory(learning=\"status 'bad' marks a cancelled order\", linked_entities=[\"orders.status\"])`"
+    caveat: "A note, or a vetted example query, tied to models and columns; `search` and `inspect` return it with them (probe-verified)."
+  malloy:
+    verdict: 'no'
+    text: "No memory store; a Publisher skill tells agents to write learnings as `#(doc)` annotations into model files."
+  cube:
+    verdict: 'no'
+    text: No agent memory in Core.
+    caveat: "Cube Cloud's AI agent has memories, rules and certified queries."
+  metricflow:
+    verdict: 'no'
+    text: "Hand-written `description` and `meta` in YAML only."
+  comment: "Only SLayer keeps notes that agents write and read back."
+- id: C28
+  group: Beyond query semantics
+  name: Smart retrieval
+  intent: "Find the models, fields and notes a question needs without loading the whole schema."
+  origin: SLayer
+  slayer:
+    verdict: 'yes'
+    how: "`search(question=\"which city does a customer live in\")`"
+    caveat: "One ranked list of models, columns, measures and memories: stemmed full text, entity overlap, optional embeddings, plus a graph filter (probe-verified without embeddings)."
+  malloy:
+    verdict: 'yes'
+    how: "`get_context` (Publisher MCP)"
+    caveat: "Ranks sources, fields, joins and views of one package per call; BM25, embeddings with an API key."
+  cube:
+    verdict: 'no'
+    text: "Core has only `/v1/meta`, the full metadata, with no search."
+    caveat: "Search over the data model is a Cube Cloud feature."
+  metricflow:
+    verdict: 'no'
+    text: "`mf list metrics --search` matches metric names by substring."
+    caveat: "dbt-mcp's search tools need the dbt platform."
+  comment: "SLayer and Malloy rank schema context for agents; SLayer ranks memories in the same list."
+- id: C29
+  group: Beyond query semantics
+  name: Auto-ingestion
+  intent: "Point it at a database and get queryable models, with joins from foreign keys."
+  origin: SLayer
+  slayer:
+    verdict: 'yes'
+    how: "`ingest_datasource_models(datasource_name=\"shop\")` · `slayer serve --ingest-on-startup`"
+    caveat: "Foreign keys become joins and comments descriptions; join cardinality from the keys. Re-runs add without overwriting (probe-verified)."
+  malloy:
+    verdict: partial
+    text: "`conn.table('x')` reads a table's columns at compile time; joins and measures are written by hand."
+  cube:
+    verdict: partial
+    how: "Playground or `cubejs generate -t orders,customers`"
+    caveat: "A one-time scaffold that rewrites the model folder. Foreign keys are read only on Postgres, MySQL and Redshift; elsewhere joins come from `*_id` names (source)."
+  metricflow:
+    verdict: 'no'
+    text: "Semantic models are hand-written YAML; dbt-codegen scaffolds sources and staging models only."
+  comment: "SLayer and Cube generate models with joins; only SLayer re-ingests additively."
+- id: C30
+  group: Beyond query semantics
+  name: Runtime model editing
+  intent: "Add a column, measure or join through an API and use it in the next query: no build, no restart."
+  origin: SLayer
+  slayer:
+    verdict: 'yes'
+    how: "`edit_model(model_name=\"orders\", measures=[{\"name\": \"aov\", \"formula\": \"sum(amount) / count(*)\"}])`"
+    caveat: "Over MCP, REST, CLI or Python; the next query sees it (probe-verified)."
+  malloy:
+    verdict: partial
+    text: "Edit `.malloy` files, then `reload_package` or watch mode; no restart."
+    caveat: No API writes model files.
+  cube:
+    verdict: partial
+    text: "Dev mode re-reads changed model files on the next request; `repositoryFactory` + `schemaVersion` load models from elsewhere."
+    caveat: "No API writes models in Core; API editing is a Cube Cloud feature."
+  metricflow:
+    verdict: 'no'
+    text: "Edit YAML, then `dbt parse` rebuilds the manifest `mf` reads."
+    caveat: No create or edit API.
+  comment: "Only SLayer takes model changes through its own API."
+- id: C31
+  group: Beyond query semantics
+  name: Schema drift handling
+  intent: "Notice when the warehouse changes under the models, and say what to fix."
+  origin: SLayer
+  slayer:
+    verdict: 'yes'
+    how: "`validate_models` · `SchemaDriftError`"
+    caveat: "A failing query names the drifted model; `validate_models` returns the `edit_model` call that fixes it; re-ingestion keeps hand edits (probe-verified)."
+  malloy:
+    verdict: partial
+    text: "A dropped column is a compile error with file and line at reload; Publisher keeps serving the previous model, flagged stale."
+    caveat: Nothing checks the warehouse until a reload or compile.
+  cube:
+    verdict: 'no'
+    text: "Nothing checks models against the warehouse; a dropped column is a raw database error at query time."
+    caveat: "`cubejs validate` compiles the files without a database connection."
+  metricflow:
+    verdict: partial
+    how: "`mf validate-configs`"
+    caveat: "Dry-runs each element against the warehouse and names the broken one; column types aren't compared, and queries surface the raw warehouse error."
+  comment: "SLayer detects drift at query time too and proposes the fix; elsewhere it is a validation run or a compile error."

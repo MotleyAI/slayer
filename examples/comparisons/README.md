@@ -48,7 +48,8 @@ The dataset keeps edge cases that break naive joins:
 
 Each runner seeds a fresh DuckDB file in a temp directory and computes the ground truth there. The SLayer runner
 pins "now" at 2025-07-15 12:00 for relative time filters and the time spine's default upper bound, and defines two
-datasource granularities: `fiscal_year` (12 months from 2024-04-01) and `quarter_hour`.
+datasource granularities: `fiscal_year` (12 months from 2024-04-01) and `quarter_hour`. Probes with `steps` (rows
+C26–C31) instead drive SLayer's MCP server on their own copy of the database, with the embedding search channel off.
 
 ## Running
 

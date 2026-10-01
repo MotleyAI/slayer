@@ -5,8 +5,11 @@ import asyncio
 import contextlib
 import datetime as dt
 import decimal
+import json
 import math
+import os
 import re
+import shutil
 import sys
 import tempfile
 import warnings
@@ -14,6 +17,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import duckdb
+import sqlalchemy as sa
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -21,7 +25,9 @@ from slayer.async_utils import run_sync
 from slayer.core.granularity import CustomGranularity
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.core.policy import SessionPolicy
+from slayer.embeddings.client import SLAYER_EMBEDDING_MODEL_ENV
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
+from slayer.mcp.server import create_mcp_server
 from slayer.storage.yaml_storage import YAMLStorage
 
 HERE = Path(__file__).resolve().parent
@@ -58,6 +64,8 @@ class SlayerExpect(BaseModel):
     buggy_rows: List[List[Any]] = Field(default_factory=list)
     buggy_row_count: Optional[int] = None
     buggy_error: Optional[str] = None
+    # Substrings the last step's text output must contain (steps probes only).
+    contains: List[str] = Field(default_factory=list)
 
 
 class SetupModel(BaseModel):
@@ -66,10 +74,29 @@ class SetupModel(BaseModel):
     query: Dict[str, Any] | List[Dict[str, Any]]
 
 
+class Step(BaseModel):
+    """An MCP tool call, or SQL run against the probe's own copy of the database."""
+
+    model_config = ConfigDict(extra="forbid")
+    tool: Optional[str] = None
+    args: Dict[str, Any] = Field(default_factory=dict)
+    sql: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _one_kind(self) -> "Step":
+        if (self.tool is None) == (self.sql is None):
+            raise ValueError("a step needs exactly one of tool / sql")
+        return self
+
+
 class SlayerBlock(BaseModel):
     model_config = ConfigDict(extra="forbid")
     query: Dict[str, Any] | List[Dict[str, Any]] | None = None
     run_by_name: Optional[str] = None
+    # An MCP session on a private copy of the database; the last step must be a tool call.
+    steps: List[Step] = Field(default_factory=list)
+    # What the session's storage starts with: the probe models, only the datasource, or nothing.
+    setup: Literal["models", "datasource", "empty"] = "models"
     refine: Optional[Dict[str, Any]] = None
     options: Dict[str, Any] = Field(default_factory=dict)
     # Files in slayer/extra_models/ saved for this probe only (they would otherwise add join cycles).
@@ -82,10 +109,12 @@ class SlayerBlock(BaseModel):
 
     @model_validator(mode="after")
     def _one_source(self) -> "SlayerBlock":
-        if (self.query is None) == (self.run_by_name is None):
-            raise ValueError("a slayer block needs exactly one of query / run_by_name")
+        if sum(x is not None for x in (self.query, self.run_by_name, self.steps or None)) != 1:
+            raise ValueError("a slayer block needs exactly one of query / run_by_name / steps")
         if self.refine is not None and self.run_by_name is None:
             raise ValueError("refine applies only to run_by_name")
+        if self.steps and self.steps[-1].tool is None:
+            raise ValueError("the last step must be a tool call")
         return self
 
 
@@ -140,18 +169,28 @@ def compute_truth(db_path: Path, probes: List[Probe]) -> Dict[Tuple[str, str], L
     return out
 
 
-async def build_engines(
-    db_path: Path, store: Path, policies: Dict[str, Any]
-) -> Tuple[SlayerQueryEngine, Dict[str, SlayerQueryEngine]]:
-    storage = YAMLStorage(base_dir=str(store))
+async def fill_store(storage: YAMLStorage, db_path: Path, setup: str) -> SlayerQueryEngine:
+    """Register the datasource and save the probe models, as far as ``setup`` asks."""
+    engine = SlayerQueryEngine(storage=storage, clock=lambda: NOW)
+    if setup == "empty":
+        return engine
     await storage.save_datasource(
         DatasourceConfig(name=DATASOURCE, type="duckdb", database=str(db_path), granularities=GRANULARITIES)
     )
-    engine = SlayerQueryEngine(storage=storage, clock=lambda: NOW)
+    if setup == "datasource":
+        return engine
     docs = [yaml.safe_load(f.read_text()) for f in sorted((HERE / "models").glob("*.yaml"))]
     # Query-backed models validate by dry-run, so their sources must exist first.
     for doc in sorted(docs, key=lambda d: bool(d.get("source_queries"))):
         await engine.save_model(SlayerModel.model_validate(doc))
+    return engine
+
+
+async def build_engines(
+    db_path: Path, store: Path, policies: Dict[str, Any]
+) -> Tuple[SlayerQueryEngine, Dict[str, SlayerQueryEngine]]:
+    storage = YAMLStorage(base_dir=str(store))
+    engine = await fill_store(storage=storage, db_path=db_path, setup="models")
     by_policy = {
         name: SlayerQueryEngine(storage=storage, policy=SessionPolicy.model_validate(spec), clock=lambda: NOW)
         for name, spec in policies.items()
@@ -250,6 +289,78 @@ def run_query(engine: SlayerQueryEngine, block: SlayerBlock) -> Tuple[Optional[S
             # A failed cleanup must not mask the probe's own outcome.
             with contextlib.suppress(Exception):
                 run_sync(engine.delete_model_by_name(model_name=model.name, data_source=model.data_source))
+
+
+class SessionResult(BaseModel):
+    """The last step's text, its rows when it returned JSON rows, or the first error."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    text: str = ""
+    resp: Optional[SlayerResponse] = None
+    err: Optional[Exception] = None
+
+
+def run_sql(db_path: Path, sql: str) -> None:
+    # Through duckdb_engine, so the connection shares the MCP engine's open database instead of clashing with it.
+    eng = sa.create_engine(f"duckdb:///{db_path}")
+    try:
+        with eng.begin() as con:
+            for stmt in sql_statements(sql):
+                con.exec_driver_sql(stmt)
+    finally:
+        eng.dispose()
+
+
+def as_response(text: str) -> Optional[SlayerResponse]:
+    """The rows of a ``query`` tool call with ``format: json``, else None."""
+    try:
+        payload = json.loads(text)
+    except ValueError:
+        return None
+    if isinstance(payload, list):
+        payload = {"data": payload}
+    if not isinstance(payload, dict) or "data" not in payload:
+        return None
+    return SlayerResponse.model_validate({"data": payload["data"], "warnings": payload.get("warnings", [])})
+
+
+def run_session(block: SlayerBlock, base_db: Path, workdir: Path) -> SessionResult:
+    """Run the steps through the MCP server on a private copy of the database and a fresh store."""
+    workdir.mkdir()
+    db_path = workdir / "probe.duckdb"
+    shutil.copy(base_db, db_path)
+    storage = YAMLStorage(base_dir=str(workdir / "store"))
+    run_sync(fill_store(storage=storage, db_path=db_path, setup=block.setup))
+    server = create_mcp_server(storage)
+    text = ""
+    try:
+        for step in block.steps:
+            if step.sql is not None:
+                run_sql(db_path=db_path, sql=step.sql)
+                continue
+            args = json.loads(json.dumps(step.args).replace("{db_path}", str(db_path)))
+            blocks, _ = run_sync(server.call_tool(step.tool, args))
+            text = blocks[0].text
+    except Exception as e:  # noqa: BLE001 - a probe's error is data
+        return SessionResult(err=e)
+    finally:
+        run_sync(server._slayer_engine.aclose())
+    return SessionResult(text=text, resp=as_response(text) if block.steps[-1].tool == "query" else None)
+
+
+def evaluate_session(p: Probe, res: SessionResult, truth: Dict) -> Outcome:
+    assert p.slayer is not None
+    ex = p.slayer.expect if isinstance(p.slayer.expect, SlayerExpect) else SlayerExpect()
+    if res.err is None and ex.error:
+        return Outcome(status=FAIL, detail=f"expected error {ex.error!r}, got: {res.text[:120]!r}")
+    if res.err is None and ex.contains:
+        missing = [s for s in ex.contains if s not in res.text]
+        if missing:
+            return Outcome(status=FAIL, detail=f"output lacks {missing}")
+        return Outcome(status=PASS, detail=f"output has {ex.contains}")
+    if res.err is None and res.resp is None:
+        return Outcome(status=FAIL, detail=f"no rows to compare: {res.text[:120]!r}")
+    return evaluate(p, res.resp, res.err, truth)
 
 
 def first_line(e: Exception) -> str:
@@ -353,14 +464,23 @@ def print_verbose(p: Probe, resp: Optional[SlayerResponse], err: Optional[Except
 
 
 def run_probe(
-    p: Probe, engine: SlayerQueryEngine, by_policy: Dict[str, SlayerQueryEngine], truth: Dict, verbose: bool
+    p: Probe, engine: SlayerQueryEngine, by_policy: Dict[str, SlayerQueryEngine], truth: Dict, verbose: bool,
+    tmp: Path,
 ) -> Outcome:
     assert p.slayer is not None
-    policy = p.slayer.options.get("policy")
-    resp, err = run_query(by_policy[policy] if policy else engine, p.slayer)
-    outcome = evaluate(p, resp, err, truth)
+    text = ""
+    if p.slayer.steps:
+        res = run_session(block=p.slayer, base_db=tmp / "probe.duckdb", workdir=tmp / p.id)
+        resp, err, text = res.resp, res.err, res.text
+        outcome = evaluate_session(p=p, res=res, truth=truth)
+    else:
+        policy = p.slayer.options.get("policy")
+        resp, err = run_query(by_policy[policy] if policy else engine, p.slayer)
+        outcome = evaluate(p, resp, err, truth)
     print(f"{outcome.status:<9} {p.id:<22} {p.row:<4} {p.title[:60]:<60}  {outcome.detail}")
     if verbose:
+        if text and resp is None:
+            print(f"    output: {text}")
         print_verbose(p, resp, err, truth)
     return outcome
 
@@ -372,6 +492,9 @@ def main() -> int:
     ap.add_argument("--verbose", action="store_true", help="show SQL, truth and returned values")
     args = ap.parse_args()
     warnings.simplefilter("ignore")  # responses carry their own typed warnings
+    # Search runs on its offline channels only: no embedding provider, so results don't depend on one.
+    os.environ[SLAYER_EMBEDDING_MODEL_ENV] = "openai/text-embedding-3-small"
+    os.environ.pop("OPENAI_API_KEY", None)
 
     probes, policies = load_probes(ROOT / "probes.yaml")
     probes = [
@@ -383,7 +506,7 @@ def main() -> int:
         seed(db_path)
         truth = compute_truth(db_path, probes)
         engine, by_policy = asyncio.run(build_engines(db_path, Path(tmp) / "store", policies))
-        results = [(p, run_probe(p, engine, by_policy, truth, args.verbose)) for p in probes]
+        results = [(p, run_probe(p, engine, by_policy, truth, args.verbose, Path(tmp))) for p in probes]
     print_summary(results)
     return 1 if any(o.status == FAIL for _, o in results) else 0
 
