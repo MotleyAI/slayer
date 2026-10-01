@@ -140,6 +140,17 @@ class TestAxes:
             with pytest.raises((SlayerError, ValueError)):
                 await eng.execute(strict)
 
+    async def test_a_measure_on_an_axisless_p_broadcasts(self, engine) -> None:
+        query = spine_query(measures=[m("count(customers.id)", "c")], date_range=JAN_MAR,
+                            dimensions=["customers.region"])
+        resp = await engine.execute(query)
+        assert by_bucket(resp, ["c"], by=["region"]) == {(g, k): (1.0,) for g in "NSE" for k in MONTHS[:3]}
+        assert [w.measure for w in broadcast_warnings(resp)] == ["c"]
+        strict = query.model_copy(update={"to_many_handling": "error"})
+        with pytest.raises(SlayerError) as exc:
+            await engine.execute(strict, dry_run=True)
+        assert "time spine" in str(exc.value)
+
     async def test_stage_with_one_temporal_column_is_wired(self, engine) -> None:
         firsts = SlayerQuery.model_validate({
             "name": "firsts", "source_model": "orders", "dimensions": ["customer_id"],

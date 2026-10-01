@@ -145,7 +145,8 @@ from slayer.engine.compile.projection import (
     _iter_slot_deps,
 )
 from slayer.engine.compile.spine import (
-    check_axis_rebucket, check_off_spine_order_keys, host_mask, plan_spine, shifted_spine_bounds, spine_column,
+    check_axis_rebucket, check_off_spine_order_keys, host_mask, is_spine_bound, plan_spine, shifted_spine_bounds,
+    spine_column,
 )
 from slayer.engine.compile.shift import carried_placeholders
 from slayer.engine.compile.staging import stage_slots
@@ -611,6 +612,26 @@ _Push = Tuple[
 ]
 
 
+def _producer_row_conjuncts(
+    *, base_filters: List[Tuple[BoundFilter, Optional[str]]],
+    target_path: Tuple[str, ...], root_model: SlayerModel,
+    models_by_name: Dict[str, SlayerModel], host_model: SlayerModel,
+    bundle: ResolvedSourceBundle,
+) -> List[Tuple[ValueKey, Optional[str]]]:
+    """The base ROW conjuncts a home-rooted producer disposes; spine bounds reach a home only through its axis."""
+    spine = spine_column(host_model)
+    reaches_spine = spine is not None and key_attributable_from_root(
+        key=spine, target_path=target_path, root_model=root_model, models_by_name=models_by_name,
+        bundle=bundle, host_model=host_model, host_name=host_model.name,
+    )
+    return [
+        (cj, text)
+        for bf, text in base_filters if bf.phase == Phase.ROW
+        for cj in split_top_level_and(bf.value_key)
+        if reaches_spine or not is_spine_bound(cj, spine=spine)
+    ]
+
+
 def _cross_model_inherited_filters(
     *, base_filters: List[Tuple[BoundFilter, Optional[str]]],
     target_path: Tuple[str, ...], root_model: SlayerModel,
@@ -622,20 +643,20 @@ def _cross_model_inherited_filters(
     EXISTS semi-join (grouped by shared branch, D3/D4)."""
     inherited: List[BoundFilter] = []
     pushes: List[_Push] = []
-    for bf, text in base_filters:
-        if bf.phase != Phase.ROW:
-            continue
-        for cj in split_top_level_and(bf.value_key):
-            inherited_bf, pushed = _conjunct_disposition(
-                cj, text=text, target_path=target_path, root_model=root_model,
-                models_by_name=models_by_name, host_name=host_name,
-                host_model=host_model, bundle=bundle,
-            )
-            if inherited_bf is not None:
-                inherited.append(inherited_bf)
-            else:
-                assert pushed is not None
-                pushes.append(pushed)
+    for cj, text in _producer_row_conjuncts(
+        base_filters=base_filters, target_path=target_path, root_model=root_model,
+        models_by_name=models_by_name, host_model=host_model, bundle=bundle,
+    ):
+        inherited_bf, pushed = _conjunct_disposition(
+            cj, text=text, target_path=target_path, root_model=root_model,
+            models_by_name=models_by_name, host_name=host_name,
+            host_model=host_model, bundle=bundle,
+        )
+        if inherited_bf is not None:
+            inherited.append(inherited_bf)
+        else:
+            assert pushed is not None
+            pushes.append(pushed)
     return inherited, _semi_join_groups_from_pushes(pushes)
 
 
@@ -2545,25 +2566,25 @@ def _association_inline_filters(
     dimension binds to the same related row."""
     inherited: List[BoundFilter] = []
     restricted_texts: List[str] = []
-    for bf, text in base_filters:
-        if bf.phase != Phase.ROW:
-            continue
-        for cj in split_top_level_and(bf.value_key):
-            inh, pushed = _conjunct_disposition(
-                cj=cj, text=text, target_path=target_path, root_model=root_model,
+    for cj, text in _producer_row_conjuncts(
+        base_filters=base_filters, target_path=target_path, root_model=root_model,
+        models_by_name=models_by_name, host_model=host_model, bundle=bundle,
+    ):
+        inh, pushed = _conjunct_disposition(
+            cj=cj, text=text, target_path=target_path, root_model=root_model,
+            models_by_name=models_by_name, host_name=host_model.name,
+            host_model=host_model, bundle=bundle,
+        )
+        if inh is not None:
+            inherited.append(inh)
+        else:
+            assert pushed is not None
+            inherited.append(bound_filter_from_key(reroot_from_root(
+                key=cj, target_path=target_path, root_model=root_model,
                 models_by_name=models_by_name, host_name=host_model.name,
-                host_model=host_model, bundle=bundle,
-            )
-            if inh is not None:
-                inherited.append(inh)
-            else:
-                assert pushed is not None
-                inherited.append(bound_filter_from_key(reroot_from_root(
-                    key=cj, target_path=target_path, root_model=root_model,
-                    models_by_name=models_by_name, host_name=host_model.name,
-                )))
-                if pushed[1] is not None:
-                    restricted_texts.append(pushed[1])
+            )))
+            if pushed[1] is not None:
+                restricted_texts.append(pushed[1])
     return inherited, restricted_texts
 
 
