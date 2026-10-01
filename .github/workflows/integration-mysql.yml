@@ -15,6 +15,7 @@ on:
       - 'examples/mysql/**'
       - 'tests/integration/test_integration_mysql.py'
       - '.github/workflows/integration-mysql.yml'
+      - '.github/actions/poetry-env/**'
   push:
     branches: [main]
     paths:
@@ -24,6 +25,7 @@ on:
       - 'examples/mysql/**'
       - 'tests/integration/test_integration_mysql.py'
       - '.github/workflows/integration-mysql.yml'
+      - '.github/actions/poetry-env/**'
   workflow_dispatch:
 
 jobs:
@@ -32,16 +34,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+      - uses: ./.github/actions/poetry-env
         with:
           python-version: "3.11"
-
-      - name: Install Poetry
-        run: pip install poetry
-
-      - name: Install dependencies
-        run: poetry install -E all --with dev
 
       - name: Verify testcontainers[mysql] extra is importable
         # DEV-1564: surface a missing extra as a CI failure rather than as a

@@ -5,7 +5,8 @@ Import-binding-aware AST check over ``slayer/**`` and ``tests/**``:
 * ``sqlite3.connect`` only in the one door (``slayer/storage/sqlite_conn.py``);
 * ``create_engine`` only in ``engine_factory``, a dialect engine-build hook, or
   the disposing test helper (``tests/_engine_helpers.py``);
-* ``create_async_engine`` only in the client's async builder.
+* ``create_async_engine`` only in the client's async builder;
+* production ``.dispose()`` only in the engine owners (``engine_factory``, the client).
 
 Plus the pyproject warning gate is pinned, and (3.13+) a self-test proves a
 leaking test turns the suite red. Zero tolerance — no baseline, like
@@ -70,7 +71,8 @@ def _canonical(func: ast.AST, bindings: dict[str, str]) -> str | None:
     """Resolve a call target to its canonical dotted path via the bindings."""
     chain = _dotted(func)
     if not chain:
-        return None
+        # An attribute call on an unnamed base (``self._x[0].dispose()``) still has a leaf.
+        return f"<expr>.{func.attr}" if isinstance(func, ast.Attribute) else None
     base = chain[0]
     if base in bindings:
         resolved = bindings[base].split(".") + chain[1:]
@@ -91,6 +93,8 @@ def _concern(canonical: str | None) -> str | None:
         return "engine"
     if leaf == "create_async_engine":
         return "async_engine"
+    if leaf == "dispose":
+        return "dispose"
     return None
 
 
@@ -125,6 +129,9 @@ def _is_allowed(relpath: str, concern: str, stack: tuple[str, ...]) -> bool:
         return False
     if concern == "async_engine":
         return relpath == CLIENT and "_get_async_engine" in stack
+    if concern == "dispose":
+        # Tests dispose the engines they build; in production only the owners do.
+        return relpath in (ENGINE_FACTORY, CLIENT) or not relpath.startswith("slayer/")
     return False
 
 
@@ -218,6 +225,18 @@ class TestMatcherSelfChecks:
     def test_sqlite_allowed_only_in_the_door(self) -> None:
         assert _is_allowed(DOOR, "sqlite", ())
         assert not _is_allowed("slayer/storage/sqlite_storage.py", "sqlite", ())
+
+    @pytest.mark.parametrize(
+        "source", ["engine.dispose()", "self._opened[0].dispose()", "e.pool.dispose()"],
+    )
+    def test_dispose_calls_are_detected(self, source) -> None:
+        assert ("dispose", "dispose") in self._concerns(source)
+
+    def test_dispose_allowed_only_in_the_engine_owners(self) -> None:
+        assert _is_allowed(ENGINE_FACTORY, "dispose", ())
+        assert _is_allowed(CLIENT, "dispose", ())
+        assert _is_allowed("tests/test_x.py", "dispose", ())
+        assert not _is_allowed("slayer/engine/ingestion.py", "dispose", ())
 
     def test_async_engine_allowed_only_in_the_builder(self) -> None:
         assert _is_allowed(CLIENT, "async_engine", ("_get_async_engine",))

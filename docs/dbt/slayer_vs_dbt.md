@@ -19,7 +19,7 @@ Some dbt constructs that look missing at first glance are in fact expressible in
 
 dbt supports measures like account balances where `SUM` across time is wrong — you need `MAX` or `MIN` over the time dimension, then `SUM` across other dimensions. The `non_additive_dimension` with `window_choice` and `window_groupings` handles this.
 
-In SLayer, this is a two-stage query:
+In SLayer this is one expression, `sum(last(balance, snapshot_date, partition_by=[account_id, customer_id, snapshot_date]))` grouped by `customer_id` and a month `snapshot_date` time dimension (the time column in `partition_by` stands for its bucket), or equivalently a two-stage query:
 
 - **Stage 1** — group by `window_groupings` plus the time bucket, and pick the latest (or earliest) value per group using the [`first` / `last` aggregations](../examples/07_aggregations/aggregations.md#first-and-last) with an explicit time column: `last(balance, snapshot_date)` for `window_choice: max`, `first(balance, snapshot_date)` for `window_choice: min`.
 - **Stage 2** — feed stage 1 into the next query via a [query list](../concepts/queries.md#query-lists); because [any SLayer query automatically becomes a model](../concepts/models.md#creating-models-from-queries), the outer query can aggregate additively (`sum`, `avg`, …) across the remaining dimensions.
@@ -37,7 +37,7 @@ Example — account balances rolled up to customer-level monthly totals:
   },
   {
     "source_model": "latest_balance_per_account",
-    "measures": ["sum(balance_last)"],
+    "measures": ["sum(balance_last_snapshot_date)"],
     "dimensions": ["customer_id"],
     "time_dimensions": [{"dimension": "snapshot_date", "granularity": "month"}]
   }
@@ -56,9 +56,9 @@ dbt allows each measure within a semantic model to have its own default time dim
 
 These constructs are **failed cleanly** by the importer — routed to the [conversion report](dbt_import.md#clean-fail-and-unsupported) with a workaround and stashed into the owning entity's `meta`, never converted to approximate or wrong SQL.
 
-### No Rolling-Window Cumulative
+### Rolling-Window Cumulative (not imported)
 
-SLayer's [`cumsum()`](../concepts/formulas.md) accumulates from the beginning of the result set. dbt supports `window: {count: 30, granularity: day}` for trailing windows. A self-join over [`ModelExtension`](../concepts/queries.md#modelextension) could emulate this but is awkward; see the [Time example](../examples/04_time/time.md) for the transforms that are natively supported.
+SLayer expresses trailing windows at query time with [`window=`](../concepts/formulas.md#windowed-aggregations) (e.g. `sum(revenue, window='30d')`), but the importer does not yet convert dbt's windowed cumulative metrics and fails them cleanly.
 
 ### No `grain_to_date` Cumulative Reset
 

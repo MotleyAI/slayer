@@ -1,0 +1,60 @@
+# Model-declared metrics (NOT graded on the query rows): what defining a metric in YAML enables.
+metrics:
+  - name: aov
+    type: ratio
+    type_params: {numerator: revenue, denominator: order_count}
+  - name: revenue_prev_year
+    type: derived
+    type_params:
+      expr: revenue_py
+      metrics:
+        - {name: revenue, offset_window: 1 year, alias: revenue_py}
+  - name: revenue_prev_month
+    type: derived
+    type_params:
+      expr: revenue_pm
+      metrics:
+        - {name: revenue, offset_window: 1 month, alias: revenue_pm}
+  - name: revenue_change
+    type: derived
+    type_params:
+      expr: revenue - revenue_pm
+      metrics:
+        - {name: revenue}
+        - {name: revenue, offset_window: 1 month, alias: revenue_pm}
+  - name: revenue_cum
+    type: cumulative
+    type_params:
+      measure: revenue
+  - name: revenue_90d
+    type: cumulative
+    type_params:
+      measure: revenue
+      cumulative_type_params: {window: 90 days}
+  - name: customers_90d
+    type: cumulative
+    type_params:
+      measure: ordering_customers
+      cumulative_type_params: {window: 90 days}
+  - name: revenue_ytd
+    type: cumulative
+    type_params:
+      measure: revenue
+      cumulative_type_params: {grain_to_date: year}
+  - name: order_count_filled
+    type: simple
+    type_params:
+      measure: {name: order_count, fill_nulls_with: 0, join_to_timespine: true}
+  - name: order_count_zero
+    type: simple
+    type_params:
+      measure: {name: order_count, fill_nulls_with: 0}
+  - name: ok_order_count
+    type: simple
+    type_params: {measure: order_count}
+    filter: "{{ Dimension('order__status') }} = 'ok'"
+  - name: revenue_90d_last
+    type: cumulative
+    type_params:
+      measure: revenue
+      cumulative_type_params: {window: 90 days, period_agg: last}

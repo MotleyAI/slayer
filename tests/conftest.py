@@ -126,14 +126,6 @@ def sample_datasource() -> DatasourceConfig:
 
 
 @pytest.fixture
-def yaml_storage(sample_datasource: DatasourceConfig) -> YAMLStorage:
-    with tempfile.TemporaryDirectory() as tmpdir:
-        storage = YAMLStorage(base_dir=tmpdir)
-        storage.save_datasource(sample_datasource)
-        yield storage
-
-
-@pytest.fixture
 async def mydb_orders_storage() -> AsyncIterator[YAMLStorage]:
     """DEV-1428: a YAMLStorage seeded with a single ``mydb`` datasource
     and a minimal ``orders`` model (id PK + amount column). Shared by

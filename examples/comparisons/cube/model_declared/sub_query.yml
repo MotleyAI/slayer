@@ -1,0 +1,12 @@
+# Model-declared extras: a sub_query dimension (per-customer total spend) and a band over it.
+cubes:
+  - name: customers_sq
+    extends: customers
+    dimensions:
+      - name: total_spend
+        sql: "{orders.revenue}"
+        type: number
+        sub_query: true
+      - name: spend_tier
+        sql: "CASE WHEN {total_spend} > 250 THEN 'high' ELSE 'low' END"
+        type: string

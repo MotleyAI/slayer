@@ -1,0 +1,159 @@
+# Baseline semantic layer: entities, dimensions, one measure + one simple metric per measure.
+models:
+  - name: time_spine_day
+    time_spine:
+      standard_granularity_column: date_day
+      custom_granularities:
+        - name: fiscal_year   # FY starts 1 April (C17)
+          column_name: fiscal_year_start
+    columns:
+      - name: date_day
+        granularity: day
+      - name: fiscal_year_start
+
+semantic_models:
+  - name: orders
+    model: ref('stg_orders')
+    defaults:
+      agg_time_dimension: order_date
+    entities:
+      - name: order
+        type: primary
+        expr: id
+      - name: customer
+        type: foreign
+        expr: customer_id
+    dimensions:
+      - name: order_date
+        type: time
+        type_params:
+          time_granularity: day
+      - name: order_month   # a month-truncated column (Q18)
+        type: time
+        expr: "date_trunc('month', order_date)"
+        type_params:
+          time_granularity: month
+      - name: status
+        type: categorical
+      - name: order_amount
+        type: categorical
+        expr: amount
+    measures:
+      - name: revenue
+        agg: sum
+        expr: amount
+      - name: order_count
+        agg: count
+        expr: id
+      - name: ordering_customers
+        agg: count_distinct
+        expr: customer_id
+
+  - name: returns
+    model: ref('stg_returns')
+    defaults:
+      agg_time_dimension: return_date
+    entities:
+      - name: return
+        type: primary
+        expr: id
+      - name: customer
+        type: foreign
+        expr: customer_id
+    dimensions:
+      - name: return_date
+        type: time
+        type_params:
+          time_granularity: day
+    measures:
+      - name: return_amount
+        agg: sum
+        expr: amount
+
+  - name: customers
+    model: ref('stg_customers')
+    # No date column: measures need an agg_time_dimension, so a constant one is synthesised.
+    defaults:
+      agg_time_dimension: customer_asof
+    entities:
+      - name: customer
+        type: primary
+        expr: id
+      - name: region
+        type: foreign
+        expr: region_id
+    dimensions:
+      - name: name
+        type: categorical
+      - name: city
+        type: categorical
+      - name: tier
+        type: categorical
+      - name: credit
+        type: categorical
+      - name: discount
+        type: categorical
+      - name: customer_asof
+        type: time
+        expr: "DATE '2024-01-01'"
+        type_params:
+          time_granularity: day
+    measures:
+      - name: customer_count
+        agg: count
+        expr: id
+      - name: credit_total
+        agg: sum
+        expr: credit
+
+  - name: regions
+    model: ref('stg_regions')
+    defaults:
+      agg_time_dimension: region_asof
+    entities:
+      - name: region
+        type: primary
+        expr: id
+    dimensions:
+      - name: name
+        type: categorical
+      - name: region_asof
+        type: time
+        expr: "DATE '2024-01-01'"
+        type_params:
+          time_granularity: day
+    measures:
+      - name: region_count
+        agg: count
+        expr: id
+
+metrics:
+  - name: revenue
+    type: simple
+    type_params: {measure: revenue}
+  - name: order_count
+    type: simple
+    type_params: {measure: order_count}
+  - name: return_amount
+    type: simple
+    type_params: {measure: return_amount}
+  - name: ordering_customers
+    type: simple
+    type_params: {measure: ordering_customers}
+  - name: customer_count
+    type: simple
+    type_params: {measure: customer_count}
+  - name: credit_total
+    type: simple
+    type_params: {measure: credit_total}
+  - name: region_count
+    type: simple
+    type_params: {measure: region_count}
+
+saved_queries:
+  - name: revenue_by_region_month
+    query_params:
+      metrics: [revenue, order_count]
+      group_by:
+        - "Dimension('region__name', entity_path=['customer'])"
+        - "TimeDimension('metric_time', 'month')"

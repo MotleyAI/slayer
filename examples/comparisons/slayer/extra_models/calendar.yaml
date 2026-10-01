@@ -1,0 +1,9 @@
+# Hand-made calendar: one row per day, joined from each fact's date.
+name: calendar
+data_source: probe
+sql: "select cast(d as date) as day from generate_series(date '2024-01-01', date '2025-06-30', interval 1 day) t(d)"
+columns:
+  - {name: day, type: date, primary_key: true}
+joins:
+  - {target_model: orders, join_pairs: [[day, order_date]], cardinality: one_to_many}
+  - {target_model: returns, join_pairs: [[day, return_date]], cardinality: one_to_many}

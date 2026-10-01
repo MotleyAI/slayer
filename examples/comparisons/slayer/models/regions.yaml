@@ -1,0 +1,6 @@
+name: regions
+data_source: probe
+sql_table: regions
+columns:
+  - {name: id, type: number, primary_key: true}
+  - {name: name, type: string}

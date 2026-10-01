@@ -88,7 +88,8 @@ def load_help_topics(
     """Built-in help topics in teaching order; ``context`` overrides
     :data:`DEFAULT_HELP_CONTEXT` (pair with :func:`merge_help_topics`)."""
     ctx = {**DEFAULT_HELP_CONTEXT, **(context or {})}
-    content_dir = files(__package__) / _CONTENT_SUBDIR
+    # Not ``__package__``: it is Optional, and ``files`` accepts None only from 3.12.
+    content_dir = files("slayer.memories") / _CONTENT_SUBDIR
     topics: list[HelpTopic] = []
     for entry in sorted(content_dir.iterdir(), key=lambda e: e.name):
         if not entry.name.endswith(".md"):

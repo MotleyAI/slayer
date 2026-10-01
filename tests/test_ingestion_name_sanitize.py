@@ -13,12 +13,12 @@ from slayer.sql import engine_factory
 from slayer.engine import ingestion as ingestion_module
 from slayer.engine.ingestion import (
     IngestionScanReport,
-    _dispose_quietly,
     _introspect_query_columns_via_inspector,
     ingest_datasource,
     ingest_datasource_report,
 )
 from slayer.storage.sqlite_conn import transaction
+from sqlalchemy.pool import QueuePool
 
 
 @pytest.fixture
@@ -331,11 +331,11 @@ class TestSkipBackstop:
 # ---------------------------------------------------------------------------
 
 
-class TestEngineDisposal:
-    def test_dispose_failure_does_not_mask_the_real_error(
+class TestIdleRelease:
+    def test_release_failure_does_not_mask_the_real_error(
         self, workspace: Path, monkeypatch
     ) -> None:
-        """A raising dispose in the finally must not mask the in-flight error."""
+        """A raising idle release in the finally must not mask the in-flight error."""
         ds = _sqlite_ds(
             workspace, "CREATE TABLE orders (id INTEGER PRIMARY KEY, x TEXT);"
         )
@@ -343,12 +343,18 @@ class TestEngineDisposal:
         class _Boom(Exception):
             pass
 
-        disposed: list[bool] = []
+        released: list[bool] = []
+
+        class _ExplodingPool(QueuePool):
+            def __init__(self):  # no creator: never connects
+                pass
+
+            def dispose(self):
+                released.append(True)
+                raise RuntimeError("release blew up")
 
         class _ExplodingEngine:
-            def dispose(self):
-                disposed.append(True)
-                raise RuntimeError("dispose blew up")
+            pool = _ExplodingPool()
 
         monkeypatch.setattr(
             "slayer.sql.engine_factory.get_engine",
@@ -362,30 +368,30 @@ class TestEngineDisposal:
 
         with pytest.raises(_Boom, match="the real failure"):
             ingest_datasource_report(datasource=ds)
-        assert disposed, "dispose must still be attempted"
+        assert released, "the idle release must still be attempted"
 
-    def test_dispose_failure_does_not_fail_a_successful_ingest(
+    def test_release_failure_does_not_fail_a_successful_ingest(
         self, workspace: Path, monkeypatch
     ) -> None:
-        """With no in-flight error, a raising dispose must not fail the ingest."""
+        """With no in-flight error, a raising idle release must not fail the ingest."""
         ds = _sqlite_ds(
             workspace, "CREATE TABLE orders (id INTEGER PRIMARY KEY, x TEXT);"
         )
 
         real_get_engine = engine_factory.get_engine
-        disposed: list[bool] = []
-        real_dispose = None
+        released: list[bool] = []
+        real_release = None
 
         def _wrap(cfg):
-            nonlocal real_dispose
+            nonlocal real_release
             engine = real_get_engine(cfg)
-            real_dispose = engine.dispose
+            real_release = engine.pool.dispose
 
             def _explode():
-                disposed.append(True)
-                raise RuntimeError("dispose blew up")
+                released.append(True)
+                raise RuntimeError("release blew up")
 
-            monkeypatch.setattr(engine, "dispose", _explode)
+            monkeypatch.setattr(engine.pool, "dispose", _explode)
             return engine
 
         monkeypatch.setattr(engine_factory, "get_engine", _wrap)
@@ -393,25 +399,31 @@ class TestEngineDisposal:
         try:
             report = ingest_datasource_report(datasource=ds)
             assert {m.name for m in report.models} == {"orders"}
-            assert disposed, "dispose must still be attempted"
+            assert released, "the idle release must still be attempted"
         finally:
             # engine_factory caches engines; without this the pool holds the file open
-            if real_dispose is not None:
-                real_dispose()
+            if real_release is not None:
+                real_release()
 
-    def test_dispose_failure_is_logged_at_warning(
+    def test_release_failure_is_logged_at_warning(
         self, workspace: Path, caplog
     ) -> None:
-        """A dispose failure must be visible above DEBUG."""
-        class _ExplodingEngine:
-            def dispose(self):
-                raise RuntimeError("dispose blew up")
+        """An idle-release failure must be visible above DEBUG."""
+        class _ExplodingPool(QueuePool):
+            def __init__(self):  # no creator: never connects
+                pass
 
-        with caplog.at_level(logging.WARNING, logger="slayer.engine.ingestion"):
-            _dispose_quietly(_ExplodingEngine())
+            def dispose(self):
+                raise RuntimeError("release blew up")
+
+        class _ExplodingEngine:
+            pool = _ExplodingPool()
+
+        with caplog.at_level(logging.WARNING, logger="slayer.sql.engine_factory"):
+            engine_factory.release_idle(_ExplodingEngine())  # pyright: ignore[reportArgumentType]  # deliberate fake
 
         assert any(
-            r.levelno >= logging.WARNING and "dispose failed" in r.getMessage()
+            r.levelno >= logging.WARNING and "release idle connections" in r.getMessage()
             for r in caplog.records
         )
 

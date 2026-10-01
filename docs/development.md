@@ -51,6 +51,7 @@ treated as unverifiable and never flagged.
 
 ```bash
 poetry run ruff check slayer/ tests/
+poetry run basedpyright  # type check: no new errors vs .basedpyright/baseline.json (CI gate)
 ```
 
 ## Project Structure

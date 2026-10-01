@@ -3972,32 +3972,6 @@
                 }
             }
         ],
-        "./tests/conftest.py": [
-            {
-                "code": "reportInvalidTypeForm",
-                "range": {
-                    "startColumn": 57,
-                    "endColumn": 68,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnusedCoroutine",
-                "range": {
-                    "startColumn": 8,
-                    "endColumn": 50,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportReturnType",
-                "range": {
-                    "startColumn": 14,
-                    "endColumn": 21,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./tests/dialects/test_base.py": [
             {
                 "code": "reportArgumentType",
@@ -10099,16 +10073,6 @@
                     "startColumn": 21,
                     "endColumn": 65,
                     "lineCount": 1
-                }
-            }
-        ],
-        "./tests/test_api_server.py": [
-            {
-                "code": "reportUnusedCoroutine",
-                "range": {
-                    "startColumn": 8,
-                    "endColumn": 10,
-                    "lineCount": 6
                 }
             }
         ],
@@ -23492,14 +23456,6 @@
                 "range": {
                     "startColumn": 29,
                     "endColumn": 32,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 29,
-                    "endColumn": 47,
                     "lineCount": 1
                 }
             }

@@ -1210,16 +1210,6 @@ def _build_one_model(
     )
 
 
-def _dispose_quietly(sa_engine: sa.Engine) -> None:
-    """Dispose ``sa_engine``, logging rather than raising (called from ``finally``)."""
-    try:
-        sa_engine.dispose()
-    except Exception as exc:  # noqa: BLE001 — teardown must not mask the cause
-        logger.warning(
-            "engine dispose failed; the connection may remain open: %s", exc
-        )
-
-
 def _collect_fk_columns(
     *,
     inspector: sa.engine.Inspector,
@@ -1439,8 +1429,8 @@ def ingest_datasource_report(
             skipped_schemas=scope.skipped,
         )
     finally:
-        # Disposes the shared cached engine on purpose: releases DuckDB file handles.
-        _dispose_quietly(sa_engine)
+        # Releases DuckDB file handles; the factory keeps owning the engine.
+        engine_factory.release_idle(sa_engine)
 
 
 def ingest_datasource(
@@ -2019,7 +2009,7 @@ def _default_schema_membership(
             names = None
         return ref.name, names
     finally:
-        _dispose_quietly(sa_engine)
+        engine_factory.release_idle(sa_engine)
 
 
 def _schema_hint_message(other_schemas: list[str]) -> str | None:

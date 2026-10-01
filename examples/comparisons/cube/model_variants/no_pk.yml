@@ -1,0 +1,20 @@
+# The same tables without primary keys. Loaded alone on top of ../model: it is a compile error that fails the whole schema.
+cubes:
+  - name: customers_nopk
+    sql_table: customers
+    joins:
+      - name: orders_nopk
+        sql: "{CUBE}.id = {orders_nopk.customer_id}"
+        relationship: one_to_many
+    dimensions:
+      - {name: name, sql: name, type: string}
+      - {name: tier, sql: tier, type: string}
+    measures:
+      - {name: credit_sum, sql: credit, type: sum}
+  - name: orders_nopk
+    sql_table: orders
+    dimensions:
+      - {name: customer_id, sql: customer_id, type: number}
+      - {name: status, sql: status, type: string}
+    measures:
+      - {name: count, type: count}

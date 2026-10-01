@@ -285,12 +285,12 @@ class TestQuery:
         assert resp.status_code == 400
 
     def test_query_missing_datasource(self, client: TestClient, storage: YAMLStorage) -> None:
-        storage.save_model(SlayerModel(
+        run_sync(storage.save_model(SlayerModel(
             name="orders",
             sql_table="t",
             data_source="missing_ds",
             columns=[Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
-        ))
+        )))
         resp = client.post("/query", json={"source_model": "orders", "measures": [{"formula": "revenue:sum"}]})
         assert resp.status_code == 400
 

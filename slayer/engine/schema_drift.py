@@ -1713,10 +1713,9 @@ class _LiveConnection:
         )
 
     def close(self) -> None:
-        # Dispose to release the connection (unblocks direct file access); quiet so
-        # it can't mask an in-flight introspection error.
+        # Frees idle connections (unblocks direct file access); quiet so it can't mask an in-flight error.
         if self._opened is not None:
-            ingestion._dispose_quietly(self._opened[0])
+            engine_factory.release_idle(self._opened[0])
 
 
 def _probe_connect(datasource: DatasourceConfig) -> None:

@@ -1,0 +1,1085 @@
+# The feature matrix in motley.ai/blog-posts/four-open-source-semantic-layers-54-capabilities. Strings are inline markdown (`code`, **bold**,
+# [links](url)). verdict: yes | partial | no | unknown. After editing, run
+# python examples/comparisons/export_matrix.py to regenerate matrix.json for the website.
+groups:
+- name: Query semantics
+  note: "grains, transforms, joins, filters and composition"
+- name: Beyond query semantics
+  note: "results, tooling, security, serving and platform"
+rows:
+- id: Q1
+  group: Query semantics
+  name: Coarser grain in the same query
+  intent: Region totals on rows grouped by region and city.
+  origin: SLayer
+  slayer:
+    verdict: 'yes'
+    how: "`sum(revenue, partition_by=region)`"
+    caveat: "`partition_by=[]` gives the grand total; takes lists, dotted join paths and time buckets."
+  malloy:
+    verdict: 'yes'
+    how: "`all(revenue, region)` · `exclude(revenue, city)`"
+    caveat: "Named dimensions must be output names. `exclude()` can reach outer levels of a `nest:`."
+  cube:
+    verdict: partial
+    how: "`SUM(rev) OVER (PARTITION BY region)` over a nested `SELECT ... MEASURE(revenue)`"
+    caveat: "Ad hoc only via the SQL API: SQL over the semantic result, without its guarantees. A model-declared `grain` measure does it in one query (not counted)."
+  metricflow:
+    verdict: 'no'
+    text: "No query-time partitioned aggregate; a metric filter joins only on the queried model's entities (verified)."
+    caveat: "Mixed-grain metrics are an open request ([#1998](https://github.com/dbt-labs/metricflow/issues/1998))."
+  comment: "Malloy's `all/exclude` and SLayer's `partition_by=` are ad hoc; Cube Core ad hoc needs SQL over the results."
+- id: Q2
+  group: Query semantics
+  name: Arithmetic across grains
+  intent: "Each city's share of its region, and of the grand total."
+  origin: SLayer
+  slayer:
+    verdict: 'yes'
+    how: "`sum(revenue) / sum(revenue, partition_by=region)`"
+    caveat: "Grains union in one expression. A finer grain than the query works when aggregated back up; a bare finer-grain aggregate is rejected with `PartitionKeyError`."
+  malloy:
+    verdict: 'yes'
+    how: "`revenue / all(revenue, region)`"
+    caveat: "Filtered forms: `all(revenue { where: ... })`. Finer grains need a pipeline stage."
+  cube:
+    verdict: partial
+    text: Window ratio over a nested semantic query in the SQL API
+    caveat: "Not counted: model-declared multi-stage measures."
+  metricflow:
+    verdict: 'no'
+    text: "Ratio and derived metrics share one group-by, so share of parent isn't expressible."
+    caveat: "Open request [#1998](https://github.com/dbt-labs/metricflow/issues/1998)."
+  comment: Same capability for share-of-parent.
+- id: Q3
+  group: Query semantics
+  name: Re-aggregation
+  intent: "Per region, the unweighted average of city revenue totals."
+  origin: SLayer
+  slayer:
+    verdict: 'yes'
+    how: "`avg(sum(amount, partition_by=[city, region]))`"
+  malloy:
+    verdict: partial
+    how: "`orders -> { group_by: region, city; aggregate: revenue } -> { group_by: region; aggregate: avg(revenue) }`"
+    caveat: "One stage fails with `aggregate-of-aggregate`."
+  cube:
+    verdict: partial
+    how: "`SELECT region, AVG(rev) FROM (SELECT region, city, MEASURE(revenue) rev ...) GROUP BY 1`"
+    caveat: Verified. The docs warn that re-aggregating non-additive measures this way is wrong unless the inner grain matches.
+  metricflow:
+    verdict: 'no'
+    text: "No aggregate of an aggregate, in a query or in a metric definition."
+    caveat: "Two-step aggregation is an open request ([#653](https://github.com/dbt-labs/metricflow/issues/653))."
+  comment: One expression in SLayer; a second stage or nested SQL query elsewhere.
+- id: Q4
+  group: Query semantics
+  name: Transforms / time shift
+  intent: "\"This measure one year earlier\" while the date filter is the last 3 months; period-over-period change; running totals; lag."
+  origin: SLayer
+  slayer:
+    verdict: 'yes'
+    how: "`time_shift(sum(revenue), -1, 'year')` · `change_pct(...)` · `cumsum(...)` · `lag/lead`"
+    caveat: "Calendar-aware per group; the date range doesn't clip the lookback (probe-verified). `lag/lead` are row-based by design."
+  malloy:
+    verdict: partial
+    how: "`calculate: prev is lag(revenue)`"
+    caveat: "`lag` counts rows, and `where:` clips its input. Calendar shift = self-join on a query source."
+  cube:
+    verdict: partial
+    text: "REST `compareDateRange` for fixed ranges side by side; SQL `LAG()` over a nested query"
+    caveat: "Ad hoc shifts are row-based. Calendar-aware `time_shift` and `rolling_window` exist only as model declarations (not counted)."
+  metricflow:
+    verdict: 'no'
+    text: No query-time shift or lag.
+    caveat: "Model-declared (not graded): an `offset_window` metric is calendar-aware and not clipped by start/end (verified)."
+  comment: Only SLayer shifts by calendar ad hoc; the others shift by rows or need a self-join.
+- id: Q5
+  group: Query semantics
+  name: "Calculated dimensions, filters, order"
+  intent: "Group revenue by whether each customer's spend is high or low; filter and sort on computed values."
+  origin: SLayer
+  slayer:
+    verdict: 'yes'
+    how: "`{\"expression\": \"CASE WHEN sum(amount, partition_by=customer_id) > 100 THEN 'high' ELSE 'low' END\", \"name\": \"band\"}`"
+  malloy:
+    verdict: partial
+    text: "Query-derived source + `join_one` + `pick` dimension."
+    caveat: "`aggregate-in-dimension` in one stage; `order_by:` takes output names only."
+  cube:
+    verdict: partial
+    text: "Nested SQL: per-customer `MEASURE(revenue)` inside, `CASE` band and `SUM` outside; REST measure filters become `HAVING`"
+    caveat: "The model-declared `sub_query` path hits a planner bug ([#12020](https://github.com/cube-js/cube/issues/12020))."
+  metricflow:
+    verdict: partial
+    how: "`--where \"{{ Metric('revenue', group_by=['customer']) }} > 300\"`"
+    caveat: "Filters at an entity grain (verified). A band can't be a group-by; metric filters can't use `metric_time` ([#1659](https://github.com/dbt-labs/metricflow/issues/1659)); order only by selected items."
+  comment: One inline dimension vs a derived source or nested SQL.
+- id: Q6
+  group: Query semantics
+  name: "Fields from many models, fan-out safe"
+  intent: Combine fields across joined models without multiplying rows.
+  origin: SLayer
+  slayer:
+    verdict: 'yes'
+    how: "`avg(customers.score)`"
+    caveat: Each aggregate computed at its own model; unproven to-one dimensions broadcast with a warning.
+  malloy:
+    verdict: 'yes'
+    how: "`orders.customers.count()`"
+    caveat: "Symmetric aggregates. **Bug ([#1762](https://github.com/malloydata/malloy/issues/1762)):** a `join_many` leaf count counts a childless parent as 1."
+  cube:
+    verdict: 'yes'
+    text: "Declared joins with `relationship: many_to_one`"
+    caveat: "Verified: primary-key dedup and one CTE per cube, even for raw `SUM` measures."
+  metricflow:
+    verdict: 'yes'
+    text: "Entity-based joins, many-to-one and one-to-one only; fan-out paths are never offered (verified)."
+    caveat: "Up to two hops. One dimension gets different names from different facts (`region__name` vs `customer__region__name`)."
+  comment: Four sound designs; the differences are in defaults and in who picks the aggregation point. MetricFlow refuses fan-out paths outright.
+- id: Q7
+  group: Query semantics
+  name: Deep composition
+  intent: "A mixed-grain expression, then a time shift, then a re-aggregation, all in one expression."
+  origin: SLayer
+  slayer:
+    verdict: 'yes'
+    how: "`cumsum(change(sum(revenue)))` · `time_shift(sum(amount) / sum(amount, partition_by=[ordered_at]), -1)`"
+    caveat: Uncompilable shapes fail with a typed error before the database (probe-verified).
+  malloy:
+    verdict: partial
+    text: One stage per layer.
+    caveat: "`sum(row_number())` reaches the database ([#3105](https://github.com/malloydata/malloy/issues/3105))."
+  cube:
+    verdict: partial
+    text: Stacked nested SQL queries
+    caveat: "Each layer is hand-written SQL over the semantic result, without its guarantees."
+  metricflow:
+    verdict: 'no'
+    text: Each composition layer is a model-declared metric.
+  comment: The biggest design difference. Stages and named measures are easier to inspect individually.
+- id: Q8
+  group: Query semantics
+  name: Population inference
+  intent: Omit the root model; measures never change which rows come back.
+  origin: SLayer
+  slayer:
+    verdict: 'yes'
+    text: "Inferred from dimensions and plain filters only; ties fail with `PopulationInferenceError`."
+  malloy:
+    verdict: 'no'
+    text: "A source is always named; its rows are the result's rows."
+  cube:
+    verdict: partial
+    text: Queries never name a root; Cube picks it from the join graph
+    caveat: "The default planner usually roots at the dimension's cube (verified). Pin with the `joinHints` query option."
+  metricflow:
+    verdict: partial
+    text: Each metric is rooted at its own model; multi-metric queries full-outer-join the per-metric results (verified).
+    caveat: "Revenue by region is rooted at orders: no row for a region without orders."
+  comment: "Cube also infers, but heuristically; SLayer's rule is fixed and fails closed on ties."
+- id: Q9
+  group: Query semantics
+  name: No silently wrong numbers
+  intent: "Fail loudly with a reason, or warn about what was approximated."
+  origin: SLayer
+  slayer:
+    verdict: 'yes'
+    how: "`\"to_many_handling\": \"broadcast\" | \"associate\" | \"error\"`"
+    caveat: Typed errors and structured warnings; every SLayer probe returns the right numbers or fails with a typed error (verified).
+  malloy:
+    verdict: partial
+    text: "Uncomputable `join_many` aggregates are rejected; an ambiguous `join_one` `sum`/`avg` warns `bad-join-usage`."
+    caveat: "**Verified gaps:** [#1762](https://github.com/malloydata/malloy/issues/1762), [#3105](https://github.com/malloydata/malloy/issues/3105); docs state the rule backwards ([docs #346](https://github.com/malloydata/malloydata.github.io/issues/346))."
+  cube:
+    verdict: partial
+    text: Strong fan-out dedup; joins without primary keys fail to compile. No warnings channel.
+    caveat: "**Verified silent cases:** an ignored order-by (Q13, [#282](https://github.com/cube-js/cube/issues/282)), re-truncation accepted (Q18), a second fact grouped by another cube's time dimension (C21); SQL post-processing can be wrong past 50,000 rows (documented)."
+  metricflow:
+    verdict: partial
+    text: "Fan-out is prevented structurally: MetricFlow refuses rather than multiplies."
+    caveat: "**Verified:** NULL (not 0) counts for childless parents, and the `period_agg` and raw-`where` bugs below."
+  comment: "SLayer has the most explicit machinery (modes, typed errors, warnings) and no open silent case in its probes; Cube and MetricFlow prevent fan-out by construction."
+- id: Q10
+  group: Query semantics
+  name: Filters across one-to-many joins
+  intent: "Customers with at least one OK order, counted once, including under OR / NOT."
+  origin: SLayer
+  slayer:
+    verdict: 'yes'
+    how: "`\"filters\": [\"tier = 'bronze' or orders.status = 'ok'\"]`"
+    caveat: "Pushed down as `EXISTS`; each customer once. `orders.id is null` = \"no orders\"."
+  malloy:
+    verdict: 'yes'
+    how: "`where: orders.status = 'ok'`"
+    caveat: "Each customer once. No `exists`; the `count() = 0` anti-join is broken by [#1762](https://github.com/malloydata/malloy/issues/1762)."
+  cube:
+    verdict: partial
+    text: "Verified: `customers.count` filtered on `orders.status` counts each customer once; OR across cubes works row by row"
+    caveat: "\"Has no orders\" (`notSet`) works only when customers is the chosen root."
+  metricflow:
+    verdict: partial
+    text: "To-many filters via `{{ Metric(...) }}` at an entity: at least one order counted once, OR across models, \"has no orders\" via `IS NULL` (verified)."
+    caveat: "`Dimension('order__status')` in a customers query is refused; \"at least one OK order\" needs a filtered metric in the model."
+  comment: "For a plain condition, SLayer, Malloy and Cube agree. `NOT` is \"has none\" in none of them; Malloy and Cube count a customer with no orders as matching a negated condition, SLayer (SQL NULL logic) doesn't."
+- id: Q11
+  group: Query semantics
+  name: Rolling time windows
+  intent: "Trailing 90 days of any aggregate, including count distinct."
+  origin: SLayer
+  slayer:
+    verdict: 'yes'
+    how: "`count_distinct(customer_id, window='90d')`"
+    caveat: "Time-based, every aggregation; date bounds don't clip the lookback; composes with arithmetic and transforms."
+  malloy:
+    verdict: partial
+    how: "`avg_moving(revenue, 2)`"
+    caveat: Row frames only; no rolling count distinct.
+  cube:
+    verdict: partial
+    text: SQL window frames over a daily nested query
+    caveat: "Row frames only ad hoc; no rolling count distinct. Time-based `rolling_window` is a model declaration (not counted)."
+  metricflow:
+    verdict: 'no'
+    text: No query-time windows.
+    caveat: "Model-declared `window: 90 days` is exact by day, incl. count distinct; at month grain it hits the `period_agg` bug."
+  comment: Only SLayer has time-based windows ad hoc; the others count rows.
+- id: Q12
+  group: Query semantics
+  name: Aggregates as arguments
+  intent: Aggregate an expression spanning models; weight by a coarser-grain aggregate.
+  origin: SLayer
+  slayer:
+    verdict: 'yes'
+    how: "`sum(amount - customers.discount)` · `weighted_avg(amount, weight=sum(amount, partition_by=region))`"
+  malloy:
+    verdict: partial
+    how: "`source.sum(amount * (1 - customers.discount))`"
+    caveat: No aggregate inside an aggregate.
+  cube:
+    verdict: partial
+    text: Pushdown expressions over cube members; a weight from a nested aggregate in SQL
+    caveat: Cross-cube expression measures exist only in the model (not counted).
+  metricflow:
+    verdict: 'no'
+    text: "A measure's `expr` sees only its own model's columns; no aggregate as a weight."
+  comment: The cross-model expression works everywhere; the aggregate-as-parameter is ad hoc only in SLayer.
+- id: Q13
+  group: Query semantics
+  name: "Order by what you don't show"
+  intent: "Top 10 statuses by revenue, displaying only the count."
+  origin: SLayer
+  slayer:
+    verdict: 'yes'
+    how: "`\"order\": [{\"column\": \"sum(amount)\", \"direction\": \"desc\"}]`"
+  malloy:
+    verdict: partial
+    text: "A second stage; `order-by-not-found-in-output` otherwise."
+  cube:
+    verdict: partial
+    text: "Verified: ordering by an unselected measure works"
+    caveat: "**Silently ignored:** an unselected dimension in `order` is left out of the SQL without an error (see [#282](https://github.com/cube-js/cube/issues/282))."
+  metricflow:
+    verdict: 'no'
+    text: Order only by selected metrics and group-by items (verified).
+  comment: A common top-N pattern.
+- id: Q14
+  group: Query semantics
+  name: Ranking and streaks
+  intent: "Filter on rank in the same query; \"3+ consecutive positive months\"."
+  origin: SLayer
+  slayer:
+    verdict: 'yes'
+    how: "`rank(sum(revenue)) <= 10` · `consecutive_periods(sum(revenue) > 0) >= 3`"
+    caveat: "Streaks count calendar periods, so an empty month breaks them (verified)."
+  malloy:
+    verdict: partial
+    how: "`nest: top is { ...; limit: 1 }`"
+    caveat: Rank filters need a second stage; streaks 2+.
+  cube:
+    verdict: partial
+    how: "`RANK() OVER (...)` in an outer SQL query, filtered one level up"
+    caveat: "Verified; needed a `CAST` around the rank. Streaks by hand in SQL."
+  metricflow:
+    verdict: 'no'
+    text: Global order plus limit only.
+  comment: "For top-N per group, Malloy's `nest:` is a fair match."
+- id: Q15
+  group: Query semantics
+  name: Multi-stage queries
+  intent: A query feeding another; save a query as a reusable model; re-bucket dates downstream.
+  origin: SLayer
+  slayer:
+    verdict: 'yes'
+    text: Named stages form a dependency graph; save as a query-backed model; re-bucket at equal or coarser grain.
+  malloy:
+    verdict: 'yes'
+    how: "`query: by_day is orders -> {...}`"
+    caveat: "Each `->` a CTE; views refine with `+`."
+  cube:
+    verdict: partial
+    text: An outer SQL query over an inner semantic query (verified)
+    caveat: Saving a result as a model means changing the model.
+  metricflow:
+    verdict: 'no'
+    text: "Saved queries can't be used as sources."
+    caveat: Exports need the dbt platform.
+  comment: "Malloy's is the richest."
+- id: Q16
+  group: Query semantics
+  name: Inline model extension
+  intent: "Add a column, measure or join for one query without editing the model."
+  origin: SLayer
+  slayer:
+    verdict: 'yes'
+    how: "`\"source_model\": {\"source_name\": \"orders\", \"columns\": [...], \"joins\": [...]}`"
+  malloy:
+    verdict: 'yes'
+    how: "`extend: { join_one: ...; measure: ... }`"
+  cube:
+    verdict: partial
+    text: SQL API pushdown expressions over dimensions and aggregations (verified)
+    caveat: No ad-hoc members over REST; no ad-hoc joins.
+  metricflow:
+    verdict: 'no'
+    text: "No expressions in group-by; raw SQL only inside a `where`, around a Jinja reference (verified)."
+  comment: "Cube's model-first design shows here."
+- id: Q17
+  group: Query semantics
+  name: Saved measures that compose
+  intent: Reuse a named formula in transforms and arithmetic; save transforms as measures.
+  origin: SLayer
+  slayer:
+    verdict: 'yes'
+    how: "`cumsum(aov)` · saved `aov_pct_change: change_pct(aov)`"
+  malloy:
+    verdict: partial
+    how: "`calculate: prev_aov is lag(aov)`"
+    caveat: "A window expression can't be saved as a measure."
+  cube:
+    verdict: partial
+    text: "Existing measures combine in SQL arithmetic (`MEASURE(a) / MEASURE(b)`)"
+    caveat: Saving a period-over-period formula needs a model change.
+  metricflow:
+    verdict: partial
+    text: Queries use named metrics.
+    caveat: "Ratio, derived and offset composition must be declared in the model."
+  comment: Only SLayer saves a transform as a reusable measure without writing model code.
+- id: Q18
+  group: Query semantics
+  name: Time-bucket safety
+  intent: Refuse a day breakdown of a column already truncated to month.
+  origin: SLayer
+  slayer:
+    verdict: 'yes'
+    text: "Typed error; `Column.granularity` set on query-backed models (probe-verified)."
+  malloy:
+    verdict: 'no'
+    text: "`m.day` returns month starts labelled as days."
+  cube:
+    verdict: 'no'
+    text: "Verified: a `day` query on a month-truncated dimension returns first-of-month \"days\""
+  metricflow:
+    verdict: 'yes'
+    text: A month-grain dimension refuses a day or week breakdown and a day-grain filter (verified).
+  comment: SLayer and MetricFlow refuse; the others return mislabelled rows.
+- id: Q19
+  group: Query semantics
+  name: "Agent & API surface"
+  intent: How an agent actually issues queries.
+  origin: SLayer
+  slayer:
+    verdict: 'yes'
+    text: "MCP, REST, CLI and Python."
+    caveat: Queries are schema-validated JSON.
+  malloy:
+    verdict: 'yes'
+    text: "Publisher MCP and REST; `loadRestrictedQuery()` sandboxes LLM-written queries."
+  cube:
+    verdict: 'yes'
+    text: "REST (JSON), GraphQL and a Postgres-wire SQL API"
+  metricflow:
+    verdict: partial
+    how: "`mf` CLI and the in-process Python `MetricFlowEngine`."
+    caveat: No network API in open source; it's a dbt platform feature.
+  comment: "JSON (SLayer, Cube), a text language (Malloy), or CLI and Python arguments (MetricFlow). MCP servers are C26."
+- id: Q20
+  group: Query semantics
+  name: "Relative & typed filters"
+  intent: "\"Last 3 days\", \"this quarter\", value lists and ranges without hand-computing bounds."
+  origin: Malloy
+  slayer:
+    verdict: 'yes'
+    how: "`\"date_range\": \"last 3 months\"` · `order_date in 'this year'` · `order_date = '2025-Q1'`"
+    caveat: "Relative tokens, periods (day to year, ISO week) and open-ended ranges, verified with a pinned clock; a period bound covers the whole period."
+  malloy:
+    verdict: 'yes'
+    how: "`ts ~ f'last 3 days'` · `dep_time ? @2003`"
+  cube:
+    verdict: 'yes'
+    how: "`\"dateRange\": \"last 3 months\"`"
+    caveat: "Verified, incl. `\"from 500 days ago to now\"`; typed operators like `inDateRange`, `notSet`."
+  metricflow:
+    verdict: partial
+    text: "Absolute start/end, widened to the query grain (verified)."
+    caveat: "Relative ranges need raw SQL date math in a `where`."
+  comment: All but MetricFlow take relative ranges in the query.
+- id: Q21
+  group: Query semantics
+  name: Calendar expressions
+  intent: "Day-of-week, date differences, date arithmetic and time zones as portable expressions."
+  origin: Malloy
+  slayer:
+    verdict: partial
+    how: "`date_part('day_of_week', t)` · `date_diff` · `date_add`"
+    caveat: Portable across engines (verified). No time zones.
+  malloy:
+    verdict: 'yes'
+    how: "`day_of_week(t)` · `days(a to b)` · `t + 3 days`"
+  cube:
+    verdict: partial
+    text: "Query `timezone`; `EXTRACT(DOW ...)` in the SQL API over a nested query (verified)"
+    caveat: "No day-of-week granularity; date math in raw SQL. `timezone` moves `DATE` values back a day in negative-offset zones ([#10166](https://github.com/cube-js/cube/issues/10166))."
+  metricflow:
+    verdict: partial
+    how: "`TimeDimension('metric_time', date_part_name='dow')`"
+    caveat: Verified. Date math only as raw SQL in filters; time zones not documented.
+  comment: "Malloy's portable date algebra is richest."
+- id: Q22
+  group: Query semantics
+  name: Nested source data
+  intent: Query arrays and repeated records with fan-out-safe aggregation.
+  origin: Malloy
+  slayer:
+    verdict: 'no'
+    text: Array and struct columns are opaque.
+  malloy:
+    verdict: 'yes'
+    how: "`tags.each.sum()`"
+  cube:
+    verdict: 'no'
+    text: No nested types in queries
+    caveat: Arrays must be unnested in the model.
+  metricflow:
+    verdict: 'no'
+    text: Not documented.
+  comment: A headline Malloy feature.
+- id: Q23
+  group: Query semantics
+  name: "Saved queries & refinement"
+  intent: "Reuse a saved query and extend the query itself with dimensions, measures or filters, not only post-process its output."
+  origin: Malloy
+  slayer:
+    verdict: 'yes'
+    how: "`query(\"monthly_rev\", refine={\"dimensions\": [\"customers.tier\"]})`"
+    caveat: "Dimensions, measures, filters, order and limit merge into the saved query's final stage; a conflicting redefinition is a typed error (verified)."
+  malloy:
+    verdict: 'yes'
+    how: "`flights -> by_carrier + { where: ... }`"
+  cube:
+    verdict: 'no'
+    text: No saved query shapes in Core
+    caveat: "Views curate members; they aren't query shapes."
+  metricflow:
+    verdict: partial
+    text: "A saved query takes an extra `where`, order and limit (verified)."
+    caveat: Not extra metrics or group-bys.
+  comment: "Malloy and SLayer merge any clause into a saved query; MetricFlow's saved queries take a few extra clauses."
+- id: C1
+  group: Beyond query semantics
+  name: Nested / hierarchical results
+  intent: "Per region, a sub-table of top customers, in one result."
+  origin: Malloy
+  slayer:
+    verdict: 'no'
+    text: Flat results.
+  malloy:
+    verdict: 'yes'
+    how: "`nest: by_customer is { ...; limit: 5 }`"
+  cube:
+    verdict: 'no'
+    text: "Flat results, GraphQL included."
+  metricflow:
+    verdict: 'no'
+    text: Flat results.
+  comment: "Malloy's flagship feature."
+- id: C2
+  group: Beyond query semantics
+  name: Explicit aggregate locality
+  intent: "From orders, average a customer field per customer vs per order."
+  origin: Malloy
+  slayer:
+    verdict: partial
+    text: "No per-aggregate switch; the reading follows where the value lives (all verified): `avg(customers.credit)` is per customer, all customers; add an orders filter for customers with orders; an orders-side column for per order."
+  malloy:
+    verdict: 'yes'
+    how: "`customers.credit.avg()` vs `source.avg(customers.credit)`"
+    caveat: The per-customer form covers only customers reached through orders.
+  cube:
+    verdict: partial
+    text: Measures aggregate at their own cube by default (per entity)
+    caveat: A per-order reading of a customer field needs SQL over joined members or a model change.
+  metricflow:
+    verdict: partial
+    text: "A measure lives in its own model, so an average of a customer field is per customer by construction."
+    caveat: A per-order weighting needs a joining dbt model.
+  comment: "From orders, SLayer's plain cross-model average includes customers with no orders; Malloy's includes only those reached through the join."
+- id: C3
+  group: Beyond query semantics
+  name: "Rendering & tooling"
+  intent: "Charts, dashboards, notebooks, drill-down, delivery."
+  origin: Malloy
+  slayer:
+    verdict: 'no'
+    text: Headless; returns data.
+  malloy:
+    verdict: 'yes'
+    text: "Rendering tags, notebooks, VS Code, Explorer."
+  cube:
+    verdict: partial
+    text: Playground only.
+    caveat: Workbooks and dashboards are Cloud features.
+  metricflow:
+    verdict: partial
+    text: "CLI tables, CSV and a plan SVG; no charts."
+  comment: A product-focus difference.
+- id: C4
+  group: Beyond query semantics
+  name: "Pre-aggregation & materialization"
+  intent: Rollup tables chosen automatically; caching and refresh.
+  origin: Malloy
+  slayer:
+    verdict: 'no'
+    text: An opt-in in-memory result cache only.
+  malloy:
+    verdict: partial
+    text: "Composite sources, `#@ persist` (experimental)."
+  cube:
+    verdict: 'yes'
+    text: "Rollups, refresh keys, partitions, Cube Store"
+  metricflow:
+    verdict: 'no'
+    text: Not in open source.
+  comment: "Cube's defining feature."
+- id: C5
+  group: Beyond query semantics
+  name: "Parameters & row-level security"
+  intent: Runtime parameters; scope every query of a session to one tenant.
+  origin: all
+  slayer:
+    verdict: 'yes'
+    text: "Engine policy the agent can't override; unlisted tables fail closed (probe-verified). `{var}` parameters."
+  malloy:
+    verdict: partial
+    text: "Source parameters, givens (experimental)."
+  cube:
+    verdict: 'yes'
+    text: "Access policies with `row_level`; security context; per-tenant data sources"
+    caveat: "`userAttributes` is Cloud-only; Core uses the security context."
+  metricflow:
+    verdict: 'no'
+    text: No parameters or row-level security in open source.
+  comment: Matters most for agent and embedded deployments.
+- id: C6
+  group: Beyond query semantics
+  name: Database coverage
+  intent: Where it runs.
+  origin: all
+  slayer:
+    verdict: 'yes'
+    text: "8 engines tested live, 4 more by SQL generation."
+  malloy:
+    verdict: 'yes'
+    text: 8 engines plus files via DuckDB.
+  cube:
+    verdict: 'yes'
+    text: "26 sources, incl. streaming (ksqlDB, Materialize) and MongoDB."
+  metricflow:
+    verdict: 'yes'
+    text: "Nine SQL renderers: BigQuery, DuckDB, Redshift, Postgres, Snowflake, Databricks, Trino, Vertica, Athena."
+  comment: "Cube's list is the longest."
+- id: C7
+  group: Beyond query semantics
+  name: "Model authoring & reuse"
+  intent: "How models get written, shared and kept in sync."
+  origin: Malloy
+  slayer:
+    verdict: 'yes'
+    text: "YAML/JSON; dbt, Cube and OSI importers."
+  malloy:
+    verdict: 'yes'
+    text: "A typed language with `import` and `extend`."
+  cube:
+    verdict: 'yes'
+    text: "YAML/JS with Jinja/Python generation, `extends`, `cube_dbt`"
+  metricflow:
+    verdict: 'yes'
+    text: dbt YAML semantic models next to the dbt models they read.
+  comment: "Models as data (SLayer), as code (Malloy), generated (Cube), or beside the dbt models they read (MetricFlow)."
+- id: C8
+  group: Beyond query semantics
+  name: Value index
+  intent: "Find which field holds \"SANTA CRUZ\", for filter suggestions and LLM grounding."
+  origin: Malloy
+  slayer:
+    verdict: partial
+    text: Sampled top values per column feed search.
+  malloy:
+    verdict: 'yes'
+    how: "`index: * by total_ratings`"
+  cube:
+    verdict: 'no'
+    text: No documented value index in Core.
+  metricflow:
+    verdict: partial
+    how: "`mf list dimension-values` queries live values; no index."
+  comment: Relevant to agent accuracy on filter values.
+- id: C9
+  group: Beyond query semantics
+  name: Authoring feedback loop
+  intent: Catch bad references and types before running.
+  origin: Malloy
+  slayer:
+    verdict: partial
+    text: "Save-time validation, `dry_run`, typed errors; no IDE support."
+  malloy:
+    verdict: 'yes'
+    text: "Language server; `malloy_compile` over MCP."
+  cube:
+    verdict: partial
+    text: Compile errors on reload (verified)
+    caveat: No language-server support documented.
+  metricflow:
+    verdict: 'yes'
+    how: "`dbt parse`, `mf validate-configs` (checks the warehouse too) and `--explain` (verified)."
+  comment: SLayer has no editor tooling.
+- id: C10
+  group: Beyond query semantics
+  name: SQL interop
+  intent: "Native SQL anywhere, and semantic queries inside SQL."
+  origin: Malloy
+  slayer:
+    verdict: partial
+    text: SQL models and columns; a Postgres-wire facade accepting a SQL subset.
+    caveat: No full SQL over semantic queries.
+  malloy:
+    verdict: 'yes'
+    how: "`conn.sql(\"\"\"... %{ malloy_query } ...\"\"\")`"
+  cube:
+    verdict: 'yes'
+    text: "SQL API with `MEASURE()`, pushdown and post-processing (verified)"
+  metricflow:
+    verdict: partial
+    text: Raw SQL in expressions and filters.
+    caveat: Semantic queries inside SQL need the dbt platform (JDBC).
+  comment: Malloy and Cube go both ways.
+- id: C11
+  group: Beyond query semantics
+  name: Portable expression library
+  intent: The same function means the same thing on every engine.
+  origin: Malloy
+  slayer:
+    verdict: partial
+    text: "Portable scalar functions, including date parts, differences and arithmetic; no regex."
+  malloy:
+    verdict: 'yes'
+    text: Broad standard library plus a native escape.
+  cube:
+    verdict: partial
+    text: Model SQL is warehouse-specific; only SQL API functions are transpiled.
+  metricflow:
+    verdict: partial
+    text: "MetricFlow renders its own time, window and offset constructs per dialect."
+    caveat: User expressions are raw SQL.
+  comment: Overlaps with Q21.
+- id: C12
+  group: Beyond query semantics
+  name: BI connectivity
+  intent: "Tableau, Metabase, Excel or Power BI query the semantic layer directly."
+  origin: Cube
+  slayer:
+    verdict: 'yes'
+    text: Postgres-wire SQL API and Arrow Flight SQL.
+    caveat: "Read-only, a SQL subset; no MDX/DAX."
+  malloy:
+    verdict: 'no'
+    text: "REST, React SDK and MCP only."
+  cube:
+    verdict: 'yes'
+    text: Postgres-wire SQL API (verified)
+    caveat: MDX and DAX APIs are Enterprise-only.
+  metricflow:
+    verdict: 'no'
+    text: A dbt platform feature.
+  comment: Both speak the Postgres wire protocol; SLayer adds Arrow Flight SQL.
+- id: C13
+  group: Beyond query semantics
+  name: Curated semantic surfaces
+  intent: Expose a vetted subset of members with pinned join paths.
+  origin: Cube
+  slayer:
+    verdict: partial
+    text: Facade models with named join edges.
+  malloy:
+    verdict: 'yes'
+    how: "`source: s is x extend { accept: ... }`"
+  cube:
+    verdict: 'yes'
+    text: "Views with `join_path`, `includes`, folders"
+  metricflow:
+    verdict: partial
+    text: Saved queries.
+  comment: "Also Cube's answer to join-path ambiguity (Q8)."
+- id: C14
+  group: Beyond query semantics
+  name: "Member-level security & masking"
+  intent: Hide or mask specific fields per user.
+  origin: Cube
+  slayer:
+    verdict: 'no'
+    text: Row-level only.
+  malloy:
+    verdict: partial
+    text: "`#(authorize)` on whole sources; no masking."
+  cube:
+    verdict: 'yes'
+    how: "`member_level` and `member_masking` access policies"
+  metricflow:
+    verdict: 'no'
+    text: Not in open source.
+  comment: Enterprise-governance territory.
+- id: C15
+  group: Beyond query semantics
+  name: Embedded analytics
+  intent: "Serve the layer's results inside your own product."
+  origin: Cube
+  slayer:
+    verdict: 'no'
+    text: "APIs only; embedding is the host app's job."
+  malloy:
+    verdict: partial
+    text: Publisher embed / React SDK; token check unfinished per its docs.
+  cube:
+    verdict: partial
+    text: REST/GraphQL plus the open-source JS client libraries
+    caveat: iframe embedding with sessions is a Cloud feature.
+  metricflow:
+    verdict: 'no'
+    text: Not in open source.
+  comment: Cube Core ships client libraries; hosted embedding is a Cloud feature.
+- id: C16
+  group: Beyond query semantics
+  name: "Custom calendars & granularities"
+  intent: "Fiscal years, retail 4-5-4, 15-minute buckets."
+  origin: Cube
+  slayer:
+    verdict: 'yes'
+    how: "`{\"name\": \"fiscal_year\", \"base\": \"month\", \"multiple\": 12, \"origin\": \"2024-04-01\"}`"
+    caveat: "Datasource granularities work as time dimensions, `time_shift` units and spine buckets: fiscal years and 15-minute buckets verified. No retail 4-5-4 calendars."
+  malloy:
+    verdict: partial
+    text: Hand-written dimensions.
+  cube:
+    verdict: 'yes'
+    how: "`granularities` with interval/offset/origin"
+  metricflow:
+    verdict: 'yes'
+    text: "Custom granularities from the time spine, e.g. an April fiscal year (verified)."
+  comment: "Interval-based grains in SLayer and Cube; MetricFlow's spine columns can hold any calendar."
+- id: C17
+  group: Beyond query semantics
+  name: Drill-across fact tables
+  intent: "Combine unrelated facts (orders, returns) over shared dimensions."
+  origin: Cube
+  slayer:
+    verdict: 'yes'
+    how: "`\"measures\": [\"sum(orders.amount)\", \"sum(returns.amount)\"]` from `customers`"
+  malloy:
+    verdict: 'yes'
+    text: "A hub source with two `join_many`s."
+  cube:
+    verdict: 'yes'
+    text: "Multi-fact queries and views, one CTE per fact (verified)"
+  metricflow:
+    verdict: 'yes'
+    text: Metrics from two fact models on one axis (verified).
+    caveat: "Refused when the dimension's entity path differs per fact."
+  comment: Fan-out safety makes this work in all four.
+- id: C18
+  group: Beyond query semantics
+  name: Cross-datasource queries
+  intent: Join models living in different databases.
+  origin: Cube
+  slayer:
+    verdict: 'no'
+    text: Refused explicitly.
+  malloy:
+    verdict: partial
+    text: Via a DuckDB connection that attaches other databases.
+  cube:
+    verdict: partial
+    how: "`rollup_join` pre-aggregations in Cube Store, or SQL API unions"
+  metricflow:
+    verdict: 'no'
+    text: One warehouse connection.
+  comment: Nobody does this natively.
+- id: C19
+  group: Beyond query semantics
+  name: Drill-down to records
+  intent: "From an aggregate, fetch the underlying rows."
+  origin: Cube
+  slayer:
+    verdict: partial
+    text: Raw-rows query mode; no declared drill members.
+  malloy:
+    verdict: 'yes'
+    text: "Publisher click-through; `select: *`."
+  cube:
+    verdict: 'yes'
+    how: "`drill_members`; `ungrouped: true` queries"
+  metricflow:
+    verdict: partial
+    text: Dimension-only queries list rows of declared dimensions (verified).
+  comment: Mostly a UI concern.
+- id: C20
+  group: Beyond query semantics
+  name: Entity-graph join inference
+  intent: "Joins found automatically from declared keys, including multi-hop."
+  origin: MetricFlow
+  slayer:
+    verdict: 'yes'
+    text: "Join edges traversed both ways, with dotted multi-hop paths inferred."
+  malloy:
+    verdict: partial
+    text: Joins declared per source; dotted paths follow them.
+  cube:
+    verdict: 'yes'
+    text: "Path-finding over the join graph, plus `joinHints`."
+  metricflow:
+    verdict: 'yes'
+    text: "An entity graph, up to two hops."
+  comment: Similar power; the differences are direction and hop limits.
+- id: C21
+  group: Beyond query semantics
+  name: Shared time axis across facts
+  intent: One time dimension for metrics from different fact tables.
+  origin: MetricFlow
+  slayer:
+    verdict: 'yes'
+    how: "`\"time_dimensions\": [{\"dimension\": \"time_spine.timestamp\", \"granularity\": \"month\", \"date_range\": [...]}]`"
+    caveat: A built-in spine each model joins through its own date column; per group too; two equally short routes fail loudly (verified).
+  malloy:
+    verdict: partial
+    text: A hand-made calendar source joined to each fact; symmetric aggregates keep it exact (verified).
+  cube:
+    verdict: partial
+    text: Needs a model-declared dates cube.
+    caveat: "Query-only, a second fact lands in the months of the time dimension's own cube: returns counted in their customers' order months (verified)."
+  metricflow:
+    verdict: 'yes'
+    how: "`metric_time`"
+    caveat: Months with either fact; empty months only with a model change (verified).
+  comment: SLayer and MetricFlow give every fact one time axis; elsewhere it is a hand-made calendar.
+- id: C22
+  group: Beyond query semantics
+  name: Gap filling / time spine
+  intent: "Rows for empty periods, zero-filled."
+  origin: MetricFlow
+  slayer:
+    verdict: 'yes'
+    how: "`coalesce(sum(orders.amount), 0)` on the spine"
+    caveat: "Every bucket in range, per group too; change, cumsum, lag, streaks and windows see the empty months (verified). A lower bound is required."
+  malloy:
+    verdict: partial
+    text: A manual calendar join.
+  cube:
+    verdict: partial
+    text: "Client-side `fillMissingDates` only."
+  metricflow:
+    verdict: 'yes'
+    how: "`join_to_timespine` + `fill_nulls_with` (verified)"
+    caveat: "Declared on the metric; a query's start/end alone doesn't fill (verified)."
+  comment: SLayer fills in any query; MetricFlow per declared metric.
+- id: C23
+  group: Beyond query semantics
+  name: Semi-additive measures
+  intent: "Balances: sum across accounts, last value over time."
+  origin: MetricFlow
+  slayer:
+    verdict: 'yes'
+    how: "`sum(last(balance, snapshot_date, partition_by=[account_id, customer_id]))`"
+    caveat: "One expression per query: the latest balance per account, then summed."
+  malloy:
+    verdict: partial
+    text: A pipeline.
+  cube:
+    verdict: partial
+    text: No recipe.
+  metricflow:
+    verdict: 'yes'
+    how: "`non_additive_dimension` (docs)"
+  comment: Declared once in MetricFlow; one query expression in SLayer; a pipeline elsewhere.
+- id: C24
+  group: Beyond query semantics
+  name: Point-in-time (SCD Type II) joins
+  intent: Join a fact to the dimension row valid at that time.
+  origin: MetricFlow
+  slayer:
+    verdict: partial
+    text: A custom SQL join.
+  malloy:
+    verdict: partial
+    text: A range join in SQL.
+  cube:
+    verdict: partial
+    text: Custom SQL.
+  metricflow:
+    verdict: 'yes'
+    how: "`validity_params` (docs)"
+  comment: A MetricFlow specialty.
+- id: C25
+  group: Beyond query semantics
+  name: Open interchange spec
+  intent: Import and export semantic definitions in a shared format.
+  origin: MetricFlow
+  slayer:
+    verdict: partial
+    text: "Imports OSI, dbt and Cube; no export."
+  malloy:
+    verdict: 'no'
+    text: None.
+  cube:
+    verdict: 'no'
+    text: None.
+  metricflow:
+    verdict: 'yes'
+    text: "Writes an Open Semantic Interchange document (verified); cumulative and conversion metrics can't be represented."
+  comment: OSI has been renamed Apache Ossie.
+- id: C26
+  group: Beyond query semantics
+  name: Built-in MCP server
+  intent: "An agent connects a database, explores it, edits models and queries over MCP, with nothing extra to deploy."
+  origin: SLayer
+  slayer:
+    verdict: 'yes'
+    how: "`slayer mcp` (stdio) · `slayer serve` (SSE)"
+    caveat: "Datasource, ingestion, model-editing, query, search and memory tools, plus built-in help; from an empty store to an answer over MCP alone (probe-verified)."
+  malloy:
+    verdict: 'yes'
+    text: "Publisher MCP: `get_context`, `execute_query`, `compile_model`, `reload_package`, docs search; skills as prompts."
+    caveat: "No tool writes models: the agent edits `.malloy` files on disk, then reloads."
+  cube:
+    verdict: 'no'
+    text: No MCP server in Core.
+    caveat: "Cube's MCP server is hosted by Cube Cloud (`cubecloud.dev/mcp`)."
+  metricflow:
+    verdict: 'no'
+    text: "No MCP server; the open-source dbt-mcp's semantic-layer tools call the dbt platform API."
+    caveat: "Without a platform account, dbt-mcp offers only CLI, codegen and LSP tools."
+  comment: "SLayer and Malloy ship one; SLayer's can also create and change models."
+- id: C27
+  group: Beyond query semantics
+  name: Agent memories
+  intent: "An agent saves what it learned about the data; later agents get it back when they touch the same columns."
+  origin: SLayer
+  slayer:
+    verdict: 'yes'
+    how: "`save_memory(learning=\"status 'bad' marks a cancelled order\", linked_entities=[\"orders.status\"])`"
+    caveat: "A note, or a vetted example query, tied to models and columns; `search` and `inspect` return it with them (probe-verified)."
+  malloy:
+    verdict: 'no'
+    text: "No memory store; a Publisher skill tells agents to write learnings as `#(doc)` annotations into model files."
+  cube:
+    verdict: 'no'
+    text: No agent memory in Core.
+    caveat: "Cube Cloud's AI agent has memories, rules and certified queries."
+  metricflow:
+    verdict: 'no'
+    text: "Hand-written `description` and `meta` in YAML only."
+  comment: "Only SLayer keeps notes that agents write and read back."
+- id: C28
+  group: Beyond query semantics
+  name: Smart retrieval
+  intent: "Find the models, fields and notes a question needs without loading the whole schema."
+  origin: SLayer
+  slayer:
+    verdict: 'yes'
+    how: "`search(question=\"which city does a customer live in\")`"
+    caveat: "One ranked list of models, columns, measures and memories: stemmed full text, entity overlap, optional embeddings, plus a graph filter (probe-verified without embeddings)."
+  malloy:
+    verdict: 'yes'
+    how: "`get_context` (Publisher MCP)"
+    caveat: "Ranks sources, fields, joins and views of one package per call; BM25, embeddings with an API key."
+  cube:
+    verdict: 'no'
+    text: "Core has only `/v1/meta`, the full metadata, with no search."
+    caveat: "Search over the data model is a Cube Cloud feature."
+  metricflow:
+    verdict: 'no'
+    text: "`mf list metrics --search` matches metric names by substring."
+    caveat: "dbt-mcp's search tools need the dbt platform."
+  comment: "SLayer and Malloy rank schema context for agents; SLayer ranks memories in the same list."
+- id: C29
+  group: Beyond query semantics
+  name: Auto-ingestion
+  intent: "Point it at a database and get queryable models, with joins from foreign keys."
+  origin: SLayer
+  slayer:
+    verdict: 'yes'
+    how: "`ingest_datasource_models(datasource_name=\"shop\")` · `slayer serve --ingest-on-startup`"
+    caveat: "Foreign keys become joins and comments descriptions; join cardinality from the keys. Re-runs add without overwriting (probe-verified)."
+  malloy:
+    verdict: partial
+    text: "`conn.table('x')` reads a table's columns at compile time; joins and measures are written by hand."
+  cube:
+    verdict: partial
+    how: "Playground or `cubejs generate -t orders,customers`"
+    caveat: "A one-time scaffold that rewrites the model folder. Foreign keys are read only on Postgres, MySQL and Redshift; elsewhere joins come from `*_id` names (source)."
+  metricflow:
+    verdict: 'no'
+    text: "Semantic models are hand-written YAML; dbt-codegen scaffolds sources and staging models only."
+  comment: "SLayer and Cube generate models with joins; only SLayer re-ingests additively."
+- id: C30
+  group: Beyond query semantics
+  name: Runtime model editing
+  intent: "Add a column, measure or join through an API and use it in the next query: no build, no restart."
+  origin: SLayer
+  slayer:
+    verdict: 'yes'
+    how: "`edit_model(model_name=\"orders\", measures=[{\"name\": \"aov\", \"formula\": \"sum(amount) / count(*)\"}])`"
+    caveat: "Over MCP, REST, CLI or Python; the next query sees it (probe-verified)."
+  malloy:
+    verdict: partial
+    text: "Edit `.malloy` files, then `reload_package` or watch mode; no restart."
+    caveat: No API writes model files.
+  cube:
+    verdict: partial
+    text: "Dev mode re-reads changed model files on the next request; `repositoryFactory` + `schemaVersion` load models from elsewhere."
+    caveat: "No API writes models in Core; API editing is a Cube Cloud feature."
+  metricflow:
+    verdict: 'no'
+    text: "Edit YAML, then `dbt parse` rebuilds the manifest `mf` reads."
+    caveat: No create or edit API.
+  comment: "Only SLayer takes model changes through its own API."
+- id: C31
+  group: Beyond query semantics
+  name: Schema drift handling
+  intent: "Notice when the warehouse changes under the models, and say what to fix."
+  origin: SLayer
+  slayer:
+    verdict: 'yes'
+    how: "`validate_models` · `SchemaDriftError`"
+    caveat: "A failing query names the drifted model; `validate_models` returns the `edit_model` call that fixes it; re-ingestion keeps hand edits (probe-verified)."
+  malloy:
+    verdict: partial
+    text: "A dropped column is a compile error with file and line at reload; Publisher keeps serving the previous model, flagged stale."
+    caveat: Nothing checks the warehouse until a reload or compile.
+  cube:
+    verdict: 'no'
+    text: "Nothing checks models against the warehouse; a dropped column is a raw database error at query time."
+    caveat: "`cubejs validate` compiles the files without a database connection."
+  metricflow:
+    verdict: partial
+    how: "`mf validate-configs`"
+    caveat: "Dry-runs each element against the warehouse and names the broken one; column types aren't compared, and queries surface the raw warehouse error."
+  comment: "SLayer detects drift at query time too and proposes the fix; elsewhere it is a validation run or a compile error."
