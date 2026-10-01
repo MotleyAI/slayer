@@ -288,7 +288,8 @@ def evaluate(p: Probe, resp: Optional[SlayerResponse], err: Optional[Exception],
     if exp_obj.known_bug:
         if ok:
             return Outcome(status=FIXED, detail=f"now matches truth ({why}); update the expectation")
-        sig = all(has_row(got, b, p.compare.tolerance) for b in exp_obj.buggy_rows)
+        # An error signature needs the error; a result can't reproduce it.
+        sig = not exp_obj.buggy_error and all(has_row(got, b, p.compare.tolerance) for b in exp_obj.buggy_rows)
         if exp_obj.buggy_row_count is not None:
             sig = sig and len(got) == exp_obj.buggy_row_count
         if sig:

@@ -30,6 +30,7 @@ The Node versions are pinned exactly in each `package.json` and `package-lock.js
 | `cube/model_variants/` | Cube models that fail to compile, each loaded on its own |
 | `metricflow/dbt_project/` | dbt project: staging views, a day time spine, semantic models with one simple metric per measure (`semantic.yml`), and model-declared metrics (`model_declared.yml`) |
 | `run_all.sh` | Runs every engine |
+| `update_comparison_doc.py` | Regenerates the glance tables and probe links of [the comparison page](../../docs/comparisons/semantic_layers.md) after its rows or the probes change |
 
 The dataset keeps edge cases that break naive joins:
 
@@ -110,6 +111,8 @@ compares them directly.
   over a nested semantic query).
 - Model-declared features are tagged `model_declared: true` and reported separately. These are multi-stage measures
   (`grain`, `time_shift`, `rank`), `rolling_window` and `sub_query` dimensions.
+- The comparison grades Cube on the default Tesseract planner. The legacy planner is deprecated (Cube plans to remove
+  it in the next minor release); it still runs here and its differences are recorded.
 - Probes whose result depends on the planner are tagged `planners: [...]` or carry `planner_expect`. The two
   planners choose different root cubes for the same query: Tesseract usually roots at the dimension's cube, legacy
   at the measure's cube. In the SQL API, the first cube in `FROM` is the root on both planners.
@@ -130,11 +133,8 @@ compares them directly.
 
 **SLayer**
 
-1. A time-spine query used as a named stage fails population inference; the fix is pending in
-   [MotleyAI/slayer#457](https://github.com/MotleyAI/slayer/pull/457). Probe: `C23-spine-stage`.
-
-Orphan orders (NULL `customer_id`) land in the NULL-region cell by design, since a cross-model aggregate is a field
-of a model keyed on the query grain (`Q8c`, `B1`, `B1-assoc`, `C23-spine-per-group`).
+None open. Orphan orders (NULL `customer_id`) land in the NULL-region cell by design, since a cross-model aggregate
+is a field of a model keyed on the query grain (`Q8c`, `B1`, `B1-assoc`, `C22-spine-per-group`).
 
 **Malloy**
 
@@ -154,23 +154,24 @@ of a model keyed on the query grain (`Q8c`, `B1`, `B1-assoc`, `C23-spine-per-gro
 1. [cube-js/cube#12020](https://github.com/cube-js/cube/issues/12020): with a `sub_query` dimension and a measure
    from the joined cube, Tesseract renders the measure as the subquery column and DuckDB rejects the SQL. Legacy
    returns the right answer. Probe: `Q5-cube-sub-query`.
-2. [cube-js/cube#282](https://github.com/cube-js/cube/issues/282) (by design): ordering by a member that is not
-   selected is dropped from the SQL without an error. Tesseract still honours an unselected measure; legacy drops
-   both. Probes: `Q13-cube-order-*`.
+2. Ordering by a member that is not selected is dropped from the SQL without an error. Tesseract still honours an
+   unselected measure; legacy drops both. A 2019 maintainer reply in
+   [cube-js/cube#282](https://github.com/cube-js/cube/issues/282) explains why an ungrouped column can't be ordered
+   by, but not why the order is dropped silently. Probes: `Q13-cube-order-*`.
 3. [cube-js/cube#12024](https://github.com/cube-js/cube/issues/12024): `number_agg` without `multi_stage: true`
    fails schema validation, although the measures reference lists it as a plain type and Tesseract treats it as a
    built-in aggregation. Related: [#10799](https://github.com/cube-js/cube/issues/10799) (still reproduces on
    1.7.46), [#10798](https://github.com/cube-js/cube/issues/10798). Probe: `Q3-cube-number-agg-plain`.
-4. [cube-js/cube#12025](https://github.com/cube-js/cube/issues/12025): the legacy planner silently ignores a
-   multi-stage `grain` (`Q1-cube-keep-only`, `Q2-cube-share-of-region`, `Q3-cube-grain-include`), and drops
-   months with no prior-year value from a `time_shift` query, along with their revenue
-   (`Q4-cube-prior-year-with-revenue`).
+4. [cube-js/cube#12025](https://github.com/cube-js/cube/issues/12025) (closed as not planned: the legacy planner is
+   deprecated and due for removal in the next minor release): the legacy planner silently ignores a multi-stage
+   `grain` (`Q1-cube-keep-only`, `Q2-cube-share-of-region`, `Q3-cube-grain-include`), and drops months with no
+   prior-year value from a `time_shift` query, along with their revenue (`Q4-cube-prior-year-with-revenue`).
 5. [cube-js/cube#10166](https://github.com/cube-js/cube/issues/10166) (feature request, our repro added): the
    `timezone` query option treats `DATE` values as UTC midnight, so a negative-offset zone moves every date back
    one day. Probe: `Q21-cube-timezone`.
 6. By design: measures from two facts under one time dimension are grouped by that dimension's own cube, so
    returns land in their customers' order months, without a warning; a model-declared dates cube is the remedy.
-   Probe: `C22-cube-two-facts`.
+   Probe: `C21-cube-two-facts`.
 
 **MetricFlow**
 

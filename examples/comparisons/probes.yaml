@@ -185,7 +185,7 @@ probes:
       keys: [orders_ms.region, orders_ms.city]
       values: [orders_ms.region_total]
       planner_expect:
-        legacy: {known_bug: "legacy planner silently ignores grain: https://github.com/cube-js/cube/issues/12025", buggy_rows: [[North, Bergen, 335]]}
+        legacy: {known_bug: "legacy planner silently ignores grain: https://github.com/cube-js/cube/issues/12025 (wontfix: legacy planner deprecated)", buggy_rows: [[North, Bergen, 335]]}
 
   # ------------------------------------------------------------------ Q2 arithmetic across grains
   - id: Q2a
@@ -330,7 +330,7 @@ probes:
       keys: [orders_ms.region, orders_ms.city]
       values: [orders_ms.share_of_region]
       planner_expect:
-        legacy: {known_bug: "legacy planner silently ignores grain: https://github.com/cube-js/cube/issues/12025", buggy_rows: [[North, Bergen, 1]]}
+        legacy: {known_bug: "legacy planner silently ignores grain: https://github.com/cube-js/cube/issues/12025 (wontfix: legacy planner deprecated)", buggy_rows: [[North, Bergen, 1]]}
 
   # ------------------------------------------------------------------ Q3 re-aggregation
   - id: Q3a
@@ -524,7 +524,7 @@ probes:
       keys: [orders_ms.region]
       values: [orders_ms.avg_city_revenue]
       planner_expect:
-        legacy: {known_bug: "legacy planner silently ignores grain: https://github.com/cube-js/cube/issues/12025", buggy_rows: [[North, 705]]}
+        legacy: {known_bug: "legacy planner silently ignores grain: https://github.com/cube-js/cube/issues/12025 (wontfix: legacy planner deprecated)", buggy_rows: [[North, 705]]}
 
   - id: Q3-cube-avg-of-avg
     row: Q3
@@ -906,7 +906,7 @@ probes:
       rest: {measures: [orders_ms.revenue, orders_ms.revenue_prior_year],
              timeDimensions: [{dimension: orders_ms.order_date, granularity: month, dateRange: ["2025-01-01", "2025-06-30"]}]}
       planner_expect:
-        legacy: {known_bug: "legacy planner drops months without a prior-year value, and their revenue: https://github.com/cube-js/cube/issues/12025",
+        legacy: {known_bug: "legacy planner drops months without a prior-year value, and their revenue: https://github.com/cube-js/cube/issues/12025 (wontfix: legacy planner deprecated)",
                  buggy_row_count: 3}
   # ------------------------------------------------------------------ Q5 calculated dimensions, filters, order
   - id: Q5a
@@ -2747,7 +2747,7 @@ probes:
     cube:
       rest: {dimensions: [customers.name], measures: [orders.count], order: [[orders.revenue, desc]], limit: 3}
       planner_expect:
-        legacy: {known_bug: "by design per https://github.com/cube-js/cube/issues/282", sql_lacks: ORDER BY}
+        legacy: {known_bug: "order on an unselected member dropped without an error (see https://github.com/cube-js/cube/issues/282)", sql_lacks: ORDER BY}
 
   - id: Q13-cube-order-dimension
     row: Q13
@@ -2757,7 +2757,7 @@ probes:
     compare: {keys: [customers.name], values: [orders.count], ordered: true}
     cube:
       rest: {dimensions: [customers.name], measures: [orders.count], order: [[customers.credit, desc]]}
-      expect: {known_bug: "by design per https://github.com/cube-js/cube/issues/282", sql_lacks: ORDER BY}
+      expect: {known_bug: "order on an unselected member dropped without an error (see https://github.com/cube-js/cube/issues/282)", sql_lacks: ORDER BY}
 
   # ------------------------------------------------------------------ Q14 ranking and streaks
   - id: Q14a
@@ -3872,8 +3872,8 @@ probes:
         group_by: [customer__tier]
       expect: {error: Group by items can't be specified with a saved query}
 
-  - id: C17-mf-fiscal-year
-    row: C17
+  - id: C16-mf-fiscal-year
+    row: C16
     title: custom granularity fiscal_year (April start) from the time spine
     truth_sql: |
       select cast(date_trunc('year', order_date - interval 3 month) + interval 3 month as date), sum(amount)
@@ -3886,8 +3886,8 @@ probes:
         metrics: [revenue]
         group_by: [metric_time__fiscal_year]
 
-  - id: C18-mf-drill-across-tier
-    row: C18
+  - id: C17-mf-drill-across-tier
+    row: C17
     title: metrics from two fact models on one tier axis, not multiplied (orphan order adds a NULL tier row)
     truth_sql: |
       with c as (select tier, sum(credit) credit from customers group by 1),
@@ -3901,8 +3901,8 @@ probes:
         metrics: [credit_total, order_count]
         group_by: [customer__tier]
 
-  - id: C20-mf-dimension-only
-    row: C20
+  - id: C19-mf-dimension-only
+    row: C19
     title: a dimension-only query lists order-level rows (a FULL OUTER JOIN keeps Frank and the orphan)
     truth_sql: select o.id, c.name from orders o full outer join customers c on o.customer_id = c.id
     compare:
@@ -4037,8 +4037,8 @@ probes:
       expect: {error: RefinementConflictError}
 
   # ------------------------------------------------------------------ C23 gap filling (time spine)
-  - id: C23-spine-fill-month
-    row: C23
+  - id: C22-spine-fill-month
+    row: C22
     title: every month 2024-01..2025-06 on the spine; empty months count 0, sum NULL
     truth_sql: |
       with m as (select * from generate_series(timestamp '2024-01-01', timestamp '2025-06-01', interval 1 month) t(mo)),
@@ -4049,8 +4049,8 @@ probes:
       query: {time_dimensions: [{dimension: time_spine.timestamp, granularity: month, date_range: ["2024-01-01", "2025-06-30"]}],
               measures: [{formula: "count(orders.id)", name: n}, {formula: "sum(orders.amount)", name: v}]}
 
-  - id: C23-spine-fill-coalesce
-    row: C23
+  - id: C22-spine-fill-coalesce
+    row: C22
     title: coalesce(sum, 0) fills the empty months with 0
     truth_sql: |
       with m as (select * from generate_series(timestamp '2024-01-01', timestamp '2025-06-01', interval 1 month) t(mo)),
@@ -4061,16 +4061,16 @@ probes:
       query: {time_dimensions: [{dimension: time_spine.timestamp, granularity: month, date_range: ["2024-01-01", "2025-06-30"]}],
               measures: [{formula: "coalesce(sum(orders.amount), 0)", name: v}]}
 
-  - id: C23-spine-no-lower-bound
-    row: C23
+  - id: C22-spine-no-lower-bound
+    row: C22
     title: a spine query without a lower bound is a typed error
     slayer:
       query: {time_dimensions: [{dimension: time_spine.timestamp, granularity: month}],
               measures: [{formula: "sum(orders.amount)", name: v}]}
       expect: {error: TimeSpineError}
 
-  - id: C23-spine-per-group
-    row: C23
+  - id: C22-spine-per-group
+    row: C22
     title: region x every month; the orphan order is the NULL-region cell (with Eve)
     truth_sql: |
       with m as (select * from generate_series(timestamp '2024-01-01', timestamp '2025-06-01', interval 1 month) t(mo)),
@@ -4085,8 +4085,8 @@ probes:
               time_dimensions: [{dimension: time_spine.timestamp, granularity: month, date_range: ["2024-01-01", "2025-06-30"]}],
               measures: [{formula: "sum(orders.amount)", name: v}]}
 
-  - id: C23-spine-fact-filter
-    row: C23
+  - id: C22-spine-fact-filter
+    row: C22
     title: a fact filter keeps every month
     truth_sql: |
       with m as (select * from generate_series(timestamp '2024-01-01', timestamp '2025-06-01', interval 1 month) t(mo)),
@@ -4097,8 +4097,8 @@ probes:
       query: {time_dimensions: [{dimension: time_spine.timestamp, granularity: month, date_range: ["2024-01-01", "2025-06-30"]}],
               filters: ["orders.status = 'bad'"], measures: [{formula: "sum(orders.amount)", name: v}]}
 
-  - id: C23-spine-change
-    row: C23
+  - id: C22-spine-change
+    row: C22
     title: change() on the dense series is NULL next to empty months
     truth_sql: |
       with m as (select * from generate_series(timestamp '2024-01-01', timestamp '2025-06-01', interval 1 month) t(mo)),
@@ -4110,8 +4110,8 @@ probes:
       query: {time_dimensions: [{dimension: time_spine.timestamp, granularity: month, date_range: ["2024-01-01", "2025-06-30"]}],
               measures: [{formula: "change(sum(orders.amount))", name: c}]}
 
-  - id: C23-spine-cumsum
-    row: C23
+  - id: C22-spine-cumsum
+    row: C22
     title: cumsum(coalesce(sum, 0)) is flat through the gap
     truth_sql: |
       with m as (select * from generate_series(timestamp '2024-01-01', timestamp '2025-06-01', interval 1 month) t(mo)),
@@ -4123,8 +4123,8 @@ probes:
       query: {time_dimensions: [{dimension: time_spine.timestamp, granularity: month, date_range: ["2024-01-01", "2025-06-30"]}],
               measures: [{formula: "cumsum(coalesce(sum(orders.amount), 0))", name: c}]}
 
-  - id: C23-spine-consecutive
-    row: C23
+  - id: C22-spine-consecutive
+    row: C22
     title: consecutive_periods(count > 0) restarts after empty months
     truth_sql: |
       with m as (select * from generate_series(timestamp '2024-01-01', timestamp '2025-06-01', interval 1 month) t(mo)),
@@ -4137,8 +4137,8 @@ probes:
       query: {time_dimensions: [{dimension: time_spine.timestamp, granularity: month, date_range: ["2024-01-01", "2025-06-30"]}],
               measures: [{formula: "consecutive_periods(count(orders.id) > 0)", name: streak}]}
 
-  - id: C23-spine-window
-    row: C23
+  - id: C22-spine-window
+    row: C22
     title: a 2-month trailing sum at empty months reads the previous month
     truth_sql: |
       with m as (select * from generate_series(timestamp '2024-01-01', timestamp '2025-06-01', interval 1 month) t(mo))
@@ -4150,8 +4150,8 @@ probes:
       query: {time_dimensions: [{dimension: time_spine.timestamp, granularity: month, date_range: ["2024-01-01", "2025-06-30"]}],
               measures: [{formula: "sum(orders.amount, window='2m')", name: w}]}
 
-  - id: C23-spine-lag
-    row: C23
+  - id: C22-spine-lag
+    row: C22
     title: lag() on the dense series reads the empty previous month
     truth_sql: |
       with m as (select * from generate_series(timestamp '2024-01-01', timestamp '2025-06-01', interval 1 month) t(mo)),
@@ -4163,10 +4163,10 @@ probes:
       query: {time_dimensions: [{dimension: time_spine.timestamp, granularity: month, date_range: ["2024-01-01", "2025-06-30"]}],
               measures: [{formula: "lag(sum(orders.amount))", name: l}]}
 
-  - id: C23-spine-stage
-    row: C23
+  - id: C22-spine-stage
+    row: C22
     title: a spine stage keeps every month; the outer query counts 18 months
-    truth_sql: select 2120, 18
+    truth_sql: select sum(amount), 18 from orders where order_date between date '2024-01-01' and date '2025-06-30'
     compare: {values: [t, months]}
     slayer:
       query:
@@ -4174,12 +4174,10 @@ probes:
            time_dimensions: [{dimension: time_spine.timestamp, granularity: month, date_range: ["2024-01-01", "2025-06-30"]}],
            measures: [{formula: "sum(orders.amount)", name: o}]}
         - {source_model: monthly, measures: [{formula: "sum(o)", name: t}, {formula: "count(*)", name: months}]}
-      expect: {known_bug: "a spine query as a named stage fails population inference; fix pending in https://github.com/MotleyAI/slayer/pull/457",
-               buggy_error: PopulationInferenceError}
 
   # ------------------------------------------------------------------ C22 shared time axis across facts
-  - id: C22-axis-two-facts
-    row: C22
+  - id: C21-axis-two-facts
+    row: C21
     title: orders and returns on one spine month, each by its own date; 2024-06 has only returns
     truth_sql: |
       with m as (select * from generate_series(timestamp '2024-01-01', timestamp '2025-06-01', interval 1 month) t(mo)),
@@ -4195,8 +4193,8 @@ probes:
       query: {time_dimensions: [{dimension: time_spine.timestamp, granularity: month, date_range: ["2024-01-01", "2025-06-30"]}],
               measures: [{formula: "sum(orders.amount)", name: o}, {formula: "sum(returns.amount)", name: r}]}
 
-  - id: C22-axis-two-facts-region
-    row: C22
+  - id: C21-axis-two-facts-region
+    row: C21
     title: region x month with both facts, each attributed through its own customer
     truth_sql: |
       with m as (select * from generate_series(timestamp '2024-01-01', timestamp '2025-06-01', interval 1 month) t(mo)),
@@ -4214,8 +4212,8 @@ probes:
               time_dimensions: [{dimension: time_spine.timestamp, granularity: month, date_range: ["2024-01-01", "2025-06-30"]}],
               measures: [{formula: "sum(orders.amount)", name: o}, {formula: "sum(returns.amount)", name: r}]}
 
-  - id: C22-axis-ambiguous-route
-    row: C22
+  - id: C21-axis-ambiguous-route
+    row: C21
     title: a model with two equally short routes to the spine fails loudly
     slayer:
       extra_models: [order_links.yaml]
@@ -4223,8 +4221,8 @@ probes:
               measures: [{formula: "count(order_links.id)", name: n}]}
       expect: {error: order_links}
 
-  - id: C22-calendar-model-parity
-    row: C22
+  - id: C21-calendar-model-parity
+    row: C21
     title: the hand-made calendar model gives the same two-fact numbers (months with data only)
     truth_sql: |
       with o as (select date_trunc('month', order_date) as mo, sum(amount) v from orders group by 1),
@@ -4239,8 +4237,8 @@ probes:
 
   # ------------------------------------------------------------------ C17 custom granularities
   # Datasource granularities (run_slayer.py): fiscal_year = 12 months from 2024-04-01; quarter_hour = 15 minutes.
-  - id: C17-slayer-fiscal-year
-    row: C17
+  - id: C16-slayer-fiscal-year
+    row: C16
     title: fiscal_year (April start) buckets
     truth_sql: |
       select cast(date_trunc('year', order_date - interval 3 month) + interval 3 month as date), sum(amount)
@@ -4250,8 +4248,8 @@ probes:
       query: {source_model: orders, time_dimensions: [{dimension: order_date, granularity: fiscal_year}],
               measures: [{formula: "sum(amount)", name: v}]}
 
-  - id: C17-slayer-fiscal-year-shift
-    row: C17
+  - id: C16-slayer-fiscal-year-shift
+    row: C16
     title: time_shift by one fiscal year
     truth_sql: |
       with f as (select cast(date_trunc('year', order_date - interval 3 month) + interval 3 month as date) fy,
@@ -4262,8 +4260,8 @@ probes:
       query: {source_model: orders, time_dimensions: [{dimension: order_date, granularity: fiscal_year}],
               measures: [{formula: "time_shift(sum(amount), -1, 'fiscal_year')", name: prev}]}
 
-  - id: C17-slayer-fiscal-year-spine
-    row: C17
+  - id: C16-slayer-fiscal-year-spine
+    row: C16
     title: fiscal years on the spine with both facts
     truth_sql: |
       with m as (select * from (values (date '2023-04-01'), (date '2024-04-01'), (date '2025-04-01')) t(fy)),
@@ -4277,8 +4275,8 @@ probes:
       query: {time_dimensions: [{dimension: time_spine.timestamp, granularity: fiscal_year, date_range: ["2024-01-01", "2025-06-30"]}],
               measures: [{formula: "sum(orders.amount)", name: o}, {formula: "sum(returns.amount)", name: r}]}
 
-  - id: C17-slayer-quarter-hour
-    row: C17
+  - id: C16-slayer-quarter-hour
+    row: C16
     title: 15-minute buckets
     truth_sql: select time_bucket(interval 15 minute, event_ts), sum(amount) from events group by 1
     compare: {keys: [event_ts], values: [v]}
@@ -4286,8 +4284,8 @@ probes:
       query: {source_model: events, time_dimensions: [{dimension: event_ts, granularity: quarter_hour}],
               measures: [{formula: "sum(amount)", name: v}]}
 
-  - id: C17-slayer-quarter-hour-spine
-    row: C17
+  - id: C16-slayer-quarter-hour-spine
+    row: C16
     title: every 15-minute bucket 09:00..10:45 on the spine
     truth_sql: |
       with m as (select * from generate_series(timestamp '2025-03-01 09:00:00', timestamp '2025-03-01 10:45:00', interval 15 minute) t(q)),
@@ -4300,8 +4298,8 @@ probes:
               measures: [{formula: "sum(events.amount)", name: v}]}
 
   # ------------------------------------------------------------------ MetricFlow: shared axis and time-spine fill
-  - id: C22-mf-two-facts
-    row: C22
+  - id: C21-mf-two-facts
+    row: C21
     title: revenue and returns on metric_time; months with either fact (2024-06 returns only), no fill
     truth_sql: |
       with o as (select date_trunc('month', order_date) mo, sum(amount) v from orders group by 1),
@@ -4315,8 +4313,8 @@ probes:
         metrics: [revenue, return_amount]
         group_by: [metric_time__month]
 
-  - id: C23-mf-no-fill
-    row: C23
+  - id: C22-mf-no-fill
+    row: C22
     title: without a model change, empty months are absent even with start/end
     truth_sql: |
       select date_trunc('month', order_date), count(id) from orders
@@ -4331,8 +4329,8 @@ probes:
         start: '2024-01-01'
         end: '2025-06-30'
 
-  - id: C23-mf-join-to-timespine
-    row: C23
+  - id: C22-mf-join-to-timespine
+    row: C22
     title: join_to_timespine + fill_nulls_with 0 in the metric gives every month
     truth_sql: |
       with m as (select * from generate_series(timestamp '2024-01-01', timestamp '2025-06-01', interval 1 month) t(mo)),
@@ -4350,8 +4348,8 @@ probes:
         end: '2025-06-30'
 
   # ------------------------------------------------------------------ Cube Core: two facts on one time axis
-  - id: C22-cube-two-facts
-    row: C22
+  - id: C21-cube-two-facts
+    row: C21
     title: orders and returns by one month axis, each by its own date (query-only)
     truth_sql: |
       with o as (select date_trunc('month', order_date) mo, sum(amount) v from orders group by 1),
@@ -4369,8 +4367,8 @@ probes:
         buggy_row_count: 9
 
   # ------------------------------------------------------------------ Malloy: hand-made calendar for a shared axis
-  - id: C22-malloy-calendar
-    row: C22
+  - id: C21-malloy-calendar
+    row: C21
     title: a hand-made month calendar joined to both facts gives every month (symmetric aggregates dedupe; an empty sum is 0)
     truth_sql: |
       with m as (select * from generate_series(timestamp '2024-01-01', timestamp '2025-06-01', interval 1 month) t(mo)),
@@ -4388,3 +4386,42 @@ probes:
           join_many: r is duckdb.table('returns') on r.return_date.month = mo
         }
         run: cal -> { group_by: mo; aggregate: o_total is o.amount.sum(), r_total is r.amount.sum(); limit: 100 }
+
+  # ------------------------------------------------------------------ Q21 calendar expressions
+  - id: Q21-slayer-day-of-week
+    row: Q21
+    title: date_part('day_of_week', ...) as a dimension (ISO, Monday = 1)
+    truth_sql: select isodow(order_date), count(*) from orders group by 1
+    compare: {keys: [dow], values: [n]}
+    slayer:
+      query: {source_model: orders, dimensions: [{expression: "date_part('day_of_week', order_date)", name: dow}],
+              measures: [{formula: "count(*)", name: n}]}
+
+  - id: Q21-slayer-date-diff
+    row: Q21
+    title: date_diff counts calendar month boundaries
+    truth_sql: select status, sum(date_diff('month', order_date, date '2025-07-01')) from orders group by 1
+    compare: {keys: [status], values: [m]}
+    slayer:
+      query: {source_model: orders, dimensions: [status],
+              measures: [{formula: "sum(date_diff('month', order_date, '2025-07-01'))", name: m}]}
+
+  - id: Q21-slayer-date-add
+    row: Q21
+    title: date_add by a month clamps at month-end (2025-03-31 -> 2025-04-30)
+    truth_sql: |
+      select cast(order_date + interval 1 month as date), count(*) from orders
+      where order_date between date '2025-01-01' and date '2025-03-31' group by 1
+    compare: {keys: [due], values: [n]}
+    slayer:
+      query: {source_model: orders, dimensions: [{expression: "date_add(order_date, 1, 'month')", name: due}],
+              filters: ["order_date in '2025-Q1'"], measures: [{formula: "count(*)", name: n}]}
+
+  - id: Q21-slayer-interval
+    row: Q21
+    title: order_date + interval(7, 'day') in a filter
+    truth_sql: select sum(amount) from orders where order_date + interval 7 day >= date '2025-06-26'
+    compare: {values: [v]}
+    slayer:
+      query: {source_model: orders, filters: ["order_date + interval(7, 'day') > '2025-06-25'"],
+              measures: [{formula: "sum(amount)", name: v}]}
