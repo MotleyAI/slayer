@@ -15,11 +15,14 @@ strategy class carries the runtime hooks; this module covers:
   bare ``sa.create_engine``.
 """
 
+import gc
 import json
 import logging
+import sqlite3
 import sys
 import threading
 import warnings
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -518,6 +521,59 @@ class TestResetCacheDisposal:
             conn.invalidate()
             conn.close()
         engine_factory.reset_cache()
+
+
+class TestReleaseIdle:
+    """Non-owners free idle connections through the factory; they never dispose its engines."""
+
+    @staticmethod
+    def _is_closed(dbapi_conn: Any) -> bool:
+        try:
+            dbapi_conn.total_changes  # noqa: B018 - raises once closed
+        except sqlite3.ProgrammingError:
+            return True
+        return False
+
+    def test_release_closes_idle_connections_and_keeps_the_engine_usable(self, tmp_path) -> None:
+        engine_factory.reset_cache()
+        engine = engine_factory.get_engine(DatasourceConfig(name="f", type="sqlite", database=str(tmp_path / "f.db")))
+        try:
+            with engine.connect() as conn:
+                idle = conn.connection.driver_connection
+            engine_factory.release_idle(engine)
+            assert self._is_closed(idle)
+            with engine.connect() as conn:
+                assert conn.exec_driver_sql("SELECT 1").scalar() == 1
+        finally:
+            engine_factory.reset_cache()
+
+    def test_drift_release_mid_checkout_leaves_no_orphaned_connection(self, tmp_path) -> None:
+        """A drift probe releasing the shared engine while another caller holds a connection must not orphan it."""
+        engine_factory.reset_cache()
+        ds = DatasourceConfig(name="f", type="sqlite", database=str(tmp_path / "f.db"))
+        engine = engine_factory.get_engine(ds)
+        try:
+            with engine.connect() as conn:
+                held = conn.connection.driver_connection
+                schema_drift._probe_connect(ds)
+        finally:
+            engine_factory.reset_cache()
+        gc.collect()
+        assert self._is_closed(held), "the connection was returned to an orphaned pool"
+
+    @pytest.mark.parametrize("db_type", ["sqlite", "duckdb"])
+    def test_release_spares_an_in_memory_database(self, db_type: str) -> None:
+        engine_factory.reset_cache()
+        engine = engine_factory.get_engine(DatasourceConfig(name="m", type=db_type, database=":memory:"))
+        try:
+            with engine.connect() as conn:
+                conn.exec_driver_sql("CREATE TABLE kept (v INTEGER)")
+                conn.commit()
+            engine_factory.release_idle(engine)
+            with engine.connect() as conn:
+                assert conn.exec_driver_sql("SELECT count(*) FROM kept").scalar() == 0
+        finally:
+            engine_factory.reset_cache()
 
 
 class TestCacheConcurrency:

@@ -172,17 +172,19 @@ def compute_truth(db_path: Path, probes: List[Probe]) -> Dict[Tuple[str, str], L
 async def fill_store(storage: YAMLStorage, db_path: Path, setup: str) -> SlayerQueryEngine:
     """Register the datasource and save the probe models, as far as ``setup`` asks."""
     engine = SlayerQueryEngine(storage=storage, clock=lambda: NOW)
-    if setup == "empty":
-        return engine
-    await storage.save_datasource(
-        DatasourceConfig(name=DATASOURCE, type="duckdb", database=str(db_path), granularities=GRANULARITIES)
-    )
-    if setup == "datasource":
-        return engine
-    docs = [yaml.safe_load(f.read_text()) for f in sorted((HERE / "models").glob("*.yaml"))]
-    # Query-backed models validate by dry-run, so their sources must exist first.
-    for doc in sorted(docs, key=lambda d: bool(d.get("source_queries"))):
-        await engine.save_model(SlayerModel.model_validate(doc))
+    try:
+        if setup != "empty":
+            await storage.save_datasource(
+                DatasourceConfig(name=DATASOURCE, type="duckdb", database=str(db_path), granularities=GRANULARITIES)
+            )
+        if setup == "models":
+            docs = [yaml.safe_load(f.read_text()) for f in sorted((HERE / "models").glob("*.yaml"))]
+            # Query-backed models validate by dry-run, so their sources must exist first.
+            for doc in sorted(docs, key=lambda d: bool(d.get("source_queries"))):
+                await engine.save_model(SlayerModel.model_validate(doc))
+    except BaseException:
+        await engine.aclose()
+        raise
     return engine
 
 
@@ -330,10 +332,12 @@ def run_session(block: SlayerBlock, base_db: Path, workdir: Path) -> SessionResu
     db_path = workdir / "probe.duckdb"
     shutil.copy(base_db, db_path)
     storage = YAMLStorage(base_dir=str(workdir / "store"))
-    run_sync(fill_store(storage=storage, db_path=db_path, setup=block.setup))
-    server = create_mcp_server(storage)
+    server: Any = None
     text = ""
     try:
+        setup_engine = run_sync(fill_store(storage=storage, db_path=db_path, setup=block.setup))
+        run_sync(setup_engine.aclose())
+        server = create_mcp_server(storage)
         for step in block.steps:
             if step.sql is not None:
                 run_sql(db_path=db_path, sql=step.sql)
@@ -344,7 +348,8 @@ def run_session(block: SlayerBlock, base_db: Path, workdir: Path) -> SessionResu
     except Exception as e:  # noqa: BLE001 - a probe's error is data
         return SessionResult(err=e)
     finally:
-        run_sync(server._slayer_engine.aclose())
+        if server is not None:
+            run_sync(server._slayer_engine.aclose())
     return SessionResult(text=text, resp=as_response(text) if block.steps[-1].tool == "query" else None)
 
 

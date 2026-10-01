@@ -12,7 +12,7 @@ import sqlalchemy as sa
 import sqlalchemy.event as sa_event
 from sqlalchemy.engine.url import make_url
 from sqlalchemy.exc import ArgumentError
-from sqlalchemy.pool import StaticPool
+from sqlalchemy.pool import QueuePool, StaticPool
 
 from slayer.core.models import DatasourceConfig
 from slayer.sql.dialects import dialect_for_ds_type
@@ -254,6 +254,17 @@ def get_engine(datasource: DatasourceConfig) -> sa.Engine:
     for stale in evicted:
         _dispose_quietly(engine=stale, reason="evicted from engine cache")
     return engine
+
+
+def release_idle(engine: sa.Engine) -> None:
+    """Close a cached engine's idle connections (freeing file locks) without disposing it: checked-out connections return to the same, still-owned pool."""
+    try:
+        # Only QueuePool's dispose drains idle connections alone; the in-memory pools
+        # (StaticPool, SingletonThreadPool) close live connections and drop the data.
+        if isinstance(engine.pool, QueuePool):
+            engine.pool.dispose()
+    except Exception:
+        logger.warning("Failed to release idle connections.", exc_info=True)
 
 
 def invalidate_engine(datasource: DatasourceConfig) -> bool:

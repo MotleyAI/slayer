@@ -23494,14 +23494,6 @@
                     "endColumn": 32,
                     "lineCount": 1
                 }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 29,
-                    "endColumn": 47,
-                    "lineCount": 1
-                }
             }
         ],
         "./tests/test_ingestion_schema_qualification.py": [
