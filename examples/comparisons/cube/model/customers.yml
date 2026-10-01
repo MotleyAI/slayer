@@ -8,6 +8,9 @@ cubes:
       - name: orders
         sql: "{CUBE}.id = {orders.customer_id}"
         relationship: one_to_many
+      - name: returns
+        sql: "{CUBE}.id = {returns.customer_id}"
+        relationship: one_to_many
     dimensions:
       - {name: id, sql: id, type: number, primary_key: true, public: true}
       - {name: name, sql: name, type: string}

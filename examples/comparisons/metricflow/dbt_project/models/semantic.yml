@@ -49,6 +49,27 @@ semantic_models:
         agg: count_distinct
         expr: customer_id
 
+  - name: returns
+    model: ref('stg_returns')
+    defaults:
+      agg_time_dimension: return_date
+    entities:
+      - name: return
+        type: primary
+        expr: id
+      - name: customer
+        type: foreign
+        expr: customer_id
+    dimensions:
+      - name: return_date
+        type: time
+        type_params:
+          time_granularity: day
+    measures:
+      - name: return_amount
+        agg: sum
+        expr: amount
+
   - name: customers
     model: ref('stg_customers')
     # No date column: measures need an agg_time_dimension, so a constant one is synthesised.
@@ -113,6 +134,9 @@ metrics:
   - name: order_count
     type: simple
     type_params: {measure: order_count}
+  - name: return_amount
+    type: simple
+    type_params: {measure: return_amount}
   - name: ordering_customers
     type: simple
     type_params: {measure: ordering_customers}

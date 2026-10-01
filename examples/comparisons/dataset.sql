@@ -1,7 +1,9 @@
 -- Shared probe dataset (DuckDB). Edge cases, all deliberate:
 --   Frank (customer 6) has no orders; Eve (5) has a NULL region;
 --   Oslo appears in North and South; East has no customers;
---   order 20 is an orphan (NULL customer_id); no orders in 2024-04..11 or 2025-04 (month gaps).
+--   order 20 is an orphan (NULL customer_id); no orders in 2024-04..11 or 2025-04 (month gaps);
+--   returns: 2024-06 has returns but no orders, return 3 is an orphan, Eve returns once;
+--   events carry sub-hour timestamps for quarter-hour buckets.
 CREATE TABLE regions (id INTEGER PRIMARY KEY, name VARCHAR);
 CREATE TABLE customers (
   id INTEGER PRIMARY KEY, name VARCHAR, region_id INTEGER, city VARCHAR,
@@ -43,6 +45,25 @@ INSERT INTO orders VALUES
   (18, 5, 100, 'ok', DATE '2025-06-30'),
   (19, 7, 55, 'ok', DATE '2025-06-15'),
   (20, NULL, 30, 'ok', DATE '2025-06-10');
+
+CREATE TABLE returns (
+  id INTEGER PRIMARY KEY, customer_id INTEGER, amount DOUBLE, return_date DATE
+);
+
+INSERT INTO returns VALUES
+  (1, 1, 40, DATE '2024-06-12'),
+  (2, 3, 25, DATE '2025-02-10'),
+  (3, NULL, 15, DATE '2025-02-20'),
+  (4, 5, 10, DATE '2025-01-15');
+
+CREATE TABLE events (id INTEGER PRIMARY KEY, amount DOUBLE, event_ts TIMESTAMP);
+
+INSERT INTO events VALUES
+  (1, 1, TIMESTAMP '2025-03-01 09:02:00'),
+  (2, 2, TIMESTAMP '2025-03-01 09:14:59'),
+  (3, 4, TIMESTAMP '2025-03-01 09:15:00'),
+  (4, 8, TIMESTAMP '2025-03-01 09:47:30'),
+  (5, 16, TIMESTAMP '2025-03-01 10:00:00');
 
 CREATE VIEW orders_flat AS
 SELECT o.id, o.customer_id, o.amount, o.status, o.order_date,

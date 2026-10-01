@@ -19,7 +19,7 @@ Some dbt constructs that look missing at first glance are in fact expressible in
 
 dbt supports measures like account balances where `SUM` across time is wrong — you need `MAX` or `MIN` over the time dimension, then `SUM` across other dimensions. The `non_additive_dimension` with `window_choice` and `window_groupings` handles this.
 
-In SLayer, this is a two-stage query:
+In SLayer this is one expression, `sum(last(balance, snapshot_date, partition_by=[account_id, customer_id, snapshot_date]))` grouped by `customer_id` and a month `snapshot_date` time dimension (the time column in `partition_by` stands for its bucket), or equivalently a two-stage query:
 
 - **Stage 1** — group by `window_groupings` plus the time bucket, and pick the latest (or earliest) value per group using the [`first` / `last` aggregations](../examples/07_aggregations/aggregations.md#first-and-last) with an explicit time column: `last(balance, snapshot_date)` for `window_choice: max`, `first(balance, snapshot_date)` for `window_choice: min`.
 - **Stage 2** — feed stage 1 into the next query via a [query list](../concepts/queries.md#query-lists); because [any SLayer query automatically becomes a model](../concepts/models.md#creating-models-from-queries), the outer query can aggregate additively (`sum`, `avg`, …) across the remaining dimensions.

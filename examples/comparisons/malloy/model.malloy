@@ -30,6 +30,12 @@ source: orders is orders_base extend {
   measure: aov is revenue / order_count
 }
 
+source: returns is duckdb.table('returns') extend {
+  primary_key: id
+  join_one: customers is customers_base with customer_id
+  measure: return_total is amount.sum()
+}
+
 source: orders_flat is duckdb.table('orders_flat') extend {
   primary_key: id
   measure:

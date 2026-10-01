@@ -103,7 +103,8 @@ async function runProbe(runtime, model, block) {
   const warnings = (prepared.problems ?? []).filter(p => p.severity === 'warn');
   const sql = await q.getSQL();
   try {
-    const result = await q.run();
+    // run() returns 10 rows unless told otherwise; the query's own limit still applies.
+    const result = await q.run({rowLimit: 100000});
     let rows = result.data.toObject();
     if (block.flatten) rows = flatten(rows, block.flatten);
     return {rows, warnings, sql};
@@ -204,7 +205,7 @@ async function main() {
       const truth = {};
       for (const kind of ['truth', 'contrast']) {
         const sql = p[`${kind}_sql`];
-        if (sql) truth[kind] = (await connection.runSQL(sql)).rows.map(r => Object.values(r));
+        if (sql) truth[kind] = (await connection.runSQL(sql, {rowLimit: 100000})).rows.map(r => Object.values(r));
       }
       const out = await runProbe(runtime, model, p.malloy);
       const [status, detail] = evaluate(p, out, truth);

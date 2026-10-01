@@ -11,7 +11,7 @@ from typing import Callable, Dict, Optional, Tuple
 
 import pytest
 
-from slayer.core.errors import UnknownReferenceError
+from slayer.core.errors import PartitionKeyError, UnknownReferenceError
 from slayer.core.keys import AggregateKey, ColumnKey, Grain, TransformKey
 from slayer.core.scope import ModelScope
 from slayer.engine.binding import bind_expr
@@ -176,14 +176,22 @@ class TestBindingSymmetry:
 
     @pytest.mark.parametrize(argnames="formula,message", argvalues=[
         ("rank(sum(amount), partition_by=sum(amount))",
-         "transform 'rank' partition_by must resolve to a column reference; got AggregateKey."),
+         "'sum(amount)' is an expression.\n  at transform 'rank' partition_by"),
         ("sum(amount, partition_by=sum(amount))",
-         "aggregation partition_by must resolve to a column reference; got AggregateKey."),
+         "'sum(amount)' is an expression.\n  at aggregation partition_by"),
     ])
     def test_non_column_element_names_construct(self, formula, message):
         amap = _alias(name="ureg", expr="upper(region)")
         with pytest.raises(ValueError, match=re.escape(message)):
             _bind(formula=formula, alias_map=amap)
+
+    @pytest.mark.parametrize(argnames="formula", argvalues=[
+        "sum(amount, partition_by=upper(region))",
+        "rank(sum(amount), partition_by=[city, upper(region)])",
+    ])
+    def test_expression_element_is_a_typed_partition_key_error(self, formula):
+        with pytest.raises(PartitionKeyError, match=re.escape("'upper(region)' is an expression")):
+            _bind(formula=formula)
 
 
 # --------------------------------------------------------------------------- #

@@ -19,6 +19,7 @@ from slayer.core.errors import (
     IllegalWindowInFilterError,
     MeasureCycleError,
     MeasureRecursionLimitError,
+    PartitionKeyError,
     UnknownFunctionError,
     UnknownReferenceError,
     UnresolvableDimensionJoinError,
@@ -36,7 +37,7 @@ from slayer.core.enums import (
 )
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.granularity import CustomGranularity, Granularity, resolve_granularity
-from slayer.core.refs import EXPRESSION_SOURCE_KINDS
+from slayer.core.refs import EXPRESSION_SOURCE_KINDS, key_display
 from slayer.core.keys import DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, SCALAR_FUNCTIONS, check_scalar_arity, type_date_values, AggregateKey, ArithmeticKey, ColumnKey, ColumnSqlKey, Grain, InKey, LiteralKey, ScalarCallKey, StarKey, TimePointCmpKey, TimePointOp, TimeTruncKey, TransformKey, ValueKey, column_leaf, column_path, is_attached_source, normalize_scalar, prepend_value_key, temporal_type, walk_value_keys
 from slayer.core.join_walker import (
     OrientedJoin,
@@ -1009,9 +1010,11 @@ def _bind_partition_keys(
             continue
         bound = _bind(parsed=elem, scope=scope, bundle=bundle, in_filter=False)
         if not isinstance(bound, (ColumnKey, ColumnSqlKey)):
-            raise ValueError(
-                f"{label} partition_by must resolve to a column reference; "
-                f"got {type(bound).__name__}."
+            raise PartitionKeyError(
+                summary=f"partition_by takes column references; '{key_display(bound)}' is an expression.",
+                location=f"{label} partition_by",
+                suggestion="Partition by a column: put a time bucket in time_dimensions, or compute "
+                "the expression as a column in an inner stage or an inline ModelExtension.",
             )
         pks.append(bound)
     return Grain.of(pks)

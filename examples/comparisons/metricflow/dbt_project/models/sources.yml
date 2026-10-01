@@ -6,3 +6,4 @@ sources:
       - name: regions
       - name: customers
       - name: orders
+      - name: returns

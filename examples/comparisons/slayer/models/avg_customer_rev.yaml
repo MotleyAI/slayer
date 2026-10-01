@@ -1,0 +1,9 @@
+# Query-backed model: average per-customer revenue (two stages).
+name: avg_customer_rev
+source_queries:
+  - name: per_customer
+    source_model: orders
+    dimensions: [customer_id, status]
+    measures: [{formula: "sum(amount)", name: rev}]
+  - source_model: per_customer
+    measures: [{formula: "avg(rev)", name: avg_rev}]

@@ -14,8 +14,10 @@ from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
 import duckdb
 import yaml
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from slayer.async_utils import run_sync
+from slayer.core.granularity import CustomGranularity
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.core.policy import SessionPolicy
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
@@ -24,6 +26,12 @@ from slayer.storage.yaml_storage import YAMLStorage
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 DATASOURCE = "probe"
+# Relative time tokens ("last 3 months") and the spine's default upper bound read this instant.
+NOW = dt.datetime(2025, 7, 15, 12, 0)
+GRANULARITIES = [
+    CustomGranularity(name="fiscal_year", base="month", multiple=12, origin=dt.datetime(2024, 4, 1)),
+    CustomGranularity(name="quarter_hour", base="minute", multiple=15),
+]
 PASS, KNOWN, FIXED, FAIL = "PASS", "KNOWN-BUG", "FIXED", "FAIL"
 STATUSES = (PASS, KNOWN, FIXED, FAIL)
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}([ T]00:00:00(\.0+)?Z?)?$")
@@ -48,6 +56,7 @@ class SlayerExpect(BaseModel):
     known_bug: Optional[str] = None
     buggy_rows: List[List[Any]] = Field(default_factory=list)
     buggy_row_count: Optional[int] = None
+    buggy_error: Optional[str] = None
 
 
 class SetupModel(BaseModel):
@@ -58,13 +67,25 @@ class SetupModel(BaseModel):
 
 class SlayerBlock(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    query: Union[Dict[str, Any], List[Dict[str, Any]]]
+    query: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None
+    run_by_name: Optional[str] = None
+    refine: Optional[Dict[str, Any]] = None
     options: Dict[str, Any] = Field(default_factory=dict)
+    # Files in slayer/extra_models/ saved for this probe only (they would otherwise add join cycles).
+    extra_models: List[str] = Field(default_factory=list)
     create_model_from_query: Optional[SetupModel] = None
     keys: Optional[List[str]] = None
     values: Optional[List[str]] = None
     expect: Union[Literal["match"], SlayerExpect] = "match"
     note: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _one_source(self) -> "SlayerBlock":
+        if (self.query is None) == (self.run_by_name is None):
+            raise ValueError("a slayer block needs exactly one of query / run_by_name")
+        if self.refine is not None and self.run_by_name is None:
+            raise ValueError("refine applies only to run_by_name")
+        return self
 
 
 class Probe(BaseModel):
@@ -122,14 +143,16 @@ async def build_engines(
     db_path: Path, store: Path, policies: Dict[str, Any]
 ) -> Tuple[SlayerQueryEngine, Dict[str, SlayerQueryEngine]]:
     storage = YAMLStorage(base_dir=str(store))
-    await storage.save_datasource(DatasourceConfig(name=DATASOURCE, type="duckdb", database=str(db_path)))
-    engine = SlayerQueryEngine(storage=storage)
+    await storage.save_datasource(
+        DatasourceConfig(name=DATASOURCE, type="duckdb", database=str(db_path), granularities=GRANULARITIES)
+    )
+    engine = SlayerQueryEngine(storage=storage, clock=lambda: NOW)
     docs = [yaml.safe_load(f.read_text()) for f in sorted((HERE / "models").glob("*.yaml"))]
     # Query-backed models validate by dry-run, so their sources must exist first.
     for doc in sorted(docs, key=lambda d: bool(d.get("source_queries"))):
         await engine.save_model(SlayerModel.model_validate(doc))
     by_policy = {
-        name: SlayerQueryEngine(storage=storage, policy=SessionPolicy.model_validate(spec))
+        name: SlayerQueryEngine(storage=storage, policy=SessionPolicy.model_validate(spec), clock=lambda: NOW)
         for name, spec in policies.items()
     }
     return engine, by_policy
@@ -200,18 +223,28 @@ def project(resp: SlayerResponse, keys: List[str], values: List[str]) -> List[Li
 
 
 def run_query(engine: SlayerQueryEngine, block: SlayerBlock) -> Tuple[Optional[SlayerResponse], Optional[Exception]]:
-    query: Any = block.query
     handling = block.options.get("to_many_handling")
-    if handling:
-        query = {**query, "to_many_handling": handling}
+    extras = [SlayerModel.model_validate(yaml.safe_load((HERE / "extra_models" / f).read_text()))
+              for f in block.extra_models]
     try:
+        for model in extras:
+            run_sync(engine.save_model(model))
         if block.create_model_from_query:
             engine.create_model_from_query_sync(
                 query=block.create_model_from_query.query, name=block.create_model_from_query.name
             )
+        if block.run_by_name is not None:
+            refine = {**(block.refine or {}), **({"to_many_handling": handling} if handling else {})}
+            return engine.execute_sync(block.run_by_name, refine=refine or None), None
+        query: Any = block.query
+        if handling:
+            query = {**query, "to_many_handling": handling}
         return engine.execute_sync(query), None
     except Exception as e:  # noqa: BLE001 - a probe's error is data
         return None, e
+    finally:
+        for model in extras:
+            run_sync(engine.delete_model_by_name(model_name=model.name, data_source=model.data_source))
 
 
 def first_line(e: Exception) -> str:
@@ -230,6 +263,10 @@ def evaluate(p: Probe, resp: Optional[SlayerResponse], err: Optional[Exception],
         if exp_obj.error == type(err).__name__ or exp_obj.error in str(err):
             return Outcome(status=PASS, detail=f"errors as expected: {first_line(err)}")
         return Outcome(status=FAIL, detail=f"wrong error: {first_line(err)}")
+    if err is not None and exp_obj.known_bug and exp_obj.buggy_error:
+        if exp_obj.buggy_error == type(err).__name__ or exp_obj.buggy_error in str(err):
+            return Outcome(status=KNOWN, detail=f"{exp_obj.known_bug} ({first_line(err)})")
+        return Outcome(status=FAIL, detail=f"neither truth nor the known buggy error: {first_line(err)}")
     if err is not None:
         return Outcome(status=FAIL, detail=f"unexpected error: {first_line(err)}")
 
