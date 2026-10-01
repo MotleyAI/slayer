@@ -14,6 +14,7 @@
 site_name = "SLayer"
 site_description = "A lightweight semantic layer for AI agents"
 site_url = "https://docs.motley.ai/slayer/"
+extra_css = ["stylesheets/comparisons.css"]
 
 nav = [
   { "Home" = "index.md" },

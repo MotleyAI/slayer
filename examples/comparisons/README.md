@@ -30,7 +30,8 @@ The Node versions are pinned exactly in each `package.json` and `package-lock.js
 | `cube/model_variants/` | Cube models that fail to compile, each loaded on its own |
 | `metricflow/dbt_project/` | dbt project: staging views, a day time spine, semantic models with one simple metric per measure (`semantic.yml`), and model-declared metrics (`model_declared.yml`) |
 | `run_all.sh` | Runs every engine |
-| `update_comparison_doc.py` | Regenerates the glance tables and probe links of [the comparison page](../../docs/comparisons/semantic_layers.md) after its rows or the probes change |
+| `matrix.yaml` | The feature matrix shown on [the comparison page](../../docs/comparisons/semantic_layers.md): verdicts, examples and comments per row |
+| `update_comparison_doc.py` | Renders `matrix.yaml` into the comparison page, with each row's probe links; rerun after editing it or the probes |
 
 The dataset keeps edge cases that break naive joins:
 
