@@ -33,6 +33,7 @@ from slayer.storage.yaml_storage import YAMLStorage
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 DATASOURCE = "probe"
+DB_FILE = "probe.duckdb"
 # Relative time tokens ("last 3 months") and the spine's default upper bound read this instant.
 NOW = dt.datetime(2025, 7, 15, 12, 0)
 GRANULARITIES = [
@@ -329,7 +330,7 @@ def as_response(text: str) -> Optional[SlayerResponse]:
 def run_session(block: SlayerBlock, base_db: Path, workdir: Path) -> SessionResult:
     """Run the steps through the MCP server on a private copy of the database and a fresh store."""
     workdir.mkdir()
-    db_path = workdir / "probe.duckdb"
+    db_path = workdir / DB_FILE
     shutil.copy(base_db, db_path)
     storage = YAMLStorage(base_dir=str(workdir / "store"))
     server: Any = None
@@ -475,7 +476,7 @@ def run_probe(
     assert p.slayer is not None
     text = ""
     if p.slayer.steps:
-        res = run_session(block=p.slayer, base_db=tmp / "probe.duckdb", workdir=tmp / p.id)
+        res = run_session(block=p.slayer, base_db=tmp / DB_FILE, workdir=tmp / p.id)
         resp, err, text = res.resp, res.err, res.text
         outcome = evaluate_session(p=p, res=res, truth=truth)
     else:
@@ -507,7 +508,7 @@ def main() -> int:
         if p.slayer and (not args.row or p.row == args.row) and (not args.id or args.id in p.id)
     ]
     with tempfile.TemporaryDirectory(prefix="slayer-probes-") as tmp:
-        db_path = Path(tmp) / "probe.duckdb"
+        db_path = Path(tmp) / DB_FILE
         seed(db_path)
         truth = compute_truth(db_path, probes)
         engine, by_policy = asyncio.run(build_engines(db_path, Path(tmp) / "store", policies))

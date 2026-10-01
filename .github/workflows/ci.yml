@@ -19,23 +19,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+      # Same inputs as the lint-and-test 3.11 leg, so the two share the venv cache.
+      - uses: ./.github/actions/poetry-env
         with:
           python-version: "3.11"
-
-      - name: Install Poetry
-        run: pip install poetry
-
-      # Same key as the lint-and-test 3.11 leg, so the two share the venv cache.
-      - name: Cache Poetry virtualenv
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pypoetry/virtualenvs
-          key: venv-${{ runner.os }}-py3.11-${{ hashFiles('poetry.lock') }}
-
-      - name: Install dependencies
-        run: poetry install -E all --with dev
 
       - name: Type-check (no new errors vs .basedpyright/baseline.json)
         run: poetry run basedpyright
@@ -49,30 +36,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-
       - name: Set up JDK 17 (for Flight SQL JDBC integration tests)
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-      - name: Install Poetry
-        run: pip install poetry
-
-      # Warm the resolved venv across runs so `poetry install` is a near-noop
-      # on a cache hit. Keyed on the lock so any dependency change busts it.
-      - name: Cache Poetry virtualenv
-        uses: actions/cache@v4
+      - uses: ./.github/actions/poetry-env
         with:
-          path: ~/.cache/pypoetry/virtualenvs
-          key: venv-${{ runner.os }}-py${{ matrix.python-version }}-${{ hashFiles('poetry.lock') }}
-
-      - name: Install dependencies
-        run: poetry install -E all --with dev
+          python-version: ${{ matrix.python-version }}
 
       - name: Install jafgen (for notebook tests, not on PyPI)
         run: poetry run pip install git+https://github.com/rossbowen/jaffle-shop-generator.git@09557a1118b000071f8171aa97d54d5029bf0f0b
@@ -174,26 +146,11 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Set up Python
-        if: steps.gate.outputs.skip != 'true'
-        uses: actions/setup-python@v5
+      - if: steps.gate.outputs.skip != 'true'
+        uses: ./.github/actions/poetry-env
         with:
           python-version: "3.11"
-
-      - name: Install Poetry
-        if: steps.gate.outputs.skip != 'true'
-        run: pip install poetry
-
-      - name: Cache Poetry virtualenv
-        if: steps.gate.outputs.skip != 'true'
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pypoetry/virtualenvs
-          key: venv-${{ runner.os }}-py3.11-bigquery-${{ hashFiles('poetry.lock') }}
-
-      - name: Install dependencies (with bigquery extra)
-        if: steps.gate.outputs.skip != 'true'
-        run: poetry install -E bigquery
+          install-args: "-E bigquery"
 
       - name: Decode service-account JSON key
         if: steps.gate.outputs.skip != 'true'
@@ -269,26 +226,11 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Set up Python
-        if: steps.gate.outputs.skip != 'true'
-        uses: actions/setup-python@v5
+      - if: steps.gate.outputs.skip != 'true'
+        uses: ./.github/actions/poetry-env
         with:
           python-version: "3.11"
-
-      - name: Install Poetry
-        if: steps.gate.outputs.skip != 'true'
-        run: pip install poetry
-
-      - name: Cache Poetry virtualenv
-        if: steps.gate.outputs.skip != 'true'
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pypoetry/virtualenvs
-          key: venv-${{ runner.os }}-py3.11-snowflake-${{ hashFiles('poetry.lock') }}
-
-      - name: Install dependencies (with snowflake extra)
-        if: steps.gate.outputs.skip != 'true'
-        run: poetry install -E snowflake
+          install-args: "-E snowflake"
 
       - name: Write ~/.snowflake/connections.toml from secret
         if: steps.gate.outputs.skip != 'true'

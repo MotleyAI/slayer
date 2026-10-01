@@ -16,14 +16,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python
-        id: setup-python
-        uses: actions/setup-python@v5
+      - uses: ./.github/actions/poetry-env
         with:
           python-version: "3.12"
-
-      - name: Install Poetry
-        run: pip install -U poetry
+          install-args: "--no-interaction"
 
       - name: Check release tag matches package version
         env:
@@ -34,18 +30,6 @@ jobs:
             echo "::error::Release tag '$TAG' does not match pyproject.toml version '$version' at ${GITHUB_SHA::8}. Merge the version bump first, then point the tag at that commit and re-publish the release."
             exit 1
           fi
-
-      - name: Load cached venv
-        uses: actions/cache@v4
-        with:
-          path: .venv
-          key: venv-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('**/poetry.lock') }}
-
-      - name: Install dependencies
-        run: |
-          poetry config virtualenvs.create true
-          poetry config virtualenvs.in-project true
-          poetry install --no-interaction
 
       - name: Build package
         run: poetry build

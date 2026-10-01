@@ -17,6 +17,7 @@ on:
       - 'examples/sqlserver/**'
       - 'tests/integration/test_integration_sqlserver.py'
       - '.github/workflows/integration-sqlserver.yml'
+      - '.github/actions/poetry-env/**'
   push:
     branches: [main]
     paths:
@@ -26,6 +27,7 @@ on:
       - 'examples/sqlserver/**'
       - 'tests/integration/test_integration_sqlserver.py'
       - '.github/workflows/integration-sqlserver.yml'
+      - '.github/actions/poetry-env/**'
   workflow_dispatch:
 
 jobs:
@@ -33,11 +35,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
 
       - name: Install ODBC Driver 18 for SQL Server
         # The pytest suite uses pyodbc IN-PROCESS on the runner host (unlike
@@ -56,11 +53,9 @@ jobs:
           sudo apt-get update
           sudo ACCEPT_EULA=Y apt-get install -y msodbcsql18 unixodbc-dev
 
-      - name: Install Poetry
-        run: pip install poetry
-
-      - name: Install dependencies
-        run: poetry install -E all --with dev
+      - uses: ./.github/actions/poetry-env
+        with:
+          python-version: "3.11"
 
       - name: Verify testcontainers[mssql] extra is importable
         run: poetry run python -c "import testcontainers.mssql"

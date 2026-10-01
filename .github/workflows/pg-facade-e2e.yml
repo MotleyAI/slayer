@@ -17,6 +17,7 @@ on:
       - 'pyproject.toml'
       - 'poetry.lock'
       - '.github/workflows/pg-facade-e2e.yml'
+      - '.github/actions/poetry-env/**'
   pull_request:
     branches: [main]
     paths:
@@ -30,6 +31,7 @@ on:
       - 'pyproject.toml'
       - 'poetry.lock'
       - '.github/workflows/pg-facade-e2e.yml'
+      - '.github/actions/poetry-env/**'
 
 jobs:
   metabase-e2e:
@@ -39,16 +41,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+      - uses: ./.github/actions/poetry-env
         with:
           python-version: "3.11"
-
-      - name: Install Poetry
-        run: pip install poetry
-
-      - name: Install dependencies
-        run: poetry install -E all --with dev
 
       - name: Install jafgen (for demo data generation)
         run: poetry run pip install git+https://github.com/rossbowen/jaffle-shop-generator.git@09557a1118b000071f8171aa97d54d5029bf0f0b
