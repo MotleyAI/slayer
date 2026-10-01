@@ -1,4 +1,4 @@
-"""DEV-1840 task 1.4 — executed semi-join pushdown values (SQLite + DuckDB).
+"""Executed semi-join pushdown values (SQLite + DuckDB).
 
 Spec: openspec …/specs/queries/cross-model-aggregates — "Producer filter
 inheritance". Every oracle is hand-computed in ``tests/_dev1840_fixtures.py``;
@@ -346,10 +346,10 @@ class TestProducerKinds:
             assert float(got[month]) == pytest.approx(expected), month
 
     async def test_windowed_grain_spine_carries_the_exists(self, exec_backend):
-        """Scenario: the pushed filter reaches BOTH windowed-producer legs —
-        the grain spine (``_base``) and the window source (``_src``) — so an
-        excluded bucket vanishes from the producer instead of surfacing with
-        a NULL window value."""
+        """Scenario: the pushed filter reaches BOTH windowed-producer legs — the
+        bucket endpoints (host rows, filtered inline) and the window source
+        (``_src``, by EXISTS) — so an excluded bucket vanishes from the producer
+        instead of surfacing with a NULL window value."""
         dialect, engine = exec_backend
         dry = await engine.execute(query=q(
             time_dimensions=signup_month_td(),
@@ -358,7 +358,13 @@ class TestProducerKinds:
             filters=["channel = 'app'"],
         ), dry_run=True)
         tree = sqlglot.parse_one(sql=dry.sql, read=dialect)
-        assert len(list(tree.find_all(exp.Exists))) == 2, dry.sql
+        src = next(s for s in tree.find_all(exp.Subquery) if s.alias == "_src")
+        assert len(list(tree.find_all(exp.Exists))) == 1, dry.sql
+        assert src.find(exp.Exists) is not None, dry.sql
+        endpoints = next(s for s in tree.find_all(exp.Subquery) if s.alias == "_e")
+        where = endpoints.this.args.get("where")
+        assert where is not None, dry.sql
+        assert "channel = 'app'" in where.sql(dialect=dialect), dry.sql
 
     async def test_windowed_grain_spine_drops_filtered_out_buckets(
         self, exec_backend,

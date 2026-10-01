@@ -385,6 +385,22 @@ def test_whitelisted_table_passed_through():
     assert not _exists_nodes(out)
 
 
+def test_number_series_table_function_passed_through():
+    sql = "SELECT i FROM RANGE(0, 5) AS _seq(i)"
+    out = apply_session_policy(sql, dialect="duckdb", policy=_jpolicy(), has_column=_boom_probe)
+    assert out == _norm(sql, dialect="duckdb")
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT * FROM read_csv('secret.csv')",
+    "SELECT * FROM RANGE(0, (SELECT MAX(id) FROM secret_table)) AS _seq(i)",
+])
+def test_data_reading_table_function_fails_closed(sql):
+    policy = _jpolicy()
+    with pytest.raises(ForcedFilterError):
+        apply_session_policy(sql, dialect="duckdb", policy=policy, has_column=_boom_probe)
+
+
 # -- unlisted table fails closed ---------------------------------------------
 
 

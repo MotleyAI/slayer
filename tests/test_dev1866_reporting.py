@@ -97,6 +97,17 @@ class TestExplicitVsInferredReporting:
         assert resp.population == "customers"
         assert resp.population_inferred is False
 
+    @pytest.mark.parametrize("dry_run", [False, True])
+    async def test_stage_population_reports_the_stage_name(self, engine, dry_run) -> None:
+        stage = SlayerQuery.model_validate({
+            "name": "by_region", "source_model": "customers", "dimensions": ["region"],
+            "measures": [{"formula": "orders.amount:sum", "name": "rev"}],
+        })
+        main = SlayerQuery.model_validate({"source_model": "by_region", "measures": [{"formula": "sum(rev)"}]})
+        resp = await engine.execute([stage, main], dry_run=dry_run)
+        assert resp.population == "by_region"
+        assert resp.population_inferred is False
+
 
 class TestReportedAcrossExecutionModes:
     async def test_dry_run(self, engine) -> None:

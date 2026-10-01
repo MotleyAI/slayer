@@ -1,4 +1,4 @@
-"""DEV-1549: models_summary compact-by-default.
+"""models_summary compact-by-default.
 
 Tests cover:
 * MCP tool ``models_summary(compact: bool = True)``.
@@ -201,7 +201,7 @@ async def test_compact_json_shape(yaml_storage: YAMLStorage) -> None:
     })
     data = json.loads(result)
     assert data["datasource_name"] == "mydb"
-    assert data["model_count"] == 2
+    assert data["model_count"] == 3
     orders = next(m for m in data["models"] if m["name"] == "orders")
     assert set(orders.keys()) == {
         "name", "description", "column_count", "measure_names", "joins_to",
@@ -269,12 +269,12 @@ async def test_verbose_json_keeps_full_column_and_measure_payloads(
 
 
 # ---------------------------------------------------------------------------
-# Empty datasource — identical message across modes
+# Empty datasource — only the built-in spine, in both modes
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_empty_datasource_message_identical_across_modes(
+async def test_empty_datasource_lists_only_the_spine_in_both_modes(
     yaml_storage: YAMLStorage,
 ) -> None:
     await yaml_storage.save_datasource(
@@ -287,8 +287,9 @@ async def test_empty_datasource_message_identical_across_modes(
     verbose = await _call(mcp, name="models_summary", arguments={
         "datasource_name": "emptyds", "compact": False,
     })
-    assert compact == verbose
-    assert "has no models" in compact
+    for out in (compact, verbose):
+        assert out.startswith("# Datasource: `emptyds` — 1 model(s)")
+        assert "## `time_spine`" in out
 
 
 # ---------------------------------------------------------------------------

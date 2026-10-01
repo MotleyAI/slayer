@@ -6,7 +6,7 @@ and failing closed when the context lacks a facility a key kind needs. It
 replaced five independent per-path renderers in ``generator.py`` (host
 WHERE/HAVING, cross-model CTE routed filters, POST/alias space, outer combined
 WHERE, AGGREGATE-phase composites) plus three arithmetic composer shims, all of
-which had drifted; those were deleted in DEV-1749. Materialisation stays on
+which had drifted; those were deleted. Materialisation stays on
 ``ScopeFrame`` (P-B) — the renderer anchors leaves through
 ``scope.resolve(ref, consumer=...)`` and never by hand.
 
@@ -471,7 +471,7 @@ class TestRendersEveryKeyKind:
         """Exact per-dialect SQL — a substring check would accept a truncation
         at the wrong granularity or over the wrong column."""
         key = TimeTruncKey(
-            column=ColumnKey(leaf="created_at"), granularity="month",
+            column=ColumnKey(leaf="created_at"), granularity=TimeGranularity.MONTH,
         )
         out = render_value_key(key=key, ctx=_filter_ctx("postgres"))
         assert _sql(out, "postgres") == "DATE_TRUNC('MONTH', orders.created_at)"
@@ -487,7 +487,7 @@ class TestRendersEveryKeyKind:
         defect this module exists to remove.
         """
         key = TimeTruncKey(
-            column=ColumnKey(leaf="created_at"), granularity="month",
+            column=ColumnKey(leaf="created_at"), granularity=TimeGranularity.MONTH,
         )
         out = _sql(render_value_key(key=key, ctx=_filter_ctx(dialect)), dialect)
         if dialect == "sqlite":
@@ -502,7 +502,7 @@ class TestRendersEveryKeyKind:
         ``DATE_TRUNC('WEEK_SUNDAY', col)``, which no dialect accepts.
         """
         key = TimeTruncKey(
-            column=ColumnKey(leaf="created_at"), granularity="week_sunday",
+            column=ColumnKey(leaf="created_at"), granularity=TimeGranularity.WEEK_SUNDAY,
         )
         out = _sql(render_value_key(key=key, ctx=_filter_ctx("postgres")), "postgres")
         assert "WEEK_SUNDAY" not in out.upper(), out
@@ -1373,13 +1373,13 @@ def _mutation_cases():
         ),
         (
             "TimeTruncKey.granularity",
-            TimeTruncKey(column=col, granularity="month"),
-            TimeTruncKey(column=col, granularity="year"),
+            TimeTruncKey(column=col, granularity=TimeGranularity.MONTH),
+            TimeTruncKey(column=col, granularity=TimeGranularity.YEAR),
         ),
         (
             "TimeTruncKey.column",
-            TimeTruncKey(column=col, granularity="month"),
-            TimeTruncKey(column=other, granularity="month"),
+            TimeTruncKey(column=col, granularity=TimeGranularity.MONTH),
+            TimeTruncKey(column=other, granularity=TimeGranularity.MONTH),
         ),
         ("StarKey.path", StarKey(), StarKey(path=("customers",))),
         (
@@ -1857,7 +1857,7 @@ class TestNewlyAdmittedScalars:
 class TestParserAndBinderScalarSetsAgree:
     """A tripwire on parser/binder divergence.
 
-    DEV-1753 admitted the last four parser-only names (``greatest``, ``least``,
+    The binder admits the last four parser-only names (``greatest``, ``least``,
     ``trunc``, ``mod``), so the parser and binder now admit exactly the same
     pass-through scalars. Pinned as the empty set so neither side can drift
     again unnoticed — adding a name to one set without the other fails here.
@@ -1951,7 +1951,7 @@ class TestNullInInList:
 
 
 class TestIifDirectRender:
-    """DEV-1740: the reserved-name ``iif`` render on a directly constructed
+    """The reserved-name ``iif`` render on a directly constructed
     key — the flattened multi-WHEN CASE shape and the fail-closed arity
     backstop (the binder validates first; render must not IndexError)."""
 
@@ -2345,7 +2345,7 @@ class TestEveryOperatorPairSurvivesTheRoundTrip:
 
 class TestArithmeticGroupingViaRender:
     """Grouping shapes the deleted generator composers used to pin, now pinned
-    on the live ``render_value_key`` path (DEV-1749). The other composer shapes
+    on the live ``render_value_key`` path. The other composer shapes
     (negated sum, NOT-of-conjunction, IS[ NOT] NULL over a comparison,
     equal-precedence right operand, ``(a + b) * c``, comparison nested in
     arithmetic) are already pinned by ``TestUnaryOperandGrouping`` /

@@ -6,13 +6,26 @@ so one direction may be provably to-one while the other fans out."""
 
 from __future__ import annotations
 
+from collections import deque
 from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple, TypeVar
 
 from pydantic import BaseModel
 
 from slayer.core.enums import JoinCardinality, RANKED_AGGREGATIONS, invert_cardinality
-from slayer.core.errors import AmbiguousJoinPathError, CircularJoinPathError
-from slayer.core.join_walker import OrientedJoin, resolve_hop, reverse_token, walk
+from slayer.core.errors import AmbiguousJoinPathError, CircularJoinPathError, UnresolvableDimensionJoinError
+from slayer.core.join_walker import (
+    OrientedJoin,
+    OrientedLike,
+    canonical_path,
+    is_product_edge,
+    neighbors,
+    provably_to_one,
+    resolve_hop,
+    reverse_token,
+    unique_key_sets,
+    walk,
+)
+from slayer.core.time_spine import TIME_SPINE_COLUMN, TIME_SPINE_MODEL, is_spine
 from slayer.core.keys import (
     SLOT_COMPOSITE_KINDS,
     AggregateKey,
@@ -45,11 +58,9 @@ from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.cardinality import (
     CardinalityVerdict,
     JoinCardinalityReport,
-    is_key_set_unique,
 )
 
 __all__ = [
-    "provably_to_one",
     "provably_fans",
     "safe_reachable",
     "may_inline_crossing_inputs",
@@ -57,40 +68,11 @@ __all__ = [
     "JoinSafetyFinding",
 ]
 
-#: An oriented hop, or a declared join read in its declared orientation — both
-#: expose ``cardinality`` and target-side ``join_pairs``, which is all the proof
-#: predicate reads.
-OrientedLike = OrientedJoin | ModelJoin
 
-
-def may_inline_crossing_inputs(crossed_paths: Sequence[tuple]) -> bool:  # NOSONAR(S1172) — crossed_paths is the documented DEV-1688 seam; the cardinality-aware decision reads it, hardcoded False until then.
+def may_inline_crossing_inputs(crossed_paths: Sequence[tuple]) -> bool:  # NOSONAR(S1172) — crossed_paths is the documented seam; the cardinality-aware decision reads it, hardcoded False until then.
     """Whether a crossing-input local aggregate may stay inline in the host base.
-    Hardcoded ``False`` (always a producer); the DEV-1688 seam that will flip."""
+    Hardcoded ``False`` (always a producer); the seam that will flip."""
     return False
-
-
-def _unique_key_sets(model: SlayerModel) -> list[list[str]]:
-    # Column names: composite PK as one set, then each solo-unique singleton.
-    sets: list[list[str]] = []
-    pk = [c.name for c in model.columns if c.primary_key]
-    if pk:
-        sets.append(pk)
-    for c in model.columns:
-        if c.unique:
-            sets.append([c.name])
-    return sets
-
-
-def provably_to_one(*, edge: OrientedLike, target_model: SlayerModel) -> bool:
-    """Is ``edge`` provably many-to-one onto ``target_model`` in its orientation?
-    True iff the oriented cardinality is m:1/1:1, or the traversal-target columns
-    fully cover a unique key-set of ``target_model``."""
-    if edge.cardinality in (JoinCardinality.MANY_TO_ONE, JoinCardinality.ONE_TO_ONE):
-        return True
-    return is_key_set_unique(
-        key_columns=[pair[1] for pair in edge.join_pairs],
-        unique_key_sets=_unique_key_sets(target_model),
-    )
 
 
 def provably_fans(*, edge: OrientedLike, target_model: SlayerModel) -> bool:
@@ -303,6 +285,154 @@ def _route_via_common_prefix(
     return (*reverse_suffix, *host_path[cp:])
 
 
+def _safe_hops_for_neighbor(
+    *, nbr: str, edges: list, target: SlayerModel, name_counts: dict[str, int],
+    stage_spellings: set,
+) -> list[Tuple[str, str]]:
+    """Executable to-one hop tokens from a model to one neighbour: its bare
+    spelling for a lone unshadowed edge (a model name is shadowed by a stage
+    spelling too), else one entry per uniquely-named parallel edge; each kept
+    only if provably many-to-one on its orientation."""
+    token = target.spelling
+    shadowed = token in name_counts or (
+        target.explicit_spelling is None and token in stage_spellings
+    )
+    if len(edges) == 1 and not shadowed:
+        return (
+            [(token, nbr)]
+            if provably_to_one(edge=edges[0], target_model=target)
+            else []
+        )
+    return [
+        (e.name, nbr)
+        for e in edges
+        if e.name is not None
+        and name_counts[e.name] == 1
+        and provably_to_one(edge=e, target_model=target)
+    ]
+
+
+def safe_hops(
+    *, model: SlayerModel, models_by_name: dict[str, SlayerModel]
+) -> list[Tuple[str, str]]:
+    """Oriented provably-to-one executable hops off ``model`` as ``(token,
+    target_model)``. Token resolution mirrors ``resolve_hop`` /
+    ``JoinGraph._executable_tokens``: a single unshadowed edge yields the bare
+    neighbour name, parallel edges yield one entry per uniquely-named edge, and
+    an unnamed parallel hop is dropped. Each candidate is then kept only if it is
+    provably many-to-one on its traversal orientation."""
+    incident = neighbors(model=model, models_by_name=models_by_name)
+    name_counts: dict[str, int] = {}
+    for e in incident:
+        if e.name is not None:
+            name_counts[e.name] = name_counts.get(e.name, 0) + 1
+    by_nbr: dict[str, list] = {}
+    for e in incident:
+        by_nbr.setdefault(e.target_model, []).append(e)
+    stage_spellings = {
+        models_by_name[n].explicit_spelling for n in by_nbr
+        if n in models_by_name and models_by_name[n].explicit_spelling
+    }
+    out: list[Tuple[str, str]] = []
+    for nbr, edges in by_nbr.items():
+        target = models_by_name.get(nbr)
+        if target is None:
+            continue
+        out.extend(
+            _safe_hops_for_neighbor(
+                nbr=nbr, edges=edges, target=target, name_counts=name_counts,
+                stage_spellings=stage_spellings,
+            )
+        )
+    return out
+
+
+def _hop_distances(*, dataset: SlayerModel, models_by_name: dict[str, SlayerModel]) -> dict[str, int]:
+    """Safe-hop BFS distance from ``dataset`` to every reachable model (the spine is a sink)."""
+    dist: dict[str, int] = {dataset.name: 0}
+    frontier: deque[str] = deque([dataset.name])
+    while frontier:
+        node = frontier.popleft()
+        model = models_by_name.get(node)
+        if model is None or is_spine(model):
+            continue
+        for _, nbr in safe_hops(model=model, models_by_name=models_by_name):
+            if nbr not in dist:
+                dist[nbr] = dist[node] + 1
+                frontier.append(nbr)
+    return dist
+
+
+def _extend_routes(
+    *, model: SlayerModel, chain: list[OrientedJoin], dist: dict[str, int],
+    models_by_name: dict[str, SlayerModel], routes: list[list[OrientedJoin]], cap: int,
+) -> None:
+    """Append to ``routes`` (up to ``cap``) every shortest continuation of ``chain`` reaching the spine."""
+    if len(routes) >= cap:
+        return
+    if is_spine(model):
+        routes.append(chain)
+        return
+    for token, nbr in safe_hops(model=model, models_by_name=models_by_name):
+        if dist.get(nbr) != dist[model.name] + 1 or dist[nbr] > dist[TIME_SPINE_MODEL]:
+            continue
+        edge = resolve_hop(current=model, token=token, models_by_name=models_by_name)
+        if edge is not None:
+            _extend_routes(model=models_by_name[nbr], chain=[*chain, edge], dist=dist,
+                           models_by_name=models_by_name, routes=routes, cap=cap)
+
+
+def spine_routes(
+    *, dataset: SlayerModel, models_by_name: dict[str, SlayerModel], cap: int = 2,
+) -> list[list[OrientedJoin]]:
+    """Up to ``cap`` minimal routes ``dataset → time_spine`` over provably to-one executable hops."""
+    dist = _hop_distances(dataset=dataset, models_by_name=models_by_name)
+    if TIME_SPINE_MODEL not in dist:
+        return []
+    routes: list[list[OrientedJoin]] = []
+    _extend_routes(model=dataset, chain=[], dist=dist, models_by_name=models_by_name, routes=routes, cap=cap)
+    return routes
+
+
+def spine_route_error(*, dataset: str, routes: list[list[OrientedJoin]], leaf: str) -> UnresolvableDimensionJoinError:
+    """The ambiguous-spine-route error, naming each tied canonical route."""
+    return UnresolvableDimensionJoinError(
+        reference=f"{dataset}.{leaf}", root_model=TIME_SPINE_MODEL,
+        reason="equal-length routes to the time spine: " + ", ".join(
+            ".".join((dataset, *canonical_path(r))) for r in routes
+        ) + "; give the model a default_time_dimension, or query its facts through one of the routes",
+    )
+
+
+def _factor_free(models_by_name: Dict[str, SlayerModel]) -> Dict[str, SlayerModel]:
+    return {n: m.as_population_factor(False) if m.population_spine else m for n, m in models_by_name.items()}
+
+
+def _is_product_path(host_path: Tuple[str, ...], *, host_name: Optional[str], models_by_name: Dict[str, SlayerModel]) -> bool:
+    """``host_path`` starts at the population's product hop to the spine."""
+    host = models_by_name.get(host_name) if host_name is not None else None
+    return host is not None and host.population_spine and bool(host_path) and host_path[0] == TIME_SPINE_MODEL
+
+
+def reads_population_spine(key: ValueKey, *, host: Optional[SlayerModel]) -> bool:
+    """``key`` reads a spine population's product hop (the spine as the population sees it)."""
+    return host is not None and host.population_spine and any(
+        isinstance(r, ColumnKey) and r.path[:1] == (TIME_SPINE_MODEL,) for r in walk_value_keys(key)
+    )
+
+
+def home_spine_route(
+    *, root_model: SlayerModel, models_by_name: Dict[str, SlayerModel], leaf: str = TIME_SPINE_COLUMN,
+) -> Optional[Tuple[str, ...]]:
+    """The home's canonical route to the spine; ``None`` without one; equal-length routes raise."""
+    universe = _factor_free(models_by_name)
+    home = universe.get(root_model.name, root_model.as_population_factor(False))
+    routes = spine_routes(dataset=home, models_by_name={**universe, home.name: home})
+    if len(routes) > 1:
+        raise spine_route_error(dataset=home.name, routes=routes, leaf=leaf)
+    return canonical_path(routes[0]) if routes else None
+
+
 def attributable_from_root(
     *, host_path: Tuple[str, ...], target_path: Tuple[str, ...],
     root_model: SlayerModel, models_by_name: Dict[str, SlayerModel],
@@ -310,6 +440,10 @@ def attributable_from_root(
 ) -> bool:
     """Is a host-coordinate path attributable from the aggregate's root over provably many-to-one hops only?"""
     tp, hp = tuple(target_path), tuple(host_path)
+    if _is_product_path(hp, host_name=host_name, models_by_name=models_by_name) or (
+        not tp and root_model.population_spine and hp[:1] == (TIME_SPINE_MODEL,)
+    ):
+        return home_spine_route(root_model=root_model, models_by_name=models_by_name) is not None
     if hp[: len(tp)] == tp:
         return safe_reachable(
             root=root_model, path=hp[len(tp):], models_by_name=models_by_name,
@@ -402,6 +536,9 @@ def _reroot_leaf_via_host(
     if not isinstance(r, (ColumnKey, ColumnSqlKey, StarKey, TimeTruncKey)):
         return None
     hp = key_host_path(r)
+    if isinstance(r, ColumnKey) and _is_product_path(hp, host_name=host_name, models_by_name=models_by_name):
+        route = home_spine_route(root_model=root_model, models_by_name=models_by_name)
+        return r if route is None else r.model_copy(update={"path": route})
     if hp[: len(target_path)] == target_path:
         return None  # reroot_value_key strips the prefix
     if target_path and host_name == target_path[0]:
@@ -447,7 +584,34 @@ def reroot_from_root(
             mapping[r] = reroot_value_key(r, target_path=tp)
     # One pass, each host leaf mapped once: a stripped leaf equal to a host key
     # is never re-mapped, a via-host leaf never stripped.
-    return substitute_value_keys(key, mapping)
+    return lower_axis_hops(
+        substitute_value_keys(key, mapping), root_model=root_model, models_by_name=models_by_name,
+    )
+
+
+def lower_axis_hops(
+    key: _RerootableT, *, root_model: SlayerModel, models_by_name: Dict[str, SlayerModel],
+) -> _RerootableT:
+    """The spine column reached over an axis edge is the axis column itself (never a join)."""
+    universe = _factor_free(models_by_name)
+    root = universe.get(root_model.name, root_model)
+    mapping: Dict[ValueKey, ValueKey] = {}
+    for r in walk_value_keys(key):
+        if not (isinstance(r, ColumnKey) and r.path and r.leaf == TIME_SPINE_COLUMN):
+            continue
+        try:
+            chain = walk(root=root, path=r.path, models_by_name=universe)
+        except (AmbiguousJoinPathError, CircularJoinPathError):
+            continue
+        if not chain or chain[-1].target_model != TIME_SPINE_MODEL or is_product_edge(chain[-1]):
+            continue
+        owner = universe.get(chain[-1].source_model)
+        axis = chain[-1].join_pairs[0][0]
+        mapping[r] = (
+            column_default_key(path=r.path[:-1], leaf=axis, base=owner)
+            if owner is not None else ColumnKey(path=r.path[:-1], leaf=axis)
+        )
+    return substitute_value_keys(key, mapping) if mapping else key
 
 
 UNREACHABLE_NO_PATH = "unreachable from the aggregate's root (no join path from it)"
@@ -484,6 +648,8 @@ def broadcast_reason(
     """Why a dimension broadcasts: crosses an unproven/fanning join hop (forward
     from the root, or back through the reverse hop), or unreachable if no path."""
     tp, hp = tuple(target_path), tuple(host_path)
+    if _is_product_path(hp, host_name=host_name, models_by_name=models_by_name):
+        return f"{root_model.name} has no route to the time spine"
     if hp[: len(tp)] == tp:
         reason = _hop_walk_reason(
             root_model=root_model, path=hp[len(tp):], models_by_name=models_by_name,
@@ -725,7 +891,7 @@ def _grain_leaves(*, grain: Grain, at: Tuple[str, ...]) -> set:
 def _entity_seeded(*, grain: Grain, model: SlayerModel, at: Tuple[str, ...]) -> bool:
     """The grain pins ``model`` at ``at`` iff its leaves there cover a unique key set."""
     here = _grain_leaves(grain=grain, at=at)
-    return any(ks and set(ks) <= here for ks in _unique_key_sets(model))
+    return any(ks and set(ks) <= here for ks in unique_key_sets(model))
 
 
 def _hop_pins(

@@ -1,4 +1,4 @@
-"""DEV-1842 task 1.9 — the generic path-map visitor in both directions.
+"""The generic path-map visitor in both directions.
 
 ``reroot_value_key`` becomes one total, fail-closed visitor parameterised by a
 per-path transform; ``strip`` (existing, byte-identical) and the new ``prepend``
@@ -20,6 +20,7 @@ from typing import get_args
 
 import pytest
 
+from slayer.core.enums import TimeGranularity
 from slayer.core import keys as K
 from slayer.core.keys import (
     AggregateKey,
@@ -50,7 +51,7 @@ def _samples() -> dict:
         ColumnKey: ColumnKey(path=(), leaf="spend"),
         ColumnSqlKey: ColumnSqlKey(path=(), model="customers", column_name="cr"),
         TimeTruncKey: TimeTruncKey(
-            column=ColumnKey(path=(), leaf="signup_at"), granularity="day",
+            column=ColumnKey(path=(), leaf="signup_at"), granularity=TimeGranularity.DAY,
         ),
         StarKey: StarKey(path=()),
         LiteralKey: LiteralKey(value=Decimal("1")),
@@ -129,7 +130,7 @@ class TestPrependLeafKinds:
 
     def test_time_trunc_prepends_wrapped_column(self) -> None:
         out = K.prepend_value_key(
-            TimeTruncKey(column=ColumnKey(path=(), leaf="signup_at"), granularity="month"),
+            TimeTruncKey(column=ColumnKey(path=(), leaf="signup_at"), granularity=TimeGranularity.MONTH),
             host_path=HOST,
         )
         assert out.column == ColumnKey(path=("customers",), leaf="signup_at")
@@ -173,7 +174,7 @@ class TestPrependCompositeKinds:
                 input=AggregateKey(source=ColumnKey(path=(), leaf="spend"), agg="sum"),
                 partition_keys=Grain.of({ColumnKey(path=(), leaf="tier")}),
                 time_key=TimeTruncKey(
-                    column=ColumnKey(path=(), leaf="signup_at"), granularity="month",
+                    column=ColumnKey(path=(), leaf="signup_at"), granularity=TimeGranularity.MONTH,
                 ),
             ),
             host_path=HOST,

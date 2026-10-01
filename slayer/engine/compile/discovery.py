@@ -32,7 +32,11 @@ from slayer.engine.elaborate_env import (
     is_grained_aggregate,
     position_classes,
 )
-from slayer.engine.join_safety import crossing_local_root_predicate, grain_member_attributable
+from slayer.engine.join_safety import (
+    crossing_local_root_predicate,
+    grain_member_attributable,
+    reads_population_spine,
+)
 from slayer.ir.elaborated import ConjunctTyping
 from slayer.ir.planned import MaskTyping
 from slayer.ir.prebound import PreboundQuery
@@ -117,8 +121,9 @@ class _Walker:
             or self.crossing(k) or is_kernel_requiring(k)
         ):
             return False
+        # The population's spine is counted over each home's own axis, never the product.
         return any(
-            not grain_member_attributable(
+            reads_population_spine(g, host=host) or not grain_member_attributable(
                 key=g, target_path=(), root_model=host,
                 models_by_name=self.bundle.models_by_name, bundle=self.bundle,
                 host_model=host, host_name=host.name,

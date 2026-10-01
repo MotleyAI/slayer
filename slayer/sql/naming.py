@@ -9,6 +9,7 @@ import sqlglot
 from pydantic import BaseModel, ConfigDict, PrivateAttr
 from sqlglot import exp
 
+from slayer.core.time_spine import TIME_SPINE_MODEL
 from slayer.core.errors import IdentifierCollisionError
 from slayer.core.keys import StarKey, source_anchor_path
 from slayer.core.refs import (
@@ -126,12 +127,15 @@ class AliasAllocator(BaseModel):
 
 
 def result_key(*, source_relation: str, path: Tuple[str, ...] = (), leaf: str) -> str:
-    """Dotted final-stage key ``source_relation`` . ``path`` . ``leaf`` (``leaf`` has no dot)."""
+    """Dotted final-stage key ``source_relation`` . ``path`` . ``leaf`` (``leaf`` has no dot); the
+    shared time axis keys from the spine itself."""
     if "." in leaf:
         raise ValueError(
             f"result_key leaf must not contain '.': {leaf!r}. Pass hops via "
             f"`path`, or use result_key_from_alias for a canonical dotted alias."
         )
+    if path and path[0] == TIME_SPINE_MODEL:
+        return ".".join((*path, leaf))
     return ".".join((source_relation, *path, leaf))
 
 
@@ -144,11 +148,11 @@ def time_trunc_result_key(
     source_relation: str,
     path: Tuple[str, ...],
     leaf: str,
-    granularity: str,
+    granularity: object,
     declared_name: str,
 ) -> str:
     """Dotted result key for a joined time-trunc slot, appending ``.<granularity>``
-    when a same-column collision suffixed its declared name (DEV-1883). Shared by
+    when a same-column collision suffixed its declared name. Shared by
     the response-metadata and SQL-alias paths so the two never diverge."""
     base = result_key(source_relation=source_relation, path=path, leaf=leaf)
     suffix = f".{granularity}"
@@ -249,7 +253,7 @@ def canonical_aggregate_alias(  # NOSONAR(S3776) — sequential dispatch over th
         key.source, "column_name", None,
     )
     if leaf is None and isinstance(key.source, EXPRESSION_SOURCE_KINDS):
-        # DEV-1826 expression source: derived leaf via the shared sanitizer
+        # Expression source: derived leaf via the shared sanitizer
         # (``sum(amount - cost)`` → ``amount_cost``), then the ordinary
         # canonical/parametric/partition machinery below applies unchanged.
         leaf = expression_source_leaf(key.source)

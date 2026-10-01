@@ -22,7 +22,10 @@ from pydantic import (
 )
 
 from slayer.core.enums import BUILTIN_AGGREGATIONS, GRANULARITY_NAMES, TimeGranularity, normalize_aggregation_name
+from slayer.core.formula import ALL_TRANSFORMS
+from slayer.core.keys import SCALAR_FUNCTIONS
 from slayer.core.errors import DistinctDimensionValuesError, GranularityCallError, RefinementConflictError
+from slayer.core.granularity import GranularitySpec, granularity_key
 from slayer.core.models import (
     Column,
     ModelJoin,
@@ -31,7 +34,7 @@ from slayer.core.models import (
     _validate_model_name,
 )
 from slayer.core.refs import auto_name_from_expression
-from slayer.core.time_points import TIME_POINT_FORMS, is_time_point
+from slayer.core.time_points import TIME_POINT_FORMS, is_time_point_shape
 from slayer.engine.syntax import AggCall, DottedRef, Ref, parse_expr, walk_parsed_refs
 from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
 from slayer.storage.migrations import CURRENT_VERSIONS, migrate as _migrate_schema
@@ -61,95 +64,79 @@ def _single_col_of_source(node: AggCall) -> str | None:
     return None
 
 
-def _time_dimension_from_functional(entry: str) -> dict | None:
-    """A valid ``gran(col)`` string → its ``TimeDimension`` dict; a non-granularity
-    call or non-call → ``None``; a granularity callee of any other shape → raise."""
+def call_callee(entry: str) -> tuple[Any, str | None]:
+    """``entry`` parsed (``None`` when unparseable) and its whole-call callee, if any."""
     try:
         node: Any = parse_expr(entry)
     except Exception:
         node = None
     if isinstance(node, AggCall):
-        callee: str | None = node.agg
-    else:
-        m = _WHOLE_CALL_RE.match(entry)
-        callee = m.group(1) if m else None
-    if callee is None or callee.lower() not in GRANULARITY_NAMES:
-        return None
+        return node, node.agg
+    m = _WHOLE_CALL_RE.match(entry)
+    return node, (m.group(1) if m else None)
+
+
+def functional_call_column(node: Any) -> str | None:
+    """The column of a single-column call ``name(col)``, else ``None``."""
     if isinstance(node, AggCall) and not node.args and not node.kwargs:
-        col = _single_col_of_source(node)
-        if col is not None:
-            return {"dimension": col, "granularity": callee.lower()}
-    raise GranularityCallError.wrong_shape(entry)
+        return _single_col_of_source(node)
+    return None
+
+
+def time_dimension_from_functional(entry: str, *, names: "frozenset[str] | set[str]") -> dict | None:
+    """A ``gran(col)`` string whose casefolded callee is in ``names`` → its ``TimeDimension``
+    dict; another callee or a non-call → ``None``; a granularity callee of any other shape → raise."""
+    node, callee = call_callee(entry)
+    if callee is None or callee.casefold() not in names:
+        return None
+    col = functional_call_column(node)
+    if col is None:
+        raise GranularityCallError.wrong_shape(entry)
+    return {"dimension": col, "granularity": callee.lower() if callee.lower() in GRANULARITY_NAMES else callee}
 
 
 def granularity_call_parts(entry: str) -> tuple[str, str] | None:
-    """``(col, gran)`` for a well-formed ``gran(col)`` string, else ``None`` (never raises);
+    """``(col, callee)`` for a well-formed single-column call string, else ``None`` (never raises);
     used to resolve a functional order key against projected time dimensions."""
-    try:
-        td = _time_dimension_from_functional(entry)
-    except GranularityCallError:
+    node, callee = call_callee(entry)
+    col = functional_call_column(node)
+    if callee is None or col is None:
         return None
-    return (td["dimension"], td["granularity"]) if td is not None else None
-
-
-def _reject_unknown_dimension_call(entry: str) -> None:
-    """A ``name(col)`` dimension whose callee is not a granularity, scalar, transform,
-    or builtin aggregation is a typo — raise naming the granularities and the
-    ``partition_by=`` requirement for a real custom aggregation."""
-    try:
-        node = parse_expr(entry)
-    except Exception:
-        return
-    if (
-        not isinstance(node, AggCall)
-        or node.args
-        or node.kwargs
-        or _single_col_of_source(node) is None
-    ):
-        return
-    # Normalize aliases (stddev→stddev_samp, variance→var_samp, …) so a bare
-    # builtin-alias aggregate keeps its binding-time ``partition_by=`` error.
-    if (
-        node.agg.lower() in GRANULARITY_NAMES
-        or normalize_aggregation_name(node.agg) in BUILTIN_AGGREGATIONS
-    ):
-        return
-    raise GranularityCallError(
-        f"Unknown function in dimension {entry!r}. For a time bucket use "
-        f"``gran(col)`` with one of: {_granularity_names()}. A custom "
-        f"aggregation used as a dimension must carry ``partition_by=``."
-    )
+    return col, (callee.lower() if callee.lower() in GRANULARITY_NAMES else callee)
 
 
 def _split_functional_dimensions(dims: "list | tuple") -> tuple[list, list]:
-    """Partition ``dimensions`` into (kept, extracted-TD-dicts): a ``gran(col)``
-    string becomes a ``TimeDimension`` dict; a non-granularity ``name(col)`` typo raises."""
+    """Partition ``dimensions`` into (kept, extracted-TD-dicts): a built-in ``gran(col)``
+    string becomes a ``TimeDimension`` dict; any other call resolves at binding."""
     kept: list = []
     rewritten: list = []
     for item in dims:
         if isinstance(item, str):
-            td = _time_dimension_from_functional(item)
+            td = time_dimension_from_functional(item, names=GRANULARITY_NAMES)
             if td is not None:
                 rewritten.append(td)
                 continue
-            _reject_unknown_dimension_call(item)
         kept.append(item)
     return kept, rewritten
 
 
 def _coerce_time_dimension_entry(entry: Any) -> Any:
-    """A string ``time_dimensions`` entry must be the functional ``gran(col)`` form;
-    dicts/objects pass through untouched."""
+    """A string ``time_dimensions`` entry must be the functional ``gran(col)`` form (a
+    non-built-in callee resolves at binding); dicts/objects pass through untouched."""
     if not isinstance(entry, str):
         return entry
-    td = _time_dimension_from_functional(entry)
-    if td is None:
+    td = time_dimension_from_functional(entry, names=GRANULARITY_NAMES)
+    if td is not None:
+        return td
+    node, callee = call_callee(entry)
+    col = functional_call_column(node)
+    if callee is None or col is None:
         raise GranularityCallError(
             f"Time dimension {entry!r} must be the functional form "
             f"``gran(col)`` (e.g. ``month(created_at)``) for one of: "
-            f"{_granularity_names()}; no default granularity is invented."
+            f"{_granularity_names()} or a datasource granularity; no default granularity is invented."
         )
-    return td
+    return {"dimension": col, "granularity": callee}
 
 
 def _rewrite_functional_granularity(data: dict) -> dict:
@@ -194,7 +181,7 @@ _C0_RE = re.compile(r"[\x00-\x1f]")
 def _escape_string_value(
     value: str, escape: Literal["sql", "python"], *, backslash_escapes: bool
 ) -> str:
-    """Escape a string value for the target layer (DEV-1727): ``"sql"`` is dialect-aware via
+    """Escape a string value for the target layer: ``"sql"`` is dialect-aware via
     ``backslash_escapes`` (double quote deliberately left untouched); ``"python"`` backslash-escapes
     quotes and encodes C0 controls (SQL quote-doubling would concatenate in the Mode-B AST parser)."""
     if escape == "sql":
@@ -214,13 +201,13 @@ def _render_list_value(
     *,
     backslash_escapes: bool,
 ) -> str:
-    """Render a ``list``/``tuple`` into an ``IN``-list body (DEV-1730): template writes
+    """Render a ``list``/``tuple`` into an ``IN``-list body: template writes
     the parens (``col IN ({var})``), string elements auto-quoted. ``escape="python"``
     appends a trailing comma to force 1-tuple parsing; empty list raises (``IN ()`` invalid)."""
     if len(value) == 0:
         raise ValueError(
             f"Variable '{name}' cannot be an empty list; 'IN ()' is invalid SQL. "
-            f"For 'no filter' semantics, use a sentinel default (see DEV-1730)."
+            f"For 'no filter' semantics, use a sentinel default."
         )
     rendered: list[str] = []
     for element in value:
@@ -670,9 +657,9 @@ def _order_formula_candidate(v: str) -> str | None:
     call-style text, or an expression containing an aggregation), else
     ``None``; shared by ``_capture_raw_formula`` and ``_coerce_order_column``
     so they can't drift. The author's spelling is preserved — resolution
-    happens at binding via the native parser (DEV-1826). Bare-alias
+    happens at binding via the native parser. Bare-alias
     arithmetic (``rev / cnt``) is deliberately NOT a candidate — it falls
-    through to ColumnRef validation and fails fast (DEV-1733)."""
+    through to ColumnRef validation and fails fast."""
     if ":" in v or _FUNCSTYLE_CALL_PATTERN.match(v):
         return v
     if _is_valid_column_ref_name(v):
@@ -746,7 +733,7 @@ def _date_range_problem(date_range: list[str | None]) -> str | None:
         return "must be one time point or a [lower, upper] pair"
     if all(bound is None for bound in date_range):
         return "needs at least one non-null bound"
-    bad = next((b for b in date_range if b is not None and not is_time_point(b)), None)
+    bad = next((b for b in date_range if b is not None and not is_time_point_shape(b)), None)
     return None if bad is None else f"has {bad!r}, which is not {TIME_POINT_FORMS}"
 
 
@@ -755,7 +742,9 @@ class TimeDimension(BaseModel):
     dimension: Annotated[ColumnRef, BeforeValidator(_coerce_column_ref)] = Field(
         validation_alias=AliasChoices("dimension", "column"),
     )
-    granularity: TimeGranularity
+    granularity: GranularitySpec = Field(
+        description="A built-in granularity, or a custom granularity defined on the query's datasource.",
+    )
     date_range: Annotated[list[str | None] | None, BeforeValidator(_coerce_date_range)] = Field(
         default=None, json_schema_extra=_advertise_string_date_range,
     )
@@ -774,7 +763,7 @@ def _advertise_string_time_dimensions(schema: dict[str, Any]) -> None:
     """Add the functional ``gran(col)`` string alternative to each ``time_dimensions``
     item in the derived JSON/MCP input schema, without widening the field's Python
     type (strings are coerced by the model before-validator). A callable
-    ``json_schema_extra`` works on the pydantic >=2.0 floor (DEV-1883)."""
+    ``json_schema_extra`` works on the pydantic >=2.0 floor."""
     for option in schema.get("anyOf", [schema]):
         if option.get("type") == "array" and "items" in option:
             option["items"] = {"anyOf": [option["items"], {"type": "string"}]}
@@ -827,6 +816,18 @@ def _coerce_measures(v: Any) -> Any:
     return [{"formula": item} if isinstance(item, str) else item for item in v]
 
 
+def _may_name_datasource_granularity(entry: str) -> bool:
+    """A whole call whose callee is no built-in name — possibly a datasource granularity."""
+    _, callee = call_callee(entry)
+    if callee is None:
+        return False
+    name = callee.lower()
+    return not (
+        name in GRANULARITY_NAMES or name in SCALAR_FUNCTIONS or name in ALL_TRANSFORMS
+        or normalize_aggregation_name(callee) in BUILTIN_AGGREGATIONS
+    )
+
+
 def _coerce_dimension_item(item: Any) -> Any:
     """Coerce one ``dimensions`` entry: a bare identifier / dotted path stays a ``ColumnRef``, any other string parses as a Mode-B expression → ``ComputedDimension`` (neither raises)."""
     if isinstance(item, (ColumnRef, ComputedDimension)):
@@ -841,6 +842,8 @@ def _coerce_dimension_item(item: Any) -> Any:
         try:
             parse_expr(item)
         except Exception as exc:
+            if _may_name_datasource_granularity(item):
+                return ComputedDimension(expression=item)  # its datasource resolves it at binding
             raise ValueError(
                 f"Dimension {item!r} is neither a column reference (a bare "
                 f"identifier or dotted join path) nor a parseable Mode-B "
@@ -1176,11 +1179,11 @@ class SlayerQuery(BaseModel):
             col = _strip_column_ref(td.dimension, model_name) if model_name else td.dimension
             return (col.full_name, td.granularity, tuple(td.date_range or ()), td.label)
 
-        seen: dict[tuple[str, TimeGranularity], tuple] = {}
+        seen: dict[tuple[str, str], tuple] = {}
         result: list[TimeDimension] = []
         for td in self.time_dimensions:
             canon = _canon(td)
-            base = (canon[0], canon[1])
+            base = (canon[0], str(canon[1]))
             prior = seen.get(base)
             if prior is None:
                 seen[base] = canon
@@ -1188,7 +1191,7 @@ class SlayerQuery(BaseModel):
             elif prior != canon:
                 raise GranularityCallError(
                     f"Conflicting time dimensions on {td.dimension.full_name!r} at "
-                    f"{td.granularity.value} granularity: same column and "
+                    f"{td.granularity} granularity: same column and "
                     f"granularity must not differ in date range or label."
                 )
         if len(result) != len(self.time_dimensions):
@@ -1374,17 +1377,17 @@ def _merge_time_dimensions(
     if not refined:
         return saved
     merged = list(saved or [])
-    positions: dict[tuple[str, TimeGranularity], int] = {}
+    positions: dict[tuple[str, str], int] = {}
     for i, td in enumerate(merged):
-        positions.setdefault((_canonical_ref(td.dimension, model_name).full_name, td.granularity), i)
+        positions.setdefault((_canonical_ref(td.dimension, model_name).full_name, granularity_key(td.granularity)), i)
     for td in refined:
-        column = _canonical_ref(td.dimension, model_name).full_name
-        i = positions.get((column, td.granularity))
+        slot = (_canonical_ref(td.dimension, model_name).full_name, granularity_key(td.granularity))
+        i = positions.get(slot)
         if i is None:
-            positions[(column, td.granularity)] = len(merged)
+            positions[slot] = len(merged)
             merged.append(td)
             continue
-        prior, key = merged[i], f"{column}@{td.granularity.value}"
+        prior, key = merged[i], f"{slot[0]}@{td.granularity}"
         update = {
             attribute: _merge_attribute(
                 saved=getattr(prior, attribute), refined=getattr(td, attribute), key=key, attribute=attribute,

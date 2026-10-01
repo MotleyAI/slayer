@@ -1,4 +1,4 @@
-"""DEV-1883 — granularity-call error surface in dimensions, plus non-regression.
+"""Granularity-call error surface in dimensions, plus non-regression.
 
 Spec: openspec/changes/dev-1883-support-functional-time-granularity-form-monthcol-in-query/
 specs/queries/time-dimensions (Granularity error surface in dimensions).
@@ -56,9 +56,10 @@ class TestWrongShapeGranularityCalls:
 
 
 class TestUnknownSingleColumnCall:
-    def test_typo_names_granularities_and_partition_by_hedge(self) -> None:
-        with pytest.raises(pydantic.ValidationError) as ei:
-            _q(["mnth(created_at)"])
+    async def test_typo_names_granularities_and_partition_by_hedge(self, exec_engine) -> None:
+        query = _q(["mnth(created_at)"])  # accepted at construction; the callee resolves at binding
+        with pytest.raises(errors.QueryTypeError) as ei:
+            await exec_engine.execute(query, dry_run=True)
         msg = str(ei.value)
         for gran in GRANULARITIES:
             assert gran in msg, f"error must name granularity {gran!r}: {msg}"

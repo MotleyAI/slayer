@@ -1,6 +1,6 @@
 """SQLite-based storage for models and datasources.
 
-v4 (DEV-1330): the ``models`` table has a composite ``(data_source, name)``
+v4: the ``models`` table has a composite ``(data_source, name)``
 primary key so two datasources can share a table name without collision. A
 ``settings`` table stores singleton state — currently just the datasource
 priority list used to disambiguate bare-name lookups. ``migrate_sqlite_schema``
@@ -40,13 +40,13 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
         migrate_sqlite_schema(db_path)
         self._migrate_memories_to_text_pk()
         self._init_db()
-        # DEV-1386 / DEV-1405: the embeddings sidecar owns its own table
+        # The embeddings sidecar owns its own table
         # + index. CREATE-IF-NOT-EXISTS makes co-existence with our own
         # schema trivial.
         self._embeddings_store = SidecarEmbeddingStore(db_path=self.db_path)
 
     def _migrate_memories_to_text_pk(self) -> None:
-        """DEV-1428: rebuild pre-DEV-1428 ``memories`` / ``memory_entities``
+        """Rebuild legacy ``memories`` / ``memory_entities``
         tables whose primary key / foreign key columns are INTEGER so
         string ids can be stored.
 
@@ -151,7 +151,7 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
                     value TEXT NOT NULL
                 )
             """)
-            # DEV-1357 v2 / DEV-1428: unified memories with string ids.
+            # Unified memories with string ids.
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS memories (
                     id TEXT PRIMARY KEY,
@@ -292,7 +292,7 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
     async def _load_raw_model_dict(
         self, *, name: str, data_source: str,
     ) -> dict | None:
-        """DEV-1743 v9: read the stored JSON verbatim (no migration / no
+        """Read the stored JSON verbatim (no migration / no
         validation) for sibling-hop resolution during the legacy-``__``
         rewrite. Returns ``None`` when the row is absent or not a mapping."""
         raw = await asyncio.to_thread(self._get_model_sync, data_source, name)
@@ -360,11 +360,11 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
             sampled_values=sampled_values, distinct_count=distinct_count,
         )
 
-    async def save_datasource(self, datasource: DatasourceConfig) -> None:
+    async def _save_datasource_impl(self, datasource: DatasourceConfig) -> None:
         await asyncio.to_thread(self._save_datasource_sync, datasource)
 
     async def get_datasource(self, name: str) -> DatasourceConfig | None:
-        # DEV-1405: sanitize the raw name. Mirrors the YAML backend; the
+        # Sanitize the raw name. Mirrors the YAML backend; the
         # SQLite lookup is parameterised so injection isn't the risk —
         # validation here keeps the public ABC contract uniform across
         # backends.
@@ -387,9 +387,9 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
     async def _set_datasource_priority_raw(self, priority: list[str]) -> None:
         await asyncio.to_thread(self._set_priority_sync, list(priority))
 
-    # ---- memories (DEV-1357 v2) -------------------------------------------
+    # ---- memories -------------------------------------------
     #
-    # DEV-1405: ids are derived from the ``memories`` table itself, not
+    # Ids are derived from the ``memories`` table itself, not
     # from a dedicated counter table. ``save_memory`` runs the insert
     # inside a single transaction with ``INSERT ... RETURNING id`` so the
     # id assignment is atomic with the write — SQLite serializes write
@@ -397,12 +397,12 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
     # both reserve the same id (which would happen if we read
     # ``MAX(id) + 1`` then issued a separate insert).
     #
-    # Any legacy ``id_counters`` table on a pre-DEV-1405 DB is left in
+    # Any legacy ``id_counters`` table on an older DB is left in
     # place as harmless dead data; nothing reads it.
 
     @staticmethod
     def _is_int_shaped_id(value: Any) -> bool:
-        """DEV-1428 allocator predicate: pure-digit, no-leading-zero
+        """Allocator predicate: pure-digit, no-leading-zero
         string. ``"0"`` counts; ``"001"`` / ``"42abc"`` do not."""
         if not isinstance(value, str) or not value:
             return False
@@ -424,7 +424,7 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
         """Reserve / accept an id and persist the new memory inside one
         SQLite transaction. Returns the persisted :class:`Memory`.
 
-        DEV-1428: ``memory_id=None`` triggers allocator (max int-shaped
+        ``memory_id=None`` triggers allocator (max int-shaped
         id + 1); ``memory_id="..."`` is a user-supplied id — upserts on
         collision, preserving ``created_at``.
 

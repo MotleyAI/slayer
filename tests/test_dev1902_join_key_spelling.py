@@ -8,16 +8,12 @@ import pytest
 
 from slayer.core.enums import DataType, JoinCardinality
 from slayer.core.errors import JoinKeyError
-from slayer.core.join_walker import edges_between
+from slayer.core.join_walker import edges_between, provably_to_one, unique_key_sets
 from slayer.core.keys import ColumnKey, Grain
 from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.cardinality import CardinalityVerdict
-from slayer.engine.join_safety import (
-    _unique_key_sets,
-    grain_determines,
-    provably_to_one,
-)
+from slayer.engine.join_safety import grain_determines
 from slayer.engine.query_engine import SlayerQueryEngine
 
 from tests._dev1902_fixtures import (
@@ -147,7 +143,7 @@ class TestProfilingSql:
 
 class TestJoinSafetyLogicalSpace:
     def test_unique_key_sets_are_column_names(self):
-        assert _unique_key_sets(customers_model()) == [["id"]]
+        assert unique_key_sets(customers_model()) == [["id"]]
 
     def test_renamed_target_pk_proves_to_one(self):
         orders, customers = orders_model(), customers_model()

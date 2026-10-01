@@ -28,9 +28,9 @@ from typing import (
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from slayer.core.enums import DataType, JoinType, RANKED_AGGREGATIONS, TimeGranularity
+from slayer.core.enums import DataType, JoinType, RANKED_AGGREGATIONS
 from slayer.core.errors import AmbiguousJoinPathError, CircularJoinPathError
-from slayer.core.keys import SLOT_COMPOSITE_KINDS, AggregateKey, Grain, ArithmeticKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, PREDICATE_COMPARISON_OPS, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, effective_root_grain, constituent_grain, attached_parameter_grain, substitute_value_keys, substitute_consumer_keys, walk_value_keys, REGROUP_LEAF_PREFIX, is_cross_model_agg, is_kernel_requiring, split_top_level_and, window_kwarg_of, is_row_attach_root, attached_inputs, operand_aggregates, operand_constituents, parameter_row_leaves, source_anchor_path, source_row_leaves, VALUE_KEY_TYPES
+from slayer.core.keys import SLOT_COMPOSITE_KINDS, AggregateKey, Grain, ArithmeticKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, PREDICATE_COMPARISON_OPS, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, effective_root_grain, constituent_grain, attached_parameter_grain, substitute_value_keys, substitute_consumer_keys, walk_value_keys, REGROUP_LEAF_PREFIX, is_cross_model_agg, is_kernel_requiring, split_top_level_and, window_kwarg_of, is_row_attach_root, attached_inputs, operand_aggregates, operand_constituents, parameter_row_leaves, source_anchor_path, source_row_leaves, shift_offset_of, VALUE_KEY_TYPES
 from slayer.core.models import Column, SlayerModel, aggregation_definition, empty_value
 from slayer.core.refs import key_display
 from slayer.engine.reference_closure import (
@@ -50,6 +50,7 @@ from slayer.core.join_walker import (
     physical_join_pairs,
     resolve_hop,
     reverse_token,
+    unique_key_sets,
     walk,
 )
 from slayer.engine.join_safety import (
@@ -67,7 +68,6 @@ from slayer.engine.join_safety import (
     reroot_from_root,
     shared_join_key_reroot,
     undetermined_witness,
-    _unique_key_sets,
     safe_reachable,
 )
 from slayer.core.query import (
@@ -143,6 +143,10 @@ from slayer.engine.compile.projection import (
     ProjectionPlanner,
     _canonical_name,
     _iter_slot_deps,
+)
+from slayer.engine.compile.spine import (
+    check_axis_rebucket, check_off_spine_order_keys, host_mask, is_spine_bound, plan_spine, shifted_spine_bounds,
+    spine_column,
 )
 from slayer.engine.compile.shift import carried_placeholders
 from slayer.engine.compile.staging import stage_slots
@@ -608,6 +612,26 @@ _Push = Tuple[
 ]
 
 
+def _producer_row_conjuncts(
+    *, base_filters: List[Tuple[BoundFilter, Optional[str]]],
+    target_path: Tuple[str, ...], root_model: SlayerModel,
+    models_by_name: Dict[str, SlayerModel], host_model: SlayerModel,
+    bundle: ResolvedSourceBundle,
+) -> List[Tuple[ValueKey, Optional[str]]]:
+    """The base ROW conjuncts a home-rooted producer disposes; spine bounds reach a home only through its axis."""
+    spine = spine_column(host_model)
+    reaches_spine = spine is not None and key_attributable_from_root(
+        key=spine, target_path=target_path, root_model=root_model, models_by_name=models_by_name,
+        bundle=bundle, host_model=host_model, host_name=host_model.name,
+    )
+    return [
+        (cj, text)
+        for bf, text in base_filters if bf.phase == Phase.ROW
+        for cj in split_top_level_and(bf.value_key)
+        if reaches_spine or not is_spine_bound(cj, spine=spine)
+    ]
+
+
 def _cross_model_inherited_filters(
     *, base_filters: List[Tuple[BoundFilter, Optional[str]]],
     target_path: Tuple[str, ...], root_model: SlayerModel,
@@ -619,20 +643,20 @@ def _cross_model_inherited_filters(
     EXISTS semi-join (grouped by shared branch, D3/D4)."""
     inherited: List[BoundFilter] = []
     pushes: List[_Push] = []
-    for bf, text in base_filters:
-        if bf.phase != Phase.ROW:
-            continue
-        for cj in split_top_level_and(bf.value_key):
-            inherited_bf, pushed = _conjunct_disposition(
-                cj, text=text, target_path=target_path, root_model=root_model,
-                models_by_name=models_by_name, host_name=host_name,
-                host_model=host_model, bundle=bundle,
-            )
-            if inherited_bf is not None:
-                inherited.append(inherited_bf)
-            else:
-                assert pushed is not None
-                pushes.append(pushed)
+    for cj, text in _producer_row_conjuncts(
+        base_filters=base_filters, target_path=target_path, root_model=root_model,
+        models_by_name=models_by_name, host_model=host_model, bundle=bundle,
+    ):
+        inherited_bf, pushed = _conjunct_disposition(
+            cj, text=text, target_path=target_path, root_model=root_model,
+            models_by_name=models_by_name, host_name=host_name,
+            host_model=host_model, bundle=bundle,
+        )
+        if inherited_bf is not None:
+            inherited.append(inherited_bf)
+        else:
+            assert pushed is not None
+            pushes.append(pushed)
     return inherited, _semi_join_groups_from_pushes(pushes)
 
 
@@ -1174,9 +1198,13 @@ def _plan_shifted_attaches(
             td_keys=td_keys, active_bucket=prebound.main_time_key,
         )
         aliases, alias_hint = _shifted_answer_aliases(answer=answer, public_alias=public_alias)
+        periods, shift_unit = shift_offset_of(key)
         producer_prebound, ordered_pks = _regroup_producer_prebound(
             pks=pks, aggs=[answer], model=producer_model, bundle=bundle,
-            inherited=inherited, n_date_range=0,
+            inherited=[*inherited, *shifted_spine_bounds(
+                prebound=prebound, spine=spine_column(producer_model), periods=periods,
+                unit=shift_unit or key.time_key.granularity,
+            )], n_date_range=0,
             partition_order=lambda pks: sorted(
                 pks, key=lambda k: consumer_order.get(k, len(consumer_order)),
             ),
@@ -2017,6 +2045,10 @@ class _ProducerSynthesisContext(BaseModel):
     # Home path per aggregate (Axiom 2), resolved in the elaborator and read
     # here; the source anchor is the fallback for keys with no term.
     home_paths: Dict[ValueKey, Tuple[str, ...]] = {}
+    # The population a windowed producer's endpoints are drawn from.
+    population: Optional[Population] = None
+    population_filters: List[BoundFilter] = []
+    n_population_date: int = 0
 
     def home_of(self, agg: AggregateKey) -> Tuple[str, ...]:
         return self.home_paths.get(agg, source_anchor_path(agg.source))
@@ -2064,6 +2096,7 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
         check_cross_model_source_resolves(
             target_path=target_path, host_name=host_model.name,
         )
+    root_model = bundle.factor_free(root_model)
     root_name = root_model.name
     alias = public_alias or canonical_aggregate_alias(agg, profile="stage_formula")
     assert alias is not None  # a projected cross-model aggregate always names one
@@ -2097,10 +2130,12 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
             models_by_name=models_by_name, bundle=bundle, host_model=host_model,
             host_name=host_model.name,
         ):
-            safe_pairs.append((g, reroot_from_root(
+            rerooted = reroot_from_root(
                 g, target_path=target_path, root_model=root_model,
                 models_by_name=models_by_name, host_name=host_model.name,
-            )))
+            )
+            check_axis_rebucket(host_key=g, rerooted=rerooted, host=host_model, root=root_model, bundle=bundle)
+            safe_pairs.append((g, rerooted))
         else:
             unattributable.append(_UnattributableDim(
                 key=g, name=context.dim_display(g), reason=key_broadcast_reason(
@@ -2293,6 +2328,15 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
             target_rooted=True,
         )
     )
+    kernel = cm_attach_kwargs.get("kernel")
+    if isinstance(kernel, TrailingWindowProducerKernel):
+        cm_attach_kwargs["kernel"] = kernel.model_copy(update={
+            "endpoints": _window_endpoints(
+                host_keys=[host_by_rerooted[rr] for rr in ordered_pks], context=context,
+                producer_registry=producer_registry,
+            ),
+            "endpoint_keys": list(ordered_pks),
+        })
     alias_hint = canonical_aggregate_alias(agg, profile="stage_formula")
     assert alias_hint is not None  # a cross-model source always has a leaf
     return RegroupAttachPlan(
@@ -2314,6 +2358,27 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
         association_restricted_filter_texts=restricted_texts,
         **cm_attach_kwargs,
     )
+
+
+def _window_endpoints(
+    *, host_keys: List[ValueKey], context: _ProducerSynthesisContext,
+    producer_registry: Optional[Dict[Hashable, PlannedQuery]],
+) -> Optional[PlannedQuery]:
+    """The population's cells at a windowed producer's grain, in host coordinates, host keys' order."""
+    if context.population is None or not isinstance(context.scope, ModelScope):
+        return None
+    prebound, _ = _regroup_producer_prebound(
+        pks=Grain.of(host_keys), aggs=[], model=context.host_model, bundle=context.bundle,
+        inherited=context.population_filters, n_date_range=context.n_population_date,
+        partition_order=lambda _pks: list(host_keys),
+        to_many_handling=context.prebound.to_many_handling,
+    )
+    plan = compile_synthesized(
+        prebound=prebound, source_model=context.host_model.name, bundle=context.bundle,
+        scope=context.scope, stage_schemas=context.stage_schemas,
+        producer_registry=producer_registry, population=context.population,
+    )
+    return plan.model_copy(update={"stage_bundle": context.bundle})
 
 
 def _param_values(agg: AggregateKey) -> List[Tuple[str, ValueKey]]:
@@ -2392,7 +2457,7 @@ def _check_attached_params_determined(
     an ungrained aggregate types at the query grain and is determined by
     construction. A grained transform resolves to its
     result grain first, so this predicate needs no transform arm."""
-    key_sets = _unique_key_sets(root_model)
+    key_sets = unique_key_sets(root_model)
     grain_display = _grain_display(Grain.of(
         column_default_key(path=target_path, leaf=col, base=root_model)
         for col in key_sets[0]
@@ -2437,7 +2502,7 @@ def _association_arm(
         alias=alias,
         windowed_or_ranked=is_kernel_requiring(agg),
     )
-    key_sets = _unique_key_sets(root_model)
+    key_sets = unique_key_sets(root_model)
     check_association_root_unique_key(
         alias=alias, root_name=root_model.name, has_unique_key=bool(key_sets),
     )
@@ -2501,25 +2566,25 @@ def _association_inline_filters(
     dimension binds to the same related row."""
     inherited: List[BoundFilter] = []
     restricted_texts: List[str] = []
-    for bf, text in base_filters:
-        if bf.phase != Phase.ROW:
-            continue
-        for cj in split_top_level_and(bf.value_key):
-            inh, pushed = _conjunct_disposition(
-                cj=cj, text=text, target_path=target_path, root_model=root_model,
+    for cj, text in _producer_row_conjuncts(
+        base_filters=base_filters, target_path=target_path, root_model=root_model,
+        models_by_name=models_by_name, host_model=host_model, bundle=bundle,
+    ):
+        inh, pushed = _conjunct_disposition(
+            cj=cj, text=text, target_path=target_path, root_model=root_model,
+            models_by_name=models_by_name, host_name=host_model.name,
+            host_model=host_model, bundle=bundle,
+        )
+        if inh is not None:
+            inherited.append(inh)
+        else:
+            assert pushed is not None
+            inherited.append(bound_filter_from_key(reroot_from_root(
+                key=cj, target_path=target_path, root_model=root_model,
                 models_by_name=models_by_name, host_name=host_model.name,
-                host_model=host_model, bundle=bundle,
-            )
-            if inh is not None:
-                inherited.append(inh)
-            else:
-                assert pushed is not None
-                inherited.append(bound_filter_from_key(reroot_from_root(
-                    key=cj, target_path=target_path, root_model=root_model,
-                    models_by_name=models_by_name, host_name=host_model.name,
-                )))
-                if pushed[1] is not None:
-                    restricted_texts.append(pushed[1])
+            )))
+            if pushed[1] is not None:
+                restricted_texts.append(pushed[1])
     return inherited, restricted_texts
 
 
@@ -3546,6 +3611,7 @@ def _plan_regroups(
         projected_td_keys=projected_td_keys,
         base_filters_with_text=base_filters_with_text, scope=scope,
         stage_schemas=stage_schemas, home_paths=home_paths,
+        population=population, population_filters=inherited, n_population_date=n_inherited_date,
     )
     cm_phases: List[Tuple[Literal["row", "combined"], List[ValueKey]]] = [
         ("combined", cm_combined), ("row", cm_row),
@@ -4031,10 +4097,18 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
     # total — the prefix ``masks[:n_date_range_masks]`` must stay exactly the
     # surviving frame bounds (readers: sql.generator lowering, _plan_src_row_filters).
     surviving_date_range = 0
+    spine = spine_column(render_source_model)
+    spine_factor = (
+        plan_spine(prebound=typed_prebound, host=render_source_model, spine=spine, bundle=bundle)
+        if spine is not None and render_source_model is not None else None
+    )
+    if spine is None:
+        check_off_spine_order_keys(typed_prebound)
     for i, (bf, ct) in enumerate(zip(bound_filters, filter_typings)):
         key = _drop_conjuncts(value_key=bf.value_key, drop=pushed_set)
+        key = host_mask(key, spine=spine) if key is not None else None
         if key is None:
-            continue  # every conjunct of this filter moved to the EXISTS
+            continue  # every conjunct moved to the EXISTS, or bounds the spine series
         mask_sid = projection.registry.find_by_key(key)
         if mask_sid is None:
             mask_sid = projection.registry.intern(
@@ -4195,6 +4269,7 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
         filter_reachability=filter_reachability,
         empty_base_plan=empty_base_plan,
         semi_join_filters=pop_semi_join_groups,
+        spine=spine_factor,
     )
     return planned
 
@@ -4441,7 +4516,22 @@ def _emit_stage_schema(
     return StageSchema(
         relation_name=stage_name or "(unnamed_stage)", columns=columns,
         grain=grain if distinct_dimension_values else None,
+        default_time_dimension=_surviving_default(projection=projection, columns=columns, root=root),
     )
+
+
+def _surviving_default(*, projection, columns: List[StageColumn], root: Optional[SlayerModel]) -> Optional[str]:
+    """The stage column carrying its source's default time column (raw or bucketed), if it survives."""
+    default = root.effective_default_time_dimension if root is not None else None
+    if default is None:
+        return None
+    wanted = ColumnKey(path=(), leaf=default)
+    visible = [projection.registry.get(sid) for sid in projection.public_projection]
+    for slot, column in zip((s for s in visible if not s.hidden), columns):
+        key = slot.key.column if isinstance(slot.key, TimeTruncKey) else slot.key
+        if key == wanted:
+            return column.name
+    return None
 
 
 def _source_column(
@@ -4476,7 +4566,7 @@ def _stage_column(
     # so a re-binding TimeDimension can type-check the re-bucket.
     row = source if slot.phase == Phase.ROW else None
     upstream_gran = (
-        TimeGranularity(slot.key.granularity)
+        slot.key.granularity
         if isinstance(slot.key, TimeTruncKey) else getattr(row, "granularity", None)
     )
     return StageColumn(

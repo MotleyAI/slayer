@@ -5,13 +5,11 @@ Usage in verify.py:
 """
 
 import json
-import os
 import statistics
 import sys
 import urllib.request
 
-# Import seed data to derive expected counts
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+# Seed data derives the expected counts (``examples/`` is on sys.path via each verify.py).
 from seed import ORDERS
 
 TOTAL_ORDERS = len(ORDERS)
@@ -19,8 +17,10 @@ STATUS_COUNTS = {}
 for o in ORDERS:
     STATUS_COUNTS[o[4]] = STATUS_COUNTS.get(o[4], 0) + 1
 
-# Repeated string literal hoisted to a constant (Sonar python:S1192).
+# Repeated string literals hoisted to constants (Sonar python:S1192).
 COUNT_MEASURE = "count(*)"
+ORDERS_COUNT = "orders._count"
+QUERY_PATH = "/query"
 
 BASE_URL = "http://localhost:5143"
 
@@ -91,7 +91,7 @@ def summary():
 
 
 def run_common_checks():
-    """Run checks common to all database examples. Returns the models list."""
+    """Run checks common to all database examples. Returns the ingested (non-built-in) models."""
     # --- Health check ---
     print("API health:")
     try:
@@ -111,36 +111,37 @@ def run_common_checks():
     check("customers model exists", "customers" in model_names)
     check("products model exists", "products" in model_names)
     check("regions model exists", "regions" in model_names)
+    check("built-in time_spine listed", "time_spine" in model_names)
 
     # --- Queries ---
     print("\nQueries:")
 
     result = api(
         "POST",
-        "/query",
+        QUERY_PATH,
         {
             "source_model": "orders",
             "measures": [COUNT_MEASURE],
         },
     )
-    check(f"total orders = {TOTAL_ORDERS}", result["data"][0]["orders._count"] == TOTAL_ORDERS)
+    check(f"total orders = {TOTAL_ORDERS}", result["data"][0][ORDERS_COUNT] == TOTAL_ORDERS)
 
     result = api(
         "POST",
-        "/query",
+        QUERY_PATH,
         {
             "source_model": "orders",
             "measures": [COUNT_MEASURE],
             "dimensions": ["status"],
         },
     )
-    by_status = {r["orders.status"]: r["orders._count"] for r in result["data"]}
+    by_status = {r["orders.status"]: r[ORDERS_COUNT] for r in result["data"]}
     for status, expected in STATUS_COUNTS.items():
         check(f"{status} = {expected}", by_status.get(status) == expected)
 
     result = api(
         "POST",
-        "/query",
+        QUERY_PATH,
         {
             "source_model": "orders",
             "measures": [COUNT_MEASURE],
@@ -149,12 +150,12 @@ def run_common_checks():
     )
     check(
         f"filter works (completed={STATUS_COUNTS['completed']})",
-        result["data"][0]["orders._count"] == STATUS_COUNTS["completed"],
+        result["data"][0][ORDERS_COUNT] == STATUS_COUNTS["completed"],
     )
 
     result = api(
         "POST",
-        "/query",
+        QUERY_PATH,
         {
             "source_model": "orders",
             "measures": [COUNT_MEASURE],
@@ -167,7 +168,7 @@ def run_common_checks():
 
     result = api(
         "POST",
-        "/query",
+        QUERY_PATH,
         {
             "source_model": "products",
             "measures": [COUNT_MEASURE],
@@ -177,7 +178,7 @@ def run_common_checks():
 
     result = api(
         "POST",
-        "/query",
+        QUERY_PATH,
         {
             "source_model": "customers",
             "measures": [COUNT_MEASURE],
@@ -191,7 +192,7 @@ def run_common_checks():
     check("datasource exists", len(datasources) > 0)
     check("demo datasource", any(d["name"] == "demo" for d in datasources))
 
-    return models
+    return [m for m in models if m["name"] != "time_spine"]
 
 
 def _percentile_cont(values, p):
@@ -227,7 +228,7 @@ def check_median_percentile(measure="quantity"):
 
     result = api(
         "POST",
-        "/query",
+        QUERY_PATH,
         {
             "source_model": "orders",
             "measures": [
@@ -279,7 +280,7 @@ def check_stddev_var(measure="quantity"):
 
     result = api(
         "POST",
-        "/query",
+        QUERY_PATH,
         {
             "source_model": "orders",
             "measures": [
@@ -335,7 +336,7 @@ def check_corr_covar(measure="quantity", other="customer_id"):
 
     result = api(
         "POST",
-        "/query",
+        QUERY_PATH,
         {
             "source_model": "orders",
             "measures": [
@@ -376,27 +377,27 @@ def check_rollup(expect_rollup=True):
         if has_joins:
             result = api(
                 "POST",
-                "/query",
+                QUERY_PATH,
                 {
                     "source_model": "orders",
                     "measures": [COUNT_MEASURE],
                     "dimensions": ["products.category"],
                 },
             )
-            by_cat = {r["orders.products.category"]: r["orders._count"] for r in result["data"]}
+            by_cat = {r["orders.products.category"]: r[ORDERS_COUNT] for r in result["data"]}
             check("query by product category works", len(by_cat) > 0)
             check(f"all categories sum to {TOTAL_ORDERS}", sum(by_cat.values()) == TOTAL_ORDERS)
 
             result = api(
                 "POST",
-                "/query",
+                QUERY_PATH,
                 {
                     "source_model": "orders",
                     "measures": [COUNT_MEASURE],
                     "dimensions": ["customers.regions.name"],
                 },
             )
-            by_region = {r["orders.customers.regions.name"]: r["orders._count"] for r in result["data"]}
+            by_region = {r["orders.customers.regions.name"]: r[ORDERS_COUNT] for r in result["data"]}
             check("transitive join by region works", len(by_region) > 0)
     else:
         check("no joins (expected)", not has_joins)

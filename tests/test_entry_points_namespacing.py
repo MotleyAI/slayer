@@ -290,7 +290,7 @@ class TestAPINamespacedModels:
         resp = http_client.get("/models", params={"data_source": "db_a"})
         assert resp.status_code == 200
         names = sorted(m["name"] for m in resp.json())
-        assert names == ["orders", "users"]
+        assert names == ["orders", "time_spine", "users"]
 
 
 class TestAPIDatasourcePriority:

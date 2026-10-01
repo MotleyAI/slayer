@@ -202,7 +202,8 @@ is the coercion from coarser to finer.
     [enforced: test:tests/test_distinct_dimension_values.py]; it may be named
     explicitly, may be any dataset, is reported back, and defaults to the
     smallest dataset determining every queried dimension — inferred from
-    dimensions and row-level filters only, never measures.
+    dimensions and row-level filters only, never measures; spine dimensions
+    factor out (Axiom 15).
     [enforced: test:tests/test_law_population_invariance.py]
 13. **Positions**: every query expression is a field or a measure; dimensions
     and measures return the value, filters mask on it, order sorts by it — the
@@ -224,6 +225,15 @@ is the coercion from coarser to finer.
     fail loudly). [enforced: test:tests/test_dev1840_execution.py]
     [enforced: test:tests/test_dev1909_population_pushdown.py]
     [enforced: test:tests/test_dev1935_boolean_lowering.py]
+15. **Time spine**: the spine is the dataset of all instants, keyed by its
+    instant. A dataset's axis — its declared default time column, else its
+    sole one — joins it to-one; a dataset reaches the spine by its nearest
+    axis on a to-one chain, equal distances failing loudly, and a path may
+    begin or end at the spine but never cross it. The spine has no countable
+    rows. A query with spine dimensions has population `spine × P`, P
+    inferred per Axiom 12 from its other dimensions and field filters, and
+    must bound the spine from below.
+    [enforced: test:tests/test_dev2015_time_spine.py]
 
 ## 3. Laws
 

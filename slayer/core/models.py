@@ -26,13 +26,13 @@ from slayer.core.enums import (
     ObjectKind,
     PRIMARY_KEY_AGGREGATIONS,
     RANKED_AGGREGATIONS,
-    TimeGranularity,
     _coerce_legacy_datatype,
     builtin_empty_value,
 )
-from slayer.core.errors import JoinKeyError
+from slayer.core.errors import GranularityDefinitionError, JoinKeyError
 from slayer.core.format import NumberFormat
 from slayer.core.formula import ALL_TRANSFORMS
+from slayer.core.granularity import CustomGranularity, GranularitySpec, definition_error, granularity_key
 from slayer.core.keys import SCALAR_FUNCTIONS
 from slayer.core.refs import IDENTIFIER_RE
 from slayer.sql.dialects import dialect_for_ds_type
@@ -196,10 +196,11 @@ class Column(BaseModel):
     label: str | None = None
     hidden: bool = False
     format: NumberFormat | None = None
-    granularity: TimeGranularity | None = Field(
+    granularity: GranularitySpec | None = Field(
         default=None,
         description=(
-            "Time bucket the column's values are already truncated to. "
+            "Time bucket the column's values are already truncated to: a built-in "
+            "granularity or a custom granularity defined on the model's datasource. "
             "Query-backed models stamp it from the final stage; on a table-backed "
             "column set it by hand only when you are sure the values are bucketed "
             "at that granularity. A finer or non-nesting time dimension over the "
@@ -239,7 +240,7 @@ class Column(BaseModel):
         if self.granularity is not None and self.type not in (DataType.DATE, DataType.TIMESTAMP):
             raise ValueError(
                 f"Column {self.name!r} declares granularity "
-                f"'{self.granularity.value}' but its type is {self.type.value}; "
+                f"'{self.granularity}' but its type is {self.type.value}; "
                 f"a granularity is only valid on a temporal (DATE / TIMESTAMP) column."
             )
         return self
@@ -283,6 +284,18 @@ class Column(BaseModel):
 def is_identifier(*, column: Column, columns: list[Column]) -> bool:
     """``column`` is its model's sole primary key (composite-key members are not identifiers)."""
     return column.primary_key and sum(1 for c in columns if c.primary_key) == 1
+
+
+def is_key_set_unique(
+    *, key_columns: list[str], unique_key_sets: list[list[str]]
+) -> bool:
+    """Is the ``key_columns`` tuple unique given the known unique key-sets?
+
+    Unique iff some key-set is a non-empty SUBSET: unique ``(a)`` makes
+    ``(a, b)`` unique, but unique ``(a, b)`` says nothing about ``(a)``.
+    """
+    key_set = set(key_columns)
+    return any(uks and set(uks) <= key_set for uks in unique_key_sets)
 
 
 def _check_allowed_aggregation(
@@ -700,6 +713,8 @@ class SlayerModel(BaseModel):
     source_model_origin: SourceModelOrigin | None = Field(default=None, exclude=True)
     # Runtime-only (never persisted): a query stage's user spelling in join paths.
     _spelling: str | None = PrivateAttr(default=None)  # NOSONAR(S5890) — pydantic PrivateAttr descriptor; the attribute holds str | None
+    # Runtime-only: this model is the P factor of a ``time_spine × P`` population.
+    _population_spine: bool = PrivateAttr(default=False)
 
     @field_validator("filters")
     @classmethod
@@ -849,9 +864,27 @@ class SlayerModel(BaseModel):
         return out
 
     @property
+    def population_spine(self) -> bool:
+        """This model is the P factor of a spine population (its spine hop is the product)."""
+        return self._population_spine
+
+    def as_population_factor(self, factor: bool = True) -> "SlayerModel":
+        out = self.model_copy()
+        out._population_spine = factor
+        return out
+
+    @property
     def awaits_columns(self) -> bool:
         """Query-backed with its output columns not yet populated."""
         return bool(self.source_queries) and not self.columns
+
+    @property
+    def effective_default_time_dimension(self) -> str | None:
+        """The declared ``default_time_dimension``, else the model's only DATE / TIMESTAMP column."""
+        if self.default_time_dimension:
+            return self.default_time_dimension
+        temporal = [c.name for c in self.columns if c.type in (DataType.DATE, DataType.TIMESTAMP)]
+        return temporal[0] if len(temporal) == 1 else None
 
     def get_column(self, name: str) -> Column | None:
         for c in self.columns:
@@ -898,6 +931,13 @@ class DatasourceConfig(BaseModel):
     # BigQuery-specific. A per-end-user OAuth authorized-user grant as JSON;
     # mutually exclusive with ``credentials_json`` (which carries a service account).
     oauth_credentials_json: str | None = Field(default=None, repr=False)
+    granularities: list[CustomGranularity] = Field(
+        default_factory=list,
+        description=(
+            "Custom time granularities: {name, base, multiple, origin}, buckets starting "
+            "at origin + k × multiple × base; usable wherever a built-in granularity is."
+        ),
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -934,6 +974,23 @@ class DatasourceConfig(BaseModel):
                 f"identifier matching [a-z_][a-z0-9_]*, got {v!r}"
             )
         return v
+
+    def check_granularities(self) -> None:
+        """Raise ``GranularityDefinitionError`` for the first entry breaking a save-time rule."""
+        reserved = _reserved_granularity_names()
+        seen: set[str] = set()
+        for g in self.granularities:
+            rule = definition_error(g, reserved=reserved)
+            if rule is None and granularity_key(g.name) in seen:
+                rule = "the name duplicates another entry (names compare case-insensitively)"
+            if rule is not None:
+                raise GranularityDefinitionError(name=g.name, rule=rule)
+            seen.add(granularity_key(g.name))
+
+    @property
+    def granularity_definitions(self) -> dict[str, CustomGranularity]:
+        """The custom granularities keyed by ``granularity_key``."""
+        return {granularity_key(g.name): g for g in self.granularities}
 
     def _get_tsql_connection_string(self) -> str:
         return _SA_URL.create(
@@ -1019,6 +1076,15 @@ class DatasourceConfig(BaseModel):
                 f"{', '.join(unresolved)}"
             )
         return DatasourceConfig(**data)
+
+
+def _reserved_granularity_names() -> dict[str, str]:
+    """Names a custom granularity may not take, lowercased, with the kind they belong to."""
+    out: dict[str, str] = dict.fromkeys(SCALAR_FUNCTIONS, "Mode-B function")
+    out.update(dict.fromkeys(ALL_TRANSFORMS, "transform"))
+    out.update(dict.fromkeys(BUILTIN_AGGREGATIONS, "aggregation"))
+    out.update(dict.fromkeys(GRANULARITY_NAMES, "granularity"))
+    return out
 
 
 def _resolve_env_string(value: str) -> str:

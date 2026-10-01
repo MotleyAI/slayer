@@ -6,8 +6,9 @@ from typing import Optional, Tuple
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from slayer.core.enums import DataType, TimeGranularity
+from slayer.core.enums import DataType
 from slayer.core.format import NumberFormat
+from slayer.core.granularity import Granularity
 from slayer.core.keys import (
     Phase,
     ValueKey,
@@ -30,7 +31,7 @@ class BoundFilter(BaseModel):
 class BoundExpr(BaseModel):
     """A bound expression — its leaves are resolved ``ValueKey``s. ``routed_dotted``
     is the full routed dotted path when the whole field is a short-form
-    ``DottedRef`` that auto-routed (DEV-1856), else ``None`` — the naming layer
+    ``DottedRef`` that auto-routed, else ``None`` — the naming layer
     surfaces a routed dimension under this full path, not the short form typed."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
@@ -53,7 +54,7 @@ class BoundTimeDimension(BaseModel):
 
     bound: BoundExpr
     column_type: Optional[DataType] = None
-    upstream_granularity: Optional[TimeGranularity] = None
+    upstream_granularity: Optional[Granularity] = None
 
 
 def bound_filter_from_key(vk: ValueKey) -> BoundFilter:
@@ -99,4 +100,4 @@ class GranularityConflict(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     column: str
-    granularities: Tuple[TimeGranularity, TimeGranularity]
+    granularities: Tuple[Granularity, Granularity]

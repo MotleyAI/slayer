@@ -28,21 +28,26 @@ from pydantic import BaseModel, ConfigDict
 from slayer.core.enums import DataType, JoinCardinality, JoinType, invert_cardinality
 from slayer.core.errors import AmbiguousJoinPathError, CircularJoinPathError
 from slayer.core.keys import ColumnKey, ColumnSqlKey, ColumnTypeFn, ValueKey, source_anchor_path
-from slayer.core.models import ModelJoin, SlayerModel, join_key_error
+from slayer.core.models import ModelJoin, SlayerModel, is_key_set_unique, join_key_error
+from slayer.core.time_spine import PRODUCT_JOIN_TYPE, TIME_SPINE_MODEL, axis_column, is_spine, spine_joins
 
 __all__ = [
     "OrientedJoin",
+    "OrientedLike",
     "aggregation_owner",
     "canonical_path",
     "canonical_token",
     "edges_between",
+    "is_product_edge",
     "neighbors",
     "observe_traversals",
     "physical_join_pairs",
+    "provably_to_one",
     "resolve_hop",
     "reverse_token",
     "terminal_model",
     "cancelling_revisit",
+    "unique_key_sets",
     "walk",
     "walk_cancelling",
 ]
@@ -152,23 +157,100 @@ def _orient(
     )
 
 
+def _product_edge(model: SlayerModel) -> OrientedJoin:
+    """A population factor's hop to the spine: the product, each factor row fanning to every instant."""
+    return OrientedJoin(
+        source_model=model.name, target_model=TIME_SPINE_MODEL, join_pairs=[],
+        join_type=PRODUCT_JOIN_TYPE, cardinality=JoinCardinality.ONE_TO_MANY,
+        name=TIME_SPINE_MODEL, declaring_model=model.name,
+        source_spelling=model.explicit_spelling,
+    )
+
+
+#: An oriented hop, or a declared join read in its declared orientation — both
+#: expose ``cardinality`` and target-side ``join_pairs``, all the proof reads.
+OrientedLike = OrientedJoin | ModelJoin
+
+
+def unique_key_sets(model: SlayerModel) -> list[list[str]]:
+    """``model``'s unique key-sets by column name: its (composite) PK, then each solo-unique column."""
+    pk = [c.name for c in model.columns if c.primary_key]
+    return ([pk] if pk else []) + [[c.name] for c in model.columns if c.unique]
+
+
+def _to_one(*, cardinality: JoinCardinality | None, target_keys: list[str], target: SlayerModel) -> bool:
+    return cardinality in (JoinCardinality.MANY_TO_ONE, JoinCardinality.ONE_TO_ONE) or is_key_set_unique(
+        key_columns=target_keys, unique_key_sets=unique_key_sets(target),
+    )
+
+
+def provably_to_one(*, edge: OrientedLike, target_model: SlayerModel) -> bool:
+    """Is ``edge`` provably many-to-one onto ``target_model`` in its orientation?
+    True iff the oriented cardinality is m:1/1:1, or the traversal-target columns
+    fully cover a unique key-set of ``target_model``."""
+    return _to_one(cardinality=edge.cardinality, target_keys=[p[1] for p in edge.join_pairs], target=target_model)
+
+
+def _detached_names(models_by_name: dict[str, SlayerModel]) -> frozenset[str]:
+    """Datasets with no provably to-one chain to an axis: the spine meets them only as a product."""
+    datasets = {n: m for n, m in models_by_name.items() if not is_spine(m)}
+    reached = {n for n, m in datasets.items() if axis_column(m) is not None}
+    to_one_into: dict[str, set[str]] = {}
+    for m in datasets.values():
+        for j in m.joins:
+            t = datasets.get(j.target_model)
+            if t is None:
+                continue
+            if _to_one(cardinality=j.cardinality, target_keys=[p[1] for p in j.join_pairs], target=t):
+                to_one_into.setdefault(t.name, set()).add(m.name)
+            if _to_one(cardinality=invert_cardinality(j.cardinality), target_keys=[p[0] for p in j.join_pairs],
+                       target=m):
+                to_one_into.setdefault(m.name, set()).add(t.name)
+    frontier = list(reached)
+    while frontier:
+        fresh = to_one_into.get(frontier.pop(), set()) - reached
+        reached |= fresh
+        frontier.extend(fresh)
+    return frozenset(datasets.keys() - reached)
+
+
+def _detached_edge(*, source: SlayerModel, target: SlayerModel) -> OrientedJoin:
+    """The spine and a dataset without any route to it, meeting only as a product."""
+    return OrientedJoin(
+        source_model=source.name, target_model=target.name, join_pairs=[],
+        join_type=PRODUCT_JOIN_TYPE, cardinality=JoinCardinality.MANY_TO_MANY,
+        name=None, declaring_model=TIME_SPINE_MODEL,
+        source_spelling=source.explicit_spelling, target_spelling=target.explicit_spelling,
+    )
+
+
+def is_product_edge(edge: OrientedJoin) -> bool:
+    """The population's hop to the spine (never an axis edge)."""
+    return edge.target_model == TIME_SPINE_MODEL and not edge.join_pairs
+
+
+def _declared_toward(model: SlayerModel, target: str, *, spine: bool) -> list[ModelJoin]:
+    joins = spine_joins(model, models_by_name={TIME_SPINE_MODEL: model}) if spine else model.joins
+    return [j for j in joins if j.target_model == target]
+
+
 def edges_between(*, source: SlayerModel, target: SlayerModel) -> list[OrientedJoin]:
     """Every edge connecting ``source`` and ``target``, oriented source→target.
 
-    Inspects both models' declarations, so the answer is independent of which
-    side stores the join. Never raises — parallel edges surface as a length-≥2
-    list for the caller to reject.
+    Inspects both models' declarations (and the spine's virtual edges), so the answer
+    is independent of which side stores the join. Never raises — parallel edges
+    surface as a length-≥2 list for the caller to reject.
     """
     out: list[OrientedJoin] = []
     spellings = {m.name: m.explicit_spelling for m in (source, target)}
-    for j in source.joins:
-        if j.target_model == target.name:
-            out.append(_orient(join=j, declaring=source.name, from_model=source.name,
-                               spellings=spellings))
-    for j in target.joins:
-        if j.target_model == source.name:
-            out.append(_orient(join=j, declaring=target.name, from_model=source.name,
-                               spellings=spellings))
+    if source.population_spine and is_spine(target):
+        out.append(_product_edge(source))
+    for j in _declared_toward(source, target.name, spine=is_spine(target)):
+        out.append(_orient(join=j, declaring=source.name, from_model=source.name,
+                           spellings=spellings))
+    for j in _declared_toward(target, source.name, spine=is_spine(source)):
+        out.append(_orient(join=j, declaring=target.name, from_model=source.name,
+                           spellings=spellings))
     _observe((e.target_model for e in out), strict=False)
     return out
 
@@ -192,6 +274,21 @@ def physical_join_pairs(
     return [(physical(src, source), physical(tgt, target)) for src, tgt in edge.join_pairs]
 
 
+def _virtual_spine_edges(*, model: SlayerModel, models_by_name: dict[str, SlayerModel]) -> list[OrientedJoin]:
+    """``model``'s product and detached-dataset hops (none without the spine in the universe)."""
+    spine = models_by_name.get(TIME_SPINE_MODEL)
+    if spine is None:
+        return []
+    if model.population_spine:
+        return [_product_edge(model)]
+    if is_spine(model):
+        return [_detached_edge(source=model, target=models_by_name[n]) for n in sorted(_detached_names(models_by_name))]
+    # An axis is a to-one chain of its own: only an axis-less dataset can be detached.
+    if axis_column(model) is None and model.name in _detached_names(models_by_name):
+        return [_detached_edge(source=model, target=spine)]
+    return []
+
+
 def neighbors(
     *, model: SlayerModel, models_by_name: dict[str, SlayerModel]
 ) -> list[OrientedJoin]:
@@ -200,16 +297,16 @@ def neighbors(
     Outgoing declarations first, then edges declared on other models that reach
     ``model`` (inverted). Never raises.
     """
-    out: list[OrientedJoin] = []
     spellings = {n: m.explicit_spelling for n, m in models_by_name.items()}
     spellings[model.name] = model.explicit_spelling
-    for j in model.joins:
+    out = _virtual_spine_edges(model=model, models_by_name=models_by_name)
+    for j in spine_joins(model, models_by_name=models_by_name):
         out.append(_orient(join=j, declaring=model.name, from_model=model.name,
                            spellings=spellings))
     for other in models_by_name.values():
         if other.name == model.name:
             continue
-        for j in other.joins:
+        for j in spine_joins(other, models_by_name=models_by_name):
             if j.target_model == model.name:
                 out.append(_orient(join=j, declaring=other.name, from_model=model.name,
                                    spellings=spellings))
@@ -261,6 +358,8 @@ def walk(
     visited = {root.name}
     chain: list[OrientedJoin] = []
     for token in path:
+        if chain and is_spine(current):
+            return None  # a path may end at the spine, never cross it
         edge = resolve_hop(current=current, token=token, models_by_name=models_by_name)
         if edge is None:
             return None

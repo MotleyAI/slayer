@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 from typing import Any, NamedTuple
 
+from slayer.core.time_spine import TIME_SPINE_MODEL
 from slayer.core.errors import (
     AmbiguousModelError,
     EntityResolutionError,
@@ -298,7 +299,11 @@ class InspectService:
     # Collection views (null / [] reference)
 
     async def _load_visible_models(self, ds_name: str) -> list[SlayerModel]:
-        return await load_visible_models(self._storage, ds_name)
+        """Visible, name-sorted models of one datasource, built-in models included."""
+        models = await load_visible_models(self._storage, ds_name)
+        models.extend(await self._storage.builtin_models(ds_name))
+        models.sort(key=lambda m: m.name)
+        return models
 
     async def _inspect_collection_model(
         self,
@@ -597,6 +602,7 @@ class InspectService:
             return self._markdown_with_warnings(trunc_desc or "", warnings)
 
         models = await self._load_visible_models(ds_name)
+        granularities = [g.model_dump(mode="json") for g in (cfg.granularities if cfg is not None else [])]
         saved = saved_queries_index(models, max_chars=descriptions_max_chars)
 
         if fmt == "json":
@@ -604,6 +610,7 @@ class InspectService:
                 "canonical_id": ds_name,
                 "entity_type": "datasource",
                 "description": trunc_desc,
+                "granularities": granularities,
                 "models": [
                     model_skeleton_fields(
                         model=m, max_chars=descriptions_max_chars, saved_queries=saved.get(m.name),
@@ -616,6 +623,10 @@ class InspectService:
         md_lines: list[str] = [f"Datasource: {ds_name}"]
         if trunc_desc:
             md_lines.append(f"Description: {trunc_desc}")
+        if granularities:
+            md_lines.append("Custom granularities: " + ", ".join(
+                f"`{g['name']}` ({g['multiple']} × {g['base']} from {g['origin']})" for g in granularities
+            ))
         for m in models:
             md_lines.append(f"\n## `{m.name}`")
             md_lines.append(
@@ -641,6 +652,11 @@ class InspectService:
             canonical = await self._resolve_model_canonical(reference)
         except AmbiguousModelError as exc:
             return _OneResult(None, True, str(exc))
+        if canonical is None and reference.split(".")[-1] == TIME_SPINE_MODEL:
+            spine = await self._storage.get_model_or_builtin(
+                TIME_SPINE_MODEL, data_source=reference.split(".")[0] if "." in reference else None,
+            )
+            canonical = f"{spine.data_source}.{TIME_SPINE_MODEL}" if spine is not None else None
         if canonical is None:
             return _OneResult(None, True, (
                 f"'{reference}' does not resolve to a model. Pass a "
@@ -648,7 +664,7 @@ class InspectService:
                 f"bare model name."
             ))
         ds_name, model_name = canonical.split(".", 1)
-        model = await self._storage.get_model(model_name, data_source=ds_name)
+        model = await self._storage.get_model_or_builtin(model_name, data_source=ds_name)
         if model is None:
             return _OneResult(None, True, (
                 f"Model '{canonical}' not found "

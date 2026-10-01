@@ -1,5 +1,4 @@
-"""DEV-1836 task 1.2 — DEV-1689: query-backed models carry provable uniqueness
-(design D5).
+"""Query-backed models carry provable uniqueness.
 
 Spec: openspec …/specs/models/join-cardinality — "Query-backed models carry
 their provable uniqueness". ``create_model_from_query`` stamps the result
@@ -12,7 +11,7 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.models import ModelJoin
-from slayer.engine.join_safety import provably_to_one
+from slayer.core.join_walker import provably_to_one
 
 from tests._dev1836_fixtures import (
     AMOUNT_BY_STATUS,

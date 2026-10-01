@@ -17,21 +17,6 @@ from slayer.core.models import is_identifier
 # ---------------------------------------------------------------------------
 
 
-def is_key_set_unique(
-    *, key_columns: list[str], unique_key_sets: list[list[str]]
-) -> bool:
-    """Is the ``key_columns`` tuple unique given the known unique key-sets?
-
-    Unique iff some key-set is a non-empty SUBSET: unique ``(a)`` makes
-    ``(a, b)`` unique, but unique ``(a, b)`` says nothing about ``(a)``.
-    """
-    key_set = set(key_columns)
-    for uks in unique_key_sets:
-        if uks and set(uks) <= key_set:
-            return True
-    return False
-
-
 def declares_solo_unique(*, columns, column) -> bool:
     """Does ``column`` ALONE carry a declared uniqueness among ``columns``?"""
     return column.unique or is_identifier(column=column, columns=columns)

@@ -8,6 +8,7 @@ from decimal import Decimal
 from operator import attrgetter
 from typing import Any, Callable
 
+from slayer.core.granularity import CustomGranularity
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
@@ -81,7 +82,7 @@ _LEGACY_KEY_SPELLINGS: dict[type, tuple[str, _LegacyFields]] = {
     )),
     TimeTruncKey: ("TimeTruncKey", (
         ("column", attrgetter("column")),
-        ("granularity", attrgetter("granularity")),
+        ("granularity", lambda k: str(k.granularity)),
     )),
     StarKey: ("StarKey", (("path", attrgetter("path")),)),
     LiteralKey: ("LiteralKey", (("value", attrgetter("value")),)),
@@ -95,7 +96,9 @@ _LEGACY_KEY_SPELLINGS: dict[type, tuple[str, _LegacyFields]] = {
     )),
     TransformKey: ("TransformKey", (
         ("op", attrgetter("op")), ("input", attrgetter("input")),
-        ("args", attrgetter("args")), ("kwargs", attrgetter("kwargs")),
+        ("args", attrgetter("args")), ("kwargs", lambda k: tuple(
+            (n, str(v) if isinstance(v, CustomGranularity) else v) for n, v in k.kwargs
+        )),
         ("partition_keys", lambda k: k.partition_keys.keys),
         ("time_key", attrgetter("time_key")),
     )),

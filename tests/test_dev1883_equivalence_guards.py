@@ -1,4 +1,4 @@
-"""DEV-1883 — fail-closed guards for equivalent time dimensions (Option A).
+"""Fail-closed guards for equivalent time dimensions (Option A).
 
 Two same-column buckets are now legal, so equivalence decided by column-name text
 leaves two silent-wrong holes; both fail closed here until DEV-1925 resolves by bound
@@ -143,8 +143,8 @@ def _bound_td(col: str, gran: str, key: TimeTruncKey, **meta) -> tuple:
 
 
 class TestEquivalentTimeDimensionMetadataGuard:
-    K_MONTH = TimeTruncKey(column=ColumnKey(leaf="created_at"), granularity="month")
-    K_YEAR = TimeTruncKey(column=ColumnKey(leaf="created_at"), granularity="year")
+    K_MONTH = TimeTruncKey(column=ColumnKey(leaf="created_at"), granularity=TimeGranularity.MONTH)
+    K_YEAR = TimeTruncKey(column=ColumnKey(leaf="created_at"), granularity=TimeGranularity.YEAR)
 
     def test_conflicting_date_range_raises(self) -> None:
         tds = [

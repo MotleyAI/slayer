@@ -1,8 +1,7 @@
-"""DEV-1853 — provability is per orientation of the symmetric edge.
+"""Provability is per orientation of the symmetric edge.
 
 ``provably_to_one`` takes the oriented edge: the declared prong uses the
-oriented cardinality (an inverted declared one_to_many proves many_to_one —
-DEV-1840's "inversion never classifies safe" rule is repealed), the structural
+oriented cardinality (an inverted declared one_to_many proves many_to_one), the structural
 prong checks traversal-target-side columns against that model's unique sets.
 ``safe_reachable`` walks any declared edge in either orientation.
 """
@@ -10,9 +9,9 @@ prong checks traversal-target-side columns against that model's unique sets.
 from __future__ import annotations
 
 from slayer.core.enums import JoinCardinality, invert_cardinality
-from slayer.core.join_walker import edges_between
+from slayer.core.join_walker import edges_between, provably_to_one
 from slayer.core.models import Column, ModelJoin, SlayerModel
-from slayer.engine.join_safety import provably_to_one, safe_reachable
+from slayer.engine.join_safety import safe_reachable
 
 
 def _model(name, cols, joins=None):

@@ -1,6 +1,6 @@
 # Time
 
-The single reference for how SLayer reads time: time points, `date_range`, granularity calls, frame bounds and `whole_periods_only`. Date *functions* (`date_part`, `date_diff`, `date_add`, `now()`, `current_date()`) are in [References](references.md#date-and-time-functions).
+The single reference for how SLayer reads time: time points, `date_range`, granularity calls, frame bounds, `whole_periods_only`, the time spine and custom granularities. Date *functions* (`date_part`, `date_diff`, `date_add`, `now()`, `current_date()`) are in [References](references.md#date-and-time-functions).
 
 ## Time points
 
@@ -60,7 +60,7 @@ A time dimension's `date_range` is one time point, or a `[lower, upper]` pair wh
 {"dimension": "created_at", "granularity": "month", "date_range": ["2024-01-01", null]}
 ```
 
-A pair means `x >= lower` and `x <= upper` in the comparison semantics above, so a date-only upper bound covers its whole day; write an instant (`'2024-12-31 00:00:00'`) for a midnight-inclusive end. `[]`, three or more elements, `[null, null]` and unparseable bounds are rejected when the query is built.
+A pair means `x >= lower` and `x <= upper` in the comparison semantics above, so a date-only upper bound covers its whole day; write an instant (`'2024-12-31 00:00:00'`) for a midnight-inclusive end. `[]`, three or more elements, `[null, null]` and unparseable bounds are rejected when the query is built; a relative unit the datasource does not define (`last fortnight`) fails when the query is planned.
 
 ## Time bounds do not clip the window
 
@@ -86,3 +86,21 @@ Mixed filters are split: `"created_at >= '2025-01-01' and status = 'paid'"` rest
 ## `whole_periods_only`
 
 With `whole_periods_only: true`, every frame bound on a time dimension's column snaps down to a bucket boundary, and the upper bound is clamped to now (added when absent), so each returned bucket is complete and the current one is left out. A monthly query with `date_range: ["2025-01-15", "2025-03-10"]` returns January and February; with no range it returns every month before the current one. With several granularities on one column the earliest boundary wins; a pair that does not nest (`week` with `month`) returns a `whole_periods_non_nesting` warning.
+
+## Time spine
+
+Every datasource has a built-in, never-stored model `time_spine` with one column, `timestamp`; each model's **axis** — its `default_time_dimension`, else its only DATE / TIMESTAMP column — joins it many-to-one, so a time dimension on `time_spine.timestamp` returns every bucket in range, gaps included, with each fact attributed through its own axis:
+
+```json
+{"dimensions": ["customers.region"],
+ "time_dimensions": [{"dimension": "time_spine.timestamp", "granularity": "month", "date_range": ["2025-01-01", "2025-06-30"]}],
+ "measures": [{"formula": "sum(orders.amount)"}, {"formula": "sum(returns.amount)"}]}
+```
+
+The population is `time_spine × P` (P the population of the remaining dimensions, or `source_model`); the spine needs a lower frame bound (the upper defaults to the current bucket), a filter on it must be a frame bound, it has no countable rows (no aggregation over it, no raw-rows query), a model reaches it by its nearest axis over to-one hops (equal-length routes are a typed error), and wrap a measure in `coalesce(..., 0)` to fill empty buckets.
+
+A stage of a multi-stage query, or a saved query, can be a spine query too; later stages then see one row per bucket.
+
+## Custom granularities
+
+A datasource's `granularities` list defines named buckets `{name, base, multiple, origin}` — e.g. `{"name": "fiscal_year", "base": "month", "multiple": 12, "origin": "2024-04-01"}` or `{"name": "quarter_hour", "base": "minute", "multiple": 15}` — usable wherever a built-in granularity is (time dimensions, `fiscal_year(order_date)`, `Column.granularity`, transform units), each bucket starting at `origin + k × multiple × base`.

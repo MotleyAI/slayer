@@ -24,6 +24,7 @@ from slayer.core.errors import (
     DimensionTypeError,
     DistinctDimensionValuesError,
     DuplicateMeasureNameError,
+    GranularityShapeError,
     MeasureNameCollidesWithColumnError,
     ModelFilterError,
     NameCollisionError,
@@ -34,11 +35,14 @@ from slayer.core.errors import (
     TimeAxisError,
     TimeDimensionColumnError,
     TimeLiteralError,
+    TimeSpineError,
     TransformInputError,
     UnanalyzableDependencyError,
+    UnknownGranularityError,
     UnsafeJoinInputError,
 )
 from slayer.core.formula import TIME_TRANSFORMS
+from slayer.core.granularity import CustomGranularity, Granularity, nests_into, unknown_granularity_message
 from slayer.core.window_duration import parse_window_duration
 from slayer.core.keys import (
     DATE_ADD_COUNT_ARG,
@@ -848,12 +852,107 @@ def check_windowed_time_dimension(*, resolved: bool) -> None:
     )
 
 
+_SPINE_REMEDY = (
+    "Use time_spine.timestamp only as a time dimension with a granularity "
+    "(time_dimensions=[{dimension: time_spine.timestamp, granularity: month, date_range: [...]}]) "
+    "or inside a date_range / bound filter; for other date logic use the fact's own time column."
+)
+
+
+def check_spine_clash(*, clash: bool) -> None:
+    """A stored model named ``time_spine`` shadows the built-in spine."""
+    if clash:
+        raise TimeSpineError(
+            summary="A stored model is named 'time_spine', the built-in time spine's reserved name.",
+            suggestion="Rename the stored model; the built-in time_spine cannot be shadowed.",
+        )
+
+
+def check_spine_raw_rows(*, raw_rows: bool) -> None:
+    """A spine population has no rows to return one by one."""
+    if raw_rows:
+        raise TimeSpineError(
+            summary="A time_spine query cannot set distinct_dimension_values=false: the spine has no rows.",
+            suggestion=_SPINE_REMEDY,
+        )
+
+
+def check_spine_aggregation(*, offender: Optional[str]) -> None:
+    """No aggregation is homed on the spine: it has no countable rows."""
+    if offender is not None:
+        raise TimeSpineError(
+            summary=f"`{offender}` aggregates over time_spine, which has no countable rows.",
+            location=offender,
+            suggestion="Aggregate a fact's own columns; group by time_spine.timestamp as a time dimension.",
+        )
+
+
+def check_spine_plain_use(*, offender: Optional[str], position: str) -> None:
+    """The spine column appears only bucketed by a granularity, or in a bound."""
+    if offender is not None:
+        raise TimeSpineError(
+            summary=f"time_spine.timestamp in {position} `{offender}` is not a bucketed time dimension.",
+            location=offender,
+            suggestion=_SPINE_REMEDY,
+        )
+
+
+def check_spine_filter(*, offender: Optional[str]) -> None:
+    """A filter on the spine column must be a frame bound."""
+    if offender is not None:
+        raise TimeSpineError(
+            summary=f"Filter `{offender}` on time_spine.timestamp is not a lower or upper bound.",
+            location=offender,
+            suggestion="Filter the fact's own time column instead, or add it as a time dimension "
+            "(time_dimensions) on that column.",
+        )
+
+
+def check_spine_lower_bound(*, has_lower: bool) -> None:
+    """A spine query bounds the spine from below."""
+    if not has_lower:
+        raise TimeSpineError(
+            summary="A time_spine query needs a lower bound on time_spine.timestamp.",
+            suggestion="Add a lower bound: a date_range on the spine time dimension, or a filter "
+            "time_spine.timestamp >= '<time point>'.",
+        )
+
+
+def check_granularity_known(
+    *, name: str, granularity: Optional[Granularity], defined: Mapping[str, CustomGranularity], where: str,
+) -> Granularity:
+    """A granularity name must be built-in or defined on the query's datasource."""
+    if granularity is None:
+        raise UnknownGranularityError(
+            summary=unknown_granularity_message(name=name, defined=defined.values(), where=where),
+        )
+    return granularity
+
+
+def check_granularity_call_shape(*, entry: str, column: Optional[str]) -> None:
+    """A datasource-granularity call must take exactly one column reference."""
+    if column is None:
+        raise GranularityShapeError(
+            summary=f"Granularity call {entry!r} must be a single column reference ``gran(col)``.",
+            suggestion="Pass one bare or dotted column, e.g. ``fiscal_year(created_at)``.",
+        )
+
+
+def check_dimension_call_known(*, entry: str, defined: Mapping[str, CustomGranularity]) -> NoReturn:
+    """A single-column dimension call naming no granularity, scalar, transform or built-in aggregation."""
+    raise UnknownGranularityError(
+        summary=unknown_granularity_message(name=entry, defined=defined.values(), where="dimensions"),
+        suggestion="For a time bucket use ``gran(col)``; a custom aggregation used as a "
+        "dimension must carry ``partition_by=``.",
+    )
+
+
 def check_time_dimension_column(
     *,
     name: str,
     column_type: Optional[DataType],
-    upstream_granularity: Optional[TimeGranularity],
-    requested_granularity: TimeGranularity,
+    upstream_granularity: Optional[Granularity],
+    requested_granularity: Granularity,
 ) -> None:
     """A time dimension's column must be temporal (DATE / TIMESTAMP); a bucketed column — stage, query-backed cache, or hand-set ``Column.granularity`` — re-buckets only to the same or a nesting-coarser granularity (closure Axiom 9). One message for all three origins."""
     if column_type not in (DataType.DATE, DataType.TIMESTAMP):
@@ -865,12 +964,12 @@ def check_time_dimension_column(
     if (
         upstream_granularity is not None
         and requested_granularity != upstream_granularity
-        and not upstream_granularity.nests_into(requested_granularity)
+        and not nests_into(upstream_granularity, requested_granularity)
     ):
         raise TimeDimensionColumnError(
-            summary=f"Cannot re-bucket to '{requested_granularity.value}': the "
-            f"column is already bucketed at '{upstream_granularity.value}', which "
-            f"does not nest into '{requested_granularity.value}'.",
+            summary=f"Cannot re-bucket to '{requested_granularity}': the "
+            f"column is already bucketed at '{upstream_granularity}', which "
+            f"does not nest into '{requested_granularity}'.",
             location=f"time dimension {name!r}",
             suggestion="Request the same or a nesting-coarser granularity, or "
             "bucket the raw column instead.",
@@ -974,7 +1073,7 @@ def check_date_operands(*, roots: Sequence[ValueKey], column_type: ColumnTypeFn)
     keys = [key for root in roots for key in walk_value_keys(root)]
     for key in keys:  # innermost first: a ``gran(col)`` inside a date function names its column
         if isinstance(key, TimeTruncKey):
-            _require_temporal(key.granularity, key.column, column_type=column_type)
+            _require_temporal(str(key.granularity), key.column, column_type=column_type)
     for key in keys:
         if isinstance(key, ScalarCallKey) and key.name in DATE_OPERAND_ARGS:
             _check_date_call(key, column_type=column_type)
@@ -984,12 +1083,16 @@ _PLAIN_COMPARISON_OPS = frozenset({"==", "!=", "<", "<=", ">", ">="})
 _MIRRORED = {"==": "==", "!=": "!=", "<": ">", "<=": ">=", ">": "<", ">=": "<="}
 
 
-def resolve_time_points(key: ValueKey, *, column_type: ColumnTypeFn, now: datetime) -> ValueKey:
-    """Lower every time-point comparison in ``key`` to typed relational bounds; a temporal
-    operand compared with a string that is not a time point fails closed."""
-    rebuilt = cast(ValueKey, key.map_children(lambda c: resolve_time_points(c, column_type=column_type, now=now)))
+def resolve_time_points(
+    key: ValueKey, *, column_type: ColumnTypeFn, now: datetime, units: Mapping[str, CustomGranularity],
+) -> ValueKey:
+    """Lower every time-point comparison in ``key`` to typed relational bounds (relative-token
+    units: built-in or ``units``); a temporal operand compared with a non-time-point string fails closed."""
+    rebuilt = cast(ValueKey, key.map_children(
+        lambda c: resolve_time_points(c, column_type=column_type, now=now, units=units),
+    ))
     if isinstance(rebuilt, TimePointCmpKey):
-        return _lower_time_point(rebuilt, column_type=column_type, now=now)
+        return _lower_time_point(rebuilt, column_type=column_type, now=now, units=units)
     if isinstance(rebuilt, ArithmeticKey):
         _check_plain_time_comparison(rebuilt, column_type=column_type)
     return rebuilt
@@ -997,12 +1100,12 @@ def resolve_time_points(key: ValueKey, *, column_type: ColumnTypeFn, now: dateti
 
 def _time_operand(
     operand: ValueKey, *, column_type: ColumnTypeFn,
-) -> Tuple[ValueKey, Optional[DataType], Optional[TimeGranularity]]:
+) -> Tuple[ValueKey, Optional[DataType], Optional[Granularity]]:
     """``(bounded operand, its temporal type, bucket granularity)``: a direct ``gran(col)``
     bounds ``col``; ISO literals in a conditional count as dates when that makes it temporal."""
     if isinstance(operand, TimeTruncKey):
         t = temporal_type(operand.column, column_type=column_type)
-        return operand.column, t, TimeGranularity(operand.granularity)
+        return operand.column, t, operand.granularity
     t = temporal_type(operand, column_type=column_type)
     if t is None:
         typed = type_date_values(operand)
@@ -1034,11 +1137,13 @@ def _raise_not_a_time_point(*, operand: object, text: str) -> NoReturn:
     )
 
 
-def _lower_time_point(key: TimePointCmpKey, *, column_type: ColumnTypeFn, now: datetime) -> ValueKey:
+def _lower_time_point(
+    key: TimePointCmpKey, *, column_type: ColumnTypeFn, now: datetime, units: Mapping[str, CustomGranularity],
+) -> ValueKey:
     target, t, gran = _time_operand(key.operand, column_type=column_type)
     if t is None:
-        return _non_temporal_comparison(key)
-    point = resolve_time_point(key.point, now=now)
+        return _non_temporal_comparison(key, units=units)
+    point = resolve_time_point(key.point, now=now, units=units)
     if point is None:
         _raise_not_a_time_point(operand=key.operand, text=key.point)
     op = {"in": "=", "not in": "!="}.get(key.op, key.op)
@@ -1086,9 +1191,9 @@ def _raise_sub_day(key: TimePointCmpKey) -> NoReturn:
     )
 
 
-def _non_temporal_comparison(key: TimePointCmpKey) -> ValueKey:
+def _non_temporal_comparison(key: TimePointCmpKey, *, units: Mapping[str, CustomGranularity]) -> ValueKey:
     """A literal time point against a non-temporal operand keeps its plain-string meaning."""
-    if key.op in ("in", "not in") or is_relative_token(key.point):
+    if key.op in ("in", "not in") or is_relative_token(key.point, units=units):
         raise DateOperandTypeError(
             summary=f"'{key.point}' is a time point, but `{_operand_display(key.operand)}` "
             f"is not a DATE or TIMESTAMP operand.",

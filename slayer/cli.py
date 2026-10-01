@@ -66,6 +66,7 @@ from slayer.storage.type_refinement import (
 )
 
 _STORAGE_DEFAULT = default_storage_path()
+_DATASOURCE_NAME_HELP = "Datasource name"
 _STORAGE_HELP = (
     "Storage path: directory for YAML storage, or .db/.sqlite file for SQLite storage "
     f"(default: {_STORAGE_DEFAULT})"
@@ -179,7 +180,7 @@ examples:
     _add_storage_arg(serve_parser)
 
     # ── flight-serve ──────────────────────────────────────────────────
-    # DEV-1390: Arrow Flight SQL endpoint, wire-compatible with the
+    # Arrow Flight SQL endpoint, wire-compatible with the
     # dbt Semantic Layer JDBC driver.
     add_flight_serve_subparser(subparsers)
     # Storage flag is shared with the rest of the subcommands.
@@ -187,7 +188,7 @@ examples:
     _add_storage_arg(flight_parser)
 
     # ── pg-serve ──────────────────────────────────────────────────────
-    # DEV-1486: Postgres wire-protocol endpoint, BI-tool compatible.
+    # Postgres wire-protocol endpoint, BI-tool compatible.
     add_pg_serve_subparser(subparsers)
     pg_parser = subparsers._name_parser_map["pg-serve"]
     _add_storage_arg(pg_parser)
@@ -580,7 +581,7 @@ examples:
     datasources_show_parser = datasources_subparsers.add_parser(
         "show", help="Show datasource config (passwords masked)"
     )
-    datasources_show_parser.add_argument("name", help="Datasource name")
+    datasources_show_parser.add_argument("name", help=_DATASOURCE_NAME_HELP)
 
     datasources_create_parser = datasources_subparsers.add_parser(
         "create",
@@ -599,6 +600,13 @@ examples:
     )
     datasources_create_parser.add_argument(
         "--description", default=None, help="Human-readable description"
+    )
+    datasources_create_parser.add_argument(
+        "--granularities", default=None, type=json.loads,
+        help=(
+            "Custom time granularities as a JSON list of {name, base, multiple, origin}, "
+            'e.g. \'[{"name": "fiscal_year", "base": "year", "origin": "2000-04-01"}]\''
+        ),
     )
     datasources_create_parser.add_argument(
         "--ingest",
@@ -664,10 +672,10 @@ examples:
     )
 
     datasources_delete_parser = datasources_subparsers.add_parser("delete", help="Delete a datasource")
-    datasources_delete_parser.add_argument("name", help="Datasource name")
+    datasources_delete_parser.add_argument("name", help=_DATASOURCE_NAME_HELP)
 
     datasources_test_parser = datasources_subparsers.add_parser("test", help="Test datasource connectivity")
-    datasources_test_parser.add_argument("name", help="Datasource name")
+    datasources_test_parser.add_argument("name", help=_DATASOURCE_NAME_HELP)
 
     # ── memory ────────────────────────────────────────────────────────
     memory_parser = subparsers.add_parser(
@@ -743,7 +751,7 @@ examples:
     # ── storage ──────────────────────────────────────────────────────
     storage_parser = subparsers.add_parser(
         "storage",
-        help="Storage maintenance (DEV-1361: migrate-types refines DOUBLE→INT for legacy models)",
+        help="Storage maintenance (migrate-types refines DOUBLE→INT for legacy models)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     storage_subparsers = storage_parser.add_subparsers(dest="subcommand")
@@ -770,12 +778,12 @@ examples:
     )
     _add_storage_arg(migrate_types_parser)
 
-    # ── inspect (DEV-1588) ───────────────────────────────────────────
+    # ── inspect ───────────────────────────────────────────
     inspect_parser = subparsers.add_parser(
         "inspect",
         help=(
             "Inspect one entity by reference and kind, or several of the same "
-            "kind at once (pass multiple references) (DEV-1588, DEV-1612)"
+            "kind at once (pass multiple references)"
         ),
     )
     inspect_parser.add_argument(
@@ -841,10 +849,10 @@ examples:
     )
     _add_storage_arg(inspect_parser)
 
-    # ── search (DEV-1375) ────────────────────────────────────────────
+    # ── search ────────────────────────────────────────────
     search_parser = subparsers.add_parser(
         "search",
-        help="Semantic search over memories + canonical entities (DEV-1375)",
+        help="Semantic search over memories + canonical entities",
         epilog="""\
 examples:
   # Two-channel search by entity overlap + tantivy full-text
@@ -916,7 +924,7 @@ examples:
         action="store_true",
         default=False,
         help=(
-            "Opt out of compact rendering (DEV-1549). Default is "
+            "Opt out of compact rendering. Default is "
             "compact: memory hits surface ``description`` (or a "
             "first-paragraph fallback from ``learning``) and an "
             "empty ``text``; entity hits surface ``entity.description`` "
@@ -943,7 +951,7 @@ examples:
         help="Model name(s) to refresh (repeatable; default: all in scope).",
     )
 
-    # DEV-1658: the standalone `slayer help` subcommand is removed. SLayer's
+    # The standalone `slayer help` subcommand is removed. SLayer's
     # concepts ship as help memories — read them with
     # `slayer inspect memory:help.intro --type memory` (see the epilog above).
 
@@ -994,16 +1002,16 @@ examples:
 
 
 def _run_inspect(*, args, storage) -> None:
-    """Run ``slayer inspect`` — a single-entity point-lookup (DEV-1588)."""
-    # DEV-1658: ensure the help.* memories exist so `inspect memory:help.intro`
+    """Run ``slayer inspect`` — a single-entity point-lookup."""
+    # Ensure the help.* memories exist so `inspect memory:help.intro`
     # works on a fresh store (idempotent / warm no-op).
     run_sync(seed_help_memories(storage=storage))
     service = InspectService(
         storage=storage, engine=SlayerQueryEngine(storage=storage),
     )
     # argparse ``nargs="*"`` always yields a list; map zero positionals to
-    # ``None`` (the collection sentinel, DEV-1667) and a single positional back
-    # to a bare str so single-id output stays byte-for-byte (DEV-1612). A direct
+    # ``None`` (the collection sentinel) and a single positional back
+    # to a bare str so single-id output stays byte-for-byte. A direct
     # str (older callers / tests) is passed through unchanged.
     reference = args.reference
     if isinstance(reference, list):
@@ -1107,7 +1115,7 @@ def _run_search_refresh_samples(*, args, storage) -> None:
 def _print_search_response_text(response) -> None:
     """Pretty-print a ``SearchResponse`` for the default text format.
 
-    DEV-1549: under compact mode ``hit.text`` is empty and the preview
+    Under compact mode ``hit.text`` is empty and the preview
     lives in ``hit.description``; under ``--verbose`` (compact=False)
     ``hit.text`` carries the full body and is what the caller wants to
     see. Prefer ``text`` when non-empty so ``--verbose`` actually shows
@@ -1136,7 +1144,7 @@ def _print_search_response_text(response) -> None:
 def _run_search_query(args, storage) -> None:
     """``slayer search [...]`` — call the SearchService and emit JSON or
     pretty text."""
-    # DEV-1658: seed help.* memories so concept searches surface them on a
+    # Seed help.* memories so concept searches surface them on a
     # fresh store. Only on the query path — NOT `search refresh-samples`.
     run_sync(seed_help_memories(storage=storage))
     service = SearchService(storage=storage)
@@ -1173,7 +1181,7 @@ def _run_storage(args) -> None:
 
 
 def _run_storage_migrate_types(args) -> None:
-    """DEV-1361: refine DOUBLE → INT on every base column whose live SQL
+    """Refine DOUBLE → INT on every base column whose live SQL
     type is integer. Iterates models in storage, calls
     ``refine_dict_with_live_schema`` per model, optionally writes the
     refined v5 dict back. Hard-fails if a datasource is unreachable.
@@ -1215,7 +1223,7 @@ def _resolve_datasource_for_cli_refinement(
     Returns the ``DatasourceConfig`` when present, ``None`` when missing
     and the model is SQLite-INT-only (best-effort skip — prints a stderr
     skip notice). Raises ``ValueError`` when the model has DOUBLE base
-    columns and the DS is missing (DEV-1361 hard-fail contract).
+    columns and the DS is missing (hard-fail contract).
     """
     ds = run_sync(inner.get_datasource(ds_name))
     if ds is not None:
@@ -1263,7 +1271,7 @@ def _refine_one_model_for_cli(
     dict has refineable DOUBLE base columns AND the datasource entry is
     missing, raises ``ValueError`` rather than silently reporting "nothing
     to refine" for a model the CLI never had enough information to inspect.
-    DEV-1538 SQLite-INT widening is best-effort: a missing datasource for
+    SQLite-INT widening is best-effort: a missing datasource for
     an INT-only model logs a skip notice and returns False. Models with no
     refineable or widenable columns (text-only, query-backed, sql-mode,
     already-narrowed) skip silently and don't require a live datasource.
@@ -1704,7 +1712,7 @@ def _collect_all_models(args, storage) -> list:
 
 def _collect_join_safety_findings(args, storage) -> list:
     """Joins whose arity is neither declared m:1/1:1 nor structurally proven —
-    metrics crossing them broadcast (DEV-1836)."""
+    metrics crossing them broadcast."""
     findings = audit_join_safety(models=_collect_all_models(args=args, storage=storage))
     if getattr(args, "model", None):
         findings = [f for f in findings if f.model == args.model]
@@ -1866,7 +1874,7 @@ def _run_import_dbt(args):
             sys.exit(1)
         sa_engine = engine_factory.get_engine(ds.resolve_env_vars())
 
-    # DEV-1595: pass the datasource dialect (best-effort) so the converter can
+    # Pass the datasource dialect (best-effort) so the converter can
     # emit percentile/median caveats for dialects that lack them (MySQL/T-SQL).
     target_dialect = ds.type if ds is not None else None
 
@@ -1891,7 +1899,7 @@ def _run_import_dbt(args):
             f"({len(model.columns)} columns, {len(model.measures)} measures)"
         )
 
-    # DEV-1595: grouped, category-keyed conversion report + a severity tally.
+    # Grouped, category-keyed conversion report + a severity tally.
     if result.unconverted_metrics or result.warnings:
         print("\nConversion report:")
         print(result.render_report())
@@ -2015,109 +2023,129 @@ def _run_import_osi(args):
     )
 
 
+def _models_list(storage, args) -> None:
+    names = run_sync(storage.list_models())
+    builtins = [m for ds in run_sync(storage.list_datasources()) for m in run_sync(storage.builtin_models(ds))]
+    if not names and not builtins:
+        print("No models found.")
+        return
+    for name in names:
+        model = run_sync(storage.get_model(name))
+        if model and model.hidden:
+            continue
+        desc = f"  — {model.description}" if model and model.description else ""
+        print(f"{name}{desc}")
+    for model in builtins:
+        print(f"{model.name}  — {model.description}")
+
+
+def _models_show(storage, args) -> None:
+    model = run_sync(storage.get_model_or_builtin(args.name))
+    if model is None:
+        print(f"Model '{args.name}' not found.")
+        sys.exit(1)
+    data = model.model_dump(mode="json", exclude_none=True)
+    print(yaml.dump(data, sort_keys=False, default_flow_style=False).rstrip())
+
+
+def _models_create(storage, args) -> None:
+    with open(args.file) as f:
+        data = yaml.safe_load(f)
+    model = SlayerModel.model_validate(data)
+    # Route through engine.save_model so query-backed models get cache
+    # populated (and user-supplied cache fields are rejected).
+    engine = SlayerQueryEngine(storage=storage)
+    try:
+        run_sync(engine.save_model(model))
+    except ValueError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
+    print(f"Created model '{model.name}'.")
+
+
+def _models_delete(storage, args) -> None:
+    if not run_sync(storage.delete_model(args.name)):
+        print(f"Model '{args.name}' not found.")
+        sys.exit(1)
+    print(f"Deleted model '{args.name}'.")
+
+
+_MODELS_COMMANDS = {"list": _models_list, "show": _models_show, "create": _models_create, "delete": _models_delete}
+
+
 def _run_models(args):
     storage = _resolve_storage(args)
-
-    if args.models_command == "list":
-        names = run_sync(storage.list_models())
-        if not names:
-            print("No models found.")
-            return
-        for name in names:
-            model = run_sync(storage.get_model(name))
-            if model and model.hidden:
-                continue
-            desc = f"  — {model.description}" if model and model.description else ""
-            print(f"{name}{desc}")
-
-    elif args.models_command == "show":
-        model = run_sync(storage.get_model(args.name))
-        if model is None:
-            print(f"Model '{args.name}' not found.")
-            sys.exit(1)
-        data = model.model_dump(mode="json", exclude_none=True)
-        print(yaml.dump(data, sort_keys=False, default_flow_style=False).rstrip())
-
-    elif args.models_command == "create":
-        with open(args.file) as f:
-            data = yaml.safe_load(f)
-        model = SlayerModel.model_validate(data)
-        # Route through engine.save_model so query-backed models get cache
-        # populated (and user-supplied cache fields are rejected).
-        engine = SlayerQueryEngine(storage=storage)
-        try:
-            run_sync(engine.save_model(model))
-        except ValueError as e:
-            print(f"Error: {e}")
-            sys.exit(1)
-        print(f"Created model '{model.name}'.")
-
-    elif args.models_command == "delete":
-        deleted = run_sync(storage.delete_model(args.name))
-        if deleted:
-            print(f"Deleted model '{args.name}'.")
-        else:
-            print(f"Model '{args.name}' not found.")
-            sys.exit(1)
-
-    else:
+    handler = _MODELS_COMMANDS.get(args.models_command)
+    if handler is None:
         print("Usage: slayer models {list,show,create,delete}")
         sys.exit(1)
+    handler(storage, args)
+
+
+def _datasources_list(storage, args) -> None:
+    names = run_sync(storage.list_datasources())
+    if not names:
+        print("No datasources found.")
+        return
+    for name in names:
+        ds = run_sync(storage.get_datasource(name))
+        ds_type = ds.type if ds and ds.type else "unknown"
+        print(f"{name}  ({ds_type})")
+
+
+def _datasource_or_exit(storage, name: str):
+    ds = run_sync(storage.get_datasource(name))
+    if ds is None:
+        print(f"Datasource '{name}' not found.")
+        sys.exit(1)
+    return ds
+
+
+def _datasources_show(storage, args) -> None:
+    data = _datasource_or_exit(storage, args.name).model_dump(mode="json", exclude_none=True)
+    for secret_field in ("password", "connection_string", "credentials_json"):
+        if secret_field in data:
+            data[secret_field] = "********"
+    print(yaml.dump(data, sort_keys=False, default_flow_style=False).rstrip())
+
+
+def _datasources_delete(storage, args) -> None:
+    if not run_sync(storage.delete_datasource(args.name)):
+        print(f"Datasource '{args.name}' not found.")
+        sys.exit(1)
+    print(f"Deleted datasource '{args.name}'.")
+
+
+def _datasources_test(storage, args) -> None:
+    ds = _datasource_or_exit(storage, args.name)
+    try:
+        engine = engine_factory.get_engine(ds.resolve_env_vars())
+        with engine.connect() as conn:
+            conn.execute(sa.text("SELECT 1"))
+        # Cached engine — engine_factory owns lifecycle; don't dispose.
+        print(f"OK — connected to '{args.name}' ({ds.type}).")
+    except Exception as e:
+        print(f"FAILED — {e}")
+        sys.exit(1)
+
+
+def _datasources_create(storage, args) -> None:
+    _run_datasources_create(args, storage)
+
+
+_DATASOURCES_COMMANDS = {
+    "list": _datasources_list, "show": _datasources_show, "create": _datasources_create,
+    "delete": _datasources_delete, "test": _datasources_test,
+}
 
 
 def _run_datasources(args):
     storage = _resolve_storage(args)
-
-    if args.datasources_command == "list":
-        names = run_sync(storage.list_datasources())
-        if not names:
-            print("No datasources found.")
-            return
-        for name in names:
-            ds = run_sync(storage.get_datasource(name))
-            ds_type = ds.type if ds and ds.type else "unknown"
-            print(f"{name}  ({ds_type})")
-
-    elif args.datasources_command == "show":
-        ds = run_sync(storage.get_datasource(args.name))
-        if ds is None:
-            print(f"Datasource '{args.name}' not found.")
-            sys.exit(1)
-        data = ds.model_dump(mode="json", exclude_none=True)
-        for secret_field in ("password", "connection_string", "credentials_json"):
-            if secret_field in data:
-                data[secret_field] = "********"
-        print(yaml.dump(data, sort_keys=False, default_flow_style=False).rstrip())
-
-    elif args.datasources_command == "create":
-        _run_datasources_create(args, storage)
-
-    elif args.datasources_command == "delete":
-        deleted = run_sync(storage.delete_datasource(args.name))
-        if deleted:
-            print(f"Deleted datasource '{args.name}'.")
-        else:
-            print(f"Datasource '{args.name}' not found.")
-            sys.exit(1)
-
-    elif args.datasources_command == "test":
-        ds = run_sync(storage.get_datasource(args.name))
-        if ds is None:
-            print(f"Datasource '{args.name}' not found.")
-            sys.exit(1)
-        try:
-            engine = engine_factory.get_engine(ds.resolve_env_vars())
-            with engine.connect() as conn:
-                conn.execute(sa.text("SELECT 1"))
-            # Cached engine — engine_factory owns lifecycle; don't dispose.
-            print(f"OK — connected to '{args.name}' ({ds.type}).")
-        except Exception as e:
-            print(f"FAILED — {e}")
-            sys.exit(1)
-
-    else:
+    handler = _DATASOURCES_COMMANDS.get(args.datasources_command)
+    if handler is None:
         print("Usage: slayer datasources {list,show,create,delete,test}")
         sys.exit(1)
+    handler(storage, args)
 
 
 def _parse_connection_string(url: str) -> tuple[str, str]:
@@ -2152,7 +2180,7 @@ def _parse_connection_string(url: str) -> tuple[str, str]:
             )
         return ds_type, stem
 
-    # DEV-1551: Snowflake connection_name sentinel URL has no path segment —
+    # Snowflake connection_name sentinel URL has no path segment —
     # all routing lives in the query string + the TOML profile. Use the
     # connection_name itself as the derived datasource name fallback so
     # ``slayer datasources create "snowflake://?connection_name=default"``
@@ -2249,6 +2277,7 @@ def _run_datasources_create(args, storage):
             "connection_string": args.connection_string,
             "description": args.description,
             "schema_name": persisted_schema,
+            "granularities": getattr(args, "granularities", None) or [],
         }
     )
 
@@ -2338,6 +2367,7 @@ def _run_datasources_create_demo(args, storage):  # NOSONAR S3776 — linear dem
             "type": "duckdb",
             "database": db_path,
             "description": args.description or "Jaffle Shop demo (synthetic data via jafgen)",
+            "granularities": getattr(args, "granularities", None) or [],
         }
     )
 

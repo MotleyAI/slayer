@@ -98,10 +98,9 @@ def resolve_ranking_time_key(
     raw = _time_dimension_raw_column(row_keys=row_keys)
     if raw is not None:
         return raw
-    if root_model.default_time_dimension:
-        return column_default_key(
-            path=(), leaf=root_model.default_time_dimension, base=root_model,
-        )
+    default = root_model.effective_default_time_dimension
+    if default:
+        return column_default_key(path=(), leaf=default, base=root_model)
     raise ValueError(
         "first/last aggregation requires a ranking time column "
         "(a time_dimension, a DATE/TIMESTAMP dimension, or the "

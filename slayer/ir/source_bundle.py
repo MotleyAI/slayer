@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from pydantic import BaseModel, ConfigDict, Field
 
 from slayer.core.enums import DataType
+from slayer.core.granularity import CustomGranularity
 from slayer.core.models import (
     Column,
     SlayerModel,
@@ -59,6 +60,10 @@ class ResolvedSourceBundle(BaseModel):
     splice_failures: Dict[str, Exception] = Field(default_factory=dict)
     # The one clock reading every time point in this execution resolves against.
     now: datetime = Field(default_factory=datetime.now)
+    # The datasource's custom granularities, keyed by ``granularity_key``.
+    granularities: Dict[str, CustomGranularity] = Field(default_factory=dict)
+    # A stored model shadows the built-in ``time_spine``.
+    spine_clash: bool = False
 
     def get_referenced_model(self, name: str) -> Optional[SlayerModel]:
         """Linear lookup by name (list is small, O(n) scan is fine)."""
@@ -67,9 +72,15 @@ class ResolvedSourceBundle(BaseModel):
                 return m
         return None
 
+    def factor_free(self, model: SlayerModel) -> SlayerModel:
+        """``model`` as stored: a spine population's P factor without its product hop."""
+        return model.as_population_factor(False) if model.population_spine else model
+
     def rerooted(self, new_source: SlayerModel) -> "ResolvedSourceBundle":
         """Re-root at ``new_source``, keeping the former source in the universe
-        (a reverse hop can target it — the map must not shrink)."""
+        (a reverse hop can target it — the map must not shrink); a producer never
+        sees a spine population's product hop."""
+        new_source = self.factor_free(new_source)
         refs = self.referenced_models
         old = self.source_model
         if old is not None and self.get_referenced_model(old.name) is None:
@@ -191,7 +202,7 @@ def model_from_stage_schema(
                 name=c.name,
                 sql=column_sql.get(c.name),
                 type=c.type or DataType.DOUBLE,
-                granularity=c.granularity,
+                granularity=c.granularity.name if isinstance(c.granularity, CustomGranularity) else c.granularity,
                 label=c.label,
                 format=c.format,
                 description=c.description,

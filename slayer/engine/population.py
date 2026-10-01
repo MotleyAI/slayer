@@ -1,4 +1,4 @@
-"""Dimension-determined population inference (DEV-1866).
+"""Dimension-determined population inference.
 
 The population of a rootless query is the model with the fewest routed join hops
 that determines every queried dimension along provably to-one paths, read from
@@ -18,11 +18,11 @@ from slayer.core.errors import (
     PopulationErrorReason,
     PopulationInferenceError,
 )
-from slayer.core.join_walker import neighbors, resolve_hop
+from slayer.core.join_walker import neighbors, provably_to_one, resolve_hop
 from slayer.core.models import SlayerModel
 from slayer.core.query import ComputedDimension, SlayerQuery, render_probe_text
+from slayer.core.time_spine import TIME_SPINE_MODEL, mentions_spine, names_spine
 from slayer.engine.dimension_routing import resolve_route, safe_route_reachable
-from slayer.engine.join_safety import provably_to_one
 from slayer.engine.syntax import (
     AggCall,
     DottedRef,
@@ -126,6 +126,12 @@ def _is_saved_measure_ref(ref: str, *, models_by_name: dict[str, SlayerModel]) -
 
 
 def _parsed_filter_refs(filter_str: str) -> tuple[list[str], bool]:
+    """``(row-valued refs, ok)`` of one masked filter; spine refs are never determination items."""
+    refs, ok = _all_filter_refs(filter_str)
+    return [r for r in refs if not names_spine(r)], ok
+
+
+def _all_filter_refs(filter_str: str) -> tuple[list[str], bool]:
     """``(row-valued refs, ok)`` of one masked filter via the execution filter parser.
 
     Uses ``parse_filter_expr`` (the same parser execution binds with), so SQL operator
@@ -496,6 +502,97 @@ def _resolve_datasource(
             PopulationErrorReason.AMBIGUOUS_DATASOURCE, datasources=sorted(candidate)
         )
     return candidate.pop()
+
+
+# --------------------------------------------------------------------------- #
+# The spine factor (queries/time-spine).
+# --------------------------------------------------------------------------- #
+def spine_factor_out(query: SlayerQuery) -> SlayerQuery:
+    """``query``'s P factor: its spine time dimensions and spine filters removed (measures too)."""
+    return query.model_copy(update={
+        "dimensions": [
+            d for d in query.dimensions or []
+            if not mentions_spine(getattr(d, "expression", None) or getattr(d, "full_name", ""))
+        ] or None,
+        "time_dimensions": [
+            td for td in query.time_dimensions or [] if not names_spine(td.dimension.full_name)
+        ] or None,
+        "filters": [f for f in query.filters or [] if not _spine_only_filter(f)] or None,
+        "measures": None,
+    })
+
+
+def _spine_only_filter(filter_str: str) -> bool:
+    refs, ok = _all_filter_refs(filter_str)
+    return ok and bool(refs) and all(names_spine(r) for r in refs)
+
+
+def _qualified_refs(parsed) -> list[str]:
+    """Every dotted reference in ``parsed``, aggregation sources included."""
+    out: list[str] = []
+    for node in walk_parsed_refs(parsed):
+        if isinstance(node, AggCall):
+            out.extend(_qualified_refs(node.source))
+        elif isinstance(node, DottedRef):
+            out.append(_ref_str(node))
+    return out
+
+
+def _measure_anchor_names(query: SlayerQuery) -> set[str]:
+    names: set[str] = set()
+    for m in query.measures or []:
+        try:
+            parsed = parse_expr(m.formula)
+        except Exception:
+            continue
+        names.update(ref.split(".")[0] for ref in _qualified_refs(parsed))
+    return names - {TIME_SPINE_MODEL}
+
+
+async def infer_spine_population(
+    *,
+    query: SlayerQuery,
+    storage: StorageBackend,
+    data_source: str | None = None,
+    sibling_stage_names: set[str] | None = None,
+) -> PopulationChoice:
+    """P for a spine query: inferred from its non-spine items, else the unit (``time_spine``)."""
+    factor = spine_factor_out(query)
+    if factor.dimensions or factor.time_dimensions or factor.filters:
+        return await infer_population(
+            query=factor, storage=storage, data_source=data_source,
+            sibling_stage_names=sibling_stage_names,
+        )
+    return PopulationChoice(
+        model_name=TIME_SPINE_MODEL,
+        data_source=await spine_datasource(
+            queries=[query], storage=storage, data_source=data_source, sibling_stage_names=sibling_stage_names,
+        ),
+    )
+
+
+async def spine_datasource(
+    *,
+    queries: list[SlayerQuery],
+    storage: StorageBackend,
+    data_source: str | None,
+    sibling_stage_names: set[str] | None = None,
+) -> str:
+    """The datasource of spine-rooted queries: pinned, else the one holding every model they name."""
+    if data_source is not None:
+        return data_source
+    anchors: set[str] = set()
+    for q in queries:
+        anchors |= _anchor_names(q) | _measure_anchor_names(q) | {q.source_model_name or TIME_SPINE_MODEL}
+    anchors -= {TIME_SPINE_MODEL, *(sibling_stage_names or ())}
+    if not anchors:
+        datasources = await storage.list_datasources()
+        if len(datasources) == 1:
+            return datasources[0]
+    _scopes, ds_by_model = await _classification_scopes(
+        storage=storage, data_source=None, anchors=anchors,
+    )
+    return _resolve_datasource(ds_by_model=ds_by_model, data_source=None, anchors=anchors)
 
 
 # --------------------------------------------------------------------------- #

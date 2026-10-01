@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 import functools
 from enum import Enum, IntEnum
 from typing import Dict, Hashable, Iterable, Iterator, List, Literal, Optional, Tuple, Union, cast
@@ -11,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from slayer.core.enums import DataType
 from slayer.core.errors import MaterialisationStageError
 from slayer.core.format import NumberFormat
+from slayer.core.granularity import Granularity
 from slayer.core.keys import (
     CLOCK_FUNCTIONS,
     AggregateKey,
@@ -187,6 +190,19 @@ class MaskTyping(str, Enum):
     MEASURE = "measure"
 
 
+class SpineFactor(BaseModel):
+    """The spine factor of a ``time_spine × P`` population: the bucket series its host reads —
+    ``size`` steps of ``granularity`` from the bucket of ``lower``, kept where they overlap
+    ``[lower, upper)``."""
+
+    model_config = ConfigDict(frozen=True)
+
+    granularity: Granularity
+    lower: datetime
+    upper: datetime
+    size: int = Field(ge=1)
+
+
 class MaskEntry(BaseModel):
     """One typed filter conjunct compiled to a hidden slot; the value masks, is never returned.
 
@@ -229,7 +245,7 @@ class EmptyBaseGrainPlan(BaseModel):
     """Host base has no columns of its own — ``_base`` is a one-row spine for the CROSS
     JOIN. ``host_filter_ids`` (if any) gate it via ``FROM <host> WHERE ... LIMIT 1``, the
     LIMIT stopping the N filtered rows from repeating the scalar N times.
-    ``host_gated`` (DEV-1909) marks a population restricted by a correlated semi-join, so
+    ``host_gated`` marks a population restricted by a correlated semi-join, so
     the spine builds the host FROM and applies the EXISTS even without a plain field mask."""
 
     host_filter_ids: List[BoundFilterId] = Field(default_factory=list)
@@ -247,10 +263,10 @@ class SemiJoinHop(BaseModel):
     join_pairs: Tuple[Tuple[str, str], ...]
     node_path: Tuple[str, ...]
     #: The declared edge is LEFT (default) rather than INNER — the null-rejection
-    #: analysis's input (a declared-INNER hop is never null-extended) (DEV-1935).
+    #: analysis's input (a declared-INNER hop is never null-extended).
     declared_left: bool = True
     #: The hop renders LEFT-joined from a one-row spine (its NULL extension can
-    #: satisfy the predicate); otherwise today's inner correlation (DEV-1935).
+    #: satisfy the predicate); otherwise today's inner correlation.
     null_extended: bool = False
 
     @property
@@ -317,7 +333,7 @@ class TrailingWindowProducerKernel(BaseModel):
     kind: Literal["trailing-window"] = "trailing-window"
     window_raw: str
     window_parts: List[Tuple[int, str]]
-    window_granularity: str
+    window_granularity: Granularity
     bucket_slot_id: SlotId
     #: ROW filters inherited into ``_src`` — frame bounds excluded.
     src_where_filter_ids: List[BoundFilterId] = Field(default_factory=list)
@@ -328,15 +344,20 @@ class TrailingWindowProducerKernel(BaseModel):
     #: Reference-bearing parameters (column / attached-aggregate / column-naming
     #: default) read per interval row as ``_src._w_p<i>``; literals never lift.
     picked_params: List[PickedParam] = Field(default_factory=list)
+    #: The population's cells at this producer's grain (a host-rooted plan): the
+    #: window is evaluated at each, home rows in its interval or not.
+    endpoints: Optional["PlannedQuery"] = None
+    #: The producer's grain keys in ``endpoints``' column order.
+    endpoint_keys: List[ValueKey] = Field(default_factory=list)
 
 
 class AssociationProducerKernel(BaseModel):
-    """A distinct-entity association producer (DEV-1841): level 1 groups by
+    """A distinct-entity association producer: level 1 groups by
     (grain × the root's ``entity_keys``) picking each input once per entity;
     level 2 aggregates over the picked rows per grain. ``entity_keys`` are the
     root's unique-key columns in the producer's coordinates.
 
-    ``null_safe`` (DEV-1847) keeps NULL entity cells as distinct cells instead of
+    ``null_safe`` keeps NULL entity cells as distinct cells instead of
     excluding them — a re-aggregation's entity is an inner-grain cell whose NULL
     component is its own cell (null-safe second-order aggregation).
 
@@ -381,25 +402,25 @@ class RegroupAttachPlan(BaseModel):
     producer_root_model: Optional[str] = None
     broadcast_measure: Optional[str] = None
     broadcast_dimensions: List[Tuple[str, str]] = Field(default_factory=list)
-    # Associate-mode counterparts (DEV-1841): the aggregate resolved by
+    # Associate-mode counterparts: the aggregate resolved by
     # distinct-entity association, and the unattributable dimensions its cells
     # are not additive across (empty for an explicit ``partition_by=`` grain).
     associated_measure: Optional[str] = None
     associated_dimensions: List[str] = Field(default_factory=list)
     # Reachable-but-unsafe conjuncts inlined on a home-rooted association
-    # producer's joins (DEV-1910): carried here since ``semi_join_filters`` is
+    # producer's joins: carried here since ``semi_join_filters`` is
     # empty for association producers, so the informational entry a semi-join
     # push would raise is kept.
     association_restricted_filter_texts: List[str] = Field(default_factory=list)
     # Public measure names for a population semi-join inherited into a host-rooted
-    # producer (DEV-1909): the informational entry names each of the producer's own
+    # producer: the informational entry names each of the producer's own
     # public measures (a producer may carry several), not its internal stage alias.
     population_semi_join_measures: List[str] = Field(default_factory=list)
     # Public measure name for a semi-join pushed into a target-rooted producer whose
-    # ``alias_hint`` is the CANONICAL stage alias (DEV-1935): the informational entry
+    # ``alias_hint`` is the CANONICAL stage alias: the informational entry
     # names the public measure, not that internal alias.
     semi_join_measure: Optional[str] = None
-    # Degenerate second-order aggregation (DEV-1847): the re-aggregation whose
+    # Degenerate second-order aggregation: the re-aggregation whose
     # operand grain equals the outer grain (the identity), with both grains for
     # the warning.
     degenerate_measure: Optional[str] = None
@@ -455,6 +476,8 @@ class PlannedQuery(BaseModel):
     empty_base_plan: Optional[EmptyBaseGrainPlan] = None
     # Filters pushed into this (producer) plan as correlated EXISTS semi-joins.
     semi_join_filters: List[SemiJoinFilter] = Field(default_factory=list)
+    # The host of a spine population renders its spine as this bucket series.
+    spine: Optional[SpineFactor] = None
 
     @model_validator(mode="after")
     def _projection_is_public_and_well_formed(self) -> "PlannedQuery":
@@ -626,6 +649,7 @@ def _validate_stage_order(pq: "PlannedQuery") -> None:
 
 # ``producer_plan`` forward-references ``PlannedQuery``.
 RegroupAttachPlan.model_rebuild()
+TrailingWindowProducerKernel.model_rebuild()
 
 
 def regroup_producer_identity(attach: RegroupAttachPlan) -> Hashable:

@@ -354,9 +354,7 @@ def render_row_expression(
             operands=[_part(o) for o in key.operands],
         )
     if isinstance(key, TimeTruncKey):
-        return dialect.build_date_trunc(
-            col_expr=_part(key.column), granularity=TimeGranularity(key.granularity),
-        )
+        return dialect.build_bucket(col_expr=_part(key.column), granularity=key.granularity)
     if isinstance(key, ScalarCallKey):
         if key.name == "iif":
             return iif_case_chain(key=key, part=_part)
