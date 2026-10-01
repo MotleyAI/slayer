@@ -79,7 +79,7 @@ A custom granularity name SHALL be accepted, and SHALL behave exactly like a bui
 
 ### Requirement: Nesting is boundary containment
 
-A granularity g1 SHALL nest into g2 iff every g2 boundary is a g1 boundary, decided arithmetically from the definitions: between fixed-length bases (`second` … `week`, `week_sunday`) iff g2's length is a multiple of g1's and their origins differ by a multiple of g1's length; between month-family bases (`month`, `quarter`, `year`) iff g2's length in months is a multiple of g1's and their origins share day and time and differ by a multiple of g1's length in months; a fixed-length g1 of one day or finer into a month-family g2 iff g2's origin is aligned to g1's boundaries; never a `week`-based g1 into a month-family g2 nor a month-family g1 into a fixed-length g2. Built-in granularities nest by the same rule. Re-bucketing (stage columns and `Column.granularity`) and `whole_periods_only` SHALL use this relation.
+A granularity g1 SHALL nest into g2 iff every g2 boundary is a g1 boundary, decided arithmetically from the definitions: between fixed-length bases (`second` … `week`, `week_sunday`) iff g2's length is a multiple of g1's and their origins differ by a multiple of g1's length; between month-family bases (`month`, `quarter`, `year`) iff g2's length in months is a multiple of g1's and their origins share day and time and differ by a multiple of g1's length in months; a fixed-length g1 whose length divides one day into a month-family g2 iff g2's origin is aligned to g1's boundaries; never a `week`-based g1 into a month-family g2 nor a month-family g1 into a fixed-length g2. Built-in granularities nest by the same rule. Re-bucketing (stage columns and `Column.granularity`) and `whole_periods_only` SHALL use this relation.
 
 #### Scenario: Month nests into the fiscal year, week does not
 
@@ -95,3 +95,8 @@ A granularity g1 SHALL nest into g2 iff every g2 boundary is a g1 boundary, deci
 
 - **WHEN** a column carrying `quarter_hour` is grouped at `hour`, and a column carrying `minute` is grouped at `quarter_hour`
 - **THEN** both execute; a column carrying `hour` grouped at `quarter_hour` fails with the re-bucketing error
+
+#### Scenario: A five-hour grain does not nest into the month
+
+- **WHEN** a datasource defines `{name: "five_hours", base: "hour", multiple: 5}`, a column carrying `five_hours` is grouped at `month`, and a column carrying `quarter_hour` is grouped at `month`
+- **THEN** the first fails with the typed re-bucketing error and the second executes

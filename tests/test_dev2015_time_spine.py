@@ -277,6 +277,14 @@ class TestPopulation:
                                                  dimensions=["customers.region"]))
         assert cells(other, by=["region"]) == cells(base, by=["region"])
 
+    @pytest.mark.parametrize("dimensions", [[], ["customers.region"]], ids=["unit", "per-group"])
+    async def test_without_measures(self, engine, dimensions) -> None:
+        resp = await engine.execute(spine_query(measures=[], date_range=JAN_MAR, dimensions=dimensions))
+        cells = sorted((*(value(r, "region") for _ in dimensions), bucket_key(r["time_spine.timestamp"]))
+                       for r in resp.data)
+        regions = ["E", "N", "S"] if dimensions else [None]
+        assert cells == sorted((*([g] if dimensions else []), k) for g in regions for k in MONTHS[:3])
+
 
 def _monthly_stage(*, measures=None, date_range=JAN_MAR, **extra) -> SlayerQuery:
     return spine_query(measures=measures or [m("sum(orders.amount)", "o")], date_range=date_range,
