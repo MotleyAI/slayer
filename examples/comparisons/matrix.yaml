@@ -1,4 +1,4 @@
-# The feature matrix on motley.ai/semantic-layer-comparison. Strings are inline markdown (`code`, **bold**,
+# The feature matrix in motley.ai/blog-posts/four-open-source-semantic-layers-54-capabilities. Strings are inline markdown (`code`, **bold**,
 # [links](url)). verdict: yes | partial | no | unknown. After editing, run
 # python examples/comparisons/export_matrix.py to regenerate matrix.json for the website.
 groups:

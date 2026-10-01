@@ -30,8 +30,8 @@ The Node versions are pinned exactly in each `package.json` and `package-lock.js
 | `cube/model_variants/` | Cube models that fail to compile, each loaded on its own |
 | `metricflow/dbt_project/` | dbt project: staging views, a day time spine, semantic models with one simple metric per measure (`semantic.yml`), and model-declared metrics (`model_declared.yml`) |
 | `run_all.sh` | Runs every engine |
-| `matrix.yaml` | The feature matrix on [motley.ai/semantic-layer-comparison](https://motley.ai/semantic-layer-comparison): verdicts, examples and comments per row |
-| `export_matrix.py` | Exports `matrix.yaml`, with each row's probe links, to `matrix.json`, which the website page renders; rerun after editing it or the probes |
+| `matrix.yaml` | The feature matrix in the [comparison post on motley.ai](https://motley.ai/blog-posts/four-open-source-semantic-layers-54-capabilities): verdicts, examples and comments per row |
+| `export_matrix.py` | Exports `matrix.yaml`, with each row's probe links, to `matrix.json`, which the website post renders; rerun after editing it or the probes |
 | `matrix.json` | Generated; copied into motley-website by its `pnpm sync:matrix` |
 
 The dataset keeps edge cases that break naive joins:

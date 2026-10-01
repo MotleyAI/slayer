@@ -1,6 +1,6 @@
 """Export the feature matrix (matrix.yaml) with each row's probes (probes.yaml) to matrix.json.
 
-matrix.json feeds the comparison page on motley.ai (motley-website: /semantic-layer-comparison). Cell text is
+matrix.json feeds the comparison post on motley.ai (motley-website: /blog-posts/four-open-source-semantic-layers-54-capabilities). Cell text is
 rendered from inline markdown to HTML here, so the site only lays it out. Run after editing matrix.yaml or
 probes.yaml; --check only reports whether matrix.json is stale.
 """
