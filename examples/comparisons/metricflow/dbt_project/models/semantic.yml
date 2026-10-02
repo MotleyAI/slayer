@@ -4,7 +4,7 @@ models:
     time_spine:
       standard_granularity_column: date_day
       custom_granularities:
-        - name: fiscal_year   # FY starts 1 April (C17)
+        - name: fiscal_year   # FY starts 1 April (C14)
           column_name: fiscal_year_start
     columns:
       - name: date_day
