@@ -194,7 +194,7 @@ rows:
   cube:
     verdict: partial
     text: Strong fan-out dedup; joins without primary keys fail to compile. No warnings channel.
-    caveat: "**Verified silent cases:** an ignored order-by (Q13, [#282](https://github.com/cube-js/cube/issues/282)), re-truncation accepted (Q18), a second fact grouped by another cube's time dimension (C21); SQL post-processing can be wrong past 50,000 rows (documented)."
+    caveat: "**Verified silent cases:** an ignored order-by (Q13, [#282](https://github.com/cube-js/cube/issues/282)), re-truncation accepted (Q18), a second fact grouped by another cube's time dimension (C19); SQL post-processing can be wrong past 50,000 rows (documented)."
   metricflow:
     verdict: partial
     text: "Fan-out is prevented structurally: MetricFlow refuses rather than multiplies."
@@ -402,7 +402,7 @@ rows:
     verdict: partial
     how: "`mf` CLI and the in-process Python `MetricFlowEngine`."
     caveat: No network API in open source; it's a dbt platform feature.
-  comment: "JSON (SLayer, Cube), a text language (Malloy), or CLI and Python arguments (MetricFlow). MCP servers are C26."
+  comment: "JSON (SLayer, Cube), a text language (Malloy), or CLI and Python arguments (MetricFlow). MCP servers are C24."
 - id: Q20
   group: Query semantics
   name: "Relative & typed filters"
@@ -485,17 +485,18 @@ rows:
     text: "A saved query takes an extra `where`, order and limit (verified)."
     caveat: Not extra metrics or group-bys.
   comment: "Malloy and SLayer merge any clause into a saved query; MetricFlow's saved queries take a few extra clauses."
-- id: C1
-  group: Beyond query semantics
+- id: Q24
+  group: Query semantics
   name: Nested / hierarchical results
   intent: "Per region, a sub-table of top customers, in one result."
   origin: Malloy
   slayer:
-    verdict: 'no'
-    text: Flat results.
+    verdict: partial
+    text: "One nest flattens: `partition_by` for the region total, `rank` for the top N, ties included (verified)."
+    caveat: Sibling nests need one query each.
   malloy:
     verdict: 'yes'
-    how: "`nest: by_customer is { ...; limit: 5 }`"
+    how: "`nest: by_customer is { ...; limit: 5 }`; sibling nests in one query (verified)"
   cube:
     verdict: 'no'
     text: "Flat results, GraphQL included."
@@ -503,17 +504,17 @@ rows:
     verdict: 'no'
     text: Flat results.
   comment: "Malloy's flagship feature."
-- id: C2
-  group: Beyond query semantics
+- id: Q25
+  group: Query semantics
   name: Explicit aggregate locality
   intent: "From orders, average a customer field per customer vs per order."
   origin: Malloy
   slayer:
-    verdict: partial
-    text: "No per-aggregate switch; the reading follows where the value lives (all verified): `avg(customers.credit)` is per customer, all customers; add an orders filter for customers with orders; an orders-side column for per order."
+    verdict: 'yes'
+    text: "The reading follows where the inputs live (all verified): `avg(customers.credit)` is per customer, even as a measure declared on orders; an orders filter keeps customers with orders; an orders-side column (`credit: customers.credit`, in a model extension) reads per order."
   malloy:
     verdict: 'yes'
-    how: "`customers.credit.avg()` vs `source.avg(customers.credit)`"
+    how: "`customers.credit.avg()` vs `source.avg(customers.credit)` (verified)"
     caveat: The per-customer form covers only customers reached through orders.
   cube:
     verdict: partial
@@ -524,7 +525,7 @@ rows:
     text: "A measure lives in its own model, so an average of a customer field is per customer by construction."
     caveat: A per-order weighting needs a joining dbt model.
   comment: "From orders, SLayer's plain cross-model average includes customers with no orders; Malloy's includes only those reached through the join."
-- id: C3
+- id: C1
   group: Beyond query semantics
   name: "Rendering & tooling"
   intent: "Charts, dashboards, notebooks, drill-down, delivery."
@@ -543,7 +544,7 @@ rows:
     verdict: partial
     text: "CLI tables, CSV and a plan SVG; no charts."
   comment: A product-focus difference.
-- id: C4
+- id: C2
   group: Beyond query semantics
   name: "Pre-aggregation & materialization"
   intent: Rollup tables chosen automatically; caching and refresh.
@@ -561,7 +562,7 @@ rows:
     verdict: 'no'
     text: Not in open source.
   comment: "Cube's defining feature."
-- id: C5
+- id: C3
   group: Beyond query semantics
   name: "Parameters & row-level security"
   intent: Runtime parameters; scope every query of a session to one tenant.
@@ -580,7 +581,7 @@ rows:
     verdict: 'no'
     text: No parameters or row-level security in open source.
   comment: Matters most for agent and embedded deployments.
-- id: C6
+- id: C4
   group: Beyond query semantics
   name: Database coverage
   intent: Where it runs.
@@ -598,7 +599,7 @@ rows:
     verdict: 'yes'
     text: "Nine SQL renderers: BigQuery, DuckDB, Redshift, Postgres, Snowflake, Databricks, Trino, Vertica, Athena."
   comment: "Cube's list is the longest."
-- id: C7
+- id: C5
   group: Beyond query semantics
   name: "Model authoring & reuse"
   intent: "How models get written, shared and kept in sync."
@@ -616,7 +617,7 @@ rows:
     verdict: 'yes'
     text: dbt YAML semantic models next to the dbt models they read.
   comment: "Models as data (SLayer), as code (Malloy), generated (Cube), or beside the dbt models they read (MetricFlow)."
-- id: C8
+- id: C6
   group: Beyond query semantics
   name: Value index
   intent: "Find which field holds \"SANTA CRUZ\", for filter suggestions and LLM grounding."
@@ -634,7 +635,7 @@ rows:
     verdict: partial
     how: "`mf list dimension-values` queries live values; no index."
   comment: Relevant to agent accuracy on filter values.
-- id: C9
+- id: C7
   group: Beyond query semantics
   name: Authoring feedback loop
   intent: Catch bad references and types before running.
@@ -653,7 +654,7 @@ rows:
     verdict: 'yes'
     how: "`dbt parse`, `mf validate-configs` (checks the warehouse too) and `--explain` (verified)."
   comment: SLayer has no editor tooling.
-- id: C10
+- id: C8
   group: Beyond query semantics
   name: SQL interop
   intent: "Native SQL anywhere, and semantic queries inside SQL."
@@ -673,14 +674,14 @@ rows:
     text: Raw SQL in expressions and filters.
     caveat: Semantic queries inside SQL need the dbt platform (JDBC).
   comment: Malloy and Cube go both ways.
-- id: C11
+- id: C9
   group: Beyond query semantics
   name: Portable expression library
   intent: The same function means the same thing on every engine.
   origin: Malloy
   slayer:
     verdict: partial
-    text: "Portable scalar functions, including date parts, differences and arithmetic; no regex."
+    text: "Functions SLayer translates per engine (date parts, differences, math, conditionals); others, e.g. regex, are written in the warehouse's own SQL."
   malloy:
     verdict: 'yes'
     text: Broad standard library plus a native escape.
@@ -692,7 +693,7 @@ rows:
     text: "MetricFlow renders its own time, window and offset constructs per dialect."
     caveat: User expressions are raw SQL.
   comment: Overlaps with Q21.
-- id: C12
+- id: C10
   group: Beyond query semantics
   name: BI connectivity
   intent: "Tableau, Metabase, Excel or Power BI query the semantic layer directly."
@@ -712,14 +713,14 @@ rows:
     verdict: 'no'
     text: A dbt platform feature.
   comment: Both speak the Postgres wire protocol; SLayer adds Arrow Flight SQL.
-- id: C13
+- id: C11
   group: Beyond query semantics
   name: Curated semantic surfaces
   intent: Expose a vetted subset of members with pinned join paths.
   origin: Cube
   slayer:
-    verdict: partial
-    text: Facade models with named join edges.
+    verdict: 'yes'
+    text: "Facade models over named join edges; `hidden` keeps the models behind them out of listings (verified)."
   malloy:
     verdict: 'yes'
     how: "`source: s is x extend { accept: ... }`"
@@ -730,7 +731,7 @@ rows:
     verdict: partial
     text: Saved queries.
   comment: "Also Cube's answer to join-path ambiguity (Q8)."
-- id: C14
+- id: C12
   group: Beyond query semantics
   name: "Member-level security & masking"
   intent: Hide or mask specific fields per user.
@@ -748,7 +749,7 @@ rows:
     verdict: 'no'
     text: Not in open source.
   comment: Enterprise-governance territory.
-- id: C15
+- id: C13
   group: Beyond query semantics
   name: Embedded analytics
   intent: "Serve the layer's results inside your own product."
@@ -767,7 +768,7 @@ rows:
     verdict: 'no'
     text: Not in open source.
   comment: Cube Core ships client libraries; hosted embedding is a Cloud feature.
-- id: C16
+- id: C14
   group: Beyond query semantics
   name: "Custom calendars & granularities"
   intent: "Fiscal years, retail 4-5-4, 15-minute buckets."
@@ -786,7 +787,7 @@ rows:
     verdict: 'yes'
     text: "Custom granularities from the time spine, e.g. an April fiscal year (verified)."
   comment: "Interval-based grains in SLayer and Cube; MetricFlow's spine columns can hold any calendar."
-- id: C17
+- id: C15
   group: Beyond query semantics
   name: Drill-across fact tables
   intent: "Combine unrelated facts (orders, returns) over shared dimensions."
@@ -805,7 +806,7 @@ rows:
     text: Metrics from two fact models on one axis (verified).
     caveat: "Refused when the dimension's entity path differs per fact."
   comment: Fan-out safety makes this work in all four.
-- id: C18
+- id: C16
   group: Beyond query semantics
   name: Cross-datasource queries
   intent: Join models living in different databases.
@@ -823,7 +824,7 @@ rows:
     verdict: 'no'
     text: One warehouse connection.
   comment: Nobody does this natively.
-- id: C19
+- id: C17
   group: Beyond query semantics
   name: Drill-down to records
   intent: "From an aggregate, fetch the underlying rows."
@@ -841,7 +842,7 @@ rows:
     verdict: partial
     text: Dimension-only queries list rows of declared dimensions (verified).
   comment: Mostly a UI concern.
-- id: C20
+- id: C18
   group: Beyond query semantics
   name: Entity-graph join inference
   intent: "Joins found automatically from declared keys, including multi-hop."
@@ -859,7 +860,7 @@ rows:
     verdict: 'yes'
     text: "An entity graph, up to two hops."
   comment: Similar power; the differences are direction and hop limits.
-- id: C21
+- id: C19
   group: Beyond query semantics
   name: Shared time axis across facts
   intent: One time dimension for metrics from different fact tables.
@@ -880,7 +881,7 @@ rows:
     how: "`metric_time`"
     caveat: Months with either fact; empty months only with a model change (verified).
   comment: SLayer and MetricFlow give every fact one time axis; elsewhere it is a hand-made calendar.
-- id: C22
+- id: C20
   group: Beyond query semantics
   name: Gap filling / time spine
   intent: "Rows for empty periods, zero-filled."
@@ -900,7 +901,7 @@ rows:
     how: "`join_to_timespine` + `fill_nulls_with` (verified)"
     caveat: "Declared on the metric; a query's start/end alone doesn't fill (verified)."
   comment: SLayer fills in any query; MetricFlow per declared metric.
-- id: C23
+- id: C21
   group: Beyond query semantics
   name: Semi-additive measures
   intent: "Balances: sum across accounts, last value over time."
@@ -919,7 +920,7 @@ rows:
     verdict: 'yes'
     how: "`non_additive_dimension` (docs)"
   comment: Declared once in MetricFlow; one query expression in SLayer; a pipeline elsewhere.
-- id: C24
+- id: C22
   group: Beyond query semantics
   name: Point-in-time (SCD Type II) joins
   intent: Join a fact to the dimension row valid at that time.
@@ -937,7 +938,7 @@ rows:
     verdict: 'yes'
     how: "`validity_params` (docs)"
   comment: A MetricFlow specialty.
-- id: C25
+- id: C23
   group: Beyond query semantics
   name: Open interchange spec
   intent: Import and export semantic definitions in a shared format.
@@ -955,7 +956,7 @@ rows:
     verdict: 'yes'
     text: "Writes an Open Semantic Interchange document (verified); cumulative and conversion metrics can't be represented."
   comment: OSI has been renamed Apache Ossie.
-- id: C26
+- id: C24
   group: Beyond query semantics
   name: Built-in MCP server
   intent: "An agent connects a database, explores it, edits models and queries over MCP, with nothing extra to deploy."
@@ -977,7 +978,7 @@ rows:
     text: "No MCP server; the open-source dbt-mcp's semantic-layer tools call the dbt platform API."
     caveat: "Without a platform account, dbt-mcp offers only CLI, codegen and LSP tools."
   comment: "SLayer and Malloy ship one; SLayer's can also create and change models."
-- id: C27
+- id: C25
   group: Beyond query semantics
   name: Agent memories
   intent: "An agent saves what it learned about the data; later agents get it back when they touch the same columns."
@@ -997,7 +998,7 @@ rows:
     verdict: 'no'
     text: "Hand-written `description` and `meta` in YAML only."
   comment: "Only SLayer keeps notes that agents write and read back."
-- id: C28
+- id: C26
   group: Beyond query semantics
   name: Smart retrieval
   intent: "Find the models, fields and notes a question needs without loading the whole schema."
@@ -1019,7 +1020,7 @@ rows:
     text: "`mf list metrics --search` matches metric names by substring."
     caveat: "dbt-mcp's search tools need the dbt platform."
   comment: "SLayer and Malloy rank schema context for agents; SLayer ranks memories in the same list."
-- id: C29
+- id: C27
   group: Beyond query semantics
   name: Auto-ingestion
   intent: "Point it at a database and get queryable models, with joins from foreign keys."
@@ -1039,7 +1040,7 @@ rows:
     verdict: 'no'
     text: "Semantic models are hand-written YAML; dbt-codegen scaffolds sources and staging models only."
   comment: "SLayer and Cube generate models with joins; only SLayer re-ingests additively."
-- id: C30
+- id: C28
   group: Beyond query semantics
   name: Runtime model editing
   intent: "Add a column, measure or join through an API and use it in the next query: no build, no restart."
@@ -1061,7 +1062,7 @@ rows:
     text: "Edit YAML, then `dbt parse` rebuilds the manifest `mf` reads."
     caveat: No create or edit API.
   comment: "Only SLayer takes model changes through its own API."
-- id: C31
+- id: C29
   group: Beyond query semantics
   name: Schema drift handling
   intent: "Notice when the warehouse changes under the models, and say what to fix."

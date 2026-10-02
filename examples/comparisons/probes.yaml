@@ -11,7 +11,7 @@
 #                 expect: match | {error} | {warning} | {known_bug, buggy_rows, buggy_row_count, buggy_error};
 #                 or steps (MCP tool calls {tool, args} and {sql} edits on a private database copy; "{db_path}" in
 #                 args is that copy) with setup: models | datasource | empty, and expect: match (last step a json
-#                 query) | {error} | {contains: [...]} (substrings of the last step's output)
+#                 query) | {error} | {contains: [...], lacks: [...]} (substrings the last step's output has / lacks)
 #   malloy:       query (appended to malloy/model.malloy), flatten (nest name), keys/values overrides,
 #                 expect: match | {compile_error} | {db_error} | {warning} | {known_bug, buggy_rows, buggy_error, buggy_row_count}
 #   cube:         rest (a /load query) or sql (SQL API), planners (default [tesseract, legacy]), model_declared,
@@ -3374,10 +3374,49 @@ probes:
       rest: {measures: [orders.revenue], timeDimensions: [{dimension: orders.order_date, granularity: day_of_week}]}
       expect: {error: "Granularity \"day_of_week\" does not exist"}
 
-  # ------------------------------------------------------------------ C1 nested results
-  - id: C1
-    row: C1
-    title: per region, a nested table of the top two customers
+  # ------------------------------------------------------------------ Q24 nested results
+  - id: Q24a
+    row: Q24
+    title: per region, the top two customers next to the region total
+    truth_sql: |
+      with cr as (select f.region, c.name, sum(f.amount) s from orders_flat f left join customers c on f.customer_id = c.id group by 1, 2),
+           rt as (select region, sum(amount) t from orders_flat group by 1)
+      select cr.region, cr.name, rt.t, cr.s from (
+        select *, row_number() over (partition by region order by s desc) rn from cr) cr
+      join rt on rt.region is not distinct from cr.region where rn <= 2
+    compare: {keys: [region, by_customer.name], values: [revenue, by_customer.revenue]}
+    slayer:
+      query: {source_model: orders, dimensions: [customers.regions.name, customers.name],
+              filters: ["rank(sum(amount), partition_by=customers.regions.name) <= 2"],
+              measures: [{formula: "sum(amount, partition_by=customers.regions.name)", name: region_rev},
+                         {formula: "sum(amount)", name: cust_rev}]}
+      keys: [customers.regions.name, customers.name]
+      values: [region_rev, cust_rev]
+    malloy:
+      query: |
+        run: orders -> { group_by: region; aggregate: revenue; nest: by_customer is { group_by: name is customers.name; aggregate: revenue; limit: 2 } }
+      flatten: by_customer
+
+  - id: Q24-ties
+    row: Q24
+    title: top two customers per region by order count keeps South's three-way tie
+    truth_sql: |
+      select region, name, n from (
+        select f.region, c.name, count(*) n, rank() over (partition by f.region order by count(*) desc) rk
+        from orders_flat f left join customers c on f.customer_id = c.id group by 1, 2) where rk <= 2
+    contrast_sql: |
+      select region, name, n from (
+        select f.region, c.name, count(*) n, row_number() over (partition by f.region order by count(*) desc, c.name) rn
+        from orders_flat f left join customers c on f.customer_id = c.id group by 1, 2) where rn <= 2
+    compare: {keys: [customers.regions.name, customers.name], values: [n]}
+    slayer:
+      query: {source_model: orders, dimensions: [customers.regions.name, customers.name],
+              filters: ["rank(count(*), partition_by=customers.regions.name) <= 2"],
+              measures: [{formula: "count(*)", name: n}]}
+
+  - id: Q24-sibling-customers
+    row: Q24
+    title: two sibling nests in one query; the top-customers nest
     truth_sql: |
       with cr as (select f.region, c.name, sum(f.amount) s from orders_flat f left join customers c on f.customer_id = c.id group by 1, 2),
            rt as (select region, sum(amount) t from orders_flat group by 1)
@@ -3387,12 +3426,75 @@ probes:
     compare: {keys: [region, by_customer.name], values: [revenue, by_customer.revenue]}
     malloy:
       query: |
-        run: orders -> { group_by: region; aggregate: revenue; nest: by_customer is { group_by: name is customers.name; aggregate: revenue; limit: 2 } }
+        run: orders -> { group_by: region; aggregate: revenue
+          nest: by_customer is { group_by: name is customers.name; aggregate: revenue; limit: 2 }
+          nest: by_status is { group_by: status; aggregate: revenue } }
       flatten: by_customer
 
-  # ------------------------------------------------------------------ C5 row-level security (SLayer)
-  - id: C5a
-    row: C5
+  - id: Q24-sibling-status
+    row: Q24
+    title: the same query's by-status nest, at its own grain
+    truth_sql: |
+      with rs as (select region, status, sum(amount) s from orders_flat group by 1, 2),
+           rt as (select region, sum(amount) t from orders_flat group by 1)
+      select rs.region, rs.status, rt.t, rs.s from rs join rt on rt.region is not distinct from rs.region
+    compare: {keys: [region, by_status.status], values: [revenue, by_status.revenue]}
+    malloy:
+      query: |
+        run: orders -> { group_by: region; aggregate: revenue
+          nest: by_customer is { group_by: name is customers.name; aggregate: revenue; limit: 2 }
+          nest: by_status is { group_by: status; aggregate: revenue } }
+      flatten: by_status
+
+  # ------------------------------------------------------------------ Q25 explicit aggregate locality
+  - id: Q25-per-customer
+    row: Q25
+    title: from orders, avg(customers.credit) averages over every customer
+    truth_sql: select avg(credit) from customers
+    contrast_sql: select avg(c.credit) from orders o join customers c on o.customer_id = c.id
+    compare: {values: [v]}
+    slayer:
+      query: {source_model: orders, measures: [{formula: "avg(customers.credit)", name: v}]}
+
+  - id: Q25-measure-on-orders
+    row: Q25
+    title: the same aggregate declared as an orders measure is still per customer
+    truth_sql: select avg(credit) from customers
+    contrast_sql: select avg(c.credit) from orders o join customers c on o.customer_id = c.id
+    compare: {values: [v]}
+    slayer:
+      query: {source_model: {source_name: orders, measures: [{name: avg_credit, formula: "avg(customers.credit)"}]},
+              measures: [{formula: avg_credit, name: v}]}
+
+  - id: Q25-customers-with-orders
+    row: Q25
+    title: per customer, only customers reached through orders
+    truth_sql: select avg(credit) from customers where id in (select customer_id from orders)
+    contrast_sql: select avg(credit) from customers
+    compare: {values: [v]}
+    slayer:
+      query: {source_model: orders, filters: ["id is not null"], measures: [{formula: "avg(customers.credit)", name: v}]}
+      expect: {warning: semi_join_pushed}
+    malloy:
+      query: |
+        run: orders -> { aggregate: v is customers.credit.avg() }
+
+  - id: Q25-per-order
+    row: Q25
+    title: per order, each order weighting its customer's credit
+    truth_sql: select avg(c.credit) from orders o join customers c on o.customer_id = c.id
+    contrast_sql: select avg(credit) from customers
+    compare: {values: [v]}
+    slayer:
+      query: {source_model: {source_name: orders, columns: [{name: credit, sql: customers.credit, type: number}]},
+              measures: [{formula: "avg(credit)", name: v}]}
+    malloy:
+      query: |
+        run: orders -> { aggregate: v is source.avg(customers.credit) }
+
+  # ------------------------------------------------------------------ C3 row-level security (SLayer)
+  - id: C3a
+    row: C3
     title: orders count and sum scoped to the North tenant
     truth_sql: select count(*), sum(amount) from orders o join customers c on o.customer_id = c.id where c.region_id = 1
     compare: {values: [n, rev]}
@@ -3400,8 +3502,8 @@ probes:
       query: {source_model: orders, measures: [{formula: "count(*)", name: n}, {formula: "sum(amount)", name: rev}]}
       options: {policy: north}
 
-  - id: C5b
-    row: C5
+  - id: C3b
+    row: C3
     title: an agent filter for another tenant returns 0
     truth_sql: select 0
     compare: {values: [n]}
@@ -3409,8 +3511,8 @@ probes:
       query: {source_model: orders, filters: ["customers.region_id = 2"], measures: [{formula: "count(*)", name: n}]}
       options: {policy: north}
 
-  - id: C5c
-    row: C5
+  - id: C3c
+    row: C3
     title: from whitelisted regions, cross-model sums only see North
     truth_sql: |
       select r.name,
@@ -3423,8 +3525,8 @@ probes:
               measures: [{formula: "sum(customers.credit)", name: total_credit}, {formula: "sum(customers.orders.amount)", name: rev}]}
       options: {policy: north}
 
-  - id: C5d
-    row: C5
+  - id: C3d
+    row: C3
     title: multi-stage query under the policy
     truth_sql: |
       select sum(amount), count(distinct customer_id) from orders o join customers c on o.customer_id = c.id where c.region_id = 1
@@ -3435,22 +3537,59 @@ probes:
         - {source_model: s1, measures: [{formula: "sum(rev)", name: t}, {formula: "count(*)", name: n}]}
       options: {policy: north}
 
-  - id: C5e
-    row: C5
+  - id: C3e
+    row: C3
     title: a table the policy does not cover (the orders_flat view) fails closed
     slayer:
       query: {source_model: orders_flat, measures: [{formula: "count(*)", name: n}]}
       options: {policy: north}
       expect: {error: ForcedFilterError}
 
-  - id: C5f
-    row: C5
+  - id: C3f
+    row: C3
     title: a query-backed model is scoped too
     truth_sql: select sum(amount) from orders o join customers c on o.customer_id = c.id where c.region_id = 1
     compare: {values: [v]}
     slayer:
       query: {source_model: monthly_rev, measures: [{formula: "sum(rev)", name: v}]}
       options: {policy: north}
+
+  # ------------------------------------------------------------------ C11 curated semantic surfaces (SLayer)
+  - id: C11-facade-listing
+    row: C11
+    title: a facade over a named join edge is listed; the hidden models behind it are not
+    slayer:
+      steps:
+        - &facade
+          tool: create_model
+          args: {name: sales, sql_table: orders, data_source: probe,
+                 columns: [{name: id, type: number, primary_key: true}, {name: customer_id, type: number, hidden: true},
+                           {name: amount, type: number}, {name: status, type: string}]}
+        - &facade_edge
+          tool: edit_model
+          args: {model_name: sales,
+                 joins: [{name: buyer, target_model: customers, join_pairs: [[customer_id, id]], cardinality: many_to_one}],
+                 columns: [{name: region, sql: buyer.regions.name, type: string}, {name: customer, sql: buyer.name, type: string}],
+                 measures: [{name: revenue, formula: "sum(amount)"}]}
+        - &hide_orders {tool: edit_model, args: {model_name: orders, hidden: true}}
+        - &hide_customers {tool: edit_model, args: {model_name: customers, hidden: true}}
+        - &hide_regions {tool: edit_model, args: {model_name: regions, hidden: true}}
+        - {tool: models_summary, args: {datasource_name: probe}}
+      expect: {contains: ["## `sales`"], lacks: ["## `orders`", "## `customers`", "## `regions`"]}
+
+  - id: C11-facade-query
+    row: C11
+    title: revenue by region through the facade
+    truth_sql: select region, sum(amount) from orders_flat group by 1
+    compare: {keys: [region], values: [revenue]}
+    slayer:
+      steps:
+        - *facade
+        - *facade_edge
+        - *hide_orders
+        - *hide_customers
+        - *hide_regions
+        - {tool: query, args: {format: json, query: {source_model: sales, dimensions: [region], measures: [revenue]}}}
 
   # ------------------------------------------------------------------ MetricFlow-specific probes
   - id: Q1-mf-metric-filter-region
@@ -3875,8 +4014,8 @@ probes:
         group_by: [customer__tier]
       expect: {error: Group by items can't be specified with a saved query}
 
-  - id: C16-mf-fiscal-year
-    row: C16
+  - id: C14-mf-fiscal-year
+    row: C14
     title: custom granularity fiscal_year (April start) from the time spine
     truth_sql: |
       select cast(date_trunc('year', order_date - interval 3 month) + interval 3 month as date), sum(amount)
@@ -3889,8 +4028,8 @@ probes:
         metrics: [revenue]
         group_by: [metric_time__fiscal_year]
 
-  - id: C17-mf-drill-across-tier
-    row: C17
+  - id: C15-mf-drill-across-tier
+    row: C15
     title: metrics from two fact models on one tier axis, not multiplied (orphan order adds a NULL tier row)
     truth_sql: |
       with c as (select tier, sum(credit) credit from customers group by 1),
@@ -3904,8 +4043,8 @@ probes:
         metrics: [credit_total, order_count]
         group_by: [customer__tier]
 
-  - id: C19-mf-dimension-only
-    row: C19
+  - id: C17-mf-dimension-only
+    row: C17
     title: a dimension-only query lists order-level rows (a FULL OUTER JOIN keeps Frank and the orphan)
     truth_sql: select o.id, c.name from orders o full outer join customers c on o.customer_id = c.id
     compare:
@@ -4039,9 +4178,9 @@ probes:
       refine: {measures: [{formula: "count(*)", name: rev}]}
       expect: {error: RefinementConflictError}
 
-  # ------------------------------------------------------------------ C23 gap filling (time spine)
-  - id: C22-spine-fill-month
-    row: C22
+  # ------------------------------------------------------------------ C20 gap filling (time spine)
+  - id: C20-spine-fill-month
+    row: C20
     title: every month 2024-01..2025-06 on the spine; empty months count 0, sum NULL
     truth_sql: |
       with m as (select * from generate_series(timestamp '2024-01-01', timestamp '2025-06-01', interval 1 month) t(mo)),
@@ -4052,8 +4191,8 @@ probes:
       query: {time_dimensions: [{dimension: time_spine.timestamp, granularity: month, date_range: ["2024-01-01", "2025-06-30"]}],
               measures: [{formula: "count(orders.id)", name: n}, {formula: "sum(orders.amount)", name: v}]}
 
-  - id: C22-spine-fill-coalesce
-    row: C22
+  - id: C20-spine-fill-coalesce
+    row: C20
     title: coalesce(sum, 0) fills the empty months with 0
     truth_sql: |
       with m as (select * from generate_series(timestamp '2024-01-01', timestamp '2025-06-01', interval 1 month) t(mo)),
@@ -4064,16 +4203,16 @@ probes:
       query: {time_dimensions: [{dimension: time_spine.timestamp, granularity: month, date_range: ["2024-01-01", "2025-06-30"]}],
               measures: [{formula: "coalesce(sum(orders.amount), 0)", name: v}]}
 
-  - id: C22-spine-no-lower-bound
-    row: C22
+  - id: C20-spine-no-lower-bound
+    row: C20
     title: a spine query without a lower bound is a typed error
     slayer:
       query: {time_dimensions: [{dimension: time_spine.timestamp, granularity: month}],
               measures: [{formula: "sum(orders.amount)", name: v}]}
       expect: {error: TimeSpineError}
 
-  - id: C22-spine-per-group
-    row: C22
+  - id: C20-spine-per-group
+    row: C20
     title: region x every month; the orphan order is the NULL-region cell (with Eve)
     truth_sql: |
       with m as (select * from generate_series(timestamp '2024-01-01', timestamp '2025-06-01', interval 1 month) t(mo)),
@@ -4088,8 +4227,8 @@ probes:
               time_dimensions: [{dimension: time_spine.timestamp, granularity: month, date_range: ["2024-01-01", "2025-06-30"]}],
               measures: [{formula: "sum(orders.amount)", name: v}]}
 
-  - id: C22-spine-fact-filter
-    row: C22
+  - id: C20-spine-fact-filter
+    row: C20
     title: a fact filter keeps every month
     truth_sql: |
       with m as (select * from generate_series(timestamp '2024-01-01', timestamp '2025-06-01', interval 1 month) t(mo)),
@@ -4100,8 +4239,8 @@ probes:
       query: {time_dimensions: [{dimension: time_spine.timestamp, granularity: month, date_range: ["2024-01-01", "2025-06-30"]}],
               filters: ["orders.status = 'bad'"], measures: [{formula: "sum(orders.amount)", name: v}]}
 
-  - id: C22-spine-change
-    row: C22
+  - id: C20-spine-change
+    row: C20
     title: change() on the dense series is NULL next to empty months
     truth_sql: |
       with m as (select * from generate_series(timestamp '2024-01-01', timestamp '2025-06-01', interval 1 month) t(mo)),
@@ -4113,8 +4252,8 @@ probes:
       query: {time_dimensions: [{dimension: time_spine.timestamp, granularity: month, date_range: ["2024-01-01", "2025-06-30"]}],
               measures: [{formula: "change(sum(orders.amount))", name: c}]}
 
-  - id: C22-spine-cumsum
-    row: C22
+  - id: C20-spine-cumsum
+    row: C20
     title: cumsum(coalesce(sum, 0)) is flat through the gap
     truth_sql: |
       with m as (select * from generate_series(timestamp '2024-01-01', timestamp '2025-06-01', interval 1 month) t(mo)),
@@ -4126,8 +4265,8 @@ probes:
       query: {time_dimensions: [{dimension: time_spine.timestamp, granularity: month, date_range: ["2024-01-01", "2025-06-30"]}],
               measures: [{formula: "cumsum(coalesce(sum(orders.amount), 0))", name: c}]}
 
-  - id: C22-spine-consecutive
-    row: C22
+  - id: C20-spine-consecutive
+    row: C20
     title: consecutive_periods(count > 0) restarts after empty months
     truth_sql: |
       with m as (select * from generate_series(timestamp '2024-01-01', timestamp '2025-06-01', interval 1 month) t(mo)),
@@ -4140,8 +4279,8 @@ probes:
       query: {time_dimensions: [{dimension: time_spine.timestamp, granularity: month, date_range: ["2024-01-01", "2025-06-30"]}],
               measures: [{formula: "consecutive_periods(count(orders.id) > 0)", name: streak}]}
 
-  - id: C22-spine-window
-    row: C22
+  - id: C20-spine-window
+    row: C20
     title: a 2-month trailing sum at empty months reads the previous month
     truth_sql: |
       with m as (select * from generate_series(timestamp '2024-01-01', timestamp '2025-06-01', interval 1 month) t(mo))
@@ -4153,8 +4292,8 @@ probes:
       query: {time_dimensions: [{dimension: time_spine.timestamp, granularity: month, date_range: ["2024-01-01", "2025-06-30"]}],
               measures: [{formula: "sum(orders.amount, window='2m')", name: w}]}
 
-  - id: C22-spine-lag
-    row: C22
+  - id: C20-spine-lag
+    row: C20
     title: lag() on the dense series reads the empty previous month
     truth_sql: |
       with m as (select * from generate_series(timestamp '2024-01-01', timestamp '2025-06-01', interval 1 month) t(mo)),
@@ -4166,8 +4305,8 @@ probes:
       query: {time_dimensions: [{dimension: time_spine.timestamp, granularity: month, date_range: ["2024-01-01", "2025-06-30"]}],
               measures: [{formula: "lag(sum(orders.amount))", name: l}]}
 
-  - id: C22-spine-stage
-    row: C22
+  - id: C20-spine-stage
+    row: C20
     title: a spine stage keeps every month; the outer query counts 18 months
     truth_sql: select sum(amount), 18 from orders where order_date between date '2024-01-01' and date '2025-06-30'
     compare: {values: [t, months]}
@@ -4178,9 +4317,9 @@ probes:
            measures: [{formula: "sum(orders.amount)", name: o}]}
         - {source_model: monthly, measures: [{formula: "sum(o)", name: t}, {formula: "count(*)", name: months}]}
 
-  # ------------------------------------------------------------------ C22 shared time axis across facts
-  - id: C21-axis-two-facts
-    row: C21
+  # ------------------------------------------------------------------ C19 shared time axis across facts
+  - id: C19-axis-two-facts
+    row: C19
     title: orders and returns on one spine month, each by its own date; 2024-06 has only returns
     truth_sql: |
       with m as (select * from generate_series(timestamp '2024-01-01', timestamp '2025-06-01', interval 1 month) t(mo)),
@@ -4196,8 +4335,8 @@ probes:
       query: {time_dimensions: [{dimension: time_spine.timestamp, granularity: month, date_range: ["2024-01-01", "2025-06-30"]}],
               measures: [{formula: "sum(orders.amount)", name: o}, {formula: "sum(returns.amount)", name: r}]}
 
-  - id: C21-axis-two-facts-region
-    row: C21
+  - id: C19-axis-two-facts-region
+    row: C19
     title: region x month with both facts, each attributed through its own customer
     truth_sql: |
       with m as (select * from generate_series(timestamp '2024-01-01', timestamp '2025-06-01', interval 1 month) t(mo)),
@@ -4215,8 +4354,8 @@ probes:
               time_dimensions: [{dimension: time_spine.timestamp, granularity: month, date_range: ["2024-01-01", "2025-06-30"]}],
               measures: [{formula: "sum(orders.amount)", name: o}, {formula: "sum(returns.amount)", name: r}]}
 
-  - id: C21-axis-ambiguous-route
-    row: C21
+  - id: C19-axis-ambiguous-route
+    row: C19
     title: a model with two equally short routes to the spine fails loudly
     slayer:
       extra_models: [order_links.yaml]
@@ -4224,8 +4363,8 @@ probes:
               measures: [{formula: "count(order_links.id)", name: n}]}
       expect: {error: order_links}
 
-  - id: C21-calendar-model-parity
-    row: C21
+  - id: C19-calendar-model-parity
+    row: C19
     title: the hand-made calendar model gives the same two-fact numbers (months with data only)
     truth_sql: |
       with o as (select date_trunc('month', order_date) as mo, sum(amount) v from orders group by 1),
@@ -4238,10 +4377,10 @@ probes:
               filters: ["orders.id is not null or returns.id is not null"],
               measures: [{formula: "sum(orders.amount)", name: o}, {formula: "sum(returns.amount)", name: r}]}
 
-  # ------------------------------------------------------------------ C17 custom granularities
+  # ------------------------------------------------------------------ C14 custom granularities
   # Datasource granularities (run_slayer.py): fiscal_year = 12 months from 2024-04-01; quarter_hour = 15 minutes.
-  - id: C16-slayer-fiscal-year
-    row: C16
+  - id: C14-slayer-fiscal-year
+    row: C14
     title: fiscal_year (April start) buckets
     truth_sql: |
       select cast(date_trunc('year', order_date - interval 3 month) + interval 3 month as date), sum(amount)
@@ -4251,8 +4390,8 @@ probes:
       query: {source_model: orders, time_dimensions: [{dimension: order_date, granularity: fiscal_year}],
               measures: [{formula: "sum(amount)", name: v}]}
 
-  - id: C16-slayer-fiscal-year-shift
-    row: C16
+  - id: C14-slayer-fiscal-year-shift
+    row: C14
     title: time_shift by one fiscal year
     truth_sql: |
       with f as (select cast(date_trunc('year', order_date - interval 3 month) + interval 3 month as date) fy,
@@ -4263,8 +4402,8 @@ probes:
       query: {source_model: orders, time_dimensions: [{dimension: order_date, granularity: fiscal_year}],
               measures: [{formula: "time_shift(sum(amount), -1, 'fiscal_year')", name: prev}]}
 
-  - id: C16-slayer-fiscal-year-spine
-    row: C16
+  - id: C14-slayer-fiscal-year-spine
+    row: C14
     title: fiscal years on the spine with both facts
     truth_sql: |
       with m as (select * from (values (date '2023-04-01'), (date '2024-04-01'), (date '2025-04-01')) t(fy)),
@@ -4278,8 +4417,8 @@ probes:
       query: {time_dimensions: [{dimension: time_spine.timestamp, granularity: fiscal_year, date_range: ["2024-01-01", "2025-06-30"]}],
               measures: [{formula: "sum(orders.amount)", name: o}, {formula: "sum(returns.amount)", name: r}]}
 
-  - id: C16-slayer-quarter-hour
-    row: C16
+  - id: C14-slayer-quarter-hour
+    row: C14
     title: 15-minute buckets
     truth_sql: select time_bucket(interval 15 minute, event_ts), sum(amount) from events group by 1
     compare: {keys: [event_ts], values: [v]}
@@ -4287,8 +4426,8 @@ probes:
       query: {source_model: events, time_dimensions: [{dimension: event_ts, granularity: quarter_hour}],
               measures: [{formula: "sum(amount)", name: v}]}
 
-  - id: C16-slayer-quarter-hour-spine
-    row: C16
+  - id: C14-slayer-quarter-hour-spine
+    row: C14
     title: every 15-minute bucket 09:00..10:45 on the spine
     truth_sql: |
       with m as (select * from generate_series(timestamp '2025-03-01 09:00:00', timestamp '2025-03-01 10:45:00', interval 15 minute) t(q)),
@@ -4301,8 +4440,8 @@ probes:
               measures: [{formula: "sum(events.amount)", name: v}]}
 
   # ------------------------------------------------------------------ MetricFlow: shared axis and time-spine fill
-  - id: C21-mf-two-facts
-    row: C21
+  - id: C19-mf-two-facts
+    row: C19
     title: revenue and returns on metric_time; months with either fact (2024-06 returns only), no fill
     truth_sql: |
       with o as (select date_trunc('month', order_date) mo, sum(amount) v from orders group by 1),
@@ -4316,8 +4455,8 @@ probes:
         metrics: [revenue, return_amount]
         group_by: [metric_time__month]
 
-  - id: C22-mf-no-fill
-    row: C22
+  - id: C20-mf-no-fill
+    row: C20
     title: without a model change, empty months are absent even with start/end
     truth_sql: |
       select date_trunc('month', order_date), count(id) from orders
@@ -4332,8 +4471,8 @@ probes:
         start: '2024-01-01'
         end: '2025-06-30'
 
-  - id: C22-mf-join-to-timespine
-    row: C22
+  - id: C20-mf-join-to-timespine
+    row: C20
     title: join_to_timespine + fill_nulls_with 0 in the metric gives every month
     truth_sql: |
       with m as (select * from generate_series(timestamp '2024-01-01', timestamp '2025-06-01', interval 1 month) t(mo)),
@@ -4351,8 +4490,8 @@ probes:
         end: '2025-06-30'
 
   # ------------------------------------------------------------------ Cube Core: two facts on one time axis
-  - id: C21-cube-two-facts
-    row: C21
+  - id: C19-cube-two-facts
+    row: C19
     title: orders and returns by one month axis, each by its own date (query-only)
     truth_sql: |
       with o as (select date_trunc('month', order_date) mo, sum(amount) v from orders group by 1),
@@ -4370,8 +4509,8 @@ probes:
         buggy_row_count: 9
 
   # ------------------------------------------------------------------ Malloy: hand-made calendar for a shared axis
-  - id: C21-malloy-calendar
-    row: C21
+  - id: C19-malloy-calendar
+    row: C19
     title: a hand-made month calendar joined to both facts gives every month (symmetric aggregates dedupe; an empty sum is 0)
     truth_sql: |
       with m as (select * from generate_series(timestamp '2024-01-01', timestamp '2025-06-01', interval 1 month) t(mo)),
@@ -4429,10 +4568,10 @@ probes:
       query: {source_model: orders, filters: ["order_date + interval(7, 'day') > '2025-06-25'"],
               measures: [{formula: "sum(amount)", name: v}]}
 
-  # ------------------------------------------------------------------ C26-C31: MCP sessions (SLayer)
+  # ------------------------------------------------------------------ C24-C29: MCP sessions (SLayer)
   # Each runs MCP tool calls on its own copy of the database; `setup` is what its storage starts with.
-  - id: C26-mcp-connect-and-ask
-    row: C26
+  - id: C24-mcp-connect-and-ask
+    row: C24
     title: "from an empty store to an answer through MCP alone: create_datasource, then query"
     truth_sql: select status, count(*) from orders group by 1
     compare: {keys: [status], values: [n]}
@@ -4443,16 +4582,16 @@ probes:
         - tool: query
           args: {format: json, query: {source_model: orders, dimensions: [status], measures: [{formula: "count(*)", name: n}]}}
 
-  - id: C26-mcp-help
-    row: C26
+  - id: C24-mcp-help
+    row: C24
     title: the server ships its own conceptual help, read through inspect
     slayer:
       steps:
         - {tool: inspect, args: {reference: "memory:help.intro", entity_type: memory, compact: false}}
       expect: {contains: ["Choose the population deliberately"]}
 
-  - id: C27-memory-recalled-by-draft-query
-    row: C27
+  - id: C25-memory-recalled-by-draft-query
+    row: C25
     title: a note saved against orders.status comes back for a later query that uses status
     slayer:
       steps:
@@ -4462,8 +4601,8 @@ probes:
           args: {query: {source_model: orders, dimensions: [status], measures: ["sum(amount)"]}}
       expect: {contains: ["marks a cancelled order"]}
 
-  - id: C27-memory-in-inspect
-    row: C27
+  - id: C25-memory-in-inspect
+    row: C25
     title: the same note shows up when inspecting the orders model
     slayer:
       steps:
@@ -4472,8 +4611,8 @@ probes:
         - {tool: inspect, args: {reference: probe.orders, entity_type: model, compact: false}}
       expect: {contains: ["marks a cancelled order"]}
 
-  - id: C27-example-query
-    row: C27
+  - id: C25-example-query
+    row: C25
     title: a saved example query is found by a question and returned with its query
     slayer:
       steps:
@@ -4484,16 +4623,16 @@ probes:
         - {tool: search, args: {question: "fulfilled revenue", max_results: 3}}
       expect: {contains: ["Fulfilled revenue counts only", "status = 'ok'"]}
 
-  - id: C28-search-finds-column
-    row: C28
+  - id: C26-search-finds-column
+    row: C26
     title: a plain-language question ranks the right column first among 3 hits
     slayer:
       steps:
         - {tool: search, args: {question: "which city does a customer live in", max_results: 3}}
       expect: {contains: ["probe.customers.city"]}
 
-  - id: C28-search-memories-and-columns
-    row: C28
+  - id: C26-search-memories-and-columns
+    row: C26
     title: one search returns the matching column and the note about it together
     slayer:
       steps:
@@ -4502,8 +4641,8 @@ probes:
         - {tool: search, args: {question: "loyalty tier", max_results: 3}}
       expect: {contains: ["probe.customers.tier", "from gold (best) to bronze"]}
 
-  - id: C29-ingest-fk-joins
-    row: C29
+  - id: C27-ingest-fk-joins
+    row: C27
     title: ingested models join through the foreign keys, two hops from orders to regions
     truth_sql: |
       select r.name, sum(o.amount) from orders o
@@ -4517,8 +4656,8 @@ probes:
           args: {format: json, query: {source_model: orders, dimensions: [customers.regions.name],
                                        measures: [{formula: "sum(amount)", name: revenue}]}}
 
-  - id: C29-ingest-comments
-    row: C29
+  - id: C27-ingest-comments
+    row: C27
     title: a database column comment becomes the ingested column's description
     slayer:
       setup: datasource
@@ -4528,8 +4667,8 @@ probes:
         - {tool: inspect, args: {reference: probe.orders.status, entity_type: column}}
       expect: {contains: ["ok = fulfilled, bad = cancelled"]}
 
-  - id: C30-edit-column-then-query
-    row: C30
+  - id: C28-edit-column-then-query
+    row: C28
     title: a column added through edit_model is queryable in the next call
     truth_sql: select status, sum(amount * 0.8) from orders group by 1
     compare: {keys: [status], values: [net]}
@@ -4539,8 +4678,8 @@ probes:
         - tool: query
           args: {format: json, query: {source_model: orders, dimensions: [status], measures: [{formula: "sum(net_amount)", name: net}]}}
 
-  - id: C30-saved-measure-then-query
-    row: C30
+  - id: C28-saved-measure-then-query
+    row: C28
     title: a named measure added through edit_model composes in the next query
     truth_sql: |
       select date_trunc('month', order_date), sum(amount) / count(*) from orders
@@ -4554,8 +4693,8 @@ probes:
                                        time_dimensions: [{dimension: order_date, granularity: month,
                                                           date_range: ["2025-01-01", "2025-03-31"]}]}}
 
-  - id: C31-drift-query-error
-    row: C31
+  - id: C29-drift-query-error
+    row: C29
     title: after a column rename in the database, the query error names the drifted model
     slayer:
       steps:
@@ -4564,8 +4703,8 @@ probes:
           args: {format: json, query: {source_model: events, measures: ["sum(amount)"]}}
       expect: {error: "Schema drift detected on models ['events']"}
 
-  - id: C31-validate-models
-    row: C31
+  - id: C29-validate-models
+    row: C29
     title: validate_models returns the edit_model call that removes the missing column
     slayer:
       steps:
@@ -4573,8 +4712,8 @@ probes:
         - {tool: validate_models, args: {data_source: probe}}
       expect: {contains: ['"tool": "edit_model"', '"model_name": "events"', "Live column 'amount' not found"]}
 
-  - id: C31-reingest-keeps-edits
-    row: C31
+  - id: C29-reingest-keeps-edits
+    row: C29
     title: re-ingesting picks up a new database column and keeps a hand-added one
     truth_sql: select 'web', sum(amount * 2) from events
     compare: {keys: [channel], values: [v]}

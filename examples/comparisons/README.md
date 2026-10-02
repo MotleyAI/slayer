@@ -49,7 +49,7 @@ The dataset keeps edge cases that break naive joins:
 Each runner seeds a fresh DuckDB file in a temp directory and computes the ground truth there. The SLayer runner
 pins "now" at 2025-07-15 12:00 for relative time filters and the time spine's default upper bound, and defines two
 datasource granularities: `fiscal_year` (12 months from 2024-04-01) and `quarter_hour`. Probes with `steps` (rows
-C26–C31) instead drive SLayer's MCP server on their own copy of the database, with the embedding search channel off.
+C24–C29) instead drive SLayer's MCP server on their own copy of the database, with the embedding search channel off.
 
 ## Running
 
@@ -137,7 +137,7 @@ compares them directly.
 **SLayer**
 
 None open. Orphan orders (NULL `customer_id`) land in the NULL-region cell by design, since a cross-model aggregate
-is a field of a model keyed on the query grain (`Q8c`, `B1`, `B1-assoc`, `C22-spine-per-group`).
+is a field of a model keyed on the query grain (`Q8c`, `B1`, `B1-assoc`, `C20-spine-per-group`).
 
 **Malloy**
 
@@ -174,7 +174,7 @@ is a field of a model keyed on the query grain (`Q8c`, `B1`, `B1-assoc`, `C22-sp
    one day. Probe: `Q21-cube-timezone`.
 6. By design: measures from two facts under one time dimension are grouped by that dimension's own cube, so
    returns land in their customers' order months, without a warning; a model-declared dates cube is the remedy.
-   Probe: `C21-cube-two-facts`.
+   Probe: `C19-cube-two-facts`.
 
 **MetricFlow**
 

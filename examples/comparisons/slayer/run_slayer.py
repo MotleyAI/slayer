@@ -65,8 +65,9 @@ class SlayerExpect(BaseModel):
     buggy_rows: List[List[Any]] = Field(default_factory=list)
     buggy_row_count: Optional[int] = None
     buggy_error: Optional[str] = None
-    # Substrings the last step's text output must contain (steps probes only).
+    # Substrings the last step's text output must contain / must not contain (steps probes only).
     contains: List[str] = Field(default_factory=list)
+    lacks: List[str] = Field(default_factory=list)
 
 
 class SetupModel(BaseModel):
@@ -359,11 +360,12 @@ def evaluate_session(p: Probe, res: SessionResult, truth: Dict) -> Outcome:
     ex = p.slayer.expect if isinstance(p.slayer.expect, SlayerExpect) else SlayerExpect()
     if res.err is None and ex.error:
         return Outcome(status=FAIL, detail=f"expected error {ex.error!r}, got: {res.text[:120]!r}")
-    if res.err is None and ex.contains:
+    if res.err is None and (ex.contains or ex.lacks):
         missing = [s for s in ex.contains if s not in res.text]
-        if missing:
-            return Outcome(status=FAIL, detail=f"output lacks {missing}")
-        return Outcome(status=PASS, detail=f"output has {ex.contains}")
+        present = [s for s in ex.lacks if s in res.text]
+        if missing or present:
+            return Outcome(status=FAIL, detail=f"output lacks {missing}, has {present}")
+        return Outcome(status=PASS, detail=f"output has {ex.contains}, lacks {ex.lacks}")
     if res.err is None and res.resp is None:
         return Outcome(status=FAIL, detail=f"no rows to compare: {res.text[:120]!r}")
     return evaluate(p, res.resp, res.err, truth)
