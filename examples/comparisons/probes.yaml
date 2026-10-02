@@ -3397,6 +3397,23 @@ probes:
         run: orders -> { group_by: region; aggregate: revenue; nest: by_customer is { group_by: name is customers.name; aggregate: revenue; limit: 2 } }
       flatten: by_customer
 
+  - id: Q24-ties
+    row: Q24
+    title: top two customers per region by order count keeps South's three-way tie
+    truth_sql: |
+      select region, name, n from (
+        select f.region, c.name, count(*) n, rank() over (partition by f.region order by count(*) desc) rk
+        from orders_flat f left join customers c on f.customer_id = c.id group by 1, 2) where rk <= 2
+    contrast_sql: |
+      select region, name, n from (
+        select f.region, c.name, count(*) n, row_number() over (partition by f.region order by count(*) desc, c.name) rn
+        from orders_flat f left join customers c on f.customer_id = c.id group by 1, 2) where rn <= 2
+    compare: {keys: [customers.regions.name, customers.name], values: [n]}
+    slayer:
+      query: {source_model: orders, dimensions: [customers.regions.name, customers.name],
+              filters: ["rank(count(*), partition_by=customers.regions.name) <= 2"],
+              measures: [{formula: "count(*)", name: n}]}
+
   - id: Q24-sibling-customers
     row: Q24
     title: two sibling nests in one query; the top-customers nest

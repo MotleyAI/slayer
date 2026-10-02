@@ -492,7 +492,7 @@ rows:
   origin: Malloy
   slayer:
     verdict: partial
-    text: "One nest flattens exactly: `partition_by` for the region total, `rank` for the top N (verified)."
+    text: "One nest flattens: `partition_by` for the region total, `rank` for the top N, ties included (verified)."
     caveat: Sibling nests need one query each.
   malloy:
     verdict: 'yes'
