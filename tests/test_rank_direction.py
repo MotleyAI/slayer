@@ -311,6 +311,19 @@ class TestDirectionErrors:
         with pytest.raises(core_errors.TransformArgumentError):
             _bind(formula)
 
+    @pytest.mark.parametrize(("op", "advertised"), [
+        ("rank", True), ("dense_rank", True), ("percent_rank", False),
+    ])
+    def test_unknown_keyword_lists_direction_where_accepted(self, op, advertised):
+        formula = f"{op}(sum(amount), foo=1)"
+        with pytest.raises(core_errors.TransformArgumentError) as binder:
+            _bind(formula)
+        with pytest.raises(ValueError) as importer:
+            parse_formula(formula)
+        for msg in (str(binder.value), str(importer.value)):
+            assert "foo" in msg, msg
+            assert ("direction" in msg) is advertised, msg
+
 
 class TestImporterParity:
     @pytest.mark.parametrize("formula", [
