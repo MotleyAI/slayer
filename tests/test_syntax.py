@@ -786,6 +786,7 @@ class TestFilterOperatorNormalization:
         result = parse_filter_expr(
             "ntile(revenue:sum, n=4, partition_by=cohort) <= 1"
         )
+        assert isinstance(result, Cmp)
         inner = result.left
         assert isinstance(inner, TransformCall)
         assert inner.op == "ntile"

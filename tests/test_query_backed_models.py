@@ -70,7 +70,6 @@ async def _expand_stage_as_model(
     return await engine._expand_query_backed_model(
         model=model,
         runtime_kwarg=None,
-        dry_run_placeholders=False,
     )
 
 
@@ -283,23 +282,18 @@ class TestCreateModelFromQuery:
         finally:
             tmp.cleanup()
 
-    async def test_save_time_placeholder_fill_for_unresolved_var(self) -> None:
-        """Save succeeds when filters reference an unresolved {var} — '0' is
-        substituted at save-time so SQL generation doesn't fail."""
+    async def test_save_refused_for_undefaulted_var(self) -> None:
+        """An undefaulted {var} refuses the save; nothing is persisted."""
         engine, tmp = await _engine_with_orders()
         try:
-            saved = await engine.create_model_from_query(
-                query=SlayerQuery(
-                    source_model="orders",
-                    measures=[{"formula": "amount:sum"}],
-                    filters=["amount > {threshold}"],
-                ),
-                name="filtered_no_default",
-                # No variables= → {threshold} will be filled with '0' at save
-            )
-            # Cache populated despite unresolved variable
-            assert saved.backing_query_sql is not None
-            assert saved.query_variables == {}
+            query = SlayerQuery.model_validate({
+                "source_model": "orders",
+                "measures": [{"formula": "amount:sum"}],
+                "filters": ["amount > {threshold}"],
+            })
+            with pytest.raises(ValueError, match="Undefined variable 'threshold'"):
+                await engine.create_model_from_query(query=query, name="filtered_no_default")
+            assert await engine.storage.get_model("filtered_no_default") is None
         finally:
             tmp.cleanup()
 
@@ -622,11 +616,7 @@ class TestQueryBackedColumnTypes:
             tmp.cleanup()
 
     async def test_get_column_types_with_required_unbound_variable(self) -> None:
-        """A query-backed model with a required-but-undefaulted ``{var}``
-        placeholder should still produce a column-type map (the type probe
-        runs with placeholder fill, not with caller variables). Codex review
-        of PR #67 commit 73f69b0.
-        """
+        """A stored query-backed model with an undefaulted ``{var}`` probes no types."""
         tmp = tempfile.TemporaryDirectory()
         try:
             storage = YAMLStorage(base_dir=tmp.name)
@@ -640,29 +630,28 @@ class TestQueryBackedColumnTypes:
                 conn.execute("CREATE TABLE orders_t (amount NUMERIC)")
                 conn.execute("INSERT INTO orders_t (amount) VALUES (1)")
 
-            # `{threshold}` is referenced in the filter but no default is set
-            # at either model.query_variables or stage.variables.
+            # Stored directly: the engine refuses to save an undefaulted variable.
             engine = SlayerQueryEngine(storage=storage)
-            await engine.save_model(SlayerModel(
+            await storage.save_model(SlayerModel(
                 name="qb_unbound",
+                data_source="ds",
                 source_queries=[SlayerQuery(
                     source_model="t",
                     measures=[{"formula": "amount:sum"}],
                     filters=["amount > {threshold}"],
                 )],
-                # NO query_variables — threshold is required at run time.
             ))
-            types = await engine.get_column_types("qb_unbound")
-            assert types, (
-                "type probing must succeed for query-backed models with "
-                "unbound required variables (placeholder fill applies)"
-            )
+            stored = await storage.get_model("qb_unbound")
+            assert stored is not None
+            with pytest.raises(ValueError, match="Undefined variable 'threshold'"):
+                await engine._expand_query_backed_model(model=stored)
+            assert await engine.get_column_types("qb_unbound") == {}
         finally:
             tmp.cleanup()
 
 
 class TestBackingQuerySQLCacheHygiene:
-    """``backing_query_sql`` is the canonical placeholder-fill render produced
+    """``backing_query_sql`` is the canonical default-variable render produced
     by ``engine.save_model`` and must not capture per-request runtime
     variables. After issue #74, read paths can no longer write to storage at
     all — so the per-request leak is structurally impossible. These tests

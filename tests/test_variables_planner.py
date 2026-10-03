@@ -1,31 +1,27 @@
-"""Stage 7b.1 (DEV-1450) — variables substitution in the new pipeline.
-
-Pins the contract for ``slayer.ir.variables``:
-
-- ``merge_query_variables`` collapses the four variable layers into the
-  effective dict that populates ``ResolvedSourceBundle.query_variables``.
-  Precedence: runtime > stage > outer > model_defaults.
-- ``apply_variables_to_query`` returns a copy of the input ``SlayerQuery``
-  with ``{var}`` substituted in its ``filters`` list. Idempotent.
-  ``dry_run_placeholders=True`` injects the legacy ``"0"`` fill for
-  unresolved placeholders.
-
-Scope deliberately matches the legacy enrichment scope — variable
-substitution touches ``SlayerQuery.filters`` only. Formulas, ``Column.sql``,
-``Column.filter``, and ``SlayerModel.filters`` are NOT variable-substituted
-today and this module preserves that contract.
-"""
+"""``slayer.ir.variables``: layer merging, query-surface substitution, saved-measure substitution."""
 
 from __future__ import annotations
 
 import pytest
 
-from slayer.core.models import ModelMeasure
-from slayer.core.query import ColumnRef, SlayerQuery
+from slayer.core.enums import DataType
+from slayer.core.models import Column, ModelMeasure, SlayerModel
+from slayer.core.query import (
+    ColumnRef,
+    ComputedDimension,
+    ModelExtension,
+    QueryRefinement,
+    SlayerQuery,
+    TimeDimension,
+    refine_query,
+)
 from slayer.ir.variables import (
     apply_variables_to_query,
     extract_placeholder_names,
     merge_query_variables,
+    model_needs_substitution_pass,
+    model_placeholder_names,
+    substitute_model_sql_surfaces,
     substitute_variables,
 )
 from slayer.core.query import substitute_variables as core_sv
@@ -283,12 +279,7 @@ class TestApplyVariablesToQuery:
         assert out.filters == ["status = 'active' AND amount > 100"]
 
     def test_non_filter_fields_untouched(self) -> None:
-        """Legacy scope: only ``query.filters`` is substituted.
-
-        Variables must NOT substitute into measure metadata (``label``,
-        etc.). This pins the legacy-scope contract: ``SlayerQuery.filters``
-        is the only field the helper touches.
-        """
+        """Measure metadata (``label``) is not a variable surface."""
         q = SlayerQuery(
             source_model="orders",
             measures=[
@@ -305,62 +296,18 @@ class TestApplyVariablesToQuery:
         assert out.measures is not None
         assert out.measures[0].label == "display_{x}"
 
-    def test_measure_formula_text_not_substituted(self) -> None:
-        """Formula text is Mode-B DSL, not a variable surface.
-
-        ``{x}`` inside a formula stays put even though ``x`` is supplied.
-        """
+    def test_measure_formula_substituted(self) -> None:
         q = SlayerQuery(
             source_model="orders",
-            measures=[ModelMeasure(formula="amount_{x}:sum", name="rev")],
+            measures=[ModelMeasure(formula="amount:sum * {x}", name="rev")],
             filters=["status = '{s}'"],
         )
         out = apply_variables_to_query(
-            query=q, variables={"s": "active", "x": "ignored"}
+            query=q, variables={"s": "active", "x": 10}
         )
         assert out.measures is not None
-        assert out.measures[0].formula == "amount_{x}:sum"
-
-    def test_dry_run_placeholders_fills_undefined_with_zero(self) -> None:
-        q = SlayerQuery(source_model="orders", filters=["amount > {threshold}"])
-        out = apply_variables_to_query(
-            query=q, variables={}, dry_run_placeholders=True
-        )
-        assert out.filters == ["amount > 0"]
-
-    def test_dry_run_placeholders_preserves_supplied_values(self) -> None:
-        q = SlayerQuery(source_model="orders", filters=["a > {x}", "b > {y}"])
-        out = apply_variables_to_query(
-            query=q, variables={"x": 50}, dry_run_placeholders=True
-        )
-        assert out.filters == ["a > 50", "b > 0"]
-
-    def test_dry_run_placeholders_idempotent_with_no_missing_vars(self) -> None:
-        q = SlayerQuery(source_model="orders", filters=["a > {x}"])
-        out = apply_variables_to_query(
-            query=q, variables={"x": 5}, dry_run_placeholders=True
-        )
-        assert out.filters == ["a > 5"]
-
-    def test_dry_run_placeholders_off_by_default(self) -> None:
-        q = SlayerQuery(source_model="orders", filters=["amount > {threshold}"])
-        with pytest.raises(ValueError, match="Undefined variable 'threshold'"):
-            apply_variables_to_query(query=q, variables={})
-
-    def test_dry_run_placeholders_does_not_mask_invalid_names(self) -> None:
-        """``dry_run_placeholders`` fills missing VALID placeholders only.
-
-        Invalid names like ``{bad-name}`` still fail ``substitute_variables``'s
-        validation — the dry-run shortcut is for missing values, not for
-        bypassing name validation.
-        """
-        q = SlayerQuery(
-            source_model="orders", filters=["status = '{bad-name}'"]
-        )
-        with pytest.raises(ValueError, match="Invalid variable name"):
-            apply_variables_to_query(
-                query=q, variables={}, dry_run_placeholders=True
-            )
+        assert out.measures[0].formula == "amount:sum * 10"
+        assert out.measures[0].name == "rev"
 
     def test_applying_twice_with_same_vars_is_a_no_op_on_second_pass(self) -> None:
         """A second call has no placeholders left to substitute, so the
@@ -393,6 +340,226 @@ class TestApplyVariablesToQuery:
         assert out.limit == 10
         assert out.offset == 5
         assert out.filters == ["status = 'active'"]
+
+
+def _q(**kw) -> SlayerQuery:
+    return SlayerQuery.model_validate({"source_model": "orders", **kw})
+
+
+def _template(entry) -> str | None:
+    return entry._template
+
+
+class TestFormulaSurfaces:
+    def test_unnamed_measure_substituted_with_template(self) -> None:
+        out = apply_variables_to_query(query=_q(measures=["amount:sum * {k} / 100"]), variables={"k": 10})
+        assert out.measures is not None
+        (m,) = out.measures
+        assert m.formula == "amount:sum * 10 / 100"
+        assert m.name is None
+        assert _template(m) == "amount:sum * {k} / 100"
+
+    def test_unchanged_measure_has_no_template(self) -> None:
+        out = apply_variables_to_query(query=_q(measures=["amount:sum"], filters=["a > {k}"]), variables={"k": 1})
+        assert out.measures is not None
+        assert _template(out.measures[0]) is None
+
+    @pytest.mark.parametrize("dimension", ["amount * {k}", {"expression": "amount * {k}"}])
+    def test_computed_dimension_substituted_name_kept(self, dimension) -> None:
+        out = apply_variables_to_query(query=_q(dimensions=[dimension]), variables={"k": 10})
+        assert out.dimensions is not None
+        (d,) = out.dimensions
+        assert isinstance(d, ComputedDimension)
+        assert d.expression == "amount * 10"
+        assert d.name == "amount_k"
+        assert _template(d) == "amount * {k}"
+
+    def test_unchanged_computed_dimension_has_no_template(self) -> None:
+        out = apply_variables_to_query(query=_q(dimensions=[{"expression": "amount * 2"}]), variables={"k": 1})
+        assert out.dimensions is not None
+        assert _template(out.dimensions[0]) is None
+
+    def test_column_dimension_untouched(self) -> None:
+        out = apply_variables_to_query(query=_q(dimensions=["region"]), variables={"k": 1})
+        assert out.dimensions == [ColumnRef(name="region")]
+
+    @pytest.mark.parametrize("column", ["amount:sum * {k}", "sum(amount) * {k}"])
+    def test_order_expression_substituted(self, column: str) -> None:
+        out = apply_variables_to_query(
+            query=_q(order=[{"column": column, "direction": "desc"}]), variables={"k": -1},
+        )
+        assert out.order is not None
+        assert out.order[0].raw_formula == column.replace("{k}", "-1")
+        assert out.order[0].direction == "desc"
+
+    def test_date_range_bounds_substituted(self) -> None:
+        q = _q(time_dimensions=[{
+            "dimension": "ordered_at", "granularity": "month", "date_range": ["{start}", "{end}"],
+        }])
+        out = apply_variables_to_query(query=q, variables={"start": "2024-01-01", "end": "2024-02-28"})
+        assert out.time_dimensions is not None
+        assert out.time_dimensions[0].date_range == ["2024-01-01", "2024-02-28"]
+
+    def test_substituted_date_range_bound_is_shape_checked(self) -> None:
+        q = _q(time_dimensions=[{"dimension": "ordered_at", "granularity": "month", "date_range": ["{start}", None]}])
+        with pytest.raises(ValueError) as info:
+            apply_variables_to_query(query=q, variables={"start": "2025/01/01"})
+        msg = str(info.value)
+        for form in ("YYYY-Qn", "YYYY-MM", "last N"):
+            assert form in msg, msg
+
+    def test_equal_template_time_dimensions_collapse_after_substitution(self) -> None:
+        td = {"dimension": "ordered_at", "granularity": "month", "date_range": ["{start}", None]}
+        out = apply_variables_to_query(query=_q(time_dimensions=[td, dict(td)]), variables={"start": "2024-01-01"})
+        assert out.time_dimensions is not None
+        assert [t.date_range for t in out.time_dimensions] == [["2024-01-01", None]]
+
+    def test_string_value_escaped_python_regime(self) -> None:
+        q = _q(measures=["sum(CASE WHEN status == '{name}' THEN 1 ELSE 0 END)"])
+        out = apply_variables_to_query(query=q, variables={"name": "O'Brien"})
+        assert out.measures is not None
+        assert out.measures[0].formula == "sum(CASE WHEN status == 'O\\'Brien' THEN 1 ELSE 0 END)"
+
+    def test_list_value_renders_tuple_in_dimension(self) -> None:
+        q = _q(dimensions=[{"expression": "region in ({regions})", "name": "ns"}])
+        out = apply_variables_to_query(query=q, variables={"regions": ["North", "South"]})
+        assert out.dimensions is not None
+        (d,) = out.dimensions
+        assert isinstance(d, ComputedDimension)
+        assert d.expression == "region in ('North', 'South',)"
+
+    @pytest.mark.parametrize("kw", [
+        {"measures": ["amount:sum * {? {k} ?}"]},
+        {"dimensions": [{"expression": "amount * {? {k} ?}", "name": "d"}]},
+        {"order": [{"column": "amount:sum * {? {k} ?}"}]},
+    ])
+    def test_optional_block_rejected(self, kw) -> None:
+        query = _q(**kw)
+        with pytest.raises(ValueError, match=r"Optional blocks") as info:
+            apply_variables_to_query(query=query, variables={"k": 1})
+        assert "filters" not in str(info.value)
+
+    @pytest.mark.parametrize("kw", [
+        {"measures": ["amount:sum * {k}"]},
+        {"dimensions": ["amount * {k}"]},
+        {"order": [{"column": "amount:sum * {k}"}]},
+    ])
+    def test_undefined_variable_raises(self, kw) -> None:
+        query = _q(**kw)
+        with pytest.raises(ValueError, match="Undefined variable 'k'"):
+            apply_variables_to_query(query=query, variables={})
+
+    def test_invalid_variable_name_in_measure_raises(self) -> None:
+        query = _q(measures=["amount:sum * {bad-name}"])
+        with pytest.raises(ValueError, match="Invalid variable name"):
+            apply_variables_to_query(query=query, variables={})
+
+
+class TestRebuild:
+    def test_fields_set_and_version_preserved(self) -> None:
+        q = _q(measures=["amount:sum * {k}"])
+        out = apply_variables_to_query(query=q, variables={"k": 2})
+        assert out.model_fields_set == q.model_fields_set
+        assert out.version == q.version
+
+    def test_extension_source_preserved(self) -> None:
+        ext = ModelExtension(source_name="orders", measures=[ModelMeasure(name="x", formula="amount:sum")])
+        q = SlayerQuery.model_validate({"source_model": ext, "measures": ["amount:sum * {k}"]})
+        out = apply_variables_to_query(query=q, variables={"k": 2})
+        assert isinstance(out.source_model, ModelExtension)
+        assert out.source_model == ext
+
+    def test_full_inline_source_preserved(self) -> None:
+        model = SlayerModel(
+            name="inline_orders", sql_table="orders", data_source="ds",
+            columns=[Column(name="amount", type=DataType.DOUBLE)],
+        )
+        q = SlayerQuery.model_validate({"source_model": model, "measures": ["amount:sum * {k}"]})
+        out = apply_variables_to_query(query=q, variables={"k": 2})
+        assert isinstance(out.source_model, SlayerModel)
+        assert out.source_model == model
+
+    def test_refined_saved_query_preserved(self) -> None:
+        saved = _q(dimensions=["region"], measures=["amount:sum * {k}"], limit=5)
+        refined = refine_query(saved=saved, refinement=QueryRefinement.model_validate({"filters": ["status == '{s}'"]}))
+        out = apply_variables_to_query(query=refined, variables={"k": 3, "s": "ok"})
+        assert out.model_fields_set == refined.model_fields_set
+        assert out.filters == ["status == 'ok'"]
+        assert out.measures is not None
+        assert out.measures[0].formula == "amount:sum * 3"
+        assert out.dimensions == [ColumnRef(name="region")]
+        assert out.limit == 5
+
+    def test_input_not_mutated(self) -> None:
+        q = _q(measures=["amount:sum * {k}"], dimensions=["amount * {k}"])
+        apply_variables_to_query(query=q, variables={"k": 2})
+        assert q.measures is not None
+        assert q.measures[0].formula == "amount:sum * {k}"
+        assert q.dimensions is not None
+        d = q.dimensions[0]
+        assert isinstance(d, ComputedDimension)
+        assert d.expression == "amount * {k}"
+
+
+class TestPlaceholderNames:
+    def _all_surfaces(self) -> SlayerQuery:
+        return _q(
+            filters=["amount > {f}"],
+            measures=["amount:sum * {m}"],
+            dimensions=["amount * {d}"],
+            order=[{"column": "amount:sum * {o}"}],
+            time_dimensions=[TimeDimension.model_validate(
+                {"dimension": "ordered_at", "granularity": "month", "date_range": ["{s}", None]},
+            )],
+        )
+
+    def test_extract_placeholder_names_covers_every_surface(self) -> None:
+        assert extract_placeholder_names(self._all_surfaces()) == {"f", "m", "d", "o", "s"}
+
+
+def _model_with_measure(formula: str, **kw) -> SlayerModel:
+    return SlayerModel(
+        name="orders", sql_table="orders", data_source="ds",
+        columns=[
+            Column(name="amount", type=DataType.DOUBLE),
+            Column(name="status", type=DataType.TEXT),
+        ],
+        measures=[ModelMeasure(name="scaled", formula=formula)],
+        **kw,
+    )
+
+
+class TestSavedMeasureSubstitution:
+    def test_placeholder_names_include_saved_measures(self) -> None:
+        assert model_placeholder_names(_model_with_measure("amount:sum * {k}")) == {"k"}
+
+    def test_saved_measure_block_needs_pass(self) -> None:
+        assert model_needs_substitution_pass(_model_with_measure("amount:sum * {? {k} ?}"))
+
+    def test_saved_measure_formula_substituted(self) -> None:
+        out = substitute_model_sql_surfaces(
+            model=_model_with_measure("amount:sum * {k}"), variables={"k": 10}, backslash_escapes=False,
+        )
+        assert out.measures[0].formula == "amount:sum * 10"
+        assert out.measures[0].name == "scaled"
+
+    @pytest.mark.parametrize("backslash_escapes", [False, True])
+    def test_saved_measure_uses_python_regime(self, backslash_escapes: bool) -> None:
+        out = substitute_model_sql_surfaces(
+            model=_model_with_measure("sum(CASE WHEN status == '{n}' THEN 1 ELSE 0 END)"),
+            variables={"n": "O'Brien"}, backslash_escapes=backslash_escapes,
+        )
+        assert out.measures[0].formula == "sum(CASE WHEN status == 'O\\'Brien' THEN 1 ELSE 0 END)"
+
+    def test_saved_measure_optional_block_rejected(self) -> None:
+        model = _model_with_measure("amount:sum * {? {k} ?}")
+        with pytest.raises(ValueError, match="Optional blocks"):
+            substitute_model_sql_surfaces(model=model, variables={"k": 1}, backslash_escapes=False)
+
+    def test_saved_measure_undefined_variable_raises(self) -> None:
+        model = _model_with_measure("amount:sum * {k}")
+        with pytest.raises(ValueError, match="Undefined variable 'k'"):
+            substitute_model_sql_surfaces(model=model, variables={"j": 1}, backslash_escapes=False)
 
 
 class TestReExportsMatchCoreQuery:

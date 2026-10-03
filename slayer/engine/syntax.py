@@ -51,6 +51,12 @@ class Literal(_BaseNode):
     value: Decimal | str | bool | None = None
 
 
+class Placeholder(_BaseNode):
+    """An unsubstituted ``{name}`` variable placeholder; admitted wherever a ``Literal`` is."""
+
+    name: str
+
+
 class TupleLit(_BaseNode):
     """Literal-only tuple/list RHS for ``IN`` / ``NOT IN``; non-literal
     elements and empty tuples are rejected at parse time."""
@@ -63,7 +69,7 @@ class AggCall(_BaseNode):
     # or — for a re-aggregation — a nested AggCall or a grained
     # TransformCall, alone or composed.
     source: (
-        Ref | DottedRef | StarSource | Literal | ScalarCall | Arith | UnaryOp
+        Ref | DottedRef | StarSource | Literal | Placeholder | ScalarCall | Arith | UnaryOp
         | AggCall | TransformCall | Cmp | BoolOp
     )
     agg: str
@@ -106,7 +112,7 @@ class BoolOp(_BaseNode):
 
 
 ParsedExpr = Union[
-    Ref, DottedRef, StarSource, Literal, TupleLit,
+    Ref, DottedRef, StarSource, Literal, Placeholder, TupleLit,
     AggCall, TransformCall, ScalarCall,
     Arith, UnaryOp, Cmp, BoolOp,
 ]
@@ -712,8 +718,8 @@ def walk_parsed_refs(
     if isinstance(parsed, BoolOp):
         for op in parsed.operands:
             yield from walk_parsed_refs(op)
-    # Literal / StarSource / TupleLit → no references (TupleLit holds only
-    # Literals by construction).
+    # Literal / Placeholder / StarSource / TupleLit → no references (TupleLit
+    # holds only Literals by construction).
 
 
 # ---------------------------------------------------------------------------
@@ -934,6 +940,13 @@ def _convert(node: ast.AST, *, agg_map: Dict, original: str) -> ParsedExpr:  # N
                     left=_convert(node.left, agg_map=agg_map, original=original),
                     right=Literal(value=rhs_node.value),
                 )
+            placeholder = _placeholder_of(rhs_node)
+            if placeholder is not None:
+                return Cmp(
+                    op=_CMP_OP_MAP[op_type],
+                    left=_convert(node.left, agg_map=agg_map, original=original),
+                    right=placeholder,
+                )
             if not isinstance(rhs_node, (ast.Tuple, ast.List)):
                 raise ValueError(
                     f"Invalid Mode-B expression {original!r}: the right-"
@@ -973,6 +986,10 @@ def _convert(node: ast.AST, *, agg_map: Dict, original: str) -> ParsedExpr:  # N
         )
         return BoolOp(op=op_str, operands=operands)
 
+    placeholder = _placeholder_of(node)
+    if placeholder is not None:
+        return placeholder
+
     if isinstance(node, ast.IfExp):
         raise ValueError(
             f"Invalid Mode-B expression {original!r}: the Python conditional "
@@ -984,6 +1001,24 @@ def _convert(node: ast.AST, *, agg_map: Dict, original: str) -> ParsedExpr:  # N
         f"Invalid Mode-B expression {original!r}: unsupported AST node "
         f"{type(node).__name__}."
     )
+
+
+_PLACEHOLDER_NAME_RE = re.compile(r"[a-zA-Z_]\w*", re.ASCII)
+
+
+def _placeholder_of(node: ast.AST) -> Optional[Placeholder]:
+    """``Placeholder`` for a set literal holding exactly one bare variable name, else ``None``."""
+    if not (isinstance(node, ast.Set) and len(node.elts) == 1 and isinstance(node.elts[0], ast.Name)):
+        return None
+    name = node.elts[0].id
+    if name == _STAR_ARG_TOKEN or _PLACEHOLDER_RE.match(name) or not _PLACEHOLDER_NAME_RE.fullmatch(name):
+        return None
+    return Placeholder(name=name)
+
+
+def placeholder_names(parsed: Any) -> List[str]:
+    """Names of every ``Placeholder`` in a parsed tree, in walk order."""
+    return [n.name for n in _walk_parsed(parsed) if isinstance(n, Placeholder)]
 
 
 def _convert_in_rhs_element(
@@ -1075,7 +1110,7 @@ def _convert_kwarg_value(node: ast.AST, *, agg_map: Dict, original: str):
 # The node kinds an ``AggCall.source`` may take (column, star, or an
 # aggregation-free scalar expression). Cmp / BoolOp / TupleLit are excluded —
 # a predicate is not an aggregatable value.
-_AGG_SOURCE_KINDS = (Ref, DottedRef, StarSource, Literal, ScalarCall, Arith, UnaryOp)
+_AGG_SOURCE_KINDS = (Ref, DottedRef, StarSource, Literal, Placeholder, ScalarCall, Arith, UnaryOp)
 
 
 def _contains_agg_or_transform(node: Any) -> bool:
@@ -1387,6 +1422,8 @@ def canonical_measure_text(parsed: Any) -> str:  # NOSONAR(S3776) — flat per-n
         if isinstance(parsed.value, str):
             return f"'{parsed.value}'"
         return str(parsed.value)
+    if isinstance(parsed, Placeholder):
+        return f"{{{parsed.name}}}"
     if isinstance(parsed, TupleLit):
         return f"({', '.join(canonical_measure_text(e) for e in parsed.elements)})"
     if isinstance(parsed, AggCall):

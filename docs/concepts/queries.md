@@ -13,7 +13,7 @@ A `SlayerQuery` specifies what data to retrieve from a model.
 | `time_dimensions` | list[TimeDimension] | No | Time dimensions with granularity |
 | `main_time_dimension` | string | No | Explicit time dimension name for transforms (overrides auto-detection) |
 | `filters` | list[str] | No | Conditions as formula strings. Supports `{variable}` placeholders. See [Filters](#filters). |
-| `variables` | dict[str, Any] | No | Variable values for filter substitution. See [Filter Variables](#filter-variables). |
+| `variables` | dict[str, Any] | No | Values for `{variable}` placeholders. See [Variables](#variables). |
 | `order` | list[OrderItem] | No | Sort specifications |
 | `limit` | int | No | Maximum rows to return |
 | `offset` | int | No | Number of rows to skip |
@@ -442,9 +442,11 @@ Use one of:
 * `first(x)` / `last(x)` / `lag(x, n)` / `lead(x, n)` for time-based window transforms.
 * A multi-stage `source_queries` model where the window computation lives in an earlier stage.
 
-### Filter Variables
+### Variables
 
 Filters support `{variable_name}` placeholders, substituted from the query's `variables` dict. This keeps filter templates reusable and avoids string concatenation in client code.
+
+The same placeholders work in measure formulas, computed-dimension expressions, `order` expressions and `date_range` bounds (`"measures": ["amount:sum * {k} / 100"]`), and an unnamed entry is named from its template (`amount_sum_k_100`), so result keys never depend on the values; `{? ... ?}` blocks and placeholders in a time dimension's granularity or column are rejected.
 
 ```json
 {
