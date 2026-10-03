@@ -804,6 +804,12 @@ class CubeToSlayerConverter:
     # ── offline validation + namespace safety ──────────────────────────────
 
     def _validate_offline(self, cube_name, columns, measures, info, report):
+        good_cols, dropped = self._validate_columns(cube_name, columns, report)
+        good_measures = self._drop_measures_over(
+            cube_name=cube_name, measures=measures, info=info, dropped=dropped, report=report)
+        return good_cols, self._drop_unparseable_measures(cube_name, good_measures, report)
+
+    def _validate_columns(self, cube_name, columns, report) -> tuple[list[Column], set[str]]:
         good_cols = []
         dropped: set[str] = set()
         for col in columns:
@@ -821,6 +827,9 @@ class CubeToSlayerConverter:
                     category=CubeIssueCategory.COMPLEX_SQL, severity="warning",
                     cube=cube_name, member=col.name,
                     message=f"Column sql does not parse; dropped: {col.sql!r}"))
+        return good_cols, dropped
+
+    def _drop_measures_over(self, *, cube_name, measures, info, dropped, report) -> list[ModelMeasure]:
         by_emitted = {i.emitted_name: i for i in info.values() if i.emitted_name}
         good_measures = []
         for m in measures:
@@ -832,13 +841,16 @@ class CubeToSlayerConverter:
                     message=f"Measure aggregates dropped column {col!r}; dropped: {m.formula!r}"))
             else:
                 good_measures.append(m)
+        return good_measures
+
+    def _drop_unparseable_measures(self, cube_name, good_measures, report) -> list[ModelMeasure]:
         # Fixpoint: dropping a measure can break a calc measure naming it. Only
         # measures are bare-referenceable; a bare column needs an aggregation.
         while True:
             known = {m.name for m in good_measures if m.name}
             broken = [m for m in good_measures if not self._formula_parses(m.formula, known)]
             if not broken:
-                return good_cols, good_measures
+                return good_measures
             for m in broken:
                 report.add(CubeConversionIssue(
                     category=CubeIssueCategory.COMPLEX_MEASURE, severity="warning",
@@ -1038,16 +1050,9 @@ class CubeToSlayerConverter:
         if info is None:
             return
         exported = names.take(f"{prefix}{mname}", suffix="_measure")
-        if info.kind == "star_count":
-            formula = functional_agg_text(source="*" if is_root else f"{cube_name}.*", suffix="count")
-        elif info.kind == "agg" and info.underlying_col and info.agg:
-            if is_root:
-                src_col = cube_model.get_column(info.underlying_col)
-                if src_col is not None and not any(c.name == info.underlying_col for c in columns):
-                    columns.append(src_col.model_copy())  # carry the underlying column onto the facade
-            source = info.underlying_col if is_root else f"{cube_name}.{info.underlying_col}"
-            formula = functional_agg_text(source=source, suffix=info.agg)
-        else:
+        formula = self._facade_measure_formula(
+            info=info, cube_name=cube_name, cube_model=cube_model, is_root=is_root, columns=columns)
+        if formula is None:
             report.add(CubeConversionIssue(
                 category=CubeIssueCategory.COMPLEX_MEASURE, severity="info",
                 view=view.name, member=mname,
@@ -1059,6 +1064,20 @@ class CubeToSlayerConverter:
             report.add(CubeConversionIssue(
                 category=CubeIssueCategory.COMPLEX_MEASURE, severity="warning",
                 view=view.name, member=mname, message=f"Facade measure failed: {exc}"))
+
+    @staticmethod
+    def _facade_measure_formula(*, info, cube_name, cube_model, is_root, columns) -> str | None:
+        """Functional facade formula for a base measure; ``None`` for a calc measure."""
+        if info.kind == "star_count":
+            return functional_agg_text(source="*" if is_root else f"{cube_name}.*", suffix="count")
+        if info.kind != "agg" or not info.underlying_col or not info.agg:
+            return None
+        if is_root:
+            src_col = cube_model.get_column(info.underlying_col)
+            if src_col is not None and not any(c.name == info.underlying_col for c in columns):
+                columns.append(src_col.model_copy())  # carry the underlying column onto the facade
+        source = info.underlying_col if is_root else f"{cube_name}.{info.underlying_col}"
+        return functional_agg_text(source=source, suffix=info.agg)
 
     def _view_default_filters(self, view, root_cube_name, report) -> list[str]:
         filters: list[str] = []
