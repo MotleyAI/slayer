@@ -254,33 +254,37 @@ def build_catalog_grouped_by_schema(
         target = schema_by_datasource.get(datasource, default_schema)
         bucket = grouped.setdefault(target, {})
         for table in source_schema.tables:
-            incoming = (_priority_index(datasource), datasource, table)
-            existing = bucket.get(table.name)
-            if existing is None or incoming[0] < existing[0]:
-                if existing is not None:
-                    logger.warning(
-                        "Facade catalog: model %r exists in both datasource %r "
-                        "and %r under schema %r; keeping %r (higher priority), "
-                        "shadowing %r. Set distinct postgres_schema to expose "
-                        "both.",
-                        table.name, existing[1], datasource, target,
-                        datasource, existing[1],
-                    )
-                bucket[table.name] = incoming
-            elif existing is not None:
-                logger.warning(
-                    "Facade catalog: model %r exists in both datasource %r and "
-                    "%r under schema %r; keeping %r (higher priority), shadowing "
-                    "%r. Set distinct postgres_schema to expose both.",
-                    table.name, existing[1], datasource, target,
-                    existing[1], datasource,
-                )
+            _place_in_schema(
+                bucket=bucket, incoming=(_priority_index(datasource), datasource, table),
+                target=target)
 
     schemas = [
         FacadeSchema(name=name, tables=[entry[2] for entry in bucket.values()])
         for name, bucket in grouped.items()
     ]
     return FacadeCatalog(catalog_name=CATALOG_NAME, schemas=schemas)
+
+
+def _place_in_schema(
+    *,
+    bucket: dict[str, tuple[int, str, FacadeTable]],
+    incoming: tuple[int, str, FacadeTable],
+    target: str,
+) -> None:
+    """Keep the higher-priority datasource's table (ties keep the existing one); log the shadowing."""
+    name = incoming[2].name
+    existing = bucket.get(name)
+    if existing is None:
+        bucket[name] = incoming
+        return
+    kept, shadowed = (incoming, existing) if incoming[0] < existing[0] else (existing, incoming)
+    logger.warning(
+        "Facade catalog: model %r exists in both datasource %r and "
+        "%r under schema %r; keeping %r (higher priority), shadowing "
+        "%r. Set distinct postgres_schema to expose both.",
+        name, existing[1], incoming[1], target, kept[1], shadowed[1],
+    )
+    bucket[name] = kept
 
 
 def _column_types_supported(*, model: SlayerModel) -> bool:
@@ -529,13 +533,13 @@ def _metric_expansion(
 
 
 def _synthetic_row_count(model: SlayerModel) -> FacadeMetric:
-    """Rule 1: synthetic ``*:count`` metric, renamed on collision."""
+    """Rule 1: synthetic row-count metric (legacy colon ``*:count`` formula), renamed on collision."""
     name = "row_count"
     if any(c.name == "row_count" for c in model.columns):
         name = "_row_count"
         logger.warning(
             "Facade catalog: model %r has a Column named 'row_count' which "
-            "collides with the synthetic *:count metric; renaming the "
+            "collides with the synthetic row-count metric; renaming the "
             "synthetic to '_row_count'.",
             model.name,
         )

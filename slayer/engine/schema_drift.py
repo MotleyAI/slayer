@@ -12,9 +12,7 @@ from typing import (
     Annotated,
     Any,
     Literal,
-    Optional,
     Set,
-    Union,
 )
 
 import sqlalchemy as sa
@@ -483,7 +481,7 @@ def _extract_column_refs_from_sql(sql: str) -> list[tuple[str | None, str]]:
     return refs
 
 
-def _parsed_ref_name(node: Union[Ref, DottedRef, AggCall]) -> Optional[str]:
+def _parsed_ref_name(node: Ref | DottedRef | AggCall) -> str | None:
     """Textual name of a reference-bearing parse node; AggCall collapses to its source name, ``count(*)`` (StarSource) yields None."""
     if isinstance(node, AggCall):
         source = node.source

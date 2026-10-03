@@ -447,7 +447,7 @@ def _expand_named_measures(
 
     try:
         tokens = list(tokenize.generate_tokens(io.StringIO(formula).readline))
-    except (tokenize.TokenError, IndentationError, SyntaxError):
+    except (tokenize.TokenError, SyntaxError):  # IndentationError is a SyntaxError
         return formula
 
     def _significant(idx: int, step: int) -> tokenize.TokenInfo | None:
