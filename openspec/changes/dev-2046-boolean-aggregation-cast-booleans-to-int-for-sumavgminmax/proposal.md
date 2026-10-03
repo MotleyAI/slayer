@@ -1,6 +1,6 @@
 ## Why
 
-Aggregating a boolean is broken: `has_fraudulent_dispute:sum` emits `CAST(SUM(b) AS BOOLEAN)` —
+Aggregating a boolean is broken: `sum(has_fraudulent_dispute)` emits `CAST(SUM(b) AS BOOLEAN)` —
 silently `True` instead of the count on DuckDB, an error on Postgres / SQL Server / BigQuery /
 Snowflake. The cause is structural: result typing has four homes that disagree (the facade's
 `_agg_output_type` already assumes INT), aggregate emission over a raw value is hand-built at

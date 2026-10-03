@@ -36,29 +36,29 @@ input SHALL remain boolean in every non-aggregate position (dimension, row filte
 
 #### Scenario: Sum counts the trues
 - **WHEN** a query over rows whose `flag` values are `true, true, false, NULL, false` selects
-  `flag:sum`
+  `sum(flag)`
 - **THEN** it returns 2 on SQLite, DuckDB and Postgres — never `true`, and never a database error
 
 #### Scenario: Avg is the share of true rows
-- **WHEN** the same query selects `flag:avg`
+- **WHEN** the same query selects `avg(flag)`
 - **THEN** it returns 0.5 (two trues among four non-NULL rows) on SQLite, DuckDB and Postgres
 
 #### Scenario: Min and max return booleans
-- **WHEN** the same query selects `flag:min` and `flag:max`
+- **WHEN** the same query selects `min(flag)` and `max(flag)`
 - **THEN** it returns `false` and `true` on DuckDB and Postgres (`0` and `1` on SQLite, which has
   no boolean type), never a database error
 
 #### Scenario: Post-aggregation filters compare booleans and counts
-- **WHEN** a query filters on `flag:max = true` or on `flag:sum > 1`
+- **WHEN** a query filters on `max(flag) = true` or on `sum(flag) > 1`
 - **THEN** each filter applies after aggregation and executes on Postgres, keeping exactly the
   groups whose value satisfies it
 
 #### Scenario: Counting keeps the boolean
-- **WHEN** a query selects `flag:count` and `flag:count_distinct` over the same rows
+- **WHEN** a query selects `count(flag)` and `count_distinct(flag)` over the same rows
 - **THEN** it returns 4 and 2 — false values counted, NULL not
 
 #### Scenario: Emitted SQL on every dialect
-- **WHEN** SQL is generated for `flag:sum`, `flag:avg`, `flag:min` and `flag:max` on each
+- **WHEN** SQL is generated for `sum(flag)`, `avg(flag)`, `min(flag)` and `max(flag)` on each
   supported dialect
 - **THEN** each aggregate takes the integer form of `flag` as its input, `min` / `max` convert
   the aggregate back to the dialect's boolean type, and no aggregate receives the raw boolean
@@ -72,16 +72,16 @@ type — query response metadata, stage schemas consumed by a later stage, and t
 metric catalogue — SHALL report the same type for the same column and aggregation.
 
 #### Scenario: Sum is an integer measure
-- **WHEN** a query selects `flag:sum`
+- **WHEN** a query selects `sum(flag)`
 - **THEN** the measure's response type is INT and its format INTEGER, and no cast to BOOLEAN
   wraps the aggregate
 
 #### Scenario: Avg displays as a percentage
-- **WHEN** a query selects `flag:avg` and `flag` declares no format
+- **WHEN** a query selects `avg(flag)` and `flag` declares no format
 - **THEN** the measure's format is PERCENT
 
 #### Scenario: Explicit column format wins
-- **WHEN** `flag` declares a FLOAT format and a query selects `flag:avg`
+- **WHEN** `flag` declares a FLOAT format and a query selects `avg(flag)`
 - **THEN** the measure's format is that FLOAT format
 
 #### Scenario: Facade agrees with the engine
@@ -99,7 +99,7 @@ aggregations at binding with a typed error.
 
 #### Scenario: Avg allowed by default
 - **WHEN** a model declares a BOOLEAN column without `allowed_aggregations` and a query selects
-  `flag:avg`
+  `avg(flag)`
 - **THEN** the model validates and the query succeeds
 
 #### Scenario: Boolean expression accepts sum
@@ -144,12 +144,12 @@ value per entity.
 - **THEN** each customer's value is its count of flagged orders
 
 #### Scenario: Stage re-aggregation
-- **WHEN** a first stage selects `flag:sum` and `flag:max` per customer and a second stage
+- **WHEN** a first stage selects `sum(flag)` and `max(flag)` per customer and a second stage
   selects `sum` and `max` over those columns
 - **THEN** the second stage returns the total count and the overall boolean maximum
 
 #### Scenario: Transform over a boolean sum
-- **WHEN** a query over a month time dimension selects `cumsum(flag:sum)`
+- **WHEN** a query over a month time dimension selects `cumsum(sum(flag))`
 - **THEN** each month carries the running count of trues
 
 #### Scenario: Windowed and partitioned boolean sums
