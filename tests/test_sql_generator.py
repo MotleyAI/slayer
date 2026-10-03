@@ -2029,7 +2029,7 @@ class TestRankFamilyTransforms:
     async def test_rank_with_partition_by_kwarg_in_filter(
         self, generator: SQLGenerator, orders_model: SlayerModel
     ) -> None:
-        """DEV-1492: ``rank(<measure>, partition_by=<col>, direction='desc') <= 1`` end-to-end."""
+        """``rank(<measure>, partition_by=<col>, direction='desc') <= 1`` end-to-end."""
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status"), ColumnRef(name="customer_id")],

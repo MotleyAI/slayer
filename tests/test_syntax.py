@@ -704,8 +704,7 @@ class TestFilterOperatorNormalization:
         assert result.left.kwargs == (("n", Literal(value=Decimal(4))),)
 
     def test_rank_partition_by_kwarg_preserved_in_filter(self):
-        # DEV-1492: rank(revenue:sum, partition_by=region) <= 1 — kwarg
-        # survives the operator rewrite; binder turns partition_by into a
+        # Both kwargs survive the operator rewrite; binder turns partition_by into a
         # column ref (covered by SQL-gen tests).
         result = parse_filter_expr("rank(revenue:sum, partition_by=region, direction='desc') <= 1")
         assert isinstance(result, Cmp)
