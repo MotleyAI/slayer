@@ -7,6 +7,7 @@ on the ``CubeConversionReport``.
 
 import logging
 import re
+from typing import Any
 
 import sqlglot
 from pydantic import BaseModel
@@ -44,7 +45,6 @@ from slayer.cube.report import (
 
 logger = logging.getLogger(__name__)
 
-_AGG_TYPES = {"sum", "avg", "min", "max", "count", "count_distinct", "count_distinct_approx"}
 _CALC_TYPES = {"number", "string", "time", "boolean"}
 _DEFERRED_MEASURE_TYPES = {"number_agg"}
 _DIM_TYPE_MAP = {
@@ -84,7 +84,7 @@ class _MeasureInfo(BaseModel):
     """How a converted cube measure can be re-aggregated by a view facade."""
     kind: str  # "agg" | "calc" | "star_count"
     underlying_col: str | None = None
-    agg: str | None = None
+    suffix: str | None = None  # the source measure's aggregation suffix, window included
     emitted_name: str | None = None  # the emitted ModelMeasure name (for pruning)
 
 
@@ -196,7 +196,7 @@ def _map_format(fmt, report: CubeConversionReport, *, cube: str, member: str) ->
     if nf_type == NumberFormatType.CURRENCY and isinstance(fmt, dict) and fmt.get("currency_symbol"):
         kwargs["symbol"] = fmt["currency_symbol"]  # symbol ONLY for currency (Codex #8)
     try:
-        return NumberFormat(**kwargs)
+        return NumberFormat.model_validate(kwargs)
     except Exception:  # noqa: BLE001
         report.add(CubeConversionIssue(
             category=CubeIssueCategory.UNSUPPORTED_FORMAT, severity="info",
@@ -401,9 +401,8 @@ class CubeToSlayerConverter:
         cube = cube.model_copy(deep=True)
         refs: list[CubeFilterParamRef] = []
 
-        def scan(text: str | None) -> str | None:
-            nonlocal refs
-            if not text or "{FILTER_PARAMS." not in text:
+        def scan(text: str) -> str:
+            if "{FILTER_PARAMS." not in text:
                 return text
             ext = parse_string_filter_params(
                 text, host_cube=cube.name, start_index=len(refs))
@@ -412,13 +411,16 @@ class CubeToSlayerConverter:
             # sees the still-present {FILTER_PARAMS...} text and drops the cube.
             return ext.text
 
-        cube.sql = scan(cube.sql)
+        def scan_opt(text: str | None) -> str | None:
+            return scan(text) if text else text
+
+        cube.sql = scan_opt(cube.sql)
         for dim in cube.dimensions:
-            dim.sql = scan(dim.sql)
+            dim.sql = scan_opt(dim.sql)
             for when in _case_when_predicates(dim):
-                when["sql"] = scan(when.get("sql"))
+                when["sql"] = scan_opt(when.get("sql"))
         for meas in cube.measures:
-            meas.sql = scan(meas.sql)
+            meas.sql = scan_opt(meas.sql)
             for f in meas.filters:
                 f.sql = scan(f.sql)
         for seg in cube.segments:
@@ -663,10 +665,12 @@ class CubeToSlayerConverter:
             if meas.rolling_window else None
 
         if meas.type == "count" and not meas.sql:
-            formula = functional_agg_text(source="*", suffix=_windowed("count", window))
+            suffix = _windowed("count", window)
+            formula = functional_agg_text(source="*", suffix=suffix)
             if self._emit_measure(measures=measures, names=names, final_name=final_name,
                                   formula=formula, meas=meas, report=report, cube_name=cube.name):
-                info[meas.name] = _MeasureInfo(kind="star_count", emitted_name=final_name)
+                info[meas.name] = _MeasureInfo(kind="star_count", suffix=suffix,
+                                               emitted_name=final_name)
             return
 
         translated = self._resolve_fp(
@@ -674,11 +678,12 @@ class CubeToSlayerConverter:
         filter_pred = self._measure_filter(cube, meas)
         col_name = self._get_or_create_column(
             meas, translated, filter_pred, columns, names, dedup, report, cube)
-        formula = functional_agg_text(source=col_name, suffix=_windowed(agg, window))
+        suffix = _windowed(agg, window)
+        formula = functional_agg_text(source=col_name, suffix=suffix)
         if self._emit_measure(measures=measures, names=names, final_name=final_name,
                               formula=formula, meas=meas, report=report, cube_name=cube.name):
             info[meas.name] = _MeasureInfo(
-                kind="agg", underlying_col=col_name, agg=agg, emitted_name=final_name)
+                kind="agg", underlying_col=col_name, suffix=suffix, emitted_name=final_name)
 
     def _convert_calc_measure(self, cube, meas, measures, names, final_name, info, report) -> None:
         formula = translate_cube_refs(meas.sql, mode="dsl", cube=cube.name)
@@ -893,8 +898,7 @@ class CubeToSlayerConverter:
                 message=f"View root cube '{root_cube_name}' was not emitted; view dropped."))
             return None
 
-        source = {"sql_table": root_model.sql_table} if root_model.sql_table else {"sql": root_model.sql}
-        meta = {"cube_kind": "view"}
+        meta: dict[str, Any] = {"cube_kind": "view"}
         unmapped: dict = {}
         if view.folders:
             unmapped["folders"] = view.folders
@@ -926,7 +930,8 @@ class CubeToSlayerConverter:
                 name=view.name, data_source=self.data_source,
                 hidden=not view.public, description=view.description, meta=meta,
                 columns=columns, measures=measures, joins=joins, filters=filters,
-                **source,
+                sql_table=root_model.sql_table or None,
+                sql=None if root_model.sql_table else root_model.sql,
             )
         except Exception as exc:  # noqa: BLE001
             report.add(CubeConversionIssue(
@@ -1068,16 +1073,18 @@ class CubeToSlayerConverter:
     @staticmethod
     def _facade_measure_formula(*, info, cube_name, cube_model, is_root, columns) -> str | None:
         """Functional facade formula for a base measure; ``None`` for a calc measure."""
+        if not info.suffix:
+            return None
         if info.kind == "star_count":
-            return functional_agg_text(source="*" if is_root else f"{cube_name}.*", suffix="count")
-        if info.kind != "agg" or not info.underlying_col or not info.agg:
+            return functional_agg_text(source="*" if is_root else f"{cube_name}.*", suffix=info.suffix)
+        if info.kind != "agg" or not info.underlying_col:
             return None
         if is_root:
             src_col = cube_model.get_column(info.underlying_col)
             if src_col is not None and not any(c.name == info.underlying_col for c in columns):
                 columns.append(src_col.model_copy())  # carry the underlying column onto the facade
         source = info.underlying_col if is_root else f"{cube_name}.{info.underlying_col}"
-        return functional_agg_text(source=source, suffix=info.agg)
+        return functional_agg_text(source=source, suffix=info.suffix)
 
     def _view_default_filters(self, view, root_cube_name, report) -> list[str]:
         filters: list[str] = []
