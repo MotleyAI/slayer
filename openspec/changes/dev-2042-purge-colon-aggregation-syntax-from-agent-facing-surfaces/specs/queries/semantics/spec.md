@@ -1,0 +1,872 @@
+## MODIFIED Requirements
+
+### Requirement: Attribution by determination
+A query dimension SHALL be attributable to an aggregate iff a chain of provably
+many-to-one join hops (per `models/join-cardinality` evidence) leads from the
+aggregate's root model to the dimension. Attributable dimensions retain exact per-cell
+values — the cells partition the root rows and sum to the total. Every other dimension
+resolves per the query's `to_many_handling` mode: under `"broadcast"` (the default) the
+aggregate broadcasts across it (its value repeats across that dimension's cells);
+under `"associate"` each cell aggregates over the distinct root entities associated
+with it (per `queries/attribution-modes`); under `"error"` the query refuses. In no
+mode does an aggregate join through an unproven path.
+
+#### Scenario: Attributable dimension partitions, unattributable broadcasts
+- **WHEN** a query rooted at `orders` selects `sum(customers.spend)` by one
+  customer-determined dimension and one orders-level dimension
+- **THEN** by executed values, cells vary along the determined dimension, sum to the
+  total across it, and repeat unchanged across the orders-level dimension
+
+#### Scenario: Associate mode keeps attributable dimensions exact
+- **WHEN** the same query runs with `to_many_handling: "associate"`
+- **THEN** by executed values, cells along the customer-determined dimension are
+  unchanged from the broadcast run, while cells along the orders-level dimension carry
+  per-cell distinct-entity values
+
+### Requirement: No double counting
+Every aggregation — however consumed: directly selected, a composite leaf, filter-only,
+order-only, inside a computed dimension, or nested in a producer, and local and
+cross-model alike — SHALL run over the rows of its own root model, each root row
+counted exactly once per result cell — never over the row product of a join; no join
+fan-out may multiply an aggregation's inputs. The sole exception is the host-grain wrap
+(an aggregate deliberately evaluated over the join result at host grain), as specified
+in `queries/cross-model-aggregates`.
+
+#### Scenario: Join fan-out never multiplies aggregation inputs
+- **WHEN** a query rooted at `orders` selects `sum(customers.spend)` and each customer
+  has several orders
+- **THEN** by executed values every customer's spend is counted exactly once, however
+  many orders fan the join
+
+#### Scenario: Local aggregate over a fanning dimension never multiplies
+- **WHEN** a query rooted at `customers` selects the local measure `sum(spend)` by
+  `orders.status`, and one customer has two orders with the same status
+- **THEN** by executed values that customer's spend is never counted twice in a cell —
+  under the default the metric broadcasts with a warning; under
+  `to_many_handling: "associate"` the cell carries the distinct-entity value
+
+#### Scenario: Fanned local aggregates are caught in every consumer context
+- **WHEN** a local aggregate over a fanning dimension is consumed inside an arithmetic
+  composite, an ORDER BY entry, an aggregate-phase filter, or a computed dimension
+- **THEN** each context resolves it per the mode exactly as a directly selected
+  measure — never through the silently multiplied join product
+
+### Requirement: Filters restrict by association or fail loudly
+A row-level filter conjunct that reaches a dataset's root only across non-determining
+paths SHALL restrict that dataset's population by association — the dataset computes
+over exactly the root rows related to at least one surviving row combination, each
+counted once; a conjunct naming a reference with no resolvable join path SHALL fail at
+resolution with a typed error in every `to_many_handling` mode, never be dropped (spec:
+`queries/cross-model-aggregates`). This applies to the query population itself exactly as
+to an aggregate's root: a conjunct reaching the population root only across a
+non-determining path restricts the population by association, every aggregate evaluated
+over the population rows — inline or in a producer rooted at the population — counts each
+population row once, the filtered model is not joined into the base query for that
+conjunct, and the restriction is reported through the semi-join informational entry with
+no aggregate named — never an error, in any `to_many_handling` mode, whatever the query
+selects. A conjunct whose non-determining paths a consumer's grain already materialises (a
+projected dimension or time dimension on the same join branch) applies to that consumer on
+the same related row instead, so filtering and grouping on one branch bind to one row; when
+the grain materialises only some of a conjunct's branches, the conjunct's references on a
+materialised branch bind to the grouped row and only the remaining branches are quantified.
+A stated restriction SHALL never be silently ignored and SHALL never fan out an
+aggregation's inputs. Whether a conjunct crosses a non-determining path is judged on its
+dependency closure — a reference to a derived column whose definition crosses such a path
+crosses it too; a conjunct whose closure cannot be analysed SHALL fail at plan time with a
+typed error naming the filter and the column, in every mode, whether or not the query
+aggregates. Restriction by association is defined on the root row's join product over the
+branches the conjunct references, built as the inline path would join them (each hop with
+its declared join type, LEFT by default, so a hop with no related row contributes NULL
+columns): the root row survives iff the conjunct holds on at least one row of that product,
+root-local references taking the root row's values, conjuncts sharing a branch judged on
+one product row, SQL three-valued logic applying inside and the restriction itself never
+unknown. This rule is total over the conjunct's boolean shape — a root-local and a cross-path
+reference mixed under `OR`/`NOT`, cross-path references spanning several join branches, and
+an atom comparing columns of two branches all restrict by association, never dropped and
+never an error in any mode; negation keeps the existential reading (`NOT B` holds when some
+related row fails `B`), and a null-test on a related column holds for a root row with no
+related row.
+
+#### Scenario: Cross-path filter restricts the population by association
+- **WHEN** a query rooted at `orders` filters on an orders-level predicate and selects
+  `sum(customers.spend)`
+- **THEN** by executed values the metric counts exactly the customers with at least one
+  order passing the predicate, each once
+
+#### Scenario: A restriction is never silently ignored
+- **WHEN** a filter conjunct names a reference with no resolvable join path from the
+  query root
+- **THEN** the query fails at resolution with a typed error in every `to_many_handling`
+  mode — never an unrestricted value presented as restricted
+
+#### Scenario: Population filter across a fanning hop restricts the population
+- **WHEN** a query rooted at `customers` filters on `orders.status = 'ok'` and selects the
+  local `sum(spend)`, in any `to_many_handling` mode, and one customer has two `ok` orders
+- **THEN** by executed values the metric equals the spend of the distinct customers with at
+  least one `ok` order, each once (420 on the reference dataset, never 520); the base query
+  restricts `customers` by a correlated semi-join and does not join `orders`; the response
+  carries a `semi_join_pushed` entry naming the filter with no aggregate; no Python-level
+  warning is emitted
+
+#### Scenario: Derived population filter across a fanning hop restricts the population
+- **WHEN** a query rooted at `orders` filters on `customers.regions.bad_pop > 0` (a derived
+  column whose definition crosses the one-to-many `regions → region_events` hop) and
+  selects the local `sum(amount)`, in any `to_many_handling` mode
+- **THEN** by executed values the metric equals the amount of the orders whose region
+  passes the predicate, each order once (120 on the reference dataset, never 220)
+
+#### Scenario: Population filter over a provably to-one path stays inline
+- **WHEN** a query rooted at `orders` filters on `customers.tier = 'gold'` and selects the
+  local `sum(amount)`
+- **THEN** the query executes with the filter applied as a plain row restriction, by
+  executed values and generated SQL unchanged from today
+
+#### Scenario: Filter and dimension on one branch bind to the same row
+- **WHEN** a query rooted at `customers` selects `dimensions: ["orders.status"]`, the
+  local `sum(spend)`, and `filters: ["orders.amount = 20"]`, where the only order of
+  amount 20 has status `new` and its customer also has `ok` orders
+- **THEN** the result has exactly one cell, `new`, by executed values — the filter and
+  the dimension are evaluated on the same joined row, never on the customer's other orders
+
+#### Scenario: Two branches restrict the population independently
+- **WHEN** a query rooted at `customers` selects `sum(spend)` with
+  `filters: ["orders.status = 'ok'", "regions.region_events.value >= 50"]`, where
+  `customers → orders` and `regions → region_events` are one-to-many
+- **THEN** by executed values the metric counts exactly the customers with at least one
+  `ok` order whose region has at least one event of value 50 or more, each once (280 on the
+  reference dataset), and the response carries one `semi_join_pushed` entry per filter
+
+#### Scenario: Unanalyzable filter dependency fails closed
+- **WHEN** a query filters on `customers.regions.unparseable > 0`, a derived column no
+  supported dialect can parse, with or without a measure, in any `to_many_handling` mode
+- **THEN** the query fails at plan time with a typed error naming the filter and the column,
+  containing no issue reference — never SQL routed as if the column crossed nothing
+
+#### Scenario: Population filter across a fanning hop with an inline aggregate fails closed
+- **WHEN** a query rooted at `customers` filters on
+  `tier = 'bronze' or orders.status = 'ok'` (a root-local and a cross-path reference under
+  `OR`, the cross-path leg reaching only across the fanning `orders` hop) and selects the
+  local `sum(spend)`, in any `to_many_handling` mode
+- **THEN** the query no longer fails closed: by executed values the metric equals the spend of
+  the distinct bronze customers and customers with at least one `ok` order, each once (460 on
+  the reference dataset, never the join-multiplied 560); the base query does not join
+  `orders`; the response carries a `semi_join_pushed` entry naming the filter with no
+  aggregate and no dropped-filter warning; no Python-level warning is emitted
+
+#### Scenario: A root row with no related row is judged with NULL related columns
+- **WHEN** a query rooted at `customers` filters on `tier = 'gold' or orders.status = 'ok'`
+  and selects `sum(spend)`, where one gold customer has no orders at all
+- **THEN** by executed values that customer is counted — the disjunction holds on the
+  customer's null-extended row — so the metric is 475 on the reference dataset, never 420
+  (the customer wrongly dropped) and never the join-multiplied 675
+
+#### Scenario: Negation keeps the existential reading
+- **WHEN** a query rooted at `customers` filters on
+  `not (tier = 'gold' and orders.status = 'ok')` and selects `sum(spend)`
+- **THEN** by executed values the metric counts the non-gold customers together with the
+  gold customers having at least one order that is not `ok`, each once (370 on the reference
+  dataset); a gold customer with no orders is not counted, and the value is never the
+  join-multiplied 520
+
+#### Scenario: A null-test on a related column reads as absence
+- **WHEN** a query rooted at `customers` filters on `orders.id is null` and selects
+  `sum(spend)`
+- **THEN** by executed values the metric counts exactly the customers with no orders (55 on
+  the reference dataset), and the response carries the `semi_join_pushed` entry
+
+#### Scenario: Branches under a disjunction restrict independently
+- **WHEN** a query rooted at `customers` filters on
+  `orders.status = 'new' or regions.region_events.value >= 50` and selects `sum(spend)`
+- **THEN** by executed values the metric counts the customers with at least one `new` order
+  together with those whose region has an event of value 50 or more, each once (320 on the
+  reference dataset), with one `semi_join_pushed` entry for the filter
+
+#### Scenario: An atom spanning two branches is judged on their product
+- **WHEN** a query rooted at `customers` filters on
+  `orders.amount < regions.region_events.value` and selects `sum(spend)`
+- **THEN** by executed values the metric counts the customers having some order and some
+  region event with the order's amount below the event's value, each once (420 on the
+  reference dataset), never a dropped-filter warning
+
+#### Scenario: A materialised branch binds to the grouped row inside a multi-branch conjunct
+- **WHEN** a query rooted at `customers` selects `dimensions: ["orders.id"]` and no measures
+  with `filters: ["orders.status = 'ok' or regions.name = 'South'"]`
+- **THEN** by executed values the result has one cell per order that is itself `ok` or whose
+  customer's region is `South` (orders 1, 3, 5, 7, 9 and 10 on the reference dataset), plus the
+  null-order cell for the orderless customer whose region is `South` (its LEFT-extended row
+  satisfies the region leg: `NULL = 'ok' OR 'South' = 'South'` is TRUE) — never a cell for a
+  customer's other order admitted because a sibling order is `ok`
+
+#### Scenario: Out-of-scope conjunct without an inline aggregate keeps applying
+- **WHEN** a query rooted at `customers` selects `sum(spend, partition_by=tier)` by `tier`
+  with `filters: ["tier = 'bronze' or orders.status = 'ok'"]`, in any `to_many_handling`
+  mode
+- **THEN** the conjunct keeps applying, now by association in the producer too: by executed
+  values each tier cell equals the spend of that tier's distinct customers passing the
+  disjunction, each once (gold 190, silver 230, bronze 40 on the reference dataset), the
+  response carries the producer's and the population's
+  `semi_join_pushed` entries and no dropped-filter warning, and `to_many_handling: "error"`
+  does not error
+
+#### Scenario: Out-of-scope conjunct in raw-row mode fails closed
+- **WHEN** a query rooted at `customers` selects `dimensions: ["tier"]` with
+  `distinct_dimension_values: false` and `filters: ["tier = 'bronze' or orders.status = 'ok'"]`,
+  and one customer has two `ok` orders
+- **THEN** the query no longer fails closed: by executed values the result has one row per
+  bronze customer or customer with at least one `ok` order (six rows on the reference
+  dataset), never one row per matching join row (seven) — the raw-row grain guarantee holds by
+  association
+
+#### Scenario: Dimension-only and producer-only queries are unaffected by the guard
+- **WHEN** a query rooted at `customers` filters on `orders.status = 'ok'` and selects no
+  measures, or selects only aggregates that compute in their own producers (cross-model,
+  partitioned, or windowed)
+- **THEN** the retired guard blocks nothing: the query executes with values unchanged from
+  today, the filter applied to the population and to each producer by association
+
+#### Scenario: Population filter across a fanning hop restricts a mixed re-aggregation constituent
+- **WHEN** a customers query over `[tier]` selects
+  `sum(spend * avg(sum(spend, partition_by=[tier, plan_code]), partition_by=tier))` with
+  the filter `orders.status = 'ok'`
+- **THEN** the constituent's operand cells and its per-tier average are computed over
+  the restricted population only (gold 18050 = 190 × 95, silver 26450 = 230 × 115),
+  never over rows multiplied by the fanning join; every producer relation carries the
+  semi-join and none joins `orders`; the semi-join informational entries name the
+  selected measure; and selecting the same re-aggregation standalone beside it shares
+  one producer relation and reports under its own name
+
+#### Scenario: Re-aggregation producers report a dropped out-of-scope conjunct
+- **WHEN** a customers query over `[tier]` selects
+  `min(sum(spend, partition_by=[tier, plan_code]), partition_by=tier)` with the filter
+  `tier = 'bronze' or orders.status = 'ok'`, in any `to_many_handling` mode
+- **THEN** nothing is dropped: the conjunct restricts the re-aggregation's carrier and
+  outer producer by association exactly as it does a plain partitioned producer — by
+  executed values each tier cell is the smallest per-plan spend among that tier's
+  customers passing the disjunction (gold 30, silver 80, bronze 40 on the reference
+  dataset), every producer relation carries the semi-join, and the response carries a
+  `semi_join_pushed` entry naming the conjunct under the selected measure and no
+  dropped-filter warning
+
+### Requirement: Dice–slice correspondence under associate
+Under `to_many_handling: "associate"`, filtering the population to `d = v` SHALL yield
+the same value for an **association-eligible** aggregate as slicing the `v` cell of the
+same query grouped by `d`, by executed values, for any dimension `d` reachable from the
+population. An aggregate whose shape is unsupported under association (`window=`,
+`first`/`last`, a root without a unique key, or a column-reference parameter) is not
+subject to this rule — it fails with its typed error instead. The broadcast default does
+not satisfy this correspondence; its warning hint (per Loud degradation) is the required
+disclosure.
+
+#### Scenario: Filtered value equals the sliced cell
+- **WHEN** an associate-mode query filters `status = 'ok'` with `sum(customers.spend)`
+  rooted at `orders`, and its counterpart groups by `status` instead
+- **THEN** the filtered run's value equals the `ok` cell of the grouped run, by
+  executed values, across a generated family of query shapes
+
+### Requirement: Second-order aggregation over attached values
+An aggregation whose source operand resolves entirely to attached values —
+partitioned aggregates, or explicitly grained transforms over them, directly or
+combined through arithmetic and scalar functions — SHALL aggregate over the
+operand dataset's cells, never over the query's population rows. The operand
+dataset is typed by the union of its constituents' grains: an aggregate
+constituent at its declared `partition_by=` grain; a transform constituent at the
+union of its inner aggregates' grains — each inner's explicit `partition_by=`, else
+the query's dimensions and time buckets — where a windowed inner's grain always
+includes the query's time bucket whether or not its `partition_by=` names it, and an
+axis-collapsing transform (`first`, `last`) at that union minus its time axis; a
+constituent with no declared grain is typed at the query's dimensions. Its rows are the distinct union-grain cells of the row-filtered
+population; each constituent's value attaches null-safely at its own grain, a cell
+a constituent lacks contributes NULL, and no constituent adds or removes cells. The
+outer aggregation partitions those cells by the query dimensions attributable to
+the operand dataset per Axiom 1 (Determination): a dimension is attributable iff
+the grain determines it — a grain member, or a field reached from a grain member
+over provably to-one join hops (a foreign-key grain field thus determines its
+referenced model's fields and any column further along a to-one chain; an
+entity-key grain field additionally determines all of its own model's columns).
+A grain field does not determine its own model's other columns when the grain
+does not fix that model's key — a foreign key does not identify the many-side
+row — and an expression grain field (time bucket, computed dimension) determines
+only itself — as a grain member it pins nothing further. Determination is closed
+under row-level combination (Axiom 2.2): a dimension combining determined operands
+through arithmetic, comparison, scalar functions or conditionals — a literal being
+determined by every grain, a time bucket when the grain determines its column, and an
+embedded aggregate when the grain determines its `partition_by=` members — is itself
+attributable, whatever its spelling.
+A derived column is determined when the grain determines every column its definition
+reads (value and filter), recursively — exactly as its inline expression would be.
+Unattributable dimensions resolve per `to_many_handling` exactly as for
+model-rooted aggregates: broadcast with a self-announcing warning naming the
+dimension and the remedy, per-cell association, or a clear error. Adding a
+re-aggregated measure MUST NOT change the result row count or any other
+column's values.
+
+#### Scenario: Average of city totals per region
+- **WHEN** a query over dimensions `[region]` selects the measure
+  `avg(sum(amount, partition_by=[city, region]))`
+- **THEN** each region row carries the unweighted average of that region's city
+  totals, by executed values, distinguishable from the row-count-weighted value
+
+#### Scenario: Grained transform constituent aggregates the transform's cells
+- **WHEN** a query over a month time dimension selects
+  `sum(cumsum(sum(amount, partition_by=[region, ordered_at])) - 1)`
+- **THEN** each month carries the sum over regions of that region's running total
+  minus one per cell, by hand-computed executed values on SQLite and DuckDB
+
+#### Scenario: Ungrained transform constituent is identity plus a warning
+- **WHEN** a query selects `sum(cumsum(sum(amount)))` over a month time dimension
+- **THEN** the value equals `cumsum(sum(amount))` per cell and the response carries
+  the degenerate-re-aggregation warning, exactly as `sum(sum(amount))` does
+
+#### Scenario: Ungrained inner of a mixed operand types at the query grain
+- **WHEN** a query over a month time dimension selects
+  `sum(rank(sum(amount, partition_by=[region, ordered_at]) - sum(amount)))`
+- **THEN** the ungrained inner is the month total, computed at the query grain and
+  broadcast onto the `(region, month)` cells before ranking — never re-evaluated per
+  region — by hand-computed executed values distinguishable from the per-cell
+  evaluation
+
+#### Scenario: Collapsing transform constituent drops the time axis
+- **WHEN** a query over a month time dimension selects
+  `sum(last(sum(amount, partition_by=[region, ordered_at])))`
+- **THEN** the constituent is typed at `(region)`: every month carries the sum over
+  regions of each region's most recent monthly total, the response warns that the
+  month dimension is broadcast, and a region absent from a month still counts —
+  distinguishable from summing the `(region, month)` cells present in that month
+
+#### Scenario: Collapsing and preserving constituents share one operand dataset
+- **WHEN** the same query selects
+  `sum(cumsum(sum(amount, partition_by=[region, ordered_at])) - last(sum(amount, partition_by=[region, ordered_at])))`
+- **THEN** the operand dataset is the `(region, month)` cells, the collapsed value
+  broadcasts onto them, each month is attributable through the preserving
+  constituent, and the value is correct with no warning
+
+#### Scenario: Composite operand keeps the population's cells
+- **WHEN** the operand combines aggregates at `[city, region]` and `[region]`
+  grains and some union-grain cell has no value for one constituent (e.g. a
+  measure-local filter eliminates its rows)
+- **THEN** the operand dataset has exactly the population's distinct
+  `(city, region)` cells, the region-grain value broadcast onto them, and the
+  missing value contributes NULL to that cell without removing it
+
+#### Scenario: Outer dimension attributed through a to-one chain
+- **WHEN** the inner grain is an entity key (e.g. `customer_id`) and a query
+  dimension is reached from it over a provably to-one join chain
+- **THEN** the outer aggregation partitions the inner cells exactly by that
+  dimension, with no broadcast warning
+
+#### Scenario: Outer dimension seeded by a nested-path entity key
+- **WHEN** the inner grain contains a joined model's unique key
+  (e.g. `sum(amount, partition_by=customers.id)` rooted at `orders`) and a query
+  dimension is a column of that model or reached from it over a to-one hop
+  (`customers.region_id`, `customers.regions.name`)
+- **THEN** the outer aggregation partitions the cells exactly by that dimension with
+  no broadcast warning, by executed values
+
+#### Scenario: A foreign-key grain field determines its to-one target
+- **WHEN** the inner grain contains a foreign-key column
+  (e.g. `sum(amount, partition_by=customers.region_id)` rooted at `orders`) and a
+  query dimension is a field of the model that key points at over the provably
+  to-one hop (`customers.regions.name`)
+- **THEN** the outer aggregation partitions the cells exactly by that dimension with
+  no broadcast warning, by executed values (Axiom 1: the fixed key value pins the
+  to-one target row)
+
+#### Scenario: A non-key grain field does not determine its own model's siblings
+- **WHEN** the inner grain contains a joined model's foreign-key column
+  (e.g. `partition_by=customers.region_id`, which does not identify a customer) and
+  a query dimension is another column of that same model reached only by
+  identifying its row (`customers.id`)
+- **THEN** the dimension is not attributable and resolves per `to_many_handling`
+
+#### Scenario: Unattributable outer dimension broadcasts with a warning
+- **WHEN** a query over dimensions `[region]` selects
+  `avg(sum(amount, partition_by=city))` under the default mode
+- **THEN** every region row carries the global average of city totals and the
+  response warns, naming `region`, the reason it is not attributable, and the
+  remedy (add it to the inner `partition_by=`)
+
+#### Scenario: Unattributable outer dimension associates on request
+- **WHEN** the same query runs under `to_many_handling: "associate"`
+- **THEN** each region cell aggregates the distinct city cells associated with
+  it through the population — a city value co-occurring with two regions counts
+  in both — by executed values
+
+#### Scenario: Unattributable outer dimension refuses under error mode
+- **WHEN** the same query runs under `to_many_handling: "error"`
+- **THEN** it fails with a clear error naming the measure, the dimension, and
+  the remedy — never wrong numbers
+
+#### Scenario: Degenerate re-aggregation is identity plus a warning
+- **WHEN** a query selects `avg(sum(amount))` (operand grain equals the outer
+  grain)
+- **THEN** the value equals `sum(amount)` per cell and the response carries a
+  degenerate-re-aggregation warning naming both grains and the
+  `partition_by=` remedy
+
+#### Scenario: Row-level expression over grain members partitions exactly
+- **WHEN** a query over dimensions `[region, city == 'Alpha']` selects
+  `avg(sum(amount, partition_by=[city, region]))` under each `to_many_handling` mode
+- **THEN** each `(region, city == 'Alpha')` row carries the average of exactly its own
+  city cells — `(North, true)` 30, `(North, false)` 60, `(South, true)` 40,
+  `(South, false)` 100, `(East, false)` 60, Gap's NULL-city cell 12, `(Gap, false)` 8,
+  `(Void, false)` NULL — by executed values on SQLite and DuckDB, with no broadcast or
+  association warning and no error
+
+#### Scenario: Expression over a to-one-determined dimension matches its plain spelling
+- **WHEN** the operand is `sum(amount, partition_by=customer_id)` rooted at `corders` and
+  the query dimension is `customers.regions.name == 'North'`
+- **THEN** the `true` cell carries 35 and the `false` cell 100 — the values the plain
+  `customers.regions.name` dimension gives North and South — by executed values, with no
+  warning
+
+#### Scenario: Aggregate-carrying expression dimension grained by a determined key
+- **WHEN** the same operand is grouped by the dimension
+  `sum(amount, partition_by=customers.regions.name) > 80`
+- **THEN** the `false` cell carries 35 and the `true` cell 100, by executed values, with no
+  warning — identical to grouping by the bare aggregate dimension
+
+#### Scenario: Expression over an undetermined column still resolves per mode
+- **WHEN** a query over dimensions `[region, is_p]`, with `is_p` defined as
+  `product == 'P'`, selects `avg(sum(amount, partition_by=[city, region]))`
+- **THEN** under the default mode each region's value repeats across `is_p` and the
+  broadcast warning names `is_p`, the reason that the operand grain does not determine
+  it, and the `partition_by=` remedy; under `to_many_handling: "error"` the query fails
+  naming `is_p`
+
+#### Scenario: Derived column over grain members partitions like its inline spelling
+- **WHEN** the model declares a derived column `city_upper` defined as `UPPER(city)` and a
+  query over dimensions `[region, city_upper]` selects
+  `avg(sum(amount, partition_by=[city, region]))`
+- **THEN** each row carries the average of exactly its own city cells, identical to the
+  query over `[region, upper(city)]`, by executed values on SQLite and DuckDB, with no warning
+
+### Requirement: Aggregation parameters are typed by the home dataset's grain
+Every parameter of an aggregation — a keyword or positional parameter (`weight=`,
+`other=`, a custom aggregation's declared parameters) and a parameter supplied by the
+aggregation definition's default — SHALL be typed against the dataset the aggregation
+runs over: with `D` that dataset and `G` its grain, a parameter `P` is legal iff `G`
+determines `P` — `P` is a grain member, an aggregate each of whose `partition_by=`
+members `G` determines (a cell value of the same dataset), or a column reached from a
+grain member over provably to-one join hops (per Axiom 1, Determination), determination
+being closed under row-level combination. A parameter naming a
+derived column is determined iff `G` determines every dependency of that column's
+definition, recursively — a derived parameter whose definition crosses a hop `G` does
+not pin is not determined, however its own path is reached. A legal parameter is evaluated once per
+cell of `D` and the aggregation reads that value; the origin of `D`'s rows — a model's
+rows deduplicated per entity, or another aggregate's cells — MUST NOT affect the rule.
+A parameter `G` does not determine SHALL fail at plan time with a typed error naming
+the parameter, the grain, and the remedy (aggregate the parameter to that grain, or add
+its determining keys to the operand's `partition_by=`) — never invalid SQL or a silently
+arbitrary value. The rule applies identically in every `to_many_handling` mode and in
+every consumer position.
+
+#### Scenario: Parameter determined by the entity key under association
+- **WHEN** a query rooted at `orders` with `to_many_handling: "associate"` selects
+  `weighted_avg(customers.spend, weight=customers.spend)` by the orders-level dimension
+  `status`
+- **THEN** each status cell equals the spend-weighted average over the distinct customers
+  associated with it, by hand-computed executed values on SQLite and DuckDB — each
+  customer weighted once, never the join-multiplied figure — with unchanged result grain
+
+#### Scenario: Definition-default parameter follows the same rule
+- **WHEN** a model declares a custom aggregation whose parameter defaults to a column of
+  the aggregate's root (e.g. `wsum` with `weight` defaulting to `spend`) and an
+  associate-mode query selects `wsum(customers.spend)` by an unattributable dimension
+- **THEN** it executes with the default applied once per distinct entity, by executed
+  values, identical to spelling the parameter explicitly
+
+#### Scenario: Parameter determined over a to-one chain from the entity key
+- **WHEN** an associate-mode aggregate's parameter is a column reached from the
+  aggregate's root over a provably to-one join (e.g. `weight=customers.regions.pop`)
+- **THEN** the query executes with the parameter read once per associated entity, by
+  executed values
+
+#### Scenario: Parameter as a cell of the operand dataset
+- **WHEN** a query over `[region]` selects
+  `weighted_avg(sum(amount, partition_by=[city, region]), weight=count(id, partition_by=[city, region]))`
+- **THEN** each region row carries its city totals averaged with each city's row count as
+  the weight, by hand-computed executed values on SQLite and DuckDB, equal to the manual
+  two-stage encoding of the same computation
+
+#### Scenario: Parameter determined over a to-one chain from the operand grain key
+- **WHEN** the operand grain is an entity key (e.g. `sum(amount, partition_by=customer_id)`
+  rooted at `corders`) and the parameter is a column reached from it over a provably
+  to-one join (`weight=customers.region_id`)
+- **THEN** the query executes with the parameter read once per cell, by executed values
+
+#### Scenario: Parameter not determined by the grain fails closed
+- **WHEN** the outer aggregation's parameter is a population-row column against a coarser
+  cell grain (`weighted_avg(sum(amount, partition_by=[city, region]), weight=id)`), a
+  definition default naming such a column, or an aggregate grained outside the operand
+  grain (`weight=sum(amount, partition_by=product)` over a `[city, region]` operand)
+- **THEN** the query fails at plan time with a typed error naming the parameter, the
+  grain, and the remedy, containing no issue reference
+
+#### Scenario: Derived re-aggregation parameter over an unpinned fanning hop fails closed
+- **WHEN** a query rooted at `orders` selects
+  `weighted_avg(sum(amount, partition_by=customers.regions.id), weight=customers.regions.bad_pop)`,
+  where `regions.bad_pop` is defined as `pop + region_events.value` over the one-to-many
+  `regions → region_events` hop the operand grain does not pin
+- **THEN** the query fails at plan time with the typed parameter error naming `weight`,
+  the grain, and the `partition_by=` remedy — never the multiplying join
+
+#### Scenario: Derived re-aggregation parameter with local-only dependencies executes
+- **WHEN** the same query's weight is `customers.regions.derived_pop`, a derived column
+  defined as `pop * 2` on `regions`, and the operand grain pins `regions` by its entity key
+- **THEN** the query executes with each region cell weighted by twice its population, by
+  hand-computed executed values on SQLite and DuckDB
+
+#### Scenario: Derived parameter over grain members is determined
+- **WHEN** a query over `[region]` selects
+  `weighted_avg(sum(amount, partition_by=[city, region]), weight=city_len)`, with
+  `city_len` a derived column defined as `LENGTH(city)`
+- **THEN** it executes with each city cell weighted by its name length, by hand-computed
+  executed values on SQLite and DuckDB; the same query with `weight=prod_flag` (a derived
+  column reading `product`) fails with the typed parameter error
+
+#### Scenario: NULL parameter values follow SQL aggregate semantics
+- **WHEN** a legal parameter is NULL for some cells (e.g. a to-one lookup with no match)
+- **THEN** those cells contribute exactly as the underlying SQL aggregate treats NULL
+  inputs (a NULL weight contributes nothing to `weighted_avg`), by executed values on
+  SQLite and DuckDB
+
+#### Scenario: Attached parameter grained by an expression over home-determined columns
+- **WHEN** a cross-model aggregate rooted at `corders` and homed on `customers` carries an
+  attached parameter whose `partition_by=` names a computed dimension `rid10` defined as
+  `customers.region_id * 10`
+- **THEN** the query executes, by executed values on SQLite and DuckDB, with values
+  identical to the same query with `partition_by=[customers.region_id]` — never a
+  parameter-grain error
+
+### Requirement: Ungrained aggregate parameters type at the query grain
+An aggregate-valued parameter with no declared `partition_by=` SHALL be typed at
+the query's dimensions — exactly as an ungrained aggregation source constituent
+is — before the parameter determination rule is applied: it is legal iff the
+aggregation's operating grain determines the query's dimensions, and it is then
+evaluated once per query-grain cell and attached into the aggregation's input
+relation (a row-level source) or carried as a constituent of the operand dataset
+(a re-aggregation), broadcast onto that dataset's cells. The rule SHALL apply
+identically in every kernel and in every `to_many_handling` mode; rejecting the
+ungrained form on construction grounds is a closure violation.
+
+#### Scenario: Ungrained parameter on a row-level source
+- **WHEN** a locally-rooted query over `[region]` selects the model-defined
+  `wsum(amount, weight=sum(amount))` (`SUM({value} * {weight})`)
+- **THEN** each region row equals the region's row sum times the region total —
+  the query-grain value row-attached as the weight — by executed values
+
+#### Scenario: Ungrained parameter under association
+- **WHEN** an associate-mode query rooted at `orders` over `[status]` selects
+  `wsum(customers.spend, weight=sum(amount))`
+- **THEN** each status cell equals the sum of its distinct associated customers'
+  spend times that status cell's order total, by executed values
+
+#### Scenario: Ungrained parameter on a re-aggregation
+- **WHEN** a query over `[region]` selects
+  `wsum(sum(amount, partition_by=[city, region]), weight=count(id))`
+- **THEN** the parameter is typed at `[region]`, carried as a constituent of the
+  `[city, region]` operand dataset and broadcast onto its cells, and the
+  executed value equals the manual encoding with
+  `count(id, partition_by=region)` — never the not-determined rejection
+
+### Requirement: Home dataset of a row-level aggregation source
+An aggregation over a row-level source SHALL run over the rows of exactly one home
+dataset (Axiom 2): the deepest join path from the query root from which every
+dependency of every input — each source leaf, each column-valued parameter and each
+non-overridden definition default, each taken through its dependency closure, and
+each grain member of every attached constituent (an aggregate or grained transform
+operand is opaque and stands for its grain: its explicit `partition_by=`, else the
+query's dimensions; a transform's grain is the union of its inner aggregates', where
+a windowed inner's grain always includes the query's time bucket whether or not its
+`partition_by=` names it) — is
+reachable over provably to-one hops. A non-overridden definition default SHALL be
+resolved as a reference from the owning model — the source anchor that declares the
+aggregation — with each column reference (bare, or one inside an expression default)
+taken in the owner's coordinates. A qualifier naming a dataset already on the owner's
+path from the query root — the root itself included — SHALL cancel the path back to
+that dataset, so the reference reads that dataset's row on the path, keeping the
+path's own spelling of it, never a second join to it; a qualifier the owner cannot
+reach forward otherwise SHALL instead be anchored at the query root, while an
+ambiguous or only partially resolvable owner reference — a first segment that
+resolves, by cancellation or as a hop, followed by one that does not — SHALL fail
+closed rather than silently re-anchor at the root. An edge-name segment never
+cancels. Only a definition default cancels: a query-typed path that revisits a
+dataset stays refused with the circular-join error, and so does a default reference
+that is circular from the query root. (Whether a derived column whose
+own `Column.sql` revisits is likewise refused is out of scope here — DEV-1952.) A
+default is resolved once, when the query is bound, and is thereafter the same value as
+its explicit spelling — the column it resolves to, or for an expression default each
+of its references: it homes, is checked for input safety and renders exactly as that
+spelling would, in every producer kind — plain, association, windowed and
+second-order — and in every position, filters and order keys included; a default and
+its identical explicit spelling in one query are computed once. So a default that
+resolves to a genuine host-local (root) column SHALL widen the home to the root, and a
+default whose resolved path reaches a dataset over a fanning hop SHALL widen the home
+to that dataset, exactly as spelling that column explicitly would; a definition
+default whose definition crosses a fanning hop SHALL fail closed even when other
+inputs widen the home away from the declaring model; and a cancelled or root-anchored
+default is never rendered as a join from the owner back to the dataset it names.
+Candidates are the input paths and their
+longest common prefix, deepest first; a tie prefers the source's anchor, the longest
+common prefix of the source leaves' own paths. The aggregation is computed over the
+home's rows, each counted once, never over a join product. When no candidate
+determines every input the query SHALL fail with the input-safety error naming the
+offending leaf and hop. The home SHALL depend on the leaves' paths alone, never on
+the spelling of the expression. Every other rule — attribution and
+`to_many_handling` modes, explicit grain, `window=`, filter routing, positions —
+applies exactly as for a single-column source rooted at the home.
+
+#### Scenario: Deepest determining dataset wins
+- **WHEN** a query rooted at `orders` selects `sum(customers.spend - customers.regions.pop)`
+  over provably to-one hops `orders → customers → regions`
+- **THEN** the home is `customers`: each customer's spend and its region's population
+  are counted once, however many orders the customer has, by executed values
+
+#### Scenario: Host-side leaf pulls the home to the root
+- **WHEN** a query rooted at `orders` selects `sum(amount - customers.discount)`
+- **THEN** the home is `orders`: each order row carries its own customer's discount,
+  by executed values
+
+#### Scenario: Branches meet at their common ancestor
+- **WHEN** a query rooted at `orders` selects `sum(customers.spend - stores.rent)`,
+  both hops provably to-one
+- **THEN** the home is `orders`, the aggregation runs over the order rows, and no
+  warning is raised, by executed values
+
+#### Scenario: A parameter widens the home
+- **WHEN** a query rooted at `orders` selects
+  `wsum(customers.spend + customers.regions.pop, weight=amount)`
+- **THEN** the home is `orders` — the weight's dataset — and each order is weighted by
+  its own amount, identical to the rule for a single-column source with the same
+  parameter
+
+#### Scenario: A definition default naming a root column widens the home to the root
+- **WHEN** a query rooted at `orders` selects `<agg>(customers.spend)`, where `<agg>` is
+  declared on `customers` and defaults its weight to the root column `orders.amount`
+  (bare-qualified or inside an expression such as `orders.amount * 1`)
+- **THEN** the home is `orders`, identical in value to the explicit
+  `weighted_avg(customers.spend, weight=orders.amount)` — the genuine root-local
+  default is retained as a home candidate rather than dropped
+
+#### Scenario: A bare definition default stays owner-local
+- **WHEN** a query rooted at `orders` selects a `customers`-declared aggregation over
+  `customers.spend` whose weight defaults to the bare identifier `spend`
+- **THEN** the default resolves to the owner's `customers.spend`, never a bogus
+  root-local `()`, and the home is exactly the home of the source alone
+
+#### Scenario: An owner-reachable dotted default resolves in the owner's frame
+- **WHEN** a `customers`-declared aggregation defaults its weight to `regions.pop`,
+  a model reachable forward from `customers`
+- **THEN** the default resolves to the owner-relative `customers.regions.pop`, not to a
+  root-anchored `regions`, and homes exactly as spelling `customers.regions.pop`
+  explicitly would
+
+#### Scenario: A fanning definition default fails closed even when the home widens
+- **WHEN** a `regions`-declared aggregation over `customers.regions.pop` has one default
+  that widens the home to `customers` and another default whose definition crosses the
+  fanning `regions → region_events` hop
+- **THEN** the query fails closed with the input-safety error naming the fanning hop —
+  the fanning default is resolved on the declaring `regions` model and never omitted
+  from safety because the home widened to `customers`
+
+#### Scenario: A default cancels to a dataset two hops from the root
+- **WHEN** a query rooted at `orders` selects `wsum_region_pop(customers.regions.countries.gdp)`,
+  where `wsum_region_pop` is declared on `countries` and defaults its weight to
+  `regions.pop`, `regions → countries` is provably to-one and `orders` has no direct
+  join to `regions`
+- **THEN** the default resolves to `customers.regions.pop` — the region the path came
+  through, never a second `countries → regions` join — the home is `customers.regions`,
+  and the value equals the explicit `weight=customers.regions.pop` twin: each region's
+  gdp times its population once (500000 on the reference dataset), never the
+  per-customer multiple (1500000), on SQLite and DuckDB
+
+#### Scenario: A default cancels twice
+- **WHEN** the `countries`-declared default is `regions.customers.spend` and the query
+  selects `wsum_cust_spend2(customers.regions.countries.gdp)` from `orders`
+- **THEN** the default resolves to `customers.spend`, the home is `customers`, and the
+  value equals the explicit `weight=customers.spend` twin (670000 on the reference
+  dataset), by executed values
+
+#### Scenario: A default cancels and then walks forward
+- **WHEN** the `countries`-declared default is `regions.customers.plans.fee` (queried as
+  `wsum_plan_fee(customers.regions.countries.gdp)`), or a `regions`-declared default is
+  `customers.plans.fee` (queried as `wsum_cust_plan_fee(customers.regions.pop)`)
+- **THEN** each resolves to `customers.plans.fee`, homes at `customers`, and equals its
+  explicit twin (100000 and 10000 on the reference dataset), by executed values
+
+#### Scenario: Defaults in different frames resolve per reference
+- **WHEN** a `countries`-declared aggregation defaults one parameter to `regions.pop`
+  and another to `regions.customers.plans.fee`, queried as
+  `wsum_two(customers.regions.countries.gdp)` from `orders`
+- **THEN** each default resolves in its own frame (`customers.regions.pop` and
+  `customers.plans.fee`), the home is `customers`, and the value equals the explicit
+  two-kwarg twin (17000000 on the reference dataset), by executed values
+
+#### Scenario: A cancelled default homes above it over a to-one reverse hop
+- **WHEN** a query rooted at `orders` selects `wsum_rp(customers.regions.region_events.value)`,
+  where `wsum_rp` is declared on `region_events` and defaults its weight to `regions.pop`,
+  `regions → region_events` fans and its inverse is provably to-one
+- **THEN** the default resolves to `customers.regions.pop`, the home is
+  `customers.regions.region_events` (it determines `regions.pop` back over the to-one
+  hop), and the value counts each event once (16000 on the reference dataset, never
+  the 48000 of a per-customer fan), identical to the explicit
+  `weight=customers.regions.pop` twin and to
+  `sum(customers.regions.region_events.value * customers.regions.pop)`
+
+#### Scenario: A cancelled default that then crosses a fanning hop fails closed
+- **WHEN** the `countries`-declared default is `regions.region_events.value` and the
+  query selects `wsum_fan(customers.regions.countries.gdp)` from `orders`
+- **THEN** the default resolves to `customers.regions.region_events.value`, the home is
+  `customers.regions.region_events` exactly as for the explicit
+  `weight=customers.regions.region_events.value` twin, and the value equals that twin
+  and `sum(customers.regions.countries.gdp * customers.regions.region_events.value)` —
+  each event counted once — on SQLite and DuckDB, by executed values
+
+#### Scenario: A reverse hop to a dataset not on the path stays refused
+- **WHEN** a query rooted at `regions` selects `wsum_cust_spend(pop)`, whose
+  `regions`-declared default is `customers.spend`
+- **THEN** nothing cancels — `customers` is not on the path — and the query fails with
+  the same input-safety error naming `customers` that the explicit
+  `weight=customers.spend` twin raises
+
+#### Scenario: A query-typed revisit is refused
+- **WHEN** a query selects `sum(customers.regions.customers.spend)` from `orders`
+- **THEN** the query is refused with the circular-join error, never silently cancelled
+
+#### Scenario: The path's own spelling survives cancellation
+- **WHEN** the query root is an inline extension of `orders` adding a named join
+  `ship_region` to `regions`, and the query selects
+  `wsum_region_pop(ship_region.countries.gdp)`
+- **THEN** the default resolves to `ship_region.pop` — the edge-name spelling of the
+  region on the path — and the value equals the explicit `weight=ship_region.pop` twin
+  (500000 on the reference dataset)
+
+#### Scenario: A cancelled expression default renders canonically in every producer kind
+- **WHEN** the cancelled default is an expression (`regions.pop * 1`,
+  `regions.customers.spend * 1`) and the aggregation runs as an association producer
+  (`to_many_handling: associate` by the unattributable `status`), as a trailing-window
+  producer (`window='1y'` over `customers.signup_at` months, home `customers`), or as
+  the outer aggregation of a second-order producer (a host-declared default
+  `customers.regions.pop * 1` over `sum(amount, partition_by=customers.regions.id)`)
+- **THEN** each executes with values identical to its explicit-kwarg twin — the
+  default is entered at the producer root in canonical coordinates, never as a reverse
+  join from the owner — by executed values
+
+#### Scenario: An owner at the root consumes its own name once
+- **WHEN** a query rooted at `orders` selects `<agg>(amount)` where `<agg>` is declared
+  on `orders` and defaults its weight to `orders.cost` (bare-dotted or inside
+  `orders.cost * 1`)
+- **THEN** the leading owner name is consumed as a self-reference exactly once, the
+  default is root-local, and the value equals the explicit `weight=cost` twin
+
+#### Scenario: A second-order default naming a non-join qualifier fails closed at typing
+- **WHEN** a host-declared aggregation whose default is `nowhere.col` is used as the
+  outer aggregation over `sum(amount, partition_by=status)`
+- **THEN** the query fails with the unresolvable-join error naming the default, never
+  a bogus key that fails later or slips through
+
+#### Scenario: A stage query with no model host is unaffected
+- **WHEN** a multi-stage query aggregates a stage's output columns in a later stage
+- **THEN** it executes exactly as before — a stage has no model host, so no definition
+  default is resolved for it
+
+#### Scenario: An attached constituent's grain widens the home
+- **WHEN** a query rooted at `orders` selects
+  `sum(customers.discount * avg(amount, partition_by=status))`
+- **THEN** the home is `orders` — the grain member `status` must be determined by the
+  home — and each order row carries its customer's discount times its status's
+  average amount, by executed values; with `partition_by=customers.tier` instead the
+  home stays `customers`
+
+#### Scenario: Spelling never moves the home
+- **WHEN** one query selects `sum(customers.spend)` and another `sum(customers.spend + 0)`
+- **THEN** both resolve the same home and return identical executed values
+
+#### Scenario: No home fails closed
+- **WHEN** a source leaf is reachable from every candidate home only across a fanning
+  or unproven join hop
+- **THEN** the query fails with the input-safety error naming the leaf and the hop,
+  never a multiplied value
+
+#### Scenario: A host column defined across a fanning hop is refused
+- **WHEN** `orders` defines `li_qty` as `line_items.qty` over an undeclared
+  one-to-many hop and a query rooted at `orders` selects `sum(li_qty)`
+- **THEN** it fails with the input-safety error naming `line_items` and the
+  cross-model spelling, while `sum(line_items.qty)` returns the per-line-item total
+
+#### Scenario: A default and its explicit spelling are computed once
+- **WHEN** one query rooted at `orders` selects both `wpop(amount)` — whose weight
+  defaults to `customers.hr.pop` — and `wpop(amount, weight=customers.hr.pop)` under
+  two names
+- **THEN** both names carry the same value from a single computation (one producer in
+  the generated SQL), each keeping its own public name, and the generated SQL equals
+  the SQL of the same query spelling the default by model name (`customers.regions.pop`)
+
+#### Scenario: A bare default names the owner's column even when the root shadows it
+- **WHEN** both `customers` and the query root `orders` declare a column of the same
+  name and a `customers`-declared aggregation defaults its weight to that bare name
+- **THEN** the default reads the owner's (`customers`) column in every producer kind,
+  equal by executed values on SQLite and DuckDB to the explicit
+  `weight=customers.<column>` twin
+
+#### Scenario: A mixed-frame expression default keeps a quoted column's identity
+- **WHEN** an expression default combines an owner-local column whose physical name
+  must be quoted (mixed-case or a reserved word) with a root-anchored column
+  (`<owner column> + orders.amount`)
+- **THEN** the quoted column renders with its exact identity and the executed value on
+  SQLite and DuckDB equals the explicit two-reference spelling
+
+#### Scenario: A default that revisits a dataset without cancelling is refused
+- **WHEN** a `customers`-declared default returns to `customers` through edge names,
+  which never cancel (`hr.back.spend`, with `hr` a named join `customers → regions` and
+  `back` a named join `regions → customers`), alone or inside an expression default
+  (`hr.back.spend * 1`)
+- **THEN** the query is refused with the circular-join error when it is bound — never
+  a reference emitted verbatim into the SQL, and never a later or different failure
+
+### Requirement: Aggregates are virtual models
+An aggregate SHALL behave as a virtual model keyed by its grain: its rows are computed
+from its source by the same joins as any query — a to-one hop that finds no related row
+null-extends, never drops the row — and by the query's row filters, whatever consumes
+it. In an expression its value SHALL be read as a field of that model, joined
+one-to-one on the grain, NULL being a grain value like any other: a NULL grain cell
+receives the virtual model's NULL row, and a virtual-model row with no matching result
+cell contributes nothing. Consequently a source row whose path to a grain dimension is
+broken (an orphan or a dangling reference) counts in the NULL cell of that dimension,
+exactly as it does when the same aggregate is materialised on its own; and the value
+never depends on which dataset roots the query.
+
+#### Scenario: Orphan child rows count in the NULL grain cell
+- **WHEN** a query rooted at `customers` selects `sum(orders.amount)` and
+  `count(orders.id)` by `regions.name`, one customer has no region, and one order has no
+  customer
+- **THEN** the NULL-region cell holds the region-less customer's orders plus the
+  customerless order (47 / 2 on the reference dataset), identically under `broadcast`,
+  `associate` and `error` and with the population inferred, by executed values on
+  SQLite and DuckDB
+
+#### Scenario: Attached value equals the materialised aggregate
+- **WHEN** the same aggregate is saved as a query-backed model grouped by the same grain
+- **THEN** every result cell of the attached aggregate, the NULL cell included, equals
+  that model's row for the cell's grain value, for the query rooted at the population
+  and at the aggregate's source alike, by executed values
+
+#### Scenario: A dangling or partial reference counts like an orphan
+- **WHEN** a child row's foreign key names no existing parent, or a composite foreign
+  key is partially NULL, and the aggregate is grouped by a parent-level dimension
+- **THEN** the row counts in the NULL cell of that dimension exactly as in the
+  materialised aggregate, by executed values
+
+#### Scenario: Multi-hop grain through a broken hop
+- **WHEN** a query rooted at `regions` selects `sum(customers.orders.amount)` by `name`,
+  and one region's name is NULL
+- **THEN** the NULL-name cell equals the materialised aggregate's NULL row — that
+  region's orders together with every order whose path to a region is broken — by
+  executed values
+
+#### Scenario: A row filter narrows the virtual model's rows
+- **WHEN** a query rooted at `orders` under `associate` selects `sum(customers.spend)` by
+  `status` with the row filter `channel = 'app'`, and one customer has no orders
+- **THEN** the orderless customer fails the filter on its null-extended row and counts
+  in no cell, and every cell equals the hand-computed aggregate over the customers
+  associated with app orders, by executed values
