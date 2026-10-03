@@ -26,6 +26,11 @@ def normalize_direction(value: Any) -> str | None:
     return DIRECTION_NORMALIZE.get(value.strip().lower())
 
 
+def with_direction_kwarg(*, op: str, accepted: frozenset[str]) -> frozenset[str]:
+    """``accepted`` plus ``direction`` when ``op`` takes one, for error listings."""
+    return accepted | {"direction"} if op in DIRECTED_RANK_TRANSFORMS else accepted
+
+
 def rank_direction(*, op: str, given: bool, value: Any = None) -> str | None:
     """Validate a rank-family call's ``direction=``; ``value`` is the literal, or any non-``str`` when not a string literal."""
     if op in ASCENDING_RANK_TRANSFORMS:

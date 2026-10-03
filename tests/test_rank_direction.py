@@ -324,6 +324,14 @@ class TestDirectionErrors:
             assert "foo" in msg, msg
             assert ("direction" in msg) is advertised, msg
 
+    def test_unknown_keyword_outside_rank_family_lists_no_rank_keywords(self):
+        with pytest.raises(core_errors.TransformArgumentError) as ei:
+            _bind("lag(amount:sum, foo=1)")
+        msg = str(ei.value)
+        assert "foo" in msg, msg
+        assert "partition_by" not in msg, msg
+        assert "direction" not in msg, msg
+
 
 class TestImporterParity:
     @pytest.mark.parametrize("formula", [

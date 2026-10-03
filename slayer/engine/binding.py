@@ -36,7 +36,7 @@ from slayer.core.enums import (
     format_unknown_aggregation,
     normalize_aggregation_name,
 )
-from slayer.core.direction import DIRECTED_RANK_TRANSFORMS, rank_direction
+from slayer.core.direction import rank_direction, with_direction_kwarg
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.granularity import CustomGranularity, Granularity, resolve_granularity
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS, key_display
@@ -1652,6 +1652,9 @@ def _bind_transform_params(
     allowed_kwargs = _TRANSFORM_KWARG_RULES.get(op, frozenset())
     seen_kwargs: set = set()
     rank_family = op in RANK_FAMILY_TRANSFORMS
+    advertised = with_direction_kwarg(
+        op=op, accepted=allowed_kwargs | {"partition_by"} if rank_family else allowed_kwargs,
+    )
     direction_value: object = _NOT_SCALAR
     for k, v in [*positional_pairs, *kwargs]:
         if k == "partition_by" and rank_family:
@@ -1665,11 +1668,6 @@ def _bind_transform_params(
             direction_value = _fold_to_scalar(v)
             continue
         if k not in allowed_kwargs:
-            advertised = (
-                allowed_kwargs
-                | ({"partition_by"} if rank_family else set())
-                | ({"direction"} if op in DIRECTED_RANK_TRANSFORMS else set())
-            )
             raise TransformArgumentError(
                 summary=f"Transform {op!r} does not accept keyword "
                 f"argument {k!r}. Accepted: {sorted(advertised)}."

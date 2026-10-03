@@ -23,7 +23,7 @@ from collections.abc import Mapping
 
 from pydantic import BaseModel, Field
 
-from slayer.core.direction import DIRECTED_RANK_TRANSFORMS, rank_direction
+from slayer.core.direction import rank_direction, with_direction_kwarg
 from slayer.core.enums import (
     BUILTIN_AGGREGATIONS,
     RANK_FAMILY_TRANSFORMS,
@@ -894,7 +894,7 @@ def _parse_transform_kwargs(  # NOSONAR S3776 — straight-line whitelist + per-
                     f"Transform '{transform}' does not accept keyword arguments; "
                     f"got '{kw.arg}=' in formula {original!r}"
                 )
-            advertised = allowed | ({"direction"} if transform in DIRECTED_RANK_TRANSFORMS else set())
+            advertised = with_direction_kwarg(op=transform, accepted=allowed)
             raise ValueError(
                 f"Transform '{transform}' does not accept keyword '{kw.arg}'. "
                 f"Accepted kwargs: {', '.join(sorted(advertised))}. "
