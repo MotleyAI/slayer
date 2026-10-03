@@ -43,7 +43,7 @@ class TestGeneratorInvariant:
         assert [s for s in DEFERRAL_SITES if "source_queries" in s.fragment] == []
 
     def test_guards_baseline_is_zero(self) -> None:
-        assert yaml.safe_load(_INDEX_YAML.read_text())["guards"]["baseline"] == 0
+        assert yaml.safe_load(_INDEX_YAML.read_text())["x-guards"]["baseline"] == 0
 
 
 def _schema(name: str) -> StageSchema:

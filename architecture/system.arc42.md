@@ -72,8 +72,9 @@ flowchart TD
 
 Ten nodes: precise `core`, `sql`, `ir`,
 `engine`, `storage` around the query pipeline; virtual buckets `importers`,
-`search`, `memories`, `protocols`, `surfaces` for the rest. Package claims,
-the legacy-arrow baseline, and spec mapping are in [index.yaml](index.yaml).
+`search`, `memories`, `protocols`, `surfaces` for the rest. Package claims and
+spec mapping are node metadata in [model/slayer.c4](model/slayer.c4); the
+legacy-arrow baseline is in [index.yaml](index.yaml).
 
 ## 3. Principles
 
@@ -88,7 +89,7 @@ All code, old and new, MUST obey these.
    `engine.syntax`, `sql.*`, `storage.migrations`), slated to die.
    [enforced: arch_check:model-truth]
 3. **Every top-level `slayer.*` package/module belongs to exactly one node.**
-   A new top-level package must be claimed in `index.yaml` in the same change.
+   A new top-level package must be claimed in a node's model metadata in the same change.
    [enforced: arch_check:claims-exactly-once]
 4. **Model truth**: the LikeC4 relation set covers the AST-measured runtime
    import edges at every declared granularity — each module attributes to its
@@ -178,16 +179,20 @@ parser of the constrained convention `arch_check` enforces (`model-identity`, `m
 
 - every element declared as `<id> = <kind> '<title>'`, one per line; children
   nest inside the parent's `{ }` body and are addressed by dotted FQN
-  (`core.query`) everywhere else;
-- all relations flat at model top level, one `<src> -> <dst>` per line (dotted
-  endpoints allowed), never inside element bodies, never `this`/`it`; `#legacy`
+  (`core.query`) everywhere else; every node is a child of the one language
+  root `python`, and findings print ids qualified with it (`python.core.query`);
+- all relations flat in the `python` root body, one `<src> -> <dst>` per line
+  (dotted endpoints relative to the root allowed), never inside node bodies,
+  never `this`/`it`; `#legacy`
   on the same line. `from pkg import name` measures both the `pkg` and the
   `pkg.name` edge — a re-exported attribute sharing a child's name attributes to
   that child (accepted fuzz);
-- `index.yaml` declares each node's on-disk `children:` (dotted paths under its
-  package); the one law then measures imports at the finest declared
-  granularity, so an arrow is required between any two declared children;
-- `views.c4` includes support only `include *`, listed top-level ids, and the
+- each node declares its mapping in one `metadata { }` block (`package` and
+  `claims` for precise nodes, `packages` for buckets, plus `arc42`/`specs`);
+  nested elements map to `<package>.<id>` by convention and carry no metadata.
+  The one law measures imports at the finest modelled granularity, so an arrow
+  is required between any two modelled children;
+- every view is `view <id> of python`; includes support only `include *`, listed top-level ids, and the
   focus predicates `x -> *` / `* -> x`; a per-view `view_depth:` in index.yaml
   (default 3) sets how many levels each view expands — deeper elements collapse
   into their cutoff ancestor with edges rolled up, and shown children render as
