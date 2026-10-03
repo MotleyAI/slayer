@@ -16,6 +16,7 @@ from pydantic import (
     ConfigDict,
     Discriminator,
     Field,
+    PrivateAttr,
     Tag,
     field_validator,
     model_validator,
@@ -48,6 +49,15 @@ _VAR_PATTERN = re.compile(r"\{\{|\}\}|\{([a-zA-Z_]\w*)\}|\{([^}]*)\}", re.ASCII)
 # ``parse_expr`` rejects the shape (e.g. ``month()``) but the callee still names a
 # granularity, so the wrong-shape error can fire.
 _WHOLE_CALL_RE = re.compile(r"^\s*([A-Za-z_]\w*)\s*\(.*\)\s*$", re.S)
+# ``callee(args)`` with any callee text, so a ``{g}(col)`` placeholder callee is caught.
+_CALL_PARTS_RE = re.compile(r"^\s*([^()]*?)\s*\((.*)\)\s*$", re.S)
+
+
+def _reject_call_placeholders(entry: str) -> None:
+    """A functional time-dimension string whose granularity or column is a ``{var}`` is refused."""
+    parts = _CALL_PARTS_RE.match(entry)
+    if parts is not None:
+        _reject_time_dimension_placeholders(entry, granularity=parts.group(1), column=parts.group(2))
 
 
 def _granularity_names() -> str:
@@ -91,6 +101,7 @@ def time_dimension_from_functional(entry: str, *, names: "frozenset[str] | set[s
         return None
     col = functional_call_column(node)
     if col is None:
+        _reject_call_placeholders(entry)
         raise GranularityCallError.wrong_shape(entry)
     return {"dimension": col, "granularity": callee.lower() if callee.lower() in GRANULARITY_NAMES else callee}
 
@@ -125,6 +136,7 @@ def _coerce_time_dimension_entry(entry: Any) -> Any:
     non-built-in callee resolves at binding); dicts/objects pass through untouched."""
     if not isinstance(entry, str):
         return entry
+    _reject_call_placeholders(entry)
     td = time_dimension_from_functional(entry, names=GRANULARITY_NAMES)
     if td is not None:
         return td
@@ -405,8 +417,8 @@ def substitute_variables(
     if escape == "python":
         if _contains_block_delimiter(filter_str):
             raise ValueError(
-                f"Optional blocks '{{? ... ?}}' are not supported in Mode-B "
-                f"(python) filters: {filter_str!r}."
+                f"Optional blocks '{{? ... ?}}' are supported only on raw-SQL model "
+                f"surfaces, not in Mode-B expressions: {filter_str!r}."
             )
         return _VAR_PATTERN.sub(_replace, filter_str)
 
@@ -432,17 +444,30 @@ def _render_block_segments(filter_str: str, variables: dict, replace_fn) -> str:
     return "".join(out)
 
 
+def query_variable_surfaces(query: "SlayerQuery") -> list[str]:
+    """Every text of ``query`` that substitutes ``{var}``: filters, measure formulas,
+    computed-dimension expressions, order expressions and ``date_range`` bounds."""
+    return [
+        *(query.filters or []),
+        *(m.formula for m in query.measures or []),
+        *(d.expression for d in query.dimensions or [] if isinstance(d, ComputedDimension)),
+        *(o.raw_formula for o in query.order or [] if o.raw_formula),
+        *(b for td in query.time_dimensions or [] for b in td.date_range or [] if b is not None),
+    ]
+
+
+def _bare_variable_names(text: str) -> set[str]:
+    return {m.group(1) for m in _VAR_PATTERN.finditer(text) if m.group(1)}
+
+
+def has_variable_syntax(text: str) -> bool:
+    """True if ``text`` holds any ``{...}`` / ``{{`` / ``}}`` token substitution rewrites or rejects."""
+    return _VAR_PATTERN.search(text) is not None
+
+
 def extract_placeholder_names(query: "SlayerQuery") -> set:
-    """Valid ``{var}`` names referenced in ``query.filters``."""
-    found: set = set()
-    for f in (query.filters or []):
-        for match in _VAR_PATTERN.finditer(f):
-            if match.group(0) in ("{{", "}}"):
-                continue
-            valid_name = match.group(1)
-            if valid_name:
-                found.add(valid_name)
-    return found
+    """Valid ``{var}`` names referenced on any of ``query``'s substituted surfaces."""
+    return set().union(*(_bare_variable_names(text) for text in query_variable_surfaces(query)))
 
 
 def _probe_replace(match: re.Match) -> str:
@@ -466,7 +491,7 @@ def render_probe_text(text: str) -> str:
 
 
 class ModelVariables(BaseModel):
-    """A model's Mode-A ``{var}`` placeholders split into ``required`` (no default, not in a block) and ``optional`` (blocked or defaulted)."""
+    """A model's ``{var}`` placeholders split into ``required`` (no default, not in a block) and ``optional`` (blocked or defaulted)."""
 
     required: list[str] = Field(default_factory=list)
     optional: list[str] = Field(default_factory=list)
@@ -493,9 +518,9 @@ def extract_variable_refs(text: str) -> tuple[set[str], set[str]]:
 
 
 def extract_model_variables(model: SlayerModel) -> ModelVariables:
-    """Classify a model's Mode-A ``{var}`` placeholders as required / optional across
-    the four surfaces (model/column sql + filters). A bare, undefaulted occurrence
-    anywhere makes the var required; everything else is optional."""
+    """Classify a model's ``{var}`` placeholders as required / optional across its four
+    Mode-A surfaces and its saved measure formulas. A bare, undefaulted occurrence
+    anywhere makes the var required (a measure has no optional blocks); everything else is optional."""
     surfaces: list[str] = []
     if model.sql:
         surfaces.append(model.sql)
@@ -512,6 +537,8 @@ def extract_model_variables(model: SlayerModel) -> ModelVariables:
         s_bare, s_blocked = extract_variable_refs(surface)
         bare |= s_bare
         blocked |= s_blocked
+    for measure in model.measures:
+        bare |= set().union(*extract_variable_refs(measure.formula))
 
     defaults = set(model.query_variables or {})
     required = {name for name in bare if name not in defaults}
@@ -624,6 +651,19 @@ class ComputedDimension(BaseModel):
 
     expression: str
     name: str | None = None
+    # Pre-substitution expression; explicitness is judged against it.
+    _template: str | None = PrivateAttr(default=None)
+
+    @property
+    def template(self) -> str:
+        """The expression as written, before ``{var}`` substitution."""
+        return self._template or self.expression
+
+    def substituted(self, expression: str) -> "ComputedDimension":
+        """A copy carrying the substituted ``expression`` and remembering its template."""
+        out = self.model_copy(update={"expression": expression})
+        out._template = self.template
+        return out
 
     @model_validator(mode="after")
     def _fill_name(self) -> "ComputedDimension":
@@ -733,8 +773,21 @@ def _date_range_problem(date_range: list[str | None]) -> str | None:
         return "must be one time point or a [lower, upper] pair"
     if all(bound is None for bound in date_range):
         return "needs at least one non-null bound"
-    bad = next((b for b in date_range if b is not None and not is_time_point_shape(b)), None)
+    # A placeholder bound is checked after substitution (the query is rebuilt then).
+    bad = next(
+        (b for b in date_range if b is not None and not _bare_variable_names(b) and not is_time_point_shape(b)),
+        None,
+    )
     return None if bad is None else f"has {bad!r}, which is not {TIME_POINT_FORMS}"
+
+
+def _reject_time_dimension_placeholders(entry: Any, *, granularity: Any = None, column: Any = None) -> None:
+    """Variables supply literals: a ``{var}`` naming a time dimension's granularity or column is refused."""
+    for what, value in (("granularity", granularity), ("column", column)):
+        if isinstance(value, str) and _bare_variable_names(value):
+            raise ValueError(
+                f"Time dimension {entry!r}: variables supply literal values; they can't name a {what} ({value!r})."
+            )
 
 
 class TimeDimension(BaseModel):
@@ -749,6 +802,15 @@ class TimeDimension(BaseModel):
         default=None, json_schema_extra=_advertise_string_date_range,
     )
     label: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_placeholder_names(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            _reject_time_dimension_placeholders(
+                data, granularity=data.get("granularity"), column=data.get("dimension", data.get("column")),
+            )
+        return data
 
     @model_validator(mode="after")
     def _check_date_range(self) -> "TimeDimension":

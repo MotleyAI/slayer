@@ -424,10 +424,7 @@ class _StagePlanner:
             **(stage.variables or {}),
             **self.bundle.runtime_variables,
         }
-        stage = apply_variables_to_query(
-            query=stage, variables=variables,
-            dry_run_placeholders=self.bundle.dry_run_placeholders,
-        )
+        stage = apply_variables_to_query(query=stage, variables=variables)
         if source is None:
             return stage, None, set()
         return stage, substitute_model_sql_surfaces(

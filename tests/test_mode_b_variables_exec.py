@@ -106,12 +106,13 @@ class TestQuerySurfaces:
         assert got == {"2024-01": 55.0, "2024-02": 70.0}
 
     async def test_malformed_substituted_bound(self, exec_engine) -> None:
+        query = q(
+            measures=["amount:sum"],
+            time_dimensions=[{**MONTH_TD, "date_range": ["{start}", None]}],
+            variables={"start": "2025/01/01"},
+        )
         with pytest.raises(ValueError) as info:
-            await exec_engine.execute(q(
-                measures=["amount:sum"],
-                time_dimensions=[{**MONTH_TD, "date_range": ["{start}", None]}],
-                variables={"start": "2025/01/01"},
-            ))
+            await exec_engine.execute(query)
         msg = str(info.value)
         for form in ("YYYY-Qn", "YYYY-MM", "last N"):
             assert form in msg, msg
@@ -128,10 +129,9 @@ class TestTemplateNaming:
         assert only_row(resp) == {"orders.amount_sum_k": pytest.approx(2100.0)}
 
     async def test_different_values_colliding_template_keys_fail(self, exec_engine) -> None:
+        query = q(measures=["amount:sum * {a_b}", "amount:sum * {a__b}"], variables={"a_b": 2, "a__b": 3})
         with pytest.raises(NameCollisionError):
-            await exec_engine.execute(q(
-                measures=["amount:sum * {a_b}", "amount:sum * {a__b}"], variables={"a_b": 2, "a__b": 3},
-            ))
+            await exec_engine.execute(query)
 
     def test_template_entries_stay_unnamed(self) -> None:
         query = apply_variables_to_query(
@@ -226,15 +226,23 @@ class TestSavedMeasures:
         await exec_engine.save_model(customers_model().model_copy(update={
             "measures": [ModelMeasure(name="spend_scaled", formula="spend:sum * {k}")],
         }))
+        query = q(measures=["customers.spend_scaled"], variables={"k": 10})
         with pytest.raises(UnresolvedPlaceholderError, match=r"\{k\}"):
-            await exec_engine.execute(q(measures=["customers.spend_scaled"], variables={"k": 10}))
+            await exec_engine.execute(query)
 
     async def test_saved_measure_undefined_variable(self, exec_engine) -> None:
         await exec_engine.save_model(orders_model().model_copy(update={
             "measures": [ModelMeasure(name="amt_scaled", formula="amount:sum * {k}")],
         }))
+        query = q(measures=["amt_scaled"], variables={"other": 1})
         with pytest.raises(ValueError, match="Undefined variable 'k'"):
-            await exec_engine.execute(q(measures=["amt_scaled"], variables={"other": 1}))
+            await exec_engine.execute(query)
+
+    async def test_undefaulted_saved_measure_keeps_column_types(self, exec_engine) -> None:
+        await exec_engine.save_model(orders_model().model_copy(update={
+            "measures": [ModelMeasure(name="amt_scaled", formula="amount:sum * {k}")],
+        }))
+        assert (await exec_engine.get_column_types("orders")).get("amount") == "number"
 
 
 class TestErrors:
@@ -244,8 +252,9 @@ class TestErrors:
         {"dimensions": ["region"], "measures": ["amount:sum"], "order": [{"column": "amount:sum * {k}"}]},
     ])
     async def test_undefined_variable(self, exec_engine, kw) -> None:
+        query = q(**kw)
         with pytest.raises(ValueError, match="Undefined variable 'k'"):
-            await exec_engine.execute(q(**kw))
+            await exec_engine.execute(query)
 
     @pytest.mark.parametrize("kw", [
         {"measures": ["amount:sum * {? {k} ?}"]},
@@ -253,21 +262,25 @@ class TestErrors:
         {"dimensions": ["region"], "measures": ["amount:sum"], "order": [{"column": "amount:sum * {? {k} ?}"}]},
     ])
     async def test_optional_block_rejected(self, exec_engine, kw) -> None:
+        query = q(**kw, variables={"k": 1})
         with pytest.raises(ValueError, match="Optional blocks"):
-            await exec_engine.execute(q(**kw, variables={"k": 1}))
+            await exec_engine.execute(query)
 
     async def test_escaped_braces_reach_binding(self, exec_engine) -> None:
+        query = q(measures=["amount:sum"], filters=["amount > {{k}}"])
         with pytest.raises(UnresolvedPlaceholderError) as info:
-            await exec_engine.execute(q(measures=["amount:sum"], filters=["amount > {{k}}"]))
+            await exec_engine.execute(query)
         msg = str(info.value)
         assert "looks like a variable placeholder" in msg, msg
         assert "amount > {k}" in msg, msg
         assert "variables" in msg, msg
-        assert "{{" in msg and "}}" in msg, msg
+        assert "{{" in msg, msg
+        assert "}}" in msg, msg
 
     async def test_multi_element_set_unsupported(self, exec_engine) -> None:
+        query = q(measures=["amount:sum * {a, b}"])
         with pytest.raises(ValueError, match="unsupported AST node Set") as info:
-            await exec_engine.execute(q(measures=["amount:sum * {a, b}"]))
+            await exec_engine.execute(query)
         assert not isinstance(info.value, UnresolvedPlaceholderError)
 
 
@@ -280,16 +293,18 @@ class TestSave:
         ({"measures": ["amount:sum"], "time_dimensions": [{**MONTH_TD, "date_range": ["{start}", None]}]}, "start"),
     ])
     async def test_undefaulted_variable_refuses_save(self, exec_engine, kw, name: str) -> None:
+        query = q(**kw)
         with pytest.raises(ValueError, match=f"Undefined variable '{name}'"):
-            await exec_engine.create_model_from_query(query=q(**kw), name="refused")
+            await exec_engine.create_model_from_query(query=query, name="refused")
         assert await exec_engine.storage.get_model("refused") is None
 
     async def test_undefaulted_saved_measure_refuses_save(self, exec_engine) -> None:
         await exec_engine.save_model(orders_model().model_copy(update={
             "measures": [ModelMeasure(name="amt_scaled", formula="amount:sum * {k}")],
         }))
+        query = q(measures=["amt_scaled"])
         with pytest.raises(ValueError, match="Undefined variable 'k'"):
-            await exec_engine.create_model_from_query(query=q(measures=["amt_scaled"]), name="refused")
+            await exec_engine.create_model_from_query(query=query, name="refused")
         assert await exec_engine.storage.get_model("refused") is None
 
     async def test_stage_variables_satisfy_save(self, exec_engine) -> None:

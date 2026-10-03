@@ -9,18 +9,18 @@
 
 ## 2. Parser and error
 
-- [ ] 2.1 `UnresolvedPlaceholderError(SlayerError)` in `core/errors.py` with the message from the spec; verify the error unit test passes
-- [ ] 2.2 `Placeholder` node in `engine/syntax.py`, admitted in every D1 position, rendered by `canonical_measure_text`, handled or failed closed by every `ParsedExpr` walker / dispatcher; binding raises `UnresolvedPlaceholderError`; verify 1.1 passes and the full unit suite stays green
+- [x] 2.1 `UnresolvedPlaceholderError(SlayerError)` in `core/errors.py` with the message from the spec; verify the error unit test passes
+- [x] 2.2 `Placeholder` node in `engine/syntax.py`, admitted in every D1 position, rendered by `canonical_measure_text`, handled or failed closed by every `ParsedExpr` walker / dispatcher; binding raises `UnresolvedPlaceholderError`; verify 1.1 passes and the full unit suite stays green
 
 ## 3. Construction
 
-- [ ] 3.1 Construction-time classification accepts templates (dimension strings, order candidates); `date_range` placeholder bounds skip the shape check; granularity / column placeholder rejection; verify 1.2 passes
+- [x] 3.1 Construction-time classification accepts templates (dimension strings, order candidates); `date_range` placeholder bounds skip the shape check; granularity / column placeholder rejection; verify 1.2 passes
 
 ## 4. Substitution and naming
 
-- [ ] 4.1 `_template` `PrivateAttr` on `ModelMeasure` and `ComputedDimension`; `apply_variables_to_query` substitutes every D2 surface, sets `_template`, and rebuilds per D2; `extract_placeholder_names` widened; reword the `{? ?}` rejection; verify 1.3 passes
-- [ ] 4.2 `bind_inputs`: an unnamed measure's public name from the template canonical alias (text path), `canonical_alias` = the substituted alias when it differs, unnamed dedupe kept; computed-dimension explicitness against the template (~L961, ~L1224); verify the naming and reference tests in 1.4 pass
-- [ ] 4.3 Saved `ModelMeasure.formula` substitution in `substitute_model_sql_surfaces` (python regime); `model_placeholder_names`, `model_needs_substitution_pass`, `extract_model_variables` widened; delete `dry_run_placeholders` and the `0` fill; refuse the save per D5; verify 1.4's saved-measure and save tests and 1.5 pass
+- [x] 4.1 `_template` `PrivateAttr` on `ModelMeasure` and `ComputedDimension`; `apply_variables_to_query` substitutes every D2 surface, sets `_template`, and rebuilds per D2; `extract_placeholder_names` widened; reword the `{? ?}` rejection; verify 1.3 passes
+- [x] 4.2 `bind_inputs`: an unnamed measure's public name from the template canonical alias (text path), `canonical_alias` = the substituted alias when it differs, unnamed dedupe kept; computed-dimension explicitness against the template (~L961, ~L1224); verify the naming and reference tests in 1.4 pass
+- [x] 4.3 Saved `ModelMeasure.formula` substitution in `substitute_model_sql_surfaces` (python regime); `model_placeholder_names`, `model_needs_substitution_pass`, `extract_model_variables` widened; delete `dry_run_placeholders` and the `0` fill; refuse the save per D5; verify 1.4's saved-measure and save tests and 1.5 pass
 
 ## 5. Docs and wrap-up
 

@@ -63,7 +63,6 @@ async def build_resolved_source_bundle(
     named_queries: Optional[Dict[str, SlayerQuery]] = None,
     stage_displays: Optional[Dict[str, StageDisplay]] = None,
     splice_chain: Tuple[str, ...] = (),
-    dry_run_placeholders: bool = False,
     now: Optional[datetime] = None,
 ) -> ResolvedSourceBundle:
     """Eagerly assemble the :class:`ResolvedSourceBundle` for one execution (P11).
@@ -123,7 +122,6 @@ async def build_resolved_source_bundle(
         query_backed=query_backed,
         splice_chain=tuple(splice_chain),
         runtime_variables=dict(runtime_variables or {}),
-        dry_run_placeholders=dry_run_placeholders,
         now=datetime.now() if now is None else now,
         granularities=ds.granularity_definitions if ds else {},
         spine_clash=spine_clash,

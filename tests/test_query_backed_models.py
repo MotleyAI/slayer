@@ -286,15 +286,13 @@ class TestCreateModelFromQuery:
         """An undefaulted {var} refuses the save; nothing is persisted."""
         engine, tmp = await _engine_with_orders()
         try:
+            query = SlayerQuery.model_validate({
+                "source_model": "orders",
+                "measures": [{"formula": "amount:sum"}],
+                "filters": ["amount > {threshold}"],
+            })
             with pytest.raises(ValueError, match="Undefined variable 'threshold'"):
-                await engine.create_model_from_query(
-                    query=SlayerQuery(
-                        source_model="orders",
-                        measures=[{"formula": "amount:sum"}],
-                        filters=["amount > {threshold}"],
-                    ),
-                    name="filtered_no_default",
-                )
+                await engine.create_model_from_query(query=query, name="filtered_no_default")
             assert await engine.storage.get_model("filtered_no_default") is None
         finally:
             tmp.cleanup()

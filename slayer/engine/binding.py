@@ -23,6 +23,7 @@ from slayer.core.errors import (
     UnknownFunctionError,
     UnknownReferenceError,
     UnresolvableDimensionJoinError,
+    UnresolvedPlaceholderError,
 )
 from slayer.core.enums import (
     BUILTIN_AGGREGATION_PARAM_ORDER,
@@ -68,13 +69,16 @@ from slayer.engine.syntax import (
     DottedRef,
     Literal,
     ParsedExpr,
+    Placeholder,
     Ref,
     ScalarCall,
     StarSource,
     TransformCall,
     TupleLit,
     UnaryOp,
+    canonical_measure_text,
     parse_expr,
+    placeholder_names,
 )
 from slayer.sql.sql_expr import has_window_function
 from slayer.sql.sql_template import SqlTemplateError, aggregation_reads
@@ -137,6 +141,7 @@ def bind_expr(
     expressions; off everywhere else, so a saved-measure name there errors.
     ``dimension_alias_map`` resolves ``partition_by=<computed dim name>`` to
     the dimension's bound key; it applies ONLY there."""
+    _reject_placeholders(parsed)
     measure_ctx = (
         MeasureResolutionCtx(depth_limit=_measure_depth_limit())
         if allow_measures else None
@@ -322,6 +327,7 @@ def bind_filter(
     ``ValueKey`` so a bare ref matching an alias interns onto that slot rather
     than resolving against model columns (colon form and alias form share one slot).
     ``dimension_alias_map`` resolves ``partition_by=<computed dim name>`` only."""
+    _reject_placeholders(parsed)
     value_key = _bind(
         parsed, scope=scope, bundle=bundle, in_filter=True, alias_map=alias_map,
         dim_alias_map=dimension_alias_map,
@@ -353,6 +359,9 @@ def _bind(
     # aggregation's ``partition_by``.
     if isinstance(parsed, Literal):
         return LiteralKey(value=normalize_scalar(parsed.value))
+
+    if isinstance(parsed, Placeholder):
+        raise UnresolvedPlaceholderError(name=parsed.name, expression=canonical_measure_text(parsed))
 
     if isinstance(parsed, Ref):
         return _resolve_ref(
@@ -438,6 +447,13 @@ def _bind(
     raise ValueError(
         f"Unsupported ParsedExpr node: {type(parsed).__name__}"
     )
+
+
+def _reject_placeholders(parsed: ParsedExpr, *, text: Optional[str] = None) -> None:
+    """Raise ``UnresolvedPlaceholderError`` for the first unsubstituted ``{name}`` in ``parsed``."""
+    names = placeholder_names(parsed)
+    if names:
+        raise UnresolvedPlaceholderError(name=names[0], expression=text or canonical_measure_text(parsed))
 
 
 _OPERAND_LEFT_OP: Dict[str, TimePointOp] = {
@@ -933,6 +949,7 @@ def _resolve_saved_measure(
             chain=_fmt_measure_chain(child.chain), limit=measure_ctx.depth_limit,
         )
     parsed = parse_expr(measure.formula)
+    _reject_placeholders(parsed, text=measure.formula)
     if not host_path:
         # Bare/local: measure lives on the host; bind inline at this scope.
         return _bind(

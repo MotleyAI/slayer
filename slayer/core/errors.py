@@ -626,6 +626,23 @@ class MeasureCycleError(SlayerError, ValueError):
         ))
 
 
+class UnresolvedPlaceholderError(SlayerError):
+    """A ``{name}`` placeholder reached binding unsubstituted."""
+
+    def __init__(self, *, name: str, expression: str) -> None:
+        self.name = name
+        self.expression = expression
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__,
+            summary=f"{{{name}}} looks like a variable placeholder, but no value was substituted into it.",
+            location=repr(expression),
+            suggestion=(
+                f"supply {name!r} through `variables` (a saved measure reached through a join "
+                "is not substituted); write `{{` / `}}` for literal braces."
+            ),
+        ))
+
+
 class BroadcastGrainWarning(UserWarning):
     """A cross-model aggregate's implicit grain lost a dimension (not attributable from its root) to broadcasting; result grain unchanged. Visibility warning, not an error."""
 

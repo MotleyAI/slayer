@@ -434,8 +434,9 @@ class TestFormulaSurfaces:
         {"order": [{"column": "amount:sum * {? {k} ?}"}]},
     ])
     def test_optional_block_rejected(self, kw) -> None:
+        query = _q(**kw)
         with pytest.raises(ValueError, match=r"Optional blocks") as info:
-            apply_variables_to_query(query=_q(**kw), variables={"k": 1})
+            apply_variables_to_query(query=query, variables={"k": 1})
         assert "filters" not in str(info.value)
 
     @pytest.mark.parametrize("kw", [
@@ -444,12 +445,14 @@ class TestFormulaSurfaces:
         {"order": [{"column": "amount:sum * {k}"}]},
     ])
     def test_undefined_variable_raises(self, kw) -> None:
+        query = _q(**kw)
         with pytest.raises(ValueError, match="Undefined variable 'k'"):
-            apply_variables_to_query(query=_q(**kw), variables={})
+            apply_variables_to_query(query=query, variables={})
 
     def test_invalid_variable_name_in_measure_raises(self) -> None:
+        query = _q(measures=["amount:sum * {bad-name}"])
         with pytest.raises(ValueError, match="Invalid variable name"):
-            apply_variables_to_query(query=_q(measures=["amount:sum * {bad-name}"]), variables={})
+            apply_variables_to_query(query=query, variables={})
 
 
 class TestRebuild:
@@ -461,7 +464,7 @@ class TestRebuild:
 
     def test_extension_source_preserved(self) -> None:
         ext = ModelExtension(source_name="orders", measures=[ModelMeasure(name="x", formula="amount:sum")])
-        q = SlayerQuery(source_model=ext, measures=["amount:sum * {k}"])
+        q = SlayerQuery.model_validate({"source_model": ext, "measures": ["amount:sum * {k}"]})
         out = apply_variables_to_query(query=q, variables={"k": 2})
         assert isinstance(out.source_model, ModelExtension)
         assert out.source_model == ext
@@ -471,7 +474,7 @@ class TestRebuild:
             name="inline_orders", sql_table="orders", data_source="ds",
             columns=[Column(name="amount", type=DataType.DOUBLE)],
         )
-        q = SlayerQuery(source_model=model, measures=["amount:sum * {k}"])
+        q = SlayerQuery.model_validate({"source_model": model, "measures": ["amount:sum * {k}"]})
         out = apply_variables_to_query(query=q, variables={"k": 2})
         assert isinstance(out.source_model, SlayerModel)
         assert out.source_model == model
@@ -490,10 +493,12 @@ class TestRebuild:
     def test_input_not_mutated(self) -> None:
         q = _q(measures=["amount:sum * {k}"], dimensions=["amount * {k}"])
         apply_variables_to_query(query=q, variables={"k": 2})
-        assert q.measures is not None and q.measures[0].formula == "amount:sum * {k}"
+        assert q.measures is not None
+        assert q.measures[0].formula == "amount:sum * {k}"
         assert q.dimensions is not None
         d = q.dimensions[0]
-        assert isinstance(d, ComputedDimension) and d.expression == "amount * {k}"
+        assert isinstance(d, ComputedDimension)
+        assert d.expression == "amount * {k}"
 
 
 class TestPlaceholderNames:
@@ -547,16 +552,14 @@ class TestSavedMeasureSubstitution:
         assert out.measures[0].formula == "sum(CASE WHEN status == 'O\\'Brien' THEN 1 ELSE 0 END)"
 
     def test_saved_measure_optional_block_rejected(self) -> None:
+        model = _model_with_measure("amount:sum * {? {k} ?}")
         with pytest.raises(ValueError, match="Optional blocks"):
-            substitute_model_sql_surfaces(
-                model=_model_with_measure("amount:sum * {? {k} ?}"), variables={"k": 1}, backslash_escapes=False,
-            )
+            substitute_model_sql_surfaces(model=model, variables={"k": 1}, backslash_escapes=False)
 
     def test_saved_measure_undefined_variable_raises(self) -> None:
+        model = _model_with_measure("amount:sum * {k}")
         with pytest.raises(ValueError, match="Undefined variable 'k'"):
-            substitute_model_sql_surfaces(
-                model=_model_with_measure("amount:sum * {k}"), variables={"j": 1}, backslash_escapes=False,
-            )
+            substitute_model_sql_surfaces(model=model, variables={"j": 1}, backslash_escapes=False)
 
 
 class TestReExportsMatchCoreQuery:

@@ -124,6 +124,7 @@ class TestStarForms:
     def test_count_dotted_star(self) -> None:
         node = parse_expr("count(customers.*)")
         assert node == parse_expr("customers.*:count")
+        assert isinstance(node, AggCall)
         assert node.source == DottedRef(parts=("customers", "*"))
 
     def test_count_deep_dotted_star(self) -> None:
