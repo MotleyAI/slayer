@@ -49,15 +49,15 @@ _VAR_PATTERN = re.compile(r"\{\{|\}\}|\{([a-zA-Z_]\w*)\}|\{([^}]*)\}", re.ASCII)
 # ``parse_expr`` rejects the shape (e.g. ``month()``) but the callee still names a
 # granularity, so the wrong-shape error can fire.
 _WHOLE_CALL_RE = re.compile(r"^\s*([A-Za-z_]\w*)\s*\(.*\)\s*$", re.S)
-# ``callee(args)`` with any callee text, so a ``{g}(col)`` placeholder callee is caught.
-_CALL_PARTS_RE = re.compile(r"^\s*([^()]*?)\s*\((.*)\)\s*$", re.S)
 
 
 def _reject_call_placeholders(entry: str) -> None:
     """A functional time-dimension string whose granularity or column is a ``{var}`` is refused."""
-    parts = _CALL_PARTS_RE.match(entry)
-    if parts is not None:
-        _reject_time_dimension_placeholders(entry, granularity=parts.group(1), column=parts.group(2))
+    # Any callee text, so a ``{g}(col)`` placeholder callee is caught.
+    head, paren, tail = entry.partition("(")
+    body = tail.rstrip()
+    if paren and ")" not in head and body.endswith(")"):
+        _reject_time_dimension_placeholders(entry, granularity=head.strip(), column=body[:-1])
 
 
 def _granularity_names() -> str:

@@ -69,7 +69,6 @@ from slayer.engine.syntax import (
     DottedRef,
     Literal,
     ParsedExpr,
-    Placeholder,
     Ref,
     ScalarCall,
     StarSource,
@@ -359,9 +358,6 @@ def _bind(
     # aggregation's ``partition_by``.
     if isinstance(parsed, Literal):
         return LiteralKey(value=normalize_scalar(parsed.value))
-
-    if isinstance(parsed, Placeholder):
-        raise UnresolvedPlaceholderError(name=parsed.name, expression=canonical_measure_text(parsed))
 
     if isinstance(parsed, Ref):
         return _resolve_ref(
