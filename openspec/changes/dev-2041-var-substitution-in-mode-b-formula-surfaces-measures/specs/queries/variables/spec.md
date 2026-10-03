@@ -145,4 +145,4 @@ A `{name}` placeholder that reaches query binding unsubstituted SHALL raise a ty
 #### Scenario: Multi-element set
 
 - **WHEN** a measure is `amount:sum * {a, b}`
-- **THEN** it fails as unsupported syntax
+- **THEN** parsing it fails as unsupported syntax, and executing it fails with the invalid-variable-name error, as in filters

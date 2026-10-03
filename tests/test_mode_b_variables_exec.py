@@ -277,9 +277,9 @@ class TestErrors:
         assert "{{" in msg, msg
         assert "}}" in msg, msg
 
-    async def test_multi_element_set_unsupported(self, exec_engine) -> None:
+    async def test_multi_element_set_is_invalid_variable_name(self, exec_engine) -> None:
         query = q(measures=["amount:sum * {a, b}"])
-        with pytest.raises(ValueError, match="unsupported AST node Set") as info:
+        with pytest.raises(ValueError, match="Invalid variable name 'a, b'") as info:
             await exec_engine.execute(query)
         assert not isinstance(info.value, UnresolvedPlaceholderError)
 

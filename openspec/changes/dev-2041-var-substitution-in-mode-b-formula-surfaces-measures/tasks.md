@@ -24,5 +24,5 @@
 
 ## 5. Docs and wrap-up
 
-- [ ] 5.1 Docs: `docs/concepts/queries.md` ("Filter Variables" → "Variables" across every surface, plus the `variables` field-table row), `docs/concepts/models.md` (saved measure formulas), `docs/examples/14_variable_substitution` (`.md` + notebook, re-executed with `jupyter nbconvert --execute --inplace`), `SlayerQuery.variables` field description, `slayer/mcp/server.py` agent instructions, `slayer/memories/help_content/*.md`; one sentence on D5's save requirement in `docs/concepts/models.md`; grep docs for "for filter substitution" / "filters only"; verify `zensical.toml` nav needs no change
-- [ ] 5.2 Full unit suite, integration suite (CI invocation), `ruff check slayer/ tests/`, `basedpyright` (no baseline growth), `la-arch-check` (pinned); verify all green
+- [x] 5.1 Docs: `docs/concepts/queries.md` ("Filter Variables" → "Variables" across every surface, plus the `variables` field-table row), `docs/concepts/models.md` (saved measure formulas), `docs/examples/14_variable_substitution` (`.md` + notebook, re-executed with `jupyter nbconvert --execute --inplace`), `SlayerQuery.variables` field description, `slayer/mcp/server.py` agent instructions, `slayer/memories/help_content/*.md`; one sentence on D5's save requirement in `docs/concepts/models.md`; grep docs for "for filter substitution" / "filters only"; verify `zensical.toml` nav needs no change
+- [x] 5.2 Full unit suite, integration suite (CI invocation), `ruff check slayer/ tests/`, `basedpyright` (no baseline growth), `la-arch-check` (pinned); verify all green
