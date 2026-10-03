@@ -22,7 +22,7 @@ import pytest
 from slayer.core.formula import _rewrite_funcstyle_aggregations
 from slayer.core.models import Aggregation
 from slayer.core.query import _FUNCSTYLE_PENDING, OrderItem
-from slayer.engine.syntax import BoolOp, parse_filter_expr
+from slayer.engine.syntax import BoolOp, Cmp, parse_filter_expr
 
 
 class TestFilterInjection:
@@ -320,23 +320,28 @@ class TestStringHygieneFilters:
     def test_pipe_pipe_chain_three_operands(self) -> None:
         # Chained `||` desugars left-associatively to nested concat calls.
         result = parse_filter_expr("a || b || c = 'foo'")
+        assert isinstance(result, Cmp)
         outer = result.left
         assert outer.name == "concat"
         assert outer.args[0].name == "concat"
 
     def test_pipe_pipe_no_spaces(self) -> None:
         result = parse_filter_expr("a||b = 'foo'")
+        assert isinstance(result, Cmp)
         assert result.left.name == "concat"
 
     def test_pipe_pipe_with_function_call_operands(self) -> None:
         result = parse_filter_expr("lower(name) || ' ' || trim(addr) = 'eu london'")
+        assert isinstance(result, Cmp)
         assert result.left.name == "concat"
 
     def test_pipe_pipe_preserved_in_string_literal(self) -> None:
         # `||` inside a string literal must NOT be rewritten.
         result = parse_filter_expr("note = 'a||b'")
+        assert isinstance(result, Cmp)
         assert result.right.value == "a||b"
 
     def test_function_name_preserved_in_string_literal(self) -> None:
         result = parse_filter_expr("note = 'lower(x)'")
+        assert isinstance(result, Cmp)
         assert result.right.value == "lower(x)"

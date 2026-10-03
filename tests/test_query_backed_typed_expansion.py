@@ -508,7 +508,6 @@ class TestVirtualModelColumns:
             virtual = await engine._expand_query_backed_model(
                 model=m,
                 runtime_kwarg=None,
-                dry_run_placeholders=True,
             )
             assert virtual.default_time_dimension == "created_at"
         finally:
@@ -743,10 +742,8 @@ class TestNestedQueryBackedSavePath:
 
 
 class TestSavePath:
-    async def test_save_with_undefined_var_uses_placeholder_fill(self) -> None:
-        """``filters=["amount > {threshold}"]`` with no ``query_variables``
-        substitutes ``"0"`` at save time so dry-run validation succeeds.
-        """
+    async def test_save_with_undefined_var_refused(self) -> None:
+        """``filters=["amount > {threshold}"]`` with no ``query_variables`` refuses the save."""
         m = SlayerModel(
             name="qb_with_var",
             data_source="ds",
@@ -759,10 +756,8 @@ class TestSavePath:
         )
         engine, tmp = await _engine()
         try:
-            saved = await engine.save_model(m)
-            assert saved.backing_query_sql is not None
-            # The placeholder is filled with literal 0 at save time.
-            assert "0" in saved.backing_query_sql
+            with pytest.raises(ValueError, match="Undefined variable 'threshold'"):
+                await engine.save_model(m)
         finally:
             tmp.cleanup()
 

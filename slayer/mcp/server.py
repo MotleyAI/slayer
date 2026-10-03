@@ -571,7 +571,8 @@ To connect a new database: create_datasource → describe_datasource (verify + l
             main_time_dimension: which time dimension time-ordered transforms key off.
 
         Top-level arguments (siblings of ``query``, NOT fields inside it):
-            variables: Values for {placeholder} substitutions in filters / model SQL. Also
+            variables: Values for {placeholder} substitutions in filters, measure / dimension /
+                order formulas, date_range bounds and model SQL; result names keep the template. Also
                 settable per query object; precedence: runtime (top-level) > named-stage >
                 outer-query > model.query_variables.
             refine: Model-name form only — clauses (dimensions, time_dimensions, measures, filters,
