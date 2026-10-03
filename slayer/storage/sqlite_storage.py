@@ -26,6 +26,7 @@ from slayer.storage.sidecar_embedding_store import (
     SidecarEmbeddingStore,
 )
 from slayer.storage.sqlite_conn import open_connection, transaction
+from slayer.storage.migrations import stamp_stored
 from slayer.storage.v4_migration import migrate_sqlite_schema
 
 
@@ -454,7 +455,7 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
                     ).fetchone()
                     if existing_row is not None:
                         existing_memory = Memory.model_validate(
-                            json.loads(existing_row[0])
+                            stamp_stored(json.loads(existing_row[0]))
                         )
                         preserved_created_at = existing_memory.created_at
                 kwargs: dict[str, Any] = {
@@ -564,7 +565,7 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
 
     async def _get_memory_row(self, memory_id: str) -> Memory | None:
         raw = await asyncio.to_thread(self._get_memory_sync, memory_id)
-        return Memory.model_validate(json.loads(raw)) if raw else None
+        return Memory.model_validate(stamp_stored(json.loads(raw))) if raw else None
 
     def _list_memories_sync(
         self, entities: list[str] | None
@@ -591,7 +592,7 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
         self, *, entities: list[str] | None
     ) -> list[Memory]:
         raws = await asyncio.to_thread(self._list_memories_sync, entities)
-        return [Memory.model_validate(json.loads(r)) for r in raws]
+        return [Memory.model_validate(stamp_stored(json.loads(r))) for r in raws]
 
     def _delete_memory_sync(self, memory_id: str) -> bool:
         with transaction(self.db_path) as conn:

@@ -18,6 +18,7 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
 
 from pydantic import BaseModel, ConfigDict
 
+from slayer.core.direction import normalize_direction
 from slayer.core.enums import BUILTIN_AGGREGATIONS, GRANULARITY_NAMES, normalize_aggregation_name
 from slayer.core.errors import GranularityCallError, IllegalWindowInFilterError, UnknownFunctionError
 from slayer.core.formula import ALL_TRANSFORMS
@@ -1347,11 +1348,20 @@ def _walk_parsed(node: Any) -> Iterator[Any]:
 
 
 def _canonical_call_params(
-    args: Tuple[Any, ...], kwargs: Tuple[Tuple[str, Any], ...],
+    args: Tuple[Any, ...], kwargs: Tuple[Tuple[str, Any], ...], *, bare_direction: bool = False,
 ) -> str:
     parts = [canonical_measure_text(a) for a in args]
-    parts += [f"{k}={_canonical_kwarg_text(v)}" for k, v in kwargs]
+    parts += [_canonical_kwarg(k, v, bare_direction=bare_direction) for k, v in kwargs]
     return f"({', '.join(parts)})" if parts else ""
+
+
+def _canonical_kwarg(name: str, value: Any, *, bare_direction: bool) -> str:
+    """``name=value``; a transform's recognised ``direction`` renders as its bare normalised value."""
+    if bare_direction and name == "direction" and isinstance(value, Literal):
+        direction = normalize_direction(value.value)
+        if direction is not None:
+            return direction
+    return f"{name}={_canonical_kwarg_text(value)}"
 
 
 def _canonical_kwarg_text(value: Any) -> str:
@@ -1391,7 +1401,7 @@ def canonical_measure_text(parsed: Any) -> str:  # NOSONAR(S3776) — flat per-n
         return f"{parsed.agg}({', '.join(parts)})"
     if isinstance(parsed, TransformCall):
         inner = canonical_measure_text(parsed.input)
-        params = _canonical_call_params(parsed.args, parsed.kwargs)
+        params = _canonical_call_params(parsed.args, parsed.kwargs, bare_direction=True)
         return f"{parsed.op}({inner}{', ' + params[1:-1] if params else ''})"
     if isinstance(parsed, ScalarCall):
         return f"{parsed.name}({', '.join(canonical_measure_text(a) for a in parsed.args)})"

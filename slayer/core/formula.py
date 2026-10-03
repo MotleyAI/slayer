@@ -23,6 +23,7 @@ from collections.abc import Mapping
 
 from pydantic import BaseModel, Field
 
+from slayer.core.direction import rank_direction
 from slayer.core.enums import (
     BUILTIN_AGGREGATIONS,
     RANK_FAMILY_TRANSFORMS,
@@ -150,7 +151,8 @@ class TransformField(BaseModel):
         default_factory=dict,
         description=(
             "Keyword args from the call site, e.g. partition_by=[...] for the "
-            "rank family or n=4 for ntile. Validated per-transform at parse time."
+            "rank family, direction='desc' for rank / dense_rank or n=4 for ntile. "
+            "Validated per-transform at parse time."
         ),
     )
 
@@ -662,7 +664,7 @@ def _parse_node(
         if func_name in RANK_FAMILY_TRANSFORMS and len(node.args) > 1:
             raise ValueError(
                 f"Transform '{func_name}' does not accept positional arguments "
-                f"beyond the measure; use keyword args (e.g. partition_by=, n=). "
+                f"beyond the measure; use keyword args (e.g. partition_by=, direction=, n=). "
                 f"Formula: {original!r}"
             )
         extra_args = []
@@ -876,12 +878,16 @@ def _parse_transform_kwargs(  # NOSONAR S3776 — straight-line whitelist + per-
     """
     allowed = _ALLOWED_TRANSFORM_KWARGS.get(transform, frozenset())
     parsed: dict[str, Any] = {}
+    direction_kw: ast.keyword | None = None
 
     for kw in keywords:
         if kw.arg is None:
             raise ValueError(
                 f"Transform '{transform}' does not accept **kwargs in formula {original!r}"
             )
+        if kw.arg == "direction" and transform in RANK_FAMILY_TRANSFORMS:
+            direction_kw = kw
+            continue
         if kw.arg not in allowed:
             if not allowed:
                 raise ValueError(
@@ -918,6 +924,14 @@ def _parse_transform_kwargs(  # NOSONAR S3776 — straight-line whitelist + per-
             parsed["n"] = n_val
         else:  # pragma: no cover — guarded by the whitelist check above
             parsed[kw.arg] = _parse_literal(node=kw.value, original=original)
+
+    literal = direction_kw.value if direction_kw is not None else None
+    direction = rank_direction(
+        op=transform, given=direction_kw is not None,
+        value=literal.value if isinstance(literal, ast.Constant) else None,
+    )
+    if direction is not None:
+        parsed["direction"] = direction
 
     if transform == "ntile" and "n" not in parsed:
         raise ValueError(

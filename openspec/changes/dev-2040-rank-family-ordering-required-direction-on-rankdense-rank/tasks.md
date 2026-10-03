@@ -14,7 +14,7 @@ old `810 / 43` and gives `810 / 33` under NULL→NULL.
 - [x] 1.3 NULL-semantics tests: every scenario of "Rank-family NULL inputs rank NULL",
   covering all four functions with mixed-NULL, all-NULL-partition and partitioned
   inputs on SQLite and DuckDB, plus T-SQL / postgres emission. Verify: they fail now.
-- [ ] 1.4 Golden emission tests for the rank family on postgres, sqlite, duckdb, tsql and
+- [x] 1.4 Golden emission tests for the rank family on postgres, sqlite, duckdb, tsql and
   bigquery, recorded after implementation. Verify: the golden files exist and are pinned.
 - [x] 1.5 Naming tests: the "Rank direction spelled as its bare value" scenario. Verify:
   they fail now.
@@ -45,40 +45,40 @@ old `810 / 43` and gives `810 / 33` under NULL→NULL.
 
 ## 2. Core rule and error
 
-- [ ] 2.1 Add `TransformArgumentError(QueryTypeError)` to `slayer/core/errors.py`.
+- [x] 2.1 Add `TransformArgumentError(QueryTypeError)` to `slayer/core/errors.py`.
   Verify: the error tests from 1.1 can import it.
-- [ ] 2.2 Move the direction synonym table out of `core/query.py` into a core module that
+- [x] 2.2 Move the direction synonym table out of `core/query.py` into a core module that
   `OrderItem` and the new rule both import, and add the core direction validator
   (required / forbidden / literal / normalise / raise). Verify: `OrderItem` tests still
   pass.
-- [ ] 2.3 `core/formula.py`: route `_parse_transform_kwargs` through the validator, with
+- [x] 2.3 `core/formula.py`: route `_parse_transform_kwargs` through the validator, with
   `direction` admitted for `rank` / `dense_rank`. Verify: 1.2 passes.
 
 ## 3. Binding, naming, emission
 
-- [ ] 3.1 `engine/binding.py`: call the validator in `_bind_transform_params`, store
+- [x] 3.1 `engine/binding.py`: call the validator in `_bind_transform_params`, store
   `("direction", ...)` in `TransformKey.kwargs`, and move the other transform-kwarg
   `ValueError`s onto `TransformArgumentError`. Verify: 1.1 binding/error scenarios pass.
-- [ ] 3.2 Render `direction` as its bare value in the canonical formula text used for
+- [x] 3.2 Render `direction` as its bare value in the canonical formula text used for
   derived keys. Verify: 1.5 passes.
-- [ ] 3.3 `sql/generator.py`: emit `ORDER BY v ASC|DESC` per `direction` for `rank` /
+- [x] 3.3 `sql/generator.py`: emit `ORDER BY v ASC|DESC` per `direction` for `rank` /
   `dense_rank` and `ASC` for `ntile` / `percent_rank`, all wrapped in the NULL→NULL shape
   (design decision 5) as sqlglot AST. Verify: 1.1 and 1.3 pass on SQLite and DuckDB, and
   the T-SQL emission test passes.
-- [ ] 3.4 Record the golden baselines and re-bless any existing golden SQL that changed
+- [x] 3.4 Record the golden baselines and re-bless any existing golden SQL that changed
   only by the CASE wrapper, `ASC` or the direction. Review each re-blessed diff. Verify: 1.4
   and the golden suites pass.
 
 ## 4. Lazy migration
 
-- [ ] 4.1 `storage/migrations.py`: add the `stored_only` registration flag and its gate in
+- [x] 4.1 `storage/migrations.py`: add the `stored_only` registration flag and its gate in
   `migrate()`. Verify: the gate unit tests from 1.6 pass.
-- [ ] 4.2 Add the token-level rewrite function in `storage` (stdlib `tokenize` only).
+- [x] 4.2 Add the token-level rewrite function in `storage` (stdlib `tokenize` only).
   Verify: the rewrite edge-case tests pass.
-- [ ] 4.3 Register the stored-only steps `SlayerModel` 12→13, `SlayerQuery` 4→5 and
+- [x] 4.3 Register the stored-only steps `SlayerModel` 12→13, `SlayerQuery` 4→5 and
   `Memory` 2→3, including the nested-query stamping (design decision 2), and bump
   `CURRENT_VERSIONS`. Verify: the 1.6 model/query/memory scenarios pass.
-- [ ] 4.4 Stamp `version: 1` on unversioned stored dicts in `_migrate_and_refine_on_load`
+- [x] 4.4 Stamp `version: 1` on unversioned stored dicts in `_migrate_and_refine_on_load`
   and the YAML / SQLite memory load sites. Verify: the unversioned-legacy scenarios pass.
 
 ## 5. Agent-facing text, docs, examples

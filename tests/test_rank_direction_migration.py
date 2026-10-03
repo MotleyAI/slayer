@@ -247,6 +247,13 @@ class TestPayloadVersions:
         model = SlayerModel.model_validate(_model_dict(measures=[{"name": "x", "formula": BARE}], version=v))
         assert model.measures[0].formula == BARE
 
+    def test_fresh_query_backed_model_untouched(self):
+        data = _model_dict(measures=[], version=None, source_queries=[_query_dict(version=None)])
+        data.pop("sql_table", None)
+        data.pop("columns", None)
+        [q] = SlayerModel.model_validate(data).source_queries or []
+        assert (q.measures or [])[0].formula == "rank(sum(amount)) + 1"
+
     def test_fresh_memory_untouched(self):
         mem = Memory.model_validate({"id": "m1", "learning": "x", "query": _query_dict(version=None)})
         assert mem.query is not None

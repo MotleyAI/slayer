@@ -18,7 +18,7 @@ again per nested query.
 import logging
 import warnings
 
-from slayer.storage.migrations import migrate, register_migration
+from slayer.storage.migrations import migrate_nested, register_migration
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +52,7 @@ def _model_v2_to_v3(data: dict) -> dict:
     raw = data.get("source_queries")
     if isinstance(raw, list):
         data["source_queries"] = [
-            migrate("SlayerQuery", q) if isinstance(q, dict) else q
+            migrate_nested("SlayerQuery", q) if isinstance(q, dict) else q
             for q in raw
         ]
     return data

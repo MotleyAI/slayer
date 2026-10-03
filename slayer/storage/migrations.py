@@ -16,21 +16,26 @@ from collections.abc import Callable
 
 # Per-entity current version. Bump independently when an entity's schema changes.
 CURRENT_VERSIONS: dict[str, int] = {
-    "SlayerModel": 12,
-    "SlayerQuery": 4,
+    "SlayerModel": 13,
+    "SlayerQuery": 5,
     "DatasourceConfig": 2,
-    "Memory": 2,
+    "Memory": 3,
     "Embedding": 1,
 }
 
 # Registry: (entity_name, source_version) -> converter producing source_version+1.
 _REGISTRY: dict[tuple[str, int], Callable[[dict], dict]] = {}
+# Registry keys whose converter runs only on stored (explicitly versioned) dicts.
+_STORED_ONLY: set[tuple[str, int]] = set()
 
 
 def register_migration(
-    entity: str, source_version: int
+    entity: str, source_version: int, stored_only: bool = False,
 ) -> Callable[[Callable[[dict], dict]], Callable[[dict], dict]]:
     """Register a converter from ``source_version`` to ``source_version+1``.
+
+    A ``stored_only`` converter runs only on a dict that carries an explicit
+    ``version`` (a stored document); a version-less fresh payload skips it.
 
     Used as a decorator::
 
@@ -47,9 +52,26 @@ def register_migration(
                 f"Duplicate migration for {entity} v{source_version}"
             )
         _REGISTRY[key] = fn
+        if stored_only:
+            _STORED_ONLY.add(key)
         return fn
 
     return deco
+
+
+def stamp_stored(data: Any) -> Any:
+    """Mark a stored dict without ``version`` as v1, so stored-only steps run on it."""
+    if isinstance(data, dict) and "version" not in data:
+        return {**data, "version": 1}
+    return data
+
+
+def migrate_nested(entity: str, data: Any) -> Any:
+    """``migrate`` a nested document, keeping an absent ``version`` absent for the stored-only gate."""
+    out = migrate(entity, data)
+    if isinstance(data, dict) and "version" not in data:
+        out.pop("version", None)
+    return out
 
 
 @register_migration("SlayerModel", 9)
@@ -134,6 +156,7 @@ def migrate(entity: str, data: Any) -> Any:
         raise KeyError(f"Unknown entity '{entity}' in migrate()")
     data = dict(data)  # never mutate caller's payload
     target = CURRENT_VERSIONS[entity]
+    stored = "version" in data
     current = int(data.get("version", 1))
     while current < target:
         fn = _REGISTRY.get((entity, current))
@@ -141,7 +164,8 @@ def migrate(entity: str, data: Any) -> Any:
             raise RuntimeError(
                 f"No migration registered for {entity} v{current} → v{current + 1}"
             )
-        data = fn(dict(data))
+        if stored or (entity, current) not in _STORED_ONLY:
+            data = fn(dict(data))
         current += 1
         data["version"] = current
     data.setdefault("version", target)
@@ -162,3 +186,4 @@ from slayer.storage import v6_migration  # noqa: E402, F401  # ALLOW(import-not-
 from slayer.storage import v7_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
 from slayer.storage import v8_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
 from slayer.storage import v9_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
+from slayer.storage import rank_direction_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here

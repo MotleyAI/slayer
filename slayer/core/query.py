@@ -21,6 +21,7 @@ from pydantic import (
     model_validator,
 )
 
+from slayer.core.direction import normalize_direction
 from slayer.core.enums import BUILTIN_AGGREGATIONS, GRANULARITY_NAMES, TimeGranularity, normalize_aggregation_name
 from slayer.core.formula import ALL_TRANSFORMS
 from slayer.core.keys import SCALAR_FUNCTIONS
@@ -40,6 +41,9 @@ from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
 from slayer.storage.migrations import CURRENT_VERSIONS, migrate as _migrate_schema
 
 logger = logging.getLogger(__name__)
+
+#: The SlayerQuery version whose migration retired ``strict``.
+_STRICT_RETIRED_AT = 4
 
 _NAME_PATTERN = re.compile(r"^[a-zA-Z_]\w*$", re.ASCII)
 _VAR_PATTERN = re.compile(r"\{\{|\}\}|\{([a-zA-Z_]\w*)\}|\{([^}]*)\}", re.ASCII)
@@ -703,19 +707,9 @@ def _coerce_order_column(v: Any) -> Any:
     return v
 
 
-# ORDER BY direction synonyms → canonical lowercase (the generator compares
-# ``direction == "asc"``). Shared by the shorthand healer and the validator.
-_DIRECTION_NORMALIZE = {
-    "asc": "asc",
-    "ascending": "asc",
-    "desc": "desc",
-    "descending": "desc",
-}
-
-
 def _is_direction(value: Any) -> bool:
     """True if ``value`` is a recognized direction word (case/whitespace-insensitive)."""
-    return isinstance(value, str) and value.strip().lower() in _DIRECTION_NORMALIZE
+    return normalize_direction(value) is not None
 
 
 def _coerce_date_range(value: Any) -> Any:
@@ -799,8 +793,9 @@ class OrderItem(BaseModel):
     def _normalize_direction(cls, v: str) -> str:
         """Normalize direction to canonical ``asc``/``desc`` (else raise); the generator
         compares ``== "asc"`` strictly, so a non-normalized ``"ASC"`` would silently emit DESC."""
-        if _is_direction(v):
-            return _DIRECTION_NORMALIZE[v.strip().lower()]
+        normalized = normalize_direction(v)
+        if normalized is not None:
+            return normalized
         raise ValueError(
             "order direction must be one of asc/desc/ascending/descending "
             f"(case-insensitive), got {v!r}"
@@ -1037,8 +1032,8 @@ class SlayerQuery(BaseModel):
         # Single before-validator: migrate, THEN rewrite the functional granularity
         # form. Pydantic runs before-validators in reverse declaration order, so
         # sequencing them explicitly here keeps the rewrite on migrated input.
-        # `strict` is retired. Reject it for fresh (no version), current-version,
-        # or malformed payloads; only a pre-current *integer* stored version
+        # `strict` is retired. Reject it for fresh (no version), v4-or-later,
+        # or malformed payloads; only a pre-v4 *integer* stored version
         # migrates it (v3→v4 maps strict:true→to_many_handling='error'). ``version``
         # is raw here (pre-coercion), so accept only int / integer-string forms —
         # never truncate a float or other malformed value into a stale version.
@@ -1052,7 +1047,7 @@ class SlayerQuery(BaseModel):
                     version = int(raw_version)
                 except ValueError:
                     version = None
-            if version is None or version >= CURRENT_VERSIONS["SlayerQuery"]:
+            if version is None or version >= _STRICT_RETIRED_AT:
                 raise ValueError(
                     "`strict` is retired; set to_many_handling='error' instead "
                     "(one of broadcast|associate|error)."

@@ -303,6 +303,10 @@ class TransformInputError(QueryTypeError):
     """A transform operand the transform cannot consume."""
 
 
+class TransformArgumentError(QueryTypeError):
+    """A missing, unknown or malformed transform argument."""
+
+
 class ComputedDimensionError(QueryTypeError):
     """A malformed computed (expression) dimension."""
 
@@ -526,7 +530,7 @@ class IllegalWindowInFilterError(SlayerError, ValueError):
         self,
         filter_expr: str,
         source: str,
-        suggestion: str = "use a rank-family transform (e.g. `rank(<measure>) <= N`).",
+        suggestion: str = "use a rank-family transform (e.g. `rank(<measure>, direction='desc') <= N`).",
     ) -> None:
         self.filter_expr = filter_expr
         self.source = source
