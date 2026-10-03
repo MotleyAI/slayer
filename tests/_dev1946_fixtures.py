@@ -1,5 +1,5 @@
 """Shared fixtures for DEV-1946 — a grained transform as an aggregation
-parameter (``weight=rank(...)``, ``weight=cumsum(...)``).
+parameter (``weight=rank(..., direction='desc')``, ``weight=cumsum(...)``).
 
 Raw-row oracles over the DEV-1840 orders→customers→regions graph and the
 DEV-1847 sales graph; every constant the delta scenarios cite is re-derived
@@ -35,38 +35,38 @@ from tests._dev1919_fixtures import RANKED, ranked_by_tier, ranked_global
 # Formula constants (one per delta scenario shape).
 # --------------------------------------------------------------------------- #
 RANKED_POSITIONAL = ("customers.spend:weighted_avg("
-                     "rank(sum(amount, partition_by=customers.regions.name)))")
+                     "rank(sum(amount, partition_by=customers.regions.name), direction='desc'))")
 LAST_PARAM = ("customers.spend:weighted_avg(weight=last(sum(amount, "
               "partition_by=[customers.regions.name, ordered_at])))")
 DET_CUMSUM = ("customers.spend:weighted_avg(weight=cumsum(sum(amount, "
               "partition_by=[customers.regions.name, customers.signup_at])))")
 NOAXIS_CUMSUM = ("customers.spend:weighted_avg(weight=cumsum(sum(amount, "
                  "partition_by=customers.regions.name)))")
-UNGRAINED_RANK = "customers.spend:weighted_avg(weight=rank(sum(amount)))"
+UNGRAINED_RANK = "customers.spend:weighted_avg(weight=rank(sum(amount), direction='desc'))"
 WINDOWED_INNER = ("customers.spend:weighted_avg(weight=rank(sum(amount, "
-                  "window='1y', partition_by=customers.regions.name)))")
+                  "window='1y', partition_by=customers.regions.name), direction='desc'))")
 WINDOWED_OUTER = ("customers.spend:weighted_avg(window='1y', "
-                  "weight=rank(sum(amount, partition_by=customers.regions.name)))")
+                  "weight=rank(sum(amount, partition_by=customers.regions.name), direction='desc'))")
 NESTED = ("customers.spend:weighted_avg(weight=weighted_avg(amount, "
-          "weight=rank(sum(amount, partition_by=customers.regions.name)), "
+          "weight=rank(sum(amount, partition_by=customers.regions.name), direction='desc'), "
           "partition_by=customers.regions.name))")
 XMODEL_LOCAL = ("amount:weighted_avg(weight=rank(sum(customers.spend, "
-                "partition_by=customers.regions.name)))")
+                "partition_by=customers.regions.name), direction='desc'))")
 OWN_PARTITION = ("customers.spend:weighted_avg(weight=rank("
                  "sum(amount, partition_by=[customers.regions.name, customers.tier]), "
-                 "partition_by=customers.regions.name))")
+                 "partition_by=customers.regions.name, direction='desc'))")
 #: refused at bind: a transform is not a valid first/last ranking key.
 LAST_RANK_KEY = ("customers.spend:last(rank(sum(amount, "
-                 "partition_by=customers.regions.name)))")
+                 "partition_by=customers.regions.name), direction='desc'))")
 #: refused at bind (non-goal): an expression-valued parameter.
 EXPR_ARG = "weighted_avg(amount, weight=quantity * 2)"
 
-LOCAL_SALES = "weighted_avg(amount, weight=rank(sum(amount, partition_by=region)))"
-LOCAL_SALES_CITY = "weighted_avg(amount, weight=rank(sum(amount, partition_by=city)))"
+LOCAL_SALES = "weighted_avg(amount, weight=rank(sum(amount, partition_by=region), direction='desc'))"
+LOCAL_SALES_CITY = "weighted_avg(amount, weight=rank(sum(amount, partition_by=city), direction='desc'))"
 REAGG_RANK_COUNT = ("weighted_avg(sum(amount, partition_by=[city, region]), "
-                    "weight=rank(count(id, partition_by=[city, region])))")
+                    "weight=rank(count(id, partition_by=[city, region]), direction='desc'))")
 REAGG_RANK_PRODUCT = ("weighted_avg(sum(amount, partition_by=[city, region]), "
-                      "weight=rank(count(id, partition_by=product)))")
+                      "weight=rank(count(id, partition_by=product), direction='desc'))")
 
 # --------------------------------------------------------------------------- #
 # Raw-row projections.
@@ -93,24 +93,23 @@ def _wavg(pairs) -> Optional[float]:
 
 
 def _rank_desc(totals: Dict) -> Dict:
-    """Descending dense-competition rank; a NULL total ranks last."""
-    nonnull = sum(1 for x in totals.values() if x is not None)
+    """Descending competition rank; a NULL total ranks NULL."""
 
     def r(v):
         if v is None:
-            return 1 + nonnull
+            return None
         return 1 + sum(1 for x in totals.values() if x is not None and x > v)
 
     return {k: r(v) for k, v in totals.items()}
 
 
 def _rank_amount() -> Dict[Optional[str], int]:
-    """rank(sum(amount, partition_by=region name)) — North 1, NULL 2, South 3."""
+    """rank(sum(amount, partition_by=region name), direction='desc') — North 1, NULL 2, South 3."""
     return _rank_desc(region_amount_totals())
 
 
 def _rank_spend() -> Dict[Optional[str], int]:
-    """rank(sum(customers.spend, partition_by=region name)) — North 1, South 2, NULL 3."""
+    """rank(sum(customers.spend, partition_by=region name), direction='desc') — North 1, South 2, NULL 3."""
     return _rank_desc(region_spend_totals())
 
 
@@ -215,7 +214,7 @@ def windowed_outer_by_signup_month() -> Dict[Optional[str], Optional[float]]:
 
 
 def _nested_middle() -> Dict[Optional[str], Optional[float]]:
-    """weighted_avg(amount, weight=rank(region), partition_by=region) per region —
+    """weighted_avg(amount, weight=rank(region, direction='desc'), partition_by=region) per region —
     the rank is constant per region so this is the plain order-amount mean:
     North 50/3, South 10, NULL 23.5."""
     rank = _rank_amount()
@@ -255,7 +254,7 @@ def xmodel_by_status() -> Dict[str, Optional[float]]:
 
 
 def _own_rank() -> Dict[Tuple[Optional[str], Optional[str]], int]:
-    """rank(sum(amount, partition_by=[region, tier]), partition_by=region) —
+    """rank(sum(amount, partition_by=[region, tier]), partition_by=region, direction='desc') —
     descending within each region over its (region, tier) cells."""
     cell: Dict[Tuple[Optional[str], Optional[str]], float] = defaultdict(float)
     for _i, c, _s, a, _m in _ORD:
@@ -311,8 +310,7 @@ def local_sales_by_region() -> Dict[str, Optional[float]]:
 
 
 def local_sales_global() -> Optional[float]:
-    """LOCAL_SALES with no dimensions — 810/43 (Void rows weight the denominator,
-    contribute no numerator)."""
+    """LOCAL_SALES with no dimensions — 810/33 (Void's NULL rank weights nothing)."""
     rank = _rank_desc(_sales_totals(1))
     return _wavg([(a, rank[r]) for _i, r, _c, _p, a, *_x in _SALES_ROWS_WIDE])
 
@@ -435,7 +433,7 @@ def verify_oracles() -> None:
     _approx_map(local_sales_by_region(),
                 {"North": 22.5, "South": 140 / 3, "East": 60.0,
                  "Gap": 20 / 3, "Void": None})
-    _approx(local_sales_global(), 810 / 43)
+    _approx(local_sales_global(), 810 / 33)
     _approx_map(local_sales_by_region_city(), {
         ("North", "Alpha"): 10.0, ("North", "Beta"): 60.0,
         ("South", "Alpha"): 20.0, ("South", "Gamma"): 100.0,

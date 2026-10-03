@@ -30,8 +30,8 @@ _HEADLINE = ("customers.spend:weighted_avg("
              "weight=sum(amount, partition_by=customers.regions.name))")
 _MIXED_TWIN = "sum(customers.spend * sum(amount, partition_by=customers.regions.name))"
 _RANKED_TRANSFORM = ("customers.spend:weighted_avg("
-                     "weight=rank(sum(amount, partition_by=customers.regions.name)))")
-_LOCAL_RANKED_TRANSFORM = f"weighted_avg(amount, weight=rank({_REGION_SUM}))"
+                     "weight=rank(sum(amount, partition_by=customers.regions.name), direction='desc'))")
+_LOCAL_RANKED_TRANSFORM = f"weighted_avg(amount, weight=rank({_REGION_SUM}, direction='desc'))"
 
 
 def _cases() -> dict:

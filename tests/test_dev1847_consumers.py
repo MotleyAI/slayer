@@ -45,7 +45,7 @@ class TestTransformOverReaggregated:
         resp = await exec_engine.execute(sales_q(
             dimensions=["region"],
             measures=[reagg("avg", INNER_CR, name="acr"),
-                      ModelMeasure(formula=f"rank(avg({INNER_CR}))", name="rnk")]))
+                      ModelMeasure(formula=f"rank(avg({INNER_CR}), direction='desc')", name="rnk")]))
         by = {k[0]: v for k, v in region_key(resp).items()}
         # South has the largest per-region average -> rank 1 (descending).
         assert int(by["South"]["sales.rnk"]) == 1

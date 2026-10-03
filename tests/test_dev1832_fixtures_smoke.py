@@ -372,9 +372,6 @@ class TestDev1928ReaggMixedOracles:
             if v != prev:
                 rank, prev = i, v
             ranks[key] = rank
-        for key, v in cells.items():
-            if v is None:
-                ranks[key] = len(nonnull) + 1
         got: dict = defaultdict(float)
         for (_region, month), rk in ranks.items():
             got[month] += rk

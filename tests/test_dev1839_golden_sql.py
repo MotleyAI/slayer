@@ -87,7 +87,7 @@ def _cases() -> dict:
             dimensions=[
                 "region", "city",
                 {"expression": "rank(amount:sum(window='90d', partition_by=region)"
-                               " - amount:sum(partition_by=city))", "name": "x"},
+                               " - amount:sum(partition_by=city), direction='desc')", "name": "x"},
             ],
             time_dimensions=month_td(),
             measures=[s],
@@ -96,7 +96,7 @@ def _cases() -> dict:
             dimensions=[
                 "region", "city",
                 {"expression": "rank(amount:last(partition_by=region) - "
-                               "amount:sum(partition_by=city))", "name": "x"},
+                               "amount:sum(partition_by=city), direction='desc')", "name": "x"},
             ],
             measures=[s],
         ),
@@ -114,7 +114,7 @@ def _cases() -> dict:
                 "region", "city",
                 {"expression": "rank(amount:sum(partition_by=region) - "
                                "amount:sum(partition_by=city), "
-                               "partition_by=channel)", "name": "x"},
+                               "partition_by=channel, direction='desc')", "name": "x"},
             ],
             measures=[s],
         ),

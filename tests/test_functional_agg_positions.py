@@ -600,7 +600,7 @@ _MEASURE_DIFF_FUNC = (
     "sum(amount, partition_by=region) - sum(amount, partition_by=city)"
 )
 _MIXED_RANK_FUNC = (
-    "rank(sum(amount, partition_by=region) - sum(amount, partition_by=city))"
+    "rank(sum(amount, partition_by=region) - sum(amount, partition_by=city), direction='desc')"
 )
 
 

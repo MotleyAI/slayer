@@ -100,7 +100,7 @@ class TestSqlPredicateRejects:
 
     def test_rank_transform_rejected(self) -> None:
         with pytest.raises(ValueError, match="transform call"):
-            parse_sql_predicate("rank(revenue) <= 10")
+            parse_sql_predicate("rank(revenue, direction='desc') <= 10")
 
     def test_raw_over_window_rejected(self) -> None:
         with pytest.raises(ValueError, match="window function"):

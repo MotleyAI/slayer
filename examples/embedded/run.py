@@ -16,14 +16,14 @@ import tempfile
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from seed import seed
+from seed import seed  # ALLOW(import-not-top): sys.path bootstrap for the shared examples/seed.py
 
-from slayer.async_utils import run_sync
-from slayer.core.models import DatasourceConfig
-from slayer.core.query import SlayerQuery
-from slayer.engine.ingestion import ingest_datasource
-from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.storage.yaml_storage import YAMLStorage
+from slayer.async_utils import run_sync  # ALLOW(import-not-top): sys.path bootstrap for the shared examples/seed.py
+from slayer.core.models import DatasourceConfig  # ALLOW(import-not-top): sys.path bootstrap for the shared examples/seed.py
+from slayer.core.query import SlayerQuery  # ALLOW(import-not-top): sys.path bootstrap for the shared examples/seed.py
+from slayer.engine.ingestion import ingest_datasource  # ALLOW(import-not-top): sys.path bootstrap for the shared examples/seed.py
+from slayer.engine.query_engine import SlayerQueryEngine  # ALLOW(import-not-top): sys.path bootstrap for the shared examples/seed.py
+from slayer.storage.yaml_storage import YAMLStorage  # ALLOW(import-not-top): sys.path bootstrap for the shared examples/seed.py
 
 # Repeated string literals hoisted to constants (Sonar python:S1192).
 COUNT_MEASURE = "count(*)"
@@ -158,7 +158,7 @@ def main():
     result = engine.execute_sync(query=SlayerQuery(
         source_model="orders",
         dimensions=["customers.name"],
-        measures=[COUNT_MEASURE, {"formula": "rank(count(*))", "name": "rk"}],
+        measures=[COUNT_MEASURE, {"formula": "rank(count(*), direction='desc')", "name": "rk"}],
         order=[{"column": "count", "direction": "desc"}],
     ))
     for row in result.data:

@@ -95,13 +95,13 @@ the computed dimension name (`band == 1`) applies after regrouping.
 
 A dimension expression may band a windowed partitioned aggregate
 (`sum(amount, window='90d', partition_by=region)`), a `first` / `last`, or a
-transform over a grained aggregate — `rank(sum(revenue, partition_by=region))` as
+transform over a grained aggregate — `rank(sum(revenue, partition_by=region), direction='desc')` as
 a DIMENSION ranks the partitions (it evaluates at the producer grain), whereas
 the same expression as a MEASURE ranks the result rows (query grain).
 
 An aggregation-derived dimension combines with transform measures: alongside
 `band` you can declare `time_shift(sum(amount), -1)`, `change` / `change_pct`,
-`cumsum`, `lag` / `lead`, `consecutive_periods(...)`, or `rank(sum(amount))`,
+`cumsum`, `lag` / `lead`, `consecutive_periods(...)`, or `rank(sum(amount), direction='desc')`,
 with or without plain and `partition_by=` measures in the same query. Every
 transform treats the computed dimension as an ordinary grouping dimension (a
 running total accumulates within each `(region, band)` group; a time shift
@@ -109,7 +109,7 @@ compares each group only against itself).
 
 A transform over aggregates at **different** partition grains unions the grains
 and broadcasts each aggregate to the union —
-`rank(sum(amount, partition_by=region) - sum(amount, partition_by=city))` ranks
+`rank(sum(amount, partition_by=region) - sum(amount, partition_by=city), direction='desc')` ranks
 the `(region, city)` rows, each region
 total broadcast across its cities and each city total against its region. The
 same holds as a bare measure (`sum(a, partition_by=region) - sum(b, partition_by=city)`
@@ -162,7 +162,7 @@ Emits roughly `SELECT orders.status, orders.amount FROM orders WHERE orders.amou
 
 - `measures` must be empty — `DistinctDimensionValuesError` otherwise.
 - At least one of `dimensions` / `time_dimensions` must be non-empty (nothing to project otherwise).
-- Filters / order items must not reference any measure — neither an aggregation (`sum(amount) > 100`, `count(*) > 0`), transform calls (`rank(sum(amount)) <= 5`), nor a bare saved-`ModelMeasure` name.
+- Filters / order items must not reference any measure — neither an aggregation (`sum(amount) > 100`, `count(*) > 0`), transform calls (`rank(sum(amount), direction='desc') <= 5`), nor a bare saved-`ModelMeasure` name.
 
 **Time dimensions** are allowed: each one emits its `DATE_TRUNC` truncation as a projected column without aggregating. For raw column values (no truncation), put the time column in `dimensions` instead.
 
@@ -217,7 +217,7 @@ What each shape of an *undeclared* order target does:
 | Order target | Behavior |
 | --- | --- |
 | An aggregate (`sum(amount)`, `sum(customers.revenue)`) | Computed hidden, sorted on, stripped from the result. Always allowed. |
-| An inline **transform** (`rank(sum(amount))`, `cumsum(...)`, `change(...)`, `lag`/`lead`/`ntile`) | Computed hidden, sorted on, stripped. |
+| An inline **transform** (`rank(sum(amount), direction='desc')`, `cumsum(...)`, `change(...)`, `lag`/`lead`/`ntile`) | Computed hidden, sorted on, stripped. |
 | An inline **composite** (`sum(revenue) / sum(cnt)`, `abs(sum(amount))`, `change(sum(amount)) / 2`) | Computed hidden, sorted on, stripped. |
 | A **windowed** aggregate (`sum(amount, window='90d')`), alone or inside a composite | Computed hidden in its own rolling-window CTE, sorted on, stripped. |
 | A raw row column, in a **raw-rows** query (`distinct_dimension_values: false`, no measures) | Sorted on directly (`ORDER BY orders.created_at`). Applies to a **joined** column (`customers.regions.name`) and to a derived column whose `sql` reaches through a join — the join is pulled in for the sort. |
@@ -438,7 +438,7 @@ Window functions (`OVER (...)`) are not allowed inside the inner WHERE on SQLite
 
 Use one of:
 
-* `rank(<measure>) <= N` (or `dense_rank` / `percent_rank` / `ntile(<measure>, n=N)`) for ranking — simpler and dialect-portable. Pass `partition_by=` to rank within groups.
+* `rank(<measure>, direction='desc') <= N` (or `dense_rank` / `percent_rank` / `ntile(<measure>, n=N)`) for ranking — simpler and dialect-portable. Pass `partition_by=` to rank within groups.
 * `first(x)` / `last(x)` / `lag(x, n)` / `lead(x, n)` for time-based window transforms.
 * A multi-stage `source_queries` model where the window computation lives in an earlier stage.
 

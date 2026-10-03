@@ -107,12 +107,12 @@ _COMBINED_CONSUMER_CASES = [
     ),
     pytest.param(
         [_dim(LOCAL_BAND, "cband")],
-        [ModelMeasure(formula=f"rank({LOCAL_AGG})", name="rt")],
+        [ModelMeasure(formula=f"rank({LOCAL_AGG}, direction='desc')", name="rt")],
         None, None, "city", id="transform_input-local",
     ),
     pytest.param(
         [_dim(SPEND_BAND, "sband")],
-        [ModelMeasure(formula=f"rank({CM_AGG})", name="rt")],
+        [ModelMeasure(formula=f"rank({CM_AGG}, direction='desc')", name="rt")],
         None, None, "customers.tier", id="transform_input-cross_model",
     ),
     # Already-clean today (no computed dimension): the aggregate is consumed only

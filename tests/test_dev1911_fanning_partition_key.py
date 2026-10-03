@@ -163,7 +163,7 @@ class TestEveryPosition:
     async def test_transform_partition_set(self, engine, mode):
         await _assert_fails_naming_hop(engine, _regions_q(
             dimensions=["bad_pop"],
-            measures=[ModelMeasure(formula="rank(pop:sum, partition_by=bad_pop)", name="w")],
+            measures=[ModelMeasure(formula="rank(pop:sum, partition_by=bad_pop, direction='desc')", name="w")],
             to_many_handling=mode))
 
     @pytest.mark.parametrize("mode", MODES)

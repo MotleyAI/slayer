@@ -257,7 +257,7 @@ probes:
     compare: {keys: [region, city], values: [rk]}
     slayer:
       query: {source_model: orders_flat, dimensions: [region, city],
-              measures: [{formula: "rank(sum(amount, partition_by=region) - sum(amount, partition_by=city))", name: rk}]}
+              measures: [{formula: "rank(sum(amount, partition_by=region) - sum(amount, partition_by=city), direction='desc')", name: rk}]}
 
   - id: F4
     row: Q2
@@ -972,13 +972,13 @@ probes:
 
   - id: Q5b
     row: Q5
-    title: filter rank(sum(amount)) <= 2 (top two customers)
+    title: filter rank(sum(amount), direction='desc') <= 2 (top two customers)
     truth_sql: |
       select c.name, sum(o.amount) from orders o left join customers c on o.customer_id = c.id
       group by 1 order by 2 desc limit 2
     compare: {keys: [customers.name], values: [v]}
     slayer:
-      query: {source_model: orders, dimensions: [customers.name], filters: ["rank(sum(amount)) <= 2"],
+      query: {source_model: orders, dimensions: [customers.name], filters: ["rank(sum(amount), direction='desc') <= 2"],
               measures: [{formula: "sum(amount)", name: v}]}
     metricflow:
       note: order by the selected metric plus a global limit
@@ -1471,7 +1471,7 @@ probes:
     compare: {keys: [region], values: [v]}
     slayer:
       query: {source_model: orders_flat, dimensions: [region],
-              measures: [{formula: "max(rank(sum(amount, partition_by=[region, customer_id]), partition_by=region))", name: v}]}
+              measures: [{formula: "max(rank(sum(amount, partition_by=[region, customer_id]), partition_by=region, direction='desc'))", name: v}]}
 
   - id: Q9c-3
     row: Q7
@@ -2722,14 +2722,14 @@ probes:
 
   - id: Q13b
     row: Q13
-    title: order by an undeclared transform rank(sum(amount)) asc
+    title: order by an undeclared transform rank(sum(amount), direction='desc') asc
     truth_sql: |
       select c.name, count(*) from orders o left join customers c on o.customer_id = c.id
       group by 1 order by sum(o.amount) desc limit 3
     compare: {keys: [customers.name], values: [order_count]}
     slayer:
       query: {source_model: orders, dimensions: [customers.name], limit: 3,
-              order: [{column: "rank(sum(amount))", direction: asc}], measures: [{formula: "count(*)", name: order_count}]}
+              order: [{column: "rank(sum(amount), direction='desc')", direction: asc}], measures: [{formula: "count(*)", name: order_count}]}
 
   - id: Q13c
     row: Q13
@@ -2773,7 +2773,7 @@ probes:
     compare: {keys: [region, name], values: [revenue]}
     slayer:
       query: {source_model: orders, dimensions: [customers.regions.name, customers.name],
-              filters: ["rank(sum(amount), partition_by=customers.regions.name) <= 1"],
+              filters: ["rank(sum(amount), partition_by=customers.regions.name, direction='desc') <= 1"],
               measures: [{formula: "sum(amount)", name: revenue}]}
       keys: [customers.regions.name, customers.name]
     malloy:
@@ -2805,7 +2805,7 @@ probes:
     compare: {keys: [region, city], values: [v]}
     slayer:
       query: {source_model: orders_flat, dimensions: [region, city],
-              filters: ["dense_rank(sum(amount), partition_by=region) <= 1"], measures: [{formula: "sum(amount)", name: v}]}
+              filters: ["dense_rank(sum(amount), partition_by=region, direction='desc') <= 1"], measures: [{formula: "sum(amount)", name: v}]}
 
   - id: W2
     row: Q14
@@ -2818,7 +2818,7 @@ probes:
     compare: {keys: [order_date], values: [v]}
     slayer:
       query: {source_model: orders, time_dimensions: [{dimension: order_date, granularity: month}],
-              measures: [{formula: "rank(sum(amount, window='90d'))", name: v}]}
+              measures: [{formula: "rank(sum(amount, window='90d'), direction='desc')", name: v}]}
 
   - id: Q14c
     row: Q14
@@ -3387,7 +3387,7 @@ probes:
     compare: {keys: [region, by_customer.name], values: [revenue, by_customer.revenue]}
     slayer:
       query: {source_model: orders, dimensions: [customers.regions.name, customers.name],
-              filters: ["rank(sum(amount), partition_by=customers.regions.name) <= 2"],
+              filters: ["rank(sum(amount), partition_by=customers.regions.name, direction='desc') <= 2"],
               measures: [{formula: "sum(amount, partition_by=customers.regions.name)", name: region_rev},
                          {formula: "sum(amount)", name: cust_rev}]}
       keys: [customers.regions.name, customers.name]
@@ -3411,7 +3411,7 @@ probes:
     compare: {keys: [customers.regions.name, customers.name], values: [n]}
     slayer:
       query: {source_model: orders, dimensions: [customers.regions.name, customers.name],
-              filters: ["rank(count(*), partition_by=customers.regions.name) <= 2"],
+              filters: ["rank(count(*), partition_by=customers.regions.name, direction='desc') <= 2"],
               measures: [{formula: "count(*)", name: n}]}
 
   - id: Q24-sibling-customers

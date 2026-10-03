@@ -175,7 +175,7 @@ class TestTransformArgEligibilityDropped:
     async def test_transform_partition_by_measure_not_expanded(self) -> None:
         model = _model([_REV, _GRP])
         with pytest.raises(ValueError):
-            await _gen(model, "rank(amount:sum, partition_by=grp)",
+            await _gen(model, "rank(amount:sum, partition_by=grp, direction='desc')",
                        dimensions=["status"],
                        time_dimensions=[{"dimension": "created_at",
                                          "granularity": "month"}])

@@ -172,7 +172,7 @@ Cycles in the reference graph (e.g., `c1.sql = "c2 + 1"` and `c2.sql = "c1 - 1"`
 
 A column's `sql` may contain a window function (`row_number() over (...)`, `dense_rank() over (...)`, etc.). The column behaves like any other column when used in `dimensions` / SELECT.
 
-> **Filtering on a windowed column is rejected.** A query filter naming a `Column` whose `sql` contains a window function (e.g. `{"filters": ["rn <= 3"]}` against a column whose `sql` is `row_number() over (...)`) raises with a clear message. Use `{"filters": ["rank(<measure>) <= 3"]}` (see [formulas.md](formulas.md#rank-family-transforms)) — the rank-family transforms cover the top-N case in pure DSL — or factor the column into a multi-stage `source_queries` model.
+> **Filtering on a windowed column is rejected.** A query filter naming a `Column` whose `sql` contains a window function (e.g. `{"filters": ["rn <= 3"]}` against a column whose `sql` is `row_number() over (...)`) raises with a clear message. Use `{"filters": ["rank(<measure>, direction='desc') <= 3"]}` (see [formulas.md](formulas.md#rank-family-transforms)) — the rank-family transforms cover the top-N case in pure DSL — or factor the column into a multi-stage `source_queries` model.
 
 ### SQL expression conventions
 

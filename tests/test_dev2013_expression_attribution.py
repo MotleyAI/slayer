@@ -449,7 +449,7 @@ class TestBroadcastReasons:
 
     async def test_unsupported_kind_cannot_be_analysed(self, exec_engine):
         resp = await exec_engine.execute(_acr(dimensions=[
-            "region", _dim("rank(sum(amount, partition_by=[city, region]))", "rk")]))
+            "region", _dim("rank(sum(amount, partition_by=[city, region]), direction='desc')", "rk")]))
         (w,) = broadcast_warnings(resp)
         (d,) = w.dimensions
         assert d.dimension == "rk"

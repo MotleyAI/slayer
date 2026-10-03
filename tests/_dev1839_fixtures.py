@@ -12,16 +12,16 @@ REGION_TOTAL   North=100 South=50 NULL=60; GRAND_TOTAL=210.
 CITY_TOTAL     (N,CityA)=30 (N,CityB)=40 (N,NULL)=30 (S,CityC)=50 (NULL,CityD)=60
                (city values are region-unique, so partition_by=city matches).
 
-MIXED_RANK     rank(region_total - city_total) over the (region, city) union:
+MIXED_RANK     rank(region_total - city_total, direction='desc') over the (region, city) union:
                diffs 70 / 60 / 70 / 0 / 0 → RANK() desc 1 / 3 / 1 / 4 / 4.
-KEYLESS_RANK   rank(region_total / grand_total) over the region union:
+KEYLESS_RANK   rank(region_total / grand_total, direction='desc') over the region union:
                shares 100/210, 50/210, 60/210 → North=1 NULL=2 South=3.
                (A keyless divisor misgrained to region makes every share 1.0
                and every rank tie at 1.)
-SUBSET_RANK    rank(citypair_total - region_total): the (region, city)-grain
+SUBSET_RANK    rank(citypair_total - region_total, direction='desc'): the (region, city)-grain
                aggregate is exactly the union, region is a strict subset;
                diffs -70 / -60 / -70 / 0 / 0 → ranks 4 / 3 / 4 / 1 / 1.
-NESTED_RANK    rank(cumsum(region_month_total) - city_total) over the
+NESTED_RANK    rank(cumsum(region_month_total) - city_total, direction='desc') over the
                (region, city, month) union. cumsum at its own (region, month)
                grain (months within region): (N,Jan)=30 (N,Feb)=100 (S,Jan)=25
                (S,Mar)=50 (NULL,Mar)=60. Union-row values: (N,CityA,Jan)=0
@@ -32,7 +32,7 @@ EXPLICIT_PART  MIXED_RANK re-partitioned by region: North diffs 70/70/60 →
 DUAL_MEASURE   MIXED_RANK's expression as a MEASURE at the (region, city,
                channel) query grain: broadcast diffs 70×3, 60, 0×3 →
                ranks 1/1/1/4/5/5/5.
-SAMEGRAIN_RANK rank(amount_region + ok_region): 200 / 75 / 120 →
+SAMEGRAIN_RANK rank(amount_region + ok_region, direction='desc'): 200 / 75 / 120 →
                North=1 NULL=2 South=3 (ok_amount region totals 100 / 25 / 60).
 MEASURE_DIFF   region_total - city_total per (region, city) row: 70/60/70/0/0.
 SAMEGRAIN_DIFF amount_region - ok_region per region: N=0 S=25 NULL=0.
@@ -66,21 +66,21 @@ dev1839_models = dev1824_models
 # --------------------------------------------------------------------------- #
 # Dimension expressions under test.
 # --------------------------------------------------------------------------- #
-MIXED_RANK = "rank(amount:sum(partition_by=region) - amount:sum(partition_by=city))"
-KEYLESS_RANK = "rank(amount:sum(partition_by=region) / amount:sum(partition_by=[]))"
+MIXED_RANK = "rank(amount:sum(partition_by=region) - amount:sum(partition_by=city), direction='desc')"
+KEYLESS_RANK = "rank(amount:sum(partition_by=region) / amount:sum(partition_by=[]), direction='desc')"
 SUBSET_RANK = (
-    "rank(amount:sum(partition_by=[region, city]) - amount:sum(partition_by=region))"
+    "rank(amount:sum(partition_by=[region, city]) - amount:sum(partition_by=region), direction='desc')"
 )
 NESTED_RANK = (
     "rank(cumsum(amount:sum(partition_by=[region, ordered_at])) - "
-    "amount:sum(partition_by=city))"
+    "amount:sum(partition_by=city), direction='desc')"
 )
 EXPLICIT_PART_RANK = (
     "rank(amount:sum(partition_by=region) - amount:sum(partition_by=city), "
-    "partition_by=region)"
+    "partition_by=region, direction='desc')"
 )
 SAMEGRAIN_RANK = (
-    "rank(amount:sum(partition_by=region) + ok_amount:sum(partition_by=region))"
+    "rank(amount:sum(partition_by=region) + ok_amount:sum(partition_by=region), direction='desc')"
 )
 MEASURE_DIFF = "amount:sum(partition_by=region) - amount:sum(partition_by=city)"
 SAMEGRAIN_DIFF = (

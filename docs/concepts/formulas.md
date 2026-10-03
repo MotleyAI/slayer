@@ -55,7 +55,7 @@ same key). Very long expressions fold to a stable-hash key. An explicit
 keys collide (`sum(amount - cost)` and `sum(amount + cost)`) fail with a
 duplicate-key error asking for a rename.
 
-Expression sources also accept joined-model refs (`sum(amount - customers.discount)`, homed at the deepest dataset that determines every operand — see [cross-model measures](queries.md#cross-model-measures)), operands whose column carries a `filter` (which masks that operand's value), and nested transforms (`sum(cumsum(sum(amount, partition_by=[region, ordered_at])) - 1)`, aggregated over the transform's own cells). A re-aggregation constituent mixed with a row-level column (`sum(amount * last(X))`) executes at its own grain and broadcasts per partition onto the rows, and one query may select the same re-aggregation both on its own and inside a mixed source; a windowed inner under a transform constituent (`sum(rank(sum(revenue, window='90d', partition_by=region)))`) is a second-order aggregation over the operand cells (COMBINED phase, not a row broadcast); a target-homed inner whose `partition_by=` names the host's time axis stays a typed error.
+Expression sources also accept joined-model refs (`sum(amount - customers.discount)`, homed at the deepest dataset that determines every operand — see [cross-model measures](queries.md#cross-model-measures)), operands whose column carries a `filter` (which masks that operand's value), and nested transforms (`sum(cumsum(sum(amount, partition_by=[region, ordered_at])) - 1)`, aggregated over the transform's own cells). A re-aggregation constituent mixed with a row-level column (`sum(amount * last(X))`) executes at its own grain and broadcasts per partition onto the rows, and one query may select the same re-aggregation both on its own and inside a mixed source; a windowed inner under a transform constituent (`sum(rank(sum(revenue, window='90d', partition_by=region), direction='desc'))`) is a second-order aggregation over the operand cells (COMBINED phase, not a row broadcast); a target-homed inner whose `partition_by=` names the host's time axis stays a typed error.
 
 A source mixing row-level columns with attached values
 (`sum(quantity * avg(price, partition_by=product))`) is a row-grain aggregation
@@ -63,7 +63,7 @@ A source mixing row-level columns with attached values
 fully-attached source is a
 [re-aggregation](#re-aggregation-aggregate-over-an-attached-value).
 An attached value — an aggregate or a grained transform
-(`weight=rank(sum(amount, partition_by=region))`) — may also arrive as a
+(`weight=rank(sum(amount, partition_by=region), direction='desc')`) — may also arrive as a
 *parameter* of a row-level aggregation
 (`weighted_avg(amount, weight=sum(amount, partition_by=region))`): it is
 attached into the input relation, so each row is weighted by its cell's value.
@@ -310,10 +310,10 @@ Functions apply window operations to measures:
 | `change(x)` | Period-over-period difference (partition-safe, resets per group) | Desugars to `x - time_shift(x, -1)` |
 | `change_pct(x)` | Period-over-period % change, e.g. month-over-month growth (partition-safe, resets per group; NULL when the prior period's value is 0 or missing) | Desugars to `CASE WHEN ts != 0 THEN (x - ts) / ts END` where `ts = time_shift(x, -1)` |
 | `consecutive_periods(predicate)` | Current trailing run length where predicate is true | Staged window CTEs with reset groups |
-| `rank(x[, partition_by=...])` | Ranking by value (descending) | `RANK() OVER ([PARTITION BY ...] ORDER BY x DESC)` |
-| `percent_rank(x[, partition_by=...])` | Relative rank in [0, 1] (descending) | `PERCENT_RANK() OVER ([PARTITION BY ...] ORDER BY x DESC)` |
-| `dense_rank(x[, partition_by=...])` | Ranking with no gaps after ties (descending) | `DENSE_RANK() OVER ([PARTITION BY ...] ORDER BY x DESC)` |
-| `ntile(x, n=N[, partition_by=...])` | Bucket the rows into N equal groups (descending) | `NTILE(N) OVER ([PARTITION BY ...] ORDER BY x DESC)` |
+| `rank(x, direction='asc'\|'desc'[, partition_by=...])` | Ranking by value in the required direction | `RANK() OVER ([PARTITION BY ...] ORDER BY x ASC\|DESC)` |
+| `percent_rank(x[, partition_by=...])` | Relative rank in [0, 1] (ascending) | `PERCENT_RANK() OVER ([PARTITION BY ...] ORDER BY x ASC)` |
+| `dense_rank(x, direction='asc'\|'desc'[, partition_by=...])` | Ranking with no gaps after ties, in the required direction | `DENSE_RANK() OVER ([PARTITION BY ...] ORDER BY x ASC\|DESC)` |
+| `ntile(x, n=N[, partition_by=...])` | Bucket the rows into N equal groups (ascending) | `NTILE(N) OVER ([PARTITION BY ...] ORDER BY x ASC)` |
 | `first(x)` | Earliest time bucket's value | `FIRST_VALUE(x) OVER (ORDER BY time ASC ...)` |
 | `last(x)` | Most recent time bucket's value | `FIRST_VALUE(x) OVER (ORDER BY time DESC ...)` |
 
@@ -392,7 +392,9 @@ Use `show_sql=True` on the query to see what SQL is generated for complex formul
 
 ### Rank-family transforms
 
-The rank family — `rank`, `percent_rank`, `dense_rank`, `ntile` — are timeless window-function transforms that order rows by the inner measure descending and emit a per-row rank value. They do not need a time dimension and, unlike the time-ordered transforms (`cumsum`, `lag`, `lead`, `first`, `last`, …), they default to **no `PARTITION BY`** — every row in the result set is ranked against every other row.
+The rank family — `rank`, `percent_rank`, `dense_rank`, `ntile` — are timeless window-function transforms that order rows by the inner value and emit a per-row rank value. They do not need a time dimension and, unlike the time-ordered transforms (`cumsum`, `lag`, `lead`, `first`, `last`, …), they default to **no `PARTITION BY`** — every row in the result set is ranked against every other row.
+
+`rank` and `dense_rank` take a **required** `direction=` keyword: `direction='desc'` ranks the highest value 1, `direction='asc'` the lowest (`ascending` / `descending` and any case are accepted too). Leaving it out is an error that shows both spellings. The inner value may be any orderable type, so `rank(min(created_at), direction='asc')` ranks the earliest first. `ntile` and `percent_rank` take no `direction=` and always order ascending: bucket `1` holds the lowest values and the lowest value has `percent_rank` `0`.
 
 ```json
 {
@@ -400,24 +402,30 @@ The rank family — `rank`, `percent_rank`, `dense_rank`, `ntile` — are timele
   "dimensions": ["customer_name"],
   "measures": [
     "sum(revenue)",
-    {"formula": "rank(sum(revenue))", "name": "rnk"}
+    {"formula": "rank(sum(revenue), direction='desc')", "name": "rnk"}
   ],
   "order": [{"column": "sum(revenue)", "direction": "desc"}]
 }
 ```
 
-Combine with a filter to get "top N":
+Combine with a filter to get "top N" (or `direction='asc'` for "bottom N"):
 
 ```json
-{"filters": ["rank(sum(revenue)) <= 10"]}
+{"filters": ["rank(sum(revenue), direction='desc') <= 10"]}
 ```
+
+A row whose inner value is NULL gets a NULL result from all four, takes no rank position or `ntile` bucket, and does not count in `percent_rank`'s denominator; the other rows rank as if it were absent, on every database. A `rank(...) <= N` filter therefore drops NULL-valued rows.
+
+An unnamed rank measure's result key spells its direction as a bare value: `rank(sum(revenue), direction='desc')` is returned as `orders.rank_revenue_sum_desc`.
 
 **Choosing between the four:**
 
-- `rank(x)` — ties share a rank, then the next rank is skipped (`1, 1, 3, 4`). Use for top-N rows.
-- `dense_rank(x)` — ties share a rank, no gaps after (`1, 1, 2, 3`). Use for "top N distinct values" / tier counting.
-- `percent_rank(x)` — relative position in `[0, 1]` (`(rank - 1) / (count - 1)`). Use for normalized rankings comparable across queries with different result-set sizes.
-- `ntile(x, n=N)` — bucket every row into one of `N` equal-sized groups (`1` is the top bucket; required `n=` kwarg is a positive integer). Use for quartiles / deciles.
+- `rank(x, direction=...)` — ties share a rank, then the next rank is skipped (`1, 1, 3, 4`). Use for top-N or bottom-N rows.
+- `dense_rank(x, direction=...)` — ties share a rank, no gaps after (`1, 1, 2, 3`). Use for "top N distinct values" / tier counting.
+- `percent_rank(x)` — relative position in `[0, 1]` (`(rank - 1) / (count - 1)`), lowest value `0`. Use for normalized rankings comparable across queries with different result-set sizes.
+- `ntile(x, n=N)` — bucket every row into one of `N` equal-sized groups (`1` is the lowest bucket; required `n=` kwarg is a positive integer). Use for quartiles / deciles.
+
+Models and queries saved before `direction=` existed load with `direction='desc'` filled in on every `rank` / `dense_rank` call, keeping their meaning; their stored `ntile` / `percent_rank` results now order ascending.
 
 **Ranking within a partition (`partition_by=`):**
 
@@ -429,7 +437,7 @@ To rank within groups instead of across the whole result set, pass `partition_by
   "dimensions": ["region", "customer_name"],
   "measures": [
     "sum(revenue)",
-    {"formula": "dense_rank(sum(revenue), partition_by=region)", "name": "rev_rank_within_region"},
+    {"formula": "dense_rank(sum(revenue), partition_by=region, direction='desc')", "name": "rev_rank_within_region"},
     {"formula": "ntile(sum(revenue), n=4, partition_by=region)", "name": "rev_quartile_within_region"}
   ]
 }
@@ -437,7 +445,7 @@ To rank within groups instead of across the whole result set, pass `partition_by
 
 Multiple partition columns: `partition_by=[region, channel]`. Cross-model dotted paths work too: `partition_by=customers.region`.
 
-The rank family's `partition_by=` may name a computed dimension, as an aggregation's can (one that itself wraps an aggregation is for now accepted only in filters and order). Each key must be a member of the transform's operand grain — the union of its inner aggregates' grains (an ungrained inner contributes the query's dimensions) — so `rank(sum(revenue, partition_by=[city, region]), partition_by=product)` is an error naming the remedy.
+The rank family's `partition_by=` may name a computed dimension, as an aggregation's can (one that itself wraps an aggregation is for now accepted only in filters and order). Each key must be a member of the transform's operand grain — the union of its inner aggregates' grains (an ungrained inner contributes the query's dimensions) — so `rank(sum(revenue, partition_by=[city, region]), partition_by=product, direction='desc')` is an error naming the remedy.
 
 > **Note:** SLayer's formula parser is Python-AST-based and rejects raw `OVER (...)` SQL in `ModelMeasure.formula` and filter strings. Use the rank-family transforms (`rank`, `percent_rank`, `dense_rank`, `ntile`) for ranking instead of `row_number() over (...) <= N`. If you need a non-standard window expression, define it on a `Column.sql` (e.g., `{"name": "rn", "sql": "row_number() over (order by mass desc)", "type": "NUMBER"}`) and filter on the column — SLayer auto-promotes the predicate to a post-aggregation outer `WHERE`.
 
