@@ -125,7 +125,7 @@ class DerivedColumnFanningError(SlayerError, ValueError):
         super().__init__(
             f"Derived column {column!r} on model {model!r} references {reference!r}, "
             f"crossing a fanning join hop to {hop!r}: it is a set per row, not a "
-            f"column of {model!r}. Aggregate the target column ({reference}:<aggregation>) "
+            f"column of {model!r}. Aggregate the target column (<aggregation>({reference})) "
             f"or filter by it; if the hop is really to-one, declare its cardinality "
             f"(many_to_one/one_to_one) or a covering unique key."
         )

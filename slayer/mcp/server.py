@@ -915,7 +915,7 @@ To connect a new database: create_datasource → describe_datasource (verify + l
             aggregations: Custom aggregations on the model. Each:
                 {"name": "sum_sq", "formula": "SUM({value} * {value})",
                  "params": [{"name": "weight", "sql": "quantity"}], "description": "..."}.
-                The formula must parse as SQL; queries use it as ``column:sum_sq``.
+                The formula must parse as SQL; queries use it as ``sum_sq(column)``.
             query: A SLayer query dict (or list of stage dicts for a multi-stage backing
                 query). When provided, the query is saved as the model's ``source_queries``
                 and the model becomes query-backed. Mutually exclusive with sql_table, sql,

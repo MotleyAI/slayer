@@ -1200,7 +1200,7 @@ class SQLGenerator:
             raise ValueError(
                 f"Aggregation '{agg_name}' requires parameter '{name}'. "
                 f"Set it in the model's aggregation definition or at query time "
-                f"(e.g., 'measure:{agg_name}({name}=column)')."
+                f"(e.g., '{agg_name}(measure, {name}=column)')."
             )
         # A copy: sqlglot re-parents a node on attach.
         return value.value.copy()

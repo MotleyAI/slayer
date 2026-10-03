@@ -885,7 +885,7 @@ def _filter_refs_on_base(
     stage: SlayerQuery, base_name: str, graph: _StageGraph
 ) -> set[str]:
     out: set[str] = set()
-    # Mode-B (DSL) filters: use the DSL parser so colon aggs/transforms surface.
+    # Mode-B (DSL) filters: use the DSL parser so aggregations/transforms surface.
     for f in stage.filters or []:
         for col in _filter_refs_dsl(f):
             attributed = _attribute_ref_to_base(

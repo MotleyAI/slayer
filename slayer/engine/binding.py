@@ -326,7 +326,7 @@ def bind_filter(
     ``IllegalWindowInFilterError`` if a referenced ``Column.sql`` is windowed.
     ``alias_map`` maps a stage's declared-measure names to their bound
     ``ValueKey`` so a bare ref matching an alias interns onto that slot rather
-    than resolving against model columns (colon form and alias form share one slot).
+    than resolving against model columns (the aggregate and its alias share one slot).
     ``dimension_alias_map`` resolves ``partition_by=<computed dim name>`` only."""
     _reject_placeholders(parsed)
     value_key = _bind(
@@ -1448,7 +1448,7 @@ def _validate_agg_eligibility(
     Healing is skipped when the raw token exactly matches a custom aggregation
     on the owning model (a custom ``countd`` wins over the alias). Gate order:
     0. unknown-name-first, for EVERY source shape (column, star, expression),
-    so ``*:bogus`` / ``bogus(*)`` never escape to SQL generation;
+    so ``bogus(*)`` never escapes to SQL generation;
     1. a sole primary key (an identifier) restricted to
     ``PRIMARY_KEY_AGGREGATIONS`` — composite-key members fall through; 2. explicit
     ``Column.allowed_aggregations`` whitelist; 3. else

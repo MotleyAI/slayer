@@ -19,7 +19,7 @@ import warnings
 
 import pytest
 
-from slayer.core.formula import _rewrite_funcstyle_aggregations
+from slayer.core.formula import _rewrite_funcstyle_aggregations, parse_formula
 from slayer.core.models import Aggregation
 from slayer.core.query import _FUNCSTYLE_PENDING, OrderItem
 from slayer.engine.syntax import BoolOp, Cmp, parse_filter_expr
@@ -178,13 +178,17 @@ class TestFuncStyleRewrite:
         """Without extra_agg_names, custom agg names are not rewritten."""
         assert _rewrite_funcstyle_aggregations("rolling_avg(revenue)") == "rolling_avg(revenue)"
 
-    # Emits warning
-    def test_emits_warning(self) -> None:
+    def test_emits_no_warning(self) -> None:
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
             _rewrite_funcstyle_aggregations("sum(revenue)")
-            assert len(w) == 1
-            assert "Auto-rewrote" in str(w[0].message)
+            assert w == []
+
+    def test_path_star_count(self) -> None:
+        assert _rewrite_funcstyle_aggregations("count(customers.*)") == "customers.*:count"
+
+    def test_parse_formula_path_star_count(self) -> None:
+        assert parse_formula("count(customers.*)") == parse_formula("customers.*:count")
 
     # Quoted string literals — must not be rewritten
     def test_inside_single_quoted_string(self) -> None:
@@ -204,7 +208,7 @@ class TestFuncStyleRewrite:
         result = _rewrite_funcstyle_aggregations("sum(revenue) > 100")
         assert result == "revenue:sum > 100"
 
-    # New stat aggregations (DEV-1317)
+    # Stat aggregations
     def test_stddev_samp_funcstyle(self) -> None:
         """`stddev_samp(latency)` must rewrite to colon syntax once the
         aggregation name is registered as built-in."""
@@ -274,7 +278,7 @@ class TestOrderColumnNormalization:
     """Order column normalization with function-style syntax."""
 
     def test_funcstyle_sum(self) -> None:
-        # DEV-1826: the author's functional spelling is preserved — the item
+        # The author's functional spelling is preserved — the item
         # carries a placeholder + raw_formula, resolved at binding.
         item = OrderItem(column="sum(revenue)", direction="desc")
         assert item.column.name == _FUNCSTYLE_PENDING
@@ -312,7 +316,7 @@ class TestOrderColumnNormalization:
 
 
 class TestStringHygieneFilters:
-    """DEV-1378 string-hygiene shapes on the typed filter parser; single
+    """String-hygiene shapes on the typed filter parser; single
     scalar calls and the two-operand ``||`` are covered by
     ``test_syntax.py::TestScalarFunctions`` /
     ``TestFilterOperatorNormalization``."""

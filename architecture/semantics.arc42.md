@@ -77,8 +77,8 @@ is the coercion from coarser to finer.
      when it exists, is among the inputs' paths and their longest common prefix;
      candidates are tried deepest-first, ties preferring the anchor.
    - **2.7 Spelling-invariance.** The home depends only on the inputs' paths and
-     types: `customers.spend:sum`, `sum(customers.spend)` and `sum(customers.spend + 0)`
-     share one home. A single-column source is the one-leaf case of 2.2 — the model
+     types: `sum(customers.spend)` and `sum(customers.spend + 0)` share one home.
+     A single-column source is the one-leaf case of 2.2 — the model
      its source names.
    - **2.8 Fail closed.** When an input has no home, or no dataset determines every
      input, the aggregation is illegal and the query fails with the input-safety error

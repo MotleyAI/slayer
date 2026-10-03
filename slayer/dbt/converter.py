@@ -33,7 +33,7 @@ from slayer.core.models import (
     is_base_column_sql,
     physical_column_sql,
 )
-from slayer.core.refs import IDENTIFIER_RE as _IDENTIFIER_RE
+from slayer.core.refs import IDENTIFIER_RE as _IDENTIFIER_RE, functional_agg_text
 from slayer.dbt.entities import EntityRegistry
 from slayer.dbt.filters import _DIMENSION_RE, convert_dbt_filter
 from slayer.dbt.models import (
@@ -538,12 +538,12 @@ class DbtToSlayerConverter:
         """Convert dbt measures into a (Columns, ModelMeasures) pair.
 
         Each unique measure expression yields a single ``Column``; each dbt
-        measure yields one ``ModelMeasure`` whose formula is ``<col>:<agg>``.
+        measure yields one ``ModelMeasure`` whose formula is ``<agg>(<col>)``.
         Special handling:
 
         * ``sum_boolean`` → a dedicated ``CASE WHEN (<expr>) THEN 1 ELSE 0 END``
-          ``INT`` column aggregated with ``:sum`` (cross-DB safe; null bool → 0).
-        * ``percentile`` → ``:percentile(p=<value>)``; clean-fails when the
+          ``INT`` column aggregated with ``sum`` (cross-DB safe; null bool → 0).
+        * ``percentile`` → ``percentile(<col>, p=<value>)``; clean-fails when the
           value is absent or discrete/approximate flags are set.
         * ``non_additive_dimension`` (semi-additive) → clean-fail.
         """
@@ -563,7 +563,8 @@ class DbtToSlayerConverter:
                     type=DataType.INT,
                     meta=_meta_of(m.config),
                 ))
-                self._emit_model_measure(measures, m, f"{col_name}:sum", sm_name)
+                self._emit_model_measure(
+                    measures, m, functional_agg_text(source=col_name, suffix="sum"), sm_name)
             else:
                 groups[m.expr or m.name].append(m)
 
@@ -610,7 +611,7 @@ class DbtToSlayerConverter:
     def _measure_formula(
         self, m: DbtMeasure, col_name: str, sm_name: str, model_meta: dict[str, Any]
     ) -> str | None:
-        """Build the ``<col>:<agg>`` formula for a dbt measure, or ``None`` if
+        """Build the ``<agg>(<col>)`` formula for a dbt measure, or ``None`` if
         it clean-fails (percentile without a value / discrete-approx flags)."""
         mapped = _map_agg(m.agg)
         if mapped == "percentile":
@@ -637,10 +638,10 @@ class DbtToSlayerConverter:
                 )
                 return None
             self._maybe_dialect_caveat(m.name, "percentile")
-            return f"{col_name}:percentile(p={ap.percentile})"
+            return functional_agg_text(source=col_name, suffix=f"percentile(p={ap.percentile})")
         if mapped == "median":
             self._maybe_dialect_caveat(m.name, "median")
-        return f"{col_name}:{mapped}"
+        return functional_agg_text(source=col_name, suffix=mapped)
 
     def _emit_model_measure(
         self, measures: list[ModelMeasure], m: DbtMeasure, formula: str, sm_name: str
@@ -1159,7 +1160,7 @@ class DbtToSlayerConverter:
         self, metric: DbtMetric, m_input: DbtMetricInput
     ) -> str | None:
         """Push a derived input's per-input filter into its single-aggregate
-        leaf, returning the filtered colon-form ref (or ``None`` on clean-fail).
+        leaf, returning the filtered aggregate ref (or ``None`` on clean-fail).
         """
         leaf = self._resolve_input_to_leaf_filtered(m_input.name)
         if leaf is None:
@@ -1524,14 +1525,14 @@ class DbtToSlayerConverter:
         raw_filter: str,
     ) -> str | None:
         """Get-or-create the filtered leaf Column for ``(model, expr, filter)``
-        and return the colon-form formula referencing it (or ``None`` on a
+        and return the aggregate formula over it (or ``None`` on a
         clean-fail that has already been routed to the report).
 
         Dedup key is ``(model, column_expr, normalized_filter)`` — the
         aggregation lives on the formula, so multiple aggregations over the
         same filtered column share one Column. Special measure forms are
         preserved exactly: ``sum_boolean`` builds the CASE-WHEN INT column and
-        aggregates with ``:sum``; ``percentile`` keeps its ``p=`` argument
+        aggregates with ``sum``; ``percentile`` keeps its ``p=`` argument
         (and clean-fails on a missing value / discrete / approximate flags).
         """
         leaf = self._filtered_leaf_spec(metric, dbt_measure)
@@ -1552,7 +1553,7 @@ class DbtToSlayerConverter:
                 filter=slayer_filter,
             ))
             self._filtered_columns[key] = col_name
-        return f"{col_name}:{agg_call}"
+        return functional_agg_text(source=col_name, suffix=agg_call)
 
     def _filtered_leaf_spec(
         self, metric: DbtMetric, dbt_measure: DbtMeasure

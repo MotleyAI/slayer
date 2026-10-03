@@ -121,8 +121,8 @@ elaborate→compile and `query_engine.py` orchestrates.
    parsing. [review]
    [enforced: test:tests/test_law_param_text_bound.py]
 2. **Parsing is pure syntax**: no scope, storage, or saved-measure resolution
-   in the parser; both aggregation spellings (colon and functional) collapse to
-   one node, so everything downstream is spelling-insensitive by construction.
+   in the parser; every aggregation spelling collapses to one node, so
+   everything downstream is spelling-insensitive by construction.
    [review]
    [enforced: test:tests/test_dev1903_first_last_dispatch.py]
 3. **Resolution is pure; storage is consulted once**: everything binding needs

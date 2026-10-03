@@ -1,9 +1,9 @@
 # aggregations/functional-form Specification
 
 ## Purpose
-Makes the functional aggregation spelling `agg(col, args)` a first-class, warning-free
-equivalent of colon syntax `col:agg(args)` in every position where aggregations are
-accepted, for all builtin, aliased, and custom aggregations.
+Makes the functional spelling `agg(col, args)` the canonical aggregation spelling in
+every position where aggregations are accepted, for all builtin, aliased, and custom
+aggregations.
 
 ## Requirements
 
