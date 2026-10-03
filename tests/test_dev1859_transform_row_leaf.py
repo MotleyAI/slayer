@@ -1,4 +1,4 @@
-"""DEV-1859 task 1.5 — leg B: non-shift transforms reject grain-refining
+"""Non-shift transforms reject grain-refining
 row-level leaves with a typed plan-time error (the checker); projected grain
 keys stay legal; the shift family keeps its bare-leaf regime byte-for-byte.
 
@@ -60,11 +60,12 @@ def _q(**kw) -> SlayerQuery:
 
 def _assert_leg_b_message(msg: str, op: str) -> None:
     """The typed message names the transform, the row-level leaf kind, and
-    the aggregate-the-leaf remedy (e.g. ``cumsum(weight:sum)``); it cites no
+    the aggregate-the-leaf remedy (e.g. ``cumsum(sum(weight))``); it cites no
     tracking issue and is ratchet-clean."""
     assert op in msg, msg
     assert re.search(r"(?i)row-level", msg), msg
-    assert ":sum" in msg, msg
+    assert f"{op}(sum(" in msg, msg
+    assert ":sum" not in msg, msg
     assert "DEV-" not in msg, msg
     assert not DEFERRAL_CLASSIFIER.search(msg), msg
 
@@ -225,7 +226,7 @@ class TestShiftFamilyRejectsRowLeaf:
         with pytest.raises(ValueError) as ei:
             await exec_engine.execute(query)
         msg = str(ei.value)
-        for part in (f"'{op}'", "'weight'", "weight:sum", "source_queries"):
+        for part in (f"'{op}'", "'weight'", f"{op}(sum(weight))", "source_queries"):
             assert part in msg, msg
 
 

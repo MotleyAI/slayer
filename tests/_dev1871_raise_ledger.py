@@ -212,7 +212,7 @@ ROWS: Tuple[LedgerRow, ...] = (
     _row(module=_EE, function="check_local_producer_inputs_safe", exc="UnsafeJoinInputError",
          message="The aggregate reads its source across an unproven or fanning join hop to … from …: a column of … cannot be aggregated across a to-many target."
          + AT + "measure …"
-         + SUGGEST + "Aggregate the target column directly (….<column>:<aggregation>), or declare a to-one cardinality or a covering unique key if the hop is to-one.",
+         + SUGGEST + "Aggregate the target column directly (<aggregation>(….<column>)), or declare a to-one cardinality or a covering unique key if the hop is to-one.",
          category="checker", family="local-partitioned", user=True, owner="checker"),
     _row(module=_SP, function="_forward_hops", exc="_PushBlocked",
          message="unreachable from the aggregate's root (no join edge from … to …)",

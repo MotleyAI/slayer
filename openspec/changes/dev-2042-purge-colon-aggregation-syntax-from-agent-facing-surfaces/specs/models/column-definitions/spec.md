@@ -8,7 +8,7 @@ model provably crosses a fanning hop — a hop that is not provably many-to-one
 and whose declared cardinality in its traversal orientation is `one_to_many` or
 `many_to_many` — the model save SHALL be rejected with an error naming the
 column, its declaring model, the complete reference as spelled, the hop, and the
-remedy (aggregate the reference as `<reference>:<aggregation>`, or filter by it;
+remedy (aggregate the reference as `<aggregation>(<reference>)`, or filter by it;
 declare a to-one cardinality or a covering unique key if the hop is really
 to-one). A hop that is provably many-to-one — its declared cardinality is
 `many_to_one`/`one_to_one`, or its target-side join columns cover a unique key of

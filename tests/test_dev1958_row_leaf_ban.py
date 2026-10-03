@@ -52,7 +52,8 @@ def _assert_unified_message(msg: str, *, op: str, leaf: str) -> None:
     assert op in msg, msg
     assert leaf in msg, msg
     assert re.search(r"(?i)row-level", msg), msg
-    assert ":sum" in msg, msg
+    assert f"{op}(sum({leaf}))" in msg, msg
+    assert ":sum" not in msg, msg
     assert "dimension" in msg, msg
     assert "source_queries" in msg, msg
     assert "DEV-" not in msg, msg

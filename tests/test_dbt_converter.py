@@ -166,9 +166,9 @@ class TestBasicConversion:
         # ModelMeasures carry the agg + the dbt name.
         measures_by_name = {m.name: m for m in orders.measures}
         assert "total_amount" in measures_by_name
-        assert measures_by_name["total_amount"].formula == "amount:sum"
+        assert measures_by_name["total_amount"].formula == "sum(amount)"
         assert "order_count" in measures_by_name
-        assert measures_by_name["order_count"].formula == "id_col:count"
+        assert measures_by_name["order_count"].formula == "count(id_col)"
 
     def test_primary_key_dimension(self) -> None:
         project = _make_simple_project()
@@ -189,7 +189,7 @@ class TestBasicConversion:
 
     def test_peer_joins_from_shared_primary_entity(self) -> None:
         """Shared primary entity → one declared edge (smaller name); reverse
-        traversal is automatic (DEV-1853)."""
+        traversal is automatic."""
         project = DbtProject(semantic_models=[
             DbtSemanticModel(
                 name="claim",
@@ -249,7 +249,7 @@ DbtMeasure(name="number_of_policies", agg="sum", expr="1")
 
         apr_to_policy = next(j for j in apr.joins if j.target_model == "policy")
         assert apr_to_policy.join_pairs == [["agreement_identifier", "Policy_Identifier"]]
-        # DEV-1853: no reverse declaration on the larger-named peer.
+        # No reverse declaration on the larger-named peer.
         assert not any(j.target_model == "agreement_party_role" for j in policy.joins)
 
     def test_peer_join_not_duplicated_with_foreign(self) -> None:
@@ -275,7 +275,7 @@ DbtMeasure(name="number_of_policies", agg="sum", expr="1")
         assert len(customer_joins) == 1
 
     def test_three_model_peer_group(self) -> None:
-        """Peer-group edges declared once per pair, smaller name first (DEV-1853)."""
+        """Peer-group edges declared once per pair, smaller name first."""
         project = DbtProject(semantic_models=[
             DbtSemanticModel(
                 name="a", model="a",
@@ -324,8 +324,8 @@ class TestMeasureConsolidation:
 
         # One ModelMeasure per dbt measure, formula carries the agg.
         by_name = {m.name: m for m in orders.measures}
-        assert by_name["revenue_sum"].formula == "amount:sum"
-        assert by_name["revenue_avg"].formula == "amount:avg"
+        assert by_name["revenue_sum"].formula == "sum(amount)"
+        assert by_name["revenue_avg"].formula == "avg(amount)"
 
     def test_different_expr_not_consolidated(self) -> None:
         """Measures with different exprs stay separate columns."""
@@ -348,8 +348,8 @@ class TestMeasureConsolidation:
         assert "qty" in col_names
 
         measures_by_name = {m.name: m for m in orders.measures}
-        assert measures_by_name["revenue"].formula == "amount:sum"
-        assert measures_by_name["quantity"].formula == "qty:sum"
+        assert measures_by_name["revenue"].formula == "sum(amount)"
+        assert measures_by_name["quantity"].formula == "sum(qty)"
 
     def test_primary_entity_does_not_duplicate_pk_column(self) -> None:
         """When primary_entity resolves to the same column the entity loop already
@@ -407,7 +407,7 @@ DbtMeasure(name="total_amount", agg="sum", expr="amount")
         completed = next(m for m in orders.measures if m.name == "completed_amount")
         assert completed.label == "Completed Amount"
         # Formula references the filter-bearing column with the dbt agg.
-        assert completed.formula == f"{filtered_cols[0].name}:sum"
+        assert completed.formula == f"sum({filtered_cols[0].name})"
 
     def test_filtered_metric_collision_with_existing_column_skipped(self) -> None:
         """Filtered metric whose name collides with an existing column on the model
@@ -524,7 +524,7 @@ class TestDerivedMetricConversion:
         result = DbtToSlayerConverter(project=project, data_source="test").convert()
         # Derived metric is a ModelMeasure on the orders model; bare-name refs
         # (Q-5) — the formula references each input metric by its name, no
-        # colon-aggregation suffix.
+        # inlined aggregation.
         orders = next(m for m in result.models if m.name == "orders")
         weird = next(m for m in orders.measures if m.name == "weird_ratio")
         formula = weird.formula
@@ -533,8 +533,8 @@ class TestDerivedMetricConversion:
         assert "subtotal" in formula
         assert "total_orders" in formula
         # Token-aware substitution didn't mangle "subtotal" or "total_orders".
-        assert "subtotal:sum" not in formula
-        assert "total:sum_orders" not in formula
+        assert "sum(subtotal)" not in formula
+        assert "sum(total)_orders" not in formula
 
     def test_derived_metric_becomes_model_measure(self) -> None:
         project = DbtProject(
@@ -718,7 +718,7 @@ class TestParserRoundTrip:
         # a ModelMeasure 'revenue' carrying the agg + label.
         rev_measure = next(me for me in m.measures if me.name == "revenue")
         assert rev_measure.label == "Revenue"
-        assert rev_measure.formula == "amount:sum"
+        assert rev_measure.formula == "sum(amount)"
 
 
 def _sample_slayer_model(name: str = "raw_events") -> SlayerModel:
@@ -1020,7 +1020,7 @@ DbtMeasure(name="total_claim_amount", agg="sum", expr="claim_amount")
         # And the ModelMeasure references that column.
         loss_metric = next(m for m in ca.measures if m.name == "loss_payment_amount")
         assert loss_metric.label == "Loss Payment Amount"
-        assert loss_metric.formula == f"{filtered_cols[0].name}:sum"
+        assert loss_metric.formula == f"sum({filtered_cols[0].name})"
 
     def test_filter_dim_on_source_model_stays_bare(self) -> None:
         """Dimension('orders__status') where status exists on orders → bare 'status'."""
@@ -1105,8 +1105,8 @@ class TestJoinTypeFromDbt:
         assert str(cov_join.join_type) == "inner"
 
     def test_inner_join_not_mirrored(self) -> None:
-        """DEV-1853: no auto-mirror — the single A→B INNER edge answers the
-        reverse orientation (divergences.md class (d))."""
+        """No auto-mirror — the single A→B INNER edge answers the
+        reverse orientation."""
         project = DbtProject(semantic_models=[
             DbtSemanticModel(
                 name="policy_amount",
@@ -1164,8 +1164,8 @@ class TestColumnNamingS4:
 
         # ModelMeasures point at that column with their respective aggs.
         by_name = {m.name: m for m in orders.measures}
-        assert by_name["line_total"].formula == "line_total_col:sum"
-        assert by_name["line_max"].formula == "line_total_col:max"
+        assert by_name["line_total"].formula == "sum(line_total_col)"
+        assert by_name["line_max"].formula == "max(line_total_col)"
 
     def test_column_name_collision_with_measure_name_suffixed_with_col(self) -> None:
         """Q-2: when the natural Column name (= the bare expr) would collide
@@ -1193,7 +1193,7 @@ class TestColumnNamingS4:
         assert "revenue" not in col_names
 
         rev_meas = next(m for m in orders.measures if m.name == "revenue")
-        assert rev_meas.formula == "revenue_col:sum"
+        assert rev_meas.formula == "sum(revenue_col)"
 
     def test_label_and_description_on_model_measure_only(self) -> None:
         """Q-D: label/description live on the ModelMeasure verbatim — no
@@ -1236,7 +1236,7 @@ class TestDbtMeasureToModelMeasure:
 
         aov = next(m for m in orders.measures if m.name == "aov")
         # Q-5: bare ModelMeasure names — formula refs total_amount / order_count.
-        # DEV-1595: ratio denominators are NULL-guarded with nullif(den, 0).
+        # Ratio denominators are NULL-guarded with nullif(den, 0).
         assert aov.formula == "total_amount / nullif(order_count, 0)"
 
     def test_cumulative_metric_becomes_model_measure(self) -> None:
@@ -1458,7 +1458,7 @@ class TestUnfilteredSimpleMetricResolution:
         result = DbtToSlayerConverter(project=project, data_source="test").convert()
         orders = next(m for m in result.models if m.name == "orders")
         aov = next(m for m in orders.measures if m.name == "aov_via_metrics")
-        # DEV-1595: ratio denominators are NULL-guarded with nullif(den, 0).
+        # Ratio denominators are NULL-guarded with nullif(den, 0).
         assert aov.formula == "total_amount / nullif(order_count, 0)", (
             f"Ratio formula should reference backing measures, got {aov.formula!r}"
         )
@@ -1520,7 +1520,7 @@ class TestUnconvertedTransformShadowing:
 
 
 # ---------------------------------------------------------------------------
-# DEV-1361: dbt converter pure rename — STRING → TEXT, NUMBER → DOUBLE.
+# dbt converter pure rename — STRING → TEXT, NUMBER → DOUBLE.
 # Behavioural change (data_type-driven mapping) tracked in DEV-1363.
 # ---------------------------------------------------------------------------
 
@@ -1552,7 +1552,7 @@ class TestDbtConverterRenamedDataTypes:
 
 
 def test_entity_metadata_merged_into_reused_pk_column() -> None:
-    """DEV-1595: when a primary/unique entity's column already exists (e.g. as a
+    """When a primary/unique entity's column already exists (e.g. as a
     dimension), the entity's role/label/description/meta is carried onto the
     reused column instead of dropped — without clobbering values it already has.
     """
