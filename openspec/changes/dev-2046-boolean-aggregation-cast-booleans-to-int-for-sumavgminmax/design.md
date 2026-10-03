@@ -1,0 +1,98 @@
+## Context
+
+See proposal.md › Why. Today the decision "what does this aggregate return" lives in
+`classify_aggregation` (keyed on the aggregation name only) read by `aggregated_type`,
+`stage_measure_type` and `_infer_aggregated_format`, plus the facade's independent
+`_agg_output_type`. Applying an aggregate to a raw value is hand-built in
+`generator._build_agg`, `value_expr._render_builtin_aggregate`, the association producer's
+level-1 `MAX` pick (`generator._render_association_producer_body`) and the HAVING seam.
+"Is this boolean" lives only in binding (`_expression_is_confidently_boolean`, best-effort,
+`any(...)` over coalesce-family arguments — unsound). Probes: DuckDB returns `True` for
+`CAST(SUM(flag) AS BOOLEAN)`; the HAVING path renders `SUM(t.flag)` without the slot cast;
+SQL Server already emits `SUM(orders.amount) > 50 AS [...]` for a boolean measure (invalid).
+
+Applicable principles: sql P1 (AST hooks take typed operands), P2 (dialect quirks only in
+`dialects/`), P5 (one renderer), P9 (fail closed); engine P1 (typed pipeline); core P1 (keys
+carry identity only); system P6 (AST-built SQL). No arc42 / `.c4` edit is needed: the facade
+(`protocols`) already may import `core` and `engine`.
+
+## Goals / Non-Goals
+
+**Goals:** one boolean-type authority, one aggregate classifier, one aggregate-application
+helper — so no render site or type surface can disagree again.
+
+**Non-Goals:** boolean lowering for statistical / parametric aggregations (they stay rejected
+over booleans); changing `count` semantics over booleans (counts non-NULL, as today);
+Oracle predicate-as-value (Oracle 23ai accepts boolean expressions; older Oracle has no boolean
+columns).
+
+## Decisions
+
+1. **`boolean_valued(key, *, column_type)` in `slayer/core/keys.py`**, beside `temporal_type`,
+   total over value-key kinds (see the spec's recognition requirement). Branch rule: an
+   expression is boolean only if every returnable branch is (`iif` branches; all args of
+   `coalesce` / `ifnull` / `greatest` / `least`; `nullif`'s first arg). Columns resolve through
+   the `ColumnTypeFn`, so host, joined and stage columns share one path. Binding's
+   `_expression_is_confidently_boolean` is deleted; the binding gate, the type lifts and the
+   renderer all call this function. *Alternative rejected (Codex):* stamping an input kind on
+   the plan — it adds a second store of type facts keyed by aggregate that HAVING, composites
+   and producers would all have to consult; the input type is a pure function of the key and
+   declared column types, exactly as `temporal_type` already feeds rendering.
+
+2. **`classify_aggregation(*, measure_name, aggregation, source_type)`**. With
+   `source_type == BOOLEAN`: `sum` → `COUNT` (INT / INTEGER — a count of trues, reusing the
+   existing class); `avg` → `FLOAT_SOURCE_UNITS` with a PERCENT format default when the column
+   declares none; `min` / `max` → `PRESERVING`. `aggregated_type`, `stage_measure_type`,
+   `measure_key_type` (including expression sources, typed via decision 1) and
+   `_infer_aggregated_format` pass the source type. The facade's `_agg_output_type` is deleted
+   and `INFORMATION_SCHEMA.METRICS.data_type` reads the engine's typing; a custom aggregation
+   therefore reports the source type there, as the engine does (Codex's preserve-`None`
+   suggestion rejected: that disagreement is what this change removes).
+
+3. **One aggregate-application helper in `slayer/sql/render/aggregates.py`** taking the
+   registry entry, the input expression and the input's `DataType`. For a BOOLEAN input and
+   `sum` / `avg` / `min` / `max`: `CAST(input AS INT)` inside the aggregate; for `min` / `max`
+   the aggregate is wrapped back to the dialect's declared BOOLEAN cast
+   (`declared_cast_type`), so the expression is boolean wherever it is used and the slot cast
+   (idempotent `_wrap_cast_for_type`) does not double it. Every other aggregation and every
+   non-boolean input passes through unchanged; the custom / formula dispatch is untouched.
+   `_build_agg`, `_render_builtin_aggregate` (and the HAVING seam that uses them) and the
+   association producer's level-1 pick all apply aggregates through it; the pick's level-2
+   aggregate receives the picked value's BOOLEAN type. *Alternative rejected:* per-dialect
+   `bool_and` / `bool_or` — sqlglot's `LogicalOr` renders `LOGICAL_OR` on T-SQL and
+   ClickHouse (invalid there); the cast round-trip transpiles on all twelve dialects probed.
+
+4. **Predicates are booleans, not a separate input kind.** A comparison / connective / IN /
+   BETWEEN source is lowered exactly like a boolean column (decision 3). Where a dialect cannot
+   hold a predicate as a value, that is a dialect quirk handled once (decision 5) — so
+   `count(amount > 15)` and custom aggregations receive the predicate like any boolean.
+
+5. **SQL Server predicate values in `slayer/sql/dialects/tsql.py`**: one target rewrite over
+   the assembled statement, before its single render, replaces each predicate node
+   (comparison, connective, NOT, IN, BETWEEN, LIKE, IS) whose parent is a value position with
+   `CAST(CASE WHEN p THEN 1 WHEN NOT p THEN 0 END AS BIT)`; condition positions (WHERE, HAVING,
+   JOIN ON, CASE WHEN condition, and a predicate nested inside another predicate) are left
+   alone. NULL stays NULL (neither WHEN matches).
+
+6. **Grammar and sources.** `_AGG_SOURCE_KINDS` gains `Cmp` and `BoolOp` (a bare `TupleLit`
+   stays rejected). `AggregateKey`'s source union admits `InKey` and `BetweenKey`, on the
+   row-level and re-aggregation paths (folds DEV-1970); any shape still unsupported raises a
+   typed SLayer error at bind, never a pydantic `ValidationError`.
+
+7. **Gates.** `avg` joins `DEFAULT_AGGREGATIONS_BY_TYPE[BOOLEAN]`.
+   `_reject_non_numeric_expression_agg` rejects a boolean-valued expression only for
+   numeric-only aggregations outside that set.
+
+## Risks / Trade-offs
+
+- [The source type is unknown at a render site (e.g. a `ColumnSqlKey` spec sets
+  `column_type=None` to avoid re-casting)] → the helper takes the input type from decision 1
+  over the source key, never from `spec.column_type`; a test per render site pins it.
+- [The T-SQL rewrite misclassifies a position] → emission tests for each value position
+  (projection, aggregate argument, cast operand, arithmetic operand) and each condition
+  position; execution only in the path-gated `integration-sqlserver` workflow (no local ODBC
+  driver).
+- [Format change surfaces in goldens] → boolean `avg` gains PERCENT and boolean `sum` INTEGER;
+  re-bless only goldens whose old value was the bug.
+- [`tests/test_dev1847_gate.py:51-52` asserts the old row-level comparison rejection] → flips to
+  acceptance (user-approved in planning).
