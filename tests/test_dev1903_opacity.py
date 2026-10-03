@@ -30,7 +30,7 @@ from tests._dev1919_fixtures import (
 _REGION_SPEND = "sum(customers.spend, partition_by=customers.regions.name)"
 SOURCE = f"sum(amount * {_REGION_SPEND})"
 KWARG = f"amount:weighted_avg(weight={_REGION_SPEND})"
-TRANSFORM = f"amount:weighted_avg(weight=rank({_REGION_SPEND}))"
+TRANSFORM = f"amount:weighted_avg(weight=rank({_REGION_SPEND}, direction='desc'))"
 #: host column masked to North customers: its own closure crosses to regions.
 NORTH_OUTER = f"sum(north_amount * {_REGION_SPEND})"
 NORTH_INNER = "amount:weighted_avg(weight=sum(north_amount, partition_by=channel))"

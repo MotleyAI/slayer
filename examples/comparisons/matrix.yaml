@@ -290,7 +290,7 @@ rows:
   origin: SLayer
   slayer:
     verdict: 'yes'
-    how: "`rank(sum(revenue)) <= 10` · `consecutive_periods(sum(revenue) > 0) >= 3`"
+    how: "`rank(sum(revenue), direction='desc') <= 10` · `consecutive_periods(sum(revenue) > 0) >= 3`"
     caveat: "Streaks count calendar periods, so an empty month breaks them (verified)."
   malloy:
     verdict: partial

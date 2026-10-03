@@ -65,7 +65,7 @@ class TestGrainEmission:
 
     def test_transform_valued_computed_dimension_is_a_member(self) -> None:
         grain = _grain(
-            dimensions=["status", {"expression": "rank(sum(amount, partition_by=channel))", "name": "rk"}],
+            dimensions=["status", {"expression": "rank(sum(amount, partition_by=channel), direction='desc')", "name": "rk"}],
             measures=[{"formula": "*:count", "name": "n"}],
         )
         assert grain == ["status", "rk"]

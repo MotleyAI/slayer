@@ -429,7 +429,7 @@ column's values.
 
 #### Scenario: Ungrained inner of a mixed operand types at the query grain
 - **WHEN** a query over a month time dimension selects
-  `sum(rank(amount:sum(partition_by=[region, ordered_at]) - amount:sum))`
+  `sum(rank(amount:sum(partition_by=[region, ordered_at]) - amount:sum, direction='desc'))`
 - **THEN** the ungrained inner is the month total, computed at the query grain and
   broadcast onto the `(region, month)` cells before ranking — never re-evaluated per
   region — by hand-computed executed values distinguishable from the per-cell
@@ -677,7 +677,7 @@ other column's values.
 
 #### Scenario: Transform constituent inside a mixed source
 - **WHEN** a query over dimensions `[region]` selects the measure
-  `sum(quantity * rank(avg(unit_price, partition_by=product)))`
+  `sum(quantity * rank(avg(unit_price, partition_by=product), direction='desc'))`
 - **THEN** each region row carries the sum over its base rows of `quantity` times
   the rank of the row's product among products by average unit price, by executed
   values, with unchanged cardinality

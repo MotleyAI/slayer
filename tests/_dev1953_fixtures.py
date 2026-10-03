@@ -25,8 +25,8 @@ def cell_totals(key: Callable[[tuple], Tuple]) -> Dict[Tuple, Optional[float]]:
     return acc
 
 
-def rank_within(totals: Dict[Tuple, Optional[float]]) -> Dict[Tuple, int]:
-    """Descending competition rank within ``k[0]``; NULL ranks last."""
+def rank_within(totals: Dict[Tuple, Optional[float]]) -> Dict[Tuple, Optional[int]]:
+    """Descending competition rank within ``k[0]``; a NULL total ranks NULL."""
     groups: Dict = defaultdict(dict)
     for k, v in totals.items():
         groups[k[0]][k] = v
@@ -34,7 +34,7 @@ def rank_within(totals: Dict[Tuple, Optional[float]]) -> Dict[Tuple, int]:
     for cells in groups.values():
         nonnull = [v for v in cells.values() if v is not None]
         for k, v in cells.items():
-            out[k] = (1 + len(nonnull)) if v is None else 1 + sum(1 for x in nonnull if x > v)
+            out[k] = None if v is None else 1 + sum(1 for x in nonnull if x > v)
     return out
 
 

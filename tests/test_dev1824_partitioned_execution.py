@@ -195,7 +195,7 @@ class TestTransformOverPartitioned:
         resp = await exec_engine.execute(q(
             dimensions=["region", "city"],
             measures=[ModelMeasure(
-                formula="rank(amount:sum(partition_by=region))", name="r",
+                formula="rank(amount:sum(partition_by=region), direction='desc')", name="r",
             )],
         ))
         by = rows_by(resp, "orders.region", "orders.city")

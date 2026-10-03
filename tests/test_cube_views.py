@@ -1,6 +1,6 @@
 """Tests for Cube views → SLayer facade models (slayer/cube/converter.py).
 
-DEV-1608 §6 + Codex #1/#3 corrections: facade measures reference the underlying
+Facade measures reference the underlying
 Column (not the Cube measure name); facade source mirrors the root cube's mode.
 """
 
@@ -16,6 +16,7 @@ from slayer.cube.models import (
     CubeViewCubeRef,
 )
 from slayer.cube.report import CubeIssueCategory
+from slayer.engine.syntax import AggCall, DottedRef, Ref, parse_expr
 
 DS = "test_ds"
 
@@ -89,33 +90,37 @@ def test_view_prefixed_joined_dimension_references_joined_column():
 
 
 def test_view_root_measure_carries_underlying_column():
-    """Codex #1: a root-cube measure re-export needs the underlying column on
-    the facade, referenced by `<col>:<agg>` (NOT the measure name)."""
+    """A root-cube measure re-export needs the underlying column on
+    the facade, referenced by `<agg>(<col>)` (NOT the measure name)."""
     project = CubeProject(cubes=_orders_customers_cubes(), views=[_view()])
     models, _ = _convert(project)
     view = models["orders_overview"]
     m = view.get_measure("total_revenue")
     assert m is not None
-    col_ref = m.formula.split(":")[0].strip()
+    parsed = parse_expr(m.formula)
+    assert isinstance(parsed, AggCall), m.formula
+    source = parsed.source
+    assert isinstance(source, (Ref, DottedRef)), m.formula
+    col_ref = ".".join(source.parts) if isinstance(source, DottedRef) else source.name
     assert view.get_column(col_ref) is not None  # underlying column copied onto facade
-    assert m.formula.endswith(":sum")
+    assert m.formula.startswith("sum(")
 
 
 def test_view_joined_measure_is_cross_model_underlying_column_ref():
-    """Codex #1: joined-cube measure → `customers.<underlying_col>:<agg>`
+    """Joined-cube measure → `<agg>(customers.<underlying_col>)`
     (the underlying column `ltv`, never the measure name `lifetime_value`)."""
     project = CubeProject(cubes=_orders_customers_cubes(), views=[_view()])
     models, _ = _convert(project)
     view = models["orders_overview"]
     m = view.get_measure("customers_lifetime_value")  # prefix: "<cube>_<member>"
     assert m is not None
-    assert m.formula == "customers.ltv:sum"
+    assert m.formula == "sum(customers.ltv)"
 
 
 def test_view_count_measure_maps_to_star_count():
     project = CubeProject(cubes=_orders_customers_cubes(), views=[_view()])
     models, _ = _convert(project)
-    assert models["orders_overview"].get_measure("count").formula == "*:count"
+    assert models["orders_overview"].get_measure("count").formula == "count(*)"
 
 
 def test_view_default_filters_become_model_filters():

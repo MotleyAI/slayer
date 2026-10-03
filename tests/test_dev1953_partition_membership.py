@@ -6,7 +6,7 @@ are rejected)."""
 
 from __future__ import annotations
 
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 
 import pytest
 
@@ -34,9 +34,9 @@ from tests._dev1953_fixtures import (
 from tests._dev1919_fixtures import ordered_month_td
 
 CRP = ["city", "region", "product"]
-NONMEMBER = "rank(sum(amount, partition_by=[city, region]), partition_by=product)"
-MEMBER = "rank(sum(amount, partition_by=[city, region]), partition_by=region)"
-UNGRAINED = "rank(sum(amount), partition_by=region)"
+NONMEMBER = "rank(sum(amount, partition_by=[city, region]), partition_by=product, direction='desc')"
+MEMBER = "rank(sum(amount, partition_by=[city, region]), partition_by=region, direction='desc')"
+UNGRAINED = "rank(sum(amount), partition_by=region, direction='desc')"
 LAST_INNER = "last(sum(amount, partition_by=[customers.regions.name, ordered_at]))"
 LAST_SHIFT = "last(time_shift(customers.regions.name, -1))"
 
@@ -45,33 +45,33 @@ MEMBER_RANKS = {
     ("North", "Beta"): 1, ("North", "Alpha"): 2,
     ("South", "Gamma"): 1, ("South", "Alpha"): 2,
     ("Gap", None): 1, ("Gap", "Kappa"): 2,
-    ("Void", "Xi"): 1,
+    ("Void", "Xi"): None,
 }
 CITY_NAME_RANKS = {
     ("East", "Zeta"): 1, ("East", "Epsilon"): 2, ("East", "Delta"): 3,
     ("North", "Beta"): 1, ("North", "Alpha"): 2,
     ("South", "Gamma"): 1, ("South", "Alpha"): 2,
-    ("Gap", "Kappa"): 1, ("Gap", None): 2,
+    ("Gap", "Kappa"): 1, ("Gap", None): None,
     ("Void", "Xi"): 1,
 }
 REGION_BAND_RANKS = {
     ("North", "hi"): 1, ("North", "lo"): 2, ("South", "hi"): 1, ("South", "lo"): 2,
-    ("East", "hi"): 1, ("Gap", "lo"): 1, ("Void", "lo"): 1,
+    ("East", "hi"): 1, ("Gap", "lo"): 1, ("Void", "lo"): None,
 }
 
 
-def _city_name_ranks() -> Dict[Tuple, int]:
-    """rank(city, partition_by=region): city values descending, NULL last."""
+def _city_name_ranks() -> Dict[Tuple, Optional[int]]:
+    """rank(city, partition_by=region, direction='desc'): city values descending, NULL ranks NULL."""
     cells = {(r[1], r[2]) for r in _SALES_ROWS_WIDE}
     out = {}
     for region, city in cells:
         peers = {c for rg, c in cells if rg == region and c is not None}
-        out[(region, city)] = (1 + len(peers) if city is None
+        out[(region, city)] = (None if city is None
                                else 1 + sum(1 for c in peers if c > city))
     return out
 
 
-def _region_band_ranks() -> Dict[Tuple, int]:
+def _region_band_ranks() -> Dict[Tuple, Optional[int]]:
     band = band_of()
     return rank_within(cell_totals(lambda r: (r[1], band[(r[2], r[1])])))
 
@@ -122,7 +122,7 @@ class TestNonMemberRejected:
 
     async def test_dimension_position_plain_column(self, engine):
         dim = {"expression": "rank(sum(amount, partition_by=[city, product]), "
-                             "partition_by=region)", "name": "r"}
+                             "partition_by=region, direction='desc')", "name": "r"}
         query = sales_q(dimensions=["region", dim], measures=[AMOUNT])
         with pytest.raises(ValueError) as ei:
             await engine.execute(query)
@@ -130,7 +130,7 @@ class TestNonMemberRejected:
 
     async def test_dimension_position_computed_dimension(self, engine):
         dim = {"expression": "rank(sum(amount, partition_by=[city, region]), "
-                             "partition_by=ureg)", "name": "r"}
+                             "partition_by=ureg, direction='desc')", "name": "r"}
         query = sales_q(dimensions=[UREG, dim], measures=[AMOUNT])
         with pytest.raises(ValueError) as ei:
             await engine.execute(query)
@@ -154,7 +154,7 @@ class TestNonMemberRejected:
         _assert_membership_error(msg=str(ei.value), key="'product'", grain="city, region")
 
     @pytest.mark.parametrize(argnames="op,extra", argvalues=[
-        ("dense_rank", ""), ("percent_rank", ""), ("ntile", ", n=2"),
+        ("dense_rank", ", direction='desc'"), ("percent_rank", ""), ("ntile", ", n=2"),
     ])
     async def test_every_rank_family_op(self, engine, op, extra):
         formula = f"{op}(sum(amount, partition_by=[city, region]){extra}, partition_by=product)"
@@ -165,7 +165,7 @@ class TestNonMemberRejected:
 
     async def test_composite_union_without_key(self, engine):
         formula = ("rank(sum(amount, partition_by=[city, region]) "
-                   "+ sum(amount, partition_by=city), partition_by=product)")
+                   "+ sum(amount, partition_by=city), partition_by=product, direction='desc')")
         query = sales_q(dimensions=CRP, measures=[_measure(formula)])
         with pytest.raises(ValueError) as ei:
             await engine.execute(query)
@@ -180,7 +180,7 @@ class TestMemberAccepted:
 
     async def test_composite_union_member(self, engine):
         formula = ("rank(sum(amount, partition_by=[city, region]) "
-                   "+ sum(amount, partition_by=[city, product]), partition_by=product)")
+                   "+ sum(amount, partition_by=[city, product]), partition_by=product, direction='desc')")
         resp = await engine.execute(sales_q(dimensions=CRP, measures=[_measure(formula)]))
         assert resp.data
 
@@ -200,14 +200,14 @@ class TestMemberAccepted:
 class TestAggregateFreeInput:
     async def test_leaf_input_takes_query_grain(self, engine):
         resp = await engine.execute(sales_q(
-            dimensions=CRP, measures=[_measure("rank(city, partition_by=region)")]))
+            dimensions=CRP, measures=[_measure("rank(city, partition_by=region, direction='desc')")]))
         for (city, region, _), row in rows_by(resp, *(f"sales.{d}" for d in CRP)).items():
             assert row["sales.r"] == CITY_NAME_RANKS[(region, city)], (city, region)
 
     # Bind level only: execution is DEV-1962.
     def test_literal_input_takes_query_grain(self):
         query = sales_q(dimensions=["region"],
-                        measures=[_measure("rank(1, partition_by=region)")])
+                        measures=[_measure("rank(1, partition_by=region, direction='desc')")])
         bind_query_inputs(query=query, bundle=_sales_bundle())
 
 
@@ -240,42 +240,42 @@ def _bind_monthly(formula: str):
 class TestOperandGrainTimeAxis:
     def test_windowed_inner_admits_active_bucket(self):
         _bind_monthly("rank(sum(amount, window='1y', partition_by=customers.regions.name), "
-                      "partition_by=ordered_at)")
+                      "partition_by=ordered_at, direction='desc')")
 
     def test_nested_last_drops_its_axis(self):
         with pytest.raises(ValueError) as ei:
-            _bind_monthly(f"rank({LAST_INNER}, partition_by=ordered_at)")
+            _bind_monthly(f"rank({LAST_INNER}, partition_by=ordered_at, direction='desc')")
         _assert_membership_error(msg=str(ei.value), key="ordered_at",
                                  grain="customers.regions.name")
 
     def test_nested_last_keeps_remaining_keys(self):
-        _bind_monthly(f"rank({LAST_INNER}, partition_by=customers.regions.name)")
+        _bind_monthly(f"rank({LAST_INNER}, partition_by=customers.regions.name, direction='desc')")
 
     def test_aggregate_free_nested_last_drops_its_axis(self):
         with pytest.raises(ValueError) as ei:
-            _bind_monthly(f"rank({LAST_SHIFT}, partition_by=ordered_at)")
+            _bind_monthly(f"rank({LAST_SHIFT}, partition_by=ordered_at, direction='desc')")
         _assert_membership_error(msg=str(ei.value), key="ordered_at",
                                  grain="customers.regions.name")
 
     def test_aggregate_free_nested_last_keeps_remaining_keys(self):
-        _bind_monthly(f"rank({LAST_SHIFT}, partition_by=customers.regions.name)")
+        _bind_monthly(f"rank({LAST_SHIFT}, partition_by=customers.regions.name, direction='desc')")
 
     def test_aggregate_free_leaf_beside_nested_last_keeps_the_query_grain(self):
-        _bind_monthly(f"rank(customers.regions.name + {LAST_SHIFT}, partition_by=ordered_at)")
+        _bind_monthly(f"rank(customers.regions.name + {LAST_SHIFT}, partition_by=ordered_at, direction='desc')")
 
     def test_aggregate_free_literal_beside_nested_last_drops_its_axis(self):
         with pytest.raises(ValueError) as ei:
-            _bind_monthly(f"rank({LAST_SHIFT} + 1, partition_by=ordered_at)")
+            _bind_monthly(f"rank({LAST_SHIFT} + 1, partition_by=ordered_at, direction='desc')")
         _assert_membership_error(msg=str(ei.value), key="ordered_at",
                                  grain="customers.regions.name")
 
     def test_aggregate_free_shift_keeps_the_query_grain(self):
-        _bind_monthly("rank(time_shift(customers.regions.name, -1), partition_by=ordered_at)")
+        _bind_monthly("rank(time_shift(customers.regions.name, -1), partition_by=ordered_at, direction='desc')")
 
 
 class TestRepeatedKeyword:
     @pytest.mark.parametrize(argnames="formula,call", argvalues=[
-        ("rank(sum(amount), partition_by=region, partition_by=city)", "rank"),
+        ("rank(sum(amount), partition_by=region, partition_by=city, direction='desc')", "rank"),
         ("sum(amount, partition_by=region, partition_by=city)", "sum"),
         ("amount:sum(partition_by=region, partition_by=city)", "sum"),
     ])

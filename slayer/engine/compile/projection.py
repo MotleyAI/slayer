@@ -135,7 +135,7 @@ class ValueRegistry:
             and column_path(key.column) == ()
             and public_name == column_leaf(key.column)
         )
-        # An unnamed ``*:<agg>`` (StarKey) is exempt: its canonical alias (``_count``)
+        # An unnamed ``<agg>(*)`` (StarKey) is exempt: its canonical alias (``_count``)
         # is a structural marker, not a column ref. An explicit user name still raises.
         is_unnamed_star_agg = (
             isinstance(key, AggregateKey)

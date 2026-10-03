@@ -20,9 +20,11 @@ from slayer.core.errors import (
     MeasureCycleError,
     MeasureRecursionLimitError,
     PartitionKeyError,
+    TransformArgumentError,
     UnknownFunctionError,
     UnknownReferenceError,
     UnresolvableDimensionJoinError,
+    UnresolvedPlaceholderError,
 )
 from slayer.core.enums import (
     BUILTIN_AGGREGATION_PARAM_ORDER,
@@ -35,6 +37,7 @@ from slayer.core.enums import (
     format_unknown_aggregation,
     normalize_aggregation_name,
 )
+from slayer.core.direction import rank_direction, with_direction_kwarg
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.granularity import CustomGranularity, Granularity, resolve_granularity
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS, key_display
@@ -74,7 +77,9 @@ from slayer.engine.syntax import (
     TransformCall,
     TupleLit,
     UnaryOp,
+    canonical_measure_text,
     parse_expr,
+    placeholder_names,
 )
 from slayer.sql.sql_expr import has_window_function
 from slayer.sql.sql_template import SqlTemplateError, aggregation_reads
@@ -137,6 +142,7 @@ def bind_expr(
     expressions; off everywhere else, so a saved-measure name there errors.
     ``dimension_alias_map`` resolves ``partition_by=<computed dim name>`` to
     the dimension's bound key; it applies ONLY there."""
+    _reject_placeholders(parsed)
     measure_ctx = (
         MeasureResolutionCtx(depth_limit=_measure_depth_limit())
         if allow_measures else None
@@ -320,8 +326,9 @@ def bind_filter(
     ``IllegalWindowInFilterError`` if a referenced ``Column.sql`` is windowed.
     ``alias_map`` maps a stage's declared-measure names to their bound
     ``ValueKey`` so a bare ref matching an alias interns onto that slot rather
-    than resolving against model columns (colon form and alias form share one slot).
+    than resolving against model columns (the aggregate and its alias share one slot).
     ``dimension_alias_map`` resolves ``partition_by=<computed dim name>`` only."""
+    _reject_placeholders(parsed)
     value_key = _bind(
         parsed, scope=scope, bundle=bundle, in_filter=True, alias_map=alias_map,
         dim_alias_map=dimension_alias_map,
@@ -438,6 +445,13 @@ def _bind(
     raise ValueError(
         f"Unsupported ParsedExpr node: {type(parsed).__name__}"
     )
+
+
+def _reject_placeholders(parsed: ParsedExpr, *, text: Optional[str] = None) -> None:
+    """Raise ``UnresolvedPlaceholderError`` for the first unsubstituted ``{name}`` in ``parsed``."""
+    names = placeholder_names(parsed)
+    if names:
+        raise UnresolvedPlaceholderError(name=names[0], expression=text or canonical_measure_text(parsed))
 
 
 _OPERAND_LEFT_OP: Dict[str, TimePointOp] = {
@@ -933,6 +947,7 @@ def _resolve_saved_measure(
             chain=_fmt_measure_chain(child.chain), limit=measure_ctx.depth_limit,
         )
     parsed = parse_expr(measure.formula)
+    _reject_placeholders(parsed, text=measure.formula)
     if not host_path:
         # Bare/local: measure lives on the host; bind inline at this scope.
         return _bind(
@@ -1433,7 +1448,7 @@ def _validate_agg_eligibility(
     Healing is skipped when the raw token exactly matches a custom aggregation
     on the owning model (a custom ``countd`` wins over the alias). Gate order:
     0. unknown-name-first, for EVERY source shape (column, star, expression),
-    so ``*:bogus`` / ``bogus(*)`` never escape to SQL generation;
+    so ``bogus(*)`` never escapes to SQL generation;
     1. a sole primary key (an identifier) restricted to
     ``PRIMARY_KEY_AGGREGATIONS`` — composite-key members fall through; 2. explicit
     ``Column.allowed_aggregations`` whitelist; 3. else
@@ -1649,29 +1664,39 @@ def _bind_transform_params(
     partition_keys: Grain = Grain.EMPTY
     allowed_kwargs = _TRANSFORM_KWARG_RULES.get(op, frozenset())
     seen_kwargs: set = set()
-    rank_partition_ok = op in RANK_FAMILY_TRANSFORMS
+    rank_family = op in RANK_FAMILY_TRANSFORMS
+    advertised = with_direction_kwarg(
+        op=op, accepted=allowed_kwargs | {"partition_by"} if rank_family else allowed_kwargs,
+    )
+    direction_value: object = _NOT_SCALAR
     for k, v in [*positional_pairs, *kwargs]:
-        if k == "partition_by" and rank_partition_ok:
+        if k == "partition_by" and rank_family:
             partition_keys = _bind_partition_keys(
                 value=v, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map,
                 label=f"transform {op!r}",
             )
             continue
+        if k == "direction" and rank_family:
+            seen_kwargs.add(k)
+            direction_value = _fold_to_scalar(v)
+            continue
         if k not in allowed_kwargs:
-            advertised = allowed_kwargs | ({"partition_by"} if rank_partition_ok else set())
-            raise ValueError(
-                f"Transform {op!r} does not accept keyword "
+            raise TransformArgumentError(
+                summary=f"Transform {op!r} does not accept keyword "
                 f"argument {k!r}. Accepted: {sorted(advertised)}."
             )
         seen_kwargs.add(k)
         scalar = _fold_to_scalar(v)
         if scalar is _NOT_SCALAR:
-            raise ValueError(
-                f"Transform {op!r} keyword {k!r} must be a "
+            raise TransformArgumentError(
+                summary=f"Transform {op!r} keyword {k!r} must be a "
                 f"scalar literal; got expression of kind "
                 f"{type(v).__name__}."
             )
         bound_kwargs.append((k, scalar))
+    direction = rank_direction(op=op, given="direction" in seen_kwargs, value=direction_value)
+    if direction is not None:
+        bound_kwargs.append(("direction", direction))
     bound_kwargs = _apply_transform_kwarg_defaults(
         op=op, kwargs=bound_kwargs, seen=seen_kwargs,
     )
@@ -1702,19 +1727,19 @@ def _apply_transform_kwarg_defaults(
     Integer checks accept integral ``Decimal`` (``normalize_scalar`` wraps numbers)."""
     if op == "ntile":
         if "n" not in seen:
-            raise ValueError(
-                "Transform 'ntile' requires keyword argument n (the "
+            raise TransformArgumentError(
+                summary="Transform 'ntile' requires keyword argument n (the "
                 "number of buckets, a positive integer)."
             )
         n_value = next(v for k, v in kwargs if k == "n")
         if not _is_positive_integer(n_value):
-            raise ValueError(
-                f"Transform {op!r} keyword n must be a positive "
+            raise TransformArgumentError(
+                summary=f"Transform {op!r} keyword n must be a positive "
                 f"integer; got {n_value!r}."
             )
     if op == "time_shift" and "periods" not in seen:
-        raise ValueError(
-            "Transform 'time_shift' requires keyword argument periods "
+        raise TransformArgumentError(
+            summary="Transform 'time_shift' requires keyword argument periods "
             "(the integer offset, negative for a backward shift)."
         )
     if op in ("lag", "lead") and "periods" not in seen:

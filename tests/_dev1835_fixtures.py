@@ -40,11 +40,11 @@ TS_OVER_LAST   time_shift(amount:last, -1) over REGION_MONTH_LAST (N,Jan)=20
 CHANGE_OVER_LAST / CHANGE_PCT_OVER_LAST  change(amount:last): (N,Feb)=30-20=10;
                change_pct: 10/20=0.5; rest NULL.
 UNION_WM_RANK  dimension ``rank(amount:sum(window='90d', partition_by=region)
-               - amount:sum(partition_by=region))``, month TD. Union grain =
+               - amount:sum(partition_by=region), direction='desc')``, month TD. Union grain =
                (region, bucket); diffs w90-total: (N,Jan)=-70 (N,Feb)=0
                (S,Jan)=-25 (S,Mar)=0 (NULL,Mar)=0 → RANK() desc 5/1/4/1/1.
 UNION_RK_RANK  dimension ``rank(amount:last(partition_by=region) -
-               amount:sum(partition_by=city))``. Union grain = (region, city);
+               amount:sum(partition_by=city), direction='desc')``. Union grain = (region, city);
                region-last broadcast (30/25/60) minus city totals
                (30/40/30/50/60): 0/-10/0/-25/0 → RANK() desc 1/4/1/5/1.
 ORDER_BY_W90_DESC  (region, month) keys ordered by the hidden windowed value
@@ -204,10 +204,10 @@ CHANGE_PCT_OVER_LAST = {("North", "2024-02"): 0.5}
 # --------------------------------------------------------------------------- #
 UNION_WM_DIM = (
     "rank(amount:sum(window='90d', partition_by=region) - "
-    "amount:sum(partition_by=region))"
+    "amount:sum(partition_by=region), direction='desc')"
 )
 UNION_RK_DIM = (
-    "rank(amount:last(partition_by=region) - amount:sum(partition_by=city))"
+    "rank(amount:last(partition_by=region) - amount:sum(partition_by=city), direction='desc')"
 )
 UNION_WM_RANK = {
     ("North", "2024-01"): 5, ("North", "2024-02"): 1,

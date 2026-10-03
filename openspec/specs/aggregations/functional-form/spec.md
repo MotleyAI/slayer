@@ -1,9 +1,9 @@
 # aggregations/functional-form Specification
 
 ## Purpose
-Makes the functional aggregation spelling `agg(col, args)` a first-class, warning-free
-equivalent of colon syntax `col:agg(args)` in every position where aggregations are
-accepted, for all builtin, aliased, and custom aggregations.
+Makes the functional spelling `agg(col, args)` the canonical aggregation spelling in
+every position where aggregations are accepted, for all builtin, aliased, and custom
+aggregations.
 
 ## Requirements
 
@@ -271,9 +271,9 @@ parameter.
 
 #### Scenario: Positional transform parameter equals named
 - **WHEN** a measure is written
-  `customers.spend:weighted_avg(rank(sum(amount, partition_by=customers.regions.name)))`
+  `customers.spend:weighted_avg(rank(sum(amount, partition_by=customers.regions.name), direction='desc'))`
   rooted at `orders`
-- **THEN** it binds to the identical aggregation identity as the `weight=rank(...)`
+- **THEN** it binds to the identical aggregation identity as the `weight=rank(..., direction='desc')`
   spelling and returns identical result keys and values
 
 ### Requirement: Repeated keyword arguments are rejected
@@ -283,7 +283,7 @@ parse-time error naming the call and the keyword; the parser never keeps the las
 occurrence and never concatenates the values.
 
 #### Scenario: Repeated partition_by on a transform
-- **WHEN** a measure names `rank(sum(amount), partition_by=region, partition_by=city)`
+- **WHEN** a measure names `rank(sum(amount), partition_by=region, partition_by=city, direction='desc')`
 - **THEN** parsing fails with an error naming `rank` and `partition_by`
 
 #### Scenario: Repeated keyword on an aggregation

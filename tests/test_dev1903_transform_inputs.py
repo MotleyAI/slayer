@@ -84,7 +84,7 @@ class TestMessagesMatchTheLedger:
 
     @pytest.mark.parametrize("formula", [
         "time_shift(revenue:sum > 100, -1)", "cumsum(revenue:sum > 100)",
-        "rank(revenue:sum > 100)",
+        "rank(revenue:sum > 100, direction='desc')",
     ])
     def test_boolean_input_accepted_elsewhere(self, formula):
         _check(formula)
@@ -98,7 +98,7 @@ class TestMessagesMatchTheLedger:
 
 class TestInnermostTransformNamed:
     @pytest.mark.parametrize("formula", [
-        "first(cumsum(weight))", "last(cumsum(weight))", "rank(cumsum(weight))",
+        "first(cumsum(weight))", "last(cumsum(weight))", "rank(cumsum(weight), direction='desc')",
         "time_shift(cumsum(weight), -1)", "change(cumsum(weight))",
     ])
     def test_consuming_transform_is_named(self, formula):

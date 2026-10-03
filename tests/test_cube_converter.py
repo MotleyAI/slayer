@@ -1,6 +1,6 @@
 """Tests for the Cube → SLayer converter (slayer/cube/converter.py).
 
-DEV-1608 §4. Projects are built in Python (parser is tested separately) so these
+Projects are built in Python (parser is tested separately) so these
 pin the mapping semantics directly.
 """
 
@@ -20,6 +20,7 @@ from slayer.cube.models import (
     CubeSegment,
 )
 from slayer.cube.report import CubeIssueCategory
+from slayer.engine.syntax import AggCall, DottedRef, Ref, parse_expr
 
 DS = "test_ds"
 
@@ -30,10 +31,14 @@ def _convert(project: CubeProject) -> tuple[dict[str, SlayerModel], object]:
 
 
 def _measure_column(model: SlayerModel, measure_name: str):
-    """Return the Column a `<col>:<agg>` measure formula references."""
+    """Return the Column an `<agg>(<col>)` measure formula aggregates."""
     m = model.get_measure(measure_name)
     assert m is not None, f"measure {measure_name} missing on {model.name}"
-    col_ref = m.formula.split(":")[0].strip()
+    parsed = parse_expr(m.formula)
+    assert isinstance(parsed, AggCall), m.formula
+    source = parsed.source
+    assert isinstance(source, (Ref, DottedRef)), m.formula
+    col_ref = ".".join(source.parts) if isinstance(source, DottedRef) else source.name
     return model.get_column(col_ref)
 
 
@@ -97,7 +102,7 @@ def test_count_measure_no_sql_becomes_star_count():
         dimensions=[CubeDimension(name="id", sql="{CUBE}.id", type="number")],
     )])
     models, _ = _convert(project)
-    assert models["orders"].get_measure("count").formula == "*:count"
+    assert models["orders"].get_measure("count").formula == "count(*)"
 
 
 def test_sum_measure_splits_column_and_modelmeasure_with_currency_format():
@@ -111,7 +116,7 @@ def test_sum_measure_splits_column_and_modelmeasure_with_currency_format():
     models, _ = _convert(project)
     orders = models["orders"]
     m = orders.get_measure("total_revenue")
-    assert m.formula.endswith(":sum")
+    assert m.formula.startswith("sum(")
     assert m.label == "Total Revenue"
     col = _measure_column(orders, "total_revenue")
     assert col.type == DataType.DOUBLE
@@ -147,7 +152,7 @@ def test_count_distinct_approx_maps_to_count_distinct_with_lossy_report():
         dimensions=[CubeDimension(name="id", sql="{CUBE}.id", type="number")],
     )])
     models, report = _convert(project)
-    assert models["orders"].get_measure("uniq_users").formula.endswith(":count_distinct")
+    assert models["orders"].get_measure("uniq_users").formula.startswith("count_distinct(")
     assert any(i.category == CubeIssueCategory.LOSSY_MAPPING for i in report.issues)
 
 
@@ -188,7 +193,7 @@ def test_finite_rolling_window_becomes_windowed_aggregation():
         dimensions=[CubeDimension(name="id", sql="{CUBE}.id", type="number")],
     )])
     models, _ = _convert(project)
-    assert models["orders"].get_measure("revenue_30d").formula == "amount:sum(window='30d')"
+    assert models["orders"].get_measure("revenue_30d").formula == "sum(amount, window='30d')"
 
 
 def test_unbounded_rolling_window_falls_back_and_reports():
@@ -199,7 +204,7 @@ def test_unbounded_rolling_window_falls_back_and_reports():
         dimensions=[CubeDimension(name="id", sql="{CUBE}.id", type="number")],
     )])
     models, report = _convert(project)
-    assert models["orders"].get_measure("revenue_total").formula == "amount:sum"
+    assert models["orders"].get_measure("revenue_total").formula == "sum(amount)"
     assert any(i.category == CubeIssueCategory.UNSUPPORTED_ROLLING_WINDOW
                for i in report.issues)
 
@@ -390,14 +395,14 @@ def _orders_with(measures):
 def test_count_with_sql_counts_column():
     models, _ = _convert(_orders_with(
         [CubeMeasure(name="paid_count", type="count", sql="{CUBE}.paid_id")]))
-    assert models["orders"].get_measure("paid_count").formula.endswith(":count")
-    assert models["orders"].get_measure("paid_count").formula != "*:count"
+    assert models["orders"].get_measure("paid_count").formula.startswith("count(")
+    assert models["orders"].get_measure("paid_count").formula != "count(*)"
 
 
 def test_count_distinct_exact():
     models, report = _convert(_orders_with(
         [CubeMeasure(name="uniq", type="count_distinct", sql="{CUBE}.user_id")]))
-    assert models["orders"].get_measure("uniq").formula.endswith(":count_distinct")
+    assert models["orders"].get_measure("uniq").formula.startswith("count_distinct(")
     assert not any(i.category == CubeIssueCategory.LOSSY_MAPPING for i in report.issues)
 
 
@@ -405,7 +410,7 @@ def test_count_distinct_exact():
 def test_simple_aggregation_passthrough(agg):
     models, _ = _convert(_orders_with(
         [CubeMeasure(name=f"m_{agg}", type=agg, sql="{CUBE}.amount")]))
-    assert models["orders"].get_measure(f"m_{agg}").formula.endswith(f":{agg}")
+    assert models["orders"].get_measure(f"m_{agg}").formula.startswith(f"{agg}(")
 
 
 @pytest.mark.parametrize("cube_type,expected", [
@@ -430,7 +435,7 @@ def test_calculated_measure_result_type_is_set(cube_type, expected):
 def test_rolling_window_leading_or_offset_unsupported(rolling):
     models, report = _convert(_orders_with(
         [CubeMeasure(name="r", type="sum", sql="{CUBE}.amount", rolling_window=rolling)]))
-    assert models["orders"].get_measure("r").formula == "amount:sum"
+    assert models["orders"].get_measure("r").formula == "sum(amount)"
     assert any(i.category == CubeIssueCategory.UNSUPPORTED_ROLLING_WINDOW
                for i in report.issues)
 
@@ -444,8 +449,8 @@ def test_window_is_part_of_dedup_key():
                     rolling_window={"trailing": "30 day"}),
     ]))
     orders = models["orders"]
-    assert orders.get_measure("rev").formula == "amount:sum"
-    assert orders.get_measure("rev_30d").formula == "amount:sum(window='30d')"
+    assert orders.get_measure("rev").formula == "sum(amount)"
+    assert orders.get_measure("rev_30d").formula == "sum(amount, window='30d')"
 
 
 # ── 4.4 joins — physical-column resolution (Codex #2) ──────────────────────

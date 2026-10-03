@@ -388,7 +388,7 @@ class TestConsecutivePeriodsReset:
 
 class TestExplicitTransformPartition:
     async def test_explicit_partition_by_on_transform_wins(self, exec_backend) -> None:
-        """``rank(amount:sum, partition_by=region)`` ranks within each region
+        """``rank(amount:sum, partition_by=region, direction='desc')`` ranks within each region
         regardless of the banded dimension (explicit keys take precedence over
         the auto-grain; only the rank family accepts a transform partition_by)."""
         _, engine = exec_backend
@@ -397,7 +397,7 @@ class TestExplicitTransformPartition:
             measures=[
                 ModelMeasure(formula="amount:sum", name="m"),
                 ModelMeasure(
-                    formula="rank(amount:sum, partition_by=region)", name="x",
+                    formula="rank(amount:sum, partition_by=region, direction='desc')", name="x",
                 ),
             ],
         ))

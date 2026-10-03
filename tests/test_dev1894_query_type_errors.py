@@ -100,7 +100,7 @@ def _bad_window() -> Tuple[SlayerQuery, List[SlayerModel]]:
 
 
 def _rank_partition() -> Tuple[SlayerQuery, List[SlayerModel]]:
-    return orders_q(dimensions=["region"], measures=[_m("rank(amount:sum, partition_by=city)", "r")]), f1739.dev1739_models()
+    return orders_q(dimensions=["region"], measures=[_m("rank(amount:sum, partition_by=city, direction='desc')", "r")]), f1739.dev1739_models()
 
 
 #: (id, case, class, location, has suggestion)

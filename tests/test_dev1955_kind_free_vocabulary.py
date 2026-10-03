@@ -105,7 +105,7 @@ class TestFanningErrorVocabulary:
             "Derived column 'li_qty' on model 'orders' references 'line_items.qty', "
             "crossing a fanning join hop to 'line_items': "
         )
-        assert "line_items.qty:<aggregation>" in msg
+        assert "<aggregation>(line_items.qty)" in msg
         assert not any(label in msg for label in _KIND_LABELS)
 
 
@@ -188,7 +188,8 @@ class TestFanningReferenceSpelling:
         exc = ei.value
         assert exc.reference == "orders.line_items.qty"
         assert exc.hop == "line_items"
-        assert "orders.line_items.qty:<aggregation>" in str(exc)
+        assert "<aggregation>(orders.line_items.qty)" in str(exc)
+        assert ":<aggregation>" not in str(exc)
 
     async def test_filter_reference_is_the_offending_spelling(self, tmp_path) -> None:
         storage = YAMLStorage(base_dir=str(tmp_path))

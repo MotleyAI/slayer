@@ -1136,8 +1136,7 @@ class TestSubstituteHelperScope:
                     name="hid", sql="amount * {mult}", type=DataType.DOUBLE, hidden=True
                 ),
             ],
-            # Mode-B surface carrying a variable-looking placeholder — must be
-            # left untouched (substitution never runs on formulas).
+            # Saved measure formula: substituted under the Mode-B regime.
             measures=[ModelMeasure(name="rev", formula="amount:sum + {mult}")],
             # Aggregation.formula uses its OWN {expr}/{param} fill mechanism —
             # a query-variable pass must never touch it.
@@ -1153,8 +1152,8 @@ class TestSubstituteHelperScope:
         assert out.get_column("scaled").sql == "amount * 2"
         assert out.get_column("flt").filter == "r = 'US'"
         assert out.get_column("hid").sql == "amount * 2"
-        # Mode-B / non-Mode-A surfaces untouched even though they contain {mult}:
-        assert out.measures[0].formula == "amount:sum + {mult}"
+        # Saved measure formulas substitute (Mode-B regime); Aggregation.formula never does:
+        assert out.measures[0].formula == "amount:sum + 2"
         assert out.aggregations[0].formula == "SUM({expr}) * {mult}"
         # Input model is NOT mutated — every Mode-A surface stays templated:
         assert model.sql == "SELECT * FROM t WHERE r = '{region}'"

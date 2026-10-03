@@ -110,7 +110,7 @@ def test_partition_by_multi_column_parses_and_binds():
     )
     bundle = ResolvedSourceBundle(dialect="postgres", source_model=orders, referenced_models=[])
     scope = ModelScope(source_model=orders)
-    parsed = _parse("rank(amount:sum, partition_by=[region, channel])")
+    parsed = _parse("rank(amount:sum, partition_by=[region, channel], direction='desc')")
     bound = bind_expr(parsed=parsed, scope=scope, bundle=bundle)
     assert isinstance(bound.value_key, TransformKey)
     assert bound.value_key.op == "rank"

@@ -323,7 +323,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
             if alias is not None:
                 declared_alias_to_bound.setdefault(alias, dm.bound)
 
-    # Declared-MEASURE aliases a filter may reference by name, interning onto the same slot as the dotted/colon form.
+    # Declared-MEASURE aliases a filter may reference by name, interning onto the same slot as the aggregate expression.
     n_dims = len(query.dimensions or [])
     n_tds = len(query.time_dimensions or [])
     filter_alias_map: Dict[str, ValueKey] = {}
@@ -370,7 +370,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
     # 2. SlayerModel.filters — lifted from scope in plan_query, not here.
 
     # 3. user query filters (Mode-B DSL). Dedupe by bound key (first wins) so the
-    #    alias and dotted/colon forms of a ref don't duplicate the HAVING clause.
+    #    alias and aggregate-expression forms of a ref don't duplicate the HAVING clause.
     for i, f in enumerate(query.filters or []):
         with stale_spelling_position(f"filters[{i}]"):
             if not isinstance(f, str):
@@ -958,7 +958,7 @@ def _declared_computed_dimension(
         bound=bound,
         declared_name=name,
         public_name=name,
-        name_is_explicit=name != auto_name_from_expression(d.expression),
+        name_is_explicit=name != auto_name_from_expression(d.template),
         type=dim_type,
         is_dimension=True,
     )
@@ -1088,8 +1088,13 @@ def _declared_measures_from_query(  # NOSONAR(S3776) — three sequential projec
                 scope=scope, bundle=bundle, formula=formula,
             )
             alias_name = explicit_name or saved_name
-            declared_name = alias_name or canonical
-            public_name = alias_name or canonical
+            # A substituted formula is named from its template (text path: an aggregate
+            # key's alias would embed the value), staying unnamed for dedupe.
+            template_name = None if m.template == formula else _canonical_alias_for_formula(
+                m.template, parsed=parse_expr(m.template),
+            )
+            declared_name = alias_name or template_name or canonical
+            public_name = declared_name
             # Two DIFFERENT values whose DERIVED keys collide would silently share
             # a column (e.g. ``sum(amount - cost)`` vs ``sum(amount + cost)`` both
             # sanitize to ``amount_cost_sum``) — fail loudly; the SAME
@@ -1121,8 +1126,8 @@ def _declared_measures_from_query(  # NOSONAR(S3776) — three sequential projec
                 declared_name=declared_name,
                 public_name=public_name,
                 label=m.label,
-                # Keep the canonical alias when the surfaced name differs, so a colon-form filter / ORDER BY resolves.
-                canonical_alias=canonical if alias_name else None,
+                # Keep the canonical alias when the surfaced name differs, so a filter / ORDER BY naming the aggregate resolves.
+                canonical_alias=canonical if alias_name or canonical != public_name else None,
                 name_is_explicit=explicit_name is not None,
                 type=m_type,
                 type_is_explicit=explicit_type is not None,
@@ -1148,11 +1153,10 @@ def _canonical_alias_for_formula(
     bundle: Optional[ResolvedSourceBundle] = None,
 ) -> str:
     """Canonical public alias for a measure formula: ``canonical_aggregate_alias``
-    for an AggregateKey root, ``canonical_agg_name`` for a plain ``col:agg``
+    for an AggregateKey root, ``canonical_agg_name`` for a plain ``agg(col)``
     text shape, else the text sanitised via ``auto_name_from_expression``. The
-    text shape runs over the CANONICAL colon-spelling rendering of ``parsed``
-    when given, so ``cumsum(sum(revenue))`` and
-    ``cumsum(revenue:sum)`` derive one alias."""
+    text shape runs over the canonical legacy colon-spelling rendering of
+    ``parsed`` when given, so both spellings of one formula derive one alias."""
     if bound is not None and isinstance(bound.value_key, AggregateKey):
         spelled = bound.value_key if parsed is None or bundle is None else spelled_aggregate_key(
             parsed=parsed, key=bound.value_key, bundle=bundle)
@@ -1221,7 +1225,8 @@ def _resolve_granularity_calls(query: SlayerQuery, *, bundle: ResolvedSourceBund
     for item in query.dimensions or []:
         td = (
             _datasource_time_dimension(item.expression, bundle=bundle)
-            if isinstance(item, ComputedDimension) and item.name == auto_name_from_expression(item.expression)
+            if isinstance(item, ComputedDimension)
+            and item.name == auto_name_from_expression(item.template)
             else None
         )
         if td is None:

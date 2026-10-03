@@ -2642,7 +2642,7 @@ async def test_filter_on_windowed_column_sqlite_raises(planets_env):
     """End-to-end: filtering on a `Column.sql` with a window function used to
     auto-promote to a post-aggregation outer WHERE (DEV-1336). DEV-1369
     removes that escape hatch — users must use rank-family transforms
-    (`rank(<measure>) <= 3`) or factor the windowed column into a
+    (`rank(<measure>, direction='desc') <= 3`) or factor the windowed column into a
     multi-stage `source_queries` model instead. The engine raises a
     clear error with that suggestion."""
     engine = planets_env
@@ -3125,7 +3125,7 @@ async def test_dense_rank_partition_by_customer_executes(integration_env):
         measures=[
             ModelMeasure(formula="amount:sum"),
             ModelMeasure(
-                formula="dense_rank(amount:sum, partition_by=customer_id)",
+                formula="dense_rank(amount:sum, partition_by=customer_id, direction='desc')",
                 name="amt_rank",
             ),
         ],

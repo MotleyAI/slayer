@@ -1,4 +1,4 @@
-"""DEV-1859 task 1.5 — leg B: non-shift transforms reject grain-refining
+"""Non-shift transforms reject grain-refining
 row-level leaves with a typed plan-time error (the checker); projected grain
 keys stay legal; the shift family keeps its bare-leaf regime byte-for-byte.
 
@@ -44,6 +44,8 @@ SHAPES = {
 
 
 def _call(op: str, inner: str) -> str:
+    if op in ("rank", "dense_rank"):
+        return f"{op}({inner}, direction='desc')"
     return f"ntile({inner}, n=4)" if op == "ntile" else f"{op}({inner})"
 
 
@@ -60,11 +62,12 @@ def _q(**kw) -> SlayerQuery:
 
 def _assert_leg_b_message(msg: str, op: str) -> None:
     """The typed message names the transform, the row-level leaf kind, and
-    the aggregate-the-leaf remedy (e.g. ``cumsum(weight:sum)``); it cites no
+    the aggregate-the-leaf remedy (e.g. ``cumsum(sum(weight))``); it cites no
     tracking issue and is ratchet-clean."""
     assert op in msg, msg
     assert re.search(r"(?i)row-level", msg), msg
-    assert ":sum" in msg, msg
+    assert f"{op}(sum(" in msg, msg
+    assert ":sum" not in msg, msg
     assert "DEV-" not in msg, msg
     assert not DEFERRAL_CLASSIFIER.search(msg), msg
 
@@ -113,7 +116,7 @@ class TestGrainRefiningLeafRejected:
     async def test_rank_family_covered(self, exec_engine):
         """Scenario: Rank family is covered."""
         q = _q(dimensions=["store"], time_dimensions=month_td(),
-               measures=[ModelMeasure(formula="rank(qty)", name="t")])
+               measures=[ModelMeasure(formula="rank(qty, direction='desc')", name="t")])
         with pytest.raises(ValueError) as ei:
             await exec_engine.execute(q)
         _assert_leg_b_message(str(ei.value), "rank")
@@ -130,7 +133,7 @@ class TestGrainRefiningLeafRejected:
     async def test_raw_time_source_column_refines_the_bucket(self, exec_engine):
         """The bucketed TD's raw source column is not a projected grain key."""
         q = _q(time_dimensions=month_td(),
-               measures=[ModelMeasure(formula="rank(ordered_at)", name="t")])
+               measures=[ModelMeasure(formula="rank(ordered_at, direction='desc')", name="t")])
         with pytest.raises(ValueError) as ei:
             await exec_engine.execute(q)
         _assert_leg_b_message(str(ei.value), "rank")
@@ -145,7 +148,7 @@ class TestGrainRefiningLeafRejected:
 
     async def test_order_position(self, exec_engine):
         q = _q(time_dimensions=month_td(),
-               order=[{"column": "rank(qty)", "direction": "desc"}],
+               order=[{"column": "rank(qty, direction='desc')", "direction": "desc"}],
                measures=[ModelMeasure(formula="revenue:sum", name="r")])
         with pytest.raises(ValueError) as ei:
             await exec_engine.execute(q)
@@ -154,11 +157,11 @@ class TestGrainRefiningLeafRejected:
 
 class TestProjectedGrainKeyStaysLegal:
     async def test_rank_over_projected_dimension(self, exec_engine):
-        """Scenario: A projected grain key stays legal — rank(weight) with
+        """Scenario: A projected grain key stays legal — rank(weight, direction='desc') with
         weight a query dimension, verified sound today."""
         resp = await exec_engine.execute(_q(
             dimensions=["weight"],
-            measures=[ModelMeasure(formula="rank(weight)", name="t")]))
+            measures=[ModelMeasure(formula="rank(weight, direction='desc')", name="t")]))
         by = rows_by(resp, "sales.weight")
         assert len(resp.data) == 2
         assert int(by[(2.0,)]["sales.t"]) == 1
@@ -185,7 +188,7 @@ class TestProjectedGrainKeyStaysLegal:
         wband = "CASE WHEN weight > 1 THEN 2 ELSE 1 END"
         resp = await exec_engine.execute(_q(
             dimensions=[{"expression": wband, "name": "wband"}],
-            measures=[ModelMeasure(formula=f"rank({wband})", name="t")]))
+            measures=[ModelMeasure(formula=f"rank({wband}, direction='desc')", name="t")]))
         by = rows_by(resp, "sales.wband")
         assert len(resp.data) == 2
         assert int(by[(2,)]["sales.t"]) == 1
@@ -206,7 +209,7 @@ class TestWalkerBehaviourUnchanged:
     async def test_all_projected_composite_is_legal(self, exec_engine):
         resp = await exec_engine.execute(_q(
             dimensions=["weight", "qty"],
-            measures=[ModelMeasure(formula="rank(weight * qty)", name="t")]))
+            measures=[ModelMeasure(formula="rank(weight * qty, direction='desc')", name="t")]))
         assert resp.data
 
 
@@ -225,7 +228,7 @@ class TestShiftFamilyRejectsRowLeaf:
         with pytest.raises(ValueError) as ei:
             await exec_engine.execute(query)
         msg = str(ei.value)
-        for part in (f"'{op}'", "'weight'", "weight:sum", "source_queries"):
+        for part in (f"'{op}'", "'weight'", f"{op}(sum(weight))", "source_queries"):
             assert part in msg, msg
 
 

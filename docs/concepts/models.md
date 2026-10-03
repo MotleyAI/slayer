@@ -172,7 +172,7 @@ Cycles in the reference graph (e.g., `c1.sql = "c2 + 1"` and `c2.sql = "c1 - 1"`
 
 A column's `sql` may contain a window function (`row_number() over (...)`, `dense_rank() over (...)`, etc.). The column behaves like any other column when used in `dimensions` / SELECT.
 
-> **Filtering on a windowed column is rejected.** A query filter naming a `Column` whose `sql` contains a window function (e.g. `{"filters": ["rn <= 3"]}` against a column whose `sql` is `row_number() over (...)`) raises with a clear message. Use `{"filters": ["rank(<measure>) <= 3"]}` (see [formulas.md](formulas.md#rank-family-transforms)) — the rank-family transforms cover the top-N case in pure DSL — or factor the column into a multi-stage `source_queries` model.
+> **Filtering on a windowed column is rejected.** A query filter naming a `Column` whose `sql` contains a window function (e.g. `{"filters": ["rn <= 3"]}` against a column whose `sql` is `row_number() over (...)`) raises with a clear message. Use `{"filters": ["rank(<measure>, direction='desc') <= 3"]}` (see [formulas.md](formulas.md#rank-family-transforms)) — the rank-family transforms cover the top-N case in pure DSL — or factor the column into a multi-stage `source_queries` model.
 
 ### SQL expression conventions
 
@@ -417,7 +417,7 @@ await engine.create_model_from_query(
 )
 ```
 
-This saves the query structure in `model.source_queries`, saves any defaults in `model.query_variables`, runs save-time validation (any unresolved `{var}` placeholder defaults to `'0'` so SQL generation succeeds), and caches the resulting `columns` and rendered `backing_query_sql` on the model for fast inspection.
+This saves the query structure in `model.source_queries`, saves any defaults in `model.query_variables`, runs save-time validation (rendered exactly as execution with no runtime variables, so a `{var}` without a default refuses the save), and caches the resulting `columns` and rendered `backing_query_sql` on the model for fast inspection.
 
 `create_model_from_query` accepts a single `SlayerQuery` or a list of stages; for multi-stage queries, every non-final stage must have a `name` so it can be referenced. Stages form a DAG: any stage may use a *prior* named sibling as `source_model` or as `joins.target_model`. Forward and self references are rejected.
 
@@ -495,10 +495,12 @@ Rules:
     { "sql": "SELECT * FROM orders WHERE 1=1 AND {? region IN ({regions}) ?}" }
     ```
 
-    With `variables={"regions": ["US","CA"]}` this renders `... WHERE 1=1 AND (region IN ('US', 'CA'))`; with no `regions` supplied it renders `... WHERE 1=1 AND (1=1)`. A block must contain at least one `{var}`; blocks do not nest; a block collapses even on a **zero-variable** call (unlike bare placeholders, which are left literal when no variable is in play at all). Optional blocks are rejected in Mode-B query filters.
+    With `variables={"regions": ["US","CA"]}` this renders `... WHERE 1=1 AND (region IN ('US', 'CA'))`; with no `regions` supplied it renders `... WHERE 1=1 AND (1=1)`. A block must contain at least one `{var}`; blocks do not nest; a block collapses even on a **zero-variable** call (unlike bare placeholders, which are left literal when no variable is in play at all). Optional blocks are rejected in every Mode-B expression.
 - **`inspect` / `inspect_model` show the literal template** (`{floor}`), not a rendered value. A `Variables:` line lists the model's placeholders classified **required** (bare, no default — omitting it raises) vs **optional** (inside a block, or carrying a `query_variables` default). The classification is derived from the SQL, not stored, so it can never drift from the template.
 
 **Scope:** substitution applies to the **direct source model**, each stage's own source model, and every stage of a query-backed source (spliced into the statement); join-target and cross-model-target models are not yet substituted, so a `{var}` there is left untouched (and surfaces as an error on the stray placeholder).
+
+**Saved measure formulas** (`ModelMeasure.formula`) on those same models substitute too, with the query-filter escaping and no optional blocks, and inspection lists their placeholders as required unless defaulted.
 
 **Trusted input.** Substituted values are still treated as trusted, not attacker-controlled — prefer not to feed untrusted end-user input through `variables`. The Mode-A escaping is now dialect-aware (DEV-1727): it keeps a string value inside the quoted literal you wrote on every supported dialect, including backslash-escaping backends like MySQL and ClickHouse. Two residual caveats: a `{var}` placed in an **unquoted** position is still raw substitution (only *quoted* string literals are escaped); and the backslash-dialect escaping assumes the server's **default** string mode — a MySQL server running with `sql_mode=NO_BACKSLASH_ESCAPES` treats backslash as an ordinary char, which the whole sqlglot dialect layer (not just this feature) assumes is off.
 

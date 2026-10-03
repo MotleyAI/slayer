@@ -44,6 +44,8 @@ def _bundle() -> ResolvedSourceBundle:
 def _call(op: str, inner: str) -> str:
     if op == "ntile":
         return f"ntile({inner}, n=4)"
+    if op in ("rank", "dense_rank"):
+        return f"{op}({inner}, direction='desc')"
     return f"time_shift({inner}, -1)" if op == "time_shift" else f"{op}({inner})"
 
 
@@ -52,7 +54,8 @@ def _assert_unified_message(msg: str, *, op: str, leaf: str) -> None:
     assert op in msg, msg
     assert leaf in msg, msg
     assert re.search(r"(?i)row-level", msg), msg
-    assert ":sum" in msg, msg
+    assert f"{op}(sum({leaf}))" in msg, msg
+    assert ":sum" not in msg, msg
     assert "dimension" in msg, msg
     assert "source_queries" in msg, msg
     assert "DEV-" not in msg, msg
