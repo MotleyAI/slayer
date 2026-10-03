@@ -102,7 +102,7 @@ An unnamed measure or computed dimension whose text contains placeholders SHALL 
 
 ### Requirement: Substitution errors on formula surfaces match filters
 
-On every formula surface, an undefined variable SHALL raise the same error as in filters; an invalid variable name SHALL raise the same error as in filters; and an optional block `{? ... ?}` SHALL be rejected with an error stating optional blocks are supported only on raw-SQL model surfaces. The save-time dry run SHALL fill a missing variable with `0` on every query formula surface and on saved measure formulas.
+On every formula surface, an undefined variable SHALL raise the same error as in filters; an invalid variable name SHALL raise the same error as in filters; and an optional block `{? ... ?}` SHALL be rejected with an error stating optional blocks are supported only on raw-SQL model surfaces.
 
 #### Scenario: Undefined variable
 
@@ -114,9 +114,23 @@ On every formula surface, an undefined variable SHALL raise the same error as in
 - **WHEN** a measure, computed dimension, or order expression contains `{? ... ?}`
 - **THEN** it is rejected with the optional-block error
 
-#### Scenario: Dry-run save with a missing variable
+### Requirement: Saving a query-backed model requires every variable
 
-- **WHEN** a query-backed model is saved whose only placeholder is an undefaulted `{k}` in a measure formula, or a model whose only placeholder is in a saved measure formula is saved
+Saving a query-backed model SHALL render it exactly as execution with no runtime variables would. A placeholder on any substituted surface with no value from the model's variables, a stage's variables or a source model's defaults SHALL refuse the save with the undefined-variable error naming the variable. A model that is not query-backed SHALL save regardless of undefaulted placeholders.
+
+#### Scenario: Undefaulted variable refuses the save
+
+- **WHEN** a query-backed model is saved from a query with measure `amount:sum * {k}`, or with `date_range: ["{start}", null]`, and no default for that variable
+- **THEN** the save fails with the undefined-variable error naming it
+
+#### Scenario: Defaulted variable saves the exact SQL
+
+- **WHEN** the same model is saved with `variables={"k": 10}`
+- **THEN** the save succeeds and its backing SQL equals the SQL execution renders with `k=10`
+
+#### Scenario: Plain model with a saved-measure placeholder
+
+- **WHEN** a model that is not query-backed has saved measure formula `amount:sum * {k}` and no default for `k`
 - **THEN** the save succeeds
 
 ### Requirement: Unsubstituted placeholders fail with a typed error

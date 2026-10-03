@@ -586,7 +586,6 @@ async def test_virtual_model_wrapped_refs_match_mangled_inner_bigquery() -> None
         vmodel = await engine._expand_query_backed_model(
             model=model,
             runtime_kwarg=None,
-            dry_run_placeholders=True,
         )
         wrapped = vmodel.sql
         # No ANSI-quoted dotted identifier survives (would be a string literal
