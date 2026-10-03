@@ -94,7 +94,7 @@ ROWS: Tuple[LedgerRow, ...] = (
     _row(module=_EE, function="check_transform_inputs", exc="TransformInputError",
          message="The transform cannot consume the row-level (non-aggregate) leaf '…', which refines the query grain: it would inflate the base grain to one row per (bucket, …-value)."
          + AT + "transform …"
-         + SUGGEST + "Aggregate the leaf — e.g. …(…:sum) — project '…' as a query dimension, or compute it in an earlier stage of a multi-stage `source_queries` model.",
+         + SUGGEST + "Aggregate the leaf — e.g. …(sum(…)) — project '…' as a query dimension, or compute it in an earlier stage of a multi-stage `source_queries` model.",
          category="checker", family="positions", user=True, owner="checker"),
     _row(module=_EE, function="check_raw_rows_filter_measure_ref", exc="DistinctDimensionValuesError",
          message="distinct_dimension_values=False rejects measure references, but the filter contains one."

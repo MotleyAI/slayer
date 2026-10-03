@@ -487,3 +487,11 @@ def split_agg_suffix(raw: str) -> tuple[str, str | None]:
     return raw, None
 
 
+def functional_agg_text(*, source: str, suffix: str) -> str:
+    """Functional text of ``(source, suffix)``, the inverse of :func:`split_agg_suffix`:
+    ``("price", "percentile(p=0.9)")`` → ``percentile(price, p=0.9)``."""
+    name, paren, rest = suffix.strip().partition("(")
+    args = rest.rstrip()[:-1].strip() if paren else ""
+    inner = f"{source}, {args}" if args else source
+    return f"{name.strip()}({inner})"
+

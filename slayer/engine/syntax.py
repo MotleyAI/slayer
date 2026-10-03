@@ -1456,7 +1456,7 @@ def split_entity_agg_ref(raw: str) -> Tuple[str, Optional[str]]:
     ):
         raise ValueError(
             f"{raw!r} is not a single aggregated column reference; only "
-            f"`agg(column)` / `column:agg` forms name an entity."
+            f"the `agg(column)` form names an entity."
         )
     source = parsed.source
     if isinstance(source, StarSource):

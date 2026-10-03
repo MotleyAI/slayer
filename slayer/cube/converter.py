@@ -21,7 +21,7 @@ from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.formula import ALL_TRANSFORMS, parse_formula
 from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import render_probe_text
-from slayer.core.refs import IDENTIFIER_RE
+from slayer.core.refs import IDENTIFIER_RE, functional_agg_text
 from slayer.cube.extends import flatten_cube_extends, flatten_view_extends
 from slayer.cube.filter_params import (
     apply_filter_params,
@@ -57,8 +57,13 @@ _FORMAT_MAP = {
 }
 _DURATION_UNITS = {"day": "d", "month": "m", "week": "w", "year": "y",
                    "hour": "h", "minute": "min", "second": "s"}
-_STAR_COUNT = "*:count"
+_STAR_COUNT = "count(*)"
 _CUBE_INFRA_FIELDS = ("refresh_key", "calendar", "hierarchies", "access_policy", "sql_alias")
+
+
+def _windowed(agg: str, window: str | None) -> str:
+    """An aggregation suffix, with a ``window=`` argument when rolling."""
+    return f"{agg}(window='{window}')" if window else agg
 
 
 def _sql_str_literal(value) -> str:
@@ -309,7 +314,7 @@ class CubeToSlayerConverter:
         for seg in cube.segments:
             self._convert_segment(cube, seg, columns, names, report)
 
-        columns, measures = self._validate_offline(cube.name, columns, measures, report)
+        columns, measures = self._validate_offline(cube.name, columns, measures, info, report)
         self._dedisambiguate_namespace(columns, measures, report, cube=cube.name)
         joins = self._convert_joins(cube, columns, names, report)
         # Keep _measure_info in sync with what actually survived validation, so
@@ -658,7 +663,7 @@ class CubeToSlayerConverter:
             if meas.rolling_window else None
 
         if meas.type == "count" and not meas.sql:
-            formula = _STAR_COUNT + (f"(window='{window}')" if window else "")
+            formula = functional_agg_text(source="*", suffix=_windowed("count", window))
             if self._emit_measure(measures=measures, names=names, final_name=final_name,
                                   formula=formula, meas=meas, report=report, cube_name=cube.name):
                 info[meas.name] = _MeasureInfo(kind="star_count", emitted_name=final_name)
@@ -669,7 +674,7 @@ class CubeToSlayerConverter:
         filter_pred = self._measure_filter(cube, meas)
         col_name = self._get_or_create_column(
             meas, translated, filter_pred, columns, names, dedup, report, cube)
-        formula = f"{col_name}:{agg}" + (f"(window='{window}')" if window else "")
+        formula = functional_agg_text(source=col_name, suffix=_windowed(agg, window))
         if self._emit_measure(measures=measures, names=names, final_name=final_name,
                               formula=formula, meas=meas, report=report, cube_name=cube.name):
             info[meas.name] = _MeasureInfo(
@@ -798,7 +803,7 @@ class CubeToSlayerConverter:
 
     # ── offline validation + namespace safety ──────────────────────────────
 
-    def _validate_offline(self, cube_name, columns, measures, report):
+    def _validate_offline(self, cube_name, columns, measures, info, report):
         good_cols = []
         dropped: set[str] = set()
         for col in columns:
@@ -816,21 +821,30 @@ class CubeToSlayerConverter:
                     category=CubeIssueCategory.COMPLEX_SQL, severity="warning",
                     cube=cube_name, member=col.name,
                     message=f"Column sql does not parse; dropped: {col.sql!r}"))
-        col_names = {c.name for c in good_cols}
-        known = col_names | {m.name for m in measures if m.name}
+        by_emitted = {i.emitted_name: i for i in info.values() if i.emitted_name}
         good_measures = []
         for m in measures:
-            ref_col = m.formula.split(":")[0].strip()
-            if ref_col in dropped:
-                continue
-            if not self._formula_parses(m.formula, known):
+            col = by_emitted[m.name].underlying_col if m.name in by_emitted else None
+            if col in dropped:
+                report.add(CubeConversionIssue(
+                    category=CubeIssueCategory.COMPLEX_MEASURE, severity="warning",
+                    cube=cube_name, member=m.name,
+                    message=f"Measure aggregates dropped column {col!r}; dropped: {m.formula!r}"))
+            else:
+                good_measures.append(m)
+        # Fixpoint: dropping a measure can break a calc measure naming it. Only
+        # measures are bare-referenceable; a bare column needs an aggregation.
+        while True:
+            known = {m.name for m in good_measures if m.name}
+            broken = [m for m in good_measures if not self._formula_parses(m.formula, known)]
+            if not broken:
+                return good_cols, good_measures
+            for m in broken:
                 report.add(CubeConversionIssue(
                     category=CubeIssueCategory.COMPLEX_MEASURE, severity="warning",
                     cube=cube_name, member=m.name,
                     message=f"Measure formula does not parse; dropped: {m.formula!r}"))
-                continue
-            good_measures.append(m)
-        return good_cols, good_measures
+            good_measures = [m for m in good_measures if m not in broken]
 
     def _formula_parses(self, formula: str, known_names: set[str]) -> bool:
         nm = dict.fromkeys(known_names, _STAR_COUNT)
@@ -1025,16 +1039,14 @@ class CubeToSlayerConverter:
             return
         exported = names.take(f"{prefix}{mname}", suffix="_measure")
         if info.kind == "star_count":
-            formula = _STAR_COUNT if is_root else f"{cube_name}.{_STAR_COUNT}"
-        elif info.kind == "agg":
-            base = f"{info.underlying_col}:{info.agg}"
+            formula = functional_agg_text(source="*" if is_root else f"{cube_name}.*", suffix="count")
+        elif info.kind == "agg" and info.underlying_col and info.agg:
             if is_root:
                 src_col = cube_model.get_column(info.underlying_col)
                 if src_col is not None and not any(c.name == info.underlying_col for c in columns):
                     columns.append(src_col.model_copy())  # carry the underlying column onto the facade
-                formula = base
-            else:
-                formula = f"{cube_name}.{info.underlying_col}:{info.agg}"
+            source = info.underlying_col if is_root else f"{cube_name}.{info.underlying_col}"
+            formula = functional_agg_text(source=source, suffix=info.agg)
         else:
             report.add(CubeConversionIssue(
                 category=CubeIssueCategory.COMPLEX_MEASURE, severity="info",

@@ -21,23 +21,23 @@ value from colon to functional, keeping colon inputs.
 
 ## 2. Renderer and legacy validator
 
-- [ ] 2.1 Add `functional_agg_text(*, source, suffix)` to `slayer/core/refs.py` next to `split_agg_suffix`; verify 1.1 passes
-- [ ] 2.2 `core/formula.py` `_rewrite_funcstyle_aggregations`: remove the warning, accept `<ident-or-path>.*` first argument; verify 1.5–1.6 pass and `tests/test_formula.py` / `tests/test_dev1576_heals.py` stay green
+- [x] 2.1 Add `functional_agg_text(*, source, suffix)` to `slayer/core/refs.py` next to `split_agg_suffix`; verify 1.1 passes
+- [x] 2.2 `core/formula.py` `_rewrite_funcstyle_aggregations`: remove the warning, accept `<ident-or-path>.*` first argument; verify 1.5–1.6 pass and `tests/test_formula.py` / `tests/test_dev1576_heals.py` stay green
 
 ## 3. Emitters (D1, D5)
 
-- [ ] 3.1 `query_engine.py` `_emit_recommend_path` via `functional_agg_text`; verify 1.9
-- [ ] 3.2 dbt `converter.py` sum_boolean, percentile, mapped agg, filtered leaf via `functional_agg_text`; verify dbt parts of 1.2, 1.4, 1.10–1.11
-- [ ] 3.3 Cube `converter.py` `_STAR_COUNT` → `count(*)`, windowed agg, view-facade star-count and agg re-exports via `functional_agg_text`; verify Cube parts of 1.2, 1.4, 1.10
-- [ ] 3.4 OSI `expression.py` agg / star count / count_distinct / count / median / percentile via `functional_agg_text`; verify OSI parts of 1.2, 1.4, 1.10
+- [x] 3.1 `query_engine.py` `_emit_recommend_path` via `functional_agg_text`; verify 1.9
+- [x] 3.2 dbt `converter.py` sum_boolean, percentile, mapped agg, filtered leaf via `functional_agg_text`; verify dbt parts of 1.2, 1.4, 1.10–1.11
+- [x] 3.3 Cube `converter.py` `_STAR_COUNT` → `count(*)`, windowed agg, view-facade star-count and agg re-exports via `functional_agg_text`; verify Cube parts of 1.2, 1.4, 1.10
+- [x] 3.4 OSI `expression.py` agg / star count / count_distinct / count / median / percentile via `functional_agg_text`; verify OSI parts of 1.2, 1.4, 1.10
 
 ## 4. Cube validation (D3)
 
-- [ ] 4.1 `_validate_offline` takes the `_MeasureInfo` map, indexes by `emitted_name`, drops + reports measures over dropped columns, fixpoints `known` / `_formula_parses` for dependent calc measures, deletes `split(":")`; verify 1.7
+- [x] 4.1 `_validate_offline` takes the `_MeasureInfo` map, indexes by `emitted_name`, drops + reports measures over dropped columns, fixpoints `known` / `_formula_parses` for dependent calc measures, deletes `split(":")`; verify 1.7
 
 ## 5. Remedies (D4)
 
-- [ ] 5.1 Rewrite the remedies in `core/errors.py`, `engine/elaborate_env.py` (both), `engine/param_binding.py`, `sql/generator.py`, `engine/syntax.py`, `core/models.py`, `core/formula.py` (both), `mcp/server.py`; verify 1.3 and 1.8
+- [x] 5.1 Rewrite the remedies in `core/errors.py`, `engine/elaborate_env.py` (both), `engine/param_binding.py`, `sql/generator.py`, `engine/syntax.py`, `core/models.py`, `core/formula.py` (both), `mcp/server.py`; verify 1.3 and 1.8
 
 ## 6. Comments and docstrings (D7)
 
@@ -45,7 +45,7 @@ value from colon to functional, keeping colon inputs.
 
 ## 7. Docs and architecture
 
-- [ ] 7.1 `docs/dbt/dbt_import.md` mapping row → `<agg>(col)`; verify a colon-spelling grep over `docs/` is empty
+- [x] 7.1 `docs/dbt/dbt_import.md` mapping row → `<agg>(col)`; verify a colon-spelling grep over `docs/` is empty
 - [ ] 7.2 Apply arc42 edits E1 and E2 verbatim from design.md (approved); verify `la-arch-check` (pinned uvx form) passes
 
 ## 8. Verification

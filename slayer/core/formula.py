@@ -3,13 +3,16 @@
 Parses formula strings into structured FieldSpec objects using Python's ast module.
 
 A formula can be:
-- An aggregated measure ref: "revenue:sum" → AggregatedMeasureRef
-- Star count: "*:count" → AggregatedMeasureRef("*", "count")
-- With agg args: "price:weighted_avg(weight=quantity)" → AggregatedMeasureRef with kwargs
-- Arithmetic: "revenue:sum / *:count" → ArithmeticField
-- A transform: "cumsum(revenue:sum)" → TransformField wrapping AggregatedMeasureRef
-- Nested transforms: "change(cumsum(revenue:sum))" → TransformField wrapping TransformField
-- Arithmetic on transforms: "cumsum(revenue:sum) / *:count" → MixedArithmeticField
+- An aggregated measure ref: "sum(revenue)" → AggregatedMeasureRef
+- Star count: "count(*)" → AggregatedMeasureRef("*", "count")
+- With agg args: "weighted_avg(price, weight=quantity)" → AggregatedMeasureRef with kwargs
+- Arithmetic: "sum(revenue) / count(*)" → ArithmeticField
+- A transform: "cumsum(sum(revenue))" → TransformField wrapping AggregatedMeasureRef
+- Nested transforms: "change(cumsum(sum(revenue)))" → TransformField wrapping TransformField
+- Arithmetic on transforms: "cumsum(sum(revenue)) / count(*)" → MixedArithmeticField
+
+Functional aggregations are rewritten internally to the legacy colon spelling
+(``revenue:sum``), which this parser also accepts as input.
 """
 
 import ast
@@ -17,7 +20,6 @@ import difflib
 import io
 import re
 import tokenize
-import warnings
 from typing import Any, Literal
 from collections.abc import Mapping
 
@@ -111,16 +113,16 @@ def _is_integer_literal(node: ast.AST) -> bool:
 
 
 class AggregatedMeasureRef(BaseModel):
-    """A measure reference with explicit aggregation (new colon syntax).
+    """A measure reference with explicit aggregation.
 
     Examples:
-        "revenue:sum"                        → AggregatedMeasureRef("revenue", "sum")
-        "*:count"                            → AggregatedMeasureRef("*", "count")
-        "customers.revenue:sum"              → AggregatedMeasureRef("customers.revenue", "sum")
-        "price:weighted_avg(weight=quantity)" → AggregatedMeasureRef("price", "weighted_avg",
-                                                                     agg_kwargs={"weight": "quantity"})
-        "revenue:last(ordered_at)"           → AggregatedMeasureRef("revenue", "last",
-                                                                     agg_args=["ordered_at"])
+        "sum(revenue)"                         → AggregatedMeasureRef("revenue", "sum")
+        "count(*)"                             → AggregatedMeasureRef("*", "count")
+        "sum(customers.revenue)"               → AggregatedMeasureRef("customers.revenue", "sum")
+        "weighted_avg(price, weight=quantity)" → AggregatedMeasureRef("price", "weighted_avg",
+                                                                      agg_kwargs={"weight": "quantity"})
+        "last(revenue, ordered_at)"            → AggregatedMeasureRef("revenue", "last",
+                                                                      agg_args=["ordered_at"])
     """
     measure_name: str = Field(description="Measure name, e.g. 'revenue', 'customers.revenue', '*'")
     aggregation_name: str = Field(description="Aggregation name, e.g. 'sum', 'weighted_avg'")
@@ -158,7 +160,7 @@ class TransformField(BaseModel):
 class MixedArithmeticField(BaseModel):
     """Arithmetic that contains transform sub-expressions.
 
-    E.g., "cumsum(revenue:sum) / *:count" — the cumsum needs to be computed first
+    E.g., "cumsum(sum(revenue)) / count(*)" — the cumsum needs to be computed first
     as a CTE step, then the arithmetic references its result.
     """
     sql: str = Field(description="Preprocessed formula with placeholders")
@@ -221,14 +223,13 @@ def _rewrite_funcstyle_aggregations(
     formula: str,
     extra_agg_names: frozenset[str] | None = None,
 ) -> str:
-    """Rewrite function-style aggregation calls to colon syntax.
+    """Rewrite function-style aggregation calls to the legacy colon spelling (internal).
 
-    E.g., ``sum(revenue)`` → ``revenue:sum``, ``count(*)`` → ``*:count``.
+    E.g., ``sum(revenue)`` → ``revenue:sum``, ``count(customers.*)`` → ``customers.*:count``.
 
     For aggregation names that are also transform names (``first``, ``last``),
-    the rewrite only fires when the first argument is a bare name (no colon).
-    If it already contains colon syntax (e.g., ``last(revenue:sum)``), it is
-    left alone as a valid transform call.
+    the rewrite only fires when the first argument holds no colon, so a
+    transform over an already-rewritten aggregate (``last(revenue:sum)``) is left alone.
 
     Args:
         formula: The formula string to rewrite.
@@ -238,7 +239,7 @@ def _rewrite_funcstyle_aggregations(
 
     # Build word-boundary regex for known aggregation names.
     # Sort by length descending so longer names match first (e.g., count_distinct before count).
-    # Negative lookbehind for ':' avoids matching inside colon syntax (e.g., revenue:last(...)).
+    # Negative lookbehind for ':' avoids matching a legacy colon suffix (e.g., revenue:last(...)).
     sorted_names = sorted(agg_names, key=len, reverse=True)
     pattern = re.compile(
         r'(?<!:)\b(' + '|'.join(re.escape(n) for n in sorted_names) + r')\('
@@ -271,8 +272,7 @@ def _rewrite_funcstyle_aggregations(
 
             inner = formula[open_paren + 1:close_paren].strip()
 
-            # For ambiguous names (first/last): skip if inner contains colon
-            # syntax (it's a valid transform call, not a function-style agg)
+            # Ambiguous first/last over a colon aggregate is a transform call.
             if agg_name in _AMBIGUOUS_AGG_TRANSFORMS and ":" in inner:
                 search_start = close_paren + 1
                 continue
@@ -285,30 +285,16 @@ def _rewrite_funcstyle_aggregations(
 
             first_arg = parts[0].strip()
 
-            # Validate first arg is an identifier/path or *
-            if first_arg == "*":
-                measure = "*"
-            elif _IDENT_OR_PATH_RE.fullmatch(first_arg):
-                measure = first_arg
-            else:
-                # First arg is not a simple name — skip
+            # First arg must be ``*``, an identifier/path, or ``<path>.*``.
+            if first_arg != "*" and not _IDENT_OR_PATH_RE.fullmatch(first_arg.removesuffix(".*")):
                 search_start = close_paren + 1
                 continue
 
-            # Build the colon-syntax replacement
             remaining_args = [p.strip() for p in parts[1:]]
             if remaining_args:
-                replacement = f"{measure}:{agg_name}({', '.join(remaining_args)})"
+                replacement = f"{first_arg}:{agg_name}({', '.join(remaining_args)})"
             else:
-                replacement = f"{measure}:{agg_name}"
-
-            warnings.warn(
-                f"Auto-rewrote function-style aggregation "
-                f"'{formula[match.start():close_paren + 1]}' "
-                f"to '{replacement}'. Use colon syntax directly "
-                f"(e.g., 'revenue:sum').",
-                stacklevel=2,
-            )
+                replacement = f"{first_arg}:{agg_name}"
 
             formula = formula[:match.start()] + replacement + formula[close_paren + 1:]
             rewritten = True
@@ -361,17 +347,13 @@ def _split_args(s: str) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# Colon-syntax preprocessing (regex source-of-truth lives in slayer.core.refs)
+# Legacy colon-spelling preprocessing (regex source-of-truth lives in slayer.core.refs)
 # ---------------------------------------------------------------------------
 
 
 def _split_agg_arglist(args_str: str | None) -> tuple[list[str], dict[str, str]]:
-    """Parse a colon-aggregation ``(...)`` arglist into (positional, keyword).
-
-    ``args_str`` is the raw ``(...)`` capture (with parens) or ``None``.
-    ``price:weighted_avg(weight=quantity)`` → ``([], {"weight": "quantity"})``;
-    ``revenue:last(ordered_at)`` → ``(["ordered_at"], {})``.
-    """
+    """Parse a legacy colon-spelling ``(...)`` arglist (with parens, or ``None``) into
+    (positional, keyword): ``(weight=quantity)`` → ``([], {"weight": "quantity"})``."""
     agg_args: list[str] = []
     agg_kwargs: dict[str, str] = {}
     if not args_str:
@@ -393,32 +375,18 @@ def _preprocess_agg_refs(
     formula: str,
     custom_agg_names: frozenset[str] = frozenset(),
 ) -> tuple[str, dict[str, AggregatedMeasureRef]]:
-    """Replace colon-syntax aggregated measure refs with placeholder identifiers.
+    """Replace legacy colon-spelling aggregated refs with placeholder identifiers.
 
     Returns (preprocessed_formula, {placeholder: AggregatedMeasureRef}).
-
-    ``custom_agg_names`` are the reachable custom-aggregation names (the source
-    model plus its join graph); a colon token matching one exactly is left
-    un-normalized so a custom aggregation takes precedence over alias/casing
-    healing (DEV-1576). This is parse-time and model-set-scoped, not per-ref
-    target-scoped: in a mixed-model graph a custom name on one model suppresses
-    healing of that same token on a different model. The failure mode is benign
-    — the un-healed token simply resolves (custom agg) or raises an explicit
-    "Unknown aggregation" at enrichment; it never silently picks the wrong
-    aggregation. Per-ref scoping would require deferring the heal past parse,
-    which would desync the canonical filter/ORDER-BY aliases built here.
+    An aggregation name exactly matching one of ``custom_agg_names`` (the reachable
+    custom aggregations) skips alias/casing healing, so the custom aggregation wins.
     """
     refs: dict[str, AggregatedMeasureRef] = {}
     counter = [0]
 
     def _replace(match: re.Match) -> str:
         measure_name = match.group(1)
-        # DEV-1576: heal aggregation-name aliases / casing at the single colon-
-        # syntax chokepoint (parse_formula). Unknown
-        # names pass through unchanged so the §3 enrichment error still fires.
-        # A model-level custom aggregation named like an alias key / builtin
-        # casing wins — skip healing for an exact custom-name match so it still
-        # resolves at enrichment.
+        # Heal aggregation aliases/casing; unknown names pass through to the enrichment error.
         raw_agg = match.group(2)
         agg_name = (
             raw_agg if raw_agg in custom_agg_names
@@ -450,7 +418,7 @@ def _expand_named_measures(
     For each NAME token whose value is a key in ``named_measures``, replaces it
     with ``(<recursively expanded saved formula>)``. The expansion is a textual
     substitution that runs *before* the rest of the formula pipeline (function-
-    style rewrite, colon-syntax preprocessing, AST parsing), so the expanded
+    style rewrite, legacy colon-spelling preprocessing, AST parsing), so the expanded
     string is parsed as if the user had written the inlined formula directly.
 
     Substitution is **skipped** when the NAME token is:
@@ -459,13 +427,11 @@ def _expand_named_measures(
       (e.g. ``customers.aov``); cross-model resolution is handled separately.
     - Followed by ``.``  — left-hand side of a cross-model reference
       (e.g. ``customers.aov`` where ``customers`` happens to be a saved name).
-    - Preceded by ``:``  — aggregation name in colon syntax
-      (e.g. ``revenue:sum`` — ``sum`` is not a measure reference).
-    - Followed by ``:``  — column being aggregated in colon syntax
-      (e.g. ``revenue:sum``).
+    - Preceded or followed by ``:`` — part of a legacy colon-spelling aggregation
+      (``revenue:sum``).
     - Followed by ``(``  — function call (transform like ``cumsum(...)``).
     - Followed by ``=``  — keyword argument name in an aggregation call
-      (e.g. ``weight`` in ``revenue:weighted_avg(weight=quantity)``).
+      (e.g. ``weight`` in ``weighted_avg(price, weight=quantity)``).
 
     Cycles (``a → b → a``) raise ``ValueError`` with the chain in the message.
 
@@ -543,12 +509,12 @@ def parse_formula(
     """Parse a formula string into a FieldSpec.
 
     Examples:
-        "revenue:sum"                        → AggregatedMeasureRef("revenue", "sum")
-        "*:count"                            → AggregatedMeasureRef("*", "count")
-        "revenue:sum / *:count"              → ArithmeticField(...)
-        "cumsum(revenue:sum)"                → TransformField("cumsum", AggregatedMeasureRef(...))
-        "price:weighted_avg(weight=qty)"     → AggregatedMeasureRef(..., agg_kwargs={"weight": "qty"})
-        "revenue:last(ordered_at)"           → AggregatedMeasureRef(..., agg_args=["ordered_at"])
+        "sum(revenue)"                       → AggregatedMeasureRef("revenue", "sum")
+        "count(*)"                           → AggregatedMeasureRef("*", "count")
+        "sum(revenue) / count(*)"            → ArithmeticField(...)
+        "cumsum(sum(revenue))"               → TransformField("cumsum", AggregatedMeasureRef(...))
+        "weighted_avg(price, weight=qty)"    → AggregatedMeasureRef(..., agg_kwargs={"weight": "qty"})
+        "last(revenue, ordered_at)"          → AggregatedMeasureRef(..., agg_args=["ordered_at"])
 
     Bare measure names (e.g., "revenue") are valid only when ``named_measures``
     is supplied and contains the name — they are inline-expanded to the saved
@@ -563,9 +529,8 @@ def parse_formula(
     """
     if named_measures:
         formula = _expand_named_measures(formula, named_measures)
-    # Rewrite function-style aggregations (e.g., sum(revenue) → revenue:sum)
+    # Functional aggregations → legacy colon spelling → ast-parseable placeholders.
     formula = _rewrite_funcstyle_aggregations(formula, extra_agg_names)
-    # Preprocess colon syntax into ast-parseable placeholders
     processed, agg_refs = _preprocess_agg_refs(
         formula=formula, custom_agg_names=extra_agg_names or frozenset()
     )
@@ -588,8 +553,8 @@ def _bare_name_message(*, name: str, known_measures: frozenset[str]) -> str:
 
     A bare name is only ever a saved measure, and by this point expansion has
     already failed, so the name is either misspelled or a column. Suggesting a
-    real measure first stops the reader from adding a colon suffix that a
-    measure would reject anyway.
+    real measure first stops the reader from wrapping a measure in an
+    aggregation it would reject anyway.
     """
     suggestion = difflib.get_close_matches(
         word=name, possibilities=sorted(known_measures), n=1
@@ -625,7 +590,7 @@ def _parse_node(
         name = f"{node.value.id}.{node.attr}"
         raise ValueError(
             f"Cross-model measure '{name}' must include an aggregation "
-            f"(e.g., '{name}:sum')."
+            f"(e.g., 'sum({name})')."
         )
 
     # Function call → transform
@@ -657,7 +622,7 @@ def _parse_node(
 
         # Remaining positional args are transform parameters (offset, granularity, etc.)
         # The rank family is keyword-only after the measure; reject extra positionals
-        # so calls like `rank(revenue:sum, 2)` or `ntile(revenue:sum, 4, n=2)` fail
+        # so calls like `rank(sum(revenue), 2)` or `ntile(sum(revenue), 4, n=2)` fail
         # fast instead of silently dropping the extra arg downstream.
         if func_name in RANK_FAMILY_TRANSFORMS and len(node.args) > 1:
             raise ValueError(
@@ -681,13 +646,13 @@ def _parse_node(
         if _contains_call(node):
             return _parse_mixed_arithmetic(node, original, agg_refs, known_measures)
         measure_names = _collect_names(node)
-        # Reject bare measure names (not from colon syntax preprocessing)
+        # Reject bare names (aggregations were preprocessed into placeholders)
         for mname in measure_names:
             if mname not in agg_refs:
                 if "." in mname:
                     raise ValueError(
                         f"Cross-model measure '{mname}' must include an aggregation "
-                        f"(e.g., '{mname}:sum')."
+                        f"(e.g., 'sum({mname})')."
                     )
                 raise ValueError(
                     _bare_name_message(

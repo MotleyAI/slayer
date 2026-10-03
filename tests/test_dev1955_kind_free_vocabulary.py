@@ -105,7 +105,7 @@ class TestFanningErrorVocabulary:
             "Derived column 'li_qty' on model 'orders' references 'line_items.qty', "
             "crossing a fanning join hop to 'line_items': "
         )
-        assert "line_items.qty:<aggregation>" in msg
+        assert "<aggregation>(line_items.qty)" in msg
         assert not any(label in msg for label in _KIND_LABELS)
 
 

@@ -82,6 +82,21 @@ def test_unaffected_measures_survive(converted) -> None:
     assert formulas["ok_total"] == "sum(amount)"
 
 
+def test_calc_measure_over_bare_column_is_dropped_and_reported() -> None:
+    cube = CubeCube(
+        name="orders", sql_table="public.orders",
+        measures=[CubeMeasure(name="doubled", type="number", sql="{CUBE}.amount * 2")],
+        dimensions=[
+            CubeDimension(name="id", sql="{CUBE}.id", type="number", primary_key=True),
+            CubeDimension(name="amount", sql="{CUBE}.amount", type="number"),
+        ],
+    )
+    result = CubeToSlayerConverter(project=CubeProject(cubes=[cube]), data_source="ds").convert()
+    orders = next(m for m in result.models if m.name == "orders")
+    assert orders.get_measure("doubled") is None
+    assert _measure_issues(result.report, "doubled")
+
+
 def test_view_does_not_reexport_dropped_measures(converted) -> None:
     models, _ = converted
     view = models["orders_view"]

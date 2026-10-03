@@ -1,8 +1,8 @@
-"""OSI metric/field SQL expression -> SLayer formula transform (DEV-1643).
+"""OSI metric/field SQL expression -> SLayer formula transform.
 
 An OSI metric carries a raw SQL aggregation expression (e.g. ``SUM(amount)``,
 ``(SUM(a)) / (COUNT(*))``, ``SUM(quantity * amount)``). SLayer measures use
-colon syntax (``amount:sum``, ``*:count``) with arithmetic over aggregated refs.
+functional aggregations (``sum(amount)``, ``count(*)``) with arithmetic over them.
 
 ``convert_expression`` walks the sqlglot AST, replaces each *outermost*
 aggregate subtree with a sentinel, lets sqlglot render the surrounding
@@ -29,6 +29,7 @@ import sqlglot.expressions as exp
 from pydantic import BaseModel
 
 from slayer.core.keys import SCALAR_PASSTHROUGH
+from slayer.core.refs import functional_agg_text
 
 # Dialects whose expressions are SQL and can be fed to sqlglot / Column.sql.
 SQL_DIALECTS = frozenset({"ANSI_SQL", "SNOWFLAKE", "DATABRICKS"})
@@ -137,7 +138,7 @@ class _Converter:
         return self._materialize(operand)
 
     def _agg_ref(self, node: exp.Expression) -> str:
-        """Return the ``ref:agg`` token for one outermost aggregate node."""
+        """Return the ``agg(ref)`` text for one outermost aggregate node."""
         # PERCENTILE_CONT/DISC(...) WITHIN GROUP (ORDER BY col)
         if isinstance(node, exp.WithinGroup):
             return self._percentile_ref(node)
@@ -145,21 +146,21 @@ class _Converter:
         if type(node) in _SIMPLE_AGG:
             agg = _SIMPLE_AGG[type(node)]
             # SLayer supports DISTINCT only for COUNT (handled below); SUM/AVG/
-            # MIN/MAX over DISTINCT have no colon-syntax representation.
+            # MIN/MAX over DISTINCT have no SLayer representation.
             if isinstance(node.this, exp.Distinct):
                 raise _Unconvertible(f"{agg.upper()}(DISTINCT ...) is not supported")
-            return f"{self._operand_ref(node.this)}:{agg}"
+            return functional_agg_text(source=self._operand_ref(node.this), suffix=agg)
 
         if isinstance(node, exp.Count):
             inner = node.this
             if inner is None or isinstance(inner, exp.Star):
-                return "*:count"
+                return functional_agg_text(source="*", suffix="count")
             if isinstance(inner, exp.Distinct):
                 exprs = inner.expressions
                 if len(exprs) != 1:
                     raise _Unconvertible("COUNT(DISTINCT ...) with multiple columns")
-                return f"{self._operand_ref(exprs[0])}:count_distinct"
-            return f"{self._operand_ref(inner)}:count"
+                return functional_agg_text(source=self._operand_ref(exprs[0]), suffix="count_distinct")
+            return functional_agg_text(source=self._operand_ref(inner), suffix="count")
 
         raise _Unconvertible(f"unsupported aggregation {node.sql_name()!r}")
 
@@ -192,8 +193,8 @@ class _Converter:
                 "the measure imports but fails at query time there."
             )
         if isinstance(inner, exp.PercentileCont) and math.isclose(p_val, 0.5):
-            return f"{ref}:median"
-        return f"{ref}:percentile(p={p_node.name})"
+            return functional_agg_text(source=ref, suffix="median")
+        return functional_agg_text(source=ref, suffix=f"percentile(p={p_node.name})")
 
     # ---- residual validation ----
 
@@ -282,7 +283,7 @@ class _Converter:
     @staticmethod
     def _strip_redundant_parens(root: exp.Expression) -> exp.Expression:
         """Drop parentheses that wrap a single atom (a sentinel ref or literal),
-        so ``(SUM(a)) / (COUNT(*))`` renders as ``a:sum / *:count``."""
+        so ``(SUM(a)) / (COUNT(*))`` renders as ``sum(a) / count(*)``."""
         # Materialize the matches first (a list comprehension, not list(gen)) —
         # the tree is mutated in place below, so we can't iterate it lazily.
         atom_parens = [

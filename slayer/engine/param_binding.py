@@ -127,7 +127,7 @@ def bind_aggregation_params(
             raise SqlTemplateError(
                 f"Aggregation '{agg}' requires parameter '{name}'. "
                 f"Set it in the model's aggregation definition or at query time "
-                f"(e.g., 'measure:{agg}({name}=column)')."
+                f"(e.g., '{agg}(measure, {name}=column)')."
             )
         out.append((name, _bind_text(
             text=defaults[name], name=name, ctx=ctx, resolve=ctx.resolve_default)))

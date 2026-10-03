@@ -91,8 +91,7 @@ _NO_DOT = _SubstringRule(
 _NO_COLON = _SubstringRule(
     substring=":",
     reason="colons are reserved as the legacy aggregation separator "
-           "(``revenue:sum``) and the ``memory:<int>`` canonical-id "
-           "prefix.",
+           "and the ``memory:<int>`` canonical-id prefix.",
 )
 _NO_FWD_SLASH = _SubstringRule(
     substring="/",

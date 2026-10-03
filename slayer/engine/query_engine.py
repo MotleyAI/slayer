@@ -81,6 +81,7 @@ from slayer.core.warnings import (
     SlayerWholePeriodsWarning,
     WholePeriodsNonNestingWarningPayload,
 )
+from slayer.core.refs import functional_agg_text
 from slayer.core.recommend import (
     CandidateCoverage,
     ItemPath,
@@ -200,9 +201,9 @@ class _ResolvedItem(BaseModel):
 
 
 def _emit_recommend_path(hops: list[str], item: "_ResolvedItem") -> str:
-    """Join-qualified path to ``item`` from a root over ``hops`` (root excluded), suffix re-attached."""
+    """Join-qualified path to ``item`` from a root over ``hops`` (root excluded), re-aggregated functionally."""
     core = item.leaf if not hops else ".".join(hops) + "." + item.leaf
-    return core if item.suffix is None else f"{core}:{item.suffix}"
+    return core if item.suffix is None else functional_agg_text(source=core, suffix=item.suffix)
 
 
 def _resolve_root_hint(
