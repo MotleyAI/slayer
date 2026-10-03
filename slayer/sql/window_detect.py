@@ -30,7 +30,7 @@ WINDOW_IN_FILTER_ERROR = (
     "contains a window function (OVER clause). Window functions are not "
     "allowed in WHERE on SQLite or most dialects. Either: (a) use a SLayer "
     "transform — rank(), first(), last(), lag(), lead() — e.g. "
-    "'rank(<measure>) <= 3'; (b) define the window expression as a "
+    "`rank(<measure>, direction='desc') <= 3`; (b) define the window expression as a "
     "Column.sql on the model and filter on the column; or (c) compute it "
     "in an earlier stage of a multi-stage model."
 )

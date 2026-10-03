@@ -339,6 +339,19 @@ class ModelMeasure(BaseModel):
     description: str | None = None
     type: DataType | None = None
     meta: dict[str, Any] | None = None
+    # Pre-substitution formula; names derive from it so result keys never carry variable values.
+    _template: str | None = PrivateAttr(default=None)
+
+    @property
+    def template(self) -> str:
+        """The formula as written, before ``{var}`` substitution."""
+        return self._template or self.formula
+
+    def substituted(self, formula: str) -> "ModelMeasure":
+        """A copy carrying the substituted ``formula`` and remembering its template."""
+        out = self.model_copy(update={"formula": formula})
+        out._template = self.template
+        return out
 
     @model_validator(mode="before")
     @classmethod

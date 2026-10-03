@@ -46,6 +46,7 @@ from slayer.storage.sidecar_embedding_store import (
     SidecarEmbeddingsMixin,
     SidecarEmbeddingStore,
 )
+from slayer.storage.migrations import stamp_stored
 from slayer.storage.v4_migration import migrate_yaml_layout
 
 
@@ -93,9 +94,9 @@ def _md_to_memory(memory_id: str, text: str) -> Memory:
             data = dict(fm) if isinstance(fm, dict) else {}
             data["id"] = memory_id
             data["learning"] = body
-            return Memory.model_validate(data)
+            return Memory.model_validate(stamp_stored(data))
     # No frontmatter fence: whole text is the learning body.
-    return Memory.model_validate({"id": memory_id, "learning": text})
+    return Memory.model_validate(stamp_stored({"id": memory_id, "learning": text}))
 
 
 def _stat_key(path: str) -> tuple[int, int, int]:
@@ -237,7 +238,7 @@ def migrate_memories_layout(base_dir: str) -> None:
         id_by_key[rid.casefold()] = rid
     os.makedirs(mem_dir, exist_ok=True)
     for r in normalized:
-        mem = Memory.model_validate(r)
+        mem = Memory.model_validate(stamp_stored(r))
         _atomic_write_text(
             path=os.path.join(mem_dir, f"{mem.id}.md"),
             text=_memory_to_md(mem),

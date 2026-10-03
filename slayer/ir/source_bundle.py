@@ -55,7 +55,6 @@ class ResolvedSourceBundle(BaseModel):
     # Query-backed models whose stages are being planned, outermost first.
     splice_chain: Tuple[str, ...] = ()
     runtime_variables: Dict[str, Any] = Field(default_factory=dict)
-    dry_run_placeholders: bool = False
     # Query-backed models this stage reads that could not be spliced, with the cause.
     splice_failures: Dict[str, Exception] = Field(default_factory=dict)
     # The one clock reading every time point in this execution resolves against.

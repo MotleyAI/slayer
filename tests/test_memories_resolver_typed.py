@@ -76,7 +76,7 @@ class TestFormulaEntityTokens:
         # parse_expr accepts list-valued partition_by; only the inner agg
         # token surfaces.
         assert _tokens(
-            "rank(amount:sum, partition_by=[region, channel])"
+            "rank(amount:sum, partition_by=[region, channel], direction='desc')"
         ) == ["amount:sum"]
 
 

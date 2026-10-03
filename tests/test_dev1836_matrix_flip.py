@@ -117,7 +117,7 @@ class TestRowAttachWithCrossModelMeasure:
         """Transform-root dimension family × cross-model measure."""
         _, engine = exec_backend
         resp = await engine.execute(q(
-            dimensions=[{"expression": "rank(amount:sum(partition_by=channel))",
+            dimensions=[{"expression": "rank(amount:sum(partition_by=channel), direction='desc')",
                          "name": "rr"}],
             measures=[M, CM],
         ))
@@ -135,7 +135,7 @@ class TestRowAttachWithCrossModelMeasure:
         resp = await engine.execute(q(
             dimensions=[{
                 "expression": ("rank(amount:sum(partition_by=channel) - "
-                               "amount:sum(partition_by=status))"),
+                               "amount:sum(partition_by=status), direction='desc')"),
                 "name": "mr",
             }],
             measures=[M, CM],

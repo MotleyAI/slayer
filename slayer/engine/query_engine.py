@@ -289,9 +289,6 @@ def _build_recommend_coverage(
     entries.sort(key=lambda e: (-len(e[0].reachable_items), e[1], e[0].model_name))
     return [e[0] for e in entries]
 
-_PLACEHOLDER_FILL_VALUE = "0"
-
-
 def _merge_query_variables(
     *,
     outer: Optional[Dict[str, Any]],
@@ -323,7 +320,9 @@ def _substitute_model_sql_surfaces(
 
 
 def _render_probe_model(model: SlayerModel, *, dialect: SqlDialect) -> SlayerModel:
-    """Substitute a template model's own ``query_variables`` defaults for type-probing (raises on undefaulted)."""
+    """Substitute a template model's own ``query_variables`` defaults for type-probing (raises on
+    an undefaulted Mode-A variable); measures are dropped, since the probe reads columns only."""
+    model = model.model_copy(update={"measures": []}) if model.measures else model
     if model.source_model_origin is None and (
         model.query_variables or model_needs_substitution_pass(model)
     ):
@@ -1016,7 +1015,6 @@ class SlayerQueryEngine:
         prefer_data_source: Optional[str],
         override_datasource: Optional[DatasourceConfig] = None,
         splice_chain: Tuple[str, ...] = (),
-        dry_run_placeholders: bool = False,
         as_statement: bool = False,
     ) -> _Rendered:
         """Plan and render one statement, splicing the stored query-backed models it
@@ -1059,7 +1057,6 @@ class SlayerQueryEngine:
             named_queries=named_queries,
             stage_displays=stage_displays,
             splice_chain=splice_chain,
-            dry_run_placeholders=dry_run_placeholders,
             now=self._clock(),
         )
         # ``build_resolved_source_bundle`` raises if unresolved, so it's populated.
@@ -1114,12 +1111,9 @@ class SlayerQueryEngine:
             normed_named[nm] = nq2
             warnings.extend(nq_warnings)
 
-        # Substitute variables into filters. Root uses the bundle's merged
-        # variables; each sibling re-merges its own stage layer.
-        query = apply_variables_to_query(
-            query=query, variables=bundle.query_variables,
-            dry_run_placeholders=dry_run_placeholders,
-        )
+        # Substitute variables into every Mode-B surface. Root uses the bundle's
+        # merged variables; each sibling re-merges its own stage layer.
+        query = apply_variables_to_query(query=query, variables=bundle.query_variables)
         root_vars = query.variables
         # Sibling-sourced stages fall back to the root model's defaults (a
         # query-backed root's own defaults layer only its spliced stages).
@@ -1134,9 +1128,7 @@ class SlayerQueryEngine:
                 **(nq.variables or {}),
                 **(runtime_kwarg or {}),
             }
-            normed_named[nm] = apply_variables_to_query(
-                query=nq, variables=stage_vars, dry_run_placeholders=dry_run_placeholders,
-            )
+            normed_named[nm] = apply_variables_to_query(query=nq, variables=stage_vars)
             if source is not None:
                 stage_sources[nm] = _substitute_model_sql_surfaces(
                     model=source, variables=stage_vars,
@@ -1781,8 +1773,7 @@ class SlayerQueryEngine:
         # a stale stored value.
         if model.source_queries:
             try:
-                # No caller variables here; fill placeholders with ``0`` (the
-                # save-time render) so an undefaulted {var} doesn't fail SQL-gen.
+                # No caller variables here; an undefaulted {var} degrades to {} below.
                 model = await self._expand_query_backed_model(model=model)
             except QueryBackedCycleError:
                 raise
@@ -2623,11 +2614,10 @@ class SlayerQueryEngine:
         *,
         model: SlayerModel,
         runtime_kwarg: Optional[Dict[str, Any]] = None,
-        dry_run_placeholders: bool = True,
     ) -> SlayerModel:
         """Render a query-backed ``model`` as a virtual ``sql``-mode model (save-time cache,
         column-type probing): its stages run as a run-by-name statement, wrapped in a
-        flat-rename SELECT."""
+        flat-rename SELECT. An undefaulted variable raises, exactly as execution does."""
         main_query, named_queries = self._stages_of_model(
             model=model, runtime_kwarg=runtime_kwarg or {},
         )
@@ -2635,8 +2625,7 @@ class SlayerQueryEngine:
         # ``get_column_types`` recover from a stale persisted ``data_source``.
         rendered = await self._plan_and_render(
             query=main_query, named_queries=named_queries, runtime_kwarg=runtime_kwarg or {},
-            prefer_data_source=None, splice_chain=(model.name,),
-            dry_run_placeholders=dry_run_placeholders, as_statement=True,
+            prefer_data_source=None, splice_chain=(model.name,), as_statement=True,
         )
         root_planned = rendered.planned_list[-1]
         dialect, bundle = rendered.dialect, rendered.bundle
@@ -2875,7 +2864,7 @@ class SlayerQueryEngine:
         return loaded
 
     async def _validate_and_populate_cache(self, model: SlayerModel) -> SlayerModel:
-        """Dry-run-validate a query-backed model → copy with cache fields populated (undefaulted ``{var}`` → ``"0"``)."""
+        """Dry-run-validate a query-backed model → copy with cache fields populated (an undefaulted ``{var}`` refuses)."""
         if not (model.source_queries or []):
             return model
         model = await self._pin_populations(model=model, prefer_data_source=None)

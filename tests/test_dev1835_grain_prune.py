@@ -5,7 +5,7 @@ hidden inside a transform's input (CodeRabbit PR #346 Thread 2).
 is constant within the raw dimensions already in the grain. It reads a key's
 free scalar columns via ``_scalar_free_columns``; if that helper fails to
 descend a ``TransformKey``'s input, a discriminating column inside e.g.
-``rank(amount:sum(partition_by=region) + city)`` goes unseen and the axis is
+``rank(amount:sum(partition_by=region) + city, direction='desc')`` goes unseen and the axis is
 wrongly pruned, collapsing the producer to ``region`` alone.
 """
 

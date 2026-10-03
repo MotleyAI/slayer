@@ -35,7 +35,7 @@ RECURSIVE = ("customers.spend:weighted_avg(weight=weighted_avg(amount, "
              "weight=sum(customers.regions.pop, partition_by=customers.regions.name), "
              "partition_by=customers.regions.name))")
 RANKED = ("customers.spend:weighted_avg("
-          "weight=rank(sum(amount, partition_by=customers.regions.name)))")
+          "weight=rank(sum(amount, partition_by=customers.regions.name), direction='desc'))")
 WINDOWED_PARAM = ("customers.spend:weighted_avg(window='1y', "
                   "weight=sum(amount, partition_by=customers.regions.name))")
 WINDOWED_CUSTOM_PARAM = ("customers.spend:wsum(window='1y', "

@@ -124,6 +124,7 @@ class TestStarForms:
     def test_count_dotted_star(self) -> None:
         node = parse_expr("count(customers.*)")
         assert node == parse_expr("customers.*:count")
+        assert isinstance(node, AggCall)
         assert node.source == DottedRef(parts=("customers", "*"))
 
     def test_count_deep_dotted_star(self) -> None:
@@ -220,8 +221,8 @@ class TestDispatchUnchanged:
         assert parse_expr("cumsum(sum(revenue))") == parse_expr("cumsum(revenue:sum)")
 
     def test_rank_over_functional_agg_with_partition(self) -> None:
-        assert parse_expr("rank(sum(revenue), partition_by=status)") == parse_expr(
-            "rank(revenue:sum, partition_by=status)"
+        assert parse_expr("rank(sum(revenue), partition_by=status, direction='desc')") == parse_expr(
+            "rank(revenue:sum, partition_by=status, direction='desc')"
         )
 
     def test_scalar_call_stays_scalar(self) -> None:

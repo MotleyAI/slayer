@@ -191,7 +191,7 @@ class TestLocalRootSales:
 
     async def test_global(self, sales_engine):
         resp = await sales_engine.execute(sales_q(measures=[_m(LOCAL_SALES)]))
-        assert float(global_val(resp)) == pytest.approx(local_sales_global())  # 810/43
+        assert float(global_val(resp)) == pytest.approx(local_sales_global())  # 810/33
 
 
 class TestCollapsingLast:
@@ -515,7 +515,7 @@ class TestBindLevel:
 
     def test_positional_equals_keyword_identity(self):
         scope, bundle = _sales_scope_bundle()
-        positional = "weighted_avg(amount, rank(sum(amount, partition_by=region)))"
+        positional = "weighted_avg(amount, rank(sum(amount, partition_by=region), direction='desc'))"
         kw = bind_expr(parse_expr(LOCAL_SALES), scope=scope, bundle=bundle)
         pos = bind_expr(parse_expr(positional), scope=scope, bundle=bundle)
         assert pos.value_key == kw.value_key

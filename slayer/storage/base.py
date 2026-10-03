@@ -641,7 +641,8 @@ class StorageBackend(ABC):
                 f"to recreate it."
             )
         write_back = False
-        pre_version = int(data.get("version", 1))
+        data = _mig.stamp_stored(data)
+        pre_version = int(data["version"])
         if pre_version < _mig.CURRENT_VERSIONS["SlayerModel"]:
             data = _mig.migrate("SlayerModel", data)
             # Rewrite legacy ``__`` split-alias qualifiers to dotted on the RAW

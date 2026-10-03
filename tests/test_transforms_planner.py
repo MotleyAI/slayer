@@ -44,7 +44,7 @@ from slayer.core.keys import (
     TransformKey,
 )
 from slayer.core.keys import Grain
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import Column, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.core.scope import ModelScope
 from slayer.engine.binding import bind_expr
@@ -178,7 +178,7 @@ class TestBindTransformValidation:
 
     def test_unknown_kwarg_on_rank_raises(self) -> None:
         # rank's allowed kwargs: {partition_by}. Anything else → error.
-        parsed = parse_expr("rank(amount:sum, foo='bar')")
+        parsed = parse_expr("rank(amount:sum, foo='bar', direction='desc')")
         scope, bundle = _scope(), _bundle()
         with pytest.raises(ValueError, match="rank.*not.*accept"):
             bind_expr(parsed=parsed, scope=scope, bundle=bundle)
@@ -190,7 +190,7 @@ class TestBindTransformValidation:
             bind_expr(parsed=parsed, scope=scope, bundle=bundle)
 
     def test_unknown_kwarg_on_dense_rank_raises(self) -> None:
-        parsed = parse_expr("dense_rank(amount:sum, foo='bar')")
+        parsed = parse_expr("dense_rank(amount:sum, foo='bar', direction='desc')")
         scope, bundle = _scope(), _bundle()
         with pytest.raises(ValueError, match="dense_rank.*not.*accept"):
             bind_expr(parsed=parsed, scope=scope, bundle=bundle)
@@ -210,7 +210,7 @@ class TestBindTransformValidation:
     def test_rank_rejects_extra_positional_arg(self) -> None:
         # rank-family transforms are keyword-only after the value; an extra
         # positional must fail fast rather than being silently dropped.
-        parsed = parse_expr("rank(amount:sum, 2)")
+        parsed = parse_expr("rank(amount:sum, 2, direction='desc')")
         scope, bundle = _scope(), _bundle()
         with pytest.raises(ValueError, match="exactly one positional"):
             bind_expr(parsed=parsed, scope=scope, bundle=bundle)
@@ -224,7 +224,7 @@ class TestBindTransformValidation:
 
     def test_rank_rejects_n_kwarg(self) -> None:
         # ``n`` is ntile-only; rank must not silently accept it.
-        parsed = parse_expr("rank(amount:sum, n=4)")
+        parsed = parse_expr("rank(amount:sum, n=4, direction='desc')")
         scope, bundle = _scope(), _bundle()
         with pytest.raises(ValueError, match="rank.*not.*accept.*'n'"):
             bind_expr(parsed=parsed, scope=scope, bundle=bundle)
@@ -286,7 +286,7 @@ class TestBindTransformValidation:
 
     def test_rank_with_partition_by_binds(self) -> None:
         bound = bind_expr(
-            parsed=parse_expr("rank(amount:sum, partition_by=region)"),
+            parsed=parse_expr("rank(amount:sum, partition_by=region, direction='desc')"),
             scope=_scope(), bundle=_bundle(),
         )
         assert isinstance(bound.value_key, TransformKey)
@@ -399,7 +399,7 @@ class TestTransformLayersPopulation:
     def test_rank_emits_transform_layer(self) -> None:
         q = SlayerQuery(
             source_model="orders",
-            measures=[{"formula": "rank(amount:sum)"}],
+            measures=[ModelMeasure(formula="rank(amount:sum, direction='desc')")],
         )
         planned = plan_query(query=q, bundle=_bundle())
         assert any(
@@ -470,7 +470,7 @@ class TestTransformLayersPopulation:
         q = SlayerQuery(
             source_model="orders",
             measures=[
-                {"formula": "rank(amount:sum)"},
+                {"formula": "rank(amount:sum, direction='desc')"},
                 {"formula": "cumsum(amount:sum)"},
             ],
             time_dimensions=[

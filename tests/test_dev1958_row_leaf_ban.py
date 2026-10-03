@@ -44,6 +44,8 @@ def _bundle() -> ResolvedSourceBundle:
 def _call(op: str, inner: str) -> str:
     if op == "ntile":
         return f"ntile({inner}, n=4)"
+    if op in ("rank", "dense_rank"):
+        return f"{op}({inner}, direction='desc')"
     return f"time_shift({inner}, -1)" if op == "time_shift" else f"{op}({inner})"
 
 

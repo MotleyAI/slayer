@@ -1,44 +1,33 @@
 """Variable substitution — ``{var}`` placeholder handling for the pipeline.
 
-Public surface:
-
-- :func:`merge_query_variables` collapses the four configured variable
-  layers (model defaults < outer query < stage query < runtime kwarg)
-  into the effective dict that populates
-  ``ResolvedSourceBundle.query_variables``. Precedence: runtime > stage >
-  outer > model_defaults.
-- :func:`apply_variables_to_query` returns a copy of the input
-  ``SlayerQuery`` with ``{var}`` substituted in its ``filters`` list. The
-  helper always returns a fresh ``SlayerQuery`` instance for predictable
-  pipeline semantics. ``dry_run_placeholders=True`` fills any unresolved
-  valid placeholder with the legacy ``"0"`` sentinel instead of raising
-  — used by save-time dry-run SQL generation. Invalid placeholder names
-  still raise regardless of ``dry_run_placeholders``.
-
+- :func:`merge_query_variables` collapses the four variable layers into the
+  effective dict (runtime > stage > outer > model_defaults).
+- :func:`apply_variables_to_query` substitutes ``{var}`` (Mode-B regime) into a
+  query's filters, measure formulas, computed-dimension expressions, order
+  expressions and ``date_range`` bounds.
 - :func:`substitute_model_sql_surfaces` substitutes a model's four Mode-A
-  surfaces (``sql``, ``filters``, ``Column.sql`` / ``Column.filter``).
-
-This is the active substitution path used by ``engine.execute`` and
-``engine.save_model``.
+  surfaces (SQL regime) and its saved measure formulas (Mode-B regime).
 """
 
 from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
-from slayer.core.models import SlayerModel
+from slayer.core.models import ModelMeasure, SlayerModel
 from slayer.core.query import (
+    ComputedDimension,
+    OrderItem,
     SlayerQuery,
+    TimeDimension,
     _contains_block_delimiter,
     coerce_declared_list_variables,
     declares_variables,
     extract_placeholder_names,
     extract_variable_refs,
+    has_variable_syntax,
     list_valued_variable_names,
     substitute_variables,
 )
-
-_PLACEHOLDER_FILL_VALUE = "0"
 
 
 def merge_query_variables(
@@ -61,57 +50,98 @@ def merge_query_variables(
     }
 
 
+def _python_sub(text: str, variables: Dict[str, Any]) -> str:
+    # Mode-B takes the python regime: SQL quote-doubling would concatenate adjacent literals.
+    return substitute_variables(filter_str=text, variables=variables, escape="python")
+
+
+def _substituted_measure(m: ModelMeasure, variables: Dict[str, Any]) -> ModelMeasure:
+    text = _python_sub(m.formula, variables)
+    return m if text == m.formula else m.substituted(text)
+
+
+def _substituted_dimension(d: Any, variables: Dict[str, Any]) -> Any:
+    if not isinstance(d, ComputedDimension):
+        return d
+    text = _python_sub(d.expression, variables)
+    return d if text == d.expression else d.substituted(text)
+
+
+def _substituted_order(o: OrderItem, variables: Dict[str, Any]) -> OrderItem:
+    if not o.raw_formula:
+        return o
+    text = _python_sub(o.raw_formula, variables)
+    return o if text == o.raw_formula else o.model_copy(update={"raw_formula": text})
+
+
+def _substituted_time_dimension(td: TimeDimension, variables: Dict[str, Any]) -> TimeDimension:
+    if not td.date_range:
+        return td
+    bounds = [None if b is None else _python_sub(b, variables) for b in td.date_range]
+    if bounds == td.date_range:
+        return td
+    # Revalidated so a substituted bound is shape-checked like a literal one.
+    return TimeDimension.model_validate({
+        "dimension": td.dimension, "granularity": td.granularity, "date_range": bounds, "label": td.label,
+    })
+
+
 def apply_variables_to_query(
     *,
     query: SlayerQuery,
     variables: Optional[Dict[str, Any]] = None,
-    dry_run_placeholders: bool = False,
 ) -> SlayerQuery:
-    """Return a copy of ``query`` with ``{var}`` substituted in ``filters``.
+    """A fresh copy of ``query`` with ``{var}`` substituted on every Mode-B surface.
 
-    The returned ``SlayerQuery`` is always a fresh instance, including in
-    the no-op cases (``query.filters`` is ``None`` / empty / contains no
-    placeholders). ``variables=None`` is normalized to an empty dict.
-    When ``dry_run_placeholders=True``, unresolved valid placeholders are
-    filled with ``"0"`` instead of raising — the legacy save-time
-    dry-run behaviour. Invalid placeholder names still raise
-    ``ValueError`` regardless of ``dry_run_placeholders``, because the
-    dry-run shortcut is for missing *values*, not for bypassing name
-    validation.
+    Changed measures and computed dimensions keep their template in ``_template``;
+    the query is rebuilt so construction validators re-run on the substituted text.
     """
-    if query.filters is None:
-        return query.model_copy()
-
     effective: Dict[str, Any] = dict(variables or {})
-    if dry_run_placeholders:
-        for placeholder in extract_placeholder_names(query):
-            effective.setdefault(placeholder, _PLACEHOLDER_FILL_VALUE)
-
-    # Mode-B (Python-AST) query filters take the ``python`` escaping regime —
-    # SQL quote-doubling would silently corrupt a value via adjacent-literal
-    # concatenation once the AST layer re-renders it (DEV-1625).
-    substituted = [
-        substitute_variables(filter_str=f, variables=effective, escape="python")
-        for f in query.filters
-    ]
-    return query.model_copy(update={"filters": substituted})
+    changed: Dict[str, Any] = {}
+    if query.filters is not None:
+        changed["filters"] = [_python_sub(f, effective) for f in query.filters]
+    surfaces = (
+        ("measures", lambda m: _substituted_measure(m, effective)),
+        ("dimensions", lambda d: _substituted_dimension(d, effective)),
+        ("order", lambda o: _substituted_order(o, effective)),
+        ("time_dimensions", lambda td: _substituted_time_dimension(td, effective)),
+    )
+    for field, substitute in surfaces:
+        entries = getattr(query, field)
+        if entries:
+            new = [substitute(e) for e in entries]
+            if any(n is not o for n, o in zip(new, entries)):
+                changed[field] = new
+    if not changed:
+        return query.model_copy()
+    # ``name`` may already be a minted stage identity the user-name validator refuses.
+    data = {f: getattr(query, f) for f in query.model_fields_set | {"version"} if f != "name"}
+    rebuilt = SlayerQuery.model_validate(data | changed)
+    return rebuilt.model_copy(update={"name": query.name}) if "name" in query.model_fields_set else rebuilt
 
 
 def _mode_a_surfaces(model: SlayerModel) -> list:
     return [model.sql, *(model.filters or []), *(t for c in model.columns for t in (c.sql, c.filter))]
 
 
+def _measure_needs_pass(measure: ModelMeasure) -> bool:
+    return has_variable_syntax(measure.formula)
+
+
 def model_needs_substitution_pass(model: SlayerModel) -> bool:
-    """True if substitution must run with no variables (a ``{? ?}`` block or declared variables)."""
-    return any(
-        s and _contains_block_delimiter(s) for s in _mode_a_surfaces(model)
-    ) or declares_variables(model)
+    """True if substitution must run with no variables (a Mode-A ``{? ?}`` block, declared
+    variables, or any ``{...}`` token in a saved measure formula)."""
+    return (
+        any(s and _contains_block_delimiter(s) for s in _mode_a_surfaces(model))
+        or declares_variables(model)
+        or any(_measure_needs_pass(m) for m in model.measures)
+    )
 
 
 def model_placeholder_names(model: SlayerModel) -> set:
-    """Every ``{var}`` a model's Mode-A surfaces read."""
+    """Every ``{var}`` a model's Mode-A surfaces and saved measure formulas read."""
     out: set = set()
-    for text in _mode_a_surfaces(model):
+    for text in [*_mode_a_surfaces(model), *(m.formula for m in model.measures)]:
         if text:
             bare, blocked = extract_variable_refs(text)
             out |= bare | blocked
@@ -121,8 +151,8 @@ def model_placeholder_names(model: SlayerModel) -> set:
 def substitute_model_sql_surfaces(
     *, model: SlayerModel, variables: Dict[str, Any], backslash_escapes: bool,
 ) -> SlayerModel:
-    """Copy of ``model`` with ``{var}`` substituted into its four Mode-A surfaces
-    (``sql``, ``filters``, ``Column.sql`` / ``Column.filter``); no-op when unneeded."""
+    """Copy of ``model`` with ``{var}`` substituted into its four Mode-A surfaces (SQL regime)
+    and its saved measure formulas (python regime); no-op when unneeded."""
     if not variables and not model_needs_substitution_pass(model):
         return model
     variables = coerce_declared_list_variables(
@@ -148,6 +178,11 @@ def substitute_model_sql_surfaces(
         update["sql"] = _sub(model.sql)
     if model.filters:
         update["filters"] = [_sub(f) for f in model.filters]
+    if model.measures:
+        update["measures"] = [
+            m.model_copy(update={"formula": _python_sub(m.formula, variables)}) if _measure_needs_pass(m) else m
+            for m in model.measures
+        ]
     return model.model_copy(update=update)
 
 

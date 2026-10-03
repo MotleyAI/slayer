@@ -37,12 +37,12 @@ from tests._dev1953_fixtures import (
     rank_within,
 )
 
-RANK_UREG = "rank(sum(amount), partition_by=ureg)"
-RANK_BAND = "rank(sum(amount), partition_by=spend_band)"
-PARAM_BAND = "rank(sum(amount, partition_by=[spend_band, city]), partition_by=spend_band)"
+RANK_UREG = "rank(sum(amount), partition_by=ureg, direction='desc')"
+RANK_BAND = "rank(sum(amount), partition_by=spend_band, direction='desc')"
+PARAM_BAND = "rank(sum(amount, partition_by=[spend_band, city]), partition_by=spend_band, direction='desc')"
 PARAM_UREG = ("weighted_avg(amount, weight=rank(sum(amount, partition_by=[ureg, city]), "
-              "partition_by=ureg))")
-DIM_R = {"expression": "rank(sum(amount, partition_by=[city, ureg]), partition_by=ureg)",
+              "partition_by=ureg, direction='desc'))")
+DIM_R = {"expression": "rank(sum(amount, partition_by=[city, ureg]), partition_by=ureg, direction='desc')",
          "name": "r"}
 
 # Spec constants.
@@ -51,15 +51,14 @@ MEASURE_RANKS = {
     ("NORTH", "Beta"): 1, ("NORTH", "Alpha"): 2,
     ("SOUTH", "Gamma"): 1, ("SOUTH", "Alpha"): 2,
     ("GAP", None): 1, ("GAP", "Kappa"): 2,
-    ("VOID", "Xi"): 1,
+    ("VOID", "Xi"): None,
 }
 PARAM_BY_UREG = {"EAST": 56.0, "NORTH": 120 / 7, "SOUTH": 36.0, "GAP": 7.0, "VOID": None}
-FILTER_RANK1 = {("EAST", "Zeta"), ("NORTH", "Beta"), ("SOUTH", "Gamma"), ("GAP", None),
-                ("VOID", "Xi")}
+FILTER_RANK1 = {("EAST", "Zeta"), ("NORTH", "Beta"), ("SOUTH", "Gamma"), ("GAP", None)}
 DIM_CELLS = {
     ("EAST", 1): 80.0, ("EAST", 2): 100.0, ("NORTH", 1): 60.0, ("NORTH", 2): 30.0,
     ("SOUTH", 1): 100.0, ("SOUTH", 2): 40.0, ("GAP", 1): 12.0, ("GAP", 2): 8.0,
-    ("VOID", 1): None,
+    ("VOID", None): None,
 }
 BAND_RANK1 = {("hi", "Gamma"): 100.0, ("lo", "Alpha"): 70.0}
 
@@ -67,20 +66,20 @@ BAND_RANK1 = {("hi", "Gamma"): 100.0, ("lo", "Alpha"): 70.0}
 # --------------------------------------------------------------------------- #
 # Raw-row oracles.
 # --------------------------------------------------------------------------- #
-def _ureg_city_ranks() -> Dict[Tuple, int]:
+def _ureg_city_ranks() -> Dict[Tuple, Optional[int]]:
     return rank_within(cell_totals(lambda r: (r[1].upper(), r[2])))
 
 
 def _weighted_avg(group: Callable[[tuple], str],
-                  weight: Callable[[tuple], int]) -> Dict[str, Optional[float]]:
+                  weight: Callable[[tuple], Optional[int]]) -> Dict[str, Optional[float]]:
     """weighted_avg(amount, weight=…) per ``group(row)``."""
     per: Dict[str, list] = defaultdict(list)
     for row in _SALES_ROWS_WIDE:
         per[group(row)].append((row[4], weight(row)))
     out = {}
     for g, pairs in per.items():
-        num = [v * w for v, w in pairs if v is not None]
-        out[g] = sum(num) / sum(w for _v, w in pairs) if num else None
+        num = [v * w for v, w in pairs if v is not None and w is not None]
+        out[g] = sum(num) / sum(w for _v, w in pairs if w is not None) if num else None
     return out
 
 
@@ -89,7 +88,7 @@ def _param_by_ureg() -> Dict[str, Optional[float]]:
     return _weighted_avg(lambda r: r[1].upper(), lambda r: rank[(r[1].upper(), r[2])])
 
 
-def _band_city_ranks() -> Dict[Tuple, int]:
+def _band_city_ranks() -> Dict[Tuple, Optional[int]]:
     band = band_of()
     return rank_within(cell_totals(lambda r: (band[(r[2], r[1])], r[2])))
 
@@ -162,7 +161,7 @@ class TestBindingSymmetry:
     def test_mixed_list(self):
         amap = _alias(name="ureg", expr="upper(region)")
         agg = _bind(formula="sum(amount, partition_by=[ureg, product])", alias_map=amap)
-        rank = _bind(formula="rank(sum(amount), partition_by=[ureg, product])", alias_map=amap)
+        rank = _bind(formula="rank(sum(amount), partition_by=[ureg, product], direction='desc')", alias_map=amap)
         want = Grain.of([amap["ureg"], ColumnKey(path=(), leaf="product")])
         assert isinstance(rank, TransformKey)
         assert isinstance(agg, AggregateKey)
@@ -175,7 +174,7 @@ class TestBindingSymmetry:
         assert rank.partition_keys == Grain.of([amap["spend_band"]])
 
     @pytest.mark.parametrize(argnames="formula,message", argvalues=[
-        ("rank(sum(amount), partition_by=sum(amount))",
+        ("rank(sum(amount), partition_by=sum(amount), direction='desc')",
          "'sum(amount)' is an expression.\n  at transform 'rank' partition_by"),
         ("sum(amount, partition_by=sum(amount))",
          "'sum(amount)' is an expression.\n  at aggregation partition_by"),
@@ -187,7 +186,7 @@ class TestBindingSymmetry:
 
     @pytest.mark.parametrize(argnames="formula", argvalues=[
         "sum(amount, partition_by=upper(region))",
-        "rank(sum(amount), partition_by=[city, upper(region)])",
+        "rank(sum(amount), partition_by=[city, upper(region)], direction='desc')",
     ])
     def test_expression_element_is_a_typed_partition_key_error(self, formula):
         with pytest.raises(PartitionKeyError, match=re.escape("'upper(region)' is an expression")):
@@ -221,9 +220,11 @@ class TestExecutedPositions:
             dimensions=[UREG, "city"], measures=[AMOUNT],
             order=[{"column": RANK_UREG, "direction": "asc"}]))
         keys = [(r["sales.ureg"], r["sales.city"]) for r in resp.data]
-        n = len(FILTER_RANK1)
-        assert set(keys[:n]) == FILTER_RANK1
-        assert all(MEASURE_RANKS[k] == 2 for k in keys[n:])
+        pos = {MEASURE_RANKS[k]: [] for k in keys}
+        for i, k in enumerate(keys):
+            pos[MEASURE_RANKS[k]].append(i)
+        assert {k for k in keys if MEASURE_RANKS[k] == 1} == FILTER_RANK1
+        assert max(pos[1]) < min(pos[2])
 
     async def test_dimension_position_member_key(self, engine):
         resp = await engine.execute(sales_q(dimensions=[UREG, DIM_R], measures=[AMOUNT]))
@@ -260,7 +261,7 @@ class TestAttachCarryingKey:
         got = {k: v["sales.r"]
                for k, v in rows_by(resp, "sales.spend_band", "sales.city").items()}
         assert got == _band_city_ranks()
-        assert {k for k, r in got.items() if r <= 1} == set(BAND_RANK1)
+        assert {k for k, r in got.items() if r is not None and r <= 1} == set(BAND_RANK1)
 
     async def test_parameter(self, engine):
         resp = await engine.execute(sales_q(

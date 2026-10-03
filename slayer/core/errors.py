@@ -303,6 +303,10 @@ class TransformInputError(QueryTypeError):
     """A transform operand the transform cannot consume."""
 
 
+class TransformArgumentError(QueryTypeError):
+    """A missing, unknown or malformed transform argument."""
+
+
 class ComputedDimensionError(QueryTypeError):
     """A malformed computed (expression) dimension."""
 
@@ -526,7 +530,7 @@ class IllegalWindowInFilterError(SlayerError, ValueError):
         self,
         filter_expr: str,
         source: str,
-        suggestion: str = "use a rank-family transform (e.g. `rank(<measure>) <= N`).",
+        suggestion: str = "use a rank-family transform (e.g. `rank(<measure>, direction='desc') <= N`).",
     ) -> None:
         self.filter_expr = filter_expr
         self.source = source
@@ -623,6 +627,23 @@ class MeasureCycleError(SlayerError, ValueError):
             cls_name=type(self).__name__,
             summary="Cyclic reference in named-measure expansion.",
             extras=[("chain", " → ".join(self.chain))],
+        ))
+
+
+class UnresolvedPlaceholderError(SlayerError):
+    """A ``{name}`` placeholder reached binding unsubstituted."""
+
+    def __init__(self, *, name: str, expression: str) -> None:
+        self.name = name
+        self.expression = expression
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__,
+            summary=f"{{{name}}} looks like a variable placeholder, but no value was substituted into it.",
+            location=repr(expression),
+            suggestion=(
+                f"supply {name!r} through `variables` (a saved measure reached through a join "
+                "is not substituted); write `{{` / `}}` for literal braces."
+            ),
         ))
 
 

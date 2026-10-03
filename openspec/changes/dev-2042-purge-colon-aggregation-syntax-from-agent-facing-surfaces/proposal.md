@@ -52,6 +52,7 @@ surface, the architecture docs and the specs must match, while colon input keeps
 - `queries/semantics`: examples → functional spelling.
 - `queries/time-dimensions`: examples → functional spelling.
 - `queries/transforms`: examples → functional spelling.
+- `queries/variables`: examples → functional spelling.
 - `sql/statement-assembly`: examples → functional spelling.
 
 ## Impact

@@ -302,7 +302,7 @@ class TestQueryBackedWrap:
             engine = SlayerQueryEngine(storage=storage)
             expanded = await engine._expand_query_backed_model(
                 model=SlayerModel(name="qb", source_queries=[_qb_stage()], data_source="ds"),
-                runtime_kwarg=None, dry_run_placeholders=False,
+                runtime_kwarg=None,
             )
         assert expanded.sql is not None
         fit = get_dialect(dialect).fit_alias

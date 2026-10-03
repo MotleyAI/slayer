@@ -64,7 +64,7 @@ def _cases() -> dict:
         "lifted/mixed_transform": {
             "source": "sales", "mode": None,
             "kw": {"dimensions": ["region"], "measures": [{"formula":
-                "sum(quantity * rank(avg(unit_price, partition_by=product)))",
+                "sum(quantity * rank(avg(unit_price, partition_by=product), direction='desc'))",
                 "name": "m"}]}},
         # DEV-1928 — re-aggregation constituents in a mixed source; windowed inner.
         "lifted/mixed_reagg": {
@@ -80,7 +80,7 @@ def _cases() -> dict:
         "lifted/windowed_inner": {
             "source": "monthly", "mode": None,
             "kw": {"time_dimensions": _MONTH_TD, "measures": [{"formula":
-                "sum(rank(amount:sum(window='90d', partition_by=region)))",
+                "sum(rank(amount:sum(window='90d', partition_by=region), direction='desc'))",
                 "name": "m"}]}},
         # positive/* — already supported; byte-identical SQL through the change.
         "positive/same_model_arith": {

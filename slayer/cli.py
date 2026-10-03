@@ -1279,7 +1279,7 @@ def _refine_one_model_for_cli(
     raw = run_sync(_load_raw_model_dict(inner, ds_name, model_name))
     if raw is None:
         return False
-    upgraded = _mig.migrate("SlayerModel", copy.deepcopy(raw))
+    upgraded = _mig.migrate("SlayerModel", _mig.stamp_stored(copy.deepcopy(raw)))
     # Snapshot column types AFTER migration but BEFORE refinement so the
     # before/after diff reports only actual refinement changes — migration-
     # only aliases like ``number → DOUBLE`` are not refinement events.

@@ -21,34 +21,34 @@ Any measure-legal expression SHALL be legal as a computed dimension provided it 
 - THEN rows group by the band with correct executed values and unchanged cardinality
 
 #### Scenario: Used as a transform partition
-- WHEN a query declares the computed dimension `ureg` = `upper(region)` and selects `rank(sum(amount), partition_by=ureg)`
+- WHEN a query declares the computed dimension `ureg` = `upper(region)` and selects `rank(sum(amount), partition_by=ureg, direction='desc')`
 - THEN the transform partitions by the dimension's value exactly as `sum(amount, partition_by=ureg)` would, in the measure, aggregation-parameter, filter, order and computed-dimension positions (values per `queries/partitioned-aggregates` › Transform partition keys bind like aggregate partition keys)
 
 ### Requirement: Transforms inside dimension expressions
 A transform inside a dimension expression SHALL evaluate at the union of its inner aggregates' effective grains — the grain of its containing context — unlike the same expression used as a measure, which evaluates at the query grain. An inner aggregate's effective grain is its declared `partition_by=` set, plus the query's active time bucket when the aggregate is windowed (`window=`); a `first`/`last` inner aggregate contributes its declared partition set only. Each inner aggregate is computed at its own effective grain and broadcast to the union-grain rows; when all inner aggregates share one grain the union degenerates to that grain (behavior unchanged). The rule is recursive: a nested transform evaluates at the union of its OWN inner aggregates' grains and its result is broadcast into the containing union like any other grained value. Keyword references on the transform (e.g. an explicit `partition_by=`) SHALL resolve against the union grain. A time-ordered transform (e.g. `cumsum`, `lag`, `time_shift`) inside a dimension expression SHALL fail with a clear error when its evaluation grain does not contain its time-ordering key — never duplicated result rows. When a windowed inner aggregate contributes the active time bucket, that synthesized bucket IS the query's bucketed time dimension — one dimension for all grain purposes (union membership, deduplication, attachment keys) — and a mixed-grain transform with a windowed inner aggregate but no resolvable time dimension SHALL fail with the same time-resolution error as windowed measures; single-grain windowed and `first`/`last` transform inputs remain legal.
 
 #### Scenario: Rank of partitions as a bandable dimension
-- WHEN a query declares the dimension `rank(revenue:sum(partition_by=region))`
+- WHEN a query declares the dimension `rank(revenue:sum(partition_by=region), direction='desc')`
 - THEN each row carries its region's rank among all regions by total revenue, and grouping or banding by that rank is legal and correct
 
 #### Scenario: Context grain distinguishes dimension use from measure use
-- WHEN `rank(revenue:sum(partition_by=region))` is used once as a dimension and once as a measure in otherwise identical queries
+- WHEN `rank(revenue:sum(partition_by=region), direction='desc')` is used once as a dimension and once as a measure in otherwise identical queries
 - THEN the dimension form ranks regions at region grain while the measure form ranks result rows at query grain
 
 #### Scenario: Different grains in one transform union and broadcast
-- WHEN a dimension expression applies a transform over an arithmetic of two aggregates at different partition grains (e.g. `rank(a:sum(partition_by=region) - b:sum(partition_by=city))`)
+- WHEN a dimension expression applies a transform over an arithmetic of two aggregates at different partition grains (e.g. `rank(a:sum(partition_by=region) - b:sum(partition_by=city), direction='desc')`)
 - THEN each aggregate is computed at its own declared grain, both are broadcast to the (region, city) union rows, the transform evaluates over exactly those rows, and executed values are correct
 
 #### Scenario: Keyless grain in a mixed transform
-- WHEN a dimension expression ranks a share-of-total, e.g. `rank(amount:sum(partition_by=region) / amount:sum(partition_by=[]))`
+- WHEN a dimension expression ranks a share-of-total, e.g. `rank(amount:sum(partition_by=region) / amount:sum(partition_by=[]), direction='desc')`
 - THEN the overall total broadcasts to every region row, the ratio and rank evaluate per region, and executed values are correct
 
 #### Scenario: A subset grain computes at its own grain
-- WHEN a mixed-grain transform combines an aggregate at the union grain with one at a strictly coarser grain (e.g. `rank(a:sum(partition_by=[region, city]) - a:sum(partition_by=region))`)
+- WHEN a mixed-grain transform combines an aggregate at the union grain with one at a strictly coarser grain (e.g. `rank(a:sum(partition_by=[region, city]) - a:sum(partition_by=region), direction='desc')`)
 - THEN the union-grain aggregate is computed directly at the union grain while the coarser one is computed at its own grain and broadcast, and executed values are correct
 
 #### Scenario: Nested transform evaluates at its own grain
-- WHEN a mixed-grain transform contains a nested transform over a strictly coarser grain (e.g. `rank(cumsum(a:sum(partition_by=[region, ordered_at])) - b:sum(partition_by=city))`)
+- WHEN a mixed-grain transform contains a nested transform over a strictly coarser grain (e.g. `rank(cumsum(a:sum(partition_by=[region, ordered_at])) - b:sum(partition_by=city), direction='desc')`)
 - THEN the inner transform evaluates over its own grain's rows (the cumulative sum accumulates across that grain's time buckets, not across union rows) before broadcasting into the union, and executed values are correct
 
 #### Scenario: Temporal transform without its time axis in the grain fails cleanly
@@ -56,7 +56,7 @@ A transform inside a dimension expression SHALL evaluate at the union of its inn
 - THEN the query fails with a clear error directing the author to include the time key in `partition_by`, and never returns duplicated rows
 
 #### Scenario: Explicit transform partition over union rows
-- WHEN a mixed-grain transform declares `partition_by=` naming a key of the union grain (e.g. `rank(a:sum(partition_by=region) - b:sum(partition_by=city), partition_by=region)`)
+- WHEN a mixed-grain transform declares `partition_by=` naming a key of the union grain (e.g. `rank(a:sum(partition_by=region) - b:sum(partition_by=city), partition_by=region, direction='desc')`)
 - THEN the transform partitions the union-grain rows by the declared key, and executed values are correct
 
 #### Scenario: Transform keyword outside the union grain fails cleanly
@@ -136,7 +136,7 @@ A grain-self-contained computed dimension (one whose aggregates all carry explic
 - THEN the query executes with correct values for both
 
 #### Scenario: Transform-root dimension with a transform measure
-- WHEN a query groups by `rank(amount:sum(partition_by=city))` as a dimension and selects a transform measure
+- WHEN a query groups by `rank(amount:sum(partition_by=city), direction='desc')` as a dimension and selects a transform measure
 - THEN the producer-grain rank and the query-grain transform are both correct in one result
 
 #### Scenario: Alongside a partitioned measure
@@ -193,7 +193,7 @@ An aggregation-derived dimension (banded, bare partitioned aggregate, or transfo
 - THEN the query executes with correct values for both
 
 #### Scenario: Transform-root dimension with a bare windowed or ranked measure
-- WHEN a query groups by `rank(amount:sum(partition_by=city))` as a dimension and selects a bare windowed or bare `first`/`last` measure
+- WHEN a query groups by `rank(amount:sum(partition_by=city), direction='desc')` as a dimension and selects a bare windowed or bare `first`/`last` measure
 - THEN the producer-grain rank and the measure are both correct in one result
 
 #### Scenario: Adding a bare windowed or ranked measure is cardinality-neutral
@@ -279,7 +279,7 @@ A row regroup attach (computed dimension), a partitioned-aggregate combined atta
 ### Requirement: An aggregate expression shared by a computed dimension and another position evaluates per position
 When the same explicitly grained aggregate expression — a partitioned aggregate, a re-aggregation, a transform over them, or a cross-model re-aggregation — appears inside a computed dimension AND in another position of the same query (measure, measure-typed filter conjunct, order target), each occurrence SHALL evaluate as that position defines it: inside the dimension at row scope, broadcast onto the rows its grain determines; elsewhere at query grain (Axiom 13). The shared expression SHALL be computed once (one producer) and the query SHALL execute with correct values or fail with a typed query error — never an internal placeholder, materialisation, hidden-slot, name-collision or join-back error. Filtering or ordering by the computed dimension's NAME uses its banded output; filtering or ordering by the underlying expression uses the expression's value.
 
-Oracles below use the DEV-1847 `sales` fixture with `R` = `avg(sum(amount, partition_by=[city, region]), partition_by=region)` (North 45, South 70, East 60, Gap 10, Void NULL), `rlevel` = `CASE WHEN R > 50 THEN 'hi' ELSE 'lo' END`, `tlevel` = `CASE WHEN rank(R) > 1 THEN 'top' ELSE 'rest' END`, and `tot` = `amount:sum`.
+Oracles below use the DEV-1847 `sales` fixture with `R` = `avg(sum(amount, partition_by=[city, region]), partition_by=region)` (North 45, South 70, East 60, Gap 10, Void NULL), `rlevel` = `CASE WHEN R > 50 THEN 'hi' ELSE 'lo' END`, `tlevel` = `CASE WHEN rank(R, direction='desc') > 1 THEN 'top' ELSE 'rest' END`, and `tot` = `amount:sum`.
 
 #### Scenario: Re-aggregation in a dimension and a measure-typed filter
 - WHEN a query over dimensions `[region, rlevel]` selects `tot` and filters on `R < amount:sum`
@@ -295,19 +295,19 @@ Oracles below use the DEV-1847 `sales` fixture with `R` = `avg(sum(amount, parti
 
 #### Scenario: Transform over a re-aggregation in a dimension
 - WHEN a query over dimensions `[region, tlevel]` selects `tot`
-- THEN South is `rest` and East, North, Gap and Void are `top`
+- THEN South and Void (NULL rank) are `rest` and East, North and Gap are `top`
 
 #### Scenario: Transform over a re-aggregation in a dimension and elsewhere
-- WHEN the `tlevel` query also selects `rank(R)` as a measure, or filters on `rank(R) > 1` or `rank(R) < 4`, or orders by `rank(R)` ascending
-- THEN the rank values are South 1, East 2, North 3, Gap 4, Void 5 on every supported dialect; `rank(R) > 1` keeps East, North, Gap, Void; `rank(R) < 4` keeps South, East, North; and the ascending order is South, East, North, Gap, Void
+- WHEN the `tlevel` query also selects `rank(R, direction='desc')` as a measure, or filters on `rank(R, direction='desc') > 1` or `rank(R, direction='desc') < 4`, or orders by `rank(R, direction='desc')` ascending
+- THEN the rank values are South 1, East 2, North 3, Gap 4, Void NULL on every supported dialect; `rank(R, direction='desc') > 1` keeps East, North, Gap; `rank(R, direction='desc') < 4` keeps South, East, North; and the ascending order is South, East, North, Gap, with Void's NULL rank sorting per the dialect's NULL ordering (last outside T-SQL)
 
 #### Scenario: Two dimensions sharing a re-aggregation
 - WHEN a query declares both `tlevel` and `rlevel` as dimensions and selects `tot` and `R`
-- THEN the rows are South (rest, hi), East (top, hi), North (top, lo), Gap (top, lo), Void (top, lo) with `tot` unchanged, and no internal name reaches the user
+- THEN the rows are South (rest, hi), East (top, hi), North (top, lo), Gap (top, lo), Void (rest, lo) with `tot` unchanged, and no internal name reaches the user
 
 #### Scenario: Ordering by a transform shared with a dimension
-- WHEN a computed dimension is `CASE WHEN rank(amount:sum(partition_by=region)) > 1 THEN 'top' ELSE 'rest' END` and the query orders by `rank(amount:sum(partition_by=region))` ascending
-- THEN rows arrive East, South, North, Gap, Void, and ordering by the dimension's name instead sorts by its banded value
+- WHEN a computed dimension is `CASE WHEN rank(amount:sum(partition_by=region), direction='desc') > 1 THEN 'top' ELSE 'rest' END` and the query orders by `rank(amount:sum(partition_by=region), direction='desc')` ascending
+- THEN rows arrive East, South, North, Gap, with Void's NULL rank sorting per the dialect's NULL ordering (last outside T-SQL), and ordering by the dimension's name instead sorts by its banded value
 
 #### Scenario: Windowed transform over a re-aggregation in a dimension with a filter
 - WHEN a monthly query declares the dimension `cumsum(min(<attached operand>, partition_by=region))` and filters on that dimension
@@ -335,7 +335,7 @@ Oracles use the DEV-1847 `sales` fixture with `P` = `amount:sum(partition_by=reg
 - **THEN** the first arrives East, South, North, Gap, Void and the second South, East, North, Gap, Void
 
 #### Scenario: Arithmetic over a transform dimension as an order target
-- **WHEN** a query over dimensions `[region, rk]`, with `rk` = `rank(P)`, orders by `rank(P) + 1` descending
+- **WHEN** a query over dimensions `[region, rk]`, with `rk` = `rank(P, direction='desc')`, orders by `rank(P, direction='desc') + 1` descending
 - **THEN** rows arrive in descending `rk` order
 
 #### Scenario: A finer-grained aggregate dimension read as a measure

@@ -580,7 +580,7 @@ dimension-position rules are unchanged.
 
 #### Scenario: Rank family is covered
 - **WHEN** a query over `[store]` with a month time dimension selects the
-  measure `rank(qty)`
+  measure `rank(qty, direction='desc')`
 - **THEN** it fails with the same typed error, never a result carrying one row
   per (store, month, qty-value)
 
@@ -600,7 +600,7 @@ dimension-position rules are unchanged.
 
 #### Scenario: A projected grain key stays legal
 - **WHEN** a query projects `weight` as a dimension and selects the measure
-  `rank(weight)`
+  `rank(weight, direction='desc')`
 - **THEN** it compiles at the query grain and executes with correct values —
   no error, no extra result rows
 
@@ -625,6 +625,6 @@ dimension-position rules are unchanged.
   transform's row leaf
 
 #### Scenario: Projected grain key under a transform inside a source stays legal
-- **WHEN** a query over `[region]` selects the measure `sum(rank(region))`
+- **WHEN** a query over `[region]` selects the measure `sum(rank(region, direction='desc'))`
 - **THEN** it compiles: the transform types at the query grain and the aggregation is
   the degenerate identity with the degenerate-re-aggregation warning, never an error

@@ -192,13 +192,13 @@ class TestDev1444Repros:
     async def test_repro2_rank_of_col_agg_hides_intermediate(
         self, funds_model: SlayerModel,
     ) -> None:
-        """Repro (2): ``rank(expensenet:sum)`` named ``expense_rank`` must
+        """Repro (2): ``rank(expensenet:sum, direction='desc')`` named ``expense_rank`` must
         produce a 2-column outer SELECT (geozone, expense_rank). The hoisted
         ``expensenet_sum`` stays inside a CTE, never in the outer projection."""
         query = SlayerQuery(
             source_model="funds",
             dimensions=[ColumnRef(name="geozone")],
-            measures=[ModelMeasure(formula="rank(expensenet:sum)", name="expense_rank")],
+            measures=[ModelMeasure(formula="rank(expensenet:sum, direction='desc')", name="expense_rank")],
             limit=3,
         )
         sql = await _generate(query, funds_model)
@@ -305,9 +305,9 @@ class TestWindowArgReuse:
     @pytest.mark.parametrize(
         "transform_formula,measure_name",
         [
-            ("rank(revenue:sum)",                       "r_rank"),
+            ("rank(revenue:sum, direction='desc')",                       "r_rank"),
             ("percent_rank(revenue:sum)",               "r_pct_rank"),
-            ("dense_rank(revenue:sum)",                 "r_dense"),
+            ("dense_rank(revenue:sum, direction='desc')",                 "r_dense"),
             ("ntile(revenue:sum, n=3)",                 "r_ntile"),
             ("cumsum(revenue:sum)",                     "r_cumsum"),
             ("lag(revenue:sum, -1)",                    "r_lag"),
@@ -503,7 +503,7 @@ class TestResponseAttributesAlignment:
         query = SlayerQuery(
             source_model="funds",
             dimensions=[ColumnRef(name="geozone")],
-            measures=[ModelMeasure(formula="rank(expensenet:sum)", name="expense_rank")],
+            measures=[ModelMeasure(formula="rank(expensenet:sum, direction='desc')", name="expense_rank")],
             limit=3,
         )
         resp = await engine.execute(query=query, dry_run=True)
@@ -655,7 +655,7 @@ class TestEdgeCases:
     async def test_rank_inside_arithmetic_reuses_named_arg(
         self, orders_model: SlayerModel,
     ) -> None:
-        """A formula like ``rank(revenue:sum) + 1`` whose inner argument is
+        """A formula like ``rank(revenue:sum, direction='desc') + 1`` whose inner argument is
         already a declared named measure must reuse that alias and not
         re-materialize the inner aggregate."""
         query = SlayerQuery(
@@ -666,7 +666,7 @@ class TestEdgeCases:
             )],
             measures=[
                 ModelMeasure(formula="revenue:sum", name="total"),
-                ModelMeasure(formula="rank(revenue:sum) + 1", name="rank_plus_one"),
+                ModelMeasure(formula="rank(revenue:sum, direction='desc') + 1", name="rank_plus_one"),
             ],
         )
         sql = await _generate(query, orders_model)
@@ -719,7 +719,7 @@ class TestMultiStageSourceQueries:
             name="inner_stage",
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="rank(revenue:sum)", name="rev_rank")],
+            measures=[ModelMeasure(formula="rank(revenue:sum, direction='desc')", name="rev_rank")],
         )
         outer = SlayerQuery(
             source_model="inner_stage",
@@ -756,7 +756,7 @@ class TestMultiDialectProjectionTrim:
         query = SlayerQuery(
             source_model="funds",
             dimensions=[ColumnRef(name="geozone")],
-            measures=[ModelMeasure(formula="rank(expensenet:sum)", name="expense_rank")],
+            measures=[ModelMeasure(formula="rank(expensenet:sum, direction='desc')", name="expense_rank")],
             limit=3,
         )
         sql = await _generate(query, funds_model, dialect=dialect)
@@ -790,7 +790,7 @@ class TestStagedProjectionTrim:
         query = SlayerQuery(
             source_model="funds",
             dimensions=[ColumnRef(name="geozone")],
-            measures=[ModelMeasure(formula="rank(expensenet:sum)", name="expense_rank")],
+            measures=[ModelMeasure(formula="rank(expensenet:sum, direction='desc')", name="expense_rank")],
         )
         model = await engine.create_model_from_query(query=query, name="ranked_funds", save=True)
         # The model's `columns` (derived from the wrapped query's projection)
@@ -821,7 +821,7 @@ class TestStagedProjectionTrim:
             name="ranked",
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="rank(revenue:sum)", name="r")],
+            measures=[ModelMeasure(formula="rank(revenue:sum, direction='desc')", name="r")],
         )
         outer = SlayerQuery(
             source_model="ranked",
@@ -1150,7 +1150,7 @@ class TestWindowChainReuse:
         self, orders_model: SlayerModel,
     ) -> None:
         """``m1={"formula":"revenue:sum","name":"total"}`` plus
-        ``m2={"formula":"rank(revenue:sum)","name":"r"}`` → ``r``'s OVER
+        ``m2={"formula":"rank(revenue:sum, direction='desc')","name":"r"}`` → ``r``'s OVER
         references ``total``'s alias (orders.total), no inner duplicate."""
         query = SlayerQuery(
             source_model="orders",
@@ -1160,7 +1160,7 @@ class TestWindowChainReuse:
             )],
             measures=[
                 ModelMeasure(formula="revenue:sum", name="total"),
-                ModelMeasure(formula="rank(revenue:sum)", name="r"),
+                ModelMeasure(formula="rank(revenue:sum, direction='desc')", name="r"),
             ],
         )
         sql = await _generate(query, orders_model)
@@ -1181,7 +1181,7 @@ class TestWindowChainReuse:
     async def test_nested_window_formula_stages_without_duplicate(
         self, orders_model: SlayerModel,
     ) -> None:
-        """``rank(rank(revenue:sum))`` named ``r2`` stages naturally as
+        """``rank(rank(revenue:sum, direction='desc'), direction='desc')`` named ``r2`` stages naturally as
         step1+step2 CTEs; the outer SELECT projects ``[created_at, r2]``
         only; no ``_inner_*`` duplicate hoist."""
         query = SlayerQuery(
@@ -1190,7 +1190,7 @@ class TestWindowChainReuse:
                 dimension=ColumnRef(name="created_at"),
                 granularity=TimeGranularity.MONTH,
             )],
-            measures=[ModelMeasure(formula="rank(rank(revenue:sum))", name="r2")],
+            measures=[ModelMeasure(formula="rank(rank(revenue:sum, direction='desc'), direction='desc')", name="r2")],
         )
         sql = await _generate(query, orders_model)
         outer_cols = _outer_select_columns(sql)
@@ -1198,7 +1198,7 @@ class TestWindowChainReuse:
         # Two RANK() OVER (...) windows must appear, stacked across CTE layers.
         rank_count = sql.upper().count("RANK()")
         assert rank_count >= 2, (
-            f"nested rank(rank(...)) needs two RANK() windows, found {rank_count}.\n"
+            f"nested rank(rank(..., direction='desc'), direction='desc') needs two RANK() windows, found {rank_count}.\n"
             f"SQL:\n{sql}"
         )
 

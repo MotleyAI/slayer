@@ -69,7 +69,7 @@ class TestMemoryCRUD:
         assert memory.learning.startswith("orders.is_returned")
         assert memory.entities == ["mydb.orders.is_returned"]
         assert memory.query is None
-        assert memory.version == 2
+        assert memory.version == 3
         assert memory.created_at is not None
 
     async def test_save_with_query_persists_query(

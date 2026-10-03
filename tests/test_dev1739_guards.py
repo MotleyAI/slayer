@@ -142,7 +142,7 @@ class TestDriveByNonRankTransform:
     async def test_partition_by_still_accepted_on_rank(self) -> None:
         sql = await gen(_q(
             dimensions=["region", "city"],
-            measures=[ModelMeasure(formula="rank(amount:sum, partition_by=region)")],
+            measures=[ModelMeasure(formula="rank(amount:sum, partition_by=region, direction='desc')")],
         ))
         upper = sql.upper()
         assert "RANK()" in upper

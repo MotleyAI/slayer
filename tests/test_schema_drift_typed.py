@@ -147,7 +147,7 @@ class TestWalkParsedRefs:
         # only the transform input, so partition columns never surface.
         nodes = list(
             walk_parsed_refs(
-                parse_expr("rank(amount:sum, partition_by=[region, channel])")
+                parse_expr("rank(amount:sum, partition_by=[region, channel], direction='desc')")
             )
         )
         assert nodes == [AggCall(source=Ref(name="amount"), agg="sum")]
@@ -223,7 +223,7 @@ class TestMeasureFormulaRefs:
         # must accept it. Only the inner value's refs surface (legacy never
         # extracted the partition columns either).
         assert _measure_formula_refs(
-            "rank(revenue:sum, partition_by=[status, customer_id])"
+            "rank(revenue:sum, partition_by=[status, customer_id], direction='desc')"
         ) == {"revenue"}
 
     def test_func_style_simple_agg_rewritten(self) -> None:

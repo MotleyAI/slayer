@@ -9,7 +9,9 @@ identifier under the product-wide expression-name convention: lowercase, every
 run of non-alphanumeric characters collapsed to one `_`, leading/trailing `_`
 stripped, a leading digit guarded, names over 48 characters folded to
 `<head>_<hash8>_<tail>`, and no `__` in the result. The SQL projection alias
-SHALL use the same derived name.
+SHALL use the same derived name. In the canonical formula text a rank-family
+`direction` SHALL appear as its bare normalised value (`asc` / `desc`), never as
+`direction=...`.
 
 #### Scenario: Arithmetic composite
 
@@ -20,6 +22,15 @@ SHALL use the same derived name.
 
 - **WHEN** an unnamed measure `time_shift(sum(cmrr_eop), -1, 'year')` is queried on model `mart`
 - **THEN** its result key is `mart.time_shift_cmrr_eop_sum_1_year`
+
+#### Scenario: Rank direction spelled as its bare value
+
+- **WHEN** the unnamed measures `rank(sum(a), direction='desc')`,
+  `rank(sum(a), direction='Ascending')` and
+  `rank(sum(a), partition_by=r, direction='asc')` are queried on model `o`
+- **THEN** their result keys are `o.rank_a_sum_desc`, `o.rank_a_sum_asc` and
+  `o.rank_a_sum_partition_by_r_asc`, while `ntile(sum(a), n=4)` keeps
+  `o.ntile_a_sum_n_4`
 
 #### Scenario: Formatting-insensitive derivation
 

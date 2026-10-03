@@ -10,7 +10,9 @@ Substitution spans SLayer's [two expression layers](../../concepts/references.md
 
 - **Mode B — the DSL.** A query's `filters` reference dimension and measure
   names. A `{var}` here is filled from the query's `variables` and applied as a
-  post-aggregation predicate on named entities.
+  post-aggregation predicate on named entities. Measure formulas, computed
+  dimensions, `order` expressions, `date_range` bounds and the source model's saved
+  measures take placeholders too (`"measures": ["sum(order_total) * {rate} / 100"]`).
 - **Mode A — raw SQL.** A model's `sql` and `filters`, and every `Column`'s `sql`
   and `filter`, are raw SQL over the underlying table. A `{var}` here is injected
   directly into that SQL, so it takes effect **before** aggregation — inside a
@@ -112,7 +114,7 @@ Substitution currently applies to a query's **direct source model**; nested
 follow-up.
 
 See [Variables in model SQL](../../concepts/models.md#variables-in-model-sql) and
-[Filter Variables](../../concepts/queries.md#filter-variables) for the reference
+[Variables](../../concepts/queries.md#variables) for the reference
 details.
 
 ---
