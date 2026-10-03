@@ -33,7 +33,7 @@ IDENTIFIER_RE = re.compile(r"^[a-zA-Z_]\w*$")
 # An identifier or dotted path; used to scan formula text for reference candidates.
 IDENT_OR_PATH_RE = re.compile(r"[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*")
 
-# Aggregation colon syntax (``revenue:sum``, ``*:count``). Group 1 measure name,
+# Legacy colon aggregation spelling (``revenue:sum``, ``*:count``). Group 1 measure name,
 # group 2 aggregation name, group 3 optional ``(...)`` arglist.
 AGG_REF_RE = re.compile(
     r"(\*|[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*(?:\.\*)?)"  # measure / *
@@ -459,7 +459,7 @@ def canonical_agg_name(
 
 
 def strip_agg_suffix(raw: str) -> tuple[str, str | None]:
-    """Return ``(prefix, agg_name)`` stripping a trailing ``:agg``/``:agg(...)`` (arglist discarded); locates the outermost colon (outside parens) so ``revenue:last(created_at)`` isn't fooled."""
+    """Return ``(prefix, agg_name)`` stripping a trailing legacy colon suffix ``:agg``/``:agg(...)`` (arglist discarded); locates the outermost colon (outside parens) so ``revenue:last(created_at)`` isn't fooled."""
     depth = 0
     for i, ch in enumerate(raw):
         if ch == "(":
@@ -475,7 +475,7 @@ def strip_agg_suffix(raw: str) -> tuple[str, str | None]:
 
 
 def split_agg_suffix(raw: str) -> tuple[str, str | None]:
-    """Return ``(prefix, suffix)`` splitting a trailing ``:agg`` but keeping the full suffix (args included) — unlike :func:`strip_agg_suffix`, so a re-rooted reference re-attaches it verbatim."""
+    """Return ``(prefix, suffix)`` splitting a trailing legacy colon suffix ``:agg`` but keeping the full suffix (args included) — unlike :func:`strip_agg_suffix`, so a re-rooted reference re-attaches it verbatim."""
     depth = 0
     for i, ch in enumerate(raw):
         if ch == "(":

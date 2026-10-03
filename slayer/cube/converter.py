@@ -2,7 +2,7 @@
 
 Mirrors ``slayer/dbt/converter.py``. For each cube → one table-owning model;
 for each view → one facade model. Everything that can't map cleanly is recorded
-on the ``CubeConversionReport``. See DEV-1608.
+on the ``CubeConversionReport``.
 """
 
 import logging
@@ -74,7 +74,7 @@ def _sql_str_literal(value) -> str:
 def _case_when_predicates(dim) -> list[dict]:
     """Return the ``when`` predicate dicts of a CASE-WHEN dimension (each carries
     a ``sql``), or ``[]`` for a non-case dimension. These are Mode-A surfaces too,
-    so they can host FILTER_PARAMS (DEV-1730)."""
+    so they can host FILTER_PARAMS."""
     if not dim.case:
         return []
     return [w for w in dim.case.get("when", []) if isinstance(w, dict)]
@@ -105,7 +105,7 @@ class _Names:
         self.used.add(name)
 
 
-#: Cube ``relationship`` → SLayer ``JoinCardinality`` (DEV-1836 D8, closed table).
+#: Cube ``relationship`` → SLayer ``JoinCardinality`` (closed table).
 _RELATIONSHIP_CARDINALITY = {
     "many_to_one": JoinCardinality.MANY_TO_ONE,
     "belongs_to": JoinCardinality.MANY_TO_ONE,
@@ -235,7 +235,7 @@ class CubeToSlayerConverter:
         self.project = project
         self.data_source = data_source
         self.parse_issues = parse_issues or []
-        # DEV-1730: honor a member's truthy ``meta.required`` by emitting its
+        # honor a member's truthy ``meta.required`` by emitting its
         # FILTER_PARAMS pushdown as a required (raise-on-missing) variable rather
         # than an optional block. ``--ignore-required-meta`` flips this off.
         self.honor_required_meta = honor_required_meta
@@ -273,7 +273,7 @@ class CubeToSlayerConverter:
                 models.append(model)
                 self._models[model.name] = model
 
-        # DEV-1853: mutually-inverse declarations collapse to one edge (reverse
+        # mutually-inverse declarations collapse to one edge (reverse
         # traversal is automatic); contradicting pairs import both edges. After
         # view conversion so facades still see the pre-dedup root joins.
         self._dedup_inverse_joins(
@@ -288,7 +288,7 @@ class CubeToSlayerConverter:
     # ── cube → model ───────────────────────────────────────────────────────
 
     def _convert_cube(self, cube: CubeCube, report: CubeConversionReport) -> SlayerModel | None:
-        # DEV-1730: gather + validate FILTER_PARAMS refs BEFORE any translation,
+        # gather + validate FILTER_PARAMS refs BEFORE any translation,
         # so a bad ref drops the cube cleanly with no half-built variable entries.
         setup = self._setup_filter_params(cube, report)
         if setup is None:
@@ -371,7 +371,7 @@ class CubeToSlayerConverter:
             ))
         return meta, unmapped
 
-    # ── FILTER_PARAMS (DEV-1730) ────────────────────────────────────────────
+    # ── FILTER_PARAMS ────────────────────────────────────────────
 
     def _setup_filter_params(
         self, cube: CubeCube, report: CubeConversionReport
@@ -494,8 +494,8 @@ class CubeToSlayerConverter:
         ``col IN ({var})``, whose parentheses the importer — not the caller —
         wrote, so the caller cannot supply the per-element quotes a scalar
         placeholder normally expects. Flagging it lets the engine coerce a bare
-        scalar to a one-element list instead of rendering an unquoted identifier
-        (DEV-1730). ``kind`` stays Cube's own taxonomy, for the report/humans.
+        scalar to a one-element list instead of rendering an unquoted identifier.
+        ``kind`` stays Cube's own taxonomy, for the report/humans.
         """
         required = self._required_members(cube, refs)
         out: dict = {}
@@ -811,8 +811,8 @@ class CubeToSlayerConverter:
                 good_cols.append(col)
                 continue
             try:
-                # A column sql may carry {? ?} blocks / {var} placeholders
-                # (DEV-1730); probe-render before the syntax-only parse.
+                # A column sql may carry {? ?} blocks / {var} placeholders;
+                # probe-render before the syntax-only parse.
                 sqlglot.parse_one(render_probe_text(col.sql))
                 good_cols.append(col)
             except Exception:  # noqa: BLE001

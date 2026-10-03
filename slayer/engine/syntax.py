@@ -3,7 +3,7 @@
 ``parse_expr(text) -> ParsedExpr`` lowers a Mode-B DSL string
 (``ModelMeasure.formula``, ``SlayerQuery.measures`` / ``.filters``) to a typed
 tree — pure syntax, no scope resolution or named-measure expansion (binder's
-job). Grammar: bare/dotted refs; colon or functional aggregations, which
+job). Grammar: bare/dotted refs; functional or legacy colon aggregations, which
 collapse to one ``AggCall``; transform calls; a closed scalar
 allowlist; arithmetic / comparison / boolean / unary; grouping. Rejects
 non-allowlisted calls, raw ``OVER(...)``, and chained comparisons.
@@ -432,7 +432,7 @@ def parse_expr(text: str) -> ParsedExpr:
         )
 
     preprocessed, agg_map = _preprocess_colons(_rewrite_case_when(text))
-    # AFTER the colon pass — ``customers.*:count`` must become a colon
+    # AFTER the legacy colon pass — ``customers.*:count`` must become a
     # placeholder first, so the only ``*`` left in call-first-arg position is
     # the functional spelling (``count(*)`` / ``count(customers.*)``).
     preprocessed = _preprocess_star_args(preprocessed)
@@ -512,7 +512,7 @@ def _classify_paren(
     """Classify an open ``(`` as a CALL or GROUPING paren.
 
     A call paren follows a bare identifier or a ``)`` / ``]``; lowercase keywords
-    (``and`` / ``not`` / ``in`` …) do not open one. After a ``:``
+    (``and`` / ``not`` / ``in`` …) do not open one. After a legacy colon
     (``revenue:first(...)``) the callee is dropped to ``None`` so
     :func:`_is_kwarg_equals` treats it as an aggregation, not a transform.
     """
@@ -724,7 +724,7 @@ def _reject_reserved_expr_token(text: str) -> None:
     """Reject the reserved ``__slayer_`` token in RAW Mode-B input (P3).
 
     Runs BEFORE ``_preprocess_colons`` mints its own ``__slayer_agg_N__``
-    placeholders, so a colon-agg like ``revenue:sum`` is unaffected while a
+    placeholders, so a legacy colon-spelling ``revenue:sum`` is unaffected while a
     literal ``__slayer_agg_0__`` spoof is rejected [C3]. String literals are
     blanked first (Python syntax, so escapes count) so quoted data is never
     mistaken for an identifier. Matched at an identifier boundary so a legal
@@ -741,7 +741,7 @@ def _reject_reserved_expr_token(text: str) -> None:
 def _preprocess_colons(
     text: str,
 ) -> Tuple[str, Dict[int, Tuple[Ref | DottedRef | StarSource, str]]]:
-    """Replace ``<source>:<agg>`` with placeholder identifiers.
+    """Replace the legacy colon spelling ``<source>:<agg>`` with placeholder identifiers.
 
     Captures source kind + agg name. Any trailing ``(args)`` is left in
     place so Python's AST parses it naturally as a Call. String literal
@@ -750,8 +750,7 @@ def _preprocess_colons(
     agg_map: Dict[int, Tuple[Ref | DottedRef | StarSource, str]] = {}
     counter = [0]
     literal_spans = [
-        # CR review: use the escape-aware matcher so backslash-escaped
-        # quotes don't leak ``:sum`` colon rewrites into the string body.
+        # Escape-aware, so escaped quotes don't leak colon rewrites into the string body.
         (m.start(), m.end()) for m in _PY_STRING_LITERAL_RE.finditer(text)
     ]
 
@@ -860,7 +859,7 @@ def _convert(node: ast.AST, *, agg_map: Dict, original: str) -> ParsedExpr:  # N
     if isinstance(node, ast.Attribute):
         parts = _flatten_attribute(node, original=original)
         # ``count(customers.*)`` — the star pre-pass turned the trailing ``*``
-        # into the star token; restore it so the DottedRef matches colon form.
+        # into the star token; restore it so the DottedRef matches the legacy colon form.
         parts = ["*" if p == _STAR_ARG_TOKEN else p for p in parts]
         return DottedRef(parts=tuple(parts))
 
@@ -1193,14 +1192,14 @@ def _convert_call(  # NOSONAR(S3776) — the one call-dispatch ladder (colon pla
         if kw.arg is not None  # guarded above; narrows kw.arg to str
     )
 
-    # Colon-aggregation placeholder?
+    # Legacy colon-spelling placeholder?
     if m:
         idx = int(m.group(1))
         source, agg = agg_map[idx]
         return AggCall(source=source, agg=agg, args=args, kwargs=kwargs)
 
     # Functional builtin aggregation? Matched via alias/case healing, exactly
-    # like colon names heal at binding; ``agg`` stores the RAW token so both
+    # like legacy colon names heal at binding; ``agg`` stores the RAW token so both
     # spellings collapse to the identical AggCall. ``first``/``last`` dispatch at
     # bind by the operand's type.
     if normalize_aggregation_name(func_name) in BUILTIN_AGGREGATIONS:
@@ -1244,8 +1243,8 @@ def _convert_call(  # NOSONAR(S3776) — the one call-dispatch ladder (colon pla
         name = func_name.lower()
         return ScalarCall(name=name, args=_date_args(name=name, args=args, original=original))
 
-    # Unknown name with an aggregatable first arg → AggCall candidate (parity
-    # with ``x:whatever``), validated at binding. A custom aggregation over an
+    # Unknown name with an aggregatable first arg → AggCall candidate, validated
+    # at binding. A custom aggregation over an
     # attached source is a re-aggregation, validated like any other.
     if args and isinstance(args[0], _AGG_SOURCE_KINDS) and not _contains_agg_or_transform(args[0]):
         return AggCall(source=args[0], agg=func_name, args=args[1:], kwargs=kwargs)
@@ -1361,9 +1360,9 @@ def _canonical_kwarg_text(value: Any) -> str:
 
 
 def canonical_measure_text(parsed: Any) -> str:  # NOSONAR(S3776) — flat per-node-kind rendering table; each branch is one spelling rule.
-    """Render a ``ParsedExpr`` back to canonical colon-spelling text.
+    """Render a ``ParsedExpr`` back to canonical legacy colon-spelling text.
 
-    Used for alias derivation so the functional and colon spellings of one
+    Used for alias derivation so the functional and legacy colon spellings of one
     formula sanitize to the SAME public name. Deterministic, not a
     verbatim round-trip: grouping parens are dropped and spacing normalised.
     """
@@ -1438,10 +1437,10 @@ def _functional_suffix_text(raw: str, *, agg: str) -> str:
 
 def split_entity_agg_ref(raw: str) -> Tuple[str, Optional[str]]:
     """``(prefix, agg_suffix)`` of a single aggregated-column entity
-    reference, accepting BOTH spellings: ``orders.amount:sum`` and
-    ``sum(orders.amount)`` split identically.
+    reference: ``sum(orders.amount)`` and the legacy ``orders.amount:sum`` split
+    identically.
 
-    Colon and call-free text splits exactly like
+    Legacy colon and call-free text splits exactly like
     :func:`slayer.core.refs.split_agg_suffix`. Functional text must parse to
     an ``AggCall`` over a pure column / star source; multi-column expression
     text (``sum(a - b)``) raises ``ValueError`` — an expression is not an

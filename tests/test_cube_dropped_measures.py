@@ -101,6 +101,7 @@ def test_view_does_not_reexport_dropped_measures(converted) -> None:
     models, _ = converted
     view = models["orders_view"]
     names = {m.name for m in view.measures}
-    assert "count" in names and "ok_total" in names
+    assert "count" in names
+    assert "ok_total" in names
     assert "bad_total" not in names
     assert not any(n.startswith("status") for n in names)

@@ -11,6 +11,9 @@ Callbacks (so the transform is model-agnostic and unit-testable in isolation):
 
 import sqlglot
 
+from slayer.core.enums import DataType
+from slayer.core.models import Column, ModelJoin, SlayerModel
+from slayer.engine.join_graph import JoinGraph
 from slayer.osi.expression import convert_expression
 
 # Single-model context: everything is owned by "orders"; refs are local (bare).
@@ -32,7 +35,9 @@ def _norm(sql: str) -> str:
 
 def test_sum_bare():
     r = _run("SUM(amount)")
-    assert r.ok and r.formula == "sum(amount)" and r.materialized == []
+    assert r.ok
+    assert r.formula == "sum(amount)"
+    assert r.materialized == []
 
 
 def test_count_star():
@@ -69,7 +74,8 @@ def test_ratio_is_plain_arithmetic():
 
 def test_scalar_passthrough_nullif():
     r = _run("SUM(amount) / NULLIF(COUNT(*), 0)")
-    assert r.ok and r.formula == "sum(amount) / nullif(count(*), 0)"
+    assert r.ok
+    assert r.formula == "sum(amount) / nullif(count(*), 0)"
 
 
 def test_constant_times_agg():
@@ -91,14 +97,16 @@ def test_materialize_arithmetic_operand():
 
 def test_materialize_scalar_operand():
     r = _run("SUM(COALESCE(amount, 0))", entity_name="safe_rev")
-    assert r.ok and len(r.materialized) == 1
+    assert r.ok
+    assert len(r.materialized) == 1
     assert _norm(r.materialized[0].sql) == _norm("COALESCE(amount, 0)")
     assert r.formula == f"sum({r.materialized[0].name})"
 
 
 def test_materialize_case_filtered_count():
     r = _run("COUNT(CASE WHEN status = 'paid' THEN 1 END)", entity_name="paid_ct")
-    assert r.ok and len(r.materialized) == 1
+    assert r.ok
+    assert len(r.materialized) == 1
     assert "CASE" in r.materialized[0].sql.upper()
     assert r.formula == f"count({r.materialized[0].name})"
 
@@ -116,7 +124,9 @@ def test_cross_dataset_operand_clean_fails():
     # quantity belongs to orders, price to products -> operand spans datasets.
     owner = lambda q, c: "orders" if c == "quantity" else "products"  # noqa: E731
     r = _run("SUM(quantity * price)", owner_of=owner)
-    assert not r.ok and r.formula is None and r.reason
+    assert not r.ok
+    assert r.formula is None
+    assert r.reason
 
 
 # ───────────────────────────── percentile ──────────────────────────────────
@@ -141,7 +151,8 @@ def test_percentile_disc():
 
 def test_percentile_out_of_range_clean_fails():
     r = _run("PERCENTILE_CONT(1.5) WITHIN GROUP (ORDER BY amount)")
-    assert not r.ok and r.reason
+    assert not r.ok
+    assert r.reason
 
 
 def test_percentile_nonliteral_clean_fails():
@@ -154,7 +165,8 @@ def test_percentile_unsupported_dialect_warns_but_emits():
         "PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY amount)",
         percentile_unsupported=True,
     )
-    assert r.ok and r.formula == "percentile(amount, p=0.9)"
+    assert r.ok
+    assert r.formula == "percentile(amount, p=0.9)"
     assert r.warnings
 
 
@@ -162,7 +174,9 @@ def test_percentile_unsupported_dialect_warns_but_emits():
 
 def test_top_level_case_clean_fails():
     r = _run("CASE WHEN status = 'x' THEN 1 ELSE 0 END")
-    assert not r.ok and r.formula is None and r.reason
+    assert not r.ok
+    assert r.formula is None
+    assert r.reason
 
 
 def test_bare_unaggregated_column_clean_fails():
@@ -202,23 +216,21 @@ def test_qualified_column_emits_dotted_ref():
     owner = lambda q, c: "customers"  # noqa: E731
     ref = lambda m, c: f"customers.{c}"  # noqa: E731
     r = _run("COUNT(DISTINCT customers.customer_id)", owner_of=owner, ref_of=ref)
-    assert r.ok and r.formula == "count_distinct(customers.customer_id)"
+    assert r.ok
+    assert r.formula == "count_distinct(customers.customer_id)"
 
 
 def test_unreachable_ref_clean_fails():
     owner = lambda q, c: "regions"  # noqa: E731
     ref = lambda m, c: None          # noqa: E731  (no join path from anchor)
     r = _run("SUM(regions.population)", owner_of=owner, ref_of=ref)
-    assert not r.ok and r.reason
+    assert not r.ok
+    assert r.reason
 
 
 def test_multihop_ref_backed_by_real_join_graph():
     # Prove the expression layer builds the SAME dotted path the converter would,
     # driven by JoinGraph.shortest_path (orders -> customers -> regions).
-    from slayer.core.enums import DataType
-    from slayer.core.models import Column, ModelJoin, SlayerModel
-    from slayer.engine.join_graph import JoinGraph
-
     models = [
         SlayerModel(name="orders", sql_table="orders", data_source="d",
                     columns=[Column(name="customer_id", type=DataType.INT)],
@@ -241,4 +253,5 @@ def test_multihop_ref_backed_by_real_join_graph():
         return ".".join([*path, column])
 
     r = _run("SUM(regions.population)", owner_of=lambda q, c: "regions", ref_of=ref_of)
-    assert r.ok and r.formula == "sum(customers.regions.population)"
+    assert r.ok
+    assert r.formula == "sum(customers.regions.population)"

@@ -69,7 +69,7 @@ class _SubstringRule:
 
 
 # ``__`` is allowed in names; only the internal ``__slayer_`` prefix
-# is reserved, so user input cannot spoof colon-agg preprocessor identifiers.
+# is reserved, so user input cannot spoof the parser's placeholder identifiers.
 _RESERVED_NAME_PREFIX = "__slayer_"
 
 

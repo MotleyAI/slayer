@@ -653,7 +653,7 @@ ORDER_PLACEHOLDER_NAMES = frozenset({_FUNCSTYLE_PENDING, _EXPR_PENDING})
 
 
 def _order_formula_candidate(v: str) -> str | None:
-    """``v`` verbatim if it carries a measure expression (colon aggregation,
+    """``v`` verbatim if it carries a measure expression (legacy colon spelling,
     call-style text, or an expression containing an aggregation), else
     ``None``; shared by ``_capture_raw_formula`` and ``_coerce_order_column``
     so they can't drift. The author's spelling is preserved — resolution
@@ -683,8 +683,8 @@ def _is_valid_column_ref_name(name: str) -> bool:
 
 
 def _coerce_order_column(v: Any) -> Any:
-    """Coerce an ORDER BY column. Colon aggregations normalize to the underscore
-    form (``revenue:sum`` → ``revenue_sum``); call-style entries (``sum(revenue)``,
+    """Coerce an ORDER BY column. Legacy colon-spelling aggregations normalize to the
+    underscore form (``revenue:sum`` → ``revenue_sum``); call-style entries (``sum(revenue)``,
     ``my_agg(price)``) emit a placeholder whose ``raw_formula`` the planner binds;
     other non-column expressions carry ``raw_formula`` under ``_EXPR_PENDING``."""
     if isinstance(v, str):

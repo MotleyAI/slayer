@@ -41,16 +41,16 @@ value from colon to functional, keeping colon inputs.
 
 ## 6. Comments and docstrings (D7)
 
-- [ ] 6.1 Sweep `slayer/` per D7 (files listed in the issue §4); verify a grep for colon aggregation examples in comments/docstrings shows only legacy-machinery descriptions, each labelled "legacy colon spelling"
+- [x] 6.1 Sweep `slayer/` per D7 (files listed in the issue §4); verify a grep for colon aggregation examples in comments/docstrings shows only legacy-machinery descriptions, each labelled "legacy colon spelling"
 
 ## 7. Docs and architecture
 
 - [x] 7.1 `docs/dbt/dbt_import.md` mapping row → `<agg>(col)`; verify a colon-spelling grep over `docs/` is empty
-- [ ] 7.2 Apply arc42 edits E1 and E2 verbatim from design.md (approved); verify `la-arch-check` (pinned uvx form) passes
+- [x] 7.2 Apply arc42 edits E1 and E2 verbatim from design.md (approved); verify `la-arch-check` (pinned uvx form) passes
 
 ## 8. Verification
 
-- [ ] 8.1 `poetry run pytest -m "not integration"` green
-- [ ] 8.2 `poetry run ruff check slayer/ tests/` and `poetry run basedpyright` (no new errors vs baseline) green
-- [ ] 8.3 `openspec validate dev-2042-purge-colon-aggregation-syntax-from-agent-facing-surfaces --strict` green
-- [ ] 8.4 Residual-colon scan (broad pattern incl. custom aggregation names) over `slayer/` agent-visible strings, `docs/`, `architecture/` and the change's deltas: only the legacy-acceptance requirement and legacy-machinery comments remain
+- [x] 8.1 `poetry run pytest -m "not integration"` green
+- [x] 8.2 `poetry run ruff check slayer/ tests/` and `poetry run basedpyright` (no new errors vs baseline) green
+- [x] 8.3 `openspec validate dev-2042-purge-colon-aggregation-syntax-from-agent-facing-surfaces --strict` green
+- [x] 8.4 Residual-colon scan (broad pattern incl. custom aggregation names) over `slayer/` agent-visible strings, `docs/`, `architecture/` and the change's deltas: only the legacy-acceptance requirement and legacy-machinery comments remain

@@ -75,7 +75,8 @@ def _reported(result) -> bool:
 def _single_agg(formula: str) -> tuple[str, str]:
     """``(agg, column)`` of a single-aggregation formula over a bare column."""
     parsed = parse_expr(formula)
-    assert isinstance(parsed, AggCall) and isinstance(parsed.source, Ref)
+    assert isinstance(parsed, AggCall)
+    assert isinstance(parsed.source, Ref)
     return parsed.agg, parsed.source.name
 
 

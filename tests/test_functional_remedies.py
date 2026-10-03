@@ -8,6 +8,7 @@ from pydantic import ValidationError
 from slayer.core.errors import DerivedColumnFanningError
 from slayer.core.formula import parse_formula
 from slayer.core.models import Column, ModelMeasure
+from slayer.engine.column_dependency import _unproven_arity_message
 from slayer.engine.syntax import split_entity_agg_ref
 from slayer.sql.generator import AggRenderSpec, SQLGenerator
 from tests._dev1832_fixtures import gen, orders_q
@@ -25,6 +26,12 @@ def test_derived_column_fanning_remedy() -> None:
         column="li_qty", model="orders", hop="line_items", reference="orders.line_items.qty",
     ))
     assert "<aggregation>(orders.line_items.qty)" in msg
+    _assert_no_colon_agg(msg)
+
+
+def test_unproven_arity_remedy() -> None:
+    msg = _unproven_arity_message(column="li_qty", model="orders", hop="line_items")
+    assert "(<aggregation>(line_items.<column>))" in msg
     _assert_no_colon_agg(msg)
 
 
@@ -51,8 +58,9 @@ def test_missing_parameter_remedy_in_generator() -> None:
         name="amount", sql="amount", model_name="orders", alias="amount_percentile",
         aggregation="percentile", agg_kwargs={},
     )
+    generator = SQLGenerator(dialect="postgres")
     with pytest.raises(ValueError, match="requires parameter 'p'") as ei:
-        SQLGenerator(dialect="postgres")._build_percentile(spec)
+        generator._build_percentile(spec)
     msg = str(ei.value)
     assert "'percentile(measure, p=column)'" in msg
     _assert_no_colon_agg(msg)
