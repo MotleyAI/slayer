@@ -303,7 +303,7 @@ class TestOrderOnlyTransform:
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             measures=[ModelMeasure(formula="amount:sum")],
-            order=[OrderItem(column="rank(amount:sum, direction='desc')", direction="desc")],
+            order=[OrderItem.model_validate({"column": "rank(amount:sum, direction='desc')", "direction": "desc"})],
         )
         sql = await _sql(engine, query)
         assert _outer_select_columns(sql) == ["orders.status", "orders.amount_sum"], sql
@@ -343,7 +343,7 @@ class TestOrderOnlyTransform:
             source_model="orders",
             time_dimensions=_MONTH,
             measures=[ModelMeasure(formula="cumsum(amount:sum)", name="cs")],
-            order=[OrderItem(column="rank(amount:sum, direction='desc')", direction="desc")],
+            order=[OrderItem.model_validate({"column": "rank(amount:sum, direction='desc')", "direction": "desc"})],
         )
         sql = await _sql(engine, query)
         assert _outer_select_columns(sql) == ["orders.created_at", "orders.cs"], sql
@@ -354,7 +354,7 @@ class TestOrderOnlyTransform:
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             measures=[ModelMeasure(formula="amount:sum")],
-            order=[OrderItem(column="rank(amount:sum, direction='desc')", direction="desc")],
+            order=[OrderItem.model_validate({"column": "rank(amount:sum, direction='desc')", "direction": "desc"})],
             limit=2, offset=1,
         )
         sql = await _sql(engine, query)
@@ -370,7 +370,7 @@ class TestOrderOnlyTransform:
             time_dimensions=_MONTH,
             measures=[ModelMeasure(formula="cumsum(amount:sum)", name="cs")],
             filters=["cs > 5"],
-            order=[OrderItem(column="rank(amount:sum, direction='desc')", direction="desc")],
+            order=[OrderItem.model_validate({"column": "rank(amount:sum, direction='desc')", "direction": "desc"})],
         )
         sql = await _sql(engine, query)
         assert _outer_select_columns(sql) == ["orders.created_at", "orders.cs"], sql
@@ -579,8 +579,8 @@ class TestHiddenAliasUniqueness:
             dimensions=[ColumnRef(name="status")],
             measures=[ModelMeasure(formula="*:count")],
             order=[
-                OrderItem(column="rank(amount:sum, direction='desc')", direction="desc"),
-                OrderItem(column="rank(fee:sum, direction='desc')", direction="asc"),
+                OrderItem.model_validate({"column": "rank(amount:sum, direction='desc')", "direction": "desc"}),
+                OrderItem.model_validate({"column": "rank(fee:sum, direction='desc')", "direction": "asc"}),
             ],
         )
         sql = await _sql(engine, query)
@@ -1063,7 +1063,7 @@ class TestDialectEmission:
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             measures=[ModelMeasure(formula="amount:sum")],
-            order=[OrderItem(column="rank(amount:sum, direction='desc')", direction="desc")],
+            order=[OrderItem.model_validate({"column": "rank(amount:sum, direction='desc')", "direction": "desc"})],
         )
         resp = await eng.execute(query, dry_run=True)
         sql = resp.sql or ""
@@ -1121,7 +1121,7 @@ class TestExecution:
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             measures=[ModelMeasure(formula="amount:sum")],
-            order=[OrderItem(column="rank(amount:sum, direction='desc')", direction="desc")],
+            order=[OrderItem.model_validate({"column": "rank(amount:sum, direction='desc')", "direction": "desc"})],
         )
         resp = await exec_engine.execute(query)
         assert [r["orders.status"] for r in resp.data] == ["open", "paid"], resp.data
@@ -1203,7 +1203,7 @@ class TestExecution:
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             measures=[ModelMeasure(formula="amount:sum")],
-            order=[OrderItem(column="rank(amount:sum, direction='desc')", direction="desc")],
+            order=[OrderItem.model_validate({"column": "rank(amount:sum, direction='desc')", "direction": "desc"})],
         )
         resp = await exec_engine.execute(query)
         assert resp.columns == ["orders.status", "orders.amount_sum"], resp.columns
@@ -1256,7 +1256,7 @@ class TestMultiStage:
             source_model="s1",
             dimensions=[ColumnRef(name="status")],
             measures=[ModelMeasure(formula="amt:sum", name="total")],
-            order=[OrderItem(column="rank(amt:sum, direction='desc')", direction="desc")],
+            order=[OrderItem.model_validate({"column": "rank(amt:sum, direction='desc')", "direction": "desc"})],
         )
         resp = await exec_engine.execute(query=[inner, outer])
         assert resp.columns == ["s1.status", "s1.total"], resp.columns
@@ -1368,7 +1368,7 @@ class TestSupersededByDev1703Phase1:
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             distinct_dimension_values=False,
-            order=[OrderItem(column="rank(amount:sum, direction='desc')", direction="desc")],
+            order=[OrderItem.model_validate({"column": "rank(amount:sum, direction='desc')", "direction": "desc"})],
         )
         with pytest.raises(DistinctDimensionValuesError) as ei:
             await _sql(engine, query)

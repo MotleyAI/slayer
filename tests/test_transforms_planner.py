@@ -44,7 +44,7 @@ from slayer.core.keys import (
     TransformKey,
 )
 from slayer.core.keys import Grain
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import Column, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.core.scope import ModelScope
 from slayer.engine.binding import bind_expr
@@ -399,7 +399,7 @@ class TestTransformLayersPopulation:
     def test_rank_emits_transform_layer(self) -> None:
         q = SlayerQuery(
             source_model="orders",
-            measures=[{"formula": "rank(amount:sum, direction='desc')"}],
+            measures=[ModelMeasure(formula="rank(amount:sum, direction='desc')")],
         )
         planned = plan_query(query=q, bundle=_bundle())
         assert any(

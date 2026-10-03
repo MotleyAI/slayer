@@ -13,10 +13,12 @@ import tempfile
 from collections.abc import Iterator
 
 import pytest
+import yaml
 
 from slayer.core.errors import IdCollisionError
 from slayer.memories.models import Memory
 from slayer.storage.base import StorageBackend
+from slayer.storage.migrations import migrate
 from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -271,7 +273,6 @@ class TestMemoryV1ToV2Migration:
     def test_duplicate_int_string_rows_same_content_normalized(self) -> None:
         """The v2 migrator deduplicates rows that exist under both int and
         str forms (``42`` and ``"42"``) when their content matches."""
-        from slayer.storage.migrations import migrate
 
         int_row = {
             "version": 1,
@@ -295,7 +296,6 @@ class TestMemoryV1ToV2Migration:
         both ``id: 42`` (int) and ``id: "42"`` (str) for the same logical
         memory must collapse to a single row on load. When content matches,
         keep one; when content differs, raise loud."""
-        import yaml
 
         with tempfile.TemporaryDirectory() as tmpdir:
             # Two rows with the SAME content — should dedupe silently.
@@ -325,7 +325,6 @@ class TestMemoryV1ToV2Migration:
         """Same-id under int and str forms with DIFFERENT learning content
         is a data-loss risk; the migrator must fail loud rather than
         silently picking one."""
-        import yaml
 
         with tempfile.TemporaryDirectory() as tmpdir:
             legacy_path = os.path.join(tmpdir, "memories.yaml")

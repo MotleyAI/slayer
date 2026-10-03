@@ -640,8 +640,10 @@ class TestWindowedInnerConstituent:
             measures=[ModelMeasure(formula=WINDOWED_INNER, name="m")],
             time_dimensions=month_td()), dialect="postgres")
         [window] = rank_windows(sql, dialect="postgres")
-        assert window.fn == "RANK" and window.descending, sql
-        assert window.null_flag and window.null_guarded, sql
+        assert window.fn == "RANK", sql
+        assert window.descending, sql
+        assert window.null_flag, sql
+        assert window.null_guarded, sql
 
 
 class TestCrossModelGrainedInnerBoundary:

@@ -659,7 +659,7 @@ def _parse_node(
 
         # Remaining positional args are transform parameters (offset, granularity, etc.)
         # The rank family is keyword-only after the measure; reject extra positionals
-        # so calls like `rank(revenue:sum, 2)` or `ntile(revenue:sum, 4, n=2)` fail
+        # so calls like `rank(revenue:sum, 'desc')` or `ntile(revenue:sum, 4, n=2)` fail
         # fast instead of silently dropping the extra arg downstream.
         if func_name in RANK_FAMILY_TRANSFORMS and len(node.args) > 1:
             raise ValueError(

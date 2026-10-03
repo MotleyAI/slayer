@@ -83,24 +83,24 @@ old `810 / 43` and gives `810 / 33` under NULL→NULL.
 
 ## 5. Agent-facing text, docs, examples
 
-- [ ] 5.1 Update the rank-family line of the `query` tool description in
+- [x] 5.1 Update the rank-family line of the `query` tool description in
   `slayer/mcp/server.py`, the suggestion strings in `slayer/sql/window_detect.py` and
   `slayer/core/errors.py`, and `slayer/memories/help_content` if it spells a rank call.
   Verify: grep finds no bare `rank(` / `dense_rank(` in `slayer/` outside migrations and
   tests.
-- [ ] 5.2 Update the docs: `docs/concepts/formulas.md` (function table and rank section:
+- [x] 5.2 Update the docs: `docs/concepts/formulas.md` (function table and rank section:
   direction, ascending `ntile` / `percent_rank`, NULL→NULL, `_asc` / `_desc` keys),
   `queries.md`, `models.md`, `references.md`, `docs/database-support.md`,
   `docs/dbt/dbt_import.md`, `docs/osi/osi_import.md`, and the `01_dynamic`,
   `05_joined_measures`, `07_aggregations` and `15_duckdb` example pages. Verify: grep
   finds no bare rank call in `docs/`.
-- [ ] 5.3 Update `examples/` (`embedded`, `clickhouse`, `snowflake`, `verify_common.py`,
+- [x] 5.3 Update `examples/` (`embedded`, `clickhouse`, `snowflake`, `verify_common.py`,
   `comparisons/matrix.yaml` + `probes.yaml`). Verify: grep is clean and the matrix /
   probe checks in the unit suite pass.
-- [ ] 5.4 Re-execute every edited notebook in place
+- [x] 5.4 Re-execute every edited notebook in place
   (`jupyter nbconvert --to notebook --execute --inplace`). Verify: committed outputs are
   fresh and the notebook suite passes.
-- [ ] 5.5 Write the release-notes entry in an untracked `RELEASE_NOTES_*.md`: required
+- [x] 5.5 Write the release-notes entry in an untracked `RELEASE_NOTES_*.md`: required
   direction, the `ntile` / `percent_rank` flip, NULL→NULL, renamed unnamed rank keys, lazy
   migration. Never stage it.
 

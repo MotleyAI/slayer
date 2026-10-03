@@ -1855,7 +1855,8 @@ def _assert_rank_window(sql: str, *, fn: str, partition: list[str], descending: 
     [window] = rank_windows(sql, dialect="postgres")
     assert (window.fn, window.order_sql, window.partition_sql, window.descending) == (
         fn, '"orders.revenue_sum"', partition, descending), sql
-    assert window.null_flag and window.null_guarded, sql
+    assert window.null_flag, sql
+    assert window.null_guarded, sql
 
 
 class TestRankFamilyTransforms:

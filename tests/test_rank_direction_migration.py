@@ -393,9 +393,11 @@ class TestStorageLoad:
         payload: dict = {"source_model": "sales", "dimensions": ["region"], "measures": [BARE]}
         if version == "current":
             payload["version"] = mig.CURRENT_VERSIONS["SlayerQuery"]
+        query = SlayerQuery.model_validate(payload)
         with pytest.raises(core_errors.TransformArgumentError) as ei:
-            await _execute(storage, SlayerQuery.model_validate(payload))
-        assert "direction='asc'" in str(ei.value) and "direction='desc'" in str(ei.value)
+            await _execute(storage, query)
+        assert "direction='asc'" in str(ei.value)
+        assert "direction='desc'" in str(ei.value)
 
     async def test_explicit_old_query_executes_descending(self, seed):
         storage = await seed(models=[_model_dict(measures=[])])
@@ -428,7 +430,8 @@ def test_rest_fresh_payload_fails(served_storage):
     resp = client.post("/query", json={"source_model": "sales", "dimensions": ["region"],
                                        "measures": [{"formula": BARE}]})
     assert 400 <= resp.status_code < 500
-    assert "direction='desc'" in resp.text and "direction='asc'" in resp.text
+    assert "direction='desc'" in resp.text
+    assert "direction='asc'" in resp.text
 
 
 async def test_mcp_fresh_payload_fails(served_storage):
@@ -438,4 +441,5 @@ async def test_mcp_fresh_payload_fails(served_storage):
             "source_model": "sales", "dimensions": ["region"], "measures": [BARE]}}))
     except Exception as exc:  # noqa: BLE001 — a ToolError carries the message too
         text = str(exc)
-    assert "direction='desc'" in text and "direction='asc'" in text
+    assert "direction='desc'" in text
+    assert "direction='asc'" in text

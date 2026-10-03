@@ -71,7 +71,7 @@ def _ureg_city_ranks() -> Dict[Tuple, Optional[int]]:
 
 
 def _weighted_avg(group: Callable[[tuple], str],
-                  weight: Callable[[tuple], int]) -> Dict[str, Optional[float]]:
+                  weight: Callable[[tuple], Optional[int]]) -> Dict[str, Optional[float]]:
     """weighted_avg(amount, weight=…) per ``group(row)``."""
     per: Dict[str, list] = defaultdict(list)
     for row in _SALES_ROWS_WIDE:

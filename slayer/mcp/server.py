@@ -510,9 +510,12 @@ To connect a new database: create_datasource → describe_datasource (verify + l
           for growth); time_shift(x, -1[, 'year']) (the shifted value itself, for custom
           arithmetic); lag(x, n) / lead(x, n) (row-position shift, NULL at edges); first(x) /
           last(x) (broadcast the earliest/latest bucket's value); consecutive_periods(predicate)
-          (trailing run length; the predicate may be row-level, e.g. status = 'paid'); rank(x),
-          dense_rank(x), percent_rank(x), ntile(x, n=N) (rank family — optional partition_by=, no
-          time dimension needed). All other transforms require a time_dimensions entry.
+          (trailing run length; the predicate may be row-level, e.g. status = 'paid');
+          rank(x, direction='desc') / dense_rank(x, direction='asc') (direction is required:
+          'desc' ranks the highest value 1, 'asc' the lowest), percent_rank(x), ntile(x, n=N)
+          (always ascending: bucket 1 / 0.0 is the lowest) (rank family — optional partition_by=,
+          no time dimension needed; a NULL value ranks NULL). All other transforms require a
+          time_dimensions entry.
           Transforms nest in either order (change(cumsum(x))). Not supported: a row-level column
           mixed into a composite or nested input of time_shift / change / change_pct, or mixed
           with another aggregation's value inside one aggregation source.

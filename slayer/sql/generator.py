@@ -4498,7 +4498,7 @@ class SQLGenerator:
         )
 
     def _rank_family_window(
-        self, *, fn: Expression, measure: Expression, partition_by: List[Expression], descending: bool,
+        self, *, fn: Expression, measure: Expression, partition_by: Iterable[Expression], descending: bool,
     ) -> Expression:
         """``CASE WHEN v IS NULL THEN NULL ELSE fn OVER (PARTITION BY …, <v-is-null flag> ORDER BY v) END``: NULL rows rank NULL, outside the others' window."""
         null_flag = exp.Case(

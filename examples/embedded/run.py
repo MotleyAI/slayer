@@ -158,7 +158,7 @@ def main():
     result = engine.execute_sync(query=SlayerQuery(
         source_model="orders",
         dimensions=["customers.name"],
-        measures=[COUNT_MEASURE, {"formula": "rank(count(*))", "name": "rk"}],
+        measures=[COUNT_MEASURE, {"formula": "rank(count(*), direction='desc')", "name": "rk"}],
         order=[{"column": "count", "direction": "desc"}],
     ))
     for row in result.data:

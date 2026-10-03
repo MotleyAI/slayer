@@ -526,7 +526,7 @@ class TestVirtualModelColumns:
             source_queries=[SlayerQuery(
                 source_model="orders",
                 dimensions=["status"],
-                measures=[{"formula": "rank(amount:sum, direction='desc')", "name": "rank_by_amt"}],
+                measures=[ModelMeasure(formula="rank(amount:sum, direction='desc')", name="rank_by_amt")],
             )],
         )
         engine, tmp = await _engine()

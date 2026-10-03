@@ -2004,7 +2004,7 @@
    "cells": {
     "slayer": {
      "verdict": "yes",
-     "how": "<code>rank(sum(revenue)) &lt;= 10</code> · <code>consecutive_periods(sum(revenue) &gt; 0) &gt;= 3</code>",
+     "how": "<code>rank(sum(revenue), direction='desc') &lt;= 10</code> · <code>consecutive_periods(sum(revenue) &gt; 0) &gt;= 3</code>",
      "caveat": "Streaks count calendar periods, so an empty month breaks them (verified)."
     },
     "malloy": {

@@ -404,7 +404,7 @@ _AggregateSource = Union[
 # Positional and kwarg arg values share one union: `last(created_at)` binds an
 # identifier column, `weighted_avg(weight=qty)` a column,
 # `weighted_avg(weight=count(id, partition_by=…))` an aggregate, and
-# `weighted_avg(weight=rank(sum(amount, partition_by=…)))` a grained transform —
+# `weighted_avg(weight=rank(sum(amount, partition_by=…), direction='desc'))` a grained transform —
 # all via `_bind_agg_arg`.
 _AggregateArgValue = Union[
     ColumnKey, ColumnSqlKey, SqlFragmentKey, "AggregateKey", "TransformKey",
@@ -972,7 +972,7 @@ def effective_root_grain(
     windowed = window_kwarg_of(agg) is not None
     if getattr(agg, "partition_keys", None) is not None:
         grain = regroup_root_grain(agg)
-        # A transform with no grained inner (e.g. rank(region)) is the degenerate
+        # A transform with no grained inner (e.g. rank(region, direction='desc')) is the degenerate
         # query-grain identity (Axiom 11.1); its operand cells are the query grain.
         if isinstance(agg, TransformKey) and grain.is_empty:
             return Grain.of([*projected_dim_keys, *projected_td_keys]), False

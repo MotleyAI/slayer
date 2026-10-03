@@ -258,14 +258,16 @@ _MISSING = [
 class TestDirectionErrors:
     @pytest.mark.parametrize(("fields", "op"), _MISSING)
     async def test_missing_direction_fails_before_sql(self, engine, fields, op):
+        query = sales_q(**fields)
         for dry_run in (True, False):
             with pytest.raises(core_errors.TransformArgumentError) as ei:
-                await engine.execute(sales_q(**fields), dry_run=dry_run)
+                await engine.execute(query, dry_run=dry_run)
             _assert_missing_direction(str(ei.value), op=op)
 
     async def test_saved_measure_without_direction(self, saved_bare_engine):
+        query = sales_q(dimensions=["region"], measures=["saved_rank"])
         with pytest.raises(core_errors.TransformArgumentError) as ei:
-            await saved_bare_engine.execute(sales_q(dimensions=["region"], measures=["saved_rank"]))
+            await saved_bare_engine.execute(query)
         _assert_missing_direction(str(ei.value))
 
     @pytest.mark.parametrize("formula", [
@@ -275,8 +277,9 @@ class TestDirectionErrors:
         "dense_rank(sum(amount), direction='')",
     ])
     async def test_unrecognised_or_non_literal(self, engine, formula):
+        query = sales_q(dimensions=["region"], measures=[_m(formula)])
         with pytest.raises(core_errors.TransformArgumentError) as ei:
-            await engine.execute(sales_q(dimensions=["region"], measures=[_m(formula)]))
+            await engine.execute(query)
         msg = str(ei.value)
         for word in ("asc", "desc", "ascending", "descending"):
             assert word in msg, msg
@@ -286,11 +289,13 @@ class TestDirectionErrors:
         ("percent_rank(sum(amount), direction='asc')", "percent_rank"),
     ])
     async def test_ntile_and_percent_rank_reject_direction(self, engine, formula, op):
+        query = sales_q(dimensions=["region"], measures=[_m(formula)])
         with pytest.raises(core_errors.TransformArgumentError) as ei:
-            await engine.execute(sales_q(dimensions=["region"], measures=[_m(formula)]))
+            await engine.execute(query)
         msg = str(ei.value)
         assert op in msg, msg
-        assert "ascending" in msg and "direction" in msg, msg
+        assert "ascending" in msg, msg
+        assert "direction" in msg, msg
 
     @pytest.mark.parametrize("formula", [
         "rank(amount:sum, foo=1, direction='desc')",
@@ -410,8 +415,11 @@ class TestEmission:
             dimensions=["region", "city"],
             measures=[_m("rank(sum(amount), partition_by=region, direction='asc')")]), dialect=dialect)
         [window] = rank_windows(sql, dialect=dialect)
-        assert len(window.partition_sql) == 1 and "region" in window.partition_sql[0], sql
-        assert window.null_flag and window.null_guarded and not window.descending
+        assert len(window.partition_sql) == 1, sql
+        assert "region" in window.partition_sql[0], sql
+        assert window.null_flag
+        assert window.null_guarded
+        assert not window.descending
 
     @pytest.mark.parametrize("formula", [p.values[0] for p in _EMISSION])
     async def test_tsql_matches_postgres(self, formula):

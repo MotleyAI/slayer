@@ -210,7 +210,7 @@ def main():
         query=SlayerQuery(
             source_model="orders",
             dimensions=["customers.name"],
-            measures=[COUNT_MEASURE, {"formula": "rank(count(*))", "name": "rnk"}],
+            measures=[COUNT_MEASURE, {"formula": "rank(count(*), direction='desc')", "name": "rnk"}],
             order=[{"column": "count", "direction": "desc"}],
         )
     )
