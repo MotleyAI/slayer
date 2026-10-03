@@ -106,11 +106,11 @@ old `810 / 43` and gives `810 / 33` under NULL→NULL.
 
 ## 6. Gates
 
-- [ ] 6.1 `poetry run pytest -m "not integration"` is fully green.
-- [ ] 6.2 The integration suite with the CI invocation from CLAUDE.md is green
+- [x] 6.1 `poetry run pytest -m "not integration"` is fully green.
+- [x] 6.2 The integration suite with the CI invocation from CLAUDE.md is green
   (Postgres locally).
-- [ ] 6.3 `poetry run ruff check slayer/ tests/` and `poetry run basedpyright` (no new
+- [x] 6.3 `poetry run ruff check slayer/ tests/` and `poetry run basedpyright` (no new
   errors vs the baseline) are clean.
-- [ ] 6.4 `uvx --no-build --from living-architecture==0.2.1 la-arch-check` is clean.
-- [ ] 6.5 `openspec validate dev-2040-rank-family-ordering-required-direction-on-rankdense-rank --strict`
+- [x] 6.4 `uvx --no-build --from living-architecture==0.2.1 la-arch-check` is clean.
+- [x] 6.5 `openspec validate dev-2040-rank-family-ordering-required-direction-on-rankdense-rank --strict`
   passes.
