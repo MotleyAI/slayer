@@ -39,7 +39,7 @@ async def exec_engine(request):
         yield engine
 
 
-RANK_DIM = "rank(amount:sum(partition_by=region))"
+RANK_DIM = "rank(amount:sum(partition_by=region), direction='desc')"
 
 
 class TestBandedDimension:

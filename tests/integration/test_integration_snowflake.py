@@ -474,8 +474,8 @@ def test_rank_transforms(sf_storage_with_models) -> None:
         dimensions=[ColumnRef(name="status")],
         measures=[
             ModelMeasure(formula="quantity:sum"),
-            ModelMeasure(formula="rank(quantity:sum)", name="qty_rank"),
-            ModelMeasure(formula="dense_rank(quantity:sum)", name="qty_dense_rank"),
+            ModelMeasure(formula="rank(quantity:sum, direction='desc')", name="qty_rank"),
+            ModelMeasure(formula="dense_rank(quantity:sum, direction='desc')", name="qty_dense_rank"),
             ModelMeasure(formula="ntile(quantity:sum, n=2)", name="qty_bucket"),
         ],
     )))

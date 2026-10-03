@@ -170,7 +170,7 @@ class TestRankedCompositionPins:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula="rank(amount:last)", name="x")],
+            measures=[ModelMeasure(formula="rank(amount:last, direction='desc')", name="x")],
         ))
         got = {r["orders.region"]: int(r["orders.x"]) for r in resp.data}
         # REGION_LAST desc: NULL 60 → 1, North 30 → 2, South 25 → 3.

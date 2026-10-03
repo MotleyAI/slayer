@@ -155,7 +155,7 @@ class TestTransforms:
         assert result.kwargs == ()
 
     def test_rank(self):
-        result = parse_expr("rank(revenue:sum)")
+        result = parse_expr("rank(revenue:sum, direction='desc')")
         assert isinstance(result, TransformCall)
         assert result.op == "rank"
 
@@ -245,10 +245,11 @@ class TestTransforms:
 
     def test_rank_partition_by_dotted_path(self):
         # partition_by may name a joined column via a dotted path.
-        result = parse_expr("rank(revenue:sum, partition_by=customers.region)")
+        result = parse_expr("rank(revenue:sum, partition_by=customers.region, direction='desc')")
         assert isinstance(result, TransformCall)
         assert result.kwargs == (
             ("partition_by", DottedRef(parts=("customers", "region"))),
+            ("direction", Literal(value="desc")),
         )
 
     def test_triple_nested_transforms(self):
@@ -637,7 +638,7 @@ class TestFilterOperatorNormalization:
 
     def test_transform_no_kwargs_in_filter(self):
         # The no-kwargs top-N form is unaffected by the operator rewrite.
-        result = parse_filter_expr("dense_rank(revenue:sum) <= 5")
+        result = parse_filter_expr("dense_rank(revenue:sum, direction='desc') <= 5")
         assert isinstance(result, Cmp)
         assert isinstance(result.left, TransformCall)
         assert result.left.op == "dense_rank"
@@ -706,26 +707,29 @@ class TestFilterOperatorNormalization:
         # DEV-1492: rank(revenue:sum, partition_by=region) <= 1 — kwarg
         # survives the operator rewrite; binder turns partition_by into a
         # column ref (covered by SQL-gen tests).
-        result = parse_filter_expr("rank(revenue:sum, partition_by=region) <= 1")
+        result = parse_filter_expr("rank(revenue:sum, partition_by=region, direction='desc') <= 1")
         assert isinstance(result, Cmp)
         assert result.op == "<="
         assert isinstance(result.left, TransformCall)
         assert result.left.op == "rank"
         assert result.left.args == ()
-        assert result.left.kwargs == (("partition_by", Ref(name="region")),)
+        assert result.left.kwargs == (
+            ("partition_by", Ref(name="region")), ("direction", Literal(value="desc")),
+        )
         assert result.right == Literal(value=Decimal(1))
 
     def test_rank_partition_by_list_kwarg_preserved_in_filter(self):
         # DEV-1492: list-form partition_by kwarg survives. _convert_kwarg_value
         # converts the list to a tuple of Refs.
         result = parse_filter_expr(
-            "rank(revenue:sum, partition_by=[region, channel]) <= 1"
+            "rank(revenue:sum, partition_by=[region, channel], direction='desc') <= 1"
         )
         assert isinstance(result, Cmp)
         assert isinstance(result.left, TransformCall)
         assert result.left.op == "rank"
         assert result.left.kwargs == (
             ("partition_by", (Ref(name="region"), Ref(name="channel"))),
+            ("direction", Literal(value="desc")),
         )
 
     # -- Aggregation args/kwargs INSIDE a filter transform ------------------
@@ -906,14 +910,16 @@ class TestFilterOperatorNormalization:
         # 0)` has a `=` which must be rewritten (SCALAR_FUNCTIONS
         # narrowing). Exercises the per-frame (kind, callee) stack.
         result = parse_filter_expr(
-            "rank(coalesce(status = 'paid', 0), partition_by=region) <= 1"
+            "rank(coalesce(status = 'paid', 0), partition_by=region, direction='desc') <= 1"
         )
         assert isinstance(result, Cmp)
         assert result.op == "<="
         assert isinstance(result.left, TransformCall)
         assert result.left.op == "rank"
         # Transform kwarg preserved.
-        assert result.left.kwargs == (("partition_by", Ref(name="region")),)
+        assert result.left.kwargs == (
+            ("partition_by", Ref(name="region")), ("direction", Literal(value="desc")),
+        )
         # Transform input is the inner coalesce ScalarCall with a Cmp arg.
         inner = result.left.input
         assert isinstance(inner, ScalarCall)

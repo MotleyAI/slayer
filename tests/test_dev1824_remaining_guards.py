@@ -145,7 +145,7 @@ class TestDimensionGrainSelfContainment:
         # Two grains in one transform union and broadcast (DEV-1839) — the
         # former fail-closed guard is gone. Executed ground truth lives in
         # tests/test_dev1839_union_dim_execution.py.
-        band = "rank(amount:sum(partition_by=region) - amount:sum(partition_by=city))"
+        band = "rank(amount:sum(partition_by=region) - amount:sum(partition_by=city), direction='desc')"
         query = q(
             dimensions=["region", "city", {"expression": band, "name": "rk"}],
             measures=[ModelMeasure(formula="amount:sum", name="s")],

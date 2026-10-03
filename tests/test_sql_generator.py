@@ -33,6 +33,7 @@ from tests._engine_helpers import (
     _join_aliases,
     _norm,
 )
+from tests._rank_direction_fixtures import rank_windows
 
 
 def _outer_order_terms(sql: str, dialect: str = "postgres") -> list[tuple[str, str]]:
@@ -1324,7 +1325,7 @@ class TestFields:
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="revenue:sum"), ModelMeasure(formula="rank(revenue:sum)", name="rev_rank")],
+            measures=[ModelMeasure(formula="revenue:sum"), ModelMeasure(formula="rank(revenue:sum, direction='desc')", name="rev_rank")],
         )
         sql = await _generate(generator, query, orders_model)
         assert "RANK()" in sql
@@ -1849,6 +1850,14 @@ class TestFields:
         assert "aov" in sql.lower()
 
 
+def _assert_rank_window(sql: str, *, fn: str, partition: list[str], descending: bool) -> None:
+    """The one rank-family window orders ``orders.revenue_sum`` and isolates NULL inputs."""
+    [window] = rank_windows(sql, dialect="postgres")
+    assert (window.fn, window.order_sql, window.partition_sql, window.descending) == (
+        fn, '"orders.revenue_sum"', partition, descending), sql
+    assert window.null_flag and window.null_guarded, sql
+
+
 class TestRankFamilyTransforms:
     """rank, percent_rank, dense_rank, ntile — first-class window-function transforms."""
 
@@ -1857,13 +1866,10 @@ class TestRankFamilyTransforms:
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="revenue:sum"), ModelMeasure(formula="rank(revenue:sum)", name="rev_rank")],
+            measures=[ModelMeasure(formula="revenue:sum"), ModelMeasure(formula="rank(revenue:sum, direction='desc')", name="rev_rank")],
         )
         sql = await _generate(generator, query, orders_model)
-        assert (
-            'RANK() OVER (ORDER BY "orders.revenue_sum" DESC NULLS LAST)'
-            in _norm(sql)
-        )
+        _assert_rank_window(sql, fn='RANK', partition=[], descending=True)
 
     async def test_rank_with_partition_by_single(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
@@ -1871,14 +1877,11 @@ class TestRankFamilyTransforms:
             dimensions=[ColumnRef(name="status"), ColumnRef(name="customer_id")],
             measures=[
                 ModelMeasure(formula="revenue:sum"),
-                ModelMeasure(formula="rank(revenue:sum, partition_by=status)", name="rev_rank"),
+                ModelMeasure(formula="rank(revenue:sum, partition_by=status, direction='desc')", name="rev_rank"),
             ],
         )
         sql = await _generate(generator, query, orders_model)
-        assert (
-            'RANK() OVER (PARTITION BY "orders.status" ORDER BY "orders.revenue_sum" DESC NULLS LAST)'
-            in _norm(sql)
-        )
+        _assert_rank_window(sql, fn='RANK', partition=['"orders.status"'], descending=True)
 
     async def test_rank_with_partition_by_list(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
@@ -1887,28 +1890,14 @@ class TestRankFamilyTransforms:
             measures=[
                 ModelMeasure(formula="revenue:sum"),
                 ModelMeasure(
-                    formula="rank(revenue:sum, partition_by=[status, customer_id])",
+                    formula="rank(revenue:sum, partition_by=[status, customer_id], direction='desc')",
                     name="rev_rank",
                 ),
             ],
         )
         sql = await _generate(generator, query, orders_model)
-        # PARTITION BY key order is irrelevant (planner sorts keys); compared as a re-emitted Window node, not raw text, since the pretty-printer line-breaks a long OVER. Pins the window's shape.
-        window = next(
-            (
-                w
-                for w in sqlglot.parse_one(sql, read="postgres").find_all(
-                    sqlglot.exp.Window,
-                )
-                if isinstance(w.this, sqlglot.exp.Rank)
-            ),
-            None,
-        )
-        assert window is not None, sql
-        assert window.sql(dialect="postgres") == (
-            'RANK() OVER (PARTITION BY "orders.customer_id", "orders.status" '
-            'ORDER BY "orders.revenue_sum" DESC NULLS LAST)'
-        )
+        # PARTITION BY key order is irrelevant (planner sorts keys).
+        _assert_rank_window(sql, fn='RANK', partition=['"orders.customer_id"', '"orders.status"'], descending=True)
 
     async def test_percent_rank_default(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
@@ -1920,10 +1909,7 @@ class TestRankFamilyTransforms:
             ],
         )
         sql = await _generate(generator, query, orders_model)
-        assert (
-            'PERCENT_RANK() OVER (ORDER BY "orders.revenue_sum" DESC NULLS LAST)'
-            in _norm(sql)
-        )
+        _assert_rank_window(sql, fn='PERCENTRANK', partition=[], descending=False)
 
     async def test_percent_rank_with_partition(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
@@ -1937,11 +1923,7 @@ class TestRankFamilyTransforms:
             ],
         )
         sql = await _generate(generator, query, orders_model)
-        assert (
-            'PERCENT_RANK() OVER (PARTITION BY "orders.status" '
-            'ORDER BY "orders.revenue_sum" DESC NULLS LAST)'
-            in _norm(sql)
-        )
+        _assert_rank_window(sql, fn='PERCENTRANK', partition=['"orders.status"'], descending=False)
 
     async def test_dense_rank_default(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
@@ -1949,14 +1931,11 @@ class TestRankFamilyTransforms:
             dimensions=[ColumnRef(name="status")],
             measures=[
                 ModelMeasure(formula="revenue:sum"),
-                ModelMeasure(formula="dense_rank(revenue:sum)", name="rev_dr"),
+                ModelMeasure(formula="dense_rank(revenue:sum, direction='desc')", name="rev_dr"),
             ],
         )
         sql = await _generate(generator, query, orders_model)
-        assert (
-            'DENSE_RANK() OVER (ORDER BY "orders.revenue_sum" DESC NULLS LAST)'
-            in _norm(sql)
-        )
+        _assert_rank_window(sql, fn='DENSERANK', partition=[], descending=True)
 
     async def test_dense_rank_with_partition(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
@@ -1965,16 +1944,12 @@ class TestRankFamilyTransforms:
             measures=[
                 ModelMeasure(formula="revenue:sum"),
                 ModelMeasure(
-                    formula="dense_rank(revenue:sum, partition_by=status)", name="rev_dr"
+                    formula="dense_rank(revenue:sum, partition_by=status, direction='desc')", name="rev_dr"
                 ),
             ],
         )
         sql = await _generate(generator, query, orders_model)
-        assert (
-            'DENSE_RANK() OVER (PARTITION BY "orders.status" '
-            'ORDER BY "orders.revenue_sum" DESC NULLS LAST)'
-            in _norm(sql)
-        )
+        _assert_rank_window(sql, fn='DENSERANK', partition=['"orders.status"'], descending=True)
 
     async def test_ntile_n_4(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
@@ -1986,10 +1961,7 @@ class TestRankFamilyTransforms:
             ],
         )
         sql = await _generate(generator, query, orders_model)
-        assert (
-            'NTILE(4) OVER (ORDER BY "orders.revenue_sum" DESC NULLS LAST)'
-            in _norm(sql)
-        )
+        _assert_rank_window(sql, fn='NTILE', partition=[], descending=False)
 
     async def test_ntile_with_partition(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
@@ -2004,21 +1976,17 @@ class TestRankFamilyTransforms:
             ],
         )
         sql = await _generate(generator, query, orders_model)
-        assert (
-            'NTILE(4) OVER (PARTITION BY "orders.status" '
-            'ORDER BY "orders.revenue_sum" DESC NULLS LAST)'
-            in _norm(sql)
-        )
+        _assert_rank_window(sql, fn='NTILE', partition=['"orders.status"'], descending=False)
 
     async def test_dense_rank_in_filter_top_5_distinct(
         self, generator: SQLGenerator, orders_model: SlayerModel
     ) -> None:
-        """``dense_rank(...) <= 5`` is auto-extracted as a hidden field and post-filtered."""
+        """``dense_rank(..., direction='desc') <= 5`` is auto-extracted as a hidden field and post-filtered."""
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="customer_id")],
             measures=[ModelMeasure(formula="revenue:sum")],
-            filters=["dense_rank(revenue:sum) <= 5"],
+            filters=["dense_rank(revenue:sum, direction='desc') <= 5"],
         )
         sql = await _generate(generator, query, orders_model)
         assert "<= 5" in post_filter_where(sql)
@@ -2060,21 +2028,18 @@ class TestRankFamilyTransforms:
     async def test_rank_with_partition_by_kwarg_in_filter(
         self, generator: SQLGenerator, orders_model: SlayerModel
     ) -> None:
-        """DEV-1492: ``rank(<measure>, partition_by=<col>) <= 1`` end-to-end."""
+        """DEV-1492: ``rank(<measure>, partition_by=<col>, direction='desc') <= 1`` end-to-end."""
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status"), ColumnRef(name="customer_id")],
             measures=[ModelMeasure(formula="revenue:sum")],
-            filters=["rank(revenue:sum, partition_by=status) <= 1"],
+            filters=["rank(revenue:sum, partition_by=status, direction='desc') <= 1"],
         )
         sql = await _generate(generator, query, orders_model)
         post_filter_where(sql)
         inner_sql, outer_sql = split_chain(sql)
-        assert (
-            'RANK() OVER (PARTITION BY "orders.status" '
-            'ORDER BY "orders.revenue_sum" DESC NULLS LAST)'
-            in _norm(inner_sql)
-        ), f"PARTITION BY status should appear in the inner SELECT, got:\n{sql}"
+        assert "RANK()" in inner_sql, f"RANK should be materialised in the inner SELECT, got:\n{sql}"
+        _assert_rank_window(sql, fn='RANK', partition=['"orders.status"'], descending=True)
         assert "RANK()" not in outer_sql, (
             f"RANK should not appear in the outer wrapper, got:\n{sql}"
         )
@@ -2096,16 +2061,12 @@ class TestRankFamilyTransforms:
             measures=[
                 ModelMeasure(formula="revenue:sum"),
                 ModelMeasure(
-                    formula="rank(revenue:sum, partition_by=created_at)", name="rev_rank"
+                    formula="rank(revenue:sum, partition_by=created_at, direction='desc')", name="rev_rank"
                 ),
             ],
         )
         sql = await _generate(generator, query, orders_model)
-        assert (
-            'RANK() OVER (PARTITION BY "orders.created_at" '
-            'ORDER BY "orders.revenue_sum" DESC NULLS LAST)'
-            in _norm(sql)
-        )
+        _assert_rank_window(sql, fn='RANK', partition=['"orders.created_at"'], descending=True)
 
     async def test_partition_by_must_be_a_query_dimension(
         self, generator: SQLGenerator, orders_model: SlayerModel
@@ -2117,7 +2078,7 @@ class TestRankFamilyTransforms:
             measures=[
                 ModelMeasure(formula="revenue:sum"),
                 ModelMeasure(
-                    formula="rank(revenue:sum, partition_by=customer_id)", name="rev_rank"
+                    formula="rank(revenue:sum, partition_by=customer_id, direction='desc')", name="rev_rank"
                 ),
             ],
         )
@@ -9839,7 +9800,7 @@ class TestBigQueryAliasMangling:
             measures=[ModelMeasure(formula="*:count")],
             dimensions=[ColumnRef(name="status")],
             # Filter using a windowed transform creates a hidden hoisted column, so the public projection is a real narrowing.
-            filters=["dense_rank(revenue:sum) <= 5"],
+            filters=["dense_rank(revenue:sum, direction='desc') <= 5"],
         )
         async with _persist_and_engine(orders_model, ds_type="bigquery") as engine:
             resp = await engine.execute(query=query, dry_run=True)

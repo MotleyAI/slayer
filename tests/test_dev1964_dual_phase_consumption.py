@@ -45,18 +45,18 @@ from tests.test_dev1903_discovery import _discover
 
 R = "avg(sum(amount, partition_by=[city, region]), partition_by=region)"
 RLEVEL = {"expression": f"CASE WHEN {R} > 50 THEN 'hi' ELSE 'lo' END", "name": "rlevel"}
-TLEVEL = {"expression": f"CASE WHEN rank({R}) > 1 THEN 'top' ELSE 'rest' END",
+TLEVEL = {"expression": f"CASE WHEN rank({R}, direction='desc') > 1 THEN 'top' ELSE 'rest' END",
           "name": "tlevel"}
 TOT = ModelMeasure(formula="amount:sum", name="tot")
 
 R_BY_REGION = {"North": 45.0, "South": 70.0, "East": 60.0, "Gap": 10.0, "Void": None}
 TOT_BY_REGION = {"North": 90.0, "South": 140.0, "East": 180.0, "Gap": 20.0, "Void": None}
 RLEVEL_BY_REGION = {"North": "lo", "South": "hi", "East": "hi", "Gap": "lo", "Void": "lo"}
-RANK_BY_REGION = {"South": 1, "East": 2, "North": 3, "Gap": 4, "Void": 5}
+RANK_BY_REGION = {"South": 1, "East": 2, "North": 3, "Gap": 4, "Void": None}
 TLEVEL_BY_REGION = {"South": "rest", "East": "top", "North": "top", "Gap": "top",
-                    "Void": "top"}
+                    "Void": "rest"}
 
-PLAIN_RANK = "rank(amount:sum(partition_by=region))"
+PLAIN_RANK = "rank(amount:sum(partition_by=region), direction='desc')"
 PBAND = {"expression": f"CASE WHEN {PLAIN_RANK} > 1 THEN 'top' ELSE 'rest' END",
          "name": "pband"}
 
@@ -143,13 +143,13 @@ class TestTransformOverReaggregationInDimension:
     async def test_rank_as_measure(self, exec_engine):
         resp = await exec_engine.execute(sales_q(
             dimensions=["region", TLEVEL],
-            measures=[TOT, ModelMeasure(formula=f"rank({R})", name="rk")]))
+            measures=[TOT, ModelMeasure(formula=f"rank({R}, direction='desc')", name="rk")]))
         assert _col(resp, "rk") == RANK_BY_REGION
         assert _col(resp, "tlevel") == TLEVEL_BY_REGION
 
     @pytest.mark.parametrize(("flt", "kept"), [
-        pytest.param(f"rank({R}) > 1", {"East", "North", "Gap", "Void"}, id="gt"),
-        pytest.param(f"rank({R}) < 4", {"South", "East", "North"}, id="lt"),
+        pytest.param(f"rank({R}, direction='desc') > 1", {"East", "North", "Gap"}, id="gt"),
+        pytest.param(f"rank({R}, direction='desc') < 4", {"South", "East", "North"}, id="lt"),
     ])
     async def test_rank_in_filter(self, exec_engine, flt, kept):
         resp = await exec_engine.execute(sales_q(
@@ -160,7 +160,7 @@ class TestTransformOverReaggregationInDimension:
     async def test_rank_as_order_target(self, exec_engine):
         resp = await exec_engine.execute(sales_q(
             dimensions=["region", TLEVEL], measures=[TOT],
-            order=[{"column": f"rank({R})", "direction": "asc"}]))
+            order=[{"column": f"rank({R}, direction='desc')", "direction": "asc"}]))
         assert _regions(resp) == ["South", "East", "North", "Gap", "Void"]
 
     async def test_two_dimensions_share_the_reaggregation(self, exec_engine):
@@ -169,7 +169,7 @@ class TestTransformOverReaggregationInDimension:
             measures=[TOT, ModelMeasure(formula=R, name="r")]))
         got = {r["sales.region"]: (r["sales.tlevel"], r["sales.rlevel"]) for r in resp.data}
         assert got == {"South": ("rest", "hi"), "East": ("top", "hi"),
-                       "North": ("top", "lo"), "Gap": ("top", "lo"), "Void": ("top", "lo")}
+                       "North": ("top", "lo"), "Gap": ("top", "lo"), "Void": ("rest", "lo")}
         assert _col(resp, "tot") == _approx(TOT_BY_REGION)
         assert _col(resp, "r") == _approx(R_BY_REGION)
         assert not any(REGROUP_LEAF_PREFIX in c or c.endswith(".grain") for c in resp.columns)
@@ -187,8 +187,8 @@ class TestOrderByTransformSharedWithDimension:
             dimensions=["region", PBAND], measures=[TOT],
             order=[{"column": "pband", "direction": "asc"}]))
         bands = [r["sales.pband"] for r in resp.data]
-        assert bands == ["rest", "top", "top", "top", "top"]
-        assert _regions(resp)[0] == "East"
+        assert bands == ["rest", "rest", "top", "top", "top"]
+        assert set(_regions(resp)[:2]) == {"East", "Void"}
 
 
 class TestFilterOnAggregateOwnedByDimensionTransform:
@@ -202,7 +202,7 @@ class TestFilterOnAggregateOwnedByDimensionTransform:
         assert _col(resp, "tot") == _approx({"South": 140.0, "East": 180.0})
 
     def test_finer_partition_key_is_a_typed_error(self):
-        band = {"expression": "CASE WHEN rank(amount:sum(partition_by=[city, region])) > 1 "
+        band = {"expression": "CASE WHEN rank(amount:sum(partition_by=[city, region]), direction='desc') > 1 "
                               "THEN 'top' ELSE 'rest' END", "name": "cband"}
         query = sales_q(dimensions=["region", band], measures=[TOT],
                         filters=["amount:sum(partition_by=[city, region]) > 50"])
@@ -264,7 +264,7 @@ def _fine_cases():
          r"order item\b"),
         ("arithmetic", {"measures": [ModelMeasure(formula=f"{FINE} + 1", name="f")]},
          r"measure 'f'"),
-        ("transform", {"measures": [ModelMeasure(formula=f"rank({FINE})", name="f")]},
+        ("transform", {"measures": [ModelMeasure(formula=f"rank({FINE}, direction='desc')", name="f")]},
          r"measure 'f'"),
         ("filter", {"measures": [TOT], "filters": [f"{FINE} < amount:sum"]}, r"filter\b"),
         ("split-filter",
@@ -294,7 +294,7 @@ class TestReaggregationOuterKeyCarriesTheRule:
 
     @pytest.mark.parametrize(("dim", "agg"), [(CITY_BAND, "amount:sum(partition_by=[city, region])"),
                                               (FINE_DIM, FINE)], ids=["plain", "reagg"])
-    @pytest.mark.parametrize("template", ["rank({})", "{} + 1"], ids=["transform", "arithmetic"])
+    @pytest.mark.parametrize("template", ["rank({}, direction='desc')", "{} + 1"], ids=["transform", "arithmetic"])
     def test_order_expression_over_dimension_aggregate(self, dim, agg, template):
         query = sales_q(dimensions=["region", dim], measures=[TOT],
                         order=[{"column": template.format(agg), "direction": "asc"}])

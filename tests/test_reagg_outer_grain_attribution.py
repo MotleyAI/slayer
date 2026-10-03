@@ -276,7 +276,7 @@ class TestOtherConsumerShapes:
         _clean(resp)
 
     async def test_transform_input(self, engine):
-        resp = await engine.execute(_by_account(m(f"rank({SUM_MAX_Q_BY_OUTER_ACCOUNT})")))
+        resp = await engine.execute(_by_account(m(f"rank({SUM_MAX_Q_BY_OUTER_ACCOUNT}, direction='desc')")))
         got = cells(resp, keys=BY_NAME_ACCOUNT)
         assert {k: int(x) for k, x in got.items() if k[0] != "Cy"} == RANK_OF_ACCOUNT_MAX
         _clean(resp)

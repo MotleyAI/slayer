@@ -221,7 +221,7 @@ ENTRIES = [
               time_dimensions=MONTH_TD, order=ASC_TIME),
            ordered=True, subset_100k=True),
     _entry("bench_rank_by_category", "bench",
-           _q(measures=["total_cost:sum", {"formula": "rank(total_cost:sum)", "name": "rnk"}],
+           _q(measures=["total_cost:sum", {"formula": "rank(total_cost:sum, direction='desc')", "name": "rnk"}],
               dimensions=["category"],
               order=[{"column": "total_cost_sum", "direction": "desc"}]),
            ordered=True),
@@ -363,7 +363,7 @@ ENTRIES = [
     _entry("join_transform_rank_over_join", "joins",
            # transform layer (rank) stacked on an aggregate grouped by a JOINED
            # dim. Unordered: poor/whale tie on the adversarial sums.
-           _q(measures=["total_cost:sum", {"formula": "rank(total_cost:sum)", "name": "rnk"}],
+           _q(measures=["total_cost:sum", {"formula": "rank(total_cost:sum, direction='desc')", "name": "rnk"}],
               dimensions=["customers.segment"],
               order=[{"column": "total_cost_sum", "direction": "desc"}]),
            subset_100k=True),
@@ -432,7 +432,7 @@ ENTRIES = [
                                          "aggs": [COUNT_STAR], "having": "_count > 2"}}),
     _entry("filter_rank_transform", "filters",
            _q(measures=["total_cost:sum"], dimensions=["category"],
-              filters=["rank(total_cost:sum) <= 3"],
+              filters=["rank(total_cost:sum, direction='desc') <= 3"],
               order=[{"column": "total_cost_sum", "direction": "desc"}]),
            ordered=True),
     _entry("filter_date_range", "filters",

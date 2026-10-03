@@ -171,7 +171,7 @@ class TestIllegalWindowInFilterError:
             "  expr: 'rank() OVER (ORDER BY x) <= 3'\n"
             "  source: raw OVER(...) in DSL filter\n"
             "  suggestion: use a rank-family transform "
-            "(e.g. `rank(<measure>) <= N`)."
+            "(e.g. `rank(<measure>, direction='desc') <= N`)."
         )
 
     def test_filter_naming_windowed_column(self):

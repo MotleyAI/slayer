@@ -4,21 +4,21 @@ Expected values for the NULL-inner cases come from raw-row oracles over the `sal
 fixture (Void's total is NULL). The oracle used at plan time reproduces the corpus's
 old `810 / 43` and gives `810 / 33` under NULL→NULL.
 
-- [ ] 1.1 Direction syntax and binding tests: every scenario of "Rank-family ordering
+- [x] 1.1 Direction syntax and binding tests: every scenario of "Rank-family ordering
   direction" (asc/desc/synonyms/non-numeric/partition_by/distinct keys/missing/invalid/
   forbidden/ntile-percent_rank ascending), executed on SQLite and DuckDB. Verify: they
   fail against the current code.
-- [ ] 1.2 Importer-parity tests: identical kwargs through `core/formula.py`
+- [x] 1.2 Importer-parity tests: identical kwargs through `core/formula.py`
   `parse_formula` and the binder raise the same `TransformArgumentError`. Verify: they fail
   now.
-- [ ] 1.3 NULL-semantics tests: every scenario of "Rank-family NULL inputs rank NULL",
+- [x] 1.3 NULL-semantics tests: every scenario of "Rank-family NULL inputs rank NULL",
   covering all four functions with mixed-NULL, all-NULL-partition and partitioned
   inputs on SQLite and DuckDB, plus T-SQL / postgres emission. Verify: they fail now.
 - [ ] 1.4 Golden emission tests for the rank family on postgres, sqlite, duckdb, tsql and
   bigquery, recorded after implementation. Verify: the golden files exist and are pinned.
-- [ ] 1.5 Naming tests: the "Rank direction spelled as its bare value" scenario. Verify:
+- [x] 1.5 Naming tests: the "Rank direction spelled as its bare value" scenario. Verify:
   they fail now.
-- [ ] 1.6 Migration tests: every scenario of "Stored rank calls without a direction load
+- [x] 1.6 Migration tests: every scenario of "Stored rank calls without a direction load
   as descending":
   - stored v12 model with write-back to v13;
   - `source_queries` across all Mode-B fields, nested calls and colon syntax;
@@ -32,7 +32,7 @@ old `810 / 43` and gives `810 / 33` under NULL→NULL.
   - idempotence;
   - an untokenisable formula still loads.
   Plus unit tests of the stored-only gate in `migrate()`. Verify: they fail now.
-- [ ] 1.7 Mechanical fill of the ~98 existing test files that spell bare `rank(` /
+- [x] 1.7 Mechanical fill of the ~98 existing test files that spell bare `rank(` /
   `dense_rank(`: add `direction='desc'`. Approved test-logic changes, each limited to
   what the plan dictates:
   - expected values where an inner is NULL become NULL (e.g. the Void cell; `_dev1946` /
@@ -41,7 +41,7 @@ old `810 / 43` and gives `810 / 33` under NULL→NULL.
   - `ntile` / `percent_rank` expected values flip to ascending.
   List every file whose expected values changed in the pr-tests handoff. Verify:
   `poetry run pytest -m "not integration"` shows only intended failures.
-- [ ] 1.8 Codex-review the tests against the specs.
+- [x] 1.8 Codex-review the tests against the specs.
 
 ## 2. Core rule and error
 

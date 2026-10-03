@@ -337,7 +337,7 @@ class TestVirtualModelColumns:
         """Codex review fix — when a hidden slot is later promoted to
         public, its type / format / description must be filled in.
 
-        Repro: declare ``rank(*:count)`` first (hoists ``*:count`` as a
+        Repro: declare ``rank(*:count, direction='desc')`` first (hoists ``*:count`` as a
         hidden dep with no display metadata), THEN declare ``*:count``
         as a public measure. The promoted public slot must end up with
         ``type=INT`` (not the default None → DOUBLE fallback).
@@ -352,7 +352,7 @@ class TestVirtualModelColumns:
                     # rank uses *:count as a hidden inner; intern order
                     # hoists *:count hidden first, then the public
                     # *:count entry promotes the same slot.
-                    {"formula": "rank(*:count)", "name": "ranked"},
+                    {"formula": "rank(*:count, direction='desc')", "name": "ranked"},
                     {"formula": "*:count"},
                 ],
             )],
@@ -515,7 +515,7 @@ class TestVirtualModelColumns:
             tmp.cleanup()
 
     async def test_excludes_hidden_hoisted_slots(self) -> None:
-        """A query with ``rank(amount:sum)`` hoists the inner ``amount_sum``
+        """A query with ``rank(amount:sum, direction='desc')`` hoists the inner ``amount_sum``
         as a hidden slot. The migrated path exposes ONLY user-declared
         public columns; ``amount_sum`` is NOT a column on the virtual model
         (decision #3 — P4 closure).
@@ -526,7 +526,7 @@ class TestVirtualModelColumns:
             source_queries=[SlayerQuery(
                 source_model="orders",
                 dimensions=["status"],
-                measures=[{"formula": "rank(amount:sum)", "name": "rank_by_amt"}],
+                measures=[{"formula": "rank(amount:sum, direction='desc')", "name": "rank_by_amt"}],
             )],
         )
         engine, tmp = await _engine()

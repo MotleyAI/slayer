@@ -69,7 +69,8 @@
      finding 6, rejected).
    - Applied to: `measures[].formula` for models; for queries, string or dict
      `measures` (`formula`), `filters`, `dimensions` (string or `expression`),
-     `time_dimensions` (string or `dimension`), `order[].column`, `main_time_dimension`.
+     `time_dimensions` (string or `dimension`), `order[].column`, `main_time_dimension`,
+     and `source_model.measures[].formula` when the `source_model` is an inline extension.
 4. **One direction rule in core.**
    - A core function validates a rank-family call's `direction`: required for
      `rank` / `dense_rank`, forbidden for `ntile` / `percent_rank`, string-literal only.

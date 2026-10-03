@@ -438,8 +438,8 @@ MIXED_COMBINED_BY_REGION_MONTH = {
     ("South", "2024-02"): 95.0}
 #: sum(rank(amount:sum(window='90d', partition_by=region))) by month: the trailing-90d
 #: per-region sum (North 10/30/60, South 5/20, West NULL), ranked DESC over the
-#: (region, month) cells (NULLs last) → North 4/2/1, South 5/3, West 6; summed per month.
-WINDOWED_INNER_BY_MONTH = {"2024-01": 9.0, "2024-02": 11.0, "2024-03": 1.0}
+#: (region, month) cells → North 4/2/1, South 5/3, West NULL; summed per month.
+WINDOWED_INNER_BY_MONTH = {"2024-01": 9.0, "2024-02": 5.0, "2024-03": 1.0}
 #: sum(cumsum(amount:sum(partition_by=[customers.tier, ordered_at]))) rooted at orders,
 #: by month — the to-one cross-model partition key (customers.tier is determined from
 #: orders): amount:sum per (tier, month), cumsum per tier over months, summed per month.

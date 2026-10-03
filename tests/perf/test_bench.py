@@ -88,7 +88,7 @@ QUERIES: dict[str, dict] = {
     "rank_by_category": dict(
         measures=[
             ModelMeasure(formula="total_cost:sum"),
-            ModelMeasure(formula="rank(total_cost:sum)", name="rnk"),
+            ModelMeasure(formula="rank(total_cost:sum, direction='desc')", name="rnk"),
         ],
         dimensions=[ColumnRef(name="category")],
         order=[OrderItem(column=ColumnRef(name="total_cost_sum"), direction="desc")],
