@@ -127,7 +127,7 @@ class DeferralSite(BaseModel):
 
 
 #: The exact fail-closed deferral list. The guard ratchet
-#: (tests/test_law_guard_ratchet.py) pins this to ``guards.baseline`` in
+#: (tests/test_law_guard_ratchet.py) pins this to ``x-guards.baseline`` in
 #: architecture/index.yaml — the list may only ever shrink.
 DEFERRAL_SITES: Tuple[DeferralSite, ...] = ()
 

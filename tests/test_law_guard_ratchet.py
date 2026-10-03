@@ -1,10 +1,10 @@
-"""DEV-1869 guard ratchet — every ``NotImplementedError`` in ``slayer/sql`` +
+"""Guard ratchet — every ``NotImplementedError`` in ``slayer/sql`` +
 ``slayer/engine`` is classified, and the fail-closed deferral list can only
-shrink. Absorbs and supersedes the DEV-1838 sweep (``test_dev1838_sweep.py``).
+shrink.
 
 Classes: **coexistence** arms must not return; **deferral** (feature slices
 parked on a live issue) must match exactly one ``DEFERRAL_SITES`` entry AND
-carry that entry's issue ref — the site count is pinned to ``guards.baseline``
+carry that entry's issue ref — the site count is pinned to ``x-guards.baseline``
 in ``architecture/index.yaml``, which is only ever lowered; **expressiveness**
 (unsupported operator / key type / dialect capability) must match the explicit
 allowlist. A raise with no scannable literal message is red unconditionally.
@@ -128,9 +128,9 @@ def classify_message(
 
 def _guards_baseline() -> int:
     data = yaml.safe_load(_INDEX_YAML.read_text())
-    guards = data.get("guards")
+    guards = data.get("x-guards")
     msg = (
-        "architecture/index.yaml must declare `guards: {baseline: N}` "
+        "architecture/index.yaml must declare `x-guards: {baseline: N}` "
         "(the only-ever-lowered deferral-site count)"
     )
     assert isinstance(guards, dict), msg
@@ -156,7 +156,7 @@ def test_guard_list_is_enumerated_issue_refd_and_pinned() -> None:
     baseline = _guards_baseline()
     assert len(DEFERRAL_SITES) == baseline, (
         f"DEFERRAL_SITES has {len(DEFERRAL_SITES)} entries, "
-        f"guards.baseline is {baseline} — shrink both together, never grow"
+        f"x-guards.baseline is {baseline} — shrink both together, never grow"
     )
     assert sum(site_hits.values()) == baseline
 

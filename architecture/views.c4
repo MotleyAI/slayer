@@ -1,25 +1,25 @@
 views {
-  view landscape {
+  view landscape of python {
     title 'SLayer landscape'
     include *
   }
 
-  view query_pipeline {
+  view query_pipeline of python {
     title 'Query pipeline'
     include core, engine, sql, ir, storage
   }
 
-  view core_focus {
+  view core_focus of python {
     title 'Core in context'
     include core, core -> *, * -> core
   }
 
-  view sql_focus {
+  view sql_focus of python {
     title 'SQL generation in context'
     include sql, sql -> *, * -> sql
   }
 
-  view engine_focus {
+  view engine_focus of python {
     title 'Engine seam'
     include engine
   }
