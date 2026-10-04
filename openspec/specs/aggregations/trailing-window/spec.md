@@ -22,27 +22,27 @@ The former "only supported for sum and avg" error SHALL NOT exist; duration vali
 (compact duration string, non-empty, positive parts, well-formed) SHALL be unchanged.
 
 #### Scenario: Rolling count, min and max by month
-- **WHEN** a query over a month time dimension selects `amount:count(window='90d')`,
-  `amount:min(window='90d')` and `amount:max(window='90d')` over rows dated 2024-01-01
+- **WHEN** a query over a month time dimension selects `count(amount, window='90d')`,
+  `min(amount, window='90d')` and `max(amount, window='90d')` over rows dated 2024-01-01
   (100), 2024-01-15 (200), 2024-02-15 (300), 2024-03-15 (400) and 2024-03-20 (300)
 - **THEN** the executed values are count `{Jan 2, Feb 3, Mar 4}`, min
   `{Jan 100, Feb 100, Mar 200}`, max `{Jan 200, Feb 300, Mar 400}` — the 2024-01-01 row
   falls outside March's interval, which starts 2024-01-02
 
 #### Scenario: Rolling count_distinct counts distinct interval values
-- **WHEN** the same query selects `amount:count_distinct(window='90d')`
+- **WHEN** the same query selects `count_distinct(amount, window='90d')`
 - **THEN** the executed values are `{Jan 2, Feb 3, Mar 3}` — March's two 300s count once
 
 #### Scenario: Statistics family and per-row parameters over the interval
-- **WHEN** the same query selects `amount:median(window='90d')`,
-  `amount:stddev_samp(window='90d')`, `amount:corr(other=qty, window='90d')` and
-  `amount:weighted_avg(weight=qty, window='90d')`, `qty` being 1..5 in row order
+- **WHEN** the same query selects `median(amount, window='90d')`,
+  `stddev_samp(amount, window='90d')`, `corr(amount, other=qty, window='90d')` and
+  `weighted_avg(amount, weight=qty, window='90d')`, `qty` being 1..5 in row order
 - **THEN** each value is the statistic over the interval rows with `qty` read on each
   interval row: median `{150, 200, 300}`, sample stddev `{70.71, 100, 81.65}`, corr
   `{1.0, 1.0, 0.632}`, weighted average `{166.67, 233.33, 314.29}`
 
 #### Scenario: Literal parameters pass through unchanged
-- **WHEN** a query selects `amount:percentile(p=0.5, window='90d')`, or a custom
+- **WHEN** a query selects `percentile(amount, p=0.5, window='90d')`, or a custom
   aggregation whose definition default for a parameter is a numeric literal
 - **THEN** the literal reaches the aggregation unchanged (the percentile equals the
   median above) and the literal-only rule for `percentile`'s `p` still raises on a
@@ -51,7 +51,7 @@ The former "only supported for sum and avg" error SHALL NOT exist; duration vali
 #### Scenario: Custom aggregation over the interval
 - **WHEN** a model defines `trimmed_mean` as
   `AVG(CASE WHEN {value} BETWEEN {lo} AND {hi} THEN {value} END)` with defaults `lo=0`,
-  `hi=1000` and a query selects `amount:trimmed_mean(lo=150, hi=350, window='90d')`
+  `hi=1000` and a query selects `trimmed_mean(amount, lo=150, hi=350, window='90d')`
 - **THEN** the formula runs over the interval rows with the overridden literals:
   `{Jan 200, Feb 250, Mar 266.67}`; without overrides it equals the rolling average
 
@@ -64,33 +64,33 @@ The former "only supported for sum and avg" error SHALL NOT exist; duration vali
 
 #### Scenario: Attached aggregate as a windowed parameter
 - **WHEN** a query over a month time dimension selects
-  `amount:weighted_avg(weight=qty:sum(partition_by=region), window='90d')`
+  `weighted_avg(amount, weight=sum(qty, partition_by=region), window='90d')`
 - **THEN** each interval row is weighted by its region's total `qty` and the executed
   values are the hand-derived weighted averages, never a value computed from the raw
   `qty` or a multiplied row set
 
 #### Scenario: Windowed count with partition_by, in a filter, and as an order target
-- **WHEN** a query selects `amount:count(window='90d', partition_by=region)` over
-  `[region, month]`, another filters on `amount:count(window='90d') >= 3` without
-  selecting it, and a third orders by `amount:max(window='90d')` without selecting it
+- **WHEN** a query selects `count(amount, window='90d', partition_by=region)` over
+  `[region, month]`, another filters on `count(amount, window='90d') >= 3` without
+  selecting it, and a third orders by `max(amount, window='90d')` without selecting it
 - **THEN** the partitioned count is per (region, month) interval, the filter keeps
   exactly the buckets whose rolling count is at least 3, and the order follows the
   rolling max with no windowed column in the response
 
 #### Scenario: Cross-model windowed count
 - **WHEN** a query rooted at `orders` over the `customers.signup_at` month time dimension
-  selects `customers.spend:count(window='1y')`
+  selects `count(customers.spend, window='1y')`
 - **THEN** the count is over the customers whose signup falls in each bucket's trailing
   year, computed on the customers producer with no fan-out from orders
 
 #### Scenario: Windowed aggregation over a stage time dimension
-- **WHEN** a two-stage query's outer stage selects `rev:count(window='60d')` and
-  `rev:first(window='60d')` over the stage's own month time dimension
+- **WHEN** a two-stage query's outer stage selects `count(rev, window='60d')` and
+  `first(rev, window='60d')` over the stage's own month time dimension
 - **THEN** each value is the aggregation over the stage rows in the trailing interval,
   identical to the same shapes evaluated over a model-backed dataset holding the same rows
 
 #### Scenario: Dialect gaps are unchanged
-- **WHEN** `amount:median(window='90d')` is rendered for MySQL or T-SQL
+- **WHEN** `median(amount, window='90d')` is rendered for MySQL or T-SQL
 - **THEN** the query fails with the same dialect error the plain aggregation raises, and
   every other Tier-1 dialect renders SQL — including BigQuery median and MySQL
   `corr`/`covar`, which the plain path already emulates, so a window adds no new gap
@@ -98,12 +98,12 @@ The former "only supported for sum and avg" error SHALL NOT exist; duration vali
 ### Requirement: An empty interval follows SQL empty-set semantics
 For an output cell whose trailing interval contains no home rows, `count`,
 `count_distinct` and `count_distinct_approx` SHALL yield 0 and every other aggregation
-SHALL yield NULL. `*:count(window=)` SHALL count the interval rows: an empty interval
+SHALL yield NULL. `count(*, window=)` SHALL count the interval rows: an empty interval
 yields 0, never 1 for the cell's own grain row.
 
 #### Scenario: One-day window on month buckets
-- **WHEN** a query over month buckets selects `amount:count(window='1d')`,
-  `*:count(window='1d')`, `amount:sum(window='1d')` and `amount:last(window='1d')` over
+- **WHEN** a query over month buckets selects `count(amount, window='1d')`,
+  `count(*, window='1d')`, `sum(amount, window='1d')` and `last(amount, window='1d')` over
   rows none of which falls on the last day of its month
 - **THEN** every bucket is still returned, the counts are 0, and the sum and last are
   NULL
@@ -118,14 +118,14 @@ ordering, as for plain `first`/`last`; a row whose ranking key is NULL is still 
 interval member.
 
 #### Scenario: Default ranking is the window axis
-- **WHEN** the rows of the first scenario are queried with `amount:first(window='90d')`
-  and `amount:last(window='90d')`
+- **WHEN** the rows of the first scenario are queried with `first(amount, window='90d')`
+  and `last(amount, window='90d')`
 - **THEN** first is `{Jan 100, Feb 100, Mar 200}` and last is `{Jan 200, Feb 300, Mar 300}`
   — March's last is the 2024-03-20 row's 300, not the interval max 400
 
 #### Scenario: Explicit ranking column with NULL keys
 - **WHEN** the same rows carry `updated_at` = 2024-01-02, 2024-01-16, NULL, 2024-03-25,
-  2024-03-16 and the query selects `amount:last(updated_at, window='90d')`
+  2024-03-16 and the query selects `last(amount, updated_at, window='90d')`
 - **THEN** last is `{Jan 200, Feb 200, Mar 400}`: February skips the NULL-keyed row
   under descending native ordering on SQLite and DuckDB, and March picks the row with
   the latest `updated_at` rather than the latest `created_at`
@@ -133,11 +133,11 @@ interval member.
 #### Scenario: Interval whose only rows have NULL ranking keys
 - **WHEN** the same query groups by `region` and the EU/February cell's interval holds
   only the NULL-keyed 300 row
-- **THEN** `amount:last(updated_at, window='90d')` for that cell is 300, not NULL
+- **THEN** `last(amount, updated_at, window='90d')` for that cell is 300, not NULL
 
 #### Scenario: Cross-model windowed last
 - **WHEN** a query rooted at `orders` over the `customers.signup_at` month time dimension
-  selects `customers.spend:last(customers.signup_at, window='1y')` over customers signed
+  selects `last(customers.spend, customers.signup_at, window='1y')` over customers signed
   up 2024-01-05 (100), 2024-02-10 (150), 2024-03-15 (60), 2024-03-20 (40)
 - **THEN** the values are `{Jan 100, Feb 150, Mar 40}`
 
@@ -155,15 +155,15 @@ place.
 
 #### Scenario: MySQL windowed covar_samp and corr use VAR_SAMP
 
-- **WHEN** `amount:covar_samp(other=qty, window='90d')` or
-  `amount:corr(other=qty, window='90d')` is compiled for MySQL, whether as a producer
+- **WHEN** `covar_samp(amount, other=qty, window='90d')` or
+  `corr(amount, other=qty, window='90d')` is compiled for MySQL, whether as a producer
   hoisted into the host statement, inside a non-root stage or inside the root stage
 - **THEN** the emitted SQL uses `VAR_SAMP` and contains no `VARIANCE(`
 
 #### Scenario: Windowed covar_samp matches a hand-computed sample covariance
 
-- **WHEN** `amount:covar_samp(other=qty, window='90d')` and
-  `amount:corr(other=qty, window='90d')` are executed on DuckDB and SQLite over a fixture
+- **WHEN** `covar_samp(amount, other=qty, window='90d')` and
+  `corr(amount, other=qty, window='90d')` are executed on DuckDB and SQLite over a fixture
   with known values
 - **THEN** each monthly value equals the sample covariance / correlation computed by hand
   over that month's trailing 90-day rows
@@ -175,7 +175,7 @@ landing past the target month's last day clamps to that day, and sub-day parts k
 day. The interval SHALL be identical on every Tier-1 dialect, SQLite included.
 
 #### Scenario: One-month window ending at month-end
-- **WHEN** a query over a `day` time dimension has rows dated 2024-02-28 (`amount` 1), 2024-02-29 (10), 2024-03-01 (100) and 2024-03-30 (1000) and selects `amount:sum(window='1m')`
+- **WHEN** a query over a `day` time dimension has rows dated 2024-02-28 (`amount` 1), 2024-02-29 (10), 2024-03-01 (100) and 2024-03-30 (1000) and selects `sum(amount, window='1m')`
 - **THEN** on every dialect the value at 2024-03-30 is 1110 — its interval starts 2024-02-29 (2024-03-31 minus one month, clamped), so the 2024-02-28 row is excluded and the 2024-02-29 row included
 
 ### Requirement: A windowed aggregate is evaluated at every population cell

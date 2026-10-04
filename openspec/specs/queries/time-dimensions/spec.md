@@ -193,7 +193,7 @@ A `TimeDimension` in a downstream stage of a multi-stage query SHALL bind agains
 
 #### Scenario: Aggregate-output timestamp with the partition_by auto-name and a same-column filter
 
-- **WHEN** an inner stage grouped by `customer_id` selects `ordered_at:max(partition_by=customer_id)` (auto-named `ordered_at_max_partition_by_customer_id`), and the outer stage declares a time dimension on that column at `month`, a filter `ordered_at_max_partition_by_customer_id >= '<date>'` and a count
+- **WHEN** an inner stage grouped by `customer_id` selects `max(ordered_at, partition_by=customer_id)` (auto-named `ordered_at_max_partition_by_customer_id`), and the outer stage declares a time dimension on that column at `month`, a filter `ordered_at_max_partition_by_customer_id >= '<date>'` and a count
 - **THEN** the query executes on SQLite and DuckDB, returns one row per cohort month with the count of customers whose last order falls in that month and after the filter date, and the same query binds at every granularity, `day` included, with no re-bucketing error
 
 #### Scenario: Three-stage chain

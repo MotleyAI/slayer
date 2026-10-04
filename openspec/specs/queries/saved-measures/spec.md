@@ -9,8 +9,8 @@ Defines how saved measures (`ModelMeasure`) are referenced from queries: bare-na
 A bare identifier in a measure formula or computed-dimension expression that matches a saved measure on the query's source model SHALL be replaced by that measure's formula, recursively (a saved formula may reference other saved measures on the same model). The expansion MUST be semantically identical to writing the saved formula inline. This is existing behavior, unchanged by this change; it is specified here because the resolution mechanism is being unified.
 
 #### Scenario: Bare reference equals inline formula
-- WHEN a query selects `{formula: "aov"}` and `aov` is saved as `revenue:sum / *:count` on the source model
-- THEN the generated SQL and executed values are identical to selecting `{formula: "revenue:sum / *:count"}`
+- WHEN a query selects `{formula: "aov"}` and `aov` is saved as `sum(revenue) / count(*)` on the source model
+- THEN the generated SQL and executed values are identical to selecting `{formula: "sum(revenue) / count(*)"}`
 
 #### Scenario: Existing bare-name behavior is preserved
 - WHEN the pre-existing bare-name test suites (root position, transforms, arithmetic, chained measures, naming, type inheritance) run against the unified resolution mechanism
@@ -20,7 +20,7 @@ A bare identifier in a measure formula or computed-dimension expression that mat
 A dotted reference whose join path resolves through the host's join graph and whose terminal segment matches a saved measure on the terminal model (`customers.aov` from an `orders`-rooted query) SHALL resolve by expanding the target measure's formula and re-anchoring every reference into the host's coordinate system. The result MUST be bound-tree-identical to the hand-written host-prefixed formula, so generated SQL, executed values, broadcast metadata, `strict` behavior, and warnings are all identical to that hand-written form.
 
 #### Scenario: Dotted measure equals hand-expanded formula
-- WHEN an `orders`-rooted query selects `customers.aov` (saved on `customers` as `spend:sum / *:count`) and an otherwise-identical query selects `customers.spend:sum / customers.*:count`
+- WHEN an `orders`-rooted query selects `customers.aov` (saved on `customers` as `sum(spend) / count(*)`) and an otherwise-identical query selects `sum(customers.spend) / count(customers.*)`
 - THEN both produce identical SQL and identical executed values on SQLite and DuckDB
 
 #### Scenario: Broadcast and strict semantics are inherited
@@ -40,11 +40,11 @@ A dotted reference whose join path resolves through the host's join graph and wh
 - THEN the dimension behaves exactly as with the hand-expanded formula
 
 ### Requirement: Re-anchoring covers every reference kind
-Re-anchoring SHALL apply to every reference kind in the saved formula: plain columns, star sources (`*:count`), references crossing the target's own joins (nested paths), `partition_by` members, aggregation args/kwargs, and transform inputs. A measure-level column filter (`Column.filter`) SHALL keep its owner-anchored meaning — it is interpreted relative to the model owning the filtered column, identically to the hand-expanded form. A self-qualified reference inside the saved formula (`customers.spend` written on `customers`) MUST NOT double-prefix.
+Re-anchoring SHALL apply to every reference kind in the saved formula: plain columns, star sources (`count(*)`), references crossing the target's own joins (nested paths), `partition_by` members, aggregation args/kwargs, and transform inputs. A measure-level column filter (`Column.filter`) SHALL keep its owner-anchored meaning — it is interpreted relative to the model owning the filtered column, identically to the hand-expanded form. A self-qualified reference inside the saved formula (`customers.spend` written on `customers`) MUST NOT double-prefix.
 
 #### Scenario: Nested-join references re-anchor
-- WHEN a `customers` saved measure references `regions.pop:sum` and an `orders`-rooted query references it dotted
-- THEN it behaves exactly as `customers.regions.pop:sum` written at the host, by SQL and executed values
+- WHEN a `customers` saved measure references `sum(regions.pop)` and an `orders`-rooted query references it dotted
+- THEN it behaves exactly as `sum(customers.regions.pop)` written at the host, by SQL and executed values
 
 #### Scenario: Column filters keep owner-anchored semantics
 - WHEN the target's saved formula aggregates a column carrying a `filter` — one referencing owner-local columns and one crossing the owner's own join
@@ -62,10 +62,10 @@ Expansion SHALL be recursive: the target measure may reference other saved measu
 - THEN the query fails with a cycle error naming the (model, measure) chain
 
 ### Requirement: Position eligibility and resolution order
-Saved-measure references — bare and dotted alike — SHALL be legal in exactly two positions: measure formulas and computed-dimension expressions. Resolution order per name SHALL be: declared-alias map, then column, then saved measure; a selected measure's declared name therefore remains referenceable in filters and ORDER BY, and a declared alias that collides with a real column resolves to the alias. In all other positions — aggregation source (`customers.aov:sum`), aggregation args/kwargs, `partition_by` members, plain dimension entries, filters naming an unselected measure, ORDER BY formulas, and downstream-stage scopes — a reference resolving to a saved measure SHALL fail with an error stating that the name is a saved measure and where it may be referenced. Raw-row queries (`distinct_dimension_values=false`) SHALL reject dotted saved-measure references in filters/ORDER BY with the same targeted error as bare ones.
+Saved-measure references — bare and dotted alike — SHALL be legal in exactly two positions: measure formulas and computed-dimension expressions. Resolution order per name SHALL be: declared-alias map, then column, then saved measure; a selected measure's declared name therefore remains referenceable in filters and ORDER BY, and a declared alias that collides with a real column resolves to the alias. In all other positions — aggregation source (`sum(customers.aov)`), aggregation args/kwargs, `partition_by` members, plain dimension entries, filters naming an unselected measure, ORDER BY formulas, and downstream-stage scopes — a reference resolving to a saved measure SHALL fail with an error stating that the name is a saved measure and where it may be referenced. Raw-row queries (`distinct_dimension_values=false`) SHALL reject dotted saved-measure references in filters/ORDER BY with the same targeted error as bare ones.
 
 #### Scenario: Aggregation suffix on a dotted saved measure errors
-- WHEN a query references `customers.aov:sum` and `aov` is a saved measure on `customers`
+- WHEN a query references `sum(customers.aov)` and `aov` is a saved measure on `customers`
 - THEN the query fails stating that `aov` is a saved measure on `customers`, takes no aggregation, and is referenced as `customers.aov`
 
 #### Scenario: Ineligible positions error clearly
@@ -80,7 +80,7 @@ Saved-measure references — bare and dotted alike — SHALL be legal in exactly
 A dotted saved-measure expansion whose re-anchored references cross a join back toward a model already on the host-to-target join chain SHALL fail with an error naming the saved measure and the revisited model — matching the behavior of the identical hand-written dotted path, which is rejected as circular.
 
 #### Scenario: Target measure crossing back to the host errors
-- WHEN `customers.order_total` is saved as `orders.amount:sum` (over the reverse orientation of the declared `orders → customers` join) and an `orders`-rooted query references `customers.order_total`
+- WHEN `customers.order_total` is saved as `sum(orders.amount)` (over the reverse orientation of the declared `orders → customers` join) and an `orders`-rooted query references `customers.order_total`
 - THEN the query fails with an error naming `order_total` on `customers` and the revisited `orders` model, not with wrong or double-counted values
 
 ### Requirement: Naming and metadata of dotted references

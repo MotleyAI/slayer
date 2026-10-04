@@ -21,7 +21,7 @@ The `query` tool SHALL accept a single query object with the documented query fi
 
 #### Scenario: Single query object runs
 
-- **WHEN** `query` is called with `query={"source_model": "orders", "measures": [{"formula": "*:count"}], "dimensions": ["status"]}`
+- **WHEN** `query` is called with `query={"source_model": "orders", "measures": [{"formula": "count(*)"}], "dimensions": ["status"]}`
 - **THEN** the aggregated result rows are returned in the requested output format
 
 #### Scenario: In-query control fields are honored
@@ -35,7 +35,7 @@ The `query` tool SHALL accept a non-empty list of query objects forming a multi-
 
 #### Scenario: Two-stage query returns the root stage's rows
 
-- **WHEN** `query` is called with `query=[{"name": "monthly", "source_model": "orders", "measures": [{"formula": "revenue:sum"}], "time_dimensions": [{"dimension": "created_at", "granularity": "month"}]}, {"source_model": "monthly", "measures": [{"formula": "*:count"}]}]`
+- **WHEN** `query` is called with `query=[{"name": "monthly", "source_model": "orders", "measures": [{"formula": "sum(revenue)"}], "time_dimensions": [{"dimension": "created_at", "granularity": "month"}]}, {"source_model": "monthly", "measures": [{"formula": "count(*)"}]}]`
 - **THEN** the result of the final (root) stage is returned
 
 #### Scenario: Empty list is rejected

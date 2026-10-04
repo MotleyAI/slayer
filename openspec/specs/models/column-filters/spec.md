@@ -22,7 +22,7 @@ aggregation's parameters are masked only by their own columns' filters, never by
 source column's, and no position reads the unmasked value.
 
 #### Scenario: Single-column aggregate SQL unchanged
-- **WHEN** `q_amount` is `amount` with filter `product = 'Q'` and a query selects `q_amount:sum`
+- **WHEN** `q_amount` is `amount` with filter `product = 'Q'` and a query selects `sum(q_amount)`
 - **THEN** the generated SQL is `SUM(CASE WHEN product = 'Q' THEN amount END)` as
   before and executed values are unchanged
 
@@ -46,7 +46,7 @@ source column's, and no position reads the unmasked value.
 
 #### Scenario: Filtered column in row-filter, order and partition-key positions
 - **WHEN** a query filters on `q_amount > 10`, orders by `q_amount`, or selects
-  `amount:sum(partition_by=q_amount)`
+  `sum(amount, partition_by=q_amount)`
 - **THEN** each position reads the masked value: the filter keeps only Q rows above
   ten, the order sorts NULLs per the dialect's default with matching rows by amount,
   and the partition forms one cell per masked value including the NULL cell, by
@@ -87,7 +87,7 @@ source column's, and no position reads the unmasked value.
   exactly as for a broken path in `sql`
 
 #### Scenario: Ranked aggregation over a filtered column picks the masked value
-- **WHEN** a query selects `q_amount:last`
+- **WHEN** a query selects `last(q_amount)`
 - **THEN** the ranking is by the ranking key over every row (the filter never
   restricts it) and the picked value is `CASE WHEN product = 'Q' THEN amount END`
   at the newest row — NULL when that newest row does not match; a row restriction

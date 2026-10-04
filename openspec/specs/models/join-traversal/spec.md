@@ -83,7 +83,7 @@ resolved edge, never by reading path tokens as model names.
   `orders.billing_customer.name`
 
 #### Scenario: Names are direction-agnostic
-- **WHEN** a query rooted at `customers` references `billing_customer.amount:sum`
+- **WHEN** a query rooted at `customers` references `sum(billing_customer.amount)`
 - **THEN** the same token traverses the same edge in reverse, reaching `orders`
 
 #### Scenario: Named paths carry correct terminal metadata
@@ -95,7 +95,7 @@ resolved edge, never by reading path tokens as model names.
 #### Scenario: A named edge typed by its model name answers under the edge name
 - **WHEN** `customers`→`regions` is a single edge named `hr` and a query rooted at
   `orders` selects the dimension `customers.regions.rname` and the measure
-  `customers.regions.pop:max`
+  `max(customers.regions.pop)`
 - **THEN** the result keys are `orders.customers.hr.rname` and
   `orders.customers.hr.pop_max`, with the same label, format and type metadata as
   the edge-name spelling
@@ -188,14 +188,14 @@ typed spelling.
 
 #### Scenario: An aggregate is grouped by a dimension spelled through the other name
 - **WHEN** a query rooted at `orders` selects the dimension `customers.hr.rname` and
-  the measure `customers.regions.pop:max`
+  the measure `max(customers.regions.pop)`
 - **THEN** the measure is computed per region exactly as for
-  `customers.hr.pop:max`, and no broadcast warning is raised
+  `max(customers.hr.pop)`, and no broadcast warning is raised
 
 #### Scenario: A reverse-hop route determines under a divergent spelling
 - **WHEN** `regions`→`region_events` is one-to-many and a query rooted at `orders`
   selects the dimension `customers.regions.rname` and the measure
-  `customers.hr.region_events.value:max`
+  `max(customers.hr.region_events.value)`
 - **THEN** the measure is computed per region and joined back exactly as when both
   are spelled `customers.hr`, and no broadcast warning is raised
 
