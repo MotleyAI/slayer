@@ -20,6 +20,7 @@ import sqlglot
 import sqlglot.errors
 import sqlglot.expressions as exp
 from sqlglot.expressions.core import Expression
+from sqlglot.expressions.datatypes import DType
 from pydantic import BaseModel, ConfigDict
 
 from slayer.core.enums import DataType, JoinCardinality, JoinType, TimeGranularity
@@ -95,7 +96,7 @@ class ProbeMatcherOutcome(BaseModel):
 
 
 ProbeMatcher = Callable[
-    [exp.Expression], RowBatch | ProbeMatcherOutcome | None,
+    [Expression], RowBatch | ProbeMatcherOutcome | None,
 ]
 
 
@@ -186,7 +187,7 @@ SELECT_STAR_MESSAGE = (
 )
 
 
-def _is_browse_mode_select(parsed: exp.Select, proj_exprs: list[exp.Expression]) -> bool:
+def _is_browse_mode_select(parsed: exp.Select, proj_exprs: list[Expression]) -> bool:
     """``SELECT * FROM t`` browse-mode predicate: no GROUP BY / HAVING / aggregate
     anywhere in the projection. When it holds, ``*`` expands to every non-hidden
     column; otherwise ``*`` stays rejected."""
@@ -202,14 +203,14 @@ def _is_browse_mode_select(parsed: exp.Select, proj_exprs: list[exp.Expression])
 
 
 def _expand_select_star(
-    proj_exprs: list[exp.Expression], table: "FacadeTable",
-) -> list[exp.Expression]:
+    proj_exprs: list[Expression], table: "FacadeTable",
+) -> list[Expression]:
     """Replace each top-level ``exp.Star`` with one column ref per non-hidden
     column on ``table``, preserving the order of any non-Star projections.
     Only row-preserving dims expand — a fan-out join path would multiply the
-    browse-mode row grain (DEV-1853); those dims stay individually addressable."""
+    browse-mode row grain; those dims stay individually addressable."""
     column_names = [d.name for d in table.dimensions if d.row_preserving]
-    out: list[exp.Expression] = []
+    out: list[Expression] = []
     for expr in proj_exprs:
         if isinstance(expr, exp.Star):
             out.extend(
@@ -272,7 +273,7 @@ _COMPARATOR_SQL: dict[type, str] = {
 # COARSE wire-OID hint, not a precision-preserving conversion: DECIMAL/NUMERIC →
 # DOUBLE, narrow ints → INT (OID int8), TIMESTAMPTZ/LTZ → TIMESTAMP (no TZ).
 # Callers needing exact precision/TZ must compute upstream; see pg-facade.md.
-_SQLGLOT_TYPE_TO_DATATYPE: dict[exp.DataType.Type, DataType] = {
+_SQLGLOT_TYPE_TO_DATATYPE: dict[DType, DataType] = {
     exp.DataType.Type.TEXT: DataType.TEXT,
     exp.DataType.Type.VARCHAR: DataType.TEXT,
     exp.DataType.Type.CHAR: DataType.TEXT,
@@ -421,7 +422,7 @@ def _apply_strip_prefix(
 
 
 def _detect_time_grain_date_trunc(
-    node: exp.Expression,
+    node: Expression,
 ) -> tuple[TimeGranularity, exp.Column] | None:
     """Plain ``DATE_TRUNC(<unit>, <col>)`` detector.
 
@@ -448,7 +449,7 @@ def _detect_time_grain_date_trunc(
     return grain, col
 
 
-def _date_trunc_unit(node: exp.Expression) -> str | None:
+def _date_trunc_unit(node: Expression) -> str | None:
     """Lowercase unit string of a ``DATE_TRUNC``/``TIMESTAMP_TRUNC`` node, else ``None``."""
     if not isinstance(node, (exp.DateTrunc, exp.TimestampTrunc)):
         return None
@@ -461,7 +462,7 @@ def _date_trunc_unit(node: exp.Expression) -> str | None:
 
 
 def _detect_sunday_week_wrapper(
-    node: exp.Expression,
+    node: Expression,
 ) -> tuple[TimeGranularity, exp.Column] | None:
     """Recognise Metabase's complete Sunday-week wrapper as a single shape:
     ``CAST(DATE_TRUNC('week', <col> + INTERVAL '1 day') AS DATE) + INTERVAL '-1 day'``,
@@ -491,7 +492,7 @@ def _detect_sunday_week_wrapper(
     return TimeGranularity.WEEK_SUNDAY, unwrapped_col
 
 
-def _day_interval_sign(node: exp.Expression) -> int | None:
+def _day_interval_sign(node: Expression) -> int | None:
     """``+1`` for ``INTERVAL '1 day'``, ``-1`` for ``INTERVAL '-1 day'``, else ``None``.
     Handles both the dialect-less form (unit in the literal) and the Postgres
     ``INTERVAL '1' DAY`` form (unit a separate node)."""
@@ -517,8 +518,8 @@ def _day_interval_sign(node: exp.Expression) -> int | None:
 
 
 def _unwrap_signed_day_offset(
-    node: exp.Expression, *, expected_sign: int,
-) -> exp.Expression:
+    node: Expression, *, expected_sign: int,
+) -> Expression:
     """If ``node`` shifts by exactly ``expected_sign`` days via a single ADD/SUB
     of a one-day interval, return the inner expression; else ``node`` unchanged.
     Direction matters so a user-written shift outside the Sunday-week wrapper is
@@ -544,7 +545,7 @@ def _unwrap_signed_day_offset(
 
 
 def _detect_time_grain_single_arg(
-    node: exp.Expression,
+    node: Expression,
 ) -> tuple[TimeGranularity, exp.Column] | None:
     """Dedicated AST classes like ``exp.Month`` / ``exp.Year``."""
     for cls, grain in _TIME_GRAIN_CLASSES.items():
@@ -569,7 +570,7 @@ def _detect_time_grain_anonymous(
     return None
 
 
-def _detect_time_grain(node: exp.Expression) -> tuple[TimeGranularity, exp.Column] | None:
+def _detect_time_grain(node: Expression) -> tuple[TimeGranularity, exp.Column] | None:
     """If ``node`` is ``<grain>(<column>)`` or ``date_trunc('<grain>', <column>)``,
     return ``(granularity, column)``, else ``None``. Also unwraps an outer
     ``CAST(...)`` (Metabase casts DATE-typed trunc results back to DATE)."""
@@ -607,7 +608,7 @@ def _alias_for_time_grain(
     return f"{grain.value}({_column_to_dotted(col, strip_prefix=strip_prefix, alias_map=alias_map)})"
 
 
-# --- aggregate-call detection (DEV-1486 decision 21) -------------------------
+# --- aggregate-call detection -------------------------
 
 
 class _AggCall(BaseModel):
@@ -622,7 +623,7 @@ class _AggCall(BaseModel):
 
 
 def _detect_aggregate(  # NOSONAR(S3776) — flat per-aggregate-kind dispatch; splitting hides the shape
-    node: exp.Expression,
+    node: Expression,
     *,
     strip_prefix: tuple[str, str] | None = None,
     alias_map: dict[str, str] | None = None,
@@ -666,7 +667,7 @@ def _detect_aggregate(  # NOSONAR(S3776) — flat per-aggregate-kind dispatch; s
 
 
 def _agg_formula(call: _AggCall) -> str:
-    """The SLayer colon-form measure formula for a recognised aggregate."""
+    """The internal legacy colon-form measure formula for a recognised aggregate."""
     if call.is_count_star:
         return "*:count"
     return f"{call.inner_ref}:{call.agg}"
@@ -697,7 +698,7 @@ def _metric_for_aggregate(
     call: _AggCall, table: FacadeTable, metrics_by_formula: dict[str, FacadeMetric],
 ) -> FacadeMetric:
     """Resolve an aggregate call to its catalog ``FacadeMetric``. The catalog
-    pre-expands every eligible column × aggregation, so a colon-form lookup
+    pre-expands every eligible column × aggregation, so a formula lookup
     validates column existence + aggregation eligibility in one step; failures
     raise ``TranslationError``.
     """
@@ -731,7 +732,7 @@ def _flatten_catalog(catalog: FacadeCatalog) -> dict[str, list[tuple[str, Facade
     return by_name
 
 
-def _unwrap_identifier(node: exp.Expression | None) -> str | None:
+def _unwrap_identifier(node: Expression | None) -> str | None:
     """Pull the string value out of a sqlglot identifier-ish node."""
     if node is None:
         return None
@@ -886,7 +887,7 @@ def _resolve_aggregate_projection(
     metrics_by_formula: dict[str, FacadeMetric],
 ) -> _ProjectionItem:
     """Map a SQL aggregate call to the same projection item a bare metric
-    name would produce (DEV-1486 decision 21)."""
+    name would produce."""
     metric = _metric_for_aggregate(
         call=call, table=table, metrics_by_formula=metrics_by_formula,
     )
@@ -925,7 +926,7 @@ def _resolve_column_projection(
 
 
 def _detect_column_cast(
-    body: exp.Expression,
+    body: Expression,
 ) -> tuple[exp.Column, DataType] | None:
     """If ``body`` is ``CAST(<Column> AS <supported_type>)``, return ``(inner_col,
     target_data_type)``, else ``None``. Requires a bare ``exp.Column`` inner
@@ -991,7 +992,7 @@ _HYGIENE_ANONYMOUS_NAMES = {"substr", "substring", "left", "right",
                             "upper", "lower", "trim", "length"}
 
 
-def _detect_hygiene_wrapper(body: exp.Expression) -> tuple[str, exp.Column] | None:
+def _detect_hygiene_wrapper(body: Expression) -> tuple[str, exp.Column] | None:
     """If ``body`` is a hygiene-scalar wrapper around exactly one column
     reference, return ``(printable_func_name, inner_col)``. Otherwise None.
     """
@@ -1065,7 +1066,7 @@ def _build_projection_lookups(
 
 
 def _resolve_projection(  # NOSONAR(S3776) — flat dispatch over projection-expression shapes; one branch per shape by design
-    expressions: Sequence[exp.Expression], table: FacadeTable,
+    expressions: Sequence[Expression], table: FacadeTable,
     *,
     schema_name: str | None = None,
     alias_map: dict[str, str] | None = None,
@@ -1098,7 +1099,7 @@ def _resolve_projection(  # NOSONAR(S3776) — flat dispatch over projection-exp
             raise TranslationError(SELECT_STAR_MESSAGE)
 
         alias_name: str | None = None
-        body: exp.Expression = expr
+        body: Expression = expr
         if isinstance(expr, exp.Alias):
             alias_name = str(expr.alias)
             body = expr.this
@@ -1171,9 +1172,9 @@ def _resolve_projection(  # NOSONAR(S3776) — flat dispatch over projection-exp
 # --- WHERE translation -------------------------------------------------------
 
 
-def _split_and_chain(node: exp.Expression) -> list[exp.Expression]:
+def _split_and_chain(node: Expression) -> list[Expression]:
     """Flatten a top-level AND chain into its conjuncts."""
-    out: list[exp.Expression] = []
+    out: list[Expression] = []
     stack = [node]
     while stack:
         cur = stack.pop()
@@ -1205,7 +1206,7 @@ def _lift_time_between(
 
 
 def _aggregate_alias_for_column(
-    side: exp.Expression,
+    side: Expression,
     items_by_projected_name: dict[str, "_ProjectionItem"],
     *, strip_prefix: tuple[str, str] | None = None,
 ) -> "_ProjectionItem | None":
@@ -1215,7 +1216,7 @@ def _aggregate_alias_for_column(
 
     Used by ``_try_aggregate_alias_filter`` to route Metabase-style
     ``WHERE "<alias>" > <literal>`` and ``HAVING "<alias>" > <literal>``
-    conjuncts to colon-form filters (DEV-1568). The ``item.metric`` guard
+    conjuncts to aggregate filters. The ``item.metric`` guard
     keeps dimension projections that happen to share a name with what
     *would* be an aggregate alias from being treated as aggregates.
     """
@@ -1229,19 +1230,19 @@ def _aggregate_alias_for_column(
 
 
 def _try_aggregate_alias_filter(
-    conj: exp.Expression,
+    conj: Expression,
     items_by_projected_name: dict[str, "_ProjectionItem"],
     *, strip_prefix: tuple[str, str] | None = None,
 ) -> str | None:
     """If ``conj`` is ``<aggregate-alias-col> <cmp> <literal>`` (in either
-    order), return the colon-form filter string. If one side matches an
+    order), return the aggregate filter string. If one side matches an
     aggregate alias but the other side is not a literal, raise. Return
     ``None`` if neither side matches an aggregate-alias column ref.
 
-    DEV-1568: Metabase compiles MBQL ``["aggregation", N]`` post-aggregation
+    Metabase compiles MBQL ``["aggregation", N]`` post-aggregation
     references to alias-bearing SQL — ``WHERE "count" > 1`` for filters and
     ``ORDER BY "count" DESC`` for sorts. This detector rewrites the filter
-    shapes to colon-form (``*:count > 1``) so the engine classifies them
+    shapes to aggregate filters (``*:count > 1``, legacy colon form) so the engine classifies them
     correctly as HAVING; ``_translate_order_by`` handles the ORDER BY side.
     """
     op_sql = _COMPARATOR_SQL.get(type(conj))
@@ -1323,7 +1324,7 @@ def _classify_where_conjunct(
     render as ``BETWEEN x AND NULL`` (never true, silent zero rows), so they fall
     through to the verbatim path. Returns ``(None, verbatim_sql)`` otherwise.
 
-    DEV-1558 B5: the engine's Mode-B DSL parses ``SlayerQuery.filters``
+    The engine's Mode-B DSL parses ``SlayerQuery.filters``
     and only accepts single-dot dotted paths. Before serialising the
     verbatim fallback, normalise any ``exp.Column`` nodes in the
     predicate via ``strip_prefix`` so a WHERE clause like
@@ -1353,11 +1354,11 @@ def _classify_where_conjunct(
 
 
 def _normalise_predicate_columns(
-    node: exp.Expression,
+    node: Expression,
     *,
     strip_prefix: tuple[str, str] | None,
     alias_map: dict[str, str] | None = None,
-) -> exp.Expression:
+) -> Expression:
     """Walk ``node`` and rewrite every ``exp.Column``: apply ``alias_map``
     first (so ``<JoinAlias>.<col>`` becomes ``<model>.<col>``), then
     ``strip_prefix`` (so the parent table's ``schema.table.`` qualifier
@@ -1375,7 +1376,7 @@ def _normalise_predicate_columns(
     that has neither a schema prefix nor a join alias.
     """
 
-    def rewrite(child: exp.Expression) -> exp.Expression:
+    def rewrite(child: Expression) -> Expression:
         if not isinstance(child, exp.Column):
             return child
         original = _raw_column_parts(child)
@@ -1396,7 +1397,7 @@ def _normalise_predicate_columns(
     return node.transform(rewrite)
 
 
-def _literal_str(node: exp.Expression | None) -> str | None:
+def _literal_str(node: Expression | None) -> str | None:
     if node is None:
         return None
     if isinstance(node, exp.Literal):
@@ -1428,20 +1429,20 @@ def _quote_keyword_aliases(sql: str) -> str:
 
 def _parse_with_keyword_alias_fallback(
     sql: str, *, dialect: str | None,
-) -> exp.Expression:
+) -> Expression:
     """Parse ``sql`` with sqlglot. On failure, retry once with unquoted
     SQL keyword aliases auto-quoted — Metabase's table-privileges CTE
     (corpus #8) uses ``AS select`` / ``AS update`` / ``AS delete`` which
     sqlglot rejects, but Postgres accepts. Raises ``TranslationError``
     with the original parse error if both attempts fail."""
     try:
-        return sqlglot.parse_one(sql, dialect=dialect)
+        return sqlglot.parse_one(sql, dialect=dialect)  # pyright: ignore[reportReturnType] — parse_one's Expr TypeVar
     except sqlglot.errors.ParseError as primary:
         retry_sql = _quote_keyword_aliases(sql)
         if retry_sql == sql:
             raise TranslationError(f"SQL parse error: {primary}") from primary
         try:
-            return sqlglot.parse_one(retry_sql, dialect=dialect)
+            return sqlglot.parse_one(retry_sql, dialect=dialect)  # pyright: ignore[reportReturnType] — parse_one's Expr TypeVar
         except sqlglot.errors.ParseError:
             raise TranslationError(f"SQL parse error: {primary}") from primary
 
@@ -1456,7 +1457,7 @@ def _apply_where(
     strip_prefix: tuple[str, str] | None = None,
     alias_map: dict[str, str] | None = None,
 ) -> None:
-    """Walk the WHERE chain; route aggregate-alias refs to colon-form
+    """Walk the WHERE chain; route aggregate-alias refs to aggregate
     filters, lift time-dim filters, append verbatim rest."""
     if where is None:
         return
@@ -1489,12 +1490,11 @@ def _apply_having(
     alias_map: dict[str, str] | None = None,
     extra_metrics_by_formula: dict[str, FacadeMetric] | None = None,
 ) -> None:
-    """Map ``HAVING <agg(col)> <cmp> <literal>`` (DEV-1486 decision 21) and
-    ``HAVING <agg-alias-col> <cmp> <literal>`` (DEV-1568) conjuncts to
-    colon-form filters. The engine classifies colon-form aggregate filters
-    as HAVING.
+    """Map ``HAVING <agg(col)> <cmp> <literal>`` and
+    ``HAVING <agg-alias-col> <cmp> <literal>`` conjuncts to aggregate
+    filters, which the engine classifies as HAVING.
 
-    DEV-1565: ``extra_metrics_by_formula`` overlay covers dynamic-join
+    ``extra_metrics_by_formula`` overlay covers dynamic-join
     targets whose metrics aren't yet in the catalog's projection.
     """
     if having is None:
@@ -1503,7 +1503,7 @@ def _apply_having(
     if extra_metrics_by_formula:
         metrics_by_formula.update(extra_metrics_by_formula)
     for conj in _split_and_chain(having.this):
-        # DEV-1568: alias-ref form (``HAVING "rev" > 1000``). Symmetric with
+        # alias-ref form (``HAVING "rev" > 1000``). Symmetric with
         # the WHERE pre-pass; tries first so it wins before the agg-call form.
         colon_form = _try_aggregate_alias_filter(
             conj, items_by_projected_name, strip_prefix=strip_prefix,
@@ -1611,7 +1611,7 @@ def _reject_lossy_cast_or_pass(
 
 
 def _resolve_order_by_item(
-    body: exp.Expression,
+    body: Expression,
     item_by_projected_name: dict[str, _ProjectionItem],
     metric_item_by_formula: dict[str, _ProjectionItem],
     *,
@@ -1621,11 +1621,11 @@ def _resolve_order_by_item(
     """Look up the projection item an ORDER BY term resolves to.
 
     Tries the bare-name lookup first (alias or canonical metric name from
-    ``_order_by_name``); on miss, DEV-1568 fallback maps a literal aggregate
+    ``_order_by_name``); on miss, fallback maps a literal aggregate
     call (``ORDER BY SUM(revenue)``) to the projection registered under a
     different alias (``SELECT SUM(revenue) AS "rev"``) by matching on the
     aggregate's canonical ``measure_formula``. Returns ``(item, name)`` so
-    the DEV-1566 lossy-CAST check downstream has both the resolved item and
+    the lossy-CAST check downstream has both the resolved item and
     the user-visible name for error messaging. Raises ``TranslationError``
     if neither path resolves.
     """
@@ -1651,7 +1651,7 @@ def _translate_order_by(
 ) -> list[OrderItem]:
     if order is None:
         return []
-    # DEV-1568: when a SELECT aliases an aggregate (``SUM(revenue) AS "rev"``)
+    # when a SELECT aliases an aggregate (``SUM(revenue) AS "rev"``)
     # and the ORDER BY repeats the call literally (``ORDER BY SUM(revenue)``),
     # ``_order_by_name`` returns the canonical metric name (``"revenue_sum"``)
     # — but ``item_by_projected_name`` is keyed on the user alias (``"rev"``).
@@ -1676,7 +1676,7 @@ def _translate_order_by(
             lossy_pairs=_LOSSY_ORDER_BY_CAST_PAIRS,
         )
         if item.metric is not None:
-            # DEV-1568: use the projection's SELECT alias, not the catalog
+            # use the projection's SELECT alias, not the catalog
             # ``FacadeMetric.name``. ``_record_metric`` registered the SLayer
             # measure under ``projected_name``, so the OrderItem must point
             # at the same name. Pre-fix the engine saw ``ColumnRef("row_count")``
@@ -1691,7 +1691,7 @@ def _translate_order_by(
 
 
 def _order_by_name(
-    body: exp.Expression,
+    body: Expression,
     *,
     strip_prefix: tuple[str, str] | None = None,
     alias_map: dict[str, str] | None = None,
@@ -1728,7 +1728,7 @@ def _validate_group_by(  # NOSONAR(S3776) — single GROUP BY validation pass; e
     """Apply the strict-on-extras / lenient-on-omissions policy (§6.1).
 
     ``item_by_projected_name`` is consulted only to look up the projection
-    item behind a user-facing name so the DEV-1566 lossy-CAST-pair rejection
+    item behind a user-facing name so the lossy-CAST-pair rejection
     can fire. Membership validation still runs against the ``derived`` list
     (which carries time-grain canonical forms in addition to the projected
     names) to preserve the existing strict-on-extras behaviour.
@@ -1760,7 +1760,7 @@ def _validate_group_by(  # NOSONAR(S3776) — single GROUP BY validation pass; e
                 f"GROUP BY item {u!r} is not in the projection's derived "
                 f"dimension set ({sorted(derived_set)})"
             )
-        # DEV-1566 — Codex round 3: reject GROUP BY on CAST projections
+        # reject GROUP BY on CAST projections
         # whose (source, target) pair is lossy under bare-column grouping.
         # Unknown-source casts (only admitted as None→TEXT) are admitted
         # here — the engine's per-value grouping already collapses to the
@@ -1783,7 +1783,7 @@ def _is_ignorable_group_item(item: str) -> bool:
 def _reject_lossy_cast_in_implicit_grouping(
     group: exp.Group | None, items: Sequence[_ProjectionItem],
 ) -> None:
-    """DEV-1566 — Codex round 12: when the user omits an explicit GROUP BY
+    """When the user omits an explicit GROUP BY
     but projects at least one dimension, SLayer auto-groups (dim-only-dedup
     when there are no measures, mandatory dim-group when there are
     measures). The auto-grouping is by the bare engine column, so a
@@ -1809,7 +1809,7 @@ def _reject_lossy_cast_in_implicit_grouping(
 # --- main entry point --------------------------------------------------------
 
 
-def _is_start_transaction(node: exp.Expression) -> bool:
+def _is_start_transaction(node: Expression) -> bool:
     """`START TRANSACTION` parses oddly: sqlglot sees `START` as a column and
     `TRANSACTION` as an alias. Match that pattern explicitly."""
     if not isinstance(node, exp.Alias):
@@ -1828,9 +1828,9 @@ def _extract_set_setting(parsed: exp.Set) -> SetSettingOp | None:
     """Extract a ``SetSettingOp`` from a clean ``SET <name> = <value>`` /
     ``SET <name> TO <value>`` AST. Returns ``None`` for multi-item SETs or
     SetItem shapes whose body isn't a single ``EQ(Column(Identifier), rhs)``
-    pair — those are silently no-op'd by the caller (DEV-1569).
+    pair — those are silently no-op'd by the caller.
 
-    DEV-1569 / Codex round 2 F2: dotted custom names (``SET myapp.user_id
+    Dotted custom names (``SET myapp.user_id
     = '42'``) parse as ``Column(table='myapp', name='user_id')``;
     reconstruct the dotted form so ``SHOW myapp.user_id`` round-trips.
     """
@@ -1857,7 +1857,7 @@ def _extract_set_setting(parsed: exp.Set) -> SetSettingOp | None:
     return SetSettingOp(name=name, value=value)
 
 
-def _extract_setting_value(rhs: exp.Expression | None) -> str | None:
+def _extract_setting_value(rhs: Expression | None) -> str | None:
     """Return the string value of a ``SET`` rhs node, robust across the
     parser's literal vs. identifier vs. variable encodings:
 
@@ -1948,7 +1948,7 @@ def _extract_command_form_set(parsed: exp.Command) -> SetSettingOp | None:
     (``SET TIME ZONE 'UTC'``), ``SET SESSION CHARACTERISTICS …``, no
     value, etc. Implementation uses plain string operations rather than
     a multi-segment regex to keep clear of catastrophic backtracking
-    (Sonar S5852 / DEV-1569 round 2).
+    (Sonar S5852).
     """
     expr = parsed.expression
     if expr is None:
@@ -1979,11 +1979,11 @@ def _extract_command_form_set(parsed: exp.Command) -> SetSettingOp | None:
     return SetSettingOp(name=name.lower(), value=value)
 
 
-def _classify_noop_root(parsed: exp.Expression) -> NoOpResult | None:
+def _classify_noop_root(parsed: Expression) -> NoOpResult | None:
     """Classify SET/SHOW/BEGIN/COMMIT/ROLLBACK roots into a NoOpResult with a
     facade-neutral ``command_tag``; ``None`` if not a no-op root.
 
-    DEV-1569: also extracts the parsed-out ``SET <name> = <value>`` and
+    Also extracts the parsed-out ``SET <name> = <value>`` and
     ``RESET <name>`` / ``RESET ALL`` shapes onto ``set_setting`` /
     ``reset_setting`` for the Postgres facade to apply per-connection.
     """
@@ -2012,7 +2012,7 @@ def _classify_noop_root(parsed: exp.Expression) -> NoOpResult | None:
                 reset_setting=_extract_reset_setting(parsed),
             )
         if verb == "SET":
-            # DEV-1569 / Codex F1: also try to extract a (name, value) pair
+            # also try to extract a (name, value) pair
             # from the Command-form fallback so spellings like
             # `SET search_path = public, extensions` round-trip through
             # SHOW. Multi-word names (`SET TIME ZONE 'UTC'`) and
@@ -2036,7 +2036,7 @@ def _unwrap_probe(
     or a ``ProbeMatcherOutcome`` (Postgres facade, carrying an optional
     session-setting mutation hint from ``set_config``). Both shapes
     collapse into ``ProbeResult`` here so the dispatcher's branch count
-    stays low (DEV-1569 / Sonar S3776).
+    stays low (Sonar S3776).
     """
     if isinstance(probe, ProbeMatcherOutcome):
         return ProbeResult(
@@ -2142,36 +2142,12 @@ def translate(
     if noop is not None:
         return noop
 
-    # Step 4 — DuckDB catalog executor (Postgres facade) OR info-schema
-    # dispatch (Flight facade). The executor handles BOTH pg_catalog AND
-    # information_schema queries via materialised tables; when it's not
-    # provided we keep the canned info-schema answer for Flight.
-    #
-    # This check runs BEFORE the "must be exp.Select" gate so catalog
-    # queries that aren't a plain Select — UNION/UNION ALL (Metabase
-    # corpus #12), set-ops, WITH-only constructs — route to the
-    # executor when every Table node resolves to a catalog relation.
-    # Non-catalog Selects continue to the SLayer-table translation
-    # below; non-catalog UNIONs etc. surface the unsupported-statement
-    # error from the gate.
-    if catalog_sql_executor is not None:
-        from slayer.facade.catalog_sql import is_catalog_only  # ALLOW(import-not-top): circular import with catalog_sql
-        if is_catalog_only(parsed):
-            # ``catalog_sql_executor`` accepts either the executor itself
-            # or a zero-arg factory — lazy construction lets the pg
-            # facade skip the DuckDB materialisation cost on
-            # non-catalog (model) queries (Codex round 16). Resolve the
-            # factory only inside this branch.
-            executor = (
-                catalog_sql_executor()
-                if callable(catalog_sql_executor)
-                else catalog_sql_executor
-            )
-            return PgCatalogResult(batch=executor.execute(parsed=parsed, sql=sql))
-    elif isinstance(parsed, exp.Select):
-        info = match_info_schema(parsed=parsed, catalog=catalog)
-        if info is not None:
-            return InfoSchemaResult(batch=info)
+    # Step 4 — runs BEFORE the "must be exp.Select" gate so catalog
+    # UNIONs / set-ops / WITH-only constructs reach the executor.
+    catalog_result = _route_catalog_query(
+        parsed=parsed, sql=sql, catalog=catalog, catalog_sql_executor=catalog_sql_executor)
+    if catalog_result is not None:
+        return catalog_result
 
     if not isinstance(parsed, exp.Select):
         raise TranslationError(
@@ -2185,6 +2161,30 @@ def translate(
     )
 
 
+def _route_catalog_query(
+    *,
+    parsed: Expression,
+    sql: str,
+    catalog: FacadeCatalog,
+    catalog_sql_executor: "CatalogSqlExecutorProtocol | Callable[[], CatalogSqlExecutorProtocol] | None",
+) -> TranslatorResult | None:
+    """DuckDB catalog executor (Postgres facade) or canned info-schema answer (Flight facade).
+
+    Non-catalog statements return ``None`` and continue to SLayer-table translation.
+    """
+    if catalog_sql_executor is None:
+        if not isinstance(parsed, exp.Select):
+            return None
+        info = match_info_schema(parsed=parsed, catalog=catalog)
+        return InfoSchemaResult(batch=info) if info is not None else None
+    from slayer.facade.catalog_sql import is_catalog_only  # ALLOW(import-not-top): circular import with catalog_sql
+    if not is_catalog_only(parsed):
+        return None
+    # A zero-arg factory defers the DuckDB materialisation to catalog queries only.
+    executor = catalog_sql_executor() if callable(catalog_sql_executor) else catalog_sql_executor
+    return PgCatalogResult(batch=executor.execute(parsed=parsed, sql=sql))
+
+
 # Lightweight Protocol so the translator doesn't pull catalog_sql at import
 # time (which would create a duckdb-at-import dependency for Flight).
 class CatalogSqlExecutorProtocol:
@@ -2192,7 +2192,7 @@ class CatalogSqlExecutorProtocol:
     ``translate`` can type-annotate its parameter without importing
     catalog_sql (which imports duckdb)."""
 
-    def execute(self, *, parsed: exp.Expression, sql: str) -> RowBatch:
+    def execute(self, *, parsed: Expression, sql: str) -> RowBatch:
         raise NotImplementedError
 
 
@@ -2220,7 +2220,7 @@ def _record_metric(
     })
     engine_alias = f"{table.name}.{item.projected_name}"
     plan.column_name_mapping.append((engine_alias, item.projected_name))
-    # DEV-1566: CAST(<metric_ref> AS T) overrides the declared metric type.
+    # CAST(<metric_ref> AS T) overrides the declared metric type.
     plan.projection_types.append(item.cast_target or item.metric.data_type)
 
 
@@ -2229,10 +2229,7 @@ def _record_time_grain(
 ) -> None:
     assert item.time_grain is not None and item.time_grain_underlying is not None
     dotted = item.time_grain_underlying.dimension_ref
-    td = TimeDimension(
-        dimension={"name": dotted},
-        granularity=item.time_grain,
-    )
+    td = TimeDimension.model_validate({"dimension": {"name": dotted}, "granularity": item.time_grain})
     plan.time_dims.append(td)
     plan.time_dim_by_name[dotted] = td
     plan.derived_dims.append(item.projected_name)
@@ -2256,7 +2253,7 @@ def _record_dimension(
     assert item.dimension is not None
     plan.dimension_refs.append(ColumnRef.from_string(item.dimension.dimension_ref))
     plan.derived_dims.append(item.projected_name)
-    # DEV-1565 (mirrors the time-grain canonical-alias trick): when the
+    # (mirrors the time-grain canonical-alias trick): when the
     # projection aliases a joined-col dim (e.g. ``"Stores"."name" AS
     # "Stores__name"``) the GROUP BY / ORDER BY may reference the alias-
     # qualified form, which alias-remap rewrites to the dotted SLayer
@@ -2265,7 +2262,7 @@ def _record_dimension(
         plan.derived_dims.append(item.dimension.dimension_ref)
     engine_alias = f"{table.name}.{item.dimension.dimension_ref}"
     plan.column_name_mapping.append((engine_alias, item.projected_name))
-    # DEV-1566: CAST(<dim_ref> AS T) overrides the declared dim type.
+    # CAST(<dim_ref> AS T) overrides the declared dim type.
     plan.projection_types.append(item.cast_target or item.dimension.data_type)
 
 
@@ -2295,7 +2292,7 @@ def _index_items_by_canonical_form(
     Metabase-style GROUP BY / ORDER BY (``ORDER BY CAST(DATE_TRUNC('month',
     ordered_at) AS DATE)``) resolves against the aliased projection.
 
-    Column-CAST items are intentionally NOT registered here: DEV-1566's CAST
+    Column-CAST items are intentionally NOT registered here: CAST
     projection is a wire-type override that leaves the engine query
     projecting the bare column, so ``ORDER BY CAST(col AS T)`` would sort by
     the engine column's natural type (numeric/temporal) instead of the
@@ -2316,7 +2313,7 @@ def _index_items_by_canonical_form(
     return by_name
 
 
-def _parse_int_literal(node: exp.Expression | None) -> int | None:
+def _parse_int_literal(node: Expression | None) -> int | None:
     """Pull an int out of ``LIMIT N`` / ``OFFSET N`` style nodes."""
     if node is None or not isinstance(node.expression, exp.Literal):
         return None
@@ -2326,7 +2323,7 @@ def _parse_int_literal(node: exp.Expression | None) -> int | None:
         return None
 
 
-# --- DEV-1565: LEFT JOIN-with-subquery recognition ---------------------------
+# --- LEFT JOIN-with-subquery recognition ---------------------------
 
 
 class _JoinPlan(BaseModel):
@@ -2358,8 +2355,8 @@ def _parse_left_join(
         return None
     if len(parsed_joins) > 1:
         raise TranslationError(
-            f"Multiple JOINs in one query are not supported (Phase 1 — "
-            f"DEV-1565); got {len(parsed_joins)}. Use one LEFT JOIN."
+            f"Multiple JOINs in one query are not supported; got "
+            f"{len(parsed_joins)}. Use one LEFT JOIN."
         )
     join = parsed_joins[0]
     _reject_non_left_join(join)
@@ -2398,7 +2395,7 @@ def _reject_non_left_join(join: exp.Join) -> None:
     if side_upper == "LEFT" and kind_upper in ("", "OUTER"):
         return
     raise TranslationError(
-        f"Only LEFT JOIN is supported (Phase 1 — DEV-1565); got "
+        f"Only LEFT JOIN is supported; got "
         f"{(side_upper + ' ' + kind_upper).strip() or 'JOIN'}."
     )
 
@@ -2415,7 +2412,7 @@ def _resolve_join_subquery_target(
     if not isinstance(right, exp.Subquery):
         raise TranslationError(
             "LEFT JOIN right side must be a subquery '(SELECT … FROM "
-            "<table>) AS <alias>' (Phase 1 — DEV-1565); got a bare table "
+            "<table>) AS <alias>'; got a bare table "
             "reference."
         )
     alias = right.alias
@@ -2427,8 +2424,8 @@ def _resolve_join_subquery_target(
     inner = right.this
     if not isinstance(inner, exp.Select):
         raise TranslationError(
-            "LEFT JOIN subquery body must be a SELECT statement (Phase 1 "
-            "— DEV-1565); set-ops (UNION/INTERSECT/EXCEPT) not accepted."
+            "LEFT JOIN subquery body must be a SELECT statement; "
+            "set-ops (UNION/INTERSECT/EXCEPT) not accepted."
         )
     for forbidden, label in (
         ("where", "WHERE"),
@@ -2436,7 +2433,7 @@ def _resolve_join_subquery_target(
         ("having", "HAVING"),
         ("joins", "JOIN"),
         ("with_", "WITH (CTE)"),
-        # DEV-1565 (Codex round 1+2): DISTINCT / LIMIT / OFFSET inside
+        # DISTINCT / LIMIT / OFFSET inside
         # the subquery change the joined row set in ways the translator
         # would silently drop (the configured/dynamic join treats the
         # right side as the full target table). Postgres also accepts
@@ -2449,20 +2446,20 @@ def _resolve_join_subquery_target(
         if inner.args.get(forbidden):
             raise TranslationError(
                 f"LEFT JOIN subquery body must be 'SELECT … FROM <single "
-                f"table>' (Phase 1 — DEV-1565); inner {label} not accepted."
+                f"table>'; inner {label} not accepted."
             )
     inner_from = inner.args.get("from_")
     if inner_from is None:
         raise TranslationError(
             "LEFT JOIN subquery body must have a FROM clause naming a "
-            "single SLayer model (Phase 1 — DEV-1565)."
+            "single SLayer model."
         )
     # Reject inner comma-join shape (FROM a, b).
     inner_table = inner_from.this
     if not isinstance(inner_table, exp.Table):
         raise TranslationError(
             "LEFT JOIN subquery body must reference exactly one table in "
-            "its FROM (Phase 1 — DEV-1565); got "
+            "its FROM; got "
             f"{type(inner_table).__name__}."
         )
     # _resolve_table accepts an exp.From wrapper, so feed the inner FROM.
@@ -2472,7 +2469,7 @@ def _resolve_join_subquery_target(
 
 def _parse_on_clause(
     *,
-    on: exp.Expression | None,
+    on: Expression | None,
     parent_table: FacadeTable,
     target_table: FacadeTable,
     alias: str,
@@ -2488,15 +2485,14 @@ def _parse_on_clause(
     if on is None or not isinstance(on, exp.EQ):
         raise TranslationError(
             "LEFT JOIN ON clause must be a single equality "
-            "'<parent>.<col> = <alias>.<col>' (Phase 1 — DEV-1565); got "
+            "'<parent>.<col> = <alias>.<col>'; got "
             f"{type(on).__name__ if on is not None else 'no ON clause'}."
         )
     lhs, rhs = on.this, on.expression
     if not isinstance(lhs, exp.Column) or not isinstance(rhs, exp.Column):
         raise TranslationError(
-            "LEFT JOIN ON clause must compare two simple column refs "
-            "(Phase 1 — DEV-1565); function calls and expressions not "
-            "accepted."
+            "LEFT JOIN ON clause must compare two simple column refs; "
+            "function calls and expressions not accepted."
         )
     lhs_qual = _on_qualifier(lhs)
     rhs_qual = _on_qualifier(rhs)
@@ -2564,7 +2560,7 @@ def _canonical_column_or_raise(
          case canonical column when that's the only match, but error
          loudly if the model carries both cases).
 
-    DEV-1565: Postgres folds unquoted identifiers to lowercase but
+    Postgres folds unquoted identifiers to lowercase but
     sqlglot preserves what was written, so hand-written SQL like
     ``ON ORDERS.STORE_ID = STORES.ID`` would otherwise fail to match
     against a model whose ``Column.name`` is ``store_id``. The canonical
@@ -2642,7 +2638,7 @@ def _materialise_dynamic_join_lookups(
 ) -> None:
     """For a dynamic-join target (no configured BFS expansion in the
     catalog), build the bare-col dims and col×agg metrics keyed by
-    ``<target>.<col>`` / ``<target>.<col>:<agg>`` so the projection /
+    ``<target>.<col>`` / ``<agg>(<target>.<col>)`` so the projection /
     aggregate / WHERE / HAVING resolution paths find the joined refs.
     """
     local_dims, local_metrics = build_local_view(target_model)
@@ -2714,14 +2710,14 @@ def _emit_join_warnings(plan: _JoinPlan, parent_name: str) -> None:
         logger.warning(
             "pg-facade: dynamic join from %r to %r on %r=%r — no configured "
             "join matched in parent.joins[]; using a ModelExtension to honor "
-            "the emitted ON clause (DEV-1565).",
+            "the emitted ON clause.",
             parent_name, plan.target_table.name, plan.source_col, plan.target_col,
         )
     elif plan.warn_cardinality:
         logger.warning(
             "pg-facade: LEFT JOIN to %r matched a configured non-LEFT join "
             "(join_type=INNER on %r.joins) — using the configured join_type "
-            "but cardinality semantics differ from the emitted SQL (DEV-1565).",
+            "but cardinality semantics differ from the emitted SQL.",
             plan.target_table.name, parent_name,
         )
 
@@ -2765,10 +2761,10 @@ def _build_item_index(items: list[_ProjectionItem]) -> dict[str, _ProjectionItem
     """Map every projection item by its user-facing name PLUS its canonical
     secondary key (time-grain canonical form for `CAST(date_trunc(...))`
     GROUP BY matches; dimension_ref dotted form for joined-col aliased
-    projections — see DEV-1565). ``setdefault`` preserves the primary
+    projections). ``setdefault`` preserves the primary
     projected_name entry when the secondary key collides with it.
 
-    DEV-1566: CAST-projected items are NOT registered under their
+    CAST-projected items are NOT registered under their
     ``dimension_ref`` secondary key — that would route ``ORDER BY <bare col>``
     on a query like ``SELECT CAST(id AS TEXT) AS x ... ORDER BY id`` to the
     cast item and trip the lossy-pair rejection, even though the user
@@ -2791,6 +2787,29 @@ def _build_item_index(items: list[_ProjectionItem]) -> dict[str, _ProjectionItem
     return out
 
 
+def _projection_exprs(
+    parsed: exp.Select, table: FacadeTable, *, expand_star_in_browse_mode: bool,
+) -> list:
+    """The SELECT list, with a browse-mode ``SELECT *`` expanded.
+
+    Only the pg facade sets ``expand_star_in_browse_mode``; a ``*`` otherwise
+    raises, as does ``*`` mixed with GROUP BY / HAVING / an aggregate.
+    """
+    proj_exprs = parsed.args.get("expressions") or []
+    if not any(isinstance(e, exp.Star) for e in proj_exprs):
+        return proj_exprs
+    if expand_star_in_browse_mode and _is_browse_mode_select(parsed, proj_exprs):
+        return _expand_select_star(proj_exprs, table)
+    raise TranslationError(SELECT_STAR_MESSAGE)
+
+
+def _temporal_column_names(table: FacadeTable, overlays: _JoinOverlays) -> set[str]:
+    return {
+        d.name for d in (*table.dimensions, *overlays.extra_dims_by_name.values())
+        if d.data_type in (DataType.DATE, DataType.TIMESTAMP)
+    }
+
+
 def _translate_slayer_select(
     parsed: exp.Select, catalog: FacadeCatalog,
     *, allow_column_cast: bool = True,
@@ -2804,21 +2823,10 @@ def _translate_slayer_select(
         )
     schema_name, table = _resolve_table(from_clause, catalog)
 
-    proj_exprs = parsed.args.get("expressions") or []
-    # SELECT * handling. When ``expand_star_in_browse_mode`` is set (pg-facade
-    # only — see translate's docstring), a ``SELECT *`` with no GROUP BY /
-    # HAVING / aggregate in the projection list expands to every non-hidden
-    # column of the table. Flight's clients project explicit names by
-    # construction, so it leaves the flag default-False and ``*`` always
-    # raises there. Mixed ``*`` + aggregate cases always reject (the
-    # explicit "project specific names" hint is more useful guidance).
-    if any(isinstance(e, exp.Star) for e in proj_exprs):
-        if expand_star_in_browse_mode and _is_browse_mode_select(parsed, proj_exprs):
-            proj_exprs = _expand_select_star(proj_exprs, table)
-        else:
-            raise TranslationError(SELECT_STAR_MESSAGE)
+    proj_exprs = _projection_exprs(
+        parsed, table, expand_star_in_browse_mode=expand_star_in_browse_mode)
 
-    # DEV-1558 B5: every helper that resolves a column ref needs the same
+    # every helper that resolves a column ref needs the same
     # ``(schema, table)`` prefix-strip context as ``_resolve_projection``.
     strip_prefix: tuple[str, str] | None = (
         (schema_name, table.name) if schema_name else None
@@ -2855,10 +2863,7 @@ def _translate_slayer_select(
     _apply_where(
         parsed.args.get("where"), plan.time_dim_by_name,
         item_by_projected_name, filters,
-        temporal_columns={
-            d.name for d in (*table.dimensions, *overlays.extra_dims_by_name.values())
-            if d.data_type in (DataType.DATE, DataType.TIMESTAMP)
-        },
+        temporal_columns=_temporal_column_names(table, overlays),
         strip_prefix=strip_prefix, alias_map=overlays.alias_map,
     )
     _apply_having(
@@ -2879,16 +2884,16 @@ def _translate_slayer_select(
         else table.name
     )
 
-    query = SlayerQuery(
-        source_model=source_model,
-        measures=plan.measures or None,
-        dimensions=plan.dimension_refs or None,
-        time_dimensions=plan.time_dims or None,
-        filters=filters or None,
-        order=order_items or None,
-        limit=_parse_int_literal(parsed.args.get("limit")),
-        offset=_parse_int_literal(parsed.args.get("offset")),
-    )
+    query = SlayerQuery.model_validate({
+        "source_model": source_model,
+        "measures": plan.measures or None,
+        "dimensions": plan.dimension_refs or None,
+        "time_dimensions": plan.time_dims or None,
+        "filters": filters or None,
+        "order": order_items or None,
+        "limit": _parse_int_literal(parsed.args.get("limit")),
+        "offset": _parse_int_literal(parsed.args.get("offset")),
+    })
 
     return QueryResult(
         query=query,

@@ -12,7 +12,7 @@ Substitution spans SLayer's [two expression layers](../../concepts/references.md
   names. A `{var}` here is filled from the query's `variables` and applied as a
   post-aggregation predicate on named entities. Measure formulas, computed
   dimensions, `order` expressions, `date_range` bounds and the source model's saved
-  measures take placeholders too (`"measures": ["order_total:sum * {rate} / 100"]`).
+  measures take placeholders too (`"measures": ["sum(order_total) * {rate} / 100"]`).
 - **Mode A — raw SQL.** A model's `sql` and `filters`, and every `Column`'s `sql`
   and `filter`, are raw SQL over the underlying table. A `{var}` here is injected
   directly into that SQL, so it takes effect **before** aggregation — inside a

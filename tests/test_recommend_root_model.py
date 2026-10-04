@@ -1,4 +1,4 @@
-"""Engine-level tests for ``recommend_root_model`` (DEV-1626).
+"""Engine-level tests for ``recommend_root_model``.
 
 Given a set of ``model.column`` / ``model.metric`` items an agent wants in
 one query, the engine recommends which model to use as ``source_model``
@@ -15,7 +15,7 @@ Fixture graph (datasource ``mydb``)::
     tickets ──LEFT──> agents            (disconnected region)
     logs                                (isolated — reaches nothing)
 
-Every declared edge traverses in both directions (DEV-1853), so each
+Every declared edge traverses in both directions, so each
 datasource splits into connected components: {orders-world}, {tickets,
 agents}, {logs}. A second datasource ``otherdb`` also has a model named
 ``orders`` (for data_source disambiguation) plus ``widgets`` (for the
@@ -78,6 +78,7 @@ async def storage() -> AsyncIterator[StorageBackend]:
                 _col("revenue", DataType.DOUBLE),
                 _col("amount", DataType.DOUBLE),
                 _col("qty", DataType.INT),
+                _col("ordered_at", DataType.TIMESTAMP),
                 Column(name="customer_id", type=DataType.INT, hidden=True),
                 Column(name="product_id", type=DataType.INT, hidden=True),
                 Column(name="warehouse_id", type=DataType.INT, hidden=True),
@@ -113,7 +114,7 @@ async def storage() -> AsyncIterator[StorageBackend]:
             columns=[_col("id", DataType.INT, pk=True), _col("name"), _col("population", DataType.INT)],
         ))
         # No reverse declaration on order_items — the orders→order_items INNER
-        # edge traverses both ways (DEV-1853); a mirror would be rejected.
+        # edge traverses both ways; a mirror would be rejected.
         await s.save_model(SlayerModel(
             name="order_items", data_source="mydb", sql_table="order_items",
             columns=[_col("id", DataType.INT, pk=True), _col("order_id", DataType.INT), _col("sku"), _col("quantity", DataType.INT)],
@@ -227,7 +228,7 @@ class TestRootSelection:
         assert _paths(rec) == {"orders.status": "status", "orders.revenue": "revenue"}
 
     async def test_fan_out_picks_bridge_that_determines_both(self, engine) -> None:
-        # DEV-1866: determination is to-one. Neither customers nor products
+        # Determination is to-one. Neither customers nor products
         # determines the other's column (the reverse hop through orders fans
         # out), so only the shared child orders determines both — the bridge
         # wins outright, no tiebreak needed.
@@ -255,14 +256,14 @@ class TestRootSelection:
         }
 
     async def test_shared_child_is_sole_determiner(self, engine) -> None:
-        # DEV-1866: only orders determines both columns along to-one paths;
+        # Only orders determines both columns along to-one paths;
         # customers/products each fan out to the other, so orders is the sole
         # valid root.
         rec = await engine.recommend_root_model(["customers.name", "products.price"])
         assert rec.root_model == "orders"
 
     async def test_symmetric_tie_broken_lexicographically(self, engine) -> None:
-        # The single orders→order_items INNER edge routes both ways (DEV-1853):
+        # The single orders→order_items INNER edge routes both ways:
         # root=orders costs 1 hop, root=order_items costs 1 hop. Both are
         # mentioned owning models, so the mentioned-preference can't break it
         # → lexicographically smallest name wins: "order_items" < "orders".
@@ -278,19 +279,19 @@ class TestAggSuffix:
     async def test_simple_suffix_local(self, engine) -> None:
         rec = await engine.recommend_root_model(["orders.revenue:sum"], data_source="mydb")
         assert rec.root_model == "orders"
-        assert _paths(rec) == {"orders.revenue:sum": "revenue:sum"}
+        assert _paths(rec) == {"orders.revenue:sum": "sum(revenue)"}
 
     async def test_suffix_cross_model(self, engine) -> None:
         rec = await engine.recommend_root_model(["products.price:sum", "orders.status"])
         assert rec.root_model == "orders"
-        assert _paths(rec)["products.price:sum"] == "products.price:sum"
+        assert _paths(rec)["products.price:sum"] == "sum(products.price)"
 
     async def test_kwarg_suffix_local(self, engine) -> None:
         rec = await engine.recommend_root_model(
             ["orders.amount:weighted_avg(weight=qty)"], data_source="mydb"
         )
         assert _paths(rec) == {
-            "orders.amount:weighted_avg(weight=qty)": "amount:weighted_avg(weight=qty)"
+            "orders.amount:weighted_avg(weight=qty)": "weighted_avg(amount, weight=qty)"
         }
 
     async def test_kwarg_suffix_cross_model_preserved_verbatim(self, engine) -> None:
@@ -300,7 +301,7 @@ class TestAggSuffix:
         assert rec.root_model == "orders"
         assert (
             _paths(rec)["products.price:weighted_avg(weight=price)"]
-            == "products.price:weighted_avg(weight=price)"
+            == "weighted_avg(products.price, weight=price)"
         )
 
     async def test_dotted_kwarg_arg_preserved_verbatim(self, engine) -> None:
@@ -309,7 +310,7 @@ class TestAggSuffix:
         item = "products.price:weighted_avg(weight=products.price)"
         rec = await engine.recommend_root_model([item, "orders.status"])
         assert rec.root_model == "orders"
-        assert _paths(rec)[item] == item
+        assert _paths(rec)[item] == "weighted_avg(products.price, weight=products.price)"
 
     async def test_suffix_through_multi_hop_path(self, engine) -> None:
         # regions is 2 hops from orders (via customers); suffix rides along.
@@ -317,14 +318,37 @@ class TestAggSuffix:
             ["orders.status", "regions.population:sum"]
         )
         assert rec.root_model == "orders"
-        assert _paths(rec)["regions.population:sum"] == "customers.regions.population:sum"
+        assert _paths(rec)["regions.population:sum"] == "sum(customers.regions.population)"
+
+    @pytest.mark.parametrize(
+        ("item", "expected"),
+        [
+            ("sum(orders.amount)", "sum(amount)"),
+            ("orders.amount:sum", "sum(amount)"),
+            ("percentile(orders.amount, p=0.9)", "percentile(amount, p=0.9)"),
+            ("orders.amount:percentile(p=0.9)", "percentile(amount, p=0.9)"),
+            ("last(orders.amount, ordered_at)", "last(amount, ordered_at)"),
+            ("orders.amount:last(ordered_at)", "last(amount, ordered_at)"),
+            ("weighted_avg(orders.amount, weight=qty)", "weighted_avg(amount, weight=qty)"),
+        ],
+    )
+    async def test_local_paths_are_functional(self, engine, item: str, expected: str) -> None:
+        rec = await engine.recommend_root_model([item], data_source="mydb")
+        assert rec.root_model == "orders"
+        assert _paths(rec) == {item: expected}
+
+    @pytest.mark.parametrize("item", ["sum(regions.population)", "regions.population:sum"])
+    async def test_cross_model_path_is_functional(self, engine, item: str) -> None:
+        rec = await engine.recommend_root_model(["orders.status", item])
+        assert rec.root_model == "orders"
+        assert _paths(rec)[item] == "sum(customers.regions.population)"
 
 
 # --------------------------------------------------------------------------
 # INNER routing + real resolvability
 #
-# The orders→order_items INNER edge is declared ONCE; DEV-1853 makes every
-# declared edge traversable in both directions. DEV-1866 determination is
+# The orders→order_items INNER edge is declared ONCE; every declared edge
+# is traversable in both directions. Determination is
 # to-one: orders→order_items fans out (order_items.order_id is not unique), so
 # only order_items determines the trio — and it reaches orders/products over
 # the to-one order_items→orders→(products) chain.
@@ -398,7 +422,7 @@ class TestNoCommonRoot:
             ["customers.name", "products.category", "agents.name"]
         )
         assert rec.reachable is False
-        # DEV-1866 (to-one determination): only orders determines both order-world
+        # To-one determination: only orders determines both order-world
         # columns (customers/products fan out to the other), so it dominates them
         # on the frontier; agents covers the disconnected item. Item lists preserve
         # original input order.
@@ -422,7 +446,7 @@ class TestNoCommonRoot:
         rec = await engine.recommend_root_model(
             ["customers.name", "products.category", "agents.name"]
         )
-        # DEV-1866 (to-one determination): orders is the sole determiner of both
+        # To-one determination: orders is the sole determiner of both
         # order-world columns, dominating customers/products (each reaches only its
         # own, a subset); tickets is dominated by agents. Only orders + agents survive.
         names = {c.model_name for c in rec.coverage}
@@ -567,7 +591,7 @@ class TestSyncWrapper:
 class TestDistinctOwningModelHopSum:
     async def test_only_to_one_determiner_wins(self) -> None:
         # Chain (ds "iso"): A →to-one→ B →to-one→ C (FK→PK forward; reverse hops
-        # fan out). DEV-1866 determination is to-one, so only A determines every
+        # fan out). Determination is to-one, so only A determines every
         # column: A reaches A(0), B(1), C(2). B cannot determine A.a* (B→A fans
         # out), and neither can C — so A is the sole viable root regardless of how
         # the per-item hops sum.
@@ -664,7 +688,7 @@ class TestRootHint:
 
     # -- infeasible hint (real model) → fallback + warning --------------
     async def test_infeasible_hint_falls_back_with_warning(self, engine) -> None:
-        # DEV-1866: 'agents' determines neither order-world column (to-one), so
+        # 'agents' determines neither order-world column (to-one), so
         # it is infeasible and we fall back to the auto-pick (orders, the sole
         # to-one determiner of both).
         rec = await engine.recommend_root_model(
@@ -731,8 +755,8 @@ class TestRootHint:
         assert lengths == sorted(lengths, reverse=True)
 
     async def test_no_root_zero_reach_hint_row_surfaced(self, engine) -> None:
-        # 'logs' is isolated and reaches neither {customers, agents} (DEV-1853:
-        # 'products' now reaches customers, so only a disconnected model has
+        # 'logs' is isolated and reaches neither {customers, agents}
+        # ('products' reaches customers, so only a disconnected model has
         # zero reach). Force-included row has an empty reachable list and both
         # items unreachable.
         rec = await engine.recommend_root_model(

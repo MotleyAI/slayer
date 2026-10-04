@@ -1,4 +1,4 @@
-"""Entity resolution for the unified Memory surface (DEV-1357 v2).
+"""Entity resolution for the unified Memory surface.
 
 Maps every input form valid inside a ``SlayerQuery`` to the canonical
 ``<datasource>.<model>[.<leaf>]`` string described in the spec, §3-4. The
@@ -72,9 +72,9 @@ _FILTER_TOKEN_BLACKLIST: frozenset[str] = frozenset({
 
 def canonical_id_rooted_at(canonical_id: str, datasource: str) -> bool:
     """Return ``True`` iff ``canonical_id`` belongs to ``datasource``
-    under the dotted-namespace rule (DEV-1409).
+    under the dotted-namespace rule.
 
-    The rule mirrors the cascade-delete semantics established in DEV-1405:
+    The rule mirrors the cascade-delete semantics:
     a canonical id is rooted at ``datasource`` when it is exactly the
     datasource name, OR a strict dotted-path descendant
     (``<datasource>.<...>``). Datasource names cannot contain ``.``
@@ -166,7 +166,7 @@ async def _resolve_join_path(
     """Walk a chain of join targets, returning the leaf model.
 
     Targets are looked up within the parent model's ``data_source``, per
-    DEV-1330's join-scoping rule. Raises ``EntityResolutionError`` when
+    the join-scoping rule. Raises ``EntityResolutionError`` when
     a segment doesn't match any join on the current model.
     """
     ds = starting_model.data_source
@@ -186,7 +186,7 @@ async def _resolve_join_path(
             models_by_name[nm] = peer
     current = starting_model
     for seg in path:
-        # Tokens resolve in either direction, edge name first (DEV-1853).
+        # Tokens resolve in either direction, edge name first.
         edge = resolve_hop(
             current=current, token=seg, models_by_name=models_by_name,
         )
@@ -244,8 +244,8 @@ async def resolve_entity(  # NOSONAR(S3776) — single linear dispatch matching 
 
     Accepts every input form valid inside a ``SlayerQuery``:
     bare names, dotted paths through joins, datasource-qualified paths,
-    aggregation suffixes (``:sum``, ``:weighted_avg(weight=qty)``),
-    and the ``*:count`` form.
+    aggregations (``sum(x)``, ``weighted_avg(x, weight=qty)``), and
+    ``count(*)``.
 
     With ``source_model`` set, bare-name resolution prefers attributes
     on the given source model — matching the engine's runtime behaviour
@@ -255,7 +255,7 @@ async def resolve_entity(  # NOSONAR(S3776) — single linear dispatch matching 
     if not raw:
         raise EntityResolutionError("entity reference is empty")
 
-    # DEV-1428: ``memory:<id>`` branch must run BEFORE ``_strip_agg_suffix``
+    # ``memory:<id>`` branch must run BEFORE ``_strip_agg_suffix``
     # — otherwise ``memory:abc`` would be parsed as prefix ``memory`` plus
     # agg ``abc``. Memory ids are opaque strings (with a small charset
     # forbidden); the resolver checks existence via ``get_memory_row``.
@@ -272,8 +272,7 @@ async def resolve_entity(  # NOSONAR(S3776) — single linear dispatch matching 
             )
         return EntityResolution(canonical_forms=[raw])
 
-    # DEV-1826: one shared splitter accepts BOTH spellings — ``a.b:sum`` and
-    # ``sum(a.b)`` resolve identically; expression text is not an entity.
+    # ``sum(a.b)`` and the legacy ``a.b:sum`` resolve identically; expression text is not an entity.
     try:
         prefix, suffix = split_entity_agg_ref(raw)
     except ValueError as exc:  # UnknownFunctionError is a ValueError subclass
@@ -457,7 +456,7 @@ def _agg_call_tokens(node: AggCall) -> Iterable[str]:
     elif isinstance(source, StarSource):
         yield f"*:{node.agg}"
     else:
-        # DEV-1826 expression source (``sum(amount - cost)``): the expression
+        # Expression source (``sum(amount - cost)``): the expression
         # itself is not an entity — tag each operand ref.
         for inner in walk_parsed_refs(source):
             if isinstance(inner, (Ref, DottedRef)):
@@ -467,7 +466,7 @@ def _agg_call_tokens(node: AggCall) -> Iterable[str]:
 def _formula_entity_tokens(parsed: ParsedExpr) -> Iterable[str]:
     """Yield every entity *token* referenced by a parsed Mode-B formula.
 
-    Colon-syntax aggregations surface as ``"<source>:<agg>"`` (``*:count``
+    Aggregations surface as legacy colon tokens ``"<source>:<agg>"`` (``*:count``
     included verbatim), bare and dotted refs surface as their textual form.
     Each token is fed one-by-one into ``resolve_entity`` downstream, which
     canonicalises it (stripping the agg suffix, collapsing ``*:count`` to the
@@ -585,7 +584,7 @@ async def extract_entities_from_query(  # NOSONAR(S3776) — straight-line walk 
 
     # 4. measures — parse each formula (Mode-B DSL) and resolve each
     # referenced entity token. The parser accepts both aggregation spellings
-    # natively (DEV-1826), and an unknown functional name — e.g. a custom
+    # natively, and an unknown functional name — e.g. a custom
     # aggregation defined on a joined model, ``rolling_avg(customers.score)``
     # — defers to an ``AggCall`` candidate, so its source token still
     # surfaces without any custom-aggregation registry walk.

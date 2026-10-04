@@ -15,7 +15,7 @@ values, or any other metric's values, and its own value MUST NOT depend on which
 other metrics are present.
 
 #### Scenario: Joined sum is not multiplied by join fan-out
-- WHEN a query rooted at `orders` selects `customers.spend:sum` grouped by a customer-level dimension, and customers have several orders each
+- WHEN a query rooted at `orders` selects `sum(customers.spend)` grouped by a customer-level dimension, and customers have several orders each
 - THEN each cell's value counts every customer's spend exactly once, by executed values, regardless of how many orders each customer has
 
 #### Scenario: Expression source homed at the joined model is not multiplied
@@ -26,7 +26,7 @@ other metrics are present.
   region — and summed over the customers in each cell, by executed values, independent
   of how many orders each customer has
 - Because the whole expression shares the `customers` home, this is NOT equal to
-  `customers.spend:sum - customers.regions.pop:sum`, whose two operands home at different
+  `sum(customers.spend) - sum(customers.regions.pop)`, whose two operands home at different
   models (`pop` counted once per region): a valid comparison is only with an aggregation
   that shares the same `customers` home
 
@@ -46,13 +46,13 @@ hops MUST retain exact per-dimension values in every mode; only unattributable
 dimensions are mode-dependent.
 
 #### Scenario: Attributable dimension keeps exact values
-- **WHEN** a query rooted at `orders` selects `customers.spend:sum` by a dimension on
+- **WHEN** a query rooted at `orders` selects `sum(customers.spend)` by a dimension on
   `customers` (or reached from `customers` over a provably many-to-one join)
 - **THEN** each dimension value's cell carries the exact aggregate for that slice, by
   executed values
 
 #### Scenario: Unattributable dimension broadcasts
-- **WHEN** a query rooted at `orders` selects `customers.spend:sum` by an
+- **WHEN** a query rooted at `orders` selects `sum(customers.spend)` by an
   `orders`-level dimension (unreachable from `customers` over provably many-to-one
   hops)
 - **THEN** every cell of the same attributable slice carries the same broadcast value —
@@ -85,7 +85,7 @@ role (expression, order, or filter). Hidden and filter-only aggregate uses emit
 warnings too. Explicit `partition_by=` broadcasting is by design and MUST NOT warn.
 
 #### Scenario: Broadcast is reported per metric and dimension
-- **WHEN** a broadcast-mode query broadcasts `customers.spend:sum` over `orders.status`
+- **WHEN** a broadcast-mode query broadcasts `sum(customers.spend)` over `orders.status`
 - **THEN** the response warnings include an entry naming that measure, the `status`
   dimension, the reason, and the dice–slice hint, and a matching Python-level warning
   is emitted
@@ -101,7 +101,7 @@ warnings too. Explicit `partition_by=` broadcasting is by design and MUST NOT wa
 
 #### Scenario: A prefix-side dimension names the fanning hop
 - **WHEN** a broadcast-mode query rooted at `orders` selects
-  `customers.regions.countries.gdp:sum` by `customers.tier`, `regions → countries`
+  `sum(customers.regions.countries.gdp)` by `customers.tier`, `regions → countries`
   provably to-one
 - **THEN** the warning's reason names the fanning reverse hop to `regions` on the way
   back from `countries` to `customers` — never "unreachable", which the round trip
@@ -127,15 +127,15 @@ An aggregate whose inputs — positional args, keyword args (including aggregati
 - THEN the aggregate evaluates over the joined rows as before, with unchanged executed values
 
 #### Scenario: Path-bearing derived argument crossing a fanning hop fails closed
-- WHEN a query rooted at `orders` selects `customers.spend:weighted_avg(weight=customers.regions.bad_pop)`, where `regions.bad_pop` is defined as `pop + region_events.value` over the one-to-many `regions → region_events` hop, in any `to_many_handling` mode
+- WHEN a query rooted at `orders` selects `weighted_avg(customers.spend, weight=customers.regions.bad_pop)`, where `regions.bad_pop` is defined as `pop + region_events.value` over the one-to-many `regions → region_events` hop, in any `to_many_handling` mode
 - THEN the query fails with the unproven-join-hop error naming the argument `bad_pop` and the hop `region_events`, never emitting the multiplying join; the same holds when the argument names a derived column defined over that derived column (`bad_pop * 2`)
 
 #### Scenario: Local aggregate with a derived crossing argument fails closed
-- WHEN a query rooted at `orders` selects `amount:weighted_avg(weight=customers.regions.bad_pop)`
+- WHEN a query rooted at `orders` selects `weighted_avg(amount, weight=customers.regions.bad_pop)`
 - THEN the query fails with the unproven-join-hop error naming `region_events`
 
 #### Scenario: Definition default naming a fanning derived column fails closed
-- WHEN a custom aggregation on `customers` defaults a parameter to `regions.bad_pop`, or to the expression `regions.bad_pop * 1`, and a query selects `customers.spend:<that aggregation>`
+- WHEN a custom aggregation on `customers` defaults a parameter to `regions.bad_pop`, or to the expression `regions.bad_pop * 1`, and a query selects `<that aggregation>(customers.spend)`
 - THEN the query fails with the unproven-join-hop error naming `region_events`
 
 #### Scenario: Measure-local filter naming a fanning derived column fails closed
@@ -151,43 +151,43 @@ An aggregate whose inputs — positional args, keyword args (including aggregati
 - THEN the query fails at plan time with a typed error naming the aggregate and the column, containing no issue reference — never a plan that treats the column as crossing nothing
 
 #### Scenario: Host column as a target ranking key names the column and the hop
-- WHEN a query rooted at `orders` selects `customers.spend:last(ordered_at)` — a host column ranking a `customers`-rooted pick
+- WHEN a query rooted at `orders` selects `last(customers.spend, ordered_at)` — a host column ranking a `customers`-rooted pick
 - THEN the query fails in every mode with the input-safety error naming `ordered_at`, that it is not attributable from `customers`, and the fanning hop to `orders`
 
 #### Scenario: Argument violation is reported ahead of a source violation
-- WHEN a target-rooted aggregate both reads its source through a fanning derived definition and ranks or weights by a host column, e.g. `customers.regions.bad_pop:last(ordered_at)` rooted at `orders`
+- WHEN a target-rooted aggregate both reads its source through a fanning derived definition and ranks or weights by a host column, e.g. `last(customers.regions.bad_pop, ordered_at)` rooted at `orders`
 - THEN the error names the argument `ordered_at` and its hop, not the source's hop — the more specific violation wins
 
 #### Scenario: Implicit model-default ranking key across an unproven hop fails closed
-- WHEN `orders.default_time_dimension` names a derived column `li_ts` defined as `line_items.created_at` over the undeclared, reverse-PK-only `orders → line_items` hop, and a query selects `amount:last` (or `amount:first`) with no time dimension and no temporal dimension
+- WHEN `orders.default_time_dimension` names a derived column `li_ts` defined as `line_items.created_at` over the undeclared, reverse-PK-only `orders → line_items` hop, and a query selects `last(amount)` (or `first(amount)`) with no time dimension and no temporal dimension
 - THEN the query fails in every mode with the input-safety error naming `li_ts`, the hop `line_items` and the host `orders` — never the ranked CTE joining `line_items` and ranking over multiplied rows
 
 #### Scenario: Target model default ranking key across an unproven hop fails closed
-- WHEN `line_items.default_time_dimension` names a derived column `sh_ts` defined as `shipments.shipped_at` over an unproven `line_items → shipments` hop, and a query rooted at `orders` selects `line_items.qty:last` with no time dimension
+- WHEN `line_items.default_time_dimension` names a derived column `sh_ts` defined as `shipments.shipped_at` over an unproven `line_items → shipments` hop, and a query rooted at `orders` selects `last(line_items.qty)` with no time dimension
 - THEN the query fails in every mode with the cross-model input-safety error naming `sh_ts`, that it is not attributable from `line_items`, and the hop `shipments`
 
 #### Scenario: Fanning temporal dimension as the implicit ranking key fails closed in every mode
-- WHEN a query rooted at `orders` groups by `line_items.created_at` (a TIMESTAMP column across the unproven `orders → line_items` hop) and selects `amount:last`, under `broadcast`, `error` or `associate`, with or without `window=` on the measure alongside a safe time dimension
-- THEN the query fails with the input-safety error naming `created_at` and the hop `line_items`, exactly as `amount:last(line_items.created_at)` does — never a ranked CTE partitioning and ranking by the fanning column
+- WHEN a query rooted at `orders` groups by `line_items.created_at` (a TIMESTAMP column across the unproven `orders → line_items` hop) and selects `last(amount)`, under `broadcast`, `error` or `associate`, with or without `window=` on the measure alongside a safe time dimension
+- THEN the query fails with the input-safety error naming `created_at` and the hop `line_items`, exactly as `last(amount, line_items.created_at)` does — never a ranked CTE partitioning and ranking by the fanning column
 
 #### Scenario: Time dimension across an unproven hop as the implicit ranking key fails closed
-- WHEN a query rooted at `orders` declares `line_items.created_at` as its only time dimension and selects `amount:last`
+- WHEN a query rooted at `orders` declares `line_items.created_at` as its only time dimension and selects `last(amount)`
 - THEN the query fails with the input-safety error naming `created_at` and the hop `line_items`
 
 #### Scenario: Explicit derived ranking argument names the argument and the hop
-- WHEN a query rooted at `orders` selects `amount:last(li_ts)`, `li_ts` being the derived column across the unproven hop
-- THEN the error names the argument `li_ts` and the hop `line_items` (the "ranks/reads by" form), not the closure's hop-only message; `amount:last(line_items.created_at)` keeps naming `created_at` and `line_items`
+- WHEN a query rooted at `orders` selects `last(amount, li_ts)`, `li_ts` being the derived column across the unproven hop
+- THEN the error names the argument `li_ts` and the hop `line_items` (the "ranks/reads by" form), not the closure's hop-only message; `last(amount, line_items.created_at)` keeps naming `created_at` and `line_items`
 
 #### Scenario: Default ranking key whose column filter crosses an unproven hop fails closed
-- WHEN `orders.default_time_dimension` names a column whose `Column.filter` references `line_items.qty` across the unproven hop, and a query selects `amount:last` with no time dimension
+- WHEN `orders.default_time_dimension` names a column whose `Column.filter` references `line_items.qty` across the unproven hop, and a query selects `last(amount)` with no time dimension
 - THEN the query fails with the input-safety error naming that column and the hop `line_items`
 
 #### Scenario: Unanalyzable default ranking key fails closed
-- WHEN `orders.default_time_dimension` names a derived column whose definition no supported dialect can parse, and a query selects `amount:last` with no time dimension
+- WHEN `orders.default_time_dimension` names a derived column whose definition no supported dialect can parse, and a query selects `last(amount)` with no time dimension
 - THEN the query fails at plan time with the typed unanalyzable-dependency error naming the aggregate and the column — never a plan that ranks by it
 
 #### Scenario: Safe ranking keys keep executing
-- WHEN the resolved ranking key is a local column (the model default, or a filter-only temporal column with no default), a derived column over a provably to-one hop (`cust_signup` = `customers.signup_at` with `customers.id` a primary key), or — for `amount:last(window='30d')` on a `created_at` time dimension — the bucket's raw column while the model default crosses the unproven hop
+- WHEN the resolved ranking key is a local column (the model default, or a filter-only temporal column with no default), a derived column over a provably to-one hop (`cust_signup` = `customers.signup_at` with `customers.id` a primary key), or — for `last(amount, window='30d')` on a `created_at` time dimension — the bucket's raw column while the model default crosses the unproven hop
 - THEN each query executes with its established value (the proven-hop case joins `customers` and picks the row with the latest signup; the windowed case never joins `line_items`), and the derived key renders as its plain expansion with no added CAST in both the plain and the windowed ranked CTE
 
 ### Requirement: Explicit grain and window on cross-model aggregates
@@ -205,7 +205,7 @@ aggregate that its home must determine, never a fanning join multiplying the win
 Windowing by association under `"associate"` is deferred to DEV-1914.
 
 #### Scenario: Cross-model partitioned aggregate computes at the declared grain
-- **WHEN** a query selects `customers.spend:sum(partition_by=<customer-level dimension>)`
+- **WHEN** a query selects `sum(customers.spend, partition_by=<customer-level dimension>)`
 - **THEN** the value is computed at exactly the declared grain and broadcast to the
   query rows, by executed values
 
@@ -235,12 +235,12 @@ Windowing by association under `"associate"` is deferred to DEV-1914.
 Cross-model aggregates SHALL be legal wherever local aggregates are: in arithmetic and scalar-call composites (including mixed with local aggregates and with aggregates from different joined models in one expression), inside transforms, in dimension expressions, in filters, and in ORDER BY. Composite legality is uniform across the composite's own shape: a cross-model operand SHALL compile whether the composite combines it with local aggregates, with literals, with several cross-model operands, or wraps it in scalar calls — the compiled route never depends on which seam the composite would otherwise render through, and no composite shape reaches an internal not-supported seam error. A computed dimension whose expression columns are all attributable from a metric's root participates in that metric's grain; otherwise the metric broadcasts across it. Consumption-position rules match local aggregates exactly: a combined-position consumer of a cross-model partitioned aggregate needs query-dimension partition keys (per the partitioned-aggregates combined-consumer requirement), while row-scope references to a computed dimension's own aggregate stay legal at any partition grain.
 
 #### Scenario: Local and cross-model aggregates in one expression
-- WHEN a query selects the measure `orders.revenue:sum / customers.spend:sum`
+- WHEN a query selects the measure `sum(orders.revenue) / sum(customers.spend)`
 - THEN each cell's value is the ratio of the two correctly-computed aggregates, by executed values
 
 #### Scenario: Scalar call wrapping a cross-model operand executes
 - **WHEN** a query selects a scalar-call composite over a cross-model aggregate mixed with
-  a local aggregate and a literal (for example `round(customers.spend:sum / amount:sum, 2)`)
+  a local aggregate and a literal (for example `round(sum(customers.spend) / sum(amount), 2)`)
 - **THEN** the composite executes with correct hand-computed values on SQLite and DuckDB —
   never the former AGGREGATE-phase-composite not-yet-supported error
 
@@ -251,7 +251,7 @@ Cross-model aggregates SHALL be legal wherever local aggregates are: in arithmet
   by executed values
 
 #### Scenario: Cross-model aggregate source inside a computed dimension
-- WHEN a query declares a dimension banding `customers.spend:sum(partition_by=<customer-level dimension>)`
+- WHEN a query declares a dimension banding `sum(customers.spend, partition_by=<customer-level dimension>)`
 - THEN rows group by the band with correct executed values and unchanged cardinality
 
 #### Scenario: Computed dimension coexists with a cross-model measure
@@ -259,7 +259,7 @@ Cross-model aggregates SHALL be legal wherever local aggregates are: in arithmet
 - THEN both are correct by executed values in one result, replacing the former fail-closed guard
 
 #### Scenario: Filter on a cross-model partitioned aggregate executes
-- WHEN a query filters on `customers.spend:sum(partition_by=<customer-level dimension>)` with that partition key among the query dimensions, whether or not the aggregate is also selected
+- WHEN a query filters on `sum(customers.spend, partition_by=<customer-level dimension>)` with that partition key among the query dimensions, whether or not the aggregate is also selected
 - THEN qualifying rows survive with values identical to the unfiltered query's, by executed values — never the former not-yet-supported error
 
 #### Scenario: Keyless-grain dual-role partitioned aggregate is rejected
@@ -278,7 +278,7 @@ Cross-model aggregates SHALL be legal wherever local aggregates are: in arithmet
 A dimension lying on an intermediate hop of a cross-model aggregate's join chain SHALL be legal. It follows the attribution rule like any other dimension: exact when attributable from the aggregate's root, broadcast (with metadata) when not — never an internal not-implemented error.
 
 #### Scenario: Intermediate-hop dimension broadcasts under attribution
-- WHEN a query rooted at `orders` selects `customers.regions.pop:sum` by a `customers`-level dimension
+- WHEN a query rooted at `orders` selects `sum(customers.regions.pop)` by a `customers`-level dimension
 - THEN the query executes (no not-implemented error); the metric broadcasts across the customer-level dimension with metadata, since a region's population is not attributable per customer
 
 ### Requirement: Every aggregate has exactly one disposition
@@ -421,18 +421,18 @@ only in the filter.
 
 #### Scenario: Attributable filter restricts the metric
 - **WHEN** a query rooted at `orders` filters on a customer-level predicate and selects
-  `customers.spend:sum`
+  `sum(customers.spend)`
 - **THEN** the metric is computed over only the customers passing the predicate
 
 #### Scenario: Aggregate-phase filter restricts result rows uniformly
 - **WHEN** a query rooted at `orders` groups by a customer-level dimension and filters
-  on `customers.spend:sum > 100`
+  on `sum(customers.spend) > 100`
 - **THEN** only groups passing the predicate remain in the result — exactly as a local
   aggregate filter behaves — whether or not the aggregate is also selected
 
 #### Scenario: Unsafe filter no longer fans out the producer
 - **WHEN** a query rooted at `orders` filters on an orders-level predicate and selects
-  `customers.spend:sum`
+  `sum(customers.spend)`
 - **THEN** the metric counts exactly the customers with at least one order passing the
   predicate, each customer's spend once (never double-counted through the reverse hop),
   with unchanged result cardinality
@@ -449,14 +449,14 @@ only in the filter.
 
 #### Scenario: Filters sharing a branch bind to the same related row
 - **WHEN** a query rooted at `orders` filters `status = 'paid'` and `channel = 'app'`
-  and selects `customers.spend:sum`, and a customer has a paid order and an app order
+  and selects `sum(customers.spend)`, and a customer has a paid order and an app order
   but no single paid app order
 - **THEN** that customer is excluded from the metric's population — both predicates
   must hold on one related row, by executed values
 
 #### Scenario: Two spellings of one edge bind to the same related row
 - **WHEN** the `customers → orders` edge is named `purchases` and a query rooted at
-  `customers` selects `spend:sum` by `tier` with
+  `customers` selects `sum(spend)` by `tier` with
   `filters: ["purchases.status = 'ok'", "orders.channel = 'app'"]`
 - **THEN** by executed values each cell counts the customers having one order that is both
   `ok` and `app` (gold 60, silver 80 on the reference dataset, never gold 160 / silver 230),
@@ -465,7 +465,7 @@ only in the filter.
 #### Scenario: Pushdown works without a declared reverse join
 - **WHEN** the only stored edge is the forward `orders → customers` join (default join
   type) and a query rooted at `orders` filters on an orders-level predicate with
-  `customers.spend:sum` selected
+  `sum(customers.spend)` selected
 - **THEN** the filter pushes down by semi-join over that edge's reverse orientation,
   with correct executed values
 
@@ -476,7 +476,7 @@ only in the filter.
   candidate edges, rather than dropping the conjunct or guessing a correlation
 
 #### Scenario: Mixed disjunction stays dropped and warned
-- **WHEN** a query rooted at `orders` selects `customers.spend:sum` by `customers.tier`
+- **WHEN** a query rooted at `orders` selects `sum(customers.spend)` by `customers.tier`
   with `filters: ["customers.tier = 'bronze' OR channel = 'app'"]`, in any mode
 - **THEN** it is no longer dropped: by executed values each cell counts the distinct customers
   that are bronze or have at least one `app` order, each once (gold 160, silver 230, bronze 40
@@ -485,7 +485,7 @@ only in the filter.
   does not error
 
 #### Scenario: Mixed disjunction on the association producer binds to the same related row
-- **WHEN** a query rooted at `orders` selects `customers.spend:sum` by `status` under
+- **WHEN** a query rooted at `orders` selects `sum(customers.spend)` by `status` under
   `to_many_handling: "associate"` with `filters: ["customers.tier = 'gold' OR channel = 'app'"]`
 - **THEN** by executed values each status cell counts the distinct customers having an
   order of that status that is itself `app` or belongs to a gold customer (ok 270, new 250 on
@@ -521,8 +521,8 @@ only in the filter.
 
 #### Scenario: Host filter and host dimension bind to the same population row
 - **WHEN** an associate-mode query rooted at `orders` filters `channel = 'app'` and
-  selects `customers.spend:sum` by `status`, or the same query rooted at `customers`
-  selects `spend:sum` by `orders.status` with the filter `orders.channel = 'app'`
+  selects `sum(customers.spend)` by `status`, or the same query rooted at `customers`
+  selects `sum(spend)` by `orders.status` with the filter `orders.channel = 'app'`
 - **THEN** each status cell aggregates the distinct customers having an app order with
   that status — never a customer whose app order and status order are different rows —
   by executed values on SQLite and DuckDB
@@ -592,7 +592,7 @@ only in the filter.
   carries the semi-join in the host-rooted producer body and no `orders` join
 
 #### Scenario: Population restriction reaches the producer-only spine
-- **WHEN** a query rooted at `customers` selects only `orders.amount:sum` with
+- **WHEN** a query rooted at `customers` selects only `sum(orders.amount)` with
   `filters: ["orders.status = 'ok'"]`, and a second run uses a predicate no order passes
 - **THEN** the first run returns one row with the producer's value by executed values (82 on
   the reference dataset) and the second returns zero rows — never one row carrying a NULL

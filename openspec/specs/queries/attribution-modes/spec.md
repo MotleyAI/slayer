@@ -39,8 +39,8 @@ value SHALL fail with a clear validation error.
 - **THEN** the query fails with a clear validation error naming the accepted values
 
 #### Scenario: Derived fanning dimension broadcasts with a warning by default
-- **WHEN** a query rooted at `orders` selects the local `amount:sum` and the cross-model
-  `customers.spend:sum` by the dimension `customers.regions.bad_pop`, a derived column
+- **WHEN** a query rooted at `orders` selects the local `sum(amount)` and the cross-model
+  `sum(customers.spend)` by the dimension `customers.regions.bad_pop`, a derived column
   defined as `pop + region_events.value` over the one-to-many `regions → region_events`
   hop, omitting `to_many_handling`
 - **THEN** each metric is broadcast across that dimension with a warning naming the hop,
@@ -69,7 +69,7 @@ unchanged); a column-reference or aggregate-valued parameter — explicit, posit
 supplied by the aggregation definition's default — is legal exactly when the entity grain
 determines it (per `queries/semantics` › Aggregation parameters are typed by the home
 dataset's grain) and is then picked once per associated entity alongside the aggregate's
-own value; `*:count` counts the distinct associated entities per cell. An
+own value; `count(*)` counts the distinct associated entities per cell. An
 aggregation's own column filter restricts the associated entities before per-cell
 aggregation. Association is needed only when at least one grain dimension is
 unattributable from the aggregate's home: an aggregate whose grain dimensions the home
@@ -89,7 +89,7 @@ fail associate-mode resolution with a clear typed error naming the model and the
   the query raises the established `NotImplementedError`, unchanged by mode
 
 #### Scenario: Star-count counts distinct associated entities
-- **WHEN** an associate-mode query rooted at `orders` selects `customers.*:count` by an
+- **WHEN** an associate-mode query rooted at `orders` selects `count(customers.*)` by an
   orders-level dimension
 - **THEN** each cell counts the distinct customers associated with it, by executed
   values
@@ -101,8 +101,8 @@ fail associate-mode resolution with a clear typed error naming the model and the
 
 #### Scenario: Weighted association by executed values
 - **WHEN** an associate-mode query rooted at `orders` selects
-  `customers.spend:weighted_avg(weight=customers.spend)`, the custom `customers.spend:wsum`
-  whose `weight` defaults to `spend`, and `customers.spend:weighted_avg(weight=customers.regions.pop)`
+  `weighted_avg(customers.spend, weight=customers.spend)`, the custom `wsum(customers.spend)`
+  whose `weight` defaults to `spend`, and `weighted_avg(customers.spend, weight=customers.regions.pop)`
   by the orders-level dimension `status`
 - **THEN** each executes with hand-computed per-cell values over the distinct associated
   customers on SQLite and DuckDB — the explicit and defaulted spellings identical, a
@@ -122,7 +122,7 @@ fail associate-mode resolution with a clear typed error naming the model and the
 
 #### Scenario: Attributable dimensions need no association
 - **WHEN** an associate-mode query rooted at `orders` selects
-  `customers.spend:weighted_avg(weight=sum(amount, partition_by=customers.regions.name))`
+  `weighted_avg(customers.spend, weight=sum(amount, partition_by=customers.regions.name))`
   by `customers.tier` against a `customers` model declaring no primary or unique key,
   the `orders → customers` hop declared many-to-one
 - **THEN** the query executes with the same values as under `broadcast` and no
@@ -200,7 +200,7 @@ host but unattributable only from a further (cross-model) root is unaffected: it
 its mode-aware resolution.
 
 #### Scenario: Path-less derived fanning partition key fails closed in every mode
-- **WHEN** a query rooted at `regions` selects `pop:sum(partition_by=bad_pop)`, where
+- **WHEN** a query rooted at `regions` selects `sum(pop, partition_by=bad_pop)`, where
   `bad_pop` is the host-local derived column `pop + region_events.value` over the
   one-to-many `regions → region_events` hop, under `broadcast`, `error`, or `associate`
 - **THEN** the query fails with a typed error naming `region_events` and the remedy, in
@@ -252,14 +252,14 @@ broadcast mode.
 
 #### Scenario: Cross-model metric attributes per cell by executed values
 - **WHEN** a query rooted at `orders` with `to_many_handling: "associate"` selects
-  `customers.spend:sum` by the orders-level dimension `status`
+  `sum(customers.spend)` by the orders-level dimension `status`
 - **THEN** each status cell equals the summed spend of the distinct customers having
   at least one order with that status — the NULL cell also holding every customer with
   no orders — by executed values, with unchanged result grain
 
 #### Scenario: Local metric over a fanning dimension attributes per cell
 - **WHEN** a query rooted at `customers` with `to_many_handling: "associate"` selects
-  `spend:sum` by `orders.status`, and one customer has two orders with the same status
+  `sum(spend)` by `orders.status`, and one customer has two orders with the same status
 - **THEN** that customer's spend counts once in that status cell — by executed values,
   never the join-multiplied figure
 
@@ -270,33 +270,33 @@ broadcast mode.
 
 #### Scenario: Multi-hop association attributes per cell
 - **WHEN** a query rooted at `orders` under `associate` selects a metric rooted two
-  hops away (e.g. `customers.regions.pop:sum`) by an orders-level dimension
+  hops away (e.g. `sum(customers.regions.pop)`) by an orders-level dimension
 - **THEN** each cell aggregates over the distinct entities of the metric's root
   associated with the cell, by executed values
 
 #### Scenario: Home entity absent from the population counts in its home-determined cell
-- **WHEN** a query rooted at `orders` under `associate` selects `customers.spend:sum`
-  and the local `amount:sum` by a regions-level dimension the customer's own path
+- **WHEN** a query rooted at `orders` under `associate` selects `sum(customers.spend)`
+  and the local `sum(amount)` by a regions-level dimension the customer's own path
   determines, and one South customer has no orders
-- **THEN** the South cell of `customers.spend:sum` includes that customer's spend (every
-  South customer once, on SQLite and DuckDB) while the local `amount:sum` cell is
+- **THEN** the South cell of `sum(customers.spend)` includes that customer's spend (every
+  South customer once, on SQLite and DuckDB) while the local `sum(amount)` cell is
   unchanged, and the response carries the associated-cells warning
 
 #### Scenario: An entity with no related row sits in the NULL cell however the query is rooted
-- **WHEN** a query rooted at `orders` under `associate` selects `customers.spend:sum` by
+- **WHEN** a query rooted at `orders` under `associate` selects `sum(customers.spend)` by
   `status`, one order carries a NULL status, and one customer has no orders
 - **THEN** the NULL-status cell holds both the orderless customer and the owner of the
   NULL-status order — the same value as the customers-rooted spelling, by executed
   values on SQLite and DuckDB
 
 #### Scenario: A population rooted at the home keeps its own NULL cell
-- **WHEN** a query rooted at `customers` under `associate` selects `spend:sum` by
+- **WHEN** a query rooted at `customers` under `associate` selects `sum(spend)` by
   `orders.status`, one order carries a NULL status, and one customer has no orders
 - **THEN** the NULL-status cell holds both the orderless customer and the owner of the
   NULL-status order, exactly the customers whose population rows carry a NULL status
 
 #### Scenario: A derived dimension crossing back keeps the orderless entity's NULL cell
-- **WHEN** a query rooted at `orders` under `associate` selects `customers.spend:sum` by
+- **WHEN** a query rooted at `orders` under `associate` selects `sum(customers.spend)` by
   a customers-level derived dimension whose definition reads the customer's orders'
   status, one order carries a NULL status, and one customer has no orders
 - **THEN** the NULL cell holds both the orderless customer and the owner of the
@@ -310,7 +310,7 @@ broadcast mode.
   executed values
 
 #### Scenario: Mixed home-side and population-root dimensions
-- **WHEN** a query rooted at `orders` under `associate` selects `customers.spend:sum` by
+- **WHEN** a query rooted at `orders` under `associate` selects `sum(customers.spend)` by
   both a regions-level dimension and `status`, and one South customer has no orders
 - **THEN** every customer with orders is counted once in each of its (region, status)
   cells, and the orderless customer's value lands only in the virtual model's

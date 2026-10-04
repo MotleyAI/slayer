@@ -18,6 +18,8 @@ ImportError at collection time.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from slayer.core.enums import DataType
@@ -51,9 +53,10 @@ def _measure(result: ConversionResult, name: str, model: str = "orders"):
 
 
 def _column_for(result: ConversionResult, formula: str, model: str = "orders"):
-    """The Column referenced by the leading ``<col>:<agg>`` in a formula."""
-    col_name = formula.split(":", 1)[0].strip()
-    return next(c for c in _model(result, model).columns if c.name == col_name)
+    """The Column referenced by the leading ``<agg>(<col>, ...)`` in a formula."""
+    match = re.match(r"\s*\w+\(\s*(\w+)\s*[,)]", formula)
+    assert match is not None, f"formula not in <agg>(<col>...) form: {formula!r}"
+    return next(c for c in _model(result, model).columns if c.name == match.group(1))
 
 
 def _all_report_entries(result: ConversionResult):
@@ -82,7 +85,7 @@ def test_percentile_emits_p_value() -> None:
     )
     result = _convert(project)
     m = _measure(result, "p95_latency")
-    assert m.formula == "latency:percentile(p=0.95)"
+    assert m.formula == "percentile(latency, p=0.95)"
 
 
 def test_percentile_without_value_clean_fails() -> None:
@@ -164,7 +167,7 @@ def test_sum_boolean_wraps_case_when() -> None:
     )
     result = _convert(project)
     m = _measure(result, "paid_orders")
-    assert m.formula.endswith(":sum")
+    assert re.fullmatch(r"sum\(\w+\)", m.formula)
     col = _column_for(result, m.formula)
     assert col.sql is not None
     norm = col.sql.upper().replace(" ", "")
@@ -1107,7 +1110,7 @@ def test_importer_maps_count_distinct_approx_measure() -> None:
         ],
     )
     result = _convert(project)
-    assert _measure(result, "uniq_cust").formula == "customer_id:count_distinct_approx"
+    assert _measure(result, "uniq_cust").formula == "count_distinct_approx(customer_id)"
 
 
 # ───────────────── Part 3.3 — offset on multi-aggregate input clean-fails ─────────────────
@@ -1233,7 +1236,7 @@ def test_percentile_on_unsupported_dialect_emits_caveat(dialect: str) -> None:
     ).convert()
     # The measure still imports (formula valid), but a report caveat warns it
     # won't execute on this dialect.
-    assert _measure(result, "p95").formula == "latency:percentile(p=0.95)"
+    assert _measure(result, "p95").formula == "percentile(latency, p=0.95)"
     assert any("percentile" in e.message.lower() or "percentile" in (getattr(e, "category", "") or "").lower()
                for e in _all_report_entries(result))
 
@@ -1259,7 +1262,7 @@ def test_filtered_percentile_metric_preserves_p() -> None:
     )
     result = _convert(project)
     m = _measure(result, "us_latency_p95")
-    assert m.formula.endswith(":percentile(p=0.95)")
+    assert re.fullmatch(r"percentile\(\w+, p=0\.95\)", m.formula)
     col = _column_for(result, m.formula)
     assert col.filter is not None
     assert "region" in col.filter
@@ -1283,7 +1286,7 @@ def test_filtered_sum_boolean_metric_builds_case_int_column() -> None:
     )
     result = _convert(project)
     m = _measure(result, "us_paid_orders")
-    assert m.formula.endswith(":sum")
+    assert re.fullmatch(r"sum\(\w+\)", m.formula)
     col = _column_for(result, m.formula)
     assert col.type == DataType.INT
     norm = (col.sql or "").upper().replace(" ", "")

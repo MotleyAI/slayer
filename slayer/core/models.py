@@ -69,7 +69,7 @@ class _SubstringRule:
 
 
 # ``__`` is allowed in names; only the internal ``__slayer_`` prefix
-# is reserved, so user input cannot spoof colon-agg preprocessor identifiers.
+# is reserved, so user input cannot spoof the parser's placeholder identifiers.
 _RESERVED_NAME_PREFIX = "__slayer_"
 
 
@@ -91,8 +91,7 @@ _NO_DOT = _SubstringRule(
 _NO_COLON = _SubstringRule(
     substring=":",
     reason="colons are reserved as the legacy aggregation separator "
-           "(``revenue:sum``) and the ``memory:<int>`` canonical-id "
-           "prefix.",
+           "and the ``memory:<int>`` canonical-id prefix.",
 )
 _NO_FWD_SLASH = _SubstringRule(
     substring="/",

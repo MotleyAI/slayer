@@ -446,7 +446,7 @@ Use one of:
 
 Filters support `{variable_name}` placeholders, substituted from the query's `variables` dict. This keeps filter templates reusable and avoids string concatenation in client code.
 
-The same placeholders work in measure formulas, computed-dimension expressions, `order` expressions and `date_range` bounds (`"measures": ["amount:sum * {k} / 100"]`), and an unnamed entry is named from its template (`amount_sum_k_100`), so result keys never depend on the values; `{? ... ?}` blocks and placeholders in a time dimension's granularity or column are rejected.
+The same placeholders work in measure formulas, computed-dimension expressions, `order` expressions and `date_range` bounds (`"measures": ["sum(amount) * {k} / 100"]`), and an unnamed entry is named from its template (`amount_sum_k_100`), so result keys never depend on the values; `{? ... ?}` blocks and placeholders in a time dimension's granularity or column are rejected.
 
 ```json
 {

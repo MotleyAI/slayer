@@ -27,7 +27,7 @@ result type.
 #### Scenario: Plain decimal column aggregates without a lossy cast
 
 - WHEN a model column has physical type `DECIMAL(18,2)` (logical type inferred
-  as DOUBLE) and a query requests `amount:sum` with no explicit type
+  as DOUBLE) and a query requests `sum(amount)` with no explicit type
 - THEN the generated SQL contains no `CAST(... AS DOUBLE)` around the
   aggregate, and the result value is the exact decimal sum
 
@@ -64,7 +64,7 @@ result type.
 #### Scenario: Dialects without exact decimal storage keep the inferred cast
 
 - WHEN a SQLite model column is declared `DECIMAL(18,2)` (numeric affinity) and
-  a query requests `amount:sum` with no explicit type
+  a query requests `sum(amount)` with no explicit type
 - THEN the generated SQL keeps the inferred float cast and the result value is
   a float even when every stored value is integral
 
@@ -74,12 +74,12 @@ On a dialect whose temporal values are stored as text under numeric affinity (SQ
 
 #### Scenario: Temporal max returns the full date on SQLite
 
-- **WHEN** a query against a SQLite datasource selects `created_at:max` grouped by `customer_id`
+- **WHEN** a query against a SQLite datasource selects `max(created_at)` grouped by `customer_id`
 - **THEN** the generated SQL carries no `CAST(... AS TIMESTAMP)` around the aggregate and each value is the customer's full latest date; the same query on DuckDB returns the same dates
 
 #### Scenario: Partitioned temporal aggregate returns the full date on SQLite
 
-- **WHEN** a query against a SQLite datasource selects `created_at:max(partition_by=customer_id)`
+- **WHEN** a query against a SQLite datasource selects `max(created_at, partition_by=customer_id)`
 - **THEN** the attached value is the full latest date per customer
 
 #### Scenario: Derived temporal column returns the full date on SQLite

@@ -188,7 +188,7 @@ operand dataset for an attached one.
 
 #### Scenario: Grained transform in the source accepted
 - **WHEN** a query over a month time dimension selects
-  `sum(cumsum(amount:sum(partition_by=[region, ordered_at])) - 1)`
+  `sum(cumsum(sum(amount, partition_by=[region, ordered_at])) - 1)`
 - **THEN** each month carries the sum over regions of that region's running total
   minus one per cell, by hand-computed values on SQLite and DuckDB, distinguishable
   from the ungrained identity — never the former nested-transform rejection
@@ -207,7 +207,7 @@ operand dataset for an attached one.
 
 #### Scenario: Collapsing constituent mixed with a row leaf fails closed
 - **WHEN** a query over a month time dimension selects
-  `sum(amount * last(amount:sum(partition_by=[region, ordered_at])))`
+  `sum(amount * last(sum(amount, partition_by=[region, ordered_at])))`
 - **THEN** it fails with a typed error naming the collapsing transform and the
   row-level column, never a broadcast or multiplied value
 
@@ -234,7 +234,7 @@ operand dataset for an attached one.
 
 #### Scenario: Attached parameter on a row-level source accepted
 - **WHEN** a measure is written
-  `customers.spend:weighted_avg(weight=sum(amount, partition_by=customers.regions.name))`
+  `weighted_avg(customers.spend, weight=sum(amount, partition_by=customers.regions.name))`
   rooted at `orders` under `to_many_handling: "associate"`
 - **THEN** it is accepted and compiles with the parameter's value attached into
   the aggregation's input relation — never the attached-parameter rejection —
@@ -242,7 +242,7 @@ operand dataset for an attached one.
 
 #### Scenario: Attached parameter on a row-level source executes under broadcast
 - **WHEN** a measure is written
-  `customers.spend:weighted_avg(weight=sum(amount, partition_by=customers.regions.name))`
+  `weighted_avg(customers.spend, weight=sum(amount, partition_by=customers.regions.name))`
   rooted at `orders` under the default `broadcast` `to_many_handling`
 - **THEN** it executes — the parameter's producer rooted at `orders`, attached per
   customer row inside the `customers`-rooted producer — with values identical to
@@ -251,7 +251,7 @@ operand dataset for an attached one.
 
 #### Scenario: Attached parameter on a row-level source rejected
 - **WHEN** a measure is written
-  `customers.spend:weighted_avg(weight=sum(customers.spend, partition_by=status))`
+  `weighted_avg(customers.spend, weight=sum(customers.spend, partition_by=status))`
   rooted at `orders`, in any `to_many_handling` mode, by an attributable
   (`customers.tier`) or an unattributable (`status`) dimension — the aggregation's
   home `customers` does not determine the parameter's grain member `status`
