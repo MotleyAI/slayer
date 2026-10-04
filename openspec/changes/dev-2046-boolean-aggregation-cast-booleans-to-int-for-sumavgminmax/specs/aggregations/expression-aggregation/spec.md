@@ -27,7 +27,7 @@ from the inferred value class, defaulting to plain numeric.
 The system SHALL accept `agg(<expression>, [args])` where the expression is built
 from row-level column references — bare host-model columns and dotted joined-model
 paths alike — scalar-allowlist functions, arithmetic operators, comparisons, boolean
-connectives, `IN` / `NOT IN` and `BETWEEN` predicates, and literals, in
+connectives, `IN` / `NOT IN` predicates, and literals, in
 every position that accepts functional aggregations, composing with reserved kwargs
 (`window`, `partition_by`), parametric aggregations, custom aggregations, rename,
 filter-form measures, post-aggregation filters, and order. The aggregation SHALL run

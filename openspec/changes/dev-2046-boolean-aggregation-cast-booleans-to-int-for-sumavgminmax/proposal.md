@@ -6,8 +6,9 @@ Snowflake. The cause is structural: result typing has four homes that disagree (
 `_agg_output_type` already assumes INT), aggregate emission over a raw value is hand-built at
 several render sites, and "is this value boolean" is answered once, best-effort, in binding.
 Predicates (`amount > 15`, `status in (…)`) are booleans too, yet the parse gate rejects them as
-aggregation sources and `IN` / `BETWEEN` re-aggregation sources leak a raw pydantic error
-(DEV-1970, folded in).
+aggregation sources and `IN` / time-point re-aggregation sources leak a raw pydantic error
+(DEV-1970, folded in; its `BETWEEN` half is moot — Mode B has no `BETWEEN`, whose stale claims
+in `consecutive_periods`' spec, docs and errors are corrected here).
 
 ## What Changes
 
@@ -22,9 +23,9 @@ aggregation sources and `IN` / `BETWEEN` re-aggregation sources leak a raw pydan
   source type there, as the engine does).
 - `avg` joins the BOOLEAN default aggregation set; boolean expression sources accept every
   aggregation in that set.
-- Comparisons, boolean connectives, `IN` and `BETWEEN` are legal aggregation sources at row level
-  and in re-aggregation (`sum(amount > 15)`, `avg(status in ('a', 'b'))`,
-  `sum(count(x) between 1 and 3)`).
+- Comparisons (time-point comparisons included), boolean connectives and `IN` are legal
+  aggregation sources at row level and in re-aggregation (`sum(amount > 15)`,
+  `avg(status in ('a', 'b'))`, `sum(count(x) in (1, 2))`, `sum(max(ordered_at) >= '2025-02')`).
 - SQL Server: a predicate in a value position renders as a BIT value
   (`CAST(CASE WHEN p THEN 1 WHEN NOT p THEN 0 END AS BIT)`), fixing projected boolean measures
   (`sum(amount) > 50`) as well as predicate aggregation inputs.
@@ -39,8 +40,10 @@ aggregation sources and `IN` / `BETWEEN` re-aggregation sources leak a raw pydan
 
 ### Modified Capabilities
 - `aggregations/expression-aggregation`: "Row-level expressions can be aggregated" admits
-  comparisons, boolean connectives, `IN` and `BETWEEN`; "Gate and type semantics for
+  comparisons, boolean connectives and `IN`; "Gate and type semantics for
   expressions" accepts boolean expressions for the BOOLEAN default aggregation set.
+- `queries/transforms`: "Composite-input consecutive_periods" and "consecutive_periods
+  predicate typing contract" drop the nonexistent `BETWEEN` predicate.
 
 ## Impact
 
@@ -50,6 +53,8 @@ aggregation sources and `IN` / `BETWEEN` re-aggregation sources leak a raw pydan
 - `slayer/sql/render/aggregates.py` (emission helper), `slayer/sql/render/value_expr.py`,
   `slayer/sql/generator.py` (built-in builder, association pick, HAVING),
   `slayer/sql/dialects/tsql.py`.
-- `AggregateKey` source union gains `InKey` / `BetweenKey`.
+- `AggregateKey` source union gains `InKey` / `TimePointCmpKey`; `EXPRESSION_SOURCE_KINDS`
+  (`slayer/core/refs.py`) gains `InKey`.
 - Docs: `docs/concepts/models.md`, `docs/concepts/formulas.md`.
-- `tests/test_dev1847_gate.py` row-level comparison rejection flips to acceptance.
+- `tests/test_dev1847_gate.py` row-level comparison rejection flips to acceptance;
+  `tests/golden/dev1846_sql_baseline.json` error strings lose `BETWEEN`.

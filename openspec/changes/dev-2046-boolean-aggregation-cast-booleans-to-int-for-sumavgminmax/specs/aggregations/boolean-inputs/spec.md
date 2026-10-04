@@ -9,12 +9,12 @@ typed and formatted, identically on every dialect.
 ### Requirement: Boolean-valued inputs are recognised by their value, never their spelling
 An aggregation input SHALL be boolean-valued when its value is certainly boolean: a column
 declared BOOLEAN (host, joined or stage column, base or derived), a boolean literal, a
-comparison, a boolean connective (`and` / `or` / `not`), an `IN` / `NOT IN` or `BETWEEN`
-predicate, `like`, an `iif` whose every branch is boolean-valued, a `coalesce` / `ifnull` /
-`greatest` / `least` whose every argument is boolean-valued, a `nullif` whose first argument is
-boolean-valued, and a `min` / `max` / `first` / `last` over a boolean-valued source. An input
-with any non-boolean returnable branch SHALL NOT be boolean-valued. The same recognition SHALL
-drive binding gates, result typing and SQL emission.
+comparison (a time-point comparison included), a boolean connective (`and` / `or` / `not`),
+an `IN` / `NOT IN` predicate, `like`, an `iif` whose every branch is boolean-valued, a
+`coalesce` / `ifnull` / `greatest` / `least` whose every argument is boolean-valued, a `nullif`
+whose first argument is boolean-valued, and a `min` / `max` / `first` / `last` over a
+boolean-valued source. An input with any non-boolean returnable branch SHALL NOT be
+boolean-valued. The same recognition SHALL drive binding gates, result typing and SQL emission.
 
 #### Scenario: Mixed-type coalesce is not boolean
 - **WHEN** a measure is written `sum(coalesce(flag, amount))` with `flag` BOOLEAN and `amount` INT
@@ -111,24 +111,25 @@ aggregations at binding with a typed error.
 - **THEN** it fails at binding with a typed error, never in the database
 
 ### Requirement: Predicates are aggregatable booleans
-A comparison, boolean connective, `IN` / `NOT IN` or `BETWEEN` predicate SHALL be a legal
-aggregation source — over row-level values and over attached (aggregated) values alike — and
-SHALL be aggregated exactly as a boolean column with the same values would be.
+A comparison (a time-point comparison included), boolean connective or `IN` / `NOT IN`
+predicate SHALL be a legal aggregation source — over row-level values and over attached
+(aggregated) values alike — and SHALL be aggregated exactly as a boolean column with the same
+values would be.
 
 #### Scenario: Row-level comparison
 - **WHEN** a query over rows with `amount` values `10, 20, 30, NULL` selects `sum(amount > 15)`,
   `avg(amount > 15)` and `count(amount > 15)`
 - **THEN** it returns 2, 0.6667 (two of three non-NULL) and 3 on SQLite, DuckDB and Postgres
 
-#### Scenario: Row-level IN and BETWEEN
+#### Scenario: Row-level IN and time-point comparison
 - **WHEN** a measure is written `sum(status in ('ok', 'hold'))` or
-  `sum(amount between 10 and 20)`
+  `sum(ordered_at >= '2025-02')`
 - **THEN** it binds without an internal validation error and returns the number of rows
   satisfying the predicate
 
 #### Scenario: Predicate over an attached value
 - **WHEN** a measure is written `sum(count(amount) in (1, 2))`,
-  `sum(count(amount) between 1 and 2)` or `sum(sum(amount) > 45 and sum(amount) < 100)` over
+  `sum(max(ordered_at) >= '2025-02')` or `sum(sum(amount) > 45 and sum(amount) < 100)` over
   a per-entity grain
 - **THEN** it binds without an internal validation error and returns the number of grain cells
   satisfying the predicate on SQLite and DuckDB

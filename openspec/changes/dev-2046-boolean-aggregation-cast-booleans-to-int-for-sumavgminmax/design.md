@@ -62,22 +62,33 @@ columns).
    `bool_and` / `bool_or` — sqlglot's `LogicalOr` renders `LOGICAL_OR` on T-SQL and
    ClickHouse (invalid there); the cast round-trip transpiles on all twelve dialects probed.
 
-4. **Predicates are booleans, not a separate input kind.** A comparison / connective / IN /
-   BETWEEN source is lowered exactly like a boolean column (decision 3). Where a dialect cannot
+4. **Predicates are booleans, not a separate input kind.** A comparison / connective / IN
+   source is lowered exactly like a boolean column (decision 3). Where a dialect cannot
    hold a predicate as a value, that is a dialect quirk handled once (decision 5) — so
    `count(amount > 15)` and custom aggregations receive the predicate like any boolean.
 
 5. **SQL Server predicate values in `slayer/sql/dialects/tsql.py`**: one target rewrite over
    the assembled statement, before its single render, replaces each predicate node
-   (comparison, connective, NOT, IN, BETWEEN, LIKE, IS) whose parent is a value position with
+   (comparison, connective, NOT, IN, BETWEEN — reachable from Mode-A column SQL — LIKE, IS)
+   whose parent is a value position with
    `CAST(CASE WHEN p THEN 1 WHEN NOT p THEN 0 END AS BIT)`; condition positions (WHERE, HAVING,
    JOIN ON, CASE WHEN condition, and a predicate nested inside another predicate) are left
    alone. NULL stays NULL (neither WHEN matches).
 
 6. **Grammar and sources.** `_AGG_SOURCE_KINDS` gains `Cmp` and `BoolOp` (a bare `TupleLit`
-   stays rejected). `AggregateKey`'s source union admits `InKey` and `BetweenKey`, on the
-   row-level and re-aggregation paths (folds DEV-1970); any shape still unsupported raises a
-   typed SLayer error at bind, never a pydantic `ValidationError`.
+   stays rejected). A `Cmp` binds to `ArithmeticKey`, `InKey` or the transient
+   `TimePointCmpKey`; the latter two pass every source gate on the row-level and
+   re-aggregation paths (folds DEV-1970): `InKey` joins `EXPRESSION_SOURCE_KINDS` (bind,
+   naming, metadata, render) and `_AggregateSource`; `TimePointCmpKey` is admitted only at
+   bind and in `_AggregateSource`, lowered by `resolve_time_points` before compilation (its
+   fail-closed guard unchanged). Any shape still unsupported raises a typed SLayer error at
+   bind, never a pydantic `ValidationError`. Mode B has no `BETWEEN` (the internal
+   date-range `BetweenKey` was deleted by DEV-1999 and never DSL-reachable): a range is
+   `lo <= x and x <= hi`, and the stale `BETWEEN` claims of `consecutive_periods` (spec,
+   `formulas.md`, the predicate-shape error strings) are removed. *Alternative rejected
+   (Codex-reviewed):* a SQL `x [not] between a and b` rewrite to two comparisons — a
+   grammar feature needing a precedence-aware rewrite (a token-local one silently mis-scopes
+   `a - b between 1 and 2`), outside this change.
 
 7. **Gates.** `avg` joins `DEFAULT_AGGREGATIONS_BY_TYPE[BOOLEAN]`.
    `_reject_non_numeric_expression_agg` rejects a boolean-valued expression only for

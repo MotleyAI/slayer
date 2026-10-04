@@ -61,23 +61,23 @@
   "cp/or::tsql": "WITH base AS (\n  SELECT\n    DATETRUNC(month, sales.ordered_at) AS [sales___ordered_at],\n    SUM(sales.revenue) AS [sales___revenue_sum],\n    SUM(sales.cost) AS [sales___cost_sum]\n  FROM sales AS sales\n  GROUP BY\n    DATETRUNC(month, sales.ordered_at)\n), cp_prev_streak AS (\n  SELECT\n    [sales___ordered_at] AS [sales___ordered_at],\n    [sales___revenue_sum] AS [sales___revenue_sum],\n    [sales___cost_sum] AS [sales___cost_sum],\n    LAG([sales___ordered_at]) OVER (ORDER BY [sales___ordered_at]) AS [_cp_prev_sales___streak]\n  FROM base\n), cp_reset_streak AS (\n  SELECT\n    [sales___ordered_at] AS [sales___ordered_at],\n    [sales___revenue_sum] AS [sales___revenue_sum],\n    [sales___cost_sum] AS [sales___cost_sum],\n    SUM(\n      CASE\n        WHEN [sales___revenue_sum] > 90\n        OR [sales___cost_sum] > 40\n        AND [_cp_prev_sales___streak] = DATEADD(MONTH, -1, [sales___ordered_at])\n        THEN 0\n        ELSE 1\n      END\n    ) OVER (ORDER BY [sales___ordered_at] ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS [_cp_reset_sales___streak]\n  FROM cp_prev_streak\n), cp_value_streak AS (\n  SELECT\n    [sales___ordered_at] AS [sales___ordered_at],\n    [sales___revenue_sum] AS [sales___revenue_sum],\n    [sales___cost_sum] AS [sales___cost_sum],\n    CASE\n      WHEN [sales___revenue_sum] > 90 OR [sales___cost_sum] > 40\n      THEN SUM(CASE WHEN [sales___revenue_sum] > 90 OR [sales___cost_sum] > 40 THEN 1 ELSE 0 END) OVER (\n        PARTITION BY [_cp_reset_sales___streak]\n        ORDER BY [sales___ordered_at]\n        ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW\n      )\n      ELSE 0\n    END AS [sales___streak]\n  FROM cp_reset_streak\n)\nSELECT\n  [sales___ordered_at],\n  [sales___streak]\nFROM (\n  SELECT\n    [sales___ordered_at],\n    [sales___revenue_sum],\n    [sales___cost_sum],\n    [sales___streak]\n  FROM cp_value_streak\n) AS _outer",
   "reject/cp_boolean_numeric::bigquery": {
     "error": "ValueError",
-    "message": "'consecutive_periods': a boolean-shaped predicate cannot appear in a value position (arithmetic operand, scalar-call argument, or IN / BETWEEN operand); only iif's condition and the top-level predicate accept a boolean. Got ArithmeticKey."
+    "message": "'consecutive_periods': a boolean-shaped predicate cannot appear in a value position (arithmetic operand, scalar-call argument, or IN operand); only iif's condition and the top-level predicate accept a boolean. Got ArithmeticKey."
   },
   "reject/cp_boolean_numeric::duckdb": {
     "error": "ValueError",
-    "message": "'consecutive_periods': a boolean-shaped predicate cannot appear in a value position (arithmetic operand, scalar-call argument, or IN / BETWEEN operand); only iif's condition and the top-level predicate accept a boolean. Got ArithmeticKey."
+    "message": "'consecutive_periods': a boolean-shaped predicate cannot appear in a value position (arithmetic operand, scalar-call argument, or IN operand); only iif's condition and the top-level predicate accept a boolean. Got ArithmeticKey."
   },
   "reject/cp_boolean_numeric::postgres": {
     "error": "ValueError",
-    "message": "'consecutive_periods': a boolean-shaped predicate cannot appear in a value position (arithmetic operand, scalar-call argument, or IN / BETWEEN operand); only iif's condition and the top-level predicate accept a boolean. Got ArithmeticKey."
+    "message": "'consecutive_periods': a boolean-shaped predicate cannot appear in a value position (arithmetic operand, scalar-call argument, or IN operand); only iif's condition and the top-level predicate accept a boolean. Got ArithmeticKey."
   },
   "reject/cp_boolean_numeric::sqlite": {
     "error": "ValueError",
-    "message": "'consecutive_periods': a boolean-shaped predicate cannot appear in a value position (arithmetic operand, scalar-call argument, or IN / BETWEEN operand); only iif's condition and the top-level predicate accept a boolean. Got ArithmeticKey."
+    "message": "'consecutive_periods': a boolean-shaped predicate cannot appear in a value position (arithmetic operand, scalar-call argument, or IN operand); only iif's condition and the top-level predicate accept a boolean. Got ArithmeticKey."
   },
   "reject/cp_boolean_numeric::tsql": {
     "error": "ValueError",
-    "message": "'consecutive_periods': a boolean-shaped predicate cannot appear in a value position (arithmetic operand, scalar-call argument, or IN / BETWEEN operand); only iif's condition and the top-level predicate accept a boolean. Got ArithmeticKey."
+    "message": "'consecutive_periods': a boolean-shaped predicate cannot appear in a value position (arithmetic operand, scalar-call argument, or IN operand); only iif's condition and the top-level predicate accept a boolean. Got ArithmeticKey."
   },
   "reject/cp_string_family::bigquery": {
     "error": "ValueError",

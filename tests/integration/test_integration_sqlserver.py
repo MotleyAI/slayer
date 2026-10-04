@@ -85,6 +85,15 @@ from tests.integration._dev2015_server import (
     server_statements,
     with_granularities,
 )
+from tests._dev2046_fixtures import (
+    FLAG_TOTALS,
+    GT15_TOTALS,
+    by_dim,
+    dev2046_models,
+    m as bool_measure,
+    orders_q,
+    seed_statements as dev2046_seed_statements,
+)
 from tests.integration._consecutive_periods_calendar import (
     CALENDAR_CASES,
     assert_calendar_streak,
@@ -1508,3 +1517,66 @@ def _sqlserver_spine_storage(sqlserver_container, tmp_path_factory):
 class TestSQLServerTimeSpine:
     async def test_scenarios(self, _sqlserver_spine_storage) -> None:
         await check_all(SlayerQueryEngine(storage=_sqlserver_spine_storage), data_source="ms", ts_data_source="ms_ts")
+
+
+# ---------------------------------------------------------------------------
+# Boolean aggregation inputs and predicate values (BIT)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def _sqlserver_boolean_storage(sqlserver_container, tmp_path_factory):
+    db_name = _create_module_db(sqlserver_container)
+    try:
+        with disposable_engine(_db_url(sqlserver_container, db_name)) as engine:
+            with engine.begin() as conn:
+                for stmt in dev2046_seed_statements("tsql"):
+                    conn.execute(sa.text(stmt))
+        storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("sqlserver_boolean")))
+        run_sync(storage.save_datasource(_ds_config(sqlserver_container, db_name)))
+        for model in dev2046_models(data_source="testmssql"):
+            run_sync(storage.save_model(model))
+        yield storage
+    finally:
+        _drop_module_db(sqlserver_container, db_name)
+
+
+@pytest.mark.integration
+class TestSQLServerBooleanAggregation:
+    async def test_bit_column_aggregates(self, _sqlserver_boolean_storage) -> None:
+        engine = SlayerQueryEngine(storage=_sqlserver_boolean_storage)
+        resp = await engine.execute(orders_q(measures=[
+            bool_measure("sum(flag)", "s"), bool_measure("avg(flag)", "a"), bool_measure("min(flag)", "mn"), bool_measure("max(flag)", "mx"),
+            bool_measure("count(flag)", "c"),
+        ]))
+        row = resp.data[0]
+        assert row["orders.s"] == FLAG_TOTALS["sum"]
+        assert float(row["orders.a"]) == pytest.approx(FLAG_TOTALS["avg"])
+        assert bool(row["orders.mn"]) is FLAG_TOTALS["min"]
+        assert bool(row["orders.mx"]) is FLAG_TOTALS["max"]
+        assert row["orders.c"] == FLAG_TOTALS["count"]
+
+    async def test_predicate_inputs(self, _sqlserver_boolean_storage) -> None:
+        engine = SlayerQueryEngine(storage=_sqlserver_boolean_storage)
+        resp = await engine.execute(orders_q(measures=[
+            bool_measure("sum(amount > 15)", "s"), bool_measure("count(amount > 15)", "c"), bool_measure("max(amount > 15)", "mx"),
+        ]))
+        row = resp.data[0]
+        assert row["orders.s"] == GT15_TOTALS["sum"]
+        assert row["orders.c"] == GT15_TOTALS["count"]
+        assert bool(row["orders.mx"]) is True
+
+    async def test_projected_boolean_measure(self, _sqlserver_boolean_storage) -> None:
+        """``sum(amount) > 50`` projects as a BIT value; NULL when the sum is NULL."""
+        engine = SlayerQueryEngine(storage=_sqlserver_boolean_storage)
+        resp = await engine.execute(orders_q(dimensions=["region"], measures=[bool_measure("sum(amount) > 50")]))
+        values = by_dim(resp, "region")
+        assert values["west"] is None
+        assert bool(values["east"]) is True
+
+    @pytest.mark.parametrize("having", ["max(flag) = true", "sum(flag) > 1", "sum(amount > 15) > 1"])
+    async def test_post_aggregation_filters(self, _sqlserver_boolean_storage, having: str) -> None:
+        engine = SlayerQueryEngine(storage=_sqlserver_boolean_storage)
+        resp = await engine.execute(orders_q(
+            dimensions=["region"], measures=[bool_measure("sum(flag)")], filters=["amount > 5 or amount is None", having],
+        ))
+        assert by_dim(resp, "region") == {"east": 2}
