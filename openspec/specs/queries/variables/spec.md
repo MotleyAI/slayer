@@ -11,7 +11,7 @@ Governs `{var}` placeholder substitution across query and model surfaces: which 
 
 #### Scenario: Measure formula
 
-- **WHEN** a query on `orders` has measure `amount:sum * {k} / 100` and `variables={"k": 10}`
+- **WHEN** a query on `orders` has measure `sum(amount) * {k} / 100` and `variables={"k": 10}`
 - **THEN** it executes and returns the total amount multiplied by 10 and divided by 100, by executed values on SQLite and DuckDB
 
 #### Scenario: Computed dimension in string and object form
@@ -21,7 +21,7 @@ Governs `{var}` placeholder substitution across query and model surfaces: which 
 
 #### Scenario: Order expression in colon and call form
 
-- **WHEN** a query orders by `amount:sum * {k}` or by `sum(amount) * {k}` descending, with `variables={"k": -1}`
+- **WHEN** a query orders by `sum(amount) * {k}` descending, with `variables={"k": -1}`
 - **THEN** both construct and the rows come back in ascending total-amount order
 
 #### Scenario: Placeholder in operand positions
@@ -40,17 +40,17 @@ A saved `ModelMeasure.formula` SHALL substitute `{var}` under the Mode-B regime 
 
 #### Scenario: Saved measure on the source model
 
-- **WHEN** model `orders` has saved measure `amt_scaled` with formula `amount:sum * {k}` and a query requests `amt_scaled` with `variables={"k": 10}`
+- **WHEN** model `orders` has saved measure `amt_scaled` with formula `sum(amount) * {k}` and a query requests `amt_scaled` with `variables={"k": 10}`
 - **THEN** it returns ten times the total amount
 
 #### Scenario: Saved measure through a join
 
-- **WHEN** model `customers`, joined from `orders`, has saved measure `spend_scaled` with formula `spend:sum * {k}` and a query on `orders` requests `customers.spend_scaled` with `variables={"k": 10}`
+- **WHEN** model `customers`, joined from `orders`, has saved measure `spend_scaled` with formula `sum(spend) * {k}` and a query on `orders` requests `customers.spend_scaled` with `variables={"k": 10}`
 - **THEN** the query fails with the unresolved-placeholder error naming `{k}`
 
 #### Scenario: Inspection lists saved-measure variables
 
-- **WHEN** model `orders` has saved measure formula `amount:sum * {k}` and no default for `k`
+- **WHEN** model `orders` has saved measure formula `sum(amount) * {k}` and no default for `k`
 - **THEN** model variable inspection reports `k` as required
 
 ### Requirement: Time-dimension date ranges substitute variables; granularities and columns do not
@@ -78,7 +78,7 @@ An unnamed measure or computed dimension whose text contains placeholders SHALL 
 
 #### Scenario: Template-derived measure key
 
-- **WHEN** an unnamed measure `amount:sum * {k} / 100` is queried on `orders` with `variables={"k": 10}`
+- **WHEN** an unnamed measure `sum(amount) * {k} / 100` is queried on `orders` with `variables={"k": 10}`
 - **THEN** its result key is `orders.amount_sum_k_100`
 
 #### Scenario: Spelling-insensitive template key
@@ -88,17 +88,17 @@ An unnamed measure or computed dimension whose text contains placeholders SHALL 
 
 #### Scenario: Equal unnamed template measures merge
 
-- **WHEN** a query lists the unnamed measure `amount:sum * {k}` twice
+- **WHEN** a query lists the unnamed measure `sum(amount) * {k}` twice
 - **THEN** the result has one column for it
 
 #### Scenario: References by template name
 
-- **WHEN** a query has unnamed measure `amount:sum * {k}`, filter `amount_sum_k > 100`, and order by `amount_sum_k`
+- **WHEN** a query has unnamed measure `sum(amount) * {k}`, filter `amount_sum_k > 100`, and order by `amount_sum_k`
 - **THEN** both resolve to that measure
 
 #### Scenario: Stable columns of a saved query-backed model
 
-- **WHEN** a query-backed model is saved from a query whose unnamed measure is `amount:sum * {k}` and it is queried with `k=10` and with `k=20`
+- **WHEN** a query-backed model is saved from a query whose unnamed measure is `sum(amount) * {k}` and it is queried with `k=10` and with `k=20`
 - **THEN** both runs return the same column names
 
 ### Requirement: Substitution errors on formula surfaces match filters
@@ -121,7 +121,7 @@ Saving a query-backed model SHALL render it exactly as execution with no runtime
 
 #### Scenario: Undefaulted variable refuses the save
 
-- **WHEN** a query-backed model is saved from a query with measure `amount:sum * {k}`, or with `date_range: ["{start}", null]`, and no default for that variable
+- **WHEN** a query-backed model is saved from a query with measure `sum(amount) * {k}`, or with `date_range: ["{start}", null]`, and no default for that variable
 - **THEN** the save fails with the undefined-variable error naming it
 
 #### Scenario: Defaulted variable saves the exact SQL
@@ -131,7 +131,7 @@ Saving a query-backed model SHALL render it exactly as execution with no runtime
 
 #### Scenario: Plain model with a saved-measure placeholder
 
-- **WHEN** a model that is not query-backed has saved measure formula `amount:sum * {k}` and no default for `k`
+- **WHEN** a model that is not query-backed has saved measure formula `sum(amount) * {k}` and no default for `k`
 - **THEN** the save succeeds
 
 ### Requirement: Unsubstituted placeholders fail with a typed error
@@ -145,5 +145,5 @@ A `{name}` placeholder that reaches query binding unsubstituted SHALL raise a ty
 
 #### Scenario: Multi-element set
 
-- **WHEN** a measure is `amount:sum * {a, b}`
+- **WHEN** a measure is `sum(amount) * {a, b}`
 - **THEN** parsing it fails as unsupported syntax, and executing it fails with the invalid-variable-name error, as in filters

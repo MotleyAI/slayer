@@ -133,7 +133,7 @@ so a reference never leaves the chain ambiguous.
 - **WHEN** `regions → region_events` fans and its inverse is provably to-one, and a
   query rooted at `orders` selects
   `sum(customers.regions.region_events.value * customers.regions.pop)` or the explicit
-  `customers.regions.region_events.value:wsum_rp(weight=customers.regions.pop)`
+  `wsum_rp(customers.regions.region_events.value, weight=customers.regions.pop)`
 - **THEN** `region_events` determines `customers.regions.pop` over the one reverse hop
   back to `regions`, the aggregation homes at `customers.regions.region_events`, and
   each event is counted once (16000 on the reference dataset), never refused as a

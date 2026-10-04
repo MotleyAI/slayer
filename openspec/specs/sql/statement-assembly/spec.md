@@ -39,7 +39,7 @@ supplied when an offset has no ordering).
 
 #### Scenario: Paginated transform chain on every dialect
 
-- **WHEN** a query with a transform (e.g. `cumsum(amount:sum)`), an `order` and a `limit`
+- **WHEN** a query with a transform (e.g. `cumsum(sum(amount))`), an `order` and a `limit`
   is compiled on each supported dialect
 - **THEN** the statement begins with the chain's `WITH` and no derived table contains a
   `WITH`
@@ -69,7 +69,7 @@ last chain step carries.
 
 #### Scenario: Filter on a transform result keeps the transform's input rows
 
-- **WHEN** a query computes `cumsum(amount:sum)` by month and filters on that cumulative
+- **WHEN** a query computes `cumsum(sum(amount))` by month and filters on that cumulative
   value being greater than 50
 - **THEN** the filter appears in the final select over the last chain step, not in the
   base CTE

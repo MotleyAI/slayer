@@ -242,7 +242,7 @@ rejected like the other table-model parameters.
 - **WHEN** `create_model` is called with a table model and an aggregation
   `{"name": "sum_sq", "formula": "SUM({value} * {value})"}`
 - **THEN** the model is persisted with that aggregation and a query using
-  `amount:sum_sq` succeeds
+  `sum_sq(amount)` succeeds
 
 ### Requirement: Self-referencing query-backed models are rejected at save time
 Saving a query-backed model whose `source_queries` reference the model itself, directly or

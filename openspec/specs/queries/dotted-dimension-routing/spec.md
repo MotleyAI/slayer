@@ -99,7 +99,7 @@ resolution takes precedence over short-form reinterpretation, and a route only s
 when every oriented hop is provably to-one.
 
 #### Scenario: Routing applies to a cross-model aggregation and star aggregation
-- WHEN a query selects the measure `Consumer.amount:sum` and `Consumer.*:count` with `Consumer` uniquely routable
+- WHEN a query selects the measure `sum(Consumer.amount)` and `count(Consumer.*)` with `Consumer` uniquely routable
 - THEN both resolve through the routed path and emit correct SQL
 
 #### Scenario: Short-form ORDER BY matches its routed dimension

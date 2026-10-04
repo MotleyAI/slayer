@@ -117,9 +117,9 @@ rendering and only supply parameter defaults.
 #### Scenario: A model formula overriding a built-in is rendered
 
 - **WHEN** a model defines `sum` with formula `SUM({value}) * {scale}` and a `scale`
-  parameter defaulting to `2`, and a query aggregates `price:sum`
+  parameter defaulting to `2`, and a query aggregates `sum(price)`
 - **THEN** the generated SQL is `SUM(price) * 2`
-- **AND** `price:sum(scale=3)` renders `SUM(price) * 3`
+- **AND** `sum(price, scale=3)` renders `SUM(price) * 3`
 
 ### Requirement: Percentile p accepts a numeric literal in [0, 1]
 
@@ -142,7 +142,7 @@ a literal, or an expression over column references. A definition default SHALL t
 indistinguishable from the same value supplied explicitly: identical results, identical
 behaviour in every producer kind and position, and a single computation when both
 appear in one query; only the public auto-generated name follows the query's own
-spelling (`amount:wpop` keeps the name `amount_wpop`). A string argument naming a
+spelling (`wpop(amount)` keeps the name `amount_wpop`). A string argument naming a
 formula placeholder SHALL resolve exactly as the same text written unquoted; any other
 string argument (e.g. `window='90d'`) is a setting, never SQL. Parameter text that
 cannot be analysed — it does not parse in the datasource's dialect, or it contains an
@@ -153,8 +153,8 @@ or be treated as referencing nothing.
 #### Scenario: A default equals its explicit spelling
 
 - **WHEN** a model declares `wsum` (`SUM({value} * {weight})`) with `weight`
-  defaulting to `quantity`, and one query selects `amount:wsum` and
-  `amount:wsum(weight=quantity)`
+  defaulting to `quantity`, and one query selects `wsum(amount)` and
+  `wsum(amount, weight=quantity)`
 - **THEN** both return identical values from one computation in the generated SQL, and
   the first keeps the public name `amount_wsum`
 

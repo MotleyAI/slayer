@@ -60,7 +60,7 @@ For a query-backed model the engine SHALL stamp each cached column produced by a
 
 #### Scenario: Unbucketed cached columns carry no granularity
 
-- **WHEN** a query-backed model's final stage projects `created_at` as a plain dimension, or selects `created_at:max`
+- **WHEN** a query-backed model's final stage projects `created_at` as a plain dimension, or selects `max(created_at)`
 - **THEN** the corresponding cached column has no granularity and any time-dimension granularity over it binds
 
 #### Scenario: Nested query-backed models compose
