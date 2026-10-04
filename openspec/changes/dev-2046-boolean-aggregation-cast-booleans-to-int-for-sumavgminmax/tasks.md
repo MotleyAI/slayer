@@ -17,26 +17,26 @@
 
 ## 2. Boolean-type authority and typing
 
-- [ ] 2.1 Add `boolean_valued` to `slayer/core/keys.py`; delete `_expression_is_confidently_boolean` and route the binding gate through it; verify 1.2 and 1.9 pass
-- [ ] 2.2 `classify_aggregation` takes `source_type`; thread it through `aggregated_type`, `stage_measure_type`, `measure_key_type`, `_infer_aggregated_format` (PERCENT default for boolean avg); verify 1.3 passes
-- [ ] 2.3 Delete the facade's `_agg_output_type`; metric `data_type` reads the engine typing; verify 1.4 passes
-- [ ] 2.4 `avg` joins `DEFAULT_AGGREGATIONS_BY_TYPE[BOOLEAN]`; `_reject_non_numeric_expression_agg` exempts the boolean default set; verify 1.9 passes
+- [x] 2.1 Add `boolean_valued` to `slayer/core/keys.py`; delete `_expression_is_confidently_boolean` and route the binding gate through it; verify 1.2 and 1.9 pass
+- [x] 2.2 `classify_aggregation` takes `source_type`; thread it through `aggregated_type`, `stage_measure_type`, `measure_key_type`, `_infer_aggregated_format` (PERCENT default for boolean avg); verify 1.3 passes
+- [x] 2.3 Delete the facade's `_agg_output_type`; metric `data_type` reads the engine typing; verify 1.4 passes
+- [x] 2.4 `avg` joins `DEFAULT_AGGREGATIONS_BY_TYPE[BOOLEAN]`; `_reject_non_numeric_expression_agg` exempts the boolean default set; verify 1.9 passes
 
 ## 3. Grammar and sources
 
-- [ ] 3.1 `_AGG_SOURCE_KINDS` gains `Cmp` and `BoolOp`; verify 1.10 passes
-- [ ] 3.2 Admit `InKey` (via `EXPRESSION_SOURCE_KINDS` and `_AggregateSource`, through bind → plan → render) and `TimePointCmpKey` (at bind and in `_AggregateSource` only, lowered before compilation) on row-level and re-aggregation paths; unsupported shapes raise a typed SLayer error; verify 1.8 passes and the `binding.py` basedpyright baseline entry is gone (baseline only shrinks)
+- [x] 3.1 `_AGG_SOURCE_KINDS` gains `Cmp` and `BoolOp`; verify 1.10 passes
+- [x] 3.2 Admit `InKey` (via `EXPRESSION_SOURCE_KINDS` and `_AggregateSource`, through bind → plan → render) and `TimePointCmpKey` (at bind and in `_AggregateSource` only, lowered before compilation) on row-level and re-aggregation paths; unsupported shapes raise a typed SLayer error; verify 1.8 passes and the `binding.py` basedpyright baseline entry is gone (baseline only shrinks)
 
 ## 4. Emission
 
-- [ ] 4.1 Aggregate-application helper in `slayer/sql/render/aggregates.py` (integer lowering for sum/avg/min/max over BOOLEAN; min/max cast back via `declared_cast_type`); verify its unit tests
+- [x] 4.1 Aggregate-application helper in `slayer/sql/render/aggregates.py` (integer lowering for sum/avg/min/max over BOOLEAN; min/max cast back via `declared_cast_type`); verify its unit tests
 - [ ] 4.2 Route `generator._build_agg`, `value_expr._render_builtin_aggregate` (and the HAVING seam) and the association producer's level-1 pick through the helper, input type from `boolean_valued`; verify 1.5–1.7 and 1.12 pass
-- [ ] 4.3 SQL Server predicate-value rewrite in `slayer/sql/dialects/tsql.py` over the assembled statement; verify 1.11 passes
+- [x] 4.3 SQL Server predicate-value rewrite in `slayer/sql/dialects/tsql.py` over the assembled statement; verify 1.11 passes
 
 ## 5. Docs and gates
 
-- [ ] 5.1 `docs/concepts/models.md`: per-type table adds `avg` for `boolean`; one sentence on how booleans are aggregated (sum counts trues, avg is the share, min/max stay boolean)
-- [ ] 5.2 `docs/concepts/formulas.md` (aggregated-expression grammar): one sentence that comparisons and `in` can be aggregated (`sum(amount > 15)`)
-- [ ] 5.3 Drop the nonexistent `BETWEEN` from `consecutive_periods`: the input sentence in `docs/concepts/formulas.md` and the predicate-shape error strings in `slayer/sql/generator.py`; verify 1.14 passes
+- [x] 5.1 `docs/concepts/models.md`: per-type table adds `avg` for `boolean`; one sentence on how booleans are aggregated (sum counts trues, avg is the share, min/max stay boolean)
+- [x] 5.2 `docs/concepts/formulas.md` (aggregated-expression grammar): one sentence that comparisons and `in` can be aggregated (`sum(amount > 15)`)
+- [x] 5.3 Drop the nonexistent `BETWEEN` from `consecutive_periods`: the input sentence in `docs/concepts/formulas.md` and the predicate-shape error strings in `slayer/sql/generator.py`; verify 1.14 passes
 - [ ] 5.4 Full unit suite (`poetry run pytest -m "not integration"`), integration suite with the CI invocation, `ruff check`, `basedpyright` (no new errors), `la-arch-check` — all green
 - [ ] 5.5 Comment on DEV-1970 that it is delivered by DEV-2046's PR and that its `BETWEEN` half is moot (Mode B has no `BETWEEN`; the internal `BetweenKey` was deleted by DEV-1999)

@@ -400,6 +400,7 @@ class LiteralKey(_LeafKey, frozen=True):
 _AggregateSource = Union[
     ColumnKey, ColumnSqlKey, StarKey, TimeTruncKey,
     "ArithmeticKey", "ScalarCallKey", "LiteralKey", "AggregateKey", "TransformKey",
+    "InKey", "TimePointCmpKey",
 ]
 # Positional and kwarg arg values share one union: `last(created_at)` binds an
 # identifier column, `weighted_avg(weight=qty)` a column,
@@ -1253,6 +1254,47 @@ def _scalar_temporal_type(key: ScalarCallKey, *, column_type: ColumnTypeFn) -> O
     if key.name == "nullif" and not _is_null_arg(key.args[0]):
         return types[0]
     return DataType.TIMESTAMP if DataType.TIMESTAMP in types else DataType.DATE
+
+
+# Aggregations whose value is one of their (boolean) inputs.
+_BOOLEAN_PRESERVING_AGGS = frozenset({"min", "max", "first", "last"})
+# Scalars returning one of their arguments, keyed to the returnable positions (None = all).
+_BOOLEAN_BRANCH_SCALARS: Mapping[str, Optional[Tuple[int, ...]]] = MappingProxyType({
+    "coalesce": None, "ifnull": None, "greatest": None, "least": None, "nullif": (0,), "iif": (1, 2),
+})
+
+
+def boolean_valued(key: object, *, column_type: ColumnTypeFn) -> bool:
+    """Whether ``key``'s value is certainly boolean; column leaves type via ``column_type``."""
+    if isinstance(key, (ColumnKey, ColumnSqlKey)):
+        return column_type(key) is DataType.BOOLEAN
+    if isinstance(key, LiteralKey):
+        return isinstance(key.value, bool)
+    if is_boolean_shaped(cast("ValueKey", key)):
+        return True
+    if isinstance(key, AggregateKey):
+        return key.agg.lower() in _BOOLEAN_PRESERVING_AGGS and boolean_valued(key.source, column_type=column_type)
+    if isinstance(key, TransformKey):
+        return key.op in AXIS_COLLAPSING_TRANSFORMS and boolean_valued(key.input, column_type=column_type)
+    if isinstance(key, ScalarCallKey):
+        if key.name == "like":
+            return True
+        if key.name not in _BOOLEAN_BRANCH_SCALARS:
+            return False
+        positions = _BOOLEAN_BRANCH_SCALARS[key.name]
+        returned = key.args if positions is None else [key.args[i] for i in positions if i < len(key.args)]
+        branches = [a for a in returned if not _is_null_arg(a)]
+        return bool(branches) and all(boolean_valued(a, column_type=column_type) for a in branches)
+    return False
+
+
+def aggregation_source_type(source: object, *, column_type: ColumnTypeFn) -> Optional[DataType]:
+    """The type an aggregation reads from ``source``: BOOLEAN when boolean-valued, a column's declared type, else ``None``."""
+    if boolean_valued(source, column_type=column_type):
+        return DataType.BOOLEAN
+    if isinstance(source, (ColumnKey, ColumnSqlKey)):
+        return column_type(source)
+    return None
 
 
 def unit_word(arg: object) -> str:

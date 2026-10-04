@@ -81,12 +81,14 @@ class TestColumnAggregates:
         assert as_bool(row["orders.mx"]) is FLAG_TOTALS["max"]
         assert row["orders.c"] == FLAG_TOTALS["count"]
         assert row["orders.cd"] == FLAG_TOTALS["count_distinct"]
-        assert row["orders.s"] == FLAG_TOTALS["sum"] and not isinstance(row["orders.s"], bool)
+        assert row["orders.s"] == FLAG_TOTALS["sum"]
+        assert not isinstance(row["orders.s"], bool)
 
     async def test_derived_boolean_column(self, engine) -> None:
         resp = await engine.execute(orders_q(measures=[m("sum(big_order)", "s"), m("avg(big_order)", "a")]))
         row = resp.data[0]
-        assert row["orders.s"] == GT15_TOTALS["sum"] and not isinstance(row["orders.s"], bool)
+        assert row["orders.s"] == GT15_TOTALS["sum"]
+        assert not isinstance(row["orders.s"], bool)
         assert _num(row["orders.a"]) == pytest.approx(GT15_TOTALS["avg"])
 
     async def test_measure_formats(self, engine) -> None:
@@ -115,9 +117,11 @@ class TestExpressionSources:
             m("max(coalesce(flag, false))", "mc"),
         ]))
         row = resp.data[0]
-        assert row["orders.sc"] == 2 and not isinstance(row["orders.sc"], bool)
+        assert row["orders.sc"] == 2
+        assert not isinstance(row["orders.sc"], bool)
         assert _num(row["orders.ac"]) == pytest.approx(0.4)
-        assert row["orders.sn"] == 2 and not isinstance(row["orders.sn"], bool)
+        assert row["orders.sn"] == 2
+        assert not isinstance(row["orders.sn"], bool)
         assert as_bool(row["orders.mc"]) is True
 
     async def test_in_predicate(self, engine) -> None:
@@ -127,7 +131,8 @@ class TestExpressionSources:
             m("sum(status not in ('ok', 'hold'))", "sn"),
         ]))
         row = resp.data[0]
-        assert row["orders.s"] == STATUS_IN_SUM and not isinstance(row["orders.s"], bool)
+        assert row["orders.s"] == STATUS_IN_SUM
+        assert not isinstance(row["orders.s"], bool)
         assert row["orders.cd"] == 2
         assert row["orders.sn"] == 1
 
@@ -136,14 +141,16 @@ class TestExpressionSources:
             m("sum(ordered_at >= '2025-02')", "s"), m("max(ordered_at >= '2025-03')", "mx"),
         ]))
         row = resp.data[0]
-        assert row["orders.s"] == 3 and not isinstance(row["orders.s"], bool)
+        assert row["orders.s"] == 3
+        assert not isinstance(row["orders.s"], bool)
         assert as_bool(row["orders.mx"]) is True
         assert resp.attributes.measures["orders.s"].format == NumberFormat(type=NumberFormatType.INTEGER)
 
     async def test_connective(self, engine) -> None:
         resp = await engine.execute(orders_q(measures=[m("sum(flag and amount > 15)", "a"), m("sum(not flag)", "n")]))
         row = resp.data[0]
-        assert row["orders.a"] == 1 and row["orders.n"] == 2
+        assert row["orders.a"] == 1
+        assert row["orders.n"] == 2
 
 
 class TestPredicateOverAttachedValue:
@@ -170,9 +177,9 @@ class TestPostAggregationFilters:
 
 class TestComposition:
     async def test_cross_model_sum(self, engine) -> None:
-        resp = await engine.execute(SlayerQuery(
-            source_model="customers", dimensions=["name"], measures=[m("sum(orders.flag)")],
-        ))
+        resp = await engine.execute(SlayerQuery.model_validate({
+            "source_model": "customers", "dimensions": ["name"], "measures": [m("sum(orders.flag)")],
+        }))
         values = by_dim(resp, "name", model="customers")
         assert values == CROSS_MODEL_FLAG_SUM_BY_NAME
         assert not any(isinstance(v, bool) for v in values.values())
@@ -185,7 +192,8 @@ class TestComposition:
              "measures": [{"formula": "sum(fs)", "name": "a"}, {"formula": "max(fm)", "name": "b"}]},
         ])
         row = resp.data[0]
-        assert row["s1.a"] == sum(FLAG_SUM_BY_CUSTOMER.values()) and not isinstance(row["s1.a"], bool)
+        assert row["s1.a"] == sum(FLAG_SUM_BY_CUSTOMER.values())
+        assert not isinstance(row["s1.a"], bool)
         assert as_bool(row["s1.b"]) is max(FLAG_MAX_BY_CUSTOMER.values())
 
     async def test_first_stage_values(self, engine) -> None:
@@ -230,13 +238,16 @@ class TestGates:
     async def test_avg_allowed_by_default_after_validation(self) -> None:
         """Scenario: a BOOLEAN column without allowed_aggregations validates and serves avg."""
         models = [orders_model(), customers_model()]
-        assert models[0].get_column("flag").allowed_aggregations is None
+        flag = models[0].get_column("flag")
+        assert flag is not None
+        assert flag.allowed_aggregations is None
         async with seeded_exec_engine(dialect="sqlite", seed=seed_sqlite, models=models, validate=True) as (engine, _):
             resp = await engine.execute(orders_q(measures=[m("avg(flag)")]))
             assert _num(single(resp)) == pytest.approx(FLAG_TOTALS["avg"])
 
     @pytest.mark.parametrize("formula", ["median(flag)", "median(amount > 15)", "stddev_samp(coalesce(flag, false))"])
     async def test_statistical_over_boolean_rejected_at_binding(self, engine, formula: str) -> None:
+        query = orders_q(measures=[m(formula)])
         with pytest.raises(SlayerError, match=r"(?i)boolean") as exc:
-            await engine.execute(orders_q(measures=[m(formula)]), dry_run=True)
+            await engine.execute(query, dry_run=True)
         assert "cannot aggregate a" not in str(exc.value)

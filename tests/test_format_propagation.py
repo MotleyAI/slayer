@@ -218,11 +218,11 @@ class TestSharedClassifier:
         ],
     )
     def test_classification_table(self, aggregation, expected):
-        assert classify_aggregation(measure_name="revenue", aggregation=aggregation) == expected
+        assert classify_aggregation(measure_name="revenue", aggregation=aggregation, source_type=None) == expected
 
     def test_star_classifies_as_count(self):
         assert (
-            classify_aggregation(measure_name="*", aggregation="count")
+            classify_aggregation(measure_name="*", aggregation="count", source_type=None)
             == AggregationValueClass.COUNT
         )
 
@@ -230,7 +230,7 @@ class TestSharedClassifier:
         # Model-defined aggregations (not builtin) inherit source type & format
         # through both consumers, not only the classifier.
         assert (
-            classify_aggregation(measure_name="revenue", aggregation="my_custom")
+            classify_aggregation(measure_name="revenue", aggregation="my_custom", source_type=None)
             == AggregationValueClass.PRESERVING
         )
         assert aggregated_type(model=model, measure_name="revenue", aggregation="my_custom") == DataType.DOUBLE

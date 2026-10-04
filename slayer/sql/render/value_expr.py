@@ -23,16 +23,19 @@ from slayer.core.keys import (
     ScalarCallKey,
     SqlFragmentKey,
     StarKey,
+    TimePointCmpKey,
     TimeTruncKey,
     TransformKey,
     ValueKey,
     _FrozenKey,
+    aggregation_source_type,
     source_anchor_path,
 )
 from slayer.sql.dialects.base import SqlDialect
 from slayer.sql.render.aggregates import (
     DISPATCH_DISTINCT,
     DISPATCH_SIMPLE,
+    apply_aggregate,
     is_builtin_agg,
     resolve_agg_entry,
 )
@@ -49,6 +52,7 @@ from slayer.sql.render.row_expr import (  # noqa: F401 — re-exported render su
     group_unary_operand,
     iif_case_chain,
     render_arithmetic,
+    render_in_predicate,
     render_date_call,
     render_temporal_comparison,
     render_scalar_call,
@@ -308,19 +312,17 @@ def _render_builtin_aggregate(  # NOSONAR(S3776) — sequential fail-closed guar
             facility=_AGG_BUILDER,
             detail="a nested-aggregate source must desugar to a producer",
         )
+    elif isinstance(key.source, TimePointCmpKey):
+        raise NotImplementedError("A time-point comparison source is lowered before render.")
     else:
         inner = _require_scope(ctx, key).resolve(
             key.source, consumer=ctx.consumer,
         )
-    if entry.node_class is None:  # pragma: no cover — dispatch gate guarantees it
-        raise RenderContextMissingFacilityError(
-            key_kind=type(key).__name__,
-            facility=_AGG_BUILDER,
-            detail=f"aggregation {key.agg!r} has no direct sqlglot node",
-        )
-    if entry.dispatch == DISPATCH_DISTINCT:
-        return entry.node_class(this=exp.Distinct(expressions=[inner]))
-    return entry.node_class(this=inner)
+    column_type = ctx.column_type or _require_scope(ctx, key).column_type
+    return apply_aggregate(
+        entry=entry, value=inner, dialect=ctx.dialect,
+        input_type=aggregation_source_type(key.source, column_type=column_type),
+    )
 
 
 def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed ValueKey union; each branch IS that type's render contract, and splitting them is exactly the fragmentation this module removes.
@@ -417,18 +419,9 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
         )
 
     if isinstance(key, InKey):
-        # Backstop for the bind-time rule: a NULL member breaks IN, and ``NOT IN`` with one matches no rows.
-        if any(v.value is None for v in key.values):
-            raise NotImplementedError(
-                "NULL is not allowed inside an IN list: 'NOT IN' with a NULL "
-                "matches no rows. Test for null separately with IS NULL / "
-                "IS NOT NULL.",
-            )
-        node = exp.In(
-            this=render_value_key(key=key.column, ctx=ctx),
-            expressions=[_literal(v.value, dialect=ctx.dialect) for v in key.values],
+        return render_in_predicate(
+            key=key, column=render_value_key(key=key.column, ctx=ctx), dialect=ctx.dialect,
         )
-        return exp.Not(this=node) if key.negated else node
 
     if isinstance(key, AggregateKey):
         return _render_aggregate(key, ctx)

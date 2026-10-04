@@ -11,6 +11,7 @@ from typing import List
 import pytest
 import sqlglot
 from sqlglot import exp
+from sqlglot.expressions.core import Expr
 
 from slayer.core.models import Aggregation
 from slayer.sql.dialects import SQLGLOT_NAMES
@@ -24,7 +25,7 @@ LOWERED = (exp.Sum, exp.Avg, exp.Min, exp.Max)
 BOOLEAN_SOURCES = ["flag", "big_order", "coalesce(flag, false)", "amount > 15"]
 
 
-def _bool_type(dialect: str) -> exp.DataType.Type:
+def _bool_type(dialect: str):
     """The type ``dialect`` renders a cast to BOOLEAN as (INTEGER on SQLite, BIT on T-SQL, …)."""
     sql = sqlglot.transpile("SELECT CAST(x AS BOOLEAN)", read="duckdb", write=dialect)[0]
     cast = sqlglot.parse_one(sql, read=dialect).find(exp.Cast)
@@ -32,18 +33,18 @@ def _bool_type(dialect: str) -> exp.DataType.Type:
     return cast.to.this
 
 
-async def _statement(dialect: str, *formulas: str, **kw) -> exp.Expression:
+async def _statement(dialect: str, *formulas: str, **kw) -> Expr:
     model = kw.pop("model", None) or orders_model()
     query = orders_q(measures=[m(f, f"v{i}") for i, f in enumerate(formulas)], **kw)
     sql = await _engine_generate(query=query, model=model, extra_models=[customers_model()], dialect=dialect)
     return sqlglot.parse_one(sql, read=dialect)
 
 
-def _int_cast(node: exp.Expression) -> bool:
+def _int_cast(node: Expr) -> bool:
     return isinstance(node, exp.Cast) and node.to.this in INT_TYPES
 
 
-def _nodes(tree: exp.Expression, kind) -> List[exp.Expression]:
+def _nodes(tree: Expr, kind) -> List[Expr]:
     found = list(tree.find_all(kind))
     assert found, f"no {kind} in:\n{tree.sql()}"
     return found
@@ -69,9 +70,8 @@ class TestLoweringOnEveryDialect:
         for agg in (*_nodes(tree, exp.Min), *_nodes(tree, exp.Max)):
             assert _int_cast(agg.this), f"{agg.sql(dialect=dialect)} takes a raw boolean"
             parent = agg.parent
-            assert isinstance(parent, exp.Cast) and parent.to.this == bool_type, (
-                f"{agg.sql(dialect=dialect)} not converted back to {bool_type}"
-            )
+            assert isinstance(parent, exp.Cast), f"{agg.sql(dialect=dialect)} not converted back to {bool_type}"
+            assert parent.to.this == bool_type, f"{agg.sql(dialect=dialect)} not converted back to {bool_type}"
 
     @pytest.mark.parametrize("dialect", SQLGLOT_NAMES)
     async def test_having_lowers_like_projection(self, dialect: str) -> None:
@@ -119,7 +119,7 @@ class TestMixedCoalesce:
 _PREDICATES = (exp.Predicate, exp.Connector, exp.Not)
 
 
-def _in_condition_position(node: exp.Expression) -> bool:
+def _in_condition_position(node: Expr) -> bool:
     child, parent = node, node.parent
     while parent is not None:
         if isinstance(parent, exp.If) and child is parent.this:
@@ -130,7 +130,7 @@ def _in_condition_position(node: exp.Expression) -> bool:
     return False
 
 
-def _bare_value_predicates(tree: exp.Expression) -> List[str]:
+def _bare_value_predicates(tree: Expr) -> List[str]:
     return [
         p.sql(dialect="tsql")
         for select in tree.find_all(exp.Select)
@@ -140,7 +140,7 @@ def _bare_value_predicates(tree: exp.Expression) -> List[str]:
     ]
 
 
-def _is_bit_value(node: exp.Expression) -> bool:
+def _is_bit_value(node: Expr) -> bool:
     """``CAST(CASE WHEN p THEN 1 WHEN NOT p THEN 0 END AS BIT)``, possibly re-cast to BIT."""
     while isinstance(node, exp.Cast) and node.to.this is exp.DataType.Type.BIT:
         if isinstance(node.this, exp.Case):
@@ -150,7 +150,7 @@ def _is_bit_value(node: exp.Expression) -> bool:
     return False
 
 
-def _projection(tree: exp.Expression, suffix: str) -> exp.Expression:
+def _projection(tree: Expr, suffix: str) -> Expr:
     outer = tree if isinstance(tree, exp.Select) else tree.find(exp.Select)
     assert outer is not None
     for projection in outer.expressions:

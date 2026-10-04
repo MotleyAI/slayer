@@ -25,6 +25,7 @@ from slayer.core.keys import (
     StarKey,
     TimeTruncKey,
     ValueKey,
+    aggregation_source_type,
     join_conditional_branch_types,
     temporal_type,
 )
@@ -38,6 +39,7 @@ from slayer.ir.prebound import walk_key_path
 
 __all__ = [
     "aggregated_type",
+    "aggregation_result_type",
     "dimension_key_metadata",
     "measure_key_format_description",
     "measure_key_preserves_native_type",
@@ -51,37 +53,30 @@ __all__ = [
 # Key -> slot metadata
 # ---------------------------------------------------------------------------
 
+def aggregation_result_type(
+    *, measure_name: Optional[str], aggregation: str, source_type: Optional[DataType],
+) -> Optional[DataType]:
+    """Result type via ``classify_aggregation``: COUNT → INT, the float classes → DOUBLE,
+    PRESERVING → ``source_type``."""
+    cls = classify_aggregation(measure_name=measure_name, aggregation=aggregation, source_type=source_type)
+    if cls is AggregationValueClass.COUNT:
+        return DataType.INT
+    if cls is AggregationValueClass.PRESERVING:
+        return source_type
+    return DataType.DOUBLE
+
+
 def aggregated_type(
     *,
     model: SlayerModel,
     measure_name: Optional[str],
     aggregation: str,
 ) -> Optional[DataType]:
-    """Type for an aggregated measure slot, via the shared
-    ``classify_aggregation`` (DEV-1788), so it cannot drift from
-    ``_infer_aggregated_format``:
-
-    * ``COUNT`` (``count(*)`` / count-family) → ``INT``
-    * ``FLOAT_SOURCE_UNITS`` / ``FLOAT_PLAIN`` (avg-family, stat, parametric) →
-      ``DOUBLE``
-    * ``PRESERVING`` (sum / min / max / first / last, and custom aggs) → inherit
-      source column type (``None`` if absent).
-    """
-    cls = classify_aggregation(measure_name=measure_name, aggregation=aggregation)
-    if cls is AggregationValueClass.COUNT:
-        return DataType.INT
-    if cls in (
-        AggregationValueClass.FLOAT_SOURCE_UNITS,
-        AggregationValueClass.FLOAT_PLAIN,
-    ):
-        return DataType.DOUBLE
-    # PRESERVING — inherit source column type.
-    if measure_name is None:
-        return None
-    col = model.get_column(measure_name)
-    if col is not None and col.type is not None:
-        return col.type
-    return None
+    """Type for an aggregate over ``model``'s column ``measure_name`` (``"*"`` for ``count(*)``)."""
+    col = model.get_column(measure_name) if measure_name is not None else None
+    return aggregation_result_type(
+        measure_name=measure_name, aggregation=aggregation, source_type=col.type if col is not None else None,
+    )
 
 
 def _local_aggregate_source_name(key: ValueKey) -> Optional[str]:
@@ -174,15 +169,10 @@ def stage_measure_type(key: ValueKey, *, schema: StageSchema) -> Optional[DataTy
     date_type = date_scalar_type(key, column_type=column_type)
     if date_type is not None or not isinstance(key, AggregateKey):
         return date_type
-    source = key.source
-    cls = classify_aggregation(
-        measure_name="*" if isinstance(source, StarKey) else None, aggregation=key.agg,
+    return aggregation_result_type(
+        measure_name="*" if isinstance(key.source, StarKey) else None, aggregation=key.agg,
+        source_type=aggregation_source_type(key.source, column_type=column_type),
     )
-    if cls is AggregationValueClass.COUNT:
-        return DataType.INT
-    if cls is not AggregationValueClass.PRESERVING:
-        return DataType.DOUBLE
-    return column_type(source)
 
 
 def measure_key_type(
@@ -210,8 +200,9 @@ def measure_key_type(
     name = _local_aggregate_source_name(key)
     if name is None or not isinstance(key, AggregateKey):
         return None
-    return aggregated_type(
-        model=model, measure_name=name, aggregation=key.agg,
+    return aggregation_result_type(
+        measure_name=name, aggregation=key.agg,
+        source_type=aggregation_source_type(key.source, column_type=_model_types(model=model, bundle=bundle)),
     )
 
 
@@ -227,7 +218,7 @@ def measure_key_preserves_native_type(*, model: SlayerModel, key: ValueKey) -> b
 
 
 def measure_key_format_description(
-    *, model: SlayerModel, key: ValueKey,
+    *, model: SlayerModel, key: ValueKey, bundle=None,
 ) -> Tuple[Optional[NumberFormat], Optional[str]]:
     """``format`` / ``description`` for a measure slot, from its bound key.
 
@@ -239,6 +230,7 @@ def measure_key_format_description(
         return None, None
     fmt = _infer_aggregated_format(
         model=model, measure_name=name, aggregation=key.agg,
+        source_type=aggregation_source_type(key.source, column_type=_model_types(model=model, bundle=bundle)),
     )
     if name == "*":
         return fmt, None

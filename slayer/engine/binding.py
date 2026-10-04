@@ -41,7 +41,7 @@ from slayer.core.direction import rank_direction, with_direction_kwarg
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.granularity import CustomGranularity, Granularity, resolve_granularity
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS, key_display
-from slayer.core.keys import DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, SCALAR_FUNCTIONS, check_scalar_arity, type_date_values, AggregateKey, ArithmeticKey, ColumnKey, ColumnSqlKey, Grain, InKey, LiteralKey, ScalarCallKey, StarKey, TimePointCmpKey, TimePointOp, TimeTruncKey, TransformKey, ValueKey, column_leaf, column_path, is_attached_source, normalize_scalar, prepend_value_key, temporal_type, walk_value_keys
+from slayer.core.keys import DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, SCALAR_FUNCTIONS, check_scalar_arity, type_date_values, AggregateKey, ArithmeticKey, ColumnKey, ColumnSqlKey, Grain, InKey, LiteralKey, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimePointOp, TimeTruncKey, TransformKey, ValueKey, boolean_valued, column_leaf, column_path, is_attached_source, normalize_scalar, prepend_value_key, temporal_type, walk_value_keys
 from slayer.core.join_walker import (
     OrientedJoin,
     aggregation_owner,
@@ -1009,6 +1009,10 @@ def _resolve_dotted_star(
     return StarKey(path=tuple(effective_hop_path))
 
 
+# Expression sources at bind: a time-point comparison is lowered by the checker before planning.
+_BOUND_EXPRESSION_SOURCE_KINDS = (*EXPRESSION_SOURCE_KINDS, TimePointCmpKey)
+
+
 def _bind_partition_keys(
     value, *,
     scope: ModelScope | StageSchema,
@@ -1037,22 +1041,28 @@ def _bind_partition_keys(
 
 def _bind_expression_agg_source(
     parsed_source: ParsedExpr, *,
+    agg: str,
     scope: ModelScope | StageSchema,
     bundle: ResolvedSourceBundle,
-) -> ValueKey:
+) -> ArithmeticKey | ScalarCallKey | LiteralKey | TimeTruncKey | InKey | TimePointCmpKey:
     """Bind a scalar-expression aggregate source.
 
     Dotted joined-model leaves and operands carrying ``Column.filter`` are both
     admitted: the home rule roots the aggregation and the filter
     desugars to ``CASE WHEN``. The source must still resolve to a row-level
-    expression (a column, star, or arithmetic/scalar composite of them)."""
+    expression (a column, star, or arithmetic/scalar/predicate composite of them)."""
     bound = _bind(parsed_source, scope=scope, bundle=bundle, in_filter=False)
-    if not isinstance(bound, EXPRESSION_SOURCE_KINDS):
-        raise ValueError(
-            f"Aggregation source must resolve to a column, star, or a "
-            f"row-level expression; got {type(bound).__name__}."
-        )
+    if not isinstance(bound, _BOUND_EXPRESSION_SOURCE_KINDS):
+        raise _not_an_aggregation_source(bound, agg=agg)
     return bound
+
+
+def _not_an_aggregation_source(bound: ValueKey, *, agg: str) -> AggregationNotAllowedError:
+    return AggregationNotAllowedError(
+        column=key_display(bound), agg=agg,
+        reason=f"an aggregation source must be a column, star, or a row-level expression; "
+        f"got {type(bound).__name__}.",
+    )
 
 
 # Scalar functions whose result is certainly text, for the best-effort
@@ -1065,10 +1075,6 @@ _TEXT_RESULT_SCALARS = frozenset({
 _ARG_CLASS_SCALARS = frozenset({
     "coalesce", "ifnull", "nullif", "greatest", "least",
 })
-# Comparison-family scalars whose result is certainly boolean.
-_BOOL_RESULT_SCALARS = frozenset({"like"})
-
-
 def _expression_is_confidently_text(key, *, model: Optional[SlayerModel]) -> bool:
     """Best-effort: True only when the expression's value is certainly text."""
     if isinstance(key, str):
@@ -1094,63 +1100,30 @@ def _expression_is_confidently_text(key, *, model: Optional[SlayerModel]) -> boo
     return False
 
 
-def _expression_is_confidently_boolean(key, *, model: Optional[SlayerModel]) -> bool:
-    """Best-effort: True only when the expression's value is certainly boolean."""
-    if isinstance(key, LiteralKey):
-        return isinstance(key.value, bool)
-    if isinstance(key, ScalarCallKey):
-        if key.name in _BOOL_RESULT_SCALARS:
-            return True
-        if key.name == "iif":
-            # iif's result follows its two branches, not the condition (arg 0).
-            branches = key.args[1:3]
-            return len(branches) == 2 and all(
-                _expression_is_confidently_boolean(a, model=model)
-                for a in branches
-            )
-        if key.name in _ARG_CLASS_SCALARS:
-            return any(
-                _expression_is_confidently_boolean(a, model=model)
-                for a in key.args
-            )
-        return False
-    if isinstance(key, ColumnKey) and not key.path and model is not None:
-        col = model.get_column(key.leaf)
-        return col is not None and col.type == DataType.BOOLEAN
-    if isinstance(key, ColumnSqlKey) and not key.path and model is not None:
-        col = model.get_column(key.column_name)
-        return col is not None and col.type == DataType.BOOLEAN
-    return False
-
-
 def _reject_non_numeric_expression_agg(
     *, source: ValueKey, agg: str,
     scope: ModelScope | StageSchema, bundle: ResolvedSourceBundle,
 ) -> None:
     if agg not in NUMERIC_ONLY_AGGREGATIONS:
         return
-    model = (
-        scope.source_model if isinstance(scope, ModelScope) else None
+    column_type = scope_column_type(scope=scope, bundle=bundle)
+    if boolean_valued(source, column_type=column_type):
+        if agg in DEFAULT_AGGREGATIONS_BY_TYPE[DataType.BOOLEAN]:
+            return
+        kind = "boolean"
+    elif (temporal := temporal_type(source, column_type=column_type)) is not None:
+        kind = f"non-numeric ({temporal.value})"
+    elif _expression_is_confidently_text(
+        source, model=scope.source_model if isinstance(scope, ModelScope) else None,
+    ):
+        kind = "non-numeric (text)"
+    else:
+        return
+    raise AggregationNotAllowedError(
+        column=key_display(source), agg=agg,
+        reason=f"{agg!r} requires a numeric value, but the aggregated expression is {kind}. Use a "
+        f"counting or min/max aggregation, or make the expression numeric.",
     )
-    temporal = temporal_type(source, column_type=scope_column_type(scope=scope, bundle=bundle))
-    if temporal is not None:
-        raise ValueError(
-            f"Aggregation {agg!r} requires a numeric value, but the "
-            f"aggregated expression is non-numeric ({temporal.value}). Use a counting "
-            f"or min/max aggregation, or make the expression numeric (e.g. date_diff)."
-        )
-    if _expression_is_confidently_text(source, model=model):
-        raise ValueError(
-            f"Aggregation {agg!r} requires a numeric value, but the "
-            f"aggregated expression is non-numeric (text). Use a counting "
-            f"or min/max aggregation, or make the expression numeric."
-        )
-    if _expression_is_confidently_boolean(source, model=model):
-        raise ValueError(
-            f"Aggregation {agg!r} requires a numeric value, but the "
-            f"aggregated expression is boolean. Use a counting aggregation, "
-            f"or cast the expression to a number."
-        )
 
 
 def _callee_granularity(name: str, *, bundle: Optional[ResolvedSourceBundle]) -> Optional[Granularity]:
@@ -1228,10 +1201,13 @@ def _bind_agg(
         # Re-aggregation: bind the operand subtree — inner AggCalls
         # become AggregateKeys — so the outer key carries a nested-aggregate
         # source (axiom 6). Discovery/planning lift it to a producer-over-producer.
-        source = _bind(
+        bound = _bind(
             parsed.source, scope=scope, bundle=bundle, in_filter=False,
             dim_alias_map=dim_alias_map,
         )
+        if isinstance(bound, SqlFragmentKey):
+            raise _not_an_aggregation_source(bound, agg=parsed.agg)
+        source = bound
     elif isinstance(parsed.source, StarSource):
         source = StarKey()
     elif (
@@ -1257,7 +1233,7 @@ def _bind_agg(
     else:
         # Same-model scalar EXPRESSION source (``sum(amount - cost)``).
         source = _bind_expression_agg_source(
-            parsed.source, scope=scope, bundle=bundle,
+            parsed.source, agg=parsed.agg, scope=scope, bundle=bundle,
         )
 
     # ``partition_by`` is lifted out of kwargs onto ``partition_keys``
@@ -1297,7 +1273,7 @@ def _bind_agg(
     # column (the ranked kernel can't rank an expression), and numeric-only
     # aggregations are rejected when the expression is confidently non-numeric
     # (per-column gates don't apply).
-    if isinstance(source, EXPRESSION_SOURCE_KINDS):
+    if isinstance(source, _BOUND_EXPRESSION_SOURCE_KINDS):
         if effective_agg in ("first", "last"):
             raise ValueError(
                 f"Aggregation {effective_agg!r} is not supported over an "

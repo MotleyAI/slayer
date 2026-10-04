@@ -14,8 +14,10 @@ from tests._dev2046_fixtures import (
     GT15_TOTALS,
     VIP_ASSOC_SUM_BY_REGION,
     by_dim,
+    by_month,
     dev2046_models,
     m,
+    month_td,
     orders_q,
     seed_statements,
 )
@@ -56,7 +58,8 @@ async def test_column_aggregates(pg_engine: SlayerQueryEngine) -> None:
         m("count(flag)", "c"), m("count_distinct(flag)", "cd"),
     ]))
     row = resp.data[0]
-    assert row["orders.s"] == FLAG_TOTALS["sum"] and not isinstance(row["orders.s"], bool)
+    assert row["orders.s"] == FLAG_TOTALS["sum"]
+    assert not isinstance(row["orders.s"], bool)
     assert _num(row["orders.a"]) == pytest.approx(FLAG_TOTALS["avg"])
     assert row["orders.mn"] is FLAG_TOTALS["min"]
     assert row["orders.mx"] is FLAG_TOTALS["max"]
@@ -85,7 +88,8 @@ async def test_comparison_source(pg_engine: SlayerQueryEngine) -> None:
     assert row["orders.s"] == GT15_TOTALS["sum"]
     assert _num(row["orders.a"]) == pytest.approx(GT15_TOTALS["avg"])
     assert row["orders.c"] == GT15_TOTALS["count"]
-    assert row["orders.mn"] is False and row["orders.mx"] is True
+    assert row["orders.mn"] is False
+    assert row["orders.mx"] is True
     assert row["orders.sb"] == GT15_TOTALS["sum"]
 
 
@@ -105,3 +109,17 @@ async def test_association_pick(pg_engine: SlayerQueryEngine) -> None:
     ))
     assert by_dim(resp, "region", "s") == VIP_ASSOC_SUM_BY_REGION
     assert by_dim(resp, "region", "mx") == {"east": True, "west": False}
+
+
+@pytest.mark.integration
+async def test_first_last_pick(pg_engine: SlayerQueryEngine) -> None:
+    """The ranked pick over a boolean value (no ``max(boolean)`` on Postgres)."""
+    resp = await pg_engine.execute(orders_q(
+        dimensions=["region"], measures=[m("first(flag)", "f"), m("last(flag)", "l")],
+    ))
+    assert by_dim(resp, "region", "f") == {"east": True, "west": None}
+    assert by_dim(resp, "region", "l") == {"east": True, "west": False}
+    windowed = await pg_engine.execute(orders_q(
+        time_dimensions=month_td(), measures=[m("first(flag, window='90d')")],
+    ))
+    assert set(by_month(windowed).values()) == {True}

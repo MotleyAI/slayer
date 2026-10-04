@@ -697,6 +697,10 @@ class SqlDialect(BaseModel):
         """
         return tree
 
+    def rewrite_statement(self, statement: Expression) -> Expression:
+        """Rewrite the assembled statement once, just before its single render. Default: identity."""
+        return statement
+
     def apply_pagination(
         self,
         select: exp.Select,

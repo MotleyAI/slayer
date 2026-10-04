@@ -12,8 +12,15 @@ from typing import Dict, Literal, Optional, Type
 
 from pydantic import BaseModel, ConfigDict
 from sqlglot import exp
+from sqlglot.expressions.core import Expression
 
-from slayer.core.enums import BUILTIN_AGGREGATIONS
+from slayer.core.enums import (
+    BOOLEAN_LOWERED_AGGREGATIONS,
+    BOOLEAN_RESTORED_AGGREGATIONS,
+    BUILTIN_AGGREGATIONS,
+    DataType,
+)
+from slayer.sql.dialects.base import SqlDialect
 
 # Which mechanism renders an aggregation. Retained as data so the generator's
 # dispatch is a table lookup rather than five stacked conditionals.
@@ -41,7 +48,7 @@ class AggEntry(BaseModel):
     name: str
     dispatch: DispatchKind
     # The sqlglot class for the simple path, when there is one.
-    node_class: Optional[Type[exp.Expression]] = None
+    node_class: Optional[Type[Expression]] = None
 
 
 def _entry(*, name: str, dispatch: DispatchKind, **kw) -> AggEntry:
@@ -107,3 +114,21 @@ def resolve_agg_entry(name: str) -> AggEntry:
 
 def is_builtin_agg(name: str) -> bool:
     return name in AGG_REGISTRY
+
+
+def apply_aggregate(
+    *, entry: AggEntry, value: Expression, input_type: Optional[DataType], dialect: SqlDialect,
+) -> Expression:
+    """``entry``'s direct-node aggregate over ``value``; a BOOLEAN input to sum / avg / min / max
+    aggregates its integer, min / max converting the result back to the dialect's boolean."""
+    if entry.node_class is None:
+        raise ValueError(f"Aggregation {entry.name!r} has no SQL node to render.")
+    if entry.dispatch == DISPATCH_DISTINCT:
+        return entry.node_class(this=exp.Distinct(expressions=[value]))
+    if input_type is not DataType.BOOLEAN or entry.name not in BOOLEAN_LOWERED_AGGREGATIONS:
+        return entry.node_class(this=value)
+    aggregate = entry.node_class(this=exp.Cast(this=value, to=exp.DataType.build("INT")))
+    restored = dialect.declared_cast_type(DataType.BOOLEAN)
+    if entry.name not in BOOLEAN_RESTORED_AGGREGATIONS or restored is None:
+        return aggregate
+    return exp.Cast(this=aggregate, to=exp.DataType(this=exp.DataType.Type(restored.value)))

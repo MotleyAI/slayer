@@ -46,6 +46,7 @@ included), scalar-allowlist functions, arithmetic, and literals. It works in
 every functional-aggregation position — measures, post-aggregation filters
 (`sum(amount - cost) > 0` routes to HAVING), order, computed-dimension
 expressions — and composes with `rename`.
+Comparisons, `and` / `or` / `not` and `in` aggregate as booleans, so `sum(amount > 15)` counts the rows whose `amount` exceeds 15.
 
 **Naming.** The result key derives from the expression via the same sanitizer
 used for computed dimensions: `sum(amount - cost)` on `orders` →

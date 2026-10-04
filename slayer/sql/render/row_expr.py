@@ -30,6 +30,7 @@ from slayer.core.keys import (
     ColumnKey,
     ColumnSqlKey,
     ColumnTypeFn,
+    InKey,
     LiteralKey,
     ScalarCallKey,
     TimeTruncKey,
@@ -317,6 +318,19 @@ def iif_case_chain(
     return exp.Case(ifs=ifs, default=part(node))
 
 
+def render_in_predicate(*, key: InKey, column: Expression, dialect: SqlDialect) -> Expression:
+    """``column [NOT] IN (…)`` over ``key``'s literals."""
+    # Backstop for the bind-time rule: a NULL member breaks IN, and ``NOT IN`` with one matches no rows.
+    if any(v.value is None for v in key.values):
+        raise NotImplementedError(
+            "NULL is not allowed inside an IN list: 'NOT IN' with a NULL "
+            "matches no rows. Test for null separately with IS NULL / "
+            "IS NOT NULL.",
+        )
+    node = exp.In(this=column, expressions=[_literal(v.value, dialect=dialect) for v in key.values])
+    return exp.Not(this=node) if key.negated else node
+
+
 def render_row_expression(
     *,
     key: Any,
@@ -362,6 +376,8 @@ def render_row_expression(
         if key.name in DATE_FUNCTIONS:
             return render_date_call(key=key, args=args, dialect=dialect, column_type=column_type)
         return render_scalar_call(name=key.name, args=args, dialect=dialect)
+    if isinstance(key, InKey):
+        return render_in_predicate(key=key, column=_part(key.column), dialect=dialect)
     raise NotImplementedError(
         f"Row-level expression cannot contain {type(key).__name__}.",
     )

@@ -298,17 +298,25 @@ class AggregationValueClass(StrEnum):
     FLOAT_PLAIN = "float_plain"                # DOUBLE type, plain FLOAT format
 
 
+# Aggregations that read a boolean input as its integer (true 1, false 0); min / max
+# convert the result back to BOOLEAN.
+BOOLEAN_LOWERED_AGGREGATIONS: frozenset[str] = frozenset({"sum", "avg", "min", "max"})
+BOOLEAN_RESTORED_AGGREGATIONS: frozenset[str] = frozenset({"min", "max"})
+
+
 def classify_aggregation(
-    *, measure_name: Optional[str], aggregation: str
+    *, measure_name: Optional[str], aggregation: str, source_type: Optional[DataType],
 ) -> AggregationValueClass:
     """Bucket an aggregation for slot-type / display-format inference.
 
-    ``measure_name == "*"`` (``count(*)``) is COUNT; custom/unknown aggregations
-    fall through to PRESERVING (inherit source type & format).
+    ``measure_name == "*"`` (``count(*)``) and a boolean ``sum`` (a count of trues) are
+    COUNT; custom/unknown aggregations fall through to PRESERVING (inherit source type & format).
     """
     if measure_name == "*":
         return AggregationValueClass.COUNT
     if aggregation in INTEGER_AGGREGATIONS:
+        return AggregationValueClass.COUNT
+    if source_type is DataType.BOOLEAN and aggregation == "sum":
         return AggregationValueClass.COUNT
     if aggregation in FLOAT_SOURCE_UNIT_AGGREGATIONS:
         return AggregationValueClass.FLOAT_SOURCE_UNITS
@@ -399,7 +407,7 @@ DEFAULT_AGGREGATIONS_BY_TYPE: dict[DataType, frozenset[str]] = {
         "count", "count_distinct", "count_distinct_approx", "first", "last", "min", "max",
     }),
     DataType.BOOLEAN: frozenset({
-        "count", "count_distinct", "count_distinct_approx", "sum", "min", "max", "first", "last",
+        "count", "count_distinct", "count_distinct_approx", "sum", "avg", "min", "max", "first", "last",
     }),
     DataType.DATE: frozenset({
         "count", "count_distinct", "count_distinct_approx", "first", "last", "min", "max",
