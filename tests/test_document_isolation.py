@@ -384,9 +384,10 @@ class TestValidateModels:
 class TestAnswerPickingFailsClosed:
     async def test_population_inference(self, bad_store: StorageBackend) -> None:
         engine = SlayerQueryEngine(storage=bad_store)
+        query = SlayerQuery.model_validate({"dimensions": ["customers.name"]})
         try:
             with pytest.raises(StoredDocumentLoadError) as ei:
-                await engine.execute(SlayerQuery.model_validate({"dimensions": ["customers.name"]}))
+                await engine.execute(query)
         finally:
             engine.close()
         assert f"{DS}.{BAD}" in str(ei.value)

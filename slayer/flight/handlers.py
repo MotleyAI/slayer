@@ -14,6 +14,7 @@ import decimal
 import logging
 
 import pyarrow as pa
+import slayer as _slayer
 import pyarrow.flight as fl
 from google.protobuf.any_pb2 import Any as PbAny
 
@@ -259,7 +260,6 @@ class FlightHandlers:
         return pa.Table.from_pylist(rows, schema=_SCHEMA_GET_XDBC_TYPE_INFO)
 
     def handle_get_sql_info(self) -> pa.Table:
-        import slayer as _slayer
         # SqlInfo enum values come straight from the FlightSql.proto spec.
         # We expose the minimum the spec recommends.
         rows = [

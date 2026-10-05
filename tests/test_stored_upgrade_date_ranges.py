@@ -96,5 +96,6 @@ async def test_memory_query_with_offset_bound_runs(tmp_path, shop_ds, backend):
 
 @pytest.mark.parametrize("date_range", [[], ["2024-01-01T00:00:00Z", "2024-12-31"], ["2024/01/01", "2024/12/31"]])
 def test_client_query_keeps_the_strict_check(date_range):
+    raw = rev_query(time_dimensions=[year_td(date_range)])
     with pytest.raises(ValidationError, match="date_range"):
-        SlayerQuery.model_validate(rev_query(time_dimensions=[year_td(date_range)]))
+        SlayerQuery.model_validate(raw)

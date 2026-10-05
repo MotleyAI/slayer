@@ -64,7 +64,8 @@ class TestPerFileLayout:
         head, body = text.split("\n---\n", 1)
         assert body == "# Heading\nbody text"  # verbatim, no extra newline
         fm = yaml.safe_load(head[len("---\n"):])
-        assert "id" not in fm and "learning" not in fm
+        assert "id" not in fm
+        assert "learning" not in fm
         assert fm["description"] == "a short preview"
         assert fm["entities"] == ["mydb.orders.amount"]
 
@@ -172,7 +173,9 @@ class TestListDeleteSeq:
                                   entities=["mydb.orders.status"])
         filtered = await storage.list_memories(entities=["mydb.orders.amount"])
         ids = {m.id for m in filtered}
-        assert "1" in ids and "2" not in ids and "3" not in ids
+        assert "1" in ids
+        assert "2" not in ids
+        assert "3" not in ids
 
     async def test_same_timestamp_tie_breaks_on_id(
         self, storage: YAMLStorage

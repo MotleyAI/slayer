@@ -114,19 +114,19 @@ Every regression test uses raw dicts/YAML in the exact 0.10.x shape (see the Lin
 
 ## 5. Undeclared join keys
 
-- [ ] 5.1 Source-side hidden-column repair after canonicalisation: valid names only; type from the peer's raw target column when it is a valid `DataType`. Verify: 1.3's source cases pass.
-- [ ] 5.2 Target-side repair: the migrating table- or SQL-backed document scans raw siblings for incoming joins and appends its own hidden columns. Unreadable siblings are skipped; query-backed docs are untouched. Verify: 1.3's target and corrupt-sibling cases pass.
+- [x] 5.1 Source-side hidden-column repair after canonicalisation: valid names only; type from the peer's raw target column when it is a valid `DataType`. Verify: 1.3's source cases pass.
+- [x] 5.2 Target-side repair: the migrating table- or SQL-backed document scans raw siblings for incoming joins and appends its own hidden columns. Unreadable siblings are skipped; query-backed docs are untouched. Verify: 1.3's target and corrupt-sibling cases pass.
 
 ## 6. Quoted aggregation placeholders
 
-- [ ] 6.1 `SqlTemplate`:
+- [x] 6.1 `SqlTemplate`:
   - collect `{name}` inside ordinary string-literal tokens, honouring `{{` / `}}`;
   - include them in `placeholder_names`;
   - raise on a placeholder inside a non-ordinary literal kind;
   - render by rebuilding `exp.Literal.string` with the literal values spliced in.
 
   Add one literal classifier shared by render and `check_aggregation_definition` (save-time default check). Terse comment on why non-literal bindings fail. Verify: 1.8 passes.
-- [ ] 6.2 Docs: one sentence in the aggregation-formula section of `docs/concepts/models.md` (quoted placeholders take a literal parameter's value; literal braces are `{{ }}`). Verify: the page builds and `zensical.toml` is unchanged.
+- [x] 6.2 Docs: one sentence in the aggregation-formula section of `docs/concepts/models.md` (quoted placeholders take a literal parameter's value; literal braces are `{{ }}`). Verify: the page builds and `zensical.toml` is unchanged.
 
 ## 7. Verification
 

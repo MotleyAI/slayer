@@ -238,7 +238,8 @@ async def _relativise_datasources(storage: StorageBackend) -> None:
 
 
 async def main() -> None:
-    assert version("motley-slayer") == "0.10.2" and "site-packages" in slayer.__file__, slayer.__file__
+    assert version("motley-slayer") == "0.10.2", version("motley-slayer")
+    assert "site-packages" in slayer.__file__, slayer.__file__
     _seed_db()
     _seed_lite()
     shutil.rmtree(YAML_STORE, ignore_errors=True)

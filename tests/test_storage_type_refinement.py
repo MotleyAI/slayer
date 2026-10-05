@@ -21,7 +21,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
-import sqlalchemy as sa
+from sqlalchemy.exc import OperationalError
 import yaml
 
 from slayer.cli import _refine_one_model_for_cli, _run_storage
@@ -269,7 +269,7 @@ class TestRefineDictWithLiveSchema:
             username="nobody",
             password="nope",  # NOSONAR(S2068) — test fixture, not a real credential; targets a closed port to assert hard-fail
         )
-        with pytest.raises(sa.exc.OperationalError):
+        with pytest.raises(OperationalError):
             refine_dict_with_live_schema(d, ds)
 
 
@@ -394,7 +394,7 @@ class TestYamlStorageRefinementOnLoad:
         storage = YAMLStorage(base_dir=base)
 
         def _boom(*_args, **_kw):
-            raise sa.exc.OperationalError("simulated", None, Exception("connect refused"))  # NOSONAR(S112) — Exception(...) is the cause-of arg for the simulated SQLAlchemy connect error
+            raise OperationalError("simulated", None, Exception("connect refused"))  # NOSONAR(S112) — Exception(...) is the cause-of arg for the simulated SQLAlchemy connect error
 
         # DEV-1551: every engine consumer goes through engine_factory.get_engine;
         # patching it surfaces the same connect failure the legacy
@@ -403,7 +403,7 @@ class TestYamlStorageRefinementOnLoad:
         monkeypatch.setattr(engine_factory, "get_engine", _boom)
         with pytest.raises(StoredDocumentLoadError) as ei:
             await storage.get_model("items", data_source="live")
-        assert isinstance(ei.value.__cause__, sa.exc.OperationalError)
+        assert isinstance(ei.value.__cause__, OperationalError)
 
 
 def _unreachable(**kw):  # used as a wraps target only — the spy.assert_not_called check fires first
@@ -559,7 +559,7 @@ class TestRefineSqliteAffinityProbe:
             username="nobody",
             password="nope",  # NOSONAR(S2068)
         )
-        with pytest.raises(sa.exc.OperationalError):
+        with pytest.raises(OperationalError):
             refine_dict_with_live_schema(d, ds)
 
     def test_sqlite_int_with_pure_int_storage_stays_int(

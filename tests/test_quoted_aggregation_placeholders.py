@@ -10,6 +10,7 @@ import duckdb
 import pytest
 import sqlglot
 from sqlglot import exp
+from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import DataType
 from slayer.core.models import (
@@ -60,7 +61,7 @@ async def _dry(formula: str, *, agg: Aggregation, dialect: str = "postgres", val
     return await _engine_generate(query=_q(formula), model=_orders(agg), dialect=dialect, validate=validate)
 
 
-def _then_literal(sql: str, *, dialect: str) -> exp.Expression:
+def _then_literal(sql: str, *, dialect: str) -> Expression:
     case = sqlglot.parse_one(sql, read=dialect).find(exp.Case)
     assert case is not None, sql
     return case.args["ifs"][0].args["true"]
@@ -136,7 +137,8 @@ class TestDoubledBraces:
     async def test_doubled_braces_emit_one_brace(self, dialect: str) -> None:
         sql = await _dry("lit(amount)", agg=_agg(self.FORMULA, name="lit"), dialect=dialect)
         lit = _then_literal(sql, dialect=dialect)
-        assert isinstance(lit, exp.Literal) and lit.is_string
+        assert isinstance(lit, exp.Literal)
+        assert lit.is_string
         assert lit.this == "{n}"
 
     def test_doubled_braces_are_not_a_read(self) -> None:
@@ -153,8 +155,9 @@ class TestInertBraces:
         assert template.placeholder_names == frozenset({"value"})
         rendered = template.render({"value": exp.column("amount")}).sql(dialect="postgres", comments=True)
         assert "{n}" in rendered
+        agg = _agg(formula, n="2")
         with pytest.raises(ValueError, match="'n' is never referenced"):
-            check_aggregation_definition(where="w", agg=_agg(formula, n="2"), dialect="postgres")
+            check_aggregation_definition(where="w", agg=agg, dialect="postgres")
 
 
 _NON_ORDINARY = [
@@ -174,14 +177,16 @@ _NON_ORDINARY = [
 class TestNonOrdinaryLiteralRejected:
     @pytest.mark.parametrize(("dialect", "formula"), _NON_ORDINARY)
     def test_rejected_at_save(self, dialect: str, formula: str) -> None:
+        agg = _agg(formula, n="2")
         with pytest.raises(SqlTemplateError) as ei:
-            check_aggregation_definition(where="w", agg=_agg(formula, n="2"), dialect=dialect)
+            check_aggregation_definition(where="w", agg=agg, dialect=dialect)
         _names_placeholder(err=ei.value, name="n", formula=formula)
 
     @pytest.mark.parametrize(("dialect", "formula"), _NON_ORDINARY)
     async def test_rejected_at_render(self, dialect: str, formula: str) -> None:
+        agg = _agg(formula, name="lit", n="2")
         with pytest.raises(SqlTemplateError) as ei:
-            await _dry("lit(amount)", agg=_agg(formula, name="lit", n="2"), dialect=dialect)
+            await _dry("lit(amount)", agg=agg, dialect=dialect)
         _names_placeholder(err=ei.value, name="n", formula=formula)
 
 
@@ -201,7 +206,8 @@ class TestQuotedBindingValue:
         kwarg = exp.Literal.string(_TRICKY).sql(dialect=dialect)
         sql = await _dry(f"lbl(amount, n={kwarg!r})", agg=_agg(_LABEL, name="lbl", n="'x'"), dialect=dialect)
         lit = _then_literal(sql, dialect=dialect)
-        assert isinstance(lit, exp.Literal) and lit.is_string
+        assert isinstance(lit, exp.Literal)
+        assert lit.is_string
         assert lit.this == _TRICKY
         assert f"THEN {_TRICKY_SQL[dialect]} END" in " ".join(sql.split())
 
@@ -211,7 +217,8 @@ class TestQuotedBindingValue:
     async def test_literal_default_value_spliced(self, default: str, value: str) -> None:
         sql = await _dry("lbl(amount)", agg=_agg(_LABEL, name="lbl", n=default), validate=True)
         lit = _then_literal(sql, dialect="postgres")
-        assert isinstance(lit, exp.Literal) and lit.is_string
+        assert isinstance(lit, exp.Literal)
+        assert lit.is_string
         assert lit.this == value
 
     async def test_quoted_and_unquoted_uses_bind_alike(self) -> None:
@@ -227,8 +234,9 @@ class TestNonLiteralBindingRejected:
         pytest.param("MAX(CASE WHEN {value} > 0 THEN '{w}' END)", "w", {"w": "amount + 1"}, id="expression-default"),
     ])
     async def test_rejected_at_save(self, formula: str, name: str, defaults: dict[str, str]) -> None:
+        model = _orders(_agg(formula, **defaults))
         with pytest.raises(SqlTemplateError) as ei:
-            await _save(_orders(_agg(formula, **defaults)))
+            await _save(model)
         _names_placeholder(err=ei.value, name=name, formula=formula)
 
     async def test_column_kwarg_rejected_at_binding(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -242,7 +250,8 @@ class TestNonLiteralBindingRejected:
         async with seeded_exec_engine(
             dialect="sqlite", seed=_seed, models=[_orders(_agg(_SUM_N, name="sum_n", n="2"))],
         ) as (engine, _db):
+            query = _q("sum_n(amount, n=id)")
             with pytest.raises(SqlTemplateError) as ei:
-                await engine.execute(_q("sum_n(amount, n=id)"))
+                await engine.execute(query)
         assert re.search(r"[{'\"]n[}'\"]", str(ei.value)), str(ei.value)
         assert executed == []

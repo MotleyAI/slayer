@@ -23,6 +23,7 @@ from collections import deque
 from importlib.util import find_spec
 from typing import IO, TYPE_CHECKING
 
+import duckdb
 from pydantic import BaseModel, Field
 
 from slayer.async_utils import run_sync
@@ -36,6 +37,7 @@ from slayer.core.models import (
     ModelMeasure,
     SlayerModel,
 )
+from slayer.engine.ingestion import ingest_datasource
 from slayer.storage.base import StorageBackend, storage_base_dir
 from slayer.storage.document_loading import DocumentLoadFailures
 
@@ -769,8 +771,6 @@ def build_jaffle_shop(
     even when the DB was built days or weeks earlier. ``stream`` is forwarded
     to ``generate_data`` so jafgen's Rich progress bars stay visible.
     """
-    import duckdb
-
     if os.path.exists(db_path) and not force:
         conn = duckdb.connect(db_path)
         try:
@@ -852,8 +852,6 @@ def ensure_demo_datasource(
                 run_sync(storage.save_model(model))
             jaffle_models.append(model)
         return ds, jaffle_models, db_built
-
-    from slayer.engine.ingestion import ingest_datasource
 
     models = ingest_datasource(datasource=ds)
     written: list[SlayerModel] = []

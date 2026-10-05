@@ -7,6 +7,7 @@ import warnings
 import pytest
 import sqlglot
 from sqlglot import exp
+from sqlglot.expressions.core import Expression
 
 from slayer.core.models import DatasourceConfig
 from slayer.sql import engine_factory
@@ -46,7 +47,7 @@ def _hidden(doc: dict, name: str) -> dict:
     return col
 
 
-def _join_on(sql: str, *, dialect: str) -> exp.Expression:
+def _join_on(sql: str, *, dialect: str) -> Expression:
     [join] = list(sqlglot.parse_one(sql, read=dialect).find_all(exp.Join))
     on = join.args.get("on")
     assert on is not None
