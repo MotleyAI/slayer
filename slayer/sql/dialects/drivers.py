@@ -45,7 +45,7 @@ def _missing_driver(
 def _is_default_driver(
     dialect: SqlDialect, *, ds_type: str | None, url: URL, driver: str | None,
 ) -> bool:
-    """Whether ``url`` selects SLayer's default driver; ``driver=None`` judges the backend alone."""
+    """Whether ``url`` selects SLayer's default driver; ``driver=None`` (none named) judges the backend alone."""
     backend, _, scheme_driver = (dialect.url_scheme or ds_type or "").partition("+")
     if url.get_backend_name() != backend:
         return False
@@ -63,7 +63,10 @@ def plugin_errors(datasource: DatasourceConfig, url: str, *, dialect: SqlDialect
         parsed = make_url(url)
         raise _missing_driver(
             datasource, dialect=dialect, missing=parsed.drivername, exc=exc,
-            default=_is_default_driver(dialect, ds_type=datasource.type, url=parsed, driver=None),
+            default=_is_default_driver(
+                dialect, ds_type=datasource.type, url=parsed,
+                driver=parsed.drivername.partition("+")[2] or None,
+            ),
         ) from exc
 
 

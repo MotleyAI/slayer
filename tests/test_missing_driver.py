@@ -238,6 +238,17 @@ def test_custom_driver_not_attributed_to_extra(monkeypatch) -> None:
     assert "motley-slayer[" not in str(info.value)
 
 
+def test_custom_driver_missing_plugin_not_attributed_to_extra() -> None:
+    ds = DatasourceConfig(
+        name="pgx", type="postgres", connection_string=f"postgresql+nosuchdriver://u:p@{_HOST}:5432/d",
+    )
+    with pytest.raises(MissingDriverError) as info:
+        engine_factory.get_engine(ds)
+    _assert_names(info.value, ds=ds, missing="postgresql+nosuchdriver")
+    assert "connection_string" in str(info.value)
+    assert "motley-slayer[" not in str(info.value)
+
+
 def test_tier2_missing_plugin_gets_generic_hint(monkeypatch) -> None:
     ds = _structured("redshift")
     _hide_plugin(monkeypatch, "redshift")

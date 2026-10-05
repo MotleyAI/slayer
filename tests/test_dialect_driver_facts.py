@@ -48,7 +48,8 @@ def test_every_registered_type_is_covered() -> None:
 @pytest.mark.parametrize("ds_type", sorted(_EXPECTED))
 def test_dialect_declares_driver_facts(ds_type) -> None:
     d = dialect_for_ds_type(ds_type)
-    assert (d.url_scheme, d.sync_driver, d.async_driver, d.install_extra) == _EXPECTED[ds_type]
+    facts = (d.url_scheme, d.sync_driver, d.async_driver, d.install_extra)
+    assert facts == _EXPECTED[ds_type]
 
 
 def test_install_extras_exist_in_pyproject() -> None:
