@@ -16,21 +16,32 @@ identifier under the product-wide expression-name convention: lowercase, every
 run of non-alphanumeric characters collapsed to one `_`, leading/trailing `_`
 stripped, a leading digit guarded, names over 48 characters folded to
 `<head>_<hash8>_<tail>`, and no `__` in the result. The SQL projection alias
-SHALL use the same derived name.
+SHALL use the same derived name. In the canonical formula text a rank-family
+`direction` SHALL appear as its bare normalised value (`asc` / `desc`), never as
+`direction=...`.
 
 #### Scenario: Arithmetic composite
 
-- **WHEN** an unnamed measure `logo_churn:sum / logo_bop:sum` is queried on model `mart`
+- **WHEN** an unnamed measure `sum(logo_churn) / sum(logo_bop)` is queried on model `mart`
 - **THEN** its result key is `mart.logo_churn_sum_logo_bop_sum`
 
 #### Scenario: Transform formula
 
-- **WHEN** an unnamed measure `time_shift(cmrr_eop:sum, -1, 'year')` is queried on model `mart`
+- **WHEN** an unnamed measure `time_shift(sum(cmrr_eop), -1, 'year')` is queried on model `mart`
 - **THEN** its result key is `mart.time_shift_cmrr_eop_sum_1_year`
+
+#### Scenario: Rank direction spelled as its bare value
+
+- **WHEN** the unnamed measures `rank(sum(a), direction='desc')`,
+  `rank(sum(a), direction='Ascending')` and
+  `rank(sum(a), partition_by=r, direction='asc')` are queried on model `o`
+- **THEN** their result keys are `o.rank_a_sum_desc`, `o.rank_a_sum_asc` and
+  `o.rank_a_sum_partition_by_r_asc`, while `ntile(sum(a), n=4)` keeps
+  `o.ntile_a_sum_n_4`
 
 #### Scenario: Formatting-insensitive derivation
 
-- **WHEN** the same formula is written with different spacing (`logo_churn:sum/logo_bop:sum`)
+- **WHEN** the same formula is written with different spacing (`sum(logo_churn)/sum(logo_bop)`)
 - **THEN** it derives the identical result key
 
 #### Scenario: Long formulas hash-fold
@@ -47,12 +58,12 @@ and SQL aliases byte-identical to their existing convention.
 
 #### Scenario: Explicit name wins
 
-- **WHEN** a measure is `{"formula": "logo_churn:sum / logo_bop:sum", "name": "churn_ratio"}` on model `mart`
+- **WHEN** a measure is `{"formula": "sum(logo_churn) / sum(logo_bop)", "name": "churn_ratio"}` on model `mart`
 - **THEN** its result key is `mart.churn_ratio`
 
 #### Scenario: Plain aggregate references unchanged
 
-- **WHEN** unnamed measures `revenue:sum` and `*:count` are queried on model `orders`
+- **WHEN** unnamed measures `sum(revenue)` and `count(*)` are queried on model `orders`
 - **THEN** their result keys are `orders.revenue_sum` and `orders._count`
 
 #### Scenario: Saved measure reference unchanged
@@ -85,7 +96,7 @@ identical formulas SHALL merge into one result column.
 
 #### Scenario: Different formulas, same derived key
 
-- **WHEN** unnamed measures `a:sum / b:sum` and `a:sum * b:sum` appear in one query
+- **WHEN** unnamed measures `sum(a) / sum(b)` and `sum(a) * sum(b)` appear in one query
 - **THEN** the query fails with an error naming both formulas and suggesting a rename
 
 #### Scenario: Identical formulas merge
@@ -105,5 +116,5 @@ formula text SHALL resolve to that measure's result column.
 
 #### Scenario: Order by raw formula text
 
-- **WHEN** a query has the unnamed measure `logo_churn:sum / logo_bop:sum` and orders by `logo_churn:sum / logo_bop:sum`
+- **WHEN** a query has the unnamed measure `sum(logo_churn) / sum(logo_bop)` and orders by `sum(logo_churn) / sum(logo_bop)`
 - **THEN** the query succeeds and orders by that measure's values

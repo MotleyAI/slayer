@@ -54,7 +54,7 @@ infers only the factor P from the remaining items.
 
 #### Scenario: Canonical default picks the coarse side
 
-- **WHEN** `dimensions=[customers.region]` and `measures=[orders.total:sum]` are
+- **WHEN** `dimensions=[customers.region]` and `measures=[sum(orders.total)]` are
   queried without `source_model`, with orders joined many-to-one to customers
 - **THEN** the population is `customers`: one row per region present among
   customers, with order totals attached and NULL where a region has no orders

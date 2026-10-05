@@ -1,4 +1,4 @@
-"""Order-only hidden slots (ORDER BY refs not declared as dims/measures) + the ``rank(partition_by=X)`` grain guard."""
+"""Order-only hidden slots (ORDER BY refs not declared as dims/measures) + the ``rank(partition_by=X, direction='desc')`` grain guard."""
 from __future__ import annotations
 
 import re
@@ -455,7 +455,7 @@ class TestLocalAggregateHiddenOrder:
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="rank(amount:sum)", name="rk")],
+            measures=[ModelMeasure(formula="rank(amount:sum, direction='desc')", name="rk")],
             order=[OrderItem(column="id:count", direction="desc")],
         )
         sql = await _sql(engine, query)
@@ -671,7 +671,7 @@ class TestPartitionByGuard:
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="rank(amount:sum, partition_by=status)", name="rk")],
+            measures=[ModelMeasure(formula="rank(amount:sum, partition_by=status, direction='desc')", name="rk")],
         )
         sql = await _sql(engine, query)
         assert "PARTITION BY" in sql.upper()
@@ -681,7 +681,7 @@ class TestPartitionByGuard:
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="rank(amount:sum, partition_by=orders.status)", name="rk")],
+            measures=[ModelMeasure(formula="rank(amount:sum, partition_by=orders.status, direction='desc')", name="rk")],
         )
         sql = await _sql(engine, query)
         assert "PARTITION BY" in sql.upper()
@@ -691,7 +691,7 @@ class TestPartitionByGuard:
             source_model="orders",
             dimensions=[ColumnRef(name="customers.region")],
             measures=[ModelMeasure(
-                formula="rank(amount:sum, partition_by=customers.region)", name="rk")],
+                formula="rank(amount:sum, partition_by=customers.region, direction='desc')", name="rk")],
         )
         sql = await _sql(engine, query)
         assert "PARTITION BY" in sql.upper()
@@ -702,7 +702,7 @@ class TestPartitionByGuard:
             source_model="orders",
             time_dimensions=[TimeDimension(dimension="created_at", granularity="month")],
             measures=[ModelMeasure(
-                formula="rank(amount:sum, partition_by=created_at)", name="rk")],
+                formula="rank(amount:sum, partition_by=created_at, direction='desc')", name="rk")],
         )
         sql = await _sql(engine, query)
         # (a) No raw bare-column projection of created_at alongside the bucket (grain widening).
@@ -746,7 +746,7 @@ class TestPartitionByGuard:
             dimensions=[ColumnRef(name="status")],
             measures=[
                 ModelMeasure(formula="amount:sum"),
-                ModelMeasure(formula="rank(amount:sum, partition_by=customer_id)", name="rk"),
+                ModelMeasure(formula="rank(amount:sum, partition_by=customer_id, direction='desc')", name="rk"),
             ],
         )
         with pytest.raises(ValueError) as ei:
@@ -766,7 +766,7 @@ class TestPartitionByGuard:
                 TimeDimension(dimension="created_at", granularity="day"),
             ],
             measures=[ModelMeasure(
-                formula="rank(amount:sum, partition_by=created_at)", name="rk")],
+                formula="rank(amount:sum, partition_by=created_at, direction='desc')", name="rk")],
         )
         with pytest.raises(ValueError) as ei:
             await _sql(engine, query)
@@ -781,7 +781,7 @@ class TestPartitionByGuard:
                 TimeDimension(dimension="created_at", granularity="month"),
             ],
             measures=[ModelMeasure(
-                formula="rank(amount:sum, partition_by=created_at)", name="rk")],
+                formula="rank(amount:sum, partition_by=created_at, direction='desc')", name="rk")],
         )
         sql = await _sql(engine, query)
         assert _outer_select_columns(sql) == ["orders.created_at", "orders.rk"]

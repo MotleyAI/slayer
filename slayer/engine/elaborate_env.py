@@ -1322,7 +1322,7 @@ def check_transform_inputs(*, roots, projected_grain_keys: frozenset) -> None:
                 f"(bucket, {disp}-value).",
                 location=f"transform {k.op!r}",
                 suggestion=f"Aggregate the leaf — e.g. "
-                f"{k.op}({disp}:sum) — project '{disp}' as a query dimension, "
+                f"{k.op}(sum({disp})) — project '{disp}' as a query dimension, "
                 f"or compute it in an earlier stage of a multi-stage "
                 f"`source_queries` model.",
             )
@@ -1422,7 +1422,7 @@ def check_local_producer_inputs_safe(
             f"aggregated across a to-many target.",
             location=f"measure {alias!r}",
             suggestion=f"Aggregate the target column directly "
-            f"({source_crossings[0]}.<column>:<aggregation>), or declare a to-one "
+            f"(<aggregation>({source_crossings[0]}.<column>)), or declare a to-one "
             f"cardinality or a covering unique key if the hop is to-one.",
         )
 

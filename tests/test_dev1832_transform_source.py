@@ -66,11 +66,12 @@ from tests._dev1832_fixtures import (
     sales_q,
     status_key,
 )
+from tests._rank_direction_fixtures import rank_windows
 
 # Source formulas under test.
 GRAINED_CUMSUM = "sum(cumsum(amount:sum(partition_by=[region, ordered_at])) - 1)"
 UNGRAINED_CUMSUM = "sum(cumsum(amount:sum))"
-RANK_MIXED = "sum(quantity * rank(avg(unit_price, partition_by=product)))"
+RANK_MIXED = "sum(quantity * rank(avg(unit_price, partition_by=product), direction='desc'))"
 JOINED_ROWLEAF_MIXED = "sum(customers.discount * avg(amount, partition_by=status))"
 
 # Collapsing / family constituents over X = the monthly per-region total.
@@ -90,7 +91,7 @@ EMPTY_GRAIN_MIXED = "sum(amount * last(amount:sum(partition_by=ordered_at)))"
 WAVG_MIN_PARAM = f"weighted_avg(amount, weight=min({_X}, partition_by=region))"
 MIXED_COMBINED = (f"sum(amount * min({_X}, partition_by=region)) "
                   "+ amount:sum(partition_by=region)")
-WINDOWED_INNER = "sum(rank(amount:sum(window='90d', partition_by=region)))"
+WINDOWED_INNER = "sum(rank(amount:sum(window='90d', partition_by=region), direction='desc'))"
 # Cross-model grained inner: the host-time-axis boundary (fanning hop), the legal
 # to-one key, and the non-time contrast that still associates.
 XMODEL_BOUNDARY = ("sum(cumsum(customers.spend:sum("
@@ -192,7 +193,7 @@ class TestDualGranularityQueryGrain:
     def test_ungrained_inner_is_grained_at_both_buckets(self, tds):
         elab = elaborate_query(
             query=monthly_q(
-                measures=[ModelMeasure(formula="sum(rank(amount:sum))", name="m")],
+                measures=[ModelMeasure(formula="sum(rank(amount:sum, direction='desc'))", name="m")],
                 time_dimensions=tds),
             bundle=_monthly_bundle())
         assert elab.prebound is not None
@@ -209,7 +210,7 @@ class TestDualGranularityQueryGrain:
         # per-column grain would rank the lone yearly total (1 everywhere).
         _, engine = exec_backend
         resp = await engine.execute(monthly_q(
-            measures=[ModelMeasure(formula="sum(rank(amount:sum))", name="m")],
+            measures=[ModelMeasure(formula="sum(rank(amount:sum, direction='desc'))", name="m")],
             time_dimensions=[*month_td(), _year_td()]))
         got = {month_key(row["monthly.ordered_at.month"]): row["monthly.m"]
                for row in resp.data}
@@ -256,7 +257,7 @@ class TestTransformSourceRejections:
         _, engine = exec_backend
         resp = await engine.execute(sales_q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula="sum(rank(region))", name="m")]))
+            measures=[ModelMeasure(formula="sum(rank(region, direction='desc'))", name="m")]))
         got = {k[0]: v["sales.m"] for k, v in rows_by(resp, "sales.region").items()}
         assert set(got) == {"North", "South", "East", "Gap", "Void"}
         assert all(v is not None for v in got.values())
@@ -633,14 +634,16 @@ class TestWindowedInnerConstituent:
         assert_scope_closed(sql, dialect="duckdb")
         assert "__regroup__" not in sql
 
-    async def test_rank_pins_nulls_last_on_postgres(self):
-        # Rank ranks NULLs last on EVERY dialect: Postgres's native DESC is NULLS
-        # FIRST, so the NULL window cell would else take rank 1 and shift the rest.
+    async def test_rank_isolates_null_cells_on_postgres(self):
+        # Postgres's native DESC is NULLS FIRST; the NULL window cell must rank NULL, never 1.
         sql = await gen(monthly_q(
             measures=[ModelMeasure(formula=WINDOWED_INNER, name="m")],
             time_dimensions=month_td()), dialect="postgres")
-        assert "RANK() OVER (ORDER BY" in sql, sql
-        assert "DESC NULLS LAST" in sql, sql
+        [window] = rank_windows(sql, dialect="postgres")
+        assert window.fn == "RANK", sql
+        assert window.descending, sql
+        assert window.null_flag, sql
+        assert window.null_guarded, sql
 
 
 class TestCrossModelGrainedInnerBoundary:

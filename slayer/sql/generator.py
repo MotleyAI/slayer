@@ -652,6 +652,9 @@ _STRING_VALUED_SCALARS = frozenset({
     "replace", "substr", "substring", "concat",
 })
 
+#: Argument-less rank-family window functions (``ntile`` carries its bucket count).
+_RANK_WINDOW_FNS = {"rank": exp.Rank, "dense_rank": exp.DenseRank, "percent_rank": exp.PercentRank}
+
 # Real ValueKey args (a ScalarCallKey / iif may also carry raw scalar literals).
 _COMPOUND_VALUE_KEYS = (
     ColumnKey, ColumnSqlKey, TimeTruncKey, StarKey,
@@ -1197,7 +1200,7 @@ class SQLGenerator:
             raise ValueError(
                 f"Aggregation '{agg_name}' requires parameter '{name}'. "
                 f"Set it in the model's aggregation definition or at query time "
-                f"(e.g., 'measure:{agg_name}({name}=column)')."
+                f"(e.g., '{agg_name}(measure, {name}=column)')."
             )
         # A copy: sqlglot re-parents a node on attach.
         return value.value.copy()
@@ -4494,6 +4497,24 @@ class SQLGenerator:
             table=exp.to_identifier(current_alias),
         )
 
+    def _rank_family_window(
+        self, *, fn: Expression, measure: Expression, partition_by: Iterable[Expression], descending: bool,
+    ) -> Expression:
+        """``CASE WHEN v IS NULL THEN NULL ELSE fn OVER (PARTITION BY …, <v-is-null flag> ORDER BY v) END``: NULL rows rank NULL, outside the others' window."""
+        null_flag = exp.Case(
+            ifs=[exp.If(this=exp.Is(this=measure.copy(), expression=exp.Null()), true=exp.Literal.number(1))],
+            default=exp.Literal.number(0),
+        )
+        window = exp.Window(
+            this=fn,
+            partition_by=[*(c.copy() for c in partition_by), null_flag],
+            order=exp.Order(expressions=[self._window_ordered(measure.copy(), descending=descending)]),
+        )
+        return exp.Case(
+            ifs=[exp.If(this=exp.Is(this=measure.copy(), expression=exp.Null()), true=exp.Null())],
+            default=window,
+        )
+
     def _window_ordered(self, col: Expression, *, descending: bool = False) -> exp.Ordered:
         """One ``ORDER BY`` term INSIDE an ``OVER (…)`` clause."""
         args: Dict[str, Any] = {
@@ -4640,10 +4661,6 @@ class SQLGenerator:
             if time_col is not None
             else None
         )
-        # Rank has no frame; pin uniform NULLS LAST (not frame-safe native) for cross-dialect parity.
-        rank_order = exp.Order(
-            expressions=[self._dialect.build_ordered(measure.copy(), descending=True)],
-        )
         unbounded_frame = exp.WindowSpec(
             kind="ROWS",
             start="UNBOUNDED", start_side="PRECEDING",
@@ -4688,12 +4705,6 @@ class SQLGenerator:
                 exp.Lead(this=measure, offset=exp.Literal.number(n)),
                 order=time_order,
             )
-        if op == "rank":
-            return _over(exp.Rank(), order=rank_order)
-        if op == "percent_rank":
-            return _over(exp.PercentRank(), order=rank_order)
-        if op == "dense_rank":
-            return _over(exp.DenseRank(), order=rank_order)
         if op == "ntile":
             # Route through the shared normaliser (like lag/lead) so bool is rejected and a non-integral Decimal raises
             # rather than truncating; render-side defense.
@@ -4702,8 +4713,14 @@ class SQLGenerator:
                 raise ValueError(
                     f"ntile requires a positive integer n, got {n!r}",
                 )
-            return _over(
-                exp.Ntile(this=exp.Literal.number(n)), order=rank_order,
+            return self._rank_family_window(
+                fn=exp.Ntile(this=exp.Literal.number(n)), measure=measure,
+                partition_by=partition_by, descending=False,
+            )
+        if op in _RANK_WINDOW_FNS:
+            return self._rank_family_window(
+                fn=_RANK_WINDOW_FNS[op](), measure=measure, partition_by=partition_by,
+                descending=kwarg_map.get("direction") == "desc",
             )
         if op == "first":
             return _over(

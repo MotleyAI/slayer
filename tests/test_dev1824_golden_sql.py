@@ -21,7 +21,7 @@ ALLOWED_DELTAS: dict[str, str] = {}
 
 WORKING_PREFIX = "lift/"
 
-RANK_DIM = "rank(amount:sum(partition_by=region))"
+RANK_DIM = "rank(amount:sum(partition_by=region), direction='desc')"
 WBAND = (
     "CASE WHEN amount:sum(window='90d', partition_by=region) > 50 THEN 1 ELSE 0 END"
 )

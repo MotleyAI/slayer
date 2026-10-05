@@ -148,6 +148,15 @@ def test_row_count_collision_renames_to_underscore(caplog) -> None:
     assert any("renaming the synthetic" in r.message for r in caplog.records)
 
 
+def test_row_count_collision_warning_has_no_colon_spelling(caplog) -> None:
+    model = _model(name="orders", columns=[Column(name="row_count", type=DataType.INT)])
+    with caplog.at_level(logging.WARNING):
+        build_catalog(models_by_datasource={"ds1": [model]})
+    messages = [r.getMessage() for r in caplog.records if "renaming the synthetic" in r.getMessage()]
+    assert messages
+    assert not any(":count" in msg for msg in messages)
+
+
 def test_saved_model_measure_emitted_with_declared_type() -> None:
     measure = ModelMeasure(name="aov", formula="revenue:sum / *:count", type=DataType.DOUBLE,
                             label="AOV", description="Avg order value")

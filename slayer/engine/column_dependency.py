@@ -330,7 +330,7 @@ def _unproven_arity_message(*, column: str, model: str, hop: str) -> str:
         f"an unproven join hop to {hop!r} (cardinality not declared to-one and no "
         f"covering unique key): it broadcasts if aggregated as a column of "
         f"{model!r}. Declare the hop's cardinality, or aggregate the target column "
-        f"({hop}.<column>:<aggregation>) instead."
+        f"(<aggregation>({hop}.<column>)) instead."
     )
 
 

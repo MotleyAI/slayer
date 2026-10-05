@@ -337,7 +337,7 @@ class TestVirtualModelColumns:
         """Codex review fix — when a hidden slot is later promoted to
         public, its type / format / description must be filled in.
 
-        Repro: declare ``rank(*:count)`` first (hoists ``*:count`` as a
+        Repro: declare ``rank(*:count, direction='desc')`` first (hoists ``*:count`` as a
         hidden dep with no display metadata), THEN declare ``*:count``
         as a public measure. The promoted public slot must end up with
         ``type=INT`` (not the default None → DOUBLE fallback).
@@ -352,7 +352,7 @@ class TestVirtualModelColumns:
                     # rank uses *:count as a hidden inner; intern order
                     # hoists *:count hidden first, then the public
                     # *:count entry promotes the same slot.
-                    {"formula": "rank(*:count)", "name": "ranked"},
+                    {"formula": "rank(*:count, direction='desc')", "name": "ranked"},
                     {"formula": "*:count"},
                 ],
             )],
@@ -508,14 +508,13 @@ class TestVirtualModelColumns:
             virtual = await engine._expand_query_backed_model(
                 model=m,
                 runtime_kwarg=None,
-                dry_run_placeholders=True,
             )
             assert virtual.default_time_dimension == "created_at"
         finally:
             tmp.cleanup()
 
     async def test_excludes_hidden_hoisted_slots(self) -> None:
-        """A query with ``rank(amount:sum)`` hoists the inner ``amount_sum``
+        """A query with ``rank(amount:sum, direction='desc')`` hoists the inner ``amount_sum``
         as a hidden slot. The migrated path exposes ONLY user-declared
         public columns; ``amount_sum`` is NOT a column on the virtual model
         (decision #3 — P4 closure).
@@ -526,7 +525,7 @@ class TestVirtualModelColumns:
             source_queries=[SlayerQuery(
                 source_model="orders",
                 dimensions=["status"],
-                measures=[{"formula": "rank(amount:sum)", "name": "rank_by_amt"}],
+                measures=[ModelMeasure(formula="rank(amount:sum, direction='desc')", name="rank_by_amt")],
             )],
         )
         engine, tmp = await _engine()
@@ -743,10 +742,8 @@ class TestNestedQueryBackedSavePath:
 
 
 class TestSavePath:
-    async def test_save_with_undefined_var_uses_placeholder_fill(self) -> None:
-        """``filters=["amount > {threshold}"]`` with no ``query_variables``
-        substitutes ``"0"`` at save time so dry-run validation succeeds.
-        """
+    async def test_save_with_undefined_var_refused(self) -> None:
+        """``filters=["amount > {threshold}"]`` with no ``query_variables`` refuses the save."""
         m = SlayerModel(
             name="qb_with_var",
             data_source="ds",
@@ -759,10 +756,8 @@ class TestSavePath:
         )
         engine, tmp = await _engine()
         try:
-            saved = await engine.save_model(m)
-            assert saved.backing_query_sql is not None
-            # The placeholder is filled with literal 0 at save time.
-            assert "0" in saved.backing_query_sql
+            with pytest.raises(ValueError, match="Undefined variable 'threshold'"):
+                await engine.save_model(m)
         finally:
             tmp.cleanup()
 

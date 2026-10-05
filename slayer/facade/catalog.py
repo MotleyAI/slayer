@@ -1,4 +1,4 @@
-"""FacadeCatalog build (DEV-1390 §5; shared by Flight + Postgres facades).
+"""FacadeCatalog build (shared by Flight + Postgres facades).
 
 Snapshots the live ``StorageBackend`` view into a wire-facade-shaped
 catalog: one logical catalog (``"slayer"``), one schema per datasource,
@@ -73,7 +73,7 @@ class FacadeDimension(BaseModel):
 class FacadeJoin(BaseModel):
     """A direct (single-hop) join from a parent model to a target model.
 
-    Used by the wire-facade translator (DEV-1565) to recognise BI-tool-emitted
+    Used by the wire-facade translator to recognise BI-tool-emitted
     LEFT JOIN-with-subquery shapes against the parent's configured joins.
     Only joins whose target is a non-hidden model in the same catalog are
     exposed, mirroring the BFS dim/metric filter.
@@ -98,7 +98,7 @@ class FacadeTable(BaseModel):
     # In-memory handle to the underlying SlayerModel — required by the
     # translator for ON-clause column validation (hidden FK/PK columns
     # don't appear on `dimensions`) and for the dynamic-join lookup
-    # materialisation (DEV-1565). Excluded from any future serialisation
+    # materialisation. Excluded from any future serialisation
     # of FacadeCatalog.
     model_ref: SlayerModel | None = Field(default=None, exclude=True)
 
@@ -118,7 +118,7 @@ def local_metrics(table: FacadeTable) -> list[FacadeMetric]:
     (``pg_attribute`` / ``INFORMATION_SCHEMA.COLUMNS``) — saved
     ``ModelMeasure`` entries only.
 
-    DEV-1567: ``_metric_expansion`` produces three kinds of entries on
+    ``_metric_expansion`` produces three kinds of entries on
     every table:
 
     1. **Cross-model entries** — names like ``customers.row_count`` /
@@ -126,10 +126,10 @@ def local_metrics(table: FacadeTable) -> list[FacadeMetric]:
        models' metrics under a dotted prefix.
     2. **Synthetic same-model entries** — the ``row_count`` rule-1
        metric (``measure_formula="*:count"``), the column × built-in-
-       aggregation cartesian (``<col>_<agg>`` / ``<col>:<agg>``), and
-       the column × custom-aggregation cartesian. None of these are
-       user-authored — they're catalog fan-out so BI tools can pick
-       any column × any agg via colon-form resolution.
+       aggregation cartesian (``<col>_<agg>``, keyed by the legacy colon
+       formula ``<col>:<agg>``), and the column × custom-aggregation
+       cartesian. None of these are user-authored — they're catalog
+       fan-out so BI tools can pick any column × any agg.
     3. **Saved measures** — ``ModelMeasure`` entries where the catalog
        sets ``name == measure_formula`` (the user named them, so the
        formula IS the name).
@@ -160,7 +160,7 @@ def local_metrics(table: FacadeTable) -> list[FacadeMetric]:
 
     The "dot in name" cross-model predicate is safe because every
     catalog-side name source forbids dots: ``Column.name``,
-    ``ModelMeasure.name``, and (DEV-1567) ``Aggregation.name`` all
+    ``ModelMeasure.name``, and ``Aggregation.name`` all
     enforce ``[a-zA-Z_][a-zA-Z0-9_]*``.
     """
     return [
@@ -254,33 +254,37 @@ def build_catalog_grouped_by_schema(
         target = schema_by_datasource.get(datasource, default_schema)
         bucket = grouped.setdefault(target, {})
         for table in source_schema.tables:
-            incoming = (_priority_index(datasource), datasource, table)
-            existing = bucket.get(table.name)
-            if existing is None or incoming[0] < existing[0]:
-                if existing is not None:
-                    logger.warning(
-                        "Facade catalog: model %r exists in both datasource %r "
-                        "and %r under schema %r; keeping %r (higher priority), "
-                        "shadowing %r. Set distinct postgres_schema to expose "
-                        "both.",
-                        table.name, existing[1], datasource, target,
-                        datasource, existing[1],
-                    )
-                bucket[table.name] = incoming
-            elif existing is not None:
-                logger.warning(
-                    "Facade catalog: model %r exists in both datasource %r and "
-                    "%r under schema %r; keeping %r (higher priority), shadowing "
-                    "%r. Set distinct postgres_schema to expose both.",
-                    table.name, existing[1], datasource, target,
-                    existing[1], datasource,
-                )
+            _place_in_schema(
+                bucket=bucket, incoming=(_priority_index(datasource), datasource, table),
+                target=target)
 
     schemas = [
         FacadeSchema(name=name, tables=[entry[2] for entry in bucket.values()])
         for name, bucket in grouped.items()
     ]
     return FacadeCatalog(catalog_name=CATALOG_NAME, schemas=schemas)
+
+
+def _place_in_schema(
+    *,
+    bucket: dict[str, tuple[int, str, FacadeTable]],
+    incoming: tuple[int, str, FacadeTable],
+    target: str,
+) -> None:
+    """Keep the higher-priority datasource's table (ties keep the existing one); log the shadowing."""
+    name = incoming[2].name
+    existing = bucket.get(name)
+    if existing is None:
+        bucket[name] = incoming
+        return
+    kept, shadowed = (incoming, existing) if incoming[0] < existing[0] else (existing, incoming)
+    logger.warning(
+        "Facade catalog: model %r exists in both datasource %r and "
+        "%r under schema %r; keeping %r (higher priority), shadowing "
+        "%r. Set distinct postgres_schema to expose both.",
+        name, existing[1], incoming[1], target, kept[1], shadowed[1],
+    )
+    bucket[name] = kept
 
 
 def _column_types_supported(*, model: SlayerModel) -> bool:
@@ -335,8 +339,7 @@ def _facade_joins_for(
 ) -> list[FacadeJoin]:
     """Expose every direct (single-hop) join whose target is a non-hidden
     model in the same catalog. Mirrors the BFS filter so the translator's
-    existence check never matches a join that isn't otherwise addressable
-    (DEV-1565)."""
+    existence check never matches a join that isn't otherwise addressable."""
     out: list[FacadeJoin] = []
     for j in model.joins:
         target = models_by_name.get(j.target_model)
@@ -368,7 +371,7 @@ def _walk_join_paths(
     max_depth: int,
 ) -> list[tuple[list[str], SlayerModel, bool]]:
     """BFS the join graph from ``root`` up to ``max_depth`` hops, in either
-    traversal direction (DEV-1853).
+    traversal direction.
 
     Returns a list of (path, target_model, row_preserving) tuples where
     ``path`` is the sequence of hop tokens the engine resolves — an edge's
@@ -411,7 +414,7 @@ def _walk_join_paths(
 
 def _hop_preserves_grain(*, edge: OrientedJoin) -> bool:
     """True when traversing ``edge`` cannot fan out the root's rows. An
-    unknown cardinality passes only in the declared direction (the pre-DEV-1853
+    unknown cardinality passes only in the declared direction (the prior
     star-expansion surface); inverted-unknown fails safe."""
     if edge.cardinality in (JoinCardinality.MANY_TO_ONE, JoinCardinality.ONE_TO_ONE):
         return True
@@ -443,7 +446,7 @@ def _path_dotted(path: list[str]) -> str:
     (what BI tools see via ``INFORMATION_SCHEMA.*`` and project in SQL) and
     the engine-facing ``measure_formula`` / ``dimension_ref``. The
     consistency lets us pass user-written WHERE clauses straight through
-    to ``SlayerQuery.filters`` without a name-rewrite step (DEV-1390 §6.2).
+    to ``SlayerQuery.filters`` without a name-rewrite step.
     """
     return ".".join(path)
 
@@ -463,7 +466,7 @@ def _model_has_resolvable_time_dimension(model: SlayerModel) -> bool:
     on this model without an explicit time-dimension argument.
 
     The engine auto-picks a time dimension only when the QUERY already
-    includes one. For ``<col>:first`` referenced as a flat metric (which
+    includes one. For ``first(<col>)`` referenced as a flat metric (which
     is how every BI tool's flat ``SELECT <col>_first FROM <model>``
     fingerprint scan emits it), the engine falls back to
     ``model.default_time_dimension`` and errors if it's unset. So the
@@ -513,9 +516,7 @@ def _metric_expansion(
         joined_local = _local_metrics_for(model=joined_model)
         for m in joined_local:
             if m.measure_formula == "*:count":
-                # Per §5.1.5 sub-bullet: *:count keeps the literal *:count
-                # but is dotted-prefixed by the joined model name.
-                # E.g. orders → customers → "customers.*:count".
+                # The internal legacy-colon star count, dotted-prefixed by the joined model.
                 formula = f"{prefix}.*:count"
             else:
                 formula = f"{prefix}.{m.measure_formula}"
@@ -532,13 +533,13 @@ def _metric_expansion(
 
 
 def _synthetic_row_count(model: SlayerModel) -> FacadeMetric:
-    """Rule 1: synthetic ``*:count`` metric, renamed on collision."""
+    """Rule 1: synthetic row-count metric (legacy colon ``*:count`` formula), renamed on collision."""
     name = "row_count"
     if any(c.name == "row_count" for c in model.columns):
         name = "_row_count"
         logger.warning(
             "Facade catalog: model %r has a Column named 'row_count' which "
-            "collides with the synthetic *:count metric; renaming the "
+            "collides with the synthetic row-count metric; renaming the "
             "synthetic to '_row_count'.",
             model.name,
         )
@@ -634,8 +635,8 @@ def build_local_view(
 ) -> tuple[list[FacadeDimension], list[FacadeMetric]]:
     """Build the bare-column dims + col×agg metrics for a single model
     in isolation (no join walk). Used by the translator's dynamic-join
-    lookup materialisation (DEV-1565) so a join the catalog's BFS didn't
-    pre-expand can still resolve `<target>.<col>` / `<target>.<col>:<agg>`
+    lookup materialisation so a join the catalog's BFS didn't
+    pre-expand can still resolve `<target>.<col>` / `<agg>(<target>.<col>)`
     refs.
     """
     return _local_dimensions_for(model=model), _local_metrics_for(model=model)

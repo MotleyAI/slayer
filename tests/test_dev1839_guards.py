@@ -40,7 +40,7 @@ class TestMixedWindowedRankedDeferred:
     async def test_mixed_windowed_grain_deferred(self) -> None:
         band = (
             "rank(amount:sum(window='90d', partition_by=region) - "
-            "amount:sum(partition_by=city))"
+            "amount:sum(partition_by=city), direction='desc')"
         )
         query = q(
             dimensions=["region", "city", {"expression": band, "name": "x"}],
@@ -54,7 +54,7 @@ class TestMixedWindowedRankedDeferred:
     async def test_mixed_first_last_grain_deferred(self) -> None:
         band = (
             "rank(amount:last(partition_by=region) - "
-            "amount:sum(partition_by=city))"
+            "amount:sum(partition_by=city), direction='desc')"
         )
         query = q(
             dimensions=["region", "city", {"expression": band, "name": "x"}],
@@ -71,7 +71,7 @@ class TestTransformKwargAgainstUnion:
     async def test_kwarg_outside_union_fails_cleanly(self) -> None:
         band = (
             "rank(amount:sum(partition_by=region) - "
-            "amount:sum(partition_by=city), partition_by=channel)"
+            "amount:sum(partition_by=city), partition_by=channel, direction='desc')"
         )
         query = q(
             dimensions=["region", "city", {"expression": band, "name": "x"}],
@@ -87,7 +87,7 @@ class TestUnchangedGuards:
     async def test_cross_model_inner_source_still_rejected(self) -> None:
         band = (
             "rank(customers.spend:sum(partition_by=region) - "
-            "amount:sum(partition_by=city))"
+            "amount:sum(partition_by=city), direction='desc')"
         )
         query = q(
             dimensions=["region", "city", {"expression": band, "name": "x"}],
@@ -99,7 +99,7 @@ class TestUnchangedGuards:
         assert "__regroup__" not in str(ei.value)
 
     async def test_bare_inner_aggregate_still_rejected(self) -> None:
-        band = "rank(amount:sum - amount:sum(partition_by=city))"
+        band = "rank(amount:sum - amount:sum(partition_by=city), direction='desc')"
         query = q(
             dimensions=["region", "city", {"expression": band, "name": "x"}],
             measures=[ModelMeasure(formula="amount:sum", name="s")],

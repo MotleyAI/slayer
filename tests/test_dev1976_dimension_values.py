@@ -62,7 +62,7 @@ N = ModelMeasure(formula="count(*)", name="n")
 RD_P = {"expression": P, "name": "rd"}
 RD_R = {"expression": R, "name": "rd"}
 X_C = {"expression": C, "name": "x"}
-RK_P = {"expression": f"rank({P})", "name": "rk"}
+RK_P = {"expression": f"rank({P}, direction='desc')", "name": "rk"}
 Q2 = {"expression": "quantity * 2", "name": "q2"}
 CITY_BAND = {"expression": f"CASE WHEN {C} > 45 THEN 'hi' ELSE 'lo' END", "name": "band"}
 
@@ -161,8 +161,8 @@ class TestAggregateDimensionAsOrderTarget:
     async def test_arithmetic_over_transform(self, exec_engine):
         resp = await exec_engine.execute(sales_q(
             dimensions=["region", RK_P], measures=[TOT],
-            order=[{"column": f"rank({P}) + 1", "direction": "desc"}]))
-        assert [r["sales.rk"] for r in resp.data] == [5, 4, 3, 2, 1]
+            order=[{"column": f"rank({P}, direction='desc') + 1", "direction": "desc"}]))
+        assert [r["sales.rk"] for r in resp.data] == [4, 3, 2, 1, None]
 
     async def test_finer_grained_aggregate(self, exec_engine):
         resp = await exec_engine.execute(sales_q(
@@ -262,9 +262,9 @@ class TestGrandTotalCell:
 # IN over aggregates: phase follows the operands, and no column is dropped.
 # --------------------------------------------------------------------------- #
 IN_P = f"{P} in (90, 140)"
-TOP2 = "rank(amount:sum) in (1, 2)"
+TOP2 = "rank(amount:sum, direction='desc') in (1, 2)"
 P_HIT = {"North": True, "South": True, "East": False, "Gap": False, "Void": None}
-TOP2_HIT = {"North": False, "South": True, "East": True, "Gap": False, "Void": False}
+TOP2_HIT = {"North": False, "South": True, "East": True, "Gap": False, "Void": None}
 
 
 def _truth(resp, key: str = "sales.region") -> dict:
@@ -293,8 +293,8 @@ class TestInPredicateOverAggregates:
 
     async def test_transform_over_predicate(self, exec_engine):
         resp = await exec_engine.execute(sales_q(
-            dimensions=["region"], measures=[_m(f"rank({IN_P})")]))
-        assert _col(resp, "m") == {"North": 1, "South": 1, "East": 3, "Gap": 3, "Void": 5}
+            dimensions=["region"], measures=[_m(f"rank({IN_P}, direction='desc')")]))
+        assert _col(resp, "m") == {"North": 1, "South": 1, "East": 3, "Gap": 3, "Void": None}
 
     async def test_cross_model(self, exec_engine):
         resp = await exec_engine.execute(chain_q(
@@ -359,7 +359,7 @@ class TestUnrenderedPublicSlotFailsClosed:
     async def test_transform_chain(self, monkeypatch):
         monkeypatch.setattr(SQLGenerator, "_unmaterialised_post_slots",
                             staticmethod(lambda _pq, _aliases: []))
-        query = sales_q(dimensions=["region"], measures=[_m("rank(amount:sum) + 1")])
+        query = sales_q(dimensions=["region"], measures=[_m("rank(amount:sum, direction='desc') + 1")])
         with pytest.raises(ValueError, match="silently dropped"):
             await gen(query, dialect="duckdb")
 
@@ -530,7 +530,7 @@ class TestExistingMeasureErrorsTakePrecedence:
         assert ei.value.location == "measure 'm'"
 
     @pytest.mark.parametrize(("formula", "family"), [
-        pytest.param("rank(amount) + amount", TransformInputError, id="transform-input"),
+        pytest.param("rank(amount, direction='desc') + amount", TransformInputError, id="transform-input"),
         pytest.param("cumsum(amount:sum) + amount", TimeAxisError, id="time-axis"),
         pytest.param(f"sum({C}, window='90d') + amount", ReaggregationError,
                      id="reaggregation-window"),

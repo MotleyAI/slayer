@@ -16,7 +16,7 @@ model provably crosses a fanning hop — a hop that is not provably many-to-one
 and whose declared cardinality in its traversal orientation is `one_to_many` or
 `many_to_many` — the model save SHALL be rejected with an error naming the
 column, its declaring model, the complete reference as spelled, the hop, and the
-remedy (aggregate the reference as `<reference>:<aggregation>`, or filter by it;
+remedy (aggregate the reference as `<aggregation>(<reference>)`, or filter by it;
 declare a to-one cardinality or a covering unique key if the hop is really
 to-one). A hop that is provably many-to-one — its declared cardinality is
 `many_to_one`/`one_to_one`, or its target-side join columns cover a unique key of
@@ -61,7 +61,7 @@ refusing it as unresolvable.
 
 #### Scenario: a fanning reference keeps the declaring-model qualifier as spelled
 - **WHEN** `orders` (joined `one_to_many` to `line_items`) is saved with a derived column whose `sql` is `orders.line_items.qty`
-- **THEN** the save is rejected with the fanning error whose reference is the complete spelling `orders.line_items.qty` and whose remedy is `orders.line_items.qty:<aggregation>`
+- **THEN** the save is rejected with the fanning error whose reference is the complete spelling `orders.line_items.qty` and whose remedy is `<aggregation>(orders.line_items.qty)`
 
 #### Scenario: sql reference that revisits a model on its path is rejected
 - **WHEN** `customers` (joined to-one to `regions`) is saved with a derived column whose `sql` is `regions.customers.spend`
@@ -134,8 +134,8 @@ query-time gate as the sole check.
 - **THEN** the save succeeds with no error and no warning, and the query-time gate remains the only check
 
 #### Scenario: a default_time_dimension across an unproven hop is refused when it ranks a first/last
-- **WHEN** a model's `default_time_dimension` names a saved derived column across an unproven hop and a query selects `amount:last` on that model with no explicit ranking column, temporal dimension or time dimension
-- **THEN** the query fails closed with the input-safety error naming the column and the hop, exactly as the explicit `amount:last(<column>)` spelling does
+- **WHEN** a model's `default_time_dimension` names a saved derived column across an unproven hop and a query selects `last(amount)` on that model with no explicit ranking column, temporal dimension or time dimension
+- **THEN** the query fails closed with the input-safety error naming the column and the hop, exactly as the explicit `last(amount, <column>)` spelling does
 
 ### Requirement: A stored circular definition is refused at query time
 
@@ -151,11 +151,11 @@ stored definition whose path reaches a model absent from the query's resolved
 models SHALL be refused as unresolvable, never emitted verbatim.
 
 #### Scenario: aggregated across a to-one hop
-- **WHEN** `customers.revisit_spend` (stored with `sql` `regions.customers.spend`) is queried from `orders` as `customers.revisit_spend:sum`
+- **WHEN** `customers.revisit_spend` (stored with `sql` `regions.customers.spend`) is queried from `orders` as `sum(customers.revisit_spend)`
 - **THEN** the query fails with the circular error naming reference `regions.customers.spend` and revisited model `customers`, and returns no rows
 
 #### Scenario: aggregated on the declaring model
-- **WHEN** the same column is queried from `customers` as `revisit_spend:sum`
+- **WHEN** the same column is queried from `customers` as `sum(revisit_spend)`
 - **THEN** the query fails with the same circular error
 
 #### Scenario: as a dimension, in a filter, and in raw-row mode
@@ -171,7 +171,7 @@ models SHALL be refused as unresolvable, never emitted verbatim.
 - **THEN** the query fails with the same circular error
 
 #### Scenario: the query-typed spelling fails with the same error class
-- **WHEN** `customers.regions.customers.spend:sum` is queried from `orders`
+- **WHEN** `sum(customers.regions.customers.spend)` is queried from `orders`
 - **THEN** the query fails with the circular error, the same error class the stored definition raises, whose message names the circular join and the revisited model
 
 #### Scenario: a path through an unresolved model is refused as unresolvable

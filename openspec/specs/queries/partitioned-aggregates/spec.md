@@ -9,7 +9,7 @@ Defines how `partition_by=` aggregations (measures computed at an explicitly dec
 An aggregation SHALL accept `partition_by=` and `window=` together. The value is the rolling-window aggregate computed at the partition grain, evaluated per time bucket of the query's active time dimension, attached to every query row of the partition.
 
 #### Scenario: Rolling total at a coarser grain
-- WHEN a query selects dimensions `[region, city, month(ordered_at)]` and the measure `revenue:sum(partition_by=region, window='90d')`
+- WHEN a query selects dimensions `[region, city, month(ordered_at)]` and the measure `sum(revenue, partition_by=region, window='90d')`
 - THEN every row carries the trailing-90-day region-wide revenue total as of that row's month, identical across cities of the same region and month, and adding the measure changes neither the row count nor any other column's values
 
 #### Scenario: Requires a resolvable time dimension
@@ -20,7 +20,7 @@ An aggregation SHALL accept `partition_by=` and `window=` together. The value is
 `first` and `last` aggregations SHALL accept `partition_by=`, returning the value at the earliest/latest ranking timestamp within the partition, attached to every query row of the partition without multiplying rows.
 
 #### Scenario: Region-wide latest value on city rows
-- WHEN a query selects dimensions `[region, city]` and the measure `price:last(partition_by=region)`
+- WHEN a query selects dimensions `[region, city]` and the measure `last(price, partition_by=region)`
 - THEN every city row of a region shows the price at the region's latest ranking timestamp, and the row count equals the same query without the measure
 
 #### Scenario: Temporal partition keys do not hijack the ranking column
@@ -31,22 +31,22 @@ An aggregation SHALL accept `partition_by=` and `window=` together. The value is
 A transform SHALL accept a partitioned aggregate as its input when used as a measure — rank-family transforms and temporal transforms (`time_shift`, `change`, `change_pct`, `lag`, `lead`, `cumsum`, `consecutive_periods`) alike. The transform evaluates at its operand grain — the attached aggregate's `partition_by=`, else the query grain (Axiom 11.1) — and the measure consumer broadcasts the result onto the query grain (Axiom 11.4); it MUST never fail with an internal error.
 
 #### Scenario: Running total of partition-grain values
-- WHEN a query selects dimensions `[region, city, month(ordered_at)]` and the measure `cumsum(revenue:sum(partition_by=[region, ordered_at]))`
+- WHEN a query selects dimensions `[region, city, month(ordered_at)]` and the measure `cumsum(sum(revenue, partition_by=[region, ordered_at]))`
 - THEN each row's value is the cumulative sum across months, within the row's non-time dimensions, of the attached region-month totals, verified by executed values
 
 #### Scenario: Ranking result rows by an attached total
-- WHEN a query selects the measure `rank(revenue:sum(partition_by=region))`
+- WHEN a query selects the measure `rank(sum(revenue, partition_by=region), direction='desc')`
 - THEN result rows are ranked by their attached region total at the query grain
 
 #### Scenario: Change over a partitioned aggregate executes
-- WHEN a query selects `change(amount:sum(partition_by=region))` or `change_pct(amount:sum(partition_by=region))` over a month time dimension
+- WHEN a query selects `change(sum(amount, partition_by=region))` or `change_pct(sum(amount, partition_by=region))` over a month time dimension
 - THEN the query executes with the hand-computed bucket-over-previous-bucket difference (or ratio) of the attached value, instead of failing with an internal rendering error
 
 ### Requirement: Filters referencing partitioned aggregates
 Query filters SHALL be able to reference partitioned aggregates. Such predicates type as measures: they apply after attachment, prune result rows, and MUST NOT alter the aggregate values of surviving rows. Each top-level conjunct of a filter types independently as a field (aggregate-free after reference resolution) or a measure (legal as a declared measure in the same query); a conjunct valid as neither fails with a clear typing error naming both failed typings.
 
 #### Scenario: Keep rows whose partition total qualifies
-- WHEN a query over dimensions `[region, city]` filters on `revenue:sum(partition_by=region) > 5000`
+- WHEN a query over dimensions `[region, city]` filters on `sum(revenue, partition_by=region) > 5000`
 - THEN only rows belonging to qualifying regions remain and every remaining value equals the unfiltered query's value for that row
 
 #### Scenario: Conjunction splits by scope
@@ -54,15 +54,15 @@ Query filters SHALL be able to reference partitioned aggregates. Such predicates
 - THEN the results equal the same query with the two predicates given as separate filters
 
 #### Scenario: Mixing with a plain aggregate in one predicate is legal
-- WHEN a single predicate combines a partitioned-aggregate reference with a plain aggregate reference (e.g. `revenue:sum(partition_by=region) > 5000 AND revenue:sum > 100`)
+- WHEN a single predicate combines a partitioned-aggregate reference with a plain aggregate reference (e.g. `sum(revenue, partition_by=region) > 5000 AND sum(revenue) > 100`)
 - THEN the whole predicate evaluates after aggregation and attachment, and the results are correct by executed values
 
 #### Scenario: Mixing a computed dimension's aggregate with a row-level reference is legal
-- WHEN a query bands a computed dimension on `amount:sum(partition_by=city)` and one predicate combines that aggregate with a row-level reference (e.g. `amount:sum(partition_by=city) > 5000 AND status = 'ok'`)
+- WHEN a query bands a computed dimension on `sum(amount, partition_by=city)` and one predicate combines that aggregate with a row-level reference (e.g. `sum(amount, partition_by=city) > 5000 AND status = 'ok'`)
 - THEN the predicate types as field — both references resolve at row scope — and applies per base row before re-aggregation, correct by executed values, never the former split-the-conjuncts error
 
 #### Scenario: Mixing a computed dimension's aggregate with a plain aggregate is legal
-- WHEN the same query's predicate combines the computed dimension's aggregate with a plain aggregate (e.g. `amount:sum(partition_by=city) > 5000 AND amount:sum > 100`)
+- WHEN the same query's predicate combines the computed dimension's aggregate with a plain aggregate (e.g. `sum(amount, partition_by=city) > 5000 AND sum(amount) > 100`)
 - THEN the predicate types as measure and masks result cells after evaluation at query grain, with surviving values unchanged, by executed values
 
 #### Scenario: No common scope fails closed
@@ -73,7 +73,7 @@ Query filters SHALL be able to reference partitioned aggregates. Such predicates
 A query SHALL support partitioned aggregates consumed inside computed dimensions and as measures simultaneously, whether they share the same partition set, use independent partition sets, or are the very same aggregate in both roles.
 
 #### Scenario: Dimension banding and a partitioned measure together
-- WHEN a query has a computed dimension banding `amount:sum(partition_by=city)` and the measure `amount:sum(partition_by=region)`
+- WHEN a query has a computed dimension banding `sum(amount, partition_by=city)` and the measure `sum(amount, partition_by=region)`
 - THEN both the band and the measure are correct by executed values in one result
 
 #### Scenario: Same aggregate in both roles
@@ -81,7 +81,7 @@ A query SHALL support partitioned aggregates consumed inside computed dimensions
 - THEN both values are correct and consistent with each other
 
 #### Scenario: ORDER BY the raw aggregate alongside a computed dimension using it
-- WHEN a computed dimension bands `amount:sum(partition_by=city)` and `order` names the raw `amount:sum(partition_by=city)`
+- WHEN a computed dimension bands `sum(amount, partition_by=city)` and `order` names the raw `sum(amount, partition_by=city)`
 - THEN rows sort by the partition-grain value; ordering by the computed dimension's name instead sorts by the banded value; neither form raises an internal placeholder error
 
 #### Scenario: Cross-model dual role without the partition key in the grain is rejected
@@ -92,7 +92,7 @@ A query SHALL support partitioned aggregates consumed inside computed dimensions
 A partitioned aggregate SHALL be usable in the same query as windowed, `first`/`last`, cross-model, and transform measures, with every measure retaining the value it has when queried alone.
 
 #### Scenario: Partitioned plus windowed measure
-- WHEN a query selects both `revenue:sum(partition_by=region)` and `revenue:sum(window='90d')`
+- WHEN a query selects both `sum(revenue, partition_by=region)` and `sum(revenue, window='90d')`
 - THEN each measure's executed values equal its value in a query where it appears alone
 
 #### Scenario: Partitioned plus first/last, cross-model, and transform measures
@@ -132,7 +132,7 @@ All partitioned-aggregate shapes supported before this change SHALL keep byte-id
 A partitioned measure SHALL be usable in the same query as `time_shift`, `change`, and `change_pct`, producing valid SQL on every supported dialect: the shifted re-aggregation groups only by real query dimensions, and reserved internal placeholder names never reach the emitted statement.
 
 #### Scenario: Partitioned measure with a time-shift measure executes
-- WHEN a query selects `amount:sum(partition_by=region)` and `time_shift(amount:sum, periods=-1)` over a month time dimension
+- WHEN a query selects `sum(amount, partition_by=region)` and `time_shift(sum(amount), periods=-1)` over a month time dimension
 - THEN the query executes with correct values for both measures and the emitted SQL contains no reserved placeholder prefix
 
 #### Scenario: Shifted re-aggregation grain excludes the attached value
@@ -143,46 +143,46 @@ A partitioned measure SHALL be usable in the same query as `time_shift`, `change
 An arithmetic expression combining aggregates at different declared partition grains SHALL be well-defined at the union of those grains: each aggregate is computed at its own declared grain and broadcast over the grain keys it lacks. The expression SHALL be consumable at any grain refining the union — as a measure, the query grain — with every operand broadcast to the consuming rows; combining aggregates at different grains is never, by itself, an error. A transform over such an expression used as a measure SHALL evaluate at the query grain over the broadcast operands. Filter conjuncts referencing such expressions apply after attachment and MUST NOT alter surviving rows' values.
 
 #### Scenario: Mixed-grain arithmetic as a measure
-- WHEN a query over dimensions `[region, city]` selects the measure `a:sum(partition_by=region) - b:sum(partition_by=city)`
+- WHEN a query over dimensions `[region, city]` selects the measure `sum(a, partition_by=region) - sum(b, partition_by=city)`
 - THEN each row's value is its region total minus its city total, by executed values
 
 #### Scenario: Same-grain partitioned arithmetic as a measure
-- WHEN a query selects the measure `a:sum(partition_by=region) - b:sum(partition_by=region)` (the degenerate union of two identical grains)
+- WHEN a query selects the measure `sum(a, partition_by=region) - sum(b, partition_by=region)` (the degenerate union of two identical grains)
 - THEN each row's value is the difference of its two broadcast region totals, by executed values
 
 #### Scenario: Plain and partitioned aggregates mix in one expression
-- WHEN a query selects the measure `amount:sum - amount:sum(partition_by=region)`
+- WHEN a query selects the measure `sum(amount) - sum(amount, partition_by=region)`
 - THEN each row's value is its query-grain total minus its broadcast region total, by executed values
 
 #### Scenario: Transform over mixed-grain arithmetic as a measure
-- WHEN a query selects the measure `rank(a:sum(partition_by=region) - b:sum(partition_by=city))`
+- WHEN a query selects the measure `rank(sum(a, partition_by=region) - sum(b, partition_by=city), direction='desc')`
 - THEN result rows are ranked at the query grain by the broadcast difference, and adding the measure changes no other column's values
 
 #### Scenario: Filter over mixed-grain arithmetic
-- WHEN a query filters on `a:sum(partition_by=region) - b:sum(partition_by=city) > 0`
+- WHEN a query filters on `sum(a, partition_by=region) - sum(b, partition_by=city) > 0`
 - THEN only qualifying rows remain and every surviving value equals the unfiltered query's value for that row
 
 ### Requirement: Bare windowed and ranked measures compose as full-grain partitioned aggregates
 A windowed aggregation without `partition_by=` and a `first`/`last` aggregation without `partition_by=` SHALL behave as partitioned at the query's full projected grain: they compose with transforms, arithmetic/composite/scalar expressions, and filters exactly as partitioned aggregates do, while keeping their established public result keys, aliases, and executed values. Explicit `partition_by=` on the same aggregation remains a strict generalization; the bare form and an explicit form at the same effective grain are equivalent.
 
 #### Scenario: Transform over a bare windowed measure
-- WHEN a query selects `cumsum(amount:sum(window='90d'))` over a month time dimension
+- WHEN a query selects `cumsum(sum(amount, window='90d'))` over a month time dimension
 - THEN the running total of the rolling window executes with hand-computed values
 
 #### Scenario: Bare windowed measure inside arithmetic
-- WHEN a query selects `amount:sum(window='90d') / amount:sum`
+- WHEN a query selects `sum(amount, window='90d') / sum(amount)`
 - THEN the composite evaluates per result row over the attached rolling total and the plain aggregate, correct by executed values
 
 #### Scenario: Filter-only reference to a bare windowed measure
-- WHEN a query filters on `amount:sum(window='90d') > 20` without selecting that measure
+- WHEN a query filters on `sum(amount, window='90d') > 20` without selecting that measure
 - THEN qualifying rows survive with unchanged values and the emitted SQL contains no leaked internal names
 
 #### Scenario: One predicate mixing a bare windowed and a plain aggregate
-- WHEN a single filter predicate combines `amount:sum(window='90d')` with `amount:sum`
+- WHEN a single filter predicate combines `sum(amount, window='90d')` with `sum(amount)`
 - THEN the whole predicate evaluates after attachment, correct by executed values
 
 #### Scenario: Temporal transform over a bare first/last measure
-- WHEN a query selects `time_shift(amount:last, -1)` over a month time dimension
+- WHEN a query selects `time_shift(last(amount), -1)` over a month time dimension
 - THEN each row carries the previous bucket's last value, correct by executed values
 
 #### Scenario: Bare and explicit partition twins are equivalent
@@ -205,7 +205,7 @@ When several consumed aggregates resolve to the same producer — same source an
 - THEN they render as separate producers and each value is correct
 
 #### Scenario: A producer shared between a nested sub-plan and the top level renders once
-- WHEN a query groups by a dimension banding `amount:sum(partition_by=city)` and selects `amount:sum(window='1y')`, so the city-total producer is needed by both the base's computed dimension and the windowed producer's sub-plan
+- WHEN a query groups by a dimension banding `sum(amount, partition_by=city)` and selects `sum(amount, window='1y')`, so the city-total producer is needed by both the base's computed dimension and the windowed producer's sub-plan
 - THEN the emitted SQL contains exactly one city-total producer relation, referenced from both scopes, with executed values unchanged
 
 #### Scenario: Differing inherited filter context prevents merging
@@ -277,12 +277,12 @@ Every explicit partition key of a partitioned aggregate consumed in a combined p
 - THEN the query plans and executes without any partition-key error, and the outer aggregation's own explicit keys still carry the combined-consumer rule
 
 #### Scenario: Measure-typed filter over a computed dimension's finer-grained aggregate fails cleanly
-- WHEN a computed dimension bands `amount:sum(partition_by=[city, region])` over dimensions `[region, <band>]` and the filter `amount:sum(partition_by=[city, region]) < amount:sum` types as measure
+- WHEN a computed dimension bands `sum(amount, partition_by=[city, region])` over dimensions `[region, <band>]` and the filter `sum(amount, partition_by=[city, region]) < sum(amount)` types as measure
 - THEN the query fails at plan time with the partition-key error naming `city` — the same error as the query without the computed dimension — never with an internal join-back failure
 
 #### Scenario: Re-aggregation in a computed dimension keeps the finer-grain exemption
 - WHEN a query over dimensions `[region, x]` declares `x` = `CASE WHEN avg(sum(amount, partition_by=[city, region, product]), partition_by=[city, region]) > 30 THEN 'hi' ELSE 'lo' END`
-- THEN the query executes, the re-aggregation is computed per `(city, region)` cell and broadcast onto its rows, and `amount:sum` by `(region, x)` is correct by executed values
+- THEN the query executes, the re-aggregation is computed per `(city, region)` cell and broadcast onto its rows, and `sum(amount)` by `(region, x)` is correct by executed values
 
 #### Scenario: Re-aggregation outer keys carry the rule in every combined position
 - WHEN the re-aggregation `avg(sum(amount, partition_by=[city, region, product]), partition_by=[city, region])` over dimensions `[region]` (with or without a computed dimension banding it) is consumed as a measure, as a raw ORDER BY target, inside an arithmetic measure, inside a transform used as a measure, or in a measure-typed filter conjunct (including one produced by splitting an AND filter)
@@ -293,7 +293,7 @@ Every explicit partition key of a partitioned aggregate consumed in a combined p
 - THEN the query fails at plan time with the partition-key error naming that key
 
 #### Scenario: An aggregate equal to a whole computed dimension is that dimension's value
-- WHEN a query over dimensions `[region, x]` declares `x` = `amount:sum(partition_by=[city, region])` and consumes `amount:sum(partition_by=[city, region])` as a measure, as an order target, or in the measure-typed filter `amount:sum(partition_by=[city, region]) < amount:sum`
+- WHEN a query over dimensions `[region, x]` declares `x` = `sum(amount, partition_by=[city, region])` and consumes `sum(amount, partition_by=[city, region])` as a measure, as an order target, or in the measure-typed filter `sum(amount, partition_by=[city, region]) < sum(amount)`
 - THEN the query executes with each position reading `x`, while the same consumers beside a dimension that only bands that aggregate still fail with the partition-key error naming `city`
 
 ### Requirement: Re-aggregation consumes attached operands as datasets
@@ -357,7 +357,7 @@ measure-local `filter=` on the outer aggregation.
 
 #### Scenario: Grained transform constituent executes through the carrier
 - **WHEN** a query over a month time dimension selects
-  `sum(cumsum(amount:sum(partition_by=[region, ordered_at])) - 1)`
+  `sum(cumsum(sum(amount, partition_by=[region, ordered_at])) - 1)`
 - **THEN** it executes with the hand-computed sum over regions of running totals
   minus one per cell on SQLite and DuckDB, the plan carries exactly one producer for
   the transform at its `(region, month)` grain inside the carrier, the emitted
@@ -365,7 +365,7 @@ measure-local `filter=` on the outer aggregation.
 
 #### Scenario: Every transform family executes as a constituent
 - **WHEN** a query over a month time dimension selects, over
-  `amount:sum(partition_by=[region, ordered_at])`, a `change`, a `lag`, a
+  `sum(amount, partition_by=[region, ordered_at])`, a `change`, a `lag`, a
   `consecutive_periods` and a `first`/`last` constituent under `sum`
 - **THEN** each executes with hand-computed values on SQLite and DuckDB: the
   shift family through its self-join series, `lag` and `consecutive_periods` per
@@ -373,13 +373,13 @@ measure-local `filter=` on the outer aggregation.
 
 #### Scenario: Windowed inner under a transform constituent fails closed
 - **WHEN** a query over a month time dimension selects
-  `sum(rank(amount:sum(window='90d', partition_by=region)))`
+  `sum(rank(sum(amount, window='90d', partition_by=region), direction='desc'))`
 - **THEN** it no longer fails with the windowed time-dimension error — it executes per
   the next scenario; the former fail-closed pin is retired
 
 #### Scenario: Windowed inner under a transform constituent executes
 - **WHEN** a query over a month time dimension selects
-  `sum(rank(amount:sum(window='90d', partition_by=region)))`
+  `sum(rank(sum(amount, window='90d', partition_by=region), direction='desc'))`
 - **THEN** it executes with hand-computed values on SQLite and DuckDB — exactly one
   result row per bucket, every value non-NULL — the plan carries exactly one nested
   producer for the windowed inner grained by the query's active bucket, that exact
@@ -389,7 +389,7 @@ measure-local `filter=` on the outer aggregation.
 
 #### Scenario: A pure re-aggregation counts operand cells, not base rows
 - **WHEN** a query over a month time dimension selects
-  `sum(rank(amount:sum(window='90d', partition_by=region)))` over a source with several
+  `sum(rank(sum(amount, window='90d', partition_by=region), direction='desc'))` over a source with several
   base rows per (region, month) cell
 - **THEN** the outer aggregation counts each operand cell once — its home is the operand
   dataset (Axiom 2.4), so the producer joins at the query grain as a second-order
@@ -399,7 +399,7 @@ measure-local `filter=` on the outer aggregation.
 
 #### Scenario: Cross-model grained inner naming a host time axis is a permanent boundary
 - **WHEN** a query rooted at `orders` over a month time dimension selects
-  `sum(cumsum(customers.spend:sum(partition_by=[customers.tier, ordered_at])))`
+  `sum(cumsum(sum(customers.spend, partition_by=[customers.tier, ordered_at])))`
 - **THEN** under every mode — the default (broadcast), error AND associate — it fails at
   plan time with the partition-key attributability error naming `ordered_at` and the
   remedy: the inner is homed at `customers`, and `ordered_at` is an `orders` column
@@ -411,7 +411,7 @@ measure-local `filter=` on the outer aggregation.
 
 #### Scenario: A to-one cross-model partition key on a local-homed inner stays legal
 - **WHEN** a query rooted at `orders` over a month time dimension selects
-  `sum(cumsum(amount:sum(partition_by=[customers.tier, ordered_at])))`
+  `sum(cumsum(sum(amount, partition_by=[customers.tier, ordered_at])))`
 - **THEN** it compiles: `customers.tier` is determined from `orders` over the to-one
   hop, so the constituent is grained at `(customers.tier, month)` — the boundary above
   is specific to a target-homed inner naming a host axis, not to cross-model partition
@@ -419,14 +419,14 @@ measure-local `filter=` on the outer aggregation.
 
 #### Scenario: Transform constituent without its time axis fails cleanly
 - **WHEN** a query over a month time dimension selects
-  `sum(cumsum(amount:sum(partition_by=region)))`
+  `sum(cumsum(sum(amount, partition_by=region)))`
 - **THEN** it fails with the time-axis error directing the author to include the time
   key in `partition_by=`, the same error the dimension-position form raises, and
   never returns duplicated or misgrained rows
 
 #### Scenario: Time transform without a time dimension fails as a constituent
 - **WHEN** a query with no `time_dimensions` selects
-  `sum(cumsum(amount:sum(partition_by=[region, ordered_at])))`
+  `sum(cumsum(sum(amount, partition_by=[region, ordered_at])))`
 - **THEN** it fails with the same unambiguous-time-dimension error a top-level
   `cumsum` raises
 
@@ -447,7 +447,7 @@ measure-local `filter=` on the outer aggregation.
   error, exactly as the source's constituents are exempt
 
 #### Scenario: Transform over a re-aggregated value
-- **WHEN** a query selects `rank(avg(sum(amount, partition_by=[city, region])))`
+- **WHEN** a query selects `rank(avg(sum(amount, partition_by=[city, region])), direction='desc')`
 - **THEN** result rows are ranked at the query grain by the attached
   re-aggregated value, and no other column's values change
 
@@ -492,7 +492,7 @@ measure-local `filter=` on the outer aggregation.
 
 #### Scenario: Transform-valued outer parameter rides the carrier
 - **WHEN** a query over `[region]` selects
-  `weighted_avg(sum(amount, partition_by=[city, region]), weight=rank(count(id, partition_by=[city, region])))`
+  `weighted_avg(sum(amount, partition_by=[city, region]), weight=rank(count(id, partition_by=[city, region]), direction='desc'))`
 - **THEN** the rank of each city cell's row count (across all cells: Alpha/North 1;
   Alpha/South, NULL/Gap and Xi/Void 2; every other cell 5) is a constituent of the
   operand carrier, and each region carries the rank-weighted average of its city
@@ -500,7 +500,7 @@ measure-local `filter=` on the outer aggregation.
   values on SQLite and DuckDB, the emitted SQL scope-closed
 
 #### Scenario: Transform-valued outer parameter outside the operand grain fails closed
-- **WHEN** the outer parameter is `rank(count(id, partition_by=product))` — a grain
+- **WHEN** the outer parameter is `rank(count(id, partition_by=product), direction='desc')` — a grain
   `[product]` the operand grain `[city, region]` does not determine
 - **THEN** the query fails at plan time with the typed determination error naming the
   parameter and the grain, never a scope leak or a value
@@ -585,7 +585,7 @@ cardinality. The shape SHALL be legal in every position — measure, filter, ord
 and computed-dimension expression — with identical values in each (position parity).
 
 #### Scenario: Cross-model last with partition_by executes
-- **WHEN** a query rooted at `orders` selects `customers.spend:last(partition_by=region)`
+- **WHEN** a query rooted at `orders` selects `last(customers.spend, partition_by=region)`
   alongside a plain measure
 - **THEN** each row carries its region's last customer-spend value, correct by
   hand-computed executed values on SQLite and DuckDB, with row count and the sibling
@@ -604,14 +604,14 @@ the transform consumes the attached value like any local partitioned input. This
 ranked inners (`first`/`last`) and holds in measure, filter, and order positions.
 
 #### Scenario: Transform over a cross-model partitioned sum executes
-- **WHEN** a query selects `cumsum(customers.spend:sum(partition_by=region))` over a month
+- **WHEN** a query selects `cumsum(sum(customers.spend, partition_by=region))` over a month
   time dimension with `region` among the query dimensions
 - **THEN** the cumulative series accumulates the per-region cross-model totals, correct by
   hand-computed executed values on SQLite and DuckDB — never the former
   not-yet-supported error
 
 #### Scenario: Transform over a cross-model ranked partitioned aggregate executes
-- **WHEN** a query selects `change(customers.spend:last(partition_by=region))` over a month
+- **WHEN** a query selects `change(last(customers.spend, partition_by=region))` over a month
   time dimension with `region` among the query dimensions
 - **THEN** each row carries the period-over-period difference of its region's last value,
   correct by executed values
@@ -679,7 +679,7 @@ its `partition_by=` still gets the outer attach the grain join needs.
 
 #### Scenario: Transform constituent inside a mixed source
 - **WHEN** a query over `[region]` selects
-  `sum(quantity * rank(avg(unit_price, partition_by=product)))`
+  `sum(quantity * rank(avg(unit_price, partition_by=product), direction='desc'))`
 - **THEN** the transform is exactly one nested producer at its `(product)` grain,
   row-attached into the outer aggregation's input relation, and each region carries
   the hand-computed row-weighted value, by executed values — never the former
@@ -687,13 +687,13 @@ its `partition_by=` still gets the outer attach the grain join needs.
 
 #### Scenario: Collapsing constituent mixed with a row leaf fails closed
 - **WHEN** a query over a month time dimension selects
-  `sum(amount * last(amount:sum(partition_by=[region, ordered_at])))`
+  `sum(amount * last(sum(amount, partition_by=[region, ordered_at])))`
 - **THEN** it no longer fails with the collapsing-transform error — it executes per the
   next scenario; the former fail-closed pin is retired
 
 #### Scenario: Collapsing transform constituent inside a mixed source
 - **WHEN** a query over a month time dimension selects `sum(amount * last(X))` with
-  `X = amount:sum(partition_by=[region, ordered_at])`
+  `X = sum(amount, partition_by=[region, ordered_at])`
 - **THEN** it executes with the hand-computed values Jan 375 / Feb 825 / Mar 900 on
   SQLite and DuckDB: `last(X)` collapses to one value per region, broadcast onto each
   row of that region, multiplied by the row's `amount` and summed per month — never
@@ -710,7 +710,7 @@ its `partition_by=` still gets the outer attach the grain join needs.
 
 #### Scenario: Empty-grain re-aggregation constituent broadcasts one value
 - **WHEN** a query over a month time dimension selects
-  `sum(amount * last(amount:sum(partition_by=ordered_at)))`
+  `sum(amount * last(sum(amount, partition_by=ordered_at)))`
 - **THEN** the collapsed constituent has an empty grain — one value — attached with no
   join keys onto every row, and the query executes with hand-computed values on both
   engines with unchanged cardinality, never an empty join predicate
@@ -723,7 +723,7 @@ its `partition_by=` still gets the outer attach the grain join needs.
 
 #### Scenario: Mixed re-aggregation root combined with a coarser measure
 - **WHEN** a query over `[region]` with a month time dimension selects
-  `sum(amount * min(X, partition_by=region)) + amount:sum(partition_by=region)`
+  `sum(amount * min(X, partition_by=region)) + sum(amount, partition_by=region)`
 - **THEN** it executes with hand-computed values on both engines, the coarser term
   broadcast across months exactly as any explicit-grain partitioned measure, with
   unchanged cardinality
@@ -879,7 +879,7 @@ SHALL be legal in measure, filter (typing as a measure) and ORDER BY positions.
 #### Scenario: Associate-mode attached parameter executes
 - **WHEN** a query rooted at `orders` over `[status]` under
   `to_many_handling: "associate"` selects
-  `customers.spend:weighted_avg(weight=sum(amount, partition_by=customers.regions.name))`
+  `weighted_avg(customers.spend, weight=sum(amount, partition_by=customers.regions.name))`
 - **THEN** each status cell carries the average of its distinct associated
   customers' spend, weighted by each customer's region total, by hand-computed
   executed values on SQLite and DuckDB
@@ -932,7 +932,7 @@ SHALL be legal in measure, filter (typing as a measure) and ORDER BY positions.
 
 #### Scenario: Cross-model attached parameter on a local root
 - **WHEN** a query rooted at `orders` selects
-  `amount:weighted_avg(weight=sum(customers.spend, partition_by=customers.regions.name))`
+  `weighted_avg(amount, weight=sum(customers.spend, partition_by=customers.regions.name))`
 - **THEN** the parameter attaches through its target-rooted producer per order
   row and the query executes with hand-computed values; a parameter whose
   path crosses a fanning or unproven hop fails with the existing typed
@@ -940,7 +940,7 @@ SHALL be legal in measure, filter (typing as a measure) and ORDER BY positions.
 
 #### Scenario: Recursively nested attached parameters
 - **WHEN** a query rooted at `orders` selects
-  `customers.spend:weighted_avg(weight=weighted_avg(amount, weight=sum(customers.regions.pop, partition_by=customers.regions.name), partition_by=customers.regions.name))`
+  `weighted_avg(customers.spend, weight=weighted_avg(amount, weight=sum(customers.regions.pop, partition_by=customers.regions.name), partition_by=customers.regions.name))`
   — three homes: `customers` for the outer, `orders` for the per-region
   weighted average of order amounts, `regions` for the innermost population sum
 - **THEN** each level's producer is rooted at its own home and attached one
@@ -950,7 +950,7 @@ SHALL be legal in measure, filter (typing as a measure) and ORDER BY positions.
 
 #### Scenario: Ranked transform as the attached parameter
 - **WHEN** a query rooted at `orders` selects
-  `customers.spend:weighted_avg(weight=rank(sum(amount, partition_by=customers.regions.name)))`
+  `weighted_avg(customers.spend, weight=rank(sum(amount, partition_by=customers.regions.name), direction='desc'))`
   — the region cells ranked by their order-amount total, the NULL-name region
   forming its own ranked cell
 - **THEN** the transform is the attached input at its result grain, and the query
@@ -962,7 +962,7 @@ SHALL be legal in measure, filter (typing as a measure) and ORDER BY positions.
 #### Scenario: Transform parameter whose grain the home does not determine fails closed
 - **WHEN** a query rooted at `orders` over a month time dimension on `ordered_at`
   selects
-  `customers.spend:weighted_avg(weight=cumsum(sum(amount, partition_by=[customers.regions.name, ordered_at])))`
+  `weighted_avg(customers.spend, weight=cumsum(sum(amount, partition_by=[customers.regions.name, ordered_at])))`
 - **THEN** the query fails in every mode with the typed determination error
   naming the parameter — `customers` does not determine the order month in the
   transform's grain — never a multiplied or broadcast value
@@ -970,7 +970,7 @@ SHALL be legal in measure, filter (typing as a measure) and ORDER BY positions.
 #### Scenario: Windowed aggregation with an attached parameter
 - **WHEN** a query rooted at `orders` over a month time dimension on
   `customers.signup_at` selects
-  `customers.spend:weighted_avg(window='1y', weight=sum(amount, partition_by=customers.regions.name))`
+  `weighted_avg(customers.spend, window='1y', weight=sum(amount, partition_by=customers.regions.name))`
 - **THEN** each signup-month bucket carries the trailing-window weighted average
   over the customers signed up in the window, each weighted by its region's
   total, identical under every mode with no warning (100, 125, 28080 / 267,
@@ -982,7 +982,7 @@ SHALL be legal in measure, filter (typing as a measure) and ORDER BY positions.
 - **WHEN** a model defines `wsum` as `SUM({value} * {weight})` on `customers`
   and a query rooted at `orders` over a month time dimension on
   `customers.signup_at` selects
-  `customers.spend:wsum(window='1y', weight=sum(amount, partition_by=customers.regions.name))`
+  `wsum(customers.spend, window='1y', weight=sum(amount, partition_by=customers.regions.name))`
 - **THEN** each signup-month bucket carries the trailing-window sum, over the
   customers signed up in the window, of spend times the region's order total,
   identical under every mode with no warning (10000, 25000, 28080, 33780 on the
@@ -999,7 +999,7 @@ SHALL be legal in measure, filter (typing as a measure) and ORDER BY positions.
 
 #### Scenario: Attached parameter whose own partition key fans from its own home fails closed
 - **WHEN** a query rooted at `orders` selects
-  `amount:weighted_avg(weight=sum(customers.regions.pop, partition_by=customers.regions.bad_pop))`
+  `weighted_avg(amount, weight=sum(customers.regions.pop, partition_by=customers.regions.bad_pop))`
   — the parameter's home is `regions` and `bad_pop` crosses the fanning
   `regions → region_events` hop from it
 - **THEN** the query fails in every mode with the existing mode-invariant
@@ -1008,7 +1008,7 @@ SHALL be legal in measure, filter (typing as a measure) and ORDER BY positions.
 
 #### Scenario: Attached parameter keyed by a host column keeps the mode-aware rule
 - **WHEN** a query rooted at `orders` over `[status]` selects
-  `amount:weighted_avg(weight=sum(customers.spend, partition_by=status))` — `status`
+  `weighted_avg(amount, weight=sum(customers.spend, partition_by=status))` — `status`
   is a plain host column, unattributable only from the parameter's home
   `customers`
 - **THEN** under `broadcast` and `error` the query fails with the explicit
@@ -1034,7 +1034,7 @@ SHALL be legal in measure, filter (typing as a measure) and ORDER BY positions.
 
 #### Scenario: Undetermined attached parameter stays rejected
 - **WHEN** the aggregation's operating grain does not determine the attached
-  parameter — e.g. `customers.spend:weighted_avg(weight=sum(customers.spend, partition_by=status))`
+  parameter — e.g. `weighted_avg(customers.spend, weight=sum(customers.spend, partition_by=status))`
   rooted at `orders`, whose home `customers` does not determine the grain member
   `status` — under any `to_many_handling` mode, by an attributable
   (`customers.tier`) or an unattributable (`status`) dimension
@@ -1043,7 +1043,7 @@ SHALL be legal in measure, filter (typing as a measure) and ORDER BY positions.
 
 #### Scenario: Positional transform parameter folds onto the declared name
 - **WHEN** a query rooted at `orders` over `[customers.tier]` selects
-  `customers.spend:weighted_avg(rank(sum(amount, partition_by=customers.regions.name)))`
+  `weighted_avg(customers.spend, rank(sum(amount, partition_by=customers.regions.name), direction='desc'))`
 - **THEN** it binds to the same aggregation identity as the `weight=` spelling and
   returns identical result keys and values (gold 475 / 8, silver 97.5, bronze 40)
 
@@ -1056,17 +1056,17 @@ SHALL be legal in measure, filter (typing as a measure) and ORDER BY positions.
 
 #### Scenario: Local-root transform parameter
 - **WHEN** a query rooted at `sales` selects
-  `weighted_avg(amount, weight=rank(sum(amount, partition_by=region)))` by `region`,
+  `weighted_avg(amount, weight=rank(sum(amount, partition_by=region), direction='desc'))` by `region`,
   by `[region, city]` with the inner grained by `city`, and with no dimensions
 - **THEN** it executes with the row-attached rank of the row's cell — by region North
   22.5, South 140 / 3, East 60, Gap 20 / 3, Void NULL; by region and city Alpha/North
   10, Beta/North 60, Alpha/South 20, Gamma/South 100, Delta/East 50, Epsilon/East 50,
-  Zeta/East 80, NULL/Gap 6, Kappa/Gap 8, Xi/Void NULL; globally 810 / 43, the
-  NULL-total Void cell ranking last (weight 5) on SQLite and DuckDB alike
+  Zeta/East 80, NULL/Gap 6, Kappa/Gap 8, Xi/Void NULL; globally 810 / 33, the
+  NULL-total Void cell carrying a NULL rank and so no weight, on SQLite and DuckDB alike
 
 #### Scenario: Collapsing transform parameter drops the axis
 - **WHEN** a query rooted at `orders` over an `ordered_at` month time dimension selects
-  `customers.spend:weighted_avg(weight=last(sum(amount, partition_by=[customers.regions.name, ordered_at])))`
+  `weighted_avg(customers.spend, weight=last(sum(amount, partition_by=[customers.regions.name, ordered_at])))`
 - **THEN** the parameter is typed at `[customers.regions.name]` — each region's
   latest-month total (North 12, South 15, NULL 47) — so the query executes: under the
   default mode 8165 / 128 on every month with the broadcast warning naming the month,
@@ -1075,7 +1075,7 @@ SHALL be legal in measure, filter (typing as a measure) and ORDER BY positions.
 
 #### Scenario: Time-ordered transform parameter without its axis fails closed
 - **WHEN** a query rooted at `orders` over an `ordered_at` month time dimension selects
-  `customers.spend:weighted_avg(weight=cumsum(sum(amount, partition_by=customers.regions.name)))`,
+  `weighted_avg(customers.spend, weight=cumsum(sum(amount, partition_by=customers.regions.name)))`,
   as a measure or only as a filter
 - **THEN** it fails in every mode with the time-axis error naming the `partition_by=`
   remedy, never a value
@@ -1083,7 +1083,7 @@ SHALL be legal in measure, filter (typing as a measure) and ORDER BY positions.
 #### Scenario: Time-ordered transform parameter over a determined axis executes
 - **WHEN** a query rooted at `orders` over a `customers.signup_at` month time dimension
   selects
-  `customers.spend:weighted_avg(weight=cumsum(sum(amount, partition_by=[customers.regions.name, customers.signup_at])))`
+  `weighted_avg(customers.spend, weight=cumsum(sum(amount, partition_by=[customers.regions.name, customers.signup_at])))`
 - **THEN** it executes in every mode with no warning: 100, 150, 1900 / 45, 5700 / 140
   for January to April 2024, the NULL bucket NULL; as a filter `> 50` it keeps January
   and February with every other value unchanged, and as a raw ORDER BY descending it
@@ -1091,7 +1091,7 @@ SHALL be legal in measure, filter (typing as a measure) and ORDER BY positions.
 
 #### Scenario: Transform over an ungrained inner types at the query grain
 - **WHEN** a query rooted at `orders` selects
-  `customers.spend:weighted_avg(weight=rank(sum(amount)))`
+  `weighted_avg(customers.spend, weight=rank(sum(amount), direction='desc'))`
 - **THEN** by `customers.tier` the inner is grained at `[customers.tier]` and the query
   executes in every mode with no warning (gold 61.25, silver 115, bronze 40, NULL tier
   NULL); by `status` the query fails in every mode with the typed determination error
@@ -1099,7 +1099,7 @@ SHALL be legal in measure, filter (typing as a measure) and ORDER BY positions.
 
 #### Scenario: Windowed inner joins the bucket to the parameter's grain
 - **WHEN** a query rooted at `orders` over an `ordered_at` month time dimension selects
-  `customers.spend:weighted_avg(weight=rank(sum(amount, window='1y', partition_by=customers.regions.name)))`
+  `weighted_avg(customers.spend, weight=rank(sum(amount, window='1y', partition_by=customers.regions.name), direction='desc'))`
 - **THEN** it fails in every mode with the typed determination error naming `weight` —
   the order-month bucket is in the transform's grain and `customers` does not
   determine it
@@ -1107,7 +1107,7 @@ SHALL be legal in measure, filter (typing as a measure) and ORDER BY positions.
 #### Scenario: Windowed aggregation with a transform parameter
 - **WHEN** a query rooted at `orders` over a `customers.signup_at` month time dimension
   selects
-  `customers.spend:weighted_avg(window='1y', weight=rank(sum(amount, partition_by=customers.regions.name)))`
+  `weighted_avg(customers.spend, window='1y', weight=rank(sum(amount, partition_by=customers.regions.name), direction='desc'))`
 - **THEN** each signup-month bucket carries the trailing-window weighted average over
   the customers signed up in the window, each weighted by its region's rank — 100,
   125, 510 / 7, 945 / 14, the NULL bucket NULL — identical under every mode with no
@@ -1127,7 +1127,7 @@ SHALL be legal in measure, filter (typing as a measure) and ORDER BY positions.
 
 #### Scenario: Nested transform parameter inside an attached aggregate parameter
 - **WHEN** a query rooted at `orders` selects
-  `customers.spend:weighted_avg(weight=weighted_avg(amount, weight=rank(sum(amount, partition_by=customers.regions.name)), partition_by=customers.regions.name))`
+  `weighted_avg(customers.spend, weight=weighted_avg(amount, weight=rank(sum(amount, partition_by=customers.regions.name), direction='desc'), partition_by=customers.regions.name))`
 - **THEN** each level resolves bottom-up — the innermost rank over the region cells,
   the middle weighted average per region (North 50 / 3, South 10, NULL 23.5), the
   outer over customers — and the query executes: 7556.67 / 103.5 broadcast to both
@@ -1136,7 +1136,7 @@ SHALL be legal in measure, filter (typing as a measure) and ORDER BY positions.
 
 #### Scenario: Cross-model transform parameter on a local root
 - **WHEN** a query rooted at `orders` selects
-  `amount:weighted_avg(weight=rank(sum(customers.spend, partition_by=customers.regions.name)))`
+  `weighted_avg(amount, weight=rank(sum(customers.spend, partition_by=customers.regions.name), direction='desc'))`
 - **THEN** the parameter's producer is rooted at `customers` grouped by region (spend
   North 280, South 195, NULL 40 → ranks 1, 2, 3) and attached per order row, the
   orphan order taking the NULL cell; the query executes in every mode with no warning —
@@ -1144,7 +1144,7 @@ SHALL be legal in measure, filter (typing as a measure) and ORDER BY positions.
 
 #### Scenario: Transform parameter with its own partition_by outside the query dimensions
 - **WHEN** a query rooted at `orders` selects
-  `customers.spend:weighted_avg(weight=rank(sum(amount, partition_by=[customers.regions.name, customers.tier]), partition_by=customers.regions.name))`
+  `weighted_avg(customers.spend, weight=rank(sum(amount, partition_by=[customers.regions.name, customers.tier]), partition_by=customers.regions.name, direction='desc'))`
   with no dimensions, and by `customers.tier`
 - **THEN** the transform's own partition key is exempt from the combined-consumer
   partition-key rule exactly as a source constituent's is, and the query executes in
@@ -1170,43 +1170,43 @@ Values below are on the sales graph with `ureg` declared as the computed dimensi
 `upper(region)` and `spend_band` banding `sum(amount, partition_by=[city, region]) > 45`.
 
 #### Scenario: Measure position
-- **WHEN** a query over `[ureg, city]` selects `rank(sum(amount), partition_by=ureg)`
-- **THEN** each city is ranked by its total within its upper-cased region — EAST: Zeta 1, Delta 2, Epsilon 2; NORTH: Beta 1, Alpha 2; SOUTH: Gamma 1, Alpha 2; GAP: the NULL city 1, Kappa 2; VOID: Xi 1 — and the bound partition grain equals that of `sum(amount, partition_by=ureg)`
+- **WHEN** a query over `[ureg, city]` selects `rank(sum(amount), partition_by=ureg, direction='desc')`
+- **THEN** each city is ranked by its total within its upper-cased region — EAST: Zeta 1, Delta 2, Epsilon 2; NORTH: Beta 1, Alpha 2; SOUTH: Gamma 1, Alpha 2; GAP: the NULL city 1, Kappa 2; VOID: Xi NULL (its total is NULL) — and the bound partition grain equals that of `sum(amount, partition_by=ureg)`
 
 #### Scenario: Aggregation-parameter position
-- **WHEN** a query over `[ureg]` selects `weighted_avg(amount, weight=rank(sum(amount, partition_by=[ureg, city]), partition_by=ureg))`
+- **WHEN** a query over `[ureg]` selects `weighted_avg(amount, weight=rank(sum(amount, partition_by=[ureg, city]), partition_by=ureg, direction='desc'))`
 - **THEN** each region's rows are weighted by their city's rank within the region: EAST 56, NORTH 120/7, SOUTH 36, GAP 7, VOID NULL
 
 #### Scenario: Filter position
-- **WHEN** a query over `[ureg, city]` filters `rank(sum(amount), partition_by=ureg) <= 1`
-- **THEN** exactly the rank-1 rows survive: EAST/Zeta, NORTH/Beta, SOUTH/Gamma, GAP/NULL, VOID/Xi
+- **WHEN** a query over `[ureg, city]` filters `rank(sum(amount), partition_by=ureg, direction='desc') <= 1`
+- **THEN** exactly the rank-1 rows survive: EAST/Zeta, NORTH/Beta, SOUTH/Gamma, GAP/NULL (VOID/Xi's NULL rank fails the predicate)
 
 #### Scenario: Order position
-- **WHEN** a query over `[ureg, city]` orders by `rank(sum(amount), partition_by=ureg)` ascending
-- **THEN** the five rank-1 rows precede every rank-2 row
+- **WHEN** a query over `[ureg, city]` orders by `rank(sum(amount), partition_by=ureg, direction='desc')` ascending
+- **THEN** the four rank-1 rows precede every rank-2 row
 
 #### Scenario: Computed-dimension position with a member key
-- **WHEN** a query declares `ureg` and a second computed dimension `rank(sum(amount, partition_by=[city, ureg]), partition_by=ureg)` named `r`, selecting `sum(amount)`
-- **THEN** rows group by `(ureg, r)`: EAST r=1 80 and r=2 100, NORTH r=1 60 and r=2 30, SOUTH r=1 100 and r=2 40, GAP r=1 12 and r=2 8, VOID r=1 NULL
+- **WHEN** a query declares `ureg` and a second computed dimension `rank(sum(amount, partition_by=[city, ureg]), partition_by=ureg, direction='desc')` named `r`, selecting `sum(amount)`
+- **THEN** rows group by `(ureg, r)`: EAST r=1 80 and r=2 100, NORTH r=1 60 and r=2 30, SOUTH r=1 100 and r=2 40, GAP r=1 12 and r=2 8, VOID r=NULL NULL
 
 #### Scenario: Mixed list of a column and a computed dimension
-- **WHEN** a measure names `rank(sum(amount), partition_by=[ureg, product])`
+- **WHEN** a measure names `rank(sum(amount), partition_by=[ureg, product], direction='desc')`
 - **THEN** the bound partition grain is `{upper(region), product}`, identical to the grain `sum(amount, partition_by=[ureg, product])` binds
 
 #### Scenario: Non-column element names the construct
-- **WHEN** a measure names `rank(sum(amount), partition_by=sum(amount))` or `sum(amount, partition_by=sum(amount))`
+- **WHEN** a measure names `rank(sum(amount), partition_by=sum(amount), direction='desc')` or `sum(amount, partition_by=sum(amount))`
 - **THEN** binding fails with "transform 'rank' partition_by must resolve to a column reference; got AggregateKey." or "aggregation partition_by must resolve to a column reference; got AggregateKey." respectively
 
 #### Scenario: Undeclared name stays unknown
-- **WHEN** a query over `[city]` (no `ureg` dimension) selects `rank(sum(amount), partition_by=ureg)`
+- **WHEN** a query over `[city]` (no `ureg` dimension) selects `rank(sum(amount), partition_by=ureg, direction='desc')`
 - **THEN** binding fails with the unknown-reference error naming `ureg`
 
 #### Scenario: Attach-carrying computed dimension in filter and order positions
-- **WHEN** a query over `[spend_band, city]` filters `rank(sum(amount), partition_by=spend_band) <= 1`
+- **WHEN** a query over `[spend_band, city]` filters `rank(sum(amount), partition_by=spend_band, direction='desc') <= 1`
 - **THEN** exactly the rows hi/Gamma (100) and lo/Alpha (70) survive, and the same expression as an ascending order target sorts those two rows first
 
 #### Scenario: Attach-carrying computed dimension in measure and parameter positions fails closed
-- **WHEN** a query over `[spend_band, city]` selects `rank(sum(amount), partition_by=spend_band)`, or a query over `[spend_band]` selects `weighted_avg(amount, weight=rank(sum(amount), partition_by=spend_band))`
+- **WHEN** a query over `[spend_band, city]` selects `rank(sum(amount), partition_by=spend_band, direction='desc')`, or a query over `[spend_band]` selects `weighted_avg(amount, weight=rank(sum(amount), partition_by=spend_band, direction='desc'))`
 - **THEN** the key binds to the dimension's value and planning fails with a planner error, never an unknown-reference error (target behaviour, DEV-1960: both execute like `sum(amount, partition_by=spend_band)`)
 
 ### Requirement: Re-aggregation over ranked and windowed operands
@@ -1314,7 +1314,7 @@ cells takes the outer aggregation's empty value (0 for the count family, NULL ot
 #### Scenario: Outer grain holding only the joined bucket
 - **WHEN** the time-bucket query drops `name` and keeps only the month
 - **THEN** each month carries the sum over all `(account, customer, month)` cells in it,
-  and the row set equals that of `account_snapshots.balance:sum` over the same month
+  and the row set equals that of `sum(account_snapshots.balance)` over the same month
 
 #### Scenario: Associated default dimension
 - **WHEN** the inner is `max(account_snapshots.balance, partition_by=[account_snapshots.account_id, id])`

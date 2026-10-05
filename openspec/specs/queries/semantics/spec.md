@@ -22,7 +22,7 @@ with it (per `queries/attribution-modes`); under `"error"` the query refuses. In
 mode does an aggregate join through an unproven path.
 
 #### Scenario: Attributable dimension partitions, unattributable broadcasts
-- **WHEN** a query rooted at `orders` selects `customers.spend:sum` by one
+- **WHEN** a query rooted at `orders` selects `sum(customers.spend)` by one
   customer-determined dimension and one orders-level dimension
 - **THEN** by executed values, cells vary along the determined dimension, sum to the
   total across it, and repeat unchanged across the orders-level dimension
@@ -43,13 +43,13 @@ fan-out may multiply an aggregation's inputs. The sole exception is the host-gra
 in `queries/cross-model-aggregates`.
 
 #### Scenario: Join fan-out never multiplies aggregation inputs
-- **WHEN** a query rooted at `orders` selects `customers.spend:sum` and each customer
+- **WHEN** a query rooted at `orders` selects `sum(customers.spend)` and each customer
   has several orders
 - **THEN** by executed values every customer's spend is counted exactly once, however
   many orders fan the join
 
 #### Scenario: Local aggregate over a fanning dimension never multiplies
-- **WHEN** a query rooted at `customers` selects the local measure `spend:sum` by
+- **WHEN** a query rooted at `customers` selects the local measure `sum(spend)` by
   `orders.status`, and one customer has two orders with the same status
 - **THEN** by executed values that customer's spend is never counted twice in a cell —
   under the default the metric broadcasts with a warning; under
@@ -140,7 +140,7 @@ related row.
 
 #### Scenario: Cross-path filter restricts the population by association
 - **WHEN** a query rooted at `orders` filters on an orders-level predicate and selects
-  `customers.spend:sum`
+  `sum(customers.spend)`
 - **THEN** by executed values the metric counts exactly the customers with at least one
   order passing the predicate, each once
 
@@ -152,7 +152,7 @@ related row.
 
 #### Scenario: Population filter across a fanning hop restricts the population
 - **WHEN** a query rooted at `customers` filters on `orders.status = 'ok'` and selects the
-  local `spend:sum`, in any `to_many_handling` mode, and one customer has two `ok` orders
+  local `sum(spend)`, in any `to_many_handling` mode, and one customer has two `ok` orders
 - **THEN** by executed values the metric equals the spend of the distinct customers with at
   least one `ok` order, each once (420 on the reference dataset, never 520); the base query
   restricts `customers` by a correlated semi-join and does not join `orders`; the response
@@ -162,25 +162,25 @@ related row.
 #### Scenario: Derived population filter across a fanning hop restricts the population
 - **WHEN** a query rooted at `orders` filters on `customers.regions.bad_pop > 0` (a derived
   column whose definition crosses the one-to-many `regions → region_events` hop) and
-  selects the local `amount:sum`, in any `to_many_handling` mode
+  selects the local `sum(amount)`, in any `to_many_handling` mode
 - **THEN** by executed values the metric equals the amount of the orders whose region
   passes the predicate, each order once (120 on the reference dataset, never 220)
 
 #### Scenario: Population filter over a provably to-one path stays inline
 - **WHEN** a query rooted at `orders` filters on `customers.tier = 'gold'` and selects the
-  local `amount:sum`
+  local `sum(amount)`
 - **THEN** the query executes with the filter applied as a plain row restriction, by
   executed values and generated SQL unchanged from today
 
 #### Scenario: Filter and dimension on one branch bind to the same row
 - **WHEN** a query rooted at `customers` selects `dimensions: ["orders.status"]`, the
-  local `spend:sum`, and `filters: ["orders.amount = 20"]`, where the only order of
+  local `sum(spend)`, and `filters: ["orders.amount = 20"]`, where the only order of
   amount 20 has status `new` and its customer also has `ok` orders
 - **THEN** the result has exactly one cell, `new`, by executed values — the filter and
   the dimension are evaluated on the same joined row, never on the customer's other orders
 
 #### Scenario: Two branches restrict the population independently
-- **WHEN** a query rooted at `customers` selects `spend:sum` with
+- **WHEN** a query rooted at `customers` selects `sum(spend)` with
   `filters: ["orders.status = 'ok'", "regions.region_events.value >= 50"]`, where
   `customers → orders` and `regions → region_events` are one-to-many
 - **THEN** by executed values the metric counts exactly the customers with at least one
@@ -197,7 +197,7 @@ related row.
 - **WHEN** a query rooted at `customers` filters on
   `tier = 'bronze' or orders.status = 'ok'` (a root-local and a cross-path reference under
   `OR`, the cross-path leg reaching only across the fanning `orders` hop) and selects the
-  local `spend:sum`, in any `to_many_handling` mode
+  local `sum(spend)`, in any `to_many_handling` mode
 - **THEN** the query no longer fails closed: by executed values the metric equals the spend of
   the distinct bronze customers and customers with at least one `ok` order, each once (460 on
   the reference dataset, never the join-multiplied 560); the base query does not join
@@ -206,14 +206,14 @@ related row.
 
 #### Scenario: A root row with no related row is judged with NULL related columns
 - **WHEN** a query rooted at `customers` filters on `tier = 'gold' or orders.status = 'ok'`
-  and selects `spend:sum`, where one gold customer has no orders at all
+  and selects `sum(spend)`, where one gold customer has no orders at all
 - **THEN** by executed values that customer is counted — the disjunction holds on the
   customer's null-extended row — so the metric is 475 on the reference dataset, never 420
   (the customer wrongly dropped) and never the join-multiplied 675
 
 #### Scenario: Negation keeps the existential reading
 - **WHEN** a query rooted at `customers` filters on
-  `not (tier = 'gold' and orders.status = 'ok')` and selects `spend:sum`
+  `not (tier = 'gold' and orders.status = 'ok')` and selects `sum(spend)`
 - **THEN** by executed values the metric counts the non-gold customers together with the
   gold customers having at least one order that is not `ok`, each once (370 on the reference
   dataset); a gold customer with no orders is not counted, and the value is never the
@@ -221,20 +221,20 @@ related row.
 
 #### Scenario: A null-test on a related column reads as absence
 - **WHEN** a query rooted at `customers` filters on `orders.id is null` and selects
-  `spend:sum`
+  `sum(spend)`
 - **THEN** by executed values the metric counts exactly the customers with no orders (55 on
   the reference dataset), and the response carries the `semi_join_pushed` entry
 
 #### Scenario: Branches under a disjunction restrict independently
 - **WHEN** a query rooted at `customers` filters on
-  `orders.status = 'new' or regions.region_events.value >= 50` and selects `spend:sum`
+  `orders.status = 'new' or regions.region_events.value >= 50` and selects `sum(spend)`
 - **THEN** by executed values the metric counts the customers with at least one `new` order
   together with those whose region has an event of value 50 or more, each once (320 on the
   reference dataset), with one `semi_join_pushed` entry for the filter
 
 #### Scenario: An atom spanning two branches is judged on their product
 - **WHEN** a query rooted at `customers` filters on
-  `orders.amount < regions.region_events.value` and selects `spend:sum`
+  `orders.amount < regions.region_events.value` and selects `sum(spend)`
 - **THEN** by executed values the metric counts the customers having some order and some
   region event with the order's amount below the event's value, each once (420 on the
   reference dataset), never a dropped-filter warning
@@ -277,7 +277,7 @@ related row.
 
 #### Scenario: Population filter across a fanning hop restricts a mixed re-aggregation constituent
 - **WHEN** a customers query over `[tier]` selects
-  `sum(spend * avg(spend:sum(partition_by=[tier, plan_code]), partition_by=tier))` with
+  `sum(spend * avg(sum(spend, partition_by=[tier, plan_code]), partition_by=tier))` with
   the filter `orders.status = 'ok'`
 - **THEN** the constituent's operand cells and its per-tier average are computed over
   the restricted population only (gold 18050 = 190 × 95, silver 26450 = 230 × 115),
@@ -288,7 +288,7 @@ related row.
 
 #### Scenario: Re-aggregation producers report a dropped out-of-scope conjunct
 - **WHEN** a customers query over `[tier]` selects
-  `min(spend:sum(partition_by=[tier, plan_code]), partition_by=tier)` with the filter
+  `min(sum(spend, partition_by=[tier, plan_code]), partition_by=tier)` with the filter
   `tier = 'bronze' or orders.status = 'ok'`, in any `to_many_handling` mode
 - **THEN** nothing is dropped: the conjunct restricts the re-aggregation's carrier and
   outer producer by association exactly as it does a plain partitioned producer — by
@@ -368,7 +368,7 @@ not satisfy this correspondence; its warning hint (per Loud degradation) is the 
 disclosure.
 
 #### Scenario: Filtered value equals the sliced cell
-- **WHEN** an associate-mode query filters `status = 'ok'` with `customers.spend:sum`
+- **WHEN** an associate-mode query filters `status = 'ok'` with `sum(customers.spend)`
   rooted at `orders`, and its counterpart groups by `status` instead
 - **THEN** the filtered run's value equals the `ok` cell of the grouped run, by
   executed values, across a generated family of query shapes
@@ -418,18 +418,18 @@ column's values.
 
 #### Scenario: Grained transform constituent aggregates the transform's cells
 - **WHEN** a query over a month time dimension selects
-  `sum(cumsum(amount:sum(partition_by=[region, ordered_at])) - 1)`
+  `sum(cumsum(sum(amount, partition_by=[region, ordered_at])) - 1)`
 - **THEN** each month carries the sum over regions of that region's running total
   minus one per cell, by hand-computed executed values on SQLite and DuckDB
 
 #### Scenario: Ungrained transform constituent is identity plus a warning
-- **WHEN** a query selects `sum(cumsum(amount:sum))` over a month time dimension
-- **THEN** the value equals `cumsum(amount:sum)` per cell and the response carries
+- **WHEN** a query selects `sum(cumsum(sum(amount)))` over a month time dimension
+- **THEN** the value equals `cumsum(sum(amount))` per cell and the response carries
   the degenerate-re-aggregation warning, exactly as `sum(sum(amount))` does
 
 #### Scenario: Ungrained inner of a mixed operand types at the query grain
 - **WHEN** a query over a month time dimension selects
-  `sum(rank(amount:sum(partition_by=[region, ordered_at]) - amount:sum))`
+  `sum(rank(sum(amount, partition_by=[region, ordered_at]) - sum(amount), direction='desc'))`
 - **THEN** the ungrained inner is the month total, computed at the query grain and
   broadcast onto the `(region, month)` cells before ranking — never re-evaluated per
   region — by hand-computed executed values distinguishable from the per-cell
@@ -437,7 +437,7 @@ column's values.
 
 #### Scenario: Collapsing transform constituent drops the time axis
 - **WHEN** a query over a month time dimension selects
-  `sum(last(amount:sum(partition_by=[region, ordered_at])))`
+  `sum(last(sum(amount, partition_by=[region, ordered_at])))`
 - **THEN** the constituent is typed at `(region)`: every month carries the sum over
   regions of each region's most recent monthly total, the response warns that the
   month dimension is broadcast, and a region absent from a month still counts —
@@ -445,7 +445,7 @@ column's values.
 
 #### Scenario: Collapsing and preserving constituents share one operand dataset
 - **WHEN** the same query selects
-  `sum(cumsum(amount:sum(partition_by=[region, ordered_at])) - last(amount:sum(partition_by=[region, ordered_at])))`
+  `sum(cumsum(sum(amount, partition_by=[region, ordered_at])) - last(sum(amount, partition_by=[region, ordered_at])))`
 - **THEN** the operand dataset is the `(region, month)` cells, the collapsed value
   broadcasts onto them, each month is attributable through the preserving
   constituent, and the value is correct with no warning
@@ -572,7 +572,7 @@ every consumer position.
 
 #### Scenario: Parameter determined by the entity key under association
 - **WHEN** a query rooted at `orders` with `to_many_handling: "associate"` selects
-  `customers.spend:weighted_avg(weight=customers.spend)` by the orders-level dimension
+  `weighted_avg(customers.spend, weight=customers.spend)` by the orders-level dimension
   `status`
 - **THEN** each status cell equals the spend-weighted average over the distinct customers
   associated with it, by hand-computed executed values on SQLite and DuckDB — each
@@ -581,7 +581,7 @@ every consumer position.
 #### Scenario: Definition-default parameter follows the same rule
 - **WHEN** a model declares a custom aggregation whose parameter defaults to a column of
   the aggregate's root (e.g. `wsum` with `weight` defaulting to `spend`) and an
-  associate-mode query selects `customers.spend:wsum` by an unattributable dimension
+  associate-mode query selects `wsum(customers.spend)` by an unattributable dimension
 - **THEN** it executes with the default applied once per distinct entity, by executed
   values, identical to spelling the parameter explicitly
 
@@ -677,7 +677,7 @@ other column's values.
 
 #### Scenario: Transform constituent inside a mixed source
 - **WHEN** a query over dimensions `[region]` selects the measure
-  `sum(quantity * rank(avg(unit_price, partition_by=product)))`
+  `sum(quantity * rank(avg(unit_price, partition_by=product), direction='desc'))`
 - **THEN** each region row carries the sum over its base rows of `quantity` times
   the rank of the row's product among products by average unit price, by executed
   values, with unchanged cardinality
@@ -720,7 +720,7 @@ ungrained form on construction grounds is a closure violation.
 
 #### Scenario: Ungrained parameter under association
 - **WHEN** an associate-mode query rooted at `orders` over `[status]` selects
-  `customers.spend:wsum(weight=sum(amount))`
+  `wsum(customers.spend, weight=sum(amount))`
 - **THEN** each status cell equals the sum of its distinct associated customers'
   spend times that status cell's order total, by executed values
 
@@ -804,7 +804,7 @@ applies exactly as for a single-column source rooted at the home.
   parameter
 
 #### Scenario: A definition default naming a root column widens the home to the root
-- **WHEN** a query rooted at `orders` selects `customers.spend:<agg>`, where `<agg>` is
+- **WHEN** a query rooted at `orders` selects `<agg>(customers.spend)`, where `<agg>` is
   declared on `customers` and defaults its weight to the root column `orders.amount`
   (bare-qualified or inside an expression such as `orders.amount * 1`)
 - **THEN** the home is `orders`, identical in value to the explicit
@@ -833,7 +833,7 @@ applies exactly as for a single-column source rooted at the home.
   from safety because the home widened to `customers`
 
 #### Scenario: A default cancels to a dataset two hops from the root
-- **WHEN** a query rooted at `orders` selects `customers.regions.countries.gdp:wsum_region_pop`,
+- **WHEN** a query rooted at `orders` selects `wsum_region_pop(customers.regions.countries.gdp)`,
   where `wsum_region_pop` is declared on `countries` and defaults its weight to
   `regions.pop`, `regions → countries` is provably to-one and `orders` has no direct
   join to `regions`
@@ -845,28 +845,28 @@ applies exactly as for a single-column source rooted at the home.
 
 #### Scenario: A default cancels twice
 - **WHEN** the `countries`-declared default is `regions.customers.spend` and the query
-  selects `customers.regions.countries.gdp:wsum_cust_spend2` from `orders`
+  selects `wsum_cust_spend2(customers.regions.countries.gdp)` from `orders`
 - **THEN** the default resolves to `customers.spend`, the home is `customers`, and the
   value equals the explicit `weight=customers.spend` twin (670000 on the reference
   dataset), by executed values
 
 #### Scenario: A default cancels and then walks forward
 - **WHEN** the `countries`-declared default is `regions.customers.plans.fee` (queried as
-  `customers.regions.countries.gdp:wsum_plan_fee`), or a `regions`-declared default is
-  `customers.plans.fee` (queried as `customers.regions.pop:wsum_cust_plan_fee`)
+  `wsum_plan_fee(customers.regions.countries.gdp)`), or a `regions`-declared default is
+  `customers.plans.fee` (queried as `wsum_cust_plan_fee(customers.regions.pop)`)
 - **THEN** each resolves to `customers.plans.fee`, homes at `customers`, and equals its
   explicit twin (100000 and 10000 on the reference dataset), by executed values
 
 #### Scenario: Defaults in different frames resolve per reference
 - **WHEN** a `countries`-declared aggregation defaults one parameter to `regions.pop`
   and another to `regions.customers.plans.fee`, queried as
-  `customers.regions.countries.gdp:wsum_two` from `orders`
+  `wsum_two(customers.regions.countries.gdp)` from `orders`
 - **THEN** each default resolves in its own frame (`customers.regions.pop` and
   `customers.plans.fee`), the home is `customers`, and the value equals the explicit
   two-kwarg twin (17000000 on the reference dataset), by executed values
 
 #### Scenario: A cancelled default homes above it over a to-one reverse hop
-- **WHEN** a query rooted at `orders` selects `customers.regions.region_events.value:wsum_rp`,
+- **WHEN** a query rooted at `orders` selects `wsum_rp(customers.regions.region_events.value)`,
   where `wsum_rp` is declared on `region_events` and defaults its weight to `regions.pop`,
   `regions → region_events` fans and its inverse is provably to-one
 - **THEN** the default resolves to `customers.regions.pop`, the home is
@@ -878,7 +878,7 @@ applies exactly as for a single-column source rooted at the home.
 
 #### Scenario: A cancelled default that then crosses a fanning hop fails closed
 - **WHEN** the `countries`-declared default is `regions.region_events.value` and the
-  query selects `customers.regions.countries.gdp:wsum_fan` from `orders`
+  query selects `wsum_fan(customers.regions.countries.gdp)` from `orders`
 - **THEN** the default resolves to `customers.regions.region_events.value`, the home is
   `customers.regions.region_events` exactly as for the explicit
   `weight=customers.regions.region_events.value` twin, and the value equals that twin
@@ -886,20 +886,20 @@ applies exactly as for a single-column source rooted at the home.
   each event counted once — on SQLite and DuckDB, by executed values
 
 #### Scenario: A reverse hop to a dataset not on the path stays refused
-- **WHEN** a query rooted at `regions` selects `pop:wsum_cust_spend`, whose
+- **WHEN** a query rooted at `regions` selects `wsum_cust_spend(pop)`, whose
   `regions`-declared default is `customers.spend`
 - **THEN** nothing cancels — `customers` is not on the path — and the query fails with
   the same input-safety error naming `customers` that the explicit
   `weight=customers.spend` twin raises
 
 #### Scenario: A query-typed revisit is refused
-- **WHEN** a query selects `customers.regions.customers.spend:sum` from `orders`
+- **WHEN** a query selects `sum(customers.regions.customers.spend)` from `orders`
 - **THEN** the query is refused with the circular-join error, never silently cancelled
 
 #### Scenario: The path's own spelling survives cancellation
 - **WHEN** the query root is an inline extension of `orders` adding a named join
   `ship_region` to `regions`, and the query selects
-  `ship_region.countries.gdp:wsum_region_pop`
+  `wsum_region_pop(ship_region.countries.gdp)`
 - **THEN** the default resolves to `ship_region.pop` — the edge-name spelling of the
   region on the path — and the value equals the explicit `weight=ship_region.pop` twin
   (500000 on the reference dataset)
@@ -916,7 +916,7 @@ applies exactly as for a single-column source rooted at the home.
   join from the owner — by executed values
 
 #### Scenario: An owner at the root consumes its own name once
-- **WHEN** a query rooted at `orders` selects `amount:<agg>` where `<agg>` is declared
+- **WHEN** a query rooted at `orders` selects `<agg>(amount)` where `<agg>` is declared
   on `orders` and defaults its weight to `orders.cost` (bare-dotted or inside
   `orders.cost * 1`)
 - **THEN** the leading owner name is consumed as a self-reference exactly once, the
@@ -953,13 +953,13 @@ applies exactly as for a single-column source rooted at the home.
 
 #### Scenario: A host column defined across a fanning hop is refused
 - **WHEN** `orders` defines `li_qty` as `line_items.qty` over an undeclared
-  one-to-many hop and a query rooted at `orders` selects `li_qty:sum`
+  one-to-many hop and a query rooted at `orders` selects `sum(li_qty)`
 - **THEN** it fails with the input-safety error naming `line_items` and the
-  cross-model spelling, while `line_items.qty:sum` returns the per-line-item total
+  cross-model spelling, while `sum(line_items.qty)` returns the per-line-item total
 
 #### Scenario: A default and its explicit spelling are computed once
-- **WHEN** one query rooted at `orders` selects both `amount:wpop` — whose weight
-  defaults to `customers.hr.pop` — and `amount:wpop(weight=customers.hr.pop)` under
+- **WHEN** one query rooted at `orders` selects both `wpop(amount)` — whose weight
+  defaults to `customers.hr.pop` — and `wpop(amount, weight=customers.hr.pop)` under
   two names
 - **THEN** both names carry the same value from a single computation (one producer in
   the generated SQL), each keeping its own public name, and the generated SQL equals
@@ -1028,7 +1028,7 @@ never depends on which dataset roots the query.
   executed values
 
 #### Scenario: A row filter narrows the virtual model's rows
-- **WHEN** a query rooted at `orders` under `associate` selects `customers.spend:sum` by
+- **WHEN** a query rooted at `orders` under `associate` selects `sum(customers.spend)` by
   `status` with the row filter `channel = 'app'`, and one customer has no orders
 - **THEN** the orderless customer fails the filter on its null-extended row and counts
   in no cell, and every cell equals the hand-computed aggregate over the customers

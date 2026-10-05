@@ -67,7 +67,7 @@ async def _expand(
         stage = SlayerQuery(source_model="orders", dimensions=dimensions)
         model = SlayerModel(name="qb", source_queries=[stage], data_source="ds")
         expanded = await engine._expand_query_backed_model(
-            model=model, runtime_kwarg=None, dry_run_placeholders=False,
+            model=model, runtime_kwarg=None,
         )
         assert expanded.sql is not None
         return expanded, expanded.sql

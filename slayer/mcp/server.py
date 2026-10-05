@@ -510,9 +510,12 @@ To connect a new database: create_datasource → describe_datasource (verify + l
           for growth); time_shift(x, -1[, 'year']) (the shifted value itself, for custom
           arithmetic); lag(x, n) / lead(x, n) (row-position shift, NULL at edges); first(x) /
           last(x) (broadcast the earliest/latest bucket's value); consecutive_periods(predicate)
-          (trailing run length; the predicate may be row-level, e.g. status = 'paid'); rank(x),
-          dense_rank(x), percent_rank(x), ntile(x, n=N) (rank family — optional partition_by=, no
-          time dimension needed). All other transforms require a time_dimensions entry.
+          (trailing run length; the predicate may be row-level, e.g. status = 'paid');
+          rank(x, direction='desc') / dense_rank(x, direction='asc') (direction is required:
+          'desc' ranks the highest value 1, 'asc' the lowest), percent_rank(x), ntile(x, n=N)
+          (always ascending: bucket 1 / 0.0 is the lowest) (rank family — optional partition_by=,
+          no time dimension needed; a NULL value ranks NULL). All other transforms require a
+          time_dimensions entry.
           Transforms nest in either order (change(cumsum(x))). Not supported: a row-level column
           mixed into a composite or nested input of time_shift / change / change_pct, or mixed
           with another aggregation's value inside one aggregation source.
@@ -571,7 +574,8 @@ To connect a new database: create_datasource → describe_datasource (verify + l
             main_time_dimension: which time dimension time-ordered transforms key off.
 
         Top-level arguments (siblings of ``query``, NOT fields inside it):
-            variables: Values for {placeholder} substitutions in filters / model SQL. Also
+            variables: Values for {placeholder} substitutions in filters, measure / dimension /
+                order formulas, date_range bounds and model SQL; result names keep the template. Also
                 settable per query object; precedence: runtime (top-level) > named-stage >
                 outer-query > model.query_variables.
             refine: Model-name form only — clauses (dimensions, time_dimensions, measures, filters,
@@ -911,7 +915,7 @@ To connect a new database: create_datasource → describe_datasource (verify + l
             aggregations: Custom aggregations on the model. Each:
                 {"name": "sum_sq", "formula": "SUM({value} * {value})",
                  "params": [{"name": "weight", "sql": "quantity"}], "description": "..."}.
-                The formula must parse as SQL; queries use it as ``column:sum_sq``.
+                The formula must parse as SQL; queries use it as ``sum_sq(column)``.
             query: A SLayer query dict (or list of stage dicts for a multi-stage backing
                 query). When provided, the query is saved as the model's ``source_queries``
                 and the model becomes query-backed. Mutually exclusive with sql_table, sql,

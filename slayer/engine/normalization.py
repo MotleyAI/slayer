@@ -17,7 +17,7 @@ Active rules:
   at binding, surfaced via :func:`stale_spelling_warnings`.
 
 Retired rules: ``FUNC_STYLE_AGG`` (the parser accepts the functional
-aggregation spelling natively as a first-class equivalent of colon syntax),
+aggregation spelling natively),
 ``DOT_PATH_IN_SQL`` (Mode-A free SQL is dotted-canonical) and
 ``MALFORMED_DATE_RANGE`` (a malformed ``date_range`` is a construction error).
 
@@ -71,7 +71,7 @@ def _apply_misplaced_measure(
     *,
     model: Optional[SlayerModel],
 ) -> tuple[SlayerQuery, List[NormalizationWarning]]:
-    """Move bare (no-colon, no-function) entries from ``query.measures`` to
+    """Move bare (non-aggregate, non-call) entries from ``query.measures`` to
     ``query.dimensions`` when they name a column on the model that isn't
     a ``ModelMeasure`` formula.
 

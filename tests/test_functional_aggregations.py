@@ -1,6 +1,5 @@
 """Functional aggregation spelling — parser equivalence, binder validation,
-slack-rule retirement, and entity-ref surfaces (OpenSpec change
-``dev-1826-make-sure-all-aggregations-support-functional-form``).
+slack-rule retirement, and entity-ref surfaces.
 
 Every aggregation writable as ``col:agg(args)`` must be writable as
 ``agg(col, args)`` producing the identical ``AggCall``; unknown names defer to
@@ -41,6 +40,7 @@ from slayer.engine.syntax import (
 from slayer.memories.resolver import extract_entities_from_query, resolve_entity
 from slayer.storage.yaml_storage import YAMLStorage
 
+from tests._dev1739_fixtures import make_exec_engine
 from tests._engine_helpers import _engine_generate
 
 
@@ -124,6 +124,7 @@ class TestStarForms:
     def test_count_dotted_star(self) -> None:
         node = parse_expr("count(customers.*)")
         assert node == parse_expr("customers.*:count")
+        assert isinstance(node, AggCall)
         assert node.source == DottedRef(parts=("customers", "*"))
 
     def test_count_deep_dotted_star(self) -> None:
@@ -220,8 +221,8 @@ class TestDispatchUnchanged:
         assert parse_expr("cumsum(sum(revenue))") == parse_expr("cumsum(revenue:sum)")
 
     def test_rank_over_functional_agg_with_partition(self) -> None:
-        assert parse_expr("rank(sum(revenue), partition_by=status)") == parse_expr(
-            "rank(revenue:sum, partition_by=status)"
+        assert parse_expr("rank(sum(revenue), partition_by=status, direction='desc')") == parse_expr(
+            "rank(revenue:sum, partition_by=status, direction='desc')"
         )
 
     def test_scalar_call_stays_scalar(self) -> None:
@@ -533,3 +534,28 @@ class TestEntityRefsFunctional:
                 )
         finally:
             await engine.aclose()
+
+
+# ===========================================================================
+# Cross-spelling measure/filter matching.
+# ===========================================================================
+
+
+@pytest.fixture(params=["sqlite", "duckdb"])
+async def exec_engine(request):
+    async for engine in make_exec_engine(request):
+        yield engine
+
+
+class TestCrossSpellingMatching:
+    @pytest.mark.parametrize(
+        ("measure", "filter_"),
+        [("sum(amount)", "SUM(amount) > 100"), ("SUM(amount)", "sum(amount) > 100")],
+    )
+    async def test_filter_resolves_to_renamed_measure(self, exec_engine, measure, filter_) -> None:
+        resp = await exec_engine.execute(SlayerQuery.model_validate({
+            "source_model": "orders", "dimensions": ["channel"],
+            "measures": [{"formula": measure, "name": "rev"}], "filters": [filter_],
+        }))
+        assert resp.columns == ["orders.channel", "orders.rev"]
+        assert [(r["orders.channel"], float(r["orders.rev"])) for r in resp.data] == [("web", 165.0)]

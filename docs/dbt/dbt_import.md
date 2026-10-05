@@ -151,7 +151,7 @@ Every legal dbt construct that reaches the importer is either represented exactl
 
 | dbt construct | SLayer representation |
 | --- | --- |
-| Measure `agg: sum/avg/min/max/count/count_distinct/median` | `ModelMeasure` `col:<agg>` |
+| Measure `agg: sum/avg/min/max/count/count_distinct/median` | `ModelMeasure` `<agg>(col)` |
 | Measure `agg: percentile` (continuous) | `percentile(col, p=<value>)` |
 | Measure `agg: count_distinct_approx` | `count_distinct_approx(col)` (dialect-aware) |
 | Measure `agg: sum_boolean` | `Column.sql = "CASE WHEN (<expr>) THEN 1 ELSE 0 END"`, type `INT`, `sum(col)` |

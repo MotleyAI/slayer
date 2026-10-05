@@ -157,7 +157,8 @@ def _model_v1_to_v2(data: dict) -> dict:
         for q in raw_source_queries:
             if isinstance(q, dict) and int(q.get("version") or 1) < 2:
                 migrated = _query_v1_to_v2(dict(q))
-                migrated["version"] = 2
+                if "version" in q:
+                    migrated["version"] = 2
                 migrated_sq.append(migrated)
             else:
                 migrated_sq.append(q)

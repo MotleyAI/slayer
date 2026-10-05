@@ -330,12 +330,12 @@ class TestCompileRejects:
         await self._expect_reject(q, model)
 
     async def test_filter_transform_call(self) -> None:
-        """Case 5: ``"rank(amount:sum) <= 5"`` → reject."""
+        """Case 5: ``"rank(amount:sum, direction='desc') <= 5"`` → reject."""
         model = _orders_model()
         q = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            filters=["rank(amount:sum) <= 5"],
+            filters=["rank(amount:sum, direction='desc') <= 5"],
             distinct_dimension_values=False,
         )
         await self._expect_reject(q, model)

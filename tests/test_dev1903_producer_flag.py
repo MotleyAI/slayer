@@ -390,7 +390,7 @@ class TestOffGrainConstituentNests:
         """Grained at ``spend_band`` alone (the nested aggregate is opaque): a constant
         weight per band."""
         query = sales_q(dimensions=dimensions, measures=[ModelMeasure(
-            formula="weighted_avg(amount, weight=rank(sum(amount, partition_by=spend_band)))",
+            formula="weighted_avg(amount, weight=rank(sum(amount, partition_by=spend_band), direction='desc'))",
             name="w")])
         resp = await exec_engine.execute(query)
         names = [d if isinstance(d, str) else d["name"] for d in dimensions]

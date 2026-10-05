@@ -13,6 +13,7 @@ import sqlalchemy as sa
 
 import slayer.osi.converter as osi_converter_module
 from slayer.core.enums import DataType, JoinType
+from slayer.engine.syntax import AggCall, Ref, parse_expr
 from slayer.osi.converter import OsiConversionError, OsiToSlayerConverter
 from slayer.osi.models import (
     OSIDataset,
@@ -69,6 +70,14 @@ def _by_name(result):
 def _reported(result) -> bool:
     """True if the conversion report has any entry (public surface)."""
     return bool(result.warnings or result.unconverted_metrics)
+
+
+def _single_agg(formula: str) -> tuple[str, str]:
+    """``(agg, column)`` of a single-aggregation formula over a bare column."""
+    parsed = parse_expr(formula)
+    assert isinstance(parsed, AggCall)
+    assert isinstance(parsed.source, Ref)
+    return parsed.agg, parsed.source.name
 
 
 def _expr(sql: str, dialect: str = "ANSI_SQL") -> OSIExpression:
@@ -170,9 +179,9 @@ def test_join_carries_relationship_ai_context(shop_engine):
 def test_simple_and_ratio_measures(shop_engine):
     orders = _by_name(_shop_result(shop_engine))["orders"]
     m = {meas.name: meas for meas in orders.measures}
-    assert m["total_amount"].formula == "amount:sum"
-    assert m["order_count"].formula == "*:count"
-    assert m["aov"].formula == "amount:sum / *:count"
+    assert m["total_amount"].formula == "sum(amount)"
+    assert m["order_count"].formula == "count(*)"
+    assert m["aov"].formula == "sum(amount) / count(*)"
 
 
 def test_materialized_derived_column_metric(shop_engine):
@@ -183,24 +192,24 @@ def test_materialized_derived_column_metric(shop_engine):
     assert any(
         {"quantity", "amount"}.issubset(c.sql.replace("*", " ").split()) for c in hidden
     )
-    derived_name = measure.formula.split(":")[0]
+    agg, derived_name = _single_agg(measure.formula)
     assert any(c.name == derived_name and c.hidden for c in orders.columns)
-    assert measure.formula.endswith(":sum")
+    assert agg == "sum"
 
 
 def test_cross_dataset_metric_anchors_and_dotted_ref(shop_engine):
-    # DEV-1853 divergences.md class (d): with bidirectional traversal the
+    # With bidirectional traversal the
     # mentioned-model tiebreak anchors on customers (lexicographic), and the
     # orders operand rides the reverse hop.
     customers = _by_name(_shop_result(shop_engine))["customers"]
     m = {meas.name: meas for meas in customers.measures}
-    assert m["cust_reach"].formula == "orders.amount:sum / customer_id:count_distinct"
+    assert m["cust_reach"].formula == "sum(orders.amount) / count_distinct(customer_id)"
 
 
 def test_multihop_metric_anchor_relative_path(shop_engine):
     orders = _by_name(_shop_result(shop_engine))["orders"]
     m = {meas.name: meas for meas in orders.measures}
-    assert m["rev_plus_pop"].formula == "amount:sum + customers.regions.population:sum"
+    assert m["rev_plus_pop"].formula == "sum(amount) + sum(customers.regions.population)"
 
 
 # ─────────────────────────── edge / failure cases ───────────────────────────
@@ -493,14 +502,14 @@ def test_unique_keys_into_meta(shop_engine):
 # ─────────────── anchoring: bridge model + COUNT(*) fact-root ────────────────
 
 def test_bridge_anchor_metric(shop_engine):
-    # DEV-1853 divergences.md class (d): customers now reaches products over
+    # customers reaches products over
     # the reverse orders hop, so the mentioned-model tiebreak anchors on
     # customers instead of the unmentioned orders bridge.
     customers = _by_name(_shop_result(shop_engine))["customers"]
     m = {meas.name: meas for meas in customers.measures}
     assert "bridge_metric" in m
     assert m["bridge_metric"].formula == (
-        "orders.products.price:sum + customer_id:count_distinct"
+        "sum(orders.products.price) + count_distinct(customer_id)"
     )
 
 
@@ -989,7 +998,7 @@ def test_materialized_name_avoids_existing_measure(shop_engine):
     result = _convert(shop_engine, doc)
     orders = {m.name: m for m in result.models}["orders"]
     assert "_rev_0" in {m.name for m in orders.measures}
-    derived = {m.name: m for m in orders.measures}["rev"].formula.split(":")[0]
+    _, derived = _single_agg({m.name: m for m in orders.measures}["rev"].formula)
     assert derived != "_rev_0"
 
 
@@ -1041,7 +1050,7 @@ def test_materialized_name_avoids_existing_column(shop_engine):
     )
     result = _convert(shop_engine, doc)
     orders = {m.name: m for m in result.models}["orders"]
-    derived = {meas.name: meas for meas in orders.measures}["rev"].formula.split(":")[0]
+    _, derived = _single_agg({meas.name: meas for meas in orders.measures}["rev"].formula)
     assert derived != "_rev_0"
     assert any(c.name == derived and c.hidden for c in orders.columns)
 
@@ -1154,7 +1163,7 @@ def test_requested_non_sql_dialect_falls_back_to_sql(shop_engine):
     )
     result = _convert(shop_engine, doc, dialect="MDX")
     orders = {m.name: m for m in result.models}["orders"]
-    assert {m.name: m for m in orders.measures}["tot"].formula == "amount:sum"
+    assert {m.name: m for m in orders.measures}["tot"].formula == "sum(amount)"
 
 
 def test_databricks_dialect_expression_normalized(shop_engine):
@@ -1168,7 +1177,7 @@ def test_databricks_dialect_expression_normalized(shop_engine):
     )
     result = _convert(shop_engine, doc, dialect="DATABRICKS")
     orders = {m.name: m for m in result.models}["orders"]
-    assert {m.name: m for m in orders.measures}["tot"].formula == "amount:sum"
+    assert {m.name: m for m in orders.measures}["tot"].formula == "sum(amount)"
 
 
 def test_target_dialect_percentile_caveat(shop_engine):

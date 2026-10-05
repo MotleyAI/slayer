@@ -125,7 +125,7 @@ class DerivedColumnFanningError(SlayerError, ValueError):
         super().__init__(
             f"Derived column {column!r} on model {model!r} references {reference!r}, "
             f"crossing a fanning join hop to {hop!r}: it is a set per row, not a "
-            f"column of {model!r}. Aggregate the target column ({reference}:<aggregation>) "
+            f"column of {model!r}. Aggregate the target column (<aggregation>({reference})) "
             f"or filter by it; if the hop is really to-one, declare its cardinality "
             f"(many_to_one/one_to_one) or a covering unique key."
         )
@@ -301,6 +301,10 @@ class UnanalyzableDependencyError(QueryTypeError):
 
 class TransformInputError(QueryTypeError):
     """A transform operand the transform cannot consume."""
+
+
+class TransformArgumentError(QueryTypeError):
+    """A missing, unknown or malformed transform argument."""
 
 
 class ComputedDimensionError(QueryTypeError):
@@ -526,7 +530,7 @@ class IllegalWindowInFilterError(SlayerError, ValueError):
         self,
         filter_expr: str,
         source: str,
-        suggestion: str = "use a rank-family transform (e.g. `rank(<measure>) <= N`).",
+        suggestion: str = "use a rank-family transform (e.g. `rank(<measure>, direction='desc') <= N`).",
     ) -> None:
         self.filter_expr = filter_expr
         self.source = source
@@ -623,6 +627,23 @@ class MeasureCycleError(SlayerError, ValueError):
             cls_name=type(self).__name__,
             summary="Cyclic reference in named-measure expansion.",
             extras=[("chain", " → ".join(self.chain))],
+        ))
+
+
+class UnresolvedPlaceholderError(SlayerError):
+    """A ``{name}`` placeholder reached binding unsubstituted."""
+
+    def __init__(self, *, name: str, expression: str) -> None:
+        self.name = name
+        self.expression = expression
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__,
+            summary=f"{{{name}}} looks like a variable placeholder, but no value was substituted into it.",
+            location=repr(expression),
+            suggestion=(
+                f"supply {name!r} through `variables` (a saved measure reached through a join "
+                "is not substituted); write `{{` / `}}` for literal braces."
+            ),
         ))
 
 

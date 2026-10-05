@@ -65,20 +65,20 @@ aligned to the bucket it is the bucket containing the offset instant.
 #### Scenario: Ratio shifted one period back
 
 - **WHEN** a query with a month time dimension and a dimension requests
-  `time_shift(revenue:sum / qty:sum, -1)`
+  `time_shift(sum(revenue) / sum(qty), -1)`
 - **THEN** each row carries the previous month's ratio for its dimension group,
   with executed values matching hand-computed expectations on SQLite and DuckDB
 
 #### Scenario: change_pct over a ratio resets per partition
 
 - **WHEN** a query grouped by store and month requests
-  `change_pct(revenue:sum / *:count)`
+  `change_pct(sum(revenue) / count(*))`
 - **THEN** each store's first month yields NULL and later months yield that
   store's own month-over-month ratio growth, never another store's
 
 #### Scenario: Missing shifted bucket yields NULL under a scalar wrap
 
-- **WHEN** `time_shift(coalesce(revenue:sum, 0), -1)` is evaluated for the
+- **WHEN** `time_shift(coalesce(sum(revenue), 0), -1)` is evaluated for the
   earliest bucket in the data
 - **THEN** the shifted value is NULL (no shifted bucket exists), not 0
 
@@ -101,7 +101,7 @@ aligned to the bucket it is the bucket containing the offset instant.
 #### Scenario: Nested transform input shifts the materialised series
 
 - **WHEN** a query with a month time dimension requests
-  `time_shift(cumsum(revenue:sum), -1)`
+  `time_shift(cumsum(sum(revenue)), -1)`
 - **THEN** each row carries the previous bucket's cumulative sum — the value the
   inner transform's own series holds at the shifted bucket — with NULL at the
   series' first bucket, correct by hand-computed executed values on SQLite and
@@ -117,14 +117,14 @@ aligned to the bucket it is the bucket containing the offset instant.
 
 #### Scenario: Aggregate-typed predicate input shifts as a boolean series
 
-- **WHEN** a query requests `time_shift(revenue:sum > 100, -1)` over a month
+- **WHEN** a query requests `time_shift(sum(revenue) > 100, -1)` over a month
   time dimension
 - **THEN** each row carries the previous bucket's boolean, NULL where the
   shifted bucket is absent, by executed values
 
 #### Scenario: change over a predicate stays rejected by the typing contract
 
-- **WHEN** a query requests `change(revenue:sum > 100)`
+- **WHEN** a query requests `change(sum(revenue) > 100)`
 - **THEN** the query fails with the existing boolean-in-arithmetic-context
   typing error (the desugared subtraction consumes a boolean), not an internal
   error
@@ -132,7 +132,7 @@ aligned to the bucket it is the bucket containing the offset instant.
 #### Scenario: Partitioned leaf keeps its grain inside a shifted composite
 
 - **WHEN** a query over `monthly` by `region` and month requests
-  `time_shift(amount:sum / amount:sum(partition_by=[ordered_at]), -1)`
+  `time_shift(sum(amount) / sum(amount, partition_by=[ordered_at]), -1)`
   (rows: North Jan 10 / Feb 20 / Mar 30, South Jan 5 / Feb 15, West Feb NULL)
 - **THEN** each row carries the prior month's share of that month's
   cross-region total — Feb North ≈ 0.667, Feb South ≈ 0.333, Mar North ≈ 0.571,
@@ -142,8 +142,8 @@ aligned to the bucket it is the bucket containing the offset instant.
 #### Scenario: change and change_pct over a partitioned-leaf composite
 
 - **WHEN** the same query requests
-  `change(amount:sum / amount:sum(partition_by=[ordered_at]))` and
-  `change_pct(amount:sum / amount:sum(partition_by=[ordered_at]))`
+  `change(sum(amount) / sum(amount, partition_by=[ordered_at]))` and
+  `change_pct(sum(amount) / sum(amount, partition_by=[ordered_at]))`
 - **THEN** the change is Feb North ≈ −0.095, Feb South ≈ +0.095, Mar North
   ≈ +0.429 and the percentage change Feb North ≈ −0.143, Feb South ≈ +0.286,
   Mar North ≈ +0.75, NULL elsewhere, by executed values
@@ -151,7 +151,7 @@ aligned to the bucket it is the bucket containing the offset instant.
 #### Scenario: Single partitioned leaf in a trivial composite
 
 - **WHEN** the same query requests
-  `time_shift(amount:sum(partition_by=[ordered_at]) / 2, -1)`
+  `time_shift(sum(amount, partition_by=[ordered_at]) / 2, -1)`
 - **THEN** each row carries half the prior month's cross-region total — Feb
   North 7.5, Feb South 7.5, Mar North 17.5, West Feb 7.5 (the operand grain is
   the month alone, so a region absent from January still reads it), Jan rows
@@ -160,7 +160,7 @@ aligned to the bucket it is the bucket containing the offset instant.
 #### Scenario: Partitioned leaf at a non-time grain is constant along the axis
 
 - **WHEN** the same query requests
-  `time_shift(amount:sum / amount:sum(partition_by=[region]), -1)`
+  `time_shift(sum(amount) / sum(amount, partition_by=[region]), -1)`
 - **THEN** each row carries the prior month's sum divided by the region's own
   total — Feb North ≈ 0.167, Mar North ≈ 0.333, Feb South 0.25, NULL elsewhere —
   by executed values
@@ -168,7 +168,7 @@ aligned to the bucket it is the bucket containing the offset instant.
 #### Scenario: Re-aggregation over a shifted partitioned composite
 
 - **WHEN** a query over `monthly` with only a month time dimension requests
-  `avg(time_shift(amount:sum(partition_by=[region, ordered_at]) / amount:sum(partition_by=[ordered_at]), -1))`
+  `avg(time_shift(sum(amount, partition_by=[region, ordered_at]) / sum(amount, partition_by=[ordered_at]), -1))`
 - **THEN** each month carries the mean of the prior month's regional shares —
   Feb 0.5, Mar ≈ 0.571, Jan NULL — by executed values
 
@@ -176,21 +176,21 @@ aligned to the bucket it is the bucket containing the offset instant.
 
 - **WHEN** the same query restricts the month time dimension with
   `"date_range": ["2024-02-01", "2024-03-31"]` and requests
-  `time_shift(amount:sum(partition_by=[ordered_at]), -1)`
+  `time_shift(sum(amount, partition_by=[ordered_at]), -1)`
 - **THEN** Feb North and Feb South carry January's total 15 and Mar North
   February's total 35, by executed values — never NULL at the first visible
   bucket
 
 #### Scenario: Bare ranked leaf reaches outside the date range
 
-- **WHEN** the same date-ranged query requests `time_shift(amount:last, -1)`
+- **WHEN** the same date-ranged query requests `time_shift(last(amount), -1)`
 - **THEN** Feb North carries 10, Feb South 5 and Mar North 20 — the prior
   month's last value — by executed values
 
 #### Scenario: Non-time partition under a date range keeps its in-frame value
 
 - **WHEN** the same date-ranged query requests
-  `time_shift(amount:sum / amount:sum(partition_by=[region]), -1)`
+  `time_shift(sum(amount) / sum(amount, partition_by=[region]), -1)`
 - **THEN** the denominator is the region's total within the date range (North
   50, South 15): Feb North 0.2, Mar North 0.4, Feb South ≈ 0.333, by executed
   values
@@ -199,7 +199,7 @@ aligned to the bucket it is the bucket containing the offset instant.
 
 - **WHEN** a query over `monthly` by `region` and month with the filter
   `ordered_at >= '2024-02-01' and region = 'North'` requests
-  `time_shift(amount:sum + amount:sum(partition_by=[ordered_at]), -1)`
+  `time_shift(sum(amount) + sum(amount, partition_by=[ordered_at]), -1)`
 - **THEN** Feb North carries 20 and Mar North 40 — the bound is stripped from
   the shifted evaluation while the region predicate restricts it — by executed
   values
@@ -209,7 +209,7 @@ aligned to the bucket it is the bucket containing the offset instant.
 - **WHEN** a query rooted at `orders` by `status` and month carries a row
   filter across the fanning `regions → region_events` hop
   (`customers.regions.region_events.value > 40`) and requests
-  `time_shift(amount:sum / amount:sum(partition_by=[ordered_at]), -1)`
+  `time_shift(sum(amount) / sum(amount, partition_by=[ordered_at]), -1)`
 - **THEN** the shifted evaluation is restricted to the same associated orders:
   Feb ok ≈ 0.394, Feb new ≈ 0.606, Apr ok NULL (no associated March rows), by
   executed values
@@ -218,7 +218,7 @@ aligned to the bucket it is the bucket containing the offset instant.
 
 - **WHEN** a query rooted at `orders` in associate mode groups by the fanning
   dimension `customers.regions.region_events.value` and month and requests
-  `time_shift(amount:sum, -1)`
+  `time_shift(sum(amount), -1)`
 - **THEN** each row carries the prior month's associated sum for its value —
   (50, Feb) 33, (30, Apr) 5, NULL elsewhere — by executed values, with the row
   count unchanged by the measure
@@ -226,7 +226,7 @@ aligned to the bucket it is the bucket containing the offset instant.
 #### Scenario: Partition key attributable across a join
 
 - **WHEN** a query rooted at `orders` by `customers.tier` and month requests
-  `time_shift(amount:sum / amount:sum(partition_by=[customers.tier]), -1)`
+  `time_shift(sum(amount) / sum(amount, partition_by=[customers.tier]), -1)`
 - **THEN** the tier total is resolved through the to-one join and each row
   carries the prior month's share of it — gold Apr 0.1, NULL where the prior
   month has no rows for the tier — by executed values
@@ -240,14 +240,14 @@ aligned to the bucket it is the bucket containing the offset instant.
 
 #### Scenario: Ranked leaf inside a shifted composite executes
 
-- **WHEN** the `monthly` query requests `time_shift(amount:last / 2, -1)`
+- **WHEN** the `monthly` query requests `time_shift(last(amount) / 2, -1)`
 - **THEN** each row carries half the prior month's last value — Feb North 5,
   Mar North 10, Feb South 2.5 — by executed values, never an internal error
 
 #### Scenario: Windowed leaf inside a shifted composite keeps its window
 
 - **WHEN** the `monthly` query requests
-  `time_shift(amount:sum(window='90d') / 2, -1)`
+  `time_shift(sum(amount, window='90d') / 2, -1)`
 - **THEN** each row carries half the prior month's trailing-window sum — Feb
   North 5, Mar North 15, Feb South 2.5, Jan rows and West Feb NULL — by
   executed values, never a value with the window silently dropped
@@ -255,22 +255,22 @@ aligned to the bucket it is the bucket containing the offset instant.
 #### Scenario: Bare windowed leaf reaches outside the date range
 
 - **WHEN** the date-ranged `monthly` query requests
-  `time_shift(amount:sum(window='90d'), -1)`
+  `time_shift(sum(amount, window='90d'), -1)`
 - **THEN** Feb North carries January's trailing-window sum 10 and Mar North
   February's 30, by executed values
 
 #### Scenario: Two offsets share one shifted evaluation
 
 - **WHEN** the `monthly` query requests both
-  `time_shift(amount:sum / amount:sum(partition_by=[ordered_at]), -1)` and
-  `time_shift(amount:sum / amount:sum(partition_by=[ordered_at]), -2)`
+  `time_shift(sum(amount) / sum(amount, partition_by=[ordered_at]), -1)` and
+  `time_shift(sum(amount) / sum(amount, partition_by=[ordered_at]), -2)`
 - **THEN** the generated SQL computes the shifted composite in exactly one
   relation read by both, and the two-period value at Mar North ≈ 0.667, by
   executed values
 
 #### Scenario: Unaligned shift reads the bucket containing the offset instant
 
-- **WHEN** the `monthly` query requests `time_shift(amount:sum, -1, 'day')`
+- **WHEN** the `monthly` query requests `time_shift(sum(amount), -1, 'day')`
   over month buckets
 - **THEN** Feb North carries January's 10 and Mar North February's 20 — the
   bucket containing the day before each bucket start — by executed values
@@ -278,9 +278,9 @@ aligned to the bucket it is the bucket containing the offset instant.
 #### Scenario: Shifted composite over a stage time dimension
 
 - **WHEN** an inner stage projects `region`, `ordered_at` at `month` and
-  `amount:sum` as `rev`, and the outer stage declares a month time dimension
+  `sum(amount)` as `rev`, and the outer stage declares a month time dimension
   on that column with `"date_range": ["2024-02-01", "2024-03-31"]` and
-  requests `time_shift(rev:sum / rev:sum(partition_by=[ordered_at]), -1)` by
+  requests `time_shift(sum(rev) / sum(rev, partition_by=[ordered_at]), -1)` by
   `region`
 - **THEN** Feb North ≈ 0.667, Feb South ≈ 0.333 and Mar North ≈ 0.571, by
   executed values on SQLite and DuckDB
@@ -306,26 +306,26 @@ strictly-typed dialects (Postgres, T-SQL, BigQuery).
 
 #### Scenario: Numeric delta truthiness
 
-- **WHEN** a query requests `consecutive_periods(revenue:sum - cost:sum)` over
+- **WHEN** a query requests `consecutive_periods(sum(revenue) - sum(cost))` over
   a month series
 - **THEN** the streak counts consecutive months where the delta is non-NULL and
   non-zero, matching hand-computed values on SQLite and DuckDB
 
 #### Scenario: Growth streak over a nested transform
 
-- **WHEN** a query requests `consecutive_periods(change(revenue:sum) > 0)`
+- **WHEN** a query requests `consecutive_periods(change(sum(revenue)) > 0)`
 - **THEN** the streak counts consecutive months of positive month-over-month
   growth
 
 #### Scenario: Bare nested transform input
 
-- **WHEN** a query requests `consecutive_periods(cumsum(revenue:sum))`
+- **WHEN** a query requests `consecutive_periods(cumsum(sum(revenue)))`
 - **THEN** the streak counts consecutive months where the running total is
   non-NULL and non-zero
 
 #### Scenario: Scalar call inside a comparison
 
-- **WHEN** a query requests `consecutive_periods(round(revenue:sum) >= 10)`
+- **WHEN** a query requests `consecutive_periods(round(sum(revenue)) >= 10)`
 - **THEN** the streak counts consecutive months where the rounded total reaches
   the threshold
 
@@ -339,12 +339,12 @@ strictly-typed dialects (Postgres, T-SQL, BigQuery).
 #### Scenario: Nested IN materialises its column
 
 - **WHEN** an `IN` predicate over a dimension column appears nested inside a
-  boolean connective (for example `status in ('a','b') and revenue:sum > 0`)
+  boolean connective (for example `status in ('a','b') and sum(revenue) > 0`)
 - **THEN** the referenced column materialises and the streak executes correctly
 
 #### Scenario: Top-level null test drives the streak
 
-- **WHEN** a query requests `consecutive_periods(hi_rev:sum is not None)`
+- **WHEN** a query requests `consecutive_periods(sum(hi_rev) is not None)`
   grouped by store, where one store's aggregate is NULL in the last month
 - **THEN** the streak counts consecutive non-NULL months and the NULL month
   breaks the run (and the `is None` form counts the complementary months)
@@ -352,7 +352,7 @@ strictly-typed dialects (Postgres, T-SQL, BigQuery).
 #### Scenario: Null test under a boolean connective
 
 - **WHEN** a query requests
-  `consecutive_periods(hi_rev:sum is not None and cost:sum > 0)`
+  `consecutive_periods(sum(hi_rev) is not None and sum(cost) > 0)`
 - **THEN** the query executes with both conjuncts applied, rather than failing
   with a boolean-shaped-operands `ValueError`
 
@@ -385,37 +385,37 @@ undefined).
 
 #### Scenario: iif condition position accepts a predicate
 
-- **WHEN** a query requests `consecutive_periods(iif(revenue:sum > 0, 1, 0))`
+- **WHEN** a query requests `consecutive_periods(iif(sum(revenue) > 0, 1, 0))`
 - **THEN** the query executes, with the streak driven by the iif value's
   truthiness
 
 #### Scenario: Boolean in arithmetic context rejected
 
 - **WHEN** a query requests
-  `consecutive_periods((revenue:sum > 0) + (cost:sum > 0))`
+  `consecutive_periods((sum(revenue) > 0) + (sum(cost) > 0))`
 - **THEN** the query fails with a `ValueError` naming the boolean-in-numeric
   shape
 
 #### Scenario: Boolean as scalar-call argument rejected
 
-- **WHEN** a query requests `consecutive_periods(coalesce(revenue:sum > 0, 0))`
+- **WHEN** a query requests `consecutive_periods(coalesce(sum(revenue) > 0, 0))`
 - **THEN** the query fails with a `ValueError` naming the shape
 
 #### Scenario: Boolean in an IN operand rejected
 
-- **WHEN** a query requests `consecutive_periods((revenue:sum > 0) in (1, 0))`
+- **WHEN** a query requests `consecutive_periods((sum(revenue) > 0) in (1, 0))`
 - **THEN** the query fails with a `ValueError` naming the boolean shape, rather
   than passing the predicate through into the emitted `IN` list
 
 #### Scenario: String-family scalar call rejected as predicate
 
-- **WHEN** a query requests `consecutive_periods(lower(name:max))`
+- **WHEN** a query requests `consecutive_periods(lower(max(name)))`
 - **THEN** the query fails with a `ValueError` explaining that a string-valued
   predicate has no truthiness
 
 #### Scenario: Null test in a value position rejected
 
-- **WHEN** a query requests `consecutive_periods((hi_rev:sum is None) + 1)`
+- **WHEN** a query requests `consecutive_periods((sum(hi_rev) is None) + 1)`
 - **THEN** the query fails with a `ValueError` naming the boolean-in-numeric
   shape, rather than rendering the null test as an arithmetic operand
 
@@ -455,7 +455,7 @@ SQL is generated.
 
 #### Scenario: Mixed aggregate-and-row composite rejected
 
-- **WHEN** a query requests `time_shift(revenue:sum * weight, -1)` where
+- **WHEN** a query requests `time_shift(sum(revenue) * weight, -1)` where
   `weight` is a plain column
 - **THEN** the query fails with a `ValueError` naming the mixed shape
 
@@ -487,47 +487,47 @@ composite SHALL fail with an internal render error.
 #### Scenario: Transform over a cross-model inner plus a hidden local aggregate
 
 - **WHEN** a query rooted at `orders` with a month time dimension selects
-  `change(customers.spend:sum) + amount:sum` and nothing else
+  `change(sum(customers.spend)) + sum(amount)` and nothing else
 - **THEN** each row carries the month-over-month change of the cross-model aggregate
   plus that month's local sum, by hand-computed executed values on SQLite and DuckDB,
   with NULL in the first month
 
 #### Scenario: Hidden local operand of another aggregation kind
 
-- **WHEN** the composite's hidden local operand is `*:count` or `amount:max` (for example
-  `change(customers.spend:sum) + *:count`)
+- **WHEN** the composite's hidden local operand is `count(*)` or `max(amount)` (for example
+  `change(sum(customers.spend)) + count(*)`)
 - **THEN** the query executes with the operand materialised, by executed values
 
 #### Scenario: Transform over a crossing-fragment inner plus a hidden local aggregate
 
-- **WHEN** a query selects `change(amount:wscaled_sum) + amount:sum`, where `wscaled_sum`
+- **WHEN** a query selects `change(wscaled_sum(amount)) + sum(amount)`, where `wscaled_sum`
   is an aggregation whose default parameter crosses a join
 - **THEN** each row carries the weighted-scaled delta plus the local sum, by executed
   values on SQLite and DuckDB
 
 #### Scenario: Other transform families compose the same way
 
-- **WHEN** the transform is `time_shift(customers.spend:sum, -1)` or
-  `cumsum(customers.spend:sum)` combined with a hidden local aggregate
+- **WHEN** the transform is `time_shift(sum(customers.spend), -1)` or
+  `cumsum(sum(customers.spend))` combined with a hidden local aggregate
 - **THEN** the composite executes with the transform's own semantics unchanged, by
   executed values
 
 #### Scenario: Conditional over a transform and mixed aggregates
 
 - **WHEN** a query selects
-  `iif(change(customers.spend:sum) > 0, customers.spend:sum, amount:sum)`
+  `iif(change(sum(customers.spend)) > 0, sum(customers.spend), sum(amount))`
 - **THEN** each row carries the cross-model total where the change is positive and the
   local sum otherwise, by executed values
 
 #### Scenario: Selecting an operand on its own changes nothing
 
-- **WHEN** the same query additionally selects `amount:sum` as its own measure
+- **WHEN** the same query additionally selects `sum(amount)` as its own measure
 - **THEN** the composite's values, the row count and every other column are identical to
   the query without it
 
 #### Scenario: Composite in filter and order positions
 
-- **WHEN** `change(customers.spend:sum) + amount:sum` appears only in a filter or only as
+- **WHEN** `change(sum(customers.spend)) + sum(amount)` appears only in a filter or only as
   an ORDER BY key, with a dimension present
 - **THEN** rows are masked or sorted by the composite's value exactly as when it is
   selected, by executed values
@@ -535,16 +535,16 @@ composite SHALL fail with an internal render error.
 #### Scenario: Inner varying along the time axis
 
 - **WHEN** the cross-model inner is attributable to the query's time axis (for example
-  `change(orders.amount:sum)` by customer signup month from `customers`, or
-  `change(customers.spend:sum)` by `customers.signup_at` from `orders`)
+  `change(sum(orders.amount))` by customer signup month from `customers`, or
+  `change(sum(customers.spend))` by `customers.signup_at` from `orders`)
 - **THEN** the delta and `change_pct` percentages are correct per period by hand-computed
   executed values on SQLite and DuckDB, and adding the measure changes no row and no
   other column
 
 #### Scenario: The issue's named shapes execute directly
 
-- **WHEN** a query selects `change(amount:wscaled_sum)`, `change_pct(amount:wscaled_sum)`,
-  `change(customers.spend:sum)` or `change_pct(customers.spend:sum)` alone
+- **WHEN** a query selects `change(wscaled_sum(amount))`, `change_pct(wscaled_sum(amount))`,
+  `change(sum(customers.spend))` or `change_pct(sum(customers.spend))` alone
 - **THEN** each executes with hand-computed values on SQLite and DuckDB, the broadcast
   cross-model inner yielding a zero delta and zero percentage after the first period
 
@@ -554,32 +554,32 @@ A downstream stage's own time dimension SHALL be the time axis for every time-or
 
 #### Scenario: time_shift over a stage time dimension
 
-- **WHEN** an outer stage declares a time dimension on `created_at` at `month` over an inner monthly stage and selects `time_shift(rev:sum, -1, 'month')`
+- **WHEN** an outer stage declares a time dimension on `created_at` at `month` over an inner monthly stage and selects `time_shift(sum(rev), -1, 'month')`
 - **THEN** each row carries the previous month's inner sum, NULL for the first month, by executed values on SQLite and DuckDB
 
 #### Scenario: change and cumsum over a stage time dimension
 
-- **WHEN** the same outer stage selects `change(rev:sum)` and `cumsum(rev:sum)`
+- **WHEN** the same outer stage selects `change(sum(rev))` and `cumsum(sum(rev))`
 - **THEN** each row carries the month-over-month delta (NULL first) and the running total, by executed values
 
 #### Scenario: last over a stage time dimension
 
-- **WHEN** the same outer stage selects `last(rev:sum)`
+- **WHEN** the same outer stage selects `last(sum(rev))`
 - **THEN** every row carries the value of the latest month, by executed values
 
 #### Scenario: Windowed aggregate over a stage time dimension
 
-- **WHEN** the outer stage selects `rev:sum(window='60d')` over the stage time dimension
+- **WHEN** the outer stage selects `sum(rev, window='60d')` over the stage time dimension
 - **THEN** each row carries the trailing-window sum keyed on the stage bucket, by executed values
 
 #### Scenario: time_shift over a multi-hop flat time dimension
 
-- **WHEN** an inner stage projects `customers.regions.last_activity_at` at `month` with `*:count` named `n`, and the outer stage declares a time dimension on `customers__regions__last_activity_at` at `month` with `time_shift(n:sum, -1, 'month')`
+- **WHEN** an inner stage projects `customers.regions.last_activity_at` at `month` with `count(*)` named `n`, and the outer stage declares a time dimension on `customers__regions__last_activity_at` at `month` with `time_shift(sum(n), -1, 'month')`
 - **THEN** the shifted relation references the inner stage's flat alias and the query executes with correct values
 
 #### Scenario: Two stage time dimensions need main_time_dimension
 
-- **WHEN** the outer stage declares time dimensions on two distinct temporal columns, `created_at` and `shipped_at`, each at `month`, and selects `change(rev:sum)` without `main_time_dimension`
+- **WHEN** the outer stage declares time dimensions on two distinct temporal columns, `created_at` and `shipped_at`, each at `month`, and selects `change(sum(rev))` without `main_time_dimension`
 - **THEN** planning fails with the existing error naming the `main_time_dimension` remedy, and setting `main_time_dimension` to `created_at` makes the query execute with that column's bucket as the axis
 
 ### Requirement: Transforms reject grain-refining row-level leaves
@@ -590,7 +590,7 @@ source, SHALL reject with a typed plan-time error — before any SQL is
 generated — any row-level (non-aggregate) leaf in its input that refines the
 consumer grain, that is, a leaf that is not itself a projected query
 dimension. The error SHALL name the transform, the offending leaf, and the
-remedies (aggregate the leaf, e.g. `cumsum(weight:sum)`; project it as a query
+remedies (aggregate the leaf, e.g. `cumsum(sum(weight))`; project it as a query
 dimension; or compute it in an earlier `source_queries` stage), and cite no
 tracking issue. The rule applies uniformly to every such transform op — the
 rank family and the shift family (`time_shift`, `change`, `change_pct`)
@@ -608,7 +608,7 @@ dimension-position rules are unchanged.
 
 #### Scenario: Rank family is covered
 - **WHEN** a query over `[store]` with a month time dimension selects the
-  measure `rank(qty)`
+  measure `rank(qty, direction='desc')`
 - **THEN** it fails with the same typed error, never a result carrying one row
   per (store, month, qty-value)
 
@@ -628,7 +628,7 @@ dimension-position rules are unchanged.
 
 #### Scenario: A projected grain key stays legal
 - **WHEN** a query projects `weight` as a dimension and selects the measure
-  `rank(weight)`
+  `rank(weight, direction='desc')`
 - **THEN** it compiles at the query grain and executes with correct values —
   no error, no extra result rows
 
@@ -653,7 +653,7 @@ dimension-position rules are unchanged.
   transform's row leaf
 
 #### Scenario: Projected grain key under a transform inside a source stays legal
-- **WHEN** a query over `[region]` selects the measure `sum(rank(region))`
+- **WHEN** a query over `[region]` selects the measure `sum(rank(region, direction='desc'))`
 - **THEN** it compiles: the transform types at the query grain and the aggregation is
   the degenerate identity with the degenerate-re-aggregation warning, never an error
 
@@ -675,43 +675,43 @@ in dimension position keeps the existing grain-self-containment error; both take
 precedence over the membership error.
 
 #### Scenario: Non-member query dimension as a measure
-- **WHEN** a query over `[city, region, product]` selects `rank(sum(amount, partition_by=[city, region]), partition_by=product)`
+- **WHEN** a query over `[city, region, product]` selects `rank(sum(amount, partition_by=[city, region]), partition_by=product, direction='desc')`
 - **THEN** planning fails with an error naming `rank`, `product`, the operand grain `city, region` and the `partition_by=` remedy — it never executes by widening the grain
 
 #### Scenario: Non-member query dimension in a filter
-- **WHEN** the same query filters `rank(sum(amount, partition_by=[city, region]), partition_by=product) <= 2`
+- **WHEN** the same query filters `rank(sum(amount, partition_by=[city, region]), partition_by=product, direction='desc') <= 2`
 - **THEN** planning fails with the same error
 
 #### Scenario: Non-member key in dimension position, plain column
-- **WHEN** a query over `[region]` declares the dimension `rank(sum(amount, partition_by=[city, product]), partition_by=region)`
+- **WHEN** a query over `[region]` declares the dimension `rank(sum(amount, partition_by=[city, product]), partition_by=region, direction='desc')`
 - **THEN** planning fails with the same error naming `region` and the grain `city, product`, never with an internal producer-slot error
 
 #### Scenario: Non-member key in dimension position, computed-dimension name
-- **WHEN** a query declares `ureg` = `upper(region)` and the dimension `rank(sum(amount, partition_by=[city, region]), partition_by=ureg)`
+- **WHEN** a query declares `ureg` = `upper(region)` and the dimension `rank(sum(amount, partition_by=[city, region]), partition_by=ureg, direction='desc')`
 - **THEN** planning fails with the same error naming the key and the grain `city, region`, never with an internal error
 
 #### Scenario: Member key executes
-- **WHEN** a query over `[city, region, product]` selects `rank(sum(amount, partition_by=[city, region]), partition_by=region)`
-- **THEN** each row carries its (city, region) total's rank within the region: East Zeta 1, Delta 2, Epsilon 2; North Beta 1, Alpha 2; South Gamma 1, Alpha 2; Gap the NULL city 1, Kappa 2; Void Xi 1
+- **WHEN** a query over `[city, region, product]` selects `rank(sum(amount, partition_by=[city, region]), partition_by=region, direction='desc')`
+- **THEN** each row carries its (city, region) total's rank within the region: East Zeta 1, Delta 2, Epsilon 2; North Beta 1, Alpha 2; South Gamma 1, Alpha 2; Gap the NULL city 1, Kappa 2; Void Xi NULL (its total is NULL)
 
 #### Scenario: Ungrained inner keeps the query-dimension rule
-- **WHEN** a query over the banded dimension alone selects `rank(sum(amount), partition_by=region)`
+- **WHEN** a query over the banded dimension alone selects `rank(sum(amount), partition_by=region, direction='desc')`
 - **THEN** planning fails with the existing "partition_by column 'region' is not a query dimension" error listing the available dimensions; over `[region, band]` the same measure executes because the ungrained inner is grained at the query grain and `region` is a member
 
 #### Scenario: Windowed inner admits the active bucket
-- **WHEN** a monthly query selects `rank(sum(amount, window='1y', partition_by=customers.regions.name), partition_by=ordered_at)`
+- **WHEN** a monthly query selects `rank(sum(amount, window='1y', partition_by=customers.regions.name), partition_by=ordered_at, direction='desc')`
 - **THEN** the partition key passes the operand-grain rule as the query's month bucket, a member contributed by the windowed inner
 
 #### Scenario: Nested collapsing transform drops its axis
-- **WHEN** a monthly query selects `rank(last(sum(amount, partition_by=[customers.regions.name, ordered_at])), partition_by=ordered_at)`
+- **WHEN** a monthly query selects `rank(last(sum(amount, partition_by=[customers.regions.name, ordered_at])), partition_by=ordered_at, direction='desc')`
 - **THEN** planning fails with the operand-grain error naming `ordered_at` and the grain `customers.regions.name`; with `partition_by=customers.regions.name` the key passes the rule
 
 #### Scenario: Aggregate-free input takes the query grain
-- **WHEN** a query over `[city, region, product]` selects `rank(city, partition_by=region)`
-- **THEN** it executes, ranking each row's city value descending within its region: East Zeta 1, Epsilon 2, Delta 3; North Beta 1, Alpha 2; South Gamma 1, Alpha 2; Gap Kappa 1, the NULL city 2; Void Xi 1
+- **WHEN** a query over `[city, region, product]` selects `rank(city, partition_by=region, direction='desc')`
+- **THEN** it executes, ranking each row's city value descending within its region: East Zeta 1, Epsilon 2, Delta 3; North Beta 1, Alpha 2; South Gamma 1, Alpha 2; Gap Kappa 1, the NULL city NULL; Void Xi 1
 
 #### Scenario: Residue error precedes the membership rule
-- **WHEN** a query over `[region]` declares the dimension `rank(sum(amount), partition_by=region)`
+- **WHEN** a query over `[region]` declares the dimension `rank(sum(amount), partition_by=region, direction='desc')`
 - **THEN** planning fails with the existing grain-self-containment error ("must declare partition_by= explicitly"), not the operand-grain error
 
 ### Requirement: consecutive_periods counts calendar periods
@@ -909,3 +909,221 @@ When the query's active time bucket is a custom granularity (`queries/custom-gra
 
 - **WHEN** rows fall in sprints starting 2025-01-06, 2025-01-20 and 2025-02-17 (the 2025-02-03 sprint empty) and the query groups at `sprint` with `consecutive_periods(count(*) > 0)`
 - **THEN** the streaks are 1, 2, 1
+
+### Requirement: Rank-family ordering direction
+
+`rank` and `dense_rank` SHALL take a required keyword argument `direction` whose
+value is a string literal `asc`, `desc`, `ascending` or `descending` (any case,
+surrounding whitespace ignored), normalised to `asc` / `desc`, and SHALL order
+their window by the inner value ascending for `asc` and descending for `desc`.
+`direction` SHALL combine with `partition_by=` and SHALL accept any orderable
+inner, numeric or not. `ntile` and `percent_rank` SHALL reject `direction` and
+SHALL always order ascending, so `ntile` bucket 1 holds the lowest values and a
+higher value never gets a lower `percent_rank`. A missing, unrecognised,
+non-literal or forbidden `direction` SHALL fail before any SQL runs with a
+`TransformArgumentError` (a `QueryTypeError`), in every position (measure,
+filter, order, computed dimension, aggregation parameter, saved `ModelMeasure`);
+the missing-direction message SHALL show both
+`direction='asc'` (lowest first) and `direction='desc'` (highest first). The
+importer formula validator SHALL apply the identical rule with the identical
+error. `rank(x, direction='asc')` and `rank(x, direction='desc')` SHALL be
+distinct values that never deduplicate into one.
+
+Values below use the DEV-1847 `sales` fixture, whose region totals are North
+90, South 140, East 180, Gap 20 and Void NULL.
+
+#### Scenario: Ascending rank puts the lowest value first
+
+- **WHEN** a query over `[region]` selects `rank(sum(amount), direction='asc')`
+- **THEN** the window orders the inner ascending and the ranks are Gap 1, North 2,
+  South 3, East 4, Void NULL on SQLite and DuckDB
+
+#### Scenario: Descending rank puts the highest value first
+
+- **WHEN** a query over `[region]` selects `rank(sum(amount), direction='desc')`
+- **THEN** the window orders the inner descending and the ranks are East 1, South 2,
+  North 3, Gap 4, Void NULL
+
+#### Scenario: dense_rank takes the same direction
+
+- **WHEN** a query over `[region]` selects `dense_rank(sum(amount), direction='asc')`
+- **THEN** the ranks are Gap 1, North 2, South 3, East 4, Void NULL
+
+#### Scenario: Direction synonyms normalise
+
+- **WHEN** a query selects `rank(sum(amount), direction=' Descending ')`
+- **THEN** it binds to the identical value as `rank(sum(amount), direction='desc')`
+
+#### Scenario: Non-numeric inner ranks ascending
+
+- **WHEN** a query over `[region]` selects `rank(min(city), direction='asc')`
+- **THEN** the ranks are North 1 and South 1 (both `Alpha`), East 3 (`Delta`), Gap 4
+  (`Kappa`), Void 5 (`Xi`)
+
+#### Scenario: Direction combines with partition_by
+
+- **WHEN** a query over `[region, city]` selects
+  `rank(sum(amount), partition_by=region, direction='asc')`
+- **THEN** each city ranks lowest-first within its region: East Delta 1, Epsilon 1,
+  Zeta 3; North Alpha 1, Beta 2; South Alpha 1, Gamma 2; Gap Kappa 1, the NULL city
+  2; Void Xi NULL
+
+#### Scenario: Both directions in one query stay distinct
+
+- **WHEN** one query selects both `rank(sum(amount), direction='asc')` and
+  `rank(sum(amount), direction='desc')` unnamed
+- **THEN** the result carries two columns with the ascending and descending ranks
+  above, never one deduplicated column
+
+#### Scenario: Missing direction fails naming both spellings
+
+- **WHEN** a query selects, filters on, or orders by `rank(sum(amount))` or
+  `dense_rank(sum(amount), partition_by=region)`, or queries a saved
+  `ModelMeasure` whose formula is `rank(sum(amount))`
+- **THEN** it fails with a `TransformArgumentError` naming the transform and showing
+  `direction='asc'` (lowest first) and `direction='desc'` (highest first), and no SQL
+  runs
+
+#### Scenario: Unrecognised or non-literal direction fails
+
+- **WHEN** a query selects `rank(sum(amount), direction='up')` or
+  `rank(sum(amount), direction=region)`
+- **THEN** it fails with a `TransformArgumentError` listing the accepted values
+
+#### Scenario: ntile and percent_rank reject direction
+
+- **WHEN** a query selects `ntile(sum(amount), n=2, direction='desc')` or
+  `percent_rank(sum(amount), direction='asc')`
+- **THEN** it fails with a `TransformArgumentError` stating that the transform always
+  orders ascending and takes no `direction`
+
+#### Scenario: ntile and percent_rank order ascending
+
+- **WHEN** a query over `[region]` selects `ntile(sum(amount), n=2)` and
+  `percent_rank(sum(amount))`
+- **THEN** `ntile` is Gap 1, North 1, South 2, East 2, Void NULL and `percent_rank` is
+  Gap 0, North 1/3, South 2/3, East 1, Void NULL
+
+#### Scenario: Importer validation shares the rule
+
+- **WHEN** the importer formula validator parses `rank(sum(amount))`,
+  `rank(sum(amount), direction='sideways')` or `ntile(sum(amount), n=4, direction='asc')`
+- **THEN** each fails with the same `TransformArgumentError` the query binder raises
+  for the same formula
+
+#### Scenario: Window ordering is pinned across dialects
+
+- **WHEN** `rank` with each direction, `dense_rank`, `ntile` and `percent_rank` are
+  rendered for postgres, sqlite, duckdb, tsql and bigquery
+- **THEN** each window orders the inner by the stated direction (`ASC` for `ntile` /
+  `percent_rank`) and the generated SQL matches recorded golden baselines
+
+### Requirement: Rank-family NULL inputs rank NULL
+
+For `rank`, `dense_rank`, `ntile` and `percent_rank`, a row whose inner value is
+NULL SHALL get a NULL result. NULL rows SHALL NOT take a rank position or an
+`ntile` bucket, nor count in `percent_rank`'s denominator, within each partition;
+the non-NULL rows SHALL rank exactly as if the NULL rows were absent. The result
+SHALL be identical on every supported dialect, independent of the dialect's
+native NULL ordering.
+
+#### Scenario: Mixed NULL and non-NULL inners
+
+- **WHEN** a query over `[region]` selects `rank(sum(amount), direction='desc')`,
+  `percent_rank(sum(amount))` and `ntile(sum(amount), n=2)` on the `sales` fixture
+- **THEN** Void (NULL total) gets NULL for all three, and the other regions get the
+  values of the ordering-direction scenarios above, `percent_rank`'s denominator
+  counting four rows, on SQLite and DuckDB
+
+#### Scenario: An all-NULL partition ranks NULL without disturbing others
+
+- **WHEN** a query over `[region, city]` selects
+  `dense_rank(sum(amount), partition_by=region, direction='desc')`
+- **THEN** Void Xi (NULL total) is NULL, and every other region's cities rank as they
+  would without Void
+
+#### Scenario: A NULL row inside a partition takes no position
+
+- **WHEN** a query over `[region, city]` selects
+  `rank(city, partition_by=region, direction='asc')`
+- **THEN** Gap's NULL city is NULL and Kappa is 1; East Delta 1, Epsilon 2, Zeta 3
+
+#### Scenario: A filter on rank drops NULL-ranked rows
+
+- **WHEN** a query over `[region]` filters `rank(sum(amount), direction='asc') <= 5`
+- **THEN** East, Gap, North and South survive and Void does not
+
+#### Scenario: NULL handling does not depend on the dialect's NULL ordering
+
+- **WHEN** the rank family is rendered for tsql, whose native ordering puts NULLs
+  first on `ASC`
+- **THEN** the emitted SQL nulls the result for a NULL inner and keeps NULL rows out of
+  the non-NULL rows' window, exactly as on postgres
+
+### Requirement: Stored rank calls without a direction load as descending
+
+A persisted model, query or memory whose stored schema version predates this
+change SHALL load with every `rank(` / `dense_rank(` call lacking a top-level
+`direction=` in its Mode-B fields rewritten to carry `direction='desc'`,
+preserving its pre-change ordering. The Mode-B fields are `ModelMeasure.formula`
+and a query's `measures`, `filters`, `dimensions`, `time_dimensions`, `order` and
+`main_time_dimension`, including queries nested in `source_queries`, an inline
+query `source_model`, the measures of an inline `ModelExtension` `source_model`,
+and `Memory.query`. Mode-A SQL (`Column.sql`, model
+`filters`, `Column.filter`, aggregation templates) and `ntile` / `percent_rank`
+calls SHALL never be rewritten. The rewrite SHALL apply only to a payload read
+from storage or one that declares an explicit schema version older than the
+current one; a payload without a version, or at the current version, SHALL be
+left as written, so a bare call in it fails with the missing-direction error. The
+rewrite SHALL be idempotent, SHALL leave a formula it cannot tokenise
+byte-identical, and a migrated model SHALL be persisted back at the current
+version on first load.
+
+#### Scenario: A stored model measure keeps its descending meaning
+
+- **WHEN** a model stored at the previous version holds the measure
+  `rank(sum(amount))` and is loaded
+- **THEN** the measure reads `rank(sum(amount), direction='desc')`, the stored document
+  is rewritten at the current version, and querying it returns the descending ranks
+
+#### Scenario: A stored query's every Mode-B field is rewritten
+
+- **WHEN** a stored query-backed model's `source_queries` entry holds bare
+  `rank(` / `dense_rank(` calls in a measure, a filter, an order item and a computed
+  dimension expression, nested inside other calls and colon syntax
+- **THEN** every call gains `direction='desc'` and nothing else in the formulas changes
+
+#### Scenario: Unversioned legacy documents are rewritten
+
+- **WHEN** a stored model with no `version`, whose nested source query also has no
+  `version`, or a stored memory (YAML and SQLite) with no `version` or with an
+  unversioned `query`, holds bare `rank(` calls
+- **THEN** they load with `direction='desc'` filled in
+
+#### Scenario: A fresh payload is never filled in
+
+- **WHEN** a query or model with no `version`, or at the current version, is
+  submitted through the API, MCP or Python with a bare `rank(sum(amount))`
+- **THEN** it fails with the missing-direction `TransformArgumentError`
+
+#### Scenario: A payload declaring an old version is treated as legacy
+
+- **WHEN** a query submitted with an explicit older `version` holds `rank(sum(amount))`
+- **THEN** it is filled in with `direction='desc'`, exactly as a stored document would be
+
+#### Scenario: Calls that need no rewrite are untouched
+
+- **WHEN** a stored document holds `rank(sum(amount), direction='asc')`, the text
+  `rank(` inside a string literal, an attribute call `x.rank(`, `ntile(sum(amount), n=4)`,
+  `percent_rank(sum(amount))`, or `dense_rank() over (order by id)` in a `Column.sql`
+- **THEN** each is left byte-identical
+
+#### Scenario: The rewrite is idempotent
+
+- **WHEN** an already-migrated document is migrated again
+- **THEN** it is unchanged
+
+#### Scenario: An untokenisable formula still loads
+
+- **WHEN** a stored model's measure formula cannot be tokenised
+- **THEN** the formula is left byte-identical and the model still loads

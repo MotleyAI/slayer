@@ -72,7 +72,7 @@ A time dimension's `date_range` SHALL be a single time point (a string, or a one
 
 ### Requirement: Malformed date_range shapes are rejected at construction
 
-Constructing a query SHALL fail with a typed error naming the time dimension and the received value when its `date_range` is an empty list, has three or more elements, is `[null, null]`, or has an element that is not a time point by syntax (neither an instant, a period literal nor a relative token; a relative token's unit may be any name, since it may be a granularity of the query's datasource). Checks that depend on the column's type or on the datasource (such as a sub-day bound on a DATE column, or a relative unit the datasource does not define) SHALL fail at planning with the typed time-literal error.
+Constructing a query SHALL fail with a typed error naming the time dimension and the received value when its `date_range` is an empty list, has three or more elements, is `[null, null]`, or has an element that is not a time point by syntax (neither an instant, a period literal nor a relative token; a relative token's unit may be any name, since it may be a granularity of the query's datasource). An element containing a `{var}` placeholder SHALL be accepted at construction and SHALL be checked by the same rules after substitution. Checks that depend on the column's type or on the datasource (such as a sub-day bound on a DATE column, or a relative unit the datasource does not define) SHALL fail at planning with the typed time-literal error.
 
 #### Scenario: Empty and over-long ranges
 
@@ -88,6 +88,11 @@ Constructing a query SHALL fail with a typed error naming the time dimension and
 
 - **WHEN** a query is constructed with `date_range: ['2025/01/01', None]`
 - **THEN** construction fails with the typed error listing the accepted time-point forms
+
+#### Scenario: Placeholder bound
+
+- **WHEN** a query is constructed with `date_range: ['{start}', None]`
+- **THEN** construction succeeds, and the bound is checked after substitution
 
 #### Scenario: Unknown relative unit
 

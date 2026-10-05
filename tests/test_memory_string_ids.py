@@ -13,10 +13,12 @@ import tempfile
 from collections.abc import Iterator
 
 import pytest
+import yaml
 
 from slayer.core.errors import IdCollisionError
 from slayer.memories.models import Memory
 from slayer.storage.base import StorageBackend
+from slayer.storage.migrations import migrate
 from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -244,7 +246,7 @@ class TestMemoryV1ToV2Migration:
         }
         m = Memory.model_validate(v1)
         assert m.id == "42"
-        assert m.version == 2
+        assert m.version == 3
 
     def test_v1_no_version_assumed_v1(self) -> None:
         # No version field → treated as v1; migrator stringifies.
@@ -255,7 +257,7 @@ class TestMemoryV1ToV2Migration:
         }
         m = Memory.model_validate(legacy)
         assert m.id == "7"
-        assert m.version == 2
+        assert m.version == 3
 
     async def test_v2_save_round_trip(
         self, storage: StorageBackend,
@@ -266,12 +268,11 @@ class TestMemoryV1ToV2Migration:
         )
         loaded = await storage.get_memory(m.id)
         assert loaded.id == "kb.policy"
-        assert loaded.version == 2
+        assert loaded.version == 3
 
     def test_duplicate_int_string_rows_same_content_normalized(self) -> None:
         """The v2 migrator deduplicates rows that exist under both int and
         str forms (``42`` and ``"42"``) when their content matches."""
-        from slayer.storage.migrations import migrate
 
         int_row = {
             "version": 1,
@@ -295,7 +296,6 @@ class TestMemoryV1ToV2Migration:
         both ``id: 42`` (int) and ``id: "42"`` (str) for the same logical
         memory must collapse to a single row on load. When content matches,
         keep one; when content differs, raise loud."""
-        import yaml
 
         with tempfile.TemporaryDirectory() as tmpdir:
             # Two rows with the SAME content — should dedupe silently.
@@ -325,7 +325,6 @@ class TestMemoryV1ToV2Migration:
         """Same-id under int and str forms with DIFFERENT learning content
         is a data-loss risk; the migrator must fail loud rather than
         silently picking one."""
-        import yaml
 
         with tempfile.TemporaryDirectory() as tmpdir:
             legacy_path = os.path.join(tmpdir, "memories.yaml")

@@ -1,60 +1,15 @@
 # aggregations/functional-form Specification
 
 ## Purpose
-Makes the functional aggregation spelling `agg(col, args)` a first-class, warning-free
-equivalent of colon syntax `col:agg(args)` in every position where aggregations are
-accepted, for all builtin, aliased, and custom aggregations.
+Makes the functional spelling `agg(col, args)` the canonical aggregation spelling in
+every position where aggregations are accepted, for all builtin, aliased, and custom
+aggregations.
 
 ## Requirements
 
-### Requirement: Functional spelling is equivalent to colon spelling
-For every aggregation expressible as `col:agg(args)`, the system SHALL accept
-`agg(col, args)` as an exact equivalent: same generated SQL, same result values,
-same result-column keys, and same error behavior for invalid combinations.
-
-#### Scenario: Simple aggregation
-- **WHEN** a query measure is written `sum(revenue)` instead of `revenue:sum`
-- **THEN** the generated SQL and the result key `orders.revenue_sum` are identical to the colon form
-
-#### Scenario: Star count
-- **WHEN** a query measure is written `count(*)` instead of `*:count`
-- **THEN** the result is identical to the colon form, with result key `orders._count`
-
-#### Scenario: Cross-model star count
-- **WHEN** a query measure is written `count(customers.*)` instead of `customers.*:count`
-- **THEN** the result is identical to the colon form, with result key `orders.customers._count`
-
-#### Scenario: Cross-model single column
-- **WHEN** a query measure is written `count(customers.regions.name)` instead of `customers.regions.name:count`
-- **THEN** the result is identical to the colon form, including the join-path result key
-
-#### Scenario: Parametric aggregation with kwargs
-- **WHEN** a measure is written `percentile(price, p=0.9)` instead of `price:percentile(p=0.9)`
-- **THEN** SQL, result, and result key (`orders.price_percentile_p_0_9`) are identical to the colon form
-
-#### Scenario: Reserved kwargs window and partition_by
-- **WHEN** measures are written `sum(revenue, window='90d')` and `sum(revenue, partition_by=region)`
-- **THEN** each behaves identically to its colon twin, including result-key suffixes
-
-#### Scenario: Ranked aggregation with positional time column
-- **WHEN** a measure is written `last(balance, updated_at)` instead of `balance:last(updated_at)`
-- **THEN** the result is identical to the colon form
-
-#### Scenario: Required-parameter aggregations
-- **WHEN** measures are written `weighted_avg(price, weight=quantity)` and `corr(x, other=y)`
-- **THEN** each behaves identically to its colon twin, and omitting a required parameter raises the same error as the colon form
-
-#### Scenario: Invalid combination errors match
-- **WHEN** `avg(*)` is submitted
-- **THEN** it fails with the same error as `*:avg`
-
-#### Scenario: Every builtin aggregation
-- **WHEN** each builtin aggregation is written functionally over a compatible column
-- **THEN** each is equivalent to its colon twin (parametrized over the full builtin set, not a hardcoded list)
-
 ### Requirement: Functional spelling works in every aggregation position
 The system SHALL accept the functional spelling in every position that accepts
-colon aggregations: query measures, query filters (both row-level and
+an aggregation: query measures, query filters (both row-level and
 post-aggregation phases), order, model measure formulas (saved via the API and
 hand-authored in YAML storage), model-extension measures, inline source-model
 measures, multi-stage source-query formulas, computed-dimension expressions,
@@ -63,75 +18,78 @@ arithmetic over partitioned aggregates).
 
 #### Scenario: Query filter routed to HAVING
 - **WHEN** a query filter is written `sum(revenue) > 100`
-- **THEN** it behaves identically to `revenue:sum > 100`
+- **THEN** it applies after aggregation (HAVING), keeping only the groups whose
+  `revenue_sum` exceeds 100
 
 #### Scenario: Order by functional aggregation
 - **WHEN** an order entry is written `sum(revenue)`
-- **THEN** results are ordered as for `revenue:sum`, under the same result key `revenue_sum`
+- **THEN** results are ordered by that aggregate, under the result key `revenue_sum`
 
 #### Scenario: Hand-authored YAML model measure
 - **WHEN** a model whose measure formula is `sum(revenue)` is loaded from YAML storage without passing through save
-- **THEN** queries against it succeed identically to a colon-form measure
+- **THEN** queries against it succeed and return the summed revenue
 
 #### Scenario: Model-extension and inline-model measures
 - **WHEN** a `ModelExtension` measure or an inline `source_model` measure uses the functional spelling
-- **THEN** the query succeeds identically to the colon form
+- **THEN** the query succeeds and returns the aggregation's executed values
 
 #### Scenario: Multi-stage source-query formulas
 - **WHEN** a stage formula in a `source_queries` pipeline uses the functional spelling
-- **THEN** the stage behaves identically to the colon form
+- **THEN** the stage computes the aggregation and exposes it to later stages
 
 #### Scenario: Inside transforms and arithmetic
 - **WHEN** a measure is written `cumsum(sum(revenue))` or `sum(revenue) / count(*)`
-- **THEN** it behaves identically to `cumsum(revenue:sum)` and `revenue:sum / *:count`
+- **THEN** the first is the running total of `revenue_sum` and the second the
+  per-row average revenue of each group
 
 #### Scenario: Cross-spelling rename and filter-form matching
-- **WHEN** a measure is declared `{"formula": "sum(revenue)", "name": "rev"}` and a filter references `revenue:sum` (or vice versa)
+- **WHEN** a measure is declared `{"formula": "sum(revenue)", "name": "rev"}` and a filter references `SUM(revenue)` (or vice versa)
 - **THEN** the filter resolves to the same measure — spelling never affects matching
 
 #### Scenario: Computed dimension with a functional partitioned aggregate
-- **WHEN** a computed dimension is written with `sum(amount, partition_by=city)` in its expression (bare, banded via CASE, or under a transform) instead of `amount:sum(partition_by=city)`
-- **THEN** the dimension behaves identically to the colon form, including result naming and grouping
+- **WHEN** a computed dimension is written with `sum(amount, partition_by=city)` in its expression (bare, banded via CASE, or under a transform)
+- **THEN** the dimension groups rows by each city's amount total, named and
+  grouped like any computed dimension
 
 #### Scenario: Computed-dimension guards fire for both spellings
 - **WHEN** a computed dimension contains `sum(amount)` with no `partition_by=`
-- **THEN** it fails with the same bare-aggregate-requires-partition_by error as the colon form
+- **THEN** it fails with the bare-aggregate-requires-partition_by error
 
 #### Scenario: Mixed-grain arithmetic with functional spellings
 - **WHEN** a measure or filter combines aggregates at different partition grains written functionally (e.g. `sum(a, partition_by=region) - sum(b, partition_by=city)`)
-- **THEN** it behaves identically to the colon-form mixed-grain expression
+- **THEN** each aggregate is computed at its own partition grain and the
+  expression combines them per row, by executed values
 
 ### Requirement: Aggregation-name healing applies to functional spelling
-The system SHALL apply the same case-insensitive builtin matching and alias
-healing to functional aggregation names as it applies to colon-form names.
+The system SHALL match functional aggregation names case-insensitively against
+the builtin aggregations and SHALL heal aggregation-name aliases.
 
 #### Scenario: Uppercase builtin
 - **WHEN** a measure is written `SUM(revenue)`
-- **THEN** it behaves identically to `revenue:SUM` and `revenue:sum`
+- **THEN** it behaves identically to `sum(revenue)`
 
 #### Scenario: Alias healing
 - **WHEN** a measure is written `countD(user_id)`
-- **THEN** it behaves identically to `user_id:count_distinct`
+- **THEN** it behaves identically to `count_distinct(user_id)`
 
 ### Requirement: Unknown and custom aggregation names defer to binding
 A function call whose first argument is aggregatable and whose name is not a
 scalar function or transform SHALL be treated as an aggregation candidate and
-validated at binding, exactly as colon-form names are: model-defined custom
-aggregations resolve, and unknown names fail with the standard
-unknown-aggregation error regardless of source shape (column, star, or
-expression).
+validated at binding: model-defined custom aggregations resolve, and unknown
+names fail with the standard unknown-aggregation error regardless of source
+shape (column, star, or expression).
 
 #### Scenario: Custom aggregation functional call
 - **WHEN** a model defines a custom aggregation `my_agg` and a measure is written `my_agg(price)`
-- **THEN** it behaves identically to `price:my_agg`
+- **THEN** it renders the model's `my_agg` definition over `price`
 
 #### Scenario: Unknown name over a column
 - **WHEN** a measure is written `bogus(price)`
-- **THEN** binding fails with the same unknown-aggregation error as `price:bogus`
+- **THEN** binding fails with the standard unknown-aggregation error naming `bogus`
 
 #### Scenario: Unknown name over star
-- **WHEN** a measure is written `bogus(*)` or `*:bogus`
-- **THEN** both fail with the standard unknown-aggregation error (not a downstream SQL-generation failure)
+- **WHEN** a measure is written `bogus(*)`
+- **THEN** it fails with the standard unknown-aggregation error (not a downstream SQL-generation failure)
 
 #### Scenario: Construction-time filter with custom functional aggregation
 - **WHEN** a query containing the filter `my_agg(price) > 0` is constructed before any model context exists
@@ -151,17 +109,18 @@ with that transform's own error.
 
 #### Scenario: Aggregation reading
 - **WHEN** a measure is written `last(balance)` or `last(balance, updated_at)`
-- **THEN** it is the `last` aggregation, identical to `balance:last` / `balance:last(updated_at)`
+- **THEN** it is the `last` aggregation — the latest `balance` ranked by the time
+  axis, or by `updated_at`
 
 #### Scenario: Transform reading
-- **WHEN** a measure is written `last(revenue:sum)` or `last(sum(revenue))`
+- **WHEN** a measure is written `last(sum(revenue))`
 - **THEN** it is the `last` transform over the aggregated series
 
 #### Scenario: Saved-measure operand reads as the transform
-- **WHEN** the model declares a measure `rev` with formula `revenue:sum` and a
+- **WHEN** the model declares a measure `rev` with formula `sum(revenue)` and a
   query measure is written `first(rev)` or `first(rev * 2)`
 - **THEN** it is the `first` transform over the saved measure's series — the
-  same plan and executed values as `first(revenue:sum)` / `first(revenue:sum * 2)`
+  same plan and executed values as `first(sum(revenue))` / `first(sum(revenue) * 2)`
   on SQLite and DuckDB — never an unknown-reference error
 
 #### Scenario: Row-grain composite keeps the aggregation reading
@@ -190,14 +149,14 @@ author's spelling.
 - **THEN** the stored formula text is still `sum(revenue)`
 
 ### Requirement: Entity references accept functional spelling
-Entity-reference surfaces that accept colon-suffixed result-column references
-(memories/search resolution, root-model recommendation) SHALL equally accept
-the functional spelling of the same reference, interpreted by the same rules
-as query parsing; multi-column expression text is not a valid entity reference.
+Entity-reference surfaces (memories/search resolution, root-model
+recommendation) SHALL accept the functional spelling of an aggregated column
+reference, interpreted by the same rules as query parsing; multi-column
+expression text is not a valid entity reference.
 
 #### Scenario: Functional entity reference
-- **WHEN** an entity reference is written `sum(orders.revenue)` instead of `orders.revenue:sum`
-- **THEN** it resolves to the same entity
+- **WHEN** an entity reference is written `sum(orders.revenue)`
+- **THEN** it resolves to the `sum` aggregation of the `orders.revenue` column
 
 #### Scenario: Expression is not an entity reference
 - **WHEN** an entity reference is written `sum(orders.amount - orders.cost)`
@@ -222,7 +181,7 @@ SQL-style `DISTINCT` inside a functional call SHALL remain a syntax error.
 
 #### Scenario: DISTINCT keyword rejected
 - **WHEN** a measure is written `count(distinct user_id)`
-- **THEN** parsing fails (the supported spellings are `count_distinct(user_id)` / `user_id:count_distinct`)
+- **THEN** parsing fails (the supported spelling is `count_distinct(user_id)`)
 
 ### Requirement: Positional parameters fold onto declared parameter order
 An aggregation call MAY pass declared parameters positionally after its source
@@ -241,8 +200,8 @@ attached (aggregate- or transform-valued) parameter is therefore always a named
 parameter.
 
 #### Scenario: Positional percentile equals named
-- **WHEN** a measure is written `percentile(price, 0.9)` or `price:percentile(0.9)`
-- **THEN** SQL, results, and result keys are identical to the `p=0.9` spellings
+- **WHEN** a measure is written `percentile(price, 0.9)`
+- **THEN** SQL, results, and result keys are identical to `percentile(price, p=0.9)`
 
 #### Scenario: Positional parameter on a re-aggregation outer
 - **WHEN** a measure is written
@@ -259,7 +218,7 @@ parameter.
   declared-parameter count
 
 #### Scenario: Positional value on a parameterless aggregation errors
-- **WHEN** `sum(amount, 1)` or `customers.spend:sum(sum(customers.spend, partition_by=status))`
+- **WHEN** `sum(amount, 1)` or `sum(customers.spend, sum(customers.spend, partition_by=status))`
   is submitted, under any `to_many_handling` mode
 - **THEN** each fails at bind with a clear error naming the aggregation and that it
   takes no parameters — never an executed value
@@ -271,21 +230,64 @@ parameter.
 
 #### Scenario: Positional transform parameter equals named
 - **WHEN** a measure is written
-  `customers.spend:weighted_avg(rank(sum(amount, partition_by=customers.regions.name)))`
+  `weighted_avg(customers.spend, rank(sum(amount, partition_by=customers.regions.name), direction='desc'))`
   rooted at `orders`
-- **THEN** it binds to the identical aggregation identity as the `weight=rank(...)`
+- **THEN** it binds to the identical aggregation identity as the `weight=rank(..., direction='desc')`
   spelling and returns identical result keys and values
 
 ### Requirement: Repeated keyword arguments are rejected
-A call in a Mode-B expression — an aggregation in functional or colon spelling, or a
-transform — SHALL reject a keyword argument that appears more than once with a
-parse-time error naming the call and the keyword; the parser never keeps the last
-occurrence and never concatenates the values.
+A call in a Mode-B expression — an aggregation or a transform — SHALL reject a
+keyword argument that appears more than once with a parse-time error naming the
+call and the keyword; the parser never keeps the last occurrence and never
+concatenates the values.
 
 #### Scenario: Repeated partition_by on a transform
-- **WHEN** a measure names `rank(sum(amount), partition_by=region, partition_by=city)`
+- **WHEN** a measure names `rank(sum(amount), partition_by=region, partition_by=city, direction='desc')`
 - **THEN** parsing fails with an error naming `rank` and `partition_by`
 
 #### Scenario: Repeated keyword on an aggregation
-- **WHEN** a measure names `sum(amount, partition_by=region, partition_by=city)` or `amount:sum(partition_by=region, partition_by=city)`
+- **WHEN** a measure names `sum(amount, partition_by=region, partition_by=city)`
 - **THEN** parsing fails with an error naming the aggregation and `partition_by`
+
+### Requirement: SLayer emits only the functional spelling
+Every aggregation SLayer writes or shows to an agent SHALL use the functional
+spelling `agg(col, args)`, whatever spelling its input used: model measure
+formulas written by the dbt, Cube (including view facades) and OSI importers,
+root-model recommendation paths, error and warning remedies, and tool
+descriptions and help.
+
+#### Scenario: Importer-written formulas are functional
+- **WHEN** a dbt, Cube or OSI project is imported
+- **THEN** every saved measure formula uses the functional spelling (for example
+  `sum(amount, window='30d')`, `count(orders.*)`, `percentile(price, p=0.9)`,
+  `sum(a) / count(*)`) and parses
+
+#### Scenario: Recommendation paths are functional
+- **WHEN** `recommend_root_model` is given `sum(orders.amount)`, its legacy colon
+  twin, or `percentile(orders.amount, p=0.9)`, and recommends `orders`
+- **THEN** the item paths are `sum(amount)` and `percentile(amount, p=0.9)`; a
+  cross-model item keeps its join path inside the call (`sum(customers.regions.population)`)
+
+#### Scenario: Error remedies are functional
+- **WHEN** a model defines a derived column across a fanning hop
+- **THEN** the save error's remedy reads `<aggregation>(orders.line_items.qty)`
+
+#### Scenario: Tool descriptions teach the functional spelling
+- **WHEN** the MCP tool descriptions and help are listed
+- **THEN** none shows the colon spelling; a custom aggregation is shown used as
+  `sum_sq(column)`
+
+### Requirement: The legacy colon spelling is accepted as an exact equivalent
+The system SHALL accept the legacy colon spelling `col:agg(args)` as an exact
+equivalent of `agg(col, args)` in every position that accepts an aggregation:
+same generated SQL, same result values, same result-column keys, the same
+measure, filter and order matching across the two spellings, and the same error
+behavior for invalid combinations.
+
+#### Scenario: Every builtin aggregation has an exact colon twin
+- **WHEN** each builtin aggregation is written in the legacy colon spelling —
+  including star (`*:count`), cross-model star (`customers.*:count`), a join-path
+  column, keyword and positional parameters (`price:percentile(p=0.9)`,
+  `balance:last(updated_at)`), and the reserved `window=` / `partition_by=` kwargs
+- **THEN** its SQL, results, result key and errors equal those of its functional
+  twin (parametrized over the full builtin set, not a hardcoded list)
