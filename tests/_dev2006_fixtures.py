@@ -147,9 +147,9 @@ WINDOW_30D_PLUS_60D_BY_CUSTOMER_MONTH = {
 }
 #: Rows per customer (count(*)): 100 → 5, 200 → 3.
 LAST_PER_ROW_BY_CUSTOMER = {100: 46.0, 200: 10.0}
-#: Ungrouped weighted_avg(balance, weight=<customer's summed last>) = SUM(v·w) / SUM(w):
-#: (530·230 + 70·30) / (5·230 + 3·30); the max-weighted twin is 93.24.
-WEIGHTED_AVG_GLOBAL = 100.0
+#: Ungrouped weighted_avg(balance, weight=<customer's summed last>) = SUM(v·w) / SUM(w over non-NULL v):
+#: (530·230 + 70·30) / (5·230 + 2·30) — snapshot 8's NULL balance skips its weight.
+WEIGHTED_AVG_GLOBAL = (530.0 * 230.0 + 70.0 * 30.0) / (5.0 * 230.0 + 2.0 * 30.0)
 #: CASE WHEN <customer's summed last> > 100 THEN 'big' ELSE 'small' END → sum(balance).
 BALANCE_BY_BAND = {"big": 530.0, "small": 70.0}
 #: time_shift(<x>, -1) by customer, month: Feb reads Jan (last 70 / 40; 30d 370 / 70).

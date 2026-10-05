@@ -30,6 +30,13 @@ class TestBranchTypeJoin:
     def test_numeric_mix_widens_to_double(self, a: DataType, b: DataType) -> None:
         assert join_conditional_branch_types(a, b) == DataType.DOUBLE
 
+    @pytest.mark.parametrize("a,b,joined", [
+        (DataType.BOOLEAN, DataType.DOUBLE, DataType.DOUBLE),
+        (DataType.INT, DataType.BOOLEAN, DataType.INT),
+    ])
+    def test_boolean_beside_a_number_is_its_integer(self, a: DataType, b: DataType, joined: DataType) -> None:
+        assert join_conditional_branch_types(a, b) == joined
+
     @pytest.mark.parametrize("other", [DataType.INT, DataType.TEXT, DataType.DATE])
     def test_null_branch_is_absorbed(self, other: DataType) -> None:
         # ``None`` marks a NULL-literal branch; it takes the other branch's type.
@@ -40,7 +47,7 @@ class TestBranchTypeJoin:
         (DataType.INT, DataType.TEXT),
         (DataType.TEXT, DataType.INT),   # both orders
         (DataType.DATE, DataType.INT),
-        (DataType.BOOLEAN, DataType.DOUBLE),
+        (DataType.BOOLEAN, DataType.TEXT),
     ])
     def test_incomparable_mix_raises_naming_both(self, a: DataType, b: DataType) -> None:
         with pytest.raises(ValueError) as ei:

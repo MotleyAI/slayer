@@ -36,9 +36,9 @@ ASSOC_WSUM3_BY_STATUS = {"ok": 56000.0, "new": 25000.0}
 #: ok distinct {c1 100, c2 150, c6 30} North; new {c1 100, c2 150} North.
 NORTH_SPEND_BY_STATUS = {"ok": 280.0, "new": 250.0}
 #: weighted_avg(customers.regions.pop, weight=spend) — value is a multi-hop
-#: to-one derived source. ok SUM(pop*spend)/SUM(spend)=56000/420; new drops c4's
-#: NULL-pop term but keeps its spend in the denom -> 25000/290.
-WAVG_POPVAL_BY_STATUS = {"ok": 56000.0 / 420.0, "new": 25000.0 / 290.0}
+#: to-one derived source. ok SUM(pop*spend)/SUM(spend)=56000/420; new skips c4's
+#: NULL pop and its spend (40) -> 25000/250.
+WAVG_POPVAL_BY_STATUS = {"ok": 56000.0 / 420.0, "new": 25000.0 / 250.0}
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])

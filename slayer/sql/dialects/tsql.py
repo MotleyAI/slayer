@@ -26,7 +26,7 @@ import re
 from typing import ClassVar, Literal
 
 from sqlglot import exp
-from sqlglot.expressions.core import Expression
+from sqlglot.expressions.core import Expr, Expression
 
 from slayer.core.enums import SUB_DAY_GRANULARITIES, DataType, DatePart, TimeGranularity
 from slayer.sql.dialects.base import (
@@ -96,6 +96,31 @@ def _days_since_monday(expr: Expression) -> Expression:
     )
 
 
+def _is_predicate(node: Expr) -> bool:
+    return isinstance(node, (exp.Predicate, exp.Connector, exp.Not))
+
+
+def _in_condition_position(node: Expr) -> bool:
+    """WHERE / HAVING / JOIN ON / CASE WHEN condition, or an operand of a connective."""
+    child, parent = node, node.parent
+    while isinstance(parent, exp.Paren):
+        child, parent = parent, parent.parent
+    if isinstance(parent, (exp.Where, exp.Having, exp.Connector, exp.Not)):
+        return True
+    if isinstance(parent, exp.Join):
+        return child.arg_key == "on"
+    return isinstance(parent, exp.If) and child.arg_key == "this"
+
+
+def _bit_value(predicate: Expr) -> Expression:
+    """``CAST(CASE WHEN p THEN 1 WHEN NOT p THEN 0 END AS BIT)`` — NULL when ``p`` is unknown."""
+    case = exp.Case(ifs=[
+        exp.If(this=predicate, true=exp.Literal.number(1)),
+        exp.If(this=exp.Not(this=exp.Paren(this=predicate.copy())), true=exp.Literal.number(0)),
+    ])
+    return exp.Cast(this=case, to=exp.DataType.build("BIT", dialect="tsql"))
+
+
 class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
     sqlglot_name: str = "tsql"
     ds_type_aliases: frozenset[str] = frozenset({"mssql", "sqlserver", "tsql"})
@@ -103,6 +128,7 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
     explain_postfix: str = "; SET SHOWPLAN_ALL OFF"
     log10_native: bool = True
     log2_native: bool = False
+    integer_avg: bool = True
     max_identifier_bytes: int | None = 128  # sysname is nvarchar(128)
     # Anonymous: sqlglot re-emits a parsed APPROX_COUNT_DISTINCT as its
     # Presto-family APPROX_DISTINCT canonical, which is not a T-SQL function.
@@ -193,6 +219,14 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
                 ))
             return node
         return tree.transform(_fix)
+
+    def rewrite_statement(self, statement: Expression) -> Expression:
+        """T-SQL predicates are conditions only: one in a value position becomes its BIT value."""
+        statement = statement.copy()
+        for node in reversed(list(statement.dfs())):
+            if _is_predicate(node) and not _in_condition_position(node):
+                node.replace(_bit_value(node.copy()))
+        return statement
 
     def build_integer_sequence(self, *, size: int) -> exp.Select:
         return exp.select(exp.column("value").as_("i")).from_(exp.Table(

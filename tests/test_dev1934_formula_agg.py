@@ -129,7 +129,8 @@ class TestFormulaGoldens:
         nullif = "nullIf" if dialect == "clickhouse" else "NULLIF"
         net = f"CAST(orders.price-orders.discountAS{_CAST[dialect]})"
         sql = _squash(await _sql("netd:weighted_avg(weight=quantity)", dialect=dialect))
-        assert f"SUM({net}*orders.quantity)/{nullif}(SUM(orders.quantity),0)" in sql, sql
+        assert f"SUM({net}*orders.quantity)*1.0/{nullif}(SUM(CASEWHEN" in sql, sql
+        assert "THENorders.quantityEND),0)" in sql, sql
 
     @pytest.mark.parametrize("dialect", TIER1)
     async def test_custom_repeated_placeholder(self, dialect: str) -> None:
@@ -151,17 +152,20 @@ class TestCompoundValueKeepsGrouping:
     @pytest.mark.parametrize("dialect", [d for d in TIER1 if d != "clickhouse"])
     async def test_compound_weight_parenthesised_only_under_operator(self, dialect: str) -> None:
         sql = _squash(await _sql("price:weighted_avg(weight=q2)", dialect=dialect))
-        assert "SUM(orders.price*(orders.quantity+1))/NULLIF(SUM(orders.quantity+1),0)" in sql
+        assert "SUM(orders.price*(orders.quantity+1))*1.0/NULLIF(SUM(CASEWHEN" in sql
+        assert "THENorders.quantity+1END),0)" in sql
 
     async def test_compound_weight_clickhouse(self) -> None:
         sql = _squash(await _sql("price:weighted_avg(weight=q2)", dialect="clickhouse"))
-        assert "SUM(orders.price*(orders.quantity+1))/nullIf(SUM(orders.quantity+1),0)" in sql
+        assert "SUM(orders.price*(orders.quantity+1))*1.0/nullIf(SUM(CASEWHEN" in sql
+        assert "THENorders.quantity+1END),0)" in sql
 
     @pytest.mark.parametrize("dialect", TIER1)
     async def test_plain_weighted_avg_byte_identical(self, dialect: str) -> None:
         sql = _squash(await _sql("price:weighted_avg(weight=quantity)", dialect=dialect))
         nullif = "nullIf" if dialect == "clickhouse" else "NULLIF"
-        assert f"SUM(orders.price*orders.quantity)/{nullif}(SUM(orders.quantity),0)" in sql
+        assert f"SUM(orders.price*orders.quantity)*1.0/{nullif}(SUM(CASEWHEN" in sql
+        assert "THENorders.quantityEND),0)" in sql
 
     @pytest.mark.parametrize("dialect", TIER1)
     async def test_custom_repeated_placeholder_renders_each_occurrence(self, dialect: str) -> None:

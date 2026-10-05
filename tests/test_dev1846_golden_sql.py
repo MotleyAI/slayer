@@ -108,12 +108,12 @@ def _cases() -> dict:
         "cp/change_gt_anchor": _q(measures=[
             {"formula": "consecutive_periods(change(revenue:sum) > 0)", "name": "streak"},
         ]),
-        # Still fail-closed — records the raise. The DEV-1868 series-regime
-        # lifts moved the ts_* shapes to tests/test_dev1868_golden_sql.py.
-        "reject/cp_boolean_numeric": _q(measures=[
+        "cp/boolean_numeric": _q(measures=[
             {"formula": "consecutive_periods((revenue:sum > 0) + (cost:sum > 0))",
              "name": "x"},
         ]),
+        # Still fail-closed — records the raise. The DEV-1868 series-regime
+        # lifts moved the ts_* shapes to tests/test_dev1868_golden_sql.py.
         "reject/cp_string_family": _q(measures=[
             {"formula": "consecutive_periods(lower(sku:max))", "name": "x"},
         ]),

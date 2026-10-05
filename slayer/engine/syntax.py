@@ -1106,10 +1106,9 @@ def _convert_kwarg_value(node: ast.AST, *, agg_map: Dict, original: str):
     return _convert(node, agg_map=agg_map, original=original)
 
 
-# The node kinds an ``AggCall.source`` may take (column, star, or an
-# aggregation-free scalar expression). Cmp / BoolOp / TupleLit are excluded —
-# a predicate is not an aggregatable value.
-_AGG_SOURCE_KINDS = (Ref, DottedRef, StarSource, Literal, Placeholder, ScalarCall, Arith, UnaryOp)
+# The node kinds an ``AggCall.source`` may take: a column, star, or an aggregation-free
+# scalar expression, predicates included (a bare TupleLit is not a value).
+_AGG_SOURCE_KINDS = (Ref, DottedRef, StarSource, Literal, Placeholder, ScalarCall, Arith, UnaryOp, Cmp, BoolOp)
 
 
 def _contains_agg_or_transform(node: Any) -> bool:
@@ -1163,8 +1162,8 @@ def _validated_agg_source(source: Any, *, func_name: str, original: str) -> Any:
         raise ValueError(
             f"Invalid Mode-B expression {original!r}: {func_name!r} cannot "
             f"aggregate a {type(source).__name__}; the aggregated expression "
-            f"must be built from columns, literals, arithmetic, and scalar "
-            f"functions."
+            f"must be built from columns, literals, arithmetic, comparisons, "
+            f"and scalar functions."
         )
     return source
 

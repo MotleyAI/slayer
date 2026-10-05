@@ -337,23 +337,16 @@ class TestPredicateTypingContract:
         assert int(by["2024-01"]["sales.streak"]) == 1
         assert int(by["2024-03"]["sales.streak"]) == 3
 
-    async def test_boolean_in_arithmetic_rejected(self) -> None:
-        name, msg = await _error(measures=[ModelMeasure(
-            formula="consecutive_periods((revenue:sum > 0) + (cost:sum > 0))",
-            name="x")])
-        assert name == "ValueError", (name, msg)
-        low = msg.lower()
-        assert "consecutive_periods" in low, msg
-        assert "boolean" in low, msg
-        assert "numeric" in low or "arithmetic" in low, msg
-
-    async def test_boolean_as_scalar_call_argument_rejected(self) -> None:
-        name, msg = await _error(measures=[ModelMeasure(
-            formula="consecutive_periods(coalesce(revenue:sum > 0, 0))", name="x")])
-        assert name == "ValueError", (name, msg)
-        low = msg.lower()
-        assert "consecutive_periods" in low, msg
-        assert "boolean" in low, msg
+    @pytest.mark.parametrize("formula", [
+        "consecutive_periods((revenue:sum > 0) + (cost:sum > 0))",
+        "consecutive_periods(coalesce(revenue:sum > 0, 0))",
+        "consecutive_periods((revenue:sum > 0) in (1, 0))",
+    ])
+    async def test_boolean_in_numeric_position_is_its_integer(self, exec_engine, formula: str) -> None:
+        """Every month's revenue and cost are positive, so each value is non-zero and the run never breaks."""
+        resp = await exec_engine.execute(_q(measures=[ModelMeasure(formula=formula, name="streak")]))
+        by = _by_month(resp)
+        assert [int(by[m]["sales.streak"]) for m in ("2024-01", "2024-02", "2024-03")] == [1, 2, 3]
 
     async def test_string_family_predicate_rejected(self) -> None:
         name, msg = await _error(measures=[ModelMeasure(
@@ -364,15 +357,11 @@ class TestPredicateTypingContract:
         assert "string" in low, msg
         assert "truthiness" in low or "predicate" in low, msg
 
-    async def test_boolean_in_in_column_rejected(self) -> None:
-        """A boolean-shaped comparison in an IN value position is rejected, not
-        passed through as ``(SUM(revenue) > 0) IN (...)``."""
-        name, msg = await _error(measures=[ModelMeasure(
-            formula="consecutive_periods((revenue:sum > 0) in (1, 0))", name="x")])
-        assert name == "ValueError", (name, msg)
-        low = msg.lower()
-        assert "consecutive_periods" in low, msg
-        assert "boolean" in low, msg
+    async def test_boolean_in_in_operand_is_its_integer(self) -> None:
+        """Never passed through as a bare ``(SUM(revenue) > 0) IN (...)``."""
+        sql = await gen(_q(measures=[ModelMeasure(
+            formula="consecutive_periods((revenue:sum > 0) in (1, 0))", name="x")]), dialect="postgres")
+        assert "> 0 IN" not in sql.replace("\n", " ").upper()
 
 
 class TestUniformFailClosed:

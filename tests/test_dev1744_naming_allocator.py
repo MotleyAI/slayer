@@ -27,8 +27,6 @@ from slayer.core.keys import (
     AggregateKey,
     ColumnKey,
     ColumnSqlKey,
-    InKey,
-    LiteralKey,
     StarKey,
 )
 from slayer.core.models import (
@@ -726,16 +724,10 @@ _MATRIX: List[tuple] = [
     ),
 ]
 
-# Kept out of the matrix because profile D returns None here. model_copy bypasses
-# validation: a TimeTruncKey source would be rejected by normal construction.
+# Kept out of the matrix because profile D returns None here: a re-aggregation
+# source derives no leaf.
 _MISSING_LEAF_KEY = AggregateKey(
-    source=ColumnKey(leaf="x"), agg="sum",
-).model_copy(
-    update={
-        "source": InKey(
-            column=ColumnKey(leaf="created_at"), values=(LiteralKey(value="a"),),
-        ),
-    },
+    source=AggregateKey(source=ColumnKey(leaf="x"), agg="sum"), agg="sum",
 )
 
 

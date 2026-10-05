@@ -256,6 +256,9 @@ class SqlDialect(BaseModel):
     # native-type preservation.
     exact_decimal_native: bool = True
 
+    # ``AVG`` over integers returns a truncated integer, so a non-DOUBLE input is read as a float.
+    integer_avg: bool = False
+
     # Conservative universal identifier budget in BYTES; ``None`` = unbounded
     # (fitting hooks become no-ops). Default is the tightest Tier-1 value
     # (Postgres), so a new dialect over-shortens rather than silently truncating.
@@ -696,6 +699,10 @@ class SqlDialect(BaseModel):
         SQLite / DuckDB round ``DOUBLE`` natively, so they keep the identity.
         """
         return tree
+
+    def rewrite_statement(self, statement: Expression) -> Expression:
+        """Rewrite the assembled statement once, just before its single render. Default: identity."""
+        return statement
 
     def apply_pagination(
         self,
