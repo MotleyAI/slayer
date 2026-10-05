@@ -3,7 +3,6 @@ architecture: true
 reviewers:
   sonar:
     project_key: MotleyAI_slayer
-architecture: true
 issue_key_pattern: "DEV-\\d+"
 commands:
   test: poetry run pytest -m "not integration"
