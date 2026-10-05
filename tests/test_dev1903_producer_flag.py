@@ -375,7 +375,8 @@ class TestStrictSubsetNesting:
 BAND = {"expression": SPEND_BAND_EXPR, "name": "spend_band"}
 
 
-_W_BY_BAND = {("hi",): 68.0, ("lo",): 9.0}
+# Constant weight per band: lo averages its 8 non-NULL amounts (90); Void's NULLs skip their weight.
+_W_BY_BAND = {("hi",): 68.0, ("lo",): 90.0 / 8.0}
 _W_BY_BAND_REGION = {("hi", "East"): 60.0, ("hi", "North"): 60.0, ("hi", "South"): 100.0,
                      ("lo", "Gap"): 20.0 / 3, ("lo", "North"): 10.0, ("lo", "South"): 20.0,
                      ("lo", "Void"): None}

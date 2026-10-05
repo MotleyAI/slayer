@@ -224,6 +224,9 @@ class SqlDialect(BaseModel):
     # Whether NUMERIC/DECIMAL is stored exactly (False: SQLite's numeric affinity).
     exact_decimal_native: bool = True
 
+    # ``AVG`` over integers returns a truncated integer, so a non-DOUBLE input is read as a float.
+    integer_avg: bool = False
+
     # Identifier budget in bytes (``None`` = unbounded); defaults to Postgres, the tightest.
     max_identifier_bytes: int | None = 63
 
@@ -593,6 +596,10 @@ class SqlDialect(BaseModel):
     def rewrite_target_ast(self, tree: Expression) -> Expression:
         """Hook: output-shaping AST rewrite keyed on the target dialect."""
         return tree
+
+    def rewrite_statement(self, statement: Expression) -> Expression:
+        """Rewrite the assembled statement once, just before its single render. Default: identity."""
+        return statement
 
     def apply_pagination(
         self,

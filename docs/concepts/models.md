@@ -109,8 +109,10 @@ A column with no explicit `allowed_aggregations` whitelist gets a default set ba
 |------|-------------------------------|
 | `number` | sum, avg, min, max, count, count_distinct, count_distinct_approx, median, weighted_avg, percentile, first, last, stddev_samp, stddev_pop, var_samp, var_pop, corr, covar_samp, covar_pop |
 | `string` | count, count_distinct, count_distinct_approx, first, last, min, max |
-| `boolean` | count, count_distinct, count_distinct_approx, sum, min, max, first, last |
+| `boolean` | the `number` set |
 | `date` / `time` | count, count_distinct, count_distinct_approx, first, last, min, max |
+
+A boolean is its integer (true 1, false 0, NULL ignored) inside every numeric aggregation, so `sum` counts the true rows, `avg` is their share (formatted as a percentage), and `min` / `max` stay boolean.
 
 `count_distinct_approx` is dialect-aware: it emits the database-native approximate-distinct function where one exists and falls back to an exact `COUNT(DISTINCT)` where it does not (Postgres / SQLite / MySQL). A model's sole primary-key column is always restricted to `count` / `count_distinct` / `count_distinct_approx` / `min` / `max` regardless of type, and is skipped by sampling and profiling; composite primary-key members aggregate by their type. When `allowed_aggregations` is set, every entry must already be eligible under the type-default map (or be a custom aggregation defined on this model); violations are caught at model construction time, so query-time validation is a single membership check.
 

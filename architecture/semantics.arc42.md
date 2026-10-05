@@ -103,9 +103,13 @@ is the coercion from coarser to finer.
    dataset, each counted exactly once — never over the row product of a join,
    so no fan-out can multiply its inputs (spec: `queries/semantics` › No double
    counting). A cell with no home rows takes the aggregation's **empty value**:
-   0 for the count family, NULL otherwise.
+   0 for the count family, NULL otherwise. A built-in aggregation skips NULL
+   inputs, so a cell whose inputs are all NULL takes the same empty value —
+   wherever the aggregation is evaluated (locally, across a join, in a stage,
+   window, partition or association) and whatever its input type.
    [enforced: test:tests/test_dev1836_producer_execution.py]
    [enforced: test:tests/test_dev1994_empty_value.py]
+   [enforced: test:tests/test_dev2046_all_null_inputs.py]
 5. **Grain and cells**: an aggregate is typed by its grain — its partition_by
    dimension set, defaulting to the query's dimensions; one combination of
    grain values is a cell. [enforced: test:tests/test_dev1871_grain_retype.py]

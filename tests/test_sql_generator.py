@@ -3937,9 +3937,11 @@ class TestAggParamSanitization:
             ],
         )
         sql = await _generate(generator=gen, query=query, model=agg_model)
-        # Exactly one CASE — the value; the weight rides bare. (``status`` is
-        # undeclared, so the door qualifies it to the root — DEV-1745 W1.)
-        assert sql.count("CASE WHEN sales.status = 'active'") == 1
+        # The mask wraps only the value — read twice (numerator, non-NULL test);
+        # the weight rides bare. (``status`` is undeclared, so the door qualifies it
+        # to the root — DEV-1745 W1.)
+        assert sql.count("CASE WHEN sales.status = 'active'") == 2
+        assert "'active' THEN sales.quantity" not in sql
 
 
 class TestFilteredMeasures:
@@ -4000,11 +4002,10 @@ class TestFilteredMeasures:
             measures=[ModelMeasure(formula="active_revenue:weighted_avg(weight=quantity)")],
         )
         sql = await _generate(generator, query, orders_model)
-        # Exactly one CASE — the value; the weight rides unmasked into the denominator.
-        assert sql.count("CASE WHEN") == 1, f"Expected 1 CASE WHEN, got: {sql}"
-        assert "SUM(orders.quantity)" in sql, (
-            f"the unmasked weight must be a plain SUM(orders.quantity): {sql}"
-        )
+        # The mask wraps only the value (read twice: numerator, non-NULL test); the
+        # weight rides unmasked.
+        assert sql.count("CASE WHEN orders.status = 'active' THEN orders.amount END") == 2, sql
+        assert "'active' THEN orders.quantity" not in sql, sql
 
     async def test_mixed_filtered_and_unfiltered(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         """Query with both filtered and unfiltered measures."""
@@ -9369,12 +9370,13 @@ class TestFilterOuterParenWrapDev1539:
         sql = await _generate(generator, query, orders_model)
         norm = _norm(sql)
         m = _re.search(
-            r"\(\s*orders\.customer_id\s+AND\s+orders\.id\s*\)\s*>\s*0",
+            # A boolean compared with a number reads as its integer; the cast delimits it.
+            r"CAST\(\s*orders\.customer_id\s+AND\s+orders\.id\s+AS\s+INT\s*\)\s*>\s*0",
             norm,
             _re.IGNORECASE,
         )
         assert m is not None, (
-            f"Expected DSL Compare LHS BoolOp wrapped to `(a AND b) > 0`; got:\n{norm}"
+            f"Expected DSL Compare LHS BoolOp delimited as `CAST(a AND b AS INT) > 0`; got:\n{norm}"
         )
 
     async def test_dsl_compare_rhs_boolop_wrapped(
@@ -9389,12 +9391,12 @@ class TestFilterOuterParenWrapDev1539:
         sql = await _generate(generator, query, orders_model)
         norm = _norm(sql)
         m = _re.search(
-            r"orders\.customer_id\s*=\s*\(\s*orders\.id\s+OR\s+0\s*\)",
+            r"orders\.customer_id\s*=\s*CAST\(\s*orders\.id\s+OR\s+0\s+AS\s+INT\s*\)",
             norm,
             _re.IGNORECASE,
         )
         assert m is not None, (
-            f"Expected DSL Compare RHS BoolOp wrapped to `x = (a OR 0)`; got:\n{norm}"
+            f"Expected DSL Compare RHS BoolOp delimited as `x = CAST(a OR 0 AS INT)`; got:\n{norm}"
         )
 
     async def test_filter_inline_preserves_backslash_in_joined_column_sql(

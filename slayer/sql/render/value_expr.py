@@ -23,16 +23,19 @@ from slayer.core.keys import (
     ScalarCallKey,
     SqlFragmentKey,
     StarKey,
+    TimePointCmpKey,
     TimeTruncKey,
     TransformKey,
     ValueKey,
     _FrozenKey,
+    aggregation_source_type,
     source_anchor_path,
 )
 from slayer.sql.dialects.base import SqlDialect
 from slayer.sql.render.aggregates import (
     DISPATCH_DISTINCT,
     DISPATCH_SIMPLE,
+    apply_aggregate,
     is_builtin_agg,
     resolve_agg_entry,
 )
@@ -48,7 +51,9 @@ from slayer.sql.render.row_expr import (  # noqa: F401 — re-exported render su
     group_is_operands,
     group_unary_operand,
     iif_case_chain,
+    numeric_parts,
     render_arithmetic,
+    render_in_predicate,
     render_date_call,
     render_temporal_comparison,
     render_scalar_call,
@@ -309,18 +314,15 @@ def _render_builtin_aggregate(  # NOSONAR(S3776) — sequential fail-closed guar
             detail="a nested-aggregate source must desugar to a producer",
         )
     else:
+        assert not isinstance(key.source, TimePointCmpKey)  # lowered by the checker before planning
         inner = _require_scope(ctx, key).resolve(
             key.source, consumer=ctx.consumer,
         )
-    if entry.node_class is None:  # pragma: no cover — dispatch gate guarantees it
-        raise RenderContextMissingFacilityError(
-            key_kind=type(key).__name__,
-            facility=_AGG_BUILDER,
-            detail=f"aggregation {key.agg!r} has no direct sqlglot node",
-        )
-    if entry.dispatch == DISPATCH_DISTINCT:
-        return entry.node_class(this=exp.Distinct(expressions=[inner]))
-    return entry.node_class(this=inner)
+    column_type = ctx.column_type or _require_scope(ctx, key).column_type
+    return apply_aggregate(
+        entry=entry, value=inner, dialect=ctx.dialect,
+        input_type=aggregation_source_type(key.source, column_type=column_type),
+    )
 
 
 def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed ValueKey union; each branch IS that type's render contract, and splitting them is exactly the fragmentation this module removes.
@@ -388,7 +390,10 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
                 rendered = _paren_if_binary(rendered)
             return render_temporal_comparison(op=op, operand=rendered, value=value, dialect=ctx.dialect)
         op = key.op.lower()
-        operands = [render_value_key(key=o, ctx=ctx) for o in key.operands]
+        operands = numeric_parts(
+            key=key, parts=[render_value_key(key=o, ctx=ctx) for o in key.operands],
+            column_type=_known_column_types(ctx),
+        )
         if (
             ctx.filters is not None
             and ctx.filters.paren_comparison_operands
@@ -402,12 +407,12 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
             return _render_iif_case(key=key, ctx=ctx)
         # ANY key routes as a key (the tail raise owns unsupported kinds); only
         # true scalars render as literals.
-        args = [
+        args = numeric_parts(key=key, column_type=_known_column_types(ctx), parts=[
             render_value_key(key=a, ctx=ctx)
             if isinstance(a, _FrozenKey)
             else _literal(a, dialect=ctx.dialect)
             for a in key.args
-        ]
+        ])
         if key.name in DATE_FUNCTIONS:
             return render_date_call(
                 key=key, args=args, dialect=ctx.dialect, column_type=_column_types(ctx, key),
@@ -417,18 +422,10 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
         )
 
     if isinstance(key, InKey):
-        # Backstop for the bind-time rule: a NULL member breaks IN, and ``NOT IN`` with one matches no rows.
-        if any(v.value is None for v in key.values):
-            raise NotImplementedError(
-                "NULL is not allowed inside an IN list: 'NOT IN' with a NULL "
-                "matches no rows. Test for null separately with IS NULL / "
-                "IS NOT NULL.",
-            )
-        node = exp.In(
-            this=render_value_key(key=key.column, ctx=ctx),
-            expressions=[_literal(v.value, dialect=ctx.dialect) for v in key.values],
+        (column,) = numeric_parts(
+            key=key, parts=[render_value_key(key=key.column, ctx=ctx)], column_type=_known_column_types(ctx),
         )
-        return exp.Not(this=node) if key.negated else node
+        return render_in_predicate(key=key, column=column, dialect=ctx.dialect)
 
     if isinstance(key, AggregateKey):
         return _render_aggregate(key, ctx)
@@ -463,7 +460,16 @@ def _render_iif_case(*, key: ScalarCallKey, ctx: "RenderContext") -> exp.Case:
             if isinstance(a, _FrozenKey) else _literal(a, dialect=ctx.dialect)
         )
 
-    return iif_case_chain(key=key, part=_part)
+    return iif_case_chain(key=key, part=_part, column_type=_known_column_types(ctx))
+
+
+def _known_column_types(ctx: RenderContext) -> ColumnTypeFn:
+    """Declared column types where the context knows them; otherwise every column is untyped."""
+    if ctx.column_type is not None:
+        return ctx.column_type
+    if ctx.scope is not None:
+        return ctx.scope.column_type
+    return lambda _key: None
 
 
 def _column_types(ctx: RenderContext, key: ScalarCallKey) -> ColumnTypeFn:

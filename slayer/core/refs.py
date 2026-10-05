@@ -64,7 +64,7 @@ def auto_name_from_expression(expression: str) -> str:
 
 # The row-level ``ValueKey`` kinds an ``AggregateKey.source`` may take when it
 # is a same-model scalar EXPRESSION rather than a column / star.
-EXPRESSION_SOURCE_KINDS = (ArithmeticKey, ScalarCallKey, LiteralKey, TimeTruncKey)
+EXPRESSION_SOURCE_KINDS = (ArithmeticKey, ScalarCallKey, LiteralKey, TimeTruncKey, InKey)
 
 
 # The pinned legacy key spelling: the historical Pydantic
@@ -181,6 +181,9 @@ def _value_key_display(key: Any) -> str:
         return f"{key.name}({args})"
     if isinstance(key, TimeTruncKey):
         return f"{key.granularity}({_value_key_display(key.column)})"
+    if isinstance(key, InKey):
+        values = ", ".join(_value_key_display(v) for v in key.values)
+        return f"{_value_key_display(key.column)} {'not in' if key.negated else 'in'} ({values})"
     if type(key) not in _LEGACY_KEY_SPELLINGS:
         return str(key)  # raw scalar arg (e.g. Decimal in nullif/round)
     return legacy_key_str(key)

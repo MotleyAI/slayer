@@ -40,7 +40,7 @@ from slayer.core.errors import (
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.granularity import CustomGranularity, Granularity, granularity_parts
 from slayer.core.time_spine import TIME_SPINE_COLUMN, is_spine
-from slayer.core.keys import BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, SLOT_COMPOSITE_KINDS, TEMPORAL_TYPES, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, ColumnKey, ColumnSqlKey, ColumnTypeFn, InKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimeTruncKey, TransformKey, column_leaf, column_path, date_add_type, is_boolean_shaped, parameter_row_leaves, shift_offset_of, source_anchor_path, substitute_value_keys, temporal_type, walk_value_keys
+from slayer.core.keys import BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, SLOT_COMPOSITE_KINDS, TEMPORAL_TYPES, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, ColumnKey, ColumnSqlKey, ColumnTypeFn, InKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimeTruncKey, TransformKey, aggregation_source_type, column_leaf, column_path, date_add_type, is_boolean_shaped, parameter_row_leaves, shift_offset_of, source_anchor_path, substitute_value_keys, temporal_type, walk_value_keys
 from slayer.core.join_walker import aggregation_owner, model_column_type, physical_join_pairs, resolve_hop, terminal_model
 from slayer.core.models import VALUE_PLACEHOLDER, aggregation_definition, rendered_formula, reserved_value_param_message
 from slayer.core.refs import (
@@ -112,12 +112,13 @@ from slayer.sql.render.ranked import (
     ranked_ordered,
 )
 from slayer.sql.render.aggregates import (
-    DISPATCH_DISTINCT,
     DISPATCH_STAT,
+    aggregate_input,
+    apply_aggregate,
     is_builtin_agg,
     resolve_agg_entry,
 )
-from slayer.sql.render.parse import parse_expression, parse_predicate
+from slayer.sql.render.parse import apply_ast_rewrites, parse_expression, parse_predicate
 from slayer.sql.sql_template import SqlTemplate, SqlTemplateError, sql_template
 from slayer.sql.render.row_expr import _literal
 from slayer.sql.render.value_expr import (
@@ -177,6 +178,12 @@ class AggRenderSpec(BaseModel):
     type: Optional[DataType] = None
 
     column_type: Optional[DataType] = None
+
+    #: The aggregated value's type as the aggregation reads it (a BOOLEAN is lowered to its integer).
+    input_type: Optional[DataType] = None
+
+    #: An expression source's rendered value, never re-parsed from text.
+    value: Optional[Expression] = None
 
 
 def _strip_declared_cast(expr: Expression) -> Expression:
@@ -663,9 +670,9 @@ _COMPOUND_VALUE_KEYS = (
 
 
 def _validate_consecutive_periods_input(*, op: str, inner) -> None:
-    """Enforce the ``consecutive_periods`` predicate typing contract: a
-    top-level string-valued scalar call has no truthiness; a boolean-shaped node
-    is legal only at the predicate top level or in an ``iif`` condition."""
+    """Enforce the ``consecutive_periods`` predicate typing contract: a top-level string-valued
+    scalar call has no truthiness, and ``and`` / ``or`` / ``not`` take boolean-shaped operands
+    (a boolean anywhere a number is needed is its integer)."""
     if (
         isinstance(inner, ScalarCallKey)
         and inner.name.lower() in _STRING_VALUED_SCALARS
@@ -675,55 +682,26 @@ def _validate_consecutive_periods_input(*, op: str, inner) -> None:
             f"string has no truthiness. Compare it explicitly (e.g. "
             f"`length(...) > 0`) to form a predicate."
         )
-    _walk_cp_predicate(op=op, key=inner, expect="either")
+    _walk_cp_predicate(op=op, key=inner, connective_operand=False)
 
 
-def _assert_cp_shape(*, op: str, key, expect: str, node_is_bool: bool) -> None:
-    """Enforce the boolean-vs-value expectation at one node; raise on mismatch."""
-    if expect == "bool" and not node_is_bool:
+def _walk_cp_predicate(*, op: str, key, connective_operand: bool) -> None:
+    """Recursively require boolean-shaped operands under ``and`` / ``or`` / ``not``."""
+    if connective_operand and not is_boolean_shaped(key):
         raise ValueError(
             f"{op!r}: 'and' / 'or' / 'not' require boolean-shaped operands (a "
-            f"comparison, a null test, BETWEEN, IN, or another connective); got "
+            f"comparison, a null test, IN, or another connective); got "
             f"{type(key).__name__}."
         )
-    if expect == "value" and node_is_bool:
-        raise ValueError(
-            f"{op!r}: a boolean-shaped predicate cannot appear in a value "
-            f"position (arithmetic operand, scalar-call argument, or IN / BETWEEN "
-            f"operand); only iif's condition and the top-level predicate accept a "
-            f"boolean. Got {type(key).__name__}."
-        )
-
-
-def _walk_cp_scalar_call(*, op: str, key) -> None:
-    """Recurse into a scalar call: an ``iif`` condition accepts either shape;
-    every remaining compound argument must be value-shaped."""
-    if key.name == "iif" and key.args:
-        _walk_cp_predicate(op=op, key=key.args[0], expect="either")
-        rest = key.args[1:]
-    else:
-        rest = key.args
-    for a in rest:
-        if isinstance(a, _COMPOUND_VALUE_KEYS):
-            _walk_cp_predicate(op=op, key=a, expect="value")
-
-
-def _walk_cp_predicate(*, op: str, key, expect: str) -> None:
-    """Recursively check the boolean-vs-value contract. ``expect`` is 'bool'
-    (must be boolean-shaped), 'value' (must not be), or 'either' (predicate top
-    level / iif condition)."""
-    _assert_cp_shape(
-        op=op, key=key, expect=expect, node_is_bool=is_boolean_shaped(key),
-    )
     if isinstance(key, ArithmeticKey):
-        child_expect = "bool" if key.op in BOOL_CONNECTIVE_OPS else "value"
         for o in key.operands:
-            _walk_cp_predicate(op=op, key=o, expect=child_expect)
+            _walk_cp_predicate(op=op, key=o, connective_operand=key.op in BOOL_CONNECTIVE_OPS)
     elif isinstance(key, ScalarCallKey):
-        _walk_cp_scalar_call(op=op, key=key)
+        for a in key.args:
+            if isinstance(a, _COMPOUND_VALUE_KEYS):
+                _walk_cp_predicate(op=op, key=a, connective_operand=False)
     elif isinstance(key, InKey):
-        for sub in (key.column, *key.values):
-            _walk_cp_predicate(op=op, key=sub, expect="value")
+        _walk_cp_predicate(op=op, key=key.column, connective_operand=False)
 
 
 def _effective_src_filters(*, lowered_filters, plan) -> list:
@@ -1179,7 +1157,9 @@ class SQLGenerator:
         )
 
     def _resolve_value_ast(self, spec: AggRenderSpec) -> Expression:
-        """Resolve ``spec.sql`` (or ``spec.name``) into a fully-qualified AST."""
+        """The spec's value: its rendered AST, else ``spec.sql`` (or ``spec.name``) resolved."""
+        if spec.value is not None:
+            return spec.value.copy()
         return self._resolve_sql(
             sql=spec.sql,
             name=spec.name,
@@ -1233,23 +1213,37 @@ class SQLGenerator:
                 col_expr=self._resolve_value_ast(spec),
             ), True
 
-        inner = exp.Star() if agg_name == "count" and spec.sql is None else self._spec_value(spec)
-
-        if dispatch == DISPATCH_DISTINCT:
-            return exp.Count(this=exp.Distinct(expressions=[inner])), True
+        is_star = agg_name == "count" and spec.sql is None and spec.value is None
+        inner = exp.Star() if is_star else self._spec_value(spec)
 
         if agg_name == "median":
-            return self._build_median(inner), True
+            return self._build_median(
+                aggregate_input(value=inner, aggregation=agg_name, input_type=spec.input_type),
+            ), True
 
-        if entry.node_class is None:
-            raise ValueError(f"Aggregation {agg_name!r} has no SQL node to render.")
-        return entry.node_class(this=inner), True
+        return apply_aggregate(
+            entry=entry, value=inner, input_type=spec.input_type, dialect=self._dialect,
+        ), True
+
+    def _pick_once(self, value: Expression, *, input_type: Optional[DataType]) -> Expression:
+        """An association producer's per-entity pick of a constant ``value`` (MAX)."""
+        return apply_aggregate(
+            entry=resolve_agg_entry("max"), value=value, input_type=input_type, dialect=self._dialect,
+        )
 
     def _spec_value(self, spec: AggRenderSpec) -> Expression:
-        """The spec's row value: its SQL expression, else its column."""
+        """The spec's row value: its rendered AST, else its SQL expression, else its column."""
+        if spec.value is not None:
+            return spec.value.copy()
         if spec.sql:
             return self._resolve_sql(sql=spec.sql, name=spec.name, model_name=spec.model_name, type=spec.column_type)
         return exp.Column(this=exp.to_identifier(spec.name), table=exp.to_identifier(spec.model_name))
+
+    def _aggregated_value(self, spec: AggRenderSpec) -> Expression:
+        """The value the spec's aggregation reads (a boolean input to a numeric aggregation as its integer)."""
+        return aggregate_input(
+            value=self._resolve_value_ast(spec), aggregation=spec.aggregation, input_type=spec.input_type,
+        )
 
     def _build_formula_agg(self, spec: AggRenderSpec, agg_name: str) -> Expression:
         """Build SQL for formula-based aggregations (weighted_avg, custom)."""
@@ -1268,7 +1262,8 @@ class SQLGenerator:
         }
         # The aggregated column; a source ``Column.filter`` is already baked in.
         bindings[VALUE_PLACEHOLDER] = (
-            exp.Star() if spec.sql is None and not spec.name else self._resolve_value_ast(spec)
+            exp.Star() if spec.sql is None and spec.value is None and not spec.name
+            else self._aggregated_value(spec)
         )
         try:
             return template.render(bindings)
@@ -1288,7 +1283,7 @@ class SQLGenerator:
     def _build_percentile(self, spec: AggRenderSpec) -> Expression:
         """Build a PERCENTILE_CONT(p) aggregation expression (dialect-dependent)."""
         p = _percentile_literal(self._resolve_agg_param(spec, name="p", agg_name="percentile"))
-        return self._dialect.build_percentile(p=p, col_expr=self._resolve_value_ast(spec))
+        return self._dialect.build_percentile(p=p, col_expr=self._aggregated_value(spec))
 
     def _build_stat_agg(self, spec: AggRenderSpec) -> Expression:
         """Build SQL for the statistical aggregations."""
@@ -1297,11 +1292,11 @@ class SQLGenerator:
             # Resolve other= first so a missing-required-param error outranks the dialect-unsupported one.
             other_expr = self._resolve_agg_param(spec, name="other", agg_name=agg_name)
             return self._dialect.build_covar_2arg(
-                agg_name=agg_name, col_expr=self._resolve_value_ast(spec), other_expr=other_expr,
+                agg_name=agg_name, col_expr=self._aggregated_value(spec), other_expr=other_expr,
             )
         if is_stat_agg1(agg_name):
             return self._dialect.build_stat_agg_1arg(
-                agg_name=agg_name, col_expr=self._resolve_value_ast(spec),
+                agg_name=agg_name, col_expr=self._aggregated_value(spec),
             )
         raise ValueError(f"Unknown statistical aggregation {agg_name!r}.")
 
@@ -2508,7 +2503,7 @@ class SQLGenerator:
                 )
             src_cols.append(exp.Literal.number("1").as_("_w_value"))
         else:
-            assert not isinstance(key.source, (AggregateKey, TransformKey))  # sources are row-level here
+            assert not isinstance(key.source, (AggregateKey, TransformKey, TimePointCmpKey))  # sources are row-level here
             src_cols.append(src_scope.resolve(key.source).as_("_w_value"))
 
         # Reference-bearing parameters read per interval row (D4): each _w_p<i> is
@@ -2631,10 +2626,14 @@ class SQLGenerator:
             rank_inner = rank_inner.from_(base_from).join(
                 src_subq, on=on_range, join_type="LEFT")
             pick = _wrap_cast_for_type(
-                expr=build_ranked_pick(value_ref=exp.Column(
-                    this=exp.to_identifier("_w_value"),
-                    table=exp.to_identifier(RANKED_SOURCE_ALIAS),
-                )),
+                expr=build_ranked_pick(
+                    value_ref=exp.Column(
+                        this=exp.to_identifier("_w_value"),
+                        table=exp.to_identifier(RANKED_SOURCE_ALIAS),
+                    ),
+                    input_type=aggregation_source_type(key.source, column_type=src_scope.column_type),
+                    dialect=self._dialect,
+                ),
                 dt=_ranked_value_cast_type(self._slot_cast_type(agg_slot)),
             )
             grain_proj = [
@@ -2668,6 +2667,7 @@ class SQLGenerator:
             agg_kwargs=self._agg_param_exprs(
                 key=key, formula=formula, resolved=picked_kwarg_exprs, scope=src_scope,
             ),
+            input_type=aggregation_source_type(key.source, column_type=src_scope.column_type),
         )
         agg_expr, _ = self._build_agg(level2_spec)
         if definition is not None and definition.formula is not None:
@@ -2926,7 +2926,10 @@ class SQLGenerator:
         # A first/last value is the raw picked column, so its temporal type needs no CAST (SQLite would give numeric
         # affinity, truncating a date to its year).
         pick = _wrap_cast_for_type(
-            expr=build_ranked_pick(value_ref=value_ref),
+            expr=build_ranked_pick(
+                value_ref=value_ref, dialect=self._dialect,
+                input_type=aggregation_source_type(local_key.source, column_type=ranked_scope.column_type),
+            ),
             dt=_ranked_value_cast_type(self._slot_cast_type(agg_slot)),
         )
         return build_ranked_cte_select(
@@ -3129,9 +3132,10 @@ class SQLGenerator:
                     key=agg_slot.key, formula=formula, scope=scope,
                     skip=frozenset(picked_names),
                 ),
+                input_type=aggregation_source_type(agg_slot.key.source, column_type=scope.column_type),
             )
             inner_cols.append(exp.Alias(
-                this=exp.Max(this=value_expr.copy()),
+                this=self._pick_once(value_expr.copy(), input_type=spec.input_type),
                 alias=exp.to_identifier(picked_alias),
             ))
         elif not is_star:
@@ -3158,7 +3162,7 @@ class SQLGenerator:
                 scope=scope,
             )
             inner_cols.append(
-                exp.Max(this=self._resolve_value_ast(spec)).as_(
+                self._pick_once(self._resolve_value_ast(spec), input_type=spec.input_type).as_(
                     exp.to_identifier(picked_alias),
                 ),
             )
@@ -3171,7 +3175,9 @@ class SQLGenerator:
             _p_alias = f"_p{_i}"
             _picked = render_value_key(key=_pp.key, ctx=ctx)
             inner_cols.append(exp.Alias(
-                this=exp.Max(this=_picked),
+                this=self._pick_once(
+                    _picked, input_type=aggregation_source_type(_pp.key, column_type=scope.column_type),
+                ),
                 alias=exp.to_identifier(_p_alias),
             ))
             picked_kwarg_exprs[_pp.name] = ResolvedAggKwarg(
@@ -3268,6 +3274,7 @@ class SQLGenerator:
                 aggregation=agg_slot.key.agg,
                 alias=agg_alias, model_name="_base", type=agg_slot.type,
                 column_type=spec.column_type,
+                input_type=spec.input_type,
                 # A picked parameter reads from _base._p<i>, overriding its
                 # explicit-kwarg / definition-default resolution.
                 agg_kwargs={**spec.agg_kwargs, **picked_kwarg_exprs},
@@ -5499,10 +5506,6 @@ class SQLGenerator:
         ).sql(dialect=self.dialect)
         return wrap_column_filter(value_sql=value_sql, filter_sql=filter_sql)
 
-    def _render_expression_source_sql(self, *, source, scope: ScopeFrame) -> str:
-        """Render an aggregate's row-level expression source through ``scope`` — one resolver for leaves, attached placeholders, derived columns and join registration."""
-        return scope.resolve(source).sql(dialect=self.dialect)
-
     def _joined_paths_in_sql(
         self, *, sql_expr: Expression, source_relation: str, source_model,
         bundle,
@@ -5758,6 +5761,7 @@ class SQLGenerator:
             model=source_model, relation=source_relation,
             bundle=bundle or ResolvedSourceBundle(dialect=self.dialect, source_model=source_model),
         )
+        input_type = aggregation_source_type(source, column_type=param_scope.column_type)
         if isinstance(source, (ColumnKey, ColumnSqlKey)):
             host_grain_root: Optional[str] = None
             if source.path and _is_host_grain(key) and bundle is not None:
@@ -5827,6 +5831,7 @@ class SQLGenerator:
                 model_name=source_relation,
                 type=slot_type,
                 column_type=column_type,
+                input_type=input_type,
                 agg_kwargs=self._agg_param_exprs(
                     key=key, formula=formula, resolved=resolved_agg_kwargs, scope=param_scope,
                 ),
@@ -5842,16 +5847,21 @@ class SQLGenerator:
             agg_def = self._resolve_aggregation_def(
                 key=key, source_model=source_model, src_leaf=expr_leaf,
             )
-            sql_text = self._render_expression_source_sql(source=source, scope=param_scope)
+            # One resolver for leaves, attached placeholders, derived columns and join registration.
+            value = apply_ast_rewrites(
+                tree=param_scope.resolve(source), target_dialect=self._dialect, parse_dialect=self._dialect,
+            )
             formula = rendered_formula(agg=key.agg, definition=agg_def)
             return AggRenderSpec(
                 name=expr_leaf,
-                sql=sql_text,
+                sql=None,
+                value=value,
                 aggregation=key.agg,
                 alias=full_alias,
                 model_name=source_relation,
                 type=slot_type,
                 column_type=None,
+                input_type=input_type,
                 agg_kwargs=self._agg_param_exprs(
                     key=key, formula=formula, resolved=resolved_agg_kwargs, scope=param_scope,
                 ),
@@ -6073,6 +6083,8 @@ class SQLGenerator:
         return RenderContext(
             scope=scope,
             dialect=self._dialect,
+            # Kept when HAVING drops the scope: booleans read as numbers need declared types.
+            column_type=scope.column_type,
             filters=FilterFacilities(
                 slot_by_key=slot_by_key or {},
                 aliases_by_slot_id=aliases_by_slot_id or {},
@@ -6344,7 +6356,7 @@ def _finish_statement(
     """The one render of a composed statement: text, then identifier fitting, scope validation and the limit check."""
     d = dialect if isinstance(dialect, SqlDialect) else get_dialect(dialect)
     sql = d.rewrite_emitted_sql(
-        statement.sql(dialect=d.sqlglot_name, pretty=True), aliases=aliases, exempt=exempt,
+        d.rewrite_statement(statement).sql(dialect=d.sqlglot_name, pretty=True), aliases=aliases, exempt=exempt,
     )
     maybe_validate_scopes(sql, dialect=d.sqlglot_name)
     d.assert_no_overlimit_identifiers(sql, exempt=exempt)

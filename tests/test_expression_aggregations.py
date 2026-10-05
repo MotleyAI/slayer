@@ -464,20 +464,16 @@ class TestExpressionGates:
         with pytest.raises(ValueError, match="(?i)numeric"):
             await _dry(q)
 
-    async def test_boolean_expression_rejected(self) -> None:
-        # A boolean operand is non-numeric: SUM(<bool>) errors on Postgres /
-        # SQL Server, so reject it like a text operand.
-        q = _q(measures=["sum(True)"])
-        with pytest.raises(ValueError, match="(?i)boolean"):
-            await _dry(q)
+    async def test_boolean_expression_accepted(self) -> None:
+        # A boolean operand is its integer inside a numeric aggregation.
+        resp = await _dry(_q(measures=["sum(True)"]))
+        assert "SUM(CAST(TRUE AS INT))" in (resp.sql or "")
 
-    async def test_boolean_scalar_expression_rejected(self) -> None:
-        # like(...) is boolean; iif follows its branch types — both reach SQL
-        # generation as SUM(<bool>) unless rejected here.
+    async def test_boolean_scalar_expression_accepted(self) -> None:
+        # like(...) is boolean; iif follows its branch types.
         for measure in ["sum(like(name, 'A%'))", "sum(iif(amount, True, False))"]:
-            q = _q(measures=[measure])
-            with pytest.raises(ValueError, match="(?i)boolean"):
-                await _dry(q)
+            resp = await _dry(_q(measures=[measure]))
+            assert "SUM(CAST(" in (resp.sql or ""), resp.sql
 
     async def test_numeric_iif_expression_allowed(self) -> None:
         # iif with numeric branches stays numeric — must not be over-rejected.

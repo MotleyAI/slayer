@@ -1536,7 +1536,8 @@ class TestOperatorCompositionEdges:
             ),
         )
         out = _sql(render_value_key(key=key, ctx=_filter_ctx()))
-        assert out == "(orders.amount > 5) + 1", out
+        # The boolean operand reads as its integer; the cast delimits it.
+        assert out == "CAST(orders.amount > 5 AS INT) + 1", out
 
     def test_boolean_nested_in_arithmetic_keeps_its_parens(self) -> None:
         """Same for a boolean child: ``a AND b + 1`` binds the ``+`` first."""
@@ -1560,7 +1561,7 @@ class TestOperatorCompositionEdges:
             ),
         )
         out = _sql(render_value_key(key=key, ctx=_filter_ctx()))
-        assert out.startswith("("), out
+        assert out == "CAST(orders.amount > 1 AND orders.amount < 9 AS INT) + 1", out
 
     def test_comparison_with_three_operands_is_refused(self) -> None:
         """A chained comparison must RAISE, not left-fold.

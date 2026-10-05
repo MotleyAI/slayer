@@ -721,12 +721,12 @@ def _format_description_for_dimension(
 
 
 def _format_description_for_measure_formula(
-    *, scope: ModelScope | StageSchema, bound,
+    *, scope: ModelScope | StageSchema, bound, bundle: ResolvedSourceBundle,
 ) -> Tuple[Optional[NumberFormat], Optional[str]]:
     if not isinstance(scope, ModelScope) or scope.source_model is None:
         return None, None
     return measure_key_format_description(
-        model=scope.source_model, key=bound.value_key,
+        model=scope.source_model, key=bound.value_key, bundle=bundle,
     )
 
 
@@ -1113,7 +1113,7 @@ def _declared_measures_from_query(  # NOSONAR(S3776) — three sequential projec
                     continue
                 seen_measure_keys[public_name] = (formula, bound.value_key, m)
             fmt, desc = _format_description_for_measure_formula(
-                scope=scope, bound=bound,
+                scope=scope, bound=bound, bundle=bundle,
             )
             # Type-priority (highest wins): query m.type, saved ModelMeasure.type,
             # then aggregation-aware inference.
