@@ -1,22 +1,4 @@
-"""SnowflakeDialect — Tier 1 promotion.
-
-Promoted from ``_tier2.py`` to its own file because Snowflake now carries
-runtime quirks beyond the data-shaped Tier-2 set:
-
-* Connection-name URL form (``snowflake://?connection_name=<name>``) +
-  ``sa.create_engine(..., creator=...)`` bridge to delegate to
-  ``snowflake.connector.connect(connection_name=...)`` for TOML-driven auth.
-* Per-connection session overrides (``USE WAREHOUSE / USE ROLE /
-  USE DATABASE / USE SCHEMA``) from the typed ``DatasourceConfig`` fields.
-* Per-statement timeout via ``ALTER SESSION SET
-  STATEMENT_TIMEOUT_IN_SECONDS``.
-* Cursor type-code mapping for ``snowflake-connector-python``'s
-  ``FieldType`` enum (FIXED/REAL/TEXT/DATE/TIMESTAMP/VARIANT/...).
-
-SQL generation mostly matches the Postgres-shaped base; divergences are
-``log2_native=False``, ISO date-part names, ``DATEADD``, and ``DATEDIFF`` for
-second gaps.
-"""
+"""SnowflakeDialect: connection-name auth, session overrides, statement timeout, cursor types."""
 
 from __future__ import annotations
 
@@ -32,15 +14,13 @@ from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import DataType, DatePart, TimeGranularity
 from slayer.sql.dialects.base import SqlDialect
+from slayer.sql.dialects.drivers import import_driver
 
 if TYPE_CHECKING:
     from slayer.core.models import DatasourceConfig
 
 
-# snowflake-connector-python's ``FieldType`` integer codes → SLayer
-# category. Codes from ``snowflake.connector.constants.FieldType``;
-# kept in sync with the consumer-facing categories used by
-# ``slayer.sql.client._map_type_code``.
+# ``snowflake.connector.constants.FieldType`` codes → SLayer category.
 _SNOWFLAKE_TYPE_MAP: dict[int, str] = {
     0: "number",   # FIXED (NUMBER / INT / DECIMAL)
     1: "number",   # REAL (FLOAT / DOUBLE)
@@ -59,55 +39,19 @@ _SNOWFLAKE_TYPE_MAP: dict[int, str] = {
 }
 
 
-# Sentinel-URL prefix used by ``build_connection_url`` when
-# ``DatasourceConfig.connection_name`` is set. ``engine_factory``
-# bridges this URL to ``snowflake.connector.connect(connection_name=...)``
-# via ``sa.create_engine(..., creator=...)`` because snowflake-sqlalchemy
-# has no ``connection_name=`` URL knob.
+# snowflake-sqlalchemy has no ``connection_name=`` knob, so this sentinel routes via ``creator=``.
 _CONNECTION_NAME_PREFIX = "snowflake://?connection_name="
 
-
-def _import_snowflake_connector():
-    """Lazy import with an actionable install hint."""
-    try:
-        import snowflake.connector  # ALLOW(import-not-top): optional heavy driver, imported lazily
-        return snowflake.connector
-    except ImportError as exc:
-        raise ImportError(
-            "Snowflake support requires the 'snowflake' extra: "
-            "pip install 'motley-slayer[snowflake]'"
-        ) from exc
+_CONNECTOR_MODULE = "snowflake.connector"
 
 
-def _import_snowflake_sqlalchemy_url():
-    """Lazy import for the inline-URL form. Same install hint."""
-    try:
-        from snowflake.sqlalchemy import URL  # ALLOW(import-not-top): optional heavy driver, imported lazily
-        return URL
-    except ImportError as exc:
-        raise ImportError(
-            "Snowflake support requires the 'snowflake' extra: "
-            "pip install 'motley-slayer[snowflake]'"
-        ) from exc
-
-
-# Snowflake identifier characters allowed unquoted: letters, digits,
-# underscores, dollar signs. Anything else (whitespace, semicolons,
-# quotes, parentheses) is rejected up front rather than emitted into a
-# ``USE WAREHOUSE/ROLE/DATABASE/SCHEMA`` statement.
 _SAFE_SNOWFLAKE_IDENT = _re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*$")
 
 
 def _validate_unquoted_identifier(*, field: str, value: str) -> str:
-    """Reject Snowflake identifier values that aren't safe to emit unquoted.
+    """Reject values unsafe to emit unquoted in ``USE ...`` statements.
 
-    The values that flow into ``USE WAREHOUSE / ROLE / DATABASE / SCHEMA``
-    statements come from typed ``DatasourceConfig`` fields. We deliberately
-    emit them **unquoted** so Snowflake's case-folding rules apply (the
-    common ``warehouse: compute_wh`` config matches the uppercase storage
-    ``COMPUTE_WH``); always-quoting would silently break those configs.
-    To keep that path safe we reject any character that could change the
-    statement's meaning (whitespace, semicolons, quotes, parens, dots).
+    Unquoted so Snowflake case-folding applies (``compute_wh`` matches ``COMPUTE_WH``).
     """
     if not _SAFE_SNOWFLAKE_IDENT.match(value):
         raise ValueError(
@@ -121,24 +65,7 @@ def _validate_unquoted_identifier(*, field: str, value: str) -> str:
 
 
 def _is_connection_name_sentinel(connection_string: str) -> bool:
-    """True iff ``connection_string`` is the
-    ``snowflake://?connection_name=<name>`` sentinel.
-
-    Cross-source-of-truth: the user can land on this URL either via
-    ``DatasourceConfig.connection_name`` (typed field) or by typing the
-    URL into the ``connection_string`` field (e.g. the CLI form
-    ``slayer datasources create snowflake://?connection_name=default``).
-    Both paths must route through ``creator=``.
-
-    The recognition is **strict**: the URL must contain exactly one
-    non-empty query parameter, ``connection_name``. Extra params like
-    ``warehouse=WH`` are rejected up front because ``build_engine`` only
-    forwards ``connection_name`` to ``snowflake.connector.connect`` —
-    silently accepting other params would route the user to the profile
-    defaults instead of the requested session context. To override
-    warehouse / role / database / schema, use the typed
-    ``DatasourceConfig`` fields; those fire via ``apply_session_overrides``.
-    """
+    """True iff the URL is the sentinel with ``connection_name`` as its only non-empty param."""
     if not connection_string.startswith("snowflake://"):
         return False
     try:
@@ -148,20 +75,12 @@ def _is_connection_name_sentinel(connection_string: str) -> bool:
     name = url.query.get("connection_name")
     if not name:
         return False
-    # Reject sentinel URLs with extra query params — they would silently
-    # be ignored by build_engine's creator= bridge.
     extra = {k for k, v in url.query.items() if k != "connection_name" and v != ""}
     return not extra
 
 
 def _extract_connection_name(connection_string: str) -> str:
-    """Parse the ``connection_name=`` value from the sentinel URL.
-
-    ``sa.engine.url.make_url`` already URL-decodes query-string values,
-    so the value is returned as-is. (Calling ``unquote`` again would
-    double-decode literal percent-encoded text such as ``%2F`` in
-    profile names.)
-    """
+    """Parse ``connection_name=`` from the sentinel URL (``make_url`` already URL-decodes it)."""
     try:
         url = _sa_url.make_url(connection_string)
     except sa.exc.ArgumentError as exc:
@@ -178,24 +97,18 @@ def _extract_connection_name(connection_string: str) -> str:
 
 
 class SnowflakeDialect(SqlDialect):
-    """Snowflake dialect — Tier 1.
-
-    Inherits Postgres-shaped SQL-generation defaults; sqlglot handles the
-    DATE_TRUNC / DATEADD / native-aggregate transpilation. Runtime
-    behavior (connection URL, engine creation, per-connection session
-    overrides, statement timeout, cursor type map) is encoded on the
-    class so ``engine_factory`` / ``client`` stay dialect-agnostic.
-    """
+    """Snowflake dialect."""
 
     sqlglot_name: str = "snowflake"
     ds_type_aliases: frozenset[str] = frozenset({"snowflake"})
     explain_prefix: str | None = "EXPLAIN USING JSON"
     explain_postfix: str = ""
     log10_native: bool = True
-    # No native LOG2 — falls through to canonical ``LOG(2, x)`` form.
     log2_native: bool = False
     max_identifier_bytes: int | None = 255
     approx_count_distinct_native: bool = True
+    url_scheme: str | None = "snowflake"
+    install_extra: str | None = "snowflake"
 
     _EXTRACT_FIELDS: ClassVar[dict[DatePart, str]] = {
         **SqlDialect._EXTRACT_FIELDS,
@@ -230,20 +143,11 @@ class SnowflakeDialect(SqlDialect):
         word = "WEEK" if unit is TimeGranularity.WEEK_SUNDAY else unit.value.upper()
         return exp.Anonymous(this="DATEADD", expressions=[exp.var(word), count.copy(), expr.copy()])
 
-    # ------------------------------------------------------------------
-    # Connection URL / engine
-    # ------------------------------------------------------------------
-
     def build_connection_url(
         self,
         datasource: DatasourceConfig,
     ) -> str | None:
-        """Emit the sentinel URL when ``connection_name`` is set, otherwise
-        build the full snowflake-sqlalchemy URL from inline fields.
-
-        Inline form requires ``host`` (the Snowflake account identifier).
-        ``warehouse`` and ``role`` populate the URL's query string.
-        """
+        """Sentinel URL when ``connection_name`` is set, else a snowflake-sqlalchemy URL."""
         if datasource.connection_name:
             return f"{_CONNECTION_NAME_PREFIX}{quote(datasource.connection_name, safe='')}"
         if not datasource.host:
@@ -254,7 +158,7 @@ class SnowflakeDialect(SqlDialect):
                 "'xy12345.us-east-1'), plus username/password — and optionally "
                 "database/schema_name/warehouse/role."
             )
-        URL = _import_snowflake_sqlalchemy_url()
+        URL = import_driver("snowflake.sqlalchemy", datasource=datasource, dialect=self).URL
         kwargs: dict[str, str] = {"account": datasource.host}
         if datasource.username:
             kwargs["user"] = datasource.username
@@ -268,8 +172,6 @@ class SnowflakeDialect(SqlDialect):
             kwargs["warehouse"] = datasource.warehouse
         if datasource.role:
             kwargs["role"] = datasource.role
-        # ``snowflake.sqlalchemy.URL`` returns a ``URL`` object; cast to
-        # ``str`` so the ``Optional[str]`` return-type annotation is honest.
         return str(URL(**kwargs))
 
     def build_engine(
@@ -278,19 +180,7 @@ class SnowflakeDialect(SqlDialect):
         *,
         connection_string: str,
     ) -> sa.Engine | None:
-        """When the sentinel URL is in play, route through ``creator=``
-        so ``snowflake.connector.connect(connection_name=...)`` drives
-        the auth path. Otherwise return None to let ``engine_factory``
-        use the default ``sa.create_engine(connection_string)`` path
-        (snowflake-sqlalchemy understands the inline URL form natively).
-        """
-        # Defence in depth: if the URL has the snowflake scheme AND a
-        # ``connection_name=`` query param BUT extra params, the strict
-        # sentinel check rejects it. Falling through to ``sa.create_engine``
-        # would then either (a) trigger a confusing snowflake-sqlalchemy
-        # parse error or (b) silently connect to the profile defaults.
-        # Raise an actionable error pointing at the typed DatasourceConfig
-        # fields instead.
+        """Route the sentinel URL through ``creator=``; None for the default engine path."""
         if connection_string.startswith("snowflake://"):
             try:
                 parsed = _sa_url.make_url(connection_string)
@@ -317,7 +207,7 @@ class SnowflakeDialect(SqlDialect):
         name = _extract_connection_name(connection_string)
 
         def _create_snowflake_connection():
-            sf = _import_snowflake_connector()
+            sf = import_driver(_CONNECTOR_MODULE, datasource=datasource, dialect=self)
             return sf.connect(connection_name=name)
 
         return sa.create_engine(
@@ -326,22 +216,16 @@ class SnowflakeDialect(SqlDialect):
             pool_pre_ping=True,
         )
 
+    def deferred_driver_modules(self, connection_string: str) -> tuple[str, ...]:
+        """The sentinel's connector is imported only by the connect-time ``creator``."""
+        return (_CONNECTOR_MODULE,) if _is_connection_name_sentinel(connection_string) else ()
+
     def apply_session_overrides(
         self,
         dbapi_connection: Any,
         datasource: DatasourceConfig,
     ) -> None:
-        """Issue ``USE WAREHOUSE / USE ROLE / USE DATABASE / USE SCHEMA``
-        in order on a fresh DBAPI connection.
-
-        Order matters:
-          * USE WAREHOUSE first — some accounts require an active
-            warehouse before USE SCHEMA can resolve.
-          * USE ROLE second — the role can scope what databases/schemas
-            are visible.
-          * USE DATABASE before USE SCHEMA — bare schema names resolve
-            against the current database.
-        """
+        """Issue ``USE ROLE / WAREHOUSE / DATABASE / SCHEMA`` on a fresh DBAPI connection."""
         if not any((
             datasource.warehouse,
             datasource.role,
@@ -349,9 +233,6 @@ class SnowflakeDialect(SqlDialect):
             datasource.schema_name,
         )):
             return
-        # Validate every value up front; reject anything that isn't a
-        # safe-to-emit-unquoted Snowflake identifier (catches embedded
-        # semicolons, quotes, whitespace).
         warehouse = (
             _validate_unquoted_identifier(field="warehouse", value=datasource.warehouse)
             if datasource.warehouse else None
@@ -370,10 +251,7 @@ class SnowflakeDialect(SqlDialect):
         )
         cur = dbapi_connection.cursor()
         try:
-            # Order: USE ROLE first — role determines warehouse / database
-            # privileges. A role granted via ``DatasourceConfig.role`` that
-            # has access to a warehouse the profile's default role doesn't
-            # see would otherwise fail at USE WAREHOUSE.
+            # Role first: it gates warehouse access; database before schema for bare names.
             if role:
                 cur.execute(f"USE ROLE {role}")
             if warehouse:
@@ -385,21 +263,10 @@ class SnowflakeDialect(SqlDialect):
         finally:
             cur.close()
 
-    # ------------------------------------------------------------------
-    # Runtime statement hooks
-    # ------------------------------------------------------------------
-
     def statement_timeout_sql(self, timeout_seconds: int) -> str | None:
-        """``ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS = N``.
-
-        Per-session setting; takes effect for every subsequent statement
-        on the same connection until the connection is closed or the
-        setting is reset.
-        """
+        """Session-wide ``STATEMENT_TIMEOUT_IN_SECONDS``."""
         return f"ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS = {timeout_seconds}"
 
     def map_cursor_type_code(self, type_code: int) -> str | None:
-        """Map a snowflake-connector ``FieldType`` integer code to a
-        SLayer category. Returns ``None`` for unknown codes so the caller
-        can fall through to a default rather than mis-classify."""
+        """Map a connector ``FieldType`` code to a SLayer category; None if unknown."""
         return _SNOWFLAKE_TYPE_MAP.get(type_code)

@@ -1,4 +1,5 @@
 # Config for the la-* tools (github.com/MotleyAI/living-architecture).
+architecture: true
 reviewers:
   sonar:
     project_key: MotleyAI_slayer

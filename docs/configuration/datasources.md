@@ -61,6 +61,10 @@ These databases are verified by integration tests and runnable Docker examples. 
 | `clickhouse` | `motley-slayer[clickhouse]` | `clickhouse+http://user:pass@localhost:8123/db` |
 | `duckdb` | (built-in, no extra needed) | `duckdb:///path/to/db.duckdb` |
 | `snowflake` | `motley-slayer[snowflake]` | `snowflake://?connection_name=default` (TOML-driven) or `snowflake://user:pw@account/db/schema?warehouse=wh&role=role` (inline). See [Snowflake](#snowflake) below. |
+| `mssql` / `sqlserver` / `tsql` | `motley-slayer[sqlserver]` (plus the system ODBC Driver 18) | `mssql+pyodbc://user:pass@host:1433/db?driver=ODBC+Driver+18+for+SQL+Server` |
+| `bigquery` | `motley-slayer[bigquery]` | `bigquery://project/dataset` |
+
+A driver you name yourself in `connection_string` (e.g. `postgresql+psycopg`) is not in any extra, so install it separately; SLayer keeps it on the async path when it can run async.
 
 `duckdb` has no install extra because `duckdb` and `duckdb-engine` are core
 dependencies — the bundled demo datasource and the SQL API both need
@@ -72,12 +76,10 @@ SQL generation is covered by unit tests, but not verified against live instances
 
 | Type | SQLAlchemy Driver | Install |
 |------|-------------------|---------|
-| `bigquery` | `sqlalchemy-bigquery` | `pip install sqlalchemy-bigquery` |
 | `redshift` | `sqlalchemy-redshift` + `redshift_connector` | `pip install sqlalchemy-redshift redshift-connector` |
 | `trino` / `presto` / `athena` | `trino` or `PyAthena` | `pip install trino` or `pip install PyAthena` |
 | `databricks` / `spark` | `databricks-sql-connector` | `pip install databricks-sql-connector` |
 | `oracle` | `oracledb` | `pip install oracledb` |
-| `mssql` / `sqlserver` / `tsql` | `pyodbc` (auto-generated strings) or `pymssql` (manual `connection_string` only) | `pip install pyodbc` or `pip install pymssql` |
 
 !!! warning "SQL Server — requires SQL Server 2022+"
     SLayer uses `DATETRUNC` for time-dimension queries, which was introduced in SQL Server 2022 (version 16.0).

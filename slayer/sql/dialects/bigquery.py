@@ -1,25 +1,7 @@
-"""BigQuery dialect — Tier 1.
+"""BigQuery dialect.
 
-BigQuery is the one dialect today with output-shape logic on top of the
-scalar config every other Tier-2 dialect has. It rejects column names
-containing ``.`` (output schema names must match ``[A-Za-z_][A-Za-z0-9_]*``),
-while SLayer's universal alias convention is dotted
-(``orders._count``, ``orders.products.category``). This dialect mangles
-``.`` -> ``___`` inside backticked aliases on the write side and decodes
-``___`` -> ``.`` on the read side so the mangling is invisible to consumers.
-
-The ``___`` separator is chosen specifically because ``__`` is already
-used by ``_query_as_model`` to flatten cross-model leaves (e.g.
-``stores__name``); using a distinct sentinel keeps the two encodings
-unambiguous.
-
-Per the "every dialect quirk lives behind a hook on
-``SqlDialect``" rule, this file is BigQuery's home. The plain
-``rewrite_emitted_sql`` / ``decode_result_keys`` hooks on the base class
-have identity defaults; only ``BigqueryDialect`` (and ``TsqlDialect``)
-override them today. The shared encode/decode bijection lives
-in :mod:`slayer.sql.naming` and is reused by both dialects —
-only the regex anchor (backticks here, brackets in T-SQL) differs.
+BigQuery rejects ``.`` in column names, so dotted aliases are mangled to ``___``
+(distinct from the ``__`` cross-model flattening) on write and decoded on read.
 """
 
 from __future__ import annotations
@@ -42,34 +24,13 @@ from slayer.sql.dialects.base import (
     _digest,
     iso_text,
 )
+from slayer.sql.dialects.drivers import import_driver
 
 if TYPE_CHECKING:
     from slayer.core.models import DatasourceConfig
 
 
-# ---------------------------------------------------------------------------
-# Alias mangling — backtick-anchored regex (BigQuery's identifier quote)
-# ---------------------------------------------------------------------------
-
-
-# Backtick-quoted dotted alias. The pattern is constrained to identifier
-# characters ``\w`` separated by dots so it can't accidentally span
-# unrelated SQL between two unrelated backticks. ``re.ASCII`` keeps ``\w``
-# ASCII-only so stray Unicode word-chars in surrounding SQL don't widen
-# the match accidentally.
-#
-# Caveats (documented constraint):
-#   - Table fully-qualified paths whose project name contains a hyphen
-#     (e.g. ``\`bigquery-public-data\`.thelook_ecommerce.orders``) are
-#     safe: the hyphen breaks ``\w``, so the regex doesn't match the
-#     backticked-project segment, and the inner ``thelook_ecommerce.orders``
-#     isn't inside any backticks.
-#   - A fully backticked dotted path of word-only segments
-#     (``\`my_dataset.my_table\``) WOULD false-positive mangle. Users
-#     writing ``Column.sql`` for BigQuery must backtick segments
-#     individually (``\`my_dataset\`.\`my_table\``) to avoid this. See
-#     ``tests/dialects/test_bigquery.py::test_rewrite_emitted_sql_false_positive_on_single_backticked_dotted_path``
-#     for the characterization pin.
+# Caveat: a single-backticked word-only path like `ds.tbl` false-positive mangles; quote segments singly.
 _DOTTED_ALIAS_RE = re.compile(r"`(\w+(?:\.\w+)+)`", re.ASCII)
 _WEEK_ANCHORS = {TimeGranularity.WEEK: "MONDAY", TimeGranularity.WEEK_SUNDAY: "SUNDAY"}
 
@@ -87,17 +48,9 @@ def _interval(count: Expression, unit: TimeGranularity) -> Expression:
     return exp.Interval(this=count, unit=exp.var(word))
 
 
-# ---------------------------------------------------------------------------
-# Credential parsing
-# ---------------------------------------------------------------------------
-
-
-# ``type`` marker Google writes into an OAuth authorized-user JSON, as
-# opposed to ``"service_account"`` in a key file.
 _AUTHORIZED_USER_TYPE = "authorized_user"
 
-# Fields of an authorized-user grant that change on every token refresh
-# without changing *whose* grant it is.
+# Rotate on every token refresh without changing whose grant it is.
 _ROTATING_OAUTH_FIELDS = frozenset({"token", "access_token", "expiry", "id_token"})
 
 
@@ -122,12 +75,9 @@ def _parse_credentials_object(
 
 
 def _durable_oauth_material(raw: str) -> str:
-    """Canonical string identifying *whose* OAuth grant ``raw`` is.
+    """Canonical string identifying *whose* OAuth grant ``raw`` is (rotating fields stripped).
 
-    Strips the rotating token fields when a refresh token is present, so a
-    refreshed grant keeps its cache identity. Unparseable input falls back
-    to the raw string: a bad blob still gets a distinct identity, and
-    ``build_engine`` is where it earns its error message.
+    Unparseable input or no refresh token → ``raw`` unchanged.
     """
     try:
         info = json.loads(raw)
@@ -139,19 +89,8 @@ def _durable_oauth_material(raw: str) -> str:
     return json.dumps(durable, sort_keys=True, default=str)
 
 
-# ---------------------------------------------------------------------------
-# BigqueryDialect — Tier 1 (has logic, not just scalar config)
-# ---------------------------------------------------------------------------
-
-
 class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
-    """BigQuery output-alias mangling + scalar config.
-
-    Promoted out of ``_tier2.py`` because it has logic
-    (``rewrite_emitted_sql`` / ``decode_result_keys`` overrides), not
-    just scalar config. ``_tier2.py``'s "data-shaped, no SQL-shape logic"
-    contract stays accurate for the remaining tier-2 dialects.
-    """
+    """BigQuery dialect."""
 
     sqlglot_name: str = "bigquery"
     ds_type_aliases: frozenset[str] = frozenset({"bigquery"})
@@ -162,7 +101,8 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
     log2_native: bool = True
     max_identifier_bytes: int | None = 300  # column-name limit
     approx_count_distinct_native: bool = True
-    # Backtick-quoted dotted-alias mangling (DottedAliasManglingMixin).
+    url_scheme: str | None = "bigquery"
+    install_extra: str | None = "bigquery"
     dotted_alias_re: ClassVar[re.Pattern[str]] = _DOTTED_ALIAS_RE
     alias_quote_open: ClassVar[str] = "`"
     alias_quote_close: ClassVar[str] = "`"
@@ -174,9 +114,7 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
     ) -> Expression:
         """Anchor both weeks explicitly: BigQuery's bare ``WEEK`` is Sunday-based.
 
-        ``DATE_TRUNC(col, WEEK(MONDAY|SUNDAY))`` is an ``exp.Anonymous`` since
-        sqlglot drops the weekday modifier from ``exp.DateTrunc``. Non-column
-        operands are cast to TIMESTAMP like the base; other grains delegate.
+        ``exp.Anonymous`` because sqlglot drops the weekday modifier from ``exp.DateTrunc``.
         """
         weekday = _WEEK_ANCHORS.get(granularity)
         if weekday is None:
@@ -278,18 +216,9 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
         *,
         connection_string: str,
     ) -> "sa.Engine | None":
-        """Build the engine for whichever auth path is configured, in order:
+        """Engine for the OAuth grant, else the service-account key, else None (ADC).
 
-        1. ``oauth_credentials_json`` — per-end-user grant, see
-           :meth:`_build_oauth_engine`.
-        2. ``credentials_json`` — service-account key, passed straight through
-           as ``credentials_info``. One shared identity for every caller.
-        3. Neither — ``None``, so the factory falls back to a plain
-           ``create_engine`` and the client picks up ADC.
-
-        Setting both is an error rather than a silent precedence win: they are
-        different identities, and guessing is how a per-user query quietly runs
-        as the service account.
+        Both set is an error: they are different identities.
         """
         if datasource.oauth_credentials_json and datasource.credentials_json:
             raise ValueError(
@@ -328,18 +257,9 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
         datasource: "DatasourceConfig",
         connection_string: str,
     ) -> "sa.Engine":
-        """Build an engine bound to a caller-supplied OAuth user grant.
+        """Engine bound to a caller-supplied OAuth user grant.
 
-        ``sqlalchemy-bigquery`` has no OAuth kwarg — every credentials kwarg it
-        has routes to ``service_account.Credentials``. Its ``user_supplied_client``
-        URL flag is the supported escape hatch: with it set, the driver takes our
-        client from ``connect_args`` instead of first building an ADC one (which
-        fails outright where no ADC exists), so the flag is load-bearing.
-
-        A grant carries no project, so it comes from the URL host or the grant's
-        ``quota_project_id``. Config is validated before the ``google.*``
-        imports — they ship only with the 'bigquery' extra, and a misconfigured
-        datasource should report that, not a missing dependency.
+        ``user_supplied_client`` is load-bearing: without it the driver builds an ADC client first.
         """
         info = _parse_credentials_object(
             raw=datasource.oauth_credentials_json,
@@ -355,11 +275,11 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
                 f"the connection string as 'bigquery://<project>/<dataset>', or "
                 f"as 'quota_project_id' inside oauth_credentials_json."
             )
-        from google.cloud import bigquery  # ALLOW(import-not-top): optional heavy driver, imported lazily
-        from google.oauth2.credentials import Credentials  # ALLOW(import-not-top): optional heavy driver, imported lazily
+        bigquery = import_driver("google.cloud.bigquery", datasource=datasource, dialect=self)
+        oauth2 = import_driver("google.oauth2.credentials", datasource=datasource, dialect=self)
 
         try:
-            credentials = Credentials.from_authorized_user_info(info)
+            credentials = oauth2.Credentials.from_authorized_user_info(info)
         except ValueError as exc:
             raise ValueError(
                 f"Datasource '{datasource.name}': oauth_credentials_json is not "
@@ -374,14 +294,7 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
         )
 
     def credential_fingerprint(self, datasource: "DatasourceConfig") -> str:
-        """Identity across both auth paths, so a cached engine never crosses
-        between a service account and an end user, or between two end users.
-
-        The OAuth half digests the *durable* grant: keying on a rotating access
-        token would mint a fresh engine per refresh. Dropping those fields is
-        only safe while a refresh token pins the identity — without one the
-        access token is the whole identity.
-        """
+        """Identity across both auth paths; the OAuth half digests the durable grant."""
         material = [datasource.credentials_json or ""]
         raw_oauth = datasource.oauth_credentials_json
         if raw_oauth:

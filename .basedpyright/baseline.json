@@ -2322,16 +2322,6 @@
                 }
             }
         ],
-        "./slayer/sql/client.py": [
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 38,
-                    "endColumn": 45,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./slayer/sql/column_expansion.py": [
             {
                 "code": "reportPrivateImportUsage",

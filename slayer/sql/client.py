@@ -17,6 +17,7 @@ import sqlalchemy.exc
 import sqlglot
 from pydantic import BaseModel, Field
 from sqlglot import expressions as exp
+from sqlalchemy.engine.url import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from slayer.core.models import DatasourceConfig
@@ -24,18 +25,12 @@ from slayer.core.warnings import SlayerStatementTimeoutSkippedWarning, Statement
 from slayer.sql import engine_factory
 from slayer.sql.dialects import SqlDialect, dialect_for_ds_type
 from slayer.sql.dialects.base import ServerProfile
+from slayer.sql.dialects.drivers import load_driver, plugin_errors
 from slayer.sql.reserved_keywords import prequote_reserved_identifiers
 from slayer.core import timing
 
 logger = logging.getLogger(__name__)
 
-# db_type → async SQLAlchemy scheme; unlisted types fall back to sync-in-thread.
-_ASYNC_DRIVERS = {
-    "postgres": "postgresql+asyncpg",
-    "postgresql": "postgresql+asyncpg",
-    "mysql": "mysql+aiomysql",
-    "mariadb": "mysql+aiomysql",
-}
 
 def _dispose_engine_quietly(engine: sa.Engine) -> None:
     """Dispose a private engine, logging rather than raising (finalizer / close backstop)."""
@@ -51,14 +46,24 @@ def _get_async_engine(connection_string: str):
 
 
 def _async_connection_string(connection_string: str, db_type: str | None) -> str | None:
-    """Convert a sync connection string to its async equivalent, or None if no async driver."""
-    async_scheme = _ASYNC_DRIVERS.get(db_type)
-    if async_scheme is None:
+    """The async URL for ``connection_string``, or ``None`` to run sync-in-thread.
+
+    An async-capable driver is kept; a plain URL or the default sync driver moves to the
+    dialect's async driver; any other driver, or a foreign backend, stays sync.
+    """
+    facts = dialect_for_ds_type(db_type).driver_facts(db_type)
+    if facts.async_driver is None:
         return None
-    if "://" in connection_string:
-        _, _, remainder = connection_string.partition("://")
-        return f"{async_scheme}://{remainder}"
-    return None
+    url = make_url(connection_string)
+    backend = facts.url_backend
+    if url.get_backend_name() != backend:
+        return None
+    if url.get_dialect(_is_async=True).is_async:
+        return connection_string
+    driver = url.drivername.partition("+")[2]
+    if driver and driver != facts.sync_driver:
+        return None
+    return url.set(drivername=f"{backend}+{facts.async_driver}").render_as_string(hide_password=False)
 
 
 def _map_type_code(type_code, db_type: str | None = None) -> str:
@@ -199,7 +204,7 @@ def _extract_types_from_cursor(result, db_type: str | None = None) -> dict[str, 
 
     rows = result.fetchall()
     if not rows:
-        return {col: "string" for col in columns}  # empty table — safe default
+        return dict.fromkeys(columns, "string")  # empty table — safe default
     row = rows[0]
     types = {}
     for col, val in zip(columns, row):
@@ -506,8 +511,8 @@ class ExecutionResult(BaseModel):
 class SlayerSQLClient:
     """Executes SQL against databases via SQLAlchemy.
 
-    Native async drivers (asyncpg, aiomysql) when available, else sync-in-thread.
-    The async engine is cached per instance (bound to the current event loop).
+    A native async driver where the dialect has one (a missing one raises), else
+    sync-in-thread. The async engine is cached per instance (bound to the current event loop).
     """
 
     def __init__(self, datasource: DatasourceConfig):
@@ -573,10 +578,13 @@ class SlayerSQLClient:
         """Get or create the async engine for this client (cached per instance)."""
         if self._async_engine is None:
             conn_str = self.datasource.get_connection_string()
-            async_conn_str = _async_connection_string(
-                connection_string=conn_str, db_type=self.datasource.type,
-            )
+            dialect = dialect_for_ds_type(self.datasource.type)
+            with plugin_errors(self.datasource, conn_str, dialect=dialect):
+                async_conn_str = _async_connection_string(
+                    connection_string=conn_str, db_type=self.datasource.type,
+                )
             if async_conn_str:
+                load_driver(self.datasource, async_conn_str, dialect=dialect, is_async=True)
                 self._async_engine = _get_async_engine(async_conn_str)
         return self._async_engine
 

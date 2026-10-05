@@ -115,6 +115,8 @@ class ClickhouseDialect(SqlDialect):
     approx_count_distinct_native: bool = True
     correlated_subqueries_gated: bool = True
     global_in_subqueries: bool = True
+    url_scheme: str | None = "clickhouse+http"
+    install_extra: str | None = "clickhouse"
 
     def set_connection_timeout(self, dbapi_connection: Any, timeout_seconds: int) -> object:
         """Per-request HTTP setting: the driver keeps no session, so a ``SET`` never reaches the query."""

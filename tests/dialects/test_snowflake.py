@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from unittest.mock import MagicMock, patch
 from urllib.parse import parse_qs, urlparse
 
@@ -9,6 +10,7 @@ import pytest
 import sqlglot
 
 from slayer.core.enums import TimeGranularity
+from slayer.core.errors import MissingDriverError
 from slayer.core.models import DatasourceConfig
 from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.dialects.snowflake import (
@@ -209,22 +211,18 @@ def test_build_engine_recognizes_sentinel_in_connection_string_field() -> None:
         connect_mock.assert_called_once_with(connection_name="prod")
 
 
-def test_build_engine_missing_connector_extra_raises_actionable_error() -> None:
-    """Calling the creator when snowflake.connector isn't installed raises with the pip extra install hint."""
+def test_build_engine_missing_connector_extra_raises_actionable_error(monkeypatch) -> None:
+    """Calling the creator when snowflake.connector isn't installed raises ``MissingDriverError`` with the extra."""
     ds = DatasourceConfig(name="sf", type="snowflake", connection_name="default")
-    with patch("slayer.sql.dialects.snowflake._import_snowflake_connector") as imp_mock:
-        imp_mock.side_effect = ImportError(
-            "Snowflake support requires the 'snowflake' extra: "
-            "pip install 'motley-slayer[snowflake]'"
+    with patch("slayer.sql.dialects.snowflake.sa.create_engine") as create_engine_mock:
+        create_engine_mock.return_value = MagicMock()
+        SnowflakeDialect().build_engine(
+            ds, connection_string="snowflake://?connection_name=default",
         )
-        with patch("slayer.sql.dialects.snowflake.sa.create_engine") as create_engine_mock:
-            create_engine_mock.return_value = MagicMock()
-            SnowflakeDialect().build_engine(
-                ds, connection_string="snowflake://?connection_name=default",
-            )
-        creator = create_engine_mock.call_args.kwargs["creator"]
-        with pytest.raises(ImportError, match=r"motley-slayer\[snowflake\]"):
-            creator()
+    creator = create_engine_mock.call_args.kwargs["creator"]
+    monkeypatch.setitem(sys.modules, "snowflake.connector", None)
+    with pytest.raises(MissingDriverError, match=r"pip install 'motley-slayer\[snowflake\]'"):
+        creator()
 
 
 # apply_session_overrides — USE WAREHOUSE / ROLE / DATABASE / SCHEMA
