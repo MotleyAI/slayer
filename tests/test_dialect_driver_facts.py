@@ -12,6 +12,7 @@ from sqlalchemy.engine.url import make_url
 from slayer.core.models import DatasourceConfig
 from slayer.sql import client, dialects
 from slayer.sql.dialects import PostgresDialect, dialect_for_ds_type
+from slayer.sql.dialects.base import DriverFacts
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -50,6 +51,17 @@ def test_dialect_declares_driver_facts(ds_type) -> None:
     d = dialect_for_ds_type(ds_type)
     facts = (d.url_scheme, d.sync_driver, d.async_driver, d.install_extra)
     assert facts == _EXPECTED[ds_type]
+
+
+@pytest.mark.parametrize("ds_type", ["mysql", "mariadb"])
+def test_mysql_family_owns_mariadb_backend(ds_type) -> None:
+    facts = dialect_for_ds_type(ds_type).driver_facts(ds_type)
+    assert facts.url_backends == {"mysql", "mariadb"}
+
+
+def test_unregistered_type_gets_no_fallback_driver_facts() -> None:
+    facts = dialect_for_ds_type("foo").driver_facts("foo")
+    assert facts == DriverFacts(url_scheme="foo", url_backends=frozenset({"foo"}))
 
 
 def test_install_extras_exist_in_pyproject() -> None:

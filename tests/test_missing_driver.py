@@ -259,6 +259,27 @@ def test_custom_driver_missing_plugin_not_attributed_to_extra() -> None:
     assert "motley-slayer[" not in str(info.value)
 
 
+def test_mariadb_backend_default_driver_names_extra(monkeypatch) -> None:
+    ds = DatasourceConfig(
+        name="maria", type="mariadb", connection_string=f"mariadb+pymysql://u:p@{_HOST}:3306/d",
+    )
+    _block_modules(monkeypatch, "pymysql")
+    with pytest.raises(MissingDriverError) as info:
+        engine_factory.get_engine(ds)
+    _assert_names(info.value, ds=ds, missing="pymysql")
+    assert "pip install 'motley-slayer[mysql]'" in str(info.value)
+
+
+def test_unregistered_type_missing_plugin_gets_generic_hint() -> None:
+    ds = _structured("foo")
+    with pytest.raises(MissingDriverError) as info:
+        engine_factory.get_engine(ds)
+    _assert_names(info.value, ds=ds, missing="foo")
+    assert "connection_string" not in info.value.hint
+    assert "motley-slayer[" not in str(info.value)
+    assert "configuration/datasources" in str(info.value)
+
+
 def test_tier2_missing_plugin_gets_generic_hint(monkeypatch) -> None:
     ds = _structured("redshift")
     _hide_plugin(monkeypatch, "redshift")

@@ -1030,8 +1030,7 @@ class DatasourceConfig(BaseModel):
             return f"{self.type}:///{self.database}"
         if self.type in ("mssql", "sqlserver", "tsql"):
             return self._get_tsql_connection_string()
-        # An unregistered type resolves to the Postgres fallback dialect but keeps its own scheme.
-        driver = (dialect.url_scheme if self.type in dialect.ds_type_aliases else None) or self.type
+        driver = dialect.driver_facts(self.type).url_scheme
         host, port = self._split_host_port()
         if driver is None:
             # Mirrors ``URL.create``'s own rejection of a non-string drivername.

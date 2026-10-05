@@ -51,19 +51,19 @@ def _async_connection_string(connection_string: str, db_type: str | None) -> str
     An async-capable driver is kept; a plain URL or the default sync driver moves to the
     dialect's async driver; any other driver, or a foreign backend, stays sync.
     """
-    dialect = dialect_for_ds_type(db_type)
-    if dialect.async_driver is None:
+    facts = dialect_for_ds_type(db_type).driver_facts(db_type)
+    if facts.async_driver is None:
         return None
     url = make_url(connection_string)
-    backend = (dialect.url_scheme or db_type or "").partition("+")[0]
-    if url.get_backend_name() != backend:
+    backend = url.get_backend_name()
+    if backend not in facts.url_backends:
         return None
     if url.get_dialect(_is_async=True).is_async:
         return connection_string
     driver = url.drivername.partition("+")[2]
-    if driver and driver != dialect.sync_driver:
+    if driver and driver != facts.sync_driver:
         return None
-    return url.set(drivername=f"{backend}+{dialect.async_driver}").render_as_string(hide_password=False)
+    return url.set(drivername=f"{backend}+{facts.async_driver}").render_as_string(hide_password=False)
 
 
 def _map_type_code(type_code, db_type: str | None = None) -> str:

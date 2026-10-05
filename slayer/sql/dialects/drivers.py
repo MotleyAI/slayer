@@ -14,7 +14,7 @@ from sqlalchemy.engine.url import URL, make_url
 from sqlalchemy.exc import NoSuchModuleError
 
 from slayer.core.errors import MissingDriverError
-from slayer.sql.dialects.base import SqlDialect
+from slayer.sql.dialects.base import DriverFacts, SqlDialect
 
 if TYPE_CHECKING:
     from slayer.core.models import DatasourceConfig
@@ -22,36 +22,34 @@ if TYPE_CHECKING:
 _DATASOURCE_DOCS = "https://docs.motley.ai/slayer/configuration/datasources/"
 
 
-def _hint(dialect: SqlDialect, *, missing: str, default: bool) -> str:
+def _hint(facts: DriverFacts, *, missing: str, default: bool) -> str:
     if not default:
         return (
             "install the driver named in your connection_string; "
             "SLayer's extras only install its default drivers."
         )
-    if dialect.install_extra:
-        return f"pip install 'motley-slayer[{dialect.install_extra}]'"
+    if facts.install_extra:
+        return f"pip install 'motley-slayer[{facts.install_extra}]'"
     return f"install the package providing {missing!r}; see {_DATASOURCE_DOCS} (Additional support)."
 
 
 def _missing_driver(
-    datasource: DatasourceConfig, *, dialect: SqlDialect, missing: str, default: bool, exc: Exception,
+    datasource: DatasourceConfig, *, facts: DriverFacts, missing: str, default: bool, exc: Exception,
 ) -> MissingDriverError:
     return MissingDriverError(
         datasource_name=datasource.name, ds_type=datasource.type, missing=missing,
-        hint=_hint(dialect, missing=missing, default=default), detail=str(exc),
+        hint=_hint(facts, missing=missing, default=default), detail=str(exc),
     )
 
 
-def _is_default_driver(
-    dialect: SqlDialect, *, ds_type: str | None, url: URL, driver: str | None,
-) -> bool:
+def _is_default_driver(facts: DriverFacts, *, url: URL, driver: str | None) -> bool:
     """Whether ``url`` selects SLayer's default driver; ``driver=None`` (none named) judges the backend alone."""
-    backend, _, scheme_driver = (dialect.url_scheme or ds_type or "").partition("+")
-    if url.get_backend_name() != backend:
+    if url.get_backend_name() not in facts.url_backends:
         return False
+    scheme_driver = (facts.url_scheme or "").partition("+")[2]
     if driver is None or ("+" not in url.drivername and not scheme_driver):
         return True
-    return driver in {dialect.sync_driver, dialect.async_driver, scheme_driver}
+    return driver in {facts.sync_driver, facts.async_driver, scheme_driver}
 
 
 @contextlib.contextmanager
@@ -61,13 +59,11 @@ def plugin_errors(datasource: DatasourceConfig, url: str, *, dialect: SqlDialect
         yield
     except (NoSuchModuleError, ImportError) as exc:
         parsed = make_url(url)
+        facts = dialect.driver_facts(datasource.type)
         missing = (isinstance(exc, ImportError) and exc.name) or parsed.drivername
         raise _missing_driver(
-            datasource, dialect=dialect, missing=missing, exc=exc,
-            default=_is_default_driver(
-                dialect, ds_type=datasource.type, url=parsed,
-                driver=parsed.drivername.partition("+")[2] or None,
-            ),
+            datasource, facts=facts, missing=missing, exc=exc,
+            default=_is_default_driver(facts, url=parsed, driver=parsed.drivername.partition("+")[2] or None),
         ) from exc
 
 
@@ -77,7 +73,8 @@ def import_driver(module: str, *, datasource: DatasourceConfig, dialect: SqlDial
         return importlib.import_module(module)
     except ImportError as exc:
         raise _missing_driver(
-            datasource, dialect=dialect, missing=exc.name or module, default=True, exc=exc,
+            datasource, facts=dialect.driver_facts(datasource.type), missing=exc.name or module,
+            default=True, exc=exc,
         ) from exc
 
 
@@ -99,11 +96,10 @@ def load_driver(
     try:
         _dbapi_importer(sa_dialect)()
     except ImportError as exc:
+        facts = dialect.driver_facts(datasource.type)
         raise _missing_driver(
-            datasource, dialect=dialect, missing=exc.name or sa_dialect.driver, exc=exc,
-            default=_is_default_driver(
-                dialect, ds_type=datasource.type, url=parsed, driver=sa_dialect.driver,
-            ),
+            datasource, facts=facts, missing=exc.name or sa_dialect.driver, exc=exc,
+            default=_is_default_driver(facts, url=parsed, driver=sa_dialect.driver),
         ) from exc
     for module in dialect.deferred_driver_modules(url):
         import_driver(module, datasource=datasource, dialect=dialect)
