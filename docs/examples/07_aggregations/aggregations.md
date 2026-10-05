@@ -89,7 +89,7 @@ These are always available — no definition needed:
 | `count_distinct` | COUNT(DISTINCT expr) |
 | `count_distinct_approx` | Database-native approximate distinct count; exact `COUNT(DISTINCT expr)` fallback — see database support below |
 | `first` / `last` | Value from the earliest/latest record per group (by time) |
-| `weighted_avg` | SUM(expr \* weight) / SUM(weight) |
+| `weighted_avg` | SUM(expr \* weight) / SUM(weight), a NULL `expr` skipping its weight |
 | `median` | PERCENTILE_CONT(0.5) — see database support below |
 | `percentile` | PERCENTILE_CONT(p) — specify `p` as an argument; see database support below |
 | `stddev_samp` / `stddev_pop` | Sample / population standard deviation |

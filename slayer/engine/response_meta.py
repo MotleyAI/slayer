@@ -11,10 +11,10 @@ from typing import Any, Dict, List, Optional, Tuple
 import sqlglot
 from pydantic import BaseModel, Field as PydanticField
 
-from slayer.core.enums import AggregationValueClass, classify_aggregation
+from slayer.core.enums import AggregationValueClass, DataType, classify_aggregation
 from slayer.core.errors import AmbiguousJoinPathError
 from slayer.core.format import NumberFormat, NumberFormatType
-from slayer.core.join_walker import resolve_hop
+from slayer.core.join_walker import model_column_type, resolve_hop
 from slayer.core.keys import (
     AggregateKey,
     ColumnKey,
@@ -22,6 +22,7 @@ from slayer.core.keys import (
     Phase,
     StarKey,
     TimeTruncKey,
+    aggregation_source_type,
     column_leaf,
     column_path,
 )
@@ -50,19 +51,21 @@ def _infer_aggregated_format(
     model: SlayerModel,
     measure_name: str,
     aggregation: str,
+    source_type: Optional[DataType] = None,
 ) -> Optional[NumberFormat]:
-    """Display NumberFormat for an aggregated measure, via ``classify_aggregation``."""
-    cls = classify_aggregation(measure_name=measure_name, aggregation=aggregation)
+    """Display NumberFormat for an aggregated measure; ``source_type`` defaults to the column's type."""
+    source_col = model.get_column(measure_name)
+    source_type = source_type or (source_col.type if source_col is not None else None)
+    cls = classify_aggregation(measure_name=measure_name, aggregation=aggregation, source_type=source_type)
     if cls is AggregationValueClass.COUNT:
         return NumberFormat(type=NumberFormatType.INTEGER)
     if cls is AggregationValueClass.FLOAT_PLAIN:
         return NumberFormat(type=NumberFormatType.FLOAT)
-
-    source_col = model.get_column(measure_name)
     if source_col and source_col.format:
         return source_col.format
     if cls is AggregationValueClass.FLOAT_SOURCE_UNITS:
-        return NumberFormat(type=NumberFormatType.FLOAT)
+        boolean_share = source_type is DataType.BOOLEAN and aggregation == "avg"
+        return NumberFormat(type=NumberFormatType.PERCENT if boolean_share else NumberFormatType.FLOAT)
     return None
 
 
@@ -195,8 +198,11 @@ def _measure_format(
         model = _owning_model_for_agg_source(src=src, bundle=bundle)
         if measure_name is None or model is None:
             return NumberFormat(type=NumberFormatType.FLOAT)
+        root = bundle.source_model
+        column_type = model_column_type(model=root, models_by_name=bundle.models_by_name) if root else None
         return _infer_aggregated_format(
-            model=model, measure_name=measure_name, aggregation=key.agg
+            model=model, measure_name=measure_name, aggregation=key.agg,
+            source_type=aggregation_source_type(src, column_type=column_type) if column_type else None,
         )
     return NumberFormat(type=NumberFormatType.FLOAT)
 

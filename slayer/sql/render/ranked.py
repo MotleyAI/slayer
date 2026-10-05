@@ -30,10 +30,15 @@ SELECT.
 
 from __future__ import annotations
 
-from typing import List, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 from pydantic import BaseModel, ConfigDict
 from sqlglot import exp
+from sqlglot.expressions.core import Expression
+
+from slayer.core.enums import DataType
+from slayer.sql.dialects.base import SqlDialect
+from slayer.sql.render.aggregates import apply_aggregate, resolve_agg_entry
 
 __all__ = [
     "RANKED_CTE_PREFIX",
@@ -70,14 +75,14 @@ class RankedGrainProjection(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     output_alias: str
-    inner_ref: exp.Expression
+    inner_ref: Expression
 
 
 def build_rank_column(
     *,
-    partition_by: Sequence[exp.Expression],
+    partition_by: Sequence[Expression],
     ranking_time: exp.Ordered,
-) -> exp.Expression:
+) -> Expression:
     """``ROW_NUMBER() OVER (PARTITION BY <grain> ORDER BY <time>) AS _rk_rn``.
 
     ``ranking_time`` arrives already ordered because the DIRECTION is the whole
@@ -94,7 +99,9 @@ def build_rank_column(
     return window.as_(RANK_COLUMN)
 
 
-def build_ranked_pick(*, value_ref: exp.Expression) -> exp.Expression:
+def build_ranked_pick(
+    *, value_ref: Expression, input_type: Optional[DataType], dialect: SqlDialect,
+) -> Expression:
     """``MAX(CASE WHEN _rk_rn = 1 THEN <value> END)`` — un-cast, un-aliased.
 
     The declared-type CAST is applied by the caller, OUTSIDE this expression.
@@ -102,20 +109,21 @@ def build_ranked_pick(*, value_ref: exp.Expression) -> exp.Expression:
     and rounding behaviour, and the two are indistinguishable to any check that
     searches the SQL for a type name.
     """
-    return exp.Max(this=exp.Case(ifs=[exp.If(
+    ranked = exp.Case(ifs=[exp.If(
         this=exp.EQ(
             this=exp.column(RANK_COLUMN),
             expression=exp.Literal.number("1"),
         ),
         true=value_ref.copy(),
-    )]))
+    )])
+    return apply_aggregate(entry=resolve_agg_entry("max"), value=ranked, input_type=input_type, dialect=dialect)
 
 
 def build_ranked_cte_select(
     *,
     inner: exp.Select,
     grain: Sequence[RankedGrainProjection],
-    pick: exp.Expression,
+    pick: Expression,
     agg_alias: str,
     source_alias: str = RANKED_SOURCE_ALIAS,
 ) -> Tuple[exp.Select, List[str]]:
@@ -149,7 +157,7 @@ def build_ranked_cte_select(
 
 
 def ranked_ordered(
-    *, ranking_time: exp.Expression, agg: str, native_nulls_first: bool,
+    *, ranking_time: Expression, agg: str, native_nulls_first: bool,
 ) -> exp.Ordered:
     """The window's ``ORDER BY`` term: ``first`` ranks ascending, ``last``
     descending. The direction is derived from the aggregation rather than

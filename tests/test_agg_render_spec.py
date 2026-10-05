@@ -166,7 +166,7 @@ class TestAggRenderSpecConstruction:
     """The new typed record's field surface and frozen contract."""
 
     def test_exact_field_set(self):
-        # Decision #4: exactly these 10 fields, no more, no less. Extra
+        # Decision #4: exactly these 12 fields, no more, no less. Extra
         # fields (agg_args / source_measure_name / distinct / window /
         # user_declared / etc.) are deliberately NOT carried. A Column.filter
         # rides its source ColumnSqlKey now, so there is no ``filter_sql`` field.
@@ -181,6 +181,8 @@ class TestAggRenderSpecConstruction:
             "time_column",
             "type",
             "column_type",
+            "input_type",
+            "value",
         }
 
     def test_minimal_count_star(self):

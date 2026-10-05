@@ -371,10 +371,12 @@ JOINED_ROWLEAF_MIXED_BY_STATUS = {"ok": 2952.0 / 7.0, "new": 2975.0 / 3.0}
 # Graph B (sales, q_amount) --------------------------------------------------
 #: q_amount:sum single-column value (SUM(CASE WHEN product='Q' THEN amount END)).
 QAMT_SUM = 250.0
-#: weighted_avg(q_amount, weight=quantity): value masked, weight NOT — the new
-#: pure-sugar meaning. The former filter-everything form gives WEIGHT_MASKED_WRONG.
+#: wavg(q_amount, weight=quantity) (custom, reads every weight): value masked, weight NOT —
+#: every row's quantity divides. A weight masked by the source filter gives WEIGHT_MASKED_WRONG.
 WAVG_QAMT_WEIGHT_QTY = 750.0 / 34.0
 WAVG_QAMT_WEIGHT_QTY_WRONG = 750.0 / 11.0
+#: weighted_avg(q_amount, weight=quantity) skips the NULL (non-Q) values' weights: Q quantities only.
+WEIGHTED_AVG_QAMT_WEIGHT_QTY = 750.0 / 11.0
 #: weighted_avg(amount, weight=q_amount): the filtered column used as a weight
 #: IS masked (NULL on non-Q rows).
 WAVG_AMOUNT_WEIGHT_QAMT = 80.4

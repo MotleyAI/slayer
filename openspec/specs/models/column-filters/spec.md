@@ -28,10 +28,11 @@ source column's, and no position reads the unmasked value.
 
 #### Scenario: Parameters are not masked by the source's filter
 - **WHEN** a query selects `weighted_avg(q_amount, weight=quantity)`
-- **THEN** the value is masked and the weight is not: the result equals
-  `SUM(CASE WHEN product = 'Q' THEN amount END * quantity) / SUM(quantity)` by
-  hand-computed executed values on SQLite and DuckDB — never the former
-  filter-everything form
+- **THEN** the value is masked and the weight is not: the result equals the same
+  aggregation over the hand-written derived column `CASE WHEN product = 'Q' THEN amount END`
+  (`weighted_avg` skips a NULL value's weight, per `aggregations/boolean-inputs`), by
+  hand-computed executed values on SQLite and DuckDB; a custom aggregation that reads every
+  weight (`SUM({value} * {weight}) / SUM({weight})`) divides by every row's `quantity`
 
 #### Scenario: A filtered column used as a parameter is masked
 - **WHEN** a query selects `weighted_avg(amount, weight=q_amount)`

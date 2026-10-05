@@ -49,8 +49,8 @@ type-default gates) SHALL NOT apply to multi-token expression operands — the
 expression is a new derived quantity owned by the query author — while global
 validation still applies: the aggregation name must be known, and numeric-only
 aggregations SHALL be rejected when the expression is confidently non-numeric;
-display classification derives from the inferred value class, defaulting to
-plain numeric.
+a boolean-valued expression is numeric (per `aggregations/boolean-inputs`); display
+classification derives from the inferred value class, defaulting to plain numeric.
 
 #### Scenario: Whitelist does not block expressions
 - **WHEN** column `quantity` whitelists only `min` and `max`, and a measure is written `sum(price * quantity)`
@@ -60,10 +60,17 @@ plain numeric.
 - **WHEN** a measure is written `sum(lower(name))`
 - **THEN** binding fails with a type error rather than failing in the database
 
+#### Scenario: Boolean expression is numeric
+- **WHEN** a measure is written `avg(coalesce(flag, false))` or
+  `stddev_samp(coalesce(flag, false))`
+- **THEN** binding succeeds and the measures are the share of true rows and the standard
+  deviation of the 0 / 1 values
+
 ### Requirement: Row-level expressions can be aggregated
 The system SHALL accept `agg(<expression>, [args])` where the expression is built
 from row-level column references — bare host-model columns and dotted joined-model
-paths alike — scalar-allowlist functions, arithmetic operators, and literals, in
+paths alike — scalar-allowlist functions, arithmetic operators, comparisons, boolean
+connectives, `IN` / `NOT IN` predicates, and literals, in
 every position that accepts functional aggregations, composing with reserved kwargs
 (`window`, `partition_by`), parametric aggregations, custom aggregations, rename,
 filter-form measures, post-aggregation filters, and order. The aggregation SHALL run
@@ -78,6 +85,11 @@ leaves' join paths (the host for a literal-only or host-mixed expression).
 #### Scenario: Arithmetic expression
 - **WHEN** a query measure is written `sum(amount - cost)`
 - **THEN** the generated SQL aggregates the row-level expression (`SUM(amount - cost)`), grouped like any other measure
+
+#### Scenario: Comparison expression
+- **WHEN** a query measure is written `sum(amount > 15)`
+- **THEN** it is accepted — never the former cannot-aggregate-a-comparison rejection — and
+  returns the number of rows whose `amount` exceeds 15 (per `aggregations/boolean-inputs`)
 
 #### Scenario: Scalar function inside
 - **WHEN** a measure is written `count_distinct(upper(email))`

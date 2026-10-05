@@ -32,11 +32,11 @@ from tests._dev1892_fixtures import (
 DERIVED_DEFAULT_BY_STATUS = {"ok": 112000.0, "new": 50000.0}
 
 #: C broadcast: weighted_avg(regions.pop, weight=spend) over all 7 customers
-#: (c4's NULL pop drops its numerator term, its spend stays in the denominator).
-CBCAST_ALL_CUSTOMERS = 67000.0 / 515.0
+#: (c4's NULL pop skips its spend: 515 - 40).
+CBCAST_ALL_CUSTOMERS = 67000.0 / 475.0
 #: host home (roots at orders, status attributable, no broadcast):
-#: SUM(spend*amount)/SUM(amount) per status (o8's NULL customer → denom only).
-HOST_HOME_BY_STATUS = {"ok": 7660.0 / 82.0, "new": 7350.0 / 85.0}
+#: SUM(spend*amount)/SUM(amount) per status (o8's NULL customer skips its amount 7).
+HOST_HOME_BY_STATUS = {"ok": 7660.0 / 75.0, "new": 7350.0 / 85.0}
 #: filtered source (north_spend on regions.name='North') × host weight:
 #: SUM(north_spend*amount) per status, North customers (c1,c2,c6) only.
 FILTERED_WSUM_BY_STATUS = {"ok": 6160.0, "new": 5750.0}

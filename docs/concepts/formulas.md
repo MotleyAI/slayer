@@ -46,6 +46,8 @@ included), scalar-allowlist functions, arithmetic, and literals. It works in
 every functional-aggregation position — measures, post-aggregation filters
 (`sum(amount - cost) > 0` routes to HAVING), order, computed-dimension
 expressions — and composes with `rename`.
+Comparisons, `and` / `or` / `not` and `in` aggregate as booleans, so `sum(amount > 15)` counts the rows whose `amount` exceeds 15.
+Wherever a number is needed — an arithmetic operand, a math function's argument, a comparison with a number — a boolean reads as 1 / 0 (`flag * amount`, `flag = 1`).
 
 **Naming.** The result key derives from the expression via the same sanitizer
 used for computed dimensions: `sum(amount - cost)` on `orders` →
@@ -357,10 +359,10 @@ A transform can also sit inside arithmetic or a scalar call beside other aggrega
 returns an integer streak length for the current row. False or NULL breaks the
 run and returns 0. A time bucket missing from the query's rows (after the date
 range and row filters) also breaks the run, so the next true bucket restarts at 1. The input is a Mode-B predicate or numeric value — a
-comparison, a null test (`is None` / `is not None`), `BETWEEN`, `IN`, a boolean
+comparison, a null test (`is None` / `is not None`), `IN`, a boolean
 connective, a nested transform, or a bare value
-(truthy when non-NULL and non-zero) — with a boolean-shaped node legal only at
-the predicate top level or an `iif` condition. The result composes with normal
+(truthy when non-NULL and non-zero) — with a boolean in a numeric position read
+as its integer (`(sum(revenue) > 0) + (sum(cost) > 0)`). The result composes with normal
 comparisons:
 
 ```json

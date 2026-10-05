@@ -41,15 +41,16 @@ class TestFullyAttachedAccepted:
 
     def test_direct_comparison_and_boolean_sources_parse(self):
         """A comparison / boolean composite is a legal attached source
-        DIRECTLY — no scalar-call wrapper — while a row-level comparison
-        source keeps its typed rejection."""
+        DIRECTLY — no scalar-call wrapper — and a row-level comparison is a
+        legal row-level source."""
         for f in (f"count({INNER_CR} > 0)",
                   f"sum({INNER_CR} > 45 and {INNER_CR} < 100)"):
             parsed = parse_expr(f)
             assert isinstance(parsed, AggCall)
             assert _source_is_reaggregation(parsed.source)
-        with pytest.raises(ValueError, match="cannot aggregate a Cmp"):
-            parse_expr("sum(amount > 45)")
+        row_level = parse_expr("sum(amount > 45)")
+        assert isinstance(row_level, AggCall)
+        assert not _source_is_reaggregation(row_level.source)
 
     def test_comparison_and_boolean_composites_route_as_reaggregation(self):
         """Cmp/BoolOp composition leaves route to the re-aggregation binder,

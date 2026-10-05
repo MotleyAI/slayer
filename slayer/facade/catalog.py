@@ -34,6 +34,7 @@ from slayer.core.models import (
     SlayerModel,
     is_identifier,
 )
+from slayer.engine.key_metadata import aggregated_type
 from slayer.facade.datatypes import SUPPORTED_DATATYPES
 
 logger = logging.getLogger(__name__)
@@ -573,7 +574,7 @@ def _column_x_builtin_aggs(model: SlayerModel) -> list[FacadeMetric]:
             name=f"{col.name}_{agg}",
             description=_describe_column_agg(column=col, agg=agg),
             label=col.label,
-            data_type=_agg_output_type(column=col, agg=agg),
+            data_type=aggregated_type(model=model, measure_name=col.name, aggregation=agg),
             measure_formula=f"{col.name}:{agg}",
         )
         for col in model.columns
@@ -585,7 +586,7 @@ def _column_x_builtin_aggs(model: SlayerModel) -> list[FacadeMetric]:
 def _column_x_custom_aggs(model: SlayerModel) -> list[FacadeMetric]:
     """Rule 4: column × parameterless custom aggs. Custom aggs are not
     gated by ``DEFAULT_AGGREGATIONS_BY_TYPE``, so we expose them on every
-    non-hidden column. Custom-agg output type is opaque."""
+    non-hidden column."""
     custom = _eligible_custom_aggregations(model=model)
     return [
         FacadeMetric(
@@ -594,7 +595,7 @@ def _column_x_custom_aggs(model: SlayerModel) -> list[FacadeMetric]:
                 column=col, agg=agg.name,
             ),
             label=col.label,
-            data_type=None,
+            data_type=aggregated_type(model=model, measure_name=col.name, aggregation=agg.name),
             measure_formula=f"{col.name}:{agg.name}",
         )
         for agg in custom
@@ -645,30 +646,6 @@ def build_local_view(
 def _describe_column_agg(*, column: Column, agg: str) -> str | None:
     if column.description:
         return f"{column.description} ({agg})"
-    return None
-
-
-def _agg_output_type(*, column: Column, agg: str) -> DataType | None:
-    """Coarse-grained output-type inference for column × agg pairs.
-
-    Used only to populate ``INFORMATION_SCHEMA.METRICS.data_type``; the
-    wire schema is always derived from the actual ``LIMIT 0`` execution
-    (§5.3), so any inference here is informational.
-    """
-    if agg in {"count", "count_distinct", "count_distinct_approx"}:
-        return DataType.INT
-    if agg in {"sum"}:
-        # SUM(INT) → INT for SQLite/Postgres; SUM(DOUBLE) → DOUBLE.
-        # Boolean SUM is also INT (cast to int per DEFAULT_AGGREGATIONS_BY_TYPE).
-        if column.type == DataType.BOOLEAN:
-            return DataType.INT
-        return column.type
-    if agg in {"min", "max", "first", "last"}:
-        return column.type
-    if agg in {"avg", "median", "percentile", "stddev_samp", "stddev_pop",
-               "var_samp", "var_pop", "weighted_avg", "corr",
-               "covar_samp", "covar_pop"}:
-        return DataType.DOUBLE
     return None
 
 

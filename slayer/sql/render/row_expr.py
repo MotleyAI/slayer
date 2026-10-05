@@ -30,11 +30,14 @@ from slayer.core.keys import (
     ColumnKey,
     ColumnSqlKey,
     ColumnTypeFn,
+    InKey,
     LiteralKey,
     ScalarCallKey,
     TimeTruncKey,
     _FrozenKey,
+    boolean_valued,
     check_scalar_arity,
+    numeric_boolean_positions,
     temporal_type,
     unit_word,
 )
@@ -300,11 +303,31 @@ def _operand_type(key: ScalarCallKey, pos: int, *, column_type: ColumnTypeFn) ->
     return dt
 
 
+def int_value(value: Expression) -> Expression:
+    """``value`` read as an integer — a boolean's 1 / 0, NULL kept."""
+    return exp.Cast(this=value, to=exp.DataType.build("INT"))
+
+
+def numeric_parts(
+    *, key: Any, parts: List[Expression], column_type: ColumnTypeFn,
+) -> List[Expression]:
+    """``key``'s rendered children with each boolean in a numeric position read as its integer."""
+    positions = numeric_boolean_positions(key, column_type=column_type)
+    return [int_value(p) if i in positions else p for i, p in enumerate(parts)]
+
+
 def iif_case_chain(
-    *, key: ScalarCallKey, part: Callable[[Any], Expression],
+    *, key: ScalarCallKey, part: Callable[[Any], Expression], column_type: ColumnTypeFn,
 ) -> exp.Case:
     """Render an ``iif`` chain as one multi-WHEN CASE, flattening nested ``iif``
-    in the otherwise position; ``part`` renders each argument."""
+    in the otherwise position; ``part`` renders each argument. A boolean branch of a
+    numeric chain reads as its integer."""
+    mixed = bool(numeric_boolean_positions(key, column_type=column_type))
+
+    def value(arg: Any) -> Expression:
+        rendered = part(arg)
+        return int_value(rendered) if mixed and boolean_valued(arg, column_type=column_type) else rendered
+
     ifs: List[exp.If] = []
     node: Any = key
     while isinstance(node, ScalarCallKey) and node.name == "iif":
@@ -312,9 +335,22 @@ def iif_case_chain(
         arity_error = check_scalar_arity(name="iif", argc=len(node.args))
         if arity_error is not None:
             raise NotImplementedError(f"Scalar arity check failed: {arity_error}")
-        ifs.append(exp.If(this=part(node.args[0]), true=part(node.args[1])))
+        ifs.append(exp.If(this=part(node.args[0]), true=value(node.args[1])))
         node = node.args[2]
-    return exp.Case(ifs=ifs, default=part(node))
+    return exp.Case(ifs=ifs, default=value(node))
+
+
+def render_in_predicate(*, key: InKey, column: Expression, dialect: SqlDialect) -> Expression:
+    """``column [NOT] IN (…)`` over ``key``'s literals."""
+    # Backstop for the bind-time rule: a NULL member breaks IN, and ``NOT IN`` with one matches no rows.
+    if any(v.value is None for v in key.values):
+        raise NotImplementedError(
+            "NULL is not allowed inside an IN list: 'NOT IN' with a NULL "
+            "matches no rows. Test for null separately with IS NULL / "
+            "IS NOT NULL.",
+        )
+    node = exp.In(this=column, expressions=[_literal(v.value, dialect=dialect) for v in key.values])
+    return exp.Not(this=node) if key.negated else node
 
 
 def render_row_expression(
@@ -351,17 +387,20 @@ def render_row_expression(
             return render_temporal_comparison(op=op, operand=_part(operand), value=value, dialect=dialect)
         return render_arithmetic(
             op=key.op.lower(),
-            operands=[_part(o) for o in key.operands],
+            operands=numeric_parts(key=key, parts=[_part(o) for o in key.operands], column_type=column_type),
         )
     if isinstance(key, TimeTruncKey):
         return dialect.build_bucket(col_expr=_part(key.column), granularity=key.granularity)
     if isinstance(key, ScalarCallKey):
         if key.name == "iif":
-            return iif_case_chain(key=key, part=_part)
-        args = [_part(a) for a in key.args]
+            return iif_case_chain(key=key, part=_part, column_type=column_type)
+        args = numeric_parts(key=key, parts=[_part(a) for a in key.args], column_type=column_type)
         if key.name in DATE_FUNCTIONS:
             return render_date_call(key=key, args=args, dialect=dialect, column_type=column_type)
         return render_scalar_call(name=key.name, args=args, dialect=dialect)
+    if isinstance(key, InKey):
+        (column,) = numeric_parts(key=key, parts=[_part(key.column)], column_type=column_type)
+        return render_in_predicate(key=key, column=column, dialect=dialect)
     raise NotImplementedError(
         f"Row-level expression cannot contain {type(key).__name__}.",
     )
