@@ -17,6 +17,7 @@ from sqlalchemy.pool import QueuePool, StaticPool
 from slayer.core.models import DatasourceConfig
 from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.dialects.base import SqlDialect, _digest
+from slayer.sql.dialects.drivers import load_driver
 
 logger = logging.getLogger(__name__)
 
@@ -208,6 +209,7 @@ def _build_engine(*, datasource: DatasourceConfig, connection_string: str) -> sa
     if _is_in_memory_sqlite(connection_string):
         return build_in_memory_sqlite_engine(connection_string)
     dialect = dialect_for_ds_type(datasource.type)
+    load_driver(datasource, connection_string, dialect=dialect, is_async=False)
     engine = dialect.build_engine(datasource, connection_string=connection_string)
     if engine is None:
         engine = sa.create_engine(connection_string, pool_pre_ping=True)

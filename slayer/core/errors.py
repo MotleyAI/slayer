@@ -188,6 +188,27 @@ class DerivedColumnCircularError(CircularJoinPathError):
         )
 
 
+class MissingDriverError(SlayerError, ImportError):
+    """A datasource's driver module or SQLAlchemy dialect plugin is not installed; ``hint`` says what to install."""
+
+    def __init__(
+        self, *, datasource_name: str, ds_type: str | None, missing: str, hint: str, detail: str,
+    ) -> None:
+        self.datasource_name = datasource_name
+        self.ds_type = ds_type
+        self.missing = missing
+        self.hint = hint
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__,
+            summary=(
+                f"Datasource {datasource_name!r} (type {ds_type!r}) needs {missing!r}, "
+                f"which could not be loaded: {detail}"
+            ),
+            suggestion=hint,
+        ))
+        self.name = missing
+
+
 class ModelSqlValidationError(SlayerError, ValueError):
     """Raw-``sql`` model source rejected by its reachable datasource at save time.
 

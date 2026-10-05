@@ -15,25 +15,25 @@
 
 ## 2. Driver facts as dialect data
 
-- [ ] 2.1 Add `url_scheme`, `sync_driver`, `async_driver`, `install_extra` to `SqlDialect` and set them per D1 in each dialect file; verify 1.9 passes
-- [ ] 2.2 `get_connection_string` reads `dialect.url_scheme` only for the dialect's own aliases; delete `driver_map`; verify 1.10 passes
+- [x] 2.1 Add `url_scheme`, `sync_driver`, `async_driver`, `install_extra` to `SqlDialect` and set them per D1 in each dialect file; verify 1.9 passes
+- [x] 2.2 `get_connection_string` reads `dialect.url_scheme` only for the dialect's own aliases; delete `driver_map`; verify 1.10 passes
 
 ## 3. Typed error and driver pre-flight
 
-- [ ] 3.1 Add `MissingDriverError(SlayerError, ImportError)` to `slayer/core/errors.py`; verify the type half of 1.6
-- [ ] 3.2 New `slayer/sql/dialects/drivers.py`: `load_driver` (get_dialect + import_dbapi, D3 hint selection, Snowflake sentinel connector check) and `import_driver`; verify 1.1, 1.3, 1.4
-- [ ] 3.3 Call `load_driver` in `engine_factory._build_engine` before the dialect hook / `create_engine` (not for in-memory SQLite); verify 1.1 and the propagation half of 1.6
-- [ ] 3.4 Route Snowflake (`build_connection_url`, connect-time `creator`) and BigQuery OAuth lazy imports through `import_driver`; delete Snowflake's hint helpers; verify 1.5 and 1.12
+- [x] 3.1 Add `MissingDriverError(SlayerError, ImportError)` to `slayer/core/errors.py`; verify the type half of 1.6
+- [x] 3.2 New `slayer/sql/dialects/drivers.py`: `load_driver` (get_dialect + import_dbapi, D3 hint selection, Snowflake sentinel connector check) and `import_driver`; verify 1.1, 1.3, 1.4
+- [x] 3.3 Call `load_driver` in `engine_factory._build_engine` before the dialect hook / `create_engine` (not for in-memory SQLite); verify 1.1 and the propagation half of 1.6
+- [x] 3.4 Route Snowflake (`build_connection_url`, connect-time `creator`) and BigQuery OAuth lazy imports through `import_driver`; delete Snowflake's hint helpers; verify 1.5 and 1.12
 
 ## 4. Async path
 
-- [ ] 4.1 Rewrite `_async_connection_string` per D5 from dialect data; delete `_ASYNC_DRIVERS`; verify 1.7, 1.8
-- [ ] 4.2 Run `load_driver(is_async=True)` around the async-URL derivation and before `create_async_engine`; correct the `SlayerSQLClient` docstring; verify 1.2
+- [x] 4.1 Rewrite `_async_connection_string` per D5 from dialect data; delete `_ASYNC_DRIVERS`; verify 1.7, 1.8
+- [x] 4.2 Run `load_driver(is_async=True)` around the async-URL derivation and before `create_async_engine`; correct the `SlayerSQLClient` docstring; verify 1.2
 
 ## 5. Docs
 
-- [ ] 5.1 `docs/configuration/datasources.md`: SQL Server row, BigQuery `motley-slayer[bigquery]` extra, one sentence on custom `connection_string` drivers and the async rule; `docs/database-support.md` one-line pointer; verify 1.11
+- [x] 5.1 `docs/configuration/datasources.md`: SQL Server row, BigQuery `motley-slayer[bigquery]` extra, one sentence on custom `connection_string` drivers and the async rule; `docs/database-support.md` one-line pointer; verify 1.11
 
 ## 6. Gate
 
-- [ ] 6.1 `poetry run pytest -m "not integration"`, the CI integration invocation from CLAUDE.md, `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs baseline), and `uvx --no-build --from living-architecture==0.2.1 la-arch-check` all green
+- [x] 6.1 `poetry run pytest -m "not integration"`, the CI integration invocation from CLAUDE.md, `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs baseline), and `poetry run la-arch-check` all green

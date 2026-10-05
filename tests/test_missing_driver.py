@@ -88,8 +88,9 @@ def _assert_names(err: MissingDriverError, *, ds: DatasourceConfig, missing: str
 def test_sync_missing_dbapi_names_extra(monkeypatch, ds_type, blocked_module, extra) -> None:
     ds = _structured(ds_type)
     _block_modules(monkeypatch, blocked_module)
+    client = SlayerSQLClient(ds)
     with pytest.raises(MissingDriverError) as info:
-        SlayerSQLClient(ds).execute_sync("SELECT 1")
+        client.execute_sync("SELECT 1")
     _assert_names(info.value, ds=ds, missing=blocked_module)
     assert f"pip install 'motley-slayer[{extra}]'" in str(info.value)
 
@@ -184,8 +185,9 @@ async def test_async_missing_custom_driver_names_connection_string(monkeypatch) 
         name="pg3", type="postgres", connection_string=f"postgresql+psycopg://u:p@{_HOST}:5432/d",
     )
     _block_modules(monkeypatch, "psycopg")
+    client = SlayerSQLClient(ds)
     with pytest.raises(MissingDriverError) as info:
-        await SlayerSQLClient(ds).execute("SELECT 1")
+        await client.execute("SELECT 1")
     _assert_names(info.value, ds=ds, missing="psycopg")
     assert "connection_string" in str(info.value)
     assert "motley-slayer[" not in str(info.value)

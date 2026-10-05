@@ -2,6 +2,7 @@
 
 SLayer uses [sqlglot](https://github.com/tobymao/sqlglot) for dialect-aware
 SQL generation. Databases are supported at two tiers.
+The extra each type needs is listed under [Datasources](configuration/datasources.md#database-drivers).
 
 ## Tier 1 — fully tested
 
@@ -234,7 +235,7 @@ gated on `GCP_PROJECT_ID` and `GCP_SA_KEY_B64` repo secrets (forks without
 them skip cleanly). Auth via Google Application Default Credentials
 (`$GOOGLE_APPLICATION_CREDENTIALS` pointing at a service-account JSON key,
 plus `$GCP_PROJECT_ID` for billing). The `bigquery://` driver requires the
-`sqlalchemy-bigquery` extra.
+`motley-slayer[bigquery]` extra.
 
 - **No FK introspection.** BigQuery exposes no foreign-key metadata via
   `INFORMATION_SCHEMA`, so auto-ingestion cannot discover joins. Hand-declare

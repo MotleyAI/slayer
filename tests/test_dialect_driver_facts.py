@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import tomllib
 from pathlib import Path
+from typing import Any
 
 import pytest
 from sqlalchemy.engine.url import make_url
@@ -37,7 +38,7 @@ _EXPECTED = {
     "oracle": (None, None, None, None),
 }
 
-_STRUCTURED = dict(host="h.example", port=1234, database="db", username="u", password="p@ss")
+_STRUCTURED: dict[str, Any] = dict(host="h.example", port=1234, database="db", username="u", password="p@ss")
 
 
 def test_every_registered_type_is_covered() -> None:
@@ -115,8 +116,9 @@ def test_structured_url_unchanged(ds_type, expected) -> None:
 
 
 def test_structured_url_without_type_still_raises() -> None:
+    ds = DatasourceConfig(name="d", type=None, host="h")
     with pytest.raises(TypeError, match="drivername must be a string"):
-        DatasourceConfig(name="d", type=None, host="h").get_connection_string()
+        ds.get_connection_string()
 
 
 # ---------------------------------------------------------------------------

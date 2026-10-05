@@ -1030,14 +1030,8 @@ class DatasourceConfig(BaseModel):
             return f"{self.type}:///{self.database}"
         if self.type in ("mssql", "sqlserver", "tsql"):
             return self._get_tsql_connection_string()
-        driver_map = {
-            "postgres": "postgresql",
-            "postgresql": "postgresql",
-            "mysql": "mysql+pymysql",
-            "mariadb": "mysql+pymysql",
-            "clickhouse": "clickhouse+http",
-        }
-        driver = driver_map.get(self.type or "", self.type)
+        # An unregistered type resolves to the Postgres fallback dialect but keeps its own scheme.
+        driver = (dialect.url_scheme if self.type in dialect.ds_type_aliases else None) or self.type
         host, port = self._split_host_port()
         if driver is None:
             # Mirrors ``URL.create``'s own rejection of a non-string drivername.

@@ -1,14 +1,4 @@
-"""SqlDialect strategy base class.
-
-Every dialect-specific SQL-generation quirk lives on a subclass of
-``SqlDialect``. The base class itself is a fully concrete Postgres-shaped
-default — concrete dialects (``SqliteDialect``, ``TsqlDialect``, ...)
-override only the methods whose behaviour differs.
-
-The class is a Pydantic ``BaseModel`` with ``frozen=True`` so registry
-singletons can't drift. Method overrides happen via regular subclassing —
-fields use class-level defaults (``sqlglot_name: str = "postgres"``).
-"""
+"""SqlDialect strategy base class: Postgres-shaped defaults that dialects override."""
 
 from __future__ import annotations
 
@@ -41,10 +31,6 @@ if TYPE_CHECKING:
 
     from slayer.core.models import DatasourceConfig
 
-
-# ---------------------------------------------------------------------------
-# Granularity / unit mapping for the date_trunc and date-function defaults
-# ---------------------------------------------------------------------------
 
 _GRANULARITY_TO_DATE_TRUNC = {
     TimeGranularity.SECOND: "second",
@@ -79,12 +65,6 @@ def literal_int(node: Expression) -> Optional[int]:
     except ValueError:
         return None
     return -value if negative else value
-
-
-# ---------------------------------------------------------------------------
-# Shared variance-decomposition formula (used by MySQL + T-SQL overrides
-# of build_covar_2arg).
-# ---------------------------------------------------------------------------
 
 
 StatAgg1Name = Literal["stddev_samp", "stddev_pop", "var_samp", "var_pop"]
@@ -175,15 +155,9 @@ def _build_covar_decomposition(
     return exp.Div(this=covar, expression=denom)
 
 
-# ---------------------------------------------------------------------------
-# SqlDialect — base class with Postgres-shaped defaults
-# ---------------------------------------------------------------------------
-
-
 @lru_cache(maxsize=None)
 def _sqlglot_backslash_escapes(sqlglot_name: str) -> bool:
-    """Whether sqlglot's tokenizer treats backslash as a string escape — read from the
-    parser itself so Mode-A escaping can't drift; a reshaped internal API fails loudly."""
+    """Whether sqlglot's tokenizer treats backslash as a string escape."""
     tokenizer = _SqlglotDialect.get_or_raise(sqlglot_name).tokenizer_class
     escapes = getattr(tokenizer, "STRING_ESCAPES", None)
     if not isinstance(escapes, (list, tuple, set, frozenset)):
@@ -198,10 +172,7 @@ def _sqlglot_backslash_escapes(sqlglot_name: str) -> bool:
 
 @lru_cache(maxsize=None)
 def _sqlglot_masking_lexis(sqlglot_name: str) -> SqlLexis:
-    """Lexical rules the identifier masker needs, read from sqlglot's tokenizer
-    (same source as the parser, so masking can't drift from it): ordinary-string
-    backslash escapes, ``/* */`` nesting, and ``$$``/``$tag$`` dollar-quoting. Guards
-    the semi-internal attributes so a sqlglot reshape fails loudly here."""
+    """Lexical rules the identifier masker needs, read from sqlglot's tokenizer."""
     tokenizer = _SqlglotDialect.get_or_raise(sqlglot_name).tokenizer_class
     nested = getattr(tokenizer, "NESTED_COMMENTS", None)
     heredoc = getattr(tokenizer, "HEREDOC_STRINGS", None)
@@ -222,8 +193,7 @@ def _sqlglot_masking_lexis(sqlglot_name: str) -> SqlLexis:
 
 
 def _digest(secret: str | None) -> str:
-    """Non-reversible id for secret material in cache keys. 16 hex chars keeps
-    it log-readable; collisions are negligible at this scale."""
+    """Non-reversible 16-hex id for secret material in cache keys."""
     if not secret:
         return ""
     return hashlib.sha256(secret.encode("utf-8")).hexdigest()[:16]
@@ -251,18 +221,13 @@ class SqlDialect(BaseModel):
     log10_native: bool = True
     log2_native: bool = True
 
-    # Whether NUMERIC/DECIMAL columns are stored and aggregated exactly.
-    # False (SQLite's numeric affinity) keeps the inferred cast instead of
-    # native-type preservation.
+    # Whether NUMERIC/DECIMAL is stored exactly (False: SQLite's numeric affinity).
     exact_decimal_native: bool = True
 
-    # Conservative universal identifier budget in BYTES; ``None`` = unbounded
-    # (fitting hooks become no-ops). Default is the tightest Tier-1 value
-    # (Postgres), so a new dialect over-shortens rather than silently truncating.
+    # Identifier budget in bytes (``None`` = unbounded); defaults to Postgres, the tightest.
     max_identifier_bytes: int | None = 63
 
-    # Approximate distinct: exact COUNT(DISTINCT) unless native (sqlglot's
-    # ApproxDistinct); Oracle/T-SQL name the call, as sqlglot mis-spells theirs.
+    # Oracle/T-SQL name the call: sqlglot mis-spells theirs.
     approx_count_distinct_native: bool = False
     approx_count_distinct_anonymous_name: str | None = None
 
@@ -275,6 +240,12 @@ class SqlDialect(BaseModel):
     # An ``IN`` subquery and its joins run once on the initiator (``GLOBAL``): exact over shards.
     global_in_subqueries: bool = False
 
+    # URL scheme (``None`` = datasource type), sync/async DBAPI drivers, and their pip extra.
+    url_scheme: str | None = None
+    sync_driver: str | None = None
+    async_driver: str | None = None
+    install_extra: str | None = None
+
     @property
     def backslash_escapes_strings(self) -> bool:
         """Whether string literals treat backslash as an escape; feeds Mode-A ``{var}`` escaping."""
@@ -282,33 +253,20 @@ class SqlDialect(BaseModel):
 
     @property
     def identifier_masking_lexis(self) -> SqlLexis:
-        """Lexical rules for the identifier masker (ordinary-string backslash
-        escapes, ``/* */`` nesting, dollar-quoting, and this dialect's identifier
-        quote pair), so masking of user literals/comments matches this dialect's
-        grammar rather than over/under-masking a Postgres-shaped default. Derived
-        from sqlglot's tokenizer plus the emitter's own identifier quote."""
+        """Lexical rules for the identifier masker, including this dialect's identifier quotes."""
         return _sqlglot_masking_lexis(self.sqlglot_name).model_copy(
             update={"identifier_quote": self._identifier_quote_anchors()},
         )
 
-    # ------------------------------------------------------------------
-    # Null-safe equality
-    # ------------------------------------------------------------------
-
     def declared_cast_type(self, dt: Optional[DataType]) -> Optional[DataType]:
-        """The declared/inferred CAST target for a value of type ``dt`` on this dialect (``None`` skips the cast). Default: unchanged; a dialect without native temporal storage overrides to drop DATE / TIMESTAMP casts (P2)."""
+        """The CAST target for a value of type ``dt`` (``None`` skips the cast)."""
         return dt
 
     def build_null_safe_eq(
         self, left: Expression, right: Expression,
     ) -> Expression:
-        """Null-safe equality for grain join-backs (``IS NOT DISTINCT FROM``; sqlglot transpiles
-        it, incl. MySQL ``<=>``); dialects without a native form override."""
+        """Null-safe equality (``IS NOT DISTINCT FROM``) for grain join-backs."""
         return exp.NullSafeEQ(this=left, expression=right)
-
-    # ------------------------------------------------------------------
-    # ORDER BY term construction
-    # ------------------------------------------------------------------
 
     def build_ordered(
         self,
@@ -317,9 +275,7 @@ class SqlDialect(BaseModel):
         descending: bool,
         nulls: Literal["default", "first", "last"] = "default",
     ) -> exp.Ordered:
-        """The one builder of ``ORDER BY`` terms. ``"default"`` renders nulls last on every
-        dialect (emulated where there's no syntax); ``"first"``/``"last"`` are honoured as asked.
-        T-SQL overrides: its emulation re-resolves the alias against FROM and fails."""
+        """The one builder of ``ORDER BY`` terms; ``"default"`` renders nulls last."""
         kwargs: dict = {"this": order_col, "desc": descending}
         if nulls == "first":
             kwargs["nulls_first"] = True
@@ -328,8 +284,7 @@ class SqlDialect(BaseModel):
         return exp.Ordered(**kwargs)
 
     def native_nulls_first(self, *, descending: bool) -> bool:
-        """Where NULLs natively sort for ``descending`` — setting it yields a bare ``ORDER BY``
-        (wanted inside window frames); read from sqlglot's emitter so it can't disagree."""
+        """Where NULLs natively sort for ``descending``, read from sqlglot's emitter."""
         ordering = getattr(
             _SqlglotDialect.get_or_raise(self.sqlglot_name),
             "NULL_ORDERING", None,
@@ -350,8 +305,7 @@ class SqlDialect(BaseModel):
     def _expanded_null_safe_eq(
         left: Expression, right: Expression,
     ) -> Expression:
-        """``left = right OR (left IS NULL AND right IS NULL)`` — the portable
-        expansion for dialects without a native null-safe equality operator."""
+        """``left = right OR (left IS NULL AND right IS NULL)``."""
         eq = exp.EQ(this=left.copy(), expression=right.copy())
         both_null = exp.And(
             this=exp.Is(this=left.copy(), expression=exp.Null()),
@@ -359,29 +313,14 @@ class SqlDialect(BaseModel):
         )
         return exp.paren(exp.Or(this=eq, expression=exp.paren(both_null)))
 
-    # ------------------------------------------------------------------
-    # Date-trunc / time arithmetic
-    # ------------------------------------------------------------------
-
     def build_date_trunc(
         self,
         col_expr: Expression,
         granularity: TimeGranularity,
     ) -> Expression:
-        """Default: ``DATE_TRUNC('unit', col)`` via sqlglot's ``exp.DateTrunc``.
-
-        Non-bare-column / non-cast operands are wrapped in
-        ``CAST(... AS TIMESTAMP)`` so Postgres can pick the right
-        ``date_trunc`` overload — preserving today's
-        ``generator.py:_build_date_trunc`` behaviour.
-        """
+        """``DATE_TRUNC``; other operands are cast to TIMESTAMP so Postgres picks an overload."""
         if granularity == TimeGranularity.WEEK_SUNDAY:
-            # Sunday-anchored week = Monday-week of (col + 1 day),
-            # shifted back 1 day. This is Metabase's own reference formula and
-            # reuses each dialect's existing (Monday-based) WEEK truncation, so
-            # WEEK_SUNDAY's correctness tracks WEEK's per dialect. BigQuery —
-            # whose native WEEK is Sunday — overrides this to emit
-            # ``DATE_TRUNC(col, WEEK(SUNDAY))`` directly.
+            # Sunday week = Monday week of (col + 1 day), shifted back a day.
             shifted = self.build_date_add(
                 expr=col_expr, count=exp.Literal.number(1), unit=TimeGranularity.DAY,
                 operand=DataType.TIMESTAMP,
@@ -399,8 +338,7 @@ class SqlDialect(BaseModel):
         return exp.DateTrunc(this=col_expr, unit=exp.Literal.string(gran_str))
 
     def build_bucket(self, *, col_expr: Expression, granularity: Granularity) -> Expression:
-        """The bucket start of ``col_expr`` at ``granularity``: native truncation for a built-in, the
-        last ``origin + k·multiple·base`` boundary at or before it for a custom granularity."""
+        """Bucket start of ``col_expr``; custom: last ``origin + k·multiple·base`` at or before it."""
         if not isinstance(granularity, CustomGranularity):
             return self.build_date_trunc(col_expr=col_expr, granularity=granularity)
         base, multiple, origin = granularity_parts(granularity)
@@ -457,10 +395,6 @@ class SqlDialect(BaseModel):
         base, multiple, _ = granularity_parts(unit)
         return self.bucket_offset(bucket=bucket, count=count * multiple, unit=base)
 
-    # ------------------------------------------------------------------
-    # Mode-B date functions (typed operands only, sql P1)
-    # ------------------------------------------------------------------
-
     def promote_to_timestamp(self, expr: Expression) -> Expression:
         """A DATE value as the dialect's naive timestamp (midnight)."""
         return exp.Cast(this=expr.copy(), to=exp.DataType.build("TIMESTAMP"))
@@ -487,7 +421,6 @@ class SqlDialect(BaseModel):
             return self._date_part(part, self.promote_to_timestamp(expr))
         return self._date_part(part, expr.copy())
 
-    # Postgres/DuckDB EXTRACT fields.
     _EXTRACT_FIELDS: ClassVar[dict[DatePart, str]] = {
         DatePart.YEAR: "YEAR", DatePart.ISO_YEAR: "ISOYEAR", DatePart.QUARTER: "QUARTER",
         DatePart.MONTH: "MONTH", DatePart.WEEK: "WEEK", DatePart.DAY: "DAY",
@@ -571,8 +504,7 @@ class SqlDialect(BaseModel):
     def build_date_add(
         self, *, expr: Expression, count: Expression, unit: TimeGranularity, operand: DataType,
     ) -> Expression:
-        """``expr`` moved by an integer ``count`` of ``unit``s; month-based moves clamp at month-end.
-        A DATE stays a DATE for day-or-coarser units."""
+        """``expr`` moved by ``count`` ``unit``s; months clamp at month-end, a DATE stays a DATE."""
         interval_unit, per_count = _INTERVAL_UNITS[unit]
         literal = literal_int(count)
         if literal is not None:
@@ -591,23 +523,17 @@ class SqlDialect(BaseModel):
         return moved
 
     def frame_time_operand(self, expr: Expression) -> Expression:
-        """The source time column as it must appear in a trailing-window frame
-        comparison. Default: unchanged — the frame bounds (``build_date_add``)
-        carry the same time type, so ``expr < bucket_end`` is already exact."""
+        """The source time column as compared in a trailing-window frame."""
         return expr
 
-    # ------------------------------------------------------------------
-    # Median / percentile / stat aggregates
-    # ------------------------------------------------------------------
-
     def build_median(self, inner: Expression) -> Expression:
-        """Default: ``PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY inner)``."""
+        """``PERCENTILE_CONT(0.5)``."""
         return self.build_percentile(p=exp.Literal.number("0.5"), col_expr=inner)
 
     def build_percentile(
         self, p: Expression, col_expr: Expression,
     ) -> Expression:
-        """Default: ``PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY col)``; ``p`` is a validated literal."""
+        """``PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY col)``."""
         return exp.WithinGroup(
             this=exp.PercentileCont(this=p.copy()),
             expression=exp.Order(expressions=[exp.Ordered(
@@ -630,7 +556,7 @@ class SqlDialect(BaseModel):
     def build_stat_agg_1arg(
         self, agg_name: StatAgg1Name, col_expr: Expression,
     ) -> Expression:
-        """Default: emit the canonical name; sqlglot transpiles per dialect."""
+        """Canonical name; sqlglot transpiles per dialect."""
         return self._named_call(agg_name, col_expr)
 
     def build_covar_2arg(
@@ -639,7 +565,7 @@ class SqlDialect(BaseModel):
         col_expr: Expression,
         other_expr: Expression,
     ) -> Expression:
-        """Default: native ``CORR(x, y)`` / ``COVAR_SAMP(x, y)`` / ``COVAR_POP(x, y)``."""
+        """Native ``CORR`` / ``COVAR_SAMP`` / ``COVAR_POP``."""
         return self._named_call(agg_name, col_expr, other_expr)
 
     def _named_call(
@@ -652,49 +578,20 @@ class SqlDialect(BaseModel):
         node.meta["name"] = name
         return node
 
-    # ------------------------------------------------------------------
-    # Log-alias rewrite
-    # ------------------------------------------------------------------
-
     def should_use_native_log(self, base: int) -> bool:
-        """Whether ``log{N}(x)`` should be emitted as the dialect's native
-        single-arg function (vs the canonical 2-arg ``LOG(N, x)``).
-
-        Defaults: log10 native = True (every Tier-1+2 dialect except
-        Oracle), log2 native = True (Postgres-shaped baseline). Concrete
-        dialects override via the ``log10_native`` / ``log2_native``
-        fields.
-        """
+        """Whether ``log{N}(x)`` uses a native single-arg function rather than ``LOG(N, x)``."""
         if base == 10:
             return self.log10_native
         if base == 2:
             return self.log2_native
         return False
 
-    # ------------------------------------------------------------------
-    # AST rewrite hook + per-connection UDF registration
-    # ------------------------------------------------------------------
-
     def rewrite_parsed_ast(self, tree: Expression) -> Expression:
-        """Default: identity. SQLite overrides to rewrite JSONExtract to
-        the function-call form."""
+        """Hook: rewrite the AST as parsed (Postgres-parsed for every target)."""
         return tree
 
     def rewrite_target_ast(self, tree: Expression) -> Expression:
-        """Default: identity. Target-keyed AST rewrite.
-
-        Applied in ``SQLGenerator._parse`` using the generator's **target**
-        dialect (``self._dialect``), independent of the parse dialect. This is
-        the place for output-shaping a dialect needs that the input-side
-        ``rewrite_parsed_ast`` cannot do: formula/measure expressions are
-        canonically parsed as Postgres regardless of target, so a
-        ``rewrite_parsed_ast`` override would fire for every backend.
-
-        ``PostgresDialect`` overrides this to wrap the first argument of a
-        2-arg ``ROUND`` in a numeric ``CAST`` (Postgres has no
-        ``round(double precision, integer)`` — only ``round(numeric, int)``).
-        SQLite / DuckDB round ``DOUBLE`` natively, so they keep the identity.
-        """
+        """Hook: output-shaping AST rewrite keyed on the target dialect."""
         return tree
 
     def apply_pagination(
@@ -704,18 +601,9 @@ class SqlDialect(BaseModel):
         limit: Optional[int],
         offset: Optional[int],
     ) -> exp.Select:
-        """Apply LIMIT/OFFSET to a completed ``SELECT`` (P-H).
+        """The single place LIMIT/OFFSET is applied to a completed ``SELECT``.
 
-        The single place pagination is expressed. Every render path routes
-        here, so a dialect that spells pagination differently is handled once
-        rather than per path — the cross-model combined statement used to append
-        raw ``LIMIT``/``OFFSET`` text and emitted literal ``LIMIT`` on SQL
-        Server, while the same query carrying a transform layer went through the
-        outer wrap and came out correct.
-
-        Setting the bounds on the ``Select`` is what makes transposition work:
-        sqlglot rewrites them per dialect only when generating the wrapping
-        SELECT, never from a free-standing ``Limit`` node.
+        Set on the ``Select``: sqlglot transpiles bounds only there, never from a free ``Limit``.
         """
         out = select
         if limit is not None:
@@ -724,35 +612,22 @@ class SqlDialect(BaseModel):
             out = out.offset(offset)
         return out
 
-    # Identifier-length fitting. Aliases stay canonical inside SLayer,
-    # fitted only on emission and restored on the result keys.
+    # Aliases stay canonical inside SLayer; fitted on emission, restored on result keys.
 
     def quote_identifier(self, name: str) -> str:
         """``name`` wrapped in this dialect's identifier quotes."""
         return exp.Identifier(this=name, quoted=True).sql(dialect=self.sqlglot_name)
 
     def fit_alias(self, name: str) -> str:
-        """Length-only fitting; identity when ``name`` already fits.
-
-        Drives the write pass (not ``emit_alias``), so an under-limit alias
-        produces byte-identical SQL even on dialects that mangle dots.
-        """
+        """Length-only fitting; identity when ``name`` already fits."""
         return fit_identifier(name=name, limit=self.max_identifier_bytes)
 
     def emit_alias(self, alias: str) -> str:
-        """The final identifier a canonical alias reaches the SQL as.
-
-        Equals ``fit_alias`` here; BigQuery/T-SQL compose dot-mangling on top.
-        Used to build the read-side map, so must match the emitted token exactly.
-        """
+        """The final identifier a canonical alias reaches the SQL as."""
         return self.fit_alias(alias)
 
     def alias_rewrite_map(self, aliases: Sequence[str]) -> dict[str, str]:
-        """``{canonical: fitted}`` for the write pass, only where they differ.
-
-        The collision check covers every alias including identities: a short
-        alias equal to another's fitted form is just as much a duplicate.
-        """
+        """``{canonical: fitted}`` where they differ; collisions checked over identities too."""
         if self.max_identifier_bytes is None:
             return {}
         allocation: dict[str, str] = {}
@@ -773,16 +648,7 @@ class SqlDialect(BaseModel):
         return {k: v for k, v in allocation.items() if k != v}
 
     def decode_alias_map(self, aliases: Sequence[str]) -> dict[str, str]:
-        """``{emitted: canonical}`` — read-side inverse, rebuilt by re-running
-        the pure fitting rather than threading a map through generation.
-
-        Raises on two canonical aliases fitting to one emitted form, for
-        symmetry with ``alias_rewrite_map`` — the read side can be handed a
-        different alias set than the write side, so its guard is independent.
-        Ownership is recorded for identity aliases too (only the output map
-        drops them), so a fitted alias colliding with an unchanged one is
-        caught just as ``alias_rewrite_map`` catches it.
-        """
+        """``{emitted: canonical}`` read-side inverse; raises if two aliases emit alike."""
         out: dict[str, str] = {}
         owner: dict[str, str] = {}
         for alias in aliases:
@@ -806,13 +672,7 @@ class SqlDialect(BaseModel):
         *,
         fallback: Callable[[str], str] | None = None,
     ) -> dict[str, Any]:
-        """Apply ``mapping`` to a row's keys, erroring if two keys collapse onto
-        one (silent column loss).
-
-        ``fallback`` decodes keys absent from ``mapping`` (BigQuery/T-SQL
-        ``___`` -> ``.``). Applied here, not upstream, so the collapse check
-        sees every key.
-        """
+        """Rekey a row via ``mapping`` (else ``fallback``); raises if two keys collapse."""
         out: dict[str, Any] = {}
         for key, value in row.items():
             if key in mapping:
@@ -831,19 +691,14 @@ class SqlDialect(BaseModel):
         return out
 
     def _identifier_quote_anchors(self) -> tuple[str, str]:
-        """This dialect's identifier open/close quote chars (``"``/``"``,
-        `` ` ``/`` ` ``, ``[``/``]``), read off ``quote_identifier`` so the scan
-        can't drift from the emitter."""
+        """This dialect's identifier open/close quote chars, read off ``quote_identifier``."""
         probe = self.quote_identifier("x")
         return probe[0], probe[-1]
 
     def _emission_fit_map(
         self, *, sql: str, aliases: Sequence[str], exempt: frozenset[str],
     ) -> dict[str, str]:
-        """``{canonical: fitted}`` for every over-limit SLayer-minted identifier —
-        the plan-derived projection ``aliases`` plus internal CTE columns scanned
-        off the assembled SQL. Exempt names pass through unfitted (they win on a
-        spelling tie). Fails closed on a fitted-form collision."""
+        """``{canonical: fitted}`` for over-limit aliases and scanned CTE columns; exempt pass through."""
         limit = self.max_identifier_bytes
         if limit is None:
             return {}
@@ -852,9 +707,7 @@ class SqlDialect(BaseModel):
             sql, quote_open=quote_open, quote_close=quote_close,
             lexis=self.identifier_masking_lexis,
         )
-        # ``fit_alias`` sizes against the post-mangle form (BigQuery/T-SQL dot
-        # expansion), so this also catches a dotted alias under the raw limit that
-        # mangling would push over.
+        # Post-mangle sizing also catches dotted aliases that mangling pushes over.
         scanned = sorted(n for n in present if self.fit_alias(n) != n)
         allocation: dict[str, str] = {}
         owner: dict[str, str] = {}
@@ -881,17 +734,7 @@ class SqlDialect(BaseModel):
     def rewrite_emitted_sql(
         self, sql: str, *, aliases: Sequence[str] = (), exempt: frozenset[str] = frozenset(),
     ) -> str:
-        """Post-pass string rewrite of the final SQL; write-side companion to
-        ``rewrite_parsed_ast``, applied at the end of ``generate()``.
-
-        Fits every over-limit SLayer-minted identifier — the plan-derived
-        projection ``aliases`` and internal CTE columns scanned off the assembled
-        SQL — replacing each canonical token everywhere it occurs (literals/comments
-        excepted). ``exempt`` names user-authored
-        identifiers that pass through byte-identical. Under-limit SQL is
-        byte-identical; unbounded dialects are a no-op. BigQuery/T-SQL compose
-        dot-mangling after this pass.
-        """
+        """Fit over-limit SLayer-minted identifiers in the final SQL (literals/comments excepted)."""
         mapping = self._emission_fit_map(sql=sql, aliases=aliases, exempt=exempt)
         if not mapping:
             return sql
@@ -903,9 +746,7 @@ class SqlDialect(BaseModel):
     def assert_no_overlimit_identifiers(
         self, sql: str, *, exempt: frozenset[str] = frozenset(),
     ) -> None:
-        """Always-on emission backstop: raise if the final SQL still carries a
-        non-exempt over-limit identifier — an unaccounted name the database would
-        truncate silently (sql principle 9)."""
+        """Raise if the final SQL still carries a non-exempt over-limit identifier."""
         limit = self.max_identifier_bytes
         if limit is None:
             return
@@ -927,32 +768,18 @@ class SqlDialect(BaseModel):
         *,
         aliases: Sequence[str] = (),
     ) -> list[dict[str, Any]]:
-        """Reverse the write-side rewrite on result-row keys, so consumers always
-        see SLayer's canonical alias shape regardless of dialect or shortening.
-
-        BigQuery/T-SQL additionally decode the ``___`` mangling back to dots.
-        """
+        """Reverse the write-side rewrite on result-row keys."""
         mapping = self.decode_alias_map(aliases)
         if not mapping:
             return rows
         return [self._rekey_row(row=row, mapping=mapping) for row in rows]
 
     def register_udfs(self, dbapi_connection) -> None:  # NOSONAR(S1172) — no-op hook default; overrides use it
-        """Default: no-op. SQLite overrides to register Python aggregate
-        / scalar UDFs on every fresh connection."""
+        """Hook: register UDFs on every fresh connection."""
         return None
 
-    # ------------------------------------------------------------------
-    # EXPLAIN
-    # ------------------------------------------------------------------
-
     def build_explain_sql(self, sql: str) -> str:
-        """Wrap ``sql`` in the dialect's EXPLAIN prefix/postfix pair.
-
-        Raises ``ValueError`` when ``explain_prefix`` is ``None``
-        (BigQuery — EXPLAIN unsupported). Preserves today's
-        ``query_engine.py:_build_explain_sql`` semantics.
-        """
+        """Wrap ``sql`` in the dialect's EXPLAIN prefix/postfix pair."""
         if self.explain_prefix is None:
             raise ValueError(
                 f"EXPLAIN is not supported for dialect '{self.sqlglot_name}'. "
@@ -960,9 +787,7 @@ class SqlDialect(BaseModel):
             )
         return f"{self.explain_prefix} {sql}{self.explain_postfix}"
 
-    # ------------------------------------------------------------------
-    # Runtime hooks: keep dialect conditionals out of engine_factory / client (no-op defaults).
-    # ------------------------------------------------------------------
+    # Runtime hooks: keep dialect conditionals out of engine_factory / client.
 
     def build_connection_url(
         self,
@@ -980,18 +805,15 @@ class SqlDialect(BaseModel):
         """Hook: a dialect-built engine, or ``None`` for ``engine_factory``'s default ``create_engine``."""
         return None
 
-    # ------------------------------------------------------------------
-    # Credential identity (engine-cache safety)
-    # ------------------------------------------------------------------
+    def deferred_driver_modules(
+        self,
+        connection_string: str,  # NOSONAR(S1172) — no-op hook default; overrides use it
+    ) -> tuple[str, ...]:
+        """Hook: driver modules the engine first imports at connect time, checked up front instead."""
+        return ()
 
     def credential_fingerprint(self, datasource: "DatasourceConfig") -> str:
-        """Opaque identity of the credentials this datasource authenticates with.
-
-        Part of the engine cache key: a dialect whose secret is *not* in the
-        connection string MUST override this, or callers with different
-        credentials share one engine. Return a digest, never raw secret —
-        keys reach logs.
-        """
+        """Digest of credentials not in the connection string; part of the engine cache key."""
         return _digest(datasource.credentials_json)
 
     def apply_session_overrides(
@@ -1055,11 +877,7 @@ class SqlDialect(BaseModel):
 class DottedAliasManglingMixin:
     """Shared ``.``-to-``___`` alias mangling for BigQuery / T-SQL.
 
-    ``fit_alias`` / ``emit_alias`` / ``decode_result_keys`` are identical on both;
-    only ``rewrite_emitted_sql``'s identifier-quote anchor differs, supplied via
-    the three class attributes. Mixed in before ``SqlDialect`` so the base LENGTH
-    pass runs first (``super().rewrite_emitted_sql``) and the dot-mangle composes
-    on its still-dotted output.
+    Mix in before ``SqlDialect`` so the base length pass runs first.
     """
 
     dotted_alias_re: ClassVar[re.Pattern[str]]
@@ -1067,8 +885,7 @@ class DottedAliasManglingMixin:
     alias_quote_close: ClassVar[str]
 
     def fit_alias(self, name: str) -> str:
-        """Size the budget against the post-mangle form (``.`` -> ``___`` adds 2
-        bytes per dot); the return value stays dotted for the regex."""
+        """Fit against the post-mangle length; the result stays dotted."""
         return fit_identifier(
             name=name, limit=self.max_identifier_bytes, expand=encode_alias,
         )
@@ -1096,8 +913,7 @@ class DottedAliasManglingMixin:
         *,
         aliases: Sequence[str] = (),
     ) -> list[dict[str, Any]]:
-        """Reverse the mangling on result-row keys: consult the emitted->canonical
-        map, falling back to the ``___`` -> ``.`` bijection for fitted keys."""
+        """Reverse the mangling on result-row keys."""
         mapping = self.decode_alias_map(aliases)
         return [
             self._rekey_row(row=row, mapping=mapping, fallback=decode_alias)

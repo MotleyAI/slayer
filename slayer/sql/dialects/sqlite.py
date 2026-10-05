@@ -1,16 +1,4 @@
-"""SqliteDialect + the SQLite-specific helpers it depends on.
-
-This module folds in the content previously in ``slayer/sql/sqlite_dialect.py``
-(the ``rewrite_sqlite_json_extract`` AST rewrite) and
-``slayer/sql/sqlite_udfs.py`` (the Python aggregate/scalar UDFs registered
-on every fresh SQLite connection).
-
-The helpers are module-level — ``rewrite_sqlite_json_extract`` and
-``register_sqlite_udfs`` and the ``_*Agg`` classes are directly
-importable (used by ``tests/test_sqlite_json_extract.py`` and
-``tests/test_sqlite_udfs.py``). ``SqliteDialect`` is a thin wrapper that
-delegates to them through the ``SqlDialect`` interface.
-"""
+"""SqliteDialect plus its JSON-extract rewrite and Python UDFs."""
 
 from __future__ import annotations
 
@@ -28,32 +16,10 @@ from slayer.core.enums import DataType, DatePart, TimeGranularity
 from slayer.sql.dialects.base import COMPARISON_NODES, SqlDialect, TemporalComparisonOp, iso_text
 
 
-# ===========================================================================
-# JSON-extract AST rewrite
-# ===========================================================================
-
-
 def rewrite_sqlite_json_extract(node: Expression) -> Expression:
-    """Rewrite every ``exp.JSONExtract`` in the tree rooted at ``node`` to the
-    function-call form.
+    """Rewrite every ``exp.JSONExtract`` to ``json_extract(...)``; returns the possibly new root.
 
-    sqlglot's default SQLite generator emits ``exp.JSONExtract`` as
-    ``col -> '$.path'``. In SQLite the ``->`` operator returns the
-    JSON-typed form (e.g. ``'"Owned"'`` with literal quotes), whereas
-    ``json_extract`` and ``->>`` (``exp.JSONExtractScalar``) return the
-    unquoted scalar. The mismatch silently breaks ``CASE WHEN`` /
-    equality matches against bare-string literals.
-
-    Returns the (possibly new) root node — callers must use the return
-    value because ``node`` itself may be a ``JSONExtract`` (e.g. when
-    parsing a ``Column.sql`` whose entire expression is
-    ``json_extract(col, path)``), in which case ``Expression.replace``
-    is a no-op and a fresh root must be returned. Non-root rewrites
-    happen in place.
-
-    Loops to a fixed point so nested forms like
-    ``json_extract(json_extract(j, '$.outer'), '$.inner')`` get
-    rewritten at every level.
+    SQLite's ``->`` returns JSON-quoted text (``'"Owned"'``), breaking equality with bare strings.
     """
     while True:
         if isinstance(node, exp.JSONExtract):
@@ -97,20 +63,6 @@ def _to_anonymous(je: exp.JSONExtract) -> exp.Anonymous:
         this="JSON_EXTRACT",
         expressions=[je.this, je.expression],
     )
-
-
-# ===========================================================================
-# Python aggregate / scalar UDFs
-# ===========================================================================
-# SQLite has a much smaller built-in math/stat catalog than Postgres,
-# DuckDB, MySQL, or ClickHouse. To bring SQLite to per-row and
-# per-aggregate parity, this section registers Python implementations
-# on every new SQLite connection via SQLAlchemy's ``connect`` event.
-
-
-# ---------------------------------------------------------------------------
-# Median / percentile (existing — unchanged from sqlite_udfs.py)
-# ---------------------------------------------------------------------------
 
 
 class _MedianAgg:
@@ -184,27 +136,13 @@ class _PercentileDiscAgg:
             return None
         s = sorted(self._vals)
         n = len(s)
-        # cume_dist of element at index k (0-based) is (k+1)/n.
-        # Smallest k with (k+1)/n >= p  =>  k = ceil(p*n) - 1.
+        # Smallest k with cume_dist (k+1)/n >= p.
         k = max(0, math.ceil(self._p * n) - 1)
         return s[k]
 
 
-# ---------------------------------------------------------------------------
-# Statistical aggregates: Welford's online algorithm
-# ---------------------------------------------------------------------------
-
-
 class _OneVarWelford:
-    """Shared online-stats state for the four 1-arg stat aggregates.
-
-    Maintains ``(n, mean, M2)`` where ``M2 = sum((x_i - mean)^2)``.
-    Subclasses pick how to turn it into stddev_samp / stddev_pop /
-    var_samp / var_pop in ``finalize()``.
-
-    NULL inputs are skipped (don't contribute to ``n``), matching
-    Postgres semantics for the whole stat-aggregate family.
-    """
+    """Welford ``(n, mean, M2)`` state for the 1-arg stat aggregates; NULLs skipped."""
 
     def __init__(self) -> None:
         self._n: int = 0
@@ -285,8 +223,7 @@ class _PairAgg:
 
 
 class _CorrAgg(_PairAgg):
-    """Pearson correlation. NULL when fewer than 2 non-null pairs OR
-    when either side has zero variance (matches Postgres CORR)."""
+    """Pearson correlation. NULL when N < 2 or either side has zero variance."""
 
     def finalize(self) -> float | None:
         if self._n < 2:
@@ -316,11 +253,6 @@ class _CovarPopAgg(_PairAgg):
         return self._c / self._n
 
 
-# ---------------------------------------------------------------------------
-# Scalar wrappers
-# ---------------------------------------------------------------------------
-
-
 def _ln(x):
     if x is None:
         return None
@@ -334,8 +266,7 @@ def _log10(x):
 
 
 def _log2(x):
-    # Overrides SQLite >=3.35's built-in to give strict
-    # "errors propagate" semantics matching Postgres.
+    # Overrides SQLite >=3.35's built-in so domain errors propagate, as in Postgres.
     if x is None:
         return None
     return math.log2(x)
@@ -361,12 +292,7 @@ def _sqrt(x):
 
 
 def _pow(x, n):
-    """``pow(x, n)`` / ``power(x, n)`` — uses ``math.pow`` rather than ``**``.
-
-    ``math.pow`` raises on negative-base-non-integer-exponent (clean
-    OperationalError at the SQLite boundary) and overflows into IEEE-754
-    ``inf`` rather than building an unbounded big-int.
-    """
+    """``math.pow``, not ``**``: raises on a negative base's fractional power, no big-ints."""
     if x is None or n is None:
         return None
     return math.pow(x, n)
@@ -420,20 +346,11 @@ def _slayer_date_add(ts, n, unit):
 
 
 def register_sqlite_udfs(dbapi_connection) -> None:
-    """Register all SLayer SQLite UDFs on a freshly-opened DBAPI connection.
-
-    Wired in via SQLAlchemy's ``connect`` event in ``slayer.sql.client``,
-    so this is called once per new connection and again on pool refresh.
-    Idempotent: re-registering a UDF on the same connection replaces the
-    previous one (sqlite3 default behaviour).
-    """
-    # --- Scalar UDFs ------------------------------------------------------
+    """Register all SLayer SQLite UDFs on a fresh DBAPI connection (idempotent)."""
     dbapi_connection.create_function("ln", 1, _ln)
     dbapi_connection.create_function("log10", 1, _log10)
     dbapi_connection.create_function("log2", 1, _log2)
-    # SQLite >=3.35 ships a built-in ``log(B, X)`` that silently returns
-    # NULL on math-domain inputs. The UDF overrides that with strict
-    # error-propagating semantics matching Postgres.
+    # SQLite >=3.35's built-in ``log(B, X)`` silently returns NULL on domain errors.
     dbapi_connection.create_function("log", 2, _log_base_x)
     dbapi_connection.create_function("exp", 1, _exp)
     dbapi_connection.create_function("sqrt", 1, _sqrt)
@@ -441,14 +358,11 @@ def register_sqlite_udfs(dbapi_connection) -> None:
     dbapi_connection.create_function("power", 2, _pow)
     dbapi_connection.create_function("slayer_date_add", 3, _slayer_date_add)
 
-    # --- Aggregate UDFs ---------------------------------------------------
     dbapi_connection.create_aggregate("median", 1, _MedianAgg)
     dbapi_connection.create_aggregate("percentile_cont", 2, _PercentileContAgg)
     dbapi_connection.create_aggregate("percentile_disc", 2, _PercentileDiscAgg)
 
-    # Statistical aggregates. Register each under its canonical Postgres-
-    # style name AND under the name sqlglot rewrites it to on SQLite, so
-    # generator output that goes through sqlglot still resolves at runtime.
+    # Also under the names sqlglot rewrites them to on SQLite.
     dbapi_connection.create_aggregate("stddev_samp", 1, _StddevSampAgg)
     dbapi_connection.create_aggregate("stddev_pop", 1, _StddevPopAgg)
     dbapi_connection.create_aggregate("var_samp", 1, _VarSampAgg)
@@ -458,12 +372,6 @@ def register_sqlite_udfs(dbapi_connection) -> None:
     dbapi_connection.create_aggregate("corr", 2, _CorrAgg)
     dbapi_connection.create_aggregate("covar_samp", 2, _CovarSampAgg)
     dbapi_connection.create_aggregate("covar_pop", 2, _CovarPopAgg)
-
-
-# ===========================================================================
-# SqliteDialect — overrides for STRFTIME date parts / truncation, the
-# slayer_date_add UDF, percentile UDF call shape, JSON rewrite, UDF registration.
-# ===========================================================================
 
 
 class SqliteDialect(SqlDialect):
@@ -476,9 +384,10 @@ class SqliteDialect(SqlDialect):
     # Numeric affinity stores INTEGER/REAL — nothing exact to preserve.
     exact_decimal_native: bool = False
     max_identifier_bytes: int | None = None  # unbounded
+    url_scheme: str | None = "sqlite"
 
     def declared_cast_type(self, dt: Optional[DataType]) -> Optional[DataType]:
-        """SQLite stores dates as text under numeric affinity, so a declared DATE / TIMESTAMP cast collapses a text date to its leading year — suppress it (P2)."""
+        """No DATE / TIMESTAMP cast: under numeric affinity it collapses a text date to its year."""
         if dt in (DataType.DATE, DataType.TIMESTAMP):
             return None
         return dt
@@ -486,9 +395,7 @@ class SqliteDialect(SqlDialect):
     def build_null_safe_eq(
         self, left: Expression, right: Expression,
     ) -> Expression:
-        """SQLite's ``IS`` is null-safe on every supported version;
-        ``IS NOT DISTINCT FROM`` (what sqlglot emits for ``NullSafeEQ``) needs
-        SQLite ≥ 3.39, so anchor on bare ``IS`` instead."""
+        """Bare ``IS``: ``IS NOT DISTINCT FROM`` needs SQLite ≥ 3.39."""
         return exp.Is(this=left, expression=right)
 
     def build_date_trunc(
@@ -496,12 +403,8 @@ class SqliteDialect(SqlDialect):
         col_expr: Expression,
         granularity: TimeGranularity,
     ) -> Expression:
-        """SQLite has no DATE_TRUNC — use STRFTIME (with CASE WHEN for
-        quarter, weekday-modifier for week)."""
+        """SQLite has no DATE_TRUNC: STRFTIME, a CASE for quarter, a weekday modifier for week."""
         if granularity == TimeGranularity.WEEK_SUNDAY:
-            # Delegate to the base generic shift, which composes
-            # SQLite's own day-offset (DATE(col, 'N days')) around SQLite's
-            # Monday-week truncation — yielding the Sunday-anchored bucket.
             return super().build_date_trunc(
                 col_expr=col_expr, granularity=granularity,
             )
@@ -601,10 +504,7 @@ class SqliteDialect(SqlDialect):
         ])
 
     def frame_time_operand(self, expr: Expression) -> Expression:
-        """Under numeric affinity a bare-date column (``'2025-02-01'``) string-sorts
-        BEFORE a DATETIME frame bound (``'2025-02-01 00:00:00'``), leaking the
-        exclusive ``bucket_end`` row into the previous bucket. Wrap it in DATETIME
-        so both sides carry the time part and the half-open interval is exact."""
+        """DATETIME-wrap: a bare-date text sorts before the same day's DATETIME frame bound."""
         return exp.Anonymous(this="DATETIME", expressions=[expr])
 
     def build_median(self, inner: Expression) -> Expression:
@@ -618,17 +518,11 @@ class SqliteDialect(SqlDialect):
         return exp.PercentileCont(this=col_expr.copy(), expression=p.copy())
 
     def rewrite_parsed_ast(self, tree: Expression) -> Expression:
-        """SQLite override: rewrites every ``exp.JSONExtract`` to
-        ``Anonymous(this='JSON_EXTRACT', ...)`` so the emission is the
-        function-call form."""
+        """Emit JSON extraction in the ``json_extract(...)`` function-call form."""
         return rewrite_sqlite_json_extract(tree)
 
     def register_udfs(self, dbapi_connection) -> None:
-        """Register the Python aggregate / scalar UDFs on the connection.
-
-        Idempotent — re-registering on the same connection replaces the
-        previous one (sqlite3 default behaviour).
-        """
+        """Register the Python aggregate / scalar UDFs on the connection."""
         register_sqlite_udfs(dbapi_connection)
 
 
