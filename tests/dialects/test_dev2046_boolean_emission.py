@@ -142,6 +142,18 @@ class TestBooleansInNumericPositions:
         assert _bare_flags(tree) == [], tree.sql(dialect=dialect)
 
     @pytest.mark.parametrize("dialect", SQLGLOT_NAMES)
+    async def test_compared_with_numeric_expressions(self, dialect: str) -> None:
+        """A boolean compared with a numeric scalar or aggregate reads as its integer."""
+        tree = await _statement(
+            dialect, "count(*)", dimensions=["region"], filters=["flag = abs(amount)", "max(flag) = count(*)"],
+        )
+        assert _bare_flags(_nodes(tree, exp.Where)[0]) == [], tree.sql(dialect=dialect)
+        having = _nodes(tree, exp.Having)[0].this
+        having = having.unnest() if isinstance(having, exp.Paren) else having
+        assert isinstance(having, exp.EQ), having.sql(dialect=dialect)
+        assert _int_cast(having.this), having.sql(dialect=dialect)
+
+    @pytest.mark.parametrize("dialect", SQLGLOT_NAMES)
     async def test_boolean_compared_with_a_boolean_stays_boolean(self, dialect: str) -> None:
         tree = await _statement(dialect, "count(*)", filters=["flag = true"])
         where = _nodes(tree, exp.Where)[0]

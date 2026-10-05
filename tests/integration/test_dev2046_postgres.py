@@ -170,6 +170,17 @@ async def test_numeric_positions(pg_engine: SlayerQueryEngine) -> None:
 
 
 @pytest.mark.integration
+async def test_compared_with_numeric_expressions(pg_engine: SlayerQueryEngine) -> None:
+    """Postgres has no boolean = integer: a boolean beside a numeric scalar or aggregate reads as its integer."""
+    rows = await pg_engine.execute(orders_q(measures=[m("count(*)")], filters=["flag = sign(amount)"]))
+    assert rows.data[0]["orders.v"] == 2
+    groups = await pg_engine.execute(orders_q(
+        dimensions=["region"], measures=[m("count(*)")], filters=["max(flag) = count_distinct(region)"],
+    ))
+    assert by_dim(groups, "region") == {"east": 3}
+
+
+@pytest.mark.integration
 async def test_weighted_avg_integer_inputs(pg_engine: SlayerQueryEngine) -> None:
     """Integer value and weight never divide as integers; a NULL value's weight is skipped."""
     resp = await pg_engine.execute(orders_q(measures=[m("weighted_avg(amount, weight=customer_id)")]))

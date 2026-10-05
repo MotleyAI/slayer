@@ -38,6 +38,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from slayer.core.enums import (
     AXIS_COLLAPSING_TRANSFORMS,
+    INTEGER_AGGREGATIONS,
+    NUMERIC_ONLY_AGGREGATIONS,
     DataType,
     DatePart,
     RANK_FAMILY_TRANSFORMS,
@@ -1316,13 +1318,34 @@ def _is_int_literal(arg: object) -> bool:
     return _is_number_literal(arg) and Decimal(str(_literal_value(arg))) % 1 == 0
 
 
-def _known_number(key: object, *, column_type: ColumnTypeFn) -> bool:
-    """Whether ``key`` is certainly a number: a number literal, a numeric column, or arithmetic."""
+# Scalars whose result is always a number.
+_NUMBER_RESULT_SCALARS = _NUMERIC_SCALARS | {"length", "instr", "date_part", "date_diff"}
+# Transforms whose result is always a number.
+_NUMBER_RESULT_TRANSFORMS = frozenset({*RANK_FAMILY_TRANSFORMS, "consecutive_periods"})
+
+
+def numeric_valued(key: object, *, column_type: ColumnTypeFn) -> bool:
+    """Whether ``key``'s value is certainly a number (a boolean reads as one only beside a number)."""
     if _is_number_literal(key):
         return True
     if isinstance(key, (ColumnKey, ColumnSqlKey)):
         return column_type(key) in _NUMERIC_TYPES
-    return isinstance(key, ArithmeticKey) and key.op in _ARITHMETIC_OPS
+    if isinstance(key, ArithmeticKey):
+        return key.op in _ARITHMETIC_OPS
+    if isinstance(key, AggregateKey):
+        agg = key.agg.lower()
+        if agg in INTEGER_AGGREGATIONS or agg in NUMERIC_ONLY_AGGREGATIONS:
+            return True
+        return agg in _BOOLEAN_PRESERVING_AGGS and numeric_valued(key.source, column_type=column_type)
+    if isinstance(key, TransformKey):
+        return key.op in _NUMBER_RESULT_TRANSFORMS or numeric_valued(key.input, column_type=column_type)
+    if isinstance(key, ScalarCallKey):
+        if key.name in _NUMBER_RESULT_SCALARS:
+            return True
+        branches = [key.args[i] for i in value_arg_positions(key.name, len(key.args)) if not _is_null_arg(key.args[i])]
+        numbers = [numeric_valued(a, column_type=column_type) for a in branches]
+        return any(numbers) and all(n or boolean_valued(a, column_type=column_type) for a, n in zip(branches, numbers))
+    return False
 
 
 def _boolean_positions(
@@ -1339,7 +1362,7 @@ def _arithmetic_numeric_booleans(key: ArithmeticKey, *, column_type: ColumnTypeF
         return frozenset()
     found = _boolean_positions(key.operands, everywhere, column_type=column_type)
     other = [o for i, o in enumerate(key.operands) if i not in found]
-    return found if len(found) == 1 and _known_number(other[0], column_type=column_type) else frozenset()
+    return found if len(found) == 1 and numeric_valued(other[0], column_type=column_type) else frozenset()
 
 
 def _scalar_numeric_booleans(key: ScalarCallKey, *, column_type: ColumnTypeFn) -> FrozenSet[int]:

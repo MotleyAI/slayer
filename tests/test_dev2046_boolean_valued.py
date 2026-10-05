@@ -10,7 +10,7 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.join_walker import model_column_type
-from slayer.core.keys import ColumnKey, ValueKey, boolean_valued
+from slayer.core.keys import ColumnKey, ValueKey, boolean_valued, numeric_valued
 from slayer.core.scope import ModelScope, StageColumn, StageSchema
 from slayer.engine.binding import bind_expr
 from slayer.engine.key_metadata import stage_column_type
@@ -85,6 +85,31 @@ def _bind(text: str) -> ValueKey:
 ])
 def test_recognition(text: str, expected: bool) -> None:
     assert boolean_valued(_bind(text), column_type=COLUMN_TYPE) is expected
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("amount", True),
+    ("15", True),
+    ("amount + 1", True),
+    ("abs(amount)", True),
+    ("length(status)", True),
+    ("date_part('year', ordered_at)", True),
+    ("count(*)", True),
+    ("sum(flag)", True),
+    ("avg(amount > 15)", True),
+    ("max(amount)", True),
+    ("coalesce(amount, 0)", True),
+    ("iif(flag, amount, false)", True),
+    ("flag", False),
+    ("max(flag)", False),
+    ("status", False),
+    ("'1'", False),
+    ("ordered_at", False),
+    ("coalesce(flag, false)", False),
+    ("lower(status)", False),
+])
+def test_numeric_recognition(text: str, expected: bool) -> None:
+    assert numeric_valued(_bind(text), column_type=COLUMN_TYPE) is expected
 
 
 def test_stage_column() -> None:
