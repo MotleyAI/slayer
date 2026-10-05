@@ -125,6 +125,16 @@ def test_snowflake_inline_missing_plugin_names_extra(monkeypatch) -> None:
     assert "pip install 'motley-slayer[snowflake]'" in str(info.value)
 
 
+def test_installed_plugin_with_missing_import_names_extra(monkeypatch) -> None:
+    pytest.importorskip("sqlalchemy_bigquery")
+    ds = _structured("bigquery")
+    _block_modules(monkeypatch, "sqlalchemy_bigquery")
+    with pytest.raises(MissingDriverError) as info:
+        engine_factory.get_engine(ds)
+    _assert_names(info.value, ds=ds, missing="sqlalchemy_bigquery")
+    assert "pip install 'motley-slayer[bigquery]'" in str(info.value)
+
+
 def test_missing_transitive_module_of_default_driver_still_names_extra(monkeypatch) -> None:
     ds = _structured("postgres")
 

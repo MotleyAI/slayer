@@ -507,7 +507,9 @@ class SqlDialect(BaseModel):
     def build_date_add(
         self, *, expr: Expression, count: Expression, unit: TimeGranularity, operand: DataType,
     ) -> Expression:
-        """``expr`` moved by ``count`` ``unit``s; months clamp at month-end, a DATE stays a DATE."""
+        """``expr`` moved by ``count`` ``unit``s; months clamp at month-end.
+
+        A DATE stays a DATE for day-or-coarser units."""
         interval_unit, per_count = _INTERVAL_UNITS[unit]
         literal = literal_int(count)
         if literal is not None:
@@ -590,7 +592,7 @@ class SqlDialect(BaseModel):
         return False
 
     def rewrite_parsed_ast(self, tree: Expression) -> Expression:
-        """Hook: rewrite the AST as parsed (Postgres-parsed for every target)."""
+        """Hook: input-side AST rewrite keyed on the dialect the text was parsed with."""
         return tree
 
     def rewrite_target_ast(self, tree: Expression) -> Expression:

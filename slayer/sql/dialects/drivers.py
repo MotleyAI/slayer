@@ -56,13 +56,14 @@ def _is_default_driver(
 
 @contextlib.contextmanager
 def plugin_errors(datasource: DatasourceConfig, url: str, *, dialect: SqlDialect) -> Generator[None, None, None]:
-    """Translate a missing SQLAlchemy dialect plugin for ``url`` while the block loads it."""
+    """Translate a missing SQLAlchemy dialect plugin for ``url``, or a missing import of it, while the block loads it."""
     try:
         yield
-    except NoSuchModuleError as exc:
+    except (NoSuchModuleError, ImportError) as exc:
         parsed = make_url(url)
+        missing = (isinstance(exc, ImportError) and exc.name) or parsed.drivername
         raise _missing_driver(
-            datasource, dialect=dialect, missing=parsed.drivername, exc=exc,
+            datasource, dialect=dialect, missing=missing, exc=exc,
             default=_is_default_driver(
                 dialect, ds_type=datasource.type, url=parsed,
                 driver=parsed.drivername.partition("+")[2] or None,
