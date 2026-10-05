@@ -26,6 +26,7 @@ import yaml
 
 from slayer.cli import _refine_one_model_for_cli, _run_storage
 from slayer.core.enums import DataType
+from slayer.core.errors import StoredDocumentLoadError
 from slayer.core.models import DatasourceConfig
 from slayer.sql import engine_factory
 from slayer.storage import migrations as mig
@@ -400,8 +401,9 @@ class TestYamlStorageRefinementOnLoad:
         # type_refinement.sa.create_engine patch used to.
         engine_factory.reset_cache()
         monkeypatch.setattr(engine_factory, "get_engine", _boom)
-        with pytest.raises(sa.exc.OperationalError):
+        with pytest.raises(StoredDocumentLoadError) as ei:
             await storage.get_model("items", data_source="live")
+        assert isinstance(ei.value.__cause__, sa.exc.OperationalError)
 
 
 def _unreachable(**kw):  # used as a wraps target only — the spy.assert_not_called check fires first

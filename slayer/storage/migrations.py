@@ -16,10 +16,10 @@ from collections.abc import Callable
 
 # Per-entity current version. Bump independently when an entity's schema changes.
 CURRENT_VERSIONS: dict[str, int] = {
-    "SlayerModel": 13,
-    "SlayerQuery": 5,
+    "SlayerModel": 14,
+    "SlayerQuery": 6,
     "DatasourceConfig": 2,
-    "Memory": 3,
+    "Memory": 4,
     "Embedding": 1,
 }
 
@@ -187,3 +187,4 @@ from slayer.storage import v7_migration  # noqa: E402, F401  # ALLOW(import-not-
 from slayer.storage import v8_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
 from slayer.storage import v9_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
 from slayer.storage import rank_direction_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
+from slayer.storage import stored_repair_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here

@@ -19,6 +19,7 @@ from slayer.core.errors import (
     MemoryNotFoundError,
     DefaultTimeDimensionTypeError,
     ReservedModelNameError,
+    StoredDocumentLoadError,
     UnknownGranularityError,
 )
 from slayer.engine.column_dependency import validate_derived_columns
@@ -37,6 +38,7 @@ from slayer.memories.models import (
     _validate_memory_id_charset,
 )
 from slayer.storage import migrations as _mig
+from slayer.storage.document_loading import DocumentLoadFailures, Loaded, stored_document_boundary
 from slayer.storage.legacy_alias_rewrite import (
     apply_dunder_rewrite_to_model_dict,
     extract_dunder_chains,
@@ -53,8 +55,10 @@ from slayer.storage.type_refinement import (
 
 
 _TO_ONE_CARDINALITIES = {"many_to_one", "one_to_one"}
-# Live type refinement repairs pre-v11 schemas only; later bumps are dict-only.
-_LIVE_REFINEMENT_BELOW_VERSION = 11
+# v8 is the first version written only by ingest that refined both DOUBLE and SQLite INT
+# columns; older documents are refined against the live schema on load.
+_LIVE_REFINEMENT_BELOW_VERSION = 8
+_MODEL_LOAD_CONCURRENCY = 8
 
 
 def _is_exact_inverse_join(a: dict, b: dict) -> bool:
@@ -359,7 +363,7 @@ class StorageBackend(ABC):
     # ---- model CRUD (composite key) ----------------------------------------
 
     async def save_model(
-        self, model: SlayerModel, *, _validate: bool = True,
+        self, model: SlayerModel, *, _validate: bool = True, failures: DocumentLoadFailures | None = None,
     ) -> None:
         """Persist a model: reserved-name and case-collision rejection, then derived-column well-formedness (reference arity + cycles) and join-edge validation, before the backend write. ``_validate=False`` (migration write-back only) skips all of it. Backends must NOT override this."""
         if _validate:
@@ -367,8 +371,11 @@ class StorageBackend(ABC):
                 raise ReservedModelNameError(name=model.name)
             if self._ids_collide_as_filenames:
                 await self._check_model_identity_collision(model)
-            await validate_derived_columns(model=model, storage=self)
-            await self._validate_join_edges(model)
+            # A skipped (unloadable) peer is invisible to these checks; its edge names go unchecked.
+            loaded, unloaded = await self.load_models(data_source=model.data_source, exclude=model.name)
+            peers = {m.name: m for m in (failures or DocumentLoadFailures()).skip((loaded, unloaded))}
+            validate_derived_columns(model=model, peers=peers, unloaded=frozenset(e.name for e in unloaded))
+            self._validate_join_edges(model, peers=peers, identities=await self._list_all_model_identities())
             await self._validate_aggregations(model)
             await self._validate_column_granularities(model)
             _validate_default_time_dimension(model)
@@ -397,12 +404,12 @@ class StorageBackend(ABC):
                 where=f"Model '{model.name}', aggregation '{agg.name}'", agg=agg, dialect=dialect,
             )
 
-    async def _validate_join_edges(self, model: SlayerModel) -> None:
-        """Save-time join validation: reject duplicate incident edge names, edge/model name collisions (both directions), and exact-inverse re-declarations; warn on unnamed parallel edges."""
-        clash = await self._find_edge_named(
-            name=model.name, data_source=model.data_source,
-            exclude_model=model.name,
-        )
+    @staticmethod
+    def _validate_join_edges(
+        model: SlayerModel, *, peers: dict[str, SlayerModel], identities: list[tuple[str, str]],
+    ) -> None:
+        """Save-time join validation against the loaded datasource ``peers``: reject duplicate incident edge names, edge/model name collisions (both directions), and exact-inverse re-declarations; warn on unnamed parallel edges."""
+        clash = next((n for n, p in sorted(peers.items()) if any(j.name == model.name for j in p.joins)), None)
         if clash is not None:
             raise ValueError(
                 f"Model name '{model.name}' collides with the join name "
@@ -413,44 +420,13 @@ class StorageBackend(ABC):
         if not model.joins:
             return
         names = _checked_join_names(model)
-        identities = await self._list_all_model_identities()
-        ds_model_names = _checked_join_name_namespace(
-            model=model, names=names, identities=identities,
-        )
-        peers = await self._load_join_peers(
-            model, names=names, ds_model_names=ds_model_names,
-        )
+        _checked_join_name_namespace(model=model, names=names, identities=identities)
+        # Join targets always; every peer when a named edge must be checked against incident edges.
+        if not names:
+            targets = {j.target_model for j in model.joins}
+            peers = {n: p for n, p in peers.items() if n in targets}
         _check_edges_against_peers(model=model, peers=peers)
         _warn_unnamed_parallel_edges(model=model, peers=peers)
-
-    async def _load_join_peers(
-        self, model: SlayerModel, *, names: list[str], ds_model_names: set[str],
-    ) -> dict[str, SlayerModel]:
-        """Load peer models only where needed: join targets always, all peers only when a named edge must be checked against incident edges."""
-        peers: dict[str, SlayerModel] = {}
-        wanted = {j.target_model for j in model.joins}
-        if names:
-            wanted = {n for n in ds_model_names if n != model.name}
-        for peer_name in sorted(wanted):
-            if peer_name == model.name or peer_name in peers:
-                continue
-            peer = await self.get_model(peer_name, data_source=model.data_source)
-            if peer is not None:
-                peers[peer.name] = peer
-        return peers
-
-    async def _find_edge_named(
-        self, *, name: str, data_source: str, exclude_model: str,
-    ) -> str | None:
-        """The datasource model declaring a join named ``name``, or ``None``."""
-        identities = await self._list_all_model_identities()
-        for ds, peer_name in identities:
-            if ds != data_source or peer_name == exclude_model:
-                continue
-            peer = await self.get_model(peer_name, data_source=data_source)
-            if peer is not None and any(j.name == name for j in peer.joins):
-                return peer_name
-        return None
 
     async def _check_model_identity_collision(self, model: SlayerModel) -> None:
         """Reject a model whose ``data_source`` or ``name`` case-collides with an existing one (both are YAML filename components)."""
@@ -476,17 +452,39 @@ class StorageBackend(ABC):
                 data_source=model.data_source,
             )
 
-    async def builtin_models(self, data_source: str, *, detailed: bool = False) -> list[SlayerModel]:
+    async def builtin_models(
+        self, data_source: str, *, detailed: bool = False, failures: DocumentLoadFailures | None = None,
+    ) -> list[SlayerModel]:
         """The datasource's built-in models (the time spine, unless a stored model shadows it);
         ``detailed`` describes its wiring, else its description points at ``inspect``. Empty for an unknown datasource."""
         if await self.get_datasource(data_source) is None:
             return []
-        if await self.get_model(TIME_SPINE_MODEL, data_source=data_source) is not None:
+        if (data_source, TIME_SPINE_MODEL) in await self._list_all_model_identities():
             return []
         if not detailed:
             return [spine_model(data_source=data_source)]
-        peers = [m for n in await self.list_models(data_source) if (m := await self.get_model(n, data_source=data_source))]
+        peers = (failures or DocumentLoadFailures()).skip(await self.load_models(data_source=data_source))
         return [spine_model(data_source=data_source, wired=peers)]
+
+    async def load_models(self, *, data_source: str | None = None, exclude: str | None = None) -> Loaded[SlayerModel]:
+        """Every stored model (of ``data_source`` when given, bar ``exclude``), and the ones that failed to load."""
+        sem = asyncio.Semaphore(_MODEL_LOAD_CONCURRENCY)
+
+        async def _load(ds: str, name: str) -> SlayerModel | StoredDocumentLoadError | None:
+            async with sem:
+                try:
+                    return await self.get_model(name, data_source=ds)
+                except StoredDocumentLoadError as exc:
+                    return exc
+
+        loaded = await asyncio.gather(*(
+            _load(ds, name) for ds, name in await self._list_all_model_identities()
+            if (data_source is None or ds == data_source) and name != exclude
+        ))
+        return (
+            [m for m in loaded if isinstance(m, SlayerModel)],
+            [e for e in loaded if isinstance(e, StoredDocumentLoadError)],
+        )
 
     async def get_model_or_builtin(self, name: str, data_source: str | None = None) -> SlayerModel | None:
         """``get_model``, falling back to a built-in model of the datasource (the only one when unnamed)."""
@@ -920,8 +918,13 @@ class StorageBackend(ABC):
     @abstractmethod
     async def _list_memories_rows(
         self, *, entities: list[str] | None
-    ) -> list[Memory]:
-        """Every ``Memory`` whose entity set intersects ``entities``; ``None`` returns all rows, ``[]`` returns ``[]``."""
+    ) -> Loaded[Memory]:
+        """Every ``Memory`` whose entity set intersects ``entities`` (``None`` = all rows, ``[]`` = none), and the rows that failed to load."""
+
+    async def _memory_from_stored(self, *, memory_id: str, decode: Callable[[], Any]) -> Memory:
+        """Decode, repair and validate one stored memory inside its load boundary."""
+        with stored_document_boundary(kind="memory", name=memory_id):
+            return Memory.model_validate(_mig.stamp_stored(decode()))
 
     @abstractmethod
     async def _delete_memory_row(self, memory_id: str) -> bool:
@@ -944,7 +947,7 @@ class StorageBackend(ABC):
         if id is not None:
             _validate_memory_id_charset(id)
             if self._ids_collide_as_filenames:
-                ids = [m.id for m in await self._list_memories_rows(entities=None)]
+                ids = await self._memory_ids()
                 collide = _find_case_colliding_id(candidate=id, existing=ids)
                 if collide is not None:
                     raise IdCollisionError(
@@ -977,10 +980,19 @@ class StorageBackend(ABC):
             raise MemoryNotFoundError(memory_id)
         return row
 
-    async def list_memories(
-        self, *, entities: list[str] | None = None
-    ) -> list[Memory]:
+    async def _memory_ids(self) -> list[str]:
+        """Every stored memory id, loadable or not."""
+        memories, errors = await self._list_memories_rows(entities=None)
+        return [m.id for m in memories] + [e.name for e in errors]
+
+    async def load_memories(self, *, entities: list[str] | None = None) -> Loaded[Memory]:
+        """The memories ``list_memories`` returns, and the ones that failed to load."""
         return await self._list_memories_rows(entities=entities)
+
+    async def list_memories(
+        self, *, entities: list[str] | None = None, failures: DocumentLoadFailures | None = None,
+    ) -> list[Memory]:
+        return (failures or DocumentLoadFailures()).skip(await self._list_memories_rows(entities=entities))
 
     async def delete_memory(self, memory_id: str) -> None:
         if not await self._delete_memory_row(memory_id):
@@ -1001,7 +1013,7 @@ class StorageBackend(ABC):
         if not canonical_id:
             return 0
         is_memory_ref = canonical_id.startswith(_MEMORY_PREFIX)
-        memories = await self._list_memories_rows(entities=None)
+        memories = await self.list_memories()
         rewritten = 0
         for memory in memories:
             if not self._memory_has_cascade_candidate(

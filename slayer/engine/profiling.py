@@ -24,6 +24,7 @@ from slayer.core.models import Column, SlayerModel, is_identifier
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.base import StorageBackend
+from slayer.storage.document_loading import DocumentLoadFailures
 
 logger = logging.getLogger(__name__)
 
@@ -418,11 +419,6 @@ async def refresh_all_table_backed_sampled(
 ) -> list[str]:
     """Force-refresh every table-backed model in ``data_source``; returns error strings."""
     errors: list[str] = []
-    for ds, name in await storage._list_all_model_identities():
-        if ds != data_source:
-            continue
-        model = await storage.get_model(name, data_source=ds)
-        if model is None:
-            continue
+    for model in DocumentLoadFailures().skip(await storage.load_models(data_source=data_source)):
         errors.extend(await refresh_table_backed_model_sampled(model=model, engine=engine, storage=storage))
     return errors

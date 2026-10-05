@@ -49,7 +49,7 @@ from slayer.engine.ingestion import (
     _sa_type_is_float,
     _sa_type_to_data_type,
 )
-from slayer.core.errors import AmbiguousJoinPathError
+from slayer.core.errors import AmbiguousJoinPathError, StoredDocumentLoadError
 from slayer.core.join_walker import neighbors, resolve_hop
 from slayer.sql.column_expansion import resolve_ref_target
 from slayer.engine.dimension_routing import short_form_route_or_none
@@ -108,13 +108,22 @@ class WholeModelDelete(BaseModel):
     model_name: str
     data_source: str
     reasons: list[DeleteReason] = Field(default_factory=list)
-    # "invalid_sql": model's own SQL fails though its tables/columns exist.
-    cause: Literal["schema_drift", "invalid_sql"] = "schema_drift"
+    # "invalid_sql": model's own SQL fails though its tables/columns exist;
+    # "unloadable": the stored document itself cannot be loaded.
+    cause: Literal["schema_drift", "invalid_sql", "unloadable"] = "schema_drift"
 
 
 ToDeleteEntry = Annotated[
     EditModelDelete | WholeModelDelete, Field(discriminator="tool")
 ]
+
+
+def unloadable_model_delete(*, error: StoredDocumentLoadError) -> WholeModelDelete:
+    """The validation report's entry for a stored model that cannot be loaded."""
+    return WholeModelDelete(
+        model_name=error.name, data_source=error.data_source or "", cause="unloadable",
+        reasons=[DeleteReason(target=f"model:{error.name}", reason=error.cause_text)],
+    )
 
 
 class ModelAddition(BaseModel):

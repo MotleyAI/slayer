@@ -28,6 +28,7 @@ from slayer.memories.help_seed import seed_help_memories
 from slayer.memories.service import MemoryService
 from slayer.search.service import SearchService
 from slayer.storage.base import StorageBackend
+from slayer.storage.document_loading import DocumentLoadFailures
 
 logger = logging.getLogger(__name__)
 
@@ -399,15 +400,11 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
     async def list_models(
         data_source: str | None = None,
     ) -> list[dict[str, Any]]:
-        identities = await storage._list_all_model_identities()
         result = []
-        for ds_name, name in identities:
-            if data_source is not None and ds_name != data_source:
+        for model in DocumentLoadFailures().skip(await storage.load_models(data_source=data_source)):
+            if model.hidden:
                 continue
-            model = await storage.get_model(name, data_source=ds_name)
-            if model is None or model.hidden:
-                continue
-            entry: dict[str, Any] = {"name": name, "data_source": ds_name}
+            entry: dict[str, Any] = {"name": model.name, "data_source": model.data_source}
             if model.description:
                 entry["description"] = model.description
             result.append(entry)

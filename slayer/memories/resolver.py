@@ -56,6 +56,7 @@ from slayer.memories.models import (
     _validate_memory_id_charset,
 )
 from slayer.storage.base import StorageBackend
+from slayer.storage.document_loading import DocumentLoadFailures, all_or_raise
 
 
 # SQL keywords / function names that look like identifiers — skip when
@@ -128,15 +129,8 @@ def _model_has_leaf(model: SlayerModel, leaf: str) -> bool:
 async def _all_models_in_datasource(
     storage: StorageBackend, data_source: str
 ) -> list[SlayerModel]:
-    identities = await storage._list_all_model_identities()
-    out: list[SlayerModel] = []
-    for ds, name in identities:
-        if ds != data_source:
-            continue
-        m = await storage.get_model(name, data_source=ds)
-        if m is not None:
-            out.append(m)
-    return out
+    """Every model of ``data_source``; an unloadable one fails closed."""
+    return all_or_raise(await storage.load_models(data_source=data_source))
 
 
 async def _find_leaf_in_priority_winner(
@@ -169,21 +163,8 @@ async def _resolve_join_path(
     the join-scoping rule. Raises ``EntityResolutionError`` when
     a segment doesn't match any join on the current model.
     """
-    ds = starting_model.data_source
-    models_by_name: dict[str, SlayerModel] = {starting_model.name: starting_model}
-    try:
-        peer_names = await storage.list_models(ds)
-    except Exception:  # best-effort — reverse hops just won't resolve
-        peer_names = []
-    for nm in peer_names:
-        if nm in models_by_name:
-            continue
-        try:
-            peer = await storage.get_model(nm, data_source=ds)
-        except Exception:
-            peer = None
-        if peer is not None:
-            models_by_name[nm] = peer
+    peers = DocumentLoadFailures().skip(await storage.load_models(data_source=starting_model.data_source))
+    models_by_name = {**{m.name: m for m in peers}, starting_model.name: starting_model}
     current = starting_model
     for seg in path:
         # Tokens resolve in either direction, edge name first.

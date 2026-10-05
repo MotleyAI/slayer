@@ -45,13 +45,14 @@ from slayer.engine.schema_scope import (
     split_sql_table,
     validate_scope_args,
 )
-from slayer.core.errors import AmbiguousModelError, EntityResolutionError
+from slayer.core.errors import AmbiguousModelError, EntityResolutionError, StoredDocumentLoadError
 from slayer.memories.models import MEMORY_CANONICAL_PREFIX as _MEMORY_PREFIX
 from slayer.memories.resolver import (
     canonical_id_rooted_at,
     extract_entities_from_query,
 )
 from slayer.storage.base import StorageBackend
+from slayer.storage.document_loading import DocumentLoadFailures
 
 if TYPE_CHECKING:
     # Runtime import is lazy: keeps the optional search extra off cold start.
@@ -1748,19 +1749,24 @@ async def _process_one_table(
     fresh: SlayerModel,
     datasource: DatasourceConfig,
     storage: StorageBackend,
+    failures: DocumentLoadFailures,
     default_schema_name: str | None = None,
     default_objects: set[str] | None = None,
 ) -> ProcessTableOutcome:
-    """Save / merge one fresh model; raises on persistence failure.
+    """Save / merge one fresh model; raises on persistence failure. An unloadable stored model is recorded and skipped.
 
     A BARE persisted ``sql_table`` is healed to the qualified one when safe; a
     qualified one is never rewritten.
     """
     from slayer.engine.schema_drift import ModelAddition  # ALLOW(import-not-top): circular — schema_drift imports ingestion
 
-    persisted = await storage.get_model(table_name, data_source=datasource.name)
+    try:
+        persisted = await storage.get_model(table_name, data_source=datasource.name)
+    except StoredDocumentLoadError as exc:
+        failures.record(exc)
+        return ProcessTableOutcome()
     if persisted is None:
-        await storage.save_model(fresh)
+        await storage.save_model(fresh, failures=failures)
         return ProcessTableOutcome(
             addition=ModelAddition(
                 model_name=table_name,
@@ -1828,7 +1834,7 @@ async def _process_one_table(
         or outcome.model_described
         or sql_table_change
     ):
-        await storage.save_model(outcome.merged)
+        await storage.save_model(outcome.merged, failures=failures)
     kind_change = None
     if outcome.kind_changed:
         before = persisted.source_kind or "unknown"
@@ -1870,17 +1876,15 @@ async def _stored_sanitized_identity_map(
     storage: StorageBackend,
     datasource: DatasourceConfig,
     default_schema: str | None,
+    failures: DocumentLoadFailures,
 ) -> tuple[set[str], dict[str, tuple[str | None, str] | None]]:
-    """Stored model names for ``datasource`` plus each one's live-object identity."""
+    """Stored model names for ``datasource`` plus each loadable one's live-object identity."""
     identities = await storage._list_all_model_identities()
     stored_names = {n for d, n in identities if d == datasource.name}
-    stored_identity: dict[str, tuple[str | None, str] | None] = {}
-    for name in stored_names:
-        stored = await storage.get_model(name, data_source=datasource.name)
-        if stored is not None:
-            stored_identity[name] = _sql_table_identity(
-                stored.sql_table, default_schema=default_schema,
-            )
+    stored_identity: dict[str, tuple[str | None, str] | None] = {
+        m.name: _sql_table_identity(m.sql_table, default_schema=default_schema)
+        for m in failures.skip(await storage.load_models(data_source=datasource.name))
+    }
     return stored_names, stored_identity
 
 
@@ -1915,13 +1919,14 @@ async def _adopt_stored_sanitized_names(
     storage: StorageBackend,
     datasource: DatasourceConfig,
     default_schema: str | None,
+    failures: DocumentLoadFailures,
 ) -> tuple[dict[str, "SlayerModel"], dict[str, str]]:
     """Rename fresh ``a__b`` models onto a stored sanitized ``a_b`` of the same object.
 
     Renames cascade into join targets; returns ``(adopted_models, rename_map)``.
     """
     stored_names, stored_identity = await _stored_sanitized_identity_map(
-        storage=storage, datasource=datasource, default_schema=default_schema,
+        storage=storage, datasource=datasource, default_schema=default_schema, failures=failures,
     )
     rename_map = _sanitized_rename_map(
         fresh_by_name=fresh_by_name, stored_names=stored_names,
@@ -1952,21 +1957,13 @@ async def _scoped_models_for_validation(
     storage: StorageBackend,
     datasource: DatasourceConfig,
     in_scope_table_names: set[str],
+    failures: DocumentLoadFailures,
 ) -> list[SlayerModel]:
     """Persisted models to validate: in-scope ``sql_table`` models plus all sql/query-backed ones."""
-    identities = await storage._list_all_model_identities()
-    ds_model_names = [n for d, n in identities if d == datasource.name]
-    scoped: list[SlayerModel] = []
-    for name in ds_model_names:
-        m = await storage.get_model(name, data_source=datasource.name)
-        if m is None:
-            continue
-        if m.sql_table:
-            if _bare_table_name(m.sql_table) in in_scope_table_names:
-                scoped.append(m)
-            continue
-        scoped.append(m)
-    return scoped
+    return [
+        m for m in failures.skip(await storage.load_models(data_source=datasource.name))
+        if not m.sql_table or _bare_table_name(m.sql_table) in in_scope_table_names
+    ]
 
 
 async def _effective_hidden_internals(
@@ -1974,6 +1971,7 @@ async def _effective_hidden_internals(
     candidates: list[InternalTable],
     datasource: DatasourceConfig,
     storage: StorageBackend,
+    failures: DocumentLoadFailures,
 ) -> list[InternalTable]:
     """Narrow scan-time internal classifications to models actually hidden in storage."""
     effective: list[InternalTable] = []
@@ -1982,6 +1980,9 @@ async def _effective_hidden_internals(
             persisted = await storage.get_model(
                 entry.model_name, data_source=datasource.name
             )
+        except StoredDocumentLoadError as exc:
+            failures.record(exc)
+            continue
         except Exception as exc:  # noqa: BLE001 — reporting must not fail ingest
             logger.debug(
                 "hidden-internal re-check failed for %r: %s", entry.model_name, exc
@@ -2030,6 +2031,7 @@ async def _run_additive_pass(
     storage: StorageBackend,
     default_schema_name: str | None,
     default_objects: set[str] | None,
+    failures: DocumentLoadFailures,
 ):
     """Save / merge every fresh model → ``(additions, errors, merge_skipped)``."""
     from slayer.engine.schema_drift import IngestionError, ModelAddition  # ALLOW(import-not-top): circular — schema_drift imports ingestion
@@ -2044,6 +2046,7 @@ async def _run_additive_pass(
                 fresh=fresh,
                 datasource=datasource,
                 storage=storage,
+                failures=failures,
                 default_schema_name=default_schema_name,
                 default_objects=default_objects,
             )
@@ -2101,6 +2104,7 @@ async def ingest_datasource_idempotent(
     default_schema_name, default_objects = await asyncio.to_thread(
         _default_schema_membership, datasource
     )
+    failures = DocumentLoadFailures()
     fresh_models = scan.models
     fresh_by_name = {m.name: m for m in fresh_models}
     fresh_by_name, adopted_renames = await _adopt_stored_sanitized_names(
@@ -2108,6 +2112,7 @@ async def ingest_datasource_idempotent(
         storage=storage,
         datasource=datasource,
         default_schema=default_schema_name,
+        failures=failures,
     )
     fresh_models = list(fresh_by_name.values())
     # Re-point internal-table entries at adopted names, else the re-check drops them.
@@ -2128,6 +2133,7 @@ async def ingest_datasource_idempotent(
         storage=storage,
         default_schema_name=default_schema_name,
         default_objects=default_objects,
+        failures=failures,
     )
 
     # Fill-if-empty, checked against the freshly-loaded STORED config, not the caller's copy.
@@ -2151,6 +2157,7 @@ async def ingest_datasource_idempotent(
         storage=storage,
         datasource=datasource,
         in_scope_table_names=in_scope_table_names,
+        failures=failures,
     )
     to_delete = await validate_datasource(
         datasource=datasource, models=scoped_models
@@ -2159,7 +2166,7 @@ async def ingest_datasource_idempotent(
     # No sample profiling here (a full scan per column); read paths refresh on cache miss.
 
     embedding_errors = await _refresh_datasource_embeddings(
-        datasource_name=datasource.name, storage=storage,
+        datasource_name=datasource.name, storage=storage, failures=failures,
     )
     for model_name, err in embedding_errors:
         errors.append(IngestionError(
@@ -2173,6 +2180,11 @@ async def ingest_datasource_idempotent(
         candidates=scan.internal_tables,
         datasource=datasource,
         storage=storage,
+        failures=failures,
+    )
+    errors.extend(
+        IngestionError(model_name=e.name, data_source=e.data_source, error=str(e))
+        for e in failures.errors if e.data_source is not None
     )
 
     return IdempotentIngestResult(
@@ -2473,26 +2485,16 @@ async def _refresh_models_for_datasource(
     datasource_name: str,
     storage: StorageBackend,
     search: "SearchService",
+    failures: DocumentLoadFailures,
 ) -> tuple[list[tuple[str, str]], list[SlayerModel]]:
-    """Refresh every model's embeddings → ``(warnings tagged <ds>.<name>, models_in_ds)``."""
+    """Refresh every loadable model's embeddings → ``(warnings tagged <ds>.<name>, models_in_ds)``."""
     warnings: list[tuple[str, str]] = []
-    models_in_ds: list[SlayerModel] = []
     try:
-        identities = await storage._list_all_model_identities()
+        models_in_ds = failures.skip(await storage.load_models(data_source=datasource_name))
     except Exception as exc:  # noqa: BLE001 — defensive
-        return [("", f"{datasource_name}: {exc}")], models_in_ds
-    for ds, name in identities:
-        if ds != datasource_name:
-            continue
-        tag = f"{ds}.{name}"
-        try:
-            m = await storage.get_model(name, data_source=ds)
-        except Exception as exc:  # noqa: BLE001 — defensive per-model
-            warnings.append((tag, str(exc)))
-            continue
-        if m is None:
-            continue
-        models_in_ds.append(m)
+        return [("", f"{datasource_name}: {exc}")], []
+    for m in models_in_ds:
+        tag = f"{m.data_source}.{m.name}"
         try:
             subtree_warnings = await search.refresh_model_subtree(m)
         except Exception as exc:  # noqa: BLE001 — defensive per-model
@@ -2567,13 +2569,14 @@ async def _refresh_memories_for_datasource(  # NOSONAR(S3776) — straight-line 
     datasource_name: str,
     storage: StorageBackend,
     search: "SearchService",
+    failures: DocumentLoadFailures,
 ) -> list[tuple[str, str]]:
     """Re-embed memories rooted at this datasource and strip their definitively stale refs.
 
     Warnings are tagged ``memory:<id>``; a stale ``Memory.query`` is reported, not rewritten.
     """
     try:
-        memories = await storage.list_memories()
+        memories = await storage.list_memories(failures=failures)
     except Exception as exc:  # noqa: BLE001 — defensive
         return [("", f"{datasource_name} (memories): {exc}")]
     warnings: list[tuple[str, str]] = []
@@ -2626,7 +2629,7 @@ async def _refresh_memories_for_datasource(  # NOSONAR(S3776) — straight-line 
 
 
 async def _refresh_datasource_embeddings(
-    *, datasource_name: str, storage: StorageBackend,
+    *, datasource_name: str, storage: StorageBackend, failures: DocumentLoadFailures | None = None,
 ) -> list[tuple[str, str]]:
     """Refresh embeddings for the datasource's models, doc and memories.
 
@@ -2635,8 +2638,9 @@ async def _refresh_datasource_embeddings(
     from slayer.search.service import SearchService  # ALLOW(import-not-top): optional embedding extra off the cold-start path
 
     search = SearchService(storage=storage)
+    failures = failures or DocumentLoadFailures()
     model_warnings, models_in_ds = await _refresh_models_for_datasource(
-        datasource_name=datasource_name, storage=storage, search=search,
+        datasource_name=datasource_name, storage=storage, search=search, failures=failures,
     )
     doc_warnings = await _refresh_datasource_doc(
         datasource_name=datasource_name,
@@ -2645,6 +2649,6 @@ async def _refresh_datasource_embeddings(
         storage=storage,
     )
     memory_warnings = await _refresh_memories_for_datasource(
-        datasource_name=datasource_name, storage=storage, search=search,
+        datasource_name=datasource_name, storage=storage, search=search, failures=failures,
     )
     return model_warnings + doc_warnings + memory_warnings

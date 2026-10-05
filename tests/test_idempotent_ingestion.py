@@ -354,10 +354,10 @@ class TestErrorIsolation:
         # Patch save_model on the storage to fail for "a_new" only.
         original_save = storage.save_model
 
-        async def flaky_save(model):
+        async def flaky_save(model, **kwargs):
             if model.name == "a_new":
                 raise RuntimeError("disk full")
-            return await original_save(model)
+            return await original_save(model, **kwargs)
 
         monkeypatch.setattr(storage, "save_model", flaky_save)
 
@@ -618,7 +618,7 @@ class TestMemoryEmbeddingRefresh:
         storage, ds, _ = await _setup(workspace)
         self._enable_channel(monkeypatch)
 
-        async def boom(self, *, entities=None):  # NOSONAR(S7503) — async list_memories signature
+        async def boom(self, *, entities=None, failures=None):  # NOSONAR(S7503) — async list_memories signature
             raise RuntimeError("memories table missing")
 
         monkeypatch.setattr(

@@ -80,10 +80,10 @@ Every regression test uses raw dicts/YAML in the exact 0.10.x shape (see the Lin
 
 ## 2. Typed load boundary and isolation helper
 
-- [ ] 2.1 Add `StoredDocumentLoadError(SlayerError, ValueError)` to the core errors module. Raise it from the single-document load boundary (`get_model`, `get_memory`, the memory row loaders) for decode, migration, refinement, validation and malformed-version failures, with the message `<ds>.<name>: <cause>` and `raise … from`. Tests asserting an inner class on a load now assert it on `__cause__`. Verify: 1.7's boundary tests pass, and the full unit suite stays green.
-- [ ] 2.2 Add `UnloadableDocumentWarning` (`kind="unloadable_document"`) plus its carrier `UserWarning` to `slayer/core/warnings.py`, joined to `AnySlayerWarning`, with the cause's CR/LF sanitised. Verify: unit test of the payload and carrier wording.
-- [ ] 2.3 Add the shared helper, which returns `(models, failures)` and catches only `StoredDocumentLoadError`, plus its memory twin. Add the per-operation failures accumulator (passed by keyword, warns once per document). Verify: 1.7's warn-once test passes.
-- [ ] 2.4 Move every enumeration site onto the helper with skip-and-warn, copying the warnings onto the response where one exists:
+- [x] 2.1 Add `StoredDocumentLoadError(SlayerError, ValueError)` to the core errors module. Raise it from the single-document load boundary (`get_model`, `get_memory`, the memory row loaders) for decode, migration, refinement, validation and malformed-version failures, with the message `<ds>.<name>: <cause>` and `raise … from`. Tests asserting an inner class on a load now assert it on `__cause__`. Verify: 1.7's boundary tests pass, and the full unit suite stays green.
+- [x] 2.2 Add `UnloadableDocumentWarning` (`kind="unloadable_document"`) plus its carrier `UserWarning` to `slayer/core/warnings.py`, joined to `AnySlayerWarning`, with the cause's CR/LF sanitised. Verify: unit test of the payload and carrier wording.
+- [x] 2.3 Add the shared helper, which returns `(models, failures)` and catches only `StoredDocumentLoadError`, plus its memory twin. Add the per-operation failures accumulator (passed by keyword, warns once per document). Verify: 1.7's warn-once test passes.
+- [x] 2.4 Move every enumeration site onto the helper with skip-and-warn, copying the warnings onto the response where one exists:
   - `_find_edge_named` / `_load_join_peers` (one load per save; terse trade-off comment);
   - ingestion `_stored_sanitized_identity_map`, `_scoped_models_for_validation` and the per-model loop (report entries blame the bad model);
   - `builtin_models(detailed=True)`, `models_summary`;
@@ -95,16 +95,16 @@ Every regression test uses raw dicts/YAML in the exact 0.10.x shape (see the Lin
   - the memory listings (`list_memories`, the YAML `save_memory(id=…)` scan, `strip_dangling_entities_from_memories`, inspect learnings, search).
 
   Verify: 1.7 passes, and `grep` finds no remaining hand-rolled `get_model` loop over a datasource.
-- [ ] 2.5 Reimplement `validate_models` on the helper so it reports failures, and `_all_models_in_datasource` on the helper with a re-raise, covering population inference, bare-name scoping, `recommend_root_model`, detection scope and resolver. Verify: 1.7's validate and fail-closed tests pass.
+- [x] 2.5 Reimplement `validate_models` on the helper so it reports failures, and `_all_models_in_datasource` on the helper with a re-raise, covering population inference, bare-name scoping, `recommend_root_model`, detection scope and resolver. Verify: 1.7's validate and fail-closed tests pass.
 
 ## 3. Refinement gate and version steps
 
-- [ ] 3.1 Set `_LIVE_REFINEMENT_BELOW_VERSION = 8`, with a comment stating the rule (refinement repairs only docs written before ingest refined both kinds). Verify: 1.2 passes.
-- [ ] 3.2 `_rewrite_order` also rewrites a dict item's string `raw_formula`. Add stored-only steps: SlayerModel 13→14 (stamp `source_queries` + re-run the order rewrite), SlayerQuery 5→6 (re-run the rank rewrite + the `date_range` repair from 4.1), Memory 3→4 (stamp `query`). Bump `CURRENT_VERSIONS` to 14 / 6 / 4. Update tests pinning the current version numbers. Verify: 1.4 passes.
+- [x] 3.1 Set `_LIVE_REFINEMENT_BELOW_VERSION = 8`, with a comment stating the rule (refinement repairs only docs written before ingest refined both kinds). Verify: 1.2 passes.
+- [x] 3.2 `_rewrite_order` also rewrites a dict item's string `raw_formula`. Add stored-only steps: SlayerModel 13→14 (stamp `source_queries` + re-run the order rewrite), SlayerQuery 5→6 (re-run the rank rewrite + the `date_range` repair from 4.1), Memory 3→4 (stamp `query`). Bump `CURRENT_VERSIONS` to 14 / 6 / 4. Update tests pinning the current version numbers. Verify: 1.4 passes.
 
 ## 4. Legacy time literals
 
-- [ ] 4.1 Shared normaliser: strip the offset keeping wall-clock time; slashed → ISO; otherwise unchanged. Add the `date_range` repair (drop when length ≠ 2, terse comment on the 1-element case) to query 5→6. Verify: 1.5 passes.
+- [x] 4.1 Shared normaliser: strip the offset keeping wall-clock time; slashed → ISO; otherwise unchanged. Add the `date_range` repair (drop when length ≠ 2, terse comment on the 1-element case) to query 5→6. Verify: 1.5 passes.
 - [ ] 4.2 Storage-side filter-literal repair:
   - sqlglot parse; direct-comparison operands in every layout; columns resolved through raw dicts, including dotted joins;
   - cheap skip for filters with no quoted literal;

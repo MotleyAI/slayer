@@ -37,6 +37,7 @@ from slayer.core.models import (
     SlayerModel,
 )
 from slayer.storage.base import StorageBackend, storage_base_dir
+from slayer.storage.document_loading import DocumentLoadFailures
 
 if TYPE_CHECKING:
     import duckdb
@@ -840,12 +841,11 @@ def ensure_demo_datasource(
     # raise on multi-datasource storages). Enrichment still runs so demos
     # set up by older versions gain labels/measures on next startup.
     existing_model_names = set(run_sync(storage.list_models(data_source=name)))
+    stored = {m.name: m for m in DocumentLoadFailures().skip(run_sync(storage.load_models(data_source=name)))}
     if not db_built and all(t in existing_model_names for t in TABLE_NAMES):
         jaffle_models = []
         for t in TABLE_NAMES:
-            if t not in existing_model_names:
-                continue
-            model = run_sync(storage.get_model(name=t, data_source=name))
+            model = stored.get(t)
             if model is None:
                 continue
             if assume_yes and apply_demo_enrichment(model):
@@ -859,9 +859,7 @@ def ensure_demo_datasource(
     written: list[SlayerModel] = []
     for model in models:
         apply_demo_enrichment(model)
-        existing_model: SlayerModel | None = run_sync(
-            storage.get_model(name=model.name, data_source=name)
-        )
+        existing_model = stored.get(model.name)
         if existing_model is not None and not assume_yes:
             written.append(existing_model)
             continue

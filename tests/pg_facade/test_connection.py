@@ -60,6 +60,9 @@ class _FakeStorage:
                 return m
         return None
 
+    async def load_models(self, *, data_source: str, exclude: str | None = None):  # NOSONAR(S7503) — async to satisfy the awaited interface
+        return [m for m in self._models_by_ds.get(data_source, []) if m.name != exclude], []
+
     async def get_datasource(self, datasource: str):  # NOSONAR(S7503) — async to satisfy the awaited interface
         schema = self._schema_by_ds.get(datasource)
         if schema is None:

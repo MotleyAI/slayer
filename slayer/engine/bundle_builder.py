@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, cast
+from typing import Any, Dict, List, Optional, Tuple, cast
 
 from slayer.core.errors import QueryBackedCycleError
 from slayer.core.models import SlayerModel
@@ -22,31 +21,29 @@ from slayer.ir.source_bundle import (
 )
 from slayer.ir.variables import merge_query_variables
 from slayer.sql.dialects import dialect_for_ds_type
-
-if TYPE_CHECKING:
-    from slayer.storage.base import StorageBackend
+from slayer.storage.base import StorageBackend
+from slayer.storage.document_loading import DocumentLoadFailures
 
 logger = logging.getLogger(__name__)
-
-
-#: Cap on concurrent peer-model reads during the join-graph walk.
-_PEER_LOAD_CONCURRENCY = 8
 
 
 async def _referenced_models(
     *, query: SlayerQuery, source_model: SlayerModel, named_queries: Dict[str, SlayerQuery],
     storage: "StorageBackend", data_source: Optional[str], chain: Tuple[str, ...], spine_clash: bool,
+    failures: DocumentLoadFailures,
 ) -> Tuple[List[SlayerModel], Dict[str, SlayerModel]]:
     """The root's join component plus query-written targets (the spine unless a stored model clashes with it), and the stored query-backed models among them."""
     component = await _collect_referenced_models(
         source_model=source_model, named_queries=named_queries, storage=storage, data_source=data_source,
+        failures=failures,
     )
     component.extend(await _query_written_targets(
         queries=[*named_queries.values(), query], known={m.name for m in component},
-        sibling_names=set(named_queries), storage=storage, data_source=data_source,
+        sibling_names=set(named_queries), storage=storage, data_source=data_source, failures=failures,
     ))
     referenced, query_backed = await _split_query_backed(
         models=[m for m in component if not is_spine(m)], storage=storage, data_source=data_source, chain=chain,
+        failures=failures,
     )
     if not spine_clash and data_source is not None:
         referenced.append(source_model if is_spine(source_model) else spine_model(data_source=data_source))
@@ -64,6 +61,7 @@ async def build_resolved_source_bundle(
     stage_displays: Optional[Dict[str, StageDisplay]] = None,
     splice_chain: Tuple[str, ...] = (),
     now: Optional[datetime] = None,
+    failures: Optional[DocumentLoadFailures] = None,
 ) -> ResolvedSourceBundle:
     """Eagerly assemble the :class:`ResolvedSourceBundle` for one execution (P11).
 
@@ -71,8 +69,9 @@ async def build_resolved_source_bundle(
     purely. Variable precedence (highest first): runtime > query (stage) >
     outer > source-model defaults. Stored query-backed models are collected as
     splice placeholders, never as referenced models. ``now`` is the execution's
-    clock reading (default: the host clock).
+    clock reading (default: the host clock); ``failures`` records skipped unloadable peers.
     """
+    failures = failures or DocumentLoadFailures()
     named_queries = named_queries or {}
     stage_displays = stage_displays or {}
     storage = cast("StorageBackend", _ModelReadCache(storage))
@@ -91,7 +90,7 @@ async def build_resolved_source_bundle(
     ) is not None
     referenced_models, query_backed = await _referenced_models(
         query=query, source_model=source_model, named_queries=named_queries,
-        storage=storage, data_source=walk_ds, chain=splice_chain, spine_clash=spine_clash,
+        storage=storage, data_source=walk_ds, chain=splice_chain, spine_clash=spine_clash, failures=failures,
     )
     source_model = query_host(source_model, query=query)
 
@@ -195,6 +194,7 @@ async def _query_written_targets(
     sibling_names: "set[str]",
     storage: "StorageBackend",
     data_source: Optional[str],
+    failures: DocumentLoadFailures,
 ) -> List[SlayerModel]:
     """The components of models the queries name as join targets but the join-graph
     walk did not reach (an extension over a sibling carries its own joins)."""
@@ -209,6 +209,7 @@ async def _query_written_targets(
             fresh = [
                 m for m in await _collect_referenced_models(
                     source_model=model, named_queries={}, storage=storage, data_source=data_source,
+                    failures=failures,
                 )
                 if m.name not in known
             ]
@@ -238,6 +239,7 @@ async def _split_query_backed(
     storage: "StorageBackend",
     data_source: Optional[str],
     chain: Tuple[str, ...],
+    failures: DocumentLoadFailures,
 ) -> "Tuple[List[SlayerModel], Dict[str, SlayerModel]]":
     """Split ``models`` into referenced models and query-backed placeholders, closing
     over each placeholder's stage bases (and their components). Placeholders keep
@@ -255,7 +257,7 @@ async def _split_query_backed(
         query_backed[model.name] = model.model_copy(update={"joins": []})
         pending.extend(await _stage_base_components(
             model=model, skip=[*chain, *query_backed], known={*referenced, *query_backed},
-            storage=storage, data_source=data_source,
+            storage=storage, data_source=data_source, failures=failures,
         ))
     return list(referenced.values()), query_backed
 
@@ -267,6 +269,7 @@ async def _stage_base_components(
     known: "set[str]",
     storage: "StorageBackend",
     data_source: Optional[str],
+    failures: DocumentLoadFailures,
 ) -> List[SlayerModel]:
     """The components of ``model``'s stage bases, bar bases named in ``skip`` or resolving into ``known``."""
     out: List[SlayerModel] = []
@@ -284,6 +287,7 @@ async def _stage_base_components(
         if base.name not in known:
             out.extend(await _collect_referenced_models(
                 source_model=base, named_queries={}, storage=storage, data_source=data_source,
+                failures=failures,
             ))
     return out
 
@@ -316,35 +320,12 @@ async def _load_datasource_peers(
     preseeded: Dict[str, SlayerModel],
     ds: Optional[str],
     storage: "StorageBackend",
+    failures: DocumentLoadFailures,
 ) -> Dict[str, SlayerModel]:
     """Preseeded plus every loadable datasource peer, so reverse edges (a peer
     declaring a join *into* a frontier model) are discoverable."""
-    all_models: Dict[str, SlayerModel] = dict(preseeded)
-    try:
-        peer_names = await storage.list_models(ds) if ds is not None else []
-    except Exception as exc:  # best-effort; ambiguous/absent ds → forward only
-        # Sanitize for log injection (S5145): strip CR/LF before logging.
-        safe_ds = str(ds).replace("\r", "\\r").replace("\n", "\\n")
-        logger.warning(
-            "list_models failed for ds '%s' (%s): reverse join edges will not "
-            "be discoverable for this query", safe_ds, exc,
-        )
-        peer_names = []
-    sem = asyncio.Semaphore(_PEER_LOAD_CONCURRENCY)
-
-    async def _load_peer(nm: str) -> "tuple[str, Optional[SlayerModel]]":
-        async with sem:
-            try:
-                return nm, await storage.get_model(nm, data_source=ds)
-            except Exception as exc:  # best-effort; a broken peer is skipped
-                logger.debug("peer model load failed for %r: %s", nm, exc)
-                return nm, None
-
-    to_load = [nm for nm in peer_names if nm not in all_models]
-    for nm, m in await asyncio.gather(*(_load_peer(nm) for nm in to_load)):
-        if m is not None:
-            all_models[nm] = m
-    return all_models
+    peers = failures.skip(await storage.load_models(data_source=ds)) if ds is not None else []
+    return {**preseeded, **{m.name: m for m in peers if m.name not in preseeded}}
 
 
 async def _frontier_model(
@@ -400,6 +381,7 @@ async def _collect_referenced_models(
     named_queries: Dict[str, SlayerQuery],
     storage: "StorageBackend",
     data_source: Optional[str],
+    failures: DocumentLoadFailures,
 ) -> List[SlayerModel]:
     """Transitive join-graph walk (BFS) over the bidirectional edge set,
     best-effort.
@@ -416,7 +398,7 @@ async def _collect_referenced_models(
     )
     ds = data_source or source_model.data_source
     all_models = await _load_datasource_peers(
-        preseeded=preseeded, ds=ds, storage=storage,
+        preseeded=preseeded, ds=ds, storage=storage, failures=failures,
     )
     incoming: Dict[str, List[str]] = {}
     universe = {**all_models, TIME_SPINE_MODEL: source_model} if is_spine(source_model) else all_models
@@ -466,6 +448,10 @@ class _ModelReadCache:
 
     def __getattr__(self, name: str):
         return getattr(self._inner, name)
+
+    async def load_models(self, **kwargs: Any) -> Any:
+        """The inner backend's ``load_models``, reading through this cache."""
+        return await StorageBackend.load_models(cast(StorageBackend, self), **kwargs)
 
     async def get_model(
         self, name: str, data_source: Optional[str] = None

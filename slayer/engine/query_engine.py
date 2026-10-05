@@ -112,6 +112,7 @@ from slayer.engine.schema_drift import (
     ApplyError,
     LiveSnapshotCache,
     ToDeleteEntry,
+    unloadable_model_delete,
     validate_datasource,
 )
 from slayer.engine.response_meta import (
@@ -160,6 +161,7 @@ from slayer.sql.generator import (
 from slayer.sql.session_policy import ScopedTable, apply_session_policy
 from slayer.sql.stage_wrapper import build_flat_rename_wrapper
 from slayer.storage.base import StorageBackend
+from slayer.storage.document_loading import DocumentLoadFailures
 import slayer.engine.bundle_builder
 
 logger = logging.getLogger(__name__)
@@ -1049,6 +1051,7 @@ class SlayerQueryEngine:
 
         # Build the resolved bundle once — the only storage consult; the binder
         # then reads from the bundle purely.
+        failures = DocumentLoadFailures()
         bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
             query=query,
             storage=self.storage,
@@ -1058,6 +1061,7 @@ class SlayerQueryEngine:
             stage_displays=stage_displays,
             splice_chain=splice_chain,
             now=self._clock(),
+            failures=failures,
         )
         # ``build_resolved_source_bundle`` raises if unresolved, so it's populated.
         model = bundle.source_model
@@ -1102,7 +1106,7 @@ class SlayerQueryEngine:
         query, _norm_warnings = self._normalize_stage(
             query=query, bundle=bundle, sibling_names=sibling_names,
         )
-        warnings: List[AnySlayerWarning] = list(_norm_warnings)
+        warnings: List[AnySlayerWarning] = [*failures.warnings, *_norm_warnings]
         normed_named: Dict[str, SlayerQuery] = {}
         for nm, nq in named_queries.items():
             nq2, nq_warnings = self._normalize_stage(
@@ -2558,18 +2562,13 @@ class SlayerQueryEngine:
             ds = await self.storage.get_datasource(data_source)
             if ds is None:
                 return []
-            identities = await self.storage._list_all_model_identities()
-            ds_model_names = [n for d, n in identities if d == data_source]
-            models: List[SlayerModel] = []
-            for name in ds_model_names:
-                m = await self.storage.get_model(name, data_source=data_source)
-                if m is not None:
-                    models.append(m)
-            return await validate_datasource(
+            models, unloadable = await self.storage.load_models(data_source=data_source)
+            entries = await validate_datasource(
                 datasource=ds,
                 models=models,
                 sql_clients=self._sql_clients,
             )
+            return [*entries, *(unloadable_model_delete(error=e) for e in unloadable)]
 
         ds_names = await self.storage.list_datasources()
         if not ds_names:
@@ -2718,11 +2717,12 @@ class SlayerQueryEngine:
                     f"is auto-managed and must not be supplied."
                 )
             model = await self._validate_and_populate_cache(model)
-        loaded = await self._preload_join_targets(model)
+        failures = DocumentLoadFailures()
+        loaded = await self._preload_join_targets(model, failures=failures)
         _validate_join_keys(model=model, loaded=loaded)
         await self._validate_mode_a_join_paths(model, loaded=loaded)
         await self.validate_sql_model_source(model)
-        await self.storage.save_model(model)
+        await self.storage.save_model(model, failures=failures)
         # Clean up the stale entry if the model moved datasource.
         if (
             prior_data_source is not None
@@ -2842,26 +2842,12 @@ class SlayerQueryEngine:
             _expand(sql)
 
     async def _preload_join_targets(
-        self, model: SlayerModel,
+        self, model: SlayerModel, *, failures: DocumentLoadFailures,
     ) -> Dict[str, Optional[SlayerModel]]:
-        """Load the datasource's models into a sync dict — the bidirectional
-        closure is the connected component. Best-effort: an
-        unlistable datasource or unloadable peer maps to ``None``/is skipped."""
-        loaded: Dict[str, Optional[SlayerModel]] = {model.name: model}
-        try:
-            names = await self.storage.list_models(model.data_source)
-        except Exception:
-            names = [j.target_model for j in (model.joins or [])]
-        for name in names:
-            if name in loaded:
-                continue
-            try:
-                loaded[name] = await self.storage.get_model(
-                    name, data_source=model.data_source,
-                )
-            except Exception:
-                loaded[name] = None
-        return loaded
+        """The datasource's loadable models by name (``model`` itself in place of its stored copy) —
+        the bidirectional closure is the connected component."""
+        peers = failures.skip(await self.storage.load_models(data_source=model.data_source, exclude=model.name))
+        return {**{m.name: m for m in peers}, model.name: model}
 
     async def _validate_and_populate_cache(self, model: SlayerModel) -> SlayerModel:
         """Dry-run-validate a query-backed model → copy with cache fields populated (an undefaulted ``{var}`` refuses)."""

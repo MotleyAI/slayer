@@ -10,8 +10,10 @@ tightening (backslash forbidden), the ``graph_fingerprint`` inclusion of
 
 from __future__ import annotations
 
+import contextlib
 import os
 import tempfile
+from datetime import datetime, timezone
 
 import pytest
 import yaml
@@ -19,7 +21,8 @@ import yaml
 from slayer.core.errors import MemoryNotFoundError
 from slayer.core.query import SlayerQuery
 from slayer.memories.models import Memory
-from slayer.storage.yaml_storage import YAMLStorage
+from slayer.storage.migrations import stamp_stored
+from slayer.storage.yaml_storage import YAMLStorage, _atomic_write_text, _md_to_memory_dict, _memory_to_md
 
 
 @pytest.fixture
@@ -87,10 +90,9 @@ class TestPerFileLayout:
         self, storage: YAMLStorage
     ) -> None:
         # Codex(tests) #6: direct helper invariant
-        # _md_to_memory(id, _memory_to_md(m)) == m, across body shapes and
+        # _md_to_memory_dict(id, _memory_to_md(m)) == m, across body shapes and
         # optional-field combinations — this is what guards seed's
         # skip-if-unchanged compare.
-        from slayer.storage.yaml_storage import _md_to_memory, _memory_to_md
 
         q = SlayerQuery(source_model="orders",
                         measures=[{"formula": "amount:sum"}])
@@ -102,7 +104,7 @@ class TestPerFileLayout:
             Memory(id="a", learning="body", entities=[], query=q),
         ]
         for m in cases:
-            round_tripped = _md_to_memory("a", _memory_to_md(m))
+            round_tripped = Memory.model_validate(stamp_stored(_md_to_memory_dict("a", _memory_to_md(m))))
             assert round_tripped.model_dump() == m.model_dump()
 
     async def test_write_read_rewrite_is_byte_stable(
@@ -178,10 +180,6 @@ class TestListDeleteSeq:
         # Two memories sharing created_at must tie-break on id. Write the files
         # directly with an identical timestamp (default_factory captures the
         # clock fn at class-def time, so monkeypatching it wouldn't help).
-        from datetime import datetime, timezone
-
-        from slayer.storage.yaml_storage import _atomic_write_text, _memory_to_md
-
         ts = datetime(2026, 1, 1, tzinfo=timezone.utc)
         for mid in ("b", "a"):
             _atomic_write_text(
@@ -390,8 +388,6 @@ class TestMemoryLock:
         # Plan §3.6: single save, id-allocation+save, delete, and cascade all
         # go through the one directory-level lock. We record every entry into
         # the lock context manager and assert each mutating op takes it.
-        import contextlib
-
         entries: list[str] = []
         real_lock = YAMLStorage._memories_file_lock
 
