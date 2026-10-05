@@ -105,7 +105,7 @@ Every regression test uses raw dicts/YAML in the exact 0.10.x shape (see the Lin
 ## 4. Legacy time literals
 
 - [x] 4.1 Shared normaliser: strip the offset keeping wall-clock time; slashed → ISO; otherwise unchanged. Add the `date_range` repair (drop when length ≠ 2, terse comment on the 1-element case) to query 5→6. Verify: 1.5 passes.
-- [ ] 4.2 Storage-side filter-literal repair:
+- [x] 4.2 Storage-side filter-literal repair:
   - sqlglot parse; direct-comparison operands in every layout; columns resolved through raw dicts, including dotted joins;
   - cheap skip for filters with no quoted literal;
   - wired into `_migrate_and_refine_on_load` for `source_queries`, and into the memory load path gated on raw memory version < 4.
@@ -131,7 +131,8 @@ Every regression test uses raw dicts/YAML in the exact 0.10.x shape (see the Lin
 
 ## 7. Verification
 
-- [ ] 7.1 Full unit suite `poetry run pytest -m "not integration"` is green.
-- [ ] 7.2 Integration with the CI invocation, including the Postgres cases for join keys and `date_range`, is green.
-- [ ] 7.3 `poetry run ruff check slayer/ tests/` is clean; `poetry run basedpyright` shows no baseline growth; `la-arch-check` passes.
+- [x] 7.1 Full unit suite `poetry run pytest -m "not integration"` is green.
+- [x] 7.2 Integration with the CI invocation, including the Postgres cases for join keys and `date_range`, is green.
+- [x] 7.3 `poetry run ruff check slayer/ tests/` is clean; `poetry run basedpyright` shows no baseline growth; `la-arch-check` passes.
 - [ ] 7.4 Upgrade-corpus test green. Record in the PR description that the generator was run once against `motley-slayer==0.10.2`.
+  - `test_datasource_reingests[shop]` is a strict xfail against DEV-2057: re-ingest files a false stale-reference error for `m_rank`, whose query reads the uncached 0.10.x query-backed model `status_rank`. 0.10.2 reports the same error.

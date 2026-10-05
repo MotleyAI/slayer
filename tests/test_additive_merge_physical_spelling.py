@@ -38,7 +38,9 @@ def test_renamed_column_is_not_duplicated():
 def test_renamed_column_merges_live_metadata():
     result = _additive_merge_existing(persisted=_stored(), fresh=_live(description="Order amount"))
     assert result.described_columns == ["amount_col"]
-    assert result.merged.get_column("amount_col").description == "Order amount"
+    column = result.merged.get_column("amount_col")
+    assert column is not None
+    assert column.description == "Order amount"
 
 
 def test_renamed_column_is_widened_on_sqlite():
@@ -47,7 +49,9 @@ def test_renamed_column_is_widened_on_sqlite():
         sqlite_widen_enabled=True,
     )
     assert result.widened_columns == ["amount_col"]
-    assert result.merged.get_column("amount_col").type is DataType.DOUBLE
+    column = result.merged.get_column("amount_col")
+    assert column is not None
+    assert column.type is DataType.DOUBLE
 
 
 def test_column_named_like_the_physical_spelling_keeps_its_own_match():
@@ -61,4 +65,6 @@ def test_column_named_like_the_physical_spelling_keeps_its_own_match():
     )
     result = _additive_merge_existing(persisted=stored, fresh=live, sqlite_widen_enabled=True)
     assert result.new_columns == []
-    assert result.merged.get_column("y").type is DataType.DOUBLE
+    column = result.merged.get_column("y")
+    assert column is not None
+    assert column.type is DataType.DOUBLE

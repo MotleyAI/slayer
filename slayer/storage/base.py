@@ -776,17 +776,16 @@ class StorageBackend(ABC):
         host = await self._query_host(source=query.get("source_model"), data_source=data_source, stage_names=stage_names)
         if host is None:
             return
-        for i, sites in enumerate(found):
-            if sites is None:
+        for i, pairs in enumerate(found):
+            if pairs is None:
                 continue
-            tree, pairs = sites
             temporal = [
                 literal for literal, column in pairs
                 if await self._stored_column_type(host=host, parts=[p.name for p in column.parts])
                 in (DataType.DATE.value, DataType.TIMESTAMP.value)
             ]
             if temporal:
-                filters[i] = repaired_filter(tree, temporal)
+                filters[i] = repaired_filter(filters[i], temporal)
 
     async def _query_host(
         self, *, source: Any, data_source: str | None, stage_names: frozenset[str],

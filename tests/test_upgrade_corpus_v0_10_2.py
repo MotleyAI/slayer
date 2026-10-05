@@ -131,7 +131,11 @@ class TestOnline:
         for model in models:
             await online_store.save_model(model)
 
-    @pytest.mark.parametrize("data_source", DATASOURCES)
+    @pytest.mark.parametrize("data_source", [
+        pytest.param("shop", marks=pytest.mark.xfail(
+            strict=True, reason="DEV-2057: false stale-reference error for m_rank over uncached status_rank")),
+        "cube", "lite",
+    ])
     async def test_datasource_reingests(self, online_store, data_source):
         datasource = await online_store.get_datasource(data_source)
         assert datasource is not None

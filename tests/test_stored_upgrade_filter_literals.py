@@ -28,6 +28,7 @@ REPAIRED_CASES = [
                  90.0, id="two-bound-range"),
     pytest.param("ordered_at IN ('2024/01/01', '2024/02/01')", 20.0, id="all-literal-in"),
     pytest.param("customers.signed_up_at >= '2024-01-01T00:00:00Z'", 180.0, id="joined-timestamp"),
+    pytest.param("ordered_at >= '2024-01-01T00:00:00Z' and like(status, 'n%')", 70.0, id="mixed-with-like"),
 ]
 LEGACY_FRAGMENTS = ("Z'", "+02:00", "/")
 
@@ -69,6 +70,12 @@ async def test_legacy_literal_against_temporal_column_runs(tmp_path, shop_ds, ba
     assert not [frag for frag in LEGACY_FRAGMENTS if frag in loaded], loaded
     resp = await run(storage, {"source_model": "rev_f", "measures": ["sum(rev)"]})
     assert measure_total(resp, measure="rev_sum") == expected
+
+
+async def test_repair_keeps_the_rest_of_the_filter_verbatim(tmp_path, shop_ds):
+    storage = await _store(tmp_path=tmp_path, ds=shop_ds, backend="yaml",
+                           filters=["ordered_at >= '2024-01-01T00:00:00Z' and like(status, 'n%')"])
+    assert await _loaded_filters(storage) == ["ordered_at >= '2024-01-01T00:00:00' and like(status, 'n%')"]
 
 
 @pytest.mark.parametrize("stored_filter", VERBATIM_CASES)

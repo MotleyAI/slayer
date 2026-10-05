@@ -125,7 +125,7 @@ Never a context variable (engine §3.3). The save-time peer checks (`_find_edge_
   - Each stored filter is parsed with sqlglot.
   - The repair touches only string literals that are direct comparison operands: either operand order, or every element of an all-literal `IN`.
   - The other operand must be a column resolving to DATE or TIMESTAMP through raw dicts, including dotted join paths. Stage-local names are unresolvable.
-  - The rewritten filter is emitted through sqlglot in the stored filter syntax.
+  - Each repaired literal is emitted through sqlglot and spliced at its source position; the rest of the filter stays verbatim.
 - **`date_range` repair** is a pure dict step in query 5→6.
 
 ### D8. Quoted placeholders in `SqlTemplate`
