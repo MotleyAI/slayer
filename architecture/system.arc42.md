@@ -145,18 +145,17 @@ All code, old and new, MUST obey these.
 ## 4. Enforcement
 
 The enforcement bundle — `la-arch-check` (the one import law, from
-MotleyAI/living-architecture; CI pins the version) runs in CI; the full bundle
+MotleyAI/living-architecture; pinned in pyproject.toml) runs in CI; the full bundle
 runs at the pr-review gate and the arch-slice move gate:
 
 ```bash
-la-arch-check                                # also runs in CI; pinned uvx form in CLAUDE.md
+la-arch-check                                # also runs in CI
 npx -y likec4@1.47.0 validate architecture   # pinned; run from the repo root
 poetry run basedpyright                      # gate = no new errors vs baseline
 ```
 
 `arch_check`'s `diagrams-fresh` goes red when a mapped doc's embedded mermaid
-drifts from the model or views — the one fix is `la-arch-diagrams` (pinned uvx
-form in CLAUDE.md).
+drifts from the model or views — the one fix is `la-arch-diagrams`.
 
 Every numbered principle item in an arc42 file carries at least one
 square-bracketed status tag (all three kinds validated by arch_check, per
